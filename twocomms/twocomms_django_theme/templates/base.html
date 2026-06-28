@@ -152,9 +152,9 @@
   <meta property="og:image"
     content="{% block og_image %}{{ site_base_url }}{% static og_locale_image_path %}{% endblock %}">
   <meta property="og:image:alt" content="{% block og_image_alt %}{% trans 'TwoComms — стріт & мілітарі одяг' %}{% endblock %}">
-  <meta property="og:image:type" content="image/jpeg">
-  <meta property="og:image:width" content="1200">
-  <meta property="og:image:height" content="630">
+  <meta property="og:image:type" content="{% block og_image_type %}image/jpeg{% endblock %}">
+  <meta property="og:image:width" content="{% block og_image_width %}1200{% endblock %}">
+  <meta property="og:image:height" content="{% block og_image_height %}630{% endblock %}">
   <meta property="og:site_name" content="TwoComms">
   <meta property="og:locale" content="{% og_locale_for_lang LANGUAGE_CODE %}">
   {% og_locale_alternates as og_alts %}

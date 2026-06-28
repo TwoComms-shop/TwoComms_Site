@@ -41,6 +41,8 @@ CATEGORY = {
     ),
 }
 
+COVER_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "custom_print_covers"
+
 COMMON_TRUST_CARDS = {
     "uk": [
         ("Від 1 штуки", "1+", "можна зробити одну річ, подарунок або тестовий зразок"),
@@ -1047,12 +1049,33 @@ def _process_ladder_html(language: str) -> str:
 
 
 def _localized_html(article: dict, language: str) -> str:
+    return "\n".join(
+        [
+            _localized_intro_html(article, language),
+            _localized_body_html(article, language),
+        ]
+    )
+
+
+def _localized_intro_html(article: dict, language: str) -> str:
+    intro = (
+        "Якщо хочеш зробити кастомний принт без довгого брифу, почни з простого: обери річ, покажи макет або опиши ідею. Далі менеджер перевірить файл, розмір і зону друку до виробництва."
+        if language == "uk"
+        else "Если хочешь сделать кастомный принт без длинного брифа, начни с простого: выбери вещь, покажи макет или опиши идею. Дальше менеджер проверит файл, размер и зону печати до производства."
+    )
+    return "\n".join(
+        [
+            '<div class="article-mini-landing article-mini-landing--compact">',
+            f'<span class="article-block-kicker">{"Швидко і без зайвого" if language == "uk" else "Быстро и без лишнего"}</span>',
+            f"<p>{intro}</p>",
+            "</div>",
+            _fast_answer_html(article, language),
+        ]
+    )
+
+
+def _localized_body_html(article: dict, language: str) -> str:
     pieces = [
-        '<div class="article-mini-landing">',
-        f"<h2>{_text(article['title'], language)}</h2>",
-        f"<p>{_text(article['excerpt'], language)}</p>",
-        "</div>",
-        _fast_answer_html(article, language),
         f"<h2>{_text(article['scenario_title'], language)}</h2>",
         '<div class="article-scenario-grid">',
     ]
@@ -1325,6 +1348,17 @@ def _render_cover_bytes(article: dict, index: int) -> bytes:
     return output.getvalue()
 
 
+def _cover_asset_path(article: dict) -> Path:
+    return COVER_ASSET_DIR / f"{article['slug']}.webp"
+
+
+def _cover_file(article: dict, index: int) -> tuple[bytes, str]:
+    asset_path = _cover_asset_path(article)
+    if asset_path.exists():
+        return asset_path.read_bytes(), asset_path.name
+    return _render_cover_bytes(article, index), f"{article['slug']}.png"
+
+
 def _should_attach_generated_cover(post: BlogPost) -> bool:
     if not post.cover_image:
         return True
@@ -1335,12 +1369,13 @@ def _article_blocks(article: dict) -> list[dict]:
     return [
         {
             "block_type": BlogPostBlock.BlockType.RICH_TEXT,
-            "payload": {"html": L(_localized_html(article, "uk"), _localized_html(article, "ru"))},
+            "payload": {"html": L(_localized_intro_html(article, "uk"), _localized_intro_html(article, "ru"))},
         },
         {
             "block_type": BlogPostBlock.BlockType.CTA_GROUP,
             "payload": {
                 "layout": "split",
+                "extra_class": "article-top-cta",
                 "eyebrow": L("Швидкий старт", "Быстрый старт"),
                 "title": L("Обери, як почати замовлення", "Выбери, как начать заказ"),
                 "body": L(
@@ -1362,6 +1397,10 @@ def _article_blocks(article: dict) -> list[dict]:
                     },
                 ],
             },
+        },
+        {
+            "block_type": BlogPostBlock.BlockType.RICH_TEXT,
+            "payload": {"html": L(_localized_body_html(article, "uk"), _localized_body_html(article, "ru"))},
         },
         {
             "block_type": BlogPostBlock.BlockType.METRIC_CARDS,
@@ -1511,9 +1550,10 @@ class Command(BaseCommand):
                 },
             )
             if _should_attach_generated_cover(post):
+                cover_bytes, cover_name = _cover_file(article, index)
                 post.cover_image = ContentFile(
-                    _render_cover_bytes(article, index),
-                    name=f"custom-print-{article['slug']}.png",
+                    cover_bytes,
+                    name=f"custom-print-{cover_name}",
                 )
                 post.save(update_fields=["cover_image", "updated_at"])
             post.blocks.all().delete()

@@ -24,6 +24,7 @@ from storefront.models import (
     PromoCode,
     UserPromoCode,
 )
+from storefront.management.commands.publish_custom_print_blog import COVER_ASSET_DIR
 from storefront.services.blog_blocks import render_post_blocks
 from storefront.services.index_targets import build_blog_urls
 from storefront.sitemaps import BlogCategorySitemap
@@ -91,6 +92,7 @@ class BlogStructuredPublicTests(TestCase):
         self.assertNotContains(response, "Внутрішній прогрес")
         self.assertNotContains(response, "2/4")
         self.assertNotContains(response, "article-custom-print-cta")
+        self.assertNotContains(response, "blog-article-primary-cta")
 
     def test_structured_blocks_render_only_when_attached_to_post(self):
         fund_post = BlogPost.objects.create(
@@ -194,7 +196,9 @@ class BlogStructuredPublicTests(TestCase):
             ".article-scenario-grid",
             ".article-checklist-grid",
             ".article-keyword-cloud",
+            ".article-top-cta",
             ".article-final-cta",
+            ".blog-article-primary-cta",
             ".blog-block-visual-preview",
             ".blog-block-modal",
             ".blog-editor-workbench",
@@ -353,6 +357,7 @@ class BlogStructuredPublicTests(TestCase):
                     self.assertTrue(post.cover_image)
                     self.assertTrue(post.cover_image.name.endswith(".webp"))
                     self.assertTrue((Path(media_root) / post.cover_image.name).exists())
+                    self.assertTrue((COVER_ASSET_DIR / f"{post.slug}.webp").exists())
                     self.assertTrue(post.title_uk)
                     self.assertTrue(post.title_ru)
                     self.assertTrue(post.seo_title_uk)
@@ -366,9 +371,15 @@ class BlogStructuredPublicTests(TestCase):
                     self.assertIn(BlogPostBlock.BlockType.SOURCE_LIST, block_types)
 
             first_post = BlogPost.objects.get(slug=EXPECTED_CUSTOM_PRINT_BLOG_SLUGS[0])
+            ordered_blocks = list(first_post.blocks.order_by("sort_order"))
+            self.assertEqual(ordered_blocks[0].block_type, BlogPostBlock.BlockType.RICH_TEXT)
+            self.assertEqual(ordered_blocks[1].block_type, BlogPostBlock.BlockType.CTA_GROUP)
+            self.assertEqual(ordered_blocks[1].payload.get("extra_class"), "article-top-cta")
+            self.assertEqual(ordered_blocks[2].block_type, BlogPostBlock.BlockType.RICH_TEXT)
             html, schema = render_post_blocks(first_post, request=self.client.request().wsgi_request)
             self.assertIn("/custom-print/", html)
             self.assertIn("article-fast-answer", html)
+            self.assertIn("article-top-cta", html)
             self.assertIn("article-decision-strip", html)
             self.assertIn("article-proof-gallery", html)
             self.assertIn("article-process-ladder", html)
@@ -392,8 +403,15 @@ class BlogStructuredPublicTests(TestCase):
             self.assertContains(response, 'content="index, follow', html=False)
             self.assertNotContains(response, "noindex")
             self.assertContains(response, "/custom-print/")
+            self.assertContains(response, "blog-article-primary-cta")
+            self.assertContains(response, "article-top-cta")
             self.assertContains(response, "Швидкі переходи")
             self.assertContains(response, "article-final-cta")
+            self.assertContains(response, f'property="og:image"\n    content="https://testserver{first_post.cover_image.url}"', html=False)
+            self.assertContains(response, 'property="og:image:type" content="image/webp"', html=False)
+            self.assertContains(response, 'property="og:image:width" content="1600"', html=False)
+            self.assertContains(response, 'property="og:image:height" content="1000"', html=False)
+            self.assertContains(response, f'name="twitter:image"\n    content="https://testserver{first_post.cover_image.url}"', html=False)
             self.assertNotContains(response, "Коротко для AI")
             self.assertNotContains(response, "Внутрішня навігація")
 

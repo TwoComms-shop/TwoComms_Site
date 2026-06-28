@@ -8,6 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.contrib.auth.models import User
+from django.utils import translation
 
 from storefront.models import Category
 
@@ -19,7 +20,13 @@ PNG_PIXEL = (
 )
 
 
-@override_settings(COMPRESS_ENABLED=False, COMPRESS_OFFLINE=False)
+TEST_CACHES = {
+    "default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+    "fragments": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+}
+
+
+@override_settings(COMPRESS_ENABLED=False, COMPRESS_OFFLINE=False, CACHES=TEST_CACHES)
 class CustomPrintPageTests(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -32,6 +39,8 @@ class CustomPrintPageTests(TestCase):
         super().tearDownClass()
 
     def setUp(self):
+        translation.activate("uk")
+        self.addCleanup(translation.deactivate)
         cache.clear()
         self.addCleanup(cache.clear)
         self.client = Client(
@@ -72,14 +81,20 @@ class CustomPrintPageTests(TestCase):
         self.assertContains(response, "Кастомний DTF-друк")
         self.assertContains(response, "data-start-flow")
         self.assertContains(response, "Написати нам у Telegram")
+        self.assertContains(response, "Не хочеш клацати всі кроки?")
+        self.assertContains(response, "Напиши менеджеру — опиши ідею простими словами.")
+        self.assertContains(response, "cp-manager-shortcut")
+        self.assertContains(response, "cp-manager-inline-link")
         self.assertContains(response, "Для себе")
         self.assertContains(response, "Для команди / бренду")
         self.assertContains(response, "Худі")
         self.assertContains(response, 'data-step="mode"')
         self.assertContains(response, "Для кого збираємо?")
         self.assertContains(response, "customPrintConfiguratorForm")
-        self.assertContains(response, "custom-print-configurator.css")
-        self.assertContains(response, "custom-print-configurator.js")
+        content = response.content.decode("utf-8")
+        self.assertRegex(content, r"custom-print-configurator(?:\.[0-9a-f]+)?\.css")
+        self.assertRegex(content, r"custom-print-configurator(?:\.[0-9a-f]+)?\.js")
+        self.assertGreaterEqual(content.count("data-safe-exit-trigger"), 2)
         self.assertContains(response, "customPrintConfiguratorConfig")
         self.assertNotContains(response, "Custom Print Atelier")
         self.assertNotContains(response, "DTG")
@@ -127,8 +142,9 @@ class CustomPrintPageTests(TestCase):
         response = self._get(reverse("custom_print"), follow=True)
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "custom-print-configurator.css?v=")
-        self.assertContains(response, "custom-print-configurator.js?v=")
+        content = response.content.decode("utf-8")
+        self.assertRegex(content, r"custom-print-configurator(?:\.[0-9a-f]+)?\.css\?v=")
+        self.assertRegex(content, r"custom-print-configurator(?:\.[0-9a-f]+)?\.js\?v=")
 
     def test_custom_print_page_disables_browser_cache(self):
         response = self._get(reverse("custom_print"), follow=True)

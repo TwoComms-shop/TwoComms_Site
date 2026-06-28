@@ -136,7 +136,7 @@
     statusBox: root.querySelector("[data-status-box]"),
     addToCartBtn: root.querySelector("[data-action-add-to-cart]"),
     submitLeadBtn: root.querySelector("[data-action-submit-lead]"),
-    safeExitBtn: root.querySelector("[data-safe-exit-trigger]"),
+    safeExitButtons: root.querySelectorAll("[data-safe-exit-trigger]"),
     startFlow: root.querySelector("[data-start-flow]"),
     cartActionHint: root.querySelector("[data-cart-action-hint]"),
     leadActionHint: root.querySelector("[data-lead-action-hint]"),
@@ -3018,7 +3018,9 @@
       event.preventDefault();
       handleSubmitLead();
     });
-    dom.safeExitBtn?.addEventListener("click", handleSafeExit);
+    dom.safeExitButtons?.forEach((button) => {
+      button.addEventListener("click", handleSafeExit);
+    });
   }
 
   function buildSnapshot(submissionType) {

@@ -6,8 +6,15 @@
 {% block canonical %}{{ site_base_url }}{{ canonical_path }}{% endblock %}
 {% block og_title %}{{ meta_title }}{% endblock %}
 {% block og_description %}{{ meta_description }}{% endblock %}
+{% block og_image %}{% if post_social_image_url %}{{ post_social_image_url }}{% else %}{{ block.super }}{% endif %}{% endblock %}
+{% block og_image_alt %}{% if post_social_image_url %}{{ post.cover_alt|default:post.title }}{% else %}{{ block.super }}{% endif %}{% endblock %}
+{% block og_image_type %}{% if post_social_image_url %}image/webp{% else %}{{ block.super }}{% endif %}{% endblock %}
+{% block og_image_width %}{% if post_social_image_url %}1600{% else %}{{ block.super }}{% endif %}{% endblock %}
+{% block og_image_height %}{% if post_social_image_url %}1000{% else %}{{ block.super }}{% endif %}{% endblock %}
 {% block twitter_title %}{{ meta_title }}{% endblock %}
 {% block twitter_description %}{{ meta_description }}{% endblock %}
+{% block twitter_image %}{% if post_social_image_url %}{{ post_social_image_url }}{% else %}{{ block.super }}{% endif %}{% endblock %}
+{% block twitter_image_alt %}{% if post_social_image_url %}{{ post.cover_alt|default:post.title }}{% else %}{{ block.super }}{% endif %}{% endblock %}
 
 {% block structured_data %}
   <script type="application/ld+json">{{ article_schema|safe }}</script>
@@ -34,6 +41,12 @@
           <p class="blog-lead">{{ post.excerpt }}</p>
         {% endif %}
         <div class="blog-article-actions">
+          {% if post_cta_url %}
+          <a href="{{ post_cta_url }}" class="blog-primary-link blog-article-primary-cta">
+            <i class="fas fa-shirt" aria-hidden="true"></i>
+            <span>{% if post.cta_label %}{{ post.cta_label }}{% else %}{% trans 'Створити свій принт' %}{% endif %}</span>
+          </a>
+          {% endif %}
           <a href="{% url 'blog' %}" class="blog-secondary-link">
             <i class="fas fa-arrow-left" aria-hidden="true"></i>
             <span>{% trans 'Усі публікації' %}</span>

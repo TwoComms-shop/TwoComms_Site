@@ -6944,3 +6944,116 @@ main {
     animation: none;
   }
 }
+
+/* ── Conversion shortcut: manager path at every configurator stage ── */
+.cp-manager-shortcut {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem 1.08rem;
+  border: 1px solid rgba(242, 211, 155, 0.24);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 100% 0, rgba(215, 164, 80, 0.14), transparent 34%),
+    linear-gradient(135deg, rgba(18, 16, 20, 0.96), rgba(8, 8, 12, 0.94));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.cp-manager-shortcut-copy {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.cp-manager-shortcut-copy span {
+  color: var(--cp-accent-soft);
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cp-manager-shortcut-copy strong {
+  color: #fff8ed;
+  font-size: 1.04rem;
+  line-height: 1.22;
+}
+
+.cp-manager-shortcut-copy p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--cp-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.cp-manager-shortcut-actions {
+  display: grid;
+  gap: 0.55rem;
+  min-width: min(100%, 230px);
+}
+
+.cp-manager-shortcut-link,
+.cp-manager-shortcut-draft,
+.cp-manager-inline-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 42px;
+  padding: 0.56rem 0.9rem;
+  border: 1px solid rgba(242, 211, 155, 0.3);
+  border-radius: 999px;
+  text-decoration: none;
+  font-size: 0.88rem;
+  font-weight: 780;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: transform var(--cp-transition-fast), border-color var(--cp-transition-fast), background var(--cp-transition-fast), color var(--cp-transition-fast);
+}
+
+.cp-manager-shortcut-link {
+  background: linear-gradient(135deg, var(--cp-accent-soft), var(--cp-accent));
+  color: #141214;
+  box-shadow: 0 14px 30px rgba(215, 164, 80, 0.22);
+}
+
+.cp-manager-shortcut-link svg {
+  width: 18px;
+  height: 18px;
+}
+
+.cp-manager-shortcut-draft,
+.cp-manager-inline-link {
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--cp-accent-soft);
+}
+
+.cp-manager-shortcut-link:hover,
+.cp-manager-shortcut-draft:hover,
+.cp-manager-inline-link:hover {
+  transform: translateY(-1px);
+  border-color: rgba(242, 211, 155, 0.52);
+}
+
+.cp-step-actions .cp-manager-inline-link {
+  margin-left: auto;
+}
+
+@media (max-width: 720px) {
+  .cp-manager-shortcut {
+    grid-template-columns: 1fr;
+    padding: 0.95rem;
+    border-radius: 20px;
+  }
+
+  .cp-manager-shortcut-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .cp-step-actions .cp-manager-inline-link {
+    margin-left: 0;
+  }
+}

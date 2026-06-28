@@ -18,7 +18,7 @@ from django.utils.translation import gettext as _
 
 from storefront.forms import BlogCategoryForm, BlogMediaAssetForm, BlogPostForm
 from storefront.models import BlogCategory, BlogPost, BlogPostBlock, BlogPostView
-from storefront.services.blog_blocks import create_blog_promo_claim, render_post_blocks, sync_post_blocks
+from storefront.services.blog_blocks import create_blog_promo_claim, localize_internal_url, render_post_blocks, sync_post_blocks
 from storefront.tracking import is_bot
 from storefront.utm_utils import get_client_ip
 
@@ -279,14 +279,17 @@ def blog_post(request, slug):
     }
     if post.seo_keywords:
         article_schema["keywords"] = post.seo_keywords
-    if post.cover_image:
-        article_schema["image"] = [_absolute_url(request, post.cover_image.url)]
+    post_social_image_url = _absolute_url(request, post.cover_image.url) if post.cover_image else ""
+    if post_social_image_url:
+        article_schema["image"] = [post_social_image_url]
     blocks_html, block_schema = render_post_blocks(post, request=request)
+    post_cta_url = localize_internal_url(post.cta_url, language_code) if post.cta_url else ""
 
     context = _blog_context(request, title=post.title)
     context.update(
         {
             "post": post,
+            "post_cta_url": post_cta_url,
             "related_posts": related,
             "blocks_html": blocks_html,
             "block_schema": _json(block_schema) if block_schema else "",
@@ -294,6 +297,7 @@ def blog_post(request, slug):
             "meta_title": post.seo_title or f"{post.title} | TwoComms",
             "meta_description": post.seo_description or post.excerpt,
             "canonical_path": post.get_absolute_url(),
+            "post_social_image_url": post_social_image_url,
             "article_schema": _json(article_schema),
             "breadcrumb_schema": _json(
                 {

@@ -42,7 +42,7 @@
 
 {% block extra_css %}
   {{ block.super }}
-  <link rel="stylesheet" href="{% static 'css/custom-print-configurator.css' %}?v=20260611-stage3d">
+  <link rel="stylesheet" href="{% static 'css/custom-print-configurator.css' %}?v=20260628-manager-shortcut">
   <style>
     .cp-breadcrumbs {
       display: flex;
@@ -431,6 +431,22 @@
         <!-- ═══ WATERFALL: вертикальний список кроків ═══ -->
         <div class="cp-waterfall" data-waterfall>
           <div class="cp-step-viewport" data-step-viewport>
+            <div class="cp-manager-shortcut" role="note">
+              <div class="cp-manager-shortcut-copy">
+                <span>{% trans 'Не хочеш клацати всі кроки?' %}</span>
+                <strong>{% trans 'Напиши менеджеру — опиши ідею простими словами.' %}</strong>
+                <p>{% trans 'Можна надіслати фото, референс, скрин або просто текст. Ми підкажемо тканину, розмір принту, зону друку й наступний крок.' %}</p>
+              </div>
+              <div class="cp-manager-shortcut-actions">
+                <a class="cp-manager-shortcut-link" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                  {% trans 'Написати менеджеру' %}
+                </a>
+                <button type="button" class="cp-manager-shortcut-draft" data-safe-exit-trigger>
+                  {% trans 'Зберегти чернетку і відкрити Telegram' %}
+                </button>
+              </div>
+            </div>
 
           <!-- STEP 1: Mode (B2C / B2B) -->
           <section class="cp-step cp-step--mode" data-step="mode" id="cp-step-mode">
@@ -541,6 +557,7 @@
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="product">{% trans 'Назад' %}</button>
+                <a class="cp-manager-inline-link" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener">{% trans 'Написати менеджеру' %}</a>
                 <button type="button" class="cp-link cp-link--primary" data-step-next="zones">{% trans 'Далі до зон' %}</button>
               </div>
             </div>
@@ -636,6 +653,7 @@
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="config">{% trans 'Назад' %}</button>
+                <a class="cp-manager-inline-link" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener">{% trans 'Написати менеджеру' %}</a>
                 <button type="button" class="cp-link cp-link--primary" data-step-next="artwork">{% trans 'Далі до макета' %}</button>
               </div>
             </div>
@@ -681,6 +699,7 @@
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="zones">{% trans 'Назад' %}</button>
+                <a class="cp-manager-inline-link" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener">{% trans 'Написати менеджеру' %}</a>
                 <button type="button" class="cp-link cp-link--primary" data-step-next="quantity">{% trans 'Далі до кількості' %}</button>
               </div>
             </div>
@@ -737,6 +756,7 @@
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="artwork">{% trans 'Назад' %}</button>
+                <a class="cp-manager-inline-link" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener">{% trans 'Написати менеджеру' %}</a>
                 <button type="button" class="cp-link cp-link--primary" data-step-next="gift">{% trans 'Далі до подарунку' %}</button>
               </div>
             </div>
@@ -784,8 +804,9 @@
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="quantity">{% trans 'Назад' %}</button>
-                <button type="button" class="cp-link cp-link--primary" data-step-next="contact">{% trans 'Додати упаковку' %}</button>
+                <a class="cp-manager-inline-link" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener">{% trans 'Написати менеджеру' %}</a>
                 <button type="button" class="cp-tertiary-button" data-step-skip="contact">{% trans 'Пропустити' %}</button>
+                <button type="button" class="cp-link cp-link--primary" data-step-next="contact">{% trans 'Додати упаковку' %}</button>
               </div>
             </div>
           </section>
