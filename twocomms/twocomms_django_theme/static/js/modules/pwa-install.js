@@ -12,6 +12,12 @@ const EXCLUDED_PATH_PREFIXES = [
   '/checkout/',
   '/push/',
 ];
+const CONVERSION_ROUTE_NAMES = new Set([
+  'blog',
+  'blog_category',
+  'blog_post',
+  'custom_print',
+]);
 
 let deferredPrompt = null;
 let promptTimer = null;
@@ -98,6 +104,21 @@ function isExcludedPath() {
   return EXCLUDED_PATH_PREFIXES.some((prefix) => window.location.pathname.startsWith(prefix));
 }
 
+function isConversionRoute() {
+  const routeName = document.documentElement.getAttribute('data-route-name') || '';
+  if (CONVERSION_ROUTE_NAMES.has(routeName)) {
+    return true;
+  }
+
+  const path = window.location.pathname || '';
+  return (
+    path === '/custom-print/' ||
+    path.includes('/custom-print/') ||
+    path === '/blog/' ||
+    path.includes('/blog/')
+  );
+}
+
 function hasAnotherPromptOpen() {
   return Boolean(
     document.querySelector('[data-web-push-prompt]') ||
@@ -110,6 +131,9 @@ function shouldShowPrompt() {
     return false;
   }
   if (document.visibilityState === 'hidden' || isDismissed() || isExcludedPath()) {
+    return false;
+  }
+  if (isConversionRoute()) {
     return false;
   }
   if (hasAnotherPromptOpen()) {

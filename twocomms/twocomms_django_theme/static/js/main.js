@@ -24,7 +24,7 @@ function initDeferredInstallPrompts() {
       }
 
       if ('serviceWorker' in navigator) {
-        import('./modules/pwa-install.js')
+        import('./modules/pwa-install.js?v=20260628-conversion-routes')
           .then(({ initPwaInstall }) => initPwaInstall())
           .catch(() => { });
       }
