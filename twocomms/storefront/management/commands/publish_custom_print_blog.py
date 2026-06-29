@@ -118,6 +118,15 @@ PROOF_CARDS = {
     ],
 }
 
+CATALOG_INTERLINKS = [
+    (L("Футболки для принту", "Футболки для принта"), "/catalog/tshirts/", "fas fa-shirt"),
+    (L("Чорні футболки", "Черные футболки"), "/catalog/tshirts/black/", "fas fa-circle-half-stroke"),
+    (L("Худі для принту", "Худи для принта"), "/catalog/hoodie/", "fas fa-shirt"),
+    (L("Чорні худі", "Черные худи"), "/catalog/hoodie/black/", "fas fa-circle-half-stroke"),
+    (L("Лонгсліви для принту", "Лонгсливы для принта"), "/catalog/long-sleeve/", "fas fa-shirt"),
+    (L("Кастомний принт онлайн", "Кастомный принт онлайн"), "/custom-print/", "fas fa-print"),
+]
+
 
 ARTICLES = [
     {
@@ -951,8 +960,14 @@ def _html_paragraphs(value: dict[str, list[str]], language: str) -> str:
     return "".join(f"<p>{paragraph}</p>" for paragraph in _text(value, language))
 
 
-def _html_list(items: dict[str, list[str]], language: str) -> str:
-    return "<ul>" + "".join(f"<li>{item}</li>" for item in _text(items, language)) + "</ul>"
+def _counted_class(base_class: str, count: int) -> str:
+    return f"{base_class} {base_class}--count-{min(max(count, 1), 8)}"
+
+
+def _html_list(items: dict[str, list[str]], language: str, class_name: str = "") -> str:
+    values = list(_text(items, language))
+    class_attr = f' class="{_counted_class(class_name, len(values))}"' if class_name else ""
+    return f"<ul{class_attr}>" + "".join(f"<li>{item}</li>" for item in values) + "</ul>"
 
 
 def _localized_internal_url(url: str, language: str) -> str:
@@ -966,7 +981,7 @@ def _localized_internal_url(url: str, language: str) -> str:
 
 def _card_grid(items: list[tuple[str, str, str]], grid_class: str) -> str:
     cards = [f'<div><span><i class="{icon}" aria-hidden="true"></i></span><h3>{title}</h3><p>{body}</p></div>' for icon, title, body in items]
-    return f'<div class="{grid_class}">' + "".join(cards) + "</div>"
+    return f'<div class="{_counted_class(grid_class, len(cards))}">' + "".join(cards) + "</div>"
 
 
 def _fast_answer_html(article: dict, language: str) -> str:
@@ -1040,8 +1055,34 @@ def _process_ladder_html(language: str) -> str:
             '<div class="article-process-ladder">',
             f"<h2>{title}</h2>",
             f"<p>{intro}</p>",
-            '<div class="article-process-steps">',
+            f'<div class="{_counted_class("article-process-steps", len(rows))}" style="--process-count:{len(rows)}">',
             *rows,
+            "</div>",
+            "</div>",
+        ]
+    )
+
+
+def _catalog_interlinks_html(language: str) -> str:
+    title = "Корисні переходи без зайвого пошуку" if language == "uk" else "Полезные переходы без лишнего поиска"
+    intro = (
+        "Якщо вже зрозуміло, на чому друкувати, переходь одразу до потрібної основи або відкрий конфігуратор."
+        if language == "uk"
+        else "Если уже понятно, на чём печатать, переходи сразу к нужной основе или открой конфигуратор."
+    )
+    cards = []
+    for label, url, icon in CATALOG_INTERLINKS:
+        cards.append(
+            f'<a href="{_localized_internal_url(url, language)}">'
+            f'<i class="{icon}" aria-hidden="true"></i><span>{_text(label, language)}</span></a>'
+        )
+    return "\n".join(
+        [
+            '<div class="article-interlink-strip">',
+            f"<h2>{title}</h2>",
+            f"<p>{intro}</p>",
+            f'<div class="{_counted_class("article-interlink-grid", len(cards))}">',
+            *cards,
             "</div>",
             "</div>",
         ]
@@ -1075,14 +1116,16 @@ def _localized_intro_html(article: dict, language: str) -> str:
 
 
 def _localized_body_html(article: dict, language: str) -> str:
+    scenarios = article["scenarios"]
     pieces = [
         f"<h2>{_text(article['scenario_title'], language)}</h2>",
-        '<div class="article-scenario-grid">',
+        f'<div class="{_counted_class("article-scenario-grid", len(scenarios))}">',
     ]
-    for title, body in article["scenarios"]:
+    for title, body in scenarios:
         pieces.append(f"<div><h3>{_text(title, language)}</h3><p>{_text(body, language)}</p></div>")
     pieces.append("</div>")
     pieces.append(_decision_strip_html(language))
+    pieces.append(_catalog_interlinks_html(language))
 
     for heading, paragraphs in article["sections"]:
         pieces.append(f"<h2>{_text(heading, language)}</h2>")
@@ -1092,7 +1135,7 @@ def _localized_body_html(article: dict, language: str) -> str:
         [
             '<div class="article-checklist-grid">',
             f"<h2>{_text(article['unique_title'], language)}</h2>",
-            _html_list(article["unique_items"], language),
+            _html_list(article["unique_items"], language, "article-checklist-list"),
             "</div>",
             "<h2>Як це робить TwoComms</h2>" if language == "uk" else "<h2>Как это делает TwoComms</h2>",
             (

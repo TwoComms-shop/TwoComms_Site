@@ -251,8 +251,11 @@ class BlogBlockRenderer:
                 )
         if not cards_html:
             return ""
+        card_count = min(len(cards_html), 6)
         return (
-            '<section class="article-structured-block blog-article-impact article-stage-board article-metric-board article-metric-cards">'
+            '<section class="article-structured-block blog-article-impact article-stage-board '
+            f'article-metric-board article-metric-cards article-metric-board--count-{card_count}" '
+            f'style="--metric-count:{card_count}">'
             + "".join(cards_html)
             + "</section>"
         )

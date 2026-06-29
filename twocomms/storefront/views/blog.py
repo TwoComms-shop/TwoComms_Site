@@ -284,6 +284,34 @@ def blog_post(request, slug):
         article_schema["image"] = [post_social_image_url]
     blocks_html, block_schema = render_post_blocks(post, request=request)
     post_cta_url = localize_internal_url(post.cta_url, language_code) if post.cta_url else ""
+    if (post.cta_url or "").rstrip("/") == "/custom-print":
+        custom_print_url = _absolute_url(request, post_cta_url)
+        tshirts_url = _absolute_url(request, localize_internal_url("/catalog/tshirts/", language_code))
+        hoodie_url = _absolute_url(request, localize_internal_url("/catalog/hoodie/", language_code))
+        longsleeve_url = _absolute_url(request, localize_internal_url("/catalog/long-sleeve/", language_code))
+        article_schema.update(
+            {
+                "about": [
+                    {
+                        "@type": "Service",
+                        "name": "Кастомний друк на одязі" if language_code == "uk" else "Кастомная печать на одежде",
+                        "provider": {"@type": "Organization", "name": "TwoComms"},
+                        "url": custom_print_url,
+                    },
+                    {"@type": "Thing", "name": "DTF-друк" if language_code == "uk" else "DTF-печать"},
+                ],
+                "mentions": [
+                    {"@type": "Product", "name": "Футболки для принту" if language_code == "uk" else "Футболки для принта", "url": tshirts_url},
+                    {"@type": "Product", "name": "Худі для принту" if language_code == "uk" else "Худи для принта", "url": hoodie_url},
+                    {"@type": "Product", "name": "Лонгсліви для принту" if language_code == "uk" else "Лонгсливы для принта", "url": longsleeve_url},
+                ],
+                "potentialAction": {
+                    "@type": "OrderAction",
+                    "name": "Створити кастомний принт" if language_code == "uk" else "Создать кастомный принт",
+                    "target": {"@type": "EntryPoint", "urlTemplate": custom_print_url},
+                },
+            }
+        )
 
     context = _blog_context(request, title=post.title)
     context.update(

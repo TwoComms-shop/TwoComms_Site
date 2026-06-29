@@ -256,7 +256,8 @@
       }
       if (block.type === 'metric_cards') {
         const cards = Array.isArray(payload.cards) ? payload.cards : [];
-        return `<section class="article-structured-block blog-article-impact article-stage-board article-metric-board article-metric-cards">${cards.map((card) => `<div class="article-metric-card stage-card"><span class="article-metric-label">${escapeHtml(localText(card.label))}</span><strong class="article-metric-value">${escapeHtml(card.value || '')}</strong><em class="article-metric-caption">${escapeHtml(localText(card.caption))}</em></div>`).join('') || '<div class="article-metric-card stage-card"><span>Метрика</span><strong>2/4</strong><em>етапи</em></div>'}</section>`;
+        const cardCount = Math.max(1, Math.min(cards.length || 1, 6));
+        return `<section class="article-structured-block blog-article-impact article-stage-board article-metric-board article-metric-cards article-metric-board--count-${cardCount}" style="--metric-count:${cardCount}">${cards.map((card) => `<div class="article-metric-card stage-card"><span class="article-metric-label">${escapeHtml(localText(card.label))}</span><strong class="article-metric-value">${escapeHtml(card.value || '')}</strong><em class="article-metric-caption">${escapeHtml(localText(card.caption))}</em></div>`).join('') || '<div class="article-metric-card stage-card"><span>Метрика</span><strong>2/4</strong><em>етапи</em></div>'}</section>`;
       }
       if (block.type === 'callout') {
         return `<aside class="article-structured-block article-callout type-${cssToken(payload.tone || 'info', 'info')}"><div class="callout-icon"><i class="fas fa-info-circle" aria-hidden="true"></i></div><div class="callout-content"><strong>${escapeHtml(localText(payload.title, 'Важливо'))}</strong><p>${escapeHtml(plainText(localText(payload.body), 'Текст підказки.'))}</p></div></aside>`;

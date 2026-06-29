@@ -194,10 +194,15 @@ class BlogStructuredPublicTests(TestCase):
             ".article-proof-gallery",
             ".article-process-ladder",
             ".article-scenario-grid",
+            ".article-scenario-grid--count-",
             ".article-checklist-grid",
             ".article-keyword-cloud",
+            ".article-interlink-strip",
+            ".article-interlink-grid",
             ".article-top-cta",
             ".article-final-cta",
+            ".article-metric-board--count-5",
+            ".article-process-steps--count-5",
             ".blog-article-primary-cta",
             ".blog-block-visual-preview",
             ".blog-block-modal",
@@ -339,6 +344,33 @@ class BlogStructuredPublicTests(TestCase):
         self.assertEqual(schema["@type"], "FAQPage")
         self.assertEqual(schema["mainEntity"][0]["name"], "Як прати футболку?")
 
+    def test_metric_cards_emit_count_class_for_balanced_odd_grids(self):
+        post = BlogPost.objects.create(
+            category=self.product_reviews,
+            title="Пост з п'ятьма метриками",
+            slug="five-metrics-post",
+            excerpt="Метрики.",
+            content_html="",
+            published_at=timezone.now(),
+            is_published=True,
+        )
+        BlogPostBlock.objects.create(
+            post=post,
+            block_type=BlogPostBlock.BlockType.METRIC_CARDS,
+            sort_order=10,
+            payload={
+                "cards": [
+                    {"label": {"uk": f"Етап {number}"}, "value": str(number), "caption": {"uk": "пояснення"}}
+                    for number in range(1, 6)
+                ]
+            },
+        )
+
+        html, _schema = render_post_blocks(post, request=self.client.request().wsgi_request)
+
+        self.assertIn("article-metric-board--count-5", html)
+        self.assertIn("--metric-count:5", html)
+
     def test_publish_custom_print_blog_command_creates_indexable_localized_post_landings(self):
         out = io.StringIO()
 
@@ -383,6 +415,12 @@ class BlogStructuredPublicTests(TestCase):
             self.assertIn("article-decision-strip", html)
             self.assertIn("article-proof-gallery", html)
             self.assertIn("article-process-ladder", html)
+            self.assertIn("article-process-steps--count-5", html)
+            self.assertIn("article-interlink-strip", html)
+            self.assertIn("article-scenario-grid--count-", html)
+            self.assertIn("/catalog/tshirts/", html)
+            self.assertIn("/catalog/tshirts/black/", html)
+            self.assertIn("/catalog/hoodie/black/", html)
             self.assertIn("Коротко: як це працює", html)
             self.assertIn("Можна почати за 5 хвилин", html)
             self.assertNotIn("Коротко для AI", html)
@@ -407,6 +445,11 @@ class BlogStructuredPublicTests(TestCase):
             self.assertContains(response, "article-top-cta")
             self.assertContains(response, "Швидкі переходи")
             self.assertContains(response, "article-final-cta")
+            self.assertContains(response, '"about"', html=False)
+            self.assertContains(response, '"mentions"', html=False)
+            self.assertContains(response, '"potentialAction"', html=False)
+            self.assertContains(response, '"@type": "OrderAction"', html=False)
+            self.assertContains(response, "https://testserver/custom-print/", html=False)
             self.assertContains(response, f'property="og:image"\n    content="https://testserver{first_post.cover_image.url}"', html=False)
             self.assertContains(response, 'property="og:image:type" content="image/webp"', html=False)
             self.assertContains(response, 'property="og:image:width" content="1600"', html=False)
@@ -418,6 +461,9 @@ class BlogStructuredPublicTests(TestCase):
             ru_response = self.client.get(f"/ru/blog/{first_post.slug}/", secure=True)
             self.assertEqual(ru_response.status_code, 200)
             self.assertContains(ru_response, "/ru/custom-print/")
+            self.assertContains(ru_response, "/ru/catalog/tshirts/")
+            self.assertContains(ru_response, "/ru/catalog/tshirts/black/")
+            self.assertContains(ru_response, "/ru/catalog/hoodie/black/")
             self.assertContains(ru_response, "Коротко: как это работает")
             self.assertContains(ru_response, "Быстрые переходы")
             self.assertNotContains(ru_response, "Коротко для AI")
