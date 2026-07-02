@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TwoComms — Стратегия A → B</title>
+<style>
+  :root{
+    --bg:#0a0a0b; --panel:#141418; --panel2:#1b1b21; --line:#2a2a32;
+    --gold:#d4af37; --gold2:#f3dd8e; --txt:#e9e9ee; --mut:#9a9aa6;
+    --green:#3ecf8e; --red:#ff6b6b; --blue:#6aa9ff; --violet:#b18cff;
+    --r:16px; --maxw:1120px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 700px at 50% -10%,#16161c 0%,var(--bg) 60%);
+    color:var(--txt);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 20px}
+  h1,h2,h3{margin:0 0 .4em;line-height:1.15;font-weight:800;letter-spacing:-.02em}
+  h2{font-size:clamp(22px,3.2vw,32px);margin-top:8px}
+  h3{font-size:18px}
+  p{margin:.3em 0 .8em;color:#d6d6dd}
+  .muted{color:var(--mut)}
+  .gold{color:var(--gold2)}
+  .green{color:var(--green)} .red{color:var(--red)} .blue{color:var(--blue)} .violet{color:var(--violet)}
+  section{padding:46px 0;border-top:1px solid var(--line)}
+  .eyebrow{font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:var(--gold);font-weight:700}
+  .card{background:linear-gradient(180deg,var(--panel) 0%,#101014 100%);border:1px solid var(--line);
+    border-radius:var(--r);padding:20px 22px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:820px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .tag{display:inline-block;font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);
+    color:var(--mut);background:#0e0e12;margin:0 6px 6px 0}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:13px;padding:5px 12px;border-radius:999px}
+  .pill.gold{background:rgba(212,175,55,.13);color:var(--gold2);border:1px solid rgba(212,175,55,.35)}
+  .big{font-size:clamp(34px,6vw,60px);font-weight:900;letter-spacing:-.03em;line-height:1}
+  /* HERO */
+  .hero{padding:64px 0 36px;text-align:center}
+  .ab{display:flex;align-items:stretch;justify-content:center;gap:0;flex-wrap:wrap;margin-top:26px}
+  .ab .box{flex:1;min-width:260px;max-width:430px;text-align:left;padding:22px 24px;border-radius:var(--r);border:1px solid var(--line)}
+  .ab .a{background:linear-gradient(180deg,#1a1316,#120d0f)}
+  .ab .b{background:linear-gradient(180deg,#15140d,#100f09);border-color:rgba(212,175,55,.4)}
+  .arrowmid{display:flex;align-items:center;justify-content:center;padding:0 14px;font-size:34px;color:var(--gold)}
+  @media(max-width:820px){.arrowmid{transform:rotate(90deg);padding:10px 0}.ab .box{min-width:0;max-width:none;flex:1 1 100%}}
+  .kv{display:flex;justify-content:space-between;gap:10px;border-top:1px dashed var(--line);padding:7px 0;font-size:14px}
+  .kv:first-of-type{border-top:0}
+  /* bars */
+  .bar{height:14px;border-radius:8px;background:#0e0e12;border:1px solid var(--line);overflow:hidden;margin:6px 0 2px}
+  .bar > i{display:block;height:100%;border-radius:8px}
+  .fill-gold{background:linear-gradient(90deg,#8a6f1e,var(--gold2))}
+  .fill-green{background:linear-gradient(90deg,#1d6e49,var(--green))}
+  .fill-blue{background:linear-gradient(90deg,#27537f,var(--blue))}
+  .fill-mut{background:linear-gradient(90deg,#34343c,#5a5a66)}
+  .legend{font-size:13px;color:var(--mut)}
+  /* phases */
+  .flow{display:flex;gap:0;flex-wrap:wrap;align-items:stretch}
+  .phase{flex:1;min-width:240px;position:relative;padding:20px;border-radius:var(--r);border:1px solid var(--line);
+    background:linear-gradient(180deg,var(--panel),#101014);margin:8px}
+  .phase h3 .num{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;
+    background:var(--gold);color:#1a1505;font-weight:900;margin-right:8px;font-size:15px}
+  .phase ul{margin:8px 0 0;padding-left:18px} .phase li{margin:4px 0;font-size:14px;color:#d2d2d9}
+  .gate{margin-top:12px;font-size:13px;border-top:1px dashed var(--line);padding-top:10px}
+  .gate b{color:var(--green)}
+  .conn{display:flex;align-items:center;justify-content:center;color:var(--gold);font-size:26px;min-width:30px}
+  @media(max-width:980px){.conn{transform:rotate(90deg);width:100%;padding:4px 0}}
+  .branch{margin:14px 8px 0;border:1px dashed rgba(177,140,255,.5);border-radius:var(--r);padding:14px 18px;
+    background:rgba(177,140,255,.06)}
+  /* ladder */
+  .ladder{display:flex;align-items:flex-end;gap:18px;height:230px;padding:12px 6px;border-bottom:2px solid var(--line);position:relative}
+  .rung{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;text-align:center;gap:8px}
+  .rung .col{width:64%;border-radius:10px 10px 0 0;border:1px solid var(--line);border-bottom:0}
+  .be{position:absolute;left:0;right:0;border-top:2px dashed var(--red);text-align:right}
+  .be span{background:var(--bg);color:var(--red);font-size:11px;padding:0 6px;position:relative;top:-9px}
+  .timeline{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .tl{flex:1;min-width:150px;border-left:3px solid var(--gold);padding:6px 0 6px 12px}
+  .tl .d{font-weight:800;color:var(--gold2)}
+  /* week */
+  .week{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+  @media(max-width:820px){.week{grid-template-columns:repeat(2,1fr)}}
+  .day{background:#0f0f13;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:13px}
+  .day .dn{font-weight:800;color:var(--gold2);margin-bottom:6px;font-size:13px}
+  .day.high{border-color:rgba(212,175,55,.5);background:rgba(212,175,55,.08)}
+  .stop li{margin:6px 0}
+  .check li{margin:6px 0;list-style:none;position:relative;padding-left:26px}
+  .check li:before{content:"✓";position:absolute;left:0;color:var(--green);font-weight:900}
+  .x li:before{content:"✕";color:var(--red)}
+  .foot{padding:30px 0 50px;color:var(--mut);font-size:13px;text-align:center}
+  .nav{position:sticky;top:0;z-index:9;background:rgba(10,10,11,.82);backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line)}
+  .nav .wrap{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:10px 20px}
+  .nav a{color:var(--mut);text-decoration:none;font-size:13px;padding:5px 10px;border-radius:8px}
+  .nav a:hover{color:var(--gold2);background:#16161c}
+  .brand{font-weight:900;letter-spacing:.04em;color:var(--txt);margin-right:auto}
+  .brand b{color:var(--gold)}
+</style>
+</head>
+<body>
+
+<div class="nav"><div class="wrap">
+  <div class="brand">TWO<b>COMMS</b> · A→B</div>
+  <a href="#diag">Диагноз</a><a href="#econ">Экономика</a><a href="#costs">Расходы</a><a href="#legs">Спрос</a>
+  <a href="#road">Дорожная карта</a><a href="#money">Деньги</a><a href="#scen">Сценарии</a><a href="#week">Ритм</a><a href="#psy">Психология</a>
+</div></div>
+
+<header class="hero"><div class="wrap">
+  <span class="eyebrow">Стратегия роста · 20.06.2026 · на реальных данных</span>
+  <h1 class="big" style="margin-top:14px">Из «построил завод» <span class="gold">→</span><br>в «включил спрос»</h1>
+  <p class="muted" style="max-width:760px;margin:16px auto 0">Бизнес ограничен не деньгами и не мощностью, а <b class="gold">спросом и фокусом</b>. Инфраструктура готова на 200%. Задача — построить 2 управляемых канала продаж и выйти на 50–100к ₴ чистыми/мес к концу 2026, пока грант оплачивает аренду.</p>
+
+  <div class="ab">
+    <div class="box a">
+      <span class="pill" style="background:rgba(255,107,107,.12);color:#ff9b9b;border:1px solid rgba(255,107,107,.3)">● ТОЧКА A — сейчас</span>
+      <div class="kv"><span class="muted">Продажи (управляемый канал)</span><b>~0 / день</b></div>
+      <div class="kv"><span class="muted">Выручка систем. канала</span><b>~7 000 ₴/мес</b></div>
+      <div class="kv"><span class="muted">Заказы с рекламы</span><b class="red">0</b></div>
+      <div class="kv"><span class="muted">Двигатель спроса</span><b class="red">нет</b></div>
+      <div class="kv"><span class="muted">Деньги на счетах</span><b>~496 600 ₴</b></div>
+      <div class="kv"><span class="muted">Состояние</span><b>выгорание 6/10</b></div>
+    </div>
+    <div class="arrowmid">➜</div>
+    <div class="box b">
+      <span class="pill gold">★ ТОЧКА B — декабрь 2026</span>
+      <div class="kv"><span class="muted">Продажи</span><b class="gold">3–8 / день</b></div>
+      <div class="kv"><span class="muted">Чистыми владельцу</span><b class="gold">50к → 100к ₴/мес</b></div>
+      <div class="kv"><span class="muted">Каналы</span><b>реклама + плёнка + опт</b></div>
+      <div class="kv"><span class="muted">Плёнка B2B (LTV)</span><b>3–5 пост. клиентов</b></div>
+      <div class="kv"><span class="muted">Операционка</span><b>частично снята</b></div>
+      <div class="kv"><span class="muted">Буфер на январь</span><b class="green">100–150к ₴</b></div>
+    </div>
+  </div>
+</div></header>
+
+<!-- DIAGNOSIS -->
+<section id="diag"><div class="wrap">
+  <span class="eyebrow">Главный диагноз</span>
+  <h2>Завод построен. Конвейер спроса — нет.</h2>
+  <div class="grid g2" style="margin-top:18px">
+    <div class="card">
+      <h3>🏭 Что построено (избыточно)</h3>
+      <p class="muted">4 поддомена, CRM с парсингом, телефония с AI, финкабинет, склад. Уровень инфраструктуры выше конкурентов.</p>
+      <div class="legend">Загрузка инфраструктуры спросом:</div>
+      <div class="bar"><i class="fill-mut" style="width:8%"></i></div>
+      <div class="legend">295 635 спарсенных лидов · 3 реальных опт-магазина · примерочная плёнки B2B: 67 сессий → <b class="red">0 заказов плёнки</b></div>
+    </div>
+    <div class="card">
+      <h3>📉 Что это даёт (мало)</h3>
+      <p class="muted">~5 заказов/мес в системе (~200–300 за всю жизнь бренда), главные продажи — разовый коллаб 225ОШП, 0 с рекламы.</p>
+      <div class="legend">Источник прошлых продаж:</div>
+      <div class="bar"><i class="fill-blue" style="width:70%"></i></div>
+      <div class="legend">друзья / коллаб / маркетплейс — <b>~70%</b> · сайт-органика — мало · реклама — <b class="red">0%</b></div>
+      <div class="legend" style="margin-top:8px;color:#8af0c2">✅ Но кастом-принт на одежде уже конвертит органикой: <b>3 заказа × ~1100 ₴</b> из ChatGPT/поиска — канал живой, его масштабируем</div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px;border-color:rgba(212,175,55,.4)">
+    <h3 class="gold">⚡ Поведенческий корень (главное)</h3>
+    <p>«Продуктивная прокрастинация»: уход в стройку инструментов вместо денежных задач. Это <b>не лень — избегание через компетентность</b>: код даёт мгновенную награду и контроль, продажи — отложенную награду и уязвимость. На фоне перегрузки соло-оператора и гранта-дедлайна это перешло в выгорание 6/10. <span class="muted">Цитата: «думаю, что это фундамент, меня это расслабляет… немножко не тем занимаюсь».</span> <b class="gold">Исход 2026 решает именно это, а не экономика</b> (корень и разбор — файл 09). Лечение: снять операционку, награду — на денежные метрики, внешняя подотчётность.</p>
+  </div>
+</div></section>
+
+<!-- ECONOMICS -->
+<section id="econ"><div class="wrap">
+  <span class="eyebrow">Юнит-экономика · реальные цифры</span>
+  <h2>Маржа сильнее, чем казалось</h2>
+  <p class="muted">Старый аудит завышал себестоимость (печать считал по цене услуги 90₴, а сырьё ~15–30₴). Реальный вклад с единицы:</p>
+  <div class="grid g4" style="margin-top:16px">
+    <div class="card"><div class="muted">Футболка @1000</div><div class="big" style="font-size:30px" >+633<span style="font-size:14px"> ₴</span></div>
+      <div class="bar"><i class="fill-gold" style="width:63%"></i></div><div class="legend">маржа 63% · COGS ~367</div></div>
+    <div class="card"><div class="muted">Худи @2000</div><div class="big" style="font-size:30px">+912<span style="font-size:14px"> ₴</span></div>
+      <div class="bar"><i class="fill-gold" style="width:46%"></i></div><div class="legend">маржа 46% · COGS ~1088</div></div>
+    <div class="card" style="border-color:rgba(212,175,55,.4)"><div class="gold">Комплект @2700</div><div class="big" style="font-size:30px">+1245<span style="font-size:14px"> ₴</span></div>
+      <div class="bar"><i class="fill-gold" style="width:46%"></i></div><div class="legend">цель рекламы → AOV ↑</div></div>
+    <div class="card"><div class="muted">Плёнка B2B /м</div><div class="big" style="font-size:30px">+255<span style="font-size:14px"> ₴</span></div>
+      <div class="bar"><i class="fill-green" style="width:77%"></i></div><div class="legend">маржа 77% · легко физически</div></div>
+  </div>
+
+  <h3 style="margin-top:28px">Денежный мост: сколько продаж нужно</h3>
+  <div class="card">
+    <div class="ladder">
+      <div class="be" style="bottom:38px"><span>безубыток в окне гранта ≈ 8к (офис оплачен)</span></div>
+      <div class="rung"><div>~7к<br><span class="muted" style="font-size:12px">сейчас</span></div><div class="col fill-mut" style="height:18px"></div><b style="font-size:13px">0 прод/день</b></div>
+      <div class="rung"><div>58к<br><span class="muted" style="font-size:12px">вклад</span></div><div class="col fill-blue" style="height:90px"></div><b style="font-size:13px">2–3 прод/день</b><span class="legend">= 50к чистыми*</span></div>
+      <div class="rung"><div>108к<br><span class="muted" style="font-size:12px">вклад</span></div><div class="col fill-gold" style="height:150px"></div><b style="font-size:13px">4–5 прод/день</b><span class="legend">= 100к чистыми*</span></div>
+      <div class="rung"><div>144к<br><span class="muted" style="font-size:12px">вклад</span></div><div class="col fill-green" style="height:200px"></div><b style="font-size:13px">6–8 прод/день</b><span class="legend">= 100к с января</span></div>
+    </div>
+    <p class="legend" style="margin-top:10px">* В окне гранта (сейчас–декабрь) офис 36к оплачен → почти каждая продажа идёт в карман. С января безубыток вырастает до ~44к. <b class="gold">Вывод: использовать окно на максимум — заработать и накопить буфер.</b></p>
+  </div>
+</div></section>
+
+<!-- HIDDEN COSTS + ADS MATH -->
+<section id="costs"><div class="wrap">
+  <span class="eyebrow">Уточнение экономики · правка 20.06</span>
+  <h2>Скрытые расходы и математика рекламы</h2>
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card">
+      <h3 class="gold">Амортизация ≠ в цену</h3>
+      <p class="muted">Принтер 600к на единицу обвально зависит от объёма:</p>
+      <div class="legend">20 ед/мес → <b class="red">625 ₴/ед</b></div>
+      <div class="bar"><i class="fill-mut" style="width:100%"></i></div>
+      <div class="legend">450 ед/мес → <b class="green">28 ₴/ед</b></div>
+      <div class="bar"><i class="fill-green" style="width:5%"></i></div>
+      <div class="legend" style="margin-top:8px">«Убыточен» не товар, а недозагрузка станка → решает ОБЪЁМ, не цена.</div>
+    </div>
+    <div class="card">
+      <h3 class="gold">Реальная скрытая дыра</h3>
+      <p>Печатающая головка — расходник: <b>~4-6 мес</b>, замена <b>$300-500</b> → ~3к ₴/мес. Раньше не считалось.</p>
+      <div class="legend">Электричество на принт — <b>~0,5-1 ₴</b> (ничтожно). Тревога была не про тот пункт.</div>
+    </div>
+    <div class="card" style="border-color:rgba(212,175,55,.4)">
+      <h3 class="gold">Реклама: цена сообщения</h3>
+      <p>При close <b>15%</b>: CAC = цена сообщения / 0,15.</p>
+      <div class="legend">&lt; $1.5 → <b class="green">масштабируй</b></div>
+      <div class="legend">$1.5–3 → жёлтый, без агрессии</div>
+      <div class="legend">&gt; $3 → <b class="red">стоп, чини креатив</b></div>
+      <div class="legend" style="margin-top:8px">Старт на СООБЩЕНИЯ (не покупки — пиксель не обучится при 5-15/мес).</div>
+    </div>
+  </div>
+</div></section>
+
+<!-- LEGS -->
+<section id="legs"><div class="wrap">
+  <span class="eyebrow">Двигатель спроса</span>
+  <h2>Три ноги дохода</h2>
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card" style="border-color:rgba(212,175,55,.4)">
+      <span class="pill gold">🥇 A · Видеореклама B2C</span>
+      <p>Платное видео, старт с <b>футболок</b> (сезон), к зиме — худи. Непрерывно 8–12 нед, на <b>комплект/предоплату</b>.</p>
+      <div class="legend">Бюджет: грант 51.5к → $300–500→$1000/мес · ретаргет+lookalike</div>
+    </div>
+    <div class="card" style="border-color:rgba(62,207,142,.4)">
+      <span class="pill" style="background:rgba(62,207,142,.12);color:#8af0c2;border:1px solid rgba(62,207,142,.35)">🥇 B · Плёнка B2B</span>
+      <p>Лид-лендинг → Telegram. Маржа <b>77%</b>, физически <b>легко</b> (только намотка). Ставка на постоянных (LTV).</p>
+      <div class="legend">Оффер: «готовим твой файл» + бесплатный тест A3/A4</div>
+    </div>
+    <div class="card">
+      <span class="pill" style="background:rgba(106,169,255,.12);color:#a9ccff;border:1px solid rgba(106,169,255,.35)">🥈 C · Консигнация</span>
+      <p>Тест-партии в магазины/военторг по договору. Объём без рекламы (CAC≈0). Новым — предоплата/50%.</p>
+      <div class="legend">Капитал: выплата за ранение + 40к грант-одежда</div>
+    </div>
+  </div>
+  <div class="branch" style="margin-top:16px">
+    <span class="pill" style="background:rgba(177,140,255,.14);color:#cdb6ff;border:1px solid rgba(177,140,255,.4)">🔮 Апсайд (не база плана)</span>
+    <p style="margin:8px 0 0">Вышивка (грант ~1.5 мес) → якорный клиент на 50–100 худи/мес + премиум корп-B2B + кепки. Женская линия. Крупные коллабы. <b class="violet">Подключается сверху, когда подтвердится — не закладывается в базовый сценарий 50к.</b></p>
+  </div>
+</div></section>
+
+<!-- ROADMAP -->
+<section id="road"><div class="wrap">
+  <span class="eyebrow">Дорожная карта</span>
+  <h2>Три фазы до декабря</h2>
+  <div class="flow" style="margin-top:14px">
+    <div class="phase">
+      <h3><span class="num">0</span>Фундамент</h3>
+      <div class="muted" style="font-size:13px">сейчас → конец июля</div>
+      <ul>
+        <li>Цены 1000/2000 + комплект + порог беспл. доставки 2000 + предоплата 200</li>
+        <li>Закупить ядро-сток (40к ≈ 100 футболок)</li>
+        <li>10 принтов-флагманов (батч GPT-Image) + голосование в сторис</li>
+        <li>Оформить IG, засеять 10–20 отзывов</li>
+        <li>DTF → лид-лендинг, раздельный пиксель</li>
+        <li>Тест-реклама $10–15/день (обучение)</li>
+      </ul>
+      <div class="gate">Ворота: <b>1–2 продажи/день с рекламы</b></div>
+    </div>
+    <div class="conn">➜</div>
+    <div class="phase">
+      <h3><span class="num">1</span>Спрос</h3>
+      <div class="muted" style="font-size:13px">август → сентябрь</div>
+      <ul>
+        <li>Реклама непрерывно $300–500/мес, ретаргет+lookalike</li>
+        <li>1 контент/нед (AI/SEO) — усилить канал ChatGPT (11%)</li>
+        <li>Плёнка-лендинг живой + 5 B2B-сообщений/нед</li>
+        <li>1–2 консигнации тест-партией</li>
+      </ul>
+      <div class="gate">Ворота: <b>ROAS≥3 · 3–5 продаж/день · ~50к чистыми</b></div>
+    </div>
+    <div class="conn">➜</div>
+    <div class="phase" style="border-color:rgba(212,175,55,.45)">
+      <h3><span class="num" style="background:var(--gold2)">2</span>Масштаб</h3>
+      <div class="muted" style="font-size:13px">сентябрь → декабрь</div>
+      <ul>
+        <li>Авто-пресс + горячая плёнка → мощность ↑</li>
+        <li>Нанять DTF-оператора при 5 заказах/день</li>
+        <li>Зима: упор рекламы на ХУДИ (вклад 912) + комплекты</li>
+        <li>Выплата за ранение → худи-сток + масштаб до $1000/мес</li>
+        <li>Накопить буфер 100–150к на январь</li>
+      </ul>
+      <div class="gate">Ворота: <b>5–8 продаж/день · 100к run-rate · буфер собран</b></div>
+    </div>
+  </div>
+
+  <div class="timeline">
+    <div class="tl"><div class="d">Сейчас</div><div class="legend">окно гранта открыто, офис оплачен</div></div>
+    <div class="tl"><div class="d">~Сентябрь</div><div class="legend">авто-пресс + горячая плёнка → разгрузка</div></div>
+    <div class="tl"><div class="d">~Сент–Окт</div><div class="legend">выплата за ранение ~300к → капитал</div></div>
+    <div class="tl"><div class="d">Декабрь</div><div class="legend">последний платёж гранта по аренде</div></div>
+    <div class="tl"><div class="d">2027</div><div class="legend">делегация + автоматизация</div></div>
+  </div>
+</div></section>
+
+<!-- MONEY -->
+<section id="money"><div class="wrap">
+  <span class="eyebrow">Деньги</span>
+  <h2>Куда направить капитал</h2>
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card"><h3 class="gold">Грант · реклама</h3><div class="big" style="font-size:30px">51 500 ₴</div>
+      <p class="legend">Реальное видео $300–500/мес. Закрывает грант по назначению И даёт спрос.</p></div>
+    <div class="card"><h3 class="gold">Грант · одежда</h3><div class="big" style="font-size:30px">40 000 ₴</div>
+      <p class="legend">Ядро-сток ~100 ед ходовых SKU. Без стока рекламу лить нельзя.</p></div>
+    <div class="card"><h3 class="violet">Выплата за ранение</h3><div class="big" style="font-size:30px">~300 000 ₴</div>
+      <p class="legend">~35к комп · ~150–200к худи-сток+масштаб · ~50к буфер/оператор. Через 3–4 мес.</p></div>
+  </div>
+  <p class="legend" style="margin-top:12px">Резерв: грант 332к на счету + пенсия 132к. Деньги — не ограничитель. Ограничитель — спрос. Поэтому капитал конвертируем в спрос с доказанной окупаемостью, а не «бережём».</p>
+</div></section>
+
+<!-- SCENARIOS -->
+<section id="scen"><div class="wrap">
+  <span class="eyebrow">Прогнозы · финмодель</span>
+  <h2>Сценарии к декабрю 2026</h2>
+  <p class="muted" style="max-width:780px">Чистыми = продаж/день × 30 × вклад (~850 ₴) − реклама (CAC ~280 ₴, 70% заказов) − постоянные. Пороги устойчивы к разумным допущениям (см. файл 10).</p>
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card" style="border-color:rgba(255,107,107,.35)">
+      <span class="pill" style="background:rgba(255,107,107,.12);color:#ff9b9b;border:1px solid rgba(255,107,107,.3)">🔴 Пессимист</span>
+      <p>Реклама не нашла креатив (&gt;$3/сообщение), дисциплина проседает.</p>
+      <div class="kv"><span class="muted">Продаж/день</span><b>1–2</b></div>
+      <div class="kv"><span class="muted">Чистыми (окно)</span><b>12–31к</b></div>
+      <div class="kv"><span class="muted">С января</span><b class="red">минус</b></div>
+    </div>
+    <div class="card" style="border-color:rgba(212,175,55,.4)">
+      <span class="pill gold">🟡 База</span>
+      <p>Реклама ~$1.5/сообщение, close 15%, непрерывность 8–12 нед.</p>
+      <div class="kv"><span class="muted">Продаж/день</span><b>3–5</b></div>
+      <div class="kv"><span class="muted">Чистыми (окно)</span><b class="gold">50–90к</b></div>
+      <div class="kv"><span class="muted">Буфер на январь</span><b class="green">да</b></div>
+    </div>
+    <div class="card" style="border-color:rgba(62,207,142,.4)">
+      <span class="pill" style="background:rgba(62,207,142,.12);color:#8af0c2;border:1px solid rgba(62,207,142,.35)">🟢 Оптимист</span>
+      <p>Видео заходит + плёнка 3–5 клиентов + якорь/вышивка.</p>
+      <div class="kv"><span class="muted">Продаж/день</span><b>8–12</b></div>
+      <div class="kv"><span class="muted">Чистыми</span><b class="green">150–230к</b></div>
+      <div class="kv"><span class="muted">Цель</span><b>мечта 200к</b></div>
+    </div>
+  </div>
+  <div class="grid g4" style="margin-top:16px">
+    <div class="card"><div class="muted">50к чистыми</div><div class="big" style="font-size:26px">~3<span style="font-size:13px"> /день (окно)</span></div><div class="legend">~5/день с января</div></div>
+    <div class="card"><div class="muted">100к чистыми</div><div class="big" style="font-size:26px">~5–6<span style="font-size:13px"> /день</span></div><div class="legend">~7/день с января</div></div>
+    <div class="card"><div class="muted">200к мечта</div><div class="big" style="font-size:26px">~10–12<span style="font-size:13px"> /день</span></div><div class="legend">апсайды сверху</div></div>
+    <div class="card" style="border-color:rgba(255,107,107,.35)"><div class="red">Ничего не менять</div><div class="big" style="font-size:22px;color:#ff9b9b">смерть</div><div class="legend">грант кончится → кассовый разрыв ~Q1 2027</div></div>
+  </div>
+  <div class="card" style="margin-top:16px;border-color:rgba(212,175,55,.4)">
+    <h3 class="gold">⭐ Главный вывод по сценариям</h3>
+    <p>Разброс «бизнес умер ↔ мечта 200к» определяется <b class="gold">не деньгами и не рынком</b> (экономика здоровая, капитал есть), а <b>поведенческой переменной</b>: найдёт ли рабочий креатив и удержит ли непрерывность 8–12 недель, не убегая в стройку. <span class="muted">Исход 2026 предсказывается психологией исполнения, а не юнит-экономикой → над фокусом работать так же серьёзно, как над рекламой.</span></p>
+  </div>
+</div></section>
+
+<!-- WEEK -->
+<section id="week"><div class="wrap">
+  <span class="eyebrow">Операционная система против прокрастинации</span>
+  <h2>Недельный ритм (а не сила воли)</h2>
+  <div class="week" style="margin-top:16px">
+    <div class="day"><div class="dn">Пн</div>План недели (3 цели) · сток/закупка · метрики</div>
+    <div class="day high"><div class="dn">Вт 🎥</div>СЪЁМОЧНЫЙ ДЕНЬ: 2–3 рилса + сторис (неотменяемо)</div>
+    <div class="day"><div class="dn">Ср</div>Контент/AI (1 статья) · дожим лидов</div>
+    <div class="day"><div class="dn">Чт</div>Производство батчем · отправки</div>
+    <div class="day high"><div class="dn">Пт</div>Реклама (метрики, не дёргать) · 5 B2B-сообщений</div>
+    <div class="day"><div class="dn">Сб</div>Заказы по мере поступления</div>
+    <div class="day"><div class="dn">Вс</div>Отдых (защита от выгорания)</div>
+  </div>
+  <p class="legend" style="margin-top:12px">Правила: реклама крутится непрерывно · дизайн батчами (10 принтов разом, не под каждый заказ) · сначала делегируется операционка (печать/упаковка → оператор с сентября + мама/девушка ad-hoc).</p>
+</div></section>
+
+<!-- PSY + STOP -->
+<section id="psy"><div class="wrap">
+  <span class="eyebrow">Психология и фокус</span>
+  <h2>Рычаги и стоп-лист</h2>
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card">
+      <h3 class="green">Делать</h3>
+      <ul class="check">
+        <li>Один приоритет за раз, с обоснованием «почему»</li>
+        <li>Денежные действия — ритуалы по календарю</li>
+        <li>Снять операционку и дизайн-рутину с себя</li>
+        <li>Доить ИИ/SEO-канал (строю контент один раз)</li>
+        <li>Фиксировать ВСЕ продажи (иначе метрики врут)</li>
+        <li>Реклама на комплект + предоплата 200</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3 class="red">Перестать</h3>
+      <ul class="check x">
+        <li>Строить новые поддомены/инструменты/фичи</li>
+        <li>Включать-выключать рекламу</li>
+        <li>Делать дизайн под каждый заказ с нуля</li>
+        <li>Перезакупать бамбуковые лонгсливы</li>
+        <li>Закладывать коллабы/якорного клиента в базу плана</li>
+        <li>Нанимать менеджера до ~40–50 ед/нед спроса</li>
+      </ul>
+    </div>
+  </div>
+  <div class="grid g4" style="margin-top:16px">
+    <div class="card"><h3 style="font-size:15px">Риск: прокрастинация</h3><p class="legend">→ ритм, делегация, метрики, 1 приоритет</p></div>
+    <div class="card"><h3 style="font-size:15px">Риск: реклама в ноль</h3><p class="legend">→ непрерывность, комплекты, предоплата, ретаргет</p></div>
+    <div class="card"><h3 style="font-size:15px">Риск: выгорание</h3><p class="legend">→ авто-пресс, делегация, выходные</p></div>
+    <div class="card"><h3 style="font-size:15px">Риск: нет стока</h3><p class="legend">→ ядро-закупка 40к первой</p></div>
+  </div>
+</div></section>
+
+<div class="foot"><div class="wrap">
+  TwoComms · Стратегия A→B · построено на реальных данных (БД + допрос владельца) 20.06.2026 ·
+  детали — в файлах 00–05 папки TWOCOMMS_A_TO_B
+</div></div>
+
+</body>
+</html>
