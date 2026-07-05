@@ -91,6 +91,54 @@
 
 ---
 
+## CB-024. Тестовое покрытие «денежных» потоков (АУДИТ ВЫПОЛНЕН, 05.07.2026 — написание смок-тестов делает исполнитель)
+
+Метод: полная инвентаризация тест-файлов репозитория (find/wc/grep), чтение содержимого ключевых тестов money-path, сверка с боевым кодом checkout/monobank/cart.
+
+### Корректировка базовой линии чек-листа
+
+Утверждение из шапки аудита «checkout/cart/UTM почти без тестов» **частично неверно** и уточняется фактами:
+
+- Всего тест-файлов: **183** (не 177). Из них `storefront/tests/` — **68 файлов, 18 498 строк** (не «почти все finance/management»).
+- Money-path тесты СУЩЕСТВУЮТ:
+
+| Файл | Строк | Что реально покрывает |
+|---|---|---|
+| `storefront/tests/test_checkout.py` | 497 | COD-заказ гостя (создание Order + очистка корзины), снапшот fit-опции в OrderItem, чекаут авторизованного из профиля, guest online_full → вызов monobank, пустая корзина → redirect, промо-сессии; `order_success` рендер + 404; `confirm_payment` |
+| `storefront/tests/test_cart.py` | 265 | add/update/remove/clear AJAX, накопление qty, fit-опции раздельными строками, 404 на несуществующий товар, промокоды (apply/remove) |
+| `storefront/tests/test_cart_sync.py` | 354 | persist/hydrate корзины в БД, **merge при логине (session+db qty)**, merge custom-cart, кросс-девайс синхронизация (3 интеграционных теста) |
+| `storefront/tests/test_utm_tracking.py` | 82 | `record_order_action('purchase'/'lead')`: связка UserAction↔UTMSession↔SiteSession↔Order, **проставление is_converted + conversion_type** — и для авторизованного, и для гостя через `Order.utm_session` |
+| `storefront/tests/test_analytics_tracking.py` | 114 | product_view, search, SW/HEAD-запросы не создают сессий, **`test_monobank_success_status_records_purchase_once` — единственный тест идемпотентности purchase** |
+| `storefront/tests/test_nova_poshta_checkout_validation.py` | 565 | валидация НП-полей чекаута; упоминает link_order_to_utm |
+
+### Подтверждённые ДЫРЫ покрытия (критично для денег)
+
+1. **`orders/` app — НОЛЬ тестов.** Непокрыты: `facebook_conversions_service.py` (850 строк CAPI — деньги атрибуции), `tiktok_events_service.py` (308 строк), `nova_poshta_service.py`, `telegram_notifications.py`, `status_management.py`, `recover_checkouts` (cron каждые 30 мин трогает заказы — без единого теста!).
+2. **`accounts/` app — НОЛЬ тестов.** Непокрыт `cart_middleware.py` — середина цепочки из 26 middleware, восстановление корзины (CRO-035).
+3. **Monobank-вебхук:** проверка подписи `_verify_monobank_signature` (monobank.py:196) — НЕ тестируется; идемпотентность повторного callback покрыта ровно ОДНИМ тестом (`test_monobank_success_status_records_purchase_once`), сценарии failure/pending/expired-статусов и `_apply_monobank_status` (monobank.py:1211) — не покрыты.
+4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕТ (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
+5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от гонки остатков без select_for_update (проверить исполнителю).
+6. **CI отсутствует:** `.github/workflows/` нет ни в корне, ни в twocomms/ — 183 тест-файла НЕ запускаются автоматически. Никто не знает, сколько из них зелёные. Прогон тестов возможен только вручную (и на сервере — с осторожностью: тестовая БД).
+7. **Тесты гоняются на SQLite** (settings.py: DB_ENGINE default sqlite), боевая БД MySQL → расхождения (charset, strict mode, атомарность DDL) тестами не ловятся.
+
+### Спецификация минимального смок-пакета для исполнителя (страховка ПЕРЕД фиксами воронки)
+
+Приоритет написания (каждый пункт = отдельный тест-файл/класс, отдельный коммит):
+
+1. `orders/tests/test_monobank_webhook.py`: (а) повторный success-callback не создаёт второй purchase-UserAction и не дублирует CAPI-вызов (mock), (б) невалидная подпись → 400 и заказ не тронут, (в) failure-статус → payment_status='unpaid', корзина восстановима.
+2. `orders/tests/test_facebook_capi.py`: event_id детерминирован (дедуп с Pixel), `_send_request_with_retry` при 2 ретраях шлёт события с ОДНИМ event_id, ошибки сети не роняют чекаут.
+3. `storefront/tests/test_checkout_utm_integration.py` (acceptance CRO-041): сессия с utm_data → POST create_order (COD) → Order.utm_session != None, Order.utm_source заполнен, UTMSession.is_converted=True, UserAction purchase/lead создан. СЕЙЧАС этот тест упадёт — он и есть definition-of-done фикса.
+4. `accounts/tests/test_cart_middleware.py`: анонимная корзина + login → слияние без дублей (поверх существующих unit-тестов cart_sync — но через полный middleware-стек `self.client`).
+5. `storefront/tests/test_stock_concurrency.py`: два конкурентных create_order на последнюю единицу → ровно один успешный заказ (или зафиксировать документально, что остатки не снимаются автоматически — тогда тест не нужен, а находка уходит в DB-009).
+6. Прогон всего пакета: `python manage.py test storefront orders accounts --parallel` локально/на staging; зафиксировать в журнале число passed/failed как базовую линию (сейчас неизвестно!).
+
+### Риски
+
+- RISK-03: до появления пунктов 1–3 НЕ трогать checkout.py/monobank.py.
+- Тестовый прогон на сервере создаёт test_-БД: убедиться, что у MySQL-пользователя нет прав CREATE DATABASE на бою (если нет — тесты гонять только локально/CI на SQLite/MySQL-контейнере).
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Статус |
@@ -99,3 +147,4 @@
 | 05.07.2026 | CB-043 | Аудит выполнен: tracked чисто, 10 стэшей, серверные untracked-скрипты |
 | 05.07.2026 | CB-012 | Боевой модуль = twocomms.production_settings; на сервере 2 env-файла; DISABLE_ANALYTICS-флаг требует проверки |
 | 05.07.2026 | CB-040 | Боевые версии зафиксированы; пин — исполнителю (3 строки) |
+| 05.07.2026 | CB-024 | Аудит покрытия выполнен: money-тесты в storefront есть (18,5k строк), но orders/ и accounts/ — 0 тестов, вебхук-подпись и CAPI не покрыты, CI нет; спецификация смок-пакета из 6 пунктов — исполнителю |
