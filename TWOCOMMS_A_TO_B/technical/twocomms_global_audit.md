@@ -98,7 +98,7 @@
 - [ ] **CRO-024. Событие product_view — завышение.** Где: `storefront/tracking.py`, `storefront/utm_tracking.py::record_product_view`, вызовы в product.py. Что: 36 009 product_view против 44 add_to_cart — проверить: (а) пишется ли view при каждом AJAX/прелоаде/боте; (б) исключаются ли краулеры (`is_bot_user_agent`); (в) нет ли двойного вызова (сервер + JS).
 - [ ] **CRO-025. Выбор цвета/размера — UX и трекинг.** Где: product_detail.html JS, `productcolors/`. Что: смена цвета обновляет фото и цену без перезагрузки; события `select_size`/`select_color` (TECH-008) отсутствуют — задача на добавление.
 - [ ] **CRO-026. Блок отзывов на карточке.** Где: `reviews/`, product_detail.html. Что: выводятся ли отзывы; schema Review/AggregateRating (см. SEO-раздел).
-- [ ] **CRO-027. Рекомендации на карточке.** Где: `storefront/recommendations.py`. Что: блок «с этим покупают/похожие» не делает N+1 и не рекомендует out-of-stock.
+- [ ] **CRO-027. Рекомендации на карточке.** Где: `storefront/recommendations.py`. Что: бло�� «с этим покупают/похожие» не делает N+1 и не рекомендует out-of-stock.
 
 ### 1.4 Мини-корзина и корзина
 
@@ -195,10 +195,10 @@
 
 ### 3.3 Надёжность и безопасность
 
-- [ ] **TD-020. Бэкапы MySQL.** Где: сервер (cron владельца/hostsila-панель). Что: расписание дампов; тест восстановления на копии (TECH-042); дампы не лежат в web-доступной папке.
+- [x] **TD-020. Бэкапы MySQL.** ✅ Аудит 05.07.2026: **P0 — регулярных бэкапов НЕТ**, внедрение — исполнителю → `audit_report_section3_techdebt.md` Где: сервер (cron владельца/hostsila-панель). Что: расписание дампов; тест восстановления на копии (TECH-042); дампы не лежат в web-доступной папке.
 - [ ] **TD-021. Секреты не в репозитории.** Где: весь репо. Что: `git log -p | grep -iE "(password|secret|token)"` выборочно; `.env*` в .gitignore; в settings.py нет захардкоженных ключей (SECRET_KEY, monobank token, FB access token — только из env); pixel ID в base.html — публичные, ок.
 - [ ] **TD-022. Мониторинг 5xx и JS-ошибок.** Где: нет системы (проверить). Что: внедрить минимум: серверный error-лог → телеграм-алерт (телеграм-бот уже есть: `accounts/telegram_bot.py`, `orders/telegram_notifications.py`) — TECH-041.
-- [ ] **TD-023. Rate limiting.** Где: django-ratelimit в requirements. Что: реально ли навешан на чекаут/логин/API (grep `@ratelimit`); если нет — тех. долг: пакет установлен, но не используется.
+- [ ] **TD-023. Rate limiting.** Где: django-ratelimit в requirements. Что: реально ли навешан на чекаут/логин/API (grep `@ratelimit`); если нет — тех. долг: пакет установлен, но н�� используется.
 - [ ] **TD-024. DRF API поверхность.** Где: `storefront/viewsets.py`, `api_urls.py`, drf-spectacular. Что: какие эндпоинты публичны; права доступа (permission_classes); /api/schema не светит внутренние модели.
 - [ ] **TD-025. db_routers.py.** Где: `twocomms/db_routers.py`. Что: зачем роутер, есть ли вторая БД; мёртвый код?
 
@@ -239,7 +239,7 @@
 - [ ] **AEO-002. llms.txt.** Где: корень сайта (проверить https://twocomms.shop/llms.txt). Что: если нет — создать с описанием бренда/каталога/политик (TECH-035), не противореча robots.txt.
 - [ ] **AEO-003. Q&A-структура контента.** Где: карточки, `docs/seo`, blog-шаблоны. Что: прямые ответы на вопросы («Из чего лонгслив?», «Сроки отправки?») в первых абзацах; таблицы замеров в HTML-таблицах (не картинках) — AI-парсеры читают текст.
 - [ ] **AEO-004. Тон бренда во всех текстах.** Где: все шаблоны pages/*, описания в БД, `services/product_copy_v2.py`, `_product_themes.py`. Что: grep-аудит на «спорт», «бейсбол», от-первого-лица «я»; соответствие «difficulties/преодоление»; составить список страниц на переписывание (само переписывание — отдельные задачи).
-- [ ] **AEO-005. «С 2014» и ложные факты.** Где: все шаблоны + БД-тексты (grep «2014»). Что: исправить историю бренда на корректную (TECH-034).
+- [ ] **AEO-005. «С 2014» и ложные факты.** Где: все шаблоны + БД-тексты (grep «2014»). Что: исправить историю бренда ��а корректную (TECH-034).
 - [ ] **AEO-006. AI-автогенерация контента.** Где: `storefront/services/product_seo_autofill.py`, openai в requirements, ai_generation.log на сервере. Что: сгенерированные тексты прошли ручную вычитку на тон бренда; нет галлюцинаций про состав/происхождение.
 
 ---
@@ -275,7 +275,7 @@
 
 - [ ] **CB-010. Кандидаты в мёртвые сервисы.** Где: `storefront/services/product_copy_v2.py`, `services/color_seo_copy.py` — из боевого кода их использует только management-команда `recraft_product_seo.py` и офлайн-скрипты `scripts/fill_translations.py`. Что: подтвердить, что не импортируются из views/signals; пометить как offline-tooling (переместить в scripts/) либо удалить.
 - [ ] **CB-011. scripts/ внутри twocomms.** Где: `twocomms/scripts/fill_translations.py` (**3706 строк** — 2-й по величине файл проекта!), `wrap_themes_lazy.py`. Что: это одноразовые фазовые скрипты (Phase 17) — проверить, завершена ли фаза; если да — в архив.
-- [ ] **CB-012. Дублирование настроек.** Где: `twocomms/settings.py` (1000+ строк) vs `twocomms/production_settings.py` (переопределяет DEBUG/SECRET_KEY/логирование). Что: выяснить, какой модуль реально указан в `passenger_wsgi.py`/env `DJANGO_SETTINGS_MODULE` на сервере; двойная точка правды = риск «поправили не тот файл»; свести к settings.py + env-переменным.
+- [x] **CB-012. Дублирование настроек.** ✅ Аудит 05.07.2026: боевой = `twocomms.production_settings` → `audit_report_section6_codebase.md` Где: `twocomms/settings.py` (1000+ строк) vs `twocomms/production_settings.py` (переопределяет DEBUG/SECRET_KEY/логирование). Что: выяснить, какой модуль реально указан в `passenger_wsgi.py`/env `DJANGO_SETTINGS_MODULE` на сервере; двойная точка правды = риск «поправили не тот файл»; свести к settings.py + env-переменным.
 - [ ] **CB-013. Дублирующиеся static-директории img/ и images/.** Где: `static/img/` (12MB), `static/images/` (6.3MB). Что: карта использования (grep по шаблонам/CSS на `/static/img/` vs `/static/images/`); свести к одной; удалить неиспользуемые исходники (для многих PNG уже есть webp-версии рядом — PNG-оригиналы, вероятно, не отдаются).
 - [ ] **CB-014. dtf переопределяет collectstatic.** Где: `dtf/management/commands/collectstatic.py` + комментарий в INSTALLED_APPS «DTF app first to override collectstatic». Что: глобальный побочный эффект: ЛЮБОЙ collectstatic проходит через dtf-логику; проверить, что это не ломает деплой других приложений и задокументировать; рассмотреть переименование команды в `collectstatic_dtf`.
 - [ ] **CB-015. Мёртвые management-команды.** Где: 60+ команд в `*/management/commands/`. Что: сверить с crontab сервера: команды, которые не в cron и не в доках → кандидаты на удаление (например, `finance_seed_demo`, `notify_test_shops`, `parser_recovery_dry_run`); составить таблицу «команда → где вызывается → вердикт».
@@ -302,11 +302,11 @@
 
 ### 6.5 Конфигурация и деплой
 
-- [ ] **CB-040. Незапиненные зависимости.** Где: requirements.txt: `openai`, `google-auth`, `google-analytics-data` без `==`. Что: запинить текущие боевые версии (узнать через `pip freeze` на сервере в ОДНОЙ SSH-сессии); мажорный апдейт openai молча сломает AI-генерацию.
+- [x] **CB-040. Незапиненные зависимости.** ✅ Аудит 05.07.2026: боевые версии сняты (openai==2.30.0, google-auth==2.52.0, google-analytics-data==0.22.0); пин — исполнителю → `audit_report_section6_codebase.md` Где: requirements.txt: `openai`, `google-auth`, `google-analytics-data` без `==`. Что: запинить текущие боевые версии (узнать через `pip freeze` на сервере в ОДНОЙ SSH-сессии); мажорный апдейт openai молча сломает AI-генерацию.
 - [ ] **CB-041. ImageOptimizationMiddleware на shared-хостинге.** Где: `twocomms/image_middleware.py`: ThreadPoolExecutor(2 workers) на КАЖДЫЙ процесс Passenger + PIL-оптимизация на лету. Что: сколько процессов Passenger → сколько тредов суммарно; память PIL при больших PNG; включён ли флаг `IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED` в проде; если да — рассмотреть офлайн-оптимизацию по cron вместо runtime.
 - [ ] **CB-042. 26 middleware: порядок задокументировать.** Где: settings.py MIDDLEWARE. Что: цепочка содержит хрупкие зависимости (комментарии «ПОСЛЕ статики!», «ПЕРЕД SimpleAnalyticsMiddleware!»); зафиксировать инварианты порядка в комментарии-шапке; кандидаты на удаление: RequestTraceMiddleware (если X-DTF-Debug не используется), ImageOptimizationMiddleware (если выключен флагом — убрать из цепочки совсем).
-- [ ] **CB-043. Git-состояние сервера.** Где: сервер `~/TWC/TwoComms_Site` (в одной SSH-сессии: `git status`, `git stash list`, `git log -3`). Что: деплой = `git pull` — проверить, нет ли на сервере незакоммиченных правок (правки «на бою» будут конфликтовать с pull и молча теряться).
-- [ ] **CB-044. Crontab-инвентаризация.** Где: сервер `crontab -l` (одна SSH-сессия). Что: полный список задач → таблица «задача → команда → скрипт существует в репо? → лог»; выявить cron-задачи, ссылающиеся на удалённые/переименованные скрипты (тихо падают).
+- [x] **CB-043. Git-состояние сервера.** ✅ Аудит 05.07.2026 → `audit_report_section6_codebase.md` Где: сервер `~/TWC/TwoComms_Site` (в одной SSH-сессии: `git status`, `git stash list`, `git log -3`). Что: деплой = `git pull` — проверить, нет ли на сервере незакоммиченных правок (правки «на бою» будут конфликтовать с pull и молча теряться).
+- [x] **CB-044. Crontab-инвентаризация.** ✅ Аудит 05.07.2026 → `audit_report_section6_codebase.md` Где: сервер `crontab -l` (одна SSH-сессия). Что: полный список задач → таблица «задача → команда → скрипт существует в репо? → лог»; выявить cron-задачи, ссылающиеся на удалённые/переименованные скрипты (тихо падают).
 - [ ] **CB-045. Логи сервера и ротация.** Где: `~/TWC/TwoComms_Site/twocomms/*.log`. Что: размер каждого; logrotate; в логах нет секретов/PII; celery.log мёртв — удалить (TD-003).
 
 ---
@@ -384,3 +384,9 @@
 | 05.07.2026 | RISK-02 | Сервер сбрасывает частые SSH-подключения (kex reset) — rate-limit подтверждён; батчить команды в одну сессию | info | — |
 | 05.07.2026 | CB-013 | Дубли static/img (12MB) и static/images (6.3MB) | P2 | — |
 | 05.07.2026 | CB-014 | dtf-app глобально переопределяет команду collectstatic | P2 | — |
+| 05.07.2026 | CB-044 | Аудит crontab: 7 задач, все скрипты в репо; НЕТ бэкап-cron, НЕТ feed-cron; логи в logs/ и tmp/ | P0 done | audit_report_section6_codebase.md |
+| 05.07.2026 | CB-043 | Git сервера: tracked чисто, 10 stash (возможна потерянная работа), untracked диаг-скрипты на бою | P0 done | audit_report_section6_codebase.md |
+| 05.07.2026 | CB-012 | Боевой settings = twocomms.production_settings (passenger_wsgi); на сервере .env И .env.production; env-флаг DISABLE_ANALYTICS может отключать UTM-мидлвари — проверить значение | P0 done | audit_report_section6_codebase.md |
+| 05.07.2026 | CB-040 | Боевые версии: openai==2.30.0, google-auth==2.52.0, google-analytics-data==0.22.0 — пин исполнителю | P1 done | audit_report_section6_codebase.md |
+| 05.07.2026 | TD-020 | **P0: регулярных бэкапов MySQL НЕТ; последний ручной дамп от 24.10 (>8 мес). Блокирует все миграции (RISK-07)** | P0 | audit_report_section3_techdebt.md |
+| 05.07.2026 | TD-016 | Ротация django/stderr есть (5 покол.); 8 мёртвых логов; ai_generation.log мёртв с 09.2025, image_optimization.log с 10.2025 | P2 partial | audit_report_section3_techdebt.md |
