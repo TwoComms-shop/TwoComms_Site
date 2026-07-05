@@ -92,7 +92,7 @@
 ### 1.3 Карточка товара
 
 - [x] **CRO-020. Корректность данных из MySQL.** ✅ Аудит 05.07.2026: 10/10 случайных товаров — полное совпадение БД↔сайт (H1/цены/скидки/цвета); побочно: published=65 (не 68), RU/EN-описания — заглушки ~120 симв., двойной product_view на legacy-URL (record до 301), на PDP есть 5 JSON-LD блоков (SEO-020 опровергнут) → `audit_report_section1_product.md` Где: `storefront/views/product.py` (755 строк), `pages/product_detail.html`; живая БД: 68 товаров. Что: для 10 случайных товаров сверить название, цену, описания, цвета (`productcolors.ProductColorVariant`), фото на сайте против значений в БД (через SSH shell, read-only).
-- [ ] **CRO-021. Тексты без «я», в tone of voice бренда.** Где: описания в БД (`Product.description*`, модели переводов django-modeltranslation: name_uk/ru/en), product_detail.html. Что: grep по описаниям на «я », «мне», «мой» от первого лица владельца; спорт/бейсбол-лексика; несоответствие концепции «difficulties».
+- [x] **CRO-021. Тексты без «я», в tone of voice бренда.** ✅ Аудит 05.07.2026: все 65 PDP просканированы (SSH заблокирован rate-limit'ом — скан живых страниц) — первого лица владельца 0, все 27 regex-совпадений это названия принтов («Це Моя Посадка» и т.п.); спорт-лексики 0; побочно P2: 65/65 описаний с идентичным boilerplate-манифестом (near-duplicate) → `audit_report_section1_texts.md` Где: описания в БД (`Product.description*`, модели переводов django-modeltranslation: name_uk/ru/en), product_detail.html. Что: grep по описаниям на «я », «мне», «мой» от первого лица владельца; спорт/бейсбол-лексика; несоответствие концепции «difficulties».
 - [ ] **CRO-022. Фото товара: варианты и вебп.** Где: `image_optimizer.py`, `storefront/services/image_variants.py`, media на сервере. Что: в��е карточки имеют основное фото; генерируются ли webp/размеры; alt-тексты не пустые и не дублируются.
 - [ ] **CRO-023. Размерная сетка с карточки.** Где: `storefront/services/size_guides.py`, product_detail.html. Что: таблица замеров в см доступна с каждой карточки лонгслива/худи; событие `view_size_guide` (TECH-005) пока НЕ существует — создать задачу на добавление.
 - [ ] **CRO-024. Событие product_view — завышение.** Где: `storefront/tracking.py`, `storefront/utm_tracking.py::record_product_view`, вызовы в product.py. Что: 36 009 product_view против 44 add_to_cart — проверить: (а) пишется ли view при каждом AJAX/прелоаде/боте; (б) исключаются ли краулеры (`is_bot_user_agent`); (в) нет ли двойного вызова (сервер + JS).
@@ -118,7 +118,7 @@
 - [ ] **CRO-044. Страница «Спасибо за покупку».** Где: `pages/order_success.html` (+ мёртвый `order_success_old.html`). Что: серверное purchase-событие не дублируется при F5 (event_id-дедуп); есть ли рекомендации/апселл; `order_success_old.html` — удалить (тех. долг, см. TD-раздел).
 - [ ] **CRO-045. Определение purchase-момента.** Где: monobank.py (purchase при оплате) vs COD (оплата при получении). Что: зафиксировать документально: purchase = создание заказа + отдельное серверное событие оплаты/доставки (TECH-066); привести GA4/Pixel/CAPI к одному определению.
 - [ ] **CRO-046. Промокоды в чекауте.** Где: `storefront/models.py` (PromoCode), cart.py/checkout.py. Что: невалидный/просроченный код даёт понятную ошибку; события `coupon_apply` (TECH-023) нет — задача на добавление.
-- [ ] **CRO-047. Ошибочные состояния чекаута.** Где: checkout.py. Что: пустая корзина → редирект с message; товар кончился между корзиной и заказом → понятное сообщение, а не 500; проверить транзакционность (`transaction.atomic`) создания Order+OrderItem.
+- [ ] **CRO-047. Ошибочные состояния чекаута.** Где: checkout.py. Что: пустая корзина → редирект с message; товар кончился между корзиной и заказом → понятное сообщение, а н�� 500; проверить транзакционность (`transaction.atomic`) создания Order+OrderItem.
 
 ### 1.6 Воронка целиком (замер)
 
@@ -152,7 +152,7 @@
 
 ### 2.4 UTM-механика
 
-- [ ] **AN-030. UTM переживает всю воронку.** Где: `storefront/utm_middleware.py` (session['utm_data']). Что: UTM из первого URL доступна на чекауте после 30+ минут и переходов; проверить SESSION_COOKIE_AGE и не рвётся ли session_key при логине (`django.contrib.auth.login` меняет session_key — UTMSession привязана к старому ключу! Проверить `cycle_key` эффект).
+- [ ] **AN-030. UTM переживает всю воронку.** Где: `storefront/utm_middleware.py` (session['utm_data']). Что: UTM из первого URL доступн�� на чекауте после 30+ минут и переходов; проверить SESSION_COOKIE_AGE и не рвётся ли session_key при логине (`django.contrib.auth.login` меняет session_key — UTMSession привязана к старому ключу! Проверить `cycle_key` эффект).
 - [ ] **AN-031. КРИТИЧНО: смена session_key при логине рвёт связку.** Где: utm_tracking.py (поиск UTMSession по `request.session.session_key`), Django auth. Что: воспроизвести: зайти с utm → залогиниться → оформить заказ; проверить, находит ли `link_order_to_utm` сессию. Если нет — мигрировать UTMSession.session_key при логине или искать по visitor_id.
 - [ ] **AN-032. Нормализация utm_source.** Где: живая БД: 'ig' (198), 'Instagram' (128), 'IGShopping' (6), 'Inst_Vid' (10) — 4 написания одного канала; 'fb'/'fb-SiteLink'; '120233970682840302' (сырой ad id). Что: словарь нормализации при записи или на уровне отчётов; UTM governance-конвенция (TECH-009).
 - [ ] **AN-033. AI-источники как отдельный канал.** Где: БД: utm_source='chatgpt.com' 109 сессий + referrer chatgpt.com 18. Что: детект chatgpt.com/perplexity.ai/gemini/claude.ai по utm и referrer → канал «AI» в отчётах (TECH-065).
@@ -185,7 +185,7 @@
 
 ### 3.2 Производительность
 
-- [ ] **TD-010. Узкие места рендера.** Где: `twocomms/settings.py` (шаблоны, context_processors — `storefront/context_processors.py`). Что: контекст-процессоры не делают тяжёлых запросов на каждый запрос (категории, счётчики — кэшировать); замерить TTFB главной/каталога/карточки (curl -w) и записать базовую линию.
+- [ ] **TD-010. Узкие места рендера.** Где: `twocomms/settings.py` (шаблоны, context_processors — `storefront/context_processors.py`). Что: контекст-процессоры не делают тяжёлых запросов на каждый з��прос (категории, счётчики — кэшировать); замерить TTFB главной/каталога/карточки (curl -w) и записать базовую линию.
 - [ ] **TD-011. Redis-кэш: покрытие и инвалидация.** Где: settings.py:859+ (django-redis, REDIS_IGNORE_EXCEPTIONS=true), `cache_signals.py`, `cache_utils.py`. Что: живой roundtrip подтверждён; проверить: какие вьюхи реально кэшируются, сигналы инвалидации при сохранении Product/Category срабатывают (изменить товар → страница обновилась без ручного сброса).
 - [ ] **TD-012. REDIS_IGNORE_EXCEPTIONS маскирует падения.** Где: settings.py:875. Что: при падении Redis сайт молча работает без кэша и деградирует — добавить алерт/лог-мониторинг (TECH-041).
 - [ ] **TD-013. Статика: compressor + whitenoise.** Где: settings (django-compressor, whitenoise), `static/`. Что: COMPRESS_ENABLED в проде; заголовки Cache-Control на static (>30d, immutable); нет блокирующих render CSS/JS в head, которые можно defer.
@@ -221,8 +221,8 @@
 - [ ] **SEO-004. hreflang uk/ru/en.** Где: base.html, urls.py:107 (i18n-префиксы /ru/, /en/). Что: hreflang-кластеры взаимные + x-default; переводы страниц реально существуют (modeltranslation поля name_ru/name_en не пустые — выборка из БД).
 - [ ] **SEO-005. H1-иерархия.** Где: index.html, catalog.html, product_detail.html, blog. Что: ровно один H1 на страницу; H1 карточки = название товара; нет прыжков H2→H4.
 - [ ] **SEO-006. Битые внутренние ссылки и 410.** Где: `404.html`, `410.html`, GSC (доступ у владел��ца), краулинг site (screaming frog/линк-чекер по sitemap). Что: внутренних 404 нет; удалённые товары отдают 410 или redirect на категорию.
-- [ ] **SEO-007. Мета-титлы/дескрипшены из БД.** Где: `storefront/seo_utils.py`, `services/product_seo_autofill.py`, `product_seo_block.py`, `category_seo_blocks.py`; БД (meta-поля Product/Category). Что: у всех 68 товаров и категорий заполнены уникальные title/description; длина title ≤ 60, description 120–160; нет шаблонного дубляжа.
-- [ ] **SEO-008. Google Merchant feed.** Где: `google_merchant_feed.xml` (корень twocomms/ — статический файл!), `storefront/feeds.py`, `services/marketplace_feeds.py`, `AUTO_GOOGLE_MERCHANT_FEED_UPDATE.md`. Что: фид генерируется автоматически или лежит устаревший статикой; цены/наличие в фиде = БД; фид отдаётся по URL и принят в Merchant Center.
+- [ ] **SEO-007. Мета-титлы/дескрипшены из БД.** Где: `storefront/seo_utils.py`, `services/product_seo_autofill.py`, `product_seo_block.py`, `category_seo_blocks.py`; БД (meta-поля Product/Category). Что: у всех 68 товаров �� категорий заполнены уникальные title/description; длина title ≤ 60, description 120–160; нет шаблонного дубляжа.
+- [ ] **SEO-008. Google Merchant feed.** Где: `google_merchant_feed.xml` (корень twocomms/ — статический файл!), `storefront/feeds.py`, `services/marketplace_feeds.py`, `AUTO_GOOGLE_MERCHANT_FEED_UPDATE.md`. Что: фид генерируется автоматически или лежит уста��евший статикой; цены/наличие в фиде = БД; фид отдаётся по URL и принят в Merchant Center.
 - [ ] **SEO-009. IndexNow и Google Indexing.** Где: `services/indexnow.py`, `services/google_indexing.py`. Что: ключи валидны, реально дергаются при публикации/изменении; не спамят при массовых пересохранениях.
 - [ ] **SEO-010. Скорость как ранж-фактор.** Где: см. CRO-003; каталог и карточка тоже. Что: CWV зелёные на 3 ключевых шаблонах mobile (TECH-040).
 
@@ -319,7 +319,7 @@
 |---|---|---|---|---|
 | RISK-01 | Удаление «мёртвого» файла, который дергается cron-ом на сервере | CB-003, CB-015, TD-001…007 | Средняя / Высокий (тихий отказ фидов, синков) | СНАЧАЛА CB-044 (crontab-инвентаризация), потом любые удаления |
 | RISK-02 | SSH rate-limit: серия подключений блокирует доступ | все SSH-проверки | Подтверждено 05.07.2026 / Средний | Батчить ВСЕ команды в один вызов; пауза ≥ 60s между сессиями; не параллелить |
-| RISK-03 | Правка checkout/monobank без тестов ломает приём денег | CRO-040…047, CB-020 | Средняя / Критический | Сначала CB-024 (смок-тесты), фиксы — мелкими PR, тест-заказ после каждого деплоя |
+| RISK-03 | Правка checkout/monobank без тестов ломает приём ��енег | CRO-040…047, CB-020 | Средняя / Критический | Сначала CB-024 (смок-тесты), фиксы — мелкими PR, тест-заказ после каждого деплоя |
 | RISK-04 | Массовая чистка except/print меняет поведение (код полагается на глотание ошибок) | CB-020, CB-021 | Высокая / Средний | Только добавлять логирование, НЕ менять control flow; никаких авто-замен по всему репо |
 | RISK-05 | Чистка CSS/JS ломает страницы, стили которых видны только в проде | CB-030…034 | Высокая / Средний | PurgeCSS только с whitelist динамических классов (JS-генерируемые, admin); скриншот-сравнение до/после на 5 ключевых шаблонах |
 | RISK-06 | git filter-repo/переписывание истории ломает клоны и сервер | CB-001 | Низкая / Критический | Только `git rm --cached` + .gitignore; filter-repo — отдельное согласованное окно |
@@ -367,7 +367,7 @@
 | 05.07.2026 | TD-030 | БД: статусы заказов только done/cancelled — нет shipped/delivered/RTS | P1 | — |
 | 05.07.2026 | SEO-020 | В product_detail.html не найден JSON-LD Product (grep по репо) — требуется подтверждение рендером | P1 | — |
 | 05.07.2026 | TD-011 | Redis live-check: cache roundtrip OK на бою | info | — |
-| 05.07.2026 | CB-001 | 132 файла артефактов (PNG/JSON) в git; репо 328MB без .git; личное фото BrandDNA/me.JPG | P2 | — |
+| 05.07.2026 | CB-001 | 132 файла артефактов (PNG/JSON) в git; репо 328MB без .git; лич��ое фото BrandDNA/me.JPG | P2 | — |
 | 05.07.2026 | CB-002 | 202 md-отчёта в корне репозитория | P2 | — |
 | 05.07.2026 | CB-003 | 30 py + 19 sh loose-скриптов в корне, из них 6 конкурирующих deploy-скриптов | P1 | — |
 | 05.07.2026 | CB-004 | 4 backup-файла под git: views.py.backup (7790 строк), styles.css.bak2 (445KB), order_success_old.html, tmp_old_index.html | P1 | — |
@@ -401,6 +401,7 @@
 | 05.07.2026 | CRO-011 | **P1-БАГ×2:** (1) пагинация `?page=N` затирает `?color=` — live-подтверждено; (2) `/catalog/?page=2..N` индексируемые (index,follow + self-canonical) дубли БЕЗ товаров — корень не рендерит грид, paginator строится зря; категорийная пагинация чиста (0 дублей между стр.) | P1 done | audit_report_section1_catalog.md |
 | 05.07.2026 | CRO-012 | lazy/width/height OK на 100% карточек; eager лишь 2 из первого ряда (реком. 4); у 9/16 карточек нет srcset/AVIF — media/product_colors/ без optimized-вариантов | P2 done | audit_report_section1_catalog.md |
 | 05.07.2026 | CRO-013 | Подтверждено БД+рендер: top-5 priority — все футболки; max priority tshirts 68 > hoodie 63 > long-sleeve 51; showcase-хардкод ставит футболки выше худи; Category.order все 0 | P1 done | audit_report_section1_catalog.md |
-| 05.07.2026 | CRO-014 | Механики наличия нет: 75/75 ProductColorVariant stock=0 (поле мертво, нигде не читается), размерного склада нет; «наличие»=ручной status=published; бейджи наличия внедрять нельзя до решения по инвентаризации | P1 done | audit_report_section1_catalog.md |
+| 05.07.2026 | CRO-014 | Механики наличия нет: 75/75 ProductColorVariant stock=0 (поле мертво, нигде не читается), размерного склада нет; «н��личие»=ручной status=published; бейджи наличия внедрять нельзя до решения по инвентаризации | P1 done | audit_report_section1_catalog.md |
 | 05.07.2026 | CRO-015 | N+1 нет (боевой замер): каталог 14–19 SQL, цвет-фильтр 12; повторный хит из page-cache = 0 SQL; бонусы: ?sort= мёртвая ветка (view не читает), DEBUG=True роняет прод (compressor OfflineGenerationError), /search/ без пагинации | info done | audit_report_section1_catalog.md |
 | 05.07.2026 | CRO-020 | 10/10 случайных товаров: БД↔сайт полное совпадение (title/final_price/og:price/категория); published=65 (не 68); RU/EN description — заглушки ~120 симв. (P2); двойной product_view на legacy `?size=` URL — record_product_view до 301 (P1, → CRO-024); на живой PDP 5 JSON-LD блоков — гипотеза SEO-020 «нет schema» опровергнута | P1 done | audit_report_section1_product.md |
+| 05.07.2026 | CRO-021 | Первого лица владельца в описаниях НЕТ: 65/65 PDP просканированы, все 27 совпадений — названия принтов в кавычках + regex-артефакт «ім'я»; спорт/бейсбол-лексики 0; tone of voice соответствует концепции «difficulties»; побочно P2: 65/65 описаний содержат идентичный boilerplate («це не просто одяг. Це стан…») — near-duplicate content риск; SSH временно блокируется rate-limit'ом после серии сессий — метод: скан живых страниц из sitemap | info done | audit_report_section1_texts.md |
