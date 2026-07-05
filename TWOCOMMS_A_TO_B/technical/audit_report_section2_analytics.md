@@ -41,6 +41,10 @@
 
 Cookie `_fbc` создаёт Meta Pixel на клиенте. GTM/Pixel грузится отложенно (interaction/таймаут 12–20s, base.html) → у ушедших до interaction пользователей `_fbc` не появляется, fbclid из URL при этом захвачен серверно. **CAPI разрешает конструировать fbc вручную**: `fb.1.{timestamp_ms}.{fbclid}` — сервис этого не делает. 334 сессии с fbclid, но без fbc = потерянный match quality, который можно вернуть без изменения клиентской части.
 
+### Доп. находка из альтернативной analytics-ветки: fbclid без utm_* может теряться полностью
+
+`utm_middleware.py::process_request` собирает `platform_data` из `fbclid/gclid/ttclid` и cookies, но сохранение в `request.session['platform_data']` и `UTMSession` завязано на ветку `if has_utm`. Типичный рекламный клик может прийти с `fbclid`, но без вручную добавленных `utm_*`; в таком случае click-ID не попадает в UTMSession и не доходит до CAPI. Fallback-кандидат: сохранять `platform_data` при наличии любого click-ID даже без UTM, а при создании заказа читать также first-touch cookie `twc_ft`, если она содержит click-ID.
+
 ### Задача исполнителю
 
 1. Расширение TECH-060: при создании ЛЮБОГО заказа копировать в Order (новые поля или в payment_payload['tracking']) — fbclid, fbc, fbp, gclid, ttclid из `session['platform_data']` / UTMSession.
