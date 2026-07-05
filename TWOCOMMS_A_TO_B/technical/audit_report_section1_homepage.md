@@ -64,10 +64,37 @@
 
 ---
 
+## CRO-004. Отложенный GTM vs атрибуция paid-трафика (АУДИТ ВЫПОЛНЕН, 05.07.2026)
+
+Метод: чтение боевого кода `base.html` (строки ~927–1051) и `static/js/analytics-loader.js`.
+
+### Фактическая архитектура загрузки трекинга
+
+1. **GTM (GTM-PRLLBF9H)** грузится по первому interaction (click/pointerdown/keydown — на главной БЕЗ scroll!) ИЛИ по таймауту: **главная 25–35s**, прочие роуты 4–9s, passive-режим 12–18s (Phase 22e, антилайтхаус-настройка).
+2. **analytics-loader.js (~55KB — Meta Pixel, TikTok, Clarity)** — тоже только по первому interaction, fallback **25s**.
+3. Ранний стаб `window.trackEvent` буферизует события до загрузки loader-а (fix 2026-06-12) — внутренний server-side трекинг НЕ теряется.
+
+### Подтверждённые проблемы
+
+1. **UTM/fbclid fast-path ОТСУТСТВУЕТ:** grep по `utm_|fbclid|gclid|ttclid` в инициализационном коде base.html — 0 совпадений. Пользователь с рекламы, который ничего не нажал и ушёл (классический bounce из IG/TikTok in-app браузера) — **невидим для Pixel/GA4/TikTok полностью**: ни PageView, ни ViewContent. На главной даже scroll не триггерит загрузку (interactionEvents для home = click/pointerdown/keydown).
+2. Следствие для рекламных кампаний: Meta/TikTok недосчитываются верхней воронки → алгоритмы оптимизации получают меньше сигналов → дороже CPM/CPA. Оценить долю потерянных сессий можно после бот-фильтра (AN-раздел) сравнением SiteSession против GA4 sessions.
+3. fbclid→_fbc cookie создаётся только внутри analytics-loader.js (строка ~111) — т.е. тоже только после interaction; если пользователь кликнул рекламу, посмотрел и ушёл — _fbc не создан, CAPI-события позже уйдут без него (связка с AN-013).
+
+### Задача исполнителю (P1, ~10 строк JS в base.html)
+
+В оба деферред-лоадера (GTM и analytics-loader) добавить fast-path: если `location.search` содержит `utm_|fbclid|gclid|ttclid` ИЛИ referrer — instagram/tiktok/facebook/google ads, грузить трекинг сразу (или с малым таймаутом 2s), игнорируя interaction-гейт. PageSpeed-замеры Лайтхауса это не заденет (LH не заходит с utm-метками) — антилайтхаус-логика Phase 22e сохраняется для organic.
+
+### Acceptance
+
+Открыть `https://twocomms.shop/?utm_source=audit&fbclid=test123` в чистом профиле, НЕ трогать страницу 5s → в Network должны появиться gtm.js и analytics-loader.js; cookie `_fbc` создана. Сейчас — не грузятся до interaction/25s.
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Результат |
 |---|---|---|
 | 05.07.2026 | CRO-001 | Спорт-лексики нет; футболки первыми в title/subtitle/витрине — 2 правки шаблона + admin-reorder приоритетов |
-| 05.07.2026 | CRO-002 | P0-БАГ: на mobile ≤360px hero-CTA обрезаны (`base.html` hero-section height:60vh + overflow:hidden); desktop и все URL — OK; PWA-prompt закрывает 45% первого экрана |
+| 05.07.2026 | CRO-002 | P0-БАГ: на mobile ≤360px hero-CTA обрезаны (`base.html` hero-section height:60vh + overflow:hidden); desktop и все URL — OK; PWA-prompt ��акрывает 45% первого экрана |
 | 05.07.2026 | CRO-003 | Lab-базовая линия: LCP 1.78s (текст hero), CLS 0.00, TTFB mobile 518ms — зелёная зона; PSI field-замер — владельцу |
+| 05.07.2026 | CRO-004 | Подтверждено: UTM/fbclid fast-path отсутствует; GTM на главной ждёт interaction или 25–35s, scroll не триггерит; bounce-трафик с рекламы невидим для Pixel/GA4; _fbc не создаётся без interaction; задача P1 — fast-path ~10 строк |
