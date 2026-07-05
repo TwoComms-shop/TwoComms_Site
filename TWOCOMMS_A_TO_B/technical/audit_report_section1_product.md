@@ -178,3 +178,51 @@ Grep по всему репо (py/js/html): 0 вхождений `view_size_guid
 | 3 | Унифицировать 2 дублирующихся bot-детектора (`tracking.is_bot` 30 паттернов vs `utm_utils.is_bot_user_agent` 15) в один модуль | P2 |
 | 4 | Дедуп product_view: окно 30 мин на (site_session, product_id) | P2 |
 | 5 | После фиксов — очистить историю: пометить/удалить старые бот-строки (эвристика: site_session IS NULL) и перезамерить воронку | P2 |
+
+---
+
+## CRO-025. Выбор цвета/размера — UX и трекинг ✅ (аудит 05.07.2026; ядро UX работает, но цена НЕ обновляется при выборе цвета + размеры не блокируются по стоку)
+
+### Методика замера
+
+1. Построчный разбор `product-detail.js` (1237 строк): `initColorSelection`, `initSizeSelection`, `currentSelection`, `updateCurrentOfferId`, `trackCustomizeProduct`, `trackViewContent`.
+2. Разбор `product-variant-history.js` (161 строка, Phase 8) — синхронизация URL/title/canonical.
+3. Разбор модели `productcolors/models.py::ProductColorVariant` (stock, price_override, slug) и всех потребителей `price_override` (grep по репо).
+4. Проверка серверной стороны: `views/cart.py` (какая цена реально попадает в корзину), ACTION_TYPES в models.py.
+5. Grep на `select_size`/`select_color` (TECH-008) по всему репо.
+6. Live-DB срез недоступен (SSH connection reset — тот же rate-limit, что в CRO-024).
+
+### Что РАБОТАЕТ корректно (ядро UX)
+
+- **Смена цвета без перезагрузки:** клик по свотчу → `initColorSelection` обновляет active-класс, `dataset.currentVariant`, пересобирает миниатюры (`renderThumbnails`), меняет главное фото (`setMainImage` с preload), пересчитывает offerId (`updateCurrentOfferId` через карту `state.offerIdMap[colorVariant:size]`).
+- **Phase 8 URL-sync — образцовый:** `product-variant-history.js` строит path-URL `/product/<slug>/<color>/<size>/<fit>/` через `history.replaceState` (не pushState — нет мусорных back-записей), обновляет `document.title` и `<link rel=canonical>` по стратегии Phase 7.3 (0–1 сегмент → self, 2+ → base). SEO и UX не конфликтуют.
+- **`?size=` из URL:** `selectSizeFromURL` корректно проставляет размер из legacy query-string и диспатчит `change` (совместимость со старыми ссылками).
+- **Meta CustomizeProduct трекается** на выбор и цвета, и размера (variant_id, size, value, currency) — с очередью-стабом `window._trackEventQueue` из base.html (FIX 2026-06-12), т.е. ранние клики не теряются.
+- **Двойного счёта view_item нет**, dataLayer-push не зависит от загрузки analytics-loader.
+
+### НАХОДКА 1 (P2→P1 при активации price_override): цена на PDP НЕ обновляется при смене цвета
+
+В модели `ProductColorVariant` есть `price_override` («Ціна для варіанту (грн)»), он редактируется в product_builder и **уже используется в marketplace_feeds.py:782** (фиды отдают вариантные цены). Но на PDP: (а) в JS-обработчике смены цвета нет НИКАКОГО обновления DOM-цены (grep «updatePrice|priceEl» = 0 вхождений — цена рендерится сервером в `.tc-current-price` и больше не трогается); (б) в `trackCustomizeProduct` и `view_item` цена всегда берётся из `payload.dataset.price` — статичного атрибута базового товара. **Сейчас риск скрыт**, только если ни у одного варианта price_override не заполнен (live-проверка отложена из-за SSH). Но серверная корзина (`cart.py:560` и ещё 8 мест) тоже игнорирует price_override — комментарий в коде прямо признаёт: «Цена всегда берется из Product». Итог: если админ заполнит вариантную цену — фиды покажут одну цену, PDP/корзина/заказ возьмут другую → расхождение фид↔сайт (риск отклонения в Merchant Center) и недополученная выручка. **Решение:** либо (а) довести price_override до PDP+корзины (JS-пересчёт из offerMap + cart.py), либо (б) осознанно задокументировать «вариантные цены только для фидов» и скрыть поле из product_builder.
+
+### НАХОДКА 2 (P2, UX): размеры/цвета НЕ блокируются по остаткам
+
+У `ProductColorVariant` есть поле `stock` («Залишок»), но в шаблоне PDP grep «stock|disabled» в блоках выбора = 0: все размеры S–XXL всегда кликабельны, все свотчи всегда активны, независимо от остатков. Покупатель может выбрать распроданную комбинацию, добавить в корзину и узнать о недоступности только от менеджера (в cart.py валидации стока при добавлении тоже нет). Это классический генератор отменённых заказов и разочарования. **Решение:** прокинуть stock в offerMap (JSON уже есть на странице), дизейблить радио-кнопки размеров с классом «нет в наличии» + бейдж; MVP — хотя бы для вариантов с ненулевым складским учётом (warehouse-модуль уже ведёт остатки).
+
+### НАХОДКА 3 (подтверждение чек-листа): событий select_size/select_color НЕТ — TECH-008 актуальна
+
+Grep по репо: `select_size`/`select_color` = 0 вхождений (только внутренняя функция `selectSizeFromURL`). В `UserAction.ACTION_TYPES` их нет. GA4-события `select_item`-типа не пушатся в dataLayer при выборе цвета/размера — уходит только Meta CustomizeProduct. Итог: в GA4 невозможно построить воронку «посмотрел → выбрал вариант → в корзину» и увидеть, какие цвета/размеры выбирают чаще (вход для решения о допечатке). Задача TECH-008: dataLayer-push `select_color`/`select_size` (item_id, variant, size) в тех же обработчиках, где уже стоит trackCustomizeProduct, — ~10 строк.
+
+### Мелкие замечания (P3)
+
+- Свотчи цвета — `<button>` без `aria-pressed`/`role=radiogroup`: скринридер не сообщает выбранное состояние (класс active — только визуальный). Размеры сделаны правильно (нативные radio).
+- `trackCustomizeProduct` имеет guard `if (!window.trackEvent) return` (строка 1118) — но стаб из base.html определяет trackEvent сразу, так что клики не теряются; guard мёртвый, можно убрать.
+
+### Задачи исполнителю (из CRO-025)
+
+| # | Задача | Приоритет |
+|---|---|---|
+| 1 | Решить судьбу `price_override`: довести до PDP+cart.py (9 мест) ЛИБО задокументировать «только фиды» и скрыть из билдера; сейчас три поверхности (фид/PDP/корзина) могут отдавать разные цены | **P2 (P1 если заполнен хоть у одного варианта)** |
+| 2 | Блокировка размеров/цветов по stock: прокинуть остатки в offerMap, дизейбл радио + валидация в cart.py при добавлении | P2 |
+| 3 | TECH-008: dataLayer `select_color`/`select_size` в существующих обработчиках (~10 строк) | P2 |
+| 4 | a11y свотчей: `role="radiogroup"` + `aria-checked` (или переделать на нативные radio, как размеры) | P3 |
+| 5 | Live-проверка после восстановления SSH: `ProductColorVariant.objects.exclude(price_override=None).count()` — если >0, задача 1 становится P1 | P3 |
