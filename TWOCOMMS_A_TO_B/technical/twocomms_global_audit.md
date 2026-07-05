@@ -97,8 +97,8 @@
 - [x] **CRO-023. Размерная сетка с карточки.** ✅ Аудит 05.07.2026: P1 — у всех лонгсливов нет таблицы замеров (нет `longsleeve` preset/catalog/SizeGrid, `/rozmirna-sitka/` тоже без лонгсливов); `view_size_guide` отсутствует; seo-pricing блок даёт 24 битые ссылки `/product/{id}/` → 404 на 3 категориях → `audit_report_section1_product.md`. Что: SizeGrid/пресет longsleeve, привязки catalog, fix `get_absolute_url`, TECH-005.
 - [x] **CRO-024. Событие product_view — завышение.** ✅ Аудит 05.07.2026: 3 root cause в коде — `record_user_action` без bot-фильтра, двойной счёт на 301 legacy URL (`record_product_view` до redirect), нет дедупа повторных просмотров; сервер+JS дубля и prefetch-триггера нет → `audit_report_section1_product.md`. Что: bot-filter, перенос записи после redirect, дедуп 30 мин.
 - [x] **CRO-025. Выбор цвета/размера — UX и трекинг.** ✅ Аудит 05.07.2026: смена фото/URL/canonical работает, но цена не обновляется по `price_override`, stock не блокирует выбор/корзину, `select_size`/`select_color` отсутствуют, a11y свотчей неполная → `audit_report_section1_product.md`. Что: синхронизировать price_override/stock и добавить TECH-008 события.
-- [ ] **CRO-026. Блок отзывов на карточке.** Где: `reviews/`, product_detail.html. Что: выводятся ли отзывы; schema Review/AggregateRating (см. SEO-раздел).
-- [ ] **CRO-027. Рекомендации на карточке.** Где: `storefront/recommendations.py`. Что: б��о���� «с этим покупают/похожие» не делает N+1 и не рекомендует out-of-stock.
+- [x] **CRO-026. Блок отзывов на карточке.** ✅ Аудит 05.07.2026: инфраструктура образцовая (модель/модерация/schema из approved, порог=1), НО live-скан 48/48 PDP — 0 AggregateRating = 0 опубликованных отзывов; петля сбора (заказ доставлен → запрос отзыва) НЕ реализована — P1; vote-endpoint без UI (P2); тексты рассинхронены с порогом 1 (P3) → `audit_report_section1_product.md` Где: `reviews/`, product_detail.html. Что: выводятся ли отзывы; schema Review/AggregateRating (см. SEO-раздел).
+- [x] **CRO-027. Рекомендации на карточке.** ✅ Аудит 05.07.2026: N+1 НЕТ (bulk prefetch + fragment-cache 3600s); НО out-of-stock не фильтруется (системно, → stock-enforcement CRO-025), дубли товаров в выдаче без дедупа (P2), бесполезная per-user фрагментация кэша + TTL-рассинхрон 300/3600 (P3), отменённые заказы искажают «часто покупают вместе» (P3) → `audit_report_section1_product.md` Где: `storefront/recommendations.py`. Что: блок «с этим покупают/похожие» не делает N+1 и не рекомендует out-of-stock.
 
 ### 1.4 Мини-корзина и корзина
 
@@ -143,7 +143,7 @@
 - [ ] **AN-012. Дедупликация Pixel↔CAPI.** Где: facebook_conversions_service.py (event_id), клиентский fbq-вызов, `META_PIXEL_CAPI_DEDUPE_IMPLEMENTATION.md` (корень). Что: одинаковый event_id в браузерном и серверном событии; в Events Manager дедуп подтверждён; EMQ зафиксировать в журнале. Это TECH-064 — числится сделанным, но не проверено.
 - [x] **AN-013. fbc/fbp/fbclid доходят до CAPI.** ✅ Аудит 05.07.2026: P0 подтверждён — Order не хранит click-ID, COD не пишет `payment_payload.tracking`, а CAPI берёт `fbc/fbp` только из tracking payload; fbclid без UTM тоже может полностью теряться → `audit_report_section2_analytics.md`. Что: расширение TECH-060 — копировать/synthesize click-ID для любого заказа.
 - [ ] **AN-014. Offline-конверсии delivered.** Где: facebook_conversions_service.py::send_event_for_order_status, orders/status_management.py. Что: возможна ли отправка события по факту доставки; сейчас статусов shipped/delivered нет вообще (только done/cancelled) — блокируется TECH-070/071.
-- [ ] **AN-015. test_event_code изоляция.** Где: base.html (data-tiktok-test-event-code), настройки CAPI. Что: тестовые события не загрязняют боевую статистику (TECH-043).
+- [ ] **AN-015. test_event_code изоляция.** Где: base.html (data-tiktok-test-event-code), настройки CAPI. Что: тестовые события не загрязняют бое��ую статистику (TECH-043).
 
 ### 2.3 TikTok Pixel
 
