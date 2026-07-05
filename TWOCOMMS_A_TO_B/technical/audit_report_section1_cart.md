@@ -234,3 +234,56 @@
 19. P3: обработка «лид удалён из БД» в `_collect_custom_cart_state` — считать pending или удалять запись (№24).
 20. P3: `_reset_monobank_session` в `custom_print_remove` (№26) — тем же коммитом, что и фикс №5 из CRO-031.
 21. P3: отвязка `lead.order` в `_cleanup_expired_monobank_orders` (№27); решение по промокодам на кастом задокументировать (№25); поправить кавычку в `cart.html:925` (№28).
+
+---
+
+## CRO-035. Восстановление корзины
+
+Дата аудита: 06.07.2026. Проверено: `accounts/cart_middleware.py` (весь), `accounts/cart_sync.py` (весь), `accounts/cart_models.py` (UserCart), `accounts/cart_signals.py` + `accounts/apps.py:8-14` (регистрация), `twocomms/settings.py:195-226` (MIDDLEWARE), `:968-990` (сессии), `production_settings.py:40-57, 522-524`, `storefront/views/cart.py:798, 951-1058, 1344`, `static/js/ui-fallback.js:40-75` (CartRemoveKey), `storefront/tests/test_cart_sync.py`, `CART_RESTORATION_REPORT.md` (корень репо).
+
+### Ответ на вопрос чек-листа
+
+**Корзина переживает закрытие браузера — подтверждено для ОБОИХ типов пользователей.** Все 4 фикса из `CART_RESTORATION_REPORT.md` фактически присутствуют в текущем коде (проверено построчно). Найдено 5 проблем, все P3.
+
+### Механизм персистентности (задокументировано)
+
+**Гости.** Корзина живёт в session-cookie: `SESSION_ENGINE='cached_db'` (`settings.py:973`, prod то же — `production_settings.py:522`), `SESSION_COOKIE_AGE = 30 дней` (`settings.py:977`), `SESSION_EXPIRE_AT_BROWSER_CLOSE` не задан (Django-default `False`) → корзина гостя переживает закрытие браузера до 30 дней на том же устройстве.
+
+**Залогиненные — DB-слой поверх сессии:**
+- Модель `UserCart` (`accounts/cart_models.py`) — OneToOne к юзеру, JSONField-снапшоты `cart_data` + `custom_cart_data` + `promo_code_id`. Синхронизируется даже промокод.
+- `CartSyncMiddleware` (`settings.py:221`, корректно ПОСЛЕ `AuthenticationMiddleware:215`; в prod присутствует — `production_settings.py:48` фильтрует только аналитические мидлвари): на входе `hydrate_session_from_db` — если content-hash-ревизия БД (`_db_revision`, sha256 содержимого, а не `updated_at` — устойчиво к грубому datetime SQLite) отличается от виденной сессией → REPLACE сессии данными БД; на выходе `persist_session_to_db` — запись в БД только если сессия реально изменилась против deepcopy-снапшота запроса (экономия записей, `SESSION_SAVE_EVERY_REQUEST=False`) и только при статусе 200–399.
+- `user_logged_in`-сигнал (`cart_signals.py`, подключён в `apps.py:12`) → `merge_session_into_db`: гостевая корзина мержится с DB-корзиной (qty суммируются по ключам, кастом — union по lead_id, промо — приоритет свежей сессии). Гость, добавивший товары и залогинившийся, ничего не теряет.
+- `select_for_update` + `transaction.atomic` при записи; все функции обёрнуты в try/except с логированием — синхронизация никогда не роняет запрос. Есть тестовое покрытие: `storefront/tests/test_cart_sync.py` (гидрация, персист, мерж, middleware).
+
+### Проверка заявлений CART_RESTORATION_REPORT.md — все 4 фикса реально в коде
+
+| Заявление отчёта | Факт в текущем коде | Статус |
+|---|---|---|
+| Формат ключа `{product.id}:{size}:{color_variant_id or 'default'}` | `cart.py:798` — точное совпадение | ✅ |
+| Ответ `{'ok': True, 'count': N, 'total': S}` | `cart.py:851, 1344` | ✅ |
+| Параметр удаления `'key'` (не `'cart_key'`) | сервер `cart.py:958` + JS `ui-fallback.js:48` (`URLSearchParams({key})`) — согласованы | ✅ |
+| Временный `views.py` (7799 строк) удалён | `storefront/views.py` не существует, только пакет `views/` | ✅ |
+
+### Найденные проблемы
+
+| # | Приоритет | Проблема | Где | Детали |
+|---|-----------|----------|-----|--------|
+| 29 | P3 | Кросс-девайс-гидрация НЕ сбрасывает Monobank-сессию | `cart_sync.py::hydrate_session_from_db` (REPLACE корзины) — `_reset_monobank_session` не вызывается | Устройство A создало monobank-инвойс → устройство B изменило корзину → следующий запрос с A заменяет корзину в сессии, но pending-инвойс со СТАРОЙ суммой остаётся. Родственник №5 (CRO-031) и №26 (CRO-034), но с новым вектором: изменение прилетает «извне» мимо всех cart-views. При централизованном фиксе №5 учесть этот путь. |
+| 30 | P3 | Lost-update при одновременных мутациях с двух устройств | `persist_session_to_db` — полный REPLACE `cart_data` состоянием сессии | Запросы A и B гидрировались с одной ревизии; A добавил item1 и записал; B добавил item2 и записал ПОЗЖЕ → item1 потерян (`select_for_update` защищает строку, но не делает merge). Окно узкое (секунды), для e-commerce приемлемо, но стоит задокументировать осознанность выбора last-write-wins. |
+| 31 | P3 | 1–2 лишних SQL-запроса на КАЖДЫЙ авторизованный запрос | `hydrate_session_from_db` → `get_user_cart` → `get_or_create` на каждом не-skip запросе | `_SKIP_PATH_PREFIXES` покрывает статику/health/rum, но не JSON-эндпоинты навигации (`/cart/summary/`, `/api/nova-poshta/*`, поисковые подсказки). Смягчено `cached_db`-сессиями, но UserCart читается напрямую из БД. Возможный фикс: кэшировать ревизию в Django-cache по user_id. |
+| 32 | P3 | Устаревший docstring: формат ключа «product_id:size:color:fit» | `cart_sync.py::_merge_standard_carts` docstring | Фактический ключ — `product_id:size:color_variant_id` (`cart.py:798`). Мерж работает корректно (ключи непрозрачные), но комментарий вводит в заблуждение — привести в соответствие. |
+| 33 | P3 | `CART_RESTORATION_REPORT.md` лежит в корне репо и предшествует DB-sync-слою | корень репо, датирован 24.10.2025 | Отчёт описывает восстановление session-логики и НЕ упоминает `UserCart`/`CartSyncMiddleware` (добавлены позже) — читатель может решить, что персистентность ограничена сессией. Перенести в `TWOCOMMS_A_TO_B/technical/` или дополнить ссылкой на cart_sync. |
+
+### Проверенные сценарии — OK (важно НЕ сломать при фиксах)
+
+- **Закрыл браузер → открыл** (гость и залогиненный): корзина на месте (cookie 30 дней; для залогиненного — даже при потере cookie БД восстановит на первом же запросе после логина).
+- **Добавил на десктопе → открыл на телефоне** (залогиненный): content-hash-ревизия ловит изменение → REPLACE сессии из БД.
+- **Гость наполнил корзину → залогинился**: мерж без потерь (qty суммируются, кастом union, промо сохраняется).
+- **Ошибка синхронизации** не роняет запрос (try/except + logger.warning), 4xx/5xx-ответы не персистятся (защита от записи отkatанного состояния).
+- **Регрессия формата ключей** (главная причина инцидента из отчёта) покрыта: сервер и JS согласованы, есть tests.
+
+### Рекомендации (порядок внедрения)
+
+22. P3: при фиксе №5 (CRO-031, централизованный сброс Monobank-сессии) добавить сброс и в `hydrate_session_from_db` при фактическом REPLACE корзины (№29).
+23. P3: кэш ревизии UserCart в Django-cache по user_id — убрать get_or_create с каждого запроса (№31).
+24. P3: поправить docstring `_merge_standard_carts` (№32); перенести/обновить `CART_RESTORATION_REPORT.md` (№33); задокументировать выбор last-write-wins (№30).
