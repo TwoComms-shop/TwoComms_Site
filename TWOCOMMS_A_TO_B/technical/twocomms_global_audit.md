@@ -82,7 +82,7 @@
 
 ### 1.2 Каталог
 
-- [ ] **CRO-010. Фильтрация лонгсливов/худи.** Где: `storefront/views/catalog.py` (1215 строк), `pages/catalog.html`, URL `/catalog/long-sleeve/`, `/catalog/hoodie/`. Что: фильтры по категории (slug: long-sleeve id=5, hoodie id=4, tshirts id=3), цвету, размеру работают без полной перезагрузки; выбранный фильтр сохраняется в URL (шаримая ссылка).
+- [x] **CRO-010. Фильтрация лонгсливов/худи.** ✅ Аудит 05.07.2026: категория+цвет работают, URL шарим (state в URL); **размерного фильтра НЕ существует** (size только как size_grid-гайд, нет складских размеров — P1 продуктовое решение); фильтр = полная перезагрузка (нет AJAX, P2); landing-swap теряет мульти-выбор цветов (P2); showcase-slug-конфиг расходится с боевыми slug (P3) → `audit_report_section1_catalog.md` Где: `storefront/views/catalog.py` (1215 строк), `pages/catalog.html`, URL `/catalog/long-sleeve/`, `/catalog/hoodie/`. Что: фильтры по категории (slug: long-sleeve id=5, hoodie id=4, tshirts id=3), цвету, размеру работают без полной перезагрузки; выбранный фильтр сохраняется в URL (шаримая ссылка).
 - [ ] **CRO-011. Пагинация каталога.** Где: `storefront/pagination.py`, catalog.py. Что: canonical/prev/next на страницах пагинации; переход по страницам не сбрасывает фильтры; нет дублирующихся товаров между страницами.
 - [ ] **CRO-012. Lazy-load изображений каталога.** Где: catalog.html, `optimized_image.html`, `responsive_image.html`, `image_optimizer.py`. Что: `loading="lazy"` на всех карточках ниже фолда, первые 4–8 карточек eager; корректные width/height (нет CLS).
 - [ ] **CRO-013. Порядок сортировки: лонгсливы/худи первыми.** Где: catalog.py (queryset ordering), главная витрина. Что: дефолтная сортировка не выпячивает футболки вопреки позиционированию.
@@ -157,7 +157,7 @@
 - [ ] **AN-032. Нормализация utm_source.** Где: живая БД: 'ig' (198), 'Instagram' (128), 'IGShopping' (6), 'Inst_Vid' (10) — 4 написания одного канала; 'fb'/'fb-SiteLink'; '120233970682840302' (сырой ad id). Что: словарь нормализации при записи или на уровне отчётов; UTM governance-конвенция (TECH-009).
 - [ ] **AN-033. AI-источники как отдельный канал.** Где: БД: utm_source='chatgpt.com' 109 сессий + referrer chatgpt.com 18. Что: детект chatgpt.com/perplexity.ai/gemini/claude.ai по utm и referrer → канал «AI» в отчётах (TECH-065).
 - [ ] **AN-034. Кэш не сбрасывает UTM.** Где: cache_headers.py, whitenoise, hosting-кэш (Hostsila/LiteSpeed?). Что: страница с `?utm_...` не отдаётся из кэша без прохода через UTMTrackingMiddleware; проверить, что HTML с query-параметрами — MISS или что мидлварь стоит до кэш-слоя.
-- [ ] **AN-035. Бот-фильтр фактически мёртв.** Где: `utm_utils.py::is_bot_user_agent`, БД: SiteSession is_bot=True = 0 из 2899. Что: либо ботов реально нет (маловероятно при 36k product_view), либо детект не работает/не пишет флаг; протестировать с UA «Googlebot»; расширить список; referrer-спам чёрный список (TECH-063).
+- [ ] **AN-035. Бот-фильтр фактически мёртв.** Где: `utm_utils.py::is_bot_user_agent`, БД: SiteSession is_bot=True = 0 из 2899. Что: либо ботов реально нет (маловероятно при 36k product_view), либо детект не работает/не пишет флаг; протестировать с UA ��Googlebot»; расширить список; referrer-спам чёрный список (TECH-063).
 - [ ] **AN-036. increment_visit на каждый запрос без UTM.** Где: utm_middleware.py (ветка `else: utm_session.increment_visit()`). Что: КАЖДЫЙ запрос любой страницы делает SELECT+UPDATE UTMSession — нагрузка и искажение visit_count (это pageviews, не визиты); оценить и переработать.
 - [ ] **AN-037. Атрибуционная модель first/last touch.** Где: utm_middleware.py — при новом UTM существующая сессия НЕ обновляет utm_* (get_or_create только defaults). Что: задокументировать фактическую модель (first-touch в рамках session_key); решить, нужен ли last-touch слой; `analytics_first_touch_data` в SiteSession — сверить консистентность.
 - [ ] **AN-038. Отчётность UTM в админке.** Где: `storefront/utm_analytics.py`, `utm_api_views.py`, `utm_cohort_analysis.py`, `storefront/admin_analytics_api.py`, `storefront/services/admin_analytics.py`, вкладка в админ-панели `/admin-panel/` (pages/admin_panel.html). Что: цифры вкладки сходятся с прямыми запросами к БД; отчёт «источник → сессии → конверсии» сейчас покажет 0 конверсий везде (следствие CRO-041/042) — после фикса перепроверить; экспорт работает.
@@ -193,7 +193,7 @@
 - [ ] **TD-015. passenger_wsgi + лимиты хостинга.** Где: `passenger_wsgi.py`, сервер (Hostsila shared). Что: сколько воркеров/память; долгие операции (AI-генерация, feed-генерация openai/feeds) выполняются синхронно в запросе? — риск таймаутов; вынести в management-команды по cron.
 - [ ] **TD-016. Логи на сервере.** Где: `~/TWC/TwoComms_Site/twocomms/*.log` (ai_generation.log, celery.log и др.). Что: ротация настроена; логи не съедают диск; в логах нет секретов.
 
-### 3.3 Надёжность и безопасность
+### 3.3 Надёжност�� и безопасность
 
 - [x] **TD-020. Бэкапы MySQL.** ✅ Аудит 05.07.2026: **P0 — регулярных бэкапов НЕТ**, внедрение — исполнителю → `audit_report_section3_techdebt.md` Где: сервер (cron владельца/hostsila-панель). Что: расписание дампов; тест восстановления на копии (TECH-042); дампы не лежат в web-доступной папке.
 - [ ] **TD-021. Секреты не в репозитории.** Где: весь репо. Что: `git log -p | grep -iE "(password|secret|token)"` выборочно; `.env*` в .gitignore; в settings.py нет захардкоженных ключей (SECRET_KEY, monobank token, FB access token — только из env); pixel ID в base.html — публичные, ок.
@@ -231,11 +231,11 @@
 - [ ] **SEO-020. КРИТИЧНО: Product schema на карточке.** Где: `pages/product_detail.html` — grep JSON-LD по шаблону НЕ нашёл `application/ld+json` (schema есть в catalog/index/blog, но не в product_detail!). Что: подтвердить рендером живой карточки (view-source); если отсутствует — добавить Product+Offer (price, priceCurrency, availability, brand, image, sku) — TECH-030; Rich Results Test зелёный.
 - [ ] **SEO-021. Review/AggregateRating schema.** Где: product_detail.html, reviews. Что: после появления отзывов — валидная разметка (TECH-031); НЕ размечать фейковые рейтинги.
 - [ ] **SEO-022. Организация/сайт schema.** Где: index.html, footer.html (schema.org найдено). Что: Organization с logo/sameAs (Instagram, TikTok); BreadcrumbList на каталоге/карточке.
-- [ ] **SEO-023. FAQPage schema.** Где: custom_print.html, support_page.html (schema найдена — валидировать). Что: FAQ-разметка соответствует видимому контенту; расширить на 5+ страниц (TECH-032).
+- [ ] **SEO-023. FAQPage schema.** Где: custom_print.html, support_page.html (schema найдена — валид��ровать). Что: FAQ-разметка соответствует видимому контенту; расширить на 5+ страниц (TECH-032).
 
 ### 4.3 AEO (Answer Engine Optimization)
 
-- [ ] **AEO-001. AI-трафик уже идёт — усилить.** Где: БД: 109 сессий utm_source=chatgpt.com. Что: понять, какие страницы цитирует ChatGPT (landing_page этих UTM-сессий — запрос к БД); усилить эти страницы фактологией (состав, замеры, сроки, цены).
+- [ ] **AEO-001. AI-трафик уже идёт — усилить.** Где: БД: 109 сессий utm_source=chatgpt.com. Что: понять, какие страницы цитирует ChatGPT (landing_page этих UTM-сессий — запрос к БД); усилить эти с��раницы фактологией (состав, замеры, сроки, цены).
 - [ ] **AEO-002. llms.txt.** Где: корень сайта (провер��ть https://twocomms.shop/llms.txt). Что: если нет — создать с описанием бренда/каталога/политик (TECH-035), не противореча robots.txt.
 - [ ] **AEO-003. Q&A-структура контента.** Где: карточки, `docs/seo`, blog-шаблоны. Что: прямые ответы на вопросы («Из чего лонгслив?», «Сроки отправки?») в первых абзацах; таблицы зам��ров в HTML-таблицах (не картинках) — AI-парсеры читают текст.
 - [ ] **AEO-004. Тон бренда во всех текстах.** Где: все шаблоны pages/*, описания в БД, `services/product_copy_v2.py`, `_product_themes.py`. Что: grep-аудит на «спорт», «бейсбол», от-первого-лица «я»; соответствие «difficulties/преодоление»; составить список страниц на переписывание (само переписывание — отдельные задачи).
@@ -388,7 +388,7 @@
 | 05.07.2026 | CB-043 | Git сервера: tracked чисто, 10 stash (возможна потерянная работа), untracked диаг-скрипты на бою | P0 done | audit_report_section6_codebase.md |
 | 05.07.2026 | CB-012 | Боевой settings = twocomms.production_settings (passenger_wsgi); на сервере .env И .env.production; env-флаг DISABLE_ANALYTICS может отключать UTM-мидлвари — проверить значение | P0 done | audit_report_section6_codebase.md |
 | 05.07.2026 | CB-040 | Боевые версии: openai==2.30.0, google-auth==2.52.0, google-analytics-data==0.22.0 — пин исполнителю | P1 done | audit_report_section6_codebase.md |
-| 05.07.2026 | TD-020 | **P0: регулярных бэкапов MySQL НЕТ; последний ручной дамп от 24.10 (>8 мес). Блокирует все миграции (RISK-07)** | P0 | audit_report_section3_techdebt.md |
+| 05.07.2026 | TD-020 | **P0: ��егулярных бэкапов MySQL НЕТ; последний ручной дамп от 24.10 (>8 мес). Блокирует все миграции (RISK-07)** | P0 | audit_report_section3_techdebt.md |
 | 05.07.2026 | TD-016 | Ротация django/stderr есть (5 покол.); 8 мёртвых логов; ai_generation.log мёртв с 09.2025, image_optimization.log с 10.2025 | P2 partial | audit_report_section3_techdebt.md |
 | 05.07.2026 | CB-024 | Уточнение баз. линии: 183 тест-файла, storefront/tests 68 файлов/18.5k строк (checkout/cart/utm покрыты юнитами); ДЫРЫ: orders/ 0 тестов (CAPI 850 строк!), accounts/ 0, вебхук-подпись monobank без тестов, идемпотентность 1 тест, CI отсутствует, тесты на SQLite vs боевой MySQL | P0 done | audit_report_section6_codebase.md |
 | 05.07.2026 | CRO-001 | Живой рендер + шаблон: спорт/бейсбол-лексики нет, «я»-лексики нет; находки: футболки первыми в title/hero-subtitle/заголовке витрины (3 строки копирайта), первые 5 карточек витрины — футболки (admin priority), концепция «труднощі» текстом не выражена | P1 done | audit_report_section1_homepage.md |
