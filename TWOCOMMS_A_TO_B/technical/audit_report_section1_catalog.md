@@ -66,5 +66,84 @@
 
 ---
 
+## CRO-011. Пагинация каталога
+
+### Статус: ПРОВЕРЕНО. Canonical/prev/next есть и корректны для «чистой» пагинации; НО пагинация СБРАСЫВАЕТ цветовой фильтр, а `?page=N` на корне каталога плодит SEO-дубли showcase.
+
+### Проверенные факты (живой сайт, 05.07.2026)
+- `/catalog/?page=2`: self-canonical `https://twocomms.shop/catalog/?page=2`; `rel="prev"` → `/catalog/` (без `?page=1` — правильно), `rel="next"` → `/catalog/?page=3`. Шаблон: `pages/catalog.html:61-63` (block `pagination_links`).
+- Дублей товаров между страницами НЕТ: порядок детерминирован — `apply_public_product_order` = `order_by("-priority", "-id")` (`services/catalog_helpers.py:130`), tie-breaker `-id` уникален. Live: пересечение data-product-id страниц 1/2 категорийного грида = 0.
+- `?page=99999` не 500-ит: `paginator.get_page` кламит к последней странице.
+
+### НАХОДКИ
+1. **[P1] Переход по страницам СБРАСЫВАЕТ фильтры.** Ссылки пагинации — `href="?page={{ i }}"` (`catalog.html:425-447`): относительный URL с `?` **заменяет весь query string**. Сценарий: `/catalog/?color=black` (26 черных товаров, 2 страницы) → клик «стр. 2» → `/catalog/?page=2` — фильтр потерян, юзер видит нефильтрованный грид (на корне — вообще showcase без товаров). Критерий чек-листа «переход по страницам не сбрасывает фильтры» — **НЕ выполнен**. Фикс: генерировать ссылки через copy запроса (`request.GET.copy()` → set `page`) или template-tag `{% url_replace page=i %}`.
+2. **[P1-SEO] `rel="prev"/"next"` на фильтрованных страницах указывают на НЕфильтрованные URL.** На `/catalog/?color=black&page=2` prev/next = `/catalog/` и `/catalog/?page=3` (без `color`). Т.к. фасеты noindex — индекс не отравляется, но сигналы пагинации врут. Фикс тем же механизмом, что и №1.
+3. **[P2-SEO] `/catalog/?page=N` (корень, без фильтра) отдаёт showcase БЕЗ товаров, но с self-canonical `?page=N` и prev/next.** Причина: `catalog.py:601-607` всегда строит `page_obj` по product_qs, а шаблон при `show_category_cards=True` рендерит showcase — товарного грида нет, содержимое всех `?page=N` идентично. Итог: бесконечный ряд индексируемых дублей витрины (`?page=2..8` все 200 + canonical на самих себя). Фикс: на корне-showcase либо 301 `?page=N` → `/catalog/`, либо canonical на `/catalog/` + не выводить pagination_links.
+4. **[P3] `pagination.py::build_homepage_page_url`** также не переносит query-параметры (для главной приемлемо — фильтров там нет; фиксировать не требуется, но не переиспользовать для каталога).
+5. **[OK] Окно страниц** в UI: `i > number-3 и i < number+3` — компактно, active помечен, prev/next disabled на краях, `aria-label` есть.
+
+---
+
+## CRO-012. Lazy-load изображений каталога
+
+### Статус: ПРОВЕРЕНО, в целом ОК. width/height есть (CLS-safe), lazy по умолчанию; но eager — только первые 2 карточки (чек-лист рекомендует 4–8).
+
+### Проверенные факты
+- Карточка (`partials/product_card.html` → tag `optimized_image`, `templatetags/responsive_images.py:142`): `loading="lazy"` по умолчанию; `eager=True` передаётся только при `forloop.counter0 < 2` (`catalog.html:388-392`). Live `/catalog/?color=black&page=2`: 1 eager + 12 lazy; `/catalog/tshirts/`: 8 lazy карточных img.
+- **width/height присутствуют на 100% карточных img** (live: 13/13 и 8/8) → CLS от карточек нет. Плюс `decoding="async"`, `fetchpriority` (auto/low), `sizes`, srcset `320w…1024w+` из `/media/products/optimized/*.webp`.
+- Hero каталога: `<link rel="preload" as="image" fetchpriority="high">` + `loading="eager"` (`catalog.html:12,264`) — LCP-кандидат прогревается корректно.
+
+### НАХОДКИ
+1. **[P2] Eager только у 2 первых карточек, а первый ряд на desktop — 4 (row-cols-lg-4).** Карточки 3–4 первого ряда лоадятся lazy → возможна поздняя отрисовка above-the-fold на широких экранах. Рекомендация: `forloop.counter0 < 4` eager (границу вынести в константу). Учесть fragment-cache `product_card_home_catalog_v6…` — ключ уже включает `forloop.counter0`, инвалидация не нужна, но bump версии ключа обязателен при изменении разметки.
+2. **[INFO] Fallback-ветка тега** (нет optimized-версий файла) рендерит `<img>` без srcset — на выборке не встретилась (все карточки шли из `/optimized/`), риск низкий.
+
+---
+
+## CRO-013. Порядок сортировки: лонгсливы/худи первыми
+
+### Статус: ЧАСТИЧНО. Управляется admin-priority (норм. механизм), но showcase-карточки на корне каталога ставят ФУТБОЛКИ ВЫШЕ ХУДІ.
+
+### Факты
+- Единый источник порядка: `apply_public_product_order` → `order_by("-priority", "-id")`; `Product.priority` управляется drag-and-drop в админке, версия порядка (`public_product_order_version`) инвалидирует кэши. Товарные гриды и главная сортируются одинаково — «выпячивание футболок» кодом НЕ зашито.
+- **Showcase-порядок на `/catalog/` (live): `long-sleeve` → `tshirts` → `hoodie`.** Порядок задаёт `CATALOG_SHOWCASE_CARD_CONFIG` (catalog.py), а не Category.order.
+
+### НАХОДКИ
+1. **[P2] Showcase ставит футболки на 2-е место, худі — последним.** Позиционирование «лонгсливы/худи — первыми» выполнено наполовину. Фикс: переставить конфиг (long-sleeve, hoodie, tshirts) — однострочник + bump кэш-версии.
+2. **[PENDING] Фактические значения `Product.priority` в БД не сверены** (SSH-доступ на момент проверки блокировался, см. журнал). Проверить: не выставлены ли приоритеты так, что первые 8 позиций главной — футболки. Скрипт готов: `/tmp/audit_cro015.py` (см. CRO-015).
+
+---
+
+## CRO-014. Статусы наличия в каталоге
+
+### Статус: ПРОВЕРЕНО. Модель — made-to-order (DTF-печать): понятия «нет в наличии» в витрине НЕТ by design; phantom-SKU не обнаружено.
+
+### Факты
+- У `Product` нет поля остатков; единственный складской атрибут — `ProductColorVariant.stock` (`productcolors/models.py:38`), и **витрина его нигде не читает**: ни `catalog.py`, ни `product.py`, ни шаблоны карточек. Используется только в `services/marketplace_feeds.py:444-459`, где stock=0 сознательно поднимается до минимума фида («made-to-order DTF» — прямая цитата из комментария кода).
+- Скрытие товара = смена `status` (published/archived и т.д.), есть поле `unpublished_reason`. Live-проверка CRO-010 подтвердила: archived (3 шт.) в гриды не попадают.
+- «Кликнуть и застрять» невозможно: все карточки в гриде published и покупабельны.
+
+### НАХОДКИ
+1. **[P3/продуктовое] Правило «наличия» нигде не задокументировано.** Если вещь временно нельзя произвести (нет заготовок нужного цвета/размера) — единственный механизм = ручная расп��бликация всего товара; per-variant «недоступен» нет (stock есть на модели, но UI/логика отсутствуют). Зафиксировать решение: либо официально «всё всегда под заказ» (тогда SLA производства на карточке), либо доделать variant-level наличие. Связка: TECH-010.
+2. **[INFO] Для маркетплейс-фидов stock искусственно ≥1** — при аудите фидов (SEO-раздел) помнить, что это не реальные остатки.
+
+---
+
+## CRO-015. N+1 при рендере каталога
+
+### Статус: СТАТИЧЕСКИЙ АНАЛИЗ ПРОЙДЕН (архитектура анти-N+1 корректна); живой замер числа SQL — ОТЛОЖЕН (SSH недоступен).
+
+### Факты (код)
+- Базовый queryset `_product_cards_queryset` (catalog.py:316): `select_related('category')` + `prefetch_related('images', 'color_variants__images')` + `defer(9 тяжёлых текстовых полей)` — все обращения карточки покрыты.
+- `build_color_preview_map` (catalog_helpers.py:239): один bulk-запрос по `product_ids` списка страницы, чтение картинок из `_prefetched_objects_cache` (комментарий «This prevents N+1 queries»); fallback `variant.images.all()` может дать N+1 только если prefetch не сработал — на текущем вызове prefetch есть.
+- `_build_catalog_showcase_cards`: счётчики товаров одним `values('category_id').annotate(Count)` — bulk.
+- Три слоя кэша душат SQL: page-cache анонимов (600с) → fragment-cache грида (600с) → fragment-cache карточки (900с).
+- ⚠️ Потенциальные лишние запросы: `build_available_colors` и `color_seo_copy` ходят по отдельным queryset-ам (приемлемо), `attach_preferred_card_image` — проверить при замере.
+
+### НАХОДКИ
+1. **[PENDING/P2] Живой замер `len(connection.queries)` не выполнен**: SSH к 195.191.24.169 отдаёт `kex_exchange_identification: connection reset` (вероятно fail2ban после серии аудит-сессий; ранее в этот же день доступ работал). Скрипт замера готов и проверен синтаксически: `/tmp/audit_cro015.py` (django `test.Client` + `CaptureQueriesContext` для `/catalog/`, `/catalog/tshirts/`, `/catalog/hoodie/`, `/catalog/?color=black`, `/` + распределение по таблицам + топ-12 priority). Выполнить при следующем SSH-окне; норма из чек-листа: ≤15 запросов/страница.
+
+---
+
 ## ЖУРНАЛ
 - 05.07.2026 · CRO-010 · аудит завершён, 4 находки P1–P3 + 2 INFO. Код не менялся (analysis-only).
+- 05.07.2026 · CRO-011…CRO-015 · аудит завершён (analysis + live HTTP). Ключевое: пагинация сбрасывает фильтры (P1), `?page=N` дублирует showcase с self-canonical (P2-SEO), showcase-порядок ставит футболки выше худі (P2). Отложено до SSH-окна: живой замер SQL-запросов и сверка Product.priority (скрипт `/tmp/audit_cro015.py`).
