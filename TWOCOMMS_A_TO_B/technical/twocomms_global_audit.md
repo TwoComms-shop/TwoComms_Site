@@ -97,7 +97,7 @@
 - [x] **CRO-023. Размерная сетка с карточки.** ✅ Аудит 05.07.2026: P1 — у всех лонгсливов нет таблицы замеров (нет `longsleeve` preset/catalog/SizeGrid, `/rozmirna-sitka/` тоже без лонгсливов); `view_size_guide` отсутствует; seo-pricing блок даёт 24 битые ссылки `/product/{id}/` → 404 на 3 категориях → `audit_report_section1_product.md`. Что: SizeGrid/пресет longsleeve, привязки catalog, fix `get_absolute_url`, TECH-005.
 - [x] **CRO-024. Событие product_view — завышение.** ✅ Аудит 05.07.2026: 3 root cause в коде — `record_user_action` без bot-фильтра, двойной счёт на 301 legacy URL (`record_product_view` до redirect), нет дедупа повторных просмотров; сервер+JS дубля и prefetch-триггера нет → `audit_report_section1_product.md`. Что: bot-filter, перенос записи после redirect, дедуп 30 мин.
 - [x] **CRO-025. Выбор цвета/размера — UX и трекинг.** ✅ Аудит 05.07.2026: смена фото/URL/canonical работает, но цена не обновляется по `price_override`, stock не блокирует выбор/корзину, `select_size`/`select_color` отсутствуют, a11y свотчей неполная → `audit_report_section1_product.md`. Что: синхронизировать price_override/stock и добавить TECH-008 события.
-- [ ] **CRO-026. Блок отзывов на карточке.** Где: `reviews/`, product_detail.html. Что: выводятся ли отзывы; schema Review/AggregateRating (см. SEO-раздел).
+- [x] **CRO-026. Блок отзывов на карточке.** ✅ Аудит 05.07.2026: код полный и корректный (блок на 65/65 PDP, schema гейтится по show_rating, порог=1), но **P1: 0/65 live PDP имеют aggregateRating — 0 approved-отзывов на весь каталог**; P1: петля сбора «coupon → review» из Phase 13.x не существует в коде; P2: bulk approve через `queryset.update()` обходит сигналы → IndexNow-пинг не срабатывает → `audit_report_cro026_reviews.md`. Что: запустить сбор отзывов post-purchase, пофиксить bulk approve.
 - [ ] **CRO-027. Рекомендации на карточке.** Где: `storefront/recommendations.py`. Что: б��о���� «с этим покупают/похожие» не делает N+1 и не рекомендует out-of-stock.
 
 ### 1.4 Мини-корзина и корзина
@@ -143,7 +143,7 @@
 - [ ] **AN-012. Дедупликация Pixel↔CAPI.** Где: facebook_conversions_service.py (event_id), клиентский fbq-вызов, `META_PIXEL_CAPI_DEDUPE_IMPLEMENTATION.md` (корень). Что: одинаковый event_id в браузерном и серверном событии; в Events Manager дедуп подтверждён; EMQ зафиксировать в журнале. Это TECH-064 — числится сделанным, но не проверено.
 - [x] **AN-013. fbc/fbp/fbclid доходят до CAPI.** ✅ Аудит 05.07.2026: P0 подтверждён — Order не хранит click-ID, COD не пишет `payment_payload.tracking`, а CAPI берёт `fbc/fbp` только из tracking payload; fbclid без UTM тоже может полностью теряться → `audit_report_section2_analytics.md`. Что: расширение TECH-060 — копировать/synthesize click-ID для любого заказа.
 - [ ] **AN-014. Offline-конверсии delivered.** Где: facebook_conversions_service.py::send_event_for_order_status, orders/status_management.py. Что: возможна ли отправка события по факту доставки; сейчас статусов shipped/delivered нет вообще (только done/cancelled) — блокируется TECH-070/071.
-- [ ] **AN-015. test_event_code изоляция.** Где: base.html (data-tiktok-test-event-code), настройки CAPI. Что: тестовые события не загрязняют боевую статистику (TECH-043).
+- [ ] **AN-015. test_event_code изоляция.** Где: base.html (data-tiktok-test-event-code), настройки CAPI. Что: тестовые события не загрязняют бое��ую статистику (TECH-043).
 
 ### 2.3 TikTok Pixel
 
@@ -236,7 +236,7 @@
 ### 4.3 AEO (Answer Engine Optimization)
 
 - [ ] **AEO-001. AI-трафик уже идёт — усилить.** Где: БД: 109 сессий utm_source=chatgpt.com. Что: понять, какие страницы цитирует ChatGPT (landing_page этих UTM-сессий — запрос к БД); усилить эти с��раницы фактологией (состав, замеры, сроки, цены).
-- [ ] **AEO-002. llms.txt.** Где: корень сайта (провер��ть https://twocomms.shop/llms.txt). Что: ��сли нет — создать с описанием бренда/каталога/политик (TECH-035), не противореча robots.txt.
+- [ ] **AEO-002. llms.txt.** Где: корень сайта (провер��т�� https://twocomms.shop/llms.txt). Что: ��сли нет — создать с описанием бренда/каталога/политик (TECH-035), не противореча robots.txt.
 - [ ] **AEO-003. Q&A-структура контента.** Где: карточки, `docs/seo`, blog-шаблоны. Что: прямые ответы на вопросы («Из чего лонгслив?», «Сроки отправки?») в первых абзацах; таблицы зам��ров в HTML-таблицах (не картинках) — AI-парсеры читают текст.
 - [ ] **AEO-004. Тон бренда во всех текстах.** Где: все шаблоны pages/*, описания в БД, `services/product_copy_v2.py`, `_product_themes.py`. Что: grep-аудит на «спорт», «бейсбол», от-первого-лица «я»; соответствие «difficulties/преодоление»; составить список страниц на переписывание (само переписывание — отдельные задачи).
 - [ ] **AEO-005. «С 2014» и ложные факты.** Где: все шаблоны + БД-тексты (grep «2014»). Что: исправить историю бренда ��а корректную (TECH-034).
@@ -281,7 +281,7 @@
 - [ ] **CB-015. Мёртвые management-команды.** Где: 60+ команд в `*/management/commands/`. Что: сверить с crontab сервера: команды, которые не в cron и не в доках → кандидаты на удаление (например, `finance_seed_demo`, `notify_test_shops`, `parser_recovery_dry_run`); составить таблицу «команда → где вызывается → вердикт».
 - [ ] **CB-016. Пакеты-призраки в requirements.** Где: `requirements.txt` (81 строка). Что: для каждого пакета grep на импорт: кандидаты на неиспользуемые (django-ratelimit — TD-023 подтверждает 0 использований; google-analytics-data — AN-040). Удалять только после grep по ВСЕМУ коду включая scripts/.
 
-### 6.3 Качество кода (обработка ошибок, логирование, размер)
+### 6.3 Качество кода (обра��отка ошибок, логирование, размер)
 
 - [ ] **CB-020. 697 широких except.** Где: весь Python-код (grep `except Exception`/`except:`). Что: НЕ чинить массово. Приоритетно исправить в местах, где глотаются ошибки денег/данных: `orders/` (чекаут, вебхуки, CAPI), `storefront/views/checkout*.py`, `monobank.py` — каждый except должен минимум `logger.exception(...)`. Составить топ-20 самых опасных ��ест.
 - [ ] **CB-021. 120 print() в бою.** Где: grep `^\s*print(` по storefront/orders/accounts/twocomms. Что: заменить на `logger.debug/info`; print под Passenger попадает в stderr-лог хостинга без ротации.
