@@ -123,3 +123,58 @@ Grep по всему репо (py/js/html): 0 вхождений `view_size_guid
 | 3 | Привязать catalog оставшимся 5 худи и 7 футболкам (сейчас фолбэк без таблицы) | P2 |
 | 4 | TECH-005: action_type `view_size_guide` + трекинг открытия таба/кликов по size-guide ссылкам | P2 |
 | 5 | Удалить тестовый SizeGrid id=1 «Test Catalog - Hoodie» из боевой БД (артефакт) | P3 |
+
+---
+
+## CRO-024. Событие product_view — завышение ✅ (аудит 05.07.2026; 3 root cause найдены в коде, все подтверждаемы построчно)
+
+### Методика замера
+
+1. Построчный разбор всей цепочки записи: `views/product.py::product_detail` → `utm_tracking.py::record_product_view` → `record_user_action` → `analytics_exclusions.py::is_request_excluded`.
+2. Сравнительный разбор bot-фильтрации во ВСЕХ трёх слоях трекинга: `utm_middleware.py` (UTM-сессии), `tracking.py` (PageView/SiteSession), `utm_tracking.py` (UserAction).
+3. Grep всего репо (js/html) на клиентский пуш `product_view` (проверка двойного сервер+JS счёта).
+4. Проверка prefetch/speculation rules в base.html и rum.js.
+5. Live-DB срез: **НЕ выполнен** — SSH на бой отдаёт `kex_exchange_identification: Connection reset` (4 попытки с бэкоффом до 2 мин; вероятно fail2ban/rate-limit после предыдущих аудит-сессий). Количественная декомпозиция 36 009 просмотров — отложенная задача (см. задачу 5).
+
+### ROOT CAUSE 1 (P1, главный): `record_user_action` НЕ фильтрует ботов — единственный слой трекинга без bot-фильтра
+
+В проекте ТРИ слоя аналитики, и в двух из них боты отсекаются, а в третьем (том самом, что пишет product_view) — НЕТ:
+
+| Слой | Файл | Bot-фильтр |
+|---|---|---|
+| UTM-сессии | utm_middleware.py:62 | ✅ `is_bot_user_agent(user_agent)` → skip |
+| PageView/SiteSession | tracking.py:35 `is_bot()` + BOT_SIGNALS (30 паттернов, включая curl/wget/lighthouse/headless) | ✅ skip |
+| **UserAction (product_view!)** | utm_tracking.py:49–62 | ❌ только `is_request_excluded` (ручной админ-список IP/UA/user) — автоматической bot-проверки НЕТ |
+
+Итог: каждый хит googlebot/bingbot/ahrefs/curl по PDP пишет строку `product_view`. Хуже того — бот не хранит cookies, поэтому строки 56–58 (`request.session.save()`) создают НОВУЮ Django-сессию на КАЖДЫЙ хит бота (побочный эффект: раздувание django_session). Наши собственные аудит-curl'ы по PDP тоже записались как product_view. Косвенное подтверждение масштаба: сайт активно краулится (в BOT_SIGNALS перечислены baiduspider/petalbot/semrush/ahrefs/mj12 — их добавляли не просто так, это «specific crawlers commonly hitting the site» по комментарию в коде).
+
+**Фикс (3 строки):** в начале `record_user_action` добавить `from .utm_utils import is_bot_user_agent` + `if is_bot_user_agent(request.META.get('HTTP_USER_AGENT', '')): return None`. Ещё лучше — использовать более полный `tracking.is_bot` (30 паттернов против 15 в is_bot_user_agent; is_bot ловит yandex/petalbot/lighthouse, is_bot_user_agent — нет). Заодно унифицировать два дублирующихся bot-детектора в один (сейчас `tracking.py::is_bot` и `utm_utils.py::is_bot_user_agent` — разные списки, рассинхрон).
+
+### ROOT CAUSE 2 (P1, подтверждение находки из CRO-018): двойной счёт на 301-редиректе
+
+`record_product_view` вызывается в product.py:247 — ДО ветки Phase 7.5 (строки 319–330), которая 301-редиректит legacy query-string URL (`?size=M&color=123`) на канонический path-URL. Итог: пользователь, пришедший по старой ссылке (email-рассылки, соцсети, закладки), генерирует **2 строки product_view** — одну на редиректе, одну на целевой странице. **Фикс:** перенести вызов `record_product_view` после строки 330 (после ветки `return HttpResponsePermanentRedirect`).
+
+### ROOT CAUSE 3 (P2): нет дедупликации перезагрузок/повторных заходов
+
+Никакого окна дедупликации (та же сессия + тот же товар в течение N минут = 1 просмотр) нет — F5, возврат «назад» из корзины, переключение цветовых path-URL вариантов (`/product/x/black/` → `/product/x/white/` — каждый вариант это отдельный GET того же product_detail) пишут отдельные строки. GA4-стандарт — считать view per session per product. **Фикс:** перед `UserAction.objects.create` проверка «existing за последние 30 мин с тем же site_session+product_id» (индекс по (action_type, site_session, product_id, created_at) уже частично покрывается, проверить).
+
+### Что проверено и НЕ является проблемой
+
+- **Двойного сервер+JS счёта НЕТ:** grep по всем js/html — клиентский пуш `product_view` отсутствует, запись только серверная (единственные вхождения — вывод статистики в admin_dispatcher_section.html).
+- **Prefetch/prerender НЕ триггерит:** в base.html только `dns-prefetch` (не загружает страницы); speculation rules не используются; rum.js явно гвардит prerender.
+- **AJAX-эндпоинтов, дёргающих product_detail, нет** — view вызывается только полноценной загрузкой PDP.
+- `is_request_excluded` корректно отсекает админ-офис/staff (ручной список), кэш снапшота 30 сек — оверхед незначителен.
+
+### Ответ на вопрос чек-листа «36 009 product_view против 44 add_to_cart»
+
+Соотношение ~818:1 объясняется комбинацией: (а) боты — главный вклад, механизм доказан root cause 1; (б) двойной счёт редиректов — root cause 2; (в) отсутствие дедупа — root cause 3; (г) add_to_cart при этом фильтруется тем же нефильтрующим слоем, но боты корзиной не пользуются — поэтому знаменатель «чистый», а числитель «грязный». Точная декомпозиция (доля строк без site_session = бот-прокси, т.к. SiteSession ботам не создаётся) — после восстановления SSH-доступа.
+
+### Задачи исполнителю (из CRO-024)
+
+| # | Задача | Приоритет |
+|---|---|---|
+| 1 | Добавить bot-фильтр в `record_user_action` (utm_tracking.py, ~3 строки) — закрывает главный канал завышения + попутно останавливает создание django_session на каждый бот-хит | **P1** |
+| 2 | Перенести `record_product_view` после 301-ветки (product.py:247 → после :330) — двойной счёт legacy-URL | **P1** |
+| 3 | Унифицировать 2 дублирующихся bot-детектора (`tracking.is_bot` 30 паттернов vs `utm_utils.is_bot_user_agent` 15) в один модуль | P2 |
+| 4 | Дедуп product_view: окно 30 мин на (site_session, product_id) | P2 |
+| 5 | После фиксов — очистить историю: пометить/удалить старые бот-строки (эвристика: site_session IS NULL) и перезамерить воронку | P2 |
