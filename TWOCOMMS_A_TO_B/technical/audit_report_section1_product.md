@@ -60,3 +60,66 @@
 | 2 | Аудит и наполнение `description_ru/en` (заглушки ~120 символов) или пересмотр hreflang | P2 |
 | 3 | Обновить базовую линию: published-товаров 65 (не 68) | info |
 | 4 | SEO-020 переформулировать: валидация 5 существующих JSON-LD блоков, а не добавление | info |
+
+---
+
+## CRO-023. Размерная сетка с карточки ✅ (аудит 05.07.2026; UI есть, но у ОСНОВНОГО продукта — лонгсливов — сетки с замерами НЕТ вообще)
+
+### Методика замера
+
+1. Полный разбор `storefront/services/size_guides.py` (пресеты, резолвинг источника сетки, фолбэки).
+2. Разбор `pages/product_detail.html` (все точки входа в size guide на PDP).
+3. Read-only Django shell на бою (одна батч-SSH-сессия): инвентаризация `SizeGrid`, привязок `Product.size_grid` / `Product.catalog` по категориям, `Catalog.size_grids`.
+4. Живой curl-рендер PDP лонгсливов (`bentejne-ls`, `last-breath-ls`, `red-leaves-ls`, `longsleeve-limited-edition`), худи (`225-hoodie`) и страницы `/rozmirna-sitka/`.
+5. Grep всего репозитория (py/js/html) на событие `view_size_guide`.
+
+### Как устроена система (для исполнителя)
+
+Резолвинг сетки на PDP (`resolve_product_size_guide`, size_guides.py) идёт каскадом:
+`Product.size_grid` (product_override) → `Product.catalog.size_grids` (catalog_default) → пресет по alias-детекту названия/категории (`SIZE_GUIDE_PRESETS`) → **глобальный фолбэк без таблицы** («Підбір розміру» + совет «напишіть нам»). Точки входа на PDP: таб «Розмірна сітка» (`data-pdp-tab="size"`, product_detail.html:406), ссылка «Як обрати розмір?» (:317), CTA внутри карточки гида (:549), trust-link в мобильной покупочной панели (:647) — все ведут на `/rozmirna-sitka/` (`urls.py:520`, view `static_pages.size_guide`).
+
+### ГЛАВНАЯ НАХОДКА (P1, конверсионная): у всех 19 лонгсливов НЕТ размерной таблицы в см
+
+Подтверждено тремя независимыми срезами:
+
+1. **Код:** в `SIZE_GUIDE_PRESETS` ровно 2 пресета — `hoodie` и `basic_tshirt`. Пресета для лонгсливов НЕ СУЩЕСТВУЕТ; ни один alias («лонгслів», «long sleeve», «longsleeve», «ls») нигде в size_guides.py не встречается (grep по «long|лонг» — 0 совпадений).
+2. **Живая БД:** `SizeGrid` всего 3 — id=2 «Худі» (catalog 2), id=3 «Basic tee» (catalog 3) и id=1 **«Test Catalog - Hoodie»** (тестовый артефакт в проде, guide_data пустой). Привязки по категориям (total / with size_grid / with catalog): **long-sleeve 19 / 0 / 0**, tshirts 24 / 0 / 17, hoodie 25 / 0 / 20. То есть НИ ОДИН товар не имеет product_override, лонгсливы не имеют даже catalog.
+3. **Живой рендер:** все 4 проверенных PDP лонгсливов отдают глобальный фолбэк `tc-guide-title">Підбір розміру` / `eyebrow">Fit guide` — ни таблицы (`tc-size-table` = 0), ни изображения. Для контраста: `/product/225-hoodie/` отдаёт полную таблицу («Hoodie fit guide», 8 ячеек tc-size-table, замеры Length/Width в см).
+
+**Бизнес-эффект:** лонгслив — заявленный основной продукт бренда, а покупатель на его карточке получает вместо замеров «звіряйтеся зі своєю річчю або напишіть нам». Это прямой конверсионный тормоз (сомнение в размере = главный барьер покупки одежды онлайн) и рассинхрон с позиционированием (связка с CRO-001/CRO-013).
+
+**Каскадные следствия:**
+- Глобальная страница `/rozmirna-sitka/` строится через `build_public_size_guide_blocks`, которая жёстко перебирает только `("hoodie", "basic_tshirt")` → лонгсливов нет и там (live-проверка: 5 упоминаний «худі», 3 «футболк», 0 «лонгслів» в контенте). Покупатель лонгслива не найдёт замеры НИГДЕ на сайте.
+- 5 худи и 7 футболок без `catalog` тоже падают в фолбэк (не только лонгсливы страдают).
+- `resolve_product_sizes` для лонгсливов возвращает захардкоженный `DEFAULT_SIZE_SETS["default"]` = S–XXL — размеры на PDP показываются «из воздуха», без связи с реальным ассортиментом.
+
+**Рецепт фикса (для исполнителя):** (а) создать `SizeGrid` «Лонгслів» с guide_data (columns/rows с реальными замерами от владельца) + пресет `longsleeve` с aliases `['лонгслів','лонгслив','long sleeve','longsleeve','long-sleeve']` в SIZE_GUIDE_PRESETS + добавить ключ в перебор `build_public_size_guide_blocks`; (б) создать Catalog «Лонгсліви» и привязать 19 товаров (+ добрать 5 худи и 7 футболок без catalog); (в) удалить тестовый SizeGrid id=1 «Test Catalog - Hoodie» из прода. Требуются реальные замеры лонгсливов от владельца — без них таблицу не заполнить.
+
+### НАХОДКА 2 (подтверждение чек-листа): событие `view_size_guide` не существует — TECH-005 актуальна
+
+Grep по всему репо (py/js/html): 0 вхождений `view_size_guide`. В `UserAction.ACTION_TYPES` (models.py:2042) его нет (26 типов, size-guide среди них отсутствует). Открытие таба `data-pdp-tab="size"` и клики по 3 ссылкам на `/rozmirna-sitka/` не трекаются ни серверно, ни в dataLayer. Задача TECH-005: добавить action_type `view_size_guide` + JS-пуш при первом открытии таба и клике по ссылкам (с product_id в metadata) — это даст сигнал «сомневается в размере» для ремаркетинга и приоритизации фикса из находки 1.
+
+### НАХОДКА 3 (P1, СЕО/UX, побочная — битые внутренние ссылки): SEO-блок «Найкращі ціни» ссылается на 404
+
+Обнаружено при live-обходе каталога: на страницах `/catalog/long-sleeve/`, `/catalog/hoodie/`, `/catalog/tshirts/` блок `seo-pricing` (таблица «Найкращі ціни на …») содержит по 8 ссылок вида `/product/{id}/` (например `/product/33/` «Лонгслів „Це Моя Посадка"») — **все 24 отдают HTTP 404** (роутинг принимает только slug: `product/<slug:slug>/`, numeric-id маршрута/редиректа нет).
+
+**Root cause (точный):** сид-миграция `storefront/migrations/0053_phase10b_seed_category_seo.py:384` записала в `CategorySeoBlockItem.url` значение `f"/product/{p.id}/"` с комментарием «view will rewrite to slug-based URL on render via Product hydration» — но обещанный rewrite так и не был реализован: сервис `category_seo_blocks.py::_hydrate_product_items` привязывает `item.product`, а шаблон `partials/category_seo_blocks.html:42` рендерит `href="{{ item.url|default:'#' }}"` — сырое значение из БД, а не `item.product.get_absolute_url`. Название при этом берётся из `item.product.title` (строка 43) — т.е. гидрация работает, но именно для URL не используется.
+
+**Эффект:** 24 битые внутренние ссылки на 3 ключевых категорийных страницах = слив внутреннего ссылочного веса на 404, плохой сигнал краулерам, тупик для пользователя, кликнувшего по цене. **Фикс — 1 строка шаблона:** `href="{% if item.product %}{{ item.product.get_absolute_url }}{% else %}{{ item.url|default:'#' }}{% endif %}"` (+ опционально data-миграция, переписывающая устаревшие `item.url`).
+
+### Что проверено и НЕ является проблемой
+
+- Для товаров С сеткой (20 худи, 17 футболок через catalog) таблица рендерится корректно: columns/rows/legend/notes из guide_data, `_serialize_image_payload` отдаёт width/height картинки против CLS (Phase 21).
+- Нормализация размеров `_normalize_size_value` схлопывает 2XL/XXL/X2L → XXL — дублей размеров не будет.
+- Доступность таба: role="tab"/aria-controls/aria-selected на кнопках табов корректны.
+- `resolve_product_size_context` вызывается в product-view с prefetch (catalog options/values, size_grids) — N+1 на резолвинге сетки нет.
+
+### Задачи исполнителю (из CRO-023)
+
+| # | Задача | Приоритет |
+|---|---|---|
+| 1 | Создать SizeGrid + пресет `longsleeve` (замеры — у владельца); привязать 19 лонгсливов к catalog; добавить longsleeve в `build_public_size_guide_blocks` | **P1** |
+| 2 | Фикс битых ссылок seo-pricing: шаблон category_seo_blocks.html:42 → `item.product.get_absolute_url` (24 ссылки × 404) | **P1** |
+| 3 | Привязать catalog оставшимся 5 худи и 7 футболкам (сейчас фолбэк без таблицы) | P2 |
+| 4 | TECH-005: action_type `view_size_guide` + трекинг открытия таба/кликов по size-guide ссылкам | P2 |
+| 5 | Удалить тестовый SizeGrid id=1 «Test Catalog - Hoodie» из боевой БД (артефакт) | P3 |
