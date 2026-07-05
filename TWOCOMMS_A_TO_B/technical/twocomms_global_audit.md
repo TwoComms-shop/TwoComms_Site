@@ -102,9 +102,9 @@
 
 ### 1.4 Мини-корзина и корзина
 
-- [ ] **CRO-030. Логика мини-корзины vs full-page корзины.** Где: `storefront/views/cart.py` (1850 строк — кандидат на декомпозицию), `accounts/cart_middleware.py`, `cart_models.py`, `cart_signals.py`, `cart_sync.py`, `pages/cart.html`. Что: описать в отчёте фактическую архитектуру (session-корзина + синхронизация в БД для залогиненных); проверить сценарии: добавил анонимно → залогинился → корзина слилась без дублей.
-- [ ] **CRO-031. Баги добавления/удаления.** Где: cart.py (AJAX-эндпоинты), JS в base.html/cart.html. Что: быстрый двойной клик «добавить» не создаёт 2 позиции; удаление последней позиции корректно обнуляет счётчик в шапке; смена количества пересчитывает сумму и промокод.
-- [ ] **CRO-032. Кэширование не ломает мини-корзину.** Где: `twocomms/cache_headers.py`, `twocomms/media_cache_middleware.py`, `cache_utils.py`, `storefront/cache_signals.py`. Что: страницы с корзиной/счётчиком не отдаются из полного page-cache другому пользователю; заголовки Cache-Control на HTML с динамикой = private/no-cache; счётчик корзины подтягивается AJAX-ом после загрузки кэшированной страницы.
+- [x] **CRO-030. Логика мини-корзины vs full-page корзины.** ✅ Аудит 05.07.2026: архитектура описана (session-корзина, цена всегда из `final_price`, UserCart + sha256-ревизия для залогиненных); мердж при логине без дублей (qty суммируются) подтверждён кодом; P2 — cart.py 1850 строк god-file, несогласованная очистка мёртвых товаров (summary/mini чистят, view_cart нет) → `audit_report_section1_cart.md` Где: `storefront/views/cart.py` (1850 строк — кандидат на декомпозицию), `accounts/cart_middleware.py`, `cart_models.py`, `cart_signals.py`, `cart_sync.py`, `pages/cart.html`. Что: описать в отчёте фактическую архитектуру (session-корзина + синхронизация в БД для залогиненных); проверить сценарии: добавил анонимно → залогинился → корзина слилась без дублей.
+- [x] **CRO-031. Баги добавления/удаления.** ✅ Аудит 05.07.2026 (live-тесты на бою): **P0 — «отравление корзины»: нечисловой `color_variant_id` в POST /cart/add/ принимается (200), после чего /cart/ и /cart/mini/ дают перманентный 500** (незащищённый `int()`; чинится только скрытым POST /cart/clean/); **P1 — двойной клик задваивает qty** (кнопка не блокируется, live: count 1→2) и дублирует пикс. события; P2 — нет потолка qty → `audit_report_section1_cart.md` Где: cart.py (AJAX-эндпоинты), JS в base.html/cart.html. Что: быстрый двойной клик «добавить» не создаёт 2 позиции; удаление последней позиции корректно обнуляет счётчик в шапке; смена количества пересчитывает сумму и промокод.
+- [ ] **CRO-032. Кэширование не ломает мини-корзину.** Где: `twocomms/cache_headers.py`, `twocomms/media_cache_middleware.py`, `cache_utils.py`, `storefront/cache_signals.py`. Что: страницы с корзиной/счётчиком не отдаются из полного page-cache другому пользователю; заголовки Cache-Control на HTML с динамикой = private/no-cache; счётчик корзины подтягивается AJAX-ом после загрузки кэширо��анной страницы.
 - [ ] **CRO-033. Событие add_to_cart — сервер + пиксели.** Где: cart.py (вызовы `record_add_to_cart`), `static` JS (fbq/ttq AddToCart). Что: одно добавление = ровно одно серверное UserAction + одно событие в каждый пиксель; протестировать вживую через Meta Test Events / TikTok Test Events.
 - [ ] **CRO-034. Кастом-принт позиции в корзине.** Где: `storefront/custom_print_config.py` (SESSION_CUSTOM_CART_KEY), checkout.py (split approved/pending). Что: pending-кастом не блокирует оформлен��е обычных товаров; UI корзины ясно объясняет, почему кастом «ждёт».
 - [ ] **CRO-035. Восстановление корзины.** Где: cart_middleware.py, отчёты `CART_RESTORATION_REPORT.md` (корень репо). Что: корзина переживает закрытие браузера для залогиненных; отчёт в корне числит фиксы «сделанными» — проверить фактически.
@@ -140,7 +140,7 @@
 
 - [ ] **AN-010. Pixel ID 823958313630148 — события клиента.** Где: base.html:12, `analytics-loader.js` (static). Что: PageView, ViewContent, AddToCart, InitiateCheckout, Purchase реально стреляют (Meta Pixel Helper); advanced matching div#am заполняется.
 - [ ] **AN-011. CAPI-события сервера.** Где: `orders/facebook_conversions_service.py` (850 строк: send_purchase_event, send_lead_event, send_add_payment_info_event, send_event_for_order_status). Что: события реально отправляются на боевом сервере (логи), access token валиден; retry-логика `_send_request_with_retry` не создаёт дублей.
-- [ ] **AN-012. Дедупликация Pixel↔CAPI.** Где: facebook_conversions_service.py (event_id), клиентский fbq-вызов, `META_PIXEL_CAPI_DEDUPE_IMPLEMENTATION.md` (корень). Что: одинаковый event_id в браузерном и серверном событии; в Events Manager дедуп подтверждён; EMQ зафиксировать в журнале. Это TECH-064 — числится сделанным, но не проверено.
+- [ ] **AN-012. Дедупликация Pixel↔CAPI.** Где: facebook_conversions_service.py (event_id), к��иентский fbq-вызов, `META_PIXEL_CAPI_DEDUPE_IMPLEMENTATION.md` (корень). Что: одинаковый event_id в браузерном и серверном событии; в Events Manager дедуп подтверждён; EMQ зафиксировать в журнале. Это TECH-064 — числится сделанным, но не проверено.
 - [x] **AN-013. fbc/fbp/fbclid доходят до CAPI.** ✅ Аудит 05.07.2026: P0 подтверждён — Order не хранит click-ID, COD не пишет `payment_payload.tracking`, а CAPI берёт `fbc/fbp` только из tracking payload; fbclid без UTM тоже может полностью теряться → `audit_report_section2_analytics.md`. Что: расширение TECH-060 — копировать/synthesize click-ID для любого заказа.
 - [ ] **AN-014. Offline-конверсии delivered.** Где: facebook_conversions_service.py::send_event_for_order_status, orders/status_management.py. Что: возможна ли отправка события по факту доставки; сейчас статусов shipped/delivered нет вообще (только done/cancelled) — блокируется TECH-070/071.
 - [ ] **AN-015. test_event_code изоляция.** Где: base.html (data-tiktok-test-event-code), настройки CAPI. Что: тестовые события не загрязняют бое��ую статистику (TECH-043).
@@ -248,7 +248,7 @@
 
 - [ ] **DB-001. Медленные запросы.** Где: сервер: MySQL slow query log (включён ли — спросить у владельца/hostsila), либо `connection.queries` при DEBUG на staging. Что: топ-10 медленных; кандидаты: отчёты utm_analytics (JOIN UserAction 36k строк), каталог.
 - [ ] **DB-002. Индексы под аналитические запросы.** Где: `storefront/models.py` (UserAction, UTMSession, SiteSession Meta.indexes). Что: составные индексы под частые фильтры (action_type+created, utm_session_id, session_key везде indexed); EXPLAIN ключевых отчётных запросов.
-- [ ] **DB-003. Целостность Order ↔ UTMSession ↔ User.** Где: живая БД. Что: после фикса CRO-041 — доля заказов с utm_session > 0; consistency-запрос: UserAction с order_id, у которого нет Order (осиротевшие записи).
+- [ ] **DB-003. Целостность Order ↔ UTMSession ↔ User.** Где: живая БД. Что: посл�� фикса CRO-041 — доля заказов с utm_session > 0; consistency-запрос: UserAction с order_id, у которого нет Order (осиротевшие записи).
 - [ ] **DB-004. Рост UserAction (36 859 строк).** Где: UserAction таблица. Что: политика retention (агрегировать записи старше 6–12 мес.); оценить размер таблицы (`SHOW TABLE STATUS`).
 - [ ] **DB-005. N+1 в админ-отчётах.** Где: `services/admin_analytics.py`, `utm_cohort_analysis.py`. Что: prefetch/annotate вместо циклов по объектам; время загрузки вкладки аналитики < 3s.
 - [ ] **DB-006. Charset/collation.** Где: MySQL: `SHOW CREATE TABLE` выборочно. Что: utf8mb4 везде (эмодзи в отзывах/поиске не падают).
@@ -279,7 +279,7 @@
 - [ ] **CB-013. Дублирующиеся static-директории img/ и images/.** Где: `static/img/` (12MB), `static/images/` (6.3MB). Что: карта использования (grep по шаблонам/CSS на `/static/img/` vs `/static/images/`); свести к одной; удалить неиспользуемые исходники (для многих PNG уже есть webp-версии рядом — PNG-оригиналы, вероятно, не отдаются).
 - [ ] **CB-014. dtf переопределяет collectstatic.** Где: `dtf/management/commands/collectstatic.py` + комментарий в INSTALLED_APPS «DTF app first to override collectstatic». Что: глобальный побочный эффект: ЛЮБОЙ collectstatic проходит через dtf-логику; проверить, что это не ломает деплой других приложений и задокументировать; рассмотреть переименование команды в `collectstatic_dtf`.
 - [ ] **CB-015. Мёртвые management-команды.** Где: 60+ команд в `*/management/commands/`. Что: сверить с crontab сервера: команды, которые не в cron и не в доках → кандидаты на удаление (например, `finance_seed_demo`, `notify_test_shops`, `parser_recovery_dry_run`); составить таблицу «команда → где вызывается → вердикт».
-- [ ] **CB-016. Пакеты-призраки в requirements.** Где: `requirements.txt` (81 строка). Что: для каждого пакета grep на импорт: кандидаты на неиспользуемые (django-ratelimit — TD-023 подтверждает 0 использований; google-analytics-data — AN-040). Удалять только после grep по ВСЕМУ коду включая scripts/.
+- [ ] **CB-016. ��акеты-призраки в requirements.** Где: `requirements.txt` (81 строка). Что: для каждого пакета grep на импорт: кандидаты на неиспользуемые (django-ratelimit — TD-023 подтверждает 0 использований; google-analytics-data — AN-040). Удалять только после grep по ВСЕМУ коду включая scripts/.
 
 ### 6.3 Качество кода (обработка ошибок, логирование, размер)
 
@@ -351,7 +351,7 @@
 
 - Найден баг → запись в журнал ниже: `дата | ID пункта | что найдено (факт, шаги воспроизведения) | severity P0–P2`.
 - Фикс → отдельная ветка/коммит `fix(ID): описание`, ссылка на PR в журнале, пункт → `[x]`.
-- Изменения в БД (миграции) — только после ревью владельцем; на бою сначала бэкап (TD-020).
+- Изменения в БД (миграции) — только пос��е ревью владельцем; на бою сначала бэкап (TD-020).
 - Данные для сверки брать ТОЛЬКО из живой MySQL через SSH (read-only), не из локальной SQLite.
 
 ## ЖУРНАЛ НАХОДОК И ВЫПОЛНЕНИЯ
