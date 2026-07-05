@@ -70,3 +70,4 @@
 |---|---|---|
 | 05.07.2026 | CRO-001 | Спорт-лексики нет; футболки первыми в title/subtitle/витрине — 2 правки шаблона + admin-reorder приоритетов |
 | 05.07.2026 | CRO-002 | P0-БАГ: на mobile ≤360px hero-CTA обрезаны (`base.html` hero-section height:60vh + overflow:hidden); desktop и все URL — OK; PWA-prompt закрывает 45% первого экрана |
+| 05.07.2026 | CRO-003 | Lab-базовая линия: LCP 1.78s (текст hero), CLS 0.00, TTFB mobile 518ms — зелёная зона; PSI field-замер — владельцу |
