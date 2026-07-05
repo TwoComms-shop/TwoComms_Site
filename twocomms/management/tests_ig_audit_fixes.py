@@ -1,6 +1,7 @@
 """Аудит-фікси IG-бота (Task 2): echo-гонка, неправильний товар у paylink,
 дубль замовлення, safety-net створення замовлення.
 """
+import json
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -52,6 +53,64 @@ class EchoChunkAndScopeTests(TestCase):
         for part in parts:
             bot._handle_echo("rcptX", part)
         self.assertFalse(IgClient.objects.get(igsid="rcptX").bot_paused)
+
+
+class SendApiErrorClassificationTests(TestCase):
+    def test_advanced_access_subcode_is_explicit(self):
+        body = json.dumps({
+            "error": {
+                "code": 200,
+                "error_subcode": bot.ADVANCED_ACCESS_SUBCODE,
+                "message": "App does not have advanced access for Instagram messages.",
+            }
+        })
+
+        kind, hint = bot._classify_send_error(403, body)
+
+        self.assertEqual(kind, "permanent")
+        self.assertIn("нерольового", hint)
+        self.assertIn("Advanced Access", hint)
+        self.assertIn("instagram_manage_messages", hint)
+
+    def test_messaging_window_subcode_is_explicit(self):
+        body = json.dumps({
+            "error": {
+                "code": 10,
+                "error_subcode": bot.MESSAGING_WINDOW_CLOSED_SUBCODE,
+                "message": "Messaging window closed.",
+            }
+        })
+
+        kind, hint = bot._classify_send_error(400, body)
+
+        self.assertEqual(kind, "permanent")
+        self.assertIn("24-годинне", hint)
+
+    @patch("management.services.instagram_bot.get_page_token", return_value="PT")
+    @patch("management.services.instagram_bot._http")
+    def test_send_text_persists_permanent_error_for_dashboard(self, mock_http, _mock_pt):
+        mock_http.return_value = (
+            403,
+            json.dumps({
+                "error": {
+                    "code": 200,
+                    "error_subcode": bot.ADVANCED_ACCESS_SUBCODE,
+                    "message": "App does not have advanced access for Instagram messages.",
+                }
+            }),
+        )
+        s = InstagramBotSettings.load()
+        s.last_error = ""
+        s.save(update_fields=["last_error"])
+
+        ok, kind, hint = bot.send_text(s, "nonrole1", "Привіт")
+
+        self.assertFalse(ok)
+        self.assertEqual(kind, "permanent")
+        self.assertIn("Advanced Access", hint)
+        s.refresh_from_db()
+        self.assertIn("Meta Send API", s.last_error)
+        self.assertIn("Advanced Access", s.last_error)
 
 
 class PaylinkProductTests(TestCase):

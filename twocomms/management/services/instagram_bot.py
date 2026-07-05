@@ -39,7 +39,7 @@ from management.models import (
     InstagramBotSettings,
 )
 
-GRAPH_VERSION = "v21.0"
+GRAPH_VERSION = "v25.0"
 GRAPH = f"https://graph.facebook.com/{GRAPH_VERSION}"
 GENAI = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -637,13 +637,23 @@ def _split_for_send(text: str, limit: int = 950, max_chunks: int = 4) -> list[st
 
 
 RATE_LIMIT_CODES = {4, 17, 32, 613, 80007}  # тимчасові ліміти — варто ретраїти
+ADVANCED_ACCESS_SUBCODE = 2534048
+MESSAGING_WINDOW_CLOSED_SUBCODE = 1545041
 PERMANENT_HINT = {
-    200: "немає Advanced Access на instagram_manage_messages (потрібен App Review) "
-         "АБО користувач не доданий у тестувальники застосунку",
+    200: "немає потрібного дозволу Meta для Instagram Messaging",
     190: "токен недійсний (онови DIRECT_API/IG_MARKER)",
-    10: "поза дозволеним вікном/політикою (24 год)",
+    10: "помилка дозволів або політики Meta",
     100: "некоректний параметр запиту",
+    551: "отримувач недоступний (блокування, деактивація або обмеження діалогу)",
 }
+
+
+def _graph_error(body: str) -> dict:
+    try:
+        err = json.loads(body).get("error", {}) or {}
+    except Exception:
+        return {}
+    return err if isinstance(err, dict) else {}
 
 
 def _classify_send_error(code: int, body: str) -> tuple[str, str]:
@@ -651,20 +661,59 @@ def _classify_send_error(code: int, body: str) -> tuple[str, str]:
     if code == -1 or code >= 500:
         return "transient", "тимчасова мережева/серверна помилка"
     ec = 0
+    sub = 0
     try:
-        ec = int(json.loads(body).get("error", {}).get("code", 0) or 0)
+        err = _graph_error(body)
+        ec = int(err.get("code", 0) or 0)
+        sub = int(err.get("error_subcode", 0) or 0)
     except Exception:
         ec = 0
+        sub = 0
     if ec in RATE_LIMIT_CODES:
         return "transient", "ліміт частоти (retry пізніше)"
-    return "permanent", PERMANENT_HINT.get(ec, f"відмова Graph API (code {ec})")
+    if sub == ADVANCED_ACCESS_SUBCODE:
+        return (
+            "permanent",
+            "Meta відхилила нерольового отримувача: немає Advanced Access на "
+            "instagram_manage_messages або отримувач не має ролі в застосунку",
+        )
+    if sub == MESSAGING_WINDOW_CLOSED_SUBCODE:
+        return (
+            "permanent",
+            "24-годинне вікно відповіді Meta закрите; потрібен дозволений message tag "
+            "або нове повідомлення від користувача",
+        )
+    suffix = f" (code {ec}, subcode {sub})" if sub else f" (code {ec})"
+    return "permanent", PERMANENT_HINT.get(ec, "відмова Graph API") + suffix
+
+
+def _remember_send_error(s: InstagramBotSettings, hint: str, *, code: int | None = None) -> None:
+    detail = f"Meta Send API: {hint}"
+    if code is not None:
+        detail += f" (HTTP {code})"
+    try:
+        s.last_error = detail[:1000]
+        s.save(update_fields=["last_error"])
+    except Exception:
+        pass
+
+
+def _clear_send_error(s: InstagramBotSettings) -> None:
+    try:
+        if (s.last_error or "").startswith("Meta Send API:"):
+            s.last_error = ""
+            s.save(update_fields=["last_error"])
+    except Exception:
+        pass
 
 
 def send_text(s: InstagramBotSettings, recipient_id: str, text: str) -> tuple[bool, str, str]:
     """Повертає (ok, kind, hint). kind: '' | 'transient' | 'permanent'."""
     page_token = get_page_token(s)
     if not page_token:
-        return False, "permanent", "немає page-token (перевірте DIRECT_API/IG_MARKER)"
+        hint = "немає page-token (перевірте DIRECT_API/IG_MARKER)"
+        _remember_send_error(s, hint)
+        return False, "permanent", hint
     parts = _split_for_send(text)
     if not parts:
         return False, "permanent", "порожня відповідь"
@@ -683,9 +732,12 @@ def send_text(s: InstagramBotSettings, recipient_id: str, text: str) -> tuple[bo
         code, resp = _http(f"{GRAPH}/{s.page_id}/messages?access_token={page_token}", data=body)
         if code == 200:
             ok_any = True
+            _clear_send_error(s)
             continue
         kind, hint = _classify_send_error(code, resp)
-        log("error", "send", f"HTTP {code} [{kind}] {hint}: {resp[:200]}")
+        if kind == "permanent":
+            _remember_send_error(s, hint, code=code)
+        log("error", "send", f"HTTP {code} [{kind}] {hint}: {resp[:900]}")
         return ok_any, kind, hint
     return True, "", ""
 
@@ -695,7 +747,9 @@ def send_text_tagged(s: InstagramBotSettings, recipient_id: str, text: str, tag:
     Потрібно для сповіщень поза 24-год вікном (напр. «замовлення відправлено»)."""
     page_token = get_page_token(s)
     if not page_token:
-        return False, "permanent", "немає page-token"
+        hint = "немає page-token"
+        _remember_send_error(s, hint)
+        return False, "permanent", hint
     parts = _split_for_send(text)
     if not parts:
         return False, "permanent", "порожня відповідь"
@@ -713,9 +767,12 @@ def send_text_tagged(s: InstagramBotSettings, recipient_id: str, text: str, tag:
         code, resp = _http(f"{GRAPH}/{s.page_id}/messages?access_token={page_token}", data=body)
         if code == 200:
             ok_any = True
+            _clear_send_error(s)
             continue
         kind, hint = _classify_send_error(code, resp)
-        log("error", "send_tag", f"HTTP {code} [{kind}] {hint}: {resp[:200]}")
+        if kind == "permanent":
+            _remember_send_error(s, hint, code=code)
+        log("error", "send_tag", f"HTTP {code} [{kind}] {hint}: {resp[:900]}")
         return ok_any, kind, hint
     return True, "", ""
 
