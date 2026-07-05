@@ -1,4 +1,4 @@
-# Аудит: Раздел 1 — Корзина (CRO-030, CRO-031, CRO-032)
+# Аудит: Раздел 1 — Корзина (CRO-030, CRO-031, CRO-032, CRO-033)
 
 Дата: 06.07.2026. Ветка: `v0/ai0xqw8fkc-5459-31d9823e`.
 
@@ -98,7 +98,7 @@
 | Сценарий | Статус | Детали |
 |----------|--------|--------|
 | Страница с корзиной/счётчиком не отдаётся из page-cache другому пользователю | ✅ (HTML корзины) / ❌ (CSRF-токен — см. баг №10) | Кэш только для анонимов; бейдж SSR=0 + AJAX. НО в закэшированном HTML остаётся **чужой `csrfmiddlewaretoken`** (формы language switcher в футере каждой страницы). |
-| Cache-Control на HTML с динамикой = private/no-cache | ⚠️ Частично | `/cart/` — ✅ no-store/private. Главная/каталог — **заголовка Cache-Control нет вообще** (live-замер), есть только `Vary: Cookie, Accept-Language, Accept-Encoding`. |
+| Cache-Control на HTML с динамикой = private/no-cache | ⚠️ Частично | `/cart/` — ✅ no-store/private. Главная/каталог — **заголовка Cache-Control нет ��ообще** (live-замер), есть только `Vary: Cookie, Accept-Language, Accept-Encoding`. |
 | Счётчик корзины подтягивается AJAX-ом после загрузки кэшированной страницы | ✅ (с оговорками) | `refreshCartSummary()` на DOMContentLoaded (`main.js:948-951`), пропускается только если localStorage-хинт = false (см. №13). |
 
 ### Найденные проблемы
@@ -124,3 +124,52 @@
 10. **P2:** `@never_cache` на `cart_summary` и `get_cart_count` (2 строки; вместе с фиксом «GET мутирует сессию» из CRO-030 №3).
 11. P3: удалить мёртвые `user_state_hint` (context_processors.py) и `twocomms/cache_views.py`.
 12. P3: явный `Cache-Control: private, no-cache` для HTML главной/каталога; fallback-fetch summary при отсутствии localStorage-хинта.
+
+---
+
+## CRO-033. Событие add_to_cart — сервер + пиксели
+
+Дата аудита: 06.07.2026. Проверено: `storefront/views/cart.py::add_to_cart` (841), `storefront/utm_tracking.py` (`record_add_to_cart` → `record_user_action`), `static/js/main.js` (delegated-handler 1669-1758, `trackAddToCartAnalytics` 1535-1667, `pushAddToCartEvent` 356-466), `static/js/ui-fallback.js` (window.AddToCart 339-423), `static/js/analytics-loader.js` (`trackEvent` 169-430: fbq/ttq/gtag/ym), `static/js/custom-print-configurator.js` (3288), `storefront/views/static_pages.py::custom_print_add_to_cart` (1558), grep по templates на inline `onclick="AddToCart"`.
+
+### Фактическая цепочка одного клика (задокументировано)
+
+```
+Клик [data-add-to-cart]
+  └─ main.js:1669 delegated click (пропускает кнопки с onclick — их в templates НЕТ, grep=0,
+     поэтому ui-fallback.js::AddToCart — мёртвая ветка, дублирования fetch нет)
+       └─ ровно 1 × POST /cart/add/
+            └─ сервер: ровно 1 × record_add_to_cart → 1 × UserAction(add_to_cart)
+               (analytics_exclusions фильтрует staff/админов; если session_key нет — создаёт)
+       └─ на d.ok: ровно 1 × trackAddToCartAnalytics(d, btn, qty)
+            ├─ trackEvent('AddToCart', payload+event_id)  [analytics-loader]
+            │    ├─ fbq('track','AddToCart', …, {eventID}) — 1 событие Meta Pixel
+            │    ├─ ttq.track('AddToCart', …, event_id)   — 1 событие TikTok
+            │    ├─ gtag('event','AddToCart') ЛИБО dataLayer.push({event:'AddToCart'})  ← см. баг №16
+            │    └─ ym reachGoal (если подключена)
+            └─ pushAddToCartEvent({eventId,…}) → dataLayer.push({event:'add_to_cart', ecommerce})  ← GA4-ecommerce
+```
+
+Соответствие чек-листу «одно добавление = ровно одно серверное UserAction + одно событие в каждый пиксель»: **Meta ✅, TikTok ✅, сервер ✅ (на уровне кода), GA4 ❌ (двойная запись в dataLayer, №16)**. Одинаковый `event_id` прокидывается во все каналы (fbq eventID / ttq event_id / dataLayer event_id) — задел под дедуп корректный.
+
+### Найденные проблемы
+
+| # | Приоритет | Проблема | Где | Детали |
+|---|-----------|----------|-----|--------|
+| 16 | **P2** | Один клик кладёт в dataLayer ДВА события: `AddToCart` и `add_to_cart` | `analytics-loader.js:344-353` (ветка gtag/dataLayer внутри `trackEvent`) + `main.js:1641-1655` (`pushAddToCartEvent`) | `trackEvent('AddToCart')` при отсутствии gtag пушит `{event:'AddToCart', eventParameters}` в dataLayer, а при наличии gtag шлёт `gtag('event','AddToCart')` — нестандартное имя попадает в GA4 как custom event. Следом `pushAddToCartEvent` пушит канонический GA4-ecommerce `add_to_cart`. Если в GTM есть триггеры на оба имени (проверить контейнер!) — двойной счёт ATC в GA4; как минимум — мусорный custom event `AddToCart` в отчётах. `event_id` у обоих одинаковый, но GA4 по event_id НЕ дедуплицирует. Фикс: в `trackEvent` исключить GA/GTM-ветку для событий, у которых есть отдельный ecommerce-пуш (AddToCart/InitiateCheckout/Purchase…), либо маппить имя в каноническое и убирать `pushAddToCartEvent`. |
+| 17 | **P2** | Server-side дедуп-пары нет: `event_id` генерится, но Meta CAPI/TikTok Events API с сервера не отправляются вообще | grep по `*.py`: 0 вызовов graph.facebook / conversions — весь трекинг только браузерный | При блокировщиках (uBlock режет и fbq, и ttq, и GTM) добавление фиксируется ТОЛЬКО в UserAction — пиксели слепнут. Это прямой кандидат в объяснение аномалии воронки 36009 views → 44 ATC (CRO-051): реальные ATC теряются на клиенте. Инфраструктура под дедуп уже готова (`event_id` в payload). Рекомендация: серверный CAPI-вызов из `add_to_cart` view с тем же event_id (передавать его с клиента или генерить на сервере и возвращать в JSON). |
+| 18 | **P2 (связка с CRO-031 №5)** | Двойной клик = 2 UserAction + 2 события в каждый пиксель с РАЗНЫМИ event_id | `main.js:1669` (нет in-flight guard) + `cart.py:841` (нет серверного дедупа) | Каждый POST честно пишет UserAction и триггерит полный каскад пикселей; event_id разные → ни Meta, ни TikTok не склеят. Фикс двойного клика из CRO-031 закрывает и это. |
+| 19 | **P3** | Кастом-принт: пиксели получают AddToCart, а серверная воронка — нет | `custom-print-configurator.js:3288` (`trackEvent('AddToCart', cartPayload)`) vs `static_pages.py::custom_print_add_to_cart` (только `record_custom_print_event`, `record_add_to_cart` НЕ вызывается) | Расхождение сервер/пиксели: в UserAction-воронке кастомные добавления невидимы как add_to_cart → занижает серверный ATC и ломает сверку пиксели↔БД (CRO-050). Решить осознанно: либо писать add_to_cart с metadata `{custom_print: true}`, либо задокументировать исключение. |
+| 20 | P3 | TikTok: события до готовности пикселя уходят в очередь-заглушку без гарантии доставки | `analytics-loader.js:374-378` (`isTikTokReady` требует `_ttqLoaded && _ttqScriptLoaded`) | Если скрипт TikTok ещё грузится, ttq — стаб-очередь; отдельные ветки кладут событие в буфер, но ранний ATC (быстрый клик на PDP из кэша) может уйти до `ttq.page()` → недоучёт. Проверяется только вживую через TikTok Test Events. |
+
+### Что требует живой проверки (вне sandbox — нужен доступ к кабинетам)
+
+- **Meta Test Events:** один клик по «В кошик» на PDP → должен прийти ровно 1 браузерный AddToCart с event_id; проверить, что событий-дублей от GTM-контейнера нет.
+- **TikTok Test Events:** то же + сценарий «клик в первые 2 секунды после загрузки страницы» (баг №20).
+- **GTM-контейнер:** есть ли триггеры одновременно на `AddToCart` и `add_to_cart` (баг №16 — решает, двойной это счёт или просто мусор).
+
+### Рекомендации (порядок внедрения)
+
+13. **P2:** убрать GA/GTM-ветку из `trackEvent` для ecommerce-событий с отдельным dataLayer-пушем (№16) — 1 условие в analytics-loader.js.
+14. **P2:** серверный Meta CAPI (и опционально TikTok Events API) для add_to_cart с тем же event_id (№17) — вместе с purchase/lead из CRO-043/045, чтобы строить один модуль.
+15. **P2:** in-flight guard на `[data-add-to-cart]` (уже рекомендация №4 CRO-031) закрывает №18.
+16. P3: `record_add_to_cart(metadata={'custom_print': True})` в `custom_print_add_to_cart` (№19).
