@@ -114,8 +114,8 @@ def create_order(request):
         phone = normalize_checkout_phone(raw_phone)
         city = delivery_selection.city
         np_office = delivery_selection.np_office
-        # Guest form has no pay_type field: "order as guest" means pay on delivery.
-        # Online payments go through the Monobank button (JS flow) instead.
+        # Direct guest-form submits are a fallback; online payments are started
+        # by the Monobank button, which creates its own order and invoice.
         pay_type = request.POST.get('pay_type', 'cod')
         customer_email = (request.POST.get('email') or '').strip()
 
@@ -136,10 +136,8 @@ def create_order(request):
         )
         return redirect('cart')
 
-    # Online payments are handled by the Monobank button (JS flow) which creates
-    # its own order + invoice from the cart. This form fallback only supports
-    # pay-on-delivery orders, so redirect online pay types back to the cart
-    # instead of creating an unpaid order without an invoice.
+    # Avoid creating an unpaid online order from a plain form submit. The
+    # Monobank button handles online order creation and invoice generation.
     if pay_type in ('online_full', 'prepay_200', 'full', 'partial'):
         messages.info(
             request,

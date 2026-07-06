@@ -1282,7 +1282,7 @@ def remove_promo_code(request):
 
 def cart_summary(request):
     """
-    Краткая сводка корзины для обновления ��ейджа (AJAX).
+    Краткая сводка корзины для обновления бейджа (AJAX).
 
     Returns:
         JsonResponse: {ok, count, total}
