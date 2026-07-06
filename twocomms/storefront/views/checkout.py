@@ -20,7 +20,11 @@ from .utils import (
     clear_cart,
 )
 # from .cart import clear_cart
-from .monobank import monobank_create_invoice
+from ..utm_tracking import (
+    link_order_to_utm,
+    record_initiate_checkout,
+    record_order_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +114,9 @@ def create_order(request):
         phone = normalize_checkout_phone(raw_phone)
         city = delivery_selection.city
         np_office = delivery_selection.np_office
-        pay_type = request.POST.get('pay_type', 'online_full')
+        # Guest form has no pay_type field: "order as guest" means pay on delivery.
+        # Online payments go through the Monobank button (JS flow) instead.
+        pay_type = request.POST.get('pay_type', 'cod')
         customer_email = (request.POST.get('email') or '').strip()
 
     if raw_phone and not phone:
@@ -127,6 +133,17 @@ def create_order(request):
         messages.error(
             request,
             _("Передплата 200 грн недоступна з кастомним принтом. Оберіть повну онлайн-оплату.")
+        )
+        return redirect('cart')
+
+    # Online payments are handled by the Monobank button (JS flow) which creates
+    # its own order + invoice from the cart. This form fallback only supports
+    # pay-on-delivery orders, so redirect online pay types back to the cart
+    # instead of creating an unpaid order without an invoice.
+    if pay_type in ('online_full', 'prepay_200', 'full', 'partial'):
+        messages.info(
+            request,
+            _("Для онлайн-оплати скористайтеся кнопкою оплати Monobank у кошику.")
         )
         return redirect('cart')
 
@@ -154,12 +171,14 @@ def create_order(request):
                 email=normalized_email,
                 city=city,
                 np_office=np_office,
+                session_key=request.session.session_key,
                 pay_type=pay_type,
                 status='new',
                 payment_status='unpaid'
             )
             apply_nova_poshta_refs(order, delivery_refs)
             order.save()
+            link_order_to_utm(request, order)
 
             # Брошенная корзина «спасена» — больше не дёргаем покупателя.
             try:
@@ -248,11 +267,17 @@ def create_order(request):
                 request.session[SESSION_CUSTOM_CART_KEY] = remaining
                 request.session.modified = True
 
-            # Handle Payment
-            if pay_type in ['online_full', 'prepay_200']:
-                return monobank_create_invoice(request, order.id)
-
-            # COD or other
+            # Funnel analytics: checkout initiated + lead.
+            # Online pay types never reach this point (redirected above), so the
+            # confirmed pay-on-delivery order is the lead.
+            record_initiate_checkout(request, float(order.total_sum))
+            record_order_action(
+                'lead',
+                order,
+                request=request,
+                cart_value=float(order.total_sum),
+                metadata={'pay_type': pay_type},
+            )
             return redirect('order_success', order_id=order.id)
 
     except Exception as e:

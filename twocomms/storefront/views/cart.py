@@ -524,7 +524,7 @@ def view_cart(request):
                 messages.error(request, _('Будь ласка, увійдіть, щоб зберегти дані доставки.'))
         elif form_type == 'guest_order':
             from storefront import views as legacy_views
-            return legacy_views.process_guest_order(request)
+            return legacy_views.create_order(request)
         elif form_type == 'order_create':
             from storefront import views as legacy_views
             return legacy_views.order_create(request)
@@ -1282,7 +1282,7 @@ def remove_promo_code(request):
 
 def cart_summary(request):
     """
-    Краткая сводка корзины для обновления бейджа (AJAX).
+    Краткая сводка корзины для обновления ��ейджа (AJAX).
 
     Returns:
         JsonResponse: {ok, count, total}
