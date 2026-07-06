@@ -6875,8 +6875,8 @@ msgstr "The second sleeve counts as a separate paid zone."
 msgid "Текст для правого рукава"
 msgstr "Text for the right sleeve"
 
-msgid "Наприклад: EST. 2014"
-msgstr "For example: EST. 2014"
+msgid "Наприклад: EST. 2022"
+msgstr "For example: EST. 2022"
 
 msgid "Далі до макета"
 msgstr "Next: layout"
