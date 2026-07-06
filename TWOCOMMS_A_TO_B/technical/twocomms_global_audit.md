@@ -111,7 +111,7 @@
 
 ### 1.5 Чекаут
 
-- [x] **CRO-040. Полный прогон COD-чекаута.** ✅ Аудит 06.07.2026: **P0 — полноценный guest COD отсутствует/сломан**: в UI корзины нет `cod` и нет submit-кнопки COD, только Monobank Pay; ручной live-submit `form_type=guest_order` с валидными NP signed tokens даёт HTTP 500 (`process_guest_order` отсутствует после refactor), заказ не создаётся; NP lookup живой, phone validation живая только на прямом `/orders/create/`; AddToCart даёт CSP console errors Google Ads `www.google.com.ua/pagead` → `audit_report_checkout_critical.md` Где: `storefront/views/checkout.py::create_order`, https://twocomms.shop/ (тестовый заказ с пометкой). Что: минимальный набор полей, валидация телефона (`normalize_checkout_phone`), Нова Пошта подбор отделени�� (`orders/nova_poshta_*`); 0 JS-ошибок в консоли на всём пути.
+- [x] **CRO-040. Полный прогон COD-чекаута.** ✅ Аудит 06.07.2026: **P0 — полноценный guest COD отсутствует/сломан**: в UI корзины нет `cod` и нет submit-кнопки COD, только Monobank Pay; ручной live-submit `form_type=guest_order` с валидными NP signed tokens даёт HTTP 500 (`process_guest_order` отсутствует после refactor), заказ не создаётся; NP lookup живой, phone validation живая только на прямом `/orders/create/`; AddToCart даёт CSP console errors Google Ads `www.google.com.ua/pagead` → `audit_report_checkout_critical.md` Где: `storefront/views/checkout.py::create_order`, https://twocomms.shop/ (тестовый заказ с пометкой). Что: минимальный набор полей, валидация телефона (`normalize_checkout_phone`), Нова Пошта подбор отделени�� (`orders/nova_poshta_*`); 0 JS-ошибок в консоли на всём пу��и.
 - [x] **CRO-041. КРИТИЧНО: COD-заказ не пишет UTM.** ✅ Аудит 05.07.2026: P0 подтверждён кодом+БД; `checkout.py::create_order` не вызывает `link_order_to_utm`/`record_order_action`, COD-заказы не пишут `session_key`, а `link_order_to_utm` не срабатывает и в monobank-потоке без fallback на session/visitor_id → `audit_report_section1_cro.md`. Что: TECH-060 — единая UTM-привязка любого заказа + fallback-цепочка.
 - [x] **CRO-042. is_converted никогда не проставляется.** ✅ Аудит 05.07.2026: P0 подтверждён — 0/1015 UTMSession converted; `record_purchase` фактически мёртв, а `record_lead`/`record_order_action` не находят UTMSession из-за разрыва session_key/utm_session → `audit_report_section1_cro.md`. Что: TECH-061 — конверсия через order/visitor/session fallback после фикса CRO-041.
 - [x] **CRO-043. Monobank-поток: вебхук и статусы.** ✅ Аудит 06.07.2026: проверено и отмечено в отчёте → `audit_report_payment_security.md`; идемпотентность `purchase` при повторном success в основном выдержана (DB: repeated success в history, но purchase-дублей по order_id нет); **P0: подпись webhook НЕ проверяется**, основной webhook доверяет body; **P0: `monobank_return` использует unsafe fallback `status_value or 'success'`**; failure не ведёт на `order_failed.html`, а возвращает в `/cart/` с message, cart не очищается до success. Где: `storefront/monobank.py`, `storefront/views/monobank.py` (986 строк вызова record_lead). Что: вебхук идемпотентен (повторный callback не создаёт второй purchase-event); подпись вебхука проверяется; отказ оплаты ведёт на `order_failed.html` с восстановимой корзиной.
@@ -134,7 +134,7 @@
 - [ ] **AN-001. Инвентаризация GTM-контейнера GTM-PRLLBF9H.** Где: base.html:973–992, GTM-интерфейс (доступ у владельца). Что: список всех тегов/триггеров/переменных; мёртвые теги; дубли GA4-событий (сервер+клиент).
 - [ ] **AN-002. От��оженный GTM vs paid-трафик.** Где: base.html (interaction-триггер + таймаут 12–20s, `isPassiveAnalytics`). Что: см. CRO-004; вариант — форсировать немедленную загрузку при наличии utm_*/fbclid/gclid/ttclid в URL.
 - [ ] **AN-003. GA4-события воронки.** Где: GTM + GA4 DebugView. Что: view_item, add_to_cart, begin_checkout, add_shipping_info, add_payment_info, purchase с items[] и value/currency; параметр payment_type (cod/prepay) — TECH-007.
-- [ ] **AN-004. Internal/staff-трафик исключён.** Где: `storefront/analytics_exclusions.py` (is_request_excluded), GA4-фильтры. Что: staff-пользователи и офисные IP не пишутся ни в UserAction, ни в GA4 (проверить оба слоя).
+- [x] **AN-004. Internal/staff-трафик исключён.** ✅ Аудит 06.07.2026 (код-слой): серверные писатели покрыты все 3, но `is_staff` НЕ исключается автоматически (нужны ручные правила в AnalyticsExclusion), клиентские пиксели не покрыты вовсе; остаток — count() правил в проде по SSH → `audit_report_section2_analytics.md` Где: `storefront/analytics_exclusions.py` (is_request_excluded), GA4-фильтры.
 
 ### 2.2 Meta Pixel + CAPI
 
@@ -148,20 +148,20 @@
 ### 2.3 TikTok Pixel
 
 - [ ] **AN-020. TikTok Pixel D43L7DBC77UA61AHLTVG.** Где: base.html:13, analytics-loader.js, `orders/tiktok_events_service.py` (308 строк). Что: клиентские события ViewContent/AddToCart/InitiateCheckout/CompletePayment стреляют; серверные события из tiktok_events_service реально отправляют��я; дедуп event_id клиент↔сервер.
-- [ ] **AN-021. ttclid сквозной путь.** Где: utm_middleware.py PLATFORM_PARAMS → session → (разрыв) → Order. Что: как AN-013, но для TikTok.
+- [x] **AN-021. ttclid сквозной путь.** ✅ Аудит 06.07.2026: разрыв подтверждён — ttclid доезжает до TikTok CAPI только у monobank (`payment_payload.tracking` пишется одним monobank.py:972); COD-заказы без клик-ID; `UTMSession.ttclid` лежит в БД, но сервисами не читается — fallback описан → `audit_report_section2_analytics.md`
 
 ### 2.4 UTM-механика
 
-- [ ] **AN-030. UTM переживает всю воронку.** Где: `storefront/utm_middleware.py` (session['utm_data']). Что: UTM из первого URL доступн�� на чекауте после 30+ минут и переходов; проверить SESSION_COOKIE_AGE и не рвётся ли session_key при логине (`django.contrib.auth.login` меняет session_key — UTMSession привязана к старому ключу! Проверить `cycle_key` эффект).
+- [x] **AN-030. UTM переживает всю воронку.** ✅ Аудит 06.07.2026: два хранилища — session['utm_data'] переживает логин, но `link_order_to_utm` его НЕ читает (только UTMSession по session_key → рвётся при логине = AN-031); оба пути заказа (COD+monobank) линкуются; фиксы объединить с AN-031 → `audit_report_section2_analytics.md`
 - [x] **AN-031. КРИТИЧНО: смена session_key при логине рвёт связку.** ✅ Аудит 05.07.2026: подтверждён кодом — `login()` вызывает `cycle_key`, данные сессии переживают логин, но `UTMSession.session_key` не мигрируется; lookup по новому ключу даёт `DoesNotExist` → `audit_report_section2_analytics.md`. Что: искать/перепривязывать по `visitor_id` и fallback на `session['utm_data']`.
 - [ ] **AN-032. Нормализация utm_source.** Где: живая БД: 'ig' (198), 'Instagram' (128), 'IGShopping' (6), 'Inst_Vid' (10) — 4 написания одного канала; 'fb'/'fb-SiteLink'; '120233970682840302' (сырой ad id). Что: словарь нормализации при записи или на уровне отчётов; UTM governance-конвенция (TECH-009).
 - [ ] **AN-033. AI-источники как отдельный канал.** Где: БД: utm_source='chatgpt.com' 109 сессий + referrer chatgpt.com 18. Что: детект chatgpt.com/perplexity.ai/gemini/claude.ai по utm и referrer → канал «AI» в отчётах (TECH-065).
 - [ ] **AN-034. Кэш не сбрасывает UTM.** Где: cache_headers.py, whitenoise, hosting-кэш (Hostsila/LiteSpeed?). Что: страница с `?utm_...` не отдаётся из кэша без прохода через UTMTrackingMiddleware; проверить, что HTML с query-параметрами — MISS или что мидлварь стоит до кэш-слоя.
 - [x] **AN-035. Бот-фильтр фактически мёртв.** ✅ Аудит 05.07.2026: подтверждён механизм — `SiteSession.is_bot=True` не появляется из-за early return, а `record_user_action` пишет product_view без бот-фильтра; 34k+ product_view без SiteSession раздувают метрики → `audit_report_section2_analytics.md`. Что: TECH-063 — единый bot-detect и фильтрация UserAction.
-- [ ] **AN-036. increment_visit на каждый запрос без UTM.** Где: utm_middleware.py (ветка `else: utm_session.increment_visit()`). Что: КАЖДЫЙ запрос любой страницы делает SELECT+UPDATE UTMSession — нагрузка и искажение visit_count (это pageviews, не визиты); оценить и переработать.
-- [ ] **AN-037. Атрибуционная модель first/last touch.** Где: utm_middleware.py — при новом UTM существующая сессия НЕ обновляет utm_* (get_or_create только defaults). Что: задокументировать фактическую модель (first-touch в рамках session_key); решить, нужен ли last-touch слой; `analytics_first_touch_data` в SiteSession — сверить консистентность.
+- [x] **AN-036. increment_visit на каждый запрос без UTM.** ✅ Аудит 06.07.2026: подтверждено — SELECT+UPDATE на каждый pageview (обе ветки); visit_count = pageview-счётчик; фикс: time-window 30 мин → `audit_report_section2_analytics.md`
+- [x] **AN-037. Атрибуционная модель first/last touch.** ✅ Аудит 06.07.2026: несогласованность вскрыта — session-слой перезаписывается (last touch), UTMSession игнорирует новые UTM (first touch, следствие get_or_create); заказы фактически first-touch; рекомендация first_touch_*/last_touch_* поля → `audit_report_section2_analytics.md`
 - [ ] **AN-038. Отчётность UTM в админке.** Где: `storefront/utm_analytics.py`, `utm_api_views.py`, `utm_cohort_analysis.py`, `storefront/admin_analytics_api.py`, `storefront/services/admin_analytics.py`, вкладка в админ-панели `/admin-panel/` (pages/admin_panel.html). Что: цифры вкладки сходятся с прямыми запросами к БД; отчёт «источник → сессии → конверсии» сейчас покажет 0 конверсий везде (следствие CRO-041/042) — после фикса перепроверить; экспорт работает.
-- [ ] **AN-039. Событие search и PII.** Где: utm_tracking.py::record_search (пишет query в metadata). Чт��: query не содержит телефонов/email (санитизация); 181 запись — просмотреть выборку на PII.
+- [x] **AN-039. Событие search и PII.** ✅ Аудит 06.07.2026 (код-слой): сырой query пишется без обрезки/маскировки; риск низкий (товарный поиск), фикс-однострочник описан; остаток — выборка 181 записи на PII по SSH → `audit_report_section2_analytics.md`
 - [ ] **AN-040. GA-Data API интеграция.** Где: requirements (google-analytics-data), `storefront/services/external_analytics.py`. Что: используется ли реально; ключ сервис-аккаунта не в репозитории; если не используется — кандидат на удаление.
 
 ### 2.5 Consent и приватность
@@ -171,7 +171,7 @@
 
 ---
 
-## РАЗДЕЛ 3. ТЕХНИЧЕСКОЕ СОСТОЯНИЕ И ТЕХ. ДОЛГ
+## РАЗДЕЛ 3. ТЕХНИЧЕСКОЕ СОСТОЯНИ�� И ТЕХ. ДОЛГ
 
 ### 3.1 Мёртвый код и файлы
 
@@ -223,8 +223,8 @@
 - [ ] **SEO-006. Битые внутренние ссылки и 410.** Где: `404.html`, `410.html`, GSC (доступ у владел��ца), краулинг site (screaming frog/линк-чекер по sitemap). Что: внутренних 404 нет; удалённые товары отдают 410 или redirect на категорию.
 - [ ] **SEO-007. Мета-титлы/дескрипшены из БД.** Где: `storefront/seo_utils.py`, `services/product_seo_autofill.py`, `product_seo_block.py`, `category_seo_blocks.py`; БД (meta-поля Product/Category). Что: у всех 68 товаров �� категорий заполнены уникальные title/description; длина title ≤ 60, description 120–160; нет шаблонного дубляжа.
 - [ ] **SEO-008. Google Merchant feed.** Где: `google_merchant_feed.xml` (корень twocomms/ — статический файл!), `storefront/feeds.py`, `services/marketplace_feeds.py`, `AUTO_GOOGLE_MERCHANT_FEED_UPDATE.md`. Что: фид генерируется автоматически или лежит уста��евший статикой; цены/наличие в фиде = БД; фид отдаётся по URL и принят в Merchant Center.
-- [ ] **SEO-009. IndexNow и Google Indexing.** Где: `services/indexnow.py`, `services/google_indexing.py`. Что: ключи валид��ы, реально дергаются при публикации/изменении; не спамят при массовых пересохранениях.
-- [ ] **SEO-010. Скорость как ранж-фактор.** Где: см. CRO-003; каталог и карточка тоже. Что: CWV зелёные на 3 ключевых шаблонах mobile (TECH-040).
+- [ ] **SEO-009. IndexNow и Google Indexing.** Где: `services/indexnow.py`, `services/google_indexing.py`. Что: ключи валид��ы, реально дергаются пр�� публикации/изменении; не спамят при массовых пересохранениях.
+- [ ] **SEO-010. Скорость как ранж-фактор.** Где: см. CRO-003; каталог и карточк�� тоже. Что: CWV зелёные на 3 ключевых шаблонах mobile (TECH-040).
 
 ### 4.2 Structured Data (Schema.org)
 
@@ -360,7 +360,7 @@
 |---|---|---|---|---|
 | 06.07.2026 | CRO-045 | Матрица purchase-моментов (4 слоя × 3 потока): **P0 — COD-покупку видит только Meta CAPI через NP-крон; GA4/TikTok/UserAction — никогда**; живой писатель UserAction purchase — `record_order_action` (monobank.py:1241, paid+prepaid), `record_purchase` мёртв; внутренний lead = создание инвойса до оплаты; prepaid = полная сумма во всех слоях, refund-событий нет; TikTok paid без pre-check дедупа; целевое определение для TECH-066 зафиксировано | P0 done | audit_report_checkout_critical.md |
 | 06.07.2026 | CRO-046 | **P0: COD-чекаут — промокод не применяется никогда** (мёртвый ключ сессии + несуществующие поле/метод в checkout.py:224-235; клиент видит скидку, платит полную сумму); **P0: per-user/групповые лимиты промо не работают** (`record_usage` — 0 call-sites, PromoCodeUsage пуст); P1: завышенный остаток при prepay_200+промо, лимит сжигается при создании инвойса; P2: `coupon_apply` события нет (TECH-023); ошибки apply-endpoint — понятные (требование пункта ок) | P0 done | audit_report_checkout_critical.md |
-| 06.07.2026 | CRO-047 | Базовые требования ОК (пустая корзина, atomic, нет 500); **P1: исчезнувший товар молча выбрасывается из заказа (оба пути); COD без guard total_sum<=0 → заказ на 0 грн возможен; складского контроля нет как класса**; P2: внешний Monobank API + clear_cart внутри atomic (потеря корзины без заказа при сбое, cached_db сессии не откатываются); P3: стаб monobank_webhook | P1 done | audit_report_checkout_critical.md |
+| 06.07.2026 | CRO-047 | Базовые требо��ания ОК (пустая корзина, atomic, нет 500); **P1: исчезнувший товар молча выбрасывается из заказа (оба пути); COD без guard total_sum<=0 → заказ на 0 грн возможен; складского контроля нет как класса**; P2: внешний Monobank API + clear_cart внутри atomic (потеря корзины без заказа при сбое, cached_db сессии не откатыва��тся); P3: стаб monobank_webhook | P1 done | audit_report_checkout_critical.md |
 | 05.07.2026 | CRO-041 | Аудит выполнен: COD не пишет UTM/session_key, `link_order_to_utm` не имеет достаточного fallback даже для monobank; TECH-060 детализирован | P0 done | audit_report_section1_cro.md |
 | 05.07.2026 | CRO-042 | Аудит выполнен: 0/1015 converted; причина — COD без трекинга + lookup UTMSession по одному session_key; TECH-061 детализир��ван | P0 done | audit_report_section1_cro.md |
 | 05.07.2026 | TD-033 | Аудит выполнен: 28/28 CustomPrintLead `new`, смена статуса не встроена в процесс, связки с заказами нет; TECH-062 детализирован | P0 done | audit_report_section3_techdebt.md |

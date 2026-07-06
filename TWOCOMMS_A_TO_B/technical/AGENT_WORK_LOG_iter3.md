@@ -37,10 +37,19 @@ CRO-050 (сквозной тест-прогон с тестовым заказо
 - **TD-006 ✅** — 48 stubs, admin_store_* дают фейковый ok; объединить с TD-001; monobank quick CRITICAL уже в audit_report_legacy_stubs.md.
 - **TD-007 ✅** — карта аналитики: tracking.py (PageView/SiteSession, 2 middleware), utm_tracking (UserAction/UTMSession), ai_signals — активны; **ab_testing.py мёртв (0 импортов)**. Остаток: PageView.count() по SSH.
 
+- **AN-004 ✅** — серверный слой исключений (AnalyticsExclusion, 5 типов правил) покрывает все 3 писателя (tracking.py:161, utm_middleware.py:67, record_user_action:51), но is_staff НЕ авто-исключается и клиентские пиксели не покрыты. Отчёт: audit_report_section2_analytics.md.
+- **AN-021 ✅** — ttclid доезжает до TikTok CAPI только через `order.payment_payload['tracking']`, который пишется ТОЛЬКО в monobank.py:972 (tracking_context строится в строках 871–966: fbp/fbc/ttclid cookies + IP + UA). COD (`checkout.py create_order`) tracking не пишет. `UTMSession.ttclid` сервисами не читается.
+- **AN-030 ✅** — link_order_to_utm (utm_tracking.py:330) линкует строго по UTMSession(session_key); session['utm_data'] переживает логин, но не используется как fallback. Вызовы: checkout.py:179, monobank.py:584.
+- **AN-036 ✅** — increment_visit в ОБЕИХ ветках (else-ветка utm_middleware.py:117–128 и update-ветка ~:215) = SELECT+UPDATE каждый pageview; visit_count = pageviews.
+- **AN-037 ✅** — session-слой last touch (перезапись :103), UTMSession first touch (get_or_create defaults); заказы фактически first-touch.
+- **AN-039 ✅** (код-слой) — record_search (utm_tracking.py:226) пишет сырой query; фикс: truncate+маска. Остаток: SSH-выборка 181 записи.
+
 ### Незакрытые хвосты для SSH-сеанса (батчить в 1 подключение!)
 1. `PageView.objects.count()` (TD-007), `UserAction` by type (CRO-051 базовая линия).
-2. Удаление celery.log НЕ делать (мы read-only) — только зафиксировано в отчёте.
-3. SSH дважды сброшен 06.07 (kex reset) — пауза 45s не помогла; пробовать паузы 3–5 мин, все запросы в одном heredoc.
+2. `AnalyticsExclusion.objects.count()` + список правил (AN-004 остаток).
+3. Выборка UserAction search-запросов на PII (AN-039 остаток): `UserAction.objects.filter(action_type='search').values_list('metadata', flat=True)[:50]`.
+4. Удаление celery.log НЕ делать (мы read-only) — только зафиксировано в отчёте.
+5. SSH дважды сброшен 06.07 (kex reset) — пауза 45s не помогла; пробовать паузы 3–5 мин, все запросы в одном heredoc.
 
 ## ЧТО ДЕЛАТЬ СЛЕДУЮЩЕМУ АГЕНТУ
 
