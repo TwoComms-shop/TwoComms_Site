@@ -210,7 +210,7 @@ class TikTokEventsService:
         """Собирает полный payload для TikTok Events API."""
         context: Dict[str, Any] = {
             'page': {
-                'url': source_url or f"https://twocomms.com/orders/{order.order_number}/"
+                'url': source_url or f"https://twocomms.shop/orders/{order.order_number}/"
             }
         }
 
