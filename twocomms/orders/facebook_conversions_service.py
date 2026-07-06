@@ -558,7 +558,7 @@ class FacebookConversionsService:
                 user_data=user_data,
                 custom_data=custom_data,
                 action_source=self.ActionSource.WEBSITE,
-                event_source_url=source_url or f"https://twocomms.com/orders/{order.order_number}/"
+                event_source_url=source_url or f"https://twocomms.shop/orders/{order.order_number}/"
             )
 
             event_request = self.EventRequest(
@@ -659,7 +659,7 @@ class FacebookConversionsService:
                 user_data=user_data,
                 custom_data=custom_data,
                 action_source=self.ActionSource.WEBSITE,
-                event_source_url=source_url or f"https://twocomms.com/orders/{order.order_number}/"
+                event_source_url=source_url or f"https://twocomms.shop/orders/{order.order_number}/"
             )
 
             # Создаем запрос
@@ -776,7 +776,7 @@ class FacebookConversionsService:
                 user_data=user_data,
                 custom_data=custom_data,
                 action_source=self.ActionSource.WEBSITE,
-                event_source_url=source_url or f"https://twocomms.com/orders/{order.order_number}/"
+                event_source_url=source_url or f"https://twocomms.shop/orders/{order.order_number}/"
             )
 
             # Создаем запрос
