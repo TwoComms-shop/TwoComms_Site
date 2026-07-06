@@ -65,7 +65,7 @@
 2. **БД: 28/28 лидов в статусе `new`** — ни один вручную не переведён. При этом эндпоинт смены статуса СУЩЕСТВУЕТ: `admin_custom_print_lead_status` (storefront/views/admin.py:1327, POST, staff-only) и счётчики new/in_progress/closed выводятся в staff-панели (admin.py:874–876). Вывод: интерфейс есть, но им не пользуются (не видна ценность/не встроено в процесс) ИЛИ он не заметен в UI панели — требуется подтверждение владельцем.
 3. **Параллельная ось — `moderation_status`** (draft → awaiting_review → approved/rejected) РАБОТАЕТ: БД: 24 draft / 2 awaiting_review / 2 approved. Это модерация макета для оплаты, не воронка продаж. Две оси статусов живут независимо, «в работе/закрыта» никак не синхронизируется с «approved/оплачен».
 4. **0/28 лидов привязаны к заказу** (`lead.order` NULL у всех) — ни один кастом не дошёл до оплаты, либо связка не проставляется. Учитывая 2 approved-лида — вероятно, реально не дошли до оплаты (approve был недавно) — уточнить у владельца.
-5. Таймстемпов смены статуса нет (только created_at/updated_at/reviewed_at) → время цикла воронки неизмеримо.
+5. Таймст��мпов смены статуса нет (только created_at/updated_at/reviewed_at) → время цикла воронки неизмеримо.
 6. UserAction-события кастом-воронки пишутся хорошо: custom_print_step_enter 244, step_complete 240, start 66, add_to_cart 3, safe_exit 18 → верх воронки живой, 66 стартов → 28 лидов → 0 продаж. Потенциал: конверсия лид→продажа сейчас 0%.
 
 ### Задача исполнителю (TECH-062)
@@ -78,6 +78,115 @@
 
 ---
 
+## TD-001. storefront/views.py.backup (АУДИТ ВЫПОЛНЕН, 06.07.2026) — **⚠️ КРИТИЧЕСКАЯ КОРРЕКЦИЯ ЗАДАЧИ: ФАЙЛ НЕЛЬЗЯ ПРОСТО УДАЛИТЬ**
+
+**Формулировка чек-листа («удалить из репо, убедиться что ничего не импортирует») ОПАСНА и опровергнута кодом.**
+
+Факты:
+1. Файл: `twocomms/storefront/views.py.backup`, **7790 строк / 329 KB**, отслеживается git.
+2. Классический `import` его действительно нигде не делает, НО он загружается в рантайме как текст:
+   - `storefront/views/__init__.py:329` — `_load_legacy_views()`: читает `Path(...)/views.py.backup` (строка 338), exec-ит и переносит функции в `globals()` пакета views.
+   - `storefront/views/__init__.py:292` — `_LEGACY_VIEW_NAMES`: белый список **102 имён** вьюх, которые берутся ИЗ backup-файла.
+   - `storefront/urls.py:11–19` — `_legacy_view(name)` вызывает `_load_legacy_views(force=True)` при первом запросе; **30 маршрутов** в urls.py привязаны через `_legacy_view(...)`.
+3. То есть **боевые URL (wholesale, admin_product_edit и др.) сегодня обслуживаются кодом из файла с расширением `.backup`**. Удаление файла = мгновенные 500/заглушки на этих маршрутах.
+4. Связь с `audit_report_legacy_stubs.md`: там уже доказано, что механизм трёхслойный (реальные из backup / заглушки типа А / заглушки типа Б) и что `monobank_create_checkout` сломан из-за отсутствия в whitelist.
+
+**Правильная задача для исполнителя (вместо «git rm»):**
+1. Инвентаризация 102 имён `_LEGACY_VIEW_NAMES` → какие реально вызываются (30 `_legacy_view` маршрутов + package-level exports).
+2. Перенести живые функции из `views.py.backup` в модули пакета `storefront/views/` (по доменам: wholesale, admin_*, monobank quick и т.д.).
+3. Удалить `_load_legacy_views`/`_LEGACY_VIEW_NAMES`/`_legacy_view` и только потом `git rm views.py.backup`.
+4. Обязательные тесты после переноса: все 30 маршрутов отвечают не заглушкой (смок-скрипт по URL-ам из urls.py).
+Приоритет: P1 (пока файл жив — рефакторинг любых views рискует рассинхронизацией двух копий кода).
+
+---
+
+## TD-002. order_success_old.html (АУДИТ ВЫПОЛНЕН, 06.07.2026) — мёртвый шаблон, удалить безопасно
+
+1. Файл: `twocomms_django_theme/templates/pages/order_success_old.html`, 16 424 байт, в git.
+2. Grep по всему репо (`*.py`, `*.html`): **0 ссылок** (ни `render(...)`, ни `template_name`, ни `{% include %}`, ни `{% extends %}`).
+3. Актуальный шаблон — `pages/order_success.html` (используется checkout-потоком).
+**Вывод:** безопасно `git rm`. Приоритет P3 (гигиена). Единственный шаг проверки перед удалением: `python manage.py check` + смок заказа → страница успеха.
+
+---
+
+## TD-003. Celery-шимы и следы (АУДИТ ВЫПОЛНЕН, 06.07.2026) — **НАЙДЕН РЕАЛЬНЫЙ БАГ: битый импорт → все прямые Telegram-отправки синхронные**
+
+Архитектура после удаления Celery (подтверждена кодом):
+- `twocomms/__init__.py:16–20` — защищённый `try: from .celery import app` (файла celery.py нет → тихо пропускается). Комментарий в коде фиксирует решение «Celery удалён, хостинг без воркеров».
+- `storefront/tasks.py:93–118` — shim `shared_task`: `.delay()`/`.apply_async()` = **синхронный inline-вызов**. Задачи: feeds, indexnow, optimize_image_field_task, AI-контент, survey-отчёты.
+- `orders/tasks.py` — СВОЯ реализация: `send_telegram_notification_task(order_id, notification_type)` запускает **daemon-поток** (`Thread`, `close_old_connections` до/после) → HTTP-ответ не ждёт Telegram. Используется `orders/signals.py:27`. Это корректный путь.
+
+**БАГ (P2, подтверждён трассировкой):**
+- `orders/telegram_notifications.py:17–20`: `try: from storefront.tasks import send_telegram_notification_task / except ImportError: = None`.
+- В `storefront/tasks.py` символа `send_telegram_notification_task` **НЕТ** (проверено grep по всем `def`). Импорт всегда падает → переменная всегда `None`.
+- Следствие: ветки `if self.async_enabled and send_telegram_notification_task:` (строки 169, 367) **мертвы навсегда**; `send_admin_message()` и `send_personal_message()` всегда идут по fallback — **синхронный `requests.post` к api.telegram.org в потоке запроса**.
+- Кто страдает (вызовы вне фоновых потоков): `accounts/signals.py:61` (регистрация), `dtf/telegram.py` (6 вызовов — лиды DTF), `orders/dropshipper_views.py:1541,1608`, `orders/nova_poshta_service.py:593,641,705,752`, `reviews/signals.py:133`. При таймауте Telegram (до 10s+) эти запросы висят.
+- Дополнительно: сигнатуры не совпадают — вызовы передают `(message, chat_id=..., parse_mode=...)`, а `orders/tasks.py`-версия ждёт `(order_id, notification_type)`. Т.е. даже «починка» импорта на orders.tasks сломает всё. Нужен отдельный лёгкий async-sender (message, chat_id) с daemon-потоком по образцу orders/tasks.py.
+- `celery.log` на сервере: 127 байт, мёртв (зафиксировано в TD-016) — удалить при ближайшем SSH-сеансе.
+- Асинхронность, на которую рассчитывал код: feeds_queue (комментарий «apply_async(countdown=300)» → заменено на cron+dirty-flag `tmp/feeds/feeds_dirty.flag`), web_push не найден, AI-генерация — sync inline (медленный admin-save, известно).
+
+**Решение зафиксировать в TECHNICAL_TASKS:** «Celery не возвращаем; фоновость = daemon-Thread / cron». Новая задача: TG-ASYNC-FIX (описание выше).
+
+---
+
+## TD-004. Мусор в корне twocomms/ (АУДИТ ВЫПОЛНЕН, 06.07.2026) — полная инвентаризация
+
+Git-tracked файлы/каталоги в `twocomms/`, не являющиеся кодом приложения:
+
+| Объект | Размер/состав | Вердикт |
+|---|---|---|
+| `494cb80b2da94b4395dbbed566ab540d.txt` | 32 B | верификационный файл (похоже на IndexNow/поисковую верификацию) — ПРОВЕРИТЬ, отдаётся ли по URL, прежде чем удалять |
+| `replacement.txt` | 859 B | разовый рабочий файл — удалить |
+| `pricelist.html` | 2 KB | статический прайс — проверить, не отдаёт ли его вьюха `pricelist_page` (legacy_stubs → рендерит `pages/pricelist.html` из templates, НЕ этот файл) — удалить после проверки |
+| `wholesale_prices.xlsx` (7.7 KB) + `Оптові ціни....xlsx` (7.6 KB) | **закупочные/оптовые цены в публичном репо** | P2: вынести из git (см. CB-005), почистить историю при необходимости |
+| `analyze_views_migration.py`, `check_views_simple.py`, `check_views_structure.py` | 4.8+7.6+7.6 KB | разовые скрипты анализа рефакторинга views → `scripts/` или удалить |
+| `_audit/` | 24 файла (probe*.py/sh, raw_results.json, urls_all.txt…) | артефакты старого аудита — удалить из git |
+| `_audit_seo.md` (54 KB), `_seo_audit.sh`, `_seo_check.py` | SEO-аудит артефакты | → docs/archive или удалить |
+| `Promt/` | 7 файлов, включая **PDF** | промпты для ИИ — вне репо/в docs |
+| `Ideas/` | **~150 md-файлов** (management_analytics, itr3, ids2…) | огромный архив ИИ-брейнштормов — → `docs/ideas/` или отдельный репо; раздувает клон |
+| `tmp/feeds/feeds_dirty.flag` | runtime-флаг feeds-очереди | **НЕ удалять слепо**: это рабочий механизм cron-feeds; правильно — добавить `tmp/` в .gitignore, файл убрать из индекса (`git rm --cached`) |
+| `PROMO_ADMIN_IMPROVEMENTS.md` (11 KB), `docs/` | докуменация | → общий docs/ |
+
+Отдельно: `google_merchant_feed.xml` (378 B в корне twocomms/) — проверить в SEO-008, не устаревший ли дубль генерируемого фида.
+
+---
+
+## TD-005. 202 md-отчёта в корне репозитория (АУДИТ ВЫПОЛНЕН, 06.07.2026)
+
+1. Подтверждено: `ls *.md | wc -l` = **202** в корне репо + 53 `.txt/.sh/.py` loose-файлов (пересечение с CB-002/CB-003).
+2. Характер: журналы разовых фиксов (`CART_DISPLAY_BUG_FIX.md`, `AUTH_FIX_SUMMARY.md`, `META_PIXEL_*` и т.п.) — история работ, не документация.
+3. Реально активные документы, которые должны остаться в корне: `README*`, `TWOCOMMS_A_TO_B/` (папка планов), `AGENTS.md`-подобные если есть.
+4. **План для исполнителя (1 PR, только `git mv`):** создать `docs/archive/2025-2026-fix-reports/`, перенести все 202 файла; grep перед переносом на ссылки на эти файлы из кода/шаблонов (ожидается 0); README-индекс в архиве не нужен (история в git). Риск: нулевой; приоритет P3, но эффект на читаемость репо высокий.
+
+---
+
+## TD-006. legacy_stubs.py (АУДИТ ВЫПОЛНЕН, 06.07.2026; базируется на audit_report_legacy_stubs.md)
+
+1. `storefront/views/legacy_stubs.py` — 222 строки, ~48 заглушек. Все живы в urls (напрямую `views.X` или как fallback при отсутствии в `_LEGACY_VIEW_NAMES`).
+2. Категории заглушек: admin_offline_stores/склад-магазины (рендерят `admin/stub.html` или пустой JSON), print_proposal-админка, pricelist/wholesale (частично перекрыты whitelist-ом → реальные из backup), `monobank_create_checkout` (**CRITICAL, см. audit_report_legacy_stubs.md Находка 4**).
+3. Ответ на вопрос чек-листа «вернуть 410 для мёртвых URL или удалить»:
+   - Заглушки, возвращающие фейковый успех (`JsonResponse({'status':'ok'})` для admin_store_*) — **хуже 410**: админ думает, что действие выполнено. Для мёртвых admin-фич → 410 или убрать маршруты из urls.py.
+   - `monobank_create_checkout` — не удалять, а ЧИНИТЬ (перенести реальную реализацию, см. TD-001 план).
+   - Публичные URL (pricelist/wholesale) отдаются реальными функциями из backup — трогать только в рамках TD-001-переноса.
+4. Итог: TD-006 сливается с TD-001 в одну задачу «ликвидация legacy-слоя views» с 3 подзадачами: (а) починить monobank quick, (б) перенос живых, (в) 410/удаление мёртвых admin-заглушек.
+
+---
+
+## TD-007. Дублирующиеся системы аналитики (АУДИТ ВЫПОЛНЕН, 06.07.2026) — карта «кто что пишет»
+
+| Модуль | Строк | Статус | Что пишет / куда |
+|---|---|---|---|
+| `storefront/tracking.py` | 223 | **АКТИВЕН** (2 middleware в settings.py:222,224) | `AnalyticsIdentityMiddleware` — first-party cookies (`_tc_id`); `SimpleAnalyticsMiddleware` — `PageView.objects.create` (models.py:1714) + `SiteSession`. Экспортирует `is_bot` (используется views/blog.py:22) |
+| `storefront/utm_tracking.py` | 389 | **АКТИВЕН** (через utm_middleware + вызовы record_*) | `UserAction.objects.create` (строки 97, 307) — 36 859 строк в БД (базовая линия); UTMSession — 1015 |
+| `storefront/ab_testing.py` | 194 | **МЁРТВ** | grep по репо: импортов **0** (только сам файл); в БД ничего не пишет из живого кода → кандидат на удаление без DB-проверки |
+| `storefront/ai_signals.py` | 75 | **АКТИВЕН** | подключается в apps.py:17; на post_save Product/Category дергает `generate_ai_content_for_*_task.delay()` → из-за shim-а TD-003 это СИНХРОННАЯ AI-генерация в потоке админского сохранения |
+| `storefront/utm_middleware.py` | — | **АКТИВЕН** (settings.py:223) | UTMSession get_or_create + increment_visit (см. AN-036) |
+
+Пересечение/дубль: `SimpleAnalyticsMiddleware` (PageView/SiteSession) и `utm_tracking.record_page_view` (UserAction page_view) фиксируют пересекающиеся события в РАЗНЫЕ таблицы — два источника правды о трафике; отчёты админки читают UserAction, PageView живёт отдельно. Задача-кандидат: выбрать один канонический слой (UserAction) и вывести PageView из записи либо задокументировать назначение обоих.
+Остаточный шаг (SSH, при доступности): `PageView.objects.count()` для оценки объёма таблицы — сервер дважды сбросил SSH 06.07 (rate-limit), выполнить при следующем сеансе. На классификацию «жив/мёртв» не влияет (middleware зарегистрирован → пишет).
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Статус |
@@ -85,3 +194,10 @@
 | 05.07.2026 | TD-020 | **P0: регулярных бэкапов MySQL нет; последний ручной дамп >8 мес. Блокирует все миграции.** |
 | 05.07.2026 | TD-016 | Частично: ротация django/stderr есть; 8 мёртвых логов; ig_bot_cron.log требует замера |
 | 05.07.2026 | TD-033 | Подтверждён: 28/28 new; эндпоинт смены статуса существует, но не используется; параллельная ось moderation_status работает (24/2/2); 0 лидов привязано к заказам |
+| 06.07.2026 | TD-001 | **Коррекция: backup-файл исполняется в рантайме (102 имени, 30 маршрутов) — нужен перенос, не git rm** |
+| 06.07.2026 | TD-002 | Мёртвый шаблон, 0 ссылок — удалить безопасно |
+| 06.07.2026 | TD-003 | **P2-баг: битый импорт TG-таска → синхронные отправки в request-потоке; сигнатуры несовместимы** |
+| 06.07.2026 | TD-004 | Инвентаризация мусора twocomms/ завершена, вердикты по каждому объекту |
+| 06.07.2026 | TD-005 | 202 md подтверждено; план 1-PR git mv в docs/archive |
+| 06.07.2026 | TD-006 | 48 заглушек; фейковые 'ok' в admin_store_*; объединить с TD-001 |
+| 06.07.2026 | TD-007 | ab_testing.py мёртв (0 импортов); карта записи построена; PageView.count() — при SSH |

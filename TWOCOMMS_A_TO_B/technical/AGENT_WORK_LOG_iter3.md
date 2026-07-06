@@ -29,7 +29,18 @@ CRO-050 (сквозной тест-прогон с тестовым заказо
 
 (сюда записывается каждый закрытый пункт: ID → краткий вывод → файл отчёта)
 
-_пока пусто — работа начата_
+- **TD-001 ✅** — views.py.backup НЕЛЬЗЯ удалять: исполняется в рантайме (`_load_legacy_views`, whitelist 102 имени, 30 маршрутов `_legacy_view`). Отчёт: audit_report_section3_techdebt.md.
+- **TD-002 ✅** — order_success_old.html: 0 ссылок, удалить безопасно.
+- **TD-003 ✅** — НАЙДЕН P2-БАГ: `orders/telegram_notifications.py:18` импортирует `send_telegram_notification_task` из storefront.tasks, где символа НЕТ → всегда None → send_admin_message/send_personal_message всегда синхронные (requests.post в потоке запроса). Плюс сигнатуры несовместимы с orders/tasks.py-версией. ai_signals через shim = синхронная AI-генерация при сохранении товара в админке.
+- **TD-004 ✅** — инвентаризация мусора twocomms/: Ideas/ ~150 md, Promt/ с PDF, _audit/ 24 файла, 2 xlsx с оптовыми ценами (P2 — публичный репо), tmp/feeds/feeds_dirty.flag — РАБОЧИЙ (не удалять, gitignore).
+- **TD-005 ✅** — 202 md в корне подтверждено; план git mv → docs/archive.
+- **TD-006 ✅** — 48 stubs, admin_store_* дают фейковый ok; объединить с TD-001; monobank quick CRITICAL уже в audit_report_legacy_stubs.md.
+- **TD-007 ✅** — карта аналитики: tracking.py (PageView/SiteSession, 2 middleware), utm_tracking (UserAction/UTMSession), ai_signals — активны; **ab_testing.py мёртв (0 импортов)**. Остаток: PageView.count() по SSH.
+
+### Незакрытые хвосты для SSH-сеанса (батчить в 1 подключение!)
+1. `PageView.objects.count()` (TD-007), `UserAction` by type (CRO-051 базовая линия).
+2. Удаление celery.log НЕ делать (мы read-only) — только зафиксировано в отчёте.
+3. SSH дважды сброшен 06.07 (kex reset) — пауза 45s не помогла; пробовать паузы 3–5 мин, все запросы в одном heredoc.
 
 ## ЧТО ДЕЛАТЬ СЛЕДУЮЩЕМУ АГЕНТУ
 
