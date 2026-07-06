@@ -44,12 +44,24 @@ CRO-050 (сквозной тест-прогон с тестовым заказо
 - **AN-037 ✅** — session-слой last touch (перезапись :103), UTMSession first touch (get_or_create defaults); заказы фактически first-touch.
 - **AN-039 ✅** (код-слой) — record_search (utm_tracking.py:226) пишет сырой query; фикс: truncate+маска. Остаток: SSH-выборка 181 записи.
 
+- **МЕТА-НАХОДКА** — прод живёт на `twocomms/production_settings.py` (639 строк): passenger_wsgi.py ставит DJANGO_SETTINGS_MODULE=twocomms.production_settings, manage.py тоже дефолтит на него. ВСЕ аудиты настроек смотреть в ОБА файла.
+- **TD-010 ✅** — context processors здоровые (orders_processing_count: staff-only + кэш 60s), cached template loader включён (settings.py:994).
+- **TD-011 ✅** — прод-CACHES трёхвариантный по env CACHE_BACKEND: redis (3 алиаса) / locmem / **file-based ДЕФОЛТ** (`/home/qlknpodo/tmp/django_cache`); какой активен — только SSH покажет.
+- **TD-012 ✅** — fail-open подтверждён: `except: pass` в SimpleRateLimitMiddleware = при падении Redis лимиты отключаются молча.
+- **TD-013 ✅** — ensure_compress_offline (settings.py:1024–1076) тихо выключает offline-компрессию если manifest отсутствует → on-the-fly CPU; порядок деплоя проверить по SSH.
+- **TD-014 ✅** — ImageOptimizationMiddleware: зарегистрирован (settings:209), но IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED default=False → pass-through; **MediaCacheMiddleware (42 строки) НЕ зарегистрирован = мёртвый код**.
+- **TD-023 ✅** — глобальный 100/min/IP: ключ из XFF (спуфаемый!), fail-open; django-ratelimit только cart.py:1752,1789 c block=False; логин/чекаут/отзывы без лимитов.
+- **TD-024 ✅** — **`/api/analytics/track/` (AllowAny) = no-op с TODO** — событие не сохраняется; Swagger/Redoc публичны; AdminProductBuilder закрыт правильно.
+- **TD-025 ✅** — DtfDatabaseRouter обоснован (опциональная dtf-БД, общий auth), не мёртвый.
+
 ### Незакрытые хвосты для SSH-сеанса (батчить в 1 подключение!)
 1. `PageView.objects.count()` (TD-007), `UserAction` by type (CRO-051 базовая линия).
 2. `AnalyticsExclusion.objects.count()` + список правил (AN-004 остаток).
 3. Выборка UserAction search-запросов на PII (AN-039 остаток): `UserAction.objects.filter(action_type='search').values_list('metadata', flat=True)[:50]`.
-4. Удаление celery.log НЕ делать (мы read-only) — только зафиксировано в отчёте.
-5. SSH дважды сброшен 06.07 (kex reset) — пауза 45s не помогла; пробовать паузы 3–5 мин, все запросы в одном heredoc.
+4. `echo $CACHE_BACKEND` + активный BACKEND через Django shell (TD-011); env IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED (TD-014); размер `media/optimized_cache/` (TD-014); деплой-скрипт: есть ли collectstatic+compress (TD-013); перезаписывает ли LiteSpeed X-Forwarded-For (TD-023).
+5. TTFB замер главной/каталога/карточки curl -w (TD-010 остаток) — можно и без SSH, к живому сайту.
+6. Удаление celery.log НЕ делать (мы read-only) — только зафиксировано в отчёте.
+7. SSH дважды сброшен 06.07 (kex reset) — пауза 45s не помогла; пробовать паузы 3–5 мин, все запросы в одном heredoc.
 
 ## ЧТО ДЕЛАТЬ СЛЕДУЮЩЕМУ АГЕНТУ
 
