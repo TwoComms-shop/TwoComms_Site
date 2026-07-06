@@ -1667,7 +1667,7 @@
             <svg class="points-benefit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
             </svg>
-            {% trans 'Отримувати персональні пропозиції' %}
+            {% trans 'Отрим��вати персональні пропозиції' %}
           </li>
         </ul>
         <div class="auth-buttons-group">
@@ -1845,8 +1845,8 @@ document.addEventListener('DOMContentLoaded', function() {
 <div id="purchase-payload"
      data-order-id="{{ order.id }}"
      {% if order %}data-order-number="{{ order.order_number }}"{% else %}data-order-number="TEST-PREVIEW"{% endif %}
-     {% if order %}data-value="{{ order.total_sum|floatformat:2 }}"{% else %}data-value="0"{% endif %}
-     {% if order %}data-prepaid-value="{{ order.get_prepayment_amount|floatformat:2 }}"{% else %}data-prepaid-value="0"{% endif %}
+     {% if order %}data-value="{{ order.total_sum|floatformat:'2u' }}"{% else %}data-value="0"{% endif %}
+     {% if order %}data-prepaid-value="{{ order.get_prepayment_amount|floatformat:'2u' }}"{% else %}data-prepaid-value="0"{% endif %}
      data-currency="UAH"
      {% if order %}data-payment-status="{{ order.payment_status }}"{% else %}data-payment-status="paid"{% endif %}
      {% if order %}data-order-status="{{ order.status }}"{% else %}data-order-status="done"{% endif %}
@@ -1869,7 +1869,7 @@ document.addEventListener('DOMContentLoaded', function() {
        data-email="{{ user.userprofile.email|lower|escapejs }}"
      {% endif %}
      {% if order %}data-external-id="{{ order.payment_payload.tracking.external_id|default:'' }}"{% endif %}
-     {% if order %}data-contents='[{% for item in order.items.all %}{"id":"{{ item.get_offer_id }}","quantity":{{ item.qty }},"price":{{ item.unit_price|floatformat:2 }},"name":"{{ item.title|escapejs }}","category":"{{ item.product.category.name|default_if_none:''|escapejs }}","variant":"{{ item.size|default:"S"|upper }}","brand":"TwoComms","currency":"UAH"}{% if not forloop.last %},{% endif %}{% endfor %}]'{% else %}data-contents='[]'{% endif %}>
+     {% if order %}data-contents='[{% for item in order.items.all %}{"id":"{{ item.get_offer_id }}","quantity":{{ item.qty }},"price":{{ item.unit_price|floatformat:'2u' }},"name":"{{ item.title|escapejs }}","category":"{{ item.product.category.name|default_if_none:''|escapejs }}","variant":"{{ item.size|default:"S"|upper }}","brand":"TwoComms","currency":"UAH"}{% if not forloop.last %},{% endif %}{% endfor %}]'{% else %}data-contents='[]'{% endif %}>
 </div>
 
 <script>
