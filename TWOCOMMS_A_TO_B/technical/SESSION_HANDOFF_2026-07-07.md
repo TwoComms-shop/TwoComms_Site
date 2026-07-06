@@ -12,7 +12,18 @@
 - В этой сессии шла работа над блоком аналитики: **CRO-051** (baseline воронки),
   **AN-011 / AN-012** (аудит Facebook CAPI и TikTok Events API), плюс обзор UTM-аналитики
   админки (utm_analytics.py / utm_api_views.py).
-- НИ ОДИН из этих пунктов ещё НЕ отмечен как выполненный в чеклисте — работа не завершена.
+
+### ОБНОВЛЕНИЕ (продолжение сессии 07.07.2026, ветки v0/*, PR #37–#39 смерджены в main):
+
+- **ЗАКРЫТО в чеклисте:** AN-011, AN-012, AN-020, AN-038 (отчёт: `audit_report_section2_analytics.md`),
+  SEO-022, SEO-023 (новый отчёт: `audit_report_section4_seo.md`).
+- Ключевые новые находки: P1 — Meta+TikTok отправка внутри row-lock транзакции (AN-011);
+  P1 — TikTok получает нестандартные имена «Purchase»/«Lead» вместо CompletePayment/SubmitForm (AN-020);
+  P3 — fallback event_source_url на чужой домен twocomms.com в 4 местах (facebook_conversions_service.py:561/662/779, tiktok_events_service.py:213);
+  P3 — sameAs без TikTok в Organization schema.
+- **CRO-051 ПО-ПРЕЖНЕМУ НЕ ВЫПОЛНЕН** — в VM v0 нет sshpass/SSH-доступа к серверу.
+  Все SSH-остатки (боевые логи CAPI, env TIKTOK_*, прогон /tmp/cro051.py) — на сессию с рабочим SSH.
+- Следующие кандидаты код-слоя: остальные открытые `- [ ]` пункты чеклиста (см. grep).
 
 ## 2. Блокер: SSH к продакшн-серверу
 
