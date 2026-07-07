@@ -62,7 +62,7 @@
 
 - `twocomms/passenger_wsgi.py` (боевая точка входа, подтверждено PassengerAppRoot в `~/public_html/.htaccess`): `os.environ.setdefault("DJANGO_SETTINGS_MODULE", "twocomms.production_settings")`.
 - **Боевой модуль = `twocomms/twocomms/production_settings.py` (639 строк), который делает `from .settings import *` (settings.py — 1342 строки) и переопределяет.**
-- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источник пу��аницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
+- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источн��к пу��аницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
 - Ключевые переопределения production_settings: `DEBUG=False`, `SECRET_KEY` из env, DB через env (`DB_ENGINE`, отдельная `DB_NAME_DTF` — вторая БД для dtf! связь с TD-025 db_routers), Redis-настройки (3 БД: cache/static/fragment), `MediaCacheMiddleware` добавляется в конец цепочки, `DISABLE_ANALYTICS` env-флаг может ВЫКЛЮЧИТЬ UTM/Analytics-мидлвари (проверить, не включён ли на бою — если да, объясняет часть разрывов аналитики!), Telegram/NovaPoshta-ключи из env.
 - Passenger Python: `virtualenv/.../3.14/bin/python` (Python 3.14), Django==5.2.11, PyMySQL==1.1.2 (подтверждено pip freeze).
 
@@ -116,7 +116,7 @@
 1. **`orders/` app — НОЛЬ тестов.** Непокрыты: `facebook_conversions_service.py` (850 строк CAPI — деньги атрибуции), `tiktok_events_service.py` (308 строк), `nova_poshta_service.py`, `telegram_notifications.py`, `status_management.py`, `recover_checkouts` (cron каждые 30 мин трогает заказы — без единого теста!).
 2. **`accounts/` app — НОЛЬ тестов.** Непокрыт `cart_middleware.py` — середина цепочки из 26 middleware, восстановление корзины (CRO-035).
 3. **Monobank-вебхук:** проверка подписи `_verify_monobank_signature` (monobank.py:196) — НЕ тестируется; идемпотентность повторного callback покрыта ровно ОДНИМ тестом (`test_monobank_success_status_records_purchase_once`), сценарии failure/pending/expired-статусов и `_apply_monobank_status` (monobank.py:1211) — не покрыты.
-4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕТ (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
+4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕ�� (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
 5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от гонки остатков без select_for_update (проверить исполнителю).
 6. **CI отсутствует:** `.github/workflows/` нет ни в корне, ни в twocomms/ — 183 тест-файла НЕ запускаются автоматически. Никто не знает, сколько из них зелёные. Прогон тестов возможен только вручную (и на сервере — с осторожностью: тестовая БД).
 7. **Тесты гоняются на SQLite** (settings.py: DB_ENGINE default sqlite), боевая БД MySQL → расхождения (charset, strict mode, атомарность DDL) тестами не ловятся.
@@ -196,7 +196,7 @@
 - **Дыры покрытия (tracked-файлы, которые должны игнорироваться):**
   - НЕТ `artifacts/`, `output/`, `tmp/` (только `tmp/critical-extraction/`), `opros/`, `newCatalog/`;
   - НЕТ `*.xlsx` → 2 файла с закупочными ценами tracked (CB-005);
-  - `*.bak` есть, но НЕ `*.bak2` → tracked `styles.css.bak2` (445KB);
+  - `*.bak` есть, но ��Е `*.bak2` → tracked `styles.css.bak2` (445KB);
   - `*.backup` есть, НО с явным исключением `!twocomms/storefront/views.py.backup` — это НЕ ошибка: файл живой (см. CB-005), исключение оставить;
   - `*.log` покрыт (дважды — дубль строк 77 и 184, косметика).
 - Опасный широкий паттерн: `lib/`, `lib64/`, `var/`, `target/` — стандартный python-шаблон, реальных коллизий с проектом не найдено.
@@ -296,6 +296,95 @@ newCatalog/
 
 ---
 
+## CB-014. dtf переопределяет collectstatic (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Что проверено
+
+- `dtf/management/commands/collectstatic.py` (38 строк) — наследует стандартный
+  `django.contrib.staticfiles...collectstatic.Command`, перед `super().handle()`
+  вызывает `build_dtf_minified_assets(settings.BASE_DIR)` из `dtf/minify_assets.py`.
+- `dtf/minify_assets.py` (105 строк) — минифицирует ровно 3 файла через `rcssmin`/`rjsmin`
+  (оба пакета запинены в `requirements.txt`: rcssmin==1.1.2, rjsmin==1.2.2):
+  - `dtf/static/dtf/css/dtf.css` → `dtf.min.css`
+  - `dtf/static/dtf/js/dtf.js` → `dtf.min.js`
+  - `dtf/static/dtf/js/components/effects-bundle.js` → `effects-bundle.min.js`
+- `settings.py:169` — `"dtf.apps.DtfConfig"` стоит ПЕРЕД `django.contrib.staticfiles`,
+  поэтому команда действительно перехватывает ЛЮБОЙ вызов `collectstatic` в проекте
+  (включая деплой основного магазина: `deploy.sh`, `deploy.exp`, `deploy_finance.sh` и др. —
+  все вызывают просто `collectstatic --noinput`).
+- Дублирующая команда `dtf/management/commands/minify_dtf_assets.py` существует отдельно —
+  т.е. минификацию МОЖНО дергать явно, без перехвата collectstatic.
+
+### Находки и риски
+
+1. **P2 — hard-fail всего деплоя из-за DTF.** `_run_dtf_minification()` кидает `CommandError`,
+   если любой из 3 source-файлов отсутствует (`FileNotFoundError` в `build_dtf_minified_assets`)
+   или минификация упала. Это роняет ВЕСЬ collectstatic основного магазина, даже если DTF
+   не менялся. При `--dry-run` минификация пропускается — единственный обход.
+2. **P3 — парадокс: минифицированные файлы НЕ используются шаблонами.**
+   grep по `dtf/templates/`: `base.html:127` подключает `dtf/css/dtf.css` (НЕ .min),
+   `base.html:538/546` — `dtf/js/dtf.js` и `effects-bundle.js` (НЕ .min).
+   Ни один шаблон не ссылается на `*.min.css`/`*.min.js` (кроме vendored `htmx.min.js`).
+   Подмены на уровне storage/middleware тоже нет (проверены settings, production_settings,
+   twocomms/*middleware*.py — логики swap на .min нет).
+   НО: прод использует `whitenoise.storage.CompressedManifestStaticFilesStorage`
+   (production_settings.py:548) — whitenoise сам gzip/brotli-сжимает оригиналы,
+   поэтому практическая ценность отдельных .min-файлов ≈ 0.
+3. `.min`-файлы tracked в git (`dtf.min.css`, `dtf.min.js`, `effects-bundle.min.js`) —
+   генерируемые артефакты в репо, diff-шум при каждом изменении исходников.
+
+### Вывод / задачи для исполнителя
+
+- Переименовать команду в `collectstatic_dtf` (или удалить — есть `minify_dtf_assets`)
+  и убрать комментарий-зависимость порядка INSTALLED_APPS; либо, минимум,
+  заменить hard-fail на warning, чтобы DTF не мог заблокировать деплой магазина.
+- Решить судьбу .min-артефактов: либо шаблоны переводятся на .min (тогда tracked-файлы
+  оправданы), либо вся связка minify+override удаляется как мёртвая (whitenoise уже сжимает).
+- Деплой других приложений НЕ ломается функционально (super().handle() вызывается всегда),
+  риск только в hard-fail сценарии — задокументировано.
+
+---
+
+## CB-011. scripts/ внутри twocomms (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Инвентаризация `twocomms/scripts/` (8 файлов, 4214 строк)
+
+| Скрипт | Строк | Назначение | Вердикт |
+|---|---|---|---|
+| fill_translations.py | 3706 | Phase 17b: заполнение RU/EN msgstr в locale/*.po (словарь переводов зашит в код) | Фаза НЕ завершена → оставить до завершения i18n |
+| wrap_themes_lazy.py | 144 | Phase 17v: одноразовый destructive-transform `_product_themes.py` (обёртка в gettext_lazy) | УЖЕ ПРИМЕНЁН → в архив |
+| check_pdp_overlap.py | 130 | разовая отладка вёрстки PDP | в архив/удалить |
+| render_social_previews.py | 78 | генерация social-preview картинок | разовый, в архив |
+| compile_mo_polib.py | 68 | компиляция .po → .mo через polib (замена msgfmt на shared-хостинге) | ЖИВОЙ инструмент i18n-пайплайна → оставить |
+| list_color_pairs.py | 42 | разовый листинг цветов | в архив/удалить |
+| list_colors.py | 30 | разовый листинг цветов | в архив/удалить |
+| list_untranslated.py | 16 | подсчёт пустых msgstr | живой (мелкий) → оставить рядом с fill_translations |
+
+### Проверка «завершена ли Phase 17»
+
+- **НЕ завершена.** Пустые msgstr в locale: ru — 638 из 2450 msgid (26%),
+  en — 639 из 2450 (26%), uk — 1331 из 1357 (98%, uk = исходный язык, это норм
+  при uk-as-msgid, но .mo для uk в корневом locale/ отсутствует — только dtf/locale/uk).
+- `wrap_themes_lazy.py` свою работу СДЕЛАЛ: `_product_themes.py` содержит 205 вхождений
+  `_( ... )` — повторный запуск destructive-скрипта опасен (двойная обёртка).
+- .mo-файлы tracked в git и свежие (последний коммит locale/ru/django.mo — 07.07.2026),
+  т.е. пайплайн fill_translations → compile_mo_polib реально живой и используется.
+- Ссылок на скрипты из кода/cron/деплой-скриптов НЕТ (grep по *.py/*.sh/*.md вне scripts/ — 0),
+  вызываются только вручную.
+
+### Вывод / задачи для исполнителя
+
+1. НЕ удалять `scripts/` целиком: fill_translations.py + compile_mo_polib.py +
+   list_untranslated.py — живой i18n-пайплайн (перевод не закончен: ~26% строк пусто).
+2. `wrap_themes_lazy.py` — переместить в `scripts/archive/` с пометкой «applied,
+   do not re-run» (destructive, уже применён).
+3. `check_pdp_overlap.py`, `list_colors.py`, `list_color_pairs.py`,
+   `render_social_previews.py` — кандидаты в archive/удаление (разовые).
+4. fill_translations.py на 3706 строк — это в основном данные (словарь TRANSLATIONS);
+   при желании словарь можно вынести в JSON/YAML, но это оптимизация, не долг.
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Статус |
@@ -311,3 +400,5 @@ newCatalog/
 | 07.07.2026 | CB-007 | Аудит выполнен: Promt/ не tracked; 7 AI-конфигов (69 файлов, живой похоже только .kiro); opros/newCatalog/BrandDNA → в PR CB-001 |
 | 07.07.2026 | CB-002 | Аудит выполнен: 175 md ~3.9MB в корне, ссылок из кода 0, docs/ существует; план git mv → docs/archive |
 | 07.07.2026 | CB-003 | Аудит выполнен + ⚠️ P0: deploy_finance.sh содержит НЕзамаскированный SSH-пароль прода (остальные скрипты зачищены ранее) → сменить пароль; 65 скриптов, cron/код их не вызывают (по CB-044) |
+| 07.07.2026 | CB-014 | Аудит выполнен: override перехватывает ЛЮБОЙ collectstatic; P2 — hard-fail деплоя при отсутствии dtf-исходников; парадокс — .min-файлы шаблонами НЕ используются (whitenoise и так сжимает); план — переименовать/удалить |
+| 07.07.2026 | CB-011 | Аудит выполнен: Phase 17 НЕ завершена (~26% msgstr пусто ru/en) — fill_translations+compile_mo_polib живые; wrap_themes_lazy УЖЕ применён (205 обёрток) — в архив, destructive; 4 разовых скрипта — кандидаты в архив |
