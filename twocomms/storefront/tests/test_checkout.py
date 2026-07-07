@@ -289,6 +289,52 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertIsNone(order.promo_code_id)
         self.assertEqual(PromoCodeUsage.objects.filter(promo_code=promo).count(), 1)
 
+    def test_create_order_missing_product_aborts_without_order(self):
+        """W1-5а (CRO-047): исчезнувший товар → сообщение + редирект,
+        заказ НЕ создаётся (раньше товар молча выбрасывался из заказа)."""
+        self.set_cart()
+        # Товар удалён после наполнения корзины
+        missing_id = self.product.id
+        self.product.delete()
+        session = self.client.session
+        session['cart'] = {
+            f'{missing_id}:M': {'product_id': missing_id, 'qty': 1, 'size': 'M'}
+        }
+        session.save()
+
+        delivery = self.delivery_payload()
+        response = self.client.post(
+            self.order_create_url, self._cod_post_payload(delivery), secure=True
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], reverse('cart'))
+        self.assertEqual(Order.objects.count(), 0)
+        # Недоступная позиция удалена из корзины
+        self.assertEqual(self.client.session.get('cart'), {})
+
+    def test_create_order_zero_total_aborts_without_order(self):
+        """W1-5б (CRO-047): заказ на 0 грн не создаётся."""
+        free_product = Product.objects.create(
+            title='Free Product',
+            slug='free-product',
+            category=self.category,
+            price=0,
+            status='published',
+        )
+        self.set_cart(product=free_product, qty=1)
+
+        delivery = self.delivery_payload()
+        fake_order_item_class, _ = self.make_fake_order_item_class()
+        with patch('storefront.views.checkout.OrderItem', fake_order_item_class):
+            response = self.client.post(
+                self.order_create_url, self._cod_post_payload(delivery), secure=True
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], reverse('cart'))
+        self.assertEqual(Order.objects.count(), 0)
+
     def test_create_order_double_submit_creates_single_order(self):
         """W1-14 (NEW-514): двойной сабмит той же корзины в окне 30s не
         создаёт второй заказ, а редиректит на уже созданный."""
@@ -365,7 +411,7 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(order.pay_type, 'cod')
 
     def test_create_order_guest_online_full_redirects_to_cart(self):
-        """Онлайн-оплата стартует ТОЛЬКО через кнопку Monobank в корзине —
+        """Онлайн-опла��а стартует ТОЛЬКО через кнопку Monobank в корзине —
         прямой POST с online-типом не должен создавать неоплаченный заказ."""
         self.set_cart()
         delivery = self.delivery_payload(

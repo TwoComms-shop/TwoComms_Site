@@ -29,6 +29,10 @@ from ..utm_tracking import (
 
 logger = logging.getLogger(__name__)
 
+class _ZeroTotalOrderError(Exception):
+    """W1-5б (CRO-047): попытка создать заказ на 0 грн — откат транзакции."""
+
+
 # W1-14 (NEW-514): окно дедупликации повторного сабмита заказа, сек.
 ORDER_DEDUP_WINDOW_SECONDS = 30
 ORDER_DEDUP_SESSION_KEY = 'last_order_submit'
@@ -200,6 +204,31 @@ def create_order(request):
         )
         return redirect('cart')
 
+    # W1-5а (CRO-047): проверяем наличие всех товаров ДО создания заказа —
+    # исчезнувший товар раньше молча выбрасывался (`if not product: continue`),
+    # и покупатель получал заказ без части позиций.
+    product_ids = [item['product_id'] for item in cart.values()]
+    products_map = Product.objects.in_bulk(product_ids)
+    missing_items = [
+        item for item in cart.values()
+        if not products_map.get(int(item['product_id']))
+    ]
+    if missing_items:
+        # Убираем недоступные позиции из корзины и возвращаем покупателя
+        # на корзину с понятным сообщением — заказ НЕ создаём.
+        cart_session = request.session.get('cart') or {}
+        for key in list(cart_session.keys()):
+            entry = cart_session.get(key) or {}
+            if not products_map.get(int(entry.get('product_id') or 0)):
+                cart_session.pop(key, None)
+        request.session['cart'] = cart_session
+        request.session.modified = True
+        messages.error(
+            request,
+            _("Деякі товари з кошика більше недоступні та були видалені. Перевірте кошик і спробуйте ще раз.")
+        )
+        return redirect('cart')
+
     try:
         with transaction.atomic():
             # Validate optional email
@@ -243,12 +272,8 @@ def create_order(request):
             except Exception:
                 pass
 
-            # Create Order Items
+            # Create Order Items (products_map подготовлен выше, до atomic)
             total_sum = Decimal('0')
-
-            # Bulk fetch products and variants
-            product_ids = [item['product_id'] for item in cart.values()]
-            products_map = Product.objects.in_bulk(product_ids)
 
             variant_ids = [item.get('color_variant_id') for item in cart.values() if item.get('color_variant_id')]
             variants_map = ProductColorVariant.objects.in_bulk(variant_ids)
@@ -291,6 +316,10 @@ def create_order(request):
                 lead.save(update_fields=["order"])
 
             order.total_sum = total_sum
+
+            # W1-5б (CRO-047): guard от заказа на 0 грн (пустые/нулевые позиции)
+            if total_sum <= 0:
+                raise _ZeroTotalOrderError()
 
             # Apply Promo Code (W1-4а / CRO-046)
             # apply_promo_code кладёт в сессию promo_code_id — читаем его же
@@ -356,6 +385,11 @@ def create_order(request):
             _remember_order_submit(request, submit_fingerprint, order)
             return redirect('order_success', order_id=order.id)
 
+    except _ZeroTotalOrderError:
+        # W1-5б: транзакция откатана — заказ на 0 грн не создан.
+        logger.warning('Rejected zero-total order attempt (session %s)', request.session.session_key)
+        messages.error(request, _("Сума замовлення дорівнює нулю. Перевірте кошик і спробуйте ще раз."))
+        return redirect('cart')
     except Exception as e:
         logger.error(f"Error creating order: {e}", exc_info=True)
         messages.error(request, _("Сталася помилка при оформленні замовлення. Спробуйте ще раз."))

@@ -571,6 +571,15 @@ def monobank_create_invoice(request):
             ids = [item['product_id'] for item in cart.values()]
             prods = Product.objects.in_bulk(ids)
 
+            # W1-5а (CRO-047): исчезнувший товар раньше молча выбрасывался —
+            # покупатель платил за заказ без части позиций. Теперь: явная
+            # ошибка, заказ и инвойс НЕ создаются.
+            if any(not prods.get(it['product_id']) for it in cart.values()):
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Деякі товари з кошика більше недоступні. Оновіть кошик і спробуйте ще раз.'
+                })
+
             # Подсчитываем общую сумму
             total_sum = Decimal('0')
             for key, it in cart.items():
@@ -670,407 +679,422 @@ def monobank_create_invoice(request):
                 except Exception as e:
                     monobank_logger.warning(f'Error applying promo code: {e}')
 
-            # Определяем сумму для оплаты в зависимости от pay_type
-            monobank_logger.info(f'🔍 Determining payment amount. pay_type={pay_type}, order.pay_type={order.pay_type}')
+        # W1-5в (CRO-047/DB-009): транзакция ЗАКРЫТА — заказ и позиции
+        # закоммичены. Всё внешнее (Monobank invoice/create, Facebook CAPI,
+        # Telegram) выполняется ВНЕ atomic, чтобы не держать row-lock на
+        # время HTTP-вызовов (wait_timeout=60 на shared-хостинге).
+        # При ошибке до получения invoice_id заказ удаляется (см. except ниже).
 
-            if pay_type == 'prepay_200':
-                monobank_logger.info(f'✅ pay_type is prepay_200! Calculating prepayment...')
+        # Определяем сумму для оплаты в зависимости от pay_type
+        monobank_logger.info(f'🔍 Determining payment amount. pay_type={pay_type}, order.pay_type={order.pay_type}')
 
-                # КРИТИЧЕСКАЯ ТОЧКА: Вызов get_prepayment_amount()
-                monobank_logger.info(f'🔍 Calling order.get_prepayment_amount()...')
-                monobank_logger.info(f'🔍 order.pay_type before call: {order.pay_type}')
-                payment_amount = order.get_prepayment_amount()
-                monobank_logger.info(f'🔍 order.get_prepayment_amount() returned: {payment_amount}')
-                monobank_logger.info(f'🔍 Type: {type(payment_amount)}, Value: {payment_amount}')
+        if pay_type == 'prepay_200':
+            monobank_logger.info(f'✅ pay_type is prepay_200! Calculating prepayment...')
 
-                # Формируем описание для предоплаты с номером заказа.
-                # W1-4в: total_sum хранится БЕЗ вычета скидки, поэтому
-                # к оплате = total_sum - discount_amount, а остаток =
-                # к оплате - предоплата (раньше остаток был завышен на скидку).
-                payable_total = order.total_sum - (order.discount_amount or Decimal('0'))
-                remaining_amount = payable_total - payment_amount
-                payment_description = (
-                    f'Передплата 200 грн для замовлення {order.order_number}. '
-                    f'Повна сума: {payable_total:.2f} грн. '
-                    f'Залишок {remaining_amount:.2f} грн оплачується при отриманні через Нову Пошту.'
-                )
-                monobank_logger.info(f'✅ Prepayment amount set to: {payment_amount} UAH')
-                monobank_logger.info(f'✅ Payment description: {payment_description}')
-            else:
-                monobank_logger.info(f'✅ pay_type is NOT prepay_200 (it is {pay_type}). Using full amount.')
-                # Полная оплата
-                payment_amount = order.total_sum - order.discount_amount
-                payment_description = f'Оплата замовлення {order.order_number}'
-                monobank_logger.info(f'✅ Full payment amount: {payment_amount} UAH')
+            # КРИТИЧЕСКАЯ ТОЧКА: Вызов get_prepayment_amount()
+            monobank_logger.info(f'🔍 Calling order.get_prepayment_amount()...')
+            monobank_logger.info(f'🔍 order.pay_type before call: {order.pay_type}')
+            payment_amount = order.get_prepayment_amount()
+            monobank_logger.info(f'🔍 order.get_prepayment_amount() returned: {payment_amount}')
+            monobank_logger.info(f'🔍 Type: {type(payment_amount)}, Value: {payment_amount}')
 
-            monobank_logger.info(f'🔍 FINAL payment_amount: {payment_amount} (pay_type={pay_type})')
-            monobank_logger.info(f'🔍 payment_amount in kopecks: {int(payment_amount * 100)}')
+            # Формируем описание для предоплаты с номером заказа.
+            # W1-4в: total_sum хранится БЕЗ вычета скидки, поэтому
+            # к оплате = total_sum - discount_amount, а остаток =
+            # к оплате - предоплата (раньше остаток был завышен на скидку).
+            payable_total = order.total_sum - (order.discount_amount or Decimal('0'))
+            remaining_amount = payable_total - payment_amount
+            payment_description = (
+                f'Передплата 200 грн для замовлення {order.order_number}. '
+                f'Повна сума: {payable_total:.2f} грн. '
+                f'Залишок {remaining_amount:.2f} грн оплачується при отриманні через Нову Пошту.'
+            )
+            monobank_logger.info(f'✅ Prepayment amount set to: {payment_amount} UAH')
+            monobank_logger.info(f'✅ Payment description: {payment_description}')
+        else:
+            monobank_logger.info(f'✅ pay_type is NOT prepay_200 (it is {pay_type}). Using full amount.')
+            # Полная оплата
+            payment_amount = order.total_sum - order.discount_amount
+            payment_description = f'Оплата замовлення {order.order_number}'
+            monobank_logger.info(f'✅ Full payment amount: {payment_amount} UAH')
 
-            # Формируем basket для Monobank
-            monobank_logger.info(f'🔍 Building basket entries for pay_type={pay_type}')
-            basket_entries = []
+        monobank_logger.info(f'🔍 FINAL payment_amount: {payment_amount} (pay_type={pay_type})')
+        monobank_logger.info(f'🔍 payment_amount in kopecks: {int(payment_amount * 100)}')
 
-            # Для предоплаты показываем товары с полными ценами отдельными позициями
-            if pay_type == 'prepay_200':
-                total_items_sum = Decimal('0')
+        # Формируем basket для Monobank
+        monobank_logger.info(f'🔍 Building basket entries for pay_type={pay_type}')
+        basket_entries = []
 
-                # Вычисляем остаток к доплате заранее (W1-4в: со скидкой)
-                payable_total = order.total_sum - (order.discount_amount or Decimal('0'))
-                remaining_amount = payable_total - payment_amount
+        # Для предоплаты показываем товары с полными ценами отдельными позициями
+        if pay_type == 'prepay_200':
+            total_items_sum = Decimal('0')
 
-                # Добавляем все товары с их полными ценами
-                items_to_show = order_items[:10]  # Максимум 10 товаров
-                items_count = len(items_to_show)
+            # Вычисляем остаток к доплате заранее (W1-4в: со скидкой)
+            payable_total = order.total_sum - (order.discount_amount or Decimal('0'))
+            remaining_amount = payable_total - payment_amount
 
-                for idx, item in enumerate(items_to_show):
-                    try:
-                        # Получаем URL изображения
-                        icon_url = ''
-                        if item.product.main_image:
-                            icon_url = request.build_absolute_uri(item.product.main_image.url)
+            # Добавляем все товары с их полными ценами
+            items_to_show = order_items[:10]  # Максимум 10 товаров
+            items_count = len(items_to_show)
 
-                        # Используем полную стоимость товара (line_total)
-                        item_total_kopecks = int(item.line_total * 100)
-                        total_items_sum += item.line_total
+            for idx, item in enumerate(items_to_show):
+                try:
+                    # Получаем URL изображения
+                    icon_url = ''
+                    if item.product.main_image:
+                        icon_url = request.build_absolute_uri(item.product.main_image.url)
 
-                        # Формируем название товара
-                        item_name = item.title
-                        if item.size:
-                            item_name += f' ({item.size})'
-                        if item.fit_label:
-                            item_name += f' / {item.fit_label}'
+                    # Используем полную стоимость товара (line_total)
+                    item_total_kopecks = int(item.line_total * 100)
+                    total_items_sum += item.line_total
 
-                        monobank_logger.info(f'🔍 PREPAY mode: Adding item with FULL price')
-                        monobank_logger.info(f'🔍 - name: {item_name}')
-                        monobank_logger.info(f'🔍 - qty: {item.qty}')
-                        monobank_logger.info(f'🔍 - sum: {item_total_kopecks} kopecks ({item.line_total} UAH)')
+                    # Формируем название товара
+                    item_name = item.title
+                    if item.size:
+                        item_name += f' ({item.size})'
+                    if item.fit_label:
+                        item_name += f' / {item.fit_label}'
 
-                        item_entry = {
-                            'name': item_name,
-                            'qty': item.qty,
-                            'sum': item_total_kopecks,  # полная цена товара в копейках
-                            'icon': icon_url,
-                            'unit': 'шт'
-                        }
+                    monobank_logger.info(f'🔍 PREPAY mode: Adding item with FULL price')
+                    monobank_logger.info(f'🔍 - name: {item_name}')
+                    monobank_logger.info(f'🔍 - qty: {item.qty}')
+                    monobank_logger.info(f'🔍 - sum: {item_total_kopecks} kopecks ({item.line_total} UAH)')
 
-                        # Для последнего товара добавляем описание с информацией о предоплате
-                        if idx == len(items_to_show) - 1:
-                            if items_count > 1:
-                                item_entry['description'] = f'Передплата 200 грн за {items_count} товарів. Залишок {remaining_amount:.2f} грн — при отриманні на Новій Пошті'
-                            else:
-                                item_entry['description'] = f'Передплата 200 грн. Залишок {remaining_amount:.2f} грн — при отриманні на Новій Пошті'
-
-                        basket_entries.append(item_entry)
-                    except Exception as e:
-                        monobank_logger.warning(f'Error processing item for prepay basket: {e}')
-
-                # Добавляем позицию "Предоплата" с суммой, которая делает общую сумму basket = 200
-                # Если сумма товаров уже больше 200, добавляем отрицательную позицию для баланса
-                prepay_kopecks = int(payment_amount * 100)
-                current_basket_sum = int(total_items_sum * 100)
-
-                if current_basket_sum > prepay_kopecks:
-                    # Добавляем отрицательную позицию для баланса
-                    balance_kopecks = prepay_kopecks - current_basket_sum
-                    monobank_logger.info(f'🔍 PREPAY mode: Adding balance entry')
-                    monobank_logger.info(f'🔍 - balance: {balance_kopecks} kopecks')
-
-                    basket_entries.append({
-                        'name': f'Часткова оплата (замовлення {order.order_number}). Залишок {remaining_amount:.2f} грн при отриманні через Нову Пошту',
-                        'qty': 1,
-                        'sum': balance_kopecks,  # отрицательная сумма для ����аланса
-                        'icon': '',
+                    item_entry = {
+                        'name': item_name,
+                        'qty': item.qty,
+                        'sum': item_total_kopecks,  # полная цена товара в копейках
+                        'icon': icon_url,
                         'unit': 'шт'
-                    })
-                elif current_basket_sum < prepay_kopecks:
-                    # Добавляем позицию "Предоплата" с остаточной суммой
-                    remaining_prepay = prepay_kopecks - current_basket_sum
-                    monobank_logger.info(f'🔍 PREPAY mode: Adding prepayment entry')
-                    monobank_logger.info(f'🔍 - prepay: {remaining_prepay} kopecks')
+                    }
 
-                    basket_entries.append({
-                        'name': f'Передплата (замовлення {order.order_number}). Залишок {remaining_amount:.2f} грн при отриманні через Нову Пошту',
-                        'qty': 1,
-                        'sum': remaining_prepay,
-                        'icon': '',
-                        'unit': 'шт'
-                    })
-                else:
-                    # Суммы совпадают - описание уже добавлено к последнему товару
-                    monobank_logger.info(f'🔍 PREPAY mode: Sums match, description already added to last item')
-            else:
-                # Для полной оплаты показываем все товары отдельными позициями
-                for item in order_items[:10]:  # Максимум 10 товаров
-                    try:
-                        # Получаем URL изображения
-                        icon_url = ''
-                        if item.product.main_image:
-                            icon_url = request.build_absolute_uri(item.product.main_image.url)
+                    # Для последнего товара добавляем описание с информацией о предоплате
+                    if idx == len(items_to_show) - 1:
+                        if items_count > 1:
+                            item_entry['description'] = f'Передплата 200 грн за {items_count} товарів. Залишок {remaining_amount:.2f} грн — при отриманні на Новій Пошті'
+                        else:
+                            item_entry['description'] = f'Передплата 200 грн. Залишок {remaining_amount:.2f} грн — при отриманні на Новій Пошті'
 
-                        basket_sum_kopecks = int(item.line_total * 100)
+                    basket_entries.append(item_entry)
+                except Exception as e:
+                    monobank_logger.warning(f'Error processing item for prepay basket: {e}')
 
-                        # Добавляем информацию о промокоде к названию товара
-                        item_name = f'{item.title} {item.size}'.strip()
-                        if item.fit_label:
-                            item_name = f'{item_name} / {item.fit_label}'.strip()
-                        if order.promo_code:
-                            item_name += f' [з промокодом {order.promo_code.code}]'
+            # Добавляем позицию "Предоплата" с суммой, которая делает общую сумму basket = 200
+            # Если сумма товаров уже больше 200, добавляем отрицательную позицию для баланса
+            prepay_kopecks = int(payment_amount * 100)
+            current_basket_sum = int(total_items_sum * 100)
 
-                        monobank_logger.info(f'🔍 FULL mode: Adding item {item_name}')
-                        monobank_logger.info(f'🔍 - qty: {item.qty}')
-                        monobank_logger.info(f'🔍 - sum: {basket_sum_kopecks} kopecks ({item.line_total} UAH)')
+            if current_basket_sum > prepay_kopecks:
+                # Добавляем отрицательную позицию для баланса
+                balance_kopecks = prepay_kopecks - current_basket_sum
+                monobank_logger.info(f'🔍 PREPAY mode: Adding balance entry')
+                monobank_logger.info(f'🔍 - balance: {balance_kopecks} kopecks')
 
-                        basket_entries.append({
-                            'name': item_name,
-                            'qty': item.qty,
-                            'sum': basket_sum_kopecks,  # в копейках
-                            'icon': icon_url,
-                            'unit': 'шт'
-                        })
-                    except Exception as e:
-                        monobank_logger.warning(f'Error formatting basket item: {e}')
-
-                for lead in approved_custom_leads:
-                    try:
-                        basket_entries.append({
-                            'name': f'Кастомний виріб {lead.lead_number}',
-                            'qty': int(getattr(lead, 'quantity', 0) or 1),
-                            'sum': int(Decimal(str(lead.final_price_value)) * 100),
-                            'icon': '',
-                            'unit': 'шт',
-                        })
-                    except Exception as e:
-                        monobank_logger.warning(f'Error formatting custom print basket item: {e}')
-
-                # Добавляем позицию со скидкой если есть промокод
-                if order.promo_code and order.discount_amount > 0:
-                    discount_kopecks = int(order.discount_amount * 100)
-                    monobank_logger.info(f'🔍 Adding discount entry: {discount_kopecks} kopecks')
-                    basket_entries.append({
-                        'name': f'Знижка по промокоду {order.promo_code.code}',
-                        'qty': 1,
-                        'sum': -discount_kopecks,  # отрицательная сумма
-                        'icon': '',
-                        'unit': 'шт'
-                    })
-
-            if not basket_entries:
                 basket_entries.append({
-                    'name': payment_description,
+                    'name': f'Часткова оплата (замовлення {order.order_number}). Залишок {remaining_amount:.2f} грн при отриманні через Нову Пошту',
                     'qty': 1,
-                    'sum': int(payment_amount * 100),
+                    'sum': balance_kopecks,  # отрицательная сумма для ����аланса
+                    'icon': '',
+                    'unit': 'шт'
+                })
+            elif current_basket_sum < prepay_kopecks:
+                # Добавляем позицию "Предоплата" с остаточной суммой
+                remaining_prepay = prepay_kopecks - current_basket_sum
+                monobank_logger.info(f'🔍 PREPAY mode: Adding prepayment entry')
+                monobank_logger.info(f'🔍 - prepay: {remaining_prepay} kopecks')
+
+                basket_entries.append({
+                    'name': f'Передплата (замовлення {order.order_number}). Залишок {remaining_amount:.2f} грн при отриманні через Нову Пошту',
+                    'qty': 1,
+                    'sum': remaining_prepay,
+                    'icon': '',
+                    'unit': 'шт'
+                })
+            else:
+                # Суммы совпадают - описание уже добавлено к последнему товару
+                monobank_logger.info(f'🔍 PREPAY mode: Sums match, description already added to last item')
+        else:
+            # Для полной оплаты показываем все товары отдельными позициями
+            for item in order_items[:10]:  # Максимум 10 товаров
+                try:
+                    # Получаем URL изображения
+                    icon_url = ''
+                    if item.product.main_image:
+                        icon_url = request.build_absolute_uri(item.product.main_image.url)
+
+                    basket_sum_kopecks = int(item.line_total * 100)
+
+                    # Добавляем информацию о промокоде к названию товара
+                    item_name = f'{item.title} {item.size}'.strip()
+                    if item.fit_label:
+                        item_name = f'{item_name} / {item.fit_label}'.strip()
+                    if order.promo_code:
+                        item_name += f' [з промокодом {order.promo_code.code}]'
+
+                    monobank_logger.info(f'🔍 FULL mode: Adding item {item_name}')
+                    monobank_logger.info(f'🔍 - qty: {item.qty}')
+                    monobank_logger.info(f'🔍 - sum: {basket_sum_kopecks} kopecks ({item.line_total} UAH)')
+
+                    basket_entries.append({
+                        'name': item_name,
+                        'qty': item.qty,
+                        'sum': basket_sum_kopecks,  # в копейках
+                        'icon': icon_url,
+                        'unit': 'шт'
+                    })
+                except Exception as e:
+                    monobank_logger.warning(f'Error formatting basket item: {e}')
+
+            for lead in approved_custom_leads:
+                try:
+                    basket_entries.append({
+                        'name': f'Кастомний виріб {lead.lead_number}',
+                        'qty': int(getattr(lead, 'quantity', 0) or 1),
+                        'sum': int(Decimal(str(lead.final_price_value)) * 100),
+                        'icon': '',
+                        'unit': 'шт',
+                    })
+                except Exception as e:
+                    monobank_logger.warning(f'Error formatting custom print basket item: {e}')
+
+            # Добавляем позицию со скидкой если есть промокод
+            if order.promo_code and order.discount_amount > 0:
+                discount_kopecks = int(order.discount_amount * 100)
+                monobank_logger.info(f'🔍 Adding discount entry: {discount_kopecks} kopecks')
+                basket_entries.append({
+                    'name': f'Знижка по промокоду {order.promo_code.code}',
+                    'qty': 1,
+                    'sum': -discount_kopecks,  # отрицательная сумма
                     'icon': '',
                     'unit': 'шт'
                 })
 
-            # Создаем Monobank инвойс
-            payload = {
-                'amount': int(payment_amount * 100),  # сумма в копейках
-                'ccy': 980,  # UAH
-                'merchantPaymInfo': {
-                    'reference': order.order_number,
-                    'destination': payment_description,
-                    'basketOrder': basket_entries
-                },
-                'redirectUrl': request.build_absolute_uri('/payments/monobank/return/'),
-                'webHookUrl': request.build_absolute_uri('/payments/monobank/webhook/'),
-            }
-
-            monobank_logger.info(f'Creating Monobank invoice, payload: {json.dumps(payload, indent=2, ensure_ascii=False)}')
-
-            try:
-                creation_data = _monobank_api_request('POST', '/api/merchant/invoice/create', json_payload=payload)
-                monobank_logger.info(f'Monobank response: {creation_data}')
-            except MonobankAPIError as exc:
-                monobank_logger.error(f'Monobank API error: {exc}')
-                # Удаляем созданный заказ при ошибке
-                order.delete()
-                return JsonResponse({
-                    'success': False,
-                    'error': f'Помилка створення платежу: {str(exc)}'
-                })
-
-            # Извлекаем данные из ответа
-            result = creation_data.get('result') or creation_data
-            invoice_id = result.get('invoiceId')
-            invoice_url = result.get('pageUrl')
-
-            if not invoice_id or not invoice_url:
-                monobank_logger.error(f'Invalid Monobank response: {creation_data}')
-                order.delete()
-                return JsonResponse({
-                    'success': False,
-                    'error': 'Не вдалося створити платіж. Спробуйте пізніше.'
-                })
-
-            # Детерминированный event_id для дедупликации AddPaymentInfo
-            add_payment_event_id = order.get_add_payment_event_id()
-
-            # Собираем tracking данные для Facebook/TikTok Conversions API
-            tracking_context = {}
-
-            # FBP Cookie (Facebook Browser Pixel)
-            try:
-                fbp_cookie = request.COOKIES.get('_fbp')
-            except Exception:
-                fbp_cookie = None
-            if fbp_cookie:
-                tracking_context['fbp'] = fbp_cookie
-
-            # FBC Cookie (Facebook Click ID)
-            try:
-                fbc_cookie = request.COOKIES.get('_fbc')
-            except Exception:
-                fbc_cookie = None
-            if fbc_cookie:
-                tracking_context['fbc'] = fbc_cookie
-
-            # TikTok Click ID
-            try:
-                ttclid_cookie = request.COOKIES.get('ttclid')
-            except Exception:
-                ttclid_cookie = None
-            if ttclid_cookie:
-                tracking_context['ttclid'] = ttclid_cookie
-
-            # Дополняем tracking_context данными от клиента (если есть)
-            if isinstance(client_tracking, dict) and client_tracking:
-                for key, value in client_tracking.items():
-                    if value is None:
-                        continue
-                    # Игнорируем event_id и lead_event_id - они генерируются при отправке событий
-                    if key in ('event_id', 'lead_event_id'):
-                        continue
-                    # Не перезаписываем server-side значения если они уже есть
-                    if key in tracking_context:
-                        continue
-                    tracking_context[key] = value
-
-            # Сохраняем event_id для AddPaymentInfo, чтобы браузер и CAPI использовали одинаковое значение
-            tracking_context['add_payment_event_id'] = add_payment_event_id
-
-            # КРИТИЧНО: External ID должен ВСЕГДА быть определен
-            external_source = tracking_context.get('external_id')
-            if request.user.is_authenticated:
-                external_source = external_source or f"user:{request.user.id}"
-            else:
-                # Пытаемся получить session_key
-                try:
-                    session_key = request.session.session_key
-                    if not session_key:
-                        # Создаем сессию если еще не создана
-                        request.session.create()
-                        session_key = request.session.session_key
-                    if session_key:
-                        external_source = external_source or f"session:{session_key}"
-                except Exception:
-                    pass
-
-                # Если нет session_key, используем order_number
-                if not external_source and order.order_number:
-                    external_source = f"order:{order.order_number}"
-
-                # Если нет order_number, используем order.id
-                if not external_source and order.id:
-                    external_source = f"order:{order.id}"
-
-            # ГАРАНТИРУЕМ что external_id ВСЕГДА определен
-            if not external_source:
-                import time
-                external_source = f"order:unknown_{int(time.time())}"
-
-            tracking_context['external_id'] = external_source
-
-            # Добавляем Client IP Address для улучшения атрибуции
-            try:
-                # Получаем реальный IP (учитываем проксирование)
-                x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-                if x_forwarded_for:
-                    client_ip = x_forwarded_for.split(',')[0].strip()
-                else:
-                    client_ip = request.META.get('REMOTE_ADDR')
-
-                if client_ip:
-                    tracking_context['client_ip_address'] = client_ip
-            except Exception:
-                pass
-
-            # Добавляем User Agent для улучшения атрибуции
-            try:
-                user_agent = request.META.get('HTTP_USER_AGENT', '')
-                if user_agent:
-                    tracking_context['client_user_agent'] = user_agent
-            except Exception:
-                pass
-
-            # Сохраняем данные платежа в Order
-            payment_payload = {
-                'request': payload,
-                'create': creation_data,
-                'history': [],
-                'tracking': tracking_context,
-                'custom_print_lead_ids': [lead.pk for lead in approved_custom_leads],
-            }
-
-            # Добавляем client_ip_address и client_user_agent на верхний уровень для совместимости
-            if 'client_ip_address' in tracking_context:
-                payment_payload['client_ip_address'] = tracking_context['client_ip_address']
-            if 'client_user_agent' in tracking_context:
-                payment_payload['client_user_agent'] = tracking_context['client_user_agent']
-
-            order.payment_invoice_id = invoice_id
-            order.payment_payload = payment_payload
-            order.payment_status = 'checking'
-            order.save(update_fields=['payment_invoice_id', 'payment_payload', 'payment_status'])
-            record_lead(request, order.id, order.order_number, float(payment_amount))
-
-            monobank_logger.info(f'Order {order.order_number}: Saved tracking context: external_id={external_source}, fbp={bool(fbp_cookie)}, fbc={bool(fbc_cookie)}')
-
-            monobank_logger.info(f'Order {order.order_number} updated with invoice_id={invoice_id}')
-
-            # Сохраняем в сессию
-            request.session['monobank_invoice_id'] = invoice_id
-            request.session['monobank_pending_order_id'] = order.id
-            request.session['monobank_approved_custom_keys'] = approved_custom_keys
-            request.session['monobank_pending_custom_keys'] = pending_custom_keys
-            request.session.modified = True
-
-            # Отправляем AddPaymentInfo через CAPI для дедупликации с пикселем
-            try:
-                facebook_service = get_facebook_conversions_service()
-                facebook_service.send_add_payment_info_event(
-                    order=order,
-                    payment_amount=float(payment_amount),
-                    event_id=add_payment_event_id,
-                    source_url=request.build_absolute_uri(request.path),
-                )
-            except Exception as capi_err:
-                monobank_logger.warning(f'⚠️ Failed to send AddPaymentInfo to Facebook CAPI: {capi_err}')
-
-            # НЕ очищаем корзину здесь - корзина будет очищена ТОЛЬКО после успешной оплаты
-            # в monobank_return или через webhook
-
-            # Отправляем Telegram уведомление
-            try:
-                from orders.telegram_notifications import TelegramNotifier
-                notifier = TelegramNotifier()
-                notifier.send_new_order_notification(order)
-            except Exception as e:
-                monobank_logger.warning(f'Failed to send Telegram notification: {e}')
-
-            monobank_logger.info(f'✅ Invoice created successfully: {invoice_url}')
-
-            return JsonResponse({
-                'success': True,
-                'invoice_url': invoice_url,
-                'invoice_id': invoice_id,
-                'order_id': order.id,
-                'order_ref': order.order_number,
-                'add_payment_event_id': add_payment_event_id
+        if not basket_entries:
+            basket_entries.append({
+                'name': payment_description,
+                'qty': 1,
+                'sum': int(payment_amount * 100),
+                'icon': '',
+                'unit': 'шт'
             })
+
+        # Создаем Monobank инвойс
+        payload = {
+            'amount': int(payment_amount * 100),  # сумма в копейках
+            'ccy': 980,  # UAH
+            'merchantPaymInfo': {
+                'reference': order.order_number,
+                'destination': payment_description,
+                'basketOrder': basket_entries
+            },
+            'redirectUrl': request.build_absolute_uri('/payments/monobank/return/'),
+            'webHookUrl': request.build_absolute_uri('/payments/monobank/webhook/'),
+        }
+
+        monobank_logger.info(f'Creating Monobank invoice, payload: {json.dumps(payload, indent=2, ensure_ascii=False)}')
+
+        try:
+            creation_data = _monobank_api_request('POST', '/api/merchant/invoice/create', json_payload=payload)
+            monobank_logger.info(f'Monobank response: {creation_data}')
+        except MonobankAPIError as exc:
+            monobank_logger.error(f'Monobank API error: {exc}')
+            # Удаляем созданный заказ при ошибке
+            order.delete()
+            return JsonResponse({
+                'success': False,
+                'error': f'Помилка створення платежу: {str(exc)}'
+            })
+
+        # Извлекаем данные из ответа
+        result = creation_data.get('result') or creation_data
+        invoice_id = result.get('invoiceId')
+        invoice_url = result.get('pageUrl')
+
+        if not invoice_id or not invoice_url:
+            monobank_logger.error(f'Invalid Monobank response: {creation_data}')
+            order.delete()
+            return JsonResponse({
+                'success': False,
+                'error': 'Не вдалося створити платіж. Спробуйте пізніше.'
+            })
+
+        # Детерминированный event_id для дедупликации AddPaymentInfo
+        add_payment_event_id = order.get_add_payment_event_id()
+
+        # Собираем tracking данные для Facebook/TikTok Conversions API
+        tracking_context = {}
+
+        # FBP Cookie (Facebook Browser Pixel)
+        try:
+            fbp_cookie = request.COOKIES.get('_fbp')
+        except Exception:
+            fbp_cookie = None
+        if fbp_cookie:
+            tracking_context['fbp'] = fbp_cookie
+
+        # FBC Cookie (Facebook Click ID)
+        try:
+            fbc_cookie = request.COOKIES.get('_fbc')
+        except Exception:
+            fbc_cookie = None
+        if fbc_cookie:
+            tracking_context['fbc'] = fbc_cookie
+
+        # TikTok Click ID
+        try:
+            ttclid_cookie = request.COOKIES.get('ttclid')
+        except Exception:
+            ttclid_cookie = None
+        if ttclid_cookie:
+            tracking_context['ttclid'] = ttclid_cookie
+
+        # Дополняем tracking_context данными от клиента (если есть)
+        if isinstance(client_tracking, dict) and client_tracking:
+            for key, value in client_tracking.items():
+                if value is None:
+                    continue
+                # Игнорируем event_id и lead_event_id - они генерируются при отправке событий
+                if key in ('event_id', 'lead_event_id'):
+                    continue
+                # Не перезаписываем server-side значения если они уже есть
+                if key in tracking_context:
+                    continue
+                tracking_context[key] = value
+
+        # Сохраняем event_id для AddPaymentInfo, чтобы браузер и CAPI использовали одинаковое значение
+        tracking_context['add_payment_event_id'] = add_payment_event_id
+
+        # КРИТИЧНО: External ID должен ВСЕГДА быть определен
+        external_source = tracking_context.get('external_id')
+        if request.user.is_authenticated:
+            external_source = external_source or f"user:{request.user.id}"
+        else:
+            # Пытаемся получить session_key
+            try:
+                session_key = request.session.session_key
+                if not session_key:
+                    # Создаем сессию если еще не создана
+                    request.session.create()
+                    session_key = request.session.session_key
+                if session_key:
+                    external_source = external_source or f"session:{session_key}"
+            except Exception:
+                pass
+
+            # Если нет session_key, используем order_number
+            if not external_source and order.order_number:
+                external_source = f"order:{order.order_number}"
+
+            # Если нет order_number, используем order.id
+            if not external_source and order.id:
+                external_source = f"order:{order.id}"
+
+        # ГАРАНТИРУЕМ что external_id ВСЕГДА определен
+        if not external_source:
+            import time
+            external_source = f"order:unknown_{int(time.time())}"
+
+        tracking_context['external_id'] = external_source
+
+        # Добавляем Client IP Address для улучшения атрибуции
+        try:
+            # Получаем реальный IP (учитываем проксирование)
+            x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            if x_forwarded_for:
+                client_ip = x_forwarded_for.split(',')[0].strip()
+            else:
+                client_ip = request.META.get('REMOTE_ADDR')
+
+            if client_ip:
+                tracking_context['client_ip_address'] = client_ip
+        except Exception:
+            pass
+
+        # Добавляем User Agent для улучшения атрибуции
+        try:
+            user_agent = request.META.get('HTTP_USER_AGENT', '')
+            if user_agent:
+                tracking_context['client_user_agent'] = user_agent
+        except Exception:
+            pass
+
+        # Сохраняем данные платежа в Order
+        payment_payload = {
+            'request': payload,
+            'create': creation_data,
+            'history': [],
+            'tracking': tracking_context,
+            'custom_print_lead_ids': [lead.pk for lead in approved_custom_leads],
+        }
+
+        # Добавляем client_ip_address и client_user_agent на верхний уровень для совместимости
+        if 'client_ip_address' in tracking_context:
+            payment_payload['client_ip_address'] = tracking_context['client_ip_address']
+        if 'client_user_agent' in tracking_context:
+            payment_payload['client_user_agent'] = tracking_context['client_user_agent']
+
+        order.payment_invoice_id = invoice_id
+        order.payment_payload = payment_payload
+        order.payment_status = 'checking'
+        order.save(update_fields=['payment_invoice_id', 'payment_payload', 'payment_status'])
+        record_lead(request, order.id, order.order_number, float(payment_amount))
+
+        monobank_logger.info(f'Order {order.order_number}: Saved tracking context: external_id={external_source}, fbp={bool(fbp_cookie)}, fbc={bool(fbc_cookie)}')
+
+        monobank_logger.info(f'Order {order.order_number} updated with invoice_id={invoice_id}')
+
+        # Сохраняем в сессию
+        request.session['monobank_invoice_id'] = invoice_id
+        request.session['monobank_pending_order_id'] = order.id
+        request.session['monobank_approved_custom_keys'] = approved_custom_keys
+        request.session['monobank_pending_custom_keys'] = pending_custom_keys
+        request.session.modified = True
+
+        # Отправляем AddPaymentInfo через CAPI для дедупликации с пикселем
+        try:
+            facebook_service = get_facebook_conversions_service()
+            facebook_service.send_add_payment_info_event(
+                order=order,
+                payment_amount=float(payment_amount),
+                event_id=add_payment_event_id,
+                source_url=request.build_absolute_uri(request.path),
+            )
+        except Exception as capi_err:
+            monobank_logger.warning(f'⚠️ Failed to send AddPaymentInfo to Facebook CAPI: {capi_err}')
+
+        # НЕ очищаем корзину здесь - корзина будет очищена ТОЛЬКО после успешной оплаты
+        # в monobank_return или через webhook
+
+        # Отправляем Telegram уведомление
+        try:
+            from orders.telegram_notifications import TelegramNotifier
+            notifier = TelegramNotifier()
+            notifier.send_new_order_notification(order)
+        except Exception as e:
+            monobank_logger.warning(f'Failed to send Telegram notification: {e}')
+
+        monobank_logger.info(f'✅ Invoice created successfully: {invoice_url}')
+
+        return JsonResponse({
+            'success': True,
+            'invoice_url': invoice_url,
+            'invoice_id': invoice_id,
+            'order_id': order.id,
+            'order_ref': order.order_number,
+            'add_payment_event_id': add_payment_event_id
+        })
 
     except Exception as e:
         monobank_logger.error(f'Error creating order/invoice: {e}', exc_info=True)
+        # W1-5в: транзакция уже закоммичена — если инвойс так и не был
+        # привязан, подчищаем осиротевший заказ (best-effort).
+        try:
+            _orphan = locals().get('order')
+            if _orphan is not None and _orphan.pk and not _orphan.payment_invoice_id:
+                _orphan.delete()
+                monobank_logger.info('Orphan order without invoice deleted after failure')
+        except Exception:
+            monobank_logger.warning('Failed to clean up orphan order', exc_info=True)
         return JsonResponse({
             'success': False,
             'error': 'Сталася помилка. Спробуйте ще раз.'
