@@ -117,7 +117,7 @@
 2. **`accounts/` app — НОЛЬ тестов.** Непокрыт `cart_middleware.py` — середина цепочки из 26 middleware, восстановление корзины (CRO-035).
 3. **Monobank-вебхук:** проверка подписи `_verify_monobank_signature` (monobank.py:196) — НЕ тестируется; идемпотентность повторного callback покрыта ровно ОДНИМ тестом (`test_monobank_success_status_records_purchase_once`), сценарии failure/pending/expired-статусов и `_apply_monobank_status` (monobank.py:1211) — не покрыты.
 4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕТ (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
-5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от го��ки остатков без select_for_update (проверить исполнителю).
+5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от ��о��ки остатков без select_for_update (проверить исполнителю).
 6. **CI отсутствует:** `.github/workflows/` нет ни в корне, ни в twocomms/ — 183 тест-файла НЕ запускаются автоматически. Никто не знает, сколько из них зелёные. Прогон тестов возможен только вручную (и на сервере — с осторожностью: тестовая БД).
 7. **Тесты гоняются на SQLite** (settings.py: DB_ENGINE default sqlite), боевая БД MySQL → расхождения (charset, strict mode, атомарность DDL) тестами не ловятся.
 
@@ -272,10 +272,10 @@ newCatalog/
 - **`deploy_finance.sh` (tracked, строка 5): `export SSHPASS='<реальный пароль qlknpodo@195.191.24.169>'`** — единственный tracked-файл, где пароль остался НЕзамаскированным (`git grep` по HEAD подтверждает ровно 1 файл).
 - Во всех остальных скриптах (13 tracked `.exp`, `deploy_paramiko.py`, `deploy_fixes.sh`, `deploy_optimizations.sh`, `deploy_promo_system.sh`, `deploy_redis.sh`) пароль уже заменён на плейсхолдер `***REMOVED_SSH_PASSWORD***` — прошлая зачистка пропустила один файл.
 - Пароль был в истории git многих файлов → считать скомпрометированным.
-- **Действия исполнителя (приоритет над всем разделом):**
+- **Де��ствия исполнителя (приоритет над всем разделом):**
   1. СМЕНИТЬ пароль qlknpodo на сервере (согласовать с владельцем; лучше перейти на ssh-ключи + отключить PasswordAuthentication).
   2. Замаскировать/удалить строку в `deploy_finance.sh`, коммит.
-  3. История git: пароль остаётся в истории — фиксация факта; `git filter-repo` только по явному согласованию (правило чеклиста).
+  3. История git: пароль остаётся в истории — фиксация ф��кта; `git filter-repo` только по явному согласованию (правило чеклиста).
 
 ### Факты по скриптам
 
@@ -546,7 +546,7 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 
 1. AN-001: выгрузить конфигурацию GTM-PRLLBF9H и устранить дубли тегов (GA4/Meta/TikTok)
    между контейнером и analytics-loader — решить, что остаётся источником истины.
-2. Почистить пустые конфиг-атрибуты #am (либо удалить div, перенеся user-data хранение).
+2. Почистить пустые конфиг-атрибуты #am (ли��о удалить div, перенеся user-data хранение).
 3. Заменить самописный SHA-256 на crypto.subtle (минус ~80 строк).
 4. Убрать console.log TikTok-отладки из прода.
 5. (Опционально) разбить на модули (meta.js/tiktok.js/ga.js/clarity.js) — но при
@@ -575,7 +575,7 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 | 7 | `storefront/views/monobank.py:378` | JSON-parse тела create_invoice → `body = {}` | **P2.** Мусорный запрос не отклоняется, а продолжается с пустым телом: pay_type станет дефолтным — инвойс может создаться не с теми параметрами, что хотел клиент |
 | 8 | `storefront/views/checkout.py:188` | `CheckoutCapture.update(converted=True)` → pass | **P2.** Конверсия capture молча не помечается → «брошенные корзины» навсегда числятся брошенными, abandoned-ремаркетинг может уйти уже купившему |
 | 9 | `storefront/views/cart.py:943` | ВЕСЬ `update_cart` обёрнут → `JsonResponse({'error': str(e)}, 400)` | **P2.** (а) str(e) утекает клиенту (internal paths в UI), (б) ноль серверных логов при ошибках пересчёта денег корзины |
-| 10 | `storefront/views/cart.py:1306` | `custom_total += Decimal(final_total)` → pass | **P2.** Сумма кастома в `cart_summary` молча занижается — UI покажет сумму меньше инвойса (стык рассинхронов CRO-034) |
+| 10 | `storefront/views/cart.py:1306` | `custom_total += Decimal(final_total)` → pass | **P2.** Сумма кастома в `cart_summary` молча занижает��я — UI покажет сумму меньше инвойса (стык рассинхронов CRO-034) |
 | 11 | `storefront/views/monobank.py:288` | валидация payload/qty → `return False, str(e)` | **P3.** str(e) уходит клиенту как есть; класс ошибки не различим (ValueError vs баг кода) |
 | 12 | `storefront/views/monobank.py:927,956,964` | session.create()/client_ip/user_agent для tracking_context → pass | **P3.** Деградация качества CAPI-матчинга без следов |
 | 13 | `storefront/views/monobank.py:1177` | append в `payment_payload['history']` при не-JSON payload → повторный append без payload | **P3.** История платежа теряет тело; сам факт стоит логировать |
@@ -649,7 +649,7 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 | 3 | SubdomainURLRouting | ДО SecurityMiddleware (inline-комментарий: routing early) |
 | 4 | RequestTrace | Активируется только заголовком `X-DTF-Debug: 1`; grep по репо: потребителей заголовка НЕТ (0 вне самого класса, `twocomms/middleware.py:265`) → **кандидат на удаление ПОДТВЕРЖДЁН** |
 | 5–7 | Security, GZip, SecurityHeaders (CSP) | стандартный порядок; GZip выше форматирующих слоёв |
-| 8 | WhiteNoise | статика; всё ниже не видит static-запросы |
+| 8 | WhiteNoise | статика; всё ниже не видит static-запр��сы |
 | 9 | SimpleRateLimit | инвариант «ПОСЛЕ статики!» (иначе лимитирует css/js) |
 | 10 | ImageOptimization | флаг `IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED` default **False** (settings.py:849), класс no-op при выключенном флаге (image_middleware.py:27) → **мёртвый слой, если env-флаг не выставлен на бою (проверка env — SSH-остаток CB-041)** |
 | 11 | Session | база для всего ниже |
@@ -672,6 +672,78 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 3. **ImageOptimizationMiddleware (№10)** — default-off; если env на бою не включает флаг, слой — чистый no-op → убрать из MIDDLEWARE (окончательная проверка env — SSH-остаток CB-041).
 4. Хрупкие инварианты (№3, №9, №24) существуют только как inline-комментарии — исполнителю: оформить шапку-комментарий над MIDDLEWARE со списком инвариантов из таблицы выше (док-фикс, поведение не меняет).
 5. При `DISABLE_ANALYTICS=true` из цепочки выпадают №23–25 — заказы работают, но UTM/UserAction слепнут полностью; значение флага на бою проверить (SSH-остаток, стык CB-012 п.2).
+
+---
+
+## CB-030. styles.css 565KB — карта подключений и мёртвый вес (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Главное открытие: боевой бандл — НЕ styles.css
+
+Сайт грузит **`styles.purged.css` (394KB)** + `cls-ultimate.css` + `perf-lite.css` (base.html:825–841). `styles.css` (565KB) — это **исходник для регенерации purged**, в браузер он не попадает. Оба файла последний раз менялись в одном коммите `0c07a63f` (29.06.2026) → пайплайн purge синхронен, но **скрипта регенерации в репо НЕТ** (grep по purge/purgecss: 0 скриптов; единственное упоминание — тест `test_blog_structured.py:178`) — процесс живёт у кого-то на локали.
+
+### Карта подключений (факт из шаблонов)
+
+| Файл | Размер | Кто грузит |
+|---|---|---|
+| styles.purged.css | 394KB | base.html — ВСЕ страницы (home: media=print-hack non-blocking; остальные: render-blocking внутри `{% compress css %}`) |
+| cls-ultimate.css + perf-lite.css | ~16KB | base.html — инлайн на home, в compress-бандле на остальных |
+| bootstrap-home-subset.css | 34KB | инлайн только home (base.html:323); остальные страницы тянут полный Bootstrap 5.3.3 с CDN jsdelivr (:332) |
+| home.css | 62KB | index.html + catalog.html |
+| product-detail.css | 70KB | product_detail.html (+_new) |
+| management.css | 234KB | management/base.html (админ-зона, покупателя не трогает) |
+| finance.css | 141KB | finance/base.html |
+| custom-print-configurator.css | 160KB | pages/custom_print.html |
+| pro-brand.css | 59KB | pages/pro_brand.html |
+
+### Мёртвый вес — 1.1MB CSS-сирот в git и collectstatic
+
+Grep по всем шаблонам/py: **ноль ссылок** на: `styles.min.css` (486KB), `styles.direct.css` (448KB), `styles.base.css` (119KB), `critical-home.min.css` (45KB — упомянут в чеклисте CB-031 как «critical-CSS уже есть», ФАКТИЧЕСКИ сирота с 31.05.2026), `styles.css.bak2` (последнее изменение 09.2025). Все сироты датируются 12.2025 и старше — остатки прошлых итераций оптимизации. Они копируются collectstatic на прод при каждом деплое.
+
+### Минификация (вопрос чеклиста) — ДА, включена
+
+`COMPRESS_ENABLED = True` (settings.py:1049), `COMPRESS_OFFLINE = not DEBUG` (:1050), фильтры rCSSmin/rJSmin (:1051–1055) + content-hashing; в settings.py:1024–1041 есть страж, падающий при отсутствии manifest.json → офлайн-компрессия гарантированно собрана на бою (иначе сайт бы не поднялся).
+
+### Доля мёртвого CSS
+
+purged = 394KB из 565KB исходника (−30%). Гипотеза чеклиста «>60% мёртвого» на боевом бандле не подтверждается формально, но purge-safelist неизвестен (скрипта нет в репо) — реальная доля мёртвых селекторов в purged не измерима без пайплайна. Фиксируем: сначала вернуть пайплайн purge в репо, потом измерять.
+
+---
+
+## CB-031. Пошаговый план CSS-диеты (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+По фактам CB-030 план из чеклиста скорректирован:
+
+1. **(1 час, P1)** Удалить из git 5 CSS-сирот: `styles.min.css`, `styles.direct.css`, `styles.base.css`, `critical-home.min.css`, `styles.css.bak2` — **−1.1MB** из репо и с прода (collectstatic). Ссылок ноль — регрессия невозможна; для страховки grep по серверным untracked-скриптам (SSH-остаток, стык CB-043).
+2. **(P1, процесс)** Вернуть в репо пайплайн регенерации `styles.purged.css` (скрипт + safelist динамических классов) — сейчас это невоспроизводимый артефакт; любой новый класс в шаблоне без ручного re-purge молча останется нестилизованным (это же требование RISK-05).
+3. **(P2)** Минификация УЖЕ включена (CB-030) — пункт чеклиста «включить/проверить» закрыт проверкой, действий не требует.
+4. **(P2)** critical-home.min.css — НЕ «уже есть», а сирота: актуальный механизм — инлайн `cls-ultimate+perf-lite` + media=print-hack (Phase 22f). Удалить файл вместе с п.1.
+5. **(P3)** Bootstrap: home использует локальный subset 34KB, остальные страницы — полный CDN-бандл ~200KB. Кандидат на распространение subset-подхода, НО только после появления пайплайна из п.2 (иначе risky).
+6. **(правило)** Новые страницы — только модульные CSS (как уже сделано для home/product-detail/pro-brand); в styles.css новый код не добавлять.
+7. **НЕ делать:** переписывание монолита, повторный PurgeCSS без safelist, трогание management.css/finance.css (админ-зона, не влияет на покупателя).
+
+---
+
+## CB-041. ImageOptimizationMiddleware на shared-хостинге (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+**Код:** `twocomms/image_middleware.py` (230 строк). Два флага: `IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED` (default **False**, settings.py:849) и `IMAGE_OPTIMIZATION_ALLOW_ON_DEMAND` (default **False**, :850).
+
+### Как реально работает (три режима)
+
+| ENABLED | ALLOW_ON_DEMAND | Поведение |
+|---|---|---|
+| false | — | Полный no-op (process_request/response сразу return) — но слой в цепочке остаётся |
+| true | false | Только отдача из готового кэша `media/optimized_cache/` (WebP hit); на miss — оригинал, БЕЗ фоновой оптимизации |
+| true | true | На miss: оригинал первому клиенту + фоновая PIL-конвертация в ThreadPoolExecutor(2) с дедупликацией по пути |
+
+### Находки
+
+1. **P3-баг: `ThreadPoolExecutor(max_workers=2)` создаётся в `__init__` БЕЗУСЛОВНО (image_middleware.py:30)** — даже при ENABLED=false каждый процесс Passenger несёт 2 подготовленных треда + lock + set. При N процессах Passenger — 2N лишних тредов на shared-хостинге при выключенной фиче. Фикс — создавать executor только при `self.enabled and self.allow_on_demand`.
+2. **Память PIL:** `_convert_to_webp_bytes` держит одновременно `bytes(image_data)` (копия, :86) + PIL Image + output_buffer → пик ≈ 3–4× размера исходника на КАЖДУЮ фоновую задачу; больших PNG из media это касается напрямую. Лимита размера НЕТ (только нижний порог 5KB) — 40MB PNG даст ~150MB пик на процесс.
+3. **Кэш без инвалидации:** ключ = MD5 от URL-пути (:53) — при замене файла в media под тем же именем клиенты вечно получают старый WebP (Cache-Control: max-age=31536000). Плюс `optimized_cache/` никогда не чистится (нет cron, стык CB-044 — в кронах его нет).
+4. **`SMALL_IMAGE_THRESHOLD` (200KB, :33) — мёртвая константа:** нигде не используется; синхронная ветка `_optimize_and_build_response` тоже мертва — из process_response вызывается только `_schedule_async_optimization`.
+5. **Вердикт (совпадает с CB-042 п.3):** дефолты выключены → если env на бою не включает флаги (SSH-остаток), убрать слой из MIDDLEWARE целиком. Если включён — заменить runtime-оптимизацию на офлайн-скрипт по cron (прекомпиляция WebP в `optimized_cache/` теми же ключами MD5(path) — формат кэша это позволяет, отдача из кэша останется работать без PIL в рантайме).
+
+**SSH-остаток CB-041:** проверить на бою `IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED`/`ALLOW_ON_DEMAND` в env-файлах и существование/размер `media/optimized_cache/`.
 
 ---
 
@@ -699,3 +771,6 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 | 07.07.2026 | CB-020 | Аудит выполнен: 734 широких except (долг вырос с 697); в 8 денежных файлах 47 SILENT из 120; топ-20 ранжирован; системный P1-паттерн save(update_fields)→save() в 4 местах (webhook Monobank + CAPI-флаг); checkout.py:233 = исполняемое подтверждение «кастом бесплатно» CRO-034 |
 | 07.07.2026 | CB-022 | Аудит выполнен: план декомпозиции 6 god-files по доменам (management/views 5 доменов, 47 моделей management → 7 пакетов, admin.py по контекст-билдерам, cart.py split закрывает рекомендацию CRO-034); правило «новый код — в новые модули»; порядок PR от cart.py к storefront/models.py |
 | 07.07.2026 | CB-042 | Аудит выполнен: 26+1(prod) middleware, полная таблица инвариантов; RequestTrace — подтверждённый мертвец (0 потребителей X-DTF-Debug); ImageOptimization default-off → кандидат на удаление; P3 — мёртвая insert-ветка в production_settings.py:48–53 внутри DISABLE_ANALYTICS |
+| 07.07.2026 | CB-030 | Аудит выполнен: боевой бандл = styles.purged.css 394KB (НЕ styles.css); минификация compressor подтверждённо включена (offline + manifest-страж); 1.1MB CSS-сирот без единой ссылки (styles.min/direct/base, critical-home.min, bak2); пайплайн purge отсутствует в репо |
+| 07.07.2026 | CB-031 | Аудит выполнен: план из 7 шагов скорректирован по фактам — п.1 удалить 1.1MB сирот (1 час), п.2 вернуть purge-пайплайн в репо (критично для RISK-05), минификация уже включена, critical-home.min.css — сирота, а не рабочий critical-CSS |
+| 07.07.2026 | CB-041 | Аудит выполнен: оба флага default-off; P3 — ThreadPoolExecutor(2) создаётся безусловно даже при выключенной фиче (2N тредов на N Passenger-процессов); кэш MD5(path) без инвалидации и без чистки; SMALL_IMAGE_THRESHOLD и синхронная ветка — мёртвый код; вердикт: убрать слой или офлайн-прекомпиляция по cron; SSH-остаток: env-флаги + размер optimized_cache/ |
