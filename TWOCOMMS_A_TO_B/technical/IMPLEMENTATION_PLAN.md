@@ -108,10 +108,11 @@
   Фикс: перенести обе функции в checkout.py С проверкой владельца заказа.
   ✅ **DONE (коммит 6c6b4709):** обе функции восстановлены из backup + усилены: `login_required` + POST-only; владелец проверяется через `Order.objects.get(id=..., user=request.user)` → чужому 404; legacy-значения фронта 'full'/'partial' маппятся на 'online_full'/'prepay_200'; смена метода блокируется (409) при paid/prepaid/checking; в `confirm_payment` скриншот валидируется как реальное изображение (ImageField/Pillow) + лимит 10 МБ, повторная загрузка на paid-заказ → 409, успех → `payment_status='checking'`. Тесты: 3 новых + 2 устаревших stub-теста заменены (test_checkout.py, 27 OK).
 
-- [ ] **W1-7. Mobile hero-CTA обрезаны ≤360px (CRO-002, P0-CRO)** `[REPO]`
+- [x] **W1-7. Mobile hero-CTA обрезаны ≤360px (CRO-002, P0-CRO)** `[REPO]`
   hero height:60vh + overflow:hidden при контенте 727px (base.html:517); PWA-prompt закрывает 45% экрана. Кандидат №1 в причины ATC=0,12%.
   Фикс: min-height/auto height на малых viewport; отложить/уменьшить PWA-prompt. После — перепроверить CLS.
   Приёмка: viewport 360×640 — обе CTA видимы и кликабельны.
+  ✅ **DONE (коммиты 0caf8b04 + f59f7827):** ВАЖНО — 60vh-лок оказался в ТРЁХ местах: base.html:517 (inline `<style>`), **cls-ultimate.css** (инлайнится в `<head>` через `{% inline_static %}` НИЖЕ по каскаду — именно он перебивал фикс) и critical-home.min.css. Во все три добавлен override `@media (max-width:767.98px){.hero-section{height:auto;max-height:none;min-height:60vh;overflow:visible;contain:layout style}}` (size-containment снят, т.к. высота теперь зависит от контента; min-height:60vh сохранён — CLS-резервирование остаётся). Приёмка выполнена в реальном браузере (viewport 360×640, локальный рендер сайта): hero растёт до 793px, все 3 ссылки (обе CTA + «Що означають дві коми?») clipped:false, скриншот подтверждает видимость и кликабельность. PWA-prompt (pwa-install.js): задержка 9s → 30s + показ только после первого взаимодействия (scroll/pointerdown/keydown); web-push.css: max-height баннера на мобильном 78vh → 50vh. Бонус: twocomms/preview_settings.py — sqlite-настройки для локального рендера в песочнице.
 
 - [x] **W1-9. [NEW-501] 🔴 Дропшип-вебхук Monobank без подписи (пропущен аудитом)** `[REPO]`
   ✅ **DONE (коммит db0af339):** `dropshipper_monobank_callback` (orders/dropshipper_views.py) теперь: (1) требует валидный `X-Sign` через общую `_verify_monobank_signature` из W1-3 → иначе 400; (2) статус подтверждается pull-запросом `invoice/status`, а не body; (3) переход в paid идемпотентен (повторный вебхук не дублирует уведомления); (4) обрабатывается полный набор failure-статусов (expired/rejected/reversed/…). Тесты в `test_monobank_webhook.py`.
@@ -175,7 +176,7 @@
   Приёмка: baseline CRO-051 пересчитан; view→ATC правдоподобен.
 
 - [ ] **W2-5. GTM fast-path для платного трафика (CRO-004 / AN-002, P1, ~10 строк)** `[REPO]`
-  GTM грузится по interaction или 12-35s; fast-path для `utm_*`/fbclid/gclid/ttclid отсутствует → paid-bounce невидим, `_fbc` не создаётся.
+  GTM ��рузится по interaction или 12-35s; fast-path для `utm_*`/fbclid/gclid/ttclid отсутствует → paid-bounce невидим, `_fbc` не создаётся.
   Фикс: base.html — при click-id/utm в URL грузить GTM немедленно.
 
 - [ ] **W2-6. TikTok: нестандартные имена событий (AN-020, P1)** `[REPO]`
@@ -237,7 +238,7 @@
   Фикс: REMOTE_ADDR-ключ (или доверенный XFF-hop); точечные лимиты auth/checkout; staff-only Swagger; LOG_IGNORED_EXCEPTIONS+алерт для Redis (TD-012).
 
 - [ ] **W3-6. Логи: 958 MB, ротация, PII (TD-016 / CB-045)** `[SERVER]` + `[REPO]`(конфиг)
-  `nova_poshta_cron.log` = 827 MB без ротации; PII-like hits в логах; rum.log — 24 secret-like hits.
+  `nova_poshta_cron.log` = 827 MB без ротации; PII-like hits в ��огах; rum.log — 24 secret-like hits.
   Фикс: `[REPO]` — logrotate-конфиг/скрипт в репо + маскирование PII в лог-вызовах; `[SERVER]` — user-cron truncate, удалить 8 мёртвых логов.
 
 - [ ] **W3-7. Идемпотентность и гонки статусов (CB-020-паттерн + DB-010)** `[REPO]`
@@ -310,7 +311,7 @@
   У ВСЕХ лонгсливов нет таблицы замеров (нет preset/SizeGrid); seo-pricing блок даёт 24 битые ссылки `/product/{id}/` → 404.
   Фикс: SizeGrid longsleeve + привязки; fix `get_absolute_url` в seo-pricing; событие `view_size_guide`.
 
-- [ ] **W5-5. Сортировка: футболки против позиционирования (CRO-013/CRO-001, P1-продукт)** `[DECISION]` + `[SERVER]`(админка)
+- [ ] **W5-5. Сортиро��ка: футболки против позиционирования (CRO-013/CRO-001, P1-продукт)** `[DECISION]` + `[SERVER]`(админка)
   top-5 priority — все футболки; showcase-хардкод; Category.order все =0. Бренд = лонгсливы/худи.
   Фикс: пересмотр priority в админке (владелец); `[REPO]` — правки hero-текстов (3 строки), showcase-хардкод.
 
@@ -529,6 +530,7 @@ O-5 (GSC-экспорт) ──→ W5-6 (правки мета)
 
 | Дата | ID | Что сделано | Коммит/PR |
 |---|---|---|---|
+| 08.07.2026 | W1-7 | Mobile hero-CTA: 60vh-лок + overflow:hidden найден в 3 местах (base.html inline, cls-ultimate.css via inline_static, critical-home.min.css) — во все добавлен mobile-override (height:auto, overflow:visible, min-height:60vh для CLS); проверено в реальном браузере 360×640 — обе CTA видимы; PWA-prompt: 30s + только после взаимодействия, max-height 50vh | 0caf8b04, f59f7827 |
 | 08.07.2026 | W1-8 | `/test-analytics/` закрыт `@staff_member_required` (Purchase больше не стреляет в боевой Pixel от анонимов); SEO-тест обновлён | 5d2d91f4 |
 | 08.07.2026 | W1-2 | order_success — только владелец (user/session/recent_order_ids) или staff, чужой → 404; success-preview → staff-only; в monobank_return доступ выдаётся только по session-доказательствам | 5d2d91f4 |
 | 08.07.2026 | W1-1 | Гостевой COD подтверждён рабочим (роутинг на create_order уже был на main); DECISION владельца: COD в UI не возвращаем; 2 устаревших чекаут-теста приведены к актуальному Monobank-button-флоу | 26702d78 |
