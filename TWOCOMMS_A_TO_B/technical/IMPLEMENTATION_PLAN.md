@@ -120,6 +120,19 @@
   Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаётся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
   Фикс если подтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизировать имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
+- [ ] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
+  В коде УЖЕ есть правильный паттерн: wholesale- и IG-ветки вебхука делают pull-verify («Гроші підтверджуємо ТІЛЬКИ pull-істиною», monobank.py:1355-1390). Но главный retail-путь идёт мимо: `_apply_monobank_status(order, status_value)` ставит `paid`/`prepaid` чисто по строке статуса из body, без pull-подтверждения и без сверки `paidAmount` с ожидаемой суммой — частичная оплата пометит заказ полностью оплаченным.
+  Фикс (вместе с W1-3): после проверки подписи — pull статуса инвойса через API (паттерн уже есть в management.services.invoice_payments) + сверка amount с `get_prepayment_amount()`/`total_sum`; расхождение → `checking` + алерт, НЕ paid.
+  Приёмка: webhook с верной подписью, но неверной суммой → заказ НЕ paid.
+
+- [ ] **W1-13. [NEW-508] Нет верхнего cap на qty (P2)** `[REPO]`
+  `cart.py:788` — `qty = max(qty, 1)` без верхнего предела; `update_cart` аналогично. qty=999999 → гигантский инвойс/спам-заказы/искажение аналитики.
+  Фикс: `qty = min(max(qty,1), MAX_QTY)` (напр. 50) в обоих эндпоинтах + тест.
+
+- [ ] **W1-14. [NEW-514] Нет защиты от double-submit заказа (P2)** `[REPO]`
+  `create_order` без идемпотентности: двойной сабмит формы (F5/дабл-клик при медленном ответе) = два заказа. `Order.save()` имеет retry на IntegrityError номера, но не дедуп самого заказа.
+  Фикс: одноразовый токен формы в сессии (или дедуп по session+cart-hash в окне 30s) + disable кнопки на клиенте.
+
 - [ ] **W1-8. [GAP] 🔴 Публичный /test-analytics/ стреляет Purchase в боевой Pixel (AN-015)** `[REPO]`
   Публичный URL без auth через 3s авто-стреляет полную воронку с Purchase 599 грн в БОЕВОЙ Meta Pixel. Загрязняет данные прямо сейчас; фикс — один декоратор. (Перенесён из W2-9 как немедленный.)
   Фикс: `@staff_member_required` или удалить маршрут.
@@ -218,6 +231,13 @@
 - [ ] **W3-7. Идемпотентность и гонки статусов (CB-020-паттерн + DB-010)** `[REPO]`
   `save(update_fields)` → молчаливый fallback `save()` в 4 местах (utils.py:542/573/723, nova_poshta_service.py:515 — флаг `purchase_sent`!) = риск lost-update и ПОВТОРНОГО CAPI Purchase; admin_update_dropship_status без select_for_update.
   Фикс: убрать fallback, логировать ошибку; select_for_update в dropship-статусах. НЕ менять control flow массово (RISK-04).
+
+- [ ] **W3-11. [NEW-510] CheckoutCapture: публичный PII-приёмник без лимитов и retention (P2)** `[REPO]`
+  `checkout_capture.py` — `@csrf_exempt` эндпоинт пишет ФИО/телефон/email в `CheckoutCapture` по session_key. Защита — только Sec-Fetch-Site (старые клиенты/curl без заголовка проходят); rate-limit нет (спам-записи); retention нет — `recover_checkouts` читает, никто не чистит (PII копится вечно, связка с NEW-404/AN-051).
+  Фикс: rate-limit по session/IP; чистка capture-записей старше 30-90 дней в trim-команде; упомянуть в privacy policy.
+
+- [ ] **W3-12. [NEW-512] Брутфорс промокодов (P3, часть TD-023)** `[REPO]`
+  `apply_promo_code` без rate-limit — перебор кодов скриптом. Фикс: точечный ratelimit (10/min/session) — включить в W3-5.
 
 - [ ] **W3-9. [NEW-504] Telegram-вебхук без секрета при пустом env (P2)** `[REPO]`/`[SERVER]`
   `accounts/telegram_views.py:20-29`: проверка `X-Telegram-Bot-Api-Secret-Token` ОПЦИОНАЛЬНА — если `TELEGRAM_BOT_WEBHOOK_SECRET` не задан в env, вебхук принимает любые POST.
@@ -403,6 +423,16 @@
 - [ ] **W7-20. [GAP] Каталоги-сироты и .gitignore-дыры (CB-006/CB-007, P3)** `[REPO]`
   .gitignore: добавить artifacts/, output/, tmp/, opros/, newCatalog/, *.xlsx, *.bak2; 7 AI-конфигов (69 файлов ~1.1MB) — решить с владельцем какие живы (похоже только .kiro), .superpowers частично tracked вопреки gitignore.
 
+- [ ] **W7-22. [NEW-509] Decimal→float в денежных payload (P2-системно)** `[REPO]`
+  ~15+ мест (cart.py:583-939, manual_orders.py, utm_api_views.py, viewsets.py): суммы сериализуются `float(Decimal)` → потенциальные 0.30000000000000004 в JSON/пикселях. Модели правильные (DecimalField), проблема только на границе сериализации.
+  Фикс: хелпер `money_str(d) -> str(d.quantize('0.01'))` или DjangoJSONEncoder; менять вместе с касанием соотв. файлов, не массово.
+
+- [ ] **W7-23. [NEW-511] Naive datetime.now() (P3)** `[REPO]`
+  `promo.py:714-720`, `recommendations.py:202`, `utm_api_views.py:522` — `datetime.now()` без timezone вместо `timezone.now()`/`localdate()` → смещение окон «неделя/месяц» в отчётах промо.
+
+- [ ] **W7-24. [NEW-513] /search/ без пагинации (P3, из CRO-015 бонуса)** `[REPO]`
+  `catalog.py:726 def search` — весь результат одним списком; широкий запрос = тяжёлый рендер. Фикс: пагинатор как в каталоге (с сохранением q= в GET — связка W5-2).
+
 - [ ] **W7-21. God-files — только план (CB-022)** `[REPO]`(docs)
   НЕ рефакторить сейчас. Порядок PR при декомпозиции: cart→admin→mgmt-models→mgmt-views→storefront-models; инвариант: пустой makemigrations-дифф; НЕ трогать `_load_legacy_views`. cart.py split (custom_cart.py) заодно закрывает CRO-034.
 
@@ -488,4 +518,5 @@ O-5 (GSC-экспорт) ──→ W5-6 (правки мета)
 | Дата | ID | Что сделано | Коммит/PR |
 |---|---|---|---|
 | 07.07.2026 | plan-v2 | План переписан в единый исполняемый чеклист: влиты gap-check находки ([GAP]: W0-6, W1-8, W2-9/10 хвосты, W3-8, W5-8/9/10, W6-6/7, W7-18/19/20), добавлены секции SERVER_TASKS (S-1…S-12) и OWNER_TASKS (O-1…O-7), теги [REPO]/[SERVER]/[OWNER]/[DECISION] | — |
+| 07.07.2026 | plan-v2.2 | Второй пост-аудит-скан (деньги/идемпотентность/PII): NEW-506 (P1 — retail-вебхук без pull-verify и сверки суммы, при том что wholesale/IG-ветки pull-verify ДЕЛАЮТ), NEW-508 (qty без cap), NEW-514 (double-submit заказа), NEW-510 (CheckoutCapture PII без лимитов/retention), NEW-509 (float в денежных payload), NEW-511 (naive datetime), NEW-512 (брутфорс промо), NEW-513 (/search/ без пагинации). Добавлены W1-12/13/14, W3-11/12, W7-22/23/24 | — |
 | 07.07.2026 | plan-v2.1 | Пост-аудит-скан кода нашёл 5 НОВЫХ проблем вне аудита: NEW-501 (P0 — дропшип-вебхук Monobank без подписи), NEW-502 (P1 — edit_profile принимает FILES без валидации), NEW-503 (P1-check — ubd_doc PII в публичном media), NEW-504 (P2 — Telegram-вебхук без секрета при пустом env), NEW-505 (P3 — eval в survey_engine). Добавлены W1-9/10/11, W3-9/10, S-13/14 | — |
