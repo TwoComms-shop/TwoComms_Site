@@ -289,6 +289,33 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertIsNone(order.promo_code_id)
         self.assertEqual(PromoCodeUsage.objects.filter(promo_code=promo).count(), 1)
 
+    def test_create_order_double_submit_creates_single_order(self):
+        """W1-14 (NEW-514): двойной сабмит той же корзины в окне 30s не
+        создаёт второй заказ, а редиректит на уже созданный."""
+        user = self.make_user(username='double-submit-user', pay_type='cod')
+        self.client.force_login(user)
+        self.set_cart()
+
+        delivery = self.delivery_payload()
+        payload = self._cod_post_payload(delivery, full_name='Double Buyer')
+        fake_order_item_class, _ = self.make_fake_order_item_class()
+
+        with patch('storefront.views.checkout.OrderItem', fake_order_item_class):
+            first = self.client.post(self.order_create_url, payload, secure=True)
+            # Эмулируем double-submit: корзина восстановлена (повторный POST
+            # приходит до того, как клиент увидел очистку корзины).
+            self.set_cart()
+            second = self.client.post(self.order_create_url, payload, secure=True)
+
+        self.assertEqual(Order.objects.count(), 1)
+        order = Order.objects.get()
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 302)
+        self.assertEqual(
+            second['Location'],
+            reverse(self.order_success_url_name, kwargs={'order_id': order.id}),
+        )
+
     def test_create_order_authenticated_uses_profile_data(self):
         self.set_cart()
         delivery = self.delivery_payload(

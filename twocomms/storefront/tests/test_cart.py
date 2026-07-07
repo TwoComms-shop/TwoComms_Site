@@ -144,6 +144,39 @@ class AddToCartTests(CartViewTestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_add_to_cart_caps_quantity(self):
+        """W1-13 (NEW-508): qty=999999 не должно раздувать корзину."""
+        from storefront.views.cart import MAX_CART_ITEM_QTY
+
+        response = self.client.post(
+            reverse("cart_add"),
+            {"product_id": self.product.id, "qty": 999999, "size": "M"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.client.session["cart"][f"{self.product.id}:M:default"]["qty"],
+            MAX_CART_ITEM_QTY,
+        )
+
+    def test_add_to_cart_caps_accumulated_quantity(self):
+        """W1-13: cap работает и при многократном добавлении."""
+        from storefront.views.cart import MAX_CART_ITEM_QTY
+
+        self.client.post(
+            reverse("cart_add"),
+            {"product_id": self.product.id, "qty": MAX_CART_ITEM_QTY, "size": "M"},
+        )
+        self.client.post(
+            reverse("cart_add"),
+            {"product_id": self.product.id, "qty": 10, "size": "M"},
+        )
+
+        self.assertEqual(
+            self.client.session["cart"][f"{self.product.id}:M:default"]["qty"],
+            MAX_CART_ITEM_QTY,
+        )
+
 
 class UpdateAndRemoveCartTests(CartViewTestCase):
     def test_update_cart_changes_quantity_for_existing_key(self):
@@ -157,6 +190,19 @@ class UpdateAndRemoveCartTests(CartViewTestCase):
         self.assertEqual(payload["line_total"], 500.0)
         self.assertEqual(payload["total"], 500.0)
         self.assertEqual(self.client.session["cart"][cart_key]["qty"], 5)
+
+    def test_update_cart_caps_quantity(self):
+        """W1-13 (NEW-508): верхний cap в update_cart."""
+        from storefront.views.cart import MAX_CART_ITEM_QTY
+
+        cart_key = self.set_cart(qty=2)
+
+        response = self.client.post(
+            reverse("update_cart"), {"cart_key": cart_key, "qty": 999999}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.session["cart"][cart_key]["qty"], MAX_CART_ITEM_QTY)
 
     def test_update_cart_rejects_missing_key(self):
         self.set_cart()

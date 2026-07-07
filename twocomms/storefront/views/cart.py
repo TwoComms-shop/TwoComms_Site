@@ -73,6 +73,9 @@ CUSTOM_PRINT_SIZE_MODE_LABELS = {
 
 LOOKUP_RATE_LIMIT = '60/m'
 
+# W1-13 (NEW-508): верхний предел количества одной позиции в корзине
+MAX_CART_ITEM_QTY = 50
+
 
 # ==================== CART VIEWS ====================
 
@@ -517,7 +520,7 @@ def view_cart(request):
                     cart_logger.error('Error saving profile: %s', e, exc_info=True)
                     if is_autosave:
                         return JsonResponse({'ok': False, 'reason': 'error'}, status=200)
-                    messages.error(request, _('Помилка при ��береженні даних. Спробуйте ще раз.'))
+                    messages.error(request, _('П��милка при ��береженні даних. Спробуйте ще раз.'))
             else:
                 if is_autosave:
                     return JsonResponse({'ok': False, 'reason': 'auth'}, status=200)
@@ -785,7 +788,8 @@ def add_to_cart(request):
         qty = int(request.POST.get('qty') or '1')
     except ValueError:
         qty = 1
-    qty = max(qty, 1)
+    # W1-13 (NEW-508): верхний cap, иначе qty=999999 => гигантский инвойс
+    qty = min(max(qty, 1), MAX_CART_ITEM_QTY)
 
     product = get_object_or_404(Product, pk=pid)
     size = normalize_requested_size(product, request.POST.get('size'))
@@ -808,7 +812,8 @@ def add_to_cart(request):
     })
     item['fit_option_code'] = fit_option_code
     item['fit_option_label'] = fit_option_label
-    item['qty'] += qty
+    # W1-13: cap применяется и к накопленному количеству позиции
+    item['qty'] = min(item['qty'] + qty, MAX_CART_ITEM_QTY)
     cart[key] = item
     if qty <= 0:
         _reset_monobank_session(request, drop_pending=True)
@@ -873,7 +878,7 @@ def add_to_cart(request):
 @require_POST
 def update_cart(request):
     """
-    Обновление количества товара в корзине (AJAX).
+    Обнов��ение количества товара в корзине (AJAX).
 
     POST params:
         cart_key: Ключ товара в корзине
@@ -891,6 +896,9 @@ def update_cart(request):
                 'success': False,
                 'error': _('Кількість має бути не менше 1')
             }, status=400)
+
+        # W1-13 (NEW-508): верхний cap количества
+        qty = min(qty, MAX_CART_ITEM_QTY)
 
         cart = get_cart_from_session(request)
 
@@ -1518,7 +1526,7 @@ def contact_manager(request):
         if whatsapp:
             message += f"\n📲 <b>WhatsApp:</b> {whatsapp}"
 
-        message += "\n\n🛒 <b>КОШИК:</b>\n"
+        message += "\n\n🛒 <b>КОШИ��:</b>\n"
 
         total_sum = Decimal('0')
 

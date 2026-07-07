@@ -29,6 +29,52 @@ from ..utm_tracking import (
 
 logger = logging.getLogger(__name__)
 
+# W1-14 (NEW-514): окно дедупликации повторного сабмита заказа, сек.
+ORDER_DEDUP_WINDOW_SECONDS = 30
+ORDER_DEDUP_SESSION_KEY = 'last_order_submit'
+
+
+def _cart_fingerprint(cart, custom_cart):
+    """Стабильный отпечаток содержимого корзины для дедупа double-submit."""
+    import hashlib
+    import json
+    try:
+        payload = json.dumps([cart or {}, custom_cart or {}], sort_keys=True, default=str)
+    except Exception:
+        payload = repr((cart, custom_cart))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _find_recent_duplicate_order(request, fingerprint):
+    """
+    W1-14: если та же корзина уже была отправлена этой сессией за последние
+    ORDER_DEDUP_WINDOW_SECONDS секунд — возвращает id созданного заказа.
+    """
+    import time
+    entry = request.session.get(ORDER_DEDUP_SESSION_KEY)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        if (
+            entry.get('fingerprint') == fingerprint
+            and (time.time() - float(entry.get('ts', 0))) < ORDER_DEDUP_WINDOW_SECONDS
+            and entry.get('order_id')
+        ):
+            return entry['order_id']
+    except Exception:
+        pass
+    return None
+
+
+def _remember_order_submit(request, fingerprint, order):
+    import time
+    request.session[ORDER_DEDUP_SESSION_KEY] = {
+        'fingerprint': fingerprint,
+        'ts': time.time(),
+        'order_id': order.id,
+    }
+    request.session.modified = True
+
 
 def checkout_view(request):
     """
@@ -47,6 +93,14 @@ def create_order(request):
     if not cart and not (isinstance(custom_cart, dict) and custom_cart):
         messages.error(request, _("Ваш кошик порожній"))
         return redirect('cart')
+
+    # W1-14 (NEW-514): защита от double-submit — та же корзина от той же
+    # сессии в течение 30s не создаёт второй заказ, а ведёт на уже созданный.
+    submit_fingerprint = _cart_fingerprint(cart, custom_cart)
+    duplicate_order_id = _find_recent_duplicate_order(request, submit_fingerprint)
+    if duplicate_order_id:
+        logger.info('Duplicate order submit deduped -> order %s', duplicate_order_id)
+        return redirect('order_success', order_id=duplicate_order_id)
 
     # Split custom-print items into approved (join the order) and pending
     # (stay in the cart for a later, combined payment). Regular items are paid now.
@@ -299,6 +353,7 @@ def create_order(request):
                 metadata={'pay_type': pay_type},
             )
             remember_order_in_session(request, order)
+            _remember_order_submit(request, submit_fingerprint, order)
             return redirect('order_success', order_id=order.id)
 
     except Exception as e:

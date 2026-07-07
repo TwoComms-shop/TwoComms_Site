@@ -974,7 +974,28 @@ function setupCartValidation(form) {
         first.scrollIntoView({ behavior: 'smooth', block: 'center' });
         first.focus();
       }
+      return;
     }
+    // W1-14 (NEW-514): защита от double-submit — блокируем повторный сабмит
+    // формы, пока идёт первый запрос (дабл-клик / F5 при медленном ответе).
+    if (form.dataset.submitting === '1') {
+      event.preventDefault();
+      return;
+    }
+    form.dataset.submitting = '1';
+    const submitButtons = form.querySelectorAll('button[type="submit"], input[type="submit"]');
+    submitButtons.forEach((btn) => {
+      btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
+    });
+    // Страховка: если навигации не случилось (ошибка сети), вернуть кнопку.
+    window.setTimeout(() => {
+      form.dataset.submitting = '';
+      submitButtons.forEach((btn) => {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+      });
+    }, 15000);
   });
 }
 
