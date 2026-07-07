@@ -228,3 +228,53 @@ class DropshipperMonobankCallbackSecurityTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 400)
+
+
+class PostPaymentEventsDeferralTests(TestCase):
+    """W2-7 (AN-011/DB-009): внешние отправки — ПОСЛЕ commit, вне row-lock."""
+
+    def setUp(self):
+        self.order = Order.objects.create(
+            full_name='Deferred Buyer',
+            phone='+380501112244',
+            city='Київ',
+            np_office='Відділення №1',
+            pay_type='online_full',
+            status='new',
+            payment_status='unpaid',
+            total_sum=Decimal('260'),
+            payment_invoice_id='inv-defer-1',
+        )
+
+    def test_external_sends_deferred_until_commit(self):
+        from storefront.views.utils import _record_monobank_status
+
+        with patch('storefront.views.utils._send_post_payment_events') as mock_send:
+            with self.captureOnCommitCallbacks(execute=False) as callbacks:
+                _record_monobank_status(
+                    self.order, {'status': 'success'}, source='webhook'
+                )
+            # Внутри транзакции внешние отправки НЕ выполнялись
+            mock_send.assert_not_called()
+            # ...но callback зарегистрирован и выполняется после commit
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()
+            mock_send.assert_called_once()
+            args = mock_send.call_args[0]
+            self.assertEqual(args[0], self.order.pk)
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.payment_status, 'paid')
+
+    def test_no_dispatch_when_status_unchanged(self):
+        from storefront.views.utils import _record_monobank_status
+
+        self.order.payment_status = 'paid'
+        self.order.save(update_fields=['payment_status'])
+
+        with patch('storefront.views.utils._send_post_payment_events') as mock_send:
+            with self.captureOnCommitCallbacks(execute=True):
+                _record_monobank_status(
+                    self.order, {'status': 'success'}, source='webhook'
+                )
+            mock_send.assert_not_called()

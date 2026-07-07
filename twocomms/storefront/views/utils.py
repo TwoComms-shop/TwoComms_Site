@@ -468,7 +468,7 @@ def _record_monobank_status(order, payload, source='api'):
     Args:
         order: Объект заказа
         payload: Данные от Monobank API
-        source: Источник данных ('api' или 'webhook')
+        source: Источник данных ('api' и��и 'webhook')
     """
     if not payload or not order or not getattr(order, 'pk', None):
         return
@@ -573,141 +573,18 @@ def _record_monobank_status_locked(order, payload, source='api'):
         except Exception:
             order.save()
 
-        # Отправляем уведомления только если статус изменился
+        # W2-7 (AN-011/DB-009): внешние HTTP-вызовы (Telegram, Meta CAPI,
+        # TikTok) раньше выполнялись ЗДЕСЬ — внутри select_for_update()
+        # транзакции, удерживая row-lock на заказ до ~25-40s. Теперь они
+        # откладываются через transaction.on_commit и выполняются ПОСЛЕ
+        # снятия блокировки.
         if previous_status != order.payment_status:
-            # Уведомление админу о смене статуса оплаты
-            try:
-                from orders.telegram_notifications import TelegramNotifier
-                notifier = TelegramNotifier()
-                notifier.send_admin_payment_status_update(
-                    order,
-                    old_status=normalized_previous or 'unpaid',
-                    new_status=order.payment_status,
-                    pay_type=pay_type,
-                )
-            except Exception:
-                monobank_logger.exception(
-                    f'Failed to send admin payment status update for order {order.order_number}'
-                )
-
-            # Проверяем что Telegram уведомление еще не отправлено (защита от дублирования)
-            payment_payload = order.payment_payload or {}
-            telegram_notifications = payment_payload.get('telegram_notifications', {})
-            telegram_sent = telegram_notifications.get('order_notification_sent', False)
-
-            # 1. Telegram уведомление (только если еще не отправлено)
-            if not telegram_sent:
-                try:
-                    from orders.telegram_notifications import TelegramNotifier
-                    notifier = TelegramNotifier()
-                    notifier.send_new_order_notification(order)
-
-                    # Сохраняем в payment_payload что уведомление отправлено
-                    if 'telegram_notifications' not in payment_payload:
-                        payment_payload['telegram_notifications'] = {}
-                    payment_payload['telegram_notifications']['order_notification_sent'] = True
-                    payment_payload['telegram_notifications']['order_notification_sent_at'] = timezone.now().isoformat()
-                    payment_payload['telegram_notifications']['order_notification_status'] = order.payment_status
-                    order.payment_payload = payment_payload
-                    order.save(update_fields=['payment_payload'])
-
-                    monobank_logger.info(
-                        f'📱 Telegram notification sent for order {order.order_number} '
-                        f'(status: {previous_status} → {order.payment_status})'
-                    )
-                except Exception as e:
-                    monobank_logger.exception(f'Failed to send Telegram notification for order {order.order_number}: {e}')
-            else:
-                monobank_logger.info(
-                    f'⚠️ Order {order.order_number}: Telegram notification already sent '
-                    f'(status changed: {previous_status} → {order.payment_status}), skipping duplicate'
-                )
-
-            # 2. Facebook событие
-            try:
-                from orders.facebook_conversions_service import get_facebook_conversions_service
-                fb_service = get_facebook_conversions_service()
-                payment_payload = order.payment_payload or {}
-                facebook_events = payment_payload.get('facebook_events', {})
-
-                if fb_service.enabled:
-                    if order.payment_status in ('paid', 'prepaid', 'partial'):
-                        if facebook_events.get('purchase_sent', False):
-                            monobank_logger.info(
-                                f'📊 Facebook Purchase event already sent for order {order.order_number} '
-                                f'(payment_status={order.payment_status}), skipping'
-                            )
-                        else:
-                            purchase_success = fb_service.send_purchase_event(order)
-                            if purchase_success:
-                                if 'facebook_events' not in payment_payload:
-                                    payment_payload['facebook_events'] = {}
-                                payment_payload['facebook_events']['purchase_sent'] = True
-                                payment_payload['facebook_events']['purchase_sent_at'] = timezone.now().isoformat()
-                                order.payment_payload = payment_payload
-                                order.save(update_fields=['payment_payload'])
-                                monobank_logger.info(
-                                    f'✅ Facebook Purchase event sent for order {order.order_number} '
-                                    f'(payment_status={order.payment_status})'
-                                )
-                            else:
-                                monobank_logger.warning(
-                                    f'⚠️ Failed to send Facebook Purchase event for order {order.order_number} '
-                                    f'(payment_status={order.payment_status})'
-                                )
-                else:
-                    monobank_logger.warning(f'⚠️ Facebook Conversions API not enabled, skipping event')
-            except Exception as e:
-                monobank_logger.exception(f'Failed to send Facebook event for order {order.order_number}: {e}')
-
-            # 3. TikTok Events API
-            try:
-                from orders.tiktok_events_service import get_tiktok_events_service
-                tiktok_service = get_tiktok_events_service()
-
-                if tiktok_service.enabled:
-                    if order.payment_status == 'prepaid':
-                        payment_payload = order.payment_payload or {}
-                        tiktok_events = payment_payload.get('tiktok_events', {})
-
-                        if not tiktok_events.get('lead_sent', False):
-                            success = tiktok_service.send_lead_event(order)
-                            if success:
-                                if 'tiktok_events' not in payment_payload:
-                                    payment_payload['tiktok_events'] = {}
-                                payment_payload['tiktok_events']['lead_sent'] = True
-                                payment_payload['tiktok_events']['lead_sent_at'] = timezone.now().isoformat()
-                                order.payment_payload = payment_payload
-                                order.save(update_fields=['payment_payload'])
-                                monobank_logger.info(f'📈 TikTok Lead event sent for order {order.order_number} (prepayment)')
-                            else:
-                                monobank_logger.warning(f'⚠️ Failed to send TikTok Lead event for order {order.order_number}')
-                        else:
-                            monobank_logger.info(f'📈 TikTok Lead event already sent for order {order.order_number} (prepayment), skipping')
-
-                    elif order.payment_status == 'paid':
-                        # Полная оплата → ТОЛЬКО Purchase событие
-                        # Lead отправляется ТОЛЬКО для prepaid (предоплата)
-                        payment_payload = order.payment_payload or {}
-                        tiktok_events = payment_payload.get('tiktok_events', {})
-
-                        purchase_success = tiktok_service.send_purchase_event(order)
-                        if purchase_success:
-                            if 'tiktok_events' not in payment_payload:
-                                payment_payload['tiktok_events'] = {}
-                            payment_payload['tiktok_events']['purchase_sent'] = True
-                            payment_payload['tiktok_events']['purchase_sent_at'] = timezone.now().isoformat()
-                            order.payment_payload = payment_payload
-                            order.save(update_fields=['payment_payload'])
-                            monobank_logger.info(f'✅ TikTok Purchase event sent for order {order.order_number} (full payment)')
-                        else:
-                            monobank_logger.warning(f'⚠️ Failed to send TikTok Purchase event for order {order.order_number}')
-                else:
-                    monobank_logger.warning('⚠️ TikTok Events API not enabled, skipping events')
-            except ImportError:
-                monobank_logger.debug('TikTok Events service module not found, skipping')
-            except Exception as e:
-                monobank_logger.exception(f'Failed to send TikTok event for order {order.order_number}: {e}')
+            order_pk = order.pk
+            prev_for_notify = normalized_previous or 'unpaid'
+            pay_type_for_notify = pay_type
+            transaction.on_commit(
+                lambda: _send_post_payment_events(order_pk, prev_for_notify, pay_type_for_notify)
+            )
 
         return
 
@@ -722,6 +599,162 @@ def _record_monobank_status_locked(order, payload, source='api'):
         order.save(update_fields=update_fields)
     except Exception:
         order.save()
+
+
+def _send_post_payment_events(order_pk, previous_status, pay_type):
+    """
+    W2-7: отправка внешних событий (Telegram, Meta CAPI, TikTok) ПОСЛЕ
+    коммита транзакции — row-lock на заказ уже снят. Дедуп-флаги
+    (purchase_sent/lead_sent/order_notification_sent) сохраняются в
+    payment_payload, как и раньше.
+    """
+    from django.utils import timezone
+
+    from orders.models import Order
+
+    try:
+        order = Order.objects.select_related('user').get(pk=order_pk)
+    except Order.DoesNotExist:
+        monobank_logger.error('Post-payment events: order %s not found', order_pk)
+        return
+
+    # Уведомление админу о смене статуса оплаты
+    try:
+        from orders.telegram_notifications import TelegramNotifier
+        notifier = TelegramNotifier()
+        notifier.send_admin_payment_status_update(
+            order,
+            old_status=previous_status or 'unpaid',
+            new_status=order.payment_status,
+            pay_type=pay_type,
+        )
+    except Exception:
+        monobank_logger.exception(
+            f'Failed to send admin payment status update for order {order.order_number}'
+        )
+
+    # Проверяем что Telegram уведомление еще не отправлено (защита от дублирования)
+    payment_payload = order.payment_payload or {}
+    telegram_notifications = payment_payload.get('telegram_notifications', {})
+    telegram_sent = telegram_notifications.get('order_notification_sent', False)
+
+    # 1. Telegram уведомление (только если еще не отправлено)
+    if not telegram_sent:
+        try:
+            from orders.telegram_notifications import TelegramNotifier
+            notifier = TelegramNotifier()
+            notifier.send_new_order_notification(order)
+
+            # Сохраняем в payment_payload что уведомление отправлено
+            if 'telegram_notifications' not in payment_payload:
+                payment_payload['telegram_notifications'] = {}
+            payment_payload['telegram_notifications']['order_notification_sent'] = True
+            payment_payload['telegram_notifications']['order_notification_sent_at'] = timezone.now().isoformat()
+            payment_payload['telegram_notifications']['order_notification_status'] = order.payment_status
+            order.payment_payload = payment_payload
+            order.save(update_fields=['payment_payload'])
+
+            monobank_logger.info(
+                f'📱 Telegram notification sent for order {order.order_number} '
+                f'(status: {previous_status} → {order.payment_status})'
+            )
+        except Exception as e:
+            monobank_logger.exception(f'Failed to send Telegram notification for order {order.order_number}: {e}')
+    else:
+        monobank_logger.info(
+            f'⚠️ Order {order.order_number}: Telegram notification already sent '
+            f'(status changed: {previous_status} → {order.payment_status}), skipping duplicate'
+        )
+
+    # 2. Facebook событие
+    try:
+        from orders.facebook_conversions_service import get_facebook_conversions_service
+        fb_service = get_facebook_conversions_service()
+        payment_payload = order.payment_payload or {}
+        facebook_events = payment_payload.get('facebook_events', {})
+
+        if fb_service.enabled:
+            if order.payment_status in ('paid', 'prepaid', 'partial'):
+                if facebook_events.get('purchase_sent', False):
+                    monobank_logger.info(
+                        f'📊 Facebook Purchase event already sent for order {order.order_number} '
+                        f'(payment_status={order.payment_status}), skipping'
+                    )
+                else:
+                    purchase_success = fb_service.send_purchase_event(order)
+                    if purchase_success:
+                        if 'facebook_events' not in payment_payload:
+                            payment_payload['facebook_events'] = {}
+                        payment_payload['facebook_events']['purchase_sent'] = True
+                        payment_payload['facebook_events']['purchase_sent_at'] = timezone.now().isoformat()
+                        order.payment_payload = payment_payload
+                        order.save(update_fields=['payment_payload'])
+                        monobank_logger.info(
+                            f'✅ Facebook Purchase event sent for order {order.order_number} '
+                            f'(payment_status={order.payment_status})'
+                        )
+                    else:
+                        monobank_logger.warning(
+                            f'⚠️ Failed to send Facebook Purchase event for order {order.order_number} '
+                            f'(payment_status={order.payment_status})'
+                        )
+        else:
+            monobank_logger.warning(f'⚠️ Facebook Conversions API not enabled, skipping event')
+    except Exception as e:
+        monobank_logger.exception(f'Failed to send Facebook event for order {order.order_number}: {e}')
+
+    # 3. TikTok Events API
+    try:
+        from orders.tiktok_events_service import get_tiktok_events_service
+        tiktok_service = get_tiktok_events_service()
+
+        if tiktok_service.enabled:
+            if order.payment_status == 'prepaid':
+                payment_payload = order.payment_payload or {}
+                tiktok_events = payment_payload.get('tiktok_events', {})
+
+                if not tiktok_events.get('lead_sent', False):
+                    success = tiktok_service.send_lead_event(order)
+                    if success:
+                        if 'tiktok_events' not in payment_payload:
+                            payment_payload['tiktok_events'] = {}
+                        payment_payload['tiktok_events']['lead_sent'] = True
+                        payment_payload['tiktok_events']['lead_sent_at'] = timezone.now().isoformat()
+                        order.payment_payload = payment_payload
+                        order.save(update_fields=['payment_payload'])
+                        monobank_logger.info(f'📈 TikTok Lead event sent for order {order.order_number} (prepayment)')
+                    else:
+                        monobank_logger.warning(f'⚠️ Failed to send TikTok Lead event for order {order.order_number}')
+                else:
+                    monobank_logger.info(f'📈 TikTok Lead event already sent for order {order.order_number} (prepayment), skipping')
+
+            elif order.payment_status == 'paid':
+                # Полная оплата → ТОЛЬКО Purchase событие
+                # Lead отправляется ТОЛЬКО для prepaid (предоплата)
+                payment_payload = order.payment_payload or {}
+                tiktok_events = payment_payload.get('tiktok_events', {})
+
+                # W2-3: pre-check purchase_sent — раньше Purchase мог уйти повторно
+                if tiktok_events.get('purchase_sent', False):
+                    monobank_logger.info(f'📈 TikTok Purchase event already sent for order {order.order_number}, skipping')
+                else:
+                    purchase_success = tiktok_service.send_purchase_event(order)
+                    if purchase_success:
+                        if 'tiktok_events' not in payment_payload:
+                            payment_payload['tiktok_events'] = {}
+                        payment_payload['tiktok_events']['purchase_sent'] = True
+                        payment_payload['tiktok_events']['purchase_sent_at'] = timezone.now().isoformat()
+                        order.payment_payload = payment_payload
+                        order.save(update_fields=['payment_payload'])
+                        monobank_logger.info(f'✅ TikTok Purchase event sent for order {order.order_number} (full payment)')
+                    else:
+                        monobank_logger.warning(f'⚠️ Failed to send TikTok Purchase event for order {order.order_number}')
+        else:
+            monobank_logger.warning('⚠️ TikTok Events API not enabled, skipping events')
+    except ImportError:
+        monobank_logger.debug('TikTok Events service module not found, skipping')
+    except Exception as e:
+        monobank_logger.exception(f'Failed to send TikTok event for order {order.order_number}: {e}')
 
 
 def _verify_monobank_signature(request):
