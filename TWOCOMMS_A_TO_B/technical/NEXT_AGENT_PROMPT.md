@@ -51,7 +51,7 @@
   - **resumable**: результаты пишутся построчно (JSONL) в `TWOCOMMS_A_TO_B/technical/data/seo_crawl_results.jsonl`; при перезапуске скрипт читает файл и продолжает с места остановки — просто запусти `python3 TWOCOMMS_A_TO_B/technical/scripts/seo_combined_slow_crawl.py` в фоне;
   - фазы: (1) sitemap collection (489 URL), (2) обход всех sitemap-URL со сбором status/title/description/canonical/robots/og/h1/внутренних ссылок, (3) проверка внутренних ссылок, которых нет в sitemap, (4) тесты 404 (несуществующие URL) и 410 для удалённых товаров. В конце пишет `{"type":"done"}`.
 - **Анализатор `scripts/seo_crawl_analyze.py`** — читает JSONL, печатает готовый отчёт: не-200 статусы, битые ссылки, редиректы, дубли title/description, длины, отсутствие canonical/H1/OG, noindex. Запуск: `python3 TWOCOMMS_A_TO_B/technical/scripts/seo_crawl_analyze.py`.
-- **Состояние на момент передачи: ~290/489 страниц пройдено, ВСЕ 200.** Если краулер умер вместе с песочницей — просто перезапусти, он продолжит (данные в git!).
+- **Состояние на момент передачи: 431/489 страниц фазы 2 пройдено, ВСЕ 200 (снапшот в git).** Осталось ~58 URL фазы 2 + фазы 3–4. Если краулер умер вместе с песочницей — просто перезапусти той же командой, он продолжит с места остановки. После появления `{"type":"done"}` в JSONL: запусти `python3 TWOCOMMS_A_TO_B/technical/scripts/seo_crawl_analyze.py` и перенеси финальные цифры в SEO-006/SEO-007.
 - **Промежуточные находки (уже в чек-листе, строки SEO-006/SEO-007):**
   - 0 битых ссылок, 0 редиректов, 0 страниц без title/description/canonical/H1/OG, 0 дублей title, 0 noindex — база очень чистая;
   - 1 интермиттентный 500 на `/blog/` (при повторе 200; паттерн Passenger-overload, коррелирует с SEO-010);
