@@ -22,6 +22,41 @@
 
 **Остаток (владелец):** выборочная валидация 2–3 страниц в Rich Results Test; убедиться, что product_faq_items не дублируют FAQ категории на цветных лендингах (риск self-competition в FAQ-сниппетах).
 
+## SEO-008. Google Merchant feed (код + live-замер, 07.07.2026)
+
+**Вывод: фид динамический и живой (384 оффера / 65 групп), НО есть P1 — все `<g:link>` дают 301-редирект с потерей цвета, и P2 — availability захардкожен `in_stock`.**
+
+### Архитектура (как реально работает)
+
+1. **Фид — динамический, а не статический.** URL-ы `/google_merchant_feed.xml`, `/google-merchant-feed-v2.xml`, `/merchant/product-feed` (twocomms/urls.py:95–97) + `/google-merchant-feed.xml` (storefront/urls.py:533) — все ведут в один view `google_merchant_feed` (storefront/views/static_pages.py:1173) → `build_google_merchant_feed_xml()` (services/marketplace_feeds.py:1140). Live-замер: все 3 корневых URL отдают HTTP 200, `application/xml`, 2 154 088 байт, генерация 2.3–3.3 s, идентичный контент.
+2. **Статический файл `twocomms/google_merchant_feed.xml` (378 байт, ПУСТОЙ — только channel без items) — мёртвый артефакт в git.** Он НЕ отдаётся по URL (роут перехватывает Django-view), но это дефолтный `--output` команды `generate_google_merchant_feed` — т.е. при запуске команды без аргументов пустышка перезаписывается в корень проекта. P3: убрать из git / сменить дефолтный output на `tmp/feeds/`.
+3. **Автообновление:** сигналы post_save/post_delete на Product/Category/ProductImage/Color/ProductColorVariant/ProductColorImage (storefront/signals.py:44–98) → `mark_feeds_dirty()` (flag-файл `tmp/feeds/feeds_dirty.flag`) → cron должен гонять `manage.py regenerate_feeds_if_dirty` (services/feeds_queue.py, файловый debounce вместо Celery). Поскольку боевой URL рендерит XML на лету из БД — «свежесть» фида по HTTP гарантирована даже без cron; cron-обвязка актуальна только для файловых снапшотов. **Остаток (SSH):** проверить crontab на сервере — есть ли `regenerate_feeds_if_dirty`.
+
+### Live-валидация контента фида (замер 07.07.2026)
+
+| Проверка | Результат |
+|---|---|
+| Офферов `<item>` | 384 (65 item_group — сходится с 65 published-товарами из CRO-020) |
+| Уникальность `g:id` | 384/384, дублей 0 |
+| id/title/description/link/image_link/price/brand/mpn/condition | 384/384 у всех |
+| color/size/gender/age_group/item_group_id/google_product_category/product_type | 384/384 |
+| gtin | 0/384 (barcode пуст в БД; `is_valid_gtin` фильтрует), `identifier_exists` НЕ проставлен |
+| sale_price | 373/384 (пара price/sale_price корректна: price=base, sale_price=final) |
+| Длины: title max 79 (<150 OK), description 341–2350 (<5000 OK) | OK |
+| image_link (выборка 5 случайных) | все HTTP 200 |
+| availability | 384/384 = `in_stock` (захардкожено, см. находку 2) |
+
+### Находки
+
+1. **P1 — ВСЕ 384 `<g:link>` дают 301 с потерей цвета.** `_product_url()` (marketplace_feeds.py:662) строит `?size=S&color=Чорний`, а сайт 301-редиректит на канонический путь `/product/{slug}/{size}/`, ВЫБРАСЫВАЯ `color` (проверено live: и «Чорний», и «Білий» редиректят на один и тот же `/product/kharkiv-district-hd/m/`). Последствия: (а) политика Merchant требует финальный URL — предупреждения «URL redirect», лишний crawl; (б) клик по объявлению конкретного цвета ведёт на дефолтный цвет — риск disapproval «mismatched landing page» и падение конверсии платного трафика; (в) атрибуция цвета ломается. Фикс: строить в фиде сразу канонический `/product/{slug}/{size_slug}/` + цвет в форме, которую PDP реально принимает.
+2. **P2 — availability захардкожен.** `FeedOffer.available` — всегда `return True` (marketplace_feeds.py:245), `stock` из БД для Google игнорируется (все 384 = `in_stock`). Комментарий в коде объясняет: made-to-order DTF, все залишки 0 (согласуется с CRO-014: у всех 75 вариантов stock=0). Осознанное решение, но: снятый с производства published-товар фид продолжит продавать. Связка с CRO-014 (механики наличия нет системно).
+3. **P3 — gtin 0/384 и `identifier_exists=false` не проставлен.** Работает через brand+mpn, но mpn синтетический (`{article}-{product.id}`), не настоящий производительский номер — формально нарушение политики MPN, при ручной ревизии Merchant может дать warning.
+4. **P3 — `<g:shipping>` не задан** — доставка должна быть настроена на уровне аккаунта Merchant Center (проверить у владельца), иначе офферы не пройдут.
+5. **P3 — 4 дублирующихся URL фида** (3 в корневом urls.py + 1 в storefront/urls.py); лишние стоит закрыть/301-нуть на один канонический, чтобы не плодить точки генерации тяжёлого XML.
+6. **P3 — нет кэширования ответа фида.** Каждый GET = полный проход по БД + сборка 2 MB XML ~3 s CPU на shared-хостинге, включая запросы ботов. Отдавать из файлового снапшота (`tmp/feeds/`) или кэшировать 10–30 мин.
+
+**Остаток (владелец/SSH):** статус фида в Merchant Center (принят/warnings — доступ у владельца); crontab `regenerate_feeds_if_dirty`; точечная сверка цен фида с БД (по live-данным цены согласованы с PDP-выборкой CRO-020).
+
 ## Журнал раздела
 
 | Дата | Пункт | Резюме |
