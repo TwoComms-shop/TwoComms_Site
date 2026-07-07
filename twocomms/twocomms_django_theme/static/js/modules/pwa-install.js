@@ -1,6 +1,9 @@
 const DISMISS_UNTIL_KEY = 'twc-pwa-install-dismissed-until';
 const INSTALLED_KEY = 'twc-pwa-installed';
-const PROMPT_DELAY_MS = 9000;
+// W1-7 (CRO-002): 9s было слишком агрессивно — баннер накрывал hero-CTA на
+// мобильных почти сразу. Показываем не раньше 30s И только после первого
+// взаимодействия (скролл/тап), чтобы не мешать первому экрану.
+const PROMPT_DELAY_MS = 30000;
 const EXCLUDED_PATH_PREFIXES = [
   '/admin/',
   '/api/',
@@ -22,6 +25,8 @@ const CONVERSION_ROUTE_NAMES = new Set([
 let deferredPrompt = null;
 let promptTimer = null;
 let registerPromise = null;
+// W1-7: не показываем баннер, пока пользователь не проскроллил/не тапнул.
+let userHasInteracted = false;
 
 function isStandalone() {
   try {
@@ -128,6 +133,10 @@ function hasAnotherPromptOpen() {
 
 function shouldShowPrompt() {
   if (!deferredPrompt || isStandalone() || wasInstalled()) {
+    return false;
+  }
+  // W1-7: первый экран (hero + CTA) должен остаться чистым до взаимодействия.
+  if (!userHasInteracted) {
     return false;
   }
   if (document.visibilityState === 'hidden' || isDismissed() || isExcludedPath()) {
@@ -338,6 +347,16 @@ export function initPwaInstall() {
 
   ensureAppShellWorker().catch(() => undefined);
   trackLaunchIfNeeded();
+
+  // W1-7: фиксируем первое взаимодействие; если таймер уже отработал —
+  // перепланируем показ после взаимодействия.
+  const markInteracted = () => {
+    userHasInteracted = true;
+    schedulePrompt();
+  };
+  window.addEventListener('scroll', markInteracted, { once: true, passive: true });
+  window.addEventListener('pointerdown', markInteracted, { once: true, passive: true });
+  window.addEventListener('keydown', markInteracted, { once: true });
 
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();

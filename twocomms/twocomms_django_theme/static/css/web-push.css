@@ -254,12 +254,15 @@
 }
 
 @media (max-width: 640px) {
+  /* W1-7 (CRO-002): раньше баннер занимал до 78vh (~45% и больше экрана)
+     и закрывал hero-CTA. Ограничиваем высоту половиной экрана — контент
+     внутри скроллится (.web-push-prompt__content: overflow-y auto). */
   .web-push-prompt {
     right: max(12px, calc(env(safe-area-inset-right, 0px) + 8px));
     left: max(12px, calc(env(safe-area-inset-left, 0px) + 8px));
     bottom: max(12px, calc(env(safe-area-inset-bottom, 0px) + 8px));
     width: auto;
-    max-height: min(78vh, 560px);
+    max-height: min(50vh, 420px);
     border-radius: 24px;
   }
 

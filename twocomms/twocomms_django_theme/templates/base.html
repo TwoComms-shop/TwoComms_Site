@@ -530,6 +530,21 @@
       overflow: hidden;
     }
 
+    /* W1-7 (CRO-002): на малых экранах контент hero (~727px) выше 60vh
+       (384px при 640px-экране) — фиксированная высота + overflow:hidden
+       обрезали обе CTA-кнопки. Даём hero расти по контенту на мобильных.
+       contain: size убираем (высота теперь зависит от контента), CLS не
+       страдает: layout-containment сохраняем. */
+    @media (max-width: 767.98px) {
+      .hero-section {
+        height: auto;
+        max-height: none;
+        min-height: 60vh;
+        overflow: visible;
+        contain: layout;
+      }
+    }
+
     .hero-content {
       display: flex;
       justify-content: center;

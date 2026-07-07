@@ -98,13 +98,15 @@
   Фикс: (а) COD → логика monobank-пути (`promo_code_id` + `can_be_used_by_user` + `record_usage(user, order)`); (б) `record_usage` при УСПЕШНОЙ оплате; (в) математика остатка; (г) чистка `promo_code_data`; (д) событие `coupon_apply` (TECH-023).
   Приёмка: COD-заказ с промо имеет `discount_amount>0`; повторный one_time-код отклоняется; `PromoCodeUsage.count() > 0`.
 
-- [ ] **W1-5. Ошибочные состояния чекаута (CRO-047, P1)** `[REPO]`
+- [x] **W1-5. Ошибочные состояния чекаута (CRO-047, P1)** `[REPO]`
   (а) исчезнувший товар молча выбрасывается (`if not product: continue` — checkout.py:187, monobank.py:547); (б) COD без guard `total_sum <= 0` → заказ на 0 грн; (в) `monobank_create_invoice` + `clear_cart` ВНУТРИ `transaction.atomic()`; (г) стаб `monobank_webhook` в checkout.py:268; (д) латентный TypeError `monobank_create_invoice(request, order.id)`.
   Фикс: missing_items → message+redirect без заказа; guard; порядок commit→инвойс→clear_cart; удалить стаб; валидация online-веток COD-формы.
+  ✅ **DONE (коммит 0a934454):** (а) `create_order`: товары проверяются ДО atomic — недоступные удаляются из корзины, message + redirect('cart'), заказ НЕ создаётся; `monobank_create_invoice`: любой отсутствующий товар → явная JSON-ошибка до создания заказа/инвойса; (б) guard `total_sum <= 0` внутри транзакции (`_ZeroTotalOrderError` → rollback + message); (в) в monobank.py блок после коммита заказа (invoice/create, CAPI, Telegram) выведен ИЗ `transaction.atomic()` (dedent), при ошибке до привязки invoice_id осиротевший заказ подчищается best-effort; (г) стаб monobank_webhook удалён ещё в db0af339; (д) call-sites `monobank_create_invoice(request, order.id)` не осталось — online-типы редиректятся к кнопке Monobank. Тесты: `test_create_order_missing_product_aborts_without_order`, `test_create_order_zero_total_aborts_without_order`.
 
-- [ ] **W1-6. Кабинет: смена оплаты молча не работает (Находка 3, HIGH)** `[REPO]`
+- [x] **W1-6. Кабинет: смена оплаты молча не работает (Находка 3, HIGH)** `[REPO]`
   `update_payment_method`/`confirm_payment` (checkout.py:305-320) — заглушки (redirect вместо JSON). Рабочие версии — в `views.py.backup:2679,3831`.
   Фикс: перенести обе функции в checkout.py С проверкой владельца заказа.
+  ✅ **DONE (коммит 6c6b4709):** обе функции восстановлены из backup + усилены: `login_required` + POST-only; владелец проверяется через `Order.objects.get(id=..., user=request.user)` → чужому 404; legacy-значения фронта 'full'/'partial' маппятся на 'online_full'/'prepay_200'; смена метода блокируется (409) при paid/prepaid/checking; в `confirm_payment` скриншот валидируется как реальное изображение (ImageField/Pillow) + лимит 10 МБ, повторная загрузка на paid-заказ → 409, успех → `payment_status='checking'`. Тесты: 3 новых + 2 устаревших stub-теста заменены (test_checkout.py, 27 OK).
 
 - [ ] **W1-7. Mobile hero-CTA обрезаны ≤360px (CRO-002, P0-CRO)** `[REPO]`
   hero height:60vh + overflow:hidden при контенте 727px (base.html:517); PWA-prompt закрывает 45% экрана. Кандидат №1 в причины ATC=0,12%.
@@ -477,7 +479,7 @@
 - [ ] **O-4. TikTok:** Events Manager сверка (AN-020).
 - [ ] **O-5. GSC/PSI:** field-данные CWV (CRO-003/SEO-010); GSC-экспорт позиций ПЕРЕД правками мета (RISK-13); Rich Results Test (SEO-020/021/022/023).
 - [ ] **O-6. Сервер:** смена SSH-пароля (W0-1); разбор 10 git-stash (W0-5).
-- [ ] **O-7. Продуктовые решения:** возвращать ли COD в UI (W1-1); склад vs под-заказ (W5-7); фильтр по размеру (W6-7); priority товаров — лонгсливы/худи первыми (W5-5); TikTok handle для sameAs (W5-8); судьба 3 неопубликованных товаров (W5-10); gtin/shipping в GMC-фиде (W5-1); судьба AI-конфигов в репо (W7-20).
+- [ ] **O-7. Продуктовые решения:** возвращать ли COD в UI (W1-1); склад vs под-заказ (W5-7); фильтр по размеру (W6-7); priority товаров — лонгсливы/худи первыми (W5-5); TikTok handle для sameAs (W5-8); судьба 3 не��публикованных товаров (W5-10); gtin/shipping в GMC-фиде (W5-1); судьба AI-конфигов в репо (W7-20).
 
 ---
 
@@ -488,7 +490,7 @@ W0-3 (бэкапы) ──→ любые миграции (W4-1, W4-3)
 W0-4 (смок-тесты) ──→ W1-* (все фиксы чекаута/оплаты)
 W1-1 (guest COD) ──→ W2-1 (UTM в COD-заказе) ──→ W2-2 (is_converted) ──→ AN-038 (отчёты оживают)
 W2-3 (purchase-определение) ──→ W2-6 (TikTok имена), W4-6 (offline-конверсии)
-W2-4 (бот-фильтр) ──→ пересчёт baseline CRO-051 ──→ честные CRO-выводы
+W2-4 (бот-фильтр) ──→ пересчёт baseline CRO-051 ──→ честные CRO-выв��ды
 W3-3 (кэш/куки) ↔ W3-4 (CSRF в кэше) — делать вместе
 W5-9 (переводы) ──→ S-10 (compilemessages)
 W7 (гигиена) — только после стабилизации Волн 0-2
@@ -534,6 +536,8 @@ O-5 (GSC-экспорт) ──→ W5-6 (правки мета)
 | 08.07.2026 | W1-4 | Промокоды: COD-путь читает promo_code_id + can_be_used_by_user (auth-only); record_usage вызывается (COD — при размещении, online — при подтверждённой оплате, идемпотентно); математика остатка prepay_200 исправлена (минус скидка); promo.use() при создании инвойса убран; coupon_apply событие + миграция 0079 | f79ed36e |
 | 08.07.2026 | W1-13, W1-14 | MAX_CART_ITEM_QTY=50 в add_to_cart/update_cart (вкл. накопленное qty); дедуп double-submit в create_order (session + sha256 корзины, окно 30s → редирект на существующий заказ) + disable кнопок на клиенте (cart.js); 4 новых теста | 91881756 |
 | 08.07.2026 | W1-10 | Валидация загрузок профиля: validate_profile_upload_size (10 МБ) в ProfileSetupForm; edit_profile валидирует файлы через ImageField + лимит, email через validate_email; FILE_UPLOAD_MAX_MEMORY_SIZE/DATA_UPLOAD_MAX_MEMORY_SIZE в settings; 2 новых теста | 5d59ef69 |
+| 08.07.2026 | W1-5 | Missing-товары → явная ошибка без заказа (COD + monobank-инвойс); guard total<=0; внешние HTTP-вызовы (invoice/CAPI/Telegram) выведены из transaction.atomic + cleanup осиротевшего заказа; 2 новых теста | 0a934454 |
+| 08.07.2026 | W1-6 | update_payment_method/confirm_payment восстановлены из backup: login_required+POST, владелец через get(user=request.user)→404, lock после оплаты (409), скриншот — Pillow-валидация + 10 МБ; 3 новых теста | 6c6b4709 |
 | 07.07.2026 | plan-v2 | План переписан в единый исполняемый чеклист: влиты gap-check находки ([GAP]: W0-6, W1-8, W2-9/10 хвосты, W3-8, W5-8/9/10, W6-6/7, W7-18/19/20), добавлены секции SERVER_TASKS (S-1…S-12) и OWNER_TASKS (O-1…O-7), теги [REPO]/[SERVER]/[OWNER]/[DECISION] | — |
 | 07.07.2026 | plan-v2.2 | Второй пост-аудит-скан (деньги/идемпотентность/PII): NEW-506 (P1 — retail-вебхук без pull-verify и сверки суммы, при том что wholesale/IG-ветки pull-verify ДЕЛАЮТ), NEW-508 (qty без cap), NEW-514 (double-submit заказа), NEW-510 (CheckoutCapture PII без лимитов/retention), NEW-509 (float в денежных payload), NEW-511 (naive datetime), NEW-512 (брутфорс промо), NEW-513 (/search/ без пагинации). Добавлены W1-12/13/14, W3-11/12, W7-22/23/24 | — |
 | 07.07.2026 | plan-v2.1 | Пост-аудит-скан кода нашёл 5 НОВЫХ проблем вне аудита: NEW-501 (P0 — дропшип-вебхук Monobank без подписи), NEW-502 (P1 — edit_profile принимает FILES без валидации), NEW-503 (P1-check — ubd_doc PII в публичном media), NEW-504 (P2 — Telegram-вебхук без секрета при пустом env), NEW-505 (P3 — eval в survey_engine). Добавлены W1-9/10/11, W3-9/10, S-13/14 | — |
