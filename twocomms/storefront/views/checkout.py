@@ -498,7 +498,16 @@ def update_payment_method(request):
     if not order_id or not payment_method:
         return JsonResponse({'success': False, 'error': _('Відсутні необхідні дані')}, status=400)
 
-    if payment_method not in ('full', 'partial'):
+    # Фронт my_orders.html шлёт legacy-значения 'full'/'partial' —
+    # маппим на канонические pay_type.
+    pay_type_map = {
+        'full': 'online_full',
+        'partial': 'prepay_200',
+        'online_full': 'online_full',
+        'prepay_200': 'prepay_200',
+    }
+    canonical_pay_type = pay_type_map.get(payment_method)
+    if not canonical_pay_type:
         return JsonResponse({'success': False, 'error': _('Невірний метод оплати')}, status=400)
 
     try:
@@ -514,10 +523,12 @@ def update_payment_method(request):
             'error': _('Спосіб оплати не можна змінити після оплати або під час перевірки.')
         }, status=409)
 
-    order.pay_type = payment_method
+    order.pay_type = canonical_pay_type
     order.save(update_fields=['pay_type'])
 
-    method_display = _('Повна передоплата') if payment_method == 'full' else _('Часткова передоплата')
+    method_display = (
+        _('Повна передоплата') if canonical_pay_type == 'online_full' else _('Часткова передоплата')
+    )
     return JsonResponse({
         'success': True,
         'payment_method': payment_method,
@@ -543,7 +554,7 @@ def confirm_payment(request):
         return JsonResponse({'success': False, 'error': _('Відсутній ID замовлення')}, status=400)
 
     if not payment_screenshot:
-        return JsonResponse({'success': False, 'error': _('Будь ласка, завантажте скріншот оплати')}, status=400)
+        return JsonResponse({'success': False, 'error': _('Будь ласка, заван��ажте скріншот оплати')}, status=400)
 
     try:
         order = Order.objects.get(id=order_id, user=request.user)

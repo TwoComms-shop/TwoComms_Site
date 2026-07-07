@@ -289,6 +289,107 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertIsNone(order.promo_code_id)
         self.assertEqual(PromoCodeUsage.objects.filter(promo_code=promo).count(), 1)
 
+    def test_update_payment_method_requires_owner(self):
+        """W1-6: сменить метод оплаты может только владелец заказа."""
+        owner = self.make_user(username='pm-owner')
+        stranger = self.make_user(username='pm-stranger')
+        order = Order.objects.create(
+            user=owner, full_name='Owner', phone='+380991112233',
+            city='Київ', np_office='1', pay_type='online_full',
+            payment_status='unpaid', total_sum=100,
+        )
+
+        self.client.force_login(stranger)
+        response = self.client.post(
+            reverse('update_payment_method'),
+            {'order_id': order.id, 'payment_method': 'partial'},
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 404)
+        order.refresh_from_db()
+        self.assertEqual(order.pay_type, 'online_full')
+
+        self.client.force_login(owner)
+        response = self.client.post(
+            reverse('update_payment_method'),
+            {'order_id': order.id, 'payment_method': 'partial'},
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+        order.refresh_from_db()
+        self.assertEqual(order.pay_type, 'prepay_200')
+
+    def test_update_payment_method_locked_after_payment(self):
+        """W1-6: после оплаты/на проверке метод менять нельзя."""
+        owner = self.make_user(username='pm-paid-owner')
+        order = Order.objects.create(
+            user=owner, full_name='Owner', phone='+380991112233',
+            city='Київ', np_office='1', pay_type='online_full',
+            payment_status='paid', total_sum=100,
+        )
+        self.client.force_login(owner)
+        response = self.client.post(
+            reverse('update_payment_method'),
+            {'order_id': order.id, 'payment_method': 'partial'},
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 409)
+        order.refresh_from_db()
+        self.assertEqual(order.pay_type, 'online_full')
+
+    def test_confirm_payment_requires_owner_and_image(self):
+        """W1-6: скриншот оплаты — только владелец и только изображение."""
+        import io
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        owner = self.make_user(username='cp-owner')
+        stranger = self.make_user(username='cp-stranger')
+        order = Order.objects.create(
+            user=owner, full_name='Owner', phone='+380991112233',
+            city='Київ', np_office='1', pay_type='online_full',
+            payment_status='unpaid', total_sum=100,
+        )
+
+        buf = io.BytesIO()
+        Image.new('RGB', (8, 8)).save(buf, format='PNG')
+        png_bytes = buf.getvalue()
+
+        # Чужой пользователь → 404
+        self.client.force_login(stranger)
+        response = self.client.post(
+            self.confirm_payment_url,
+            {'order_id': order.id,
+             'payment_screenshot': SimpleUploadedFile('pay.png', png_bytes, content_type='image/png')},
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 404)
+
+        # Не-изображение → 400
+        self.client.force_login(owner)
+        response = self.client.post(
+            self.confirm_payment_url,
+            {'order_id': order.id,
+             'payment_screenshot': SimpleUploadedFile('pay.php', b'<?php ?>', content_type='image/png')},
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 400)
+
+        # Владелец + валидное изображение → checking
+        response = self.client.post(
+            self.confirm_payment_url,
+            {'order_id': order.id,
+             'payment_screenshot': SimpleUploadedFile('pay.png', png_bytes, content_type='image/png')},
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+        order.refresh_from_db()
+        self.assertEqual(order.payment_status, 'checking')
+        self.assertTrue(order.payment_screenshot)
+
     def test_create_order_missing_product_aborts_without_order(self):
         """W1-5а (CRO-047): исчезнувший товар → сообщение + редирект,
         заказ НЕ создаётся (раньше товар молча выбрасывался из заказа)."""
@@ -611,19 +712,22 @@ class OrderSuccessTests(CheckoutTestSupport):
 
 
 class ConfirmPaymentTests(CheckoutTestSupport):
-    def test_confirm_payment_redirects_to_my_orders(self):
-        response = self.client.get(self.confirm_payment_url)
+    # W1-6: confirm_payment — больше не заглушка-redirect, а AJAX-эндпоинт
+    # (POST-only + login_required). GET → 405 для залогиненного,
+    # аноним → redirect на login.
+    def test_confirm_payment_get_requires_login(self):
+        response = self.client.get(self.confirm_payment_url, secure=True)
 
-        self.assertRedirects(response, reverse('my_orders'), fetch_redirect_response=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('login', response['Location'])
 
-    def test_confirm_payment_follow_redirect_for_authenticated_user(self):
+    def test_confirm_payment_get_not_allowed_for_authenticated_user(self):
         user = self.make_user(username='history-user')
         self.client.force_login(user)
 
-        response = self.client.get(self.confirm_payment_url, follow=True)
+        response = self.client.get(self.confirm_payment_url, secure=True)
 
-        self.assertRedirects(response, reverse('my_orders'))
-        self.assertContains(response, 'Мої замовлення')
+        self.assertEqual(response.status_code, 405)
 
 
 class PromoAndCartTests(CheckoutTestSupport):
