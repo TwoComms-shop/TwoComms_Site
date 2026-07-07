@@ -535,3 +535,11 @@
 {"type": "notfound_test", "url": "https://twocomms.shop/catalog/nonexistent-category/", "status": 404, "final": "https://twocomms.shop/catalog/nonexistent-category/", "chain": [], "body_len": 93290}
 {"type": "notfound_test", "url": "https://twocomms.shop/some-random-page-404/", "status": 404, "final": "https://twocomms.shop/some-random-page-404/", "chain": [], "body_len": 93216}
 {"type": "notfound_test", "url": "https://twocomms.shop/blog/nonexistent-post-xyz/", "status": 404, "final": "https://twocomms.shop/blog/nonexistent-post-xyz/", "chain": [], "body_len": 93267}
+{"type": "sitemap_count", "count": 489}
+{"type": "links_summary", "unique_links": 0, "unseen": 0, "to_check": 0, "skipped_auth_cart": 0}
+{"type": "notfound_test", "url": "https://twocomms.shop/product/nonexistent-slug-xyz-123/", "status": 404, "final": "https://twocomms.shop/product/nonexistent-slug-xyz-123/", "chain": [], "body_len": 93307}
+{"type": "notfound_test", "url": "https://twocomms.shop/product/99999/", "status": 404, "final": "https://twocomms.shop/product/99999/", "chain": [], "body_len": 93193}
+{"type": "notfound_test", "url": "https://twocomms.shop/p/nonexistent-slug/", "status": 404, "final": "https://twocomms.shop/p/nonexistent-slug/", "chain": [], "body_len": 93204}
+{"type": "notfound_test", "url": "https://twocomms.shop/catalog/nonexistent-category/", "status": 404, "final": "https://twocomms.shop/catalog/nonexistent-category/", "chain": [], "body_len": 93290}
+{"type": "notfound_test", "url": "https://twocomms.shop/some-random-page-404/", "status": 404, "final": "https://twocomms.shop/some-random-page-404/", "chain": [], "body_len": 93216}
+{"type": "notfound_test", "url": "https://twocomms.shop/blog/nonexistent-post-xyz/", "status": 404, "final": "https://twocomms.shop/blog/nonexistent-post-xyz/", "chain": [], "body_len": 93267}
