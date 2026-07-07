@@ -222,7 +222,9 @@ class CreateOrderTests(CheckoutTestSupport):
             warehouse_label='Відділення №99, Одеса',
             warehouse_ref='odesa-warehouse-ref',
         )
-        user = self.make_user(pay_type='full')
+        # Online pay types are handled by the Monobank button flow, so the
+        # profile-driven form submit path uses COD here.
+        user = self.make_user(pay_type='cod')
         self.client.force_login(user)
         fake_order_item_class, _ = self.make_fake_order_item_class()
 
@@ -257,9 +259,11 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(order.np_settlement_ref, delivery['canonical_settlement_ref'])
         self.assertEqual(order.np_city_ref, delivery['canonical_city_ref'])
         self.assertEqual(order.np_warehouse_ref, delivery['canonical_warehouse_ref'])
-        self.assertEqual(order.pay_type, 'full')
+        self.assertEqual(order.pay_type, 'cod')
 
-    def test_create_order_guest_online_full_calls_monobank(self):
+    def test_create_order_guest_online_full_redirects_to_cart(self):
+        """Онлайн-оплата стартует ТОЛЬКО через кнопку Monobank в корзине —
+        прямой POST с online-типом не должен создавать неоплаченный заказ."""
         self.set_cart()
         delivery = self.delivery_payload(
             city_label='м. Київ, Київ',
@@ -270,10 +274,7 @@ class CreateOrderTests(CheckoutTestSupport):
         )
         fake_order_item_class, _ = self.make_fake_order_item_class()
 
-        with patch('storefront.views.checkout.OrderItem', fake_order_item_class), patch(
-            'storefront.views.checkout.monobank_create_invoice',
-            return_value=HttpResponseRedirect('/mock-monobank-checkout/'),
-        ) as monobank_create_invoice:
+        with patch('storefront.views.checkout.OrderItem', fake_order_item_class):
             response = self.client.post(
                 self.order_create_url,
                 {
@@ -291,11 +292,8 @@ class CreateOrderTests(CheckoutTestSupport):
                 secure=True,
             )
 
-        order = Order.objects.get()
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, '/mock-monobank-checkout/')
-        self.assertEqual(monobank_create_invoice.call_args.args[1], order.id)
-        self.assertEqual(order.pay_type, 'online_full')
+        self.assertRedirects(response, reverse('cart'), fetch_redirect_response=False)
+        self.assertFalse(Order.objects.exists())
 
     def test_create_order_empty_cart_redirects_to_cart(self):
         response = self.client.post(
