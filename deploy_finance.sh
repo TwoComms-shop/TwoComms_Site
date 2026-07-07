@@ -2,7 +2,7 @@
 # Deploy script for finance subdomain
 set -e
 
-export SSHPASS='Trs5m4t1zxcvqwer!twc'
+: "${SSHPASS:?Set SSHPASS in the environment before running this deploy script}"
 
 sshpass -e ssh -o StrictHostKeyChecking=no qlknpodo@195.191.24.169 "bash -lc '
     source /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/activate

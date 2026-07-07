@@ -2,7 +2,7 @@
 
 > Дата: 07.07.2026. Автор: v0-агент (песочница без SSH — IP забанен файрволом хостинга на kex-этапе).
 > Ты работаешь в окружении, ГДЕ SSH ДОСТУПЕН. Твоя задача — собрать данные с продакшн-сервера и вернуть их (вывод в чат владельцу И/ИЛИ коммит файлов с выводом в репозиторий). Анализировать и закрывать пункты чек-листа будет другой агент (или ты, если владелец попросит).
-> Прочитай этот файл ЦЕЛИКОМ. Здесь всё: доступы, команды, правила безопасности, точный список того, что собрать, и формат возврата.
+> Прочитай этот файл ЦЕЛИКОМ. Здесь всё: безопасный порядок подключения, команды, правила безопасности, точный список того, что собрать, и формат возврата.
 
 ---
 
@@ -20,14 +20,14 @@
 Хост:     195.191.24.169
 Порт:     22
 Юзер:     qlknpodo
-Пароль:   Trs5m4t1zxcvqwer!twc
+Пароль:   НЕ ХРАНИТСЯ В РЕПОЗИТОРИИ; запросить у владельца или взять из approved secret manager
 Проект:   /home/qlknpodo/TWC/TwoComms_Site/twocomms/        (manage.py здесь)
 Venv:     /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/activate
 ```
 
 Подключение:
 ```bash
-sshpass -p 'Trs5m4t1zxcvqwer!twc' ssh -o StrictHostKeyChecking=no qlknpodo@195.191.24.169
+SSHPASS='<password-from-owner-or-secret-manager>' sshpass -e ssh -o StrictHostKeyChecking=no qlknpodo@195.191.24.169
 ```
 
 ### ⚠️ КРИТИЧЕСКИЕ ПРАВИЛА (нарушение = бан IP и срыв аудита)
@@ -45,7 +45,7 @@ sshpass -p 'Trs5m4t1zxcvqwer!twc' ssh -o StrictHostKeyChecking=no qlknpodo@195.1
 ### Шаг 1 — bash-батч (системная часть: TD-015, TD-016, CB-015, CB-041, CB-045, DB-007)
 
 ```bash
-sshpass -p 'Trs5m4t1zxcvqwer!twc' ssh -o StrictHostKeyChecking=no qlknpodo@195.191.24.169 'bash -s' \
+SSHPASS='<password-from-owner-or-secret-manager>' sshpass -e ssh -o StrictHostKeyChecking=no qlknpodo@195.191.24.169 'bash -s' \
   < TWOCOMMS_A_TO_B/technical/scripts/server_shell_batch.sh \
   > server_shell_batch_output.txt 2>&1
 ```
@@ -65,7 +65,7 @@ sshpass -p 'Trs5m4t1zxcvqwer!twc' ssh -o StrictHostKeyChecking=no qlknpodo@195.1
 ### Шаг 2 — Django shell батч (данные из БД: CRO-051, AEO-001, DB-001, DB-003, DB-004, DB-006)
 
 ```bash
-sshpass -p 'Trs5m4t1zxcvqwer!twc' ssh -o StrictHostKeyChecking=no qlknpodo@195.191.24.169 \
+SSHPASS='<password-from-owner-or-secret-manager>' sshpass -e ssh -o StrictHostKeyChecking=no qlknpodo@195.191.24.169 \
   'source /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/activate && cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && python manage.py shell' \
   < TWOCOMMS_A_TO_B/technical/scripts/server_audit_batch.py \
   > server_audit_batch_output.txt 2>&1
