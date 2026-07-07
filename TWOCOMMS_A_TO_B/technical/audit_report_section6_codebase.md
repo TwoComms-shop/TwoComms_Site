@@ -62,7 +62,7 @@
 
 - `twocomms/passenger_wsgi.py` (боевая точка входа, подтверждено PassengerAppRoot в `~/public_html/.htaccess`): `os.environ.setdefault("DJANGO_SETTINGS_MODULE", "twocomms.production_settings")`.
 - **Боевой модуль = `twocomms/twocomms/production_settings.py` (639 строк), который делает `from .settings import *` (settings.py — 1342 строки) и переопределяет.**
-- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источник пу��аницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
+- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный ��сточник пу��аницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
 - Ключевые переопределения production_settings: `DEBUG=False`, `SECRET_KEY` из env, DB через env (`DB_ENGINE`, отдельная `DB_NAME_DTF` — вторая БД для dtf! связь с TD-025 db_routers), Redis-настройки (3 БД: cache/static/fragment), `MediaCacheMiddleware` добавляется в конец цепочки, `DISABLE_ANALYTICS` env-флаг может ВЫКЛЮЧИТЬ UTM/Analytics-мидлвари (проверить, не включён ли на бою — если да, объясняет часть разрывов аналитики!), Telegram/NovaPoshta-ключи из env.
 - Passenger Python: `virtualenv/.../3.14/bin/python` (Python 3.14), Django==5.2.11, PyMySQL==1.1.2 (подтверждено pip freeze).
 
@@ -117,7 +117,7 @@
 2. **`accounts/` app — НОЛЬ тестов.** Непокрыт `cart_middleware.py` — середина цепочки из 26 middleware, восстановление корзины (CRO-035).
 3. **Monobank-вебхук:** проверка подписи `_verify_monobank_signature` (monobank.py:196) — НЕ тестируется; идемпотентность повторного callback покрыта ровно ОДНИМ тестом (`test_monobank_success_status_records_purchase_once`), сценарии failure/pending/expired-статусов и `_apply_monobank_status` (monobank.py:1211) — не покрыты.
 4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕТ (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
-5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от ��о��ки остатков без select_for_update (проверить исполнителю).
+5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от ����о��ки остатков без select_for_update (проверить исполнителю).
 6. **CI отсутствует:** `.github/workflows/` нет ни в корне, ни в twocomms/ — 183 тест-файла НЕ запускаются автоматически. Никто не знает, сколько из них зелёные. Прогон тестов возможен только вручную (и на сервере — с осторожностью: тестовая БД).
 7. **Тесты гоняются на SQLite** (settings.py: DB_ENGINE default sqlite), боевая БД MySQL → расхождения (charset, strict mode, атомарность DDL) тестами не ловятся.
 
@@ -319,7 +319,7 @@ newCatalog/
 
 1. **P2 — hard-fail всего деплоя из-за DTF.** `_run_dtf_minification()` кидает `CommandError`,
    если любой из 3 source-файлов отсутствует (`FileNotFoundError` в `build_dtf_minified_assets`)
-   или минификация упала. Это роняет ВЕСЬ collectstatic основного магазина, даже если DTF
+   или минификация упала. Это ��оняет ВЕСЬ collectstatic основного магазина, даже если DTF
    не менялся. При `--dry-run` минификация пропускается — единственный обход.
 2. **P3 — парадокс: минифицированные файлы НЕ используются шаблонами.**
    grep по `dtf/templates/`: `base.html:127` подключает `dtf/css/dtf.css` (НЕ .min),
@@ -590,7 +590,7 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 ### Выводы для исполнителя
 
 1. **Правило фикса:** в каждом из топ-20 — минимум `logger.exception(...)` (для #1/#2 — уровень critical), поведение потока НЕ менять без отдельного согласования.
-2. **Паттерн `save(update_fields) except → save()`** (4 места: utils.py:542,573,723; nova_poshta_service.py:515) — самый опасный системный паттерн: заменить на logged-retry БЕЗ fallback на полный save (риск lost-update на боевых заказах).
+2. **Паттерн `save(update_fields) except → save()`** (4 ме��та: utils.py:542,573,723; nova_poshta_service.py:515) — самый опасный системный паттерн: заменить на logged-retry БЕЗ fallback на полный save (риск lost-update на боевых заказах).
 3. **#4 (checkout.py:233)** чинить вместе с P2-багом CRO-034 «кастом уедет бесплатно» — это одно и то же место.
 4. `str(e)` в JSON-ответах клиенту (#9, #11) — заменить на generic-сообщение + серверный лог.
 5. Массовую зачистку остальных ~700 мест НЕ делать (анти-задачи); рекордсмен `management/views.py` (140) — только при декомпозиции CB-022.
@@ -679,7 +679,7 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 
 ### Главное открытие: боевой бандл — НЕ styles.css
 
-Сайт грузит **`styles.purged.css` (394KB)** + `cls-ultimate.css` + `perf-lite.css` (base.html:825–841). `styles.css` (565KB) — это **исходник для регенерации purged**, в браузер он не попадает. Оба файла последний раз менялись в одном коммите `0c07a63f` (29.06.2026) → пайплайн purge синхронен, но **скрипта регенерации в репо НЕТ** (grep по purge/purgecss: 0 скриптов; единственное упоминание — тест `test_blog_structured.py:178`) — процесс живёт у кого-то на локали.
+Сайт грузит **`styles.purged.css` (394KB)** + `cls-ultimate.css` + `perf-lite.css` (base.html:825–841). `styles.css` (565KB) — это **исходник для регенерации purged**, в браузер он не попадает. Оба ��айла последний раз менялись в одном коммите `0c07a63f` (29.06.2026) → пайплайн purge синхронен, но **скрипта регенерации в репо НЕТ** (grep по purge/purgecss: 0 скриптов; единственное упоминание — тест `test_blog_structured.py:178`) — процесс живёт у кого-то на локали.
 
 ### Карта подключений (факт из шаблонов)
 
@@ -738,12 +738,55 @@ purged = 394KB из 565KB исходника (−30%). Гипотеза чекл
 ### Находки
 
 1. **P3-баг: `ThreadPoolExecutor(max_workers=2)` создаётся в `__init__` БЕЗУСЛОВНО (image_middleware.py:30)** — даже при ENABLED=false каждый процесс Passenger несёт 2 подготовленных треда + lock + set. При N процессах Passenger — 2N лишних тредов на shared-хостинге при выключенной фиче. Фикс — создавать executor только при `self.enabled and self.allow_on_demand`.
-2. **Память PIL:** `_convert_to_webp_bytes` держит одновременно `bytes(image_data)` (копия, :86) + PIL Image + output_buffer → пик ≈ 3–4× размера исходника на КАЖДУЮ фоновую задачу; больших PNG из media это касается напрямую. Лимита размера НЕТ (только нижний порог 5KB) — 40MB PNG даст ~150MB пик на процесс.
+2. **Память PIL:** `_convert_to_webp_bytes` держит одновременно `bytes(image_data)` (копия, :86) + PIL Image + output_buffer → пик ≈ 3–4× размера исходника на ��АЖДУЮ фоновую задачу; больших PNG из media это касается напрямую. Лимита размера НЕТ (только нижний порог 5KB) — 40MB PNG даст ~150MB пик на процесс.
 3. **Кэш без инвалидации:** ключ = MD5 от URL-пути (:53) — при замене файла в media под тем же именем клиенты вечно получают старый WebP (Cache-Control: max-age=31536000). Плюс `optimized_cache/` никогда не чистится (нет cron, стык CB-044 — в кронах его нет).
 4. **`SMALL_IMAGE_THRESHOLD` (200KB, :33) — мёртвая константа:** нигде не используется; синхронная ветка `_optimize_and_build_response` тоже мертва — из process_response вызывается только `_schedule_async_optimization`.
 5. **Вердикт (совпадает с CB-042 п.3):** дефолты выключены → если env на бою не включает флаги (SSH-остаток), убрать слой из MIDDLEWARE целиком. Если включён — заменить runtime-оптимизацию на офлайн-скрипт по cron (прекомпиляция WebP в `optimized_cache/` теми же ключами MD5(path) — формат кэша это позволяет, отдача из кэша останется работать без PIL в рантайме).
 
 **SSH-остаток CB-041:** проверить на бою `IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED`/`ALLOW_ON_DEMAND` в env-файлах и существование/размер `media/optimized_cache/`.
+
+---
+
+## CB-015. Мёртвые management-команды (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+**Метод:** инвентаризация `*/management/commands/` → **93 команды**; сверка с боевым crontab (CB-044, 7 задач — SSH не нужен повторно) + grep по всему репо (`call_command(...)` и `manage.py <cmd>` в py/sh/md).
+
+**Итог:** 7 в cron; ~30 referenced (вызываются кодом/скриптами/доками); **56 команд без единой ссылки в репозитории** (не в cron, не в call_command, не в доках).
+
+### Классификация 56 нереференсированных команд
+
+| Категория | Команды | Вердикт |
+|---|---|---|
+| **Кандидаты на УДАЛЕНИЕ (одноразовые фиксы данных, уже отработали)** | fix_delivered_orders, fix_seo_text_data, fix_site_domain, finance_fix_hold_drafts, finance_repair_wrong_transfers, merge_split_accounts, generate_order_numbers, backfill_management_v7_analytics, backfill_management_website_match_keys, checker_backfill_networks, repoint_stale_image_fields, clear_dropshipper_orders, create_missing_points | Удалить после подтверждения владельцем, что данные пофикшены; git хранит историю |
+| **Кандидаты на УДАЛЕНИЕ (тест/демо-мусор из чеклиста)** | finance_seed_demo, notify_test_shops, send_storage_test, send_test_receipt, parser_recovery_dry_run (referenced только в md) | Подтверждено: в проде не нужны |
+| **ЛЕГИТИМНЫЕ ручные инструменты (оставить, задокументировать)** | enable_slow_query_log (нужна для DB-001!), generate_web_push_vapid_keys, set_telegram_config, setup_telegram_webhook, setup_main_telegram_webhook, generate_promo_codes, translate_products, audit_translations, check_translation_coverage, normalize_slugs, seed_color_landings, generate_wholesale_prices | Одноразовый setup/операционка — снабдить README в commands/ |
+| **ПОДОЗРИТЕЛЬНЫЕ: полезные, но никем не запускаются** | optimize_images + enqueue_optimize_images (нужны для backfill CRO-022!), generate_alt_texts, generate_seo_meta, generate_ai_content, refresh_product_faqs, generate_sitemap, generate_instagram_feed, prune_orphan_media, compress_media_originals, convert_originals_to_webp, update_tracking_statuses, recalculate_visible_points, finance_send_reports, finance_generate_recurring, finance_reconcile_transfers, finance_categorize_mcc, send_utm_report, refresh_external_analytics, run_call_ai_analyses, check_survey_inactivity, checker_calibrate, resend_custom_print_notification, inject_sales_seo_h2, submit_indexnow_urls | Каждая — либо забытая фича (должна быть в cron?), либо мёртвая. Решение по каждой — у владельца; НЕ удалять до ревизии |
+
+**Примечание к точности:** grep-ссылка не гарантирует «живость» (ссылка может быть в мёртвом md), а отсутствие ссылки не гарантирует смерть (владелец может запускать руками по SSH). Список «на удаление» — только после подтверждения владельцем. `trim_analytics`/`recover_checkouts`/`run_instagram_bot` формально попали в «unreferenced» по grep (cron живёт на сервере, не в репо) — они living, см. CB-044.
+
+**Связки:** `update_tracking_statuses` не в cron → вероятная причина «статусы НП не обновляются» (стык CRO-042/статусная модель); `finance_generate_recurring` не в cron → регулярные платежи не создаются автоматически?; `generate_sitemap` не в cron — sitemap отдаётся динамически (см. static_pages), команда — legacy.
+
+---
+
+## SEO-009 (кросс-раздел). IndexNow и Google Indexing (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+**Код:** `storefront/services/indexnow.py` (229 строк), `google_indexing.py` (859), `index_targets.py` (418); сигналы: `storefront/signals.py` (Product, CategoryColorLanding), `cache_signals.py` (Category); команды `submit_indexnow_urls`, `reindex_indexnow`.
+
+### Ответы на вопросы чеклиста
+
+1. **Ключ валиден и доставлен:** `INDEXNOW_KEY` из env (settings.py:297); key-файл `494cb80b...txt` закоммичен в корень, роут в urls.py:70; **live-проверка 07.07.2026: `https://twocomms.shop/494cb80b....txt` → 200, содержимое = имя ключа. РАБОТАЕТ.**
+2. **Реально дергаются при изменениях: ДА.** post_save/post_delete на Product / Category / CategoryColorLanding → `transaction.on_commit` → синхронный POST (Celery-hop убран осознанно, комментарий в коде). Учитывается смена slug (previous_url + current_url), unpublished фильтруется.
+3. **Спам при массовых пересохранениях — РИСК ПОДТВЕРЖДЁН для IndexNow:** дедупликация есть только ВНУТРИ одного вызова (`_normalize_urls`). Bulk-операция (пересохранение 68 товаров скриптом/admin action) = 68 отдельных синхронных POST к api.indexnow.org — по одному на каждый save, без окна дедупа. Смягчение: IndexNow-протокол толерантен к повторам, timeout 2.5s, но каждый save товара в админке становится на ~2.5s медленнее при недоступном endpoint (×2: ещё Google Indexing). **Google Indexing защищён лучше:** rolling-window дедуп `skip_recent_success_hours` (google_indexing.py:192,616) + in-process token cache.
+4. **Качество кода:** submit_indexnow_urls — образцовый (батчи 100, ретраи только на 5xx/timeout, 4xx фатальны, полное логирование). Замечаний нет.
+
+### Находки
+
+| Приоритет | Находка |
+|---|---|
+| P2 | Синхронные POST (IndexNow + Google Indexing) в `transaction.on_commit` каждого product save = до ~12.5s задержки ответа админки при недоступных endpoint'ах (2.5s×retries + 10s Google). Рекомендация: общий rolling-window дедуп (как у Google) + для bulk — собирать URL и слать один батч |
+| P3 | IndexNow без дедуп-окна между вызовами (в отличие от Google Indexing) — несимметрия защиты |
+| P3 | `submit_indexnow_urls`/`reindex_indexnow` команды не в cron и не referenced — периодический re-submit sitemap-URL не происходит (для IndexNow это норм-протокол: пингуется только изменение; НЕ баг) |
+| SSH-остаток | Проверить env на бою: `INDEXNOW_KEY` (совпадает ли с 494cb80b...), `GOOGLE_INDEXING_CREDENTIALS_PATH` (существует ли файл credentials) — иначе весь Google Indexing тихо skip |
 
 ---
 
