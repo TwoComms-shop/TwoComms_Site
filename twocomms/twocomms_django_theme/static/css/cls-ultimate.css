@@ -24,6 +24,20 @@
   will-change: auto;
 }
 
+/* W1-7 (CRO-002): on small screens hero content (~727px) exceeds 60vh
+   (384px at 640px viewport) — the fixed height + overflow:hidden clipped
+   both CTA buttons. Let the hero grow with content on mobile; CLS stays
+   stable because min-height still reserves the space. */
+@media (max-width: 767.98px) {
+  .hero-section {
+    height: auto;
+    max-height: none;
+    min-height: 60vh;
+    overflow: visible;
+    contain: layout style;
+  }
+}
+
 .navbar {
   height: 70px;
   contain: layout style;
