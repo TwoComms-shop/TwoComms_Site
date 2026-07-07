@@ -107,6 +107,19 @@
   Фикс: min-height/auto height на малых viewport; отложить/уменьшить PWA-prompt. После — перепроверить CLS.
   Приёмка: viewport 360×640 — обе CTA видимы и кликабельны.
 
+- [ ] **W1-9. [NEW-501] 🔴 Дропшип-вебхук Monobank без подписи (пропущен аудитом)** `[REPO]`
+  `orders/dropshipper_views.py:1210` — `dropshipper_monobank_callback`: `@csrf_exempt`, без проверки `X-Sign`; `status=='success'` из body → `payment_status='paid'` + `status='confirmed'`. Тот же класс уязвимости, что W1-3, но в дропшип-контуре — аудит (DB-010) зафиксировал только гонку статусов, подпись пропустил.
+  Фикс: единая функция верификации подписи Monobank (из W1-3) → применить в ОБОИХ вебхуках.
+  Приёмка: невалидная подпись → 400, статус не меняется.
+
+- [ ] **W1-10. [NEW-502] Загрузка файлов профиля без валидации (P1, пропущен аудитом)** `[REPO]`
+  `storefront/views/profile.py:150-156` (`edit_profile`): `request.FILES['avatar']`/`ubd_doc` присваиваются НАПРЯМУЮ без формы → валидация ImageField обходится (любой файл/размер на диск shared-хостинга); email/first_name тоже без валидации. Рядом `profile_setup` (тот же файл, :196) делает это правильно через `ProfileSetupForm`.
+  Фикс: edit_profile → та же ProfileSetupForm (или отдельная форма с FileExtension/size-валидаторами); задать `FILE_UPLOAD_MAX_MEMORY_SIZE`/лимит размера.
+
+- [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
+  Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаётся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
+  Фикс если подтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизировать имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
+
 - [ ] **W1-8. [GAP] 🔴 Публичный /test-analytics/ стреляет Purchase в боевой Pixel (AN-015)** `[REPO]`
   Публичный URL без auth через 3s авто-стреляет полную воронку с Purchase 599 грн в БОЕВОЙ Meta Pixel. Загрязняет данные прямо сейчас; фикс — один декоратор. (Перенесён из W2-9 как немедленный.)
   Фикс: `@staff_member_required` или удалить маршрут.
@@ -205,6 +218,14 @@
 - [ ] **W3-7. Идемпотентность и гонки статусов (CB-020-паттерн + DB-010)** `[REPO]`
   `save(update_fields)` → молчаливый fallback `save()` в 4 местах (utils.py:542/573/723, nova_poshta_service.py:515 — флаг `purchase_sent`!) = риск lost-update и ПОВТОРНОГО CAPI Purchase; admin_update_dropship_status без select_for_update.
   Фикс: убрать fallback, логировать ошибку; select_for_update в dropship-статусах. НЕ менять control flow массово (RISK-04).
+
+- [ ] **W3-9. [NEW-504] Telegram-вебхук без секрета при пустом env (P2)** `[REPO]`/`[SERVER]`
+  `accounts/telegram_views.py:20-29`: проверка `X-Telegram-Bot-Api-Secret-Token` ОПЦИОНАЛЬНА — если `TELEGRAM_BOT_WEBHOOK_SECRET` не задан в env, вебхук принимает любые POST.
+  Фикс: проверить env на сервере (S-13); если пуст — задать секрет + перерегистрировать webhook у Telegram; в коде — предупреждающий лог при пустом секрете.
+
+- [ ] **W3-10. [NEW-505] eval() в survey_engine (P3-hardening)** `[REPO]`
+  `storefront/services/survey_engine.py:340`: строковые условия опроса исполняются через `eval()` (с `__builtins__={}` — обходится). Источник — JSON-definition (admin-controlled), риск низкий, но паттерн опасный.
+  Фикс: заменить на безопасный парсер при следующем касании файла.
 
 - [ ] **W3-8. [GAP] Включить контролируемый slow-log (DB-001, P2)** `[SERVER]`
   `slow_query_log=OFF` — перф-работы W3 вслепую.
@@ -403,6 +424,8 @@
 - [ ] **S-10.** `compilemessages` после мерджа переводов (= W5-9).
 - [ ] **S-11.** Крон НП-трекинга: подтвердить расписание update_tracking_statuses (AN-014).
 - [ ] **S-12.** PageView.count() (TD-007 хвост) — дубль-слой PageView vs UserAction page_view.
+- [ ] **S-13.** [NEW-504] env `TELEGRAM_BOT_WEBHOOK_SECRET` задан? (= W3-9).
+- [ ] **S-14.** [NEW-503] live-проверка отдачи `media/ubd_docs/<имя>` с Referer-заголовком / из браузера (= W1-11).
 
 ---
 
@@ -465,3 +488,4 @@ O-5 (GSC-экспорт) ──→ W5-6 (правки мета)
 | Дата | ID | Что сделано | Коммит/PR |
 |---|---|---|---|
 | 07.07.2026 | plan-v2 | План переписан в единый исполняемый чеклист: влиты gap-check находки ([GAP]: W0-6, W1-8, W2-9/10 хвосты, W3-8, W5-8/9/10, W6-6/7, W7-18/19/20), добавлены секции SERVER_TASKS (S-1…S-12) и OWNER_TASKS (O-1…O-7), теги [REPO]/[SERVER]/[OWNER]/[DECISION] | — |
+| 07.07.2026 | plan-v2.1 | Пост-аудит-скан кода нашёл 5 НОВЫХ проблем вне аудита: NEW-501 (P0 — дропшип-вебхук Monobank без подписи), NEW-502 (P1 — edit_profile принимает FILES без валидации), NEW-503 (P1-check — ubd_doc PII в публичном media), NEW-504 (P2 — Telegram-вебхук без секрета при пустом env), NEW-505 (P3 — eval в survey_engine). Добавлены W1-9/10/11, W3-9/10, S-13/14 | — |
