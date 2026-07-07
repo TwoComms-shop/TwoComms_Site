@@ -139,6 +139,116 @@
 
 ---
 
+## CB-001. Артефакты и скриншоты в git (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Факты (прямые замеры, git ls-files + du, 07.07.2026)
+
+Всего **145 tracked-файлов** в мусорных директориях (чеклист говорил 132 — фактически больше):
+
+| Директория | Tracked-файлов | Размер tracked (KB) | Содержимое |
+|---|---|---|---|
+| `tmp/` | 69 | **101 184** | smoke-скриншоты (smoke_home.png 6.2MB!), custom-print-live-artifacts (десяток PNG по 3–4.5MB) |
+| `artifacts/` | 29 | 26 960 | lighthouse-JSON, скриншоты проверок |
+| `output/` | 34 | 26 232 | verification-скриншоты (custom-print-hero-*.png по 3.5MB) |
+| `BrandDNA/` | 7 (+11 c twocomms/static/BrandDNA) | 6 788 | **личное фото владельца `me.JPG` 4.8MB — в ДВУХ копиях**: `BrandDNA/me.JPG` и `twocomms/static/BrandDNA/me.JPG` |
+| `opros/` | 2 | 3 880 | win-all.png 2.6MB и др. |
+| `newCatalog/` | 4 | 3 748 | референс-PNG каталога |
+| `Ideas/` | 61 | 4 452 | брейншторм-заметки (текст+изображения) |
+
+- **Топ жирных файлов:** `tmp/smoke_home.png` 6.2MB; `me.JPG` 4.8MB ×2; ~15 PNG по 3–4.5MB в `tmp/custom-print-live-artifacts/` и `output/verification/`. Итого мусор ≈ **170MB tracked** — основная причина 328MB репо.
+- **Runtime-зависимости от этих директорий: НЕТ.** Проверено grep по `*.py/*.html/*.css/*.js`: единственные упоминания `BrandDNA` — комментарии в `storefront/seo_utils.py:166` и `storefront/templatetags/i18n_links.py:56` (реальный файл иконки — `img/lang/ptn.png`, НЕ из BrandDNA/). `me.JPG` не референсится нигде (в т.ч. копия в `twocomms/static/BrandDNA/` — мёртвый вес, попадает в collectstatic!).
+- `.gitignore` НЕ содержит `artifacts/`, `output/`, `tmp/` (только `tmp/critical-extraction/`), `opros/`, `newCatalog/` — см. CB-006.
+
+### Задачи для исполнителя (порядок)
+
+1. `git rm -r --cached artifacts/ output/ tmp/ opros/ newCatalog/` + `git rm --cached BrandDNA/me.JPG twocomms/static/BrandDNA/me.JPG` (личное фото — приоритет: приватность).
+2. Добавить директории в `.gitignore` (см. CB-006 ниже).
+3. `Ideas/` — решение владельца (это заметки, не артефакты; кандидат в `docs/ideas/` или приватное хранилище).
+4. НЕ запускать `git filter-repo` без явного согласования (правило чеклиста). Без переписывания истории размер `.git` не уменьшится — но свежие клоны через `--depth 1` станут лёгкими после шага 1.
+5. ВНИМАНИЕ: `twocomms/static/BrandDNA/` удалять с проверкой collectstatic на сервере (файл мог попасть в `staticfiles/`).
+
+---
+
+## CB-005. XLSX с закупочными ценами в репо (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Факты
+
+- В git отслеживаются 2 файла: `twocomms/wholesale_prices.xlsx` и `twocomms/Оптові ціни TwoComms v12 UA Final Clean.xlsx` — оптовые (закупочные) цены. Репо приватный сейчас, но это бомба при смене видимости/утечке форка.
+- **Runtime они НЕ нужны — подтверждено кодом и live-проверкой:**
+  - URL `/pricelist_opt.xlsx` (urls.py:570) обслуживается view `wholesale_prices_xlsx`, который **генерирует XLSX на лету** через openpyxl из БД (реализация в `views.py.backup:6434` — грузится лениво через `_load_legacy_views`, см. важную находку ниже).
+  - Live-проверка 07.07.2026: `curl https://twocomms.shop/pricelist_opt.xlsx` → 200, 9161 байт (динамическая генерация, не статик 9KB≠файлы в репо).
+  - Tracked xlsx — это, вероятно, старый вывод команды `generate_wholesale_prices` (default output=`wholesale_prices.xlsx`, management/commands/generate_wholesale_prices.py:113) — одноразовый артефакт.
+- **ВАЖНАЯ ПОБОЧНАЯ НАХОДКА (для CB-001/исполнителей):** `twocomms/storefront/views.py.backup` (7790 строк) — НЕ мёртвый код! Он загружается в рантайме через `_load_legacy_views()` (`storefront/views/__init__.py:329–354`, SourceFileLoader по пути `views.py.backup`) и обслуживает живые маршруты (`/pricelist_opt.xlsx` и др. `_legacy_view`-роуты из urls.py). В `.gitignore` есть явное исключение `!twocomms/storefront/views.py.backup`. Удаление этого файла СЛОМАЕТ прод. Согласуется с `audit_report_legacy_stubs.md`.
+
+### Задачи для исполнителя
+
+1. `git rm --cached` обоих xlsx + паттерн `*.xlsx` в `.gitignore` (проверить, что нигде в коде нет чтения этих файлов с диска — grep подтвердил: нет).
+2. Файлы передать владельцу / в приватное хранилище.
+3. НЕ трогать `views.py.backup` в рамках этого пункта.
+
+---
+
+## CB-006. Аудит .gitignore (ВЫПОЛНЕН, 07.07.2026)
+
+### Факты
+
+- `.gitignore` 278 строк, секреты покрыты хорошо: `.env*` (c исключениями example/sample), ключи, `json/` (service-account), майнерские артефакты (следы security-инцидента!), `.deploy_pass`, `.kiro/settings/mcp.json`.
+- **Дыры покрытия (tracked-файлы, которые должны игнорироваться):**
+  - НЕТ `artifacts/`, `output/`, `tmp/` (только `tmp/critical-extraction/`), `opros/`, `newCatalog/`;
+  - НЕТ `*.xlsx` → 2 файла с закупочными ценами tracked (CB-005);
+  - `*.bak` есть, но НЕ `*.bak2` → tracked `styles.css.bak2` (445KB);
+  - `*.backup` есть, НО с явным исключением `!twocomms/storefront/views.py.backup` — это НЕ ошибка: файл живой (см. CB-005), исключение оставить;
+  - `*.log` покрыт (дважды — дубль строк 77 и 184, косметика).
+- Опасный широкий паттерн: `lib/`, `lib64/`, `var/`, `target/` — стандартный python-шаблон, реальных коллизий с проектом не найдено.
+- Паттерны-обереги от майнера (`**/xmrig`, `**/mn.sh`, `**/authorized_keys*`) — подтверждают прошлый инцидент безопасности на сервере; для исполнителя: не удалять.
+
+### Задачи для исполнителя (один PR вместе с CB-001/CB-005)
+
+```gitignore
+# добавить:
+artifacts/
+output/
+tmp/
+opros/
+newCatalog/
+*.xlsx
+*.bak2
+```
+Плюс `git rm --cached` соответствующих файлов (сами файлы на диске остаются).
+
+---
+
+## CB-007. Каталоги-сироты и AI-конфиги (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Факты (tracked-файлы по данным git ls-files, 07.07.2026)
+
+| Каталог | Tracked | Размер | Вердикт-кандидат |
+|---|---|---|---|
+| `Promt/` | 0 | — | не tracked, только на диске — игнорировать/удалить локально |
+| `Ideas/` | 61 | 4.4MB | заметки владельца — решение владельца (docs/ или приватно) |
+| `opros/` | 2 | 3.8MB | скриншоты опроса — удалить из git (входит в CB-001) |
+| `newCatalog/` | 4 | 3.7MB | референсы редизайна — удалить из git (CB-001) |
+| `BrandDNA/` | 11 (вкл. twocomms/static/) | 6.7MB | личное фото me.JPG — удалить из git приоритетно (CB-001) |
+| `.claude/` | 2 | 28K | AI-конфиг |
+| `.codex/` | 1 | 8K | AI-конфиг |
+| `.cursor/` | 2 | 8K | AI-конфиг |
+| `.kiro/` | 53 | 984K | самый большой AI-конфиг (steering-доки, specs) |
+| `.serena/` | 5 | 28K | AI-конфиг |
+| `.zenflow/` | 1 | 4K | AI-конфиг |
+| `.superpowers/` | 5 | 24K | AI-конфиг (в .gitignore добавлен, но 5 файлов уже tracked — заигнорены только новые) |
+
+- Код НЕ ссылается ни на один из каталогов (grep по py/html/js/css: только 2 комментария, см. CB-001).
+- AI-конфиги суммарно ~1.1MB / 69 файлов — не критично по размеру, но 7 инструментов = когнитивный шум. `.kiro/` выглядит наиболее живым (949KB steering/specs, упоминается в .gitignore как активный: mcp.json исключён из git осознанно).
+
+### Задачи для исполнителя
+
+1. Спросить владельца, какие AI-инструменты реально живы (судя по гигиене .gitignore — Kiro точно жив).
+2. Мёртвые AI-конфиги → `git rm -r --cached` + .gitignore.
+3. `.superpowers/`: уже в .gitignore — доудалить 5 tracked-файлов из индекса для консистентности.
+4. `opros/`, `newCatalog/`, `BrandDNA/` — покрываются PR по CB-001.
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Статус |
@@ -148,3 +258,7 @@
 | 05.07.2026 | CB-012 | Боевой модуль = twocomms.production_settings; на сервере 2 env-файла; DISABLE_ANALYTICS-флаг требует проверки |
 | 05.07.2026 | CB-040 | Боевые версии зафиксированы; пин — исполнителю (3 строки) |
 | 05.07.2026 | CB-024 | Аудит покрытия выполнен: money-тесты в storefront есть (18,5k строк), но orders/ и accounts/ — 0 тестов, вебхук-подпись и CAPI не покрыты, CI нет; спецификация смок-пакета из 6 пунктов — исполнителю |
+| 07.07.2026 | CB-001 | Аудит выполнен: 145 tracked-артефактов ≈170MB (tmp/ 101MB!), личное фото me.JPG ×2 копии; runtime-зависимостей нет; план git rm --cached |
+| 07.07.2026 | CB-005 | Аудит выполнен: 2 xlsx с закупочными ценами tracked; runtime не нужны (XLSX генерится на лету, live 200 подтверждён); ВАЖНО: views.py.backup — ЖИВОЙ рантайм-код через _load_legacy_views |
+| 07.07.2026 | CB-006 | Аудит выполнен: секреты покрыты; дыры — artifacts/, output/, tmp/, opros/, newCatalog/, *.xlsx, *.bak2; исключение !views.py.backup оставить |
+| 07.07.2026 | CB-007 | Аудит выполнен: Promt/ не tracked; 7 AI-конфигов (69 файлов, живой похоже только .kiro); opros/newCatalog/BrandDNA → в PR CB-001 |
