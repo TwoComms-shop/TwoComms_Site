@@ -18,7 +18,7 @@ from django.urls import reverse
 
 from orders.models import Order, OrderItem
 from orders.nova_poshta_checkout import build_city_choice_token, build_warehouse_choice_token
-from storefront.models import Category, Product, PromoCode
+from storefront.models import Category, Product, PromoCode, PromoCodeUsage
 
 
 class CheckoutTestSupport(TestCase):
@@ -212,6 +212,82 @@ class CreateOrderTests(CheckoutTestSupport):
         bulk_items = fake_manager.bulk_create.call_args.args[0]
         self.assertEqual(bulk_items[0].raw_kwargs['fit_option_code'], 'classic')
         self.assertEqual(bulk_items[0].raw_kwargs['fit_option_label'], 'Класичний')
+
+    def _cod_post_payload(self, delivery, full_name='Promo Buyer', phone='+380631112233'):
+        return {
+            'full_name': full_name,
+            'phone': phone,
+            'city': delivery['city'],
+            'np_office': delivery['np_office'],
+            'np_settlement_ref': delivery['np_settlement_ref'],
+            'np_city_ref': delivery['np_city_ref'],
+            'np_city_token': delivery['np_city_token'],
+            'np_warehouse_ref': delivery['np_warehouse_ref'],
+            'np_warehouse_token': delivery['np_warehouse_token'],
+            'pay_type': 'cod',
+        }
+
+    def test_create_order_cod_applies_promo_discount(self):
+        """W1-4а (CRO-046): COD-заказ с промо имеет discount_amount > 0."""
+        promo = PromoCode.objects.create(
+            code='COD10',
+            discount_type='fixed',
+            discount_value=Decimal('10'),
+            is_active=True,
+        )
+        user = self.make_user(username='promo-cod-user', pay_type='cod')
+        self.client.force_login(user)
+        self.set_cart()
+        session = self.client.session
+        session['promo_code_id'] = promo.id
+        session.save()
+
+        delivery = self.delivery_payload()
+        fake_order_item_class, _ = self.make_fake_order_item_class()
+
+        with patch('storefront.views.checkout.OrderItem', fake_order_item_class):
+            response = self.client.post(
+                self.order_create_url, self._cod_post_payload(delivery), secure=True
+            )
+
+        order = Order.objects.get()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(order.discount_amount, Decimal('10'))
+        self.assertEqual(order.promo_code_id, promo.id)
+        # W1-4б: usage recorded and limits burned
+        self.assertEqual(PromoCodeUsage.objects.filter(promo_code=promo, user=user).count(), 1)
+        promo.refresh_from_db()
+        self.assertEqual(promo.current_uses, 1)
+        # Session promo keys cleared after placement
+        self.assertIsNone(self.client.session.get('promo_code_id'))
+
+    def test_create_order_cod_rejects_reused_one_time_promo(self):
+        """W1-4б: повторное использование one_time_per_user кода отклоняется."""
+        promo = PromoCode.objects.create(
+            code='ONCE10',
+            discount_type='fixed',
+            discount_value=Decimal('10'),
+            is_active=True,
+            one_time_per_user=True,
+        )
+        user = self.make_user(username='once-user', pay_type='cod')
+        PromoCodeUsage.objects.create(user=user, promo_code=promo)
+        self.client.force_login(user)
+        self.set_cart()
+        session = self.client.session
+        session['promo_code_id'] = promo.id
+        session.save()
+
+        delivery = self.delivery_payload()
+        fake_order_item_class, _ = self.make_fake_order_item_class()
+
+        with patch('storefront.views.checkout.OrderItem', fake_order_item_class):
+            self.client.post(self.order_create_url, self._cod_post_payload(delivery), secure=True)
+
+        order = Order.objects.get()
+        self.assertEqual(order.discount_amount or Decimal('0'), Decimal('0'))
+        self.assertIsNone(order.promo_code_id)
+        self.assertEqual(PromoCodeUsage.objects.filter(promo_code=promo).count(), 1)
 
     def test_create_order_authenticated_uses_profile_data(self):
         self.set_cart()

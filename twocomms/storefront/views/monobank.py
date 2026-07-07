@@ -649,18 +649,24 @@ def monobank_create_invoice(request):
                 lead.order = order
                 lead.save(update_fields=['order'])
 
-            # Применяем промокод если есть
+            # Применяем промокод если есть (W1-4)
             promo_code_id = request.session.get('promo_code_id')
             if promo_code_id:
                 try:
                     promo = PromoCode.objects.get(id=promo_code_id)
-                    if promo.can_be_used():
+                    can_use = promo.can_be_used()
+                    if can_use and request.user.is_authenticated:
+                        can_use, _promo_reason = promo.can_be_used_by_user(request.user)
+                    if can_use:
                         discount = promo.calculate_discount(total_sum)
-                        order.discount_amount = discount
-                        order.promo_code = promo
-                        promo.use()
-                        order.save(update_fields=['discount_amount', 'promo_code'])
-                        monobank_logger.info(f'Promo code applied: {promo.code}, discount={discount}')
+                        if discount > 0:
+                            order.discount_amount = discount
+                            order.promo_code = promo
+                            # W1-4г: лимит НЕ сжигаем при создании инвойса —
+                            # record_usage() вызывается при УСПЕШНОЙ оплате
+                            # (см. _record_promo_usage_for_order).
+                            order.save(update_fields=['discount_amount', 'promo_code'])
+                            monobank_logger.info(f'Promo code applied: {promo.code}, discount={discount}')
                 except Exception as e:
                     monobank_logger.warning(f'Error applying promo code: {e}')
 
@@ -677,12 +683,15 @@ def monobank_create_invoice(request):
                 monobank_logger.info(f'🔍 order.get_prepayment_amount() returned: {payment_amount}')
                 monobank_logger.info(f'🔍 Type: {type(payment_amount)}, Value: {payment_amount}')
 
-                # Формируем описание для предоплаты с номером заказа
-                total_sum_without_discount = order.total_sum + (order.discount_amount or Decimal('0'))
-                remaining_amount = total_sum_without_discount - payment_amount
+                # Формируем описание для предоплаты с номером заказа.
+                # W1-4в: total_sum хранится БЕЗ вычета скидки, поэтому
+                # к оплате = total_sum - discount_amount, а остаток =
+                # к оплате - предоплата (раньше остаток был завышен на скидку).
+                payable_total = order.total_sum - (order.discount_amount or Decimal('0'))
+                remaining_amount = payable_total - payment_amount
                 payment_description = (
                     f'Передплата 200 грн для замовлення {order.order_number}. '
-                    f'Повна сума: {total_sum_without_discount:.2f} грн. '
+                    f'Повна сума: {payable_total:.2f} грн. '
                     f'Залишок {remaining_amount:.2f} грн оплачується при отриманні через Нову Пошту.'
                 )
                 monobank_logger.info(f'✅ Prepayment amount set to: {payment_amount} UAH')
@@ -705,9 +714,9 @@ def monobank_create_invoice(request):
             if pay_type == 'prepay_200':
                 total_items_sum = Decimal('0')
 
-                # Вычисляем остаток к доплате заранее
-                total_sum_without_discount = order.total_sum + (order.discount_amount or Decimal('0'))
-                remaining_amount = total_sum_without_discount - payment_amount
+                # Вычисляем остаток к доплате заранее (W1-4в: со скидкой)
+                payable_total = order.total_sum - (order.discount_amount or Decimal('0'))
+                remaining_amount = payable_total - payment_amount
 
                 # Добавляем все товары с их полными ценами
                 items_to_show = order_items[:10]  # Максимум 10 товаров
@@ -1232,10 +1241,37 @@ def _cleanup_after_success(request):
     request.session.pop('cart', None)
     request.session.pop('promo_code', None)
     request.session.pop('promo_code_id', None)
+    request.session.pop('promo_code_data', None)
     request.session.pop('monobank_invoice_id', None)
     request.session.pop('monobank_pending_order_id', None)
     request.session.pop('monobank_pending_custom_keys', None)
     request.session.modified = True
+
+
+def _record_promo_usage_for_order(order):
+    """
+    W1-4б (CRO-046): фиксирует использование промокода при УСПЕШНОЙ оплате.
+
+    Идемпотентно: повторный вебхук/return не создаёт дубликатов и не сжигает
+    лимит дважды. Для гостевых заказов инкрементируется только счётчик
+    current_uses (персональная история требует пользователя).
+    """
+    try:
+        promo = order.promo_code
+        if not promo:
+            return
+        from storefront.models import PromoCodeUsage
+        if PromoCodeUsage.objects.filter(order=order).exists():
+            return
+        user = getattr(order, 'user', None)
+        if user and getattr(user, 'is_authenticated', False):
+            promo.record_usage(user, order)
+        else:
+            promo.use()
+    except Exception:
+        monobank_logger.warning(
+            'Failed to record promo usage for order %s', getattr(order, 'pk', None), exc_info=True
+        )
 
 
 def _apply_monobank_status(order, status_value, payload=None, source='webhook'):
@@ -1268,6 +1304,8 @@ def _apply_monobank_status(order, status_value, payload=None, source='webhook'):
 
     # Уведомление в Telegram при смене статуса оплаты на оплачено/предоплата
     if order.payment_status in ('paid', 'prepaid') and order.payment_status != old_payment_status:
+        # W1-4б: лимиты промокода сжигаются только при подтверждённой оплате.
+        _record_promo_usage_for_order(order)
         record_order_action(
             'purchase',
             order,

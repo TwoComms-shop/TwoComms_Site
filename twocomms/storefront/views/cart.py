@@ -56,7 +56,7 @@ from .utils import (
     _reset_monobank_session,
     _color_label_from_variant,
 )
-from ..utm_tracking import record_add_to_cart, record_remove_from_cart
+from ..utm_tracking import record_add_to_cart, record_remove_from_cart, record_user_action
 
 # Logger для корзины
 cart_logger = logging.getLogger('storefront.cart')
@@ -517,7 +517,7 @@ def view_cart(request):
                     cart_logger.error('Error saving profile: %s', e, exc_info=True)
                     if is_autosave:
                         return JsonResponse({'ok': False, 'reason': 'error'}, status=200)
-                    messages.error(request, _('Помилка при збереженні даних. Спробуйте ще раз.'))
+                    messages.error(request, _('Помилка при ��береженні даних. Спробуйте ще раз.'))
             else:
                 if is_autosave:
                     return JsonResponse({'ok': False, 'reason': 'auth'}, status=200)
@@ -1182,6 +1182,21 @@ def apply_promo_code(request):
             'promo_type': promo_code.promo_type
         }
         request.session.modified = True
+
+        # W1-4д (TECH-023): аналитическое событие применения промокода
+        try:
+            record_user_action(
+                request,
+                'coupon_apply',
+                cart_value=float(subtotal),
+                metadata={
+                    'promo_code': promo_code.code,
+                    'promo_type': promo_code.promo_type,
+                    'discount': float(discount),
+                },
+            )
+        except Exception:
+            cart_logger.warning('Failed to record coupon_apply event', exc_info=True)
 
         total = subtotal - discount
         site_discount_total = (original_subtotal - subtotal).quantize(Decimal('0.01')) if original_subtotal >= subtotal else Decimal('0.00')

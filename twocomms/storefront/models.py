@@ -157,7 +157,7 @@ class BlogCategory(models.Model):
     def clean(self):
         super().clean()
         if self.parent_id and self.pk and self.parent_id == self.pk:
-            raise ValidationError({"parent": "Категорія не може бути власним батьком."})
+            raise ValidationError({"parent": "Категорія ��е може бути власним батьком."})
         parent = self.parent
         while parent is not None:
             if self.pk and parent.pk == self.pk:
@@ -2048,6 +2048,7 @@ class UserAction(models.Model):
         ('lead', 'Лід (передплата)'),
         ('purchase', 'Покупка'),
         ('search', 'Пошук'),
+        ('coupon_apply', 'Застосування промокоду'),
         ('custom_print_start', 'Кастомний принт: старт'),
         ('custom_print_step_enter', 'Кастомний принт: вхід у крок'),
         ('custom_print_step_complete', 'Кастомний принт: завершення кроку'),

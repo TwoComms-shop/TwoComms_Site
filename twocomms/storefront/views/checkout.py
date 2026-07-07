@@ -238,21 +238,42 @@ def create_order(request):
 
             order.total_sum = total_sum
 
-            # Apply Promo Code
-            promo_code_str = request.session.get('promo_code')
-            if promo_code_str:
+            # Apply Promo Code (W1-4а / CRO-046)
+            # apply_promo_code кладёт в сессию promo_code_id — читаем его же
+            # (старый код читал мёртвый ключ 'promo_code' с несуществующими
+            # полями active/is_valid(), из-за чего промо в COD не работало).
+            # Промокоды доступны только зарегистрированным пользователям
+            # (та же политика, что в apply_promo_code).
+            applied_promo = None
+            promo_code_id = request.session.get('promo_code_id')
+            if promo_code_id and request.user.is_authenticated:
                 try:
-                    promo = PromoCode.objects.get(code=promo_code_str, active=True)
-                    if promo.is_valid():
+                    promo = PromoCode.objects.get(id=promo_code_id)
+                    can_use, _reason = promo.can_be_used_by_user(request.user)
+                    if can_use:
                         discount = promo.calculate_discount(total_sum)
-                        order.discount_amount = discount
-                        order.total_sum -= discount
-                        order.promo_code = promo
-                        # Increment usage? (Maybe later)
+                        if discount > 0:
+                            order.discount_amount = discount
+                            order.promo_code = promo
+                            applied_promo = promo
                 except PromoCode.DoesNotExist:
                     pass
+                except Exception:
+                    logger.warning('Error applying promo code to COD order', exc_info=True)
 
             order.save()
+
+            # W1-4б: COD-заказ размещён — фиксируем использование промокода
+            # (лимиты one_time_per_user / max_uses).
+            if applied_promo is not None:
+                try:
+                    applied_promo.record_usage(request.user, order)
+                except Exception:
+                    logger.warning('Failed to record promo usage for order %s', order.pk, exc_info=True)
+                request.session.pop('promo_code_id', None)
+                request.session.pop('promo_code', None)
+                request.session.pop('promo_code_data', None)
+                request.session.modified = True
 
             # Clear regular cart — approved custom items are now attached to the order.
             clear_cart(request)
