@@ -62,13 +62,13 @@
 
 - `twocomms/passenger_wsgi.py` (боевая точка входа, подтверждено PassengerAppRoot в `~/public_html/.htaccess`): `os.environ.setdefault("DJANGO_SETTINGS_MODULE", "twocomms.production_settings")`.
 - **Боевой модуль = `twocomms/twocomms/production_settings.py` (639 строк), который делает `from .settings import *` (settings.py — 1342 строки) и переопределяет.**
-- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источн��к пу��аницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
+- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источник путаницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
 - Ключевые переопределения production_settings: `DEBUG=False`, `SECRET_KEY` из env, DB через env (`DB_ENGINE`, отдельная `DB_NAME_DTF` — вторая БД для dtf! связь с TD-025 db_routers), Redis-настройки (3 БД: cache/static/fragment), `MediaCacheMiddleware` добавляется в конец цепочки, `DISABLE_ANALYTICS` env-флаг может ВЫКЛЮЧИТЬ UTM/Analytics-мидлвари (проверить, не включён ли на бою — если да, объясняет часть разрывов аналитики!), Telegram/NovaPoshta-ключи из env.
 - Passenger Python: `virtualenv/.../3.14/bin/python` (Python 3.14), Django==5.2.11, PyMySQL==1.1.2 (подтверждено pip freeze).
 
 ### Риски / задачи для исполнителя
 
-1. **RISK-08 закрыт фактом:** править надо `production_settings.py` (или settings.py, помня что production наследует). Любые правки MIDDLEWARE в settings.py могут быть molча изменены production_settings (DISABLE_ANALYTICS-ветка, MediaCacheMiddleware append).
+1. **RISK-08 закрыт фактом:** править надо `production_settings.py` (или settings.py, помня что production наследует). Любые правки MIDDLEWARE в settings.py могут быть молча изменены production_settings (DISABLE_ANALYTICS-ветка, MediaCacheMiddleware append).
 2. **ОБЯЗАТЕЛЬНАЯ проверка исполнителем (1 SSH-сессия):** `grep -c DISABLE_ANALYTICS .env.production .env` и значение (не печатая прочих строк) — если `DISABLE_ANALYTICS=true`, это прямое объяснение части разрывов UTM-аналитики.
 3. Комментарий в шапке production_settings «for PythonAnywhere» устарел (хостинг — CloudLinux/Passenger) — мелкий, но вводит в заблуждение.
 4. Двойная точка правды подтверждена: 639 строк переопределений поверх 1342 строк базы. Долгосрочная задача — единый settings.py + env, но НЕ сейчас (анти-задача «не рефакторить заодно»).
@@ -116,8 +116,8 @@
 1. **`orders/` app — НОЛЬ тестов.** Непокрыты: `facebook_conversions_service.py` (850 строк CAPI — деньги атрибуции), `tiktok_events_service.py` (308 строк), `nova_poshta_service.py`, `telegram_notifications.py`, `status_management.py`, `recover_checkouts` (cron каждые 30 мин трогает заказы — без единого теста!).
 2. **`accounts/` app — НОЛЬ тестов.** Непокрыт `cart_middleware.py` — середина цепочки из 26 middleware, восстановление корзины (CRO-035).
 3. **Monobank-вебхук:** проверка подписи `_verify_monobank_signature` (monobank.py:196) — НЕ тестируется; идемпотентность повторного callback покрыта ровно ОДНИМ тестом (`test_monobank_success_status_records_purchase_once`), сценарии failure/pending/expired-статусов и `_apply_monobank_status` (monobank.py:1211) — не покрыты.
-4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕ�� (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
-5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита ����т гонки остатков без select_for_update (проверить исполнителю).
+4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕТ (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
+5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от гонки остатков без select_for_update (проверить исполнителю).
 6. **CI отсутствует:** `.github/workflows/` нет ни в корне, ни в twocomms/ — 183 тест-файла НЕ запускаются автоматически. Никто не знает, сколько из них зелёные. Прогон тестов возможен только вручную (и на сервере — с осторожностью: тестовая БД).
 7. **Тесты гоняются на SQLite** (settings.py: DB_ENGINE default sqlite), боевая БД MySQL → расхождения (charset, strict mode, атомарность DDL) тестами не ловятся.
 
@@ -196,7 +196,7 @@
 - **Дыры покрытия (tracked-файлы, которые должны игнорироваться):**
   - НЕТ `artifacts/`, `output/`, `tmp/` (только `tmp/critical-extraction/`), `opros/`, `newCatalog/`;
   - НЕТ `*.xlsx` → 2 файла с закупочными ценами tracked (CB-005);
-  - `*.bak` есть, но ��Е `*.bak2` → tracked `styles.css.bak2` (445KB);
+  - `*.bak` есть, но НЕ `*.bak2` → tracked `styles.css.bak2` (445KB);
   - `*.backup` есть, НО с явным исключением `!twocomms/storefront/views.py.backup` — это НЕ ошибка: файл живой (см. CB-005), исключение оставить;
   - `*.log` покрыт (дважды — дубль строк 77 и 184, косметика).
 - Опасный широкий паттерн: `lib/`, `lib64/`, `var/`, `target/` — стандартный python-шаблон, реальных коллизий с проектом не найдено.
@@ -275,7 +275,7 @@ newCatalog/
 - **Действия исполнителя (приоритет над всем разделом):**
   1. СМЕНИТЬ пароль qlknpodo на сервере (согласовать с владельцем; лучше перейти на ssh-ключи + отключить PasswordAuthentication).
   2. Замаскировать/удалить строку в `deploy_finance.sh`, коммит.
-  3. История git: пароль остаётся в истории — фиксаци�� факта; `git filter-repo` только по явному согласованию (правило чеклиста).
+  3. История git: пароль остаётся в истории — фиксация факта; `git filter-repo` только по явному согласованию (правило чеклиста).
 
 ### Факты по скриптам
 
@@ -360,7 +360,7 @@ newCatalog/
 | list_colors.py | 30 | разовый листинг цветов | в архив/удалить |
 | list_untranslated.py | 16 | подсчёт пустых msgstr | живой (мелкий) → оставить рядом с fill_translations |
 
-### Прове��ка «завершена ли Phase 17»
+### Проверка «завершена ли Phase 17»
 
 - **НЕ завершена.** Пустые msgstr в locale: ru — 638 из 2450 msgid (26%),
   en — 639 из 2450 (26%), uk — 1331 из 1357 (98%, uk = исходный язык, это норм
