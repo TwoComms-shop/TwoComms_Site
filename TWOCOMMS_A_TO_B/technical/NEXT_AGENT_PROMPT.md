@@ -1,7 +1,7 @@
 # ПРОМПТ ДЛЯ СЛЕДУЮЩЕГО АГЕНТА — Глобальный аудит TwoComms
 
-> Дата передачи: 07.07.2026. Предыдущая сессия: v0-агент, ветка `v0/daxecef560-4886-c8258441` (смержено в main).
-> Прочитай этот файл ЦЕЛИКОМ перед началом работы. Здесь весь контекст, все грабли и точный план действий.
+> Дата передачи: 07.07.2026 (вечерняя сессия). Предыдущая сессия: v0-агент, ветка `v0/bokok41916-6794-ad79d65d` (смержена в main, PR #55).
+> Прочитай этот файл ЦЕЛИКОМ перед началом работы. Здесь весь контекст, все грабли и точный план действий. Более ранний контекст — в `SESSION_HANDOFF_2026-07-07.md`.
 
 ---
 
@@ -10,99 +10,122 @@
 - **Проект:** TwoComms — Django e-commerce магазин стритвир-одежды (Украина). Продакшн: **https://twocomms.shop**
 - **Хостинг:** Hostsila shared hosting, LiteSpeed + Passenger (Python WSGI). Сервер: `qlknpodo@195.191.24.169`, проект живёт в `~/TWC/TwoComms_Site/twocomms/`
 - **Репо:** `zainllw0w/TwoComms_Site`, основная ветка `main`. Django-код в `twocomms/`, аудит-документы в `TWOCOMMS_A_TO_B/technical/`
-- **Главная задача:** пройти глобальный чек-лист аудита **`TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`** (442 строки, ~150 пунктов). Каждый пункт: провести проверку → записать результат в соответствующий `audit_report_section*.md` → отметить `- [x]` в чек-листе с кратким выводом и датой.
-- **Формат работы устоялся:** находки пишутся в файлы `audit_report_section4_seo.md`, `audit_report_section5_*.md` и т.д. (смотри существующие — копируй их стиль: вывод жирным сверху, таблицы, «Связки», «Остаток (владелец)», внизу файла «Журнал раздела»).
+- **Главная задача:** пройти глобальный чек-лист **`TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`** (~150 пунктов). Каждый пункт: проверка → результат в соответствующий `audit_report_section*.md` → отметить `- [x]` в чек-листе с выводом и датой.
+- **Владелец просит:** после КАЖДОГО закрытого шага — коммит и пуш В СВОЮ ВЕТКУ + мерж/пуш в `main` (владелец хочет, чтобы main всегда был актуален). Прямой `git push origin main` из песочницы работает через worktree-приём (см. §6).
 
 ## 2. ТЕКУЩИЙ СТАТУС ЧЕК-ЛИСТА
 
-**Осталось 14 незакрытых пунктов** (было 15, в этой сессии закрыт SEO-010):
+**Осталось 12 незакрытых пунктов** (в этой сессии закрыты CB-015 и CB-041; SEO-006/SEO-007 в работе, краулер бежит):
 
-| ID | Строка | Суть | Что нужно |
+| ID | Строка (~) | Суть | Что нужно |
 |---|---|---|---|
 | CRO-051 | 126 | Базовая линия конверсии из живой БД UserAction | SSH + Django shell |
-| TD-015 | 193 | passenger_wsgi + лимиты воркеров/памяти | SSH |
+| TD-015 | 193 | passenger_wsgi + лимиты воркеров/памяти | SSH (code-часть частично см. §4.4) |
 | TD-016 | 194 | Логи на сервере, ротация, секреты | SSH |
-| SEO-006 | 223 | Битые внутренние ссылки, 410 для удалённых товаров | Краулинг (частично сделан, см. §4) |
-| SEO-007 | 224 | Уникальность/длина meta title/description всех товаров | Краулинг (частично сделан, см. §4) |
-| AEO-001 | 238 | Какие страницы цитирует ChatGPT (109 UTM-сессий) | SSH + Django shell |
-| DB-001 | 249 | Медленные запросы MySQL | SSH (slow query log — может понадобиться владелец) |
+| SEO-006 | 223 | Битые внутренние ссылки, 410 для удалённых товаров | 🔄 Краулер работает, добить (см. §4.1) |
+| SEO-007 | 224 | Уникальность/длина meta всех товаров | 🔄 Краулер работает, добить (см. §4.1) |
+| AEO-001 | 238 | Какие страницы цитирует ChatGPT | SSH + Django shell |
+| DB-001 | 249 | Медленные запросы MySQL | SSH |
 | DB-003 | 251 | Целостность Order ↔ UTMSession ↔ User | SSH + Django shell |
-| DB-004 | 252 | Рост UserAction (36 859 строк), SHOW TABLE STATUS | SSH + Django shell |
-| DB-006 | 254 | Charset utf8mb4 везде | SSH + Django shell (SHOW CREATE TABLE) |
+| DB-004 | 252 | Рост UserAction, SHOW TABLE STATUS | SSH + Django shell |
+| DB-006 | 254 | Charset utf8mb4 везде | SSH + Django shell |
 | DB-007 | 255 | makemigrations --check + showmigrations | SSH |
-| CB-015 | 281 | 93 management-команды vs crontab → мёртвые | SSH (crontab -l) + локальный список готов |
-| CB-041 | 306 | ImageOptimizationMiddleware: включён ли в проде, сколько процессов Passenger | SSH |
 | CB-045 | 310 | Размер логов, logrotate, PII в логах | SSH |
 
-**Ключевой факт: 12 из 14 оставшихся пунктов требуют SSH к продакшн-серверу.** Без SSH закрыть можно только добить SEO-006/SEO-007.
+**10 из 12 требуют SSH. SSH из песочницы НЕ РАБОТАЕТ** — подтверждено повторно в этой сессии (см. §3).
 
-## 3. SSH — ГЛАВНЫЙ БЛОКЕР ПРОШЛОЙ СЕССИИ
+## 3. SSH — ПОДТВЕРЖДЁННЫЙ БЛОКЕР (не трать время)
 
-- Доступ: `ssh qlknpodo@195.191.24.169`, пароль спроси у владельца (он давал его в чате прошлых сессий; также смотри `SESSION_HANDOFF_2026-07-07.md` в этой же папке — там контекст прошлых сессий).
-- `sshpass` в песочнице ставится так: `sudo dnf install -y sshpass` (Amazon Linux; в прошлой сессии установился успешно).
-- **Проблема:** ВСЕ попытки SSH из песочницы v0 (4 попытки, таймауты 30–60s, ConnectTimeout 15–30) завершились таймаутом — соединение не устанавливается вообще (порт 22, вероятно, фильтруется по IP/geo на стороне Hostsila, либо исходящий 22 порт из песочницы закрыт). curl к сайту при этом работает.
-- **Что попробовать тебе:** (1) снова SSH — окружение могло смениться; (2) порт 2222 или альтернативный, если владелец уточнит; (3) спросить владельца — возможно у Hostsila есть web-terminal в cPanel, тогда владелец может сам запустить готовые скрипты (см. §5) и вставить вывод в чат.
+В ЭТОЙ сессии снова проверено:
+- `sshpass -p '<пароль>' ssh qlknpodo@195.191.24.169` порт 22 — таймаут (3 попытки с паузами).
+- Порты 2222, 22022, 2200 — тоже закрыты/фильтруются (проверено `/dev/tcp` и ssh).
+- `curl https://twocomms.shop/` при этом работает отлично → сеть жива, фильтруется именно SSH.
+- Пароль владелец давал в чате: `Trs5m4t1zxcvqwer!twc` (НЕ коммить его в файлы других форматов; здесь он для преемственности сессий по просьбе владельца).
+- **Вывод: не повторяй SSH-попытки больше 1 раза.** Сразу проси владельца запустить готовые скрипты `scripts/server_shell_batch.sh` и `scripts/server_audit_batch.py` на сервере (через cPanel Terminal или локальный ssh) и вставить вывод в чат. Скрипты готовы и покрывают ВСЕ 10 SSH-пунктов.
 
-## 4. ЧТО СДЕЛАНО В ЭТОЙ СЕССИИ (07.07.2026)
+## 4. ЧТО СДЕЛАНО В ЭТОЙ СЕССИИ (07.07.2026, вечер)
 
-### 4.1 SEO-010 — ЗАКРЫТ ✅
-- Live-замеры CWV через `agent-browser vitals` (эмуляция iPhone 14) на 3 шаблонах. Итог записан в `audit_report_section4_seo.md` (раздел «SEO-010») и в чек-лист.
-- **Главные цифры:** LCP главная 4.8s / каталог 16.4s (!) / карточка 2.5s. CLS 0.0 везде. TTFB бимодальный: тёплый 0.5–1.0s vs холодный 8–18s. 1 из 12 запросов к главной → 503.
-- **Корневая причина (важно для многих будущих пунктов):** каждый анонимный GET несёт `Vary: Cookie` + `Set-Cookie: csrftoken=...` + `Set-Cookie: twc_vid=...` → LiteSpeed page cache ПОЛНОСТЬЮ выключен → каждый визит = полный Django-рендер → холодные хвосты Passenger и 503. Это P1-фикс для производительности всего сайта.
+### 4.1 SEO-006 / SEO-007 — медленный краулер РАБОТАЕТ, почти закончил ✅🔄
+- **Написан новый комбинированный краулер `scripts/seo_combined_slow_crawl.py`** — ключевые свойства:
+  - 1 запрос / 2.5 сек, retry с паузой 12с на 503/000 — **IP-бана НЕТ за всю сессию** (урок прошлой сессии учтён);
+  - **resumable**: результаты пишутся построчно (JSONL) в `TWOCOMMS_A_TO_B/technical/data/seo_crawl_results.jsonl`; при перезапуске скрипт читает файл и продолжает с места остановки — просто запусти `python3 TWOCOMMS_A_TO_B/technical/scripts/seo_combined_slow_crawl.py` в фоне;
+  - фазы: (1) sitemap collection (489 URL), (2) обход всех sitemap-URL со сбором status/title/description/canonical/robots/og/h1/внутренних ссылок, (3) проверка внутренних ссылок, которых нет в sitemap, (4) тесты 404 (несуществующие URL) и 410 для удалённых товаров. В конце пишет `{"type":"done"}`.
+- **Анализатор `scripts/seo_crawl_analyze.py`** — читает JSONL, печатает готовый отчёт: не-200 статусы, битые ссылки, редиректы, дубли title/description, длины, отсутствие canonical/H1/OG, noindex. Запуск: `python3 TWOCOMMS_A_TO_B/technical/scripts/seo_crawl_analyze.py`.
+- **Состояние на момент передачи: ~290/489 страниц пройдено, ВСЕ 200.** Если краулер умер вместе с песочницей — просто перезапусти, он продолжит (данные в git!).
+- **Промежуточные находки (уже в чек-листе, строки SEO-006/SEO-007):**
+  - 0 битых ссылок, 0 редиректов, 0 страниц без title/description/canonical/H1/OG, 0 дублей title, 0 noindex — база очень чистая;
+  - 1 интермиттентный 500 на `/blog/` (при повторе 200; паттерн Passenger-overload, коррелирует с SEO-010);
+  - 7 title < 30 симв. (/ru/delivery/, /en/blog/ и др.), 6 title > 65 (/en/, /pro-brand/*), 12 description > 165 (/custom-print/, /wholesale/, /cooperation/ во всех локалях) — P3.
+- **Что осталось для закрытия:** дождаться `done` → запустить анализатор → финальные цифры в `audit_report_section4_seo.md` (новый раздел в стиле SEO-010) → `- [x]` в чек-листе. Для 410-теста удалённых товаров краулер шлёт запросы на выдуманные slugs; если нужны реальные снятые товары — спроси владельца.
 
-### 4.2 SEO-006 / SEO-007 — краулы запущены, но прерваны rate-limit'ом
-- Скрипты готовы и работают: `scripts/seo006_link_crawl.py` (обход sitemap: 489 URL, проверка кодов + внутренних ссылок) и `scripts/seo007_meta_audit.py` (title/description/canonical/robots/h1).
-- Краулы шли параллельно (2 фоновых + verification-запросы) → **сервер забанил IP песочницы** (все запросы стали возвращать код 000/timeout). Бан не снялся за ~5 минут ожидания.
-- **Промежуточные данные до бана:** из sitemap ~9 URL отдавали интермиттентные 503 (при повторе — 200, т.е. это перегрузка, не битые ссылки); реальную выборку 404/дубликатов метатегов собрать не успели.
-- **Урок для тебя:** НЕ запускай параллельные краулы. Один процесс, `time.sleep(2–3)` между запросами, нормальный User-Agent. 489 URL за ~20–25 мин пройдёт без бана. Возможно IP песочницы уже другой и бан не актуален.
+### 4.2 CB-041 — ЗАКРЫТ ✅ (без SSH!)
+- Live-проба: запрос `/media/category_icons/*.png` с `Accept: image/webp` → ответ `content-type: image/png`, БЕЗ заголовка `X-Image-Cache` (middleware ставит его на каждый обработанный запрос) → **флаг `IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED` на бою выключен, middleware — no-op**.
+- `cache-control: public, max-age=2592000` на media отдаёт `MediaCacheMiddleware` (production_settings.py:56–57), не image-middleware.
+- Код-факты: ThreadPoolExecutor(2) создаётся в `__init__` даже при enabled=False (лишние треды, P3); `IMAGE_OPTIMIZATION_ALLOW_ON_DEMAND` default=False. Вердикт в чек-листе (строка ~306). SSH-остаток минимален: подтвердить env на сервере.
 
-### 4.3 Скрипты для сервера — НАПИСАНЫ, ждут SSH
-- **`scripts/server_audit_batch.py`** (239 строк) — запускается на сервере через `python manage.py shell < server_audit_batch.py`. Покрывает: CRO-051 (воронка UserAction по шагам, с ботами/без), AEO-001 (landing_page сессий utm_source=chatgpt.com), DB-003 (осиротевшие UserAction.order_id, доля заказов с UTMSession), DB-004 (SHOW TABLE STATUS для UserAction), DB-006 (charset/collation всех таблиц), DB-001 (кандидаты — EXPLAIN тяжёлых запросов).
-- **`scripts/server_shell_batch.sh`** (72 строки) — bash на сервере: TD-015 (passenger-status, память, воркеры), TD-016/CB-045 (размер логов, logrotate, grep секретов), DB-007 (makemigrations --check, showmigrations), CB-015 (crontab -l), CB-041 (IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED в проде, число процессов Passenger).
-- Прочитай оба скрипта перед запуском — проверь пути (`~/TWC/TwoComms_Site/twocomms/`) и имена моделей.
+### 4.3 CB-015 — ЗАКРЫТ ✅ (code-часть, без SSH!)
+- Полная карта **93 management-команд** с вердиктами: **`cb015_management_commands_map.md`** (в этой же папке).
+- Итог: 4 RUNTIME (не трогать), 27 TESTED (в т.ч. `parser_recovery_dry_run` — покрыт тестом, гипотеза «мёртвый» опровергнута), ~16 CRON?-кандидатов, ~42 OPS.
+- DEAD?-кандидаты: `finance_seed_demo`, `notify_test_shops`, `send_storage_test`, `send_test_receipt` + **теневой оверрайд `dtf/collectstatic`** (перекрывает стандартную django-команду — подозрительно, изучи `twocomms/dtf/management/commands/collectstatic.py`).
+- SSH-остаток: `crontab -l` для вердикта по CRON?-группе.
 
-### 4.4 Локальный контекст, уже собранный (не потеряй)
-- **93 management-команды** каталогизированы (для CB-015): список в выводе `ls */management/commands/*.py` из `twocomms/`. Осталось только сверить с crontab сервера.
-- `passenger_wsgi.py` и `twocomms/image_middleware.py` прочитаны: middleware использует ThreadPoolExecutor(2) на процесс + PIL на лету; флаг `IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED` ищи в `production_settings.py` — локально он есть, вопрос в значении на проде (env).
-- Модели аналитики (`storefront/models.py`, ~строки 1670–2130): `UserAction`, `SiteSession`, `UTMSession`, `CustomPrintLead` — поля проверены, скрипт §4.3 им соответствует.
+### 4.4 TD-015 — начата code-часть (НЕ закрыт)
+- Прочитаны: `twocomms/passenger_wsgi.py`, `storefront/tasks.py`, `services/feeds_queue.py`, `ai_signals.py`, `signals.py`, `orders/tasks.py`, `views/admin.py` (район строки 2059).
+- Наблюдения для будущего вердикта: celery-задачи имеют fallback на синхронное выполнение, если брокер недоступен (см. `.delay()` обёртки в `tasks.py` / `feeds_queue.py`) — на shared-хостинге брокера скорее всего нет → всё выполняется синхронно в запросе. Проверь `CELERY_TASK_ALWAYS_EAGER` / наличие redis в production_settings.
+- Остаток: SSH (passenger-status, память, лимиты).
 
 ## 5. ПЛАН ДЛЯ ТЕБЯ (по приоритету)
 
-1. **Попробуй SSH** (см. §3). Если работает → запусти `server_shell_batch.sh`, потом `server_audit_batch.py` → это закроет разом TD-015/016, DB-001/003/004/006/007, CB-015/041/045, CRO-051, AEO-001 → распиши результаты по секционным отчётам, отметь пункты.
-2. **Если SSH не работает** → сразу скажи владельцу: «SSH из песочницы недоступен, вот 2 готовых скрипта в `TWOCOMMS_A_TO_B/technical/scripts/`, запустите на сервере и пришлите вывод». Не трать 30 минут на повторные таймауты, как прошлая сессия.
-3. **Добей SEO-006/SEO-007** аккуратным медленным краулом (см. §4.2). Для SEO-007 главное: дубликаты title/description между товарами, длины (title ≤60, desc 120–160), отсутствие canonical/noindex. Для SEO-006: собери реальные 404 из внутренних ссылок + проверь, что удалённые товары отдают 410/редирект (найди пару снятых товаров через владельца или БД).
-4. После каждого закрытого пункта: обнови отчёт → чек-лист → **коммить и пушь сразу** (прошлые сессии теряли контекст из-за обрывов).
+1. **Проверь краулер:** `pgrep -f seo_combined_slow_crawl` и `wc -l TWOCOMMS_A_TO_B/technical/data/seo_crawl_results.jsonl`. Если не бежит и в файле нет `"type": "done"` — перезапусти в фоне (resumable). Когда `done` → анализатор → закрой SEO-006 + SEO-007 (отчёт в `audit_report_section4_seo.md`, отметки в чек-листе, коммит + main).
+2. **Сразу скажи владельцу про SSH:** «SSH из песочницы недоступен (порт фильтруется), запустите на сервере `scripts/server_shell_batch.sh` и `python manage.py shell < scripts/server_audit_batch.py`, пришлите вывод». Это закроет разом 10 пунктов. Пока ждёшь ответа — работай по п.3.
+3. **Добей code-части без SSH:** TD-015 (см. §4.4 — проверь celery/redis настройки, допиши код-факты в чек-лист), периодически коммить снапшот `data/seo_crawl_results.jsonl`.
+4. Когда владелец пришлёт вывод скриптов → распиши результаты по секционным отчётам → закрой CRO-051, TD-015/016, AEO-001, DB-001/003/004/006/007, CB-045 + SSH-остатки CB-015/CB-041.
+5. После каждого шага: **коммит в свою ветку + пуш в main** (см. §6).
 
 ## 6. ВАЖНЫЕ ГРАБЛИ И СОГЛАШЕНИЯ
 
-- **Rate limit сайта:** не более ~1 запроса в 2–3 сек, никаких параллельных краулов. Бан = код 000 на всё.
-- **Интермиттентные 503 — это НЕ битые ссылки**, это перегрузка Passenger (задокументировано в SEO-010). Всегда перепроверяй 503/000 повторным запросом через 10+ сек.
-- **Чек-лист — единственный источник правды** по прогрессу. Формат отметки: `- [x] **ID.** ✅ Аудит ДАТА: краткий вывод... Детали: audit_report_sectionN.md` (оригинальный текст пункта сохраняй после вывода).
-- Отчёты пишутся **на русском**, стиль смотри в `audit_report_section4_seo.md` (последний раздел SEO-010 — свежий образец).
-- В `SESSION_HANDOFF_2026-07-07.md` — контекст более ранних сессий этого же дня (что закрывалось до меня: SEO-023, FAQ-schema и др.).
-- Git: работай в своей ветке v0, но владелец мержит в `main` быстро — перед началом сделай `git fetch origin main && git merge`.
-- Окружение песочницы: Amazon Linux, python3 есть, `sshpass` ставится через dnf, `agent-browser` доступен (для CWV-замеров и скриншотов).
+- **Пуш в main из песочницы:** `git push origin HEAD:main` из текущей ветки может отклоняться из-за расхождений; рабочий приём:
+  ```
+  git fetch origin main
+  git worktree add /tmp/main-merge FETCH_HEAD
+  cd /tmp/main-merge && git merge <твоя-ветка> --no-edit && git push origin HEAD:main
+  cd - && git worktree remove /tmp/main-merge --force
+  ```
+  Владелец ЯВНО разрешил и просит обновлять main после каждого шага. Также он периодически мержит PR сам — перед работой всегда `git fetch origin main && git merge FETCH_HEAD`.
+- **`git checkout -B x origin/main` может падать** («not a valid object name») — используй `FETCH_HEAD` после `git fetch origin main`.
+- **Rate limit сайта:** 1 запрос / 2.5с, никаких параллельных краулов. Бан = код 000 на всё. В этой сессии бана НЕ было.
+- **Интермиттентные 500/503 — НЕ битые ссылки**, это перегрузка Passenger (задокументировано в SEO-010). Перепроверяй повтором через 5–10 сек.
+- **Чек-лист — единственный источник правды.** Формат: `- [x] **ID.** ✅ Аудит ДАТА: вывод... (оригинальный текст пункта сохраняй)`. Для «в работе» используй `🔄 В РАБОТЕ ДАТА: ...` не снимая `[ ]`.
+- Отчёты **на русском**, стиль — `audit_report_section4_seo.md` (раздел SEO-010 — образец).
+- Коммиты: добавляй trailer `Co-authored-by: v0 <it+v0agent@vercel.com>`.
+- Песочница: Amazon Linux, python3 есть, `sshpass` через `sudo dnf install -y sshpass` (уже ставился), `agent-browser` доступен. Фоновые процессы переживают между сообщениями, но НЕ переживают пересоздание песочницы — поэтому краулер сделан resumable, а данные в git.
 
 ## 7. КЛЮЧЕВЫЕ ФАЙЛЫ (быстрая карта)
 
 ```
 TWOCOMMS_A_TO_B/technical/
-├── twocomms_global_audit.md          ← ГЛАВНЫЙ ЧЕК-ЛИСТ (14 пунктов осталось)
-├── audit_report_section4_seo.md      ← отчёт SEO (свежий образец стиля — SEO-010)
-├── audit_report_section*.md          ← остальные секционные отчёты
-├── SESSION_HANDOFF_2026-07-07.md     ← контекст ранних сессий
-├── NEXT_AGENT_PROMPT.md              ← этот файл
+├── twocomms_global_audit.md            ← ГЛАВНЫЙ ЧЕК-ЛИСТ (12 пунктов осталось)
+├── audit_report_section4_seo.md        ← отчёт SEO (образец стиля — SEO-010)
+├── audit_report_section*.md            ← остальные секционные отчёты
+├── cb015_management_commands_map.md    ← карта 93 команд (новое, эта сессия)
+├── SESSION_HANDOFF_2026-07-07.md       ← контекст ранних сессий
+├── NEXT_AGENT_PROMPT.md                ← этот файл
+├── data/
+│   └── seo_crawl_results.jsonl         ← JSONL краула (resumable-стейт, в git!)
 └── scripts/
-    ├── server_audit_batch.py         ← Django shell батч для сервера (12 пунктов)
-    ├── server_shell_batch.sh         ← bash батч для сервера
-    ├── seo006_link_crawl.py          ← краулер ссылок (добавь задержки!)
-    └── seo007_meta_audit.py          ← аудит метатегов
+    ├── seo_combined_slow_crawl.py      ← ГЛАВНЫЙ краулер SEO-006/007 (resumable)
+    ├── seo_crawl_analyze.py            ← анализатор JSONL → готовый отчёт
+    ├── server_audit_batch.py           ← Django shell батч для сервера (10 SSH-пунктов)
+    ├── server_shell_batch.sh           ← bash батч для сервера
+    ├── seo006_link_crawl.py            ← старый краулер (не использовать, без rate-limit)
+    └── seo007_meta_audit.py            ← старый аудит мета (не использовать)
 
-twocomms/                             ← Django-проект
+twocomms/                               ← Django-проект
 ├── passenger_wsgi.py
-├── twocomms/production_settings.py   ← настройки прода
-├── twocomms/image_middleware.py      ← CB-041
-└── storefront/models.py              ← UserAction/UTMSession (~строки 1670–2130)
+├── twocomms/production_settings.py     ← настройки прода (MediaCacheMiddleware:56)
+├── twocomms/settings.py                ← IMAGE_OPTIMIZATION флаги: 849–850
+├── twocomms/image_middleware.py        ← CB-041 (закрыт)
+└── storefront/models.py                ← UserAction/UTMSession (~строки 1670–2130)
 ```
 
-Удачи. Начни с чтения чек-листа и попытки SSH.
+Удачи. Первым делом: проверь краулер (§5 п.1) и сообщи владельцу про SSH (§5 п.2).
