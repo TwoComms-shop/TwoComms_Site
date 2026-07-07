@@ -104,6 +104,9 @@ def get_sitemap_urls():
 
 
 def main():
+    import sys
+    skip_sitemap_check = "--skip-sitemap-check" in sys.argv
+
     print("== collecting sitemap urls ==", flush=True)
     sm_urls = get_sitemap_urls()
     print(f"sitemap urls total: {len(sm_urls)}", flush=True)
@@ -112,19 +115,20 @@ def main():
         status, final, _, chain = fetch(u, method="GET")
         return u, status, final, chain
 
-    bad = []
-    redirected = []
-    with cf.ThreadPoolExecutor(8) as ex:
-        for u, status, final, chain in ex.map(check_url, sorted(sm_urls)):
-            if status != 200:
-                bad.append((u, status, final))
-            elif chain:
-                redirected.append((u, [c[0] for c in chain], final))
-    print(f"sitemap non-200: {len(bad)}; redirected-but-200: {len(redirected)}", flush=True)
-    for b in bad[:80]:
-        print("  SM_BAD", json.dumps(b, ensure_ascii=False))
-    for r in redirected[:80]:
-        print("  SM_RED", json.dumps(r, ensure_ascii=False))
+    if not skip_sitemap_check:
+        bad = []
+        redirected = []
+        with cf.ThreadPoolExecutor(8) as ex:
+            for u, status, final, chain in ex.map(check_url, sorted(sm_urls)):
+                if status != 200:
+                    bad.append((u, status, final))
+                elif chain:
+                    redirected.append((u, [c[0] for c in chain], final))
+        print(f"sitemap non-200: {len(bad)}; redirected-but-200: {len(redirected)}", flush=True)
+        for b in bad[:80]:
+            print("  SM_BAD", json.dumps(b, ensure_ascii=False))
+        for r in redirected[:80]:
+            print("  SM_RED", json.dumps(r, ensure_ascii=False))
 
     print("== crawling internal links from key pages ==", flush=True)
     seeds = [
