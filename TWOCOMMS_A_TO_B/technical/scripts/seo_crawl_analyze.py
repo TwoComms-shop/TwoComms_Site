@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Analyze /tmp/seo_crawl_results.jsonl -> SEO-006 + SEO-007 findings (markdown to stdout)."""
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 
-IN_FILE = sys.argv[1] if len(sys.argv) > 1 else "/tmp/seo_crawl_results.jsonl"
+_DEFAULT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "seo_crawl_results.jsonl"))
+IN_FILE = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT
 
 pages, links, nf_tests = [], [], []
 sitemap_count = 0

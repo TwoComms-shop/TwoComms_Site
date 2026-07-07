@@ -24,7 +24,9 @@ BASE = "https://twocomms.shop"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 TwoCommsAudit/2.0"
 DELAY = 2.5
 RETRY_WAIT = 12
-OUT_FILE = "/tmp/seo_crawl_results.jsonl"
+import os
+OUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "seo_crawl_results.jsonl")
+OUT_FILE = os.path.normpath(OUT_FILE)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -181,7 +183,25 @@ def main():
     if "--limit" in sys.argv:
         limit = int(sys.argv[sys.argv.index("--limit") + 1])
 
-    out = open(OUT_FILE, "w", encoding="utf-8")
+    os.makedirs(os.path.dirname(OUT_FILE), exist_ok=True)
+
+    # Resume support: load already-crawled page URLs and their links
+    done_pages = {}
+    done_links = set()
+    if os.path.exists(OUT_FILE):
+        for line in open(OUT_FILE, encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("type") == "page":
+                done_pages[r["url"]] = r
+            elif r.get("type") == "link":
+                done_links.add(r["url"])
+    if done_pages:
+        print(f"RESUME: {len(done_pages)} pages already crawled", flush=True)
+
+    out = open(OUT_FILE, "a", encoding="utf-8")
 
     def emit(rec):
         out.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -197,7 +217,12 @@ def main():
     print("== phase 2: crawl sitemap urls (status + meta + links) ==", flush=True)
     all_links = {}
     seen = set()
+    for u in done_pages:
+        seen.add(u.rstrip("/") + "/")
+        seen.add(u)
     for i, u in enumerate(sm_urls):
+        if u in done_pages:
+            continue
         time.sleep(DELAY)
         status, final, headers, body, chain, retried = check_with_retry(u)
         rec = {"type": "page", "url": u, "status": status, "final": final,
@@ -214,7 +239,7 @@ def main():
             print(f"  progress {i+1}/{len(sm_urls)}", flush=True)
 
     print("== phase 3: check internal links not in sitemap ==", flush=True)
-    unseen = sorted(l for l in all_links if l not in seen and (l.rstrip("/") + "/") not in seen)
+    unseen = sorted(l for l in all_links if l not in seen and (l.rstrip("/") + "/") not in seen and l not in done_links)
     # skip obvious non-content links to save requests
     skip_pat = re.compile(r"/(login|logout|register|account|cart|checkout|admin|api|set-language|search\?|favorites|profile|order)")
     to_check = [l for l in unseen if not skip_pat.search(l)]
