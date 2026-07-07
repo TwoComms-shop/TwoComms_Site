@@ -72,24 +72,28 @@
 
 ## ВОЛНА 1 — ДЕНЬГИ И ПРИЁМ ЗАКАЗОВ (P0)
 
-- [ ] **W1-1. 🔴 Гостевой COD-чекаут сломан — HTTP 500 (CRO-040)** `[REPO]` + `[DECISION]`
+- [x] **W1-1. 🔴 Гостевой COD-чекаут сломан — HTTP 500 (CRO-040)** `[REPO]` + `[DECISION]`
+  ✅ **DONE (коммит 26702d78):** (1) роутинг гостя на `create_order` уже был исправлен на main до начала работ — перепроверено, `cart.py` вызывает `legacy_views.order_create(request)`; (2) `[DECISION]` владельца: COD в UI **НЕ возвращаем**, остаётся backend-only fallback; (3) обновлены 2 устаревших теста в `test_checkout.py`, которые ожидали удалённый inline-monobank-флоу (online pay_type теперь редиректит в корзину — заказ создаёт кнопка Monobank). Проверка: `storefront.tests.test_checkout` зелёный.
   `storefront/views/cart.py:525-527` вызывает несуществующий `legacy_views.process_guest_order` → AttributeError → 500. Live-подтверждено: гость не может оформить заказ. В guest UI корзины нет `pay_type=cod` и submit-кнопки COD.
   Фикс: (1) `cart.py:525` → `return legacy_views.order_create(request)` (`create_order` поддерживает гостей, поля совпадают — проверено); (2) `[DECISION]` — возвращать ли `cod` в UI (значение есть в `Order.PAY_TYPE_CHOICES`); (3) НЕ использовать ветку `monobank_create_invoice(request, order.id)` — латентный TypeError (см. W1-5д).
   Приёмка: live guest COD-заказ создаётся (тест-пометка); invalid phone → controlled error; 0 JS-ошибок.
   Отчёт: `audit_report_checkout_critical.md` (Находка 1).
 
-- [ ] **W1-2. 🔴 Публичная утечка PII заказов (CRO-044)** `[REPO]`
+- [x] **W1-2. 🔴 Публичная утечка PII заказов (CRO-044)** `[REPO]`
+  ✅ **DONE (коммит 5d2d91f4):** (а) `order_success_preview` → `@staff_member_required`; (б) `order_success` → проверка владельца `_can_view_order()` (checkout.py): staff / `order.user_id == request.user.id` / совпадение `order.session_key` / id в новом session-ключе `recent_order_ids` (заполняется `remember_order_in_session()` при создании заказа и в `monobank_return` — там только по session-доказательствам, НЕ по GET-параметрам). Чужой → 404 (не 403, чтобы не было перебора id). Тесты: `test_order_success_denies_anonymous_stranger`, `..._denies_other_authenticated_user`, `..._allows_order_owner_user`, `..._allows_matching_session_key`, `..._preview_requires_staff` в test_checkout.py.
   (а) `/orders/success-preview/` (checkout.py:289-299) публично рендерит ПОСЛЕДНИЙ реальный заказ (ФИО/телефон/адрес); (б) `/orders/success/<id>/` (checkout.py:281) отдаёт ЛЮБОЙ заказ перебором id — live-подтверждено.
   Фикс: preview → `@staff_member_required` или удалить; success → проверка владельца (user/session_key) либо непредсказуемый токен в URL; убрать preview из `static_pages.py`/sitemap.
   Приёмка: аноним → 403/404 на оба URL; владелец заказа видит свою страницу.
 
-- [ ] **W1-3. 🔴 Вебхук Monobank не проверяет подпись (CRO-043)** `[REPO]`
+- [x] **W1-3. 🔴 Вебхук Monobank не проверяет подпись (CRO-043)** `[REPO]`
+  ✅ **DONE (коммит db0af339):** (1) `_verify_monobank_signature` починена: ECDSA/SHA-256 вместо всегда-падавшего RSA PKCS1v15, поддержка base64-кодированного PEM-ключа из `/api/merchant/pubkey`, retry со свежим ключом при ротации; (2) `monobank_webhook` теперь ТРЕБУЕТ валидный `X-Sign` (пробуются ключи обоих мерчантов — storefront и acquiring) → иначе 400 без изменения статуса; (3) `monobank_return`: unsafe fallback `or 'success'` УДАЛЁН — статус берётся только из pull-запроса `invoice/status` (см. W1-12), при недоступности API статус заказа не трогается. Тесты: `test_monobank_webhook.py` (9 шт., включая реальную ECDSA-подпись round-trip).
   Webhook доверяет body без проверки `X-Sign` → любой может отметить заказ оплаченным. `monobank_return` использует unsafe fallback `status_value or 'success'` (monobank.py:1317).
   Фикс: (1) верификация подписи (публичный ключ Monobank, ECDSA); (2) `monobank_return` только читает статус через API/ждёт webhook, убрать `or 'success'`.
   Приёмка: невалидная подпись → 400, статус не меняется; return-редирект без webhook не переводит в paid.
   Отчёт: `audit_report_payment_security.md`.
 
-- [ ] **W1-4. 🔴 Промокоды: COD-путь мёртв + лимиты не работают (CRO-046)** `[REPO]`
+- [x] **W1-4. 🔴 Промокоды: COD-путь мёртв + лимиты не работают (CRO-046)** `[REPO]`
+  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математика остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
   (а) checkout.py:224 читает мёртвый ключ `promo_code` (apply пишет `promo_code_id`) + несуществующие `active=True`/`is_valid()` → промокод в COD НЕ применяется никогда; (б) `record_usage()` — 0 call-sites → лимиты `one_time_per_user` мертвы; (в) prepay_200: остаток завышен на сумму скидки; (г) `promo.use()` сжигает лимит при СОЗДАНИИ инвойса.
   Фикс: (а) COD → логика monobank-пути (`promo_code_id` + `can_be_used_by_user` + `record_usage(user, order)`); (б) `record_usage` при УСПЕШНОЙ оплате; (в) математика остатка; (г) чистка `promo_code_data`; (д) событие `coupon_apply` (TECH-023).
   Приёмка: COD-заказ с промо имеет `discount_amount>0`; повторный one_time-код отклоняется; `PromoCodeUsage.count() > 0`.
@@ -107,33 +111,39 @@
   Фикс: min-height/auto height на малых viewport; отложить/уменьшить PWA-prompt. После — перепроверить CLS.
   Приёмка: viewport 360×640 — обе CTA видимы и кликабельны.
 
-- [ ] **W1-9. [NEW-501] 🔴 Дропшип-вебхук Monobank без подписи (пропущен аудитом)** `[REPO]`
+- [x] **W1-9. [NEW-501] 🔴 Дропшип-вебхук Monobank без подписи (пропущен аудитом)** `[REPO]`
+  ✅ **DONE (коммит db0af339):** `dropshipper_monobank_callback` (orders/dropshipper_views.py) теперь: (1) требует валидный `X-Sign` через общую `_verify_monobank_signature` из W1-3 → иначе 400; (2) статус подтверждается pull-запросом `invoice/status`, а не body; (3) переход в paid идемпотентен (повторный вебхук не дублирует уведомления); (4) обрабатывается полный набор failure-статусов (expired/rejected/reversed/…). Тесты в `test_monobank_webhook.py`.
   `orders/dropshipper_views.py:1210` — `dropshipper_monobank_callback`: `@csrf_exempt`, без проверки `X-Sign`; `status=='success'` из body → `payment_status='paid'` + `status='confirmed'`. Тот же класс уязвимости, что W1-3, но в дропшип-контуре — аудит (DB-010) зафиксировал только гонку статусов, подпись пропустил.
   Фикс: единая функция верификации подписи Monobank (из W1-3) → применить в ОБОИХ вебхуках.
   Приёмка: невалидная подпись → 400, статус не меняется.
 
-- [ ] **W1-10. [NEW-502] Загрузка файлов профиля без валидации (P1, пропущен аудитом)** `[REPO]`
+- [x] **W1-10. [NEW-502] Загрузка файлов профиля без валидации (P1, пропущен аудитом)** `[REPO]`
+  ✅ **DONE (коммиты 5d59ef69 + авто-коммит перед ним):** (1) новый `validate_profile_upload_size()` в views/auth.py — лимит 10 МБ, подключён в `ProfileSetupForm.clean_avatar/clean_ubd_doc`; (2) `edit_profile` (views/profile.py) больше НЕ присваивает `request.FILES` напрямую: файлы прогоняются через `forms.ImageField().clean()` (Pillow-проверка содержимого) + size-лимит, email валидируется `validate_email`, имена обрезаются по длине полей; (3) settings.py: `FILE_UPLOAD_MAX_MEMORY_SIZE=10MB`, `DATA_UPLOAD_MAX_MEMORY_SIZE=20MB`. Тесты: php-файл под видом png отклоняется; oversized-изображение отклоняется (test_auth.py). Примечание: `edit_profile` не подключён в urls.py (боевой путь — `profile_setup_db`), но починен на случай подключения.
   `storefront/views/profile.py:150-156` (`edit_profile`): `request.FILES['avatar']`/`ubd_doc` присваиваются НАПРЯМУЮ без формы → валидация ImageField обходится (любой файл/размер на диск shared-хостинга); email/first_name тоже без валидации. Рядом `profile_setup` (тот же файл, :196) делает это правильно через `ProfileSetupForm`.
   Фикс: edit_profile → та же ProfileSetupForm (или отдельная форма с FileExtension/size-валидаторами); задать `FILE_UPLOAD_MAX_MEMORY_SIZE`/лимит размера.
 
 - [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
   Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаётся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
-  Фикс если подтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизировать имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
+  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизировать имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
-- [ ] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
+- [x] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
+  ✅ **DONE (коммит db0af339):** новый `_resolve_retail_invoice_status()` в monobank.py — retail-путь вебхука И `monobank_return` подтверждают деньги ТОЛЬКО pull-истиной (`GET /api/merchant/invoice/status`); для success-статусов сверяется `paidAmount` (fallback: finalAmount/amount) с ожидаемой суммой (`get_prepayment_amount()` для prepay_200, иначе `total_sum − discount_amount`); недоплата или сбой сверки → статус `processing` (заказ в checking, НЕ paid) + error-лог. Если pull не удался — success из недоверенного источника тоже даунгрейдится до processing. Тесты: `test_webhook_underpaid_amount_goes_to_checking`, `test_webhook_pull_failure_does_not_mark_paid`.
   В коде УЖЕ есть правильный паттерн: wholesale- и IG-ветки вебхука делают pull-verify («Гроші підтверджуємо ТІЛЬКИ pull-істиною», monobank.py:1355-1390). Но главный retail-путь идёт мимо: `_apply_monobank_status(order, status_value)` ставит `paid`/`prepaid` чисто по строке статуса из body, без pull-подтверждения и без сверки `paidAmount` с ожидаемой суммой — частичная оплата пометит заказ полностью оплаченным.
   Фикс (вместе с W1-3): после проверки подписи — pull статуса инвойса через API (паттерн уже есть в management.services.invoice_payments) + сверка amount с `get_prepayment_amount()`/`total_sum`; расхождение → `checking` + алерт, НЕ paid.
   Приёмка: webhook с верной подписью, но неверной суммой → заказ НЕ paid.
 
-- [ ] **W1-13. [NEW-508] Нет верхнего cap на qty (P2)** `[REPO]`
+- [x] **W1-13. [NEW-508] Нет верхнего cap на qty (P2)** `[REPO]`
   `cart.py:788` — `qty = max(qty, 1)` без верхнего предела; `update_cart` аналогично. qty=999999 → гигантский инвойс/спам-заказы/искажение аналитики.
   Фикс: `qty = min(max(qty,1), MAX_QTY)` (напр. 50) в обоих эндпоинтах + тест.
+  ✅ **DONE (коммит 91881756):** константа `MAX_CART_ITEM_QTY = 50` в views/cart.py; cap применён в `add_to_cart` (входное qty И накопленное `item['qty'] + qty`) и в `update_cart`. Тесты: `test_add_to_cart_caps_quantity`, `test_add_to_cart_caps_accumulated_quantity`, `test_update_cart_caps_quantity` (test_cart.py).
 
-- [ ] **W1-14. [NEW-514] Нет защиты от double-submit заказа (P2)** `[REPO]`
+- [x] **W1-14. [NEW-514] Нет защиты от double-submit заказа (P2)** `[REPO]`
   `create_order` без идемпотентности: двойной сабмит формы (F5/дабл-клик при медленном ответе) = два заказа. `Order.save()` имеет retry на IntegrityError номера, но не дедуп самого заказа.
   Фикс: одноразовый токен формы в сессии (или дедуп по session+cart-hash в окне 30s) + disable кнопки на клиенте.
+  ✅ **DONE (коммит 91881756):** серверный дедуп в `create_order` (checkout.py): sha256-отпечаток корзины + session, окно 30s (`_cart_fingerprint` / `_find_recent_duplicate_order` / `_remember_order_submit`) — повторный сабмит редиректит на уже созданный заказ, второй НЕ создаётся. Клиент: в `cart.js` submit-обработчик блокирует повторный сабмит формы и дизейблит кнопки (`data-submitting` + failsafe re-enable через 15s). Тест: `test_create_order_double_submit_creates_single_order`.
 
-- [ ] **W1-8. [GAP] 🔴 Публичный /test-analytics/ стреляет Purchase в боевой Pixel (AN-015)** `[REPO]`
+- [x] **W1-8. [GAP] 🔴 Публичный /test-analytics/ стреляет Purchase в боевой Pixel (AN-015)** `[REPO]`
+  ✅ **DONE (коммит 5d2d91f4):** `test_analytics_events` (views/static_pages.py) → `@staff_member_required`; аноним получает 302 на admin login. Устаревший SEO-тест, ожидавший аноним-200, заменён на `test_test_analytics_requires_staff` (test_seo_regressions.py).
   Публичный URL без auth через 3s авто-стреляет полную воронку с Purchase 599 грн в БОЕВОЙ Meta Pixel. Загрязняет данные прямо сейчас; фикс — один декоратор. (Перенесён из W2-9 как немедленный.)
   Фикс: `@staff_member_required` или удалить маршрут.
   Приёмка: аноним → 403/404; событий в Pixel от URL нет.
@@ -517,6 +527,13 @@ O-5 (GSC-экспорт) ──→ W5-6 (правки мета)
 
 | Дата | ID | Что сделано | Коммит/PR |
 |---|---|---|---|
+| 08.07.2026 | W1-8 | `/test-analytics/` закрыт `@staff_member_required` (Purchase больше не стреляет в боевой Pixel от анонимов); SEO-тест обновлён | 5d2d91f4 |
+| 08.07.2026 | W1-2 | order_success — только владелец (user/session/recent_order_ids) или staff, чужой → 404; success-preview → staff-only; в monobank_return доступ выдаётся только по session-доказательствам | 5d2d91f4 |
+| 08.07.2026 | W1-1 | Гостевой COD подтверждён рабочим (роутинг на create_order уже был на main); DECISION владельца: COD в UI не возвращаем; 2 устаревших чекаут-теста приведены к актуальному Monobank-button-флоу | 26702d78 |
+| 08.07.2026 | W1-3, W1-9, W1-12 | Подпись X-Sign обязательна в retail- И дропшип-вебхуках (ECDSA/SHA-256, base64-PEM ключ, retry при ротации), невалидная → 400; retail-путь и monobank_return подтверждают оплату ТОЛЬКО pull-истиной invoice/status + сверка paidAmount (недоплата → checking, не paid); unsafe `or 'success'` удалён; дропшип-callback идемпотентен; 9 новых тестов (test_monobank_webhook.py) | db0af339 |
+| 08.07.2026 | W1-4 | Промокоды: COD-путь читает promo_code_id + can_be_used_by_user (auth-only); record_usage вызывается (COD — при размещении, online — при подтверждённой оплате, идемпотентно); математика остатка prepay_200 исправлена (минус скидка); promo.use() при создании инвойса убран; coupon_apply событие + миграция 0079 | f79ed36e |
+| 08.07.2026 | W1-13, W1-14 | MAX_CART_ITEM_QTY=50 в add_to_cart/update_cart (вкл. накопленное qty); дедуп double-submit в create_order (session + sha256 корзины, окно 30s → редирект на существующий заказ) + disable кнопок на клиенте (cart.js); 4 новых теста | 91881756 |
+| 08.07.2026 | W1-10 | Валидация загрузок профиля: validate_profile_upload_size (10 МБ) в ProfileSetupForm; edit_profile валидирует файлы через ImageField + лимит, email через validate_email; FILE_UPLOAD_MAX_MEMORY_SIZE/DATA_UPLOAD_MAX_MEMORY_SIZE в settings; 2 новых теста | 5d59ef69 |
 | 07.07.2026 | plan-v2 | План переписан в единый исполняемый чеклист: влиты gap-check находки ([GAP]: W0-6, W1-8, W2-9/10 хвосты, W3-8, W5-8/9/10, W6-6/7, W7-18/19/20), добавлены секции SERVER_TASKS (S-1…S-12) и OWNER_TASKS (O-1…O-7), теги [REPO]/[SERVER]/[OWNER]/[DECISION] | — |
 | 07.07.2026 | plan-v2.2 | Второй пост-аудит-скан (деньги/идемпотентность/PII): NEW-506 (P1 — retail-вебхук без pull-verify и сверки суммы, при том что wholesale/IG-ветки pull-verify ДЕЛАЮТ), NEW-508 (qty без cap), NEW-514 (double-submit заказа), NEW-510 (CheckoutCapture PII без лимитов/retention), NEW-509 (float в денежных payload), NEW-511 (naive datetime), NEW-512 (брутфорс промо), NEW-513 (/search/ без пагинации). Добавлены W1-12/13/14, W3-11/12, W7-22/23/24 | — |
 | 07.07.2026 | plan-v2.1 | Пост-аудит-скан кода нашёл 5 НОВЫХ проблем вне аудита: NEW-501 (P0 — дропшип-вебхук Monobank без подписи), NEW-502 (P1 — edit_profile принимает FILES без валидации), NEW-503 (P1-check — ubd_doc PII в публичном media), NEW-504 (P2 — Telegram-вебхук без секрета при пустом env), NEW-505 (P3 — eval в survey_engine). Добавлены W1-9/10/11, W3-9/10, S-13/14 | — |
