@@ -84,7 +84,7 @@
 ### Как устроено
 
 - **Единый источник истины:** `reviews/services/aggregate.py` — `aggregate_rating_for_product()` считает count/avg/histogram только по `status=APPROVED` (индекс `rev_status_product_idx`); порог `MIN_APPROVED_REVIEWS_FOR_RATING = 1` (осознанно снижен с 3 в Phase 12 против cold-start, решение задокументировано прямо в коде).
-- **Схема:** `seo_utils.py:916–973` — `aggregateRating` (ratingValue 1dp, reviewCount, best/worst) добавляется ТОЛЬКО когда `review_summary.show_rating=True`; рядом nested top-5 `Review` блоков (по helpful_count, body обрезан до 600 симв., author fallback). Никаких хардкодов `ratingValue` в шаблонах/коде НЕТ (grep чистый).
+- **С��ема:** `seo_utils.py:916–973` — `aggregateRating` (ratingValue 1dp, reviewCount, best/worst) добавляется ТОЛЬКО когда `review_summary.show_rating=True`; рядом nested top-5 `Review` блоков (по helpful_count, body обрезан до 600 симв., author fallback). Никаких хардкодов `ratingValue` в шаблонах/коде НЕТ (grep чистый).
 - **Проводка:** view `product.py:560` → контекст `product_review_summary` → шаблон `product_detail.html` → `{% product_graph ... review_summary=product_review_summary %}` — цепочка целая. ProductGroup-объект намеренно БЕЗ review/aggregateRating (фикс GSC-ошибки «position требует review», задокументирован seo_utils.py:1191, 1232).
 - **Тесты:** `reviews/tests/test_aggregate.py` + `storefront/tests/test_seo_regressions.py` (3 теста прямо проверяют схему с review_summary) — регрессионная защита есть.
 
@@ -100,9 +100,41 @@
 
 **Остаток (владелец/SSH):** count по `reviews_review` в БД; после появления первого одобренного отзыва — прогнать PDP через Rich Results Test.
 
+## SEO-010. Скорость как ранж-фактор — CWV на 3 ключевых шаблонах mobile (live-замеры, 07.07.2026)
+
+**Вывод: CWV НЕ зелёные ни на одном из 3 ключевых шаблонов — но проблема на 90–95% серверная (TTFB), а не фронтендовая. CLS идеальный (0.0) везде, рендер после получения HTML быстрый. Корневая причина — комбинация `Vary: Cookie` + `Set-Cookie` (csrftoken + twc_vid) на КАЖДОМ анонимном GET, которая полностью выключает LiteSpeed page cache, плюс перегрузка/cold-start воркеров Passenger на shared-хостинге (интермиттентные 503).**
+
+### Замеры (agent-browser, эмуляция iPhone 14, 07.07.2026)
+
+| Шаблон | TTFB | FCP | LCP | LCP-элемент | CLS | Вердикт LCP |
+|---|---|---|---|---|---|---|
+| Главная `/` | 3 442 мс | 4 216 мс | 4 784 мс | `logo.svg` (img) | 0.00 | КРАСНЫЙ (>2.5s) |
+| Каталог `/catalog/` | 15 352 / 16 122 мс (2 прогона) | 16 188 мс | 16 400 мс | `catalog-hero.webp` (div bg) | 0.00 | КАТАСТРОФА (~6.5× порога) |
+| Карточка `/product/my-little-baby/` | 2 097 мс | 2 520 мс | 2 520 мс | AVIF 1080w | 0.00 | Погранично красный |
+
+### Распределение TTFB (curl, 12+ сэмплов)
+
+- **Бимодальное:** тёплые ответы 0.53–0.97s vs холодные 8.5–17.9s (главная 13.5s, каталог 12s, карточка 17.9s). Медиана главной ~0.85s — т.е. сам Django-рендер быстрый, пики = очередь/спавн воркеров Passenger.
+- **1 из 12 запросов к главной → 503** (13.6s). Те же интермиттентные 503 поймал краулер SEO-006 (9 URL из sitemap: при повторной проверке все 200). Для Googlebot это сигнал «хост перегружен» → снижение crawl rate.
+
+### Корневые причины (по убыванию веса)
+
+1. **P1 — кэш полностью выключен для анонимов:** ответ несёт `Vary: Cookie` И одновременно `Set-Cookie: csrftoken=...` + `Set-Cookie: twc_vid=...` на каждом анонимном GET. LiteSpeed Cache при такой комбинации не кэширует НИЧЕГО — каждый визит (и каждый заход Googlebot) = полный Django-рендер. Фикс: не сажать csrftoken на GET без формы (лениво через `{% csrf_token %}` только где нужно), выдавать twc_vid только после первого действия или через JS, либо настроить LiteSpeed cache-vary ignore для этих кук.
+2. **P1 — ёмкость Passenger:** холодные хвосты 8–18s и 503 = мало воркеров/памяти на Hostsila shared (связка с TD-015: сколько воркеров, что выполняется синхронно). 
+3. **P3 — LCP-элемент главной = logo.svg** (143KB SVG в шапке) — стоит проверить вес/инлайн; но при TTFB <1s LCP главной был бы ~1.5–2s, т.е. фронт вторичен.
+
+### Что уже хорошо
+
+- CLS 0.0 на всех трёх шаблонах (размеры зарезервированы корректно).
+- Карточка отдаёт AVIF 1080w как LCP — современный формат, приоритизация работает.
+- Разрыв FCP→LCP минимален (0–570 мс) — критический путь рендера короткий.
+
+**Связки:** CRO-003 (те же замеры), TECH-040 (CWV mobile), TD-015 (воркеры Passenger), SEO-006 (интермиттентные 503 для краулера). **Остаток (владелец):** полевые данные CrUX/GSC Core Web Vitals (лаборатория подтверждает красный статус; поле покажет реальную долю затронутых визитов), настройки LiteSpeed Cache в панели Hostsila.
+
 ## Журнал раздела
 
 | Дата | Пункт | Резюме |
 |---|---|---|
 | 07.07.2026 | SEO-022 | Organization/WebSite/founder глобально через теги в base.html со стабильными @id, logo есть, BreadcrumbList на каталоге/карточке/индексе/контактах; P3 — sameAs без TikTok (нужен подтверждённый handle); остаток — Rich Results Test |
 | 07.07.2026 | SEO-023 | FAQPage через единый тег faq_schema на 6 страницах, разметка строится из видимого контента (один источник), TECH-032 фактически закрыт; остаток — выборочная валидация владельцем |
+| 07.07.2026 | SEO-010 | CWV mobile НЕ зелёные: LCP главная 4.8s, каталог 16.4s, карточка 2.5s; CLS 0.0 везде; корень — Vary:Cookie + Set-Cookie на каждом GET выключают LiteSpeed cache + cold-start Passenger (TTFB бимодальный 0.5s/8–18s, интермиттентные 503); остаток — CrUX/GSC поле + панель Hostsila |
