@@ -23,6 +23,7 @@ from .utils import (
 )
 # from .cart import clear_cart
 from ..utm_tracking import (
+    attach_tracking_to_order,
     link_order_to_utm,
     record_initiate_checkout,
     record_order_action,
@@ -262,6 +263,9 @@ def create_order(request):
             apply_nova_poshta_refs(order, delivery_refs)
             order.save()
             link_order_to_utm(request, order)
+            # W2-1: click-ID (fbp/fbc/ttclid/gclid) → payment_payload.tracking,
+            # чтобы NP-крон CAPI получал атрибуцию и для COD-заказов.
+            attach_tracking_to_order(request, order)
 
             # Брошенная корзина «спасена» — больше не дёргаем покупателя.
             try:

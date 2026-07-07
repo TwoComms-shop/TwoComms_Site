@@ -195,32 +195,10 @@ def record_lead(request, order_id: int, order_number: str, cart_value: float):
     return action
 
 
-def record_purchase(request, order_id: int, order_number: str, cart_value: float):
-    """
-    Записывает покупку (полная оплата).
-    Также помечает UTM-сессию как конверсионную.
-    """
-    action = record_user_action(
-        request,
-        action_type='purchase',
-        order_id=order_id,
-        order_number=order_number,
-        cart_value=cart_value
-    )
-
-    # Помечаем UTM-сессию как конверсионную
-    try:
-        session_key = request.session.session_key
-        if session_key:
-            utm_session = UTMSession.objects.get(session_key=session_key)
-            utm_session.mark_as_converted(conversion_type='purchase')
-            logger.info(f"Marked UTM session as converted (purchase): {utm_session}")
-    except UTMSession.DoesNotExist:
-        pass
-    except Exception as e:
-        logger.error(f"Error marking UTM session as converted: {e}")
-
-    return action
+# NOTE (W2-2/TECH-061): мёртвый record_purchase(request, ...) удалён —
+# у него было 0 call-sites. Purchase-события записываются через
+# record_order_action('purchase', order, ...), который работает и из
+# вебхуков (без request) и сам помечает UTM-сессию конверсионной.
 
 
 def record_search(request, query: str):
@@ -327,45 +305,192 @@ def record_order_action(
         return None
 
 
+def resolve_utm_session(request, order=None):
+    """
+    W2-1 (TECH-060): fallback-цепочка поиска UTM-сессии.
+
+    1. session_key (текущий или сохранённый в заказе);
+    2. visitor_id — переживает `cycle_key()` при логине (кука twc_vid живёт
+       год, а session_key ротируется);
+    3. None — вызывающий код может добрать UTM из session['utm_data'].
+    """
+    session_key = None
+    if request is not None:
+        session_key = request.session.session_key
+    if not session_key and order is not None:
+        session_key = getattr(order, 'session_key', None)
+
+    if session_key:
+        utm_session = UTMSession.objects.filter(session_key=session_key).first()
+        if utm_session is not None:
+            return utm_session
+
+    visitor_id = getattr(request, 'analytics_visitor_id', None) if request is not None else None
+    if visitor_id:
+        utm_session = (
+            UTMSession.objects.filter(visitor_id=visitor_id)
+            .order_by('-last_seen')
+            .first()
+        )
+        if utm_session is not None:
+            return utm_session
+
+    return None
+
+
 def link_order_to_utm(request, order):
     """
     Связывает заказ с UTM-сессией.
     Копирует UTM-параметры в заказ для быстрого доступа.
 
-    Args:
-        request: Django request object
-        order: Order instance
+    W2-1: lookup больше не завязан ЖЁСТКО на session_key — используется
+    fallback-цепочка session_key → visitor_id → session['utm_data'], иначе
+    логин (`cycle_key()`) рвал связь и заказ оставался без атрибуции.
     """
     try:
-        session_key = request.session.session_key or order.session_key
-        if not session_key:
-            logger.warning("No session_key to link order to UTM")
+        # Гарантируем session_key на заказе (для record_order_action и вебхуков)
+        if not getattr(order, 'session_key', None) and request.session.session_key:
+            order.session_key = request.session.session_key
+            order.save(update_fields=['session_key'])
+
+        utm_session = resolve_utm_session(request, order)
+
+        if utm_session is not None:
+            order.utm_session = utm_session
+            order.utm_source = utm_session.utm_source
+            order.utm_medium = utm_session.utm_medium
+            order.utm_campaign = utm_session.utm_campaign
+            order.utm_content = utm_session.utm_content
+            order.utm_term = utm_session.utm_term
+            order.save(update_fields=[
+                'utm_session', 'utm_source', 'utm_medium',
+                'utm_campaign', 'utm_content', 'utm_term'
+            ])
+            logger.info(f"Linked order {order.order_number} to UTM session: {utm_session}")
             return
 
-        # Получаем UTM сессию
-        utm_session = UTMSession.objects.get(session_key=session_key)
+        # Fallback 3: UTM из сессии (utm_middleware пишет session['utm_data']
+        # даже когда UTMSession-строка не создалась/потерялась).
+        utm_data = {}
+        try:
+            utm_data = request.session.get('utm_data') or {}
+        except Exception:
+            utm_data = {}
+        if utm_data:
+            order.utm_source = utm_data.get('utm_source')
+            order.utm_medium = utm_data.get('utm_medium')
+            order.utm_campaign = utm_data.get('utm_campaign')
+            order.utm_content = utm_data.get('utm_content')
+            order.utm_term = utm_data.get('utm_term')
+            order.save(update_fields=[
+                'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'
+            ])
+            logger.info(f"Linked order {order.order_number} to session utm_data (no UTMSession row)")
+            return
 
-        # Связываем заказ с UTM
-        order.utm_session = utm_session
+        logger.debug("No UTM attribution found for order %s", getattr(order, 'order_number', order.pk))
 
-        # Кэшируем UTM-параметры в заказе для быстрого доступа
-        order.utm_source = utm_session.utm_source
-        order.utm_medium = utm_session.utm_medium
-        order.utm_campaign = utm_session.utm_campaign
-        order.utm_content = utm_session.utm_content
-        order.utm_term = utm_session.utm_term
-
-        order.save(update_fields=[
-            'utm_session', 'utm_source', 'utm_medium',
-            'utm_campaign', 'utm_content', 'utm_term'
-        ])
-
-        logger.info(f"Linked order {order.order_number} to UTM session: {utm_session}")
-
-    except UTMSession.DoesNotExist:
-        logger.debug(f"No UTM session found for session_key: {session_key}")
     except Exception as e:
         logger.error(f"Error linking order to UTM: {e}", exc_info=True)
+
+
+def build_order_tracking_context(request, order, utm_session=None):
+    """
+    W2-1 (TECH-060): собирает click-ID контекст (fbp/fbc/ttclid/gclid,
+    external_id, ip, ua) для payment_payload['tracking'] ЛЮБОГО заказа —
+    раньше это делал только monobank-путь, и COD-заказы уходили в CAPI
+    без атрибуции.
+
+    fbc синтезируется из fbclid (формат fb.1.{ts_ms}.{fbclid}), если куки
+    _fbc нет — стандартное поведение Meta CAPI.
+    """
+    import time as _time
+
+    tracking = {}
+    cookies = getattr(request, 'COOKIES', {}) or {}
+
+    fbp = cookies.get('_fbp')
+    if fbp:
+        tracking['fbp'] = fbp
+
+    fbc = cookies.get('_fbc')
+
+    # Источники fbclid по убыванию свежести: URL → first-touch кука → UTMSession
+    first_touch = getattr(request, 'analytics_first_touch_data', None) or {}
+    fbclid = (
+        (request.GET.get('fbclid') if hasattr(request, 'GET') else None)
+        or first_touch.get('fbclid')
+        or (getattr(utm_session, 'fbclid', None) if utm_session is not None else None)
+    )
+    if not fbc and utm_session is not None:
+        fbc = getattr(utm_session, 'fbc', None)
+    if not fbc and fbclid:
+        fbc = f"fb.1.{int(_time.time() * 1000)}.{fbclid}"
+    if fbc:
+        tracking['fbc'] = fbc
+    if fbclid:
+        tracking['fbclid'] = fbclid
+
+    ttclid = (
+        cookies.get('ttclid')
+        or first_touch.get('ttclid')
+        or (getattr(utm_session, 'ttclid', None) if utm_session is not None else None)
+    )
+    if ttclid:
+        tracking['ttclid'] = ttclid
+
+    gclid = (
+        (request.GET.get('gclid') if hasattr(request, 'GET') else None)
+        or first_touch.get('gclid')
+        or (getattr(utm_session, 'gclid', None) if utm_session is not None else None)
+    )
+    if gclid:
+        tracking['gclid'] = gclid
+
+    # external_id: user → session → order (тот же приоритет, что в monobank-пути)
+    user = getattr(request, 'user', None)
+    if user is not None and getattr(user, 'is_authenticated', False):
+        tracking['external_id'] = f"user:{user.id}"
+    elif request.session.session_key:
+        tracking['external_id'] = f"session:{request.session.session_key}"
+    elif getattr(order, 'order_number', None):
+        tracking['external_id'] = f"order:{order.order_number}"
+    elif getattr(order, 'pk', None):
+        tracking['external_id'] = f"order:{order.pk}"
+
+    meta = getattr(request, 'META', {}) or {}
+    xff = meta.get('HTTP_X_FORWARDED_FOR')
+    client_ip = xff.split(',')[0].strip() if xff else meta.get('REMOTE_ADDR')
+    if client_ip:
+        tracking['client_ip_address'] = client_ip
+    ua = meta.get('HTTP_USER_AGENT')
+    if ua:
+        tracking['client_user_agent'] = ua
+
+    return tracking
+
+
+def attach_tracking_to_order(request, order):
+    """
+    Сохраняет click-ID контекст в order.payment_payload['tracking'], не
+    перезаписывая уже существующие значения (например, от monobank-пути).
+    """
+    try:
+        tracking = build_order_tracking_context(request, order, getattr(order, 'utm_session', None))
+        if not tracking:
+            return
+        payload = order.payment_payload if isinstance(order.payment_payload, dict) else {}
+        existing = payload.get('tracking') if isinstance(payload.get('tracking'), dict) else {}
+        merged = {**tracking, **existing}  # существующие значения приоритетнее
+        payload['tracking'] = merged
+        order.payment_payload = payload
+        order.save(update_fields=['payment_payload'])
+        logger.info(
+            "Attached tracking context to order %s (fbp=%s, fbc=%s)",
+            getattr(order, 'order_number', order.pk), bool(merged.get('fbp')), bool(merged.get('fbc')),
+        )
+    except Exception as e:
+        logger.error(f"Error attaching tracking context to order: {e}", exc_info=True)
 
 
 def mark_user_registered(request):

@@ -155,19 +155,19 @@
 
 ## ВОЛНА 2 — ДАННЫЕ И АТРИБУЦИЯ (P0: без этого аналитика слепа; TECH-060…066)
 
-- [ ] **W2-1. 🔴 Единая UTM-привязка любого заказа (CRO-041 / AN-013 / AN-021 / AN-030 / AN-031 → TECH-060)** `[REPO]`
+- [x] **W2-1. 🔴 Единая UTM-привязка любого заказа (CRO-041 / AN-013 / AN-021 / AN-030 / AN-031 → TECH-060)** `[REPO]` ✅ fallback-цепочка session_key→visitor_id→session['utm_data'] в link_order_to_utm; attach_tracking_to_order пишет click-ID (fbp/fbc-синтез из fbclid/ttclid/gclid/external_id/ip/ua) в payment_payload.tracking для COD; тесты test_utm_attribution.py (3) зелёные. Единый order-builder COD+Monobank — отложен как долгосрочный рефакторинг.
   COD-путь не вызывает НИ ОДНОЙ функции трекинга; даже в monobank `link_order_to_utm` не срабатывает: lookup строго по session_key, `cycle_key()` при логине рвёт ключ, fallback на `session['utm_data']` отсутствует. Click-ID (fbc/fbp/fbclid/gclid/ttclid) не доходят до CAPI для COD. Факт: 0/43 заказов с utm.
   Фикс: (1) в `create_order` после `order.save()`: `order.session_key=...`; `link_order_to_utm(request, order)`; `record_order_action(...)`; (2) fallback-цепочка в `link_order_to_utm`: session_key → `visitor_id` → `session['utm_data']`; (3) копировать/синтезировать click-ID в `payment_payload.tracking` для ЛЮБОГО заказа (fbc из fbclid если куки нет); (4) долгосрочно — единый order-builder COD+Monobank.
   Приёмка (= CRO-050): визит с `?utm_source=audit` → COD-заказ → в БД utm_source='audit', utm_session FK, session_key, UserAction с order_id.
 
-- [ ] **W2-2. 🔴 is_converted оживить (CRO-042 → TECH-061)** `[REPO]`
+- [x] **W2-2. 🔴 is_converted оживить (CRO-042 → TECH-061)** `[REPO]` ✅ закрыт W2-1 (record_order_action помечает конверсию); мёртвый record_purchase удалён; тест подтверждает is_converted/conversion_type/converted_at.
   0/1015 UTMSession converted; `record_purchase` — мёртвая функция (0 call-sites).
   Фикс: закрывается fallback-цепочкой W2-1; удалить/переписать мёртвый `record_purchase`.
   Приёмка: после тестового заказа `is_converted=True`, `conversion_type`, `converted_at` заполнены.
 
 - [ ] **W2-3. 🔴 Единое определение purchase по всем слоям (CRO-045 → TECH-066)** `[REPO]` + `[REPO]`(docs)
   4 слоя × 3 потока = 4 разных определения. COD-покупки видит ТОЛЬКО Meta CAPI (через НП-крон); GA4/TikTok/UserAction — никогда. Prepaid шлёт полную сумму без refund.
-  Целевое определение: `purchase` = подтверждённая оплата (webhook с подписью) ИЛИ получение посылки (NP received); создание заказа = отдельное `place_order`/`lead` во всех слоях.
+  Целевое определение: `purchase` = подтверждённая оплата (webhook с п��дписью) ИЛИ получение посылки (NP received); создание заказа = отдельное `place_order`/`lead` во всех слоях.
   Фикс: (а) record-слой в COD create_order; (б) UserAction purchase в NP-delivery-путь; (в) TikTok Purchase в NP-delivery + pre-check `purchase_sent`; (г) server-side GA4 purchase для COD (Measurement Protocol) или задокументировать пробел; (д) `paid_value` отдельным параметром; (е) refund/cancel-события; (ж) задокументировать определение в TECHNICAL_TASKS.md.
 
 - [ ] **W2-4. 🔴 Бот-фильтр и чистота событий (AN-035 / CRO-024 → TECH-063)** `[REPO]`
@@ -206,7 +206,7 @@
   - [ ] **DB-002 (P2):** UserAction — денормализовать is_bot + индекс `(site_session, action_type)`.
   - [ ] **DB-003 (P3):** orphan UserAction.order_id 259, 260 — вычистить при retention-работах.
   - [ ] **[GAP] AN-039 (P3):** search-query пишется сырым — обрезка длины + маскировка (однострочник).
-  - [ ] **[GAP] AN-001/CB-034 (P2):** gtag.js G-109EFTWM05 грузится ПАРАЛЛЕЛЬНО GTM (риск двойного GA4 page_view); dataLayer получает 2 события на ATC (`AddToCart` + `add_to_cart`). Код-часть: убрать прямой gtag после сверки контейнера владельцем (см. OWNER-1).
+  - [ ] **[GAP] AN-001/CB-034 (P2):** gtag.js G-109EFTWM05 грузится ПАРАЛЛЕЛЬНО GTM (риск двойного GA4 page_view); dataLayer получает 2 события на ATC (`AddToCart` + `add_to_cart`). Код-часть: убрать прямой gtag после сверки контейнера в��адельцем (см. OWNER-1).
   - [ ] **[GAP] AN-003 (P2):** `payment_type` параметр не существует (TECH-007); `add_shipping_info`/`add_payment_info` в GA4-схеме отсутствуют; item_id листинга `TC-pid-default-S` не матчится с offer_id покупок.
   - [ ] **[GAP] NEW-406 (P3):** русский цвет в offer_id «TC-0020-ЧЕРНЫЙ-M» — латинизировать слаг цвета (согласовать с Merchant-фидом, не ломать существующие id без маппинга).
   - [ ] **[GAP] NEW-407 (P3):** legacy-дефолт `pay_type='cod'` в checkout.py:119 при отсутствии cod в UI — согласовать с W1-1 п.2.
@@ -447,7 +447,7 @@
   `catalog.py:726 def search` — весь результат одним списком; широкий запрос = тяжёлый рендер. Фикс: пагинатор как в каталоге (с сохранением q= в GET — связка W5-2).
 
 - [ ] **W7-21. God-files — только план (CB-022)** `[REPO]`(docs)
-  НЕ рефакторить сейчас. Порядок PR при декомпозиции: cart→admin→mgmt-models→mgmt-views→storefront-models; инвариант: пустой makemigrations-дифф; НЕ трогать `_load_legacy_views`. cart.py split (custom_cart.py) заодно закрывает CRO-034.
+  НЕ рефакторить сейчас. Порядок PR при декомпозиции: cart→admin→mgmt-models→mgmt-views→storefront-models; инвариант: пустой makemigrations-дифф; НЕ тро��ать `_load_legacy_views`. cart.py split (custom_cart.py) заодно закрывает CRO-034.
 
 ---
 
