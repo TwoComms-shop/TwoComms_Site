@@ -390,7 +390,15 @@ class OrderSuccessTests(CheckoutTestSupport):
         )
         self.success_url = reverse(self.order_success_url_name, kwargs={'order_id': self.order.id})
 
+    def grant_session_ownership(self, order=None):
+        """W1-2: order_success is owner-only now; mark session as the buyer's."""
+        order = order or self.order
+        session = self.client.session
+        session['recent_order_ids'] = [order.id]
+        session.save()
+
     def test_order_success_renders_order_details(self):
+        self.grant_session_ownership()
         response = self.client.get(self.success_url)
 
         self.assertEqual(response.status_code, 200)
@@ -401,11 +409,58 @@ class OrderSuccessTests(CheckoutTestSupport):
         self.assertEqual(response.context['order'].total_sum, self.order.total_sum)
 
     def test_order_success_returns_404_for_unknown_order(self):
+        self.grant_session_ownership()
         response = self.client.get(
             reverse(self.order_success_url_name, kwargs={'order_id': self.order.id + 999})
         )
 
         self.assertEqual(response.status_code, 404)
+
+    def test_order_success_denies_anonymous_stranger(self):
+        """W1-2 (CRO-044): страница успеха содержит PII — перебор id должен
+        давать 404 для чужой сессии."""
+        response = self.client.get(self.success_url)
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_order_success_denies_other_authenticated_user(self):
+        owner = self.make_user(username='order-owner')
+        self.order.user = owner
+        self.order.save(update_fields=['user'])
+
+        stranger = self.make_user(username='stranger')
+        self.client.force_login(stranger)
+        response = self.client.get(self.success_url)
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_order_success_allows_order_owner_user(self):
+        owner = self.make_user(username='order-owner2')
+        self.order.user = owner
+        self.order.save(update_fields=['user'])
+
+        self.client.force_login(owner)
+        response = self.client.get(self.success_url)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_order_success_allows_matching_session_key(self):
+        # Prime a session, then bind the order to it.
+        session = self.client.session
+        session['touch'] = True
+        session.save()
+        self.order.session_key = session.session_key
+        self.order.save(update_fields=['session_key'])
+
+        response = self.client.get(self.success_url)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_order_success_preview_requires_staff(self):
+        response = self.client.get(reverse('order_success_preview'), follow=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('login', response['Location'])
 
 
 class ConfirmPaymentTests(CheckoutTestSupport):

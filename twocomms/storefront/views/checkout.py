@@ -2,6 +2,7 @@ import logging
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
+from django.contrib.admin.views.decorators import staff_member_required
 from django.utils.translation import gettext as _
 from django.views.decorators.http import require_POST
 from django.db import transaction
@@ -276,6 +277,7 @@ def create_order(request):
                 cart_value=float(order.total_sum),
                 metadata={'pay_type': pay_type},
             )
+            remember_order_in_session(request, order)
             return redirect('order_success', order_id=order.id)
 
     except Exception as e:
@@ -301,19 +303,69 @@ def payment_callback(request):
     return redirect('home')
 
 
+RECENT_ORDER_IDS_SESSION_KEY = 'recent_order_ids'
+RECENT_ORDER_IDS_LIMIT = 10
+
+
+def remember_order_in_session(request, order):
+    """
+    W1-2 (CRO-044): remember the order id in the visitor's session so the
+    success page stays reachable for the buyer even if session_key rotates
+    or was empty at order creation time.
+    """
+    try:
+        recent = request.session.get(RECENT_ORDER_IDS_SESSION_KEY) or []
+        if not isinstance(recent, list):
+            recent = []
+        if order.id not in recent:
+            recent.append(order.id)
+        request.session[RECENT_ORDER_IDS_SESSION_KEY] = recent[-RECENT_ORDER_IDS_LIMIT:]
+        request.session.modified = True
+    except Exception:
+        logger.warning('Failed to remember order %s in session', getattr(order, 'id', None))
+
+
+def _can_view_order(request, order):
+    """
+    W1-2 (CRO-044): only the order owner (by user account or by session)
+    or staff may view the success page — it exposes PII (name/phone/address).
+    """
+    if request.user.is_authenticated:
+        if request.user.is_staff:
+            return True
+        if order.user_id and order.user_id == request.user.id:
+            return True
+        # Authenticated user must not see other accounts' orders.
+        if order.user_id:
+            return False
+    # Guest (or owner-by-session) access: match the session that created the order.
+    session_key = request.session.session_key
+    if session_key and order.session_key and order.session_key == session_key:
+        return True
+    recent = request.session.get(RECENT_ORDER_IDS_SESSION_KEY) or []
+    if isinstance(recent, list) and order.id in recent:
+        return True
+    return False
+
+
 def order_success(request, order_id):
     order = get_object_or_404(
         Order.objects.prefetch_related('items__product', 'items__color_variant', 'custom_print_leads'),
         id=order_id
     )
+    if not _can_view_order(request, order):
+        # 404 (not 403) so order ids can't be enumerated.
+        from django.http import Http404
+        raise Http404("Order not found")
     return render(request, 'pages/order_success.html', {'order': order})
 
 
+@staff_member_required
 def order_success_preview(request):
     """
-    Preview for order success page.
+    Preview for order success page. Staff-only: it used to publicly render
+    the LAST real order with the customer's PII (W1-2 / CRO-044).
     """
-    # Create a dummy order for preview
     try:
         last_order = Order.objects.last()
     except Exception:

@@ -739,7 +739,7 @@ def monobank_create_invoice(request):
                     basket_entries.append({
                         'name': f'Часткова оплата (замовлення {order.order_number}). Залишок {remaining_amount:.2f} грн при отриманні через Нову Пошту',
                         'qty': 1,
-                        'sum': balance_kopecks,  # отрицательная сумма для баланса
+                        'sum': balance_kopecks,  # отрицательная сумма для ��аланса
                         'icon': '',
                         'unit': 'шт'
                     })
@@ -1315,6 +1315,22 @@ def monobank_return(request):
             monobank_logger.warning('Failed to fetch invoice status for %s: %s', invoice_id, exc)
 
     applied_status = _apply_monobank_status(order, status_value or 'success', payload=status_payload, source='return')
+
+    # W1-2 (CRO-044): order_success now enforces ownership; make sure the
+    # returning buyer's session is allowed to open the page. Only trust
+    # SESSION-derived evidence here — GET params are attacker-controllable,
+    # so they must not grant access to arbitrary orders.
+    session_invoice = request.session.get('monobank_invoice_id')
+    session_order_id = request.session.get('monobank_pending_order_id')
+    owns_order = (
+        (session_order_id and order.id == session_order_id)
+        or (session_invoice and getattr(order, 'payment_invoice_id', None) == session_invoice)
+        or (order.session_key and order.session_key == request.session.session_key)
+        or (request.user.is_authenticated and order.user_id == request.user.id)
+    )
+    if owns_order:
+        from storefront.views.checkout import remember_order_in_session
+        remember_order_in_session(request, order)
 
     if applied_status in MONOBANK_SUCCESS_STATUSES:
         _cleanup_after_success(request)

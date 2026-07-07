@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
+from django.contrib.admin.views.decorators import staff_member_required
 from django.core.paginator import EmptyPage, PageNotAnInteger
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.conf import settings
@@ -200,18 +201,18 @@ CUSTOM_PRINT_FAQ_ITEMS = [
     },
     {
         "question": _("Що робити, якщо у мене немає готового файлу для друку?"),
-        "answer": _("Можна завантажити готовий макет або просто описати ідею в брифі. Менеджер підкаже, як підготувати файл, або допоможе допрацювати дизайн під друк."),
+        "answer": _("��ожна завантажити готовий макет або просто описати ідею в брифі. Менеджер підкаже, як підготувати файл, або допоможе допрацювати дизайн під друк."),
     },
     {
         "question": _("Чи можна друкувати на своєму одязі?"),
         "answer": _("Так. Конфігуратор підтримує сценарій зі своїм виробом: додайте опис речі, матеріал, колір і важливі деталі, щоб менеджер міг коректно порахувати замовлення."),
     },
     {
-        "question": _("Чи можна повернути або обміняти кастомний виріб?"),
+        "question": _("Чи можна поверн��ти або обміняти кастомний виріб?"),
         "answer": _("Кастомний одяг, виготовлений за індивідуальним замовленням, не підлягає поверненню чи обміну, якщо його виконано належним чином і він відповідає погодженим параметрам. Якщо є виробничий брак або відхилення від погодженого макета, зверніться до нас через контакти й ми розглянемо ситуацію окремо."),
     },
     {
-        "question": _("Як оформити партію для бренду, команди або події?"),
+        "question": _("Як оформити партію для бренду, команди а��о події?"),
         "answer": _("Оберіть формат для команди або бренду, вкажіть кількість, розміри та контакт. Після цього ми допоможемо узгодити тираж, принт, дедлайни й умови для партії. Партії від 50 одиниць — індивідуальна знижка; від 100 — додатковий пакет послуг (упаковка, листівки, спільна сесія фото)."),
     },
     {
@@ -583,7 +584,7 @@ def llms_full_txt(request):
         "- Country: Ukraine",
         "- City: Харків",
         "- Segment: streetwear / military-adjacent apparel + custom DTF print",
-        "- Founder: Артем Синіло (Artem Synilo) — ветеран, засновник бренду з Харкова.",
+        "- Founder: Артем Синіло (Artem Synilo) — ветеран, засновник бренду з Харк��ва.",
         "- Founder story (external source): пресреліз Міністерства у справах ветеранів "
         "України «Це не крапка, це продовження» — "
         "https://mva.gov.ua/prescenter/category/86-novini/tse-ne-krapka-tse-prodovzhennya-istoriya-artema-sinila-ta-harkivskogo-brendu-twocomms",
@@ -1146,7 +1147,7 @@ def _build_page_context(request, page_key):
                 "items": categories,
             },
             {
-                "title": _("Актуальні товарні сторінки"),
+                "title": _("Актуальні товарні сторін��и"),
                 "eyebrow": "Fresh product links",
                 "items": latest_products,
             },
@@ -1904,9 +1905,13 @@ def terms_of_service(request):
     return _render_support_page(request, "terms_of_service")
 
 
+@staff_member_required
 def test_analytics_events(request):
     """
     Тестовая страница для проверки аналитических событий.
+
+    ВАЖНО (AN-015/W1-8): страница авто-стреляет полную воронку событий
+    (включая Purchase) в БОЕВЫЕ Pixel/Analytics, поэтому доступ — только staff.
 
     Автоматически отправляет все типы событий для тестирования
     в TikTok Events Manager и Facebook Events Manager.

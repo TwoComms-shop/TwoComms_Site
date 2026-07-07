@@ -585,6 +585,10 @@ class OrderSuccessSeoRegressionTests(TestCase):
         )
 
     def test_order_success_page_is_noindex(self):
+        # W1-2: order_success is owner-only now — mark session as the buyer's.
+        session = self.client.session
+        session["recent_order_ids"] = [self.order.id]
+        session.save()
         response = self.client.get(reverse("order_success", kwargs={"order_id": self.order.id}), follow=True)
 
         self.assertEqual(response.status_code, 200)
@@ -945,13 +949,21 @@ class PublicUrlIndexationSeoRegressionTests(TestCase):
         self.assertEqual(response["Location"], reverse("wholesale_page"))
 
     def test_utility_pages_are_noindex_follow(self):
-        cases = [reverse("wholesale_order_form"), reverse("test_analytics")]
+        cases = [reverse("wholesale_order_form")]
 
         for url in cases:
             with self.subTest(url=url):
                 response = self.client.get(url, follow=True)
                 self.assertEqual(response.status_code, 200)
                 self.assertContains(response, 'content="noindex, follow"', html=False)
+
+    def test_test_analytics_requires_staff(self):
+        """AN-015/W1-8 — /test-analytics/ авто-стреляет Purchase в боевой
+        Pixel, поэтому анонимный доступ запрещён (redirect на admin login)."""
+        response = self.client.get(reverse("test_analytics"), follow=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("login", response["Location"])
 
     def test_private_user_flow_pages_are_noindex_nofollow(self):
         cases = [reverse("cart"), reverse("login"), reverse("register")]
