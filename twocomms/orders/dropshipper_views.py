@@ -1135,7 +1135,7 @@ def create_dropshipper_monobank_payment(request):
                 'icon': icon_url
             })
 
-            # Для предоплаты достаточно одного товара
+            # Для п��едоплаты достаточно одного товара
             if order.payment_method == 'cod':
                 break
 
@@ -1210,13 +1210,28 @@ def create_dropshipper_monobank_payment(request):
 @csrf_exempt
 @require_http_methods(["POST"])
 def dropshipper_monobank_callback(request):
-    """Обработка callback от Monobank для оплаты дропшипера"""
+    """Обработка callback от Monobank для оплаты дропшипера.
+
+    W1-9 (NEW-501): раньше endpoint доверял body без проверки X-Sign — любой
+    мог пометить заказ оплаченным. Теперь: (1) обязательная проверка подписи,
+    (2) статус подтверждаем pull-истиной через invoice/status API.
+    """
+    from django.http import HttpResponse
+    from storefront.views.monobank import (
+        MonobankAPIError,
+        _monobank_api_request,
+        _verify_monobank_signature,
+    )
+
+    if not _verify_monobank_signature(request):
+        monobank_logger.warning('Dropshipper Monobank callback rejected: invalid or missing X-Sign')
+        return HttpResponse(status=400)
+
     try:
         data = json.loads(request.body)
         monobank_logger.info(f'Received Monobank callback for dropshipper: {data}')
 
         invoice_id = data.get('invoiceId')
-        status = data.get('status')
 
         if not invoice_id:
             monobank_logger.error('No invoiceId in callback')
@@ -1229,8 +1244,24 @@ def dropshipper_monobank_callback(request):
             monobank_logger.error(f'Order not found for invoice_id: {invoice_id}')
             return JsonResponse({'success': False})
 
-        # Обновляем статус оплаты
-        if status == 'success':
+        # Pull-истина: деньги подтверждаем только статусом из API, не из body.
+        status = None
+        try:
+            status_payload = _monobank_api_request(
+                'GET', '/api/merchant/invoice/status', params={'invoiceId': invoice_id}
+            )
+            if isinstance(status_payload.get('result'), dict):
+                status_payload = status_payload['result']
+            status = (status_payload.get('status') or '').lower()
+        except MonobankAPIError as exc:
+            monobank_logger.warning(f'Failed to pull invoice status for dropshipper {invoice_id}: {exc}')
+            return JsonResponse({'success': True})
+
+        # Обновляем статус оплаты (идемпотентно: повторный webhook не
+        # дублирует уведомления)
+        if status in ('success', 'hold'):
+            if order.payment_status == 'paid':
+                return JsonResponse({'success': True})
             order.payment_status = 'paid'
             order.status = 'confirmed'  # Меняем статус на "Підтверджено"
             order.save()
@@ -1244,7 +1275,7 @@ def dropshipper_monobank_callback(request):
             except Exception as e:
                 # Не прерываем обработку callback если Telegram не работает
                 monobank_logger.error(f"Ошибка отправки Telegram уведомления об оплате: {e}")
-        elif status == 'failure':
+        elif status in ('failure', 'expired', 'rejected', 'canceled', 'cancelled', 'reversed'):
             order.payment_status = 'failed'
             order.save()
             monobank_logger.warning(f'Payment failed for dropshipper order {order.order_number}')

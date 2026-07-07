@@ -230,7 +230,6 @@ from .checkout import (
     order_success_preview,
     update_payment_method,
     confirm_payment,
-    monobank_webhook,
 )
 
 

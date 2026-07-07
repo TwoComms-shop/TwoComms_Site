@@ -290,13 +290,8 @@ def payment_method(request):
     return redirect('cart')
 
 
-def monobank_webhook(request):
-    # This should be handled by monobank views directly if possible,
-    # but for now we stub it or import it if it was here.
-    # Assuming webhook logic is in monobank.py or handled via signal?
-    # If urls.py points here, we need it.
-    # Let's return 200 OK for now to avoid errors if called.
-    return JsonResponse({'status': 'ok'})
+# NOTE (W1-3/W1-5г): стаб monobank_webhook удалён — реальный обработчик с
+# проверкой подписи живёт в storefront/views/monobank.py.
 
 
 def payment_callback(request):

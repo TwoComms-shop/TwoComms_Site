@@ -220,40 +220,70 @@ def _verify_monobank_signature(request, token=None, cache_key=None):
         # Получаем тело запроса
         body = request.body
 
-        # Проверяем подпись
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
-        from cryptography.hazmat.backends import default_backend
-
-        # Загружаем публичный ключ
-        public_key = serialization.load_pem_public_key(
-            public_key_pem.encode(),
-            backend=default_backend()
-        )
-
         # Декодируем подпись из base64
         signature_bytes = base64.b64decode(signature)
 
-        # Проверяем
-        try:
-            public_key.verify(
-                signature_bytes,
-                body,
-                padding.PKCS1v15(),
-                hashes.SHA256()
-            )
+        if _verify_signature_with_key(public_key_pem, signature_bytes, body):
             return True
-        except Exception as verify_error:
-            monobank_logger.warning(
-                f'Monobank signature verification failed: {verify_error}'
-            )
-            return False
+
+        # Ключ мог ротироваться — сбрасываем кеш и пробуем один раз со свежим.
+        cache.delete(cache_key or MONOBANK_PUBLIC_KEY_CACHE_KEY)
+        fresh_key = _get_monobank_public_key(token=token, cache_key=cache_key)
+        if fresh_key and fresh_key != public_key_pem:
+            if _verify_signature_with_key(fresh_key, signature_bytes, body):
+                return True
+
+        monobank_logger.warning('Monobank signature verification failed')
+        return False
 
     except Exception as e:
         monobank_logger.error(
             f'Error verifying Monobank signature: {e}',
             exc_info=True
         )
+        return False
+
+
+def _verify_signature_with_key(public_key_raw, signature_bytes, body):
+    """
+    Проверяет подпись X-Sign данным публичным ключом.
+
+    W1-3 (CRO-043): Monobank подписывает webhook ECDSA (SHA-256), а ключ из
+    /api/merchant/pubkey приходит base64-кодированным PEM. Старая реализация
+    проверяла RSA PKCS1v15 поверх сырой строки — и всегда падала.
+    """
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec, padding
+        from cryptography.hazmat.backends import default_backend
+
+        if isinstance(public_key_raw, bytes):
+            raw = public_key_raw
+        else:
+            raw = public_key_raw.encode()
+
+        # Ключ приходит base64-кодированным PEM; поддерживаем и «голый» PEM.
+        pem_bytes = raw
+        if b'-----BEGIN' not in raw:
+            try:
+                decoded = base64.b64decode(raw)
+                if b'-----BEGIN' in decoded:
+                    pem_bytes = decoded
+            except Exception:
+                pass
+
+        public_key = serialization.load_pem_public_key(pem_bytes, backend=default_backend())
+
+        try:
+            if isinstance(public_key, ec.EllipticCurvePublicKey):
+                public_key.verify(signature_bytes, body, ec.ECDSA(hashes.SHA256()))
+            else:
+                public_key.verify(signature_bytes, body, padding.PKCS1v15(), hashes.SHA256())
+            return True
+        except Exception:
+            return False
+    except Exception as load_error:
+        monobank_logger.warning(f'Failed to load Monobank public key: {load_error}')
         return False
 
 
@@ -739,7 +769,7 @@ def monobank_create_invoice(request):
                     basket_entries.append({
                         'name': f'Часткова оплата (замовлення {order.order_number}). Залишок {remaining_amount:.2f} грн при отриманні через Нову Пошту',
                         'qty': 1,
-                        'sum': balance_kopecks,  # отрицательная сумма для ��аланса
+                        'sum': balance_kopecks,  # отрицательная сумма для ����аланса
                         'icon': '',
                         'unit': 'шт'
                     })
@@ -1305,16 +1335,17 @@ def monobank_return(request):
         messages.error(request, 'Замовлення не знайдено. Спробуйте ще раз.')
         return redirect('cart')
 
-    status_value = None
-    status_payload = None
-    if invoice_id:
-        try:
-            status_payload = _monobank_api_request('GET', '/api/merchant/invoice/status', params={'invoiceId': invoice_id})
-            status_value = status_payload.get('status') or status_payload.get('statusCode')
-        except MonobankAPIError as exc:
-            monobank_logger.warning('Failed to fetch invoice status for %s: %s', invoice_id, exc)
-
-    applied_status = _apply_monobank_status(order, status_value or 'success', payload=status_payload, source='return')
+    # W1-3 (CRO-043): статус берём ТОЛЬКО из pull-истины (invoice/status API)
+    # со сверкой суммы (W1-12). Убран unsafe fallback `or 'success'` — редирект
+    # без подтверждения от API больше не переводит заказ в paid.
+    status_value, status_payload = _resolve_retail_invoice_status(
+        order, invoice_id or getattr(order, 'payment_invoice_id', None)
+    )
+    if status_value:
+        applied_status = _apply_monobank_status(order, status_value, payload=status_payload, source='return')
+    else:
+        # Pull не удался — не трогаем платёжный статус, ждём webhook.
+        applied_status = 'processing'
 
     # W1-2 (CRO-044): order_success now enforces ownership; make sure the
     # returning buyer's session is allowed to open the page. Only trust
@@ -1346,12 +1377,111 @@ def monobank_return(request):
 
 
 @csrf_exempt
+def _webhook_signature_ok(request):
+    """
+    W1-3/W1-9 (CRO-043, NEW-501): единая проверка X-Sign для вебхуков Monobank.
+
+    Один endpoint принимает вебхуки двух мерчантов (storefront-корзина и
+    acquiring `mono_hrefs` для накладних), у каждого свой публичный ключ —
+    поэтому пробуем оба.
+    """
+    if _verify_monobank_signature(request):
+        return True
+    try:
+        from management.services.invoice_payments import (
+            ACQUIRING_PUBKEY_CACHE_KEY,
+            acquiring_token,
+        )
+        acq_token = acquiring_token()
+        if acq_token and acq_token != getattr(settings, 'MONOBANK_TOKEN', None):
+            return _verify_monobank_signature(
+                request, token=acq_token, cache_key=ACQUIRING_PUBKEY_CACHE_KEY
+            )
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_retail_invoice_status(order, invoice_id, fallback_status=None):
+    """
+    W1-12 (NEW-506): pull-истина для retail-заказов.
+
+    Статус подтверждаем ТОЛЬКО запросом /api/merchant/invoice/status, а для
+    успешных статусов сверяем фактически оплаченную сумму с ожидаемой.
+    Расхождение суммы → 'processing' (заказ уходит в checking, НЕ в paid).
+
+    Returns:
+        tuple(status_value, status_payload)
+    """
+    status_value = None
+    status_payload = None
+    if invoice_id:
+        try:
+            status_payload = _monobank_api_request(
+                'GET', '/api/merchant/invoice/status', params={'invoiceId': invoice_id}
+            )
+            if isinstance(status_payload.get('result'), dict):
+                status_payload = status_payload['result']
+            status_value = status_payload.get('status') or status_payload.get('statusCode')
+        except MonobankAPIError as exc:
+            monobank_logger.warning('Failed to pull invoice status for %s: %s', invoice_id, exc)
+
+    if status_value is None:
+        # Pull не удался — деньги не подтверждаем. Максимум pending.
+        fallback_lower = (fallback_status or '').lower()
+        if fallback_lower in MONOBANK_PENDING_STATUSES or fallback_lower in MONOBANK_FAILURE_STATUSES:
+            return fallback_lower, status_payload
+        if fallback_lower in MONOBANK_SUCCESS_STATUSES:
+            monobank_logger.warning(
+                'Invoice %s: success status from untrusted source without pull confirmation -> checking',
+                invoice_id,
+            )
+            return 'processing', status_payload
+        return None, status_payload
+
+    status_lower = (status_value or '').lower()
+    if status_lower in MONOBANK_SUCCESS_STATUSES and isinstance(status_payload, dict):
+        try:
+            pay_type = _normalize_order_pay_type(getattr(order, 'pay_type', None))
+            if pay_type == 'prepay_200':
+                expected = order.get_prepayment_amount()
+            else:
+                expected = (order.total_sum or 0) - (order.discount_amount or 0)
+            expected_minor = int((Decimal(str(expected)) * 100).to_integral_value())
+
+            paid_minor = status_payload.get('paidAmount')
+            if paid_minor is None:
+                paid_minor = status_payload.get('finalAmount')
+            if paid_minor is None:
+                paid_minor = status_payload.get('amount')
+
+            if paid_minor is not None and expected_minor > 0 and int(paid_minor) < expected_minor:
+                monobank_logger.error(
+                    'Invoice %s (order %s): paid amount %s < expected %s minor units -> checking, NOT paid',
+                    invoice_id, order.pk, paid_minor, expected_minor,
+                )
+                return 'processing', status_payload
+        except Exception:
+            monobank_logger.warning(
+                'Invoice %s (order %s): amount reconciliation failed -> checking',
+                invoice_id, order.pk, exc_info=True,
+            )
+            return 'processing', status_payload
+
+    return status_lower, status_payload
+
+
 def monobank_webhook(request):
     """
     Receive status updates from Monobank webhook.
     """
     if request.method != 'POST':
         return HttpResponse(status=405)
+
+    # W1-3 (CRO-043): без валидной подписи X-Sign body недоверенный → 400.
+    if not _webhook_signature_ok(request):
+        monobank_logger.warning('Monobank webhook rejected: invalid or missing X-Sign')
+        return HttpResponse(status=400)
 
     try:
         payload = json.loads(request.body.decode('utf-8'))
@@ -1407,6 +1537,14 @@ def monobank_webhook(request):
         monobank_logger.warning('Webhook received for unknown invoice/order: %s / %s', invoice_id, order_ref)
         return JsonResponse({'ok': True})
 
-    status_value = result.get('status') or payload.get('status')
-    _apply_monobank_status(order, status_value, payload=payload, source='webhook')
+    # W1-12 (NEW-506): retail-путь подтверждает деньги ТОЛЬКО pull-истиной
+    # + сверкой суммы, как это уже делают wholesale/IG-ветки выше.
+    body_status = result.get('status') or payload.get('status')
+    verified_status, verified_payload = _resolve_retail_invoice_status(
+        order,
+        invoice_id or getattr(order, 'payment_invoice_id', None),
+        fallback_status=body_status,
+    )
+    if verified_status:
+        _apply_monobank_status(order, verified_status, payload=verified_payload or payload, source='webhook')
     return JsonResponse({'ok': True})
