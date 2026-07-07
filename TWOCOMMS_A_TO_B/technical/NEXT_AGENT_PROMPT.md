@@ -69,16 +69,23 @@
 - DEAD?-кандидаты: `finance_seed_demo`, `notify_test_shops`, `send_storage_test`, `send_test_receipt` + **теневой оверрайд `dtf/collectstatic`** (перекрывает стандартную django-команду — подозрительно, изучи `twocomms/dtf/management/commands/collectstatic.py`).
 - SSH-остаток: `crontab -l` для вердикта по CRON?-группе.
 
-### 4.4 TD-015 — начата code-часть (НЕ закрыт)
-- Прочитаны: `twocomms/passenger_wsgi.py`, `storefront/tasks.py`, `services/feeds_queue.py`, `ai_signals.py`, `signals.py`, `orders/tasks.py`, `views/admin.py` (район строки 2059).
-- Наблюдения для будущего вердикта: celery-задачи имеют fallback на синхронное выполнение, если брокер недоступен (см. `.delay()` обёртки в `tasks.py` / `feeds_queue.py`) — на shared-хостинге брокера скорее всего нет → всё выполняется синхронно в запросе. Проверь `CELERY_TASK_ALWAYS_EAGER` / наличие redis в production_settings.
-- Остаток: SSH (passenger-status, память, лимиты).
+### 4.4 TD-015 — code-часть ЗАВЕРШЕНА ✅ (SSH-остаток), найден P1-риск
+- **ГЛАВНАЯ НАХОДКА (P1): прод работает БЕЗ Celery-воркера, но Redis-брокер ЖИВ (он же кэш).** Прямое доказательство в коде: комментарий `storefront/signals.py:110` — «Production runs without Celery, so attempting .delay() only adds a failed-RPC round-trip». Следствие: `.delay()` НЕ падает (успешно публикует в Redis-очередь `celery`), поэтому:
+  - `orders/signals.py::_safe_queue_notification` — sync-fallback срабатывает ТОЛЬКО при исключении из `.delay()`, которого нет → **Telegram-уведомления о смене статуса заказа / добавлении ТТН молча теряются**;
+  - `telegram_notifications.py:122` — default `async_enabled=True` → админ-сообщения без reply_markup тоже уходят в мёртвую очередь (строки 169–173);
+  - `CELERY_BEAT_SCHEDULE` `survey-inactivity-check` (settings.py:961, каждые 120с) никогда не выполняется — beat не запущен;
+  - очередь `celery` в Redis растёт бесконечно → расход памяти Redis.
+- Кто уже защитился явно (`async_enabled=False`): `dtf/telegram.py:29`, `custom_print_notifications.py:59`, `reviews/signals.py:111`. Image-оптимизация переведена на `transaction.on_commit` inline (signals.py:107–138) — правильный паттерн.
+- `CELERY_TASK_ALWAYS_EAGER` — ЗАКОММЕНТИРОВАН (settings.py:959), т.е. eager-режима нет.
+- Синхронные долгие операции в запросах: AI-генерация в `views/admin.py` (~2059) — OpenAI-вызов синхронно, но admin-only; feed-генерация через dirty-флаг + cron (OK).
+- **Рекомендуемый фикс** (согласуй с владельцем): `async_enabled=False` по умолчанию в `TelegramNotifier.__init__` — одно слово в одной строке; survey-check перевести на cron-команду.
+- SSH-остаток: `redis-cli llen celery` (подтвердить накопление тасков), passenger-status/лимиты памяти. Также в `telegram_notifications.py` куча emoji-`print()` → мусор в Passenger-лог (пересекается с TD-016/CB-045).
 
 ## 5. ПЛАН ДЛЯ ТЕБЯ (по приоритету)
 
 1. **Проверь краулер:** `pgrep -f seo_combined_slow_crawl` и `wc -l TWOCOMMS_A_TO_B/technical/data/seo_crawl_results.jsonl`. Если не бежит и в файле нет `"type": "done"` — перезапусти в фоне (resumable). Когда `done` → анализатор → закрой SEO-006 + SEO-007 (отчёт в `audit_report_section4_seo.md`, отметки в чек-листе, коммит + main).
 2. **Сразу скажи владельцу про SSH:** «SSH из песочницы недоступен (порт фильтруется), запустите на сервере `scripts/server_shell_batch.sh` и `python manage.py shell < scripts/server_audit_batch.py`, пришлите вывод». Это закроет разом 10 пунктов. Пока ждёшь ответа — работай по п.3.
-3. **Добей code-части без SSH:** TD-015 (см. §4.4 — проверь celery/redis настройки, допиши код-факты в чек-лист), периодически коммить снапшот `data/seo_crawl_results.jsonl`.
+3. **Code-часть TD-015 уже сделана (§4.4, P1-риск с мёртвой Celery-очередью задокументирован в чек-листе).** Предложи владельцу фикс `async_enabled=False`. Периодически коммить снапшот `data/seo_crawl_results.jsonl`.
 4. Когда владелец пришлёт вывод скриптов → распиши результаты по секционным отчётам → закрой CRO-051, TD-015/016, AEO-001, DB-001/003/004/006/007, CB-045 + SSH-остатки CB-015/CB-041.
 5. После каждого шага: **коммит в свою ветку + пуш в main** (см. §6).
 
@@ -120,7 +127,7 @@ TWOCOMMS_A_TO_B/technical/
     ├── seo006_link_crawl.py            ← старый краулер (не использовать, без rate-limit)
     └── seo007_meta_audit.py            ← старый аудит мета (не использовать)
 
-twocomms/                               ← Django-проект
+twocomms/                               ← Django-прое��т
 ├── passenger_wsgi.py
 ├── twocomms/production_settings.py     ← настройки прода (MediaCacheMiddleware:56)
 ├── twocomms/settings.py                ← IMAGE_OPTIMIZATION флаги: 849–850
