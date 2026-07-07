@@ -117,7 +117,7 @@
 2. **`accounts/` app — НОЛЬ тестов.** Непокрыт `cart_middleware.py` — середина цепочки из 26 middleware, восстановление корзины (CRO-035).
 3. **Monobank-вебхук:** проверка подписи `_verify_monobank_signature` (monobank.py:196) — НЕ тестируется; идемпотентность повторного callback покрыта ровно ОДНИМ тестом (`test_monobank_success_status_records_purchase_once`), сценарии failure/pending/expired-статусов и `_apply_monobank_status` (monobank.py:1211) — не покрыты.
 4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕ�� (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
-5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от гонки остатков без select_for_update (проверить исполнителю).
+5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита ��т гонки остатков без select_for_update (проверить исполнителю).
 6. **CI отсутствует:** `.github/workflows/` нет ни в корне, ни в twocomms/ — 183 тест-файла НЕ запускаются автоматически. Никто не знает, сколько из них зелёные. Прогон тестов возможен только вручную (и на сервере — с осторожностью: тестовая БД).
 7. **Тесты гоняются на SQLite** (settings.py: DB_ENGINE default sqlite), боевая БД MySQL → расхождения (charset, strict mode, атомарность DDL) тестами не ловятся.
 
@@ -385,6 +385,82 @@ newCatalog/
 
 ---
 
+## CB-013. Дублирующиеся static-директории img/ и images/ (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Фактическая картина (уточнение к формулировке чеклиста)
+
+Директорий не 2, а 3, и они НЕ дубли друг друга — контент не пересекается:
+
+| Директория | Размер | Файлов | Контент |
+|---|---|---|---|
+| `twocomms_django_theme/static/img/` | 12MB | 67 + подпапки | ОСНОВНАЯ: логотипы, фавиконки, social-preview, noise/vignette, catalog/, configurator/ (3.6MB), logo_fire/ (5.8MB), icons/, lang/, pdp/ |
+| `twocomms_django_theme/static/images/` | 6.3MB | 16 | ТОЛЬКО banksy_* (3 картинки × png+webp+3 srcset-размера) + hero_dtf_graphic.png |
+| `static/img/` (корень проекта) | 2.6MB | 1 | только `price.png` (для email-шаблона КП) |
+
+Обе theme-директории попадают в один namespace `static/...` через STATICFILES_DIRS
+(settings.py:813-816: theme/static + корневой static). Коллизий имён нет.
+
+### Карта использования
+
+- `images/banksy_*.png` — 3 ссылки, все из `pro_brand.html` через тег `{% responsive_image %}`
+  (тег сам подставляет webp/srcset — PNG-путь в шаблоне это ключ, а не реальный отдаваемый файл).
+- `images/hero_dtf_graphic.png` — **0 ссылок** в коде/шаблонах → мёртвый файл.
+- `img/price.png` (корневой static) — 1 ссылка из `management/.../commercial_offer_email.html`.
+- `img/social-preview-*.jpg` — og:image (внешние потребители! соцсети кэшируют URL).
+- `img/placeholder.jpg` — используется GMC-фидом (внешний потребитель — Google Merchant).
+
+### Находки
+
+1. **P3 — мёртвый вес ~5.5MB в git (не влияет на прод-трафик):**
+   - `img/logo_fire/stena.png` (2.7MB) — не используется (в шаблоне только stena2.png);
+   - `img/logo_fire/stena2.png` (2.7MB) — используется в pro_brand, но грузится как PNG
+     2.7MB без webp-версии — это и вес репо, и вес страницы (P2 для perf pro_brand);
+   - `images/hero_dtf_graphic.png` — 0 ссылок.
+2. **P3 — configurator/ui/*.png по 450-650KB** (hoodie/tshirt превью) — нет webp-версий.
+3. Слияние `images/` → `img/` ВОЗМОЖНО без риска (нет коллизий имён, потребители banksy —
+   только pro_brand.html + логика responsive_image), но затрагивает пути → по RISK-14
+   сначала убедиться, что banksy-URL не светятся во внешних фидах (проверено: НЕ светятся,
+   внешние потребители используют только img/social-preview* и img/placeholder — их НЕ трогать).
+
+### Задачи для исполнителя
+
+1. Удалить мёртвые: `img/logo_fire/stena.png`, `images/hero_dtf_graphic.png` (~2.7MB+).
+2. Сгенерировать webp для `stena2.png` и `configurator/ui/*.png`, переключить шаблоны.
+3. (Опционально) слить `images/` в `img/banksy/` — только banksy-набор, 3 ссылки в одном
+   шаблоне; пути `img/social-preview*`, `img/placeholder.jpg` НЕ менять (внешние кэши).
+
+---
+
+## CB-036. vendor/ 1.1MB (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Инвентаризация
+
+`twocomms_django_theme/static/vendor/` = ТОЛЬКО Font Awesome 6 Free (self-hosted, 1.1MB):
+
+| Файл | Размер | Нужен? |
+|---|---|---|
+| css/all.min.css | 104KB | да (подключён в base.html:72 с media=print+onload) |
+| webfonts/*.woff2 (4 шт) | 308KB | да — реально отдаются браузерам |
+| webfonts/*.ttf (4 шт) | 700KB | **НЕТ** — ttf это fallback в @font-face после woff2; woff2 поддержан всеми браузерами с 2016 |
+
+Плюс `dtf/static/dtf/js/vendor/htmx.min.js` (48KB) — используется dtf-шаблонами, ок.
+
+### Проверка дублей с CDN
+
+Дублей НЕТ: base.html грузит с CDN только Bootstrap 5.3.3 (css+js, jsdelivr);
+Font Awesome — только self-hosted. Двойной загрузки одной библиотеки не обнаружено.
+Продуманная оптимизация уже есть: страницы без FA-иконок (index, catalog, pro_brand)
+отключают загрузку через пустой блок `{% block fontawesome_css %}`.
+
+### Задачи для исполнителя
+
+1. **Quick win P3:** удалить 4 `.ttf` из vendor/fontawesome/webfonts (−700KB, 64% размера
+   vendor/) и вычистить `url(...ttf) format("truetype")` из all.min.css. Риск ≈ 0.
+2. (Опционально, больший выигрыш для perf) заменить FA на инлайн-SVG подмножество
+   используемых иконок — но это отдельная задача из PERF-блока, не гигиена репо.
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Статус |
@@ -402,3 +478,5 @@ newCatalog/
 | 07.07.2026 | CB-003 | Аудит выполнен + ⚠️ P0: deploy_finance.sh содержит НЕзамаскированный SSH-пароль прода (остальные скрипты зачищены ранее) → сменить пароль; 65 скриптов, cron/код их не вызывают (по CB-044) |
 | 07.07.2026 | CB-014 | Аудит выполнен: override перехватывает ЛЮБОЙ collectstatic; P2 — hard-fail деплоя при отсутствии dtf-исходников; парадокс — .min-файлы шаблонами НЕ используются (whitenoise и так сжимает); план — переименовать/удалить |
 | 07.07.2026 | CB-011 | Аудит выполнен: Phase 17 НЕ завершена (~26% msgstr пусто ru/en) — fill_translations+compile_mo_polib живые; wrap_themes_lazy УЖЕ применён (205 обёрток) — в архив, destructive; 4 разовых скрипта — кандидаты в архив |
+| 07.07.2026 | CB-013 | Аудит выполнен: 3 директории (не 2), контент НЕ пересекается; мёртвые stena.png 2.7MB + hero_dtf_graphic.png; stena2.png 2.7MB и configurator/ui без webp; внешние потребители (og:image, GMC placeholder) — только img/, пути не трогать |
+| 07.07.2026 | CB-036 | Аудит выполнен: vendor/ = только Font Awesome 6 self-hosted; дублей с CDN НЕТ (CDN только Bootstrap); quick win — удалить 4 .ttf-fallback (−700KB, 64% vendor/) |
