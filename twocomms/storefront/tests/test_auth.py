@@ -319,29 +319,31 @@ class ProfileSetupViewTests(AuthViewTestCase):
         self.assertFalse(self.user.userprofile.avatar)
 
     def test_profile_setup_rejects_oversized_image(self):
-        """W1-10: изображение больше 10 МБ отклоняется."""
+        """W1-10: изображение больше лимита отклоняется (лимит уменьшен
+        через patch, чтобы не гонять 10+ МБ через тестовый клиент)."""
         import io
+        from unittest.mock import patch
 
         from django.core.files.uploadedfile import SimpleUploadedFile
         from PIL import Image
 
         buf = io.BytesIO()
-        Image.new("RGB", (10, 10)).save(buf, format="PNG")
+        Image.new("RGB", (64, 64)).save(buf, format="PNG")
         upload = SimpleUploadedFile("big.png", buf.getvalue(), content_type="image/png")
-        upload.size = 11 * 1024 * 1024  # эмулируем 11 MB
 
         delivery = self._delivery_payload()
-        response = self.post(
-            self.profile_setup_url,
-            {
-                "full_name": "Test User",
-                "phone": "+380991234567",
-                "np_city_token": delivery["np_city_token"],
-                "np_warehouse_token": delivery["np_warehouse_token"],
-                "pay_type": "full",
-                "avatar": upload,
-            },
-        )
+        with patch("storefront.views.auth.PROFILE_UPLOAD_MAX_BYTES", 10):
+            response = self.post(
+                self.profile_setup_url,
+                {
+                    "full_name": "Test User",
+                    "phone": "+380991234567",
+                    "np_city_token": delivery["np_city_token"],
+                    "np_warehouse_token": delivery["np_warehouse_token"],
+                    "pay_type": "full",
+                    "avatar": upload,
+                },
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["form"].errors.get("avatar"))
