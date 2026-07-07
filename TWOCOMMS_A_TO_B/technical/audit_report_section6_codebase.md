@@ -747,6 +747,52 @@ purged = 394KB из 565KB исходника (−30%). Гипотеза чекл
 
 ---
 
+## CB-045. Логи сервера и ротация (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+**Источник:** read-only SSH batch, `data/server_shell_batch_output.txt` + `data/server_followup_batch_output.txt`. Содержимое логов не выводилось; сканы только counts-only.
+
+### Инвентаризация
+
+| Локация | Размер / факт |
+|---|---:|
+| `twocomms/logs/` | **958 MB** |
+| `twocomms/tmp/` log files | 2,6 MB |
+| root `*.log` | до 2,6 MB (`stderr.log`) |
+| user-level logrotate configs | не найдены |
+| crontab logrotate | не найден |
+
+Топ проблем:
+
+1. `logs/nova_poshta_cron.log` — **826,93 MB**. Это главный пожиратель диска. В текущем crontab нет Nova Poshta sync cron, значит файл может быть наследием старого процесса или пишется из другого места.
+2. `logs/django.log.pre-rotation.bak` — **130 MB**. Старый backup после ручной ротации, автоматической политики не видно.
+3. `stderr.log` — 2,53 MB, активный Passenger stderr.
+4. `tmp/ig_bot_cron.log` — 0,67 MB и растёт каждую минуту из cron `run_instagram_bot --ensure`.
+5. `tmp/poll_ig_deal_payments.log` — 0,97 MB, cron каждые 4 минуты.
+
+### Секреты/PII counts-only
+
+- `password/passwd`: 0 hits во всех проверенных логах.
+- `secret|token=|api_key|apikey`: 0 почти везде, кроме `rum.log` — **24 secret-like hits**. Строки не раскрывались; нужна закрытая проверка на сервере.
+- PII-like hits:
+  - `django.log`: 1448;
+  - `stderr.log`: 1448;
+  - `logs/recover_checkouts.log`: 60;
+  - `logs/nova_poshta_cron.log`: 8648 только в tail-20000. Полный 827MB файл не сканировался полностью, чтобы не грузить shared-hosting.
+
+### Вывод
+
+CB-045 подтверждён: лог-ротация системно не оформлена, логи содержат PII-like данные, а один NP-log разросся до 827 MB. Прямых password/API-key утечек counts-only scan не нашёл, но `rum.log` требует отдельной ручной классификации 24 secret-like срабатываний без копирования строк в git.
+
+### План исполнителю
+
+1. Ввести user-level logrotate/cron rotate для root `*.log`, `logs/*.log`, `tmp/*.log`.
+2. Для `nova_poshta_cron.log`: сохранить последние N строк в приватном месте, после согласования владельца truncate/архивировать; до удаления проверить, что его больше не пишет активный cron.
+3. В логгерах маскировать phone/email/TTN/order payload, особенно для Nova Poshta и recover-checkouts.
+4. Разобрать `rum.log` secret-like hits в закрытом shell без вывода строк; если реальные токены — ротация.
+5. Убрать `print()`-шум из Telegram/cron paths (связка CB-021/TD-016), иначе logrotate будет лечить симптом, а не причину.
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Статус |
@@ -774,3 +820,4 @@ purged = 394KB из 565KB исходника (−30%). Гипотеза чекл
 | 07.07.2026 | CB-030 | Аудит выполнен: боевой бандл = styles.purged.css 394KB (НЕ styles.css); минификация compressor подтверждённо включена (offline + manifest-страж); 1.1MB CSS-сирот без единой ссылки (styles.min/direct/base, critical-home.min, bak2); пайплайн purge отсутствует в репо |
 | 07.07.2026 | CB-031 | Аудит выполнен: план из 7 шагов скорректирован по фактам — п.1 удалить 1.1MB сирот (1 час), п.2 вернуть purge-пайплайн в репо (критично для RISK-05), минификация уже включена, critical-home.min.css — сирота, а не рабочий critical-CSS |
 | 07.07.2026 | CB-041 | Аудит выполнен: оба флага default-off; P3 — ThreadPoolExecutor(2) создаётся безусловно даже при выключенной фиче (2N тредов на N Passenger-процессов); кэш MD5(path) без инвалидации и без чистки; SMALL_IMAGE_THRESHOLD и синхронная ветка — мёртвый код; вердикт: убрать слой или офлайн-прекомпиляция по cron; SSH-остаток: env-флаги + размер optimized_cache/ |
+| 07.07.2026 | CB-045 | SSH-аудит выполнен: logs/ 958MB, nova_poshta_cron.log 827MB, logrotate не найден; password hits 0, PII-like hits в django/stderr/recover/nova_poshta, rum.log 24 secret-like hits counts-only |

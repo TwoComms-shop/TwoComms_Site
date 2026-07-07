@@ -1,0 +1,91 @@
+===SECTION redis_celery_queue===
+215 objects imported automatically (use -v 2 for details).
+
+broker_configured= True
+broker_scheme= redis
+broker_host= redis-19835.c328.europe-west3-1.gce.redns.redis-cloud.com
+broker_port= 19835
+broker_db= 0
+redis_error_type= ConnectionError
+redis_error= Error -2 connecting to redis-19835.c328.europe-west3-1.gce.redns.redis-cloud.com:19835. Name or service not known.
+===SECTION all_logs_top_sizes===
+826.93 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/nova_poshta_cron.log
+2.53 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/stderr.log
+0.97 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/poll_ig_deal_payments.log
+0.92 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/rum.log
+0.89 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/django.log
+0.67 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot_cron.log
+0.42 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/checker_tick.log
+0.14 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/notify_test_shops_cron.log
+0.09 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/poll_invoices.log
+0.07 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/recover_checkouts.log
+0.05 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/finance_reports.log
+0.03 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/refresh_external.log
+0.03 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/feeds_cron.log
+0.01 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/image_optimization.log
+0.01 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/ai_generation.log
+0.01 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/fp_cron.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/trim_analytics.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/feeds.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/purge_ig_clients.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/cls_fix.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/nightly_scores.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/server.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/django_debug.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/debug.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/release_comm.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/optimize_images.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/celery.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/weekly_reviews.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot_daemon.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/persist_test.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/img_opt.log
+0.00 MB /home/qlknpodo/TWC/TwoComms_Site/twocomms/cron.log
+===SECTION log_dirs_total===
+958M	/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs
+2.6M	/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp
+===SECTION log_secret_counts_extended===
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/ai_generation.log size=8.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/celery.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/cls_fix.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/cron.log size=0 scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/debug.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/django.log size=912K scan=full pw_hits=0 secret_hits=0 pii_like_hits=1448
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/django_debug.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/image_optimization.log size=12K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/feeds.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/feeds_cron.log size=40K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/finance_reports.log size=56K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/img_opt.log size=0 scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/nightly_scores.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/notify_test_shops_cron.log size=148K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/nova_poshta_cron.log size=828M scan=tail20000 pw_hits=0 secret_hits=0 pii_like_hits=8648
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/poll_invoices.log size=100K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/recover_checkouts.log size=80K scan=full pw_hits=0 secret_hits=0 pii_like_hits=60
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/refresh_external.log size=40K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/release_comm.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/trim_analytics.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/weekly_reviews.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/optimize_images.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/rum.log size=952K scan=full pw_hits=0 secret_hits=24 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/server.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/stderr.log size=2.6M scan=full pw_hits=0 secret_hits=0 pii_like_hits=1448
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/checker_tick.log size=436K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/fp_cron.log size=8.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot_cron.log size=688K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot_daemon.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/persist_test.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/poll_ig_deal_payments.log size=996K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/purge_ig_clients.log size=4.0K scan=full pw_hits=0 secret_hits=0 pii_like_hits=0
+===SECTION tmp_listing_logs===
+-rw-r--r-- 1 qlknpodo qlknpodo 432K Jul  7 23:05 /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/checker_tick.log
+-rw-r--r-- 1 qlknpodo qlknpodo 5.2K Jul  7 03:15 /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/fp_cron.log
+-rw-r--r-- 1 qlknpodo qlknpodo 1.3K Jun 14 03:21 /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot.log
+-rw-rw-r-- 1 qlknpodo qlknpodo 682K Jul  7 23:08 /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot_cron.log
+-rw-rw-r-- 1 qlknpodo qlknpodo   30 Jun 19 00:17 /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/ig_bot_daemon.log
+-rw-rw-r-- 1 qlknpodo qlknpodo    5 Jun 14 13:32 /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/persist_test.log
+-rw-r--r-- 1 qlknpodo qlknpodo 992K Jul  7 23:08 /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/poll_ig_deal_payments.log
+-rw-r--r-- 1 qlknpodo qlknpodo 1.4K Jul  7 04:30 /home/qlknpodo/TWC/TwoComms_Site/twocomms/tmp/purge_ig_clients.log
+===DONE===

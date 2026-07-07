@@ -1,0 +1,164 @@
+===SECTION crontab===
+20 4 * * * cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python manage.py trim_analytics >> logs/trim_analytics.log 2>&1
+*/30 * * * * cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python manage.py recover_checkouts >> logs/recover_checkouts.log 2>&1
+* * * * * /bin/bash -lc 'source /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/activate && cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && python manage.py run_instagram_bot --ensure >> tmp/ig_bot_cron.log 2>&1'
+*/5 * * * * cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python manage.py checker_tick >> tmp/checker_tick.log 2>&1
+*/4 * * * * cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python manage.py poll_ig_deal_payments >> tmp/poll_ig_deal_payments.log 2>&1
+30 4 * * * cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python manage.py purge_ig_clients >> tmp/purge_ig_clients.log 2>&1
+15 3 * * * cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python manage.py generate_bot_fingerprints --limit 15 --sleep 2 >> tmp/fp_cron.log 2>&1
+===SECTION passenger_processes===
+3678274 161388      19:21 lswsgi          /opt/alt/python314/bin/lswsgi -m /home/qlknpodo/TWC/TwoComms_Site/twocomms/passenger_wsgi.py
+3719187 154584      02:29 lswsgi          /opt/alt/python314/bin/lswsgi -m /home/qlknpodo/TWC/TwoComms_Site/twocomms/passenger_wsgi.py
+3678318 147840      19:18 lswsgi          /opt/alt/python314/bin/lswsgi -m /home/qlknpodo/TWC/TwoComms_Site/twocomms/passenger_wsgi.py
+3045112 130200   04:35:48 python3.14_bin  /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python3.14_bin manage.py run_instagram_bot --forever
+3727426 126704      00:04 python3.14_bin  /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python3.14_bin manage.py run_instagram_bot --ensure
+2102805 119496   11:21:18 lswsgi          /opt/alt/python314/bin/lswsgi -m /home/qlknpodo/TWC/TwoComms_Site/twocomms/passenger_wsgi.py
+3727340  3664       00:04 bash            /bin/bash -lc source /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/activate && cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && python manage.py run_instagram_bot --ensure >> tmp/ig_bot_cron.log 2>&1
+--- process count by name ---
+      4 lswsgi
+      3 bash
+      2 python3.14_bin
+      1 uniq
+      1 systemd
+      1 sort
+      1 ps
+      1 head
+      1 COMMAND
+===SECTION memory_limits===
+core file size          (blocks, -c) 0
+data seg size           (kbytes, -d) unlimited
+scheduling priority             (-e) 0
+file size               (blocks, -f) unlimited
+pending signals                 (-i) 513043
+max locked memory       (kbytes, -l) 64
+max memory size         (kbytes, -m) unlimited
+open files                      (-n) 1024
+pipe size            (512 bytes, -p) 8
+POSIX message queues     (bytes, -q) 819200
+real-time priority              (-r) 0
+stack size              (kbytes, -s) 8192
+cpu time               (seconds, -t) unlimited
+max user processes              (-u) 513043
+virtual memory          (kbytes, -v) unlimited
+file locks                      (-x) unlimited
+--- free ---
+              total        used        free      shared  buff/cache   available
+Mem:         128300       12606       69407        7406       46285      107083
+Swap:          2047           0        2047
+===SECTION htaccess_passenger===
+/home/qlknpodo/public_html/.htaccess:# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN
+/home/qlknpodo/public_html/.htaccess:PassengerAppRoot "/home/qlknpodo/TWC/TwoComms_Site/twocomms"
+/home/qlknpodo/public_html/.htaccess:PassengerBaseURI "/"
+/home/qlknpodo/public_html/.htaccess:PassengerPython "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python"
+/home/qlknpodo/public_html/.htaccess:# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END
+/home/qlknpodo/tmp/twocomms-py314-validate/.htaccess
+/home/qlknpodo/public_html/.htaccess
+===SECTION logs_listing===
+-rw-rw-r-- 1 qlknpodo qlknpodo 6.5K Sep 10  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/ai_generation.log
+-rw-rw-r-- 1 qlknpodo qlknpodo  127 Nov 19  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/celery.log
+-rw-rw-r-- 1 qlknpodo qlknpodo  776 Sep 11  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/cls_fix.log
+-rw-r--r-- 1 qlknpodo qlknpodo    0 Sep 15  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/cron.log
+-rw-rw-r-- 1 qlknpodo qlknpodo  205 Sep 12  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/debug.log
+-rw-r--r-- 1 qlknpodo qlknpodo 907K Jul  7 23:06 /home/qlknpodo/TWC/TwoComms_Site/twocomms/django.log
+-rw-rw-r-- 1 qlknpodo qlknpodo  205 Sep 12  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/django_debug.log
+-rw-rw-r-- 1 qlknpodo qlknpodo 8.6K Oct 24  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/image_optimization.log
+-rw-rw-r-- 1 qlknpodo qlknpodo  158 Nov 22  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/optimize_images.log
+-rw-r--r-- 1 qlknpodo qlknpodo 947K Jul  7 22:50 /home/qlknpodo/TWC/TwoComms_Site/twocomms/rum.log
+-rw-rw-r-- 1 qlknpodo qlknpodo  205 Sep 12  2025 /home/qlknpodo/TWC/TwoComms_Site/twocomms/server.log
+-rw-r--r-- 1 qlknpodo qlknpodo 2.6M Jul  7 23:06 /home/qlknpodo/TWC/TwoComms_Site/twocomms/stderr.log
+--- other log dirs ---
+total 958M
+drwxr-xr-x  2 qlknpodo qlknpodo 4.0K Jun 12 04:20 .
+drwxrwxr-x 32 qlknpodo qlknpodo 4.0K Jul  6 23:56 ..
+-rw-rw-r--  1 qlknpodo qlknpodo 130M Jun 11 10:20 django.log.pre-rotation.bak
+-rw-rw-r--  1 qlknpodo qlknpodo 1.6K Jun 11 13:20 feeds.log
+-rw-r--r--  1 qlknpodo qlknpodo  34K May 15 01:10 feeds_cron.log
+-rw-r--r--  1 qlknpodo qlknpodo  52K Jun 11 13:20 finance_reports.log
+-rw-rw-r--  1 qlknpodo qlknpodo    0 Jun 11 10:27 img_opt.log
+-rw-r--r--  1 qlknpodo qlknpodo  220 Jun 11 02:30 nightly_scores.log
+-rw-r--r--  1 qlknpodo qlknpodo 143K May 15 00:17 notify_test_shops_cron.log
+-rw-r--r--  1 qlknpodo qlknpodo 827M May 15 01:10 nova_poshta_cron.log
+-rw-r--r--  1 qlknpodo qlknpodo  93K Jun 11 13:20 poll_invoices.log
+-rw-r--r--  1 qlknpodo qlknpodo  76K Jul  7 23:00 recover_checkouts.log
+-rw-r--r--  1 qlknpodo qlknpodo  36K Jun 11 12:00 refresh_external.log
+-rw-r--r--  1 qlknpodo qlknpodo  180 Jun 11 03:00 release_comm.log
+-rw-r--r--  1 qlknpodo qlknpodo 1.7K Jul  7 04:20 trim_analytics.log
+-rw-r--r--  1 qlknpodo qlknpodo   65 Jun  8 00:30 weekly_reviews.log
+8.0K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/ai_generation.log
+4.0K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/celery.log
+4.0K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/cls_fix.log
+0	/home/qlknpodo/TWC/TwoComms_Site/twocomms/cron.log
+4.0K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/debug.log
+912K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/django.log
+4.0K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/django_debug.log
+12K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/image_optimization.log
+4.0K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/optimize_images.log
+952K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/rum.log
+4.0K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/server.log
+2.6M	/home/qlknpodo/TWC/TwoComms_Site/twocomms/stderr.log
+===SECTION logrotate===
+--- user logrotate configs ---
+===SECTION log_secret_scan_counts_only===
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/ai_generation.log size=8.0K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/celery.log size=4.0K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/cls_fix.log size=4.0K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/cron.log size=0 pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/debug.log size=4.0K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/django.log size=912K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/django_debug.log size=4.0K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/image_optimization.log size=12K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/optimize_images.log size=4.0K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/rum.log size=952K pw_hits=0
+0 secret_hits=24 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/server.log size=4.0K pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+/home/qlknpodo/TWC/TwoComms_Site/twocomms/stderr.log size=2.6M pw_hits=0
+0 secret_hits=0
+0 digit16_hits=0
+0
+===SECTION env_image_flags===
+0
+--- actual boolean values (safe, non-secret flags) ---
+===SECTION optimized_cache_dir===
+4.0K	/home/qlknpodo/TWC/TwoComms_Site/twocomms/media/optimized_cache
+0
+===SECTION django_checks===
+No changes detected
+--- unapplied migrations ---
+--- unapplied count ---
+0
+===SECTION disk===
+/dev/sda7        89G   20G   64G  24% /home
+109M	/home/qlknpodo/TWC/TwoComms_Site/twocomms/media
+141M	/home/qlknpodo/TWC/TwoComms_Site/twocomms/staticfiles
+===DONE===

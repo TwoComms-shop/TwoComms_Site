@@ -178,6 +178,48 @@
 
 **Связки:** SEO-005 (hreflang), TECH-030 (шаблоны мета), RISK-13 (батчи при массовой правке мета).
 
+## AEO-001. AI-трафик уже идёт — какие страницы цитирует ChatGPT (БД, 07.07.2026)
+
+**Источник:** read-only SSH/Django shell batch, `data/server_audit_batch_output.txt`.
+
+### Факты
+
+- `utm_source=chatgpt.com`: **119 сессий**.
+- Referrer-based hits: `chatgpt` — **19**, `perplexity` — 0, `gemini` — 0.
+- Период: first seen **2026-02-02 19:22:44 UTC**, last seen **2026-07-07 19:47:35 UTC**.
+- Устройства: **100 mobile**, 19 desktop.
+- `is_converted=True`: **0** — ожидаемо, потому что CRO-041/042/DB-003 подтверждают, что UTM-конверсии сейчас не проставляются.
+
+### Landing pages из chatgpt.com
+
+| URL | Сессий | Вывод |
+|---|---:|---|
+| `/` | 52 | Главная — основной AI-вход; должна ясно отвечать «что такое TwoComms», состав/товары/доставка/возврат/цены |
+| `/catalog/` | 13 | Каталог как общий ответ AI |
+| `/en/catalog/tshirts/` | 10 | AI ведёт на английскую tshirts-страницу, хотя брендовый приоритет — лонгсливы/худи |
+| `/catalog/tshirts/` | 10 | То же для UA |
+| `/en/catalog/` | 5 | Английский каталог |
+| `/ru/catalog/` | 4 | Русский каталог |
+| `/en/` | 3 | Английская главная |
+| `/en/custom-print/` | 3 | Custom print важен для AI-выдачи |
+| `/catalog/hoodie/` | 3 | Hoodie уже цитируется, но слабее tshirts |
+| `/en/pro-brand/` | 2 | B2B/brand story |
+| `/catalog/long-sleeve/` | 2 | Long-sleeve цитируется слабо |
+| `/pro-brand/` | 2 | Brand story UA |
+
+Единичные попадания: `/ru/catalog/hoodie/`, `/en/catalog/long-sleeve/`, `/en/product/20-twocomms-legend/black/`, `/en/product/hool-ts/`, `/product/-v2-0_Pokrovsk/`, `/product/kha-style-hd/`, `/en/catalog/hoodie/`, `/ru/product/kha-edition-ts/`.
+
+### Вывод
+
+AI-трафик уже не гипотеза, а стабильный канал: 119 UTM-сессий + 19 referrer hits. ChatGPT чаще всего цитирует главную и каталог, но заметный кусок ведёт в `tshirts`, что конфликтует с позиционированием «лонгсливы/худи первичны». Конверсии AI-канала сейчас не измеряются из-за общей поломки UTM/order linkage, а не обязательно из-за качества AI-трафика.
+
+### Что делать исполнителю/контент-агенту
+
+1. На `/`, `/catalog/`, `/catalog/hoodie/`, `/catalog/long-sleeve/`, `/custom-print/`, `/pro-brand/` добавить явные answer blocks, которые AI легко цитирует: состав ткани, плотность, размерная сетка, сроки печати/отправки, доставка/возврат, цены/диапазоны, отличие TwoComms от generic print shop.
+2. Уменьшить AI-перекос в tshirts: усилить hoodie/long-sleeve страницы фактологией и внутренними ссылками с главной/каталога.
+3. После фикса CRO-041/042 повторить batch и смотреть AI-конверсию по `UTMSession.is_converted`, а не только visits.
+4. Добавить AI-channel grouping в аналитику (AN-033), чтобы `chatgpt.com`/referrer AI не смешивались с обычным referral/direct.
+
 ## Журнал раздела
 
 | Дата | Пункт | Резюме |
@@ -187,3 +229,4 @@
 | 07.07.2026 | SEO-010 | CWV mobile НЕ зелёные: LCP главная 4.8s, каталог 16.4s, карточка 2.5s; CLS 0.0 везде; корень — Vary:Cookie + Set-Cookie на каждом GET выключают LiteSpeed cache + cold-start Passenger (TTFB бимодальный 0.5s/8–18s, интермиттентные 503); остаток — CrUX/GSC поле + панель Hostsila |
 | 07.07.2026 | SEO-006 | Полный краул 489/489: все 200 без редиректов, 0 битых внутренних ссылок; несуществующие URL → чистый 404 (410 не реализован — P3) |
 | 07.07.2026 | SEO-007 | Структурно чисто (0 missing title/desc/canonical/OG/H1, canonical=final везде); P3: 41 title >65, 121 desc >165, 13 групп дублей (3 Reality Bends кросс-товарных + 11 непереведённых en-блогов) |
+| 07.07.2026 | AEO-001 | БД: chatgpt.com = 119 сессий, referrer chatgpt = 19; топ landing pages `/` 52, `/catalog/` 13, tshirts 20 суммарно; конверсии 0 из-за общей UTM-поломки |
