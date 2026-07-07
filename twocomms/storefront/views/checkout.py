@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth.decorators import login_required
 from django.utils.translation import gettext as _
 from django.views.decorators.http import require_POST
 from django.db import transaction
@@ -483,20 +484,93 @@ def order_failed(request):
     return render(request, 'pages/order_failed.html')
 
 
+@login_required
+@require_POST
 def update_payment_method(request):
     """
-    Update payment method for an order.
+    W1-6 (Находка 3): AJAX-смена метода оплаты заказа из кабинета.
+    Раньше — заглушка (redirect вместо JSON), фронт my_orders.html молча
+    ломался. Восстановлено из views.py.backup:2679 + проверка владельца.
     """
-    # Stub implementation
-    return redirect('my_orders')
+    order_id = request.POST.get('order_id')
+    payment_method = request.POST.get('payment_method')
+
+    if not order_id or not payment_method:
+        return JsonResponse({'success': False, 'error': _('Відсутні необхідні дані')}, status=400)
+
+    if payment_method not in ('full', 'partial'):
+        return JsonResponse({'success': False, 'error': _('Невірний метод оплати')}, status=400)
+
+    try:
+        # Проверка владельца: заказ ищется строго по user=request.user
+        order = Order.objects.get(id=order_id, user=request.user)
+    except (Order.DoesNotExist, ValueError):
+        return JsonResponse({'success': False, 'error': _('Замовлення не знайдено')}, status=404)
+
+    # Оплаченный/находящийся на проверке заказ менять нельзя
+    if order.payment_status in ('paid', 'prepaid', 'checking'):
+        return JsonResponse({
+            'success': False,
+            'error': _('Спосіб оплати не можна змінити після оплати або під час перевірки.')
+        }, status=409)
+
+    order.pay_type = payment_method
+    order.save(update_fields=['pay_type'])
+
+    method_display = _('Повна передоплата') if payment_method == 'full' else _('Часткова передоплата')
+    return JsonResponse({
+        'success': True,
+        'payment_method': payment_method,
+        'method_display': method_display,
+    })
 
 
+PAYMENT_SCREENSHOT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+@login_required
+@require_POST
 def confirm_payment(request):
     """
-    Confirm payment for an order.
+    W1-6 (Находка 3): AJAX-загрузка скриншота оплаты из кабинета.
+    Восстановлено из views.py.backup:3831 + проверка владельца + валидация
+    файла (тип изображения через ImageField + лимит размера).
     """
-    # Stub implementation
-    return redirect('my_orders')
+    order_id = request.POST.get('order_id')
+    payment_screenshot = request.FILES.get('payment_screenshot')
+
+    if not order_id:
+        return JsonResponse({'success': False, 'error': _('Відсутній ID замовлення')}, status=400)
+
+    if not payment_screenshot:
+        return JsonResponse({'success': False, 'error': _('Будь ласка, завантажте скріншот оплати')}, status=400)
+
+    try:
+        order = Order.objects.get(id=order_id, user=request.user)
+    except (Order.DoesNotExist, ValueError):
+        return JsonResponse({'success': False, 'error': _('Замовлення не знайдено')}, status=404)
+
+    if order.payment_status == 'paid':
+        return JsonResponse({'success': False, 'error': _('Замовлення вже оплачено.')}, status=409)
+
+    # Валидация файла: реальное изображение + разумный размер
+    from django import forms as dj_forms
+    from django.core.exceptions import ValidationError as DjValidationError
+    if getattr(payment_screenshot, 'size', 0) > PAYMENT_SCREENSHOT_MAX_BYTES:
+        return JsonResponse({'success': False, 'error': _('Файл завеликий. Максимум 10 МБ.')}, status=400)
+    try:
+        dj_forms.ImageField().clean(payment_screenshot)
+    except DjValidationError:
+        return JsonResponse({'success': False, 'error': _('Файл не є зображенням.')}, status=400)
+
+    order.payment_screenshot = payment_screenshot
+    order.payment_status = 'checking'
+    order.save(update_fields=['payment_screenshot', 'payment_status'])
+
+    return JsonResponse({
+        'success': True,
+        'message': _('Скріншот оплати успішно завантажено')
+    })
 
 
 def calculate_shipping(request):
