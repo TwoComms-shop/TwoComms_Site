@@ -9,6 +9,9 @@ Profile views - Профиль пользователя и личный каби
 - Настройки уведомлений
 """
 
+from django import forms
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -23,7 +26,7 @@ from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_option
 from orders.nova_poshta_data import apply_nova_poshta_refs
 from orders.nova_poshta_documents import normalize_checkout_phone
 from ..models import Product
-from .auth import ProfileSetupForm
+from .auth import ProfileSetupForm, validate_profile_upload_size
 
 
 def _published_products(request):
@@ -120,11 +123,30 @@ def edit_profile(request):
         user_profile = UserProfile.objects.create(user=request.user)
 
     if request.method == 'POST':
-        # Обновляем основные данные пользователя
-        request.user.first_name = request.POST.get('first_name', '')
-        request.user.last_name = request.POST.get('last_name', '')
-        request.user.email = request.POST.get('email', '')
-        request.user.save()
+        # W1-10 (NEW-502): валидируем email и файлы вместо прямого присвоения
+        email = (request.POST.get('email') or '').strip()
+        if email:
+            try:
+                validate_email(email)
+            except ValidationError:
+                messages.error(request, _('Введіть коректний email.'))
+                return redirect('profile_setup')
+
+        # Файлы прогоняем через ImageField (тип) + лимит размера — раньше
+        # request.FILES присваивались напрямую в обход любой валидации.
+        avatar_file = request.FILES.get('avatar')
+        ubd_doc_file = request.FILES.get('ubd_doc')
+        image_field = forms.ImageField(required=False)
+        try:
+            avatar_file = validate_profile_upload_size(
+                image_field.clean(avatar_file) if avatar_file else None
+            )
+            ubd_doc_file = validate_profile_upload_size(
+                image_field.clean(ubd_doc_file) if ubd_doc_file else None
+            )
+        except ValidationError as exc:
+            messages.error(request, '; '.join(exc.messages))
+            return redirect('profile_setup')
 
         phone = normalize_checkout_phone(request.POST.get('phone', ''))
         if not phone:
@@ -137,23 +159,29 @@ def edit_profile(request):
             messages.error(request, exc.message)
             return redirect('profile_setup')
 
+        # Обновляем основные данные пользователя
+        request.user.first_name = request.POST.get('first_name', '')[:150]
+        request.user.last_name = request.POST.get('last_name', '')[:150]
+        request.user.email = email
+        request.user.save()
+
         # Обновляем профиль
-        user_profile.full_name = request.POST.get('full_name', '')
+        user_profile.full_name = request.POST.get('full_name', '')[:200]
         user_profile.phone = phone
-        user_profile.email = request.POST.get('email', '')
+        user_profile.email = email
         user_profile.telegram = request.POST.get('telegram', '')
         user_profile.instagram = request.POST.get('instagram', '')
         _apply_profile_delivery_selection(user_profile, delivery_selection)
         user_profile.pay_type = request.POST.get('pay_type', 'full')
 
         # Аватар
-        if 'avatar' in request.FILES:
-            user_profile.avatar = request.FILES['avatar']
+        if avatar_file:
+            user_profile.avatar = avatar_file
 
         # УБД
         user_profile.is_ubd = 'is_ubd' in request.POST
-        if 'ubd_doc' in request.FILES:
-            user_profile.ubd_doc = request.FILES['ubd_doc']
+        if ubd_doc_file:
+            user_profile.ubd_doc = ubd_doc_file
 
         user_profile.save()
 

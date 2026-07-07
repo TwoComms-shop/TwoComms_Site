@@ -94,6 +94,19 @@ class RegisterForm(forms.Form):
         return data
 
 
+# W1-10 (NEW-502): лимит размера загружаемых файлов профиля (аватар/УБД-док)
+PROFILE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def validate_profile_upload_size(uploaded_file):
+    """Отклоняет файлы больше PROFILE_UPLOAD_MAX_BYTES."""
+    if uploaded_file and getattr(uploaded_file, 'size', 0) > PROFILE_UPLOAD_MAX_BYTES:
+        raise ValidationError(
+            _("Файл завеликий. Максимальний розмір — 10 МБ.")
+        )
+    return uploaded_file
+
+
 class ProfileSetupForm(forms.Form):
     """Форма первоначальной настройки профиля."""
 
@@ -211,6 +224,12 @@ class ProfileSetupForm(forms.Form):
         required=False
     )
 
+    def clean_avatar(self):
+        return validate_profile_upload_size(self.cleaned_data.get("avatar"))
+
+    def clean_ubd_doc(self):
+        return validate_profile_upload_size(self.cleaned_data.get("ubd_doc"))
+
     def clean(self):
         data = super().clean()
         if data.get("is_ubd") and not data.get("ubd_doc") and not self.has_existing_ubd_doc:
@@ -320,7 +339,7 @@ def register_view(request):
     Features:
     - Проверяет уникальность username
     - Валидирует пароль согласно Django password validators
-    - Создает нового пользователя
+    - ��оздает нового пользователя
     - Автоматически авторизует после регистрации
     - Переносит избранные товары из сессии
     - Редиректит на настройку профиля

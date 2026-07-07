@@ -292,6 +292,62 @@ class ProfileSetupViewTests(AuthViewTestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, "user@example.com")
 
+    def test_profile_setup_rejects_non_image_upload(self):
+        """W1-10 (NEW-502): не-изображение отклоняется валидацией формы."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        delivery = self._delivery_payload()
+        fake_file = SimpleUploadedFile(
+            "malware.php", b"<?php echo 'not an image'; ?>", content_type="image/png"
+        )
+        response = self.post(
+            self.profile_setup_url,
+            {
+                "full_name": "Test User",
+                "phone": "+380991234567",
+                "np_city_token": delivery["np_city_token"],
+                "np_warehouse_token": delivery["np_warehouse_token"],
+                "pay_type": "full",
+                "avatar": fake_file,
+            },
+        )
+
+        # Невалидная форма — рендер страницы с ошибками, аватар не сохранён
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].errors.get("avatar"))
+        self.user.userprofile.refresh_from_db()
+        self.assertFalse(self.user.userprofile.avatar)
+
+    def test_profile_setup_rejects_oversized_image(self):
+        """W1-10: изображение больше 10 МБ отклоняется."""
+        import io
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (10, 10)).save(buf, format="PNG")
+        upload = SimpleUploadedFile("big.png", buf.getvalue(), content_type="image/png")
+        upload.size = 11 * 1024 * 1024  # эмулируем 11 MB
+
+        delivery = self._delivery_payload()
+        response = self.post(
+            self.profile_setup_url,
+            {
+                "full_name": "Test User",
+                "phone": "+380991234567",
+                "np_city_token": delivery["np_city_token"],
+                "np_warehouse_token": delivery["np_warehouse_token"],
+                "pay_type": "full",
+                "avatar": upload,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].errors.get("avatar"))
+        self.user.userprofile.refresh_from_db()
+        self.assertFalse(self.user.userprofile.avatar)
+
     def test_profile_setup_push_preferences_form_updates_flags_independently(self):
         response = self.post(
             self.profile_setup_url,

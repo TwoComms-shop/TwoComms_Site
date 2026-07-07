@@ -116,6 +116,11 @@ else:
 # не знеструмлювала збережені токени.
 FINANCE_TOKEN_KEY = os.environ.get('FINANCE_TOKEN_KEY', '')
 
+# W1-10 (NEW-502): лимиты на загрузку файлов — защита shared-хостинга от
+# произвольно больших аплоадов (аватар/УБД-док и другие формы).
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 20 * 1024 * 1024  # 20 MB (все поля запроса)
+
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',') if os.environ.get('ALLOWED_HOSTS') else [
     'test.com',
     'www.test.com',
