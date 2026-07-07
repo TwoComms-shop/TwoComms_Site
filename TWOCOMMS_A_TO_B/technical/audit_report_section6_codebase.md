@@ -62,7 +62,7 @@
 
 - `twocomms/passenger_wsgi.py` (боевая точка входа, подтверждено PassengerAppRoot в `~/public_html/.htaccess`): `os.environ.setdefault("DJANGO_SETTINGS_MODULE", "twocomms.production_settings")`.
 - **Боевой модуль = `twocomms/twocomms/production_settings.py` (639 строк), который делает `from .settings import *` (settings.py — 1342 строки) и переопределяет.**
-- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источник путаницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
+- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источник пу��аницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
 - Ключевые переопределения production_settings: `DEBUG=False`, `SECRET_KEY` из env, DB через env (`DB_ENGINE`, отдельная `DB_NAME_DTF` — вторая БД для dtf! связь с TD-025 db_routers), Redis-настройки (3 БД: cache/static/fragment), `MediaCacheMiddleware` добавляется в конец цепочки, `DISABLE_ANALYTICS` env-флаг может ВЫКЛЮЧИТЬ UTM/Analytics-мидлвари (проверить, не включён ли на бою — если да, объясняет часть разрывов аналитики!), Telegram/NovaPoshta-ключи из env.
 - Passenger Python: `virtualenv/.../3.14/bin/python` (Python 3.14), Django==5.2.11, PyMySQL==1.1.2 (подтверждено pip freeze).
 
@@ -249,6 +249,53 @@ newCatalog/
 
 ---
 
+## CB-002. md-отчёты в корне (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+### Факты
+
+- Фактически tracked в корне: **175 md-файлов, ~3.9MB** (чеклист говорил 202 — часть уже убрана ранее).
+- Крупнейшие кластеры по префиксу: PERFORMANCE_* (23), UTM_* (10), PRODUCT_* (7), META_* (7), VIEWS_* (5), GTM_* (5), DTF_* (5), CART_* (5), TRACKING_* (4), NOVA_* (4), MODAL_* (4).
+- **Ссылок из кода нет:** grep всех 175 имён по `twocomms/` (*.py/*.html/*.js) — 0 совпадений. Перенос безопасен.
+- `docs/` уже существует — целевая структура `docs/archive/...` готова к использованию.
+
+### Задачи для исполнителя
+
+1. Один PR: `git mv` всех отчётных md в `docs/archive/2025/` и `docs/archive/2026/` (по дате из содержимого/git log).
+2. В корне оставить README.md, DEPLOY.md, CHANGELOG.md (проверить их наличие; при отсутствии — создать заглушки не нужно, просто не переносить существующие аналоги).
+
+---
+
+## CB-003. Loose-скрипты в корне (АУДИТ ВЫПОЛНЕН, 07.07.2026) + P0-НАХОДКА
+
+### ⚠️ P0: пароль SSH прода в открытом виде в git
+
+- **`deploy_finance.sh` (tracked, строка 5): `export SSHPASS='<реальный пароль qlknpodo@195.191.24.169>'`** — единственный tracked-файл, где пароль остался НЕзамаскированным (`git grep` по HEAD подтверждает ровно 1 файл).
+- Во всех остальных скриптах (13 tracked `.exp`, `deploy_paramiko.py`, `deploy_fixes.sh`, `deploy_optimizations.sh`, `deploy_promo_system.sh`, `deploy_redis.sh`) пароль уже заменён на плейсхолдер `***REMOVED_SSH_PASSWORD***` — прошлая зачистка пропустила один файл.
+- Пароль был в истории git многих файлов → считать скомпрометированным.
+- **Действия исполнителя (приоритет над всем разделом):**
+  1. СМЕНИТЬ пароль qlknpodo на сервере (согласовать с владельцем; лучше перейти на ssh-ключи + отключить PasswordAuthentication).
+  2. Замаскировать/удалить строку в `deploy_finance.sh`, коммит.
+  3. История git: пароль остаётся в истории — фиксация факта; `git filter-repo` только по явному согласованию (правило чеклиста).
+
+### Факты по скриптам
+
+- Фактически tracked в корне: **65 скриптов** (.py/.sh/.exp/.js; чеклист говорил 49).
+- **Cron их НЕ вызывает** — подтверждено инвентаризацией CB-044 (05.07.2026): все 7 cron-задач — management-команды из репо. Риск «сломать cron» снят без новой SSH-сессии.
+- **Код `twocomms/` их НЕ вызывает** — grep по представителям (update_feed_now.sh, update_google_merchant_feed.sh, setup_session_cleaner.sh, security_check.py): 0 ссылок.
+- Категории:
+  - deploy-семейство (~20 шт: deploy*.sh/.exp/.py, run_*.exp, restart.exp) — дубли одного процесса; реально живой процесс деплоя сверить с владельцем;
+  - одноразовые fix_*/update_index_v3..v5/restructure_html.py — мёртвые, кандидаты на удаление;
+  - потенциально полезные: crawl_all_pages.py, optimize_images.py, security_check.py, setup_*.sh → `scripts/` с README;
+  - `postcss.config.js` — НЕ трогать (конфиг сборки), `inspect_purge.js`/`modal_position_debug.js` — разовые отладки.
+- SSH из sandbox: сервер сбрасывает соединение (kex reset) — вероятно, IP-фильтр/fail2ban; исполнителю с доступом ничего перепроверять по cron не нужно (см. CB-044).
+
+### Задачи для исполнителя
+
+1. P0-блок выше — первым делом.
+2. PR: `scripts/archive/` для deploy-дублей, `scripts/` для полезных, удаление мёртвых fix_*.
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Статус |
@@ -262,3 +309,5 @@ newCatalog/
 | 07.07.2026 | CB-005 | Аудит выполнен: 2 xlsx с закупочными ценами tracked; runtime не нужны (XLSX генерится на лету, live 200 подтверждён); ВАЖНО: views.py.backup — ЖИВОЙ рантайм-код через _load_legacy_views |
 | 07.07.2026 | CB-006 | Аудит выполнен: секреты покрыты; дыры — artifacts/, output/, tmp/, opros/, newCatalog/, *.xlsx, *.bak2; исключение !views.py.backup оставить |
 | 07.07.2026 | CB-007 | Аудит выполнен: Promt/ не tracked; 7 AI-конфигов (69 файлов, живой похоже только .kiro); opros/newCatalog/BrandDNA → в PR CB-001 |
+| 07.07.2026 | CB-002 | Аудит выполнен: 175 md ~3.9MB в корне, ссылок из кода 0, docs/ существует; план git mv → docs/archive |
+| 07.07.2026 | CB-003 | Аудит выполнен + ⚠️ P0: deploy_finance.sh содержит НЕзамаскированный SSH-пароль прода (остальные скрипты зачищены ранее) → сменить пароль; 65 скриптов, cron/код их не вызывают (по CB-044) |
