@@ -62,7 +62,7 @@
 
 - `twocomms/passenger_wsgi.py` (боевая точка входа, подтверждено PassengerAppRoot в `~/public_html/.htaccess`): `os.environ.setdefault("DJANGO_SETTINGS_MODULE", "twocomms.production_settings")`.
 - **Боевой модуль = `twocomms/twocomms/production_settings.py` (639 строк), который делает `from .settings import *` (settings.py — 1342 строки) и переопределяет.**
-- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источник путаницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
+- env-файлы на сервере: `twocomms/.env` И `twocomms/.env.production` (оба существуют!). production_settings ищет в порядке: `DJANGO_ENV_FILE` → `.env.production` (BASE_DIR, затем parent) → `.env`. Т.е. **фактически грузится `.env.production`**, а `.env` — вероятный источник пу��аницы (какие значения в нём — проверить отдельной SSH-сессией, НЕ печатая значений секретов, только ключи).
 - Ключевые переопределения production_settings: `DEBUG=False`, `SECRET_KEY` из env, DB через env (`DB_ENGINE`, отдельная `DB_NAME_DTF` — вторая БД для dtf! связь с TD-025 db_routers), Redis-настройки (3 БД: cache/static/fragment), `MediaCacheMiddleware` добавляется в конец цепочки, `DISABLE_ANALYTICS` env-флаг может ВЫКЛЮЧИТЬ UTM/Analytics-мидлвари (проверить, не включён ли на бою — если да, объясняет часть разрывов аналитики!), Telegram/NovaPoshta-ключи из env.
 - Passenger Python: `virtualenv/.../3.14/bin/python` (Python 3.14), Django==5.2.11, PyMySQL==1.1.2 (подтверждено pip freeze).
 
@@ -117,7 +117,7 @@
 2. **`accounts/` app — НОЛЬ тестов.** Непокрыт `cart_middleware.py` — середина цепочки из 26 middleware, восстановление корзины (CRO-035).
 3. **Monobank-вебхук:** проверка подписи `_verify_monobank_signature` (monobank.py:196) — НЕ тестируется; идемпотентность повторного callback покрыта ровно ОДНИМ тестом (`test_monobank_success_status_records_purchase_once`), сценарии failure/pending/expired-статусов и `_apply_monobank_status` (monobank.py:1211) — не покрыты.
 4. **COD ↔ UTM интеграция:** unit-механизм `record_order_action` покрыт (test_utm_tracking.py), но НЕТ интеграционного теста «COD-заказ через create_order → Order.utm_session заполнен» — потому что самого вызова в checkout.py НЕТ (CRO-041). Тест из test_utm_tracking.py — это acceptance-заготовка: после фикса CRO-041 нужен e2e-тест на уровне view.
-5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от гонки остатков без select_for_update (проверить исполнителю).
+5. **Конкурентность остатков:** снятие остатков при заказе и «последний размер на двоих» — тестов нет (связь DB-009). `transaction.atomic` есть (checkout.py:134, monobank.py:539), но атомарность ≠ защита от го��ки остатков без select_for_update (проверить исполнителю).
 6. **CI отсутствует:** `.github/workflows/` нет ни в корне, ни в twocomms/ — 183 тест-файла НЕ запускаются автоматически. Никто не знает, сколько из них зелёные. Прогон тестов возможен только вручную (и на сервере — с осторожностью: тестовая БД).
 7. **Тесты гоняются на SQLite** (settings.py: DB_ENGINE default sqlite), боевая БД MySQL → расхождения (charset, strict mode, атомарность DDL) тестами не ловятся.
 
@@ -193,7 +193,7 @@
 ### Факты
 
 - `.gitignore` 278 строк, секреты покрыты хорошо: `.env*` (c исключениями example/sample), ключи, `json/` (service-account), майнерские артефакты (следы security-инцидента!), `.deploy_pass`, `.kiro/settings/mcp.json`.
-- **Дыры покрытия (tracked-файлы, которые должны игнорироваться):**
+- **Ды��ы покрытия (tracked-файлы, которые должны игнорироваться):**
   - НЕТ `artifacts/`, `output/`, `tmp/` (только `tmp/critical-extraction/`), `opros/`, `newCatalog/`;
   - НЕТ `*.xlsx` → 2 файла с закупочными ценами tracked (CB-005);
   - `*.bak` есть, но НЕ `*.bak2` → tracked `styles.css.bak2` (445KB);
@@ -554,6 +554,127 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 
 ---
 
+## CB-020. 697 широких except — топ-20 опасных мест в денежных потоках (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+**Метод:** grep + разбор тел except-блоков в деньгах/данных: `storefront/views/checkout.py`, `storefront/views/monobank.py`, `storefront/views/cart.py`, `storefront/views/utils.py`, `orders/facebook_conversions_service.py`, `orders/nova_poshta_service.py`, `orders/telegram_notifications.py`, `storefront/views/manual_orders.py`. Классификация: SILENT = в теле except нет logger/logging/print.
+
+**Актуальный замер:** широких `except`/`except Exception` во всём Python-коде (без migrations/tests) — **734** (baseline был 697 — долг вырос на +37). Топ-файлы: `management/views.py` — 140, `management/services/instagram_bot.py` — 50, `storefront/seo_utils.py` — 24, `management/shop_views.py` — 17, `storefront/views/monobank.py` — 16, `storefront/views/admin.py` — 16.
+
+**В 8 проверенных денежных файлах: 120 except-блоков, из них 47 SILENT (глотают молча).**
+
+### ТОП-20 самых опасных SILENT-мест (приоритет для исполнителя)
+
+| # | Место | Что глотается | Риск |
+|---|---|---|---|
+| 1 | `storefront/views/utils.py:542,573,723` (3 места) | `order.save(update_fields=[...])` падает → молчаливый fallback на полный `order.save()` | **P1.** Ядро webhook-обработки Monobank (payment_status). Полный save() перезаписывает ВСЕ поля заказа устаревшим снапшотом из памяти → потеря конкурентных изменений (статус НП, payment_payload другого потока). Причина исходного падения не логируется |
+| 2 | `orders/nova_poshta_service.py:515` | тот же паттерн save(update_fields)→save() в момент фиксации `facebook_events.purchase_sent=True` | **P1.** Если и второй save упадёт — флаг не сохранён → CAPI Purchase уйдёт ПОВТОРНО при следующем кроне; если сработает — full-save с рисками #1 |
+| 3 | `storefront/views/monobank.py:124` | `Decimal(str(lead.final_price_value))` → `final_price = Decimal('0.00')` | **P1.** Битая цена approved-кастома превращается в 0.00; лид уходит в pending, но причина (corrupt data в БД) не логируется — диагностика вслепую. Родня CRO-034 |
+| 4 | `storefront/views/checkout.py:233` | `total_sum += Decimal(str(lead.final_price_value))` → `pass` | **P1 (исполняемое подтверждение P2 CRO-034).** COD-заказ создаётся, кастом-лид привязывается к заказу (строка 235), но его цена НЕ входит в сумму — кастом уедет бесплатно, 0 логов |
+| 5 | `storefront/views/monobank.py:876,884,892` | чтение cookie `_fbp`/`_fbc`/`ttclid` → None | **P2.** Молчаливая потеря атрибуции: при любом сбое CAPI навсегда теряет match-ключи, EMQ проседает без единого лога (стык AN-013) |
+| 6 | `storefront/views/monobank.py:1342` | JSON-parse тела **вебхука** → `HttpResponse(400)` | **P2.** Monobank получает 400 и ретраит; ни байта payload не логируется → расследовать «почему заказ завис в pending» невозможно |
+| 7 | `storefront/views/monobank.py:378` | JSON-parse тела create_invoice → `body = {}` | **P2.** Мусорный запрос не отклоняется, а продолжается с пустым телом: pay_type станет дефолтным — инвойс может создаться не с теми параметрами, что хотел клиент |
+| 8 | `storefront/views/checkout.py:188` | `CheckoutCapture.update(converted=True)` → pass | **P2.** Конверсия capture молча не помечается → «брошенные корзины» навсегда числятся брошенными, abandoned-ремаркетинг может уйти уже купившему |
+| 9 | `storefront/views/cart.py:943` | ВЕСЬ `update_cart` обёрнут → `JsonResponse({'error': str(e)}, 400)` | **P2.** (а) str(e) утекает клиенту (internal paths в UI), (б) ноль серверных логов при ошибках пересчёта денег корзины |
+| 10 | `storefront/views/cart.py:1306` | `custom_total += Decimal(final_total)` → pass | **P2.** Сумма кастома в `cart_summary` молча занижается — UI покажет сумму меньше инвойса (стык рассинхронов CRO-034) |
+| 11 | `storefront/views/monobank.py:288` | валидация payload/qty → `return False, str(e)` | **P3.** str(e) уходит клиенту как есть; класс ошибки не различим (ValueError vs баг кода) |
+| 12 | `storefront/views/monobank.py:927,956,964` | session.create()/client_ip/user_agent для tracking_context → pass | **P3.** Деградация качества CAPI-матчинга без следов |
+| 13 | `storefront/views/monobank.py:1177` | append в `payment_payload['history']` при не-JSON payload → повторный append без payload | **P3.** История платежа теряет тело; сам факт стоит логировать |
+| 14 | `storefront/views/monobank.py:1363` | `WholesaleInvoice.objects.filter(...)` → `inv = None` | **P3.** DB-ошибка (потеря коннекта) маскируется под «инвойс не найден» — B2B-вебхук уйдёт в retail-ветку и потеряется |
+| 15 | `orders/facebook_conversions_service.py:224` | `response[attr]` → None | **P3.** Валидация ответа CAPI деградирует молча — детали сломанного ответа не фиксируются |
+| 16 | `storefront/views/cart.py:594,1401,1618` (3 места) | `points_reward * qty` → pass | **P3.** Баллы лояльности молча выпадают из расчёта — клиент видит 0 баллов, саппорт не найдёт причину |
+| 17 | `storefront/views/checkout.py:161` + `monobank.py:534` | нормализация email → None/'' | **P3.** Покупатель остаётся без email в заказе (receipt-письмо) без следов |
+| 18 | `storefront/views/cart.py:483` | сохранение email в профиль → pass (вложенный except-в-except) | **P3.** Тихая потеря контакта; двойная вложенность — маркер копипасты |
+| 19 | `storefront/views/utils.py:495` | `order.refresh_from_db()` → pass | **P3.** После отправки событий заказ может остаться stale в памяти вызывающего кода |
+| 20 | `orders/telegram_notifications.py:557–714` (9 мест) | секции админ-сообщения → `return ""`/None | **P3.** Куски уведомления о заказе молча исчезают (менеджер не увидит, например, кнопку накладной); плюс весь файл логирует через `print()` (стык print-долга) |
+
+### Выводы для исполнителя
+
+1. **Правило фикса:** в каждом из топ-20 — минимум `logger.exception(...)` (для #1/#2 — уровень critical), поведение потока НЕ менять без отдельного согласования.
+2. **Паттерн `save(update_fields) except → save()`** (4 места: utils.py:542,573,723; nova_poshta_service.py:515) — самый опасный системный паттерн: заменить на logged-retry БЕЗ fallback на полный save (риск lost-update на боевых заказах).
+3. **#4 (checkout.py:233)** чинить вместе с P2-багом CRO-034 «кастом уедет бесплатно» — это одно и то же место.
+4. `str(e)` в JSON-ответах клиенту (#9, #11) — заменить на generic-сообщение + серверный лог.
+5. Массовую зачистку остальных ~700 мест НЕ делать (анти-задачи); рекордсмен `management/views.py` (140) — только при декомпозиции CB-022.
+
+---
+
+## CB-022. God-files: план декомпозиции (АУДИТ ВЫПОЛНЕН, 07.07.2026 — только план, БЕЗ рефакторинга)
+
+**Актуальные замеры (wc -l):** `management/views.py` **8188**, `management/models.py` **3985**, `storefront/views/admin.py` **3270**, `storefront/models.py` **2935**, `storefront/views/static_pages.py` **1950**, `storefront/views/cart.py` **1850**.
+
+### Карта доменов внутри каждого файла (по фактическим def/class)
+
+**1. `management/views.py` (8188 строк, 140 широких except)** — 5 смешанных доменов:
+- CRM-«домашка» менеджера: `home` (строка 1163), `_serialize_client_for_home`, `_build_phase_family_state_map`, follow-up-проекции (~282–1600) → `views/manager_home.py`
+- Админ-обзор: `admin_overview` (строка 1612 — одна функция ~600 строк!), `admin_invoice_*`, `admin_manager_*`, `admin_user_clients` (1612–2686) → `views/admin_overview.py`
+- Отчёты: `reports`, `report_precheck`, `send_report`, `build_report_excel` (904), `send_telegram_report` (1085) → `views/reports.py`
+- Напоминания: `reminder_read`, `reminder_feed`, `get_reminders` → `views/reminders.py`
+- Утилиты/токены: `_load_env_tokens`, `_split_chat_ids`, bot-хелперы → `services/`; общие `user_is_management`/`calc_points` → `management/permissions.py` / `services/scoring.py`
+
+**2. `management/models.py` (3985 строк, 47 моделей)** — доменные кластеры:
+- CRM: Client, ClientPhone, ClientFollowUp, ClientInteractionAttempt, DuplicateReview, OwnershipChangeLog
+- Лидогенерация: ManagementLead, LeadParsingJob/RuntimeLock/Result/QueryState
+- KPI/зарплаты: Report, DayReportAudit, ManagementDailyActivity, NightlyScoreSnapshot, ScoreAppeal, ManagerLevel/History, WeeklySalaryAccrual, ManagerCommissionAccrual, ManagerPayoutRequest
+- Телефония: CallSession, CallRecord, TelephonyHealthSnapshot, BinotelWebhookEvent, CallQAReview, CallAIAnalysis, TelephonyWebhookLog
+- B2B-магазины: Shop, ShopPhone, ShopShipment, ShopCommunication, ShopInventoryMovement
+- Договоры/КП: ManagementContract, ContractSequence, CommercialOfferEmail*
+- Календарь: WorkingCalendar* (3 модели)
+- План: пакет `models/` (crm.py, leads.py, kpi.py, telephony.py, shops.py, contracts.py, calendar.py) + re-export в `models/__init__.py` — Django-safe без миграций (db_table не меняется).
+
+**3. `storefront/views/admin.py` (3270 строк)** — уже сгруппирован контекст-билдерами, резать по ним: `admin_products.py` (manage_products, add_product, reorder, product_status), `admin_orders.py` (_build_orders_context, payment_status/snapshots), `admin_custom_print.py` (5 функций lead-модерации), `admin_push.py` (3 функции кампаний), `admin_dashboard.py` (dashboard, panel, _build_stats/_resolve_period).
+
+**4. `storefront/models.py` (2935 строк, 55 классов)** — кластеры: blog (8 классов), custom-print (10), catalog/product (10), promo (4), tracking (UTMSession, UserAction, SiteSession, PageView, AnalyticsExclusion), push (3), SEO-блоки (5), offline-store (6). План: пакет `storefront/models/` с re-export; ВАЖНО: `UserAction`/`UTMSession` — самые горячие таблицы, выносить в `models/tracking.py` последними, отдельным PR.
+
+**5. `storefront/views/cart.py` (1850 строк)** — резать по границе «кастом vs обычная корзина»: `_collect_custom_cart_state`/`_build_custom_cart_entry_payload`/`_promote_legacy_custom_draft` (~350 строк) → общий модуль `storefront/custom_cart.py` — это ОДНОВРЕМЕННО закрывает рекомендацию CRO-034 «вынести _split_custom_cart_entries в общий модуль для COD+Monobank». NP-поиск (nova_poshta_city_search/warehouse_search + хелперы) → `views/nova_poshta_lookup.py`.
+
+**6. `storefront/views/static_pages.py` (1950 строк)** — домены: robots/llms/sitemap (SEO-plumbing: `robots_txt`, `llms_txt` строка 371, `llms_full_txt` 463, `static_sitemap` 704) → `views/seo_endpoints.py`; `csp_report` (260) → `views/security_endpoints.py`; остальные статические страницы остаются.
+
+### Инварианты и правила исполнителю
+
+1. **НЕ рефакторить сейчас** — план вступает в силу правилом: «новый код — только в новые модули по доменам выше».
+2. Пакет-декомпозиция моделей БЕЗ смены db_table/app_label → `makemigrations` обязан дать **пустой** дифф (обязательная проверка).
+3. `storefront/views/__init__.py:329` грузит `views.py.backup` через `_load_legacy_views()` (живой рантайм, CB-005) — при декомпозиции storefront/views этот механизм НЕ трогать отдельно от аудита legacy-роутов.
+4. Порядок PR: (1) cart.py split (даёт фикс-площадку CRO-034), (2) admin.py, (3) management/models.py, (4) management/views.py, (5) storefront/models.py — от наименее рискованного к самому горячему.
+
+---
+
+## CB-042. 26 middleware: порядок и инварианты (АУДИТ ВЫПОЛНЕН, 07.07.2026)
+
+**Факт:** в `twocomms/settings.py:199` — **26 middleware**; в проде (`production_settings.py:56–57`) добавляется 27-й — `MediaCacheMiddleware` (append в конец).
+
+### Полная цепочка с инвариантами порядка
+
+| # | Middleware | Инвариант/зависимость |
+|---|---|---|
+| 1–2 | ForceHTTPS, WWWRedirect | Первыми (redirect до любой работы) |
+| 3 | SubdomainURLRouting | ДО SecurityMiddleware (inline-комментарий: routing early) |
+| 4 | RequestTrace | Активируется только заголовком `X-DTF-Debug: 1`; grep по репо: потребителей заголовка НЕТ (0 вне самого класса, `twocomms/middleware.py:265`) → **кандидат на удаление ПОДТВЕРЖДЁН** |
+| 5–7 | Security, GZip, SecurityHeaders (CSP) | стандартный порядок; GZip выше форматирующих слоёв |
+| 8 | WhiteNoise | статика; всё ниже не видит static-запросы |
+| 9 | SimpleRateLimit | инвариант «ПОСЛЕ статики!» (иначе лимитирует css/js) |
+| 10 | ImageOptimization | флаг `IMAGE_OPTIMIZATION_MIDDLEWARE_ENABLED` default **False** (settings.py:849), класс no-op при выключенном флаге (image_middleware.py:27) → **мёртвый слой, если env-флаг не выставлен на бою (проверка env — SSH-остаток CB-041)** |
+| 11 | Session | база для всего ниже |
+| 12 | SocialAuthStateCookie | ПОСЛЕ Session, ДО social-auth callback |
+| 13–16 | Locale, Common, Csrf, Auth | стандартный django-порядок |
+| 17 | ManagementOnboardingGate | ПОСЛЕ Auth (нужен request.user) |
+| 18–20 | Message, SocialAuthException, XFrameOptions | — |
+| 21 | SubdomainRedirectFallback | SEO-редиректы (skip dtf.*) |
+| 22 | CartSync | ПОСЛЕ Auth (подтверждено CRO-035) |
+| 23 | AnalyticsIdentity | first-party cookies ДО UTM/Analytics |
+| 24 | UTMTracking | инвариант «ПЕРЕД SimpleAnalyticsMiddleware!» — UTMSession должна существовать до записи PageView |
+| 25 | SimpleAnalytics | последний трекинг-слой |
+| 26 | NovaPoshtaFallback | хвост цепочки |
+| 27 (prod) | MediaCache | только в production_settings |
+
+### Находки
+
+1. **P3-мёртвый код в `production_settings.py:48–53`:** блок `MIDDLEWARE.insert(0, ForceHTTPS)` / `insert(1, WWWRedirect)` живёт ВНУТРИ ветки `if DISABLE_ANALYTICS`, при этом оба уже есть в базовом списке → условие `not in MIDDLEWARE` всегда ложно, вставка никогда не срабатывает. Артефакт, вводящий в заблуждение при чтении.
+2. **RequestTraceMiddleware (№4)** — потребителей `X-DTF-Debug` нет ни в коде, ни в скриптах → удалить из цепочки (−1 слой на каждый запрос).
+3. **ImageOptimizationMiddleware (№10)** — default-off; если env на бою не включает флаг, слой — чистый no-op → убрать из MIDDLEWARE (окончательная проверка env — SSH-остаток CB-041).
+4. Хрупкие инварианты (№3, №9, №24) существуют только как inline-комментарии — исполнителю: оформить шапку-комментарий над MIDDLEWARE со списком инвариантов из таблицы выше (док-фикс, поведение не меняет).
+5. При `DISABLE_ANALYTICS=true` из цепочки выпадают №23–25 — заказы работают, но UTM/UserAction слепнут полностью; значение флага на бою проверить (SSH-остаток, стык CB-012 п.2).
+
+---
+
 ## Журнал раздела
 
 | Дата | ID | Статус |
@@ -575,3 +696,6 @@ G-109EFTWM05 / t7u94cvpqc / 823958313630148; TikTok — из context processor).
 | 07.07.2026 | CB-036 | Аудит выполнен: vendor/ = только Font Awesome 6 self-hosted; дублей с CDN НЕТ (CDN только Bootstrap); quick win — удалить 4 .ttf-fallback (−700KB, 64% vendor/) |
 | 07.07.2026 | CB-033 | Аудит выполнен: 7 активных inline-блоков (1 закомментирован — удалить); 4 обязаны остаться inline (CSRF, device-class, sync-hints, trackEvent-стаб); дубль device-class детектора в Ahrefs-блоке; «Lighthouse-маскировка» GTM (35s таймаут) — осознанный трейд-офф, задокументирован |
 | 07.07.2026 | CB-034 | Аудит выполнен: мёртвых Celery/ab_test веток НЕТ; P2 — GA4 грузится напрямую ПАРАЛЛЕЛЬНО GTM-контейнеру → риск двойного счёта (AN-001); #am div с пустыми конфиг-атрибутами; самописный SHA-256 (80 строк) → crypto.subtle; console.log TikTok в проде |
+| 07.07.2026 | CB-020 | Аудит выполнен: 734 широких except (долг вырос с 697); в 8 денежных файлах 47 SILENT из 120; топ-20 ранжирован; системный P1-паттерн save(update_fields)→save() в 4 местах (webhook Monobank + CAPI-флаг); checkout.py:233 = исполняемое подтверждение «кастом бесплатно» CRO-034 |
+| 07.07.2026 | CB-022 | Аудит выполнен: план декомпозиции 6 god-files по доменам (management/views 5 доменов, 47 моделей management → 7 пакетов, admin.py по контекст-билдерам, cart.py split закрывает рекомендацию CRO-034); правило «новый код — в новые модули»; порядок PR от cart.py к storefront/models.py |
+| 07.07.2026 | CB-042 | Аудит выполнен: 26+1(prod) middleware, полная таблица инвариантов; RequestTrace — подтверждённый мертвец (0 потребителей X-DTF-Debug); ImageOptimization default-off → кандидат на удаление; P3 — мёртвая insert-ветка в production_settings.py:48–53 внутри DISABLE_ANALYTICS |
