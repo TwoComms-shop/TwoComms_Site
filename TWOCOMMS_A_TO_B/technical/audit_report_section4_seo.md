@@ -77,6 +77,29 @@
 
 **Остаток (SSH/владелец):** значение `INDEXNOW_KEY` в env и live-проверка `/{key}.txt` (ключ знает только сервер); наличие `json/totemic-life-…json` на сервере; фактический расход квоты в `GoogleIndexingSubmission` (read-only SQL); статус в Bing/Yandex Webmaster (IndexNow) — доступ у владельца.
 
+## SEO-021. Review/AggregateRating schema (код + live, 07.07.2026)
+
+**Вывод: разметка реализована дисциплинированно и БЕЗ фейков — `aggregateRating` эмитится только при ≥1 одобренном отзыве из единого источника истины; live сейчас ни один PDP не отдаёт рейтинг (отзывов нет — корректное поведение). Замечаний уровня P1/P2 нет.**
+
+### Как устроено
+
+- **Единый источник истины:** `reviews/services/aggregate.py` — `aggregate_rating_for_product()` считает count/avg/histogram только по `status=APPROVED` (индекс `rev_status_product_idx`); порог `MIN_APPROVED_REVIEWS_FOR_RATING = 1` (осознанно снижен с 3 в Phase 12 против cold-start, решение задокументировано прямо в коде).
+- **Схема:** `seo_utils.py:916–973` — `aggregateRating` (ratingValue 1dp, reviewCount, best/worst) добавляется ТОЛЬКО когда `review_summary.show_rating=True`; рядом nested top-5 `Review` блоков (по helpful_count, body обрезан до 600 симв., author fallback). Никаких хардкодов `ratingValue` в шаблонах/коде НЕТ (grep чистый).
+- **Проводка:** view `product.py:560` → контекст `product_review_summary` → шаблон `product_detail.html` → `{% product_graph ... review_summary=product_review_summary %}` — цепочка целая. ProductGroup-объект намеренно БЕЗ review/aggregateRating (фикс GSC-ошибки «position требует review», задокументирован seo_utils.py:1191, 1232).
+- **Тесты:** `reviews/tests/test_aggregate.py` + `storefront/tests/test_seo_regressions.py` (3 теста прямо проверяют схему с review_summary) — регрессионная защита есть.
+
+### Live-проверка (07.07.2026)
+
+2 PDP (kharkiv-district-hd, red-leaves-hd): 5 JSON-LD блоков валидно парсятся, Product БЕЗ aggregateRating/review — т.е. одобренных отзывов сейчас 0, и система честно молчит. Требование чек-листа «НЕ размечать фейковые рейтинги» — выполнено.
+
+### Находки
+
+1. **P3 — мёртвый шаблон `product_detail_new.html`** вызывает `{% product_schema product %}` без review_summary — не используется ни одним view (рендерится только `pages/product_detail.html`), но при случайном включении рейтинг молча пропадёт. Кандидат на удаление (связка с CB-015 мёртвый код).
+2. **P3 — nested Review-блоки: +1 запрос к БД внутри генератора схемы** (top-5 живым запросом) — активируется только при наличии отзывов, сейчас не влияет.
+3. **Наблюдение (не дефект):** порог 1 отзыв допустим по политике Google, но «1 отзыв, 5.0★» в SERP может выглядеть тонко; компенсирующий механизм сбора отзывов (Phase 13 купон→отзыв) должен реально работать — иначе рейтинг так и не появится. Фактическое количество отзывов в БД — остаток SSH (read-only SQL по `reviews_review`).
+
+**Остаток (владелец/SSH):** count по `reviews_review` в БД; после появления первого одобренного отзыва — прогнать PDP через Rich Results Test.
+
 ## Журнал раздела
 
 | Дата | Пункт | Резюме |
