@@ -1,0 +1,59 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DIRECT_BOT Data Deletion Status</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="{% static 'faviconMNG/faviconMNG.ico' %}" sizes="any" type="image/x-icon">
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5e6a7d; --line:#dde4ee; --panel:#fff; --soft:#f4f7fb; --accent:#2457a6; --ok:#0d7a55; --warn:#8a4b10; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#eef3f8; color:var(--ink); font-family:Inter, Arial, sans-serif; line-height:1.62; }
+    .page { min-height:100vh; display:grid; place-items:center; padding:34px 18px; }
+    .panel { width:min(760px,100%); border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:0 22px 58px rgba(31,44,68,.08); padding:30px; }
+    .brand { display:flex; align-items:center; gap:13px; margin-bottom:18px; color:var(--muted); font-size:.82rem; font-weight:800; text-transform:uppercase; }
+    .brand img { width:42px; height:42px; object-fit:contain; border:1px solid var(--line); border-radius:8px; padding:6px; background:#fff; }
+    h1 { margin:0 0 12px; font-size:clamp(2rem,4.5vw,3rem); line-height:1.05; letter-spacing:0; }
+    p { margin:0 0 12px; }
+    .card { margin-top:16px; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--soft); }
+    .row { display:grid; grid-template-columns:190px minmax(0,1fr); gap:10px; padding:8px 0; border-top:1px solid var(--line); }
+    .row:first-child { border-top:0; }
+    .k { color:var(--muted); font-weight:800; }
+    .v { overflow-wrap:anywhere; }
+    .ok { color:var(--ok); font-weight:800; }
+    .warn { color:var(--warn); font-weight:800; }
+    a { color:var(--accent); font-weight:800; }
+    @media (max-width:640px) { .panel { padding:22px; } .row { grid-template-columns:1fr; gap:2px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="panel">
+      <div class="brand">
+        <img src="{% static 'img/logo.svg' %}" alt="TwoComms logo">
+        <span>twocomms / DIRECT_BOT data deletion</span>
+      </div>
+      {% if deletion_request %}
+        <h1>Deletion Request Status</h1>
+        <p>Your DIRECT_BOT data deletion request has been processed. Keep this confirmation code for your records.</p>
+        <div class="card">
+          <div class="row"><div class="k">Confirmation code</div><div class="v">{{ deletion_request.confirmation_code }}</div></div>
+          <div class="row"><div class="k">Status</div><div class="v {% if deletion_request.status == 'completed' %}ok{% else %}warn{% endif %}">{{ deletion_request.get_status_display }}</div></div>
+          <div class="row"><div class="k">Source</div><div class="v">{{ deletion_request.get_source_display }}</div></div>
+          <div class="row"><div class="k">Deleted clients</div><div class="v">{{ deletion_request.deleted_clients_count }}</div></div>
+          <div class="row"><div class="k">Deleted messages</div><div class="v">{{ deletion_request.deleted_messages_count }}</div></div>
+          <div class="row"><div class="k">Deleted raw events</div><div class="v">{{ deletion_request.deleted_raw_events_count }}</div></div>
+          <div class="row"><div class="k">Deleted logs</div><div class="v">{{ deletion_request.deleted_logs_count }}</div></div>
+          <div class="row"><div class="k">Detail</div><div class="v">{{ deletion_request.detail }}</div></div>
+        </div>
+      {% else %}
+        <h1>Request Not Found</h1>
+        <p>No DIRECT_BOT data deletion request was found for confirmation code <b>{{ confirmation_code }}</b>.</p>
+      {% endif %}
+      <p style="margin-top:18px;"><a href="/data-deletion/">Back to Data Deletion</a></p>
+    </section>
+  </main>
+</body>
+</html>

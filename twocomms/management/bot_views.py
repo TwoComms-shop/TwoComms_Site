@@ -5,9 +5,21 @@ UI зі станом агента (запущено/зупинено, очіку
 Start/Stop, вибором джерела ключів і онлайн-консоллю подій.
 """
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
+from django.db import transaction
+from django.db.models import Q
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
+import base64
+import hashlib
+import hmac
+import json
+import os
+import re
+import secrets
 
 from .bot_access import is_meta_bot_reviewer
 from .models import InstagramBotLog, InstagramBotSettings
@@ -42,6 +54,192 @@ def data_deletion(request):
     response = render(request, "management/data_deletion.html")
     response["Cache-Control"] = "public, max-age=300"
     return response
+
+
+def data_deletion_status(request, confirmation_code):
+    from .models import BotDataDeletionRequest
+
+    deletion_request = BotDataDeletionRequest.objects.filter(
+        confirmation_code=confirmation_code
+    ).first()
+    response = render(
+        request,
+        "management/data_deletion_status.html",
+        {
+            "deletion_request": deletion_request,
+            "confirmation_code": confirmation_code,
+        },
+        status=200 if deletion_request else 404,
+    )
+    response["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+def _normalize_deletion_identifier(value: str) -> str:
+    ident = (value or "").strip()
+    if not ident:
+        return ""
+    ident = ident.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    match = re.search(r"(?:instagram\.com|instagr\.am)/([^/?#]+)", ident, re.I)
+    if match:
+        ident = match.group(1)
+    ident = ident.strip().lstrip("@").lower()
+    return ident
+
+
+def _new_deletion_code() -> str:
+    return secrets.token_hex(8).upper()
+
+
+def _delete_direct_bot_records(identifier: str) -> dict:
+    from .models import (
+        BotDataDeletionRequest,
+        IgClient,
+        InstagramBotLog,
+        InstagramBotMessage,
+        InstagramBotProcessedMessage,
+        InstagramBotRawEvent,
+    )
+
+    normalized = _normalize_deletion_identifier(identifier)
+    result = {
+        "normalized_identifier": normalized,
+        "status": BotDataDeletionRequest.Status.NO_MATCH,
+        "clients": 0,
+        "messages": 0,
+        "raw_events": 0,
+        "logs": 0,
+        "detail": "",
+    }
+    if not normalized:
+        result["detail"] = "Empty identifier."
+        return result
+
+    with transaction.atomic():
+        clients = list(
+            IgClient.objects.filter(
+                Q(igsid__iexact=normalized)
+                | Q(username__iexact=normalized)
+                | Q(display_name__iexact=normalized)
+                | Q(phone_normalized__iexact=normalized)
+            )
+        )
+        sender_ids = {normalized}
+        sender_ids.update(c.igsid for c in clients if c.igsid)
+        mids = list(
+            InstagramBotMessage.objects.filter(
+                Q(sender_id__in=sender_ids) | Q(client__in=clients)
+            ).exclude(mid__isnull=True).values_list("mid", flat=True)
+        )
+        messages_count, _ = InstagramBotMessage.objects.filter(
+            Q(sender_id__in=sender_ids) | Q(client__in=clients)
+        ).delete()
+        raw_events_count, _ = InstagramBotRawEvent.objects.filter(sender_id__in=sender_ids).delete()
+        logs_count, _ = InstagramBotLog.objects.filter(detail__icontains=normalized).delete()
+        if mids:
+            InstagramBotProcessedMessage.objects.filter(mid__in=mids).delete()
+        clients_count = len(clients)
+        IgClient.objects.filter(id__in=[c.id for c in clients]).delete()
+
+    result.update({
+        "status": (
+            BotDataDeletionRequest.Status.COMPLETED
+            if any([clients_count, messages_count, raw_events_count, logs_count])
+            else BotDataDeletionRequest.Status.NO_MATCH
+        ),
+        "clients": clients_count,
+        "messages": messages_count,
+        "raw_events": raw_events_count,
+        "logs": logs_count,
+        "detail": (
+            "Matching DIRECT_BOT records were deleted or anonymized."
+            if any([clients_count, messages_count, raw_events_count, logs_count])
+            else "No matching DIRECT_BOT records were found for the supplied identifier."
+        ),
+    })
+    return result
+
+
+@require_POST
+def data_deletion_submit(request):
+    from .models import BotDataDeletionRequest
+
+    identifier = (request.POST.get("identifier") or "").strip()
+    deletion = _delete_direct_bot_records(identifier)
+    deletion_request = BotDataDeletionRequest.objects.create(
+        confirmation_code=_new_deletion_code(),
+        source=BotDataDeletionRequest.Source.MANUAL_FORM,
+        identifier=identifier[:255],
+        normalized_identifier=deletion["normalized_identifier"][:255],
+        status=deletion["status"],
+        deleted_clients_count=deletion["clients"],
+        deleted_messages_count=deletion["messages"],
+        deleted_raw_events_count=deletion["raw_events"],
+        deleted_logs_count=deletion["logs"],
+        detail=deletion["detail"],
+    )
+    deletion_request.mark_completed()
+    return redirect("management_data_deletion_status", confirmation_code=deletion_request.confirmation_code)
+
+
+def _base64_url_decode(value: str) -> bytes:
+    value += "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode(value.encode("utf-8"))
+
+
+def _parse_meta_signed_request(signed_request: str) -> dict:
+    if not signed_request or "." not in signed_request:
+        return {}
+    encoded_sig, encoded_payload = signed_request.split(".", 1)
+    payload = json.loads(_base64_url_decode(encoded_payload).decode("utf-8"))
+
+    app_secret = (
+        os.environ.get("IG_APP_SECRET")
+        or os.environ.get("FACEBOOK_APP_SECRET")
+        or getattr(settings, "IG_APP_SECRET", "")
+        or getattr(settings, "FACEBOOK_APP_SECRET", "")
+    )
+    if app_secret:
+        expected = hmac.new(
+            app_secret.encode("utf-8"),
+            msg=encoded_payload.encode("utf-8"),
+            digestmod=hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(_base64_url_decode(encoded_sig), expected):
+            return {}
+    return payload
+
+
+@csrf_exempt
+@require_POST
+def data_deletion_callback(request):
+    from .models import BotDataDeletionRequest
+
+    payload = _parse_meta_signed_request(request.POST.get("signed_request") or "")
+    if not payload:
+        return JsonResponse({"error": "Invalid signed_request."}, status=400)
+    meta_user_id = str(payload.get("user_id") or "")
+    deletion_request = BotDataDeletionRequest.objects.create(
+        confirmation_code=_new_deletion_code(),
+        source=BotDataDeletionRequest.Source.META_CALLBACK,
+        identifier=meta_user_id[:255],
+        normalized_identifier=meta_user_id[:255],
+        meta_user_id=meta_user_id[:128],
+        status=BotDataDeletionRequest.Status.NO_MATCH,
+        detail=(
+            "Meta deletion callback received. DIRECT_BOT stores Instagram Direct sender "
+            "identifiers; no matching local Instagram conversation records were found for "
+            "the supplied Meta app-scoped user id."
+        ),
+    )
+    deletion_request.mark_completed(status=BotDataDeletionRequest.Status.NO_MATCH)
+    status_url = request.build_absolute_uri(
+        reverse("management_data_deletion_status", args=[deletion_request.confirmation_code])
+    )
+    return JsonResponse({
+        "url": status_url,
+        "confirmation_code": deletion_request.confirmation_code,
+    })
 
 
 def app_review_info(request):

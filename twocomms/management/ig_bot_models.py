@@ -11,6 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.db import models
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "BotQuickLink",
     "BotAdCampaign",
     "IgClientStageEvent",
+    "BotDataDeletionRequest",
 ]
 
 
@@ -51,6 +53,56 @@ class InstagramBotRawEvent(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - тривіально
         return f"RawEvent#{self.pk} {self.sender_id} [{self.attachment_types}]"
+
+
+class BotDataDeletionRequest(models.Model):
+    """Public/Meta deletion request receipt for DIRECT_BOT data."""
+
+    class Source(models.TextChoices):
+        MANUAL_FORM = "manual_form", "Manual form"
+        META_CALLBACK = "meta_callback", "Meta callback"
+
+    class Status(models.TextChoices):
+        COMPLETED = "completed", "Completed"
+        NO_MATCH = "no_match", "No matching records"
+        RECEIVED = "received", "Received"
+
+    confirmation_code = models.CharField(max_length=32, unique=True, db_index=True)
+    source = models.CharField(max_length=24, choices=Source.choices)
+    identifier = models.CharField(max_length=255, blank=True, default="")
+    normalized_identifier = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    meta_user_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.RECEIVED)
+    deleted_clients_count = models.PositiveIntegerField(default=0)
+    deleted_messages_count = models.PositiveIntegerField(default=0)
+    deleted_raw_events_count = models.PositiveIntegerField(default=0)
+    deleted_logs_count = models.PositiveIntegerField(default=0)
+    detail = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "DIRECT_BOT data deletion request"
+        verbose_name_plural = "DIRECT_BOT data deletion requests"
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["status", "-created_at"], name="bot_del_status_dt"),
+            models.Index(fields=["source", "-created_at"], name="bot_del_source_dt"),
+        ]
+
+    def mark_completed(self, *, status: str | None = None) -> None:
+        if status:
+            self.status = status
+        self.completed_at = timezone.now()
+        self.save(update_fields=[
+            "status",
+            "deleted_clients_count",
+            "deleted_messages_count",
+            "deleted_raw_events_count",
+            "deleted_logs_count",
+            "detail",
+            "completed_at",
+        ])
 
 
 class IgClient(models.Model):

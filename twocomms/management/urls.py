@@ -55,12 +55,16 @@ urlpatterns = [
     path('privacy-policy/', bot_views.privacy_policy, name='management_privacy_policy'),
     path('terms-of-service/', bot_views.terms_of_service, name='management_terms_of_service'),
     path('data-deletion/', bot_views.data_deletion, name='management_data_deletion'),
+    path('data-deletion/submit/', bot_views.data_deletion_submit, name='management_data_deletion_submit'),
+    path('data-deletion/request/', bot_views.data_deletion_callback, name='management_data_deletion_callback'),
+    path('data-deletion/status/<str:confirmation_code>/', bot_views.data_deletion_status, name='management_data_deletion_status'),
     path('app-review/', bot_views.app_review_info, name='management_app_review_info'),
     # Instagram bot webhook (тестова фаза) — публічний, без логіну, CSRF-exempt.
     path('bot/webhook/', bot_webhook.ig_webhook, name='management_ig_bot_webhook'),
     path('bot/privacy-policy/', bot_views.privacy_policy, name='management_bot_privacy_policy'),
     path('bot/terms-of-service/', bot_views.terms_of_service, name='management_bot_terms_of_service'),
     path('bot/data-deletion/', bot_views.data_deletion, name='management_bot_data_deletion'),
+    path('bot/data-deletion/request/', bot_views.data_deletion_callback, name='management_bot_data_deletion_callback'),
     path('bot/app-review/', bot_views.app_review_info, name='management_bot_app_review_info'),
     # Instagram bot — панель керування (тільки адміністратори).
     path('bot/', bot_views.bot_dashboard, name='management_bot'),

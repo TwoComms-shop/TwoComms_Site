@@ -1,3 +1,5 @@
+import base64
+import json
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -6,7 +8,13 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from .bot_access import META_REVIEWER_GROUP_NAME
-from .models import InstagramBotSettings
+from .models import (
+    BotDataDeletionRequest,
+    IgClient,
+    InstagramBotMessage,
+    InstagramBotRawEvent,
+    InstagramBotSettings,
+)
 
 
 @override_settings(
@@ -77,6 +85,8 @@ class InstagramBotPrivacyPolicyTests(TestCase):
         self.assertNotIn("/login/", response.get("Location", ""))
         self.assertContains(response, "User Data Deletion Instructions for DIRECT_BOT")
         self.assertContains(response, "Data Deletion Instructions URL")
+        self.assertContains(response, "Data Deletion Callback URL")
+        self.assertContains(response, "Delete DIRECT_BOT data")
         self.assertContains(response, "DIRECT_BOT data deletion request")
         self.assertContains(response, "cooperation@twocomms.shop")
 
@@ -112,8 +122,59 @@ class InstagramBotPrivacyPolicyTests(TestCase):
         self.assertContains(response, "https://management.twocomms.shop/privacy-policy/")
         self.assertContains(response, "https://management.twocomms.shop/terms-of-service/")
         self.assertContains(response, "https://management.twocomms.shop/data-deletion/")
+        self.assertContains(response, "https://management.twocomms.shop/data-deletion/request/")
         self.assertNotContains(response, "custom_direct_token")
         self.assertNotContains(response, "custom_gemini_key")
+
+    def test_data_deletion_form_deletes_matching_direct_bot_records(self):
+        client = IgClient.objects.create(igsid="123456789", username="delete_me")
+        InstagramBotMessage.objects.create(
+            sender_id="123456789",
+            client=client,
+            role=InstagramBotMessage.Role.USER,
+            text="please delete this",
+            mid="mid-delete-me",
+        )
+        InstagramBotRawEvent.objects.create(sender_id="123456789", payload='{"text":"delete"}')
+
+        response = self.client.post(
+            "/data-deletion/submit/",
+            {"identifier": "https://www.instagram.com/delete_me/"},
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Deletion Request Status")
+        deletion_request = BotDataDeletionRequest.objects.get()
+        self.assertEqual(deletion_request.status, BotDataDeletionRequest.Status.COMPLETED)
+        self.assertEqual(deletion_request.deleted_clients_count, 1)
+        self.assertEqual(deletion_request.deleted_messages_count, 1)
+        self.assertEqual(deletion_request.deleted_raw_events_count, 1)
+        self.assertFalse(IgClient.objects.filter(igsid="123456789").exists())
+        self.assertFalse(InstagramBotMessage.objects.filter(sender_id="123456789").exists())
+        self.assertFalse(InstagramBotRawEvent.objects.filter(sender_id="123456789").exists())
+
+    def test_data_deletion_callback_returns_meta_required_json(self):
+        payload = {"user_id": "meta-user-123", "algorithm": "HMAC-SHA256"}
+        encoded_payload = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        signed_request = "ignoredsig." + encoded_payload
+
+        response = self.client.post(
+            "/data-deletion/request/",
+            {"signed_request": signed_request},
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("confirmation_code", data)
+        self.assertTrue(data["url"].startswith("https://management.twocomms.shop/data-deletion/status/"))
+        deletion_request = BotDataDeletionRequest.objects.get(confirmation_code=data["confirmation_code"])
+        self.assertEqual(deletion_request.source, BotDataDeletionRequest.Source.META_CALLBACK)
+        self.assertEqual(deletion_request.meta_user_id, "meta-user-123")
 
     def test_public_bot_dashboard_and_controls_remain_protected(self):
         dashboard = self.client.get(

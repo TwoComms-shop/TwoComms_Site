@@ -38,6 +38,11 @@
     .notice { margin-top:14px; padding:17px; border:1px solid #f1d2aa; border-radius:8px; background:#fff8ed; color:var(--warn); }
     .summary { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-top:14px; }
     .summary .card { background:var(--soft); }
+    .delete-form { display:grid; gap:12px; margin-top:14px; padding:17px; border:1px solid var(--line); border-radius:8px; background:var(--soft); }
+    .delete-form label { font-weight:800; color:var(--ink); }
+    .delete-form input { width:100%; min-height:48px; border:1px solid #cbd6e3; border-radius:8px; padding:12px 14px; font:inherit; color:var(--ink); background:#fff; }
+    .delete-form button { width:max-content; border:0; border-radius:8px; padding:12px 18px; background:#b42318; color:#fff; font:inherit; font-weight:800; cursor:pointer; }
+    .delete-form small { color:var(--muted); }
     .footer-note { margin:18px 0 0; color:var(--muted); font-size:.92rem; text-align:center; }
     @media (max-width:820px) { .hero { grid-template-columns:1fr; padding:22px; } .status { min-width:0; } .meta, .summary { grid-template-columns:1fr; } .content { padding:22px; } }
   </style>
@@ -101,7 +106,19 @@
 
         <section class="section">
           <h2>3. Request deletion from twocomms</h2>
-          <p>To request deletion of eligible DIRECT_BOT data, email <a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a> with the subject "DIRECT_BOT data deletion request" and include:</p>
+          <p>
+            You can submit a deletion request directly on this page. Enter the Instagram username, Instagram profile URL, or Instagram sender ID used in the conversation with <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a>.
+          </p>
+          <form class="delete-form" method="post" action="/data-deletion/submit/">
+            {% csrf_token %}
+            <label for="identifier">Instagram username, profile URL, or sender ID</label>
+            <input id="identifier" name="identifier" required maxlength="255" placeholder="@username, https://www.instagram.com/username, or IGSID">
+            <small>We only process exact matching DIRECT_BOT records. If no matching records are found, you will still receive a confirmation page.</small>
+            <button type="submit">Delete DIRECT_BOT data</button>
+          </form>
+          <p style="margin-top:16px;">
+            You may also email <a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a> with the subject "DIRECT_BOT data deletion request" and include:
+          </p>
           <ul>
             <li>your Instagram username used to contact <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a>;</li>
             <li>the approximate date of your conversation, if you remember it;</li>
@@ -127,6 +144,7 @@
           <h2>5. Recommended Meta field values</h2>
           <div class="summary">
             <div class="card"><b>User Data Deletion</b><p>Select "Data Deletion Instructions URL" and use https://management.twocomms.shop/data-deletion/</p></div>
+            <div class="card"><b>Data Deletion Callback URL</b><p>If Meta asks for a callback URL, use https://management.twocomms.shop/data-deletion/request/</p></div>
             <div class="card"><b>Terms of Service URL</b><p>Use https://management.twocomms.shop/terms-of-service/</p></div>
             <div class="card"><b>Privacy Policy URL</b><p>Use https://management.twocomms.shop/privacy-policy/</p></div>
             <div class="card"><b>Contact</b><p>cooperation@twocomms.shop</p></div>
