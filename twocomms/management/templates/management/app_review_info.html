@@ -116,7 +116,44 @@
         </section>
 
         <section class="section">
-          <h2>5. Contact</h2>
+          <h2>5. Reviewer testing flow</h2>
+          <p>
+            To verify the requested Instagram messaging permission, reviewers can follow the same flow shown in the App Review screencast:
+          </p>
+          <ul>
+            <li>Open the official Instagram account <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a>.</li>
+            <li>Send a Direct message such as: "Hello, what sizes are available for black T-shirts and how can I order?"</li>
+            <li>Observe that DIRECT_BOT receives the Direct message, uses the customer support context, and replies with product/order guidance.</li>
+            <li>In the private owner dashboard, an authorized TwoComms administrator can see the conversation, bot status, handoff controls, and logs.</li>
+            <li>If Meta needs to access the private dashboard, TwoComms should provide a temporary reviewer account only inside the Meta App Review submission notes. The account should be removed after review.</li>
+          </ul>
+        </section>
+
+        <section class="section">
+          <h2>6. Recommended App Review notes</h2>
+          <p>
+            The following text can be used in the App Review notes field and should match the screencast:
+          </p>
+          <div class="notice">
+            DIRECT_BOT (App ID 2120980214971807) is used only for Instagram Direct customer support for the official twocomms clothing account @twocomms. We request Instagram messaging permission so the app can receive and reply to customer Direct messages about product availability, sizes, delivery, payment, and order preparation. Replies may be drafted with Google Gemini Flash AI and can be reviewed or taken over by a human manager. The admin dashboard is private because it contains customer conversations, bot controls, API credential settings, prompts, logs, and sender restrictions. Public policy pages are available at /privacy-policy/, /terms-of-service/, /data-deletion/, and this /app-review/ page. A screencast demonstrates: customer sends an Instagram Direct message to @twocomms, DIRECT_BOT receives it, the dashboard shows the conversation, and the bot replies within the allowed messaging flow.
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>7. Screencast checklist</h2>
+          <ul>
+            <li>Record in clear resolution with readable text and normal speed.</li>
+            <li>Show the official Instagram account <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a>.</li>
+            <li>Show a test user sending a Direct message to @twocomms.</li>
+            <li>Show the private dashboard receiving or listing the message and the bot status/logs.</li>
+            <li>Show the bot reply sent back in Instagram Direct.</li>
+            <li>Show or mention the exact requested permission: instagram_business_manage_messages / Instagram business messaging.</li>
+            <li>Keep the explanation consistent with the public Privacy Policy, Terms, and Data Deletion pages.</li>
+          </ul>
+        </section>
+
+        <section class="section">
+          <h2>8. Contact</h2>
           <p>
             Questions about DIRECT_BOT, App Review, privacy, terms, or user data deletion can be sent to <a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a>.
           </p>
