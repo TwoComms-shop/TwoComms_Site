@@ -55,7 +55,7 @@ REPO-часть:
 SERVER-часть:
 
 ```cron
-10 4 * * * /bin/bash /home/qlknpodo/TWC/TwoComms_Site/twocomms/scripts/rotate_twocomms_logs.sh >> /home/qlknpodo/log_archives/rotate_twocomms_logs.log 2>&1
+10 4 * * * /bin/bash /home/qlknpodo/TWC/TwoComms_Site/scripts/rotate_twocomms_logs.sh >> /home/qlknpodo/log_archives/twocomms/rotate_twocomms_logs.log 2>&1
 ```
 
 ## Git-состояние сервера (CB-043, снято 05.07.2026)

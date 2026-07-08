@@ -5,7 +5,7 @@
 #   mkdir -p "$HOME/log_archives"
 #   chmod 700 "$HOME/log_archives"
 #   crontab -e
-#   10 4 * * * /bin/bash /home/qlknpodo/TWC/TwoComms_Site/twocomms/scripts/rotate_twocomms_logs.sh >> /home/qlknpodo/log_archives/rotate_twocomms_logs.log 2>&1
+#   10 4 * * * /bin/bash /home/qlknpodo/TWC/TwoComms_Site/scripts/rotate_twocomms_logs.sh >> /home/qlknpodo/log_archives/twocomms/rotate_twocomms_logs.log 2>&1
 #
 # This script does not need root logrotate. It rotates only regular *.log
 # files under the Django project, compresses archives, and keeps recent
