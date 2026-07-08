@@ -96,7 +96,7 @@
   Отчёт: `audit_report_payment_security.md`.
 
 - [x] **W1-4. 🔴 Промокоды: COD-путь мёртв + лимиты не работают (CRO-046)** `[REPO]`
-  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математ����������ка остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
+  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математ������������ка остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
   (а) checkout.py:224 читает мёртвый ключ `promo_code` (apply пишет `promo_code_id`) + несуществующие `active=True`/`is_valid()` → промокод в COD НЕ применяется никогда; (б) `record_usage()` — 0 call-sites → лимиты `one_time_per_user` мертвы; (в) prepay_200: остаток завышен на сумму скидки; (г) `promo.use()` сжигает лимит при СОЗДАНИИ инвойса.
   Фикс: (а) COD → логика monobank-пути (`promo_code_id` + `can_be_used_by_user` + `record_usage(user, order)`); (б) `record_usage` при УСПЕШНОЙ оплате; (в) математика остатка; (г) чистка `promo_code_data`; (д) событие `coupon_apply` (TECH-023).
   Приёмка: COD-заказ с промо имеет `discount_amount>0`; повторный one_time-код отклоняется; `PromoCodeUsage.count() > 0`.
@@ -130,7 +130,7 @@
 
 - [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
   Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё������ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
-  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + ран��ом��зи��оват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
+  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + ��ан��ом��зи��оват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
 - [x] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
   ✅ **DONE (коммит db0af339):** новый `_resolve_retail_invoice_status()` в monobank.py — retail-путь вебхука И `monobank_return` подтверждают деньги ТОЛЬКО pull-истиной (`GET /api/merchant/invoice/status`); для success-статусов сверяется `paidAmount` (fallback: finalAmount/amount) с ожидаемой суммой (`get_prepayment_amount()` для prepay_200, иначе `total_sum − discount_amount`); недоплата или сбой сверки → статус `processing` (заказ в checking, НЕ paid) + error-лог. Если pull не удался — success из недоверенного источника тоже даунгрейдится до processing. Тесты: `test_webhook_underpaid_amount_goes_to_checking`, `test_webhook_pull_failure_does_not_mark_paid`.
@@ -159,7 +159,7 @@
 ## ВОЛНА 2 — ДАННЫЕ И АТРИБУЦИЯ (P0: без этого аналитика слепа; TECH-060…066)
 
 - [x] **W2-1. 🔴 Единая UTM-привязка любого заказа (CRO-041 / AN-013 / AN-021 / AN-030 / AN-031 → TECH-060)** `[REPO]` ✅ fallback-цепочка session_key→visitor_id→session['utm_data'] в link_order_to_utm; attach_tracking_to_order пишет click-ID (fbp/fbc-синтез из fbclid/ttclid/gclid/external_id/ip/ua) в payment_payload.tracking для COD; тесты test_utm_attribution.py (3) зелёные. Единый order-builder COD+Monobank — отложен как долгосрочный рефакторинг.
-  COD-путь не выз��вает НИ ОДНО�� функции трекинга; даже в monobank `link_order_to_utm` не срабатывает: lookup строго по session_key, `cycle_key()` при логине рвёт ключ, fallback на `session['utm_data']` отсутствует. Click-ID (fbc/fbp/fbclid/gclid/ttclid) не доходят до CAPI для COD. Факт: 0/43 заказов с utm.
+  COD-��уть не выз��вает НИ ОДНО�� функции трекинга; даже в monobank `link_order_to_utm` не срабатывает: lookup строго по session_key, `cycle_key()` при логине рвёт ключ, fallback на `session['utm_data']` отсутствует. Click-ID (fbc/fbp/fbclid/gclid/ttclid) не доходят до CAPI для COD. Факт: 0/43 заказов с utm.
   Фикс: (1) в `create_order` после `order.save()`: `order.session_key=...`; `link_order_to_utm(request, order)`; `record_order_action(...)`; (2) fallback-цепочка в `link_order_to_utm`: session_key → `visitor_id` → `session['utm_data']`; (3) копировать/синтезировать click-ID в `payment_payload.tracking` для ЛЮБОГО заказа (fbc из fbclid если куки нет); (4) долгосрочно — единый order-builder COD+Monobank.
   Приёмка (= CRO-050): визит с `?utm_source=audit` → COD-заказ → в БД utm_source='audit', utm_session FK, session_key, UserAction с order_id.
 
@@ -216,7 +216,7 @@
   - [x] **DB-003 (P3):** orphan UserAction.order_id 259, 260 — вычистить при retention-работах. ✅ Закрывается командой `cleanup_analytics_data` (шаг 3: удаление UserAction с несуществующими order_id); запуск на проде — `[SERVER]`.
   - [x] **[GAP] AN-039 (P3):** search-query пишется сырым — обрезка длины + маскировка (однострочник). ✅ record_search: обрезка до 200 симв. + маскировка email → `[email]` и 12-19-значных числовых последовательностей (карты) → `[number]`.
   - [ ] **[GAP] AN-001/CB-034 (P2):** gtag.js G-109EFTWM05 грузится ПАРАЛЛЕЛЬНО GTM (риск двойного GA4 page_view); dataLayer получает 2 события на ATC (`AddToCart` + `add_to_cart`). Код-часть: убрать прямой gtag после сверки контейнера в����адельц��м (см. OWNER-1).
-  - [ ] **[GAP] AN-003 (P2):** `payment_type` параметр не существует (TECH-007); `add_shipping_info`/`add_payment_info` в GA4-схеме отсутствуют; item_id листинга `TC-pid-default-S` н�� матчится с offer_id покупок.
+  - [ ] **[GAP] AN-003 (P2):** `payment_type` параметр не существует (TECH-007); `add_shipping_info`/`add_payment_info` в GA4-схеме отсутствуют; item_id ��истинга `TC-pid-default-S` н�� матчится с offer_id покупок.
   - [ ] **[GAP] NEW-406 (P3):** русский цвет в offer_id «TC-0020-ЧЕРНЫЙ-M» — латинизировать слаг цвета (согласовать с Merchant-фидом, не ломать существующие id без маппинга).
   - [ ] **[GAP] NEW-407 (P3):** legacy-дефолт `pay_type='cod'` в checkout.py:119 при отсутствии cod в UI — согласовать с W1-1 п.2.
 
@@ -281,6 +281,48 @@
 - [ ] **W3-8. [GAP] Включить контролируемый slow-log (DB-001, P2)** `[SERVER]`
   `slow_query_log=OFF` — перф-работы W3 вслепую.
   Фикс: включить slow-log (`long_query_time=2`) на 3-7 дней через панель/SET GLOBAL (если права позволяют), собрать топ-10, выключить. Если прав нет — зафиксировать отказ.
+
+---
+
+## ВОЛНА ADS — ПРЕДЗАПУСК META-РЕКЛАМЫ (P0: блокеры запуска трафика, добавлено 2026-07-08)
+
+> Владелец запускает платный Meta-трафик. Всё в этой волне — блокеры или прямые
+> риски слива бюджета/индексации. Порядок = приоритет исполнения.
+
+- [ ] **ADS-1. Meta Pixel: PageView теряется у «отказников» + захардкоженный ID (P0)** `[REPO]`
+  Диагноз: (1) analytics-loader.js (~55KB, содержит fbevents-инициализацию) грузится ТОЛЬКО после первого user interaction (Phase 22e, base.html:1083+) → посетитель из рекламы, который посмотрел и ушёл без клика/скролла, НЕ отправляет PageView → Meta не видит трафик, атрибуция и оптимизация кампаний ломаются, CPM растёт; (2) meta_pixel_id `823958313630148` захардкожен в base.html `{% with %}` (не из env `FACEBOOK_PIXEL_ID`, который пуст); (3) `<div id="am">` (advanced matching) рендерится только для authenticated — для гостей из рекламы AM-параметры пусты; (4) в partials/analytics.html лежит мёртвый закомментированный блок пикселя с placeholder `FACEBOOK_PIXEL_ID` — мусор, вводит в заблуждение.
+  Фикс: лёгкий инлайн-сниппет fbq (init+PageView, ~1.5KB) в `<head>` СРАЗУ (без ожидания interaction), тяжёлый loader с событиями (ViewContent/AddToCart/InitiateCheckout/Purchase) оставить лениво; ID из settings/env с fallback; вычистить мёртвый блок.
+  Приёмка: Meta Pixel Helper видит PageView без взаимодействия; события e-commerce приходят в Events Manager (Test Events).
+
+- [ ] **ADS-2. Английская версия наполовину не переведена (P0 для SEO/рекламы на EN) ** `[REPO]`
+  Диагноз: locale/en/django.po — 161 пустой msgstr + 129 fuzzy (fuzzy НЕ компилируются в .mo → показывается украинский). Итого ~290 строк на /en/ остаются украинскими: части хедера, футера, блоки наполовину переведены. Смешанный язык = сигнал низкого качества для Google, ломает EN-индексацию.
+  Фикс: перевести все пустые msgstr, снять fuzzy-флаги (проверив корректность), `compilemessages`, прогнать по /en/ ключевые шаблоны (home, catalog, product, cart, checkout, header/footer).
+  Приёмка: на /en/ нет украинских строк в header/footer/основных блоках; `msgattrib --untranslated` и `--fuzzy` по en.po → пусто.
+
+- [ ] **ADS-3. Title tag каталога обрезан (P1)** `[REPO]`
+  Диагноз: `seo_utils._truncate_at_word_boundary(..., 60)` жёстко режет тайтлы категорий/каталога — в SERP и соцпревью видны «недописанные» тайтлы. 60 — консервативный лимит: Google показывает ~600px (~65-70 символов кириллицы).
+  Фикс: аудит фактических тайтлов всех категорий (скриптом); паттерны, которые укладываются в лимит целиком (без обрезки хвоста «| TwoComms» посреди слова); поднять лимит до 65 + не резать, если строка ≤70.
+  Приёмка: ни один title категории/каталога не заканчивается обрывком слова/фразы.
+
+- [ ] **ADS-4. Дубли по query-параметрам (`?color=black` и пр.) (P1)** `[REPO]`
+  Диагноз: фасетные URL `?color=`/`?fit=`/`?size=` отдают полный HTML; canonical указывает на чистый path (уже хорошо), но страницы остаются краулябельными и могут попадать в индекс как дубли (владелец видел дубли «через равно, а не через слэш»).
+  Фикс: аудит — какие query-комбинации реально в индексе (Search Console `[OWNER]`); для фасетных query-страниц добавить `noindex,follow` (canonical сохранить); внутренние ссылки вести только на path-версии (`/catalog/black/`-стиль, где есть); robots.txt НЕ трогать (canonical+noindex достаточно, Disallow сломает передачу сигналов).
+  Приёмка: фасетные `?param=` страницы содержат `noindex,follow`; внутренняя перелинковка не генерирует query-URL.
+
+- [ ] **ADS-5. Ссылки на 404 в «Схожі товари» и внутренней перелинковке (P1)** `[REPO]`
+  Диагноз: блок рекомендаций PDP кэшируется фрагмент-кэшем на 3600s (`{% cache 3600 product_detail_recommendations_i18n ... %}`) с ключом, который НЕ инвалидируется при снятии товара с публикации → до часа живут ссылки на 404. Плюс сама страница PDP кэшируется — ссылки на снятые товары могут жить и дольше. Клик бота → 404 (краул-бюджет), клик человека → плохой UX.
+  Фикс: включить версию каталога публикаций в ключ фрагмент-кэша (по аналогии с `public_product_order_version` — проверить, бампается ли она при unpublish; если нет — бампать в save() при смене status); аудит прочих внутренних ссылок на 404 краулом `[REPO-script]`.
+  Приёмка: unpublish товара → рекомендации без него максимум через минуты; краул сайта (screaming-frog-стиль скрипт) не находит внутренних 404.
+
+- [ ] **ADS-6. 500-ка при обходе сайта (P1, связка с W3-2)** `[REPO]`
+  Диагноз: при внешнем анализе сайта выпадала 500. Мониторинг W3-2 (Telegram-алерт + инцидент-код) уже задеплоен в код — но причина конкретной 500 не найдена.
+  Фикс: после деплоя W3-2 собрать инцидент-коды за 48h, воспроизвести и починить топ-причины 500; проверить stderr.log/django.log на сервере `[SERVER]`.
+  Приёмка: 48h без 500 в логах при нормальном трафике + краул всех URL из sitemap без 5xx.
+
+- [ ] **ADS-7. Favicon в каталоге / прочие мелочи индексации (P2, требует уточнения)** `[REPO]`
+  Диагноз: владелец упоминал проблему с favicon в каталоге (возможно — SERP favicon). base.html содержит полный набор `<link rel="icon">`; вероятная причина — редирект/404 на /favicon.ico или отсутствие иконки в выдаче Google.
+  Фикс: проверить отдачу /favicon.ico и всех favicon-URL (200, правильный Content-Type); Google требует favicon ≥48px кратный 48 — проверить размеры.
+  Приёмка: все favicon-URL отдают 200; Google Rich Results / SERP показывает иконку.
 
 ---
 
