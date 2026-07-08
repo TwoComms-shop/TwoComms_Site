@@ -180,9 +180,10 @@
   Фикс: base.html — при click-id/utm в URL грузить GTM немедленно.
   ✅ **DONE:** fast-path добавлен в ОБА deferred-лоадера base.html (GTM и analytics-loader.js): при `gclid|fbclid|ttclid|wbraid|gbraid|msclkid|utm_source|utm_medium|utm_campaign` в query — немедленная загрузка. Проверено в браузере: `/?utm_source=audit&fbclid=…` → analytics-loader инжектится сразу; чистая органика (свежая сессия, 0 interaction) → НЕ инжектится, PageSpeed-профиль сохранён (Lighthouse не ходит с utm/click-id).
 
-- [ ] **W2-6. TikTok: нестандартные имена событий (AN-020, P1)** `[REPO]`
+- [x] **W2-6. TikTok: нестандартные имена событий (AN-020, P1)** `[REPO]`
   Клиент (analytics-loader.js:394) и сервер (tiktok_events_service.py) шлют Meta-имена «Purchase»/«Lead» вместо CompletePayment/PlaceAnOrder/SubmitForm → цели TikTok их не видят.
   Фикс: маппинг имён на обоих слоях с сохранением event_id-дедупа; уйти с legacy `v1.3/pixel/track/`.
+  ✅ **DONE:** (1) клиент — `mapTikTokEventName()` в analytics-loader.js: Purchase→CompletePayment, Lead→PlaceAnOrder перед КАЖДЫМ `ttq.track` (прямая отправка + оба буфер-пути); Meta/GA4/YM продолжают получать оригинальные имена; cache-buster `?v=7`; (2) сервер — tiktok_events_service.py: `EVENT_NAME_MAP` тот же + миграция с legacy `v1.3/pixel/track/` на Events API 2.0 `v1.3/event/track/` (payload переписан на `event_source`/`event_source_id`/`data[]`, `event_time` unix-int); (3) event_id НЕ трогается на обоих слоях → client/server дедуп сохранён. Тесты: `orders/tests/test_tiktok_events.py` (5 шт., зелёные): маппинг Purchase/Lead, pass-through ViewContent, структура 2.0-payload, POST через мок. ⚠️ NB: если в env задан кастомный `TIKTOK_EVENTS_API_ENDPOINT` со старым URL — на сервере его надо убрать/обновить.
 
 - [x] **W2-7. CAPI/TikTok внутри row-lock транзакции (AN-011 / DB-009, P1)** `[REPO]` ✅ Telegram/Meta/TikTok вынесены из select_for_update в _send_post_payment_events через transaction.on_commit; попутно добавлен pre-check purchase_sent для TikTok (часть W2-3в). Invoice/create вне atomic — уже закрыт в W1-5в. Тесты PostPaymentEventsDeferralTests зелёные.
   Отправка Meta+TikTok ВНУТРИ `transaction.atomic()`+`select_for_update()` — до ~25-40s row-lock; тот же анти-паттерн: Monobank invoice/create внутри atomic (monobank.py:~843) при wait_timeout=60.

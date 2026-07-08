@@ -24,7 +24,21 @@ logger = logging.getLogger(__name__)
 class TikTokEventsService:
     """Сервис для работы с TikTok Events API (server-to-server)."""
 
-    DEFAULT_ENDPOINT = 'https://business-api.tiktok.com/open_api/v1.3/pixel/track/'
+    # W2-6 (AN-020): миграция с legacy `v1.3/pixel/track/` на Events API 2.0
+    # (`v1.3/event/track/`) — legacy-эндпоинт deprecated и не поддерживает
+    # стандартные имена событий в отчётах целей.
+    DEFAULT_ENDPOINT = 'https://business-api.tiktok.com/open_api/v1.3/event/track/'
+
+    # W2-6 (AN-020): маппинг Meta-имён → стандартные имена TikTok.
+    # TikTok-цели (оптимизация кампаний) видят ТОЛЬКО стандартные имена:
+    # Purchase → CompletePayment (полная оплата),
+    # Lead → PlaceAnOrder (предоплаченный заказ / заявка на заказ).
+    # event_id при этом НЕ меняется — дедуп клиент/сервер сохраняется,
+    # т.к. клиентский слой (analytics-loader.js) маппит имена так же.
+    EVENT_NAME_MAP = {
+        'Purchase': 'CompletePayment',
+        'Lead': 'PlaceAnOrder',
+    }
 
     def __init__(self) -> None:
         """Инициализация сервиса с настройками из ENV."""
@@ -207,24 +221,36 @@ class TikTokEventsService:
         source_url: Optional[str],
         test_event_code: Optional[str],
     ) -> Dict[str, Any]:
-        """Собирает полный payload для TikTok Events API."""
-        context: Dict[str, Any] = {
+        """
+        Собирает payload для TikTok Events API 2.0 (`/event/track/`).
+
+        W2-6: структура 2.0 — `event_source`/`event_source_id` + массив
+        `data[]`; имя события маппится на стандартное TikTok-имя
+        (Purchase→CompletePayment, Lead→PlaceAnOrder), event_id сохраняется
+        как есть — клиентский пиксель шлёт тот же id → дедуп работает.
+        """
+        tiktok_event_name = self.EVENT_NAME_MAP.get(event_name, event_name)
+
+        event_time = order.created or timezone.now()
+
+        event_data: Dict[str, Any] = {
+            'event': tiktok_event_name,
+            'event_time': int(event_time.timestamp()),
+            'event_id': event_id,
             'page': {
                 'url': source_url or f"https://twocomms.shop/orders/{order.order_number}/"
-            }
+            },
+            'properties': self._build_properties(order, event_name=event_name),
         }
 
         user_context = self._build_user_context(order)
         if user_context:
-            context['user'] = user_context
+            event_data['user'] = user_context
 
         payload: Dict[str, Any] = {
-            'pixel_code': self.pixel_code,
-            'event': event_name,
-            'event_id': event_id,
-            'timestamp': (order.created or timezone.now()).isoformat(),
-            'context': context,
-            'properties': self._build_properties(order, event_name=event_name),
+            'event_source': 'web',
+            'event_source_id': self.pixel_code,
+            'data': [event_data],
         }
 
         # Добавляем test_event_code для тестирования Events API
@@ -254,7 +280,12 @@ class TikTokEventsService:
             return False
 
         if data.get('code') == 0:
-            logger.info("✅ TikTok Events API accepted event: %s", payload.get('event_id'))
+            events = payload.get('data') or [{}]
+            logger.info(
+                "✅ TikTok Events API accepted event: %s (%s)",
+                events[0].get('event_id'),
+                events[0].get('event'),
+            )
             return True
 
         logger.error("❌ TikTok Events API responded with error: %s", data)

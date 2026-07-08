@@ -370,6 +370,11 @@
       // Отправка в TikTok Pixel (с полной структурой contents)
       try {
         if (TIKTOK_PIXEL_ID) {
+          // W2-6 (AN-020): TikTok-цели видят только СТАНДАРТНЫЕ имена
+          // событий. Meta-имена маппим: Purchase → CompletePayment,
+          // Lead → PlaceAnOrder. event_id НЕ меняется — серверный слой
+          // (tiktok_events_service.py) маппит так же → дедуп сохраняется.
+          var ttqEventName = mapTikTokEventName(eventName);
           // Проверяем что пиксель реально загружен (не только очередь)
           var isTikTokReady = win.ttq && 
                              typeof win.ttq.track === 'function' && 
@@ -386,15 +391,15 @@
               
               // Логируем отправку события для отладки
               if (console && console.log) {
-                console.log('[TikTok Pixel] Sending event:', eventName, ttqPayload);
+                console.log('[TikTok Pixel] Sending event:', ttqEventName, ttqPayload);
               }
               
               // Отправляем событие напрямую (пиксель уже готов)
               // Используем try-catch для безопасности
-              win.ttq.track(eventName, ttqPayload);
+              win.ttq.track(ttqEventName, ttqPayload);
               
               if (console && console.log) {
-                console.log('[TikTok Pixel] Event sent successfully:', eventName);
+                console.log('[TikTok Pixel] Event sent successfully:', ttqEventName);
               }
             } catch (ttqErr) {
               if (console && console.debug) {
@@ -408,7 +413,7 @@
               if (!win._ttqBuffer) {
                 win._ttqBuffer = [];
               }
-              win._ttqBuffer.push({ event: eventName, data: ttqBufferedPayload });
+              win._ttqBuffer.push({ event: ttqEventName, data: ttqBufferedPayload });
             }
           } else {
             // TikTok Pixel еще не загружен - буферизуем
@@ -419,10 +424,10 @@
             if (!win._ttqBuffer) {
               win._ttqBuffer = [];
             }
-            win._ttqBuffer.push({ event: eventName, data: ttqBufferedPayload });
+            win._ttqBuffer.push({ event: ttqEventName, data: ttqBufferedPayload });
             
             if (console && console.log) {
-              console.log('[TikTok Pixel] Event buffered (pixel not ready):', eventName, 'Total buffered:', win._ttqBuffer.length);
+              console.log('[TikTok Pixel] Event buffered (pixel not ready):', ttqEventName, 'Total buffered:', win._ttqBuffer.length);
             }
             
             // Пытаемся загрузить пиксель если он еще не начал загружаться
@@ -460,6 +465,18 @@
     } catch (_) { }
   }
   
+  // W2-6 (AN-020): Meta-имена → стандартные имена TikTok (цели TikTok
+  // распознают только стандартные). Остальные имена (ViewContent,
+  // AddToCart, InitiateCheckout, Search, CompleteRegistration, Contact)
+  // совпадают в обеих системах и проходят как есть.
+  function mapTikTokEventName(eventName) {
+    var map = {
+      'Purchase': 'CompletePayment',
+      'Lead': 'PlaceAnOrder'
+    };
+    return map[eventName] || eventName;
+  }
+
   // Функция для преобразования payload в формат TikTok
   function buildTikTokPayload(eventName, payload, isEcommerceEvent) {
     var ttqPayload = {};
@@ -864,7 +881,7 @@
     }
     // Удаляем все нецифровые символы
     var digits = phone.replace(/\D/g, '');
-    // Проверяем длину: минимум 10 цифр, максимум 15 (стандарт E.164)
+    // Проверяем длин��: минимум 10 цифр, максимум 15 (стандарт E.164)
     return digits.length >= 10 && digits.length <= 15;
   }
 
