@@ -483,10 +483,16 @@ SOCIAL_AUTH_LOGIN_ERROR_URL = '/login/'
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'pii_redaction': {
+            '()': 'twocomms.log_handlers.PIIRedactionFilter',
+        },
+    },
     'handlers': {
         'console': {
             'level': 'INFO',
             'class': 'logging.StreamHandler',
+            'filters': ['pii_redaction'],
         },
         'app_file': {
             'level': 'INFO',
@@ -496,6 +502,7 @@ LOGGING = {
             'backupCount': 5,
             'encoding': 'utf-8',
             'delay': True,
+            'filters': ['pii_redaction'],
         },
         'app_error_file': {
             'level': 'ERROR',
@@ -505,6 +512,7 @@ LOGGING = {
             'backupCount': 5,
             'encoding': 'utf-8',
             'delay': True,
+            'filters': ['pii_redaction'],
         },
         # RUM beacon log — отдельный файл, чтобы не забивать django.log
         'rum_file': {
@@ -515,6 +523,7 @@ LOGGING = {
             'backupCount': 3,
             'encoding': 'utf-8',
             'delay': True,
+            'filters': ['pii_redaction'],
         },
         # W3-2 (TD-022): ERROR → Telegram-алерт админу (rate-limited 5/10мин,
         # отправка в daemon-потоке). Раньше 500-ки уходили в stderr.log
@@ -522,6 +531,7 @@ LOGGING = {
         'telegram_alert': {
             'level': 'ERROR',
             'class': 'twocomms.log_handlers.TelegramAlertHandler',
+            'filters': ['pii_redaction'],
         },
         # W3-2: client-side ошибки (window.onerror) — отдельный файл.
         'client_error_file': {
@@ -532,6 +542,7 @@ LOGGING = {
             'backupCount': 3,
             'encoding': 'utf-8',
             'delay': True,
+            'filters': ['pii_redaction'],
         },
     },
     'loggers': {

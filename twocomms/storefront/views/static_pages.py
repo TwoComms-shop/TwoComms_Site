@@ -1583,6 +1583,8 @@ def custom_print_add_to_cart(request):
     custom_cart[key] = _build_custom_cart_session_item(lead)
     request.session[SESSION_CUSTOM_CART_KEY] = custom_cart
     request.session.modified = True
+    from storefront.views.utils import _reset_monobank_session
+    _reset_monobank_session(request, drop_pending=True)
 
     try:
         notify_custom_print_moderation_request(lead)
@@ -1636,6 +1638,9 @@ def custom_print_remove(request):
 
     request.session[SESSION_CUSTOM_CART_KEY] = custom_cart
     request.session.modified = True
+    if removed:
+        from storefront.views.utils import _reset_monobank_session
+        _reset_monobank_session(request, drop_pending=True)
     return JsonResponse({
         "ok": True,
         "removed": bool(removed),

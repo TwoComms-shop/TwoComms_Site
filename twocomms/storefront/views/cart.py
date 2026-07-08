@@ -911,6 +911,7 @@ def update_cart(request):
         # Обновляем количество
         cart[cart_key]['qty'] = qty
         save_cart_to_session(request, cart)
+        _reset_monobank_session(request, drop_pending=True)
 
         # ИСПРАВЛЕНО: Получаем цену из Product, а не из сессии (в сессии нет поля 'price')
         product_id = cart[cart_key]['product_id']
@@ -985,12 +986,6 @@ def remove_from_cart(request):
                 if kk.lower() == target:
                     remove_key_exact(kk)
                     break
-            # 1.2) если всё ещё не нашли, попробуем удалить все варианты этого товара
-            if not removed and ":" in key:
-                pid_part = key.split(":", 1)[0]
-                for kk in list(cart.keys()):
-                    if kk.split(":", 1)[0] == pid_part:
-                        remove_key_exact(kk)
     # 2) Либо удаляем по product_id (+optional size)
     elif pid:
         try:
@@ -1014,6 +1009,8 @@ def remove_from_cart(request):
     # Сохраняем изменения
     request.session['cart'] = cart
     request.session.modified = True
+    if removed:
+        _reset_monobank_session(request, drop_pending=True)
 
     # Пересчёт сводки с использованием Decimal и учетом промокодов
     ids = [i['product_id'] for i in cart.values()]
@@ -1111,6 +1108,15 @@ def get_cart_count(request):
     """
     cart = get_cart_from_session(request)
     cart_count = sum(item.get('qty', 0) for item in cart.values())
+    custom_cart = request.session.get(SESSION_CUSTOM_CART_KEY) or {}
+    if isinstance(custom_cart, dict):
+        for item in custom_cart.values():
+            if not isinstance(item, dict):
+                continue
+            try:
+                cart_count += int(item.get('quantity') or 1)
+            except (TypeError, ValueError):
+                cart_count += 1
 
     return JsonResponse({
         'cart_count': cart_count
@@ -1353,14 +1359,13 @@ def cart_summary(request):
     missing_products = set(ids) - found_products
 
     if missing_products:
-        # Удаляем несуществующие товары из корзины
-        cart_to_clean = dict(cart)
-        for key, item in cart_to_clean.items():
-            if item['product_id'] in missing_products:
-                cart.pop(key, None)
-        _reset_monobank_session(request, drop_pending=True)
-        request.session['cart'] = cart
-        request.session.modified = True
+        # GET summary stays side-effect-free: exclude stale products from the
+        # response, but leave session cleanup to explicit cart mutations/page views.
+        cart = {
+            key: item
+            for key, item in cart.items()
+            if item.get('product_id') not in missing_products
+        }
 
     # Пересчитываем с очищенной корзиной
     total_qty = sum(i['qty'] for i in cart.values())

@@ -197,9 +197,9 @@ class ProductRecommendationEngine:
         """
         Сезонные рекомендации
         """
-        import datetime
+        from django.utils import timezone
 
-        current_month = datetime.datetime.now().month
+        current_month = timezone.localdate().month
 
         # Определяем сезон
         if current_month in [12, 1, 2]:

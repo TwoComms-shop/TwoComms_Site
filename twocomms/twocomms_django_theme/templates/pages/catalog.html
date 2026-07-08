@@ -59,7 +59,7 @@ point at themselves.
 {% block twitter_url %}{% if is_search_page %}{{ site_base_url }}{% url 'catalog' %}{% elif page_obj and page_obj.number > 1 %}{{ site_base_url }}{{ request.path }}?page={{ page_obj.number }}{% else %}{{ site_base_url }}{{ request.path }}{% endif %}{% endblock %}
 
 {% block pagination_links %}
-{% if page_obj %}{% if page_obj.has_previous %}<link rel="prev" href="{{ site_base_url }}{{ request.path }}{% if page_obj.previous_page_number > 1 %}?page={{ page_obj.previous_page_number }}{% endif %}">{% endif %}{% if page_obj.has_next %}<link rel="next" href="{{ site_base_url }}{{ request.path }}?page={{ page_obj.next_page_number }}">{% endif %}{% endif %}
+{% if page_obj %}{% if page_obj.has_previous %}<link rel="prev" href="{{ site_base_url }}{{ request.path }}?{{ pagination_query_prefix }}page={{ page_obj.previous_page_number }}">{% endif %}{% if page_obj.has_next %}<link rel="next" href="{{ site_base_url }}{{ request.path }}?{{ pagination_query_prefix }}page={{ page_obj.next_page_number }}">{% endif %}{% endif %}
 {% endblock %}
 
 {% block og_type %}website{% endblock %}
@@ -423,7 +423,7 @@ point at themselves.
         <ul class="pagination justify-content-center">
           {% if page_obj.has_previous %}
           <li class="page-item">
-            <a class="page-link" href="?page={{ page_obj.previous_page_number }}" aria-label="{% trans 'Попередня' %}">
+            <a class="page-link" href="?{{ pagination_query_prefix }}page={{ page_obj.previous_page_number }}" aria-label="{% trans 'Попередня' %}">
               <span aria-hidden="true">&laquo;</span>
             </a>
           </li>
@@ -437,13 +437,13 @@ point at themselves.
           {% if page_obj.number == i %}
           <li class="page-item active"><span class="page-link">{{ i }}</span></li>
           {% elif i > page_obj.number|add:'-3' and i < page_obj.number|add:'3' %}
-          <li class="page-item"><a class="page-link" href="?page={{ i }}">{{ i }}</a></li>
+          <li class="page-item"><a class="page-link" href="?{{ pagination_query_prefix }}page={{ i }}">{{ i }}</a></li>
           {% endif %}
           {% endfor %}
 
           {% if page_obj.has_next %}
           <li class="page-item">
-            <a class="page-link" href="?page={{ page_obj.next_page_number }}" aria-label="{% trans 'Наступна' %}">
+            <a class="page-link" href="?{{ pagination_query_prefix }}page={{ page_obj.next_page_number }}" aria-label="{% trans 'Наступна' %}">
               <span aria-hidden="true">&raquo;</span>
             </a>
           </li>

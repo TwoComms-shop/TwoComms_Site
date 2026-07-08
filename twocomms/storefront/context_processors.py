@@ -4,6 +4,7 @@ from django.urls import NoReverseMatch, reverse
 from django.templatetags.static import static
 
 from accounts.models import UserProfile
+from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
 from storefront.services.web_push import is_web_push_configured
 
 
@@ -54,7 +55,9 @@ def user_state_hint(request):
         if isinstance(cart, dict) and cart:
             has_cart = True
         if not has_cart:
-            custom_cart = request.session.get('custom_cart')
+            custom_cart = request.session.get(SESSION_CUSTOM_CART_KEY)
+            if not custom_cart:
+                custom_cart = request.session.get('custom_cart')
             if isinstance(custom_cart, dict) and custom_cart:
                 has_cart = True
     except Exception:

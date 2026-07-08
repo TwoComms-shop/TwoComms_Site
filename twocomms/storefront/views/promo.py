@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from django.db.models import Count, Q, Avg, Sum
 from django.http import JsonResponse
+from django.utils import timezone
 from django import forms
 
 from ..models import PromoCode, PromoCodeGroup, PromoCodeUsage
@@ -700,7 +701,7 @@ def admin_promo_export(request):
 
     import csv
     from django.http import HttpResponse
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     export_format = request.GET.get('format', 'csv')
     period = request.GET.get('period', 'all')
@@ -711,13 +712,13 @@ def admin_promo_export(request):
     queryset = PromoCode.objects.all()
 
     if period == 'today':
-        today = datetime.now().date()
+        today = timezone.localdate()
         queryset = queryset.filter(created_at__date=today)
     elif period == 'week':
-        week_ago = datetime.now() - timedelta(days=7)
+        week_ago = timezone.now() - timedelta(days=7)
         queryset = queryset.filter(created_at__gte=week_ago)
     elif period == 'month':
-        month_ago = datetime.now() - timedelta(days=30)
+        month_ago = timezone.now() - timedelta(days=30)
         queryset = queryset.filter(created_at__gte=month_ago)
     elif period == 'custom' and date_from and date_to:
         queryset = queryset.filter(created_at__date__range=[date_from, date_to])
@@ -725,7 +726,7 @@ def admin_promo_export(request):
     # CSV експорт
     if export_format == 'csv':
         response = HttpResponse(content_type='text/csv; charset=utf-8')
-        response['Content-Disposition'] = f'attachment; filename="promo_stats_{datetime.now().strftime("%Y%m%d")}.csv"'
+        response['Content-Disposition'] = f'attachment; filename="promo_stats_{timezone.localdate().strftime("%Y%m%d")}.csv"'
 
         # Додати BOM для правильного відображення UTF-8 в Excel
         response.write('\ufeff')
@@ -799,7 +800,7 @@ def admin_promo_export(request):
             response = HttpResponse(
                 content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             )
-            response['Content-Disposition'] = f'attachment; filename="promo_stats_{datetime.now().strftime("%Y%m%d")}.xlsx"'
+            response['Content-Disposition'] = f'attachment; filename="promo_stats_{timezone.localdate().strftime("%Y%m%d")}.xlsx"'
 
             wb.save(response)
             return response
@@ -851,7 +852,7 @@ def admin_promo_export(request):
             buffer.close()
 
             response = HttpResponse(content_type='application/pdf')
-            response['Content-Disposition'] = f'attachment; filename="promo_stats_{datetime.now().strftime("%Y%m%d")}.pdf"'
+            response['Content-Disposition'] = f'attachment; filename="promo_stats_{timezone.localdate().strftime("%Y%m%d")}.pdf"'
             response.write(pdf)
 
             return response

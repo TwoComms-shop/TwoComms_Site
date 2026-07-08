@@ -519,7 +519,7 @@ def export_utm_csv(request):
     try:
         # Создаем CSV response
         response = HttpResponse(content_type='text/csv; charset=utf-8')
-        response['Content-Disposition'] = f'attachment; filename="utm_{export_type}_{period}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv"'
+        response['Content-Disposition'] = f'attachment; filename="utm_{export_type}_{period}_{timezone.now().strftime("%Y%m%d_%H%M%S")}.csv"'
 
         # Добавляем BOM для правильного отображения в Excel
         response.write('\ufeff')

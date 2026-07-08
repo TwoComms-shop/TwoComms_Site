@@ -153,3 +153,38 @@ class NovaPoshtaTrackingDedupTests(TestCase):
 
         self.assertTrue(captured.get("called"))
 
+    def test_facebook_purchase_save_error_does_not_fallback_to_full_save(self):
+        fake_service = type("FakeFacebookService", (), {
+            "enabled": True,
+            "send_purchase_event": lambda self, order: True,
+        })()
+
+        with (
+            patch(
+                "orders.facebook_conversions_service.get_facebook_conversions_service",
+                return_value=fake_service,
+            ),
+            patch.object(self.order, "save", side_effect=RuntimeError("db down")) as save_mock,
+        ):
+            self.service._send_facebook_purchase_event(self.order)
+
+        self.assertEqual(save_mock.call_count, 1)
+        self.assertEqual(save_mock.call_args.kwargs, {"update_fields": ["payment_payload"]})
+
+    def test_tiktok_purchase_save_error_does_not_fallback_to_full_save(self):
+        fake_service = type("FakeTikTokService", (), {
+            "enabled": True,
+            "send_purchase_event": lambda self, order: True,
+        })()
+
+        with (
+            patch(
+                "orders.tiktok_events_service.get_tiktok_events_service",
+                return_value=fake_service,
+            ),
+            patch.object(self.order, "save", side_effect=RuntimeError("db down")) as save_mock,
+        ):
+            self.service._send_tiktok_purchase_event(self.order)
+
+        self.assertEqual(save_mock.call_count, 1)
+        self.assertEqual(save_mock.call_args.kwargs, {"update_fields": ["payment_payload"]})

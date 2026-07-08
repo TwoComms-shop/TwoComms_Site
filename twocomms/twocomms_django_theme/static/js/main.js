@@ -1672,6 +1672,11 @@ document.addEventListener('click', (e) => {
   // Если на кнопке есть inline-обработчик (AddToCart), не дублируем запрос
   if (btn.hasAttribute('onclick')) return;
   e.preventDefault();
+  if (btn.dataset.addToCartPending === '1') return;
+  btn.dataset.addToCartPending = '1';
+  btn.setAttribute('aria-busy', 'true');
+  if ('disabled' in btn) { btn.disabled = true; }
+  btn.classList.add('is-loading');
   const productId = btn.getAttribute('data-add-to-cart');
   const sizeInput = document.querySelector('input[name="size"]:checked');
   const size = sizeInput ? sizeInput.value : '';
@@ -1754,6 +1759,12 @@ document.addEventListener('click', (e) => {
     })
     .catch(() => {
       handleAddFailure();
+    })
+    .finally(() => {
+      delete btn.dataset.addToCartPending;
+      btn.removeAttribute('aria-busy');
+      if ('disabled' in btn) { btn.disabled = false; }
+      btn.classList.remove('is-loading');
     });
 });
 

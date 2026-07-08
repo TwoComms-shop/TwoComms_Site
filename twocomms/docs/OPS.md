@@ -26,7 +26,7 @@
 1. **Бэкапа MySQL** — P0, см. W0-3 (скрипт `scripts/backup_mysql.sh` в репо; добавить cron `[SERVER]`).
 2. Генерации Google Merchant feed (SEO-008) — фид статикой, устаревает.
 3. IndexNow/sitemap-пингов.
-4. logrotate для `tmp/*.log` (W3-6).
+4. logrotate для `tmp/*.log` (W3-6) — REPO-часть готова: `scripts/rotate_twocomms_logs.sh`; добавить cron `[SERVER]`.
 5. **`manage.py check_survey_inactivity`** (W3-1/TD-015) — survey-репорты о брошенных опросах. Раньше висела в `CELERY_BEAT_SCHEDULE` (каждые 2 мин), но beat не запущен → не выполнялась никогда. Добавить cron `*/5 * * * *` `[SERVER]`.
 6. **`manage.py cleanup_analytics_data`** (W2-10/AN-051) — retention аналитики (UserAction >180д, неконверсионные UTMSession >90д, orphan-события). Добавить cron `20 4 * * 0` (раз в неделю) `[SERVER]`.
 
@@ -43,7 +43,20 @@
 
 - Все 7 cron-команд — management-команды из репо; loose-скрипты корня кроном НЕ вызываются (CB-044) → их можно архивировать без риска для cron.
 - НИКОГДА не добавляйте cron-задачу без записи в эту таблицу.
-- Логи в `tmp/` не ротируются — новые задачи логируйте в `logs/` и добавляйте в logrotate.
+- Логи в `tmp/` ротируются только после установки cron для `scripts/rotate_twocomms_logs.sh`; новые задачи логируйте в `logs/` и добавляйте в этот rotation-путь.
+
+### Log rotation / PII (W3-6)
+
+REPO-часть:
+
+- `twocomms.log_handlers.PIIRedactionFilter` подключён ко всем logging handlers и маскирует email, украинские телефоны и длинные числовые последовательности до записи в persistent logs.
+- `scripts/rotate_twocomms_logs.sh` ротирует большие `*.log` под проектом, gzip-архивы складывает в `$HOME/log_archives/twocomms`, права 700/600, retention 30 дней.
+
+SERVER-часть:
+
+```cron
+10 4 * * * /bin/bash /home/qlknpodo/TWC/TwoComms_Site/twocomms/scripts/rotate_twocomms_logs.sh >> /home/qlknpodo/log_archives/rotate_twocomms_logs.log 2>&1
+```
 
 ## Git-состояние сервера (CB-043, снято 05.07.2026)
 

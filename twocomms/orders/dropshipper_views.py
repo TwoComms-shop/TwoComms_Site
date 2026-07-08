@@ -1330,8 +1330,6 @@ def admin_update_dropship_status(request, order_id):
 
     try:
         data = json.loads(request.body)
-        order = get_object_or_404(DropshipperOrder, id=order_id)
-
         new_status = data.get('status')
         new_payment_status = data.get('payment_status')
         tracking_number = data.get('tracking_number', '').strip()
@@ -1350,28 +1348,33 @@ def admin_update_dropship_status(request, order_id):
             if new_payment_status not in valid_payment_statuses:
                 return JsonResponse({'success': False, 'error': 'Невірний статус оплати'})
 
-        old_status = order.status
-        old_payment_status = order.payment_status
+        with transaction.atomic():
+            order = get_object_or_404(
+                DropshipperOrder.objects.select_for_update(),
+                id=order_id,
+            )
+            old_status = order.status
+            old_payment_status = order.payment_status
 
-        order.status = new_status
+            order.status = new_status
 
-        # Обновляем payment_status если указан
-        if new_payment_status:
-            order.payment_status = new_payment_status
+            # Обновляем payment_status если указан
+            if new_payment_status:
+                order.payment_status = new_payment_status
 
-        # Обновляем ТТН если предоставлен
-        if tracking_number:
-            order.tracking_number = tracking_number
+            # Обновляем ТТН если предоставлен
+            if tracking_number:
+                order.tracking_number = tracking_number
 
-        # Логика изменения статуса
-        # Если переводим в "Відправлено" - требуем ТТН
-        if new_status == 'shipped' and not tracking_number and not order.tracking_number:
-            return JsonResponse({
-                'success': False,
-                'error': 'Для статусу "Відправлено" необхідно вказати ТТН'
-            })
+            # Логика изменения статуса
+            # Если переводим в "Відправлено" - требуем ТТН
+            if new_status == 'shipped' and not tracking_number and not order.tracking_number:
+                return JsonResponse({
+                    'success': False,
+                    'error': 'Для статусу "Відправлено" необхідно вказати ТТН'
+                })
 
-        order.save()
+            order.save()
 
         # Обрабатываем выплату если статус изменен на "received" и выплата еще не обработана
         if new_status == 'received' and not order.payout_processed:

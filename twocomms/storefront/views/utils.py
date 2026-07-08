@@ -522,6 +522,18 @@ def _record_monobank_status_locked(order, payload, source='api'):
 
     update_fields = ['payment_payload']
 
+    def _save_status_fields(fields, reason):
+        try:
+            order.save(update_fields=fields)
+        except Exception:
+            monobank_logger.exception(
+                'Order %s: failed to save Monobank status fields %s (%s)',
+                getattr(order, 'order_number', order.pk),
+                fields,
+                reason,
+            )
+            raise
+
     if status in MONOBANK_SUCCESS_STATUSES:
         previous_status = order.payment_status
         normalized_previous = 'prepaid' if previous_status == 'partial' else previous_status
@@ -536,10 +548,7 @@ def _record_monobank_status_locked(order, payload, source='api'):
                 f'статус уже {target_status} (pay_type_raw={raw_pay_type}, normalized={pay_type}). '
                 f'Пропускаем обновление.'
             )
-            try:
-                order.save(update_fields=['payment_payload'])
-            except Exception:
-                order.save()
+            _save_status_fields(['payment_payload'], 'duplicate_success_payload')
             return
 
         if normalized_previous == 'paid' and target_status == 'prepaid':
@@ -567,10 +576,7 @@ def _record_monobank_status_locked(order, payload, source='api'):
                 f'(pay_type_raw={raw_pay_type}, normalized={pay_type}, previous_status={previous_status})'
             )
 
-        try:
-            order.save(update_fields=update_fields)
-        except Exception:
-            order.save()
+        _save_status_fields(update_fields, 'success_transition')
 
         # W2-7 (AN-011/DB-009): внешние HTTP-вызовы (Telegram, Meta CAPI,
         # TikTok) раньше выполнялись ЗДЕСЬ — внутри select_for_update()
@@ -594,10 +600,7 @@ def _record_monobank_status_locked(order, payload, source='api'):
         order.payment_status = 'unpaid'
         update_fields.append('payment_status')
 
-    try:
-        order.save(update_fields=update_fields)
-    except Exception:
-        order.save()
+    _save_status_fields(update_fields, 'non_success_transition')
 
 
 def _dispatch_post_payment_events(order_pk, previous_status, pay_type):

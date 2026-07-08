@@ -41,6 +41,7 @@
   Фикс: (1) владелец меняет пароль `qlknpodo` / переходит на ключи; (2) `[REPO]` — проверить grep по репо, что масок больше нигде нет.
   Приёмка: старый пароль не работает; grep по репо на пароль = 0.
   Отчёт: `audit_report_section6_codebase.md`, `SESSION_HANDOFF_2026-07-07.md`.
+  ✅ **REPO-часть VERIFIED:** fresh grep по tracked-файлам на скомпрометированный пароль = 0; `deploy_finance.sh` использует `SSHPASS` env без литерала. Осталось `[OWNER]`: сменить пароль/перейти на SSH-ключ и подтвердить, что старый пароль не работает.
 
 - [ ] **W0-2. 🔴 Ротация секретов из git-истории (TD-021, P1)** `[OWNER]`/`[SERVER]`
   В истории git восстановимы `twocomms/db_config.env` (SECRET_KEY, DB-креды) и `twocomms/.env.production` (REDIS_URL с кредами).
@@ -254,10 +255,12 @@
 - [ ] **W3-6. Логи: 958 MB, ротация, PII (TD-016 / CB-045)** `[SERVER]` + `[REPO]`(конфиг)
   `nova_poshta_cron.log` = 827 MB без ротац��и; PII-like hits в ��огах; rum.log — 24 secret-like hits.
   Фикс: `[REPO]` — logrotate-конфиг/скрипт в репо + маскирование PII в лог-вызовах; `[SERVER]` — user-cron truncate, удалить 8 мёртвых логов.
+  ✅ **REPO-часть DONE:** добавлен `PIIRedactionFilter` в logging handlers, фильтр подключён к console/file/rum/telegram/client-error handlers; добавлен `scripts/rotate_twocomms_logs.sh` с gzip-ротацией, chmod и TTL архивов; `twocomms/docs/OPS.md` содержит cron-инструкцию. Осталось `[SERVER]`: поставить cron, безопасно truncate/архивировать текущие большие логи и удалить мёртвые.
 
-- [ ] **W3-7. Идемпотентность и гонки статусов (CB-020-паттерн + DB-010)** `[REPO]`
+- [x] **W3-7. Идемпотентность и гонки статусов (CB-020-паттерн + DB-010)** `[REPO]`
   `save(update_fields)` → молчаливый fallback `save()` в 4 местах (utils.py:542/573/723, nova_poshta_service.py:515 — флаг `purchase_sent`!) = риск lost-update и ПОВТОРНОГО CAPI Purchase; admin_update_dropship_status без select_for_update.
   Фикс: убрать fallback, логировать ошибку; select_for_update в dropship-статусах. НЕ менять control flow массово (RISK-04).
+  ✅ **DONE:** fallback `save()` после failed `save(update_fields=...)` убран в monobank-status persistence и NP purchase flags: ошибка логируется и пробрасывается, без full-save overwrite; `admin_update_dropship_status` теперь валидирует статус и обновляет `DropshipperOrder` внутри `transaction.atomic()` + `select_for_update()`. Тесты покрывают отсутствие fallback-save и row-lock.
 
 - [x] **W3-11. [NEW-510] CheckoutCapture: публичный PII-приёмник без лимитов и retention (P2)** `[REPO]`
   `checkout_capture.py` — `@csrf_exempt` эндпоинт пишет ФИО/телефон/email в `CheckoutCapture` по session_key. Защита — только Sec-Fetch-Site (старые клиенты/curl без заголовка проходят); rate-limit нет (спам-записи); retention нет — `recover_checkouts` читает, никто не чистит (PII копится вечно, связка с NEW-404/AN-051).
@@ -289,20 +292,23 @@
 > Владелец запускает платный Meta-трафик. Всё в этой волне — блокеры или прямые
 > риски слива бюджета/индексации. Порядок = приоритет исполнения.
 
-- [ ] **ADS-1. Meta Pixel: PageView теряется у «отказников» + захардкоженный ID (P0)** `[REPO]`
+- [x] **ADS-1. Meta Pixel: PageView теряется у «отказников» + захардкоженный ID (P0)** `[REPO]`
   Диагноз: (1) analytics-loader.js (~55KB, содержит fbevents-инициализацию) грузится ТОЛЬКО после первого user interaction (Phase 22e, base.html:1083+) → посетитель из рекламы, который посмотрел и ушёл без клика/скролла, НЕ отправляет PageView → Meta не видит трафик, атрибуция и оптимизация кампаний ломаются, CPM растёт; (2) meta_pixel_id `823958313630148` захардкожен в base.html `{% with %}` (не из env `FACEBOOK_PIXEL_ID`, который пуст); (3) `<div id="am">` (advanced matching) рендерится только для authenticated — для гостей из рекламы AM-параметры пусты; (4) в partials/analytics.html лежит мёртвый закомментированный блок пикселя с placeholder `FACEBOOK_PIXEL_ID` — мусор, вводит в заблуждение.
   Фикс: лёгкий инлайн-сниппет fbq (init+PageView, ~1.5KB) в `<head>` СРАЗУ (без ожидания interaction), тяжёлый loader с событиями (ViewContent/AddToCart/InitiateCheckout/Purchase) оставить лениво; ID из settings/env с fallback; вычистить мёртвый блок.
   Приёмка: Meta Pixel Helper видит PageView без взаимодействия; события e-commerce приходят в Events Manager (Test Events).
+  ✅ **DONE (коммит 5aacb163, verified):** `base.html` делает `fbq('init')` + `PageView` сразу в `<head>`, `META_PIXEL_ID` приходит из context/settings с fallback; `analytics-loader.js` не шлёт второй PageView, если head-snippet уже bootstrapped; мёртвый placeholder в partials/analytics.html вычищен. Live Events Manager/Pixel Helper — `[OWNER]`.
 
-- [ ] **ADS-2. Английская версия наполовину не переведена (P0 для SEO/рекламы на EN) ** `[REPO]`
+- [x] **ADS-2. Английская версия наполовину не переведена (P0 для SEO/рекламы на EN) ** `[REPO]`
   Диагноз: locale/en/django.po — 161 пустой msgstr + 129 fuzzy (fuzzy НЕ компилируются в .mo → показывается украинский). Итого ~290 строк на /en/ остаются украинскими: части хедера, футера, блоки наполовину переведены. Смешанный язык = сигнал низкого качества для Google, ломает EN-индексацию.
   Фикс: перевести все пустые msgstr, снять fuzzy-флаги (проверив корректность), `compilemessages`, прогнать по /en/ ключевые шаблоны (home, catalog, product, cart, checkout, header/footer).
   Приёмка: на /en/ нет украинских строк в header/footer/основных блоках; `msgattrib --untranslated` и `--fuzzy` по en.po → пусто.
+  ✅ **DONE (коммит c1c0de5b, verified):** main-site `twocomms/locale/en/LC_MESSAGES/django.po` проверен: `msgattrib --untranslated` = 0, `msgattrib --only-fuzzy` = 0. DTF locale не трогался по scope fence.
 
-- [ ] **ADS-3. Title tag каталога обрезан (P1)** `[REPO]`
+- [x] **ADS-3. Title tag каталога обрезан (P1)** `[REPO]`
   Диагноз: `seo_utils._truncate_at_word_boundary(..., 60)` жёстко режет тайтлы категорий/каталога — в SERP и соцпревью видны «недописанные» тайтлы. 60 — консервативный лимит: Google показывает ~600px (~65-70 символов кириллицы).
   Фикс: аудит фактических тайтлов всех категорий (скриптом); паттерны, которые укладываются в лимит целиком (без обрезки хвоста «| TwoComms» посреди слова); поднять лимит до 65 + не резать, если строка ≤70.
   Приёмка: ни один title категории/каталога не заканчивается обрывком слова/фразы.
+  ✅ **DONE (коммит 9e0994b2, verified):** `TITLE_LIMIT = 70`, `_fit_title()` больше не добавляет «...», режет по границе слова и чистит висящие разделители; product/category title templates деградируют без середины слова.
 
 - [ ] **ADS-4. Дубли по query-параметрам (`?color=black` и пр.) (P1)** `[REPO]`
   Диагноз: фасетные URL `?color=`/`?fit=`/`?size=` отдают полный HTML; canonical указывает на чистый path (уже хорошо), но страницы остаются краулябельными и могут попадать в индекс как дубли (владелец видел дубли «через равно, а не через слэш»).
@@ -359,9 +365,10 @@
   Все 384 `<g:link>` дают 301 с потерей `color` → риск disapproval; availability захардкожен in_stock; нет кэша (~3s CPU/GET).
   Фикс: финальные URL без redirect (color в каноническом виде); кэш фида; gtin/identifier_exists/shipping — `[DECISION]`; удалить пустой статический xml из корня.
 
-- [ ] **W5-2. Пагинация каталога (CRO-011, P1)** `[REPO]`
+- [x] **W5-2. Пагинация каталога (CRO-011, P1)** `[REPO]`
   `?page=N` сбрасывает `?color=`; `/catalog/?page=2..N` — индексируемые дубли БЕЗ товаров.
   Фикс: сохранять GET-параметры в пагинаторе; noindex/redirect для корневой пагинации.
+  ✅ **DONE:** общий `pagination_query_prefix` сохраняет GET-параметры в catalog/search paginator links и `<link rel=prev/next>`. Search/facet страницы остаются `noindex,follow`; корневая `/catalog/?page=N` в текущей реализации рендерит уникальную товарную выдачу и сознательно оставлена indexable по существующему SEO-комментарию, диагноз «без товаров» не подтвердился.
 
 - [ ] **W5-3. Оптимизированные изображения: backfill (CRO-022 / CRO-012, P1)** `[SERVER]` + `[REPO]`
   20/65 товаров: LCP-фото без optimized-вариантов (404 на диске, оригиналы 100-276 KB); 9/16 карточек каталога без srcset/AVIF; eager только 2 карточки (нужно 4-8).
@@ -404,15 +411,18 @@
 
 ## ВОЛНА 6 — КОРЗИНА / UX (P1/P2)
 
-- [ ] **W6-1. Monobank-инвойс не сбрасывается при мутации корзины (CRO-031, P1)** `[REPO]`
+- [x] **W6-1. Monobank-инвойс не сбрасывается при мутации корзины (CRO-031, P1)** `[REPO]`
   `update_cart`/`remove_from_cart` не вызывают `_reset_monobank_session` → оплата устаревшей суммы при сбое JS; `custom_print_remove` — та же родня.
   Фикс: сброс инвойса во всех мутирующих эндпоинтах.
+  ✅ **DONE:** `update_cart`, successful `remove_from_cart`, `custom_print_add_to_cart` и `custom_print_remove` вызывают `_reset_monobank_session(..., drop_pending=True)`. Покрыто тестами на stale invoice/pending order.
 
-- [ ] **W6-2. Двойной клик и fallback-удаление (CRO-031, P2)** `[REPO]`
+- [x] **W6-2. Двойной клик и fallback-удаление (CRO-031, P2)** `[REPO]`
   Нет in-flight guard у `[data-add-to-cart]` в main.js (qty удваивается, пиксели дублируются); fallback remove удаляет ВСЕ варианты товара при рассинхроне ключа.
+  ✅ **DONE:** общий `[data-add-to-cart]` handler в `main.js` ставит `data-add-to-cart-pending`/`aria-busy` и блокирует повторный POST до `.finally()`; `remove_from_cart` больше не удаляет все варианты товара при устаревшем composite key, только exact/case-insensitive key или явный product_id без key.
 
-- [ ] **W6-3. Кастом-бейдж и счётчики (CRO-030, P2)** `[REPO]`
+- [x] **W6-3. Кастом-бейдж и счётчики (CRO-030, P2)** `[REPO]`
   `user_state_hint` читает `custom_cart` вместо `custom_print_cart` (мёртвый код — решить, регистрировать ли); `/cart/count/` игнорирует кастом; GET `cart_summary` мутирует сессию и сбрасывает инвойс.
+  ✅ **DONE:** `user_state_hint` читает `SESSION_CUSTOM_CART_KEY` (`custom_print_cart`) с fallback на legacy `custom_cart`; `/cart/count/` суммирует custom-print quantities; `/cart/summary/` учитывает custom-print totals/counts, остаётся `never_cache` и больше не мутирует session/Monobank invoice на GET при missing product. Тестами покрыты badge hint, count и custom summary path.
 
 - [ ] **W6-4. Петля сбора отзывов (CRO-026, P1-growth)** `[REPO]`
   0 опубликованных отзывов при образцовой инфраструктуре.
@@ -433,9 +443,10 @@
 
 ⚠️ Перед ЛЮБЫМ удалением: crontab инвентаризирован (CB-044: 7 задач, все скрипты в репо), но перепроверить непосредственно перед удалением (RISK-01).
 
-- [ ] **W7-1. ⚠️ views.py.backup — ЖИВОЙ рантайм (CB-004/TD-001)** `[REPO]`
+- [x] **W7-1. ⚠️ views.py.backup — ЖИВОЙ рантайм (CB-004/TD-001)** `[REPO]`
   `_load_legacy_views` exec-ит его (whitelist 102 имени, 30 боевых маршрутов). НЕ УДАЛЯТЬ.
   План: миграция 102 имён в нормальные модули → потом удаление. Безопасно удалить сейчас: `styles.css.bak2` (445KB), `order_success_old.html`, `tmp_old_index.html`.
+  ✅ **DONE (safe subset only):** живой `views.py.backup` не тронут; безопасные tracked legacy-файлы `styles.css.bak2`, `order_success_old.html`, `tmp_old_index.html` сняты с git-tracking и добавлены в ignore для локальных копий.
 
 - [ ] **W7-2. legacy_stubs.py (TD-006)** `[REPO]`
   48 заглушек живы в urls; admin_store_* возвращают фейко��ый `{'status':'ok'}`.
@@ -451,8 +462,9 @@
 - [ ] **W7-5. 65 loose-скриптов (CB-003)** `[REPO]`
   cron их не вызывает → рассортировать scripts/archive, удалить fix_*; из 6 deploy-скриптов оставить рабочий (сверить с владельцем).
 
-- [ ] **W7-6. xlsx с закупочными ценами (CB-005)** `[REPO]`
+- [x] **W7-6. xlsx с закупочными ценами (CB-005)** `[REPO]`
   Репо публичный! Вынести из git (`/pricelist_opt.xlsx` генерится из БД — подтверждено).
+  ✅ **DONE:** tracked wholesale XLSX-файлы сняты с git-tracking; `.gitignore` запрещает повторное добавление `*.xlsx`.
 
 - [ ] **W7-7. Топ-20 денежных except (CB-020, P1-точечно)** `[REPO]`
   734 широких except; чинить ТОЛЬКО топ-20 (ранжированы в `audit_report_section6_codebase.md`): checkout.py:233 (цена кастома!), utils.py:542/573/723, nova_poshta_service.py:515, str(e) клиенту (cart.py:943, monobank.py:288). Только logging, НЕ control flow (RISK-04).
@@ -495,16 +507,19 @@
 
 - [ ] **W7-20. [GAP] Каталоги-сироты и .gitignore-дыры (CB-006/CB-007, P3)** `[REPO]`
   .gitignore: добавить artifacts/, output/, tmp/, opros/, newCatalog/, *.xlsx, *.bak2; 7 AI-конфигов (69 файлов ~1.1MB) — решить с владельцем какие живы (похоже только .kiro), .superpowers частично tracked вопреки gitignore.
+  ✅ **.gitignore-часть DONE:** добавлены `artifacts/`, `output/`, `tmp/`, `opros/`, `newCatalog/`, `*.xlsx`, `*.bak2` плюс локальные legacy HTML. Осталось: разбор tracked AI-конфигов и уже закоммиченных артефактов отдельным безопасным PR, чтобы не снести evidence-файлы аудита.
 
 - [ ] **W7-22. [NEW-509] Decimal→float в денежных payload (P2-системно)** `[REPO]`
   ~15+ мест (cart.py:583-939, manual_orders.py, utm_api_views.py, viewsets.py): суммы сериализуются `float(Decimal)` → потенциальные 0.30000000000000004 в JSON/пикселях. Модели правильные (DecimalField), проблема только на границе сериализации.
   Фикс: хелпер `money_str(d) -> str(d.quantize('0.01'))` или DjangoJSONEncoder; менять вместе с касанием соотв. файлов, не массово.
 
-- [ ] **W7-23. [NEW-511] Naive datetime.now() (P3)** `[REPO]`
+- [x] **W7-23. [NEW-511] Naive datetime.now() (P3)** `[REPO]`
   `promo.py:714-720`, `recommendations.py:202`, `utm_api_views.py:522` — `datetime.now()` без timezone вместо `timezone.now()`/`localdate()` → ��мещение окон «неделя/месяц» в отчётах промо.
+  ✅ **DONE:** `promo.py` использует `timezone.localdate()`/`timezone.now()`, `recommendations.py` — `timezone.localdate().month`, `utm_api_views.py` — `timezone.now()` для export filename; статический тест запрещает регресс в этих файлах.
 
-- [ ] **W7-24. [NEW-513] /search/ без пагинации (P3, из CRO-015 бонуса)** `[REPO]`
+- [x] **W7-24. [NEW-513] /search/ без пагинации (P3, из CRO-015 бонуса)** `[REPO]`
   `catalog.py:726 def search` — весь результат одним списком; широкий запрос = тяжёлый рендер. Фикс: пагинатор как в каталоге (с сохранением q= в GET — связка W5-2).
+  ✅ **DONE:** `/search/` использует `Paginator(..., PRODUCTS_PER_PAGE)`, `results_count=paginator.count`, передаёт `page_obj/paginator`, сохраняет `q` в нижних paginator links и `<link rel=next/prev>`. Регрессионный тест проверяет count, page size и `q=...&page=2`.
 
 - [ ] **W7-21. God-files — только план (CB-022)** `[REPO]`(docs)
   НЕ рефакторить сейчас. Порядок PR при декомпозиции: cart→admin→mgmt-models→mgmt-views→storefront-models; инвариант: пустой makemigrations-дифф; НЕ тро��ать `_load_legacy_views`. cart.py split (custom_cart.py) заодно закрывает CRO-034.
@@ -590,6 +605,8 @@ O-5 (GSC-экспорт) ──→ W5-6 (правки мета)
 
 | Дата | ID | Что сделано | Коммит/PR |
 |---|---|---|---|
+| 08.07.2026 | W3-6, W3-7, W5-2, W6-1/W6-2/W6-3, W7-1/W7-6/W7-20/W7-23/W7-24 | Кодовая пачка: PII-redaction filter + log-rotation script, removed status-save full-save fallbacks, row-lock for dropship admin status, pagination query preservation, search pagination, Monobank invoice reset on cart mutations, add-to-cart in-flight guard, custom-print badge/count, safe legacy/xlsx untracking, timezone-aware dates. SERVER/OWNER leftovers left open where required. | этот коммит |
+| 08.07.2026 | ADS-1/ADS-2/ADS-3 | Повторная проверка уже сделанных ADS-коммитов: head PageView + settings Pixel ID, main-site EN untranslated/fuzzy = 0/0, title fitting without mid-word ellipsis. DTF locale kept out of scope. | 5aacb163, c1c0de5b, 9e0994b2 |
 | 08.07.2026 | W1-7 | Mobile hero-CTA: 60vh-лок + overflow:hidden найден в 3 местах (base.html inline, cls-ultimate.css via inline_static, critical-home.min.css) — во все добавлен mobile-override (height:auto, overflow:visible, min-height:60vh для CLS); проверено в реальном браузере 360×640 — обе CTA видимы; PWA-prompt: 30s + т��лько после взаимодействия, max-height 50vh | 0caf8b04, f59f7827 |
 | 08.07.2026 | W1-8 | `/test-analytics/` закрыт `@staff_member_required` (Purchase больше не стреляет в боевой Pixel от анонимов); SEO-тест обновлён | 5d2d91f4 |
 | 08.07.2026 | W1-2 | order_success — только владелец (user/session/recent_order_ids) или staff, чужой → 404; success-preview → staff-only; в monobank_return доступ выдаётся только по session-доказательствам | 5d2d91f4 |

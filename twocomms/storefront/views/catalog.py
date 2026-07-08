@@ -93,6 +93,13 @@ CATALOG_SHOWCASE_CARD_CONFIG = (
 )
 
 
+def _pagination_query_prefix(request):
+    params = request.GET.copy()
+    params.pop('page', None)
+    encoded = params.urlencode()
+    return f'{encoded}&' if encoded else ''
+
+
 def _match_showcase_category(categories, config):
     slugs = {slug.lower() for slug in config['slugs']}
     tokens = tuple(token.lower() for token in config['tokens'])
@@ -638,6 +645,7 @@ def catalog(request, cat_slug=None):
             'selected_color_slugs': selected_color_slugs,
             'has_active_color_filter': has_active_color_filter,
             'color_filter_reset_url': color_filter_reset_url,
+            'pagination_query_prefix': _pagination_query_prefix(request),
             # Phase 10 — structured SEO blocks shown after the products grid.
             'category_seo_blocks': get_category_seo_blocks(category) if category else [],
             # Phase 10b — split layout: tabs (top_menu/top_filters/top_queries/
@@ -796,7 +804,9 @@ def search(request):
         color_filter_reset_url = build_reset_url(request) if has_active_color_filter else ''
         filtered_search_qs = apply_color_filter(base_search_qs, selected_color_slugs)
 
-        product_list = list(filtered_search_qs)
+        paginator = Paginator(filtered_search_qs, PRODUCTS_PER_PAGE)
+        page_obj = paginator.get_page(request.GET.get('page'))
+        product_list = list(page_obj.object_list)
         color_previews = build_color_preview_map(product_list)
 
         for product in product_list:
@@ -817,14 +827,17 @@ def search(request):
                 'show_category_cards': False,
                 'selected_category': selected_category,
                 'query': query,
-                'results_count': len(product_list),
+                'results_count': paginator.count,
                 'is_search_page': True,
+                'page_obj': page_obj,
+                'paginator': paginator,
                 'public_product_order_version': public_product_order_version,
                 'public_category_version': public_category_version,
                 'available_colors': available_colors,
                 'selected_color_slugs': selected_color_slugs,
                 'has_active_color_filter': has_active_color_filter,
                 'color_filter_reset_url': color_filter_reset_url,
+                'pagination_query_prefix': _pagination_query_prefix(request),
             }
         )
     except Exception as e:

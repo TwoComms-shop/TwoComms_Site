@@ -184,6 +184,71 @@ class MonobankWebhookSecurityTests(TestCase):
         self.assertEqual(self.order.payment_status, 'unpaid')
 
 
+class MonobankStatusPersistenceTests(TestCase):
+    def setUp(self):
+        self.order = Order.objects.create(
+            full_name='Persistence Buyer',
+            phone='+380501112233',
+            city='Київ',
+            np_office='Відділення №1',
+            pay_type='online_full',
+            status='new',
+            payment_status='paid',
+            total_sum=Decimal('260'),
+            payment_invoice_id='inv-persist-1',
+        )
+
+    def test_duplicate_success_save_error_does_not_fallback_to_full_save(self):
+        from storefront.views.utils import _record_monobank_status_locked
+
+        with patch.object(self.order, 'save', side_effect=RuntimeError('db down')) as save_mock:
+            with self.assertRaises(RuntimeError):
+                _record_monobank_status_locked(
+                    self.order,
+                    {'status': 'success', 'invoiceId': 'inv-persist-1'},
+                    source='test',
+                )
+
+        self.assertEqual(save_mock.call_count, 1)
+        self.assertEqual(save_mock.call_args.kwargs, {'update_fields': ['payment_payload']})
+
+    def test_status_transition_save_error_does_not_fallback_to_full_save(self):
+        from storefront.views.utils import _record_monobank_status_locked
+
+        self.order.payment_status = 'unpaid'
+
+        with patch.object(self.order, 'save', side_effect=RuntimeError('db down')) as save_mock:
+            with self.assertRaises(RuntimeError):
+                _record_monobank_status_locked(
+                    self.order,
+                    {'status': 'success', 'invoiceId': 'inv-persist-1'},
+                    source='test',
+                )
+
+        self.assertEqual(save_mock.call_count, 1)
+        self.assertEqual(
+            save_mock.call_args.kwargs,
+            {'update_fields': ['payment_payload', 'payment_status']},
+        )
+
+    def test_pending_status_save_error_does_not_fallback_to_full_save(self):
+        from storefront.views.utils import _record_monobank_status_locked
+
+        with patch.object(self.order, 'save', side_effect=RuntimeError('db down')) as save_mock:
+            with self.assertRaises(RuntimeError):
+                _record_monobank_status_locked(
+                    self.order,
+                    {'status': 'processing', 'invoiceId': 'inv-persist-1'},
+                    source='test',
+                )
+
+        self.assertEqual(save_mock.call_count, 1)
+        self.assertEqual(
+            save_mock.call_args.kwargs,
+            {'update_fields': ['payment_payload', 'payment_status']},
+        )
+
+
 class MonobankReturnSecurityTests(TestCase):
     def setUp(self):
         self.order = Order.objects.create(

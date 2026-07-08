@@ -518,7 +518,11 @@ class NovaPoshtaService:
                     try:
                         order.save(update_fields=['payment_payload'])
                     except Exception:
-                        order.save()
+                        logger.exception(
+                            "Failed to persist Facebook purchase flag for order %s",
+                            order.order_number,
+                        )
+                        raise
                     logger.info(f"📊 Facebook Purchase event sent for order {order.order_number}")
                 else:
                     logger.warning(f"⚠️ Failed to send Facebook Purchase event for order {order.order_number}")
@@ -561,7 +565,11 @@ class NovaPoshtaService:
                 try:
                     order.save(update_fields=['payment_payload'])
                 except Exception:
-                    order.save()
+                    logger.exception(
+                        "Failed to persist TikTok purchase flag for order %s",
+                        order.order_number,
+                    )
+                    raise
                 logger.info(f"📈 TikTok Purchase event sent for order {order.order_number} (delivery)")
             else:
                 logger.warning(f"⚠️ Failed to send TikTok Purchase event for order {order.order_number}")

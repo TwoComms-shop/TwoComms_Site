@@ -810,6 +810,34 @@ class CustomPrintPageTests(TestCase):
         )
         self.assertEqual(self.client.session.get(SESSION_CUSTOM_CART_KEY), {})
 
+    def test_custom_print_remove_resets_pending_monobank_invoice(self):
+        from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
+
+        session = self.client.session
+        session[SESSION_CUSTOM_CART_KEY] = {
+            "custom:77": {
+                "lead_id": 77,
+                "lead_number": "CP-77",
+                "label": "Худі · Спереду",
+                "quantity": 1,
+                "final_total": 1800,
+            }
+        }
+        session["monobank_invoice_id"] = "inv-stale"
+        session["monobank_pending_order_id"] = 123
+        session.save()
+
+        response = self._post(
+            reverse("custom_print_remove"),
+            {"key": "custom:77"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        session = self.client.session
+        self.assertNotIn("monobank_invoice_id", session)
+        self.assertNotIn("monobank_pending_order_id", session)
+
     def test_cart_page_renders_custom_only_pending_item_with_full_details_and_no_submit_review_step(self):
         from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
         from storefront.models import CustomPrintLead, CustomPrintModerationStatus

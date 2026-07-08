@@ -10,6 +10,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 
+from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
 from storefront.models import Category, Product, ProductFitOption, PromoCode
 
 
@@ -191,6 +192,20 @@ class UpdateAndRemoveCartTests(CartViewTestCase):
         self.assertEqual(payload["total"], 500.0)
         self.assertEqual(self.client.session["cart"][cart_key]["qty"], 5)
 
+    def test_update_cart_resets_pending_monobank_invoice(self):
+        cart_key = self.set_cart(qty=2)
+        session = self.client.session
+        session["monobank_invoice_id"] = "inv-stale"
+        session["monobank_pending_order_id"] = 123
+        session.save()
+
+        response = self.client.post(reverse("update_cart"), {"cart_key": cart_key, "qty": 3})
+
+        self.assertEqual(response.status_code, 200)
+        session = self.client.session
+        self.assertNotIn("monobank_invoice_id", session)
+        self.assertNotIn("monobank_pending_order_id", session)
+
     def test_update_cart_caps_quantity(self):
         """W1-13 (NEW-508): верхний cap в update_cart."""
         from storefront.views.cart import MAX_CART_ITEM_QTY
@@ -232,6 +247,28 @@ class UpdateAndRemoveCartTests(CartViewTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["removed"], [])
 
+    def test_remove_from_cart_does_not_delete_variants_when_exact_key_is_stale(self):
+        current_key = self.set_cart(size="M")
+        response = self.client.post(reverse("cart_remove"), {"key": f"{self.product.id}:L:default"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["removed"], [])
+        self.assertIn(current_key, self.client.session["cart"])
+
+    def test_remove_from_cart_resets_pending_monobank_invoice_when_removed(self):
+        cart_key = self.set_cart(qty=2)
+        session = self.client.session
+        session["monobank_invoice_id"] = "inv-stale"
+        session["monobank_pending_order_id"] = 123
+        session.save()
+
+        response = self.client.post(reverse("cart_remove"), {"key": cart_key})
+
+        self.assertEqual(response.status_code, 200)
+        session = self.client.session
+        self.assertNotIn("monobank_invoice_id", session)
+        self.assertNotIn("monobank_pending_order_id", session)
+
 
 class CartUtilityEndpointTests(CartViewTestCase):
     def test_clear_cart_ajax_empties_cart_and_promo_session(self):
@@ -259,6 +296,52 @@ class CartUtilityEndpointTests(CartViewTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["cart_count"], 3)
+
+    def test_get_cart_count_includes_custom_print_cart(self):
+        self.set_cart(qty=3)
+        session = self.client.session
+        session[SESSION_CUSTOM_CART_KEY] = {
+            "custom:1": {"quantity": 2},
+            "custom:2": {"quantity": "bad"},
+        }
+        session.save()
+
+        response = self.client.get(reverse("get_cart_count"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["cart_count"], 6)
+
+    def test_cart_summary_does_not_mutate_session_for_missing_products(self):
+        session = self.client.session
+        session["cart"] = {
+            "999:M:default": {
+                "product_id": 999,
+                "qty": 1,
+                "size": "M",
+                "color_variant_id": None,
+            }
+        }
+        session["monobank_invoice_id"] = "inv-stale"
+        session["monobank_pending_order_id"] = 123
+        session.save()
+
+        response = self.client.get(reverse("cart_summary"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 0)
+        self.assertEqual(response.json()["total"], 0.0)
+        session = self.client.session
+        self.assertIn("999:M:default", session["cart"])
+        self.assertEqual(session["monobank_invoice_id"], "inv-stale")
+        self.assertEqual(session["monobank_pending_order_id"], 123)
+
+    def test_main_js_guards_global_add_to_cart_double_clicks(self):
+        js_path = "twocomms/twocomms_django_theme/static/js/main.js"
+        with open(js_path, encoding="utf-8") as handle:
+            js = handle.read()
+
+        self.assertIn("btn.dataset.addToCartPending", js)
+        self.assertIn("delete btn.dataset.addToCartPending", js)
 
     def test_cart_items_api_exposes_fit_label(self):
         self.set_cart(qty=1, fit_option_code="classic", fit_option_label="Класичний")

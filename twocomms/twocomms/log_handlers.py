@@ -15,10 +15,38 @@ W3-2 (TD-022/TECH-041): Telegram-алерты для серверных ошиб
 """
 
 import logging
+import re
 import threading
 
 WINDOW_SECONDS = 600
 MAX_ALERTS_PER_WINDOW = 5
+EMAIL_RE = re.compile(r'(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b')
+PHONE_RE = re.compile(
+    r'(?<![\w])(?:\+?380|0)[\s-]?\(?\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)'
+)
+LONG_NUMBER_RE = re.compile(r'(?<!\d)\d{12,19}(?!\d)')
+
+
+def redact_pii(text):
+    """Mask common PII shapes before they reach persistent logs."""
+    if not text:
+        return text
+    text = EMAIL_RE.sub('[email]', str(text))
+    text = PHONE_RE.sub('[phone]', text)
+    text = LONG_NUMBER_RE.sub('[number]', text)
+    return text
+
+
+class PIIRedactionFilter(logging.Filter):
+    """Redact email/phone/long numeric identifiers from log records."""
+
+    def filter(self, record):
+        try:
+            record.msg = redact_pii(record.getMessage())
+            record.args = ()
+        except Exception:
+            pass
+        return True
 
 
 class TelegramAlertHandler(logging.Handler):

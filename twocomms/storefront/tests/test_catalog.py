@@ -241,6 +241,23 @@ class SearchViewTests(CatalogViewTestCase):
         self.assertIn("Published Two", product_titles)
         self.assertNotIn("Draft Product", product_titles)
 
+    def test_search_results_are_paginated_and_keep_query_param(self):
+        from storefront.views.utils import PRODUCTS_PER_PAGE
+
+        for index in range(PRODUCTS_PER_PAGE + 3):
+            self.create_product(
+                title=f"Searchable Product {index:02d}",
+                slug=f"searchable-product-{index:02d}",
+            )
+
+        response = self.client.get(reverse("search"), {"q": "Searchable"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["results_count"], PRODUCTS_PER_PAGE + 3)
+        self.assertEqual(len(response.context["products"]), PRODUCTS_PER_PAGE)
+        self.assertTrue(response.context["page_obj"].has_next())
+        self.assertContains(response, "?q=Searchable&amp;page=2")
+
 
 class LoadMoreProductsTests(CatalogViewTestCase):
     def test_load_more_returns_json_page_metadata(self):

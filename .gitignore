@@ -138,6 +138,8 @@ venv.bak/
 # Temporary debug / SSH wrappers — ПЕРСОНАЛЬНЫЕ скрипты с паролями
 .tmp_*
 **/.tmp_*
+tmp_old_index.html
+twocomms/twocomms_django_theme/templates/pages/*_old.html
 .kiro/scratch/
 # Workspace MCP-конфиг с секретами (Context7 API key, web-to-mcp slug и т.п.).
 # Шаблон — .kiro/settings/mcp.example.json — коммитим, реальный mcp.json — нет.
@@ -201,6 +203,17 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+*.bak2
+
+# Generated/local audit artifacts
+artifacts/
+output/
+tmp/
+opros/
+newCatalog/
+
+# Private/generated spreadsheets
+*.xlsx
 
 # Server logs
 server.log
