@@ -41,6 +41,10 @@ def spectacular_redoc_view(request, *args, **kwargs):
 
     return SpectacularRedocView.as_view(url_name='api-schema')(request, *args, **kwargs)
 
+# W3-2 (TECH-041): кастомный handler500 — инцидент-код в user-facing
+# сообщении + маппинг кода на трейсбек в логах/Telegram-алерте.
+handler500 = 'twocomms.error_views.server_error'
+
 urlpatterns = [
     # Phase 17a — language switcher endpoint (POST). Stays outside i18n_patterns
     # so it is reachable from any prefix.

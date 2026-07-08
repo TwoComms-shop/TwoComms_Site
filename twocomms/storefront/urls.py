@@ -142,6 +142,9 @@ urlpatterns = [
     path('api/track-event/', csrf_exempt(_module_view('storefront.views.api', 'track_event')), name='track_event'),
     # W3-3: ленивая выдача csrftoken + analytics-кук (см. analytics_bootstrap)
     path('api/bootstrap/', _module_view('storefront.views.api', 'analytics_bootstrap'), name='analytics_bootstrap'),
+    # W3-2: приёмник клиентских JS-ошибок (window.onerror → client_errors.log).
+    # csrf_exempt на обёртке обязателен — как у rum_beacon выше.
+    path('api/client-error/', csrf_exempt(_module_view('storefront.views.api', 'client_error')), name='client_error'),
     path('cart/clean/', views.clean_cart, name='clean_cart'),
     # path('checkout/', views.checkout, name='checkout'), # REMOVED: Dead code
     # auth - using modular auth views with proper password validation

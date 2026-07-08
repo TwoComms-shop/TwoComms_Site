@@ -15,6 +15,7 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.translation import gettext as _
+from django_ratelimit.decorators import ratelimit
 
 from ..models import CustomPrintLead, Product, SurveySession, UserAction
 from ..services.catalog_helpers import get_categories_cached
@@ -43,6 +44,41 @@ def analytics_bootstrap(request):
     from django.middleware.csrf import get_token
 
     get_token(request)  # помечает CSRF_COOKIE_USED → middleware поставит cookie
+    response = JsonResponse({'ok': True})
+    response['Cache-Control'] = 'no-store, private'
+    return response
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@ratelimit(key='ip', rate='10/m', method='POST', block=False)
+def client_error(request):
+    """
+    W3-2 (TECH-041): приёмник клиентских JS-ошибок.
+
+    base.html вешает window.onerror/unhandledrejection и шлёт сюда краткий
+    отчёт. Пишем в отдельный лог client_errors.log (logger
+    storefront.client_errors, без Telegram-алертов — фронтовые ошибки
+    массовые и не должны флудить админа). Rate-limit 10/m/IP + жёсткая
+    обрезка полей: это публичный endpoint.
+    """
+    if getattr(request, 'limited', False):
+        return JsonResponse({'ok': False}, status=429)
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return JsonResponse({'ok': False}, status=400)
+
+    def _s(key, limit):
+        value = payload.get(key)
+        return str(value)[:limit] if value is not None else ''
+
+    logging.getLogger('storefront.client_errors').info(
+        'msg=%s | url=%s | src=%s:%s | ua=%s',
+        _s('message', 500), _s('url', 300),
+        _s('source', 200), _s('line', 10),
+        (request.META.get('HTTP_USER_AGENT') or '')[:200],
+    )
     response = JsonResponse({'ok': True})
     response['Cache-Control'] = 'no-store, private'
     return response
@@ -300,7 +336,7 @@ def rum_beacon(request):
         metrics = data.get('metrics') or {}
         if not isinstance(metrics, dict):
             metrics = {}
-        # Огрубляем и не логируем ничего, кроме ожидаемых полей — защита от мусора
+        # Огрубляем и не ��огируем ничего, кроме ожидаемых полей — защита от мусора
         allowed = {'LCP', 'CLS', 'INP', 'FCP', 'TTFB', 'FID'}
         safe_metrics = {k: metrics[k] for k in allowed if k in metrics}
 

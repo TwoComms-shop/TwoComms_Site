@@ -1,0 +1,32 @@
+{# W3-2 (TECH-041): standalone 500-страница. НЕ extends base.html — #}
+{# если упал сам base.html или контекст-процессор, наследование #}
+{# зациклит ошибку. Минимум зависимостей: без static, без i18n-тегов. #}
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Помилка сервера — TwoComms</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0b0b0f; color: #f2f2f5; font-family: Inter, system-ui, -apple-system, sans-serif; }
+    .box { max-width: 28rem; padding: 2rem; text-align: center; }
+    h1 { font-size: 1.5rem; margin: 0 0 0.75rem; }
+    p { line-height: 1.5; color: #b6b6c2; margin: 0 0 1rem; }
+    code { display: inline-block; background: #1a1a24; border: 1px solid #2c2c3a; border-radius: 0.375rem; padding: 0.25rem 0.75rem; font-size: 1rem; letter-spacing: 0.08em; color: #ffd166; }
+    a { display: inline-block; margin-top: 1.25rem; color: #0b0b0f; background: #f2f2f5; text-decoration: none; padding: 0.6rem 1.4rem; border-radius: 0.5rem; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main class="box">
+    <h1>Щось пішло не так</h1>
+    <p>Сталася помилка на сервері. Ми вже отримали сповіщення і працюємо над виправленням.</p>
+    {% if incident_code %}
+      <p>Якщо звертатиметесь до підтримки, назвіть код інциденту:</p>
+      <code>{{ incident_code }}</code>
+    {% endif %}
+    <br>
+    <a href="/">Повернутися на головну</a>
+  </main>
+</body>
+</html>

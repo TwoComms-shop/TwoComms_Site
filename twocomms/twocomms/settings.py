@@ -508,6 +508,23 @@ LOGGING = {
             'encoding': 'utf-8',
             'delay': True,
         },
+        # W3-2 (TD-022): ERROR → Telegram-алерт админу (rate-limited 5/10мин,
+        # отправка в daemon-потоке). Раньше 500-ки уходили в stderr.log
+        # «в никуда» — узнавали от покупателей.
+        'telegram_alert': {
+            'level': 'ERROR',
+            'class': 'twocomms.log_handlers.TelegramAlertHandler',
+        },
+        # W3-2: client-side ошибки (window.onerror) — отдельный файл.
+        'client_error_file': {
+            'level': 'INFO',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(BASE_DIR / 'client_errors.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 3,
+            'encoding': 'utf-8',
+            'delay': True,
+        },
     },
     'loggers': {
         'django': {
@@ -515,8 +532,15 @@ LOGGING = {
             'level': os.environ.get('DJANGO_LOG_LEVEL', 'INFO'),
         },
         'django.request': {
-            'handlers': ['app_error_file'],
+            # W3-2: + telegram_alert — 500-ки теперь видны сразу
+            'handlers': ['app_error_file', 'telegram_alert'],
             'level': 'ERROR',
+            'propagate': False,
+        },
+        # W3-2: клиентские ошибки с /api/client-error/
+        'storefront.client_errors': {
+            'handlers': ['client_error_file'],
+            'level': 'INFO',
             'propagate': False,
         },
         'storefront.social_pipeline': {
