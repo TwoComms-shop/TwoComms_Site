@@ -35,6 +35,12 @@ def data_deletion(request):
     return response
 
 
+def app_review_info(request):
+    response = render(request, "management/app_review_info.html")
+    response["Cache-Control"] = "public, max-age=300"
+    return response
+
+
 def _require_admin_json(request):
     if not _is_admin(request.user):
         return JsonResponse({"success": False, "error": "Доступ лише для адміністраторів."}, status=403)

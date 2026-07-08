@@ -1,0 +1,130 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DIRECT_BOT App Review Information</title>
+  <meta name="description" content="Public App Review information for DIRECT_BOT, the twocomms Instagram Direct support bot.">
+  <link rel="icon" href="{% static 'faviconMNG/faviconMNG.ico' %}" sizes="any" type="image/x-icon">
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5e6a7d; --line:#dde4ee; --soft:#f4f7fb; --panel:#fff; --accent:#2457a6; --ok:#0d7a55; --warn:#8a4b10; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#eef3f8; color:var(--ink); font-family:Inter, Arial, sans-serif; line-height:1.62; }
+    .page { min-height:100vh; padding:34px 18px 48px; background:linear-gradient(180deg,rgba(255,255,255,.84),rgba(238,243,248,.96)),#eef3f8; }
+    .shell { width:min(1060px,100%); margin:0 auto; }
+    .hero, .content { border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:0 22px 58px rgba(31,44,68,.08); }
+    .hero { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:22px; align-items:start; padding:30px; }
+    .brand-row { display:flex; align-items:center; gap:13px; margin-bottom:18px; }
+    .brand-mark { display:inline-flex; align-items:center; justify-content:center; width:48px; height:48px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    .brand-mark img { width:31px; height:31px; object-fit:contain; }
+    .brand-name { margin:0; color:var(--muted); font-size:.82rem; font-weight:800; letter-spacing:0; text-transform:uppercase; }
+    h1 { max-width:820px; margin:0 0 12px; font-size:clamp(2rem,4.5vw,3.1rem); line-height:1.05; letter-spacing:0; }
+    .hero-copy { max-width:810px; margin:0; color:var(--muted); font-size:1.08rem; }
+    .status { min-width:250px; padding:17px; border:1px solid #cde8dc; border-radius:8px; background:#f2fbf7; color:#174a39; }
+    .status strong { display:block; margin-bottom:5px; color:var(--ok); }
+    .meta, .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:14px 0 0; }
+    .card { padding:15px; border:1px solid var(--line); border-radius:8px; background:rgba(255,255,255,.76); }
+    .card b { display:block; margin-bottom:3px; color:var(--ink); font-size:.9rem; }
+    .card span, .card p { color:var(--muted); font-size:.92rem; }
+    .content { margin-top:18px; padding:30px; }
+    .section { padding:24px 0; border-top:1px solid var(--line); }
+    .section:first-child { padding-top:0; border-top:0; }
+    h2 { margin:0 0 11px; font-size:1.35rem; line-height:1.25; letter-spacing:0; }
+    p { margin:0 0 12px; }
+    ul { margin:0; padding-left:22px; }
+    li + li { margin-top:8px; }
+    a { color:var(--accent); font-weight:700; }
+    .notice { margin-top:14px; padding:17px; border:1px solid #f1d2aa; border-radius:8px; background:#fff8ed; color:var(--warn); }
+    .footer-note { margin:18px 0 0; color:var(--muted); font-size:.92rem; text-align:center; }
+    @media (max-width:820px) { .hero { grid-template-columns:1fr; padding:22px; } .status { min-width:0; } .meta, .grid { grid-template-columns:1fr; } .content { padding:22px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="shell">
+      <header class="hero">
+        <div>
+          <div class="brand-row">
+            <span class="brand-mark"><img src="{% static 'img/logo.svg' %}" alt="TwoComms logo"></span>
+            <div>
+              <p class="brand-name">twocomms / TwoComms</p>
+              <p class="brand-name">DIRECT_BOT App Review</p>
+            </div>
+          </div>
+          <h1>DIRECT_BOT App Review Information</h1>
+          <p class="hero-copy">
+            DIRECT_BOT, App ID 2120980214971807, is used only for Instagram Direct customer support on the official twocomms Instagram account.
+          </p>
+        </div>
+        <aside class="status" aria-label="Public access status">
+          <strong>Public Review Page</strong>
+          <span>This page is public so reviewers can understand the app without accessing private controls or customer data.</span>
+        </aside>
+      </header>
+
+      <section class="meta" aria-label="App metadata">
+        <div class="card"><b>Meta App</b><span>DIRECT_BOT, App ID 2120980214971807</span></div>
+        <div class="card"><b>Instagram Account</b><span><a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a></span></div>
+        <div class="card"><b>AI Assistant</b><span>Google Gemini Flash AI, currently Gemini 3.1 Flash / compatible Gemini Flash model</span></div>
+        <div class="card"><b>Requested Permission</b><span>instagram_business_manage_messages / Instagram Direct messaging support</span></div>
+        <div class="card"><b>Owner Contact</b><span><a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a></span></div>
+        <div class="card"><b>Last updated</b><span>July 9, 2026</span></div>
+      </section>
+
+      <article class="content">
+        <section class="section">
+          <h2>1. What DIRECT_BOT does</h2>
+          <p>
+            DIRECT_BOT receives Instagram Direct messages sent to <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a> and helps customers with clothing-related questions. It can answer about product availability, sizes, colors, delivery, payment, order status, returns, and handoff to a human manager.
+          </p>
+          <p>
+            The bot does not post on behalf of users, does not access unrelated Instagram content, does not sell data, and does not message users outside the customer support conversation allowed by Meta's messaging rules.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>2. Public pages for Meta settings</h2>
+          <div class="grid">
+            <div class="card"><b>Privacy Policy URL</b><p><a href="/privacy-policy/">https://management.twocomms.shop/privacy-policy/</a></p></div>
+            <div class="card"><b>Terms of Service URL</b><p><a href="/terms-of-service/">https://management.twocomms.shop/terms-of-service/</a></p></div>
+            <div class="card"><b>User Data Deletion</b><p><a href="/data-deletion/">https://management.twocomms.shop/data-deletion/</a></p></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>3. Why the admin dashboard is not public</h2>
+          <p>
+            The operational bot dashboard contains private controls and customer support data: start/stop controls, API credential source settings, AI configuration, prompt/knowledge settings, sender allowlist, customer list, conversation snippets, and diagnostic logs.
+          </p>
+          <p>
+            For security and privacy, the dashboard is restricted to authenticated TwoComms administrators. Public access to these controls would allow unauthorized users to stop the bot, change settings, view customer data, or disrupt support operations.
+          </p>
+          <div class="notice">
+            Reviewers can use this public page, the privacy policy, terms, data deletion page, screenshots/screencast, and any reviewer credentials provided in Meta App Review. The actual control panel remains private by design.
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>4. User-facing behavior</h2>
+          <ul>
+            <li>A customer sends a Direct message to the official Instagram account <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a>.</li>
+            <li>DIRECT_BOT drafts or sends a customer support reply using the configured twocomms support rules and Google Gemini Flash AI.</li>
+            <li>If the conversation requires a human decision, the conversation can be handed to a manager.</li>
+            <li>Order-related data is used only to prepare or support the customer's order.</li>
+          </ul>
+        </section>
+
+        <section class="section">
+          <h2>5. Contact</h2>
+          <p>
+            Questions about DIRECT_BOT, App Review, privacy, terms, or user data deletion can be sent to <a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a>.
+          </p>
+        </section>
+      </article>
+
+      <p class="footer-note">twocomms / TwoComms · DIRECT_BOT App Review Information · Public page for Meta reviewers</p>
+    </div>
+  </main>
+</body>
+</html>
