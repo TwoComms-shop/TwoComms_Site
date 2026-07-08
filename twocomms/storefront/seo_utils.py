@@ -60,6 +60,27 @@ def _truncate_at_word_boundary(text: str, limit: int) -> str:
     return f"{cut}..."
 
 
+# ADS-3: лимит <title>. Google показывает ~600px ≈ 65-70 символов; прежний
+# жёсткий limit=60 с «...» давал «недописанные» тайтлы в SERP и соцпревью.
+TITLE_LIMIT = 70
+
+
+def _fit_title(text: str, limit: int = TITLE_LIMIT) -> str:
+    """Подгоняет <title> под лимит БЕЗ многоточия.
+
+    ADS-3: «...» в тайтле выглядит как обрыв (SERP сам ставит своё
+    многоточие при переполнении по пикселям). Режем по границе слова и
+    чистим висящие разделители («|», «—», «-») в конце.
+    """
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,.;:-–—|(«\"'")
+
+
 def _ai_enabled(obj) -> bool:
     """Returns True only if the object explicitly opted into AI-driven SEO.
 
@@ -475,7 +496,8 @@ class SEOKeywordGenerator:
         """Генерирует мета-заголовок для товара"""
         stored_title = _clean_text(getattr(product, "seo_title", ""))
         if stored_title:
-            return _truncate_at_word_boundary(stored_title, 60)
+            # ADS-3: было limit=60 c «...» — обрубленные тайтлы в SERP
+            return _fit_title(stored_title)
 
         # SEO 2026-05-19 (VILNI deep review §13.13 — PDP title
         # optimisation for low-CTR products). The «бентежне» print
@@ -492,14 +514,21 @@ class SEOKeywordGenerator:
             patterned = (
                 f"Принт «Бентежне» — {product.category.name} | TwoComms"
             )
-            return _truncate_at_word_boundary(patterned, 60)
+            return _fit_title(patterned)
+
+        # ADS-3: деградируем аккуратно — если полный шаблон с категорией не
+        # влезает, пробуем без категории; и только потом режем по слову.
+        # Раньше: жёсткий limit=60 + «...» → обрубки в SERP.
+        if product.category:
+            with_category = f"{product.title} ({product.category.name}) - TwoComms"
+            if len(with_category) <= TITLE_LIMIT:
+                return with_category
 
         title = f"{product.title} - TwoComms"
+        if len(title) <= TITLE_LIMIT:
+            return title
 
-        if product.category:
-            title = f"{product.title} ({product.category.name}) - TwoComms"
-
-        return _truncate_at_word_boundary(title, 60)
+        return _fit_title(str(product.title))
 
 
 class SEOMetaGenerator:
@@ -1600,7 +1629,7 @@ class StructuredDataGenerator:
             "name": "Артем Синіло",
             "jobTitle": _("Засновник TwoComms"),
             "description": _(
-                "Засновник українського streetwear-бренду TwoComms із Харкова, "
+                "Засновник укр��їнського streetwear-бренду TwoComms із Харкова, "
                 "бойовий ветеран."
             ),
             "worksFor": {"@id": f"{base_url}#organization"},
