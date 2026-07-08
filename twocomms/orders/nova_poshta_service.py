@@ -214,7 +214,7 @@ class NovaPoshtaService:
                     )
                     return None
 
-                # Логируем полученную информацию
+                # Логируем получен��ую информацию
                 status = tracking_data.get('Status', 'Unknown')
                 status_code = tracking_data.get('StatusCode')
                 status_description = tracking_data.get('StatusDescription', '')
@@ -376,7 +376,12 @@ class NovaPoshtaService:
         # --- Уведомления и внешние события: строго вне транзакции/лока ---
         if decision['is_delivery']:
             if decision['payment_status_changed']:
+                # W2-3 (CRO-045): «получение посылки» = подтверждённая покупка
+                # ВО ВСЕХ слоях, а не только в Meta. До фикса COD-покупки видел
+                # только Meta CAPI; TikTok и внутренний UserAction — никогда.
                 self._send_facebook_purchase_event(order)
+                self._send_tiktok_purchase_event(order)
+                self._record_purchase_action(order)
             self._send_admin_delivery_notification(
                 order, decision['old_order_status'], decision['payment_status_changed']
             )
@@ -522,6 +527,73 @@ class NovaPoshtaService:
 
         except Exception as e:
             logger.exception(f"❌ Error sending Facebook Purchase event for order {order.order_number}: {e}")
+
+    def _send_tiktok_purchase_event(self, order):
+        """
+        W2-3в / AN-014: TikTok Purchase при получении посылки (COD-выкуп).
+
+        Симметрично Meta-пути: pre-check `purchase_sent` в payment_payload
+        защищает от дублей (например, если заказ уже был оплачен онлайн
+        и Purchase ушёл из webhook-пути).
+        """
+        try:
+            from .tiktok_events_service import get_tiktok_events_service
+
+            tiktok_service = get_tiktok_events_service()
+            if not tiktok_service.enabled:
+                logger.debug("TikTok Events API not enabled, skipping Purchase event")
+                return
+
+            payment_payload = order.payment_payload or {}
+            tiktok_events = payment_payload.get('tiktok_events', {})
+            if tiktok_events.get('purchase_sent'):
+                logger.info(
+                    f"📈 TikTok Purchase event already sent for order {order.order_number}, skipping duplicate"
+                )
+                return
+
+            success = tiktok_service.send_purchase_event(order)
+            if success:
+                tiktok_events['purchase_sent'] = True
+                tiktok_events['purchase_sent_at'] = timezone.now().isoformat()
+                payment_payload['tiktok_events'] = tiktok_events
+                order.payment_payload = payment_payload
+                try:
+                    order.save(update_fields=['payment_payload'])
+                except Exception:
+                    order.save()
+                logger.info(f"📈 TikTok Purchase event sent for order {order.order_number} (delivery)")
+            else:
+                logger.warning(f"⚠️ Failed to send TikTok Purchase event for order {order.order_number}")
+        except Exception as e:
+            logger.exception(f"❌ Error sending TikTok Purchase event for order {order.order_number}: {e}")
+
+    def _record_purchase_action(self, order):
+        """
+        W2-3б: внутренний UserAction 'purchase' при получении посылки.
+
+        До фикса COD-выкупы не попадали в UserAction вообще → внутренняя
+        воронка (view→ATC→checkout→purchase) не видела большинство покупок.
+        Дедуп: не пишем второй purchase для того же заказа.
+        """
+        try:
+            from storefront.models import UserAction
+            from storefront.utm_tracking import record_order_action
+
+            if UserAction.objects.filter(action_type='purchase', order_id=order.pk).exists():
+                logger.debug(
+                    f"UserAction purchase already recorded for order {order.order_number}, skipping"
+                )
+                return
+
+            record_order_action(
+                'purchase',
+                order,
+                cart_value=float(order.total_sum or 0),
+                metadata={'source': 'np_delivery', 'trigger': 'parcel_received'},
+            )
+        except Exception as e:
+            logger.exception(f"❌ Error recording purchase action for order {order.order_number}: {e}")
 
     def _send_admin_delivery_notification(self, order, old_status, payment_status_changed):
         """
@@ -801,7 +873,7 @@ class NovaPoshtaService:
         Returns:
             str: Отформатированное сообщение
         """
-        message = f"""📦 <b>ОНОВЛЕННЯ СТАТУСУ ПОСИЛКИ</b>
+        message = f"""📦 <b>��НОВЛЕННЯ СТАТУСУ ПОСИЛКИ</b>
 
 🆔 <b>Замовлення:</b> #{order.order_number}
 📋 <b>ТТН:</b> {order.tracking_number}

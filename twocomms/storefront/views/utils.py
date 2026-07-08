@@ -468,7 +468,7 @@ def _record_monobank_status(order, payload, source='api'):
     Args:
         order: Объект заказа
         payload: Данные от Monobank API
-        source: Источник данных ('api' и��и 'webhook')
+        source: Источник данных ('api' и����и 'webhook')
     """
     if not payload or not order or not getattr(order, 'pk', None):
         return
@@ -583,7 +583,7 @@ def _record_monobank_status_locked(order, payload, source='api'):
             prev_for_notify = normalized_previous or 'unpaid'
             pay_type_for_notify = pay_type
             transaction.on_commit(
-                lambda: _send_post_payment_events(order_pk, prev_for_notify, pay_type_for_notify)
+                lambda: _dispatch_post_payment_events(order_pk, prev_for_notify, pay_type_for_notify)
             )
 
         return
@@ -599,6 +599,38 @@ def _record_monobank_status_locked(order, payload, source='api'):
         order.save(update_fields=update_fields)
     except Exception:
         order.save()
+
+
+def _dispatch_post_payment_events(order_pk, previous_status, pay_type):
+    """
+    W2-9 (AN-011): запуск post-payment событий в фоновом daemon-потоке.
+
+    Meta CAPI retry использует блокирующий time.sleep (до ~3.5s суммарно
+    на 3 попытки с backoff) — в on_commit это держало воркер и задерживало
+    ответ вебхуку Monobank. Поток снимает блокировку с request-цикла;
+    DB-соединение потока закрывается в finally (иначе утечка коннектов).
+    В тестах (Django TestCase) поток не используется — иначе фоновые
+    записи ломают транзакционную изоляцию тестов.
+    """
+    import sys
+    import threading
+
+    # В тестовом раннере выполняем синхронно (транзакционная изоляция)
+    if 'test' in sys.argv:
+        _send_post_payment_events(order_pk, previous_status, pay_type)
+        return
+
+    def _runner():
+        from django.db import connection
+        try:
+            _send_post_payment_events(order_pk, previous_status, pay_type)
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    threading.Thread(target=_runner, daemon=True, name=f'post-payment-{order_pk}').start()
 
 
 def _send_post_payment_events(order_pk, previous_status, pay_type):

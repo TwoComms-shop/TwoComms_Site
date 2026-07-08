@@ -609,6 +609,30 @@ class FacebookConversionsService:
             )
             return False
 
+    def _extract_paid_amount(self, order):
+        """
+        W2-3д: фактически оплаченная сумма (грн) из payment_payload.
+
+        Monobank webhook кладёт paidAmount/amount в копейках в
+        payment_payload; для COD-выкупа (NP received) paid = total_sum.
+        Возвращает float или None, если определить нельзя.
+        """
+        payload = order.payment_payload or {}
+        for key in ('paidAmount', 'paid_amount'):
+            raw = payload.get(key)
+            if raw:
+                try:
+                    return round(float(raw) / 100.0, 2)  # копейки → грн
+                except (TypeError, ValueError):
+                    pass
+        # COD: посылка получена → оплачена полностью
+        if order.payment_status == 'paid':
+            try:
+                return float(order.total_sum or 0) or None
+            except (TypeError, ValueError):
+                return None
+        return None
+
     def send_purchase_event(
         self,
         order,
@@ -650,6 +674,21 @@ class FacebookConversionsService:
 
             # Custom Data (детали покупки)
             custom_data = self._prepare_custom_data(order)
+
+            # W2-3д (CRO-045): value = полная стоимость заказа (для ROAS),
+            # paid_value = фактически внесённая сумма. Для prepaid-заказов
+            # они различаются: без этого предоплата 200 грн выглядела как
+            # полная оплата 2600 грн.
+            try:
+                paid_value = self._extract_paid_amount(order)
+                if paid_value is not None:
+                    custom_data.custom_properties = {
+                        **(getattr(custom_data, 'custom_properties', None) or {}),
+                        'paid_value': paid_value,
+                        'payment_status': order.payment_status,
+                    }
+            except Exception:
+                logger.debug("Could not attach paid_value for order %s", order.order_number)
 
             # Создаем событие
             event = self.Event(
@@ -809,33 +848,10 @@ class FacebookConversionsService:
             )
             return False
 
-    def send_event_for_order_status(self, order) -> bool:
-        """
-        Автоматически определяет и отправляет нужное событие на основе статуса заказа.
-
-        Логика:
-        - payment_status = 'paid' → Purchase
-        - payment_status = 'prepaid' → Purchase
-        - payment_status = 'unpaid' или 'checking' → пропускаем (заявка без оплаты)
-
-        Args:
-            order: Объект заказа
-
-        Returns:
-            bool: True если событие отправлено
-        """
-        if order.payment_status in ('paid', 'prepaid', 'partial'):
-            return self.send_purchase_event(order)
-        elif order.payment_status in ('unpaid', 'checking'):
-            logger.info(
-                "Skipping Facebook event for order %s with payment_status=%s",
-                order.order_number,
-                order.payment_status,
-            )
-            return False
-        else:
-            logger.warning(f"Unknown payment_status for order {order.order_number}: {order.payment_status}")
-            return False
+    # W2-9: send_event_for_order_status удалён — мёртвый API без единого
+    # вызова; вся маршрутизация Purchase/Lead живёт в
+    # storefront/views/utils.py::_send_post_payment_events с дедуп-флагами
+    # в payment_payload. Держать второй (несогласованный) путь опасно.
 
 
 # Глобальный экземпляр сервиса
