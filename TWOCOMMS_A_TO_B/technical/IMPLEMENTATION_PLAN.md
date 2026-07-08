@@ -96,7 +96,7 @@
   Отчёт: `audit_report_payment_security.md`.
 
 - [x] **W1-4. 🔴 Промокоды: COD-путь мёртв + лимиты не работают (CRO-046)** `[REPO]`
-  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математ��������ка остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
+  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математ����������ка остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
   (а) checkout.py:224 читает мёртвый ключ `promo_code` (apply пишет `promo_code_id`) + несуществующие `active=True`/`is_valid()` → промокод в COD НЕ применяется никогда; (б) `record_usage()` — 0 call-sites → лимиты `one_time_per_user` мертвы; (в) prepay_200: остаток завышен на сумму скидки; (г) `promo.use()` сжигает лимит при СОЗДАНИИ инвойса.
   Фикс: (а) COD → логика monobank-пути (`promo_code_id` + `can_be_used_by_user` + `record_usage(user, order)`); (б) `record_usage` при УСПЕШНОЙ оплате; (в) математика остатка; (г) чистка `promo_code_data`; (д) событие `coupon_apply` (TECH-023).
   Приёмка: COD-заказ с промо имеет `discount_amount>0`; повторный one_time-код отклоняется; `PromoCodeUsage.count() > 0`.
@@ -130,7 +130,7 @@
 
 - [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
   Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё������ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
-  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандом��зи��оват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
+  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + ран��ом��зи��оват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
 - [x] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
   ✅ **DONE (коммит db0af339):** новый `_resolve_retail_invoice_status()` в monobank.py — retail-путь вебхука И `monobank_return` подтверждают деньги ТОЛЬКО pull-истиной (`GET /api/merchant/invoice/status`); для success-статусов сверяется `paidAmount` (fallback: finalAmount/amount) с ожидаемой суммой (`get_prepayment_amount()` для prepay_200, иначе `total_sum − discount_amount`); недоплата или сбой сверки → статус `processing` (заказ в checking, НЕ paid) + error-лог. Если pull не удался — success из недоверенного источника тоже даунгрейдится до processing. Тесты: `test_webhook_underpaid_amount_goes_to_checking`, `test_webhook_pull_failure_does_not_mark_paid`.
@@ -215,7 +215,7 @@
   - [x] **DB-002 (P2):** UserAction — денормализовать is_bot + индекс `(site_session, action_type)`. ✅ Индекс `idx_action_site_type` добавлен (миграция 0080); денормализация is_bot не нужна — после W2-4 бот-события в UserAction вообще не пишутся.
   - [x] **DB-003 (P3):** orphan UserAction.order_id 259, 260 — вычистить при retention-работах. ✅ Закрывается командой `cleanup_analytics_data` (шаг 3: удаление UserAction с несуществующими order_id); запуск на проде — `[SERVER]`.
   - [x] **[GAP] AN-039 (P3):** search-query пишется сырым — обрезка длины + маскировка (однострочник). ✅ record_search: обрезка до 200 симв. + маскировка email → `[email]` и 12-19-значных числовых последовательностей (карты) → `[number]`.
-  - [ ] **[GAP] AN-001/CB-034 (P2):** gtag.js G-109EFTWM05 грузится ПАРАЛЛЕЛЬНО GTM (риск двойного GA4 page_view); dataLayer получает 2 события на ATC (`AddToCart` + `add_to_cart`). Код-часть: убрать прямой gtag после сверки контейнера в��адельц��м (см. OWNER-1).
+  - [ ] **[GAP] AN-001/CB-034 (P2):** gtag.js G-109EFTWM05 грузится ПАРАЛЛЕЛЬНО GTM (риск двойного GA4 page_view); dataLayer получает 2 события на ATC (`AddToCart` + `add_to_cart`). Код-часть: убрать прямой gtag после сверки контейнера в����адельц��м (см. OWNER-1).
   - [ ] **[GAP] AN-003 (P2):** `payment_type` параметр не существует (TECH-007); `add_shipping_info`/`add_payment_info` в GA4-схеме отсутствуют; item_id листинга `TC-pid-default-S` н�� матчится с offer_id покупок.
   - [ ] **[GAP] NEW-406 (P3):** русский цвет в offer_id «TC-0020-ЧЕРНЫЙ-M» — латинизировать слаг цвета (согласовать с Merchant-фидом, не ломать существующие id без маппинга).
   - [ ] **[GAP] NEW-407 (P3):** legacy-дефолт `pay_type='cod'` в checkout.py:119 при отсутствии cod в UI — согласовать с W1-1 п.2.
@@ -230,15 +230,16 @@
   Приёмка: смена статуса заказа → Telegram-сообщение приходит.
   ✅ **DONE:** (1) битый импорт `from storefront.tasks import send_telegram_notification_task` в orders/telegram_notifications.py удалён (функция там не существует — импорт ВСЕГДА падал, async-ветки были мёртвым кодом); (2) обе мёртвые async-ветки (`send_message`, `send_personal_message`) вычищены — отправка синхронная, фоновость обеспечивает orders/tasks.py (daemon-thread, уже работал корректно); (3) `async_enabled=False` по умолчанию; (4) `CELERY_BEAT_SCHEDULE` удалён из settings.py — beat не запущен, survey-check не выполнялся никогда; cron-команда `check_survey_inactivity` уже существует — добавить в crontab `[SERVER]` (внесено в docs/OPS.md, дыра №5); (5) решение «Celery не возвращаем» зафиксировано в docs/OPS.md отдельным разделом. Синхронный шим в storefront/tasks.py ОСТАВЛЕН — он не no-op, а рабочий механизм для остальных `.delay()`-вызовов. Регрессия: 59 тестов (NP delivery + orders + checkout) зелёные.
 
-- [ ] **W3-2. Мониторинг ошибок с алертом (TD-022 → TECH-041)** `[REPO]`
+- [x] **W3-2. Мониторинг ошибок с алертом (TD-022 → TECH-041)** `[REPO]`
   django.request ERROR → stderr «в никуда»; window.onerror нет; handler500 нет.
   Фикс: ERROR-Handler → Telegram с rate-limit; `window.onerror`/`unhandledrejection` → `/api/client-error/`; инцидент-код в user-facing message.
+  ✅ **DONE:** (1) `TelegramAlertHandler` (twocomms/log_handlers.py) повешен на logger `django.request` уровня ERROR — алерт админу через существующий TelegramNotifier, rate-limit 5 алертов/10 мин (глобальный, по modulе-level state), отправка в daemon-потоке, сам handler никогда не роняет запрос; (2) `window.onerror` + `unhandledrejection` в base.html → POST `/api/client-error/` через sendBeacon (лимит 5 репортов/страницу, дедуп по message) → лог `client_errors.log` (отдельный logger `storefront.client_errors`, БЕЗ Telegram — фронтовые ошибки массовые); endpoint rate-limited 10/m/IP, поля жёстко обрезаются; (3) кастомный `handler500` (twocomms/error_views.py) — 8-символьный инцидент-код показывается пользователю и логируется рядом с трейсбеком (жалоба покупателя → конкретный traceback); standalone-шаблон 500.html (не extends base — если упал сам base, наследование зациклит ошибку) + hard-coded HTML fallback. Смоук: client-error 200/400/лог пишется, handler500 рендерит код. Регрессия: 63 теста зелёные.
 
 - [x] **W3-3. Server-side кэш выключен куками → LCP 4.8-16.4s (SEO-010)** `[REPO]`
   `Vary: Cookie` + `Set-Cookie` (csrftoken+twc_vid) на КАЖДОМ анонимном GET выключают LiteSpeed page cache → TTFB холодный 8-18s; интермиттентные 503/500.
   Фикс: не ставить csrftoken/twc_vid на анонимные GET (lazy-выдача при первом POST/взаимодействии); делать ВМЕСТЕ с W3-4.
   Приёмка: повторный анонимный GET = cache HIT; LCP mobile < 2.5s на 3 шаблонах.
-  ✅ **DONE:** (1) AnalyticsIdentityMiddleware: twc_vid/first-touch куки НЕ ставятся на кэшируемых анонимных GET — гейт `_analytics_cookie_allowed` (разрешено: не-GET, /api/bootstrap/, landing с utm/click-id/внешним referrer — там first-touch атрибуция важнее кэша); (2) `@ensure_csrf_cookie` снят с home/catalog; (3) get_token() убран из cache-hit пути `cache_page_for_anon`; (4) новый endpoint `/api/bootstrap/` (no-store) — ленивая выдача csrftoken+analytics-кук, дергается из base.html через requestIdleCallback только если csrftoken-cookie отсутствует (path добавлен в whitelist noise-фильтра). Тест: анонимный GET / → НОЛЬ Set-Cookie. Приёмка «LCP mobile < 2.5s» — замер на проде после деплоя `[SERVER]`.
+  ✅ **DONE:** (1) AnalyticsIdentityMiddleware: twc_vid/first-touch куки НЕ ставятся на кэшируемых анонимных GET — гейт `_analytics_cookie_allowed` (разрешено: не-GET, /api/bootstrap/, landing с utm/click-id/внешним referrer — там first-touch атрибуция важнее кэша); (2) `@ensure_csrf_cookie` снят с home/catalog; (3) get_token() убран из cache-hit пути `cache_page_for_anon`; (4) новый endpoint `/api/bootstrap/` (no-store) — ленивая выдача csrftoken+analytics-кук, дергается из base.html через requestIdleCallback только если csrftoken-cookie ��тсутствует (path добавлен в whitelist noise-фильтра). Тест: анонимный GET / → НОЛЬ Set-Cookie. Приёмка «LCP mobile < 2.5s» — замер на проде после деплоя `[SERVER]`.
 
 - [x] **W3-4. Кэш отдаёт чужой CSRF-токен (CRO-032, live-подтверждён)** `[REPO]`
   `cache_page_for_anon` кэширует HTML с чужим `csrfmiddlewaretoken` → POST `/i18n/setlang` = 403 для всех анонов на cache-hit.
@@ -303,7 +304,7 @@
   Приёмка: ни одного лида старше 7 дней в `new` без причины.
 
 - [ ] **W4-5. Кастом-принт в чекау��е (CRO-034, P2)** `[REPO]`
-  COD не проверяет цену approved-кастома (лид с ценой 0 уедет бесплатно — checkout.py:233 глотает ошибку); COD молча удаляет кастом-запис�� без lead_id; промокод дисконтирует согласованную цену кастома; брошенный инвойс не отвязывает lead.order.
+  COD не проверяет цену approved-кастома (лид с ценой 0 уедет бесплатно — checkout.py:233 глотает ошибку); COD молча удаляет кастом-запис���� без lead_id; промокод дисконтирует согласованную цену кастома; брошенный инвойс не отвязывает lead.order.
   Фикс: вынести `_split_custom_cart_entries` в общий модуль для обоих потоков; guard цены кастома.
 
 - [ ] **W4-6. Meta Ads spend-импорт (TECH-073) + офлайн-конверсии delivered/refused (TECH-074)** `[REPO]` + `[OWNER]`(токены) — после W4-1/W2-3.
@@ -458,7 +459,7 @@
   Фикс: хелпер `money_str(d) -> str(d.quantize('0.01'))` или DjangoJSONEncoder; менять вместе с касанием соотв. файлов, не массово.
 
 - [ ] **W7-23. [NEW-511] Naive datetime.now() (P3)** `[REPO]`
-  `promo.py:714-720`, `recommendations.py:202`, `utm_api_views.py:522` — `datetime.now()` без timezone вместо `timezone.now()`/`localdate()` → смещение окон «неделя/месяц» в отчётах промо.
+  `promo.py:714-720`, `recommendations.py:202`, `utm_api_views.py:522` — `datetime.now()` без timezone вместо `timezone.now()`/`localdate()` → ��мещение окон «неделя/месяц» в отчётах промо.
 
 - [ ] **W7-24. [NEW-513] /search/ без пагинации (P3, из CRO-015 бонуса)** `[REPO]`
   `catalog.py:726 def search` — весь результат одним списком; широкий запрос = тяжёлый рендер. Фикс: пагинатор как в каталоге (с сохранением q= в GET — связка W5-2).
