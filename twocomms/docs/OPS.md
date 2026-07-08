@@ -27,6 +27,17 @@
 2. Генерации Google Merchant feed (SEO-008) — фид статикой, устаревает.
 3. IndexNow/sitemap-пингов.
 4. logrotate для `tmp/*.log` (W3-6).
+5. **`manage.py check_survey_inactivity`** (W3-1/TD-015) — survey-репорты о брошенных опросах. Раньше висела в `CELERY_BEAT_SCHEDULE` (каждые 2 мин), но beat не запущен → не выполнялась никогда. Добавить cron `*/5 * * * *` `[SERVER]`.
+6. **`manage.py cleanup_analytics_data`** (W2-10/AN-051) — retention аналитики (UserAction >180д, неконверсионные UTMSession >90д, orphan-события). Добавить cron `20 4 * * 0` (раз в неделю) `[SERVER]`.
+
+### Решение: Celery НЕ возвращаем (W3-1 / TD-015)
+
+Прод-хостинг (shared, Passenger) не запускает Celery-воркер и beat; Redis-брокер
+с сервера не резолвится. Все `@shared_task` работают через синхронный шим
+(`storefront/tasks.py`), фоновость для Telegram-уведомлений — daemon-поток
+(`orders/tasks.py`). `CELERY_BEAT_SCHEDULE` в settings.py — мёртвый конфиг,
+периодика выполняется ТОЛЬКО через crontab (см. дыры 5-6 выше). Новую
+фоновую работу оформлять как management-команду + cron, НЕ как Celery-таск.
 
 ### Инварианты
 

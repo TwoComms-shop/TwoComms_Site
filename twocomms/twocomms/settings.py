@@ -954,6 +954,12 @@ else:
     }
 
 # ==================== CELERY CONFIGURATION ====================
+# W3-1 (TD-015): МЁРТВЫЙ КОНФИГ. На проде НЕТ Celery-воркера и beat;
+# Redis-брокер с сервера не резолвится. Решение зафиксировано в
+# docs/OPS.md: Celery не возвращаем, периодика — только crontab
+# (survey-check → `manage.py check_survey_inactivity`).
+# Блок оставлен, чтобы dev-окружения с установленным celery не падали
+# на импорте; НЕ добавляйте сюда новые таски/расписания.
 CELERY_BROKER_URL = REDIS_DSN
 CELERY_RESULT_BACKEND = REDIS_DSN
 
@@ -961,14 +967,10 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
-# CELERY_TASK_ALWAYS_EAGER = DEBUG  # Optional: run tasks synchronously in debug mode
 
-CELERY_BEAT_SCHEDULE = {
-    'survey-inactivity-check': {
-        'task': 'storefront.tasks.check_survey_inactivity_task',
-        'schedule': 120.0,
-    },
-}
+# CELERY_BEAT_SCHEDULE удалён (W3-1): survey-inactivity-check никогда не
+# выполнялся (beat не запущен) и создавал ложное ощущение работающей
+# периодики. Реальный запуск — cron: `manage.py check_survey_inactivity`.
 
 # ============================================================================
 # SESSION CONFIGURATION (E-COMMERCE BEST PRACTICES)
@@ -1289,7 +1291,7 @@ FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
 # Токен доступа для Events API (получается в TikTok Ads Manager)
 TIKTOK_EVENTS_ACCESS_TOKEN = os.environ.get('TIKTOK_EVENTS_ACCESS_TOKEN', '')
 
-# Pixel Code (тот же что и для браузерного пикселя)
+# Pixel Code (тот же что и для ��раузерного пикселя)
 TIKTOK_EVENTS_PIXEL_CODE = os.environ.get('TIKTOK_EVENTS_PIXEL_CODE', '')
 
 # Опциональный тестовый код события (для тестов через браузер)

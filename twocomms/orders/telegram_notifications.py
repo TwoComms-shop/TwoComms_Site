@@ -13,11 +13,13 @@ from django.utils import timezone
 from orders.nova_poshta_documents import TELEGRAM_CREATE_NP_WAYBILL_ACTION, TELEGRAM_DELETE_NP_WAYBILL_ACTION
 from orders.status_management import get_telegram_status_action
 from orders.telegram_status_links import build_order_action_url, build_order_status_action_url
-# Import async task
-try:
-    from storefront.tasks import send_telegram_notification_task
-except ImportError:
-    send_telegram_notification_task = None
+# W3-1 (TD-015/TD-003): битый импорт удалён. Раньше здесь пытались
+# импортировать send_telegram_notification_task из storefront.tasks, где её
+# НЕТ (она в orders.tasks и с другой сигнатурой) → импорт всегда падал,
+# async-ветки были мёртвым кодом, а отправка шла синхронно в request-потоке.
+# Celery на прод не возвращаем (решение зафиксировано в docs/OPS.md);
+# фоновая отправка живёт в orders/tasks.py (daemon-thread).
+send_telegram_notification_task = None
 
 
 def _parse_chat_ids(raw_value):
@@ -119,7 +121,9 @@ class TelegramNotifier:
         bot_token_env="TELEGRAM_BOT_TOKEN",
         chat_id_env="TELEGRAM_CHAT_ID",
         admin_id_env="TELEGRAM_ADMIN_ID",
-        async_enabled=True,
+        # W3-1: False по умолчанию — Celery-воркера на проде нет,
+        # «async» через .delay() публиковал в мёртвую очередь.
+        async_enabled=False,
     ):
         self.bot_token = bot_token if bot_token is not None else os.environ.get(bot_token_env)
         self.chat_id = chat_id if chat_id is not None else os.environ.get(chat_id_env)
@@ -166,34 +170,30 @@ class TelegramNotifier:
         if not target_ids:
             return [] if return_results else False
 
-        if self.async_enabled and send_telegram_notification_task and reply_markup is None and not return_results:
-            print(f"🟢 Delegating to Celery task (chat_id={target_ids})")
-            for target_id in target_ids:
-                send_telegram_notification_task.delay(message, chat_id=target_id, parse_mode=parse_mode)
-            return True
-        else:
-            # Fallback if task not available (e.g. during migration or if import failed)
-            success = False
-            sent_results = []
-            for target_id in target_ids:
-                try:
-                    data = {
-                        'chat_id': target_id,
-                        'text': message,
-                        'parse_mode': parse_mode
-                    }
-                    if reply_markup is not None:
-                        data['reply_markup'] = json.dumps(reply_markup, ensure_ascii=False)
-                    print(f"🟢 Sending SYNC POST to Telegram API for admin (chat_id={target_id})")
-                    payload = self._post_json("sendMessage", data=data, timeout=10)
-                    if payload and payload.get("ok"):
-                        success = True
-                        result = payload.get("result") or {}
-                        if return_results:
-                            sent_results.append(result)
-                except Exception as e:
-                    print(f"❌ Exception in send_message to admin (chat_id={target_id}): {e}")
-            return sent_results if return_results else success
+        # W3-1: async-ветка удалена — она зависела от битого импорта и
+        # никогда не выполнялась. Отправка синхронная; фоновость
+        # обеспечивает вызывающий код (orders/tasks.py, daemon-thread).
+        success = False
+        sent_results = []
+        for target_id in target_ids:
+            try:
+                data = {
+                    'chat_id': target_id,
+                    'text': message,
+                    'parse_mode': parse_mode
+                }
+                if reply_markup is not None:
+                    data['reply_markup'] = json.dumps(reply_markup, ensure_ascii=False)
+                print(f"🟢 Sending SYNC POST to Telegram API for admin (chat_id={target_id})")
+                payload = self._post_json("sendMessage", data=data, timeout=10)
+                if payload and payload.get("ok"):
+                    success = True
+                    result = payload.get("result") or {}
+                    if return_results:
+                        sent_results.append(result)
+            except Exception as e:
+                print(f"❌ Exception in send_message to admin (chat_id={target_id}): {e}")
+        return sent_results if return_results else success
 
     def send_admin_message(self, message, parse_mode='HTML', reply_markup=None):
         """
@@ -364,24 +364,20 @@ class TelegramNotifier:
             print(f"❌ No telegram_id provided")
             return False
 
-        if self.async_enabled and send_telegram_notification_task:
-            print(f"🟢 Delegating to Celery task (chat_id={telegram_id})")
-            send_telegram_notification_task.delay(message, chat_id=telegram_id, parse_mode=parse_mode)
-            return True
-        else:
-            try:
-                url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-                data = {
-                    'chat_id': telegram_id,
-                    'text': message,
-                    'parse_mode': parse_mode
-                }
-                print(f"🟡 Sending SYNC POST to {url[:50]}... with chat_id={telegram_id}")
-                response = requests.post(url, data=data, timeout=10)
-                return response.status_code == 200
-            except Exception as e:
-                print(f"❌ Exception in send_personal_message: {e}")
-                return False
+        # W3-1: мёртвая async-ветка удалена (см. комментарий у импорта).
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            data = {
+                'chat_id': telegram_id,
+                'text': message,
+                'parse_mode': parse_mode
+            }
+            print(f"🟡 Sending SYNC POST to {url[:50]}... with chat_id={telegram_id}")
+            response = requests.post(url, data=data, timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"❌ Exception in send_personal_message: {e}")
+            return False
 
     def _format_payment_info(self, order):
         """
@@ -395,7 +391,7 @@ class TelegramNotifier:
         """
         payment_info = "│  💳 ОПЛАТА:\n"
 
-        # Получаем pay_type и payment_status
+        # Полу��аем pay_type и payment_status
         pay_type = getattr(order, 'pay_type', 'online_full')
         payment_status = getattr(order, 'payment_status', 'unpaid')
 

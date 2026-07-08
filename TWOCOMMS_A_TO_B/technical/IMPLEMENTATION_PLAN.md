@@ -224,10 +224,11 @@
 
 ## ВОЛНА 3 — НАДЁЖНОСТЬ И ИНФРАСТРУКТУРА (P1)
 
-- [ ] **W3-1. Мёртвая Celery-очередь глотает Telegram-уведомления (TD-015 / TD-003)** `[REPO]`
+- [x] **W3-1. Мёртвая Celery-очередь глотает Telegram-уведомления (TD-015 / TD-003)** `[REPO]`
   Прод без Celery-воркера, Redis-брокер жив → `.delay()` публикует в мёртвую очередь: уведомления о смене статуса/ТТН молча теряются; битый импорт `send_telegram_notification_task` → часть отправок синхронна в request-потоке; `CELERY_BEAT_SCHEDULE` survey-check не выполняется.
   Фикс: `async_enabled=False` по умолчанию в `TelegramNotifier.__init__`; survey-check → cron-команда; починить/удалить битый импорт; зафиксировать «Celery не возвращаем»; вычистить no-op шимы.
   Приёмка: смена статуса заказа → Telegram-сообщение приходит.
+  ✅ **DONE:** (1) битый импорт `from storefront.tasks import send_telegram_notification_task` в orders/telegram_notifications.py удалён (функция там не существует — импорт ВСЕГДА падал, async-ветки были мёртвым кодом); (2) обе мёртвые async-ветки (`send_message`, `send_personal_message`) вычищены — отправка синхронная, фоновость обеспечивает orders/tasks.py (daemon-thread, уже работал корректно); (3) `async_enabled=False` по умолчанию; (4) `CELERY_BEAT_SCHEDULE` удалён из settings.py — beat не запущен, survey-check не выполнялся никогда; cron-команда `check_survey_inactivity` уже существует — добавить в crontab `[SERVER]` (внесено в docs/OPS.md, дыра №5); (5) решение «Celery не возвращаем» зафиксировано в docs/OPS.md отдельным разделом. Синхронный шим в storefront/tasks.py ОСТАВЛЕН — он не no-op, а рабочий механизм для остальных `.delay()`-вызовов. Регрессия: 59 тестов (NP delivery + orders + checkout) зелёные.
 
 - [ ] **W3-2. Мониторинг ошибок с алертом (TD-022 → TECH-041)** `[REPO]`
   django.request ERROR → stderr «в никуда»; window.onerror нет; handler500 нет.
