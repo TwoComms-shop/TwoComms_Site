@@ -600,10 +600,9 @@ msgstr ""
 "Kharkiv, built around the idea of continuation after a critical point: not a"
 " period, a continuation."
 
-#, fuzzy
 #| msgid "Харків як ДНК"
 msgid "Харків, Україна"
-msgstr "Kharkiv as DNA"
+msgstr "Kharkiv, Ukraine"
 
 msgid "Магазин стріт & мілітарі одягу з ексклюзивним дизайном"
 msgstr "Street & military apparel store with exclusive design"
@@ -613,6 +612,8 @@ msgid ""
 "Базова класична {nom} TwoComms без принту: чиста форма, якісний матеріал і "
 "силует, що пасує під будь-який образ."
 msgstr ""
+"A basic classic TwoComms {nom} with no print: clean shape, quality fabric "
+"and a silhouette that works with any look."
 
 #, python-brace-format
 msgid ""
@@ -621,54 +622,64 @@ msgid ""
 "матеріал, який тримає вигляд десятки прань. Базова річ, яку легко поєднувати"
 " з будь-яким стилем — від streetwear до casual."
 msgstr ""
+"The classic TwoComms {nom} is a wardrobe staple for those who value "
+"minimalism and quality. No print, no extra details: just a clean shape and "
+"dense fabric that keeps its look through dozens of washes. A basic piece "
+"that pairs easily with any style — from streetwear to casual."
 
 #, python-brace-format
 msgid "класична {nom}"
-msgstr ""
+msgstr "classic {nom}"
 
 #, python-brace-format
 msgid "базова {nom}"
-msgstr ""
+msgstr "basic {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Де буде принт?"
 msgid "{nom} без принту"
-msgstr "Where will the print go?"
+msgstr "{nom} without print"
 
 #, python-brace-format
 msgid "однотонна {nom}"
-msgstr ""
+msgstr "plain {nom}"
 
 #, python-brace-format
 msgid "{nom} TwoComms classic"
-msgstr ""
+msgstr "TwoComms classic {nom}"
 
 msgid ""
 "Підійде тим, хто хоче базову річ TwoComms без принту — для щоденного "
 "носіння, шарування або як основу стилізування."
 msgstr ""
+"Perfect for anyone who wants a basic TwoComms piece with no print — for "
+"everyday wear, layering, or as a styling base."
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "недоступно з кастомним принтом"
 msgid "Чи доступна ця {nom} без принту?"
-msgstr "unavailable with custom print"
+msgstr "Is this {nom} available without a print?"
 
 msgid ""
 "Так — це базова класична модель TwoComms без принту. Однотонний матеріал у "
 "нейтральних кольорах, ідеальна як основа streetwear-гардероба або як база "
 "під шарування з іншими речами TwoComms."
 msgstr ""
+"Yes — this is a basic classic TwoComms model with no print. Plain fabric in "
+"neutral colors, ideal as the foundation of a streetwear wardrobe or as a "
+"layering base with other TwoComms pieces."
 
-#, fuzzy
 #| msgid "Футболка базова"
 msgid "класична базова"
-msgstr "Wholesale t-shirts"
+msgstr "classic basic"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «My Little Baby» TwoComms: ніжний принт у контрасті з мілітарним "
 "ДНК бренду — для тих, хто не боїться поєднувати протилежності."
 msgstr ""
+"The TwoComms “My Little Baby” {nom_cap}: a tender print in contrast with the"
+" brand’s military DNA — for those who aren’t afraid to combine opposites."
 
 #, python-brace-format
 msgid ""
@@ -677,46 +688,58 @@ msgid ""
 "жарт, який розпізнає той, кому треба. {nom_cap} стає виразним акцентом у "
 "спокійному образі або іронічним контрастом у мілітарному комплекті."
 msgstr ""
+"“My Little Baby” is an original TwoComms print about love in a slightly "
+"uneven shape: something between a child’s drawing and grown-up irony. Not "
+"“cutesy”, but a subtle joke recognized by those who need it. The {nom} "
+"becomes a bold accent in a calm outfit or an ironic contrast in a military-"
+"style look."
 
 msgid "my little baby"
-msgstr ""
+msgstr "my little baby"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "%(color)s худі з патріотичним принтом"
 msgid "{nom} з ніжним принтом"
-msgstr "%(color)s hoodie with patriotic print"
+msgstr "{nom} with a tender print"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Кастомний принт"
 msgid "авторський принт {nom}"
-msgstr "Custom print"
+msgstr "original print {nom}"
 
 #, python-brace-format
 msgid "streetwear {nom} іронія"
-msgstr ""
+msgstr "streetwear {nom} irony"
 
 msgid ""
 "Для тих, хто любить контрасти: ніжне поверх жорсткого, м'який принт на "
 "щільному streetwear-силуеті. Гарний подарунок коханій людині або собі."
 msgstr ""
+"For those who love contrasts: soft over hard, a gentle print on a dense "
+"streetwear silhouette. A great gift for a loved one or for yourself."
 
 msgid "Що означає принт «My Little Baby»?"
-msgstr ""
+msgstr "What does the “My Little Baby” print mean?"
 
 msgid ""
 "Це авторський принт TwoComms у дусі контрасту: ніжна графіка на щільному "
 "streetwear-силуеті. Жарт, упізнаваний тими, хто цінує іронію без переходу в "
 "кітч. Нанесено DTF-друком — насичено, тонко, стійко до прання."
 msgstr ""
+"It is an original TwoComms print built on contrast: tender graphics on a "
+"dense streetwear silhouette. A joke recognized by those who value irony "
+"without kitsch. Applied with DTF printing — rich, fine, wash-resistant."
 
 msgid "принт My Little Baby"
-msgstr ""
+msgstr "My Little Baby print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Де Мої Подарунки, Мразота?» TwoComms — провокаційний святковий "
 "принт у дусі чорного гумору."
 msgstr ""
+"The TwoComms “Where Are My Presents, Scum?” {nom_cap} — a provocative "
+"holiday print in the spirit of dark humor."
 
 #, python-brace-format
 msgid ""
@@ -725,55 +748,64 @@ msgid ""
 "ставлення до свят. {nom_cap} стає головним акцентом на корпоратив, родинне "
 "свято або вечір з друзями, де можна сміятися голосно."
 msgstr ""
+"The “Where Are My Presents, Scum?” print is a Christmas manifesto for those "
+"tired of sugary New Year kitsch. A hard joke, dark humor, a military "
+"attitude to holidays. The {nom} becomes the main statement at an office "
+"party, a family gathering or a night with friends where you can laugh out "
+"loud."
 
-#, fuzzy
 #| msgid "Далі до подарунку"
 msgid "де мої подарунки"
-msgstr "Next: gift"
+msgstr "where are my presents"
 
 #, python-brace-format
 msgid "новорічна {nom}"
-msgstr ""
+msgstr "New Year {nom}"
 
 #, python-brace-format
 msgid "мем {nom}"
-msgstr ""
+msgstr "meme {nom}"
 
 #, python-brace-format
 msgid "святкова {nom} streetwear"
-msgstr ""
+msgstr "holiday streetwear {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Чорний, Кайот"
 msgid "чорний гумор {nom}"
-msgstr "Black, Coyote"
+msgstr "dark humor {nom}"
 
 msgid ""
 "Для тих, хто має почуття гумору й не боїться провокацій. Подарунок другу-"
 "цинікові або колезі, який ненавидить корпоративи."
 msgstr ""
+"For those with a sense of humor who aren’t afraid of provocation. A gift for"
+" a cynical friend or a colleague who hates office parties."
 
-#, fuzzy
 #| msgid "Чи можна замовити кастомний принт?"
 msgid "Чи це святковий/новорічний принт?"
-msgstr "Can I order a custom print?"
+msgstr "Is this a holiday/New Year print?"
 
 msgid ""
 "Так — це авторський різдвяний принт TwoComms у дусі чорного гумору. Не "
 "«солодке Різдво», а провокаційний жарт. Підходить як головний акцент "
 "святкового образу або як іронічний подарунок."
 msgstr ""
+"Yes — it is an original TwoComms Christmas print in the spirit of dark "
+"humor. Not a “sweet Christmas”, but a provocative joke. Works as the main "
+"accent of a holiday outfit or as an ironic gift."
 
-#, fuzzy
 #| msgid "Далі до подарунку"
 msgid "принт «Де Мої Подарунки»"
-msgstr "Next: gift"
+msgstr "“Where Are My Presents” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Тильний В Єб*Ло» TwoComms — streetwear-маніфест у дусі прямого "
 "слова та військового сленгу."
 msgstr ""
+"The TwoComms “Rear Guy In The Face” {nom_cap} — a streetwear manifesto in "
+"the spirit of straight talk and military slang."
 
 #, python-brace-format
 msgid ""
@@ -782,47 +814,58 @@ msgid ""
 " streetwear-маніфест для тих, хто за прямоту й проти лицемірства. Жорсткий "
 "візуальний удар, який відрізняє своїх від чужих."
 msgstr ""
+"The “Rear Guy In The Face” print is not for everyone. It is for those who "
+"know what war sounds like from the inside and aren’t afraid of that "
+"language. A TwoComms {nom} with this print is a streetwear manifesto for "
+"those who stand for directness and against hypocrisy. A hard visual punch "
+"that tells friend from stranger."
 
-#, fuzzy
 #| msgid "Поточний баланс"
 msgid "тильний в єбало"
-msgstr "Current balance"
+msgstr "rear guy in the face"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "TwoComms — це військовий бренд?"
 msgid "військовий сленг {nom}"
-msgstr "Is TwoComms a military brand?"
+msgstr "military slang {nom}"
 
 #, python-brace-format
 msgid "streetwear {nom}"
-msgstr ""
+msgstr "streetwear {nom}"
 
 #, python-brace-format
 msgid "військова {nom} зсу"
-msgstr ""
+msgstr "military {nom} armed forces"
 
 msgid ""
 "Для тих, хто служив, служить або просто розуміє правду без цензури. "
 "Streetwear для тих, хто не любить прикрашати слова."
 msgstr ""
+"For those who served, are serving, or simply understand the uncensored "
+"truth. Streetwear for people who don’t sugarcoat words."
 
 msgid "Що означає напис «Тильний В Єб*Ло»?"
-msgstr ""
+msgstr "What does the “Rear Guy In The Face” phrase mean?"
 
 msgid ""
 "Це військовий сленг — пряма цитата з армійської мови, без цензури й пафосу. "
 "Принт у дусі streetwear-маніфесту: для тих, хто знає, що означає служба, і "
 "не боїться прямої мови."
 msgstr ""
+"It is military slang — a direct quote from army language, uncensored and "
+"without pathos. A streetwear-manifesto print for those who know what service"
+" means and aren’t afraid of straight talk."
 
 msgid "принт «Тильний В Єб*Ло»"
-msgstr ""
+msgstr "“Rear Guy In The Face” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Бізнес — Це Математика» TwoComms: іронічний принт про правду "
 "грошей за стилем streetwear."
 msgstr ""
+"The TwoComms “Business Is Math” {nom_cap}: an ironic print about the truth "
+"of money in streetwear style."
 
 #, python-brace-format
 msgid ""
@@ -831,45 +874,55 @@ msgid ""
 "годин, без лайфхаків з ютуба. Streetwear-форма {gen}, наповнена кмітливим "
 "жартом для тих, хто живе в підприємництві."
 msgstr ""
+"“Business Is Math” is a phrase understood only by those who have built "
+"something of their own. This TwoComms print is about the cold arithmetic of "
+"risk, profit and working hours — no YouTube life hacks. A streetwear {nom} "
+"filled with a clever joke for people who live in entrepreneurship."
 
-#, fuzzy
 #| msgid "Естетика"
 msgid "бізнес математика"
-msgstr "Aesthetics"
+msgstr "business math"
 
 #, python-brace-format
 msgid "{nom} для підприємця"
-msgstr ""
+msgstr "{nom} for entrepreneurs"
 
 #, python-brace-format
 msgid "streetwear {nom} бізнес"
-msgstr ""
+msgstr "streetwear {nom} business"
 
 #, python-brace-format
 msgid "сатирична {nom}"
-msgstr ""
+msgstr "satirical {nom}"
 
 msgid ""
 "Для підприємців, фаундерів, фрілансерів — усіх, хто рахує цифри щоранку. "
 "Подарунок партнерові або колезі."
 msgstr ""
+"For entrepreneurs, founders, freelancers — everyone who counts numbers every"
+" morning. A gift for a partner or colleague."
 
 msgid "Що означає принт «Бізнес — Це Математика»?"
-msgstr ""
+msgstr "What does the “Business Is Math” print mean?"
 
 msgid ""
 "Це іронічний streetwear-принт про правду підприємництва: холодна арифметика "
 "замість мотиваційних плакатів. Принт розпізнають ті, хто будував щось своє."
 msgstr ""
+"It is an ironic streetwear print about the truth of entrepreneurship: cold "
+"arithmetic instead of motivational posters. Recognized by those who have "
+"built something of their own."
 
 msgid "принт «Бізнес — Це Математика»"
-msgstr ""
+msgstr "“Business Is Math” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «last breath» TwoComms — мінімалістичний темний принт про межу та "
 "зосередженість."
 msgstr ""
+"The TwoComms “last breath” {nom_cap} — a minimalist dark print about the "
+"edge and focus."
 
 #, python-brace-format
 msgid ""
@@ -878,44 +931,55 @@ msgid ""
 "зосередженості. {nom_cap} TwoComms у цьому образі — для тих, хто живе на "
 "межі: спортсмени, музиканти, бійці, творці."
 msgstr ""
+"“last breath” is a minimalist print about the final breath before the jump. "
+"Not a single extra element: laconic graphics, a dark palette, a feeling of "
+"focus. A TwoComms {nom} in this look is for those who live on the edge: "
+"athletes, musicians, fighters, creators."
 
 msgid "last breath"
-msgstr ""
+msgstr "last breath"
 
 #, python-brace-format
 msgid "темна {nom}"
-msgstr ""
+msgstr "dark {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Кастомний принт"
 msgid "мінімалістичний принт {nom}"
-msgstr "Custom print"
+msgstr "minimalist print {nom}"
 
 #, python-brace-format
 msgid "{nom} streetwear minimal"
-msgstr ""
+msgstr "{nom} streetwear minimal"
 
 msgid ""
 "Для тих, хто розуміє ціну зосередженості: спорт, виступи, дедлайни, бій. "
 "Мінімалізм без галасу."
 msgstr ""
+"For those who know the value of focus: sports, performances, deadlines, a "
+"fight. Minimalism without noise."
 
 msgid "Який сенс у принті «last breath»?"
-msgstr ""
+msgstr "What is the meaning of the “last breath” print?"
 
 msgid ""
 "Це принт про межу — момент перед рішучою дією. Мінімалістична графіка для "
 "тих, хто живе у режимі високих ставок. Без декоративності — тільки суть."
 msgstr ""
+"It is a print about the edge — the moment before decisive action. Minimalist"
+" graphics for those living in high-stakes mode. No decoration — only the "
+"essence."
 
 msgid "принт «last breath» мінімалізм"
-msgstr ""
+msgstr "“last breath” minimalism print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Харківська Область» TwoComms — про любов до Слобожанщини без "
 "зайвого пафосу."
 msgstr ""
+"The TwoComms “Kharkiv Region” {nom_cap} — about love for Slobozhanshchyna "
+"without unnecessary pathos."
 
 #, python-brace-format
 msgid ""
@@ -924,47 +988,59 @@ msgid ""
 "факт: ти звідси, і цим пишаєшся. {nom_cap} TwoComms для харків'ян у місті, у"
 " відрядженні, у війську — щоб своїх упізнавали з першого погляду."
 msgstr ""
+"“Kharkiv Region” is a simple and direct print about belonging to "
+"Slobozhanshchyna. No official heraldry, no pompous glorification — just the "
+"fact: you are from here and proud of it. A TwoComms {nom} for Kharkiv people"
+" in the city, on a trip, in the army — so your own recognize you at first "
+"glance."
 
 #, python-brace-format
 msgid "харківська область {nom}"
-msgstr ""
+msgstr "kharkiv region {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Харків"
 msgid "харків {nom}"
-msgstr "Kharkiv"
+msgstr "kharkiv {nom}"
 
 #, python-brace-format
 msgid "слобожанщина {nom}"
-msgstr ""
+msgstr "slobozhanshchyna {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Харків як ДНК"
 msgid "{nom} харків'янина"
-msgstr "Kharkiv as DNA"
+msgstr "{nom} for a Kharkiv local"
 
 msgid ""
 "Для харків'ян у місті, у відрядженні, у війську — і для всіх, хто любить "
 "Слобожанщину. Гарний подарунок земляку."
 msgstr ""
+"For Kharkiv people in the city, on business trips, in the military — and for"
+" everyone who loves Slobozhanshchyna. A great gift for a fellow countryman."
 
 msgid "Це універсальна модель «Харківська Область»?"
-msgstr ""
+msgstr "Is the “Kharkiv Region” model universal?"
 
 msgid ""
 "Так — принт лаконічний, без офіційної геральдики. Підходить і для "
 "повсякденного носіння у місті, і для поїздок. Пасує до streetwear, casual та"
 " semi-formal комплектів."
 msgstr ""
+"Yes — the print is laconic, without official heraldry. Suitable both for "
+"everyday city wear and for trips. Matches streetwear, casual and semi-formal"
+" outfits."
 
 msgid "принт «Харківська Область»"
-msgstr ""
+msgstr "“Kharkiv Region” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Дівчина З Покровська» TwoComms — поетичний принт про дім, який "
 "лишається з тобою назавжди."
 msgstr ""
+"The TwoComms “Girl From Pokrovsk” {nom_cap} — a poetic print about the home "
+"that stays with you forever."
 
 #, python-brace-format
 msgid ""
@@ -973,44 +1049,55 @@ msgid ""
 "але для когось воно лунає в серці з дитинства. {nom_cap} TwoComms для тих, "
 "хто залишив дім, але не залишив його у собі."
 msgstr ""
+"“Girl From Pokrovsk” is a poetic TwoComms print about a girl who carries her"
+" city inside wherever she goes. Pokrovsk is a name heard in the news now, "
+"but for someone it has sounded in the heart since childhood. A TwoComms "
+"{nom} for those who left home but did not leave it inside themselves."
 
 msgid "дівчина з покровська"
-msgstr ""
+msgstr "girl from pokrovsk"
 
 #, python-brace-format
 msgid "покровськ {nom}"
-msgstr ""
+msgstr "pokrovsk {nom}"
 
 #, python-brace-format
 msgid "донецька область {nom}"
-msgstr ""
+msgstr "donetsk region {nom}"
 
 #, python-brace-format
 msgid "патріотична {nom}"
-msgstr ""
+msgstr "patriotic {nom}"
 
 msgid ""
 "Для покровчанок, для людей, які лишили східні міста, для всіх, кому близька "
 "тема пам'яті про дім."
 msgstr ""
+"For women of Pokrovsk, for people who left the eastern cities, for everyone "
+"close to the theme of remembering home."
 
 msgid "Чому саме Покровськ?"
-msgstr ""
+msgstr "Why Pokrovsk?"
 
 msgid ""
 "Покровськ — місто Донецької області, ім'я якого зараз лунає у новинах. Принт"
 " TwoComms — поетична присвята жінкам, які лишили східні міста, але не лишили"
 " їх у своєму серці."
 msgstr ""
+"Pokrovsk is a city in Donetsk region whose name is heard in the news now. "
+"The TwoComms print is a poetic dedication to women who left the eastern "
+"cities but did not leave them in their hearts."
 
 msgid "принт «Дівчина З Покровська»"
-msgstr ""
+msgstr "“Girl From Pokrovsk” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «death grabs ass» TwoComms — провокативний мем-принт у дусі "
 "streetwear-абсурду."
 msgstr ""
+"The TwoComms “death grabs ass” {nom_cap} — a provocative meme print in the "
+"spirit of streetwear absurdism."
 
 #, python-brace-format
 msgid ""
@@ -1019,46 +1106,57 @@ msgid ""
 "{nom_cap} у цьому образі — головний жарт клубного або вуличного образу для "
 "тих, хто розуміє іронію без пояснень."
 msgstr ""
+"“death grabs ass” is an English-language TwoComms meme print in the style of"
+" absurdist streetwear: dark humor, subtle sarcasm, zero excess seriousness. "
+"A {nom} in this look is the main joke of a club or street outfit for those "
+"who get irony without explanations."
 
 msgid "death grabs ass"
-msgstr ""
+msgstr "death grabs ass"
 
 #, python-brace-format
 msgid "streetwear абсурд {nom}"
-msgstr ""
+msgstr "streetwear absurd {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Кастомний принт"
 msgid "англійський принт {nom}"
-msgstr "Custom print"
+msgstr "english print {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Український стрітвір"
 msgid "темна {nom} стрітвір"
-msgstr "Ukrainian streetwear"
+msgstr "dark streetwear {nom}"
 
 msgid ""
 "Для людей з тонким почуттям гумору, прихильників абсурдистського streetwear,"
 " відвідувачів клубів і концертів."
 msgstr ""
+"For people with a fine sense of humor, fans of absurdist streetwear, club "
+"and concert goers."
 
 msgid "Що означає принт «death grabs ass»?"
-msgstr ""
+msgstr "What does the “death grabs ass” print mean?"
 
 msgid ""
 "Це англомовний мем-принт у дусі streetwear-абсурду: чорний гумор без пафосу "
 "та політичного підтексту. Образ для тих, хто цінує іронію та не боїться "
 "провокаційних написів."
 msgstr ""
+"It is an English-language meme print in the spirit of streetwear absurdism: "
+"dark humor without pathos or political subtext. A look for those who value "
+"irony and aren’t afraid of provocative slogans."
 
 msgid "мем-принт «death grabs ass»"
-msgstr ""
+msgstr "“death grabs ass” meme print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Річ Йде Про Двозначні Суми» TwoComms — іронічний принт про "
 "серйозні розмови та фрілансерські ставки."
 msgstr ""
+"The TwoComms “We’re Talking Double-Digit Sums” {nom_cap} — an ironic print "
+"about serious talks and freelance rates."
 
 #, python-brace-format
 msgid ""
@@ -1067,46 +1165,56 @@ msgid ""
 " міряють копійками. {nom_cap} стає кодовим знаком для своїх — інші не "
 "зрозуміють, бо їм це й не треба."
 msgstr ""
+"“We’re Talking Double-Digit Sums” is the phrase after which the real "
+"conversation begins. A TwoComms print about evening Zoom calls, negotiations"
+" and rates no longer measured in pennies. The {nom} becomes a code sign for "
+"your own kind — others won’t get it, and they don’t need to."
 
-#, fuzzy
 #| msgid "Фіксована сума"
 msgid "двозначні суми"
-msgstr "Fixed amount"
+msgstr "double-digit sums"
 
 #, python-brace-format
 msgid "фрілансер {nom}"
-msgstr ""
+msgstr "freelancer {nom}"
 
 #, python-brace-format
 msgid "перемовини {nom}"
-msgstr ""
+msgstr "negotiations {nom}"
 
 #, python-brace-format
 msgid "сатирична {nom} streetwear"
-msgstr ""
+msgstr "satirical streetwear {nom}"
 
 msgid ""
 "Для фрілансерів, продакт-менеджерів, ейчарів, перемовників — усіх, хто живе "
 "у грошових діалогах."
 msgstr ""
+"For freelancers, product managers, HR people, negotiators — everyone living "
+"in money dialogues."
 
 msgid "Що означає принт «Річ Йде Про Двозначні Суми»?"
-msgstr ""
+msgstr "What does the “We’re Talking Double-Digit Sums” print mean?"
 
 msgid ""
 "Іронічна фраза про моменти, коли розмова переходить у серйозну площину — "
 "фріланс, перемовини, бізнес-ставки. Принт-кодовий знак для тих, хто розуміє "
 "правду грошових діалогів."
 msgstr ""
+"An ironic phrase about the moments when a conversation turns serious — "
+"freelance, negotiations, business rates. A code-sign print for those who "
+"know the truth of money talks."
 
 msgid "принт «Двозначні Суми»"
-msgstr ""
+msgstr "“Double-Digit Sums” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Lord Of The Lending» TwoComms — сатирична фентезі-пародія про "
 "владу банків і кредитів."
 msgstr ""
+"The TwoComms “Lord Of The Lending” {nom_cap} — a satirical fantasy parody "
+"about the power of banks and loans."
 
 #, python-brace-format
 msgid ""
@@ -1115,44 +1223,55 @@ msgid ""
 " іпотеку, розстрочку або просто розуміє правду фінансової системи. {nom_cap}"
 " як іронічний коментар до повсякдення."
 msgstr ""
+"“Lord Of The Lending” is a satirical English-language TwoComms print in the "
+"spirit of a fantasy parody on the power of banks and consumer loans. A joke "
+"for those who have a mortgage, an installment plan, or simply understand the"
+" truth of the financial system. The {nom} works as an ironic comment on "
+"everyday life."
 
 msgid "lord of the lending"
-msgstr ""
+msgstr "lord of the lending"
 
 #, python-brace-format
 msgid "сатира кредити {nom}"
-msgstr ""
+msgstr "loan satire {nom}"
 
 #, python-brace-format
 msgid "{nom} streetwear англійський принт"
-msgstr ""
+msgstr "{nom} streetwear english print"
 
-#, fuzzy
 #| msgid "Фейковий номер"
 msgid "фінансовий гумор"
-msgstr "Fake number"
+msgstr "financial humor"
 
 msgid ""
 "Для тих, хто живе у системі споживчих кредитів і має почуття гумору, щоб з "
 "цього сміятись."
 msgstr ""
+"For those who live inside the consumer credit system and have the sense of "
+"humor to laugh about it."
 
 msgid "Що це за гра слів — «Lord Of The Lending»?"
-msgstr ""
+msgstr "What is the wordplay in “Lord Of The Lending”?"
 
 msgid ""
 "Сатирична пародія на «Lord of the Rings»: принт про королів кредитного "
 "відділу, які володіють вашою розстрочкою. Англомовний streetwear-гумор для "
 "тих, хто сміється з фінансової системи."
 msgstr ""
+"A satirical parody of “Lord of the Rings”: a print about the kings of the "
+"credit department who own your installment plan. English-language streetwear"
+" humor for those who laugh at the financial system."
 
 msgid "принт «Lord Of The Lending»"
-msgstr ""
+msgstr "“Lord Of The Lending” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Red Leaves» TwoComms — осінній естетичний принт у теплій палітрі."
 msgstr ""
+"The TwoComms “Red Leaves” {nom_cap} — an aesthetic autumn print in a warm "
+"palette."
 
 #, python-brace-format
 msgid ""
@@ -1161,50 +1280,60 @@ msgid ""
 "ілюстрація для тих, хто любить тиху естетику. {nom_cap} як акцент у "
 "спокійному образі або як єдина деталь, що кричить кольором."
 msgstr ""
+"“Red Leaves” is an aesthetic autumn TwoComms print in warm red-orange tones."
+" No message, no irony — just a beautiful original illustration for those who"
+" love quiet aesthetics. The {nom} works as an accent in a calm outfit or as "
+"the only detail that screams with color."
 
 msgid "red leaves"
-msgstr ""
+msgstr "red leaves"
 
 #, python-brace-format
 msgid "осіння {nom}"
-msgstr ""
+msgstr "autumn {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Кастомний принт"
 msgid "естетичний принт {nom}"
-msgstr "Custom print"
+msgstr "aesthetic print {nom}"
 
 #, python-brace-format
 msgid "{nom} теплі тони"
-msgstr ""
+msgstr "{nom} warm tones"
 
-#, fuzzy
 #| msgid "Худі streetwear"
 msgid "осінній streetwear"
-msgstr "Streetwear hoodie"
+msgstr "autumn streetwear"
 
 msgid ""
 "Для тих, хто цінує тиху естетику без агресивних меседжів. Для осінньо-"
 "зимового сезону."
 msgstr ""
+"For those who value quiet aesthetics without aggressive messages. For the "
+"autumn-winter season."
 
 msgid "Чи є особливий сенс у принті «Red Leaves»?"
-msgstr ""
+msgstr "Is there a special meaning behind the “Red Leaves” print?"
 
 msgid ""
 "Цей принт — суто естетичний: червоне листя як акцент осінньої гами без "
 "іронії та політичних меседжів. Просто тонка авторська ілюстрація для тих, "
 "хто любить тиху красу."
 msgstr ""
+"This print is purely aesthetic: red leaves as an accent of the autumn "
+"palette with no irony or political messages. Just a fine original "
+"illustration for those who love quiet beauty."
 
 msgid "осінній принт «Red Leaves»"
-msgstr ""
+msgstr "“Red Leaves” autumn print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «І На Той Світ З Собою Візьму» TwoComms — поетичний темний принт "
 "про любов сильнішу за смерть."
 msgstr ""
+"The TwoComms “I’ll Take You To The Afterlife With Me” {nom_cap} — a poetic "
+"dark print about love stronger than death."
 
 #, python-brace-format
 msgid ""
@@ -1213,41 +1342,50 @@ msgid ""
 "із собою куди завгодно. {nom_cap} як тихий маніфест — без пафосу, але "
 "глибоко."
 msgstr ""
+"“I’ll Take You To The Afterlife With Me” is a line that sounds like a "
+"promise. A dark poetic TwoComms print about love, loyalty and that one "
+"person you would take with you anywhere. The {nom} as a quiet manifesto — "
+"without pathos, but deep."
 
 msgid "і на той світ з собою візьму"
-msgstr ""
+msgstr "i’ll take you to the afterlife with me"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Кастомний принт"
 msgid "поетичний принт {nom}"
-msgstr "Custom print"
+msgstr "poetic print {nom}"
 
-#, fuzzy
 #| msgid "Кастомний принт"
 msgid "глибокий принт"
-msgstr "Custom print"
+msgstr "deep print"
 
 msgid ""
 "Для тих, хто живе глибокими почуттями. Як подарунок коханій людині або як "
 "особистий маніфест."
 msgstr ""
+"For those who live with deep feelings. As a gift for a loved one or as a "
+"personal manifesto."
 
 msgid "Що означає фраза «І На Той Світ З Собою Візьму»?"
-msgstr ""
+msgstr "What does the phrase “I’ll Take You To The Afterlife With Me” mean?"
 
 msgid ""
 "Це поетичний рядок про любов і вірність — обіцянка забрати кохану людину "
 "куди завгодно, навіть за межі життя. Темний романтичний меседж без пафосу."
 msgstr ""
+"It is a poetic line about love and loyalty — a promise to take your loved "
+"one anywhere, even beyond life. A dark romantic message without pathos."
 
 msgid "принт «На Той Світ»"
-msgstr ""
+msgstr "“To The Afterlife” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Харків Edition» TwoComms — ексклюзивна локальна серія для "
 "Слобожанщини."
 msgstr ""
+"The TwoComms “Kharkiv Edition” {nom_cap} — an exclusive local series for "
+"Slobozhanshchyna."
 
 #, python-brace-format
 msgid ""
@@ -1256,39 +1394,49 @@ msgid ""
 " нахилом до streetwear-шрифтів. {nom_cap} як прихована приналежність — своїх"
 " упізнаєте одразу."
 msgstr ""
+"“Kharkiv Edition” is a special local TwoComms series about Slobozhanshchyna "
+"today: distinctive, unbreakable, with a style of its own. A print without "
+"pathos, with a subtle lean toward streetwear typography. The {nom} as hidden"
+" belonging — your own will recognize you at once."
 
-#, fuzzy
 #| msgid "Харків"
 msgid "харків edition"
-msgstr "Kharkiv"
+msgstr "kharkiv edition"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Ексклюзивний дизайн"
 msgid "ексклюзивна {nom} харків"
-msgstr "Exclusive design"
+msgstr "exclusive kharkiv {nom}"
 
 msgid ""
 "Для харків'ян та всіх, хто пов'язаний зі Слобожанщиною. Подарунок земляку, "
 "що працює деінде."
 msgstr ""
+"For Kharkiv people and everyone connected to Slobozhanshchyna. A gift for a "
+"fellow countryman working elsewhere."
 
 msgid "У чому відмінність «Харків Edition» від «Харківської Області»?"
-msgstr ""
+msgstr "How does “Kharkiv Edition” differ from “Kharkiv Region”?"
 
 msgid ""
 "«Харків Edition» — стилізована streetwear-версія з акцентом на сучасні "
 "шрифти та локальну ідентичність. «Харківська Область» — лаконічна версія для"
 " мінімалістів. Обидві про любов до Слобожанщини."
 msgstr ""
+"“Kharkiv Edition” is a stylized streetwear version focused on modern "
+"typography and local identity. “Kharkiv Region” is a laconic version for "
+"minimalists. Both are about love for Slobozhanshchyna."
 
 msgid "принт «Харків Edition»"
-msgstr ""
+msgstr "“Kharkiv Edition” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Харків / Стиль — Це Все» TwoComms — про віру у форму, яка ніколи "
 "не зраджує."
 msgstr ""
+"The TwoComms “Kharkiv / Style Is Everything” {nom_cap} — about faith in form"
+" that never betrays."
 
 #, python-brace-format
 msgid ""
@@ -1297,45 +1445,55 @@ msgid ""
 "{nom_cap} в цьому образі — нагадування собі: коли довкола падає все, "
 "лишається стиль."
 msgstr ""
+"“Kharkiv / Style Is Everything” is a TwoComms manifesto print for Kharkiv "
+"people who know that style is not a luxury but a way to hold your head above"
+" circumstances. The {nom} in this look is a reminder to yourself: when "
+"everything around is falling, style remains."
 
 msgid "харків стиль"
-msgstr ""
+msgstr "kharkiv style"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Худі streetwear"
 msgid "харків {nom} streetwear"
-msgstr "Streetwear hoodie"
+msgstr "kharkiv {nom} streetwear"
 
 #, python-brace-format
 msgid "стиль харків'янина {nom}"
-msgstr ""
+msgstr "kharkiv local style {nom}"
 
-#, fuzzy
 #| msgid "Кастомний принт"
 msgid "локальний принт"
-msgstr "Custom print"
+msgstr "local print"
 
 msgid ""
 "Для харків'ян та всіх, хто розуміє стиль як стратегію виживання у "
 "нестабільні часи."
 msgstr ""
+"For Kharkiv people and everyone who understands style as a survival strategy"
+" in unstable times."
 
 msgid "Що мається на увазі під «Стиль — Це Все»?"
-msgstr ""
+msgstr "What does “Style Is Everything” mean?"
 
 msgid ""
 "Це маніфест: стиль як остання опора, коли довкола падає все. Не модний "
 "прокат, а спосіб тримати характер. Принт TwoComms про віру в форму."
 msgstr ""
+"It is a manifesto: style as the last support when everything around is "
+"falling. Not fashion rental, but a way to keep character. A TwoComms print "
+"about faith in form."
 
 msgid "принт «Харків — Стиль Це Все»"
-msgstr ""
+msgstr "“Kharkiv — Style Is Everything” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «мені поЖуй — це філософія» TwoComms — streetwear-маніфест про "
 "здорову байдужість до зайвого."
 msgstr ""
+"The TwoComms “I Don’t Care — It’s A Philosophy” {nom_cap} — a streetwear "
+"manifesto about healthy indifference to the unnecessary."
 
 #, python-brace-format
 msgid ""
@@ -1344,44 +1502,56 @@ msgid ""
 "важливо, а що — ні. {nom_cap} як спокійна декларація для тих, хто навчився "
 "відрізняти своє від чужого."
 msgstr ""
+"“I Don’t Care — It’s A Philosophy” is a TwoComms print in the style of a "
+"streetwear aphorism. Not cynicism, not nihilism — but healthy "
+"prioritization: what really matters and what doesn’t. The {nom} as a calm "
+"declaration for those who have learned to tell their own from someone "
+"else’s."
 
 msgid "мені поЖуй"
-msgstr ""
+msgstr "i don’t care"
 
 #, python-brace-format
 msgid "streetwear філософія {nom}"
-msgstr ""
+msgstr "streetwear philosophy {nom}"
 
 #, python-brace-format
 msgid "афоризм {nom}"
-msgstr ""
+msgstr "aphorism {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Створити свій принт"
 msgid "стрітвір принт {nom}"
-msgstr "Create your print"
+msgstr "streetwear print {nom}"
 
 msgid ""
 "Для тих, хто перестав витрачати енергію на зайве — корпоративні драми, чужі "
 "очікування, токсичні рамки."
 msgstr ""
+"For those who stopped wasting energy on the unnecessary — corporate drama, "
+"other people’s expectations, toxic frameworks."
 
 msgid "Що означає «мені поЖуй — це філософія»?"
-msgstr ""
+msgstr "What does “I Don’t Care — It’s A Philosophy” mean?"
 
 msgid ""
 "Це streetwear-афоризм про здорову байдужість до зайвого: не цинізм, а "
 "спокійне розставлення пріоритетів. Принт-маніфест TwoComms для тих, хто живе"
 " своїм без оглядання на чужі очікування."
 msgstr ""
+"It is a streetwear aphorism about healthy indifference to the unnecessary: "
+"not cynicism, but calm prioritization. A TwoComms manifesto print for those "
+"who live their own life without checking others’ expectations."
 
 msgid "принт «мені поЖуй — філософія»"
-msgstr ""
+msgstr "“I Don’t Care — Philosophy” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} «Життя Бентежне» TwoComms — ліричний принт про красу неспокою."
 msgstr ""
+"The TwoComms “Restless Life” {nom_cap} — a lyrical print about the beauty of"
+" unrest."
 
 #, python-brace-format
 msgid ""
@@ -1390,44 +1560,53 @@ msgid ""
 "змушує бачити, чути, відчувати глибше. {nom_cap} як тихий нагадник самому "
 "собі."
 msgstr ""
+"“Restless Life” is a lyrical TwoComms print about the beauty of unrest, that"
+" subtle vibration that keeps a person alive. Not anxiety, but restlessness —"
+" the thing that makes you see, hear and feel deeper. The {nom} as a quiet "
+"reminder to yourself."
 
 msgid "життя бентежне"
-msgstr ""
+msgstr "restless life"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Кастомний принт"
 msgid "ліричний принт {nom}"
-msgstr "Custom print"
+msgstr "lyrical print {nom}"
 
 #, python-brace-format
 msgid "поетична {nom}"
-msgstr ""
+msgstr "poetic {nom}"
 
 msgid "глибокий принт streetwear"
-msgstr ""
+msgstr "deep streetwear print"
 
 msgid ""
 "Для тих, хто живе глибоко — митців, читачів, людей із власним внутрішнім "
 "простором."
 msgstr ""
+"For those who live deeply — artists, readers, people with their own inner "
+"space."
 
-#, fuzzy
 #| msgid "Що означають етапи"
 msgid "Що означає «Життя Бентежне»?"
-msgstr "What the stages mean"
+msgstr "What does “Restless Life” mean?"
 
 msgid ""
 "Це ліричний рядок про красу неспокою — те живе хвилювання, що тримає людину "
 "пробудженою. Принт TwoComms у дусі тихої поезії."
 msgstr ""
+"It is a lyrical line about the beauty of unrest — the living tremor that "
+"keeps a person awake. A TwoComms print in the spirit of quiet poetry."
 
 msgid "принт «Життя Бентежне»"
-msgstr ""
+msgstr "“Restless Life” print"
 
 msgid ""
 "Лонгслів «Limited Edition» TwoComms — лімітована колекція з обмеженим "
 "тиражем і фірмовим streetwear-оформленням."
 msgstr ""
+"The TwoComms “Limited Edition” longsleeve — a limited collection with a "
+"restricted run and signature streetwear design."
 
 msgid ""
 "«Limited Edition» — лімітована серія TwoComms з обмеженим тиражем. "
@@ -1435,47 +1614,55 @@ msgid ""
 "партія. Лонгслів у цій серії — не просто базовий шар, а колекційна річ для "
 "тих, хто збирає рідкісні релізи бренду."
 msgstr ""
+"“Limited Edition” is a limited TwoComms series with a restricted run. "
+"Special design, branded printing inside the collar, a numbered batch. A "
+"longsleeve in this series is not just a base layer, but a collectible piece "
+"for those who collect rare brand releases."
 
 msgid "limited edition"
-msgstr ""
+msgstr "limited edition"
 
-#, fuzzy
 #| msgid "Кайотовий лонгслів"
 msgid "лімітований лонгслів"
-msgstr "Coyote long sleeve"
+msgstr "limited longsleeve"
 
 #, python-brace-format
 msgid "колекційний {nom}"
-msgstr ""
+msgstr "collectible {nom}"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Ексклюзивний дизайн"
 msgid "ексклюзивний {nom} TwoComms"
-msgstr "Exclusive design"
+msgstr "exclusive TwoComms {nom}"
 
 msgid ""
 "Для колекціонерів streetwear, фанатів TwoComms, тих, хто цінує речі з "
 "обмеженим тиражем."
 msgstr ""
+"For streetwear collectors, TwoComms fans, and those who value limited-run "
+"pieces."
 
 msgid "Чому ця модель «Limited Edition»?"
-msgstr ""
+msgstr "Why is this model “Limited Edition”?"
 
 msgid ""
 "Це справді лімітована партія: обмежений тираж, фірмова поліграфія всередині "
 "комірця, нумерована серія. Після розпродажу нова партія не виходитиме."
 msgstr ""
+"It really is a limited batch: restricted run, branded printing inside the "
+"collar, a numbered series. Once sold out, no new batch will be released."
 
-#, fuzzy
 #| msgid "Лонгслів"
 msgid "лонгслів Limited Edition"
-msgstr "Long sleeve"
+msgstr "Limited Edition longsleeve"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} 225ОШП «Команда Сірко» TwoComms — спеціальна серія на підтримку "
 "225-го окремого штурмового полку."
 msgstr ""
+"The TwoComms 225th SAR “Team Sirko” {nom_cap} — a special series in support "
+"of the 225th Separate Assault Regiment."
 
 #, python-brace-format
 msgid ""
@@ -1484,51 +1671,61 @@ msgid ""
 "{nom_cap} як знак приналежності до спільноти, що тримає схід. Частина "
 "прибутку від продажу йде на підтримку 225 ОШП."
 msgstr ""
+"A TwoComms series in support of the 225th Separate Assault Regiment (“Team "
+"Sirko”). A print with the call sign and the unit’s distinctive visual code. "
+"The {nom} as a sign of belonging to the community holding the east. Part of "
+"the profit goes to support the 225th SAR."
 
 #, python-brace-format
 msgid "225 ошп {nom}"
-msgstr ""
+msgstr "225 sar {nom}"
 
-#, fuzzy
 #| msgid "Розмірна сітка"
 msgid "команда сірко"
-msgstr "Size chart"
+msgstr "team sirko"
 
 #, python-brace-format
 msgid "військова {nom}"
-msgstr ""
+msgstr "military {nom}"
 
 #, python-brace-format
 msgid "{nom} зсу 225 полк"
-msgstr ""
+msgstr "{nom} afu 225th regiment"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "Груповий промокод"
 msgid "штурмовий полк {nom}"
-msgstr "Grouped promo code"
+msgstr "assault regiment {nom}"
 
 msgid ""
 "Для бійців 225 ОШП, їхніх рідних, побратимів та усіх, хто хоче підтримати "
 "підрозділ покупкою."
 msgstr ""
+"For soldiers of the 225th SAR, their families, brothers-in-arms and everyone"
+" who wants to support the unit with a purchase."
 
 #, python-brace-format
 msgid "Чи частина грошей з цього {gen} йде на підтримку 225 ОШП?"
-msgstr ""
+msgstr "Does part of the money from this {gen} go to support the 225th SAR?"
 
 msgid ""
 "Так — це спеціальна серія TwoComms на підтримку 225-го окремого штурмового "
 "полку «Команда Сірко». Частина прибутку йде безпосередньо на потреби "
 "підрозділу."
 msgstr ""
+"Yes — this is a special TwoComms series in support of the 225th Separate "
+"Assault Regiment “Team Sirko”. Part of the profit goes directly to the "
+"unit’s needs."
 
 msgid "принт 225ОШП «Команда Сірко»"
-msgstr ""
+msgstr "225th SAR “Team Sirko” print"
 
 msgid ""
 "Худі «Покровськ V2.0» TwoComms — оновлене видання патріотичного принту про "
 "місто на сході."
 msgstr ""
+"The TwoComms “Pokrovsk V2.0” hoodie — an updated edition of the patriotic "
+"print about the city in the east."
 
 #, python-brace-format
 msgid ""
@@ -1537,42 +1734,53 @@ msgid ""
 "лінії, оновлений колір, той самий меседж — пам'ятати про дім. {nom_cap} для "
 "тих, кому Покровськ — не точка на карті, а місце, де лишилися люди."
 msgstr ""
+"“Pokrovsk V2.0” is an updated edition of the TwoComms print about the city "
+"whose name is heard in the news now. The second version with reworked "
+"graphics: sharper lines, updated color, the same message — to remember home."
+" The {nom} for those to whom Pokrovsk is not a dot on the map but a place "
+"where people remain."
 
 msgid "покровськ v2.0"
-msgstr ""
+msgstr "pokrovsk v2.0"
 
 msgid "худі покровськ"
-msgstr ""
+msgstr "pokrovsk hoodie"
 
 msgid "донецька область худі"
-msgstr ""
+msgstr "donetsk region hoodie"
 
 msgid "патріотичне худі схід"
-msgstr ""
+msgstr "patriotic hoodie east"
 
 msgid ""
 "Для покровчан, мешканців Донецької області у вимушеному переселенні, та "
 "усіх, хто пам'ятає про східні міста."
 msgstr ""
+"For Pokrovsk residents, people of Donetsk region displaced from home, and "
+"everyone who remembers the eastern cities."
 
-#, fuzzy
 #| msgid "Чим TwoComms відрізняється від патріотичного мерчу?"
 msgid "Чим V2.0 відрізняється від першої версії?"
-msgstr "How is TwoComms different from patriotic merch?"
+msgstr "How does V2.0 differ from the first version?"
 
 msgid ""
 "Друга версія принту «Покровськ» має перероблену графіку: чіткіші лінії, "
 "оновлену палітру, додані стилістичні акценти. Меседж той самий — пам'ять про"
 " дім."
 msgstr ""
+"The second version of the “Pokrovsk” print has reworked graphics: sharper "
+"lines, an updated palette, added stylistic accents. The message is the same "
+"— the memory of home."
 
 msgid "принт «Покровськ V2.0»"
-msgstr ""
+msgstr "“Pokrovsk V2.0” print"
 
 msgid ""
 "Худі «Дрони навколо 2.0» TwoComms — оновлений мілітарний принт про "
 "реальність повітряних загроз."
 msgstr ""
+"The TwoComms “Drones Around 2.0” hoodie — an updated military print about "
+"the reality of air threats."
 
 #, python-brace-format
 msgid ""
@@ -1582,44 +1790,54 @@ msgid ""
 "{nom_cap} для тих, хто живе у цій реальності й знає, що означає слово "
 "«розвідка з повітря»."
 msgstr ""
+"“Drones Around 2.0” is an updated edition of the TwoComms military print "
+"about the reality in which Ukrainians learned to recognize the sound of a "
+"drone before the alarm. The graphics are rethought: sharper now, with color "
+"accents. The {nom} for those who live in this reality and know what “air "
+"reconnaissance” means."
 
 msgid "дрони навколо"
-msgstr ""
+msgstr "drones around"
 
-#, fuzzy
 #| msgid "Деталі худі"
 msgid "мілітарне худі"
-msgstr "Hoodie details"
+msgstr "military hoodie"
 
-#, fuzzy
 #| msgid "Худі для пари"
 msgid "худі про дрони"
-msgstr "Couple hoodies"
+msgstr "drone hoodie"
 
 msgid "патріотичне худі зсу"
-msgstr ""
+msgstr "patriotic hoodie afu"
 
 msgid ""
 "Для військових, волонтерів, прифронтових мешканців та всіх, хто стежить за "
 "оборонною темою."
 msgstr ""
+"For the military, volunteers, frontline-area residents and everyone "
+"following the defense theme."
 
 msgid "Що означає принт «Дрони навколо 2.0»?"
-msgstr ""
+msgstr "What does the “Drones Around 2.0” print mean?"
 
 msgid ""
 "Це оновлена редакція мілітарного принту TwoComms про реальність повітряних "
 "загроз — звуки, силуети, напруження. Графіка переосмислена для другої "
 "версії: чіткіші лінії, акцентні кольори, сильний меседж."
 msgstr ""
+"It is an updated edition of the TwoComms military print about the reality of"
+" air threats — sounds, silhouettes, tension. The graphics were rethought for"
+" the second version: sharper lines, accent colors, a strong message."
 
 msgid "принт «Дрони навколо 2.0»"
-msgstr ""
+msgstr "“Drones Around 2.0” print"
 
 msgid ""
 "Худі «Silent Winter» TwoComms — атмосферний зимовий принт у спокійній темній"
 " палітрі."
 msgstr ""
+"The TwoComms “Silent Winter” hoodie — an atmospheric winter print in a calm "
+"dark palette."
 
 #, python-brace-format
 msgid ""
@@ -1628,45 +1846,53 @@ msgid ""
 "{nom_cap} у цьому образі стає повноцінним зимовим шаром із характером, "
 "ідеально поєднуючись з темним низом і верхнім одягом мілітарних відтінків."
 msgstr ""
+"“Silent Winter” is an atmospheric winter TwoComms print in a restrained dark"
+" palette. No aggression, no noise — just the quiet beauty of the cold "
+"season. The {nom} in this look becomes a proper winter layer with character,"
+" pairing perfectly with dark bottoms and outerwear in military shades."
 
 msgid "silent winter"
-msgstr ""
+msgstr "silent winter"
 
-#, fuzzy
 #| msgid "Худі streetwear"
 msgid "зимове худі streetwear"
-msgstr "Streetwear hoodie"
+msgstr "winter streetwear hoodie"
 
-#, fuzzy
 #| msgid "Кайот худі"
 msgid "темне худі"
-msgstr "Coyote hoodie"
+msgstr "dark hoodie"
 
-#, fuzzy
 #| msgid "Кайот худі"
 msgid "атмосферне худі"
-msgstr "Coyote hoodie"
+msgstr "atmospheric hoodie"
 
 msgid ""
 "Для тих, хто любить зимову естетику без новорічного кітчу. Для довгих "
 "прогулянок, кави на холоді, тихих ранків."
 msgstr ""
+"For those who love winter aesthetics without New Year kitsch. For long "
+"walks, coffee in the cold, quiet mornings."
 
 msgid "У якому стилі виконано принт «Silent Winter»?"
-msgstr ""
+msgstr "What is the style of the “Silent Winter” print?"
 
 msgid ""
 "Атмосферна зимова графіка у спокійній темній палітрі — без агресії, без "
 "яскравих акцентів. Принт у дусі тихої краси холодного сезону."
 msgstr ""
+"Atmospheric winter graphics in a calm dark palette — no aggression, no "
+"bright accents. A print in the spirit of the quiet beauty of the cold "
+"season."
 
 msgid "зимовий принт «Silent Winter»"
-msgstr ""
+msgstr "“Silent Winter” winter print"
 
 msgid ""
 "Худі «Glory of Ukraine» TwoComms — патріотичний англомовний принт у стилі "
 "мілітарного streetwear."
 msgstr ""
+"The TwoComms “Glory of Ukraine” hoodie — a patriotic English-language print "
+"in military streetwear style."
 
 #, python-brace-format
 msgid ""
@@ -1675,42 +1901,52 @@ msgid ""
 "меседж для міжнародної аудиторії. {nom_cap} як спосіб пронести український "
 "маніфест за кордон без перекладу."
 msgstr ""
+"“Glory of Ukraine” is a patriotic TwoComms print in the spirit of English-"
+"language military streetwear. A laconic shape, a restrained palette, a "
+"readable message for an international audience. The {nom} as a way to carry "
+"the Ukrainian manifesto abroad without translation."
 
 msgid "glory of ukraine"
-msgstr ""
+msgstr "glory of ukraine"
 
 msgid "патріотичне худі англійською"
-msgstr ""
+msgstr "patriotic hoodie in english"
 
-#, fuzzy
 #| msgid "Український streetwear"
 msgid "україна streetwear"
-msgstr "Ukrainian streetwear"
+msgstr "ukraine streetwear"
 
 msgid "мілітарне худі зсу"
-msgstr ""
+msgstr "military hoodie afu"
 
 msgid ""
 "Для українців за кордоном, для гостей з-за кордону, для всіх, хто хоче нести"
 " меседж у міжнародному форматі."
 msgstr ""
+"For Ukrainians abroad, for guests from other countries, for everyone who "
+"wants to carry the message in an international format."
 
 msgid "Чому принт «Glory of Ukraine» англійською?"
-msgstr ""
+msgstr "Why is the “Glory of Ukraine” print in English?"
 
 msgid ""
 "Англомовний меседж розрахований на міжнародну аудиторію: іноземних знайомих,"
 " гостей з-за кордону, контекст за межами України. Принт зрозумілий без "
 "перекладу — і саме в цьому його сила."
 msgstr ""
+"The English-language message targets an international audience: foreign "
+"friends, guests from abroad, contexts outside Ukraine. The print is "
+"understood without translation — and that is its strength."
 
 msgid "англомовний принт «Glory of Ukraine»"
-msgstr ""
+msgstr "English-language “Glory of Ukraine” print"
 
 msgid ""
 "Футболка «Печатка Хулігана» TwoComms — streetwear-принт у дусі панкових "
 "90-х."
 msgstr ""
+"The TwoComms “Hooligan’s Seal” t-shirt — a streetwear print in the spirit of"
+" the punk 90s."
 
 #, python-brace-format
 msgid ""
@@ -1718,43 +1954,51 @@ msgid ""
 "неохайна графіка, різкі лінії, характерний шрифт. {nom_cap} в цьому образі —"
 " для тих, хто любить streetwear із вуличним нахилом, без глянцевого ідеалу."
 msgstr ""
+"“Hooligan’s Seal” is a TwoComms streetwear print in the spirit of the punk "
+"90s: slightly messy graphics, sharp lines, a distinctive typeface. The {nom}"
+" in this look is for those who love streetwear with a street lean, without a"
+" glossy ideal."
 
 msgid "печатка хулігана"
-msgstr ""
+msgstr "hooligan’s seal"
 
-#, fuzzy
 #| msgid "Тризуб футболка"
 msgid "панк футболка"
-msgstr "T-shirt with the trident"
+msgstr "punk t-shirt"
 
 msgid "streetwear футболка 90х"
-msgstr ""
+msgstr "90s streetwear t-shirt"
 
-#, fuzzy
 #| msgid "Класичні футболки"
 msgid "вулична футболка"
-msgstr "Classic t-shirts"
+msgstr "street t-shirt"
 
 msgid ""
 "Для прихильників панку, скейту, вуличної естетики — і просто для тих, хто не"
 " любить ідеально-чистий стиль."
 msgstr ""
+"For fans of punk, skating, street aesthetics — and simply for those who "
+"don’t like a perfectly clean style."
 
 msgid "У якому стилі виконано принт «Печатка Хулігана»?"
-msgstr ""
+msgstr "What is the style of the “Hooligan’s Seal” print?"
 
 msgid ""
 "Панково-вулична естетика: трохи неохайна графіка, різкі лінії, характерний "
 "90-х шрифт. Принт TwoComms для тих, хто цінує streetwear без глянцю."
 msgstr ""
+"Punk street aesthetics: slightly messy graphics, sharp lines, a distinctive "
+"90s typeface. A TwoComms print for those who value streetwear without gloss."
 
 msgid "панк-принт «Печатка Хулігана»"
-msgstr ""
+msgstr "“Hooligan’s Seal” punk print"
 
 msgid ""
 "Худі «Довіряй Своїй Божевільній Ідеї» TwoComms — мотиваційний streetwear-"
 "маніфест."
 msgstr ""
+"The TwoComms “Trust Your Crazy Idea” hoodie — a motivational streetwear "
+"manifesto."
 
 #, python-brace-format
 msgid ""
@@ -1763,49 +2007,56 @@ msgid ""
 "творців, фаундерів, авторів — усіх, хто колись не послухав «розумних людей» "
 "і виграв."
 msgstr ""
+"“Trust Your Crazy Idea” is a TwoComms print about that very thought everyone"
+" called reckless, and you made it real anyway. The {nom} as an amulet for "
+"creators, founders, authors — everyone who once didn’t listen to the “smart "
+"people” and won."
 
-#, fuzzy
 #| msgid "Довіряй своїй божевільній ідеї"
 msgid "довіряй своїй ідеї"
-msgstr "Trust your crazy idea"
+msgstr "trust your idea"
 
-#, fuzzy
 #| msgid "Деталі худі"
 msgid "мотиваційне худі"
-msgstr "Hoodie details"
+msgstr "motivational hoodie"
 
-#, fuzzy
 #| msgid "Худі для пари"
 msgid "худі для творця"
-msgstr "Couple hoodies"
+msgstr "creator hoodie"
 
 msgid "streetwear маніфест худі"
-msgstr ""
+msgstr "streetwear manifesto hoodie"
 
 msgid ""
 "Для творців, фаундерів, художників, музикантів — для всіх, хто має ідею, в "
 "яку інші не вірять."
 msgstr ""
+"For creators, founders, artists, musicians — for everyone with an idea that "
+"others don’t believe in."
 
-#, fuzzy
 #| msgid "Сенсовий принт TwoComms Довіряй своїй божевільній ідеї"
 msgid "Кому пасує принт «Довіряй Своїй Божевільній Ідеї»?"
-msgstr "TwoComms statement print: Trust your crazy idea"
+msgstr "Who is the “Trust Your Crazy Idea” print for?"
 
 msgid ""
 "Творцям, підприємцям, художникам, авторам — усім, хто знає, що означає "
 "вірити у задум, коли ще ніхто навколо не вірить. Streetwear-амулет для тих, "
 "хто будує своє."
 msgstr ""
+"For creators, entrepreneurs, artists, authors — everyone who knows what it "
+"means to believe in an idea when no one around does yet. A streetwear amulet"
+" for those building their own."
 
 msgid "принт «Довіряй Своїй Ідеї»"
-msgstr ""
+msgstr "“Trust Your Idea” print"
 
 #, python-brace-format
 msgid ""
 "{nom_cap} TWOCOMMS «Reality Bends»: Колекція Future 2026 — cyberpunk-принт у"
 " рожевому виконанні, флагманська модель сезону."
 msgstr ""
+"The TWOCOMMS “Reality Bends” {nom_cap}: Future 2026 Collection — a cyberpunk"
+" print in pink, the flagship model of the season."
 
 #, python-brace-format
 msgid ""
@@ -1815,57 +2066,70 @@ msgid ""
 "колекції. {nom_cap} у цьому варіанті поєднує streetwear-силует із витонченим"
 " sci-fi-принтом. Обмежене виробництво сезону 2026."
 msgstr ""
+"“Reality Bends: Future 2026” is the flagship TwoComms collection in the "
+"spirit of cyberpunk aesthetics: bending reality, neon reflections, a sense "
+"of the near future. The pink edition (#F7A1B9) is the collection’s main "
+"color. The {nom} in this version combines a streetwear silhouette with a "
+"refined sci-fi print. Limited production of the 2026 season."
 
 msgid "reality bends"
-msgstr ""
+msgstr "reality bends"
 
 msgid "future 2026"
-msgstr ""
+msgstr "future 2026"
 
 #, python-brace-format
 msgid "cyberpunk {nom}"
-msgstr ""
+msgstr "cyberpunk {nom}"
 
 #, python-brace-format
 msgid "рожева {nom}"
-msgstr ""
+msgstr "pink {nom}"
 
 #, python-brace-format
 msgid "sci-fi принт {nom}"
-msgstr ""
+msgstr "sci-fi print {nom}"
 
 #, python-brace-format
 msgid "neon {nom} streetwear"
-msgstr ""
+msgstr "neon streetwear {nom}"
 
 msgid "twocomms reality bends"
-msgstr ""
+msgstr "twocomms reality bends"
 
 #, python-brace-format
 msgid "flagship {nom}"
-msgstr ""
+msgstr "flagship {nom}"
 
 msgid ""
 "Для фанатів cyberpunk-естетики, futurist-streetwear, колекціонерів "
 "флагманських релізів TwoComms."
 msgstr ""
+"For fans of cyberpunk aesthetics, futurist streetwear, and collectors of "
+"TwoComms flagship releases."
 
 msgid "Що означає «Reality Bends: Future 2026»?"
-msgstr ""
+msgstr "What does “Reality Bends: Future 2026” mean?"
 
 msgid ""
 "Це флагманська колекція TwoComms сезону 2026 у дусі cyberpunk-естетики: "
 "реальність, що гнеться, неонові відблиски, відчуття близького майбутнього. "
 "Рожеве виконання — основний колір серії, є ще Dark Neon та Ментол-версії."
 msgstr ""
+"It is the flagship TwoComms collection of the 2026 season in the spirit of "
+"cyberpunk aesthetics: bending reality, neon reflections, a sense of the near"
+" future. Pink is the main color of the series; Dark Neon and Menthol "
+"versions also exist."
 
 msgid "cyberpunk-принт «Reality Bends» рожевий"
-msgstr ""
+msgstr "pink “Reality Bends” cyberpunk print"
 
 msgid ""
 "Футболка TWOCOMMS «Reality Bends»: Dark Neon Edition — темна версія "
 "cyberpunk-колекції Future 2026."
 msgstr ""
+"The TWOCOMMS “Reality Bends” t-shirt: Dark Neon Edition — the dark version "
+"of the Future 2026 cyberpunk collection."
 
 msgid ""
 "Dark Neon Edition — темна версія колекції «Reality Bends: Future 2026». "
@@ -1873,49 +2137,57 @@ msgid ""
 "цьому виконанні — для тих, хто обирає стрімкість і драматизм замість "
 "пастельної поетики. Той самий флагманський принт, інший характер."
 msgstr ""
+"Dark Neon Edition is the dark version of the “Reality Bends: Future 2026” "
+"collection. A black base, neon accents, a more aggressive cyberpunk mood. A "
+"t-shirt in this edition is for those who choose speed and drama over pastel "
+"poetics. The same flagship print, a different character."
 
 msgid "reality bends dark neon"
-msgstr ""
+msgstr "reality bends dark neon"
 
-#, fuzzy
 #| msgid "Тризуб футболка"
 msgid "чорна футболка cyberpunk"
-msgstr "T-shirt with the trident"
+msgstr "black cyberpunk t-shirt"
 
 msgid "dark neon edition"
-msgstr ""
+msgstr "dark neon edition"
 
-#, fuzzy
 #| msgid "Тризуб футболка"
 msgid "темна футболка streetwear"
-msgstr "T-shirt with the trident"
+msgstr "dark streetwear t-shirt"
 
 msgid "twocomms future 2026"
-msgstr ""
+msgstr "twocomms future 2026"
 
 msgid ""
 "Для тих, хто любить темний futurist-streetwear і неонові відблиски на "
 "чорному."
 msgstr ""
+"For those who love dark futurist streetwear and neon reflections on black."
 
-#, fuzzy
 #| msgid "Чим TwoComms відрізняється від патріотичного мерчу?"
 msgid "Чим Dark Neon відрізняється від рожевої версії?"
-msgstr "How is TwoComms different from patriotic merch?"
+msgstr "How does Dark Neon differ from the pink version?"
 
 msgid ""
 "Dark Neon Edition — темна (чорна база) редакція тієї самої колекції «Reality"
 " Bends: Future 2026» з неоновими акцентами. Агресивніша, драматичніша, для "
 "тих, хто обирає темну естетику. Принт той самий, характер інший."
 msgstr ""
+"Dark Neon Edition is the dark (black base) edition of the same “Reality "
+"Bends: Future 2026” collection with neon accents. More aggressive, more "
+"dramatic, for those who choose dark aesthetics. The print is the same, the "
+"character is different."
 
 msgid "Dark Neon cyberpunk принт"
-msgstr ""
+msgstr "Dark Neon cyberpunk print"
 
 msgid ""
 "Футболка TWOCOMMS «Reality Bends»: Ментол — пастельна версія cyberpunk-"
 "колекції Future 2026."
 msgstr ""
+"The TWOCOMMS “Reality Bends” t-shirt: Menthol — the pastel version of the "
+"Future 2026 cyberpunk collection."
 
 msgid ""
 "Ментолова версія колекції «Reality Bends: Future 2026» — пастельна гра з "
@@ -1924,47 +2196,58 @@ msgid ""
 "виконанні — для тих, хто обирає cyberpunk у легкому, атмосферному "
 "прочитанні."
 msgstr ""
+"The Menthol version of the “Reality Bends: Future 2026” collection is a "
+"pastel take on the cyberpunk theme. Soft menthol (#C2EBE5) as the base, neon"
+" print details, the feeling of a cool summer morning in a city of the "
+"future. A t-shirt in this edition is for those who choose cyberpunk in a "
+"light, atmospheric reading."
 
 msgid "reality bends ментол"
-msgstr ""
+msgstr "reality bends menthol"
 
-#, fuzzy
 #| msgid "Тризуб футболка"
 msgid "ментолова футболка"
-msgstr "T-shirt with the trident"
+msgstr "menthol t-shirt"
 
-#, fuzzy
 #| msgid "Класичні футболки"
 msgid "пастельна футболка cyberpunk"
-msgstr "Classic t-shirts"
+msgstr "pastel cyberpunk t-shirt"
 
 msgid "mint футболка streetwear"
-msgstr ""
+msgstr "mint streetwear t-shirt"
 
 msgid "twocomms future 2026 mentol"
-msgstr ""
+msgstr "twocomms future 2026 menthol"
 
 msgid ""
 "Для прихильників пастельних відтінків, атмосферного streetwear, літніх "
 "комплектів у прохолодній палітрі."
 msgstr ""
+"For fans of pastel shades, atmospheric streetwear, and summer outfits in a "
+"cool palette."
 
 msgid "Чому «Ментол»?"
-msgstr ""
+msgstr "Why “Menthol”?"
 
 msgid ""
 "Ментолова — пастельна версія колекції «Reality Bends: Future 2026». База у "
 "м'якому ментоловому відтінку, неонові деталі принту. Легший, атмосферніший "
 "варіант тієї самої флагманської серії. Ідеально для літніх комплектів."
 msgstr ""
+"Menthol is the pastel version of the “Reality Bends: Future 2026” "
+"collection. A base in a soft menthol shade, neon print details. A lighter, "
+"more atmospheric variant of the same flagship series. Perfect for summer "
+"outfits."
 
 msgid "ментолова футболка «Reality Bends»"
-msgstr ""
+msgstr "“Reality Bends” menthol t-shirt"
 
 msgid ""
 "Чорна футболка унісекс TwoComms «Довіряй своїй божевільній ідеї» — "
 "мотиваційний streetwear-маніфест у класичному виконанні."
 msgstr ""
+"The black unisex TwoComms “Trust Your Crazy Idea” t-shirt — a motivational "
+"streetwear manifesto in a classic design."
 
 msgid ""
 "«Довіряй своїй божевільній ідеї» — фірмовий мотиваційний принт TwoComms у "
@@ -1972,40 +2255,46 @@ msgid ""
 "мінімальна графіка. Для творців, фаундерів і всіх, хто колись зважився "
 "втілити те, у що ще ніхто не вірив."
 msgstr ""
+"“Trust Your Crazy Idea” is the signature motivational TwoComms print in a "
+"classic design: a black basic unisex t-shirt, readable type, minimal "
+"graphics. For creators, founders and everyone who once dared to build what "
+"no one believed in yet."
 
-#, fuzzy
 #| msgid "Чорна футболка з принтом"
 msgid "чорна футболка унісекс"
-msgstr "Black t-shirt with a print"
+msgstr "black unisex t-shirt"
 
-#, fuzzy
 #| msgid "Тризуб футболка"
 msgid "мотиваційна футболка"
-msgstr "T-shirt with the trident"
+msgstr "motivational t-shirt"
 
 msgid "streetwear футболка маніфест"
-msgstr ""
+msgstr "streetwear manifesto t-shirt"
 
 msgid ""
 "Для творців, авторів, фаундерів — і всіх, хто живе власним проектом проти "
 "всіх."
 msgstr ""
+"For creators, authors, founders — and everyone living their own project "
+"against the odds."
 
-#, fuzzy
 #| msgid "Чим TwoComms відрізняється від патріотичного мерчу?"
 msgid "Чим ця футболка відрізняється від худі з таким самим принтом?"
-msgstr "How is TwoComms different from patriotic merch?"
+msgstr "How does this t-shirt differ from the hoodie with the same print?"
 
 msgid ""
 "Це класичний унісекс-варіант принту «Довіряй своїй божевільній ідеї» на "
 "чорній базовій футболці: більш повсякденний формат, однаково пасує для "
 "міста, офісу та вечірніх виходів. Меседж той самий, силует інший."
 msgstr ""
+"It is the classic unisex version of the “Trust Your Crazy Idea” print on a "
+"black basic t-shirt: a more casual format, equally fitting for the city, the"
+" office and evenings out. The message is the same, the silhouette is "
+"different."
 
-#, fuzzy
 #| msgid "Чорна футболка з тризубом"
 msgid "чорна футболка «Довіряй Своїй Ідеї»"
-msgstr "Black t-shirt with trident"
+msgstr "black “Trust Your Idea” t-shirt"
 
 msgid "Товар TwoComms"
 msgstr "TwoComms product"
@@ -2286,71 +2575,62 @@ msgstr "Filter by colour"
 msgid "Популярні запити"
 msgstr "Popular queries"
 
-#, fuzzy
 #| msgid "Футболка"
 msgctxt "nominative"
 msgid "футболка"
-msgstr "T-shirt"
+msgstr "t-shirt"
 
 msgctxt "nominative"
 msgid "худі"
-msgstr ""
+msgstr "hoodie"
 
-#, fuzzy
 #| msgid "Лонгслів"
 msgctxt "nominative"
 msgid "лонгслів"
-msgstr "Long sleeve"
+msgstr "longsleeve"
 
-#, fuzzy
 #| msgid "Футболка"
 msgctxt "accusative"
 msgid "футболку"
-msgstr "T-shirt"
+msgstr "t-shirt"
 
 msgctxt "accusative"
 msgid "худі"
-msgstr ""
+msgstr "hoodie"
 
-#, fuzzy
 #| msgid "Лонгслів"
 msgctxt "accusative"
 msgid "лонгслів"
-msgstr "Long sleeve"
+msgstr "longsleeve"
 
-#, fuzzy
 #| msgid "Футболки"
 msgctxt "genitive"
 msgid "футболки"
-msgstr "T-shirts"
+msgstr "t-shirt"
 
 msgctxt "genitive"
 msgid "худі"
-msgstr ""
+msgstr "hoodie"
 
-#, fuzzy
 #| msgid "Лонгсліви"
 msgctxt "genitive"
 msgid "лонгсліва"
-msgstr "Long sleeves"
+msgstr "longsleeve"
 
-#, fuzzy
 #| msgid "FAQ товару"
 msgctxt "nominative"
 msgid "товар"
-msgstr "Product FAQ"
+msgstr "product"
 
-#, fuzzy
 #| msgid "FAQ товару"
 msgctxt "accusative"
 msgid "товар"
-msgstr "Product FAQ"
+msgstr "product"
 
-#, fuzzy
 #| msgid "FAQ товару"
 msgctxt "genitive"
 msgid "товару"
-msgstr "Product FAQ"
+msgstr "product"
 
 msgid ""
 "Виготовлена зі щільного бавовняного трикотажу 180–220 г/м²: не "
@@ -2358,109 +2638,120 @@ msgid ""
 "нанесено методом DTF-друку — насичені кольори, тонкі деталі та стійкість до "
 "50+ циклів прання при дотриманні правил догляду."
 msgstr ""
+"Made of dense cotton jersey 180–220 g/m²: not see-through, keeps its shape "
+"after washing, soft to the skin. The print is applied with DTF printing — "
+"rich colors, fine details and durability for 50+ wash cycles when care rules"
+" are followed."
 
 msgid ""
 "Універсальна форма: пасує і для сольного носіння, і для шарування під "
 "сорочку, худі або легку куртку. Поєднується з джинсами, карго-штанами, "
 "шортами чи спідницею. Доступні regular та oversize-силуети, розміри XS–XXL."
 msgstr ""
+"A universal shape: works both worn solo and layered under a shirt, hoodie or"
+" light jacket. Pairs with jeans, cargo pants, shorts or a skirt. Available "
+"in regular and oversize silhouettes, sizes XS–XXL."
 
 msgid ""
 "Прати при 30 °C у режимі для бавовни, навиворіт, без агресивних "
 "відбілювачів. Сушити на повітрі, без сушильної машини. Прасувати з вивороту "
 "або через тканину — не торкайтеся праскою принта."
 msgstr ""
+"Wash at 30 °C on a cotton cycle, inside out, without harsh bleach. Air dry, "
+"no tumble dryer. Iron inside out or through fabric — do not touch the print "
+"with the iron."
 
 msgid ""
 "Підійде тим, хто шукає базову, але авторську футболку — без масмаркету і "
 "копій західних брендів. Для щоденного носіння у місті, активного відпочинку "
 "чи як подарунок патріотичним рідним."
 msgstr ""
+"For anyone looking for a basic yet original t-shirt — without mass market "
+"and copies of Western brands. For everyday city wear, active leisure, or as "
+"a gift for patriotic loved ones."
 
-#, fuzzy
 #| msgid "Футболки TwoComms"
 msgid "футболка TwoComms"
-msgstr "TwoComms t-shirts"
+msgstr "TwoComms t-shirt"
 
-#, fuzzy
 #| msgid "Купити футболку"
 msgid "купити футболку"
-msgstr "Buy a t-shirt"
+msgstr "buy a t-shirt"
 
-#, fuzzy
 #| msgid "%(color)s футболка з принтом"
 msgid "футболка з принтом"
-msgstr "%(color)s t-shirt with print"
+msgstr "printed t-shirt"
 
-#, fuzzy
 #| msgid "Класичні футболки"
 msgid "патріотична футболка"
-msgstr "Classic t-shirts"
+msgstr "patriotic t-shirt"
 
-#, fuzzy
 #| msgid "Тризуб футболка"
 msgid "українська футболка"
-msgstr "T-shirt with the trident"
+msgstr "Ukrainian t-shirt"
 
-#, fuzzy
 #| msgid "Футболка"
 msgid "футболка ЗСУ"
-msgstr "T-shirt"
+msgstr "AFU t-shirt"
 
-#, fuzzy
 #| msgid "Тризуб футболка"
 msgid "стрітвір футболка"
-msgstr "T-shirt with the trident"
+msgstr "streetwear t-shirt"
 
-#, fuzzy
 #| msgid "Футболка унісекс TwoComms"
 msgid "футболка унісекс"
-msgstr "Unisex TwoComms t-shirt"
+msgstr "unisex t-shirt"
 
 msgid "DTF друк"
-msgstr ""
+msgstr "DTF printing"
 
-#, fuzzy
 #| msgid "Як обрати розмір?"
 msgid "Як обрати розмір футболки?"
-msgstr "How to choose a size?"
+msgstr "How do I choose a t-shirt size?"
 
 msgid ""
 "Орієнтуйтеся на розмірну сітку. Для regular fit — свій звичний розмір; для "
 "oversize — на 1 менший (помірний оверсайз) або свій (виразний). У сумнівах "
 "між двома — беріть більший."
 msgstr ""
+"Use the size chart. For regular fit — your usual size; for oversize — one "
+"size down (moderate oversize) or your own (pronounced). If in doubt between "
+"two sizes — take the larger one."
 
-#, fuzzy
 #| msgid "Купити футболку з принтом"
 msgid "Як прати футболку, щоб принт не зіпсувався?"
-msgstr "Buy a printed t-shirt"
+msgstr "How do I wash the t-shirt so the print doesn’t get damaged?"
 
 msgid ""
 "Виверніть навиворіт, періть при 30 °C у режимі для бавовни без відбілювачів."
 " Сушіть на повітрі. Прасувати можна з вивороту або через марлю. DTF-принт "
 "витримує 50+ циклів такого прання."
 msgstr ""
+"Turn it inside out and wash at 30 °C on a cotton cycle without bleach. Air "
+"dry. Iron inside out or through gauze. The DTF print withstands 50+ such "
+"wash cycles."
 
-#, fuzzy
 #| msgid "Купити футболку"
 msgid "Як швидко доставимо футболку?"
-msgstr "Buy a t-shirt"
+msgstr "How fast will the t-shirt be delivered?"
 
 msgid ""
 "Новою Поштою — 1–3 робочі дні по всій Україні. Відділення/поштомат від 85 ₴,"
 " кур'єр від 180 ₴. Замовлення до 14:00 відправляємо того ж дня."
 msgstr ""
+"By Nova Poshta — 1–3 business days across Ukraine. Branch/parcel locker from"
+" 85 ₴, courier from 180 ₴. Orders placed before 2 p.m. ship the same day."
 
-#, fuzzy
 #| msgid "Чи можна замовити кастомний принт?"
 msgid "Чи можна замовити футболку зі своїм принтом?"
-msgstr "Can I order a custom print?"
+msgstr "Can I order a t-shirt with my own print?"
 
 msgid ""
 "Так — у TwoComms є сервіс кастомного друку. Надішліть макет, оберіть колір і"
 " розмір, ми надрукуємо й доставимо. Мінімальне замовлення — 1 одиниця."
 msgstr ""
+"Yes — TwoComms offers a custom printing service. Send us your design, choose"
+" a color and size, and we will print and deliver it. Minimum order — 1 item."
 
 msgid ""
 "Худі виготовлене зі щільного трикотажу з начосом 280–320 г/м²: тримає тепло,"
@@ -2468,6 +2759,11 @@ msgid ""
 "шнурком; манжети та низ — посилена резинка. Принт нанесено DTF-друком — "
 "стійка фарба, що передає всі деталі ілюстрації."
 msgstr ""
+"The hoodie is made of dense fleece-lined jersey 280–320 g/m²: keeps warmth, "
+"fits well, doesn’t stretch out after washing. A two-layer hood with a "
+"braided drawstring; cuffs and hem — reinforced ribbing. The print is applied"
+" with DTF printing — durable ink that conveys every detail of the "
+"illustration."
 
 msgid ""
 "Базовий шар streetwear-гардероба: сидить як у regular, так і в oversize-"
@@ -2475,6 +2771,9 @@ msgid ""
 "прохолодної погоди, активного відпочинку та щоденного носіння. Розміри "
 "XS–XXL."
 msgstr ""
+"A staple layer of a streetwear wardrobe: fits both regular and oversize "
+"silhouettes, pairs with a t-shirt, longsleeve or shirt. Suitable for cool "
+"weather, active leisure and everyday wear. Sizes XS–XXL."
 
 msgid ""
 "Прати при 30 °C, навиворіт, без агресивних засобів. Сушити природним "
@@ -2482,103 +2781,113 @@ msgid ""
 " або через тканину. При перших пранні можлива усадка до 2% — це природна "
 "властивість бавовни."
 msgstr ""
+"Wash at 30 °C, inside out, without harsh detergents. Dry naturally — not on "
+"a radiator and not in a tumble dryer. Iron only inside out or through "
+"fabric. Up to 2% shrinkage is possible after the first wash — a natural "
+"property of cotton."
 
 msgid ""
 "Для тих, хто шукає тепле стильне худі з характером — без масмаркетного "
 "«лубочного» патріотизму та копій західних брендів. Для міста, активного "
 "відпочинку, або як патріотичний подарунок."
 msgstr ""
+"For anyone looking for a warm, stylish hoodie with character — without mass-"
+"market cheap patriotism and copies of Western brands. For the city, active "
+"leisure, or as a patriotic gift."
 
-#, fuzzy
 #| msgid "Худі TwoComms"
 msgid "худі TwoComms"
-msgstr "TwoComms hoodies"
+msgstr "TwoComms hoodie"
 
-#, fuzzy
 #| msgid "Купити худі"
 msgid "купити худі"
-msgstr "Buy a hoodie"
+msgstr "buy a hoodie"
 
-#, fuzzy
 #| msgid "Свій принт"
 msgid "худі з принтом"
-msgstr "Your print"
+msgstr "printed hoodie"
 
-#, fuzzy
 #| msgid "Кайот худі"
 msgid "патріотичне худі"
-msgstr "Coyote hoodie"
+msgstr "patriotic hoodie"
 
-#, fuzzy
 #| msgid "Українська"
 msgid "українське худі"
-msgstr "Ukrainian"
+msgstr "Ukrainian hoodie"
 
-#, fuzzy
 #| msgid "Худі ЗСУ"
 msgid "худі ЗСУ"
 msgstr "AFU hoodie"
 
-#, fuzzy
 #| msgid "Деталі худі"
 msgid "стрітвір худі"
-msgstr "Hoodie details"
+msgstr "streetwear hoodie"
 
-#, fuzzy
 #| msgid "Худі [фліс] опт"
 msgid "худі унісекс"
-msgstr "Hoodie [fleece] wholesale"
+msgstr "unisex hoodie"
 
-#, fuzzy
 #| msgid "Купити худі"
 msgid "тепле худі"
-msgstr "Buy a hoodie"
+msgstr "warm hoodie"
 
-#, fuzzy
 #| msgid "Як обрати розмір?"
 msgid "Як обрати розмір худі?"
-msgstr "How to choose a size?"
+msgstr "How do I choose a hoodie size?"
 
 msgid ""
 "Для класичного силуету — свій звичний розмір; для oversize — на 1 більший. "
 "Якщо плануєте шарувати худі поверх сорочки/лонгсліва, рекомендуємо взяти на "
 "розмір більший за звичний."
 msgstr ""
+"For a classic silhouette — your usual size; for oversize — one size up. If "
+"you plan to layer the hoodie over a shirt or longsleeve, we recommend going "
+"one size larger than usual."
 
 msgid "Як прати худі, щоб не зіпсувалося?"
-msgstr ""
+msgstr "How do I wash the hoodie so it doesn’t get damaged?"
 
 msgid ""
 "Прання при 30 °C, режим для бавовни, навиворіт, без відбілювачів. Сушити "
 "горизонтально або на плічках — не на батареї та не в сушарці. Прасування "
 "лише з вивороту, не торкайтеся праскою принта."
 msgstr ""
+"Wash at 30 °C on a cotton cycle, inside out, without bleach. Dry flat or on "
+"a hanger — not on a radiator and not in a dryer. Iron only inside out, do "
+"not touch the print with the iron."
 
-#, fuzzy
 #| msgid "Швидка доставка"
 msgid "Як швидко доставимо худі?"
-msgstr "Fast delivery"
+msgstr "How fast will the hoodie be delivered?"
 
 msgid ""
 "Новою Поштою — 1–3 робочі дні. Відділення/поштомат від 85 ₴, адресна "
 "кур'єрська доставка від 180 ₴. Замовлення до 14:00 йдуть того ж дня."
 msgstr ""
+"By Nova Poshta — 1–3 business days. Branch/parcel locker from 85 ₴, address "
+"courier delivery from 180 ₴. Orders placed before 2 p.m. ship the same day."
 
-#, fuzzy
 #| msgid "Чи можна замовити кастомний принт?"
 msgid "Чи можна замовити худі зі своїм принтом?"
-msgstr "Can I order a custom print?"
+msgstr "Can I order a hoodie with my own print?"
 
 msgid ""
 "Так — оформіть кастомний друк через нашу форму: завантажте макет, оберіть "
 "колір і розмір базового худі, ми надрукуємо й доставимо персональну модель."
 msgstr ""
+"Yes — order custom printing through our form: upload your design, choose the"
+" color and size of the base hoodie, and we will print and deliver your "
+"personalized model."
 
 msgid ""
 "Лонгслів виготовлений з бавовняного трикотажу 200–240 г/м² — щільнішого за "
 "футбольний, легшого за худі. Манжети — двошарова резинка, тримає рукав на "
 "місці. Принт нанесено DTF-друком: насичені стійкі кольори, тонкі деталі."
 msgstr ""
+"The longsleeve is made of cotton jersey 200–240 g/m² — denser than a "
+"t-shirt, lighter than a hoodie. Cuffs — two-layer ribbing that keeps the "
+"sleeve in place. The print is applied with DTF printing: rich, durable "
+"colors and fine details."
 
 msgid ""
 "Універсальний базовий шар streetwear-гардероба: можна носити окремо у "
@@ -2586,136 +2895,151 @@ msgid ""
 "джинсами, карго та темним низом. Силуети — regular та oversize, розміри "
 "XS–XXL."
 msgstr ""
+"A universal base layer of a streetwear wardrobe: can be worn on its own in "
+"cool weather or layered under a hoodie or light jacket. Pairs with jeans, "
+"cargo pants and dark bottoms. Silhouettes — regular and oversize, sizes "
+"XS–XXL."
 
 msgid ""
 "Прати при 30 °C у режимі для бавовни, навиворіт. Сушити на повітрі, без "
 "сушильної машини. Прасувати з вивороту або через тканину. Мінімальна усадка "
 "(до 2%) при першому пранні є природною властивістю бавовни."
 msgstr ""
+"Wash at 30 °C on a cotton cycle, inside out. Air dry, no tumble dryer. Iron "
+"inside out or through fabric. Minimal shrinkage (up to 2%) after the first "
+"wash is a natural property of cotton."
 
 msgid ""
 "Для тих, кому замало футболки, але худі поки зайве. Базовий шар із "
 "характером, добре виглядає самостійно і у багатошаровому образі. Гарний для "
 "активного відпочинку та повсякденного носіння."
 msgstr ""
+"For those for whom a t-shirt isn’t enough but a hoodie is too much. A base "
+"layer with character that looks great on its own and in a layered outfit. "
+"Great for active leisure and everyday wear."
 
-#, fuzzy
 #| msgid "Лонгсліви TwoComms"
 msgid "лонгслів TwoComms"
-msgstr "TwoComms long sleeves"
+msgstr "TwoComms longsleeve"
 
-#, fuzzy
 #| msgid "Купити лонгслів"
 msgid "купити лонгслів"
-msgstr "Buy a long sleeve"
+msgstr "buy a longsleeve"
 
-#, fuzzy
 #| msgid "Чорна футболка з принтом"
 msgid "лонгслів з принтом"
-msgstr "Black t-shirt with a print"
+msgstr "printed longsleeve"
 
-#, fuzzy
 #| msgid "Чорний лонгслів"
 msgid "український лонгслів"
-msgstr "Black long sleeve"
+msgstr "Ukrainian longsleeve"
 
-#, fuzzy
 #| msgid "Кайотовий лонгслів"
 msgid "патріотичний лонгслів"
-msgstr "Coyote long sleeve"
+msgstr "patriotic longsleeve"
 
-#, fuzzy
 #| msgid "Лонгсліви"
 msgid "лонгслів ЗСУ"
-msgstr "Long sleeves"
+msgstr "AFU longsleeve"
 
-#, fuzzy
 #| msgid "Купити лонгслів"
 msgid "стрітвір лонгслів"
-msgstr "Buy a long sleeve"
+msgstr "streetwear longsleeve"
 
-#, fuzzy
 #| msgid "Лонгслів мілітарі"
 msgid "лонгслів унісекс"
-msgstr "Military long sleeve"
+msgstr "unisex longsleeve"
 
-#, fuzzy
 #| msgid "Як обрати розмір?"
 msgid "Як обрати розмір лонгсліва?"
-msgstr "How to choose a size?"
+msgstr "How do I choose a longsleeve size?"
 
 msgid ""
 "Для класичного (regular) силуету — свій звичний розмір; для oversize — на 1 "
 "більший. Якщо плануєте шарувати лонгслів під худі або куртку, беріть свій "
 "звичний розмір."
 msgstr ""
+"For a classic (regular) silhouette — your usual size; for oversize — one "
+"size up. If you plan to layer the longsleeve under a hoodie or jacket, take "
+"your usual size."
 
 msgid "Як прати лонгслів, щоб принт залишився яскравим?"
-msgstr ""
+msgstr "How do I wash the longsleeve so the print stays vivid?"
 
 msgid ""
 "Прання при 30 °C, навиворіт, без відбілювачів. Сушити природним способом. "
 "Прасування лише з вивороту або через тканину, не торкаючись праскою принта."
 msgstr ""
+"Wash at 30 °C, inside out, without bleach. Dry naturally. Iron only inside "
+"out or through fabric, without touching the print with the iron."
 
-#, fuzzy
 #| msgid "Як довго триває доставка по Україні?"
 msgid "Як довго їде доставка?"
-msgstr "How long does delivery across Ukraine take?"
+msgstr "How long does delivery take?"
 
 msgid ""
 "Новою Поштою — 1–3 робочі дні. Відділення/поштомат від 85 ₴, адресна "
 "кур'єрська від 180 ₴. Оформлюйте до 14:00 — відправимо сьогодні."
 msgstr ""
+"By Nova Poshta — 1–3 business days. Branch/parcel locker from 85 ₴, address "
+"courier from 180 ₴. Order before 2 p.m. — we ship the same day."
 
-#, fuzzy
 #| msgid "Чи можна замовити кастомний принт?"
 msgid "Чи можна замовити лонгслів зі своїм принтом?"
-msgstr "Can I order a custom print?"
+msgstr "Can I order a longsleeve with my own print?"
 
 msgid ""
 "Так — у TwoComms є сервіс кастомного друку. Надішліть макет, оберіть колір і"
 " розмір лонгсліва — ми надрукуємо й доставимо."
 msgstr ""
+"Yes — TwoComms offers a custom printing service. Send us your design, choose"
+" the longsleeve color and size — we will print and deliver it."
 
 #, python-brace-format
 msgid ""
 "{nom_cap} TwoComms: {title} — авторський streetwear з мілітарним ДНК, DTF-"
 "друк, бавовна."
 msgstr ""
+"TwoComms {nom_cap}: {title} — original streetwear with military DNA, DTF "
+"printing, cotton."
 
 #, python-brace-format
 msgid ""
 "{title} — {nom} TwoComms у мілітарно-streetwear ДНК. Виготовлена в Україні, "
 "з авторським принтом і якісним DTF-друком."
 msgstr ""
+"{title} — a TwoComms {nom} with military-streetwear DNA. Made in Ukraine, "
+"with an original print and quality DTF printing."
 
 msgid "Гарний вибір для щоденного носіння у місті."
-msgstr ""
+msgstr "A great choice for everyday city wear."
 
-#, fuzzy
 #| msgid "Топ запити для цієї моделі"
 msgid "Що особливого в цій моделі?"
-msgstr "Top queries for this model"
+msgstr "What is special about this model?"
 
 msgid ""
 "Це авторська модель TwoComms з мілітарно-streetwear ДНК. DTF-друк, щільна "
 "бавовна, пошиття в Україні. Частина прибутку йде на підтримку ЗСУ."
 msgstr ""
+"It is an original TwoComms model with military-streetwear DNA. DTF printing,"
+" dense cotton, sewn in Ukraine. Part of the profit goes to support the Armed"
+" Forces of Ukraine."
 
-#, fuzzy
 #| msgid "Кастомний принт"
 msgid "авторський принт"
-msgstr "Custom print"
+msgstr "original print"
 
-#, fuzzy, python-brace-format
+#, python-brace-format
 #| msgid "%(title)s — фото%(number)s TwoComms"
 msgid "{title} — купити {acc} TwoComms"
-msgstr "%(title)s — photo%(number)s TwoComms"
+msgstr "{title} — buy the {acc} by TwoComms"
 
 msgid ""
 "Шиємо в Україні, DTF-друк, бавовна. Доставка Новою Поштою. Підтримуємо ЗСУ."
 msgstr ""
+"Sewn in Ukraine, DTF printing, cotton. Delivery by Nova Poshta. We support "
+"the Armed Forces of Ukraine."
 
 msgid "Індивідуальна сітка товару"
 msgstr "Custom size chart for this item"
@@ -3743,85 +4067,85 @@ msgstr "confirmed categories"
 msgid "без зайвого перевантаження"
 msgstr "without extra clutter"
 
-#, fuzzy
 #| msgid "Як обрати розмір?"
 msgid "Як зняти мірки і обрати розмір TwoComms"
-msgstr "How to choose a size?"
+msgstr "How to take measurements and choose your TwoComms size"
 
 msgid ""
 "Покрокова інструкція, як з’ясувати свій розмір TwoComms за власною футболкою"
 " чи худі без рулетки на тілі."
 msgstr ""
+"A step-by-step guide on how to figure out your TwoComms size using your own "
+"t-shirt or hoodie, without a tape measure on your body."
 
 msgid "Сантиметрова стрічка або лінійка"
-msgstr ""
+msgstr "A measuring tape or a ruler"
 
-#, fuzzy
 #| msgid "Своя ідея"
 msgid "Своя річ для звірки"
-msgstr "Your idea"
+msgstr "Your own garment for comparison"
 
-#, fuzzy
 #| msgid ""
 #| "Покладіть свою футболку або худі на рівну поверхню й зніміть мірки з виробу."
 msgid "Покладіть свою річ на рівну поверхню"
-msgstr ""
-"Lay your t-shirt or hoodie flat and take measurements from the garment."
+msgstr "Lay your garment on a flat surface"
 
 msgid ""
 "Розправте футболку чи худі на столі, без складок. Це базова умова для точних"
 " мірок."
 msgstr ""
+"Spread the t-shirt or hoodie on a table, without folds. This is the basic "
+"condition for accurate measurements."
 
-#, fuzzy
 #| msgid "ширина по грудях"
 msgid "Зніміть ширину по грудях"
-msgstr "chest width"
+msgstr "Measure the chest width"
 
 msgid ""
 "Виміряйте відстань від одного бокового шва до іншого на 2–3 см нижче пройми."
 msgstr ""
+"Measure the distance from one side seam to the other, 2–3 cm below the "
+"armhole."
 
-#, fuzzy
 #| msgid "довжина виробу"
 msgid "Зніміть довжину виробу"
-msgstr "garment length"
+msgstr "Measure the garment length"
 
 msgid ""
 "Виміряйте від найвищої точки плеча біля горловини до низу виробу. Це "
 "відповідь на питання «що буде по довжині»."
 msgstr ""
+"Measure from the highest point of the shoulder near the collar to the bottom"
+" hem. This answers the question of how long it will be."
 
-#, fuzzy
 #| msgid "для категорії ще немає окремої підтвердженої таблиці."
 msgid "Порівняйте з підтвердженою таблицею TwoComms"
-msgstr "the category doesn't yet have a dedicated verified table."
+msgstr "Compare with the verified TwoComms chart"
 
 msgid ""
 "Знайдіть на цій сторінці блок для своєї категорії й співставте свої цифри з "
 "рядком потрібного розміру."
 msgstr ""
+"Find the block for your category on this page and match your numbers with "
+"the row of the size you need."
 
-#, fuzzy
 #| msgid ""
 #| "Якщо вагаєтесь між двома розмірами, обирайте за бажаною посадкою, а не "
 #| "тільки за звичкою."
 msgid "Якщо вагаєтесь — оберіть за бажаною посадкою"
-msgstr ""
-"If you are torn between two sizes, choose based on the fit you want rather "
-"than habit alone."
+msgstr "If in doubt — choose by the desired fit"
 
 msgid ""
 "Між двома розмірами обирайте більший для оверсайз-фіту або менший — якщо "
 "хочете щільну посадку."
 msgstr ""
+"Between two sizes, choose the larger one for an oversize fit or the smaller "
+"one if you want a snug fit."
 
-#, fuzzy
 #| msgid "Звертайтесь до підтримки до оплати, якщо"
 msgid "Напишіть у підтримку перед оплатою, якщо є сумніви"
-msgstr "Reach out to support before payment if"
+msgstr "Message support before paying if you have doubts"
 
-#, fuzzy
 #| msgid ""
 #| "Опишіть модель, бажаний fit і свій звичний розмір. Так ми швидше підкажемо "
 #| "без зайвих повідомлень."
@@ -3829,8 +4153,8 @@ msgid ""
 "Опишіть модель, fit і свій звичний розмір — підкажемо точніше до того, як "
 "замовлення піде у виробництво."
 msgstr ""
-"Describe the model, the fit you want and your usual size. That way we can "
-"advise faster without extra messages."
+"Describe the model, the fit and your usual size — we will advise you more "
+"precisely before the order goes into production."
 
 msgid "Футболки"
 msgstr "T-shirts"
@@ -3917,78 +4241,82 @@ msgstr ""
 "Short care rules without overload: how to wash, dry and store items so they "
 "keep their shape and look longer."
 
-#, fuzzy
 #| msgid "Як доглядати за одягом TwoComms?"
 msgid "Як прати і доглядати за одягом TwoComms з DTF-принтом"
-msgstr "How do I care for TwoComms apparel?"
+msgstr "How to wash and care for TwoComms clothes with a DTF print"
 
 msgid ""
 "Покрокова інструкція з догляду за футболками, худі та лонгслівами TwoComms, "
 "щоб зберегти форму, колір і яскравість DTF-принта."
 msgstr ""
+"A step-by-step care guide for TwoComms t-shirts, hoodies and longsleeves to "
+"preserve the shape, color and vibrancy of the DTF print."
 
-#, fuzzy
 #| msgid "соціальна мережа"
 msgid "Пральна машина"
-msgstr "social network"
+msgstr "Washing machine"
 
-#, fuzzy
 #| msgid "Прасування:"
 msgid "Праска"
-msgstr "Ironing:"
+msgstr "Iron"
 
-#, fuzzy
 #| msgid "30°C, делікатний режим, навиворіт."
 msgid "Делікатний пральний засіб"
-msgstr "30°C, delicate cycle, inside out."
+msgstr "Delicate laundry detergent"
 
-#, fuzzy
 #| msgid "Оберіть виріб, щоб побачити деталі."
 msgid "Виверніть виріб навиворіт"
-msgstr "Pick a garment to view the details."
+msgstr "Turn the garment inside out"
 
 msgid ""
 "Перед пранням обов’язково виверніть футболку, худі чи лонгслів навиворіт, "
 "щоб мінімізувати тертя по принту."
 msgstr ""
+"Before washing, always turn the t-shirt, hoodie or longsleeve inside out to "
+"minimize friction on the print."
 
-#, fuzzy
 #| msgid "30°C, делікатний режим, навиворіт."
 msgid "Періть на 30 °C у делікатному режимі"
-msgstr "30°C, delicate cycle, inside out."
+msgstr "Wash at 30 °C on a delicate cycle"
 
 msgid ""
 "Використовуйте температуру не вище 30 °C і делікатний режим. Уникайте "
 "відбілювачів і агресивних плямовивідників."
 msgstr ""
+"Use a temperature no higher than 30 °C and a delicate cycle. Avoid bleach "
+"and aggressive stain removers."
 
-#, fuzzy
 #| msgid "Періть речі навиворіт на помірній температурі."
 msgid "Не сушіть у барабанній сушарці на високій температурі"
-msgstr "Wash items inside out at a moderate temperature."
+msgstr "Do not tumble dry at high temperature"
 
 msgid ""
 "Сушіть розправленим на плічках або горизонтально. Високотемпературна сушарка"
 " пришвидшує усадку і пошкоджує принт."
 msgstr ""
+"Dry spread out on a hanger or flat. A high-temperature dryer accelerates "
+"shrinkage and damages the print."
 
-#, fuzzy
 #| msgid "Прасуйте обережно й не перегрівайте зони з принтом."
 msgid "Прасуйте з вивороту, не торкайтесь принта"
-msgstr "Iron carefully and do not overheat the print areas."
+msgstr "Iron inside out, do not touch the print"
 
 msgid ""
 "Якщо потрібно прасування — лише з вивороту. Прямий контакт праски з DTF-"
 "принтом руйнує плівку і кольори."
 msgstr ""
+"If ironing is needed — only inside out. Direct contact of the iron with the "
+"DTF print destroys the film and colors."
 
 msgid "Зберігайте без вологості і прямого сонця"
-msgstr ""
+msgstr "Store away from humidity and direct sun"
 
 msgid ""
 "Зберігайте речі сухими, в шафі без прямого сонця. Не залишайте мокрий одяг "
 "складеним на тривалий час."
 msgstr ""
+"Keep the garments dry, in a wardrobe away from direct sunlight. Do not leave"
+" wet clothes folded for a long time."
 
 msgid "Базові правила"
 msgstr "Basic rules"
@@ -4626,7 +4954,7 @@ msgid "Для УБД додайте фото посвідчення"
 msgstr "For UBD, please attach a photo of the certificate"
 
 msgid "Введіть коректний український номер телефону. Можна без +380."
-msgstr ""
+msgstr "Enter a valid Ukrainian phone number. You can omit +380."
 
 msgid "Невірний логін або пароль"
 msgstr "Wrong login or password"
@@ -4963,10 +5291,9 @@ msgstr ""
 "We will then help agree the run size, print, deadlines and terms for the "
 "batch."
 
-#, fuzzy
 #| msgid "Підтримка та сервіс"
 msgid "Покупки та сервіс"
-msgstr "Support and service"
+msgstr "Shopping and service"
 
 msgid "Доставка та оплата"
 msgstr "Delivery & payment"
@@ -4988,10 +5315,10 @@ msgid "Актуальні товарні сторінки"
 msgstr "Up-to-date product pages"
 
 msgid "Ukrainian"
-msgstr ""
+msgstr "Ukrainian"
 
 msgid "Russian"
-msgstr ""
+msgstr "Russian"
 
 msgid "404 — Щось пішло не так"
 msgstr "404 — Something went wrong"
@@ -6235,10 +6562,9 @@ msgstr ""
 msgid "Зв'яжіться з нами будь-яким зручним способом"
 msgstr "Reach us in any way that suits you"
 
-#, fuzzy
 #| msgid "Запропонувати принт — TwoComms"
 msgid "Зателефонувати в TwoComms"
-msgstr "Suggest a print — TwoComms"
+msgstr "Call TwoComms"
 
 msgid "Наші магазини"
 msgstr "Our stores"
@@ -7864,30 +8190,28 @@ msgstr "TwoComms long sleeves"
 msgid "Лонгсліви з авторськими принтами, базовий і оверсайз-крій."
 msgstr "Long sleeves with original prints, basic and oversized fits."
 
-#, fuzzy
 #| msgid "Оптові ціни TwoComms"
 msgid "Засновник TwoComms"
-msgstr "TwoComms wholesale prices"
+msgstr "Founder of TwoComms"
 
 msgid ""
 "Засновник TwoComms, харків’янин, побудував бренд як ідею продовження після "
 "критичної точки."
 msgstr ""
+"Founder of TwoComms, a Kharkiv native, who built the brand as an idea of "
+"continuing after a critical point."
 
-#, fuzzy
 #| msgid "Худі streetwear"
 msgid "streetwear"
-msgstr "Streetwear hoodie"
+msgstr "streetwear"
 
-#, fuzzy
 #| msgid "Розмірна сітка"
 msgid "мілітарна естетика"
-msgstr "Size chart"
+msgstr "military aesthetics"
 
 msgid "DTF-друк"
-msgstr ""
+msgstr "DTF printing"
 
-#, fuzzy
 #| msgid "Український streetwear"
 msgid "український streetwear"
 msgstr "Ukrainian streetwear"
