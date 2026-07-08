@@ -51,17 +51,20 @@
   Бэкапов НЕТ; последний ручной дамп >8 мес. Блокирует ВСЕ миграции (RISK-07).
   Фикс: `[REPO]` — написать `scripts/backup_mysql.sh` (mysqldump, ротация 7/30 дней, каталог вне web-root, права 700); `[SERVER]` — поставить в crontab, тест восстановления на копии.
   Приёмка: дамп по расписанию; восстановление проверено; каталог не доступен по HTTP.
+  ✅ **REPO-часть DONE:** `scripts/backup_mysql.sh` создан — mysqldump `--single-transaction --routines --triggers`, атомарная запись через .tmp + sanity-check размера (>10KB) + `gzip -t`, ротация daily 7 дней / weekly 35 дней, chmod 600/700, инструкция установки в шапке скрипта. Осталось `[SERVER]`: mkdir ~/db_backups (вне webroot), ~/.my.cnf, crontab `45 3 * * *`, тест восстановления.
 
-- [ ] **W0-4. 🔴 Смок-тесты на деньги (CB-024)** `[REPO]`
+- [x] **W0-4. 🔴 Смок-тесты на деньги (CB-024)** `[REPO]`
   orders/ — 0 тестов (CAPI 850 строк!), accounts/ — 0; вебхук-подпись без тестов; CI нет.
   Фикс: pytest-набор ПЕРЕД фиксами воронки: (а) создание COD-заказа; (б) идемпотентность monobank-вебхука; (в) слияние корзины при логине; (г) guest COD; (д) `link_order_to_utm` (после W2-1).
   Приёмка: набор зелёный локально; прогоняется перед каждым деплоем.
   Отчёт: `audit_report_section6_codebase.md` (CB-024).
+  ✅ **DONE:** все 5 пунктов покрыты: (а)+(г) test_checkout (guest COD, double-submit, промо — накоплено в W1); (б) НОВЫЙ test_webhook_duplicate_delivery_is_idempotent — повторный success-вебхук не диспатчит side-effects повторно (ретейл-путь `_apply_monobank_status` идемпотентен через old_payment_status-чек); (в) test_cart_sync (merge при логине, мультидевайс); (д) test_utm_attribution (W2-1). Смок-набор зафиксирован в docs/OPS.md («перед каждым деплоем»). Все 12 тестов test_monobank_webhook зелёные. CI-pipeline — отдельная задача при появлении CI-инфраструктуры.
 
-- [ ] **W0-5. Зафиксировать crontab/инварианты (CB-043/CB-044/CB-012)** `[REPO]`(docs) + `[OWNER]`
+- [x] **W0-5. Зафиксировать crontab/инварианты (CB-043/CB-044/CB-012)** `[REPO]`(docs) + `[OWNER]`
   crontab: 7 задач, НЕТ бэкап-cron, НЕТ feed-cron; на сервере **10 git-stash** (возможна потерянная работа) + untracked диаг-скрипты.
   Фикс: `[REPO]` — задокументировать crontab и боевой settings-модуль в `docs/OPS.md`; `[OWNER]` — разобрать stash с владельцем (что выбросить, что закоммитить).
   Приёмка: docs/OPS.md существует; судьба каждого stash решена.
+  ✅ **REPO-часть DONE:** `twocomms/docs/OPS.md` создан — полная таблица 7 cron-задач (из CB-044), известные дыры (нет бэкап/feed-cron/logrotate), инварианты («не добавлять cron без записи в таблицу»), git-состояние сервера (10 stash — не дропать без владельца), смок-набор W0-4 и деплой-чеклист. Остаётся `[OWNER]`: разбор 10 git-stash.
 
 - [ ] **W0-6. [GAP] 🔴 NEW-405: сервис-аккаунт JSON в webroot?** `[SERVER]`
   `external_analytics.py` авто-дискаверит `*service*account*.json` в каталоге проекта. Если файл лежит в webroot — ключ Google потенциально доступен по HTTP.
@@ -126,7 +129,7 @@
   Фикс: edit_profile → та же ProfileSetupForm (или отдельная форма с FileExtension/size-валидаторами); задать `FILE_UPLOAD_MAX_MEMORY_SIZE`/лимит размера.
 
 - [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
-  Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё����ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
+  Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё������ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
   Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизировать имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
 - [x] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
@@ -251,7 +254,7 @@
 
 - [ ] **W3-11. [NEW-510] CheckoutCapture: публичный PII-приёмник без лимитов и retention (P2)** `[REPO]`
   `checkout_capture.py` — `@csrf_exempt` эндпоинт пишет ФИО/телефон/email в `CheckoutCapture` по session_key. Защита — только Sec-Fetch-Site (старые клиенты/curl без заголовка проходят); rate-limit нет (спам-записи); retention нет — `recover_checkouts` читает, никто не чистит (PII копится вечно, связка с NEW-404/AN-051).
-  Фикс: rate-limit по session/IP; чистка capture-записей старше 30-90 дней в trim-команде; упомянуть в privacy policy.
+  Фикс: rate-limit по session/IP; чи��тка capture-записей старше 30-90 дней в trim-команде; упомянуть в privacy policy.
 
 - [ ] **W3-12. [NEW-512] Брутфорс промокодов (P3, часть TD-023)** `[REPO]`
   `apply_promo_code` без rate-limit — перебор кодов скриптом. Фикс: точечный ratelimit (10/min/session) — включить в W3-5.

@@ -124,6 +124,48 @@ class MonobankWebhookSecurityTests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.payment_status, 'checking')
 
+    def test_webhook_duplicate_delivery_is_idempotent(self):
+        """
+        W0-4б (CB-024): повторная доставка того же success-вебхука не должна
+        повторно диспатчить side-effects (purchase-событие, Telegram) —
+        ретейл-путь `_apply_monobank_status` идемпотентен через
+        `payment_status != old_payment_status`.
+        """
+        from storefront.models import UserAction
+
+        private_key, pub_b64 = _make_ec_keypair()
+
+        with patch(
+            'storefront.views.monobank._get_monobank_public_key',
+            return_value=pub_b64,
+        ), patch(
+            'storefront.views.monobank._monobank_api_request',
+            return_value={'status': 'success', 'amount': 26000, 'paidAmount': 26000},
+        ), patch(
+            'storefront.views.monobank.TelegramNotifier'
+        ) as mock_notifier:
+            first = self.post_webhook(x_sign=_sign(private_key, self.payload))
+            self.assertEqual(first.status_code, 200)
+            notifications_after_first = mock_notifier.return_value.send_admin_payment_status_update.call_count
+            self.assertEqual(notifications_after_first, 1)
+
+            # Повторная доставка того же вебхука
+            second = self.post_webhook(x_sign=_sign(private_key, self.payload))
+            self.assertEqual(second.status_code, 200)
+            # Статус уже paid → уведомление НЕ отправляется второй раз
+            self.assertEqual(
+                mock_notifier.return_value.send_admin_payment_status_update.call_count,
+                notifications_after_first,
+            )
+
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.payment_status, 'paid')
+        # Purchase-событие записано максимум один раз
+        self.assertLessEqual(
+            UserAction.objects.filter(action_type='purchase', order_id=self.order.id).count(),
+            1,
+        )
+
     def test_webhook_body_status_ignored_when_pull_says_failure(self):
         """Body говорит success, но pull-истина failure — верим pull."""
         private_key, pub_b64 = _make_ec_keypair()
