@@ -12,6 +12,7 @@ from django.core.exceptions import ValidationError
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+from django_ratelimit.decorators import ratelimit
 
 from orders.models import CheckoutCapture
 
@@ -25,9 +26,15 @@ def _clean(value, field):
     return value[: _MAX_LEN[field]]
 
 
+# W3-11 (NEW-510): публичный PII-приёмник — точечный rate-limit.
+# 30/m хватает для дебаунс-автосейва формы, но душит скриптовый спам.
 @csrf_exempt
 @require_POST
+@ratelimit(key='user_or_ip', rate='30/m', method='POST', block=False)
 def capture_checkout(request):
+    if getattr(request, 'limited', False):
+        return JsonResponse({'ok': False}, status=429)
+
     # Same-origin guard: browsers send Sec-Fetch-Site for fetch/beacon.
     sfs = request.headers.get('Sec-Fetch-Site')
     if sfs and sfs not in ('same-origin', 'same-site', 'none'):

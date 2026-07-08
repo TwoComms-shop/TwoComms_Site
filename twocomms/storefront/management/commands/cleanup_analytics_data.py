@@ -7,7 +7,9 @@ UTMSession и UserAction никогда не чистились — таблиц
     КРОМЕ действий, связанных с заказами (purchase/lead с order_id);
   - UTMSession старше --sessions-days (по умолчанию 730),
     КРОМЕ конверсионных (is_converted=True);
-  - orphan UserAction (DB-003): order_id указывает на несуществующий заказ.
+  - orphan UserAction (DB-003): order_id указывает на несуществующий заказ;
+  - CheckoutCapture старше --captures-days (по умолчанию 60) — W3-11/NEW-510:
+    ФИО/телефон/email для abandoned-cart recovery, копились вечно.
 
 Установка в crontab (см. docs/OPS.md):
   15 4 * * 0 cd ~/TWC/TwoComms_Site/twocomms && \
@@ -33,6 +35,8 @@ class Command(BaseCommand):
                             help='UserAction старше N дней удаляются (кроме order-связанных)')
         parser.add_argument('--sessions-days', type=int, default=730,
                             help='UTMSession старше N дней удаляются (кроме конверсионных)')
+        parser.add_argument('--captures-days', type=int, default=60,
+                            help='CheckoutCapture старше N дней удаляются (W3-11, PII retention)')
         parser.add_argument('--dry-run', action='store_true',
                             help='Только посчитать, ничего не удалять')
         parser.add_argument('--skip-orphans', action='store_true',
@@ -67,6 +71,14 @@ class Command(BaseCommand):
                 order_id__in=existing_ids
             )
             self._purge(orphans, 'orphan UserAction (dead order_id)', dry)
+
+        # 4. CheckoutCapture старше N дней (W3-11 / NEW-510, PII retention).
+        # recover_checkouts работает с записями последних дней — 60 дней
+        # хватает с запасом; конвертированные тоже чистим (данные уже в Order).
+        from orders.models import CheckoutCapture
+        captures_cutoff = now - timedelta(days=options['captures_days'])
+        old_captures = CheckoutCapture.objects.filter(updated_at__lt=captures_cutoff)
+        self._purge(old_captures, 'old CheckoutCapture (PII)', dry)
 
         self.stdout.write(self.style.SUCCESS('cleanup_analytics_data finished'))
 

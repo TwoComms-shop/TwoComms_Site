@@ -1,3 +1,4 @@
+import ast
 import json
 import logging
 import re
@@ -10,6 +11,72 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from ..models import PromoCode, PromoCodeGroup, UserPromoCode
+
+
+def _safe_eval_node(node, helpers):
+    """
+    W3-10 (NEW-505): безопасный интерпретатор условий опроса.
+
+    Исполняет только whitelist AST-узлов: константы, and/or/not,
+    сравнения (==, !=, <, <=, >, >=, in, not in) и вызовы helper-функций
+    по имени. Атрибуты, индексация, comprehension'ы, f-строки и любые
+    другие конструкции → ValueError (в вызывающем коде это warning+False).
+    """
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.BoolOp):
+        if isinstance(node.op, ast.And):
+            result = True
+            for value in node.values:
+                result = _safe_eval_node(value, helpers)
+                if not result:
+                    return result
+            return result
+        if isinstance(node.op, ast.Or):
+            for value in node.values:
+                result = _safe_eval_node(value, helpers)
+                if result:
+                    return result
+            return result
+        raise ValueError("unsupported bool op")
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return not _safe_eval_node(node.operand, helpers)
+    if isinstance(node, ast.Compare):
+        left = _safe_eval_node(node.left, helpers)
+        for op, comparator in zip(node.ops, node.comparators):
+            right = _safe_eval_node(comparator, helpers)
+            if isinstance(op, ast.Eq):
+                ok = left == right
+            elif isinstance(op, ast.NotEq):
+                ok = left != right
+            elif isinstance(op, ast.Lt):
+                ok = left is not None and right is not None and left < right
+            elif isinstance(op, ast.LtE):
+                ok = left is not None and right is not None and left <= right
+            elif isinstance(op, ast.Gt):
+                ok = left is not None and right is not None and left > right
+            elif isinstance(op, ast.GtE):
+                ok = left is not None and right is not None and left >= right
+            elif isinstance(op, ast.In):
+                ok = right is not None and left in right
+            elif isinstance(op, ast.NotIn):
+                ok = right is None or left not in right
+            else:
+                raise ValueError("unsupported comparison op")
+            if not ok:
+                return False
+            left = right
+        return True
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name) or node.func.id not in helpers:
+            raise ValueError("unsupported function call")
+        if node.keywords:
+            raise ValueError("keyword arguments not allowed")
+        args = [_safe_eval_node(arg, helpers) for arg in node.args]
+        return helpers[node.func.id](*args)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [_safe_eval_node(elt, helpers) for elt in node.elts]
+    raise ValueError(f"unsupported expression node: {type(node).__name__}")
 
 logger = logging.getLogger(__name__)
 
@@ -335,19 +402,21 @@ class SurveyEngine:
             r'_answer("\1")',
             source,
         )
+        # W3-10 (NEW-505): eval() заменён на AST-walker с whitelist узлов.
+        # `eval(..., {"__builtins__": {}})` обходится через атрибуты объектов
+        # (клас��ический sandbox-escape). AST-подход исполняет ТОЛЬКО
+        # разрешённые конструкции: литералы, and/or/not, сравнения и вызовы
+        # четырёх helper-функций. Всё прочее (атрибуты, индексация, лямбды,
+        # f-строки) — отказ с warning.
+        helpers = {
+            "_answer": lambda qid: self._answer_value(qid, context),
+            "_count": lambda value: len(value) if isinstance(value, (list, tuple, set)) else (0 if self._is_empty(value) else 1),
+            "_first": lambda value: value[0] if isinstance(value, (list, tuple)) and value else None,
+            "_includes": self._includes,
+        }
         try:
-            return bool(
-                eval(
-                    source,
-                    {"__builtins__": {}},
-                    {
-                        "_answer": lambda qid: self._answer_value(qid, context),
-                        "_count": lambda value: len(value) if isinstance(value, (list, tuple, set)) else (0 if self._is_empty(value) else 1),
-                        "_first": lambda value: value[0] if isinstance(value, (list, tuple)) and value else None,
-                        "_includes": self._includes,
-                    },
-                )
-            )
+            tree = ast.parse(source, mode="eval")
+            return bool(_safe_eval_node(tree.body, helpers))
         except Exception as exc:
             logger.warning("String condition eval failed for %s: %s", expr, exc)
             return False
