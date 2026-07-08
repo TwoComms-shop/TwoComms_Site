@@ -96,7 +96,7 @@
   Отчёт: `audit_report_payment_security.md`.
 
 - [x] **W1-4. 🔴 Промокоды: COD-путь мёртв + лимиты не работают (CRO-046)** `[REPO]`
-  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математ����ка остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
+  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математ������ка остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
   (а) checkout.py:224 читает мёртвый ключ `promo_code` (apply пишет `promo_code_id`) + несуществующие `active=True`/`is_valid()` → промокод в COD НЕ применяется никогда; (б) `record_usage()` — 0 call-sites → лимиты `one_time_per_user` мертвы; (в) prepay_200: остаток завышен на сумму скидки; (г) `promo.use()` сжигает лимит при СОЗДАНИИ инвойса.
   Фикс: (а) COD → логика monobank-пути (`promo_code_id` + `can_be_used_by_user` + `record_usage(user, order)`); (б) `record_usage` при УСПЕШНОЙ оплате; (в) математика остатка; (г) чистка `promo_code_data`; (д) событие `coupon_apply` (TECH-023).
   Приёмка: COD-заказ с промо имеет `discount_amount>0`; повторный one_time-код отклоняется; `PromoCodeUsage.count() > 0`.
@@ -130,7 +130,7 @@
 
 - [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
   Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё������ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
-  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизироват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
+  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизи��оват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
 - [x] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
   ✅ **DONE (коммит db0af339):** новый `_resolve_retail_invoice_status()` в monobank.py — retail-путь вебхука И `monobank_return` подтверждают деньги ТОЛЬКО pull-истиной (`GET /api/merchant/invoice/status`); для success-статусов сверяется `paidAmount` (fallback: finalAmount/amount) с ожидаемой суммой (`get_prepayment_amount()` для prepay_200, иначе `total_sum − discount_amount`); недоплата или сбой сверки → статус `processing` (заказ в checking, НЕ paid) + error-лог. Если pull не удался — success из недоверенного источника тоже даунгрейдится до processing. Тесты: `test_webhook_underpaid_amount_goes_to_checking`, `test_webhook_pull_failure_does_not_mark_paid`.
@@ -234,17 +234,19 @@
   django.request ERROR → stderr «в никуда»; window.onerror нет; handler500 нет.
   Фикс: ERROR-Handler → Telegram с rate-limit; `window.onerror`/`unhandledrejection` → `/api/client-error/`; инцидент-код в user-facing message.
 
-- [ ] **W3-3. Server-side кэш выключен куками → LCP 4.8-16.4s (SEO-010)** `[REPO]`
+- [x] **W3-3. Server-side кэш выключен куками → LCP 4.8-16.4s (SEO-010)** `[REPO]`
   `Vary: Cookie` + `Set-Cookie` (csrftoken+twc_vid) на КАЖДОМ анонимном GET выключают LiteSpeed page cache → TTFB холодный 8-18s; интермиттентные 503/500.
   Фикс: не ставить csrftoken/twc_vid на анонимные GET (lazy-выдача при первом POST/взаимодействии); делать ВМЕСТЕ с W3-4.
   Приёмка: повторный анонимный GET = cache HIT; LCP mobile < 2.5s на 3 шаблонах.
+  ✅ **DONE:** (1) AnalyticsIdentityMiddleware: twc_vid/first-touch куки НЕ ставятся на кэшируемых анонимных GET — гейт `_analytics_cookie_allowed` (разрешено: не-GET, /api/bootstrap/, landing с utm/click-id/внешним referrer — там first-touch атрибуция важнее кэша); (2) `@ensure_csrf_cookie` снят с home/catalog; (3) get_token() убран из cache-hit пути `cache_page_for_anon`; (4) новый endpoint `/api/bootstrap/` (no-store) — ленивая выдача csrftoken+analytics-кук, дергается из base.html через requestIdleCallback только если csrftoken-cookie отсутствует (path добавлен в whitelist noise-фильтра). Тест: анонимный GET / → НОЛЬ Set-Cookie. Приёмка «LCP mobile < 2.5s» — замер на проде после деплоя `[SERVER]`.
 
-- [ ] **W3-4. Кэш отдаёт чужой CSRF-токен (CRO-032, live-подтверждён)** `[REPO]`
+- [x] **W3-4. Кэш отдаёт чужой CSRF-токен (CRO-032, live-подтверждён)** `[REPO]`
   `cache_page_for_anon` кэширует HTML с чужим `csrfmiddlewaretoken` → POST `/i18n/setlang` = 403 для всех анонов на cache-hit.
   Фикс: не кэшировать формы с inline-токеном (пустой meta + заполнение из cookie — паттерн уже есть, НЕ ломать); `/cart/summary/`, `/cart/count/` → `Cache-Control: no-store`.
+  ✅ **DONE:** корень бага — language_switcher.html: формы /i18n/setlang «запекали» `{% csrf_token %}` в кэшируемый HTML → чужой токен на cache-hit → 403. Фикс: пустой `value=""` + подстановка из cookie в submit-обработчике (fallback на /api/bootstrap/, если куки ещё нет). `/cart/summary/` и `/cart/count/` → `@never_cache`. Паттерн base.html (пустой meta + заполнение из cookie) сохранён и дополнен lazy-bootstrap. Тесты: test_cache_hygiene.py — 6 шт. (ноль Set-Cookie на анонимном GET, нет inline-токена в HTML, bootstrap ставит csrftoken+twc_vid+no-store, utm-landing получает куки, cart no-store, cache-hit чистый). Регрессия: 49 тестов зелёные; 4 падения test_seo_regressions — pre-existing (проверено на чистом дереве через git stash).
 
 - [ ] **W3-5. Rate limiting и API-поверхность (TD-023 / TD-024)** `[REPO]`
-  Лимитер ключуется спуфаемым X-Forwarded-For; fail-open при падении Redis; логин/регистрация/чекаут/отзывы без точечных лимитов; `/api/analytics/track/` — публичный no-op; Swagger/Redoc публичны.
+  Лимитер ключуется спуфаемым X-Forwarded-For; fail-open при падении Redis; логи��/регистрация/чекаут/отзывы без точечных лимитов; `/api/analytics/track/` — публичный no-op; Swagger/Redoc публичны.
   Фикс: REMOTE_ADDR-ключ (или доверенный XFF-hop); точечные лимиты auth/checkout; staff-only Swagger; LOG_IGNORED_EXCEPTIONS+алерт для Redis (TD-012).
 
 - [ ] **W3-6. Логи: 958 MB, ротация, PII (TD-016 / CB-045)** `[SERVER]` + `[REPO]`(конфиг)
