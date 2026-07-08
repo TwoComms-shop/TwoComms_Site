@@ -53,9 +53,13 @@ urlpatterns = [
     # Публічна privacy policy для Meta App Review: URL має відкриватися
     # напряму без логіну та без редиректу на dashboard/login.
     path('privacy-policy/', bot_views.privacy_policy, name='management_privacy_policy'),
+    path('terms-of-service/', bot_views.terms_of_service, name='management_terms_of_service'),
+    path('data-deletion/', bot_views.data_deletion, name='management_data_deletion'),
     # Instagram bot webhook (тестова фаза) — публічний, без логіну, CSRF-exempt.
     path('bot/webhook/', bot_webhook.ig_webhook, name='management_ig_bot_webhook'),
     path('bot/privacy-policy/', bot_views.privacy_policy, name='management_bot_privacy_policy'),
+    path('bot/terms-of-service/', bot_views.terms_of_service, name='management_bot_terms_of_service'),
+    path('bot/data-deletion/', bot_views.data_deletion, name='management_bot_data_deletion'),
     # Instagram bot — панель керування (тільки адміністратори).
     path('bot/', bot_views.bot_dashboard, name='management_bot'),
     path('bot/api/start/', bot_views.bot_start_api, name='management_bot_start_api'),

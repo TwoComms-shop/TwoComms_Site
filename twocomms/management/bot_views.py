@@ -23,6 +23,18 @@ def privacy_policy(request):
     return response
 
 
+def terms_of_service(request):
+    response = render(request, "management/terms_of_service.html")
+    response["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+def data_deletion(request):
+    response = render(request, "management/data_deletion.html")
+    response["Cache-Control"] = "public, max-age=300"
+    return response
+
+
 def _require_admin_json(request):
     if not _is_admin(request.user):
         return JsonResponse({"success": False, "error": "Доступ лише для адміністраторів."}, status=403)

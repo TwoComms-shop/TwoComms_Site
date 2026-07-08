@@ -1,0 +1,148 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>twocomms DIRECT_BOT User Data Deletion Instructions</title>
+  <meta name="description" content="User data deletion instructions for DIRECT_BOT, the twocomms Instagram Direct customer support bot.">
+  <link rel="icon" href="{% static 'faviconMNG/faviconMNG.ico' %}" sizes="any" type="image/x-icon">
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5e6a7d; --line:#dde4ee; --soft:#f4f7fb; --panel:#fff; --accent:#2457a6; --ok:#0d7a55; --warn:#8a4b10; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#eef3f8; color:var(--ink); font-family:Inter, Arial, sans-serif; line-height:1.62; }
+    .page { min-height:100vh; padding:34px 18px 48px; background:linear-gradient(180deg,rgba(255,255,255,.84),rgba(238,243,248,.96)),#eef3f8; }
+    .shell { width:min(1060px,100%); margin:0 auto; }
+    .hero, .content { border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:0 22px 58px rgba(31,44,68,.08); }
+    .hero { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:22px; align-items:start; padding:30px; }
+    .brand-row { display:flex; align-items:center; gap:13px; margin-bottom:18px; }
+    .brand-mark { display:inline-flex; align-items:center; justify-content:center; width:48px; height:48px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    .brand-mark img { width:31px; height:31px; object-fit:contain; }
+    .brand-name { margin:0; color:var(--muted); font-size:.82rem; font-weight:800; letter-spacing:0; text-transform:uppercase; }
+    h1 { max-width:820px; margin:0 0 12px; font-size:clamp(2rem,4.5vw,3.1rem); line-height:1.05; letter-spacing:0; }
+    .hero-copy { max-width:810px; margin:0; color:var(--muted); font-size:1.08rem; }
+    .status { min-width:250px; padding:17px; border:1px solid #cde8dc; border-radius:8px; background:#f2fbf7; color:#174a39; }
+    .status strong { display:block; margin-bottom:5px; color:var(--ok); }
+    .meta { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:14px 0 0; }
+    .card { padding:15px; border:1px solid var(--line); border-radius:8px; background:rgba(255,255,255,.76); }
+    .card b { display:block; margin-bottom:3px; color:var(--ink); font-size:.9rem; }
+    .card span, .card p { color:var(--muted); font-size:.92rem; }
+    .content { margin-top:18px; padding:30px; }
+    .section { padding:24px 0; border-top:1px solid var(--line); }
+    .section:first-child { padding-top:0; border-top:0; }
+    h2 { margin:0 0 11px; font-size:1.35rem; line-height:1.25; letter-spacing:0; }
+    p { margin:0 0 12px; }
+    ol, ul { margin:0; padding-left:22px; }
+    li + li { margin-top:8px; }
+    a { color:var(--accent); font-weight:700; }
+    .notice { margin-top:14px; padding:17px; border:1px solid #f1d2aa; border-radius:8px; background:#fff8ed; color:var(--warn); }
+    .summary { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-top:14px; }
+    .summary .card { background:var(--soft); }
+    .footer-note { margin:18px 0 0; color:var(--muted); font-size:.92rem; text-align:center; }
+    @media (max-width:820px) { .hero { grid-template-columns:1fr; padding:22px; } .status { min-width:0; } .meta, .summary { grid-template-columns:1fr; } .content { padding:22px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="shell">
+      <header class="hero">
+        <div>
+          <div class="brand-row">
+            <span class="brand-mark"><img src="{% static 'img/logo.svg' %}" alt="TwoComms logo"></span>
+            <div>
+              <p class="brand-name">twocomms / TwoComms</p>
+              <p class="brand-name">DIRECT_BOT data deletion</p>
+            </div>
+          </div>
+          <h1>User Data Deletion Instructions for DIRECT_BOT</h1>
+          <p class="hero-copy">
+            This page explains how Instagram users can remove DIRECT_BOT access and request deletion of eligible data processed for the official twocomms Instagram Direct customer support bot.
+          </p>
+        </div>
+        <aside class="status" aria-label="Public access status">
+          <strong>Public Data Deletion URL</strong>
+          <span>This page is available without login and may be used as Meta's Data Deletion Instructions URL.</span>
+        </aside>
+      </header>
+
+      <section class="meta" aria-label="Data deletion metadata">
+        <div class="card"><b>Meta App</b><span>DIRECT_BOT, App ID 2120980214971807</span></div>
+        <div class="card"><b>Instagram Account</b><span><a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a></span></div>
+        <div class="card"><b>Contact</b><span><a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a></span></div>
+        <div class="card"><b>Privacy Policy</b><span><a href="/privacy-policy/">management.twocomms.shop/privacy-policy/</a></span></div>
+        <div class="card"><b>Terms</b><span><a href="/terms-of-service/">management.twocomms.shop/terms-of-service/</a></span></div>
+        <div class="card"><b>Last updated</b><span>July 9, 2026</span></div>
+      </section>
+
+      <article class="content">
+        <section class="section">
+          <h2>1. What data this covers</h2>
+          <p>
+            DIRECT_BOT may process Instagram Direct customer support data, including Instagram sender identifiers, username, display name, messages sent to twocomms, attachments, order-support details voluntarily provided by the user, conversation stage, bot logs, and operational error logs.
+          </p>
+          <p>
+            We do not sell Instagram Direct message data. We use it to answer customer questions, help with clothing selection and sizing, and support order preparation.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>2. Remove app access in Meta / Instagram</h2>
+          <p>If you connected or interacted with DIRECT_BOT through Meta technologies and want to remove app access, you can use Meta's app and website settings:</p>
+          <ol>
+            <li>Open your Facebook or Instagram account settings.</li>
+            <li>Go to "Apps and Websites" or "Business Integrations".</li>
+            <li>Find DIRECT_BOT or the connected twocomms integration.</li>
+            <li>Select "Remove". If Meta offers "Request data deletion", submit the request there as well.</li>
+          </ol>
+          <div class="notice">
+            Removing app access in Meta stops future access where Meta supports that control. It does not always remove order records or support records already stored by twocomms, so use the email request below if you want us to delete eligible records from our systems.
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>3. Request deletion from twocomms</h2>
+          <p>To request deletion of eligible DIRECT_BOT data, email <a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a> with the subject "DIRECT_BOT data deletion request" and include:</p>
+          <ul>
+            <li>your Instagram username used to contact <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a>;</li>
+            <li>the approximate date of your conversation, if you remember it;</li>
+            <li>any phone number or order number only if your request is related to an order;</li>
+            <li>a short request such as "Please delete my DIRECT_BOT Instagram Direct data".</li>
+          </ul>
+          <p>
+            We may ask for limited verification information to confirm that the request relates to the correct Instagram conversation or order. After verification, we will delete or anonymize eligible bot conversation records unless we must keep limited data for legal, tax, accounting, fraud-prevention, delivery, payment, or dispute-resolution obligations.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>4. What happens after a request</h2>
+          <ol>
+            <li>We review the request and identify matching DIRECT_BOT records.</li>
+            <li>We delete or anonymize eligible conversation and bot records.</li>
+            <li>We keep only data that is legally required or necessary for order/payment/dispute records, and only for the required period.</li>
+            <li>We reply with confirmation when the request is completed or explain why a limited record cannot be deleted immediately.</li>
+          </ol>
+        </section>
+
+        <section class="section">
+          <h2>5. Recommended Meta field values</h2>
+          <div class="summary">
+            <div class="card"><b>User Data Deletion</b><p>Select "Data Deletion Instructions URL" and use https://management.twocomms.shop/data-deletion/</p></div>
+            <div class="card"><b>Terms of Service URL</b><p>Use https://management.twocomms.shop/terms-of-service/</p></div>
+            <div class="card"><b>Privacy Policy URL</b><p>Use https://management.twocomms.shop/privacy-policy/</p></div>
+            <div class="card"><b>Contact</b><p>cooperation@twocomms.shop</p></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>6. Contact</h2>
+          <p>
+            Questions about data deletion, privacy, or DIRECT_BOT can be sent to <a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a>.
+          </p>
+        </section>
+      </article>
+
+      <p class="footer-note">twocomms / TwoComms · DIRECT_BOT User Data Deletion Instructions · Public page for customers and Meta App Review</p>
+    </div>
+  </main>
+</body>
+</html>

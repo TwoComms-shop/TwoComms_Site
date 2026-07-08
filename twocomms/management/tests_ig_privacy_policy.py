@@ -32,3 +32,46 @@ class InstagramBotPrivacyPolicyTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Public policy URL")
+
+    def test_terms_of_service_is_public_without_login_redirect(self):
+        response = self.client.get(
+            "/terms-of-service/",
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("/login/", response.get("Location", ""))
+        self.assertContains(response, "Terms of Service for the twocomms Instagram Direct Bot")
+        self.assertContains(response, "DIRECT_BOT")
+        self.assertContains(response, "2120980214971807")
+        self.assertContains(response, "https://management.twocomms.shop/data-deletion/")
+
+    def test_data_deletion_instructions_are_public_without_login_redirect(self):
+        response = self.client.get(
+            "/data-deletion/",
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("/login/", response.get("Location", ""))
+        self.assertContains(response, "User Data Deletion Instructions for DIRECT_BOT")
+        self.assertContains(response, "Data Deletion Instructions URL")
+        self.assertContains(response, "DIRECT_BOT data deletion request")
+        self.assertContains(response, "cooperation@twocomms.shop")
+
+    def test_bot_terms_and_data_deletion_aliases_are_public(self):
+        for path, expected in (
+            ("/bot/terms-of-service/", "Public Terms URL"),
+            ("/bot/data-deletion/", "Public Data Deletion URL"),
+        ):
+            with self.subTest(path=path):
+                response = self.client.get(
+                    path,
+                    HTTP_HOST="management.twocomms.shop",
+                    secure=True,
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, expected)
