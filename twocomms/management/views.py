@@ -36,6 +36,7 @@ import uuid
 from docx import Document
 
 from .forms import CommercialOfferEmailForm, CommercialOfferEmailPreviewForm
+from .bot_access import is_meta_bot_reviewer
 from .models import (
     Client,
     ClientCPLink,
@@ -1161,6 +1162,8 @@ def client_dedupe_preview(request):
 
 @login_required(login_url='management_login')
 def home(request):
+    if is_meta_bot_reviewer(request.user) and not user_is_management(request.user):
+        return redirect('management_bot')
     if not user_is_management(request.user):
         return redirect('management_login')
     if request.method == 'POST':

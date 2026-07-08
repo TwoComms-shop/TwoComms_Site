@@ -9,6 +9,7 @@ from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
+from .bot_access import is_meta_bot_reviewer
 from .models import InstagramBotLog, InstagramBotSettings
 from .services import instagram_bot as bot
 
@@ -64,6 +65,14 @@ def _log_items(limit: int = 80):
 
 @login_required(login_url="management_login")
 def bot_dashboard(request):
+    if is_meta_bot_reviewer(request.user) and not _is_admin(request.user):
+        return render(
+            request,
+            "management/bot_reviewer.html",
+            {
+                "status": bot.status_snapshot(),
+            },
+        )
     if not _is_admin(request.user):
         return redirect("management_home")
     settings_obj = InstagramBotSettings.load()

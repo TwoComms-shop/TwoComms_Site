@@ -1,4 +1,9 @@
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import TestCase, override_settings
+from django.urls import reverse
+
+from .bot_access import META_REVIEWER_GROUP_NAME
 
 
 @override_settings(
@@ -6,6 +11,17 @@ from django.test import TestCase, override_settings
     ROOT_URLCONF="twocomms.urls_management",
 )
 class InstagramBotPrivacyPolicyTests(TestCase):
+    def _login_meta_reviewer(self):
+        user = get_user_model().objects.create_user(
+            username="meta_reviewer_direct_bot",
+            email="meta-reviewer@twocomms.shop",
+            password="test-reviewer-password",
+        )
+        group = Group.objects.create(name=META_REVIEWER_GROUP_NAME)
+        user.groups.add(group)
+        self.client.force_login(user)
+        return user
+
     def test_privacy_policy_is_public_without_login_redirect(self):
         response = self.client.get(
             "/privacy-policy/",
@@ -114,3 +130,59 @@ class InstagramBotPrivacyPolicyTests(TestCase):
                 )
                 self.assertEqual(response.status_code, 302)
                 self.assertIn("/login/", response["Location"])
+
+    def test_meta_reviewer_home_redirects_directly_to_bot(self):
+        self._login_meta_reviewer()
+
+        response = self.client.get(
+            "/",
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("management_bot"))
+
+    def test_meta_reviewer_gets_safe_read_only_bot_page(self):
+        self._login_meta_reviewer()
+
+        response = self.client.get(
+            "/bot/",
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "DIRECT_BOT Reviewer Access")
+        self.assertContains(response, "Meta Bot Reviewer Access")
+        self.assertContains(response, "2120980214971807")
+        self.assertContains(response, "https://www.instagram.com/twocomms/")
+        self.assertContains(response, "https://management.twocomms.shop/privacy-policy/")
+        self.assertContains(response, "https://management.twocomms.shop/terms-of-service/")
+        self.assertContains(response, "https://management.twocomms.shop/data-deletion/")
+        self.assertNotContains(response, "custom_direct_token")
+        self.assertNotContains(response, "custom_gemini_key")
+        self.assertNotContains(response, "allowed_senders")
+        self.assertNotContains(response, "Клієнти")
+        self.assertNotContains(response, "Запустити")
+        self.assertNotContains(response, "Зупинити")
+
+    def test_meta_reviewer_cannot_call_admin_bot_apis(self):
+        self._login_meta_reviewer()
+
+        for path in (
+            "/bot/api/start/",
+            "/bot/api/stop/",
+            "/bot/api/settings/",
+            "/bot/api/clients/",
+            "/bot/api/kb/",
+        ):
+            with self.subTest(path=path):
+                method = self.client.get if path.endswith(("clients/", "kb/")) else self.client.post
+                response = method(
+                    path,
+                    HTTP_HOST="management.twocomms.shop",
+                    secure=True,
+                    HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+                )
+                self.assertEqual(response.status_code, 403)

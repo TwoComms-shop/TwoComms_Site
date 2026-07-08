@@ -1,0 +1,116 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DIRECT_BOT Reviewer Access</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="{% static 'faviconMNG/faviconMNG.ico' %}" sizes="any" type="image/x-icon">
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5f6b7a; --line:#dce5ef; --panel:#fff; --bg:#edf3f8; --accent:#2457a6; --ok:#0c7654; --warn:#8a4b10; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font-family:Inter, Arial, sans-serif; line-height:1.6; }
+    .page { min-height:100vh; padding:32px 18px 46px; background:linear-gradient(180deg,rgba(255,255,255,.9),rgba(237,243,248,.96)); }
+    .shell { width:min(1080px,100%); margin:0 auto; }
+    .hero, .panel { border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:0 20px 54px rgba(32,44,66,.08); }
+    .hero { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:22px; align-items:start; padding:28px; }
+    .brand { display:flex; align-items:center; gap:13px; margin-bottom:16px; }
+    .brand img { width:42px; height:42px; object-fit:contain; border:1px solid var(--line); border-radius:8px; background:#fff; padding:6px; }
+    .label { margin:0; color:var(--muted); font-size:.82rem; font-weight:800; text-transform:uppercase; letter-spacing:0; }
+    h1 { margin:0 0 12px; font-size:clamp(2rem,4vw,3rem); line-height:1.06; letter-spacing:0; }
+    .lead { max-width:760px; margin:0; color:var(--muted); font-size:1.06rem; }
+    .badge { min-width:250px; padding:16px; border:1px solid #cae7d9; border-radius:8px; background:#f1fbf6; color:#164b38; }
+    .badge strong { display:block; margin-bottom:5px; color:var(--ok); }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:16px; }
+    .card { padding:15px; border:1px solid var(--line); border-radius:8px; background:rgba(255,255,255,.8); }
+    .card b { display:block; margin-bottom:3px; color:var(--ink); font-size:.9rem; }
+    .card span, .card p { margin:0; color:var(--muted); font-size:.92rem; overflow-wrap:anywhere; }
+    .panel { margin-top:18px; padding:28px; }
+    .section { padding:22px 0; border-top:1px solid var(--line); }
+    .section:first-child { padding-top:0; border-top:0; }
+    h2 { margin:0 0 10px; font-size:1.32rem; line-height:1.25; letter-spacing:0; }
+    p { margin:0 0 12px; }
+    ul { margin:0; padding-left:22px; }
+    li + li { margin-top:8px; }
+    a { color:var(--accent); font-weight:700; }
+    .notice { margin-top:12px; padding:16px; border:1px solid #f0d0a5; border-radius:8px; background:#fff8ed; color:var(--warn); }
+    .footer { margin:18px 0 0; color:var(--muted); font-size:.92rem; text-align:center; }
+    @media (max-width:820px) { .hero { grid-template-columns:1fr; padding:22px; } .badge { min-width:0; } .grid { grid-template-columns:1fr; } .panel { padding:22px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="shell">
+      <header class="hero">
+        <div>
+          <div class="brand">
+            <img src="{% static 'img/logo.svg' %}" alt="TwoComms logo">
+            <div>
+              <p class="label">twocomms / TwoComms</p>
+              <p class="label">Meta Bot Reviewer Access</p>
+            </div>
+          </div>
+          <h1>DIRECT_BOT Reviewer Access</h1>
+          <p class="lead">
+            This restricted page is provided for Meta App Review. It shows only the Instagram Direct bot purpose, public compliance links, and safe operational status for DIRECT_BOT.
+          </p>
+        </div>
+        <aside class="badge" aria-label="Restricted reviewer status">
+          <strong>Restricted access</strong>
+          <span>Customer data, tokens, settings, prompts, logs, and bot control actions are hidden from reviewer accounts.</span>
+        </aside>
+      </header>
+
+      <section class="grid" aria-label="DIRECT_BOT metadata">
+        <div class="card"><b>Meta App</b><span>DIRECT_BOT, App ID 2120980214971807</span></div>
+        <div class="card"><b>Instagram Account</b><span><a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a></span></div>
+        <div class="card"><b>AI Assistant</b><span>Google Gemini Flash AI, currently Gemini 3.1 Flash / compatible Gemini Flash model</span></div>
+        <div class="card"><b>Bot Status</b><span>{% if status.running %}Online{% else %}Offline or controlled by owner administrator{% endif %}</span></div>
+        <div class="card"><b>Owner Contact</b><span><a href="mailto:cooperation@twocomms.shop">cooperation@twocomms.shop</a></span></div>
+        <div class="card"><b>Access Scope</b><span>Read-only reviewer page for Meta App Review</span></div>
+      </section>
+
+      <article class="panel">
+        <section class="section">
+          <h2>What reviewers can verify</h2>
+          <p>
+            DIRECT_BOT helps customers who message the official <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a> Instagram account. It answers clothing support questions about availability, sizing, colors, delivery, payment, order preparation, and manager handoff.
+          </p>
+          <ul>
+            <li>The bot uses Instagram Direct messaging only for customer support conversations.</li>
+            <li>Replies may be generated with Google Gemini Flash AI using twocomms support rules.</li>
+            <li>A human TwoComms manager can review or take over support conversations when needed.</li>
+            <li>The app does not post on behalf of users and does not use data for advertising resale or unrelated profiling.</li>
+          </ul>
+        </section>
+
+        <section class="section">
+          <h2>Public compliance URLs</h2>
+          <div class="grid">
+            <div class="card"><b>Privacy Policy</b><p><a href="/privacy-policy/">https://management.twocomms.shop/privacy-policy/</a></p></div>
+            <div class="card"><b>Terms of Service</b><p><a href="/terms-of-service/">https://management.twocomms.shop/terms-of-service/</a></p></div>
+            <div class="card"><b>User Data Deletion</b><p><a href="/data-deletion/">https://management.twocomms.shop/data-deletion/</a></p></div>
+            <div class="card"><b>App Review Info</b><p><a href="/app-review/">https://management.twocomms.shop/app-review/</a></p></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Recommended testing flow</h2>
+          <ul>
+            <li>Open <a href="https://www.instagram.com/twocomms/" rel="noopener">@twocomms</a> on Instagram.</li>
+            <li>Send a Direct message asking about product availability, size, delivery, or order preparation.</li>
+            <li>Verify that the app behavior matches the screencast and App Review notes: DIRECT_BOT receives the message and replies within the customer support flow.</li>
+            <li>Use this restricted page to confirm app identity, policy URLs, data deletion instructions, and the reason private admin controls are not public.</li>
+          </ul>
+          <div class="notice">
+            The full administrator dashboard is intentionally unavailable to reviewer accounts because it contains customer conversations, API credential settings, AI prompt settings, diagnostic logs, and real start/stop controls.
+          </div>
+        </section>
+      </article>
+
+      <p class="footer">twocomms / TwoComms · DIRECT_BOT · Restricted Meta reviewer page</p>
+    </div>
+  </main>
+</body>
+</html>
