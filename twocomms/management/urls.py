@@ -50,8 +50,12 @@ urlpatterns = [
     path('profile/bind-status/', views.profile_bind_status, name='management_profile_bind_status'),
     path('profile/reset-manager-bot/', views.profile_reset_manager_bot, name='management_profile_reset_manager_bot'),
     path('tg-manager/webhook/<str:token>/', views.management_bot_webhook, name='management_bot_webhook'),
+    # Публічна privacy policy для Meta App Review: URL має відкриватися
+    # напряму без логіну та без редиректу на dashboard/login.
+    path('privacy-policy/', bot_views.privacy_policy, name='management_privacy_policy'),
     # Instagram bot webhook (тестова фаза) — публічний, без логіну, CSRF-exempt.
     path('bot/webhook/', bot_webhook.ig_webhook, name='management_ig_bot_webhook'),
+    path('bot/privacy-policy/', bot_views.privacy_policy, name='management_bot_privacy_policy'),
     # Instagram bot — панель керування (тільки адміністратори).
     path('bot/', bot_views.bot_dashboard, name='management_bot'),
     path('bot/api/start/', bot_views.bot_start_api, name='management_bot_start_api'),

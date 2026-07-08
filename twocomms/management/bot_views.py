@@ -17,6 +17,12 @@ def _is_admin(user) -> bool:
     return bool(user.is_authenticated and (user.is_staff or user.is_superuser))
 
 
+def privacy_policy(request):
+    response = render(request, "management/privacy_policy.html")
+    response["Cache-Control"] = "public, max-age=300"
+    return response
+
+
 def _require_admin_json(request):
     if not _is_admin(request.user):
         return JsonResponse({"success": False, "error": "Доступ лише для адміністраторів."}, status=403)
