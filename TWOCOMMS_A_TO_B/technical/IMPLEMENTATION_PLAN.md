@@ -96,7 +96,7 @@
   Отчёт: `audit_report_payment_security.md`.
 
 - [x] **W1-4. 🔴 Промокоды: COD-путь мёртв + лимиты не работают (CRO-046)** `[REPO]`
-  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математ������ка остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
+  ✅ **DONE (коммит f79ed36e):** (а) COD-путь в checkout.py читает `promo_code_id` (как monobank-путь) + `can_be_used_by_user()`; промо остаются auth-only (та же политика, что в `apply_promo_code`); (б) `record_usage()` получил call-sites: COD — при размещении заказа; online — при ПОДТВЕРЖДЁННОЙ оплате через новый `_record_promo_usage_for_order()` в `_apply_monobank_status` (идемпотентно по `PromoCodeUsage.order`); (в) математ��������ка остатка prepay_200: `остаток = (total_sum − discount) − 200` в обоих местах monobank.py (было завышение на скидку); (г) `promo.use()` при создании инвойса УБРАН; `promo_code_data` чистится во всех cleanup-путях; (д) событие `coupon_apply` добавлено: новый choice в UserAction + миграция `0079` + запись в `apply_promo_code`. Тесты: COD-заказ с промо → `discount_amount>0` + строка PromoCodeUsage; повторный one_time-код отклоняется.
   (а) checkout.py:224 читает мёртвый ключ `promo_code` (apply пишет `promo_code_id`) + несуществующие `active=True`/`is_valid()` → промокод в COD НЕ применяется никогда; (б) `record_usage()` — 0 call-sites → лимиты `one_time_per_user` мертвы; (в) prepay_200: остаток завышен на сумму скидки; (г) `promo.use()` сжигает лимит при СОЗДАНИИ инвойса.
   Фикс: (а) COD → логика monobank-пути (`promo_code_id` + `can_be_used_by_user` + `record_usage(user, order)`); (б) `record_usage` при УСПЕШНОЙ оплате; (в) математика остатка; (г) чистка `promo_code_data`; (д) событие `coupon_apply` (TECH-023).
   Приёмка: COD-заказ с промо имеет `discount_amount>0`; повторный one_time-код отклоняется; `PromoCodeUsage.count() > 0`.
@@ -130,7 +130,7 @@
 
 - [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
   Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё������ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
-  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизи��оват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
+  Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандом��зи��оват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
 - [x] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
   ✅ **DONE (коммит db0af339):** новый `_resolve_retail_invoice_status()` в monobank.py — retail-путь вебхука И `monobank_return` подтверждают деньги ТОЛЬКО pull-истиной (`GET /api/merchant/invoice/status`); для success-статусов сверяется `paidAmount` (fallback: finalAmount/amount) с ожидаемой суммой (`get_prepayment_amount()` для prepay_200, иначе `total_sum − discount_amount`); недоплата или сбой сверки → статус `processing` (заказ в checking, НЕ paid) + error-лог. Если pull не удался — success из недоверенного источника тоже даунгрейдится до processing. Тесты: `test_webhook_underpaid_amount_goes_to_checking`, `test_webhook_pull_failure_does_not_mark_paid`.
@@ -159,7 +159,7 @@
 ## ВОЛНА 2 — ДАННЫЕ И АТРИБУЦИЯ (P0: без этого аналитика слепа; TECH-060…066)
 
 - [x] **W2-1. 🔴 Единая UTM-привязка любого заказа (CRO-041 / AN-013 / AN-021 / AN-030 / AN-031 → TECH-060)** `[REPO]` ✅ fallback-цепочка session_key→visitor_id→session['utm_data'] в link_order_to_utm; attach_tracking_to_order пишет click-ID (fbp/fbc-синтез из fbclid/ttclid/gclid/external_id/ip/ua) в payment_payload.tracking для COD; тесты test_utm_attribution.py (3) зелёные. Единый order-builder COD+Monobank — отложен как долгосрочный рефакторинг.
-  COD-путь не вызывает НИ ОДНО�� функции трекинга; даже в monobank `link_order_to_utm` не срабатывает: lookup строго по session_key, `cycle_key()` при логине рвёт ключ, fallback на `session['utm_data']` отсутствует. Click-ID (fbc/fbp/fbclid/gclid/ttclid) не доходят до CAPI для COD. Факт: 0/43 заказов с utm.
+  COD-путь не выз��вает НИ ОДНО�� функции трекинга; даже в monobank `link_order_to_utm` не срабатывает: lookup строго по session_key, `cycle_key()` при логине рвёт ключ, fallback на `session['utm_data']` отсутствует. Click-ID (fbc/fbp/fbclid/gclid/ttclid) не доходят до CAPI для COD. Факт: 0/43 заказов с utm.
   Фикс: (1) в `create_order` после `order.save()`: `order.session_key=...`; `link_order_to_utm(request, order)`; `record_order_action(...)`; (2) fallback-цепочка в `link_order_to_utm`: session_key → `visitor_id` → `session['utm_data']`; (3) копировать/синтезировать click-ID в `payment_payload.tracking` для ЛЮБОГО заказа (fbc из fbclid если куки нет); (4) долгосрочно — единый order-builder COD+Monobank.
   Приёмка (= CRO-050): визит с `?utm_source=audit` → COD-заказ → в БД utm_source='audit', utm_session FK, session_key, UserAction с order_id.
 
@@ -188,7 +188,7 @@
 - [x] **W2-6. TikTok: нестандартные имена событий (AN-020, P1)** `[REPO]`
   Клиент (analytics-loader.js:394) и сервер (tiktok_events_service.py) шлют Meta-имена «Purchase»/«Lead» вместо CompletePayment/PlaceAnOrder/SubmitForm → цели TikTok их не видят.
   Фикс: маппинг имён на обоих слоях с сохранением event_id-дедупа; уйти с legacy `v1.3/pixel/track/`.
-  ✅ **DONE:** (1) клиент — `mapTikTokEventName()` в analytics-loader.js: Purchase→CompletePayment, Lead→PlaceAnOrder перед КАЖДЫМ `ttq.track` (прямая отправка + оба буфер-пути); Meta/GA4/YM продолжают получать оригинальные имена; cache-buster `?v=7`; (2) сервер — tiktok_events_service.py: `EVENT_NAME_MAP` тот же + миграция с legacy `v1.3/pixel/track/` на Events API 2.0 `v1.3/event/track/` (payload переписан на `event_source`/`event_source_id`/`data[]`, `event_time` unix-int); (3) event_id НЕ трогается на обоих слоях → client/server дедуп сохранён. Тесты: `orders/tests/test_tiktok_events.py` (5 шт., зелёные): маппинг Purchase/Lead, pass-through ViewContent, структура 2.0-payload, POST через мок. ⚠️ NB: если в env задан кастомный `TIKTOK_EVENTS_API_ENDPOINT` со старым URL — на сервере его надо убрать/обновить.
+  ✅ **DONE:** (1) клиент — `mapTikTokEventName()` в analytics-loader.js: Purchase→CompletePayment, Lead→PlaceAnOrder перед КАЖДЫМ `ttq.track` (прямая отправка + оба буфер-пути); Meta/GA4/YM продолжают получать оригинальные имена; cache-buster `?v=7`; (2) сервер — tiktok_events_service.py: `EVENT_NAME_MAP` тот же + миграция с legacy `v1.3/pixel/track/` на Events API 2.0 `v1.3/event/track/` (payload переписан на `event_source`/`event_source_id`/`data[]`, `event_time` unix-int); (3) event_id НЕ трогается на обоих слоях → client/server дедуп сохранён. Тесты: `orders/tests/test_tiktok_events.py` (5 шт., зелёные): ма��пинг Purchase/Lead, pass-through ViewContent, структура 2.0-payload, POST через мок. ⚠️ NB: если в env задан кастомный `TIKTOK_EVENTS_API_ENDPOINT` со старым URL — на сервере его надо убрать/обновить.
 
 - [x] **W2-7. CAPI/TikTok внутри row-lock транзакции (AN-011 / DB-009, P1)** `[REPO]` ✅ Telegram/Meta/TikTok вынесены из select_for_update в _send_post_payment_events через transaction.on_commit; попутно добавлен pre-check purchase_sent для TikTok (часть W2-3в). Invoice/create вне atomic — уже закрыт в W1-5в. Тесты PostPaymentEventsDeferralTests зелёные.
   Отправка Meta+TikTok ВНУТРИ `transaction.atomic()`+`select_for_update()` — до ~25-40s row-lock; тот же анти-паттерн: Monobank invoice/create внутри atomic (monobank.py:~843) при wait_timeout=60.
@@ -215,8 +215,8 @@
   - [x] **DB-002 (P2):** UserAction — денормализовать is_bot + индекс `(site_session, action_type)`. ✅ Индекс `idx_action_site_type` добавлен (миграция 0080); денормализация is_bot не нужна — после W2-4 бот-события в UserAction вообще не пишутся.
   - [x] **DB-003 (P3):** orphan UserAction.order_id 259, 260 — вычистить при retention-работах. ✅ Закрывается командой `cleanup_analytics_data` (шаг 3: удаление UserAction с несуществующими order_id); запуск на проде — `[SERVER]`.
   - [x] **[GAP] AN-039 (P3):** search-query пишется сырым — обрезка длины + маскировка (однострочник). ✅ record_search: обрезка до 200 симв. + маскировка email → `[email]` и 12-19-значных числовых последовательностей (карты) → `[number]`.
-  - [ ] **[GAP] AN-001/CB-034 (P2):** gtag.js G-109EFTWM05 грузится ПАРАЛЛЕЛЬНО GTM (риск двойного GA4 page_view); dataLayer получает 2 события на ATC (`AddToCart` + `add_to_cart`). Код-часть: убрать прямой gtag после сверки контейнера в��адельцем (см. OWNER-1).
-  - [ ] **[GAP] AN-003 (P2):** `payment_type` параметр не существует (TECH-007); `add_shipping_info`/`add_payment_info` в GA4-схеме отсутствуют; item_id листинга `TC-pid-default-S` не матчится с offer_id покупок.
+  - [ ] **[GAP] AN-001/CB-034 (P2):** gtag.js G-109EFTWM05 грузится ПАРАЛЛЕЛЬНО GTM (риск двойного GA4 page_view); dataLayer получает 2 события на ATC (`AddToCart` + `add_to_cart`). Код-часть: убрать прямой gtag после сверки контейнера в��адельц��м (см. OWNER-1).
+  - [ ] **[GAP] AN-003 (P2):** `payment_type` параметр не существует (TECH-007); `add_shipping_info`/`add_payment_info` в GA4-схеме отсутствуют; item_id листинга `TC-pid-default-S` н�� матчится с offer_id покупок.
   - [ ] **[GAP] NEW-406 (P3):** русский цвет в offer_id «TC-0020-ЧЕРНЫЙ-M» — латинизировать слаг цвета (согласовать с Merchant-фидом, не ломать существующие id без маппинга).
   - [ ] **[GAP] NEW-407 (P3):** legacy-дефолт `pay_type='cod'` в checkout.py:119 при отсутствии cod в UI — согласовать с W1-1 п.2.
 
@@ -251,16 +251,17 @@
   ✅ **DONE:** (1) SimpleRateLimitMiddleware: ключ = REMOTE_ADDR; клиентский XFF учитывается ТОЛЬКО если REMOTE_ADDR приватный (локальный прокси-hop), и берётся последний элемент — спуфинг curl -H больше не работает; (2) fail-open при падении Redis оставлен осознанно (нельзя ронять сайт), но теперь с warning-логом `twocomms.ratelimit` вместо молчания; (3) точечные лимиты: ajax_login 10/m/IP, ajax_register 5/m/IP (django-ratelimit key='ip' = REMOTE_ADDR); чекаут уже покрыт W1 (submit-lock + идемпотентность); (4) Swagger/Redoc/schema → staff-only (404 для анонимов) — публичная карта API закрыта; (5) `/api/analytics/track/` снят с маршрутизации: no-op (только logger.info), ноль клиентских вызовов, реальный трекинг идёт через /api/track-event/. Регрессия: 51 тест зелёный.
 
 - [ ] **W3-6. Логи: 958 MB, ротация, PII (TD-016 / CB-045)** `[SERVER]` + `[REPO]`(конфиг)
-  `nova_poshta_cron.log` = 827 MB без ротации; PII-like hits в ��огах; rum.log — 24 secret-like hits.
+  `nova_poshta_cron.log` = 827 MB без ротац��и; PII-like hits в ��огах; rum.log — 24 secret-like hits.
   Фикс: `[REPO]` — logrotate-конфиг/скрипт в репо + маскирование PII в лог-вызовах; `[SERVER]` — user-cron truncate, удалить 8 мёртвых логов.
 
 - [ ] **W3-7. Идемпотентность и гонки статусов (CB-020-паттерн + DB-010)** `[REPO]`
   `save(update_fields)` → молчаливый fallback `save()` в 4 местах (utils.py:542/573/723, nova_poshta_service.py:515 — флаг `purchase_sent`!) = риск lost-update и ПОВТОРНОГО CAPI Purchase; admin_update_dropship_status без select_for_update.
   Фикс: убрать fallback, логировать ошибку; select_for_update в dropship-статусах. НЕ менять control flow массово (RISK-04).
 
-- [ ] **W3-11. [NEW-510] CheckoutCapture: публичный PII-приёмник без лимитов и retention (P2)** `[REPO]`
+- [x] **W3-11. [NEW-510] CheckoutCapture: публичный PII-приёмник без лимитов и retention (P2)** `[REPO]`
   `checkout_capture.py` — `@csrf_exempt` эндпоинт пишет ФИО/телефон/email в `CheckoutCapture` по session_key. Защита — только Sec-Fetch-Site (старые клиенты/curl без заголовка проходят); rate-limit нет (спам-записи); retention нет — `recover_checkouts` читает, никто не чистит (PII копится вечно, связка с NEW-404/AN-051).
   Фикс: rate-limit по session/IP; чи��тка capture-записей старше 30-90 дней в trim-команде; упомянуть в privacy policy.
+  ✅ **DONE:** (1) rate-limit `@ratelimit(key='user_or_ip', rate='30/m', block=False)` + JSON 429 — 30/m хватает для дебаунс-автосейва формы, душит скриптовый спам; (2) retention: в `cleanup_analytics_data` добавлен шаг 4 — CheckoutCapture старше `--captures-days` (по умолчанию 60) удаляются, включая конвертированные (данные уже в Order); (3) упоминание в privacy policy — `[OWNER]` (связка с NEW-403).
 
 - [x] **W3-12. [NEW-512] Брутфорс промокодов (P3, часть TD-023)** `[REPO]`
   `apply_promo_code` без rate-limit — перебор кодов скриптом. Фикс: точечный ratelimit (10/min/session) — включить в W3-5.
@@ -271,9 +272,10 @@
   Фикс: проверить env на сервере (S-13); если пуст — задать секрет + перерегистрировать webhook у Telegram; в коде — предупреждающий лог при пустом секрете.
   ✅ **REPO-часть DONE:** при пустом TELEGRAM_BOT_WEBHOOK_SECRET каждый запрос пишет SECURITY-warning в лог `accounts.telegram` с инструкцией (setWebhook secret_token=...). Запросы НЕ блокируются намеренно — иначе бот упадёт до того, как секрет добавят в env. Осталось `[SERVER]`: задать секрет в env + перерегистрировать webhook.
 
-- [ ] **W3-10. [NEW-505] eval() в survey_engine (P3-hardening)** `[REPO]`
+- [x] **W3-10. [NEW-505] eval() в survey_engine (P3-hardening)** `[REPO]`
   `storefront/services/survey_engine.py:340`: строковые условия опроса исполняются через `eval()` (с `__builtins__={}` — обходится). Источник — JSON-definition (admin-controlled), риск низкий, но паттерн опасный.
   Фикс: заменить на безопасный парсер при следующем касании файла.
+  ✅ **DONE:** eval() заменён на AST-walker `_safe_eval_node` с whitelist узлов: константы, and/or/not, сравнения (==/!=/</<=/>/>=/in/not in), списки/кортежи и вызовы 4 helper-функций (_answer/_count/_first/_includes) по имени. Атрибуты, индексация, comprehension'ы, keyword-аргументы → ValueError → warning+False. Unit-проверка: легитимные условия работают, sandbox-escape паттерны (`().__class__`, `__globals__`, `__import__`) отклоняются. Полный прогон storefront.tests: 850 тестов, 45 падений = pre-existing (идентичный результат на HEAD~1 через git worktree), новых регрессий ноль.
 
 - [ ] **W3-8. [GAP] Включить контролируемый slow-log (DB-001, P2)** `[SERVER]`
   `slow_query_log=OFF` — перф-работы W3 вслепую.
@@ -393,7 +395,7 @@
   План: миграция 102 имён в нормальные модули → потом удаление. Безопасно удалить сейчас: `styles.css.bak2` (445KB), `order_success_old.html`, `tmp_old_index.html`.
 
 - [ ] **W7-2. legacy_stubs.py (TD-006)** `[REPO]`
-  48 заглушек живы в urls; admin_store_* возвращают фейковый `{'status':'ok'}`.
+  48 заглушек живы в urls; admin_store_* возвращают фейко��ый `{'status':'ok'}`.
   План: (а) fix monobank quick (Находка 4 payment_security); (б) перенос живых; (в) 410 мёртвым.
 
 - [ ] **W7-3. 145 tracked-артефактов ≈170MB (CB-001)** `[REPO]`
