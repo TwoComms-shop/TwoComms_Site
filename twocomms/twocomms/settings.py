@@ -1059,6 +1059,38 @@ STATICFILES_FINDERS = [
     'compressor.finders.CompressorFinder',
 ]
 
+COMPRESS_SOURCE_WATCH_DIRS = [
+    BASE_DIR / "twocomms_django_theme" / "templates",
+    BASE_DIR / "twocomms_django_theme" / "static",
+    BASE_DIR / "storefront" / "templates",
+    BASE_DIR / "orders" / "templates",
+    BASE_DIR / "templates",
+]
+COMPRESS_SOURCE_WATCH_SUFFIXES = (".html", ".htm", ".css", ".js")
+
+
+def _latest_compress_source_mtime():
+    latest_mtime = None
+    for source_dir in COMPRESS_SOURCE_WATCH_DIRS:
+        source_path = Path(source_dir)
+        if not source_path.exists():
+            continue
+        try:
+            for candidate in source_path.rglob("*"):
+                if (
+                    candidate.is_file()
+                    and candidate.suffix.lower() in COMPRESS_SOURCE_WATCH_SUFFIXES
+                ):
+                    candidate_mtime = candidate.stat().st_mtime
+                    if latest_mtime is None or candidate_mtime > latest_mtime:
+                        latest_mtime = candidate_mtime
+        except OSError as exc:
+            warnings.warn(
+                f"Не удалось проверить source-файлы django-compressor в {source_path}: {exc}",
+                RuntimeWarning,
+            )
+    return latest_mtime
+
 
 def ensure_compress_offline(enabled_flag):
     """
@@ -1091,6 +1123,24 @@ def ensure_compress_offline(enabled_flag):
             "COMPRESS_OFFLINE=True, но manifest CACHE/manifest.json пустой или некорректный. "
             "Запустите 'python manage.py compress' перед деплоем, чтобы включить offline-компрессию.",
             RuntimeWarning
+        )
+        return False
+    try:
+        manifest_mtime = manifest_path.stat().st_mtime
+    except OSError as exc:
+        warnings.warn(
+            "COMPRESS_OFFLINE=True, но не удалось проверить возраст CACHE/manifest.json. "
+            f"Отключаем offline-компрессию до следующего успешного compress: {exc}",
+            RuntimeWarning,
+        )
+        return False
+    latest_source_mtime = _latest_compress_source_mtime()
+    if latest_source_mtime is not None and latest_source_mtime > manifest_mtime:
+        warnings.warn(
+            "COMPRESS_OFFLINE=True, но CACHE/manifest.json старше шаблонов или static-исходников. "
+            "Запустите 'python manage.py compress --force' после collectstatic; "
+            "до этого offline-компрессия отключена, чтобы не отдавать 500.",
+            RuntimeWarning,
         )
         return False
     return True

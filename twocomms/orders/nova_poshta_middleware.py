@@ -14,6 +14,7 @@ import logging
 import threading
 from django.core.cache import cache
 from django.conf import settings
+from django.db import close_old_connections
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,6 @@ class NovaPoshtaFallbackMiddleware:
         Выполняется в отдельном потоке
         """
         try:
-            from django.db import close_old_connections
             from orders.nova_poshta_service import NovaPoshtaService
 
             # Поток живёт дольше HTTP-запроса: без этого MySQL-соединение
@@ -148,6 +148,7 @@ class NovaPoshtaFallbackMiddleware:
             logger.exception(f"Error in fallback Nova Poshta update: {e}")
 
         finally:
+            close_old_connections()
             # Снимаем блокировку
             cache.delete(self.lock_key)
             logger.debug("Released lock for Nova Poshta update")
@@ -216,6 +217,7 @@ class NovaPoshtaFallbackSimpleMiddleware:
             logger.info("Triggering simple fallback Nova Poshta status update")
 
             try:
+                close_old_connections()
                 service = NovaPoshtaService()
                 result = service.update_all_tracking_statuses()
 
@@ -225,6 +227,7 @@ class NovaPoshtaFallbackSimpleMiddleware:
                     f"{result['errors']} errors"
                 )
             finally:
+                close_old_connections()
                 cache.delete(lock_key)
 
         except Exception as e:

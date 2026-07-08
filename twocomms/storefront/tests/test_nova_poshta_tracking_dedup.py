@@ -153,6 +153,23 @@ class NovaPoshtaTrackingDedupTests(TestCase):
 
         self.assertTrue(captured.get("called"))
 
+    def test_apply_update_error_is_counted_and_closes_old_connections(self):
+        with (
+            patch.object(
+                self.service,
+                "get_tracking_info",
+                return_value=_tracking("Прибув на відділення", 4),
+            ),
+            patch.object(self.service, "_apply_tracking_update", side_effect=RuntimeError("db down")),
+            patch("orders.nova_poshta_service.close_old_connections") as close_old,
+        ):
+            result = self.service.update_all_tracking_statuses()
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["errors"], 1)
+        self.assertGreaterEqual(close_old.call_count, 1)
+
     def test_facebook_purchase_save_error_does_not_fallback_to_full_save(self):
         fake_service = type("FakeFacebookService", (), {
             "enabled": True,

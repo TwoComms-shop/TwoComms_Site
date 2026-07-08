@@ -17,7 +17,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.core.cache import cache
 from django.core.exceptions import ObjectDoesNotExist
-from django.db import transaction
+from django.db import close_old_connections, transaction
 from .models import Order
 from .telegram_notifications import TelegramNotifier
 
@@ -320,6 +320,8 @@ class NovaPoshtaService:
         Returns:
             bool: True если что-то изменилось/отправлено, False если нет
         """
+        self._last_tracking_update_error = False
+
         if not order.tracking_number:
             logger.debug(f"Order {order.order_number}: no tracking number")
             return False
@@ -344,6 +346,7 @@ class NovaPoshtaService:
         full_status = full_status.strip()[:self.SHIPMENT_STATUS_MAX_LENGTH]
 
         try:
+            close_old_connections()
             decision = self._apply_tracking_update(
                 order.pk, status, status_description, status_code, full_status
             )
@@ -351,11 +354,14 @@ class NovaPoshtaService:
             logger.warning(f"Order pk={order.pk} disappeared during tracking update")
             return False
         except Exception as e:
+            self._last_tracking_update_error = True
             logger.error(
                 f"Order {order.order_number}: failed to apply tracking update: {e}",
                 exc_info=True,
             )
             return False
+        finally:
+            close_old_connections()
 
         if decision is None:
             logger.debug(f"Order {order.order_number}: no changes")
@@ -929,16 +935,21 @@ class NovaPoshtaService:
             shipment_status__icontains='отримано'
         )
 
-        total_orders = orders_with_ttn.count()
+        close_old_connections()
+        order_ids = list(orders_with_ttn.values_list('pk', flat=True))
+
+        total_orders = len(order_ids)
         updated_count = 0
         error_count = 0
         processed_count = 0
 
         logger.info(f"Found {total_orders} orders with TTN to process")
 
-        for order in orders_with_ttn:
+        for order_pk in order_ids:
             processed_count += 1
+            close_old_connections()
             try:
+                order = Order.objects.get(pk=order_pk)
                 logger.debug(
                     f"Processing order {order.order_number} "
                     f"({processed_count}/{total_orders})"
@@ -950,12 +961,18 @@ class NovaPoshtaService:
                         f"✓ Order {order.order_number} updated "
                         f"({updated_count} updated so far)"
                     )
+                if getattr(self, '_last_tracking_update_error', False):
+                    error_count += 1
 
+            except ObjectDoesNotExist:
+                logger.warning(f"Order pk={order_pk} disappeared before tracking update")
             except Exception as e:
                 error_count += 1
                 logger.exception(
-                    f"✗ Error updating order {order.order_number}: {e}"
+                    f"✗ Error updating order pk={order_pk}: {e}"
                 )
+            finally:
+                close_old_connections()
 
         result = {
             'total_orders': total_orders,
