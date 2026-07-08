@@ -1,5 +1,6 @@
 import io
 import uuid
+from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
@@ -157,7 +158,7 @@ class BlogCategory(models.Model):
     def clean(self):
         super().clean()
         if self.parent_id and self.pk and self.parent_id == self.pk:
-            raise ValidationError({"parent": "Категорія ��е може бути власним батьком."})
+            raise ValidationError({"parent": "Категорія ����е може бути власним батьком."})
         parent = self.parent
         while parent is not None:
             if self.pk and parent.pk == self.pk:
@@ -991,7 +992,7 @@ class Product(models.Model):
     # Fit selector visibility (classic / oversize)
     fit_selector_enabled = models.BooleanField(
         default=True,
-        verbose_name='Показувати селектор крою (класика / оверсайз)',
+        verbose_name='Показувати селектор крою (класика / оверсай��)',
         help_text='Якщо вимкнено — блок з вибором крою не відображається на сторінці товару.'
     )
     # SEO timestamps for sitemap lastmod
@@ -2017,12 +2018,31 @@ class UTMSession(models.Model):
             self.conversion_type = conversion_type
             self.save(update_fields=['is_converted', 'converted_at', 'conversion_type'])
 
+    # W2-10/AN-036: «визит» = сессионное окно 30 минут (стандарт GA).
+    VISIT_WINDOW_MINUTES = 30
+
     def increment_visit(self):
-        """Увеличивает счетчик визитов"""
+        """
+        Увеличивает счетчик визитов.
+
+        W2-10 (AN-036): до фикса вызывался на КАЖДЫЙ pageview →
+        SELECT+UPDATE на каждый хит и visit_count = число просмотров,
+        а не визитов. Теперь новый «визит» засчитывается только если
+        с last_seen прошло > VISIT_WINDOW_MINUTES; внутри окна
+        обновляется только last_seen (и то не чаще раза в минуту,
+        чтобы не писать в БД на каждый хит).
+        """
+        now = timezone.now()
+        if self.last_seen and (now - self.last_seen) <= timedelta(minutes=self.VISIT_WINDOW_MINUTES):
+            # Внутри визит-окна: только продлеваем last_seen, максимум раз в минуту
+            if (now - self.last_seen) >= timedelta(minutes=1):
+                self.last_seen = now
+                self.save(update_fields=['last_seen'])
+            return
         self.visit_count = F('visit_count') + 1
         self.is_first_visit = False
         self.is_returning_visitor = True
-        self.last_seen = timezone.now()
+        self.last_seen = now
         self.save(update_fields=['visit_count', 'is_first_visit', 'is_returning_visitor', 'last_seen'])
 
     def mark_user_registered(self):

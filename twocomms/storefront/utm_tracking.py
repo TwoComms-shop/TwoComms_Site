@@ -254,11 +254,22 @@ def record_lead(request, order_id: int, order_number: str, cart_value: float):
 
 
 def record_search(request, query: str):
-    """Записывает поисковый запрос"""
+    """
+    Записывает поисковый запрос.
+
+    W2-10/AN-039: запрос обрезается до 200 символов и маскируются
+    PII-паттерны (email, телефон, номер карты) — раньше писался сырым.
+    """
+    import re
+    cleaned = (query or '')[:200]
+    # email → [email]
+    cleaned = re.sub(r'[\w.+-]+@[\w-]+\.[\w.]+', '[email]', cleaned)
+    # 12-19 цифр подряд (карта) → [card]
+    cleaned = re.sub(r'\b\d[\d\s-]{10,17}\d\b', '[number]', cleaned)
     return record_user_action(
         request,
         action_type='search',
-        metadata={'query': query}
+        metadata={'query': cleaned}
     )
 
 
