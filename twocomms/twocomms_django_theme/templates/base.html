@@ -1002,6 +1002,17 @@
         }
       }
       
+      // W2-5 (CRO-004/AN-002): fast-path для платного трафика.
+      // Если в URL есть click-id или utm-метки — грузим GTM СРАЗУ:
+      // иначе paid-bounce (ушёл до interaction/таймаута) невидим в
+      // аналитике, а _fbc-кука не успевает создаться из fbclid.
+      // PageSpeed не страдает: Lighthouse не ходит с ?utm_/fbclid.
+      var isPaidLanding = /[?&](gclid|fbclid|ttclid|wbraid|gbraid|msclkid|utm_source|utm_medium|utm_campaign)=/i.test(window.location.search);
+      if (isPaidLanding) {
+        loadGTM();
+        return;
+      }
+
       // Load on first user interaction (scroll, click, touch, etc.)
       interactionEvents.forEach(function(evt) {
         window.addEventListener(evt, loadGTM, {passive: true, capture: true, once: true});
@@ -1056,6 +1067,13 @@
         (document.head || document.documentElement).appendChild(s);
       }
       var interactionEvents = ['scroll', 'click', 'touchstart', 'pointerdown', 'keydown'];
+      // W2-5 (CRO-004/AN-002): fast-path для платного трафика — Pixel/TikTok
+      // должны инициализироваться сразу, чтобы _fbc/_ttclid куки создались
+      // из click-id даже при мгновенном bounce.
+      if (/[?&](gclid|fbclid|ttclid|wbraid|gbraid|msclkid|utm_source|utm_medium|utm_campaign)=/i.test(window.location.search)) {
+        inject();
+        return;
+      }
       interactionEvents.forEach(function (evt) {
         window.addEventListener(evt, inject, { passive: true, capture: true, once: true });
       });

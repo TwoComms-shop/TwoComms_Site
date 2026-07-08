@@ -126,7 +126,7 @@
   Фикс: edit_profile → та же ProfileSetupForm (или отдельная форма с FileExtension/size-валидаторами); задать `FILE_UPLOAD_MAX_MEMORY_SIZE`/лимит размера.
 
 - [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
-  Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаётся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
+  Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё��ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
   Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизировать имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
 - [x] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
@@ -175,9 +175,10 @@
   Фикс: единый bot-detect на записи UserAction; запись product_view ПОСЛЕ redirect; дедуп 30 мин session+product; `is_staff` → авто-исключение (AN-004).
   Приёмка: baseline CRO-051 пересчитан; view→ATC правдоподобен.
 
-- [ ] **W2-5. GTM fast-path для платного трафика (CRO-004 / AN-002, P1, ~10 строк)** `[REPO]`
+- [x] **W2-5. GTM fast-path для платного трафика (CRO-004 / AN-002, P1, ~10 строк)** `[REPO]`
   GTM ��рузится по interaction или 12-35s; fast-path для `utm_*`/fbclid/gclid/ttclid отсутствует → paid-bounce невидим, `_fbc` не создаётся.
   Фикс: base.html — при click-id/utm в URL грузить GTM немедленно.
+  ✅ **DONE:** fast-path добавлен в ОБА deferred-лоадера base.html (GTM и analytics-loader.js): при `gclid|fbclid|ttclid|wbraid|gbraid|msclkid|utm_source|utm_medium|utm_campaign` в query — немедленная загрузка. Проверено в браузере: `/?utm_source=audit&fbclid=…` → analytics-loader инжектится сразу; чистая органика (свежая сессия, 0 interaction) → НЕ инжектится, PageSpeed-профиль сохранён (Lighthouse не ходит с utm/click-id).
 
 - [ ] **W2-6. TikTok: нестандартные имена событий (AN-020, P1)** `[REPO]`
   Клиент (analytics-loader.js:394) и сервер (tiktok_events_service.py) шлют Meta-имена «Purchase»/«Lead» вместо CompletePayment/PlaceAnOrder/SubmitForm → цели TikTok их не видят.
@@ -285,8 +286,8 @@
   Фикс: статусная модель `new → in_progress → quoted → won/lost(причина)`, движение из админки, привязка lead→order.
   Приёмка: ни одного лида старше 7 дней в `new` без причины.
 
-- [ ] **W4-5. Кастом-принт в чекауте (CRO-034, P2)** `[REPO]`
-  COD не проверяет цену approved-кастома (лид с ценой 0 уедет бесплатно — checkout.py:233 глотает ошибку); COD молча удаляет кастом-записи без lead_id; промокод дисконтирует согласованную цену кастома; брошенный инвойс не отвязывает lead.order.
+- [ ] **W4-5. Кастом-принт в чекау��е (CRO-034, P2)** `[REPO]`
+  COD не проверяет цену approved-кастома (лид с ценой 0 уедет бесплатно — checkout.py:233 глотает ошибку); COD молча удаляет кастом-запис�� без lead_id; промокод дисконтирует согласованную цену кастома; брошенный инвойс не отвязывает lead.order.
   Фикс: вынести `_split_custom_cart_entries` в общий модуль для обоих потоков; guard цены кастома.
 
 - [ ] **W4-6. Meta Ads spend-импорт (TECH-073) + офлайн-конверсии delivered/refused (TECH-074)** `[REPO]` + `[OWNER]`(токены) — после W4-1/W2-3.
@@ -326,7 +327,7 @@
 - [ ] **W5-8. Прочее SEO (P2/P3)** `[REPO]`
   - [ ] **SEO-009 (P2):** Google Indexing сигнальный путь без дедупа/quota_limit — масс-пересохранение сжигает квоту.
   - [ ] **NEW-411 (P3):** NewsArticle/GovernmentOrganization-bloat в Organization schema (seo_utils.py:1518) — убрать/упростить.
-  - [ ] **NEW-410 (P3):** lastmod в sitemap-products (1 из 195).
+  - [ ] **NEW-410 (P3):** lastmod �� sitemap-products (1 из 195).
   - [ ] **SEO-022 (P3):** TikTok в sameAs (нужен handle от владельца).
   - [ ] **[GAP] SEO-006 (P3):** 410 для удалённых товаров (сейчас 404) — опционально.
   - [ ] **[OWNER]** Rich Results Test прогон вручную.
@@ -539,7 +540,7 @@ O-5 (GSC-экспорт) ──→ W5-6 (правки мета)
 | 08.07.2026 | W1-13, W1-14 | MAX_CART_ITEM_QTY=50 в add_to_cart/update_cart (вкл. накопленное qty); дедуп double-submit в create_order (session + sha256 корзины, окно 30s → редирект на существующий заказ) + disable кнопок на клиенте (cart.js); 4 новых теста | 91881756 |
 | 08.07.2026 | W1-10 | Валидация загрузок профиля: validate_profile_upload_size (10 МБ) в ProfileSetupForm; edit_profile валидирует файлы через ImageField + лимит, email через validate_email; FILE_UPLOAD_MAX_MEMORY_SIZE/DATA_UPLOAD_MAX_MEMORY_SIZE в settings; 2 новых теста | 5d59ef69 |
 | 08.07.2026 | W1-5 | Missing-товары → явная ошибка без заказа (COD + monobank-инвойс); guard total<=0; внешние HTTP-вызовы (invoice/CAPI/Telegram) выведены из transaction.atomic + cleanup осиротевшего заказа; 2 новых теста | 0a934454 |
-| 08.07.2026 | W1-6 | update_payment_method/confirm_payment восстановлены из backup: login_required+POST, владелец через get(user=request.user)→404, lock после оплаты (409), скриншот — Pillow-валидация + 10 МБ; 3 новых теста | 6c6b4709 |
+| 08.07.2026 | W1-6 | update_payment_method/confirm_payment восстановлены из backup: login_required+POST, владелец через get(user=request.user)→404, lock после ��платы (409), скриншот — Pillow-валидация + 10 МБ; 3 новых теста | 6c6b4709 |
 | 07.07.2026 | plan-v2 | План переписан в единый исполняемый чеклист: влиты gap-check находки ([GAP]: W0-6, W1-8, W2-9/10 хвосты, W3-8, W5-8/9/10, W6-6/7, W7-18/19/20), добавлены секции SERVER_TASKS (S-1…S-12) и OWNER_TASKS (O-1…O-7), теги [REPO]/[SERVER]/[OWNER]/[DECISION] | — |
 | 07.07.2026 | plan-v2.2 | Второй пост-аудит-скан (деньги/идемпотентность/PII): NEW-506 (P1 — retail-вебхук без pull-verify и сверки суммы, при том что wholesale/IG-ветки pull-verify ДЕЛАЮТ), NEW-508 (qty без cap), NEW-514 (double-submit заказа), NEW-510 (CheckoutCapture PII без лимитов/retention), NEW-509 (float в денежных payload), NEW-511 (naive datetime), NEW-512 (брутфорс промо), NEW-513 (/search/ без пагинации). Добавлены W1-12/13/14, W3-11/12, W7-22/23/24 | — |
 | 07.07.2026 | plan-v2.1 | Пост-аудит-скан кода нашёл 5 НОВЫХ проблем вне аудита: NEW-501 (P0 — дропшип-вебхук Monobank без подписи), NEW-502 (P1 — edit_profile принимает FILES без валидации), NEW-503 (P1-check — ubd_doc PII в публичном media), NEW-504 (P2 — Telegram-вебхук без секрета при пустом env), NEW-505 (P3 — eval в survey_engine). Добавлены W1-9/10/11, W3-9/10, S-13/14 | — |
