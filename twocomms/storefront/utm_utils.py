@@ -369,6 +369,95 @@ def sanitize_utm_param(value: str, max_length: int = 255) -> Optional[str]:
     return value or None
 
 
+# ---------------------------------------------------------------------------
+# W2-8 (AN-032/AN-033): нормализация utm_source + детект AI-трафика.
+# ---------------------------------------------------------------------------
+
+# Канонические имена источников → все встречающиеся написания.
+# Governance-конвенция: канон — lowercase, без пробелов; см. docs/UTM_GOVERNANCE.md.
+UTM_SOURCE_ALIASES = {
+    'instagram': [
+        'ig', 'inst', 'insta', 'instagram', 'igshopping', 'ig_shopping',
+        'inst_vid', 'instvid', 'ig_stories', 'instagram_stories',
+        'instagram_reels', 'ig_reels', 'l.instagram.com',
+    ],
+    'facebook': [
+        'fb', 'facebook', 'meta', 'fb_ads', 'facebook_ads', 'facebookads',
+        'm.facebook.com', 'l.facebook.com', 'lm.facebook.com', 'facebook.com',
+    ],
+    'tiktok': ['tt', 'tiktok', 'tik_tok', 'tiktok_ads', 'tiktokads'],
+    'google': ['google', 'adwords', 'google_ads', 'googleads', 'google.com'],
+    'telegram': ['tg', 'telegram', 'org.telegram.messenger', 't.me'],
+    'youtube': ['yt', 'youtube', 'youtube.com'],
+    # AI-источники (детектятся и по referrer — см. detect_ai_source)
+    'chatgpt': ['chatgpt', 'chatgpt.com', 'chat.openai.com', 'openai'],
+    'perplexity': ['perplexity', 'perplexity.ai'],
+    'gemini': ['gemini', 'gemini.google.com', 'bard'],
+    'claude': ['claude', 'claude.ai'],
+    'copilot': ['copilot', 'copilot.microsoft.com', 'bing_chat'],
+}
+
+# Обратный индекс: alias (lowercase) → канон
+_UTM_SOURCE_REVERSE = {}
+for _canonical, _aliases in UTM_SOURCE_ALIASES.items():
+    _UTM_SOURCE_REVERSE[_canonical] = _canonical
+    for _alias in _aliases:
+        _UTM_SOURCE_REVERSE[_alias] = _canonical
+
+# Источники, относящиеся к каналу «AI» (utm_medium=ai)
+AI_SOURCES = {'chatgpt', 'perplexity', 'gemini', 'claude', 'copilot'}
+
+# Referrer-домен → канонический AI-источник (суффикс-матч по hostname)
+AI_REFERRER_DOMAINS = {
+    'chatgpt.com': 'chatgpt',
+    'chat.openai.com': 'chatgpt',
+    'perplexity.ai': 'perplexity',
+    'gemini.google.com': 'gemini',
+    'claude.ai': 'claude',
+    'copilot.microsoft.com': 'copilot',
+    'you.com': 'you',
+    'poe.com': 'poe',
+}
+
+
+def normalize_utm_source(value: Optional[str]) -> Optional[str]:
+    """
+    Нормализует utm_source по словарю алиасов.
+
+    'IG'/'Instagram'/'IGShopping'/'Inst_Vid' → 'instagram' и т.д.
+    Неизвестные значения приводятся к lowercase (чтобы 'Newsletter' и
+    'newsletter' не были двумя источниками), но не переименовываются.
+    """
+    if not value:
+        return value
+    cleaned = str(value).strip().lower()
+    if not cleaned:
+        return None
+    return _UTM_SOURCE_REVERSE.get(cleaned, cleaned)
+
+
+def detect_ai_source(referrer: Optional[str]) -> Optional[str]:
+    """
+    Определяет AI-источник по referrer-домену.
+
+    Возвращает канонический источник ('chatgpt', 'perplexity', …) или None.
+    Матч по суффиксу hostname, чтобы ловить www./m.-поддомены.
+    """
+    if not referrer:
+        return None
+    try:
+        from urllib.parse import urlparse
+        hostname = (urlparse(referrer).hostname or '').lower()
+    except Exception:
+        return None
+    if not hostname:
+        return None
+    for domain, source in AI_REFERRER_DOMAINS.items():
+        if hostname == domain or hostname.endswith('.' + domain):
+            return source
+    return None
+
+
 def is_bot_user_agent(user_agent: str) -> bool:
     """
     Определяет, является ли User-Agent ботом.
