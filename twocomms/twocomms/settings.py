@@ -363,6 +363,14 @@ AUTO_GENERATE_AI_CONTENT_ON_CREATE = _env_bool('AUTO_GENERATE_AI_CONTENT_ON_CREA
 # TikTok Pixel configuration
 TIKTOK_PIXEL_ID = os.environ.get('TIKTOK_PIXEL_ID', 'D43L7DBC77UA61AHLTVG')  # Default fallback if not set
 
+# ADS-1: Meta Pixel ID из env с fallback на текущий прод-ID.
+# Раньше был захардкожен в base.html (env FACEBOOK_PIXEL_ID пустовал).
+META_PIXEL_ID = (
+    os.environ.get('META_PIXEL_ID')
+    or os.environ.get('FACEBOOK_PIXEL_ID')
+    or '823958313630148'
+).strip()
+
 # Monobank acquiring
 MONOBANK_TOKEN = os.environ.get('MONOBANK_TOKEN', '')
 MONOBANK_API_BASE = os.environ.get('MONOBANK_API_BASE', 'https://api.monobank.ua')

@@ -9,7 +9,7 @@
 {% html_lang_for LANGUAGE_CODE as html_lang_attr %}
 <!DOCTYPE html>
 <html lang='{{ html_lang_attr }}' data-bs-theme='dark' data-route-name="{{ request.resolver_match.url_name|default:'' }}" data-page-shell="{% if request.resolver_match.url_name == 'about' %}marketing{% else %}commerce{% endif %}" data-analytics-mode="{% if request.resolver_match.url_name == 'about' %}passive{% else %}default{% endif %}" {% if not debug %}data-ga-id="G-109EFTWM05" data-clarity-id="t7u94cvpqc"
-  data-meta-pixel-id="823958313630148" {% endif %}
+  data-meta-pixel-id="{{ META_PIXEL_ID }}" {% endif %}
   data-tiktok-pixel-id="{% if TIKTOK_PIXEL_ID %}{{ TIKTOK_PIXEL_ID }}{% else %}D43L7DBC77UA61AHLTVG{% endif %}"{% if TIKTOK_TEST_EVENT_CODE %} data-tiktok-test-event-code="{{ TIKTOK_TEST_EVENT_CODE }}"{% endif %}>
 
 <head>
@@ -296,6 +296,32 @@
   <link rel="dns-prefetch" href="https://analytics.tiktok.com">
   <link rel="dns-prefetch" href="https://www.clarity.ms">
   <link rel="dns-prefetch" href="https://www.google-analytics.com">
+  <script>
+    // ADS-1: Meta Pixel — init+PageView СРАЗУ в <head> на ВСЕХ страницах
+    // (включая home — главный landing рекламы), не дожидаясь первого user
+    // interaction. Раньше пиксель жил только внутри analytics-loader.js
+    // (грузится после взаимодействия) → посетитель из рекламы, ушедший без
+    // клика/скролла, не отправлял PageView, и Meta не видела трафик
+    // (ломалась атрибуция и оптимизация кампаний). Тяжёлые e-commerce
+    // события остаются в analytics-loader (лениво).
+    !function (f, b, e, v, n, t, s) {
+      if (f.fbq) return;
+      n = f.fbq = function () {
+        n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments);
+      };
+      if (!f._fbq) f._fbq = n;
+      n.push = n; n.loaded = !0; n.version = '2.0'; n.queue = [];
+      t = b.createElement(e); t.async = !0; t.src = v;
+      s = b.getElementsByTagName(e)[0];
+      if (s && s.parentNode) { s.parentNode.insertBefore(t, s); }
+      else { (b.head || b.documentElement).appendChild(t); }
+    }(window, document, 'script', 'https://connect.facebook.net/en_US/fbevents.js');
+    try {
+      fbq('init', '{{ META_PIXEL_ID }}');
+      fbq('track', 'PageView');
+      window.__fbPixelInline = true;
+    } catch (e) { /* ad blocker — молча продолжаем */ }
+  </script>
   {% endif %}
 
   {% if not debug %}
@@ -1106,7 +1132,7 @@
   {% endcomment %}
   <script>
     (function () {
-      var src = "{% static 'js/analytics-loader.js' %}?v=7";
+      var src = "{% static 'js/analytics-loader.js' %}?v=8";
       var loaded = false;
       function inject() {
         if (loaded) return;
@@ -1197,13 +1223,9 @@
   {% if not debug %}
   {% with "109EFTWM05" as ga_id %}
   {% with "t7u94cvpqc" as clarity_id %}
-  {% with "823958313630148" as meta_pixel_id %}
-  {% with "D43L7DBC77UA61AHLTVG" as tiktok_pixel_id %}
-  <div id="am" data-ga-id="{{ ga_id }}" data-clarity-id="{{ clarity_id }}" data-meta-pixel-id="{{ meta_pixel_id }}"
-    data-tiktok-pixel-id="{{ tiktok_pixel_id }}" style="display:none">
+  <div id="am" data-ga-id="{{ ga_id }}" data-clarity-id="{{ clarity_id }}" data-meta-pixel-id="{{ META_PIXEL_ID }}"
+    data-tiktok-pixel-id="{{ TIKTOK_PIXEL_ID }}" style="display:none">
   </div>
-  {% endwith %}
-  {% endwith %}
   {% endwith %}
   {% endwith %}
   {% else %}
@@ -1211,7 +1233,7 @@
   {% endif %}
   {% endif %}
   <noscript><img height="1" width="1" style="display:none"
-      src="https://www.facebook.com/tr?id=823958313630148&ev=PageView&noscript=1" /></noscript>
+      src="https://www.facebook.com/tr?id={{ META_PIXEL_ID }}&ev=PageView&noscript=1" /></noscript>
   <!-- End Meta Pixel Code -->
   {% include 'partials/header.html' %}
   <main id="main-content" class='container-xxl py-4 py-md-5'>

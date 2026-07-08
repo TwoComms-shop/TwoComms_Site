@@ -94,6 +94,9 @@ def analytics_settings(request):
     return {
         'TIKTOK_PIXEL_ID': tiktok_pixel_id,
         'TIKTOK_TEST_EVENT_CODE': tiktok_test_event_code,
+        # ADS-1: Meta Pixel ID из settings (env META_PIXEL_ID/FACEBOOK_PIXEL_ID
+        # с fallback на прод-ID) — вместо хардкода в base.html
+        'META_PIXEL_ID': getattr(settings, 'META_PIXEL_ID', '') or '823958313630148',
     }
 
 

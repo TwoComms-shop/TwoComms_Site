@@ -1115,6 +1115,10 @@
       }
       win.__fbPixelLoaded = false;
     }
+    // ADS-1: если инлайн-сниппет в <head> уже сделал init+PageView
+    // (window.__fbPixelInline), здесь только ДОПОЛНЯЕМ advanced matching
+    // повторным init (fbq дедуплицирует по pixel id) и НЕ шлём второй
+    // PageView — иначе Meta посчитает страницу дважды.
     try {
       var advancedMatching = buildAdvancedMatchingMap();
       win.fbq('init', PIXEL_ID, advancedMatching);
@@ -1130,11 +1134,13 @@
         }
       }
     }
-    try {
-      win.fbq('track', 'PageView');
-    } catch (errTrack) {
-      if (console && console.debug) {
-        console.debug('Meta Pixel track error', errTrack);
+    if (!win.__fbPixelInline) {
+      try {
+        win.fbq('track', 'PageView');
+      } catch (errTrack) {
+        if (console && console.debug) {
+          console.debug('Meta Pixel track error', errTrack);
+        }
       }
     }
     
