@@ -11,6 +11,32 @@
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@500&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="{% static 'css/management.css' %}">
+    {% if meta_bot_reviewer_mode %}
+    <style>
+        .header-tabs .tab.is-disabled {
+            color: rgba(159, 169, 187, .46);
+            cursor: not-allowed;
+            pointer-events: none;
+            filter: grayscale(1);
+            opacity: .52;
+        }
+        .header-tabs .tab.is-disabled::after {
+            display: none !important;
+        }
+        .reviewer-scope-chip {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid rgba(148, 163, 184, .28);
+            border-radius: 999px;
+            padding: 6px 10px;
+            color: #cbd5e1;
+            background: rgba(15, 23, 42, .72);
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+    </style>
+    {% endif %}
 
     <!-- PWA / Favicons (Management) -->
     <link rel="manifest" href="{% static 'faviconMNG/site.webmanifest' %}">
@@ -40,7 +66,7 @@
     <!-- Глобальный верхний хедер -->
     <header class="global-header">
         <div class="header-left">
-            <a href="{% url 'management_home' %}" class="brand-home-link" aria-label="На головну">
+            <a href="{% if meta_bot_reviewer_mode %}{% url 'management_bot' %}{% else %}{% url 'management_home' %}{% endif %}" class="brand-home-link" aria-label="На головну">
                 <div class="brand-mark">
                     <img src="{% static 'img/logo.svg' %}" alt="TwoComms" />
                 </div>
@@ -51,6 +77,19 @@
             </a>
         </div>
         <nav class="header-tabs">
+            {% if meta_bot_reviewer_mode %}
+            <a href="#" class="tab is-disabled" aria-disabled="true">Менеджмент</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Звітність</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Статистика</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Профіль</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Виплати</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Інформація</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Каса</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Лідоген</a>
+            <a href="{% url 'management_bot' %}" class="tab active">Бот</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Тест</a>
+            <a href="#" class="tab is-disabled" aria-disabled="true">Адміністрування</a>
+            {% else %}
             <a href="{% url 'management_home' %}" class="tab{% if request.resolver_match.url_name == 'management_home' or request.resolver_match.url_name == 'management_invoices' or request.resolver_match.url_name == 'management_contracts' or request.resolver_match.url_name == 'management_commercial_offer_email' or request.resolver_match.url_name == 'management_shops' %} active{% endif %}">Менеджмент</a>
             <a href="{% url 'management_reports' %}" class="tab{% if request.resolver_match.url_name == 'management_reports' %} active{% endif %}">Звітність</a>
             <a href="{% url 'management_stats' %}" class="tab{% if request.resolver_match.url_name == 'management_stats' or request.resolver_match.url_name == 'management_stats_admin' or request.resolver_match.url_name == 'management_stats_admin_user' %} active{% endif %}">Статистика</a>
@@ -64,8 +103,12 @@
             <a href="{% url 'management_binotel_test' %}" class="tab{% if request.resolver_match.url_name == 'management_binotel_test' %} active{% endif %}">Тест</a>
             <a href="{% url 'management_admin' %}" class="tab{% if request.resolver_match.url_name == 'management_admin' %} active{% endif %}">Адміністрування</a>
             {% endif %}
+            {% endif %}
         </nav>
         <div class="header-actions">
+            {% if meta_bot_reviewer_mode %}
+            <span class="reviewer-scope-chip">Meta Bot Reviewer</span>
+            {% endif %}
             <div class="notif-wrapper">
                 <button type="button" class="bell-static" id="notif-btn" aria-label="Нагадування" aria-expanded="false">
                     <svg viewBox="0 0 24 24" aria-hidden="true">

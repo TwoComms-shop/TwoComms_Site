@@ -84,6 +84,7 @@
 .bot-save:hover{background:#1d4ed8;}.bot-save:active{transform:scale(.97);}
 .bot-hint{font-size:12px;color:#7e889a;}
 .bot-note{background:#15110a;border:1px solid #3a2e16;color:#d8c08a;border-radius:12px;padding:11px 14px;font-size:12.5px;margin-bottom:18px;line-height:1.5;}
+.bot-reviewer-note{background:#0f1b2e;border:1px solid #263c5f;color:#bdd7ff;border-radius:12px;padding:11px 14px;font-size:12.5px;margin-bottom:16px;line-height:1.5;}
 
 /* ---- KB ---- */
 .bot-kb-wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;}
@@ -152,11 +153,18 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       <button class="bot-btn stop" id="bot-stop">Зупинити</button>
     </div>
   </header>
+  {% if meta_bot_reviewer_mode %}
+  <div class="bot-reviewer-note">
+    Meta reviewer mode: цей акаунт може керувати лише вкладкою Instagram-бота для перевірки App Review. Інші розділи management заблоковані; API-токени, credential source, allowlist, system prompt та база інструкцій приховані.
+  </div>
+  {% endif %}
 
   <nav class="bot-tabs" id="bot-tabs">
     <button class="bot-tab active" data-tab="overview">Огляд<span class="badge" id="badge-pending" style="display:none;"></span></button>
     <button class="bot-tab" data-tab="settings">Налаштування</button>
+    {% if not meta_bot_reviewer_mode %}
     <button class="bot-tab" data-tab="kb">Інструкції</button>
+    {% endif %}
     <button class="bot-tab" data-tab="clients">Клієнти<span class="badge" id="badge-clients" style="display:none;"></span></button>
     <span class="bot-tab-ind" id="bot-tab-ind"></span>
   </nav>
@@ -205,7 +213,13 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   <section class="bot-panel" data-panel="settings">
     <div class="bot-card">
       <h2>Ключі та параметри</h2>
+      {% if meta_bot_reviewer_mode %}
+      <div class="bot-reviewer-note">
+        Для перевірки доступні тільки безпечні demo-параметри: Start/Stop, AI-режим, резервний polling, модель Gemini та перегляд переписок. Секрети й приватні правила відповіді не показуються.
+      </div>
+      {% endif %}
       <form id="bot-settings-form">
+        {% if not meta_bot_reviewer_mode %}
         <div class="bot-grid2">
           <div class="bot-field">
             <label>Direct API (Facebook токен)</label>
@@ -220,6 +234,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             <input type="text" name="custom_gemini_key" placeholder="Свій Gemini ключ (необов'язково)" value="{{ settings.custom_gemini_key }}" style="margin-top:8px;">
           </div>
         </div>
+        {% endif %}
         <div class="bot-grid2">
           <div class="bot-field">
             <label>Режим відповіді</label>
@@ -237,6 +252,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             </select>
           </div>
         </div>
+        {% if not meta_bot_reviewer_mode %}
         <div class="bot-field">
           <label>Системний промпт (як боту відповідати)</label>
           <textarea name="system_prompt" rows="6">{{ settings.system_prompt }}</textarea>
@@ -263,12 +279,14 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             <input type="text" name="reply_text" value="{{ settings.reply_text }}" placeholder="Текст відповіді">
           </div>
         </div>
+        {% endif %}
         <button type="submit" class="bot-save">Зберегти</button>
         <span class="bot-hint" id="bot-save-hint" style="margin-left:10px;"></span>
       </form>
     </div>
   </section>
 
+  {% if not meta_bot_reviewer_mode %}
   <!-- ===== Інструкції ===== -->
   <section class="bot-panel" data-panel="kb">
     <div class="bot-card">
@@ -308,6 +326,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       </div>
     </div>
   </section>
+  {% endif %}
 
   <!-- ===== Клієнти ===== -->
   <section class="bot-panel" data-panel="clients">

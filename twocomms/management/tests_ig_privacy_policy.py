@@ -1,9 +1,12 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from .bot_access import META_REVIEWER_GROUP_NAME
+from .models import InstagramBotSettings
 
 
 @override_settings(
@@ -143,7 +146,7 @@ class InstagramBotPrivacyPolicyTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response["Location"], reverse("management_bot"))
 
-    def test_meta_reviewer_gets_safe_read_only_bot_page(self):
+    def test_meta_reviewer_gets_working_bot_only_page_without_secrets(self):
         self._login_meta_reviewer()
 
         response = self.client.get(
@@ -153,36 +156,83 @@ class InstagramBotPrivacyPolicyTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "DIRECT_BOT Reviewer Access")
-        self.assertContains(response, "Meta Bot Reviewer Access")
-        self.assertContains(response, "2120980214971807")
-        self.assertContains(response, "https://www.instagram.com/twocomms/")
-        self.assertContains(response, "https://management.twocomms.shop/privacy-policy/")
-        self.assertContains(response, "https://management.twocomms.shop/terms-of-service/")
-        self.assertContains(response, "https://management.twocomms.shop/data-deletion/")
+        self.assertContains(response, "Інстаграм-бот")
+        self.assertContains(response, "Meta reviewer mode")
+        self.assertContains(response, "Meta Bot Reviewer")
+        self.assertContains(response, "Запустити")
+        self.assertContains(response, "Зупинити")
+        self.assertContains(response, "Налаштування")
+        self.assertContains(response, "Клієнти")
+        self.assertContains(response, "is-disabled")
         self.assertNotContains(response, "custom_direct_token")
         self.assertNotContains(response, "custom_gemini_key")
         self.assertNotContains(response, "allowed_senders")
-        self.assertNotContains(response, "Клієнти")
-        self.assertNotContains(response, "Запустити")
-        self.assertNotContains(response, "Зупинити")
+        self.assertNotContains(response, "Системний промпт")
+        self.assertNotContains(response, "Інструкції, посилання та реклама")
 
-    def test_meta_reviewer_cannot_call_admin_bot_apis(self):
+    def test_meta_reviewer_can_use_bot_demo_apis_but_not_kb_admin_api(self):
         self._login_meta_reviewer()
 
-        for path in (
-            "/bot/api/start/",
-            "/bot/api/stop/",
-            "/bot/api/settings/",
-            "/bot/api/clients/",
-            "/bot/api/kb/",
-        ):
+        with patch("management.bot_views.bot.start_bot"), patch("management.bot_views.bot.stop_bot"):
+            for path in ("/bot/api/start/", "/bot/api/stop/"):
+                with self.subTest(path=path):
+                    response = self.client.post(
+                        path,
+                        HTTP_HOST="management.twocomms.shop",
+                        secure=True,
+                        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+                    )
+                    self.assertEqual(response.status_code, 200)
+
+        for path in ("/bot/api/status/", "/bot/api/clients/"):
             with self.subTest(path=path):
-                method = self.client.get if path.endswith(("clients/", "kb/")) else self.client.post
-                response = method(
+                response = self.client.get(
                     path,
                     HTTP_HOST="management.twocomms.shop",
                     secure=True,
                     HTTP_X_REQUESTED_WITH="XMLHttpRequest",
                 )
-                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(
+            "/bot/api/kb/",
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_meta_reviewer_settings_save_cannot_change_secret_fields(self):
+        self._login_meta_reviewer()
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.custom_direct_token = "keep-direct-secret"
+        settings_obj.custom_gemini_key = "keep-gemini-secret"
+        settings_obj.system_prompt = "keep-system-prompt"
+        settings_obj.allowed_senders = "keep-sender"
+        settings_obj.save()
+
+        response = self.client.post(
+            "/bot/api/settings/",
+            {
+                "ai_enabled": "on",
+                "receive_via_poll": "on",
+                "gemini_model": "gemini-2.5-flash",
+                "custom_direct_token": "leaked-change",
+                "custom_gemini_key": "leaked-change",
+                "system_prompt": "changed",
+                "allowed_senders": "changed",
+            },
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        settings_obj.refresh_from_db()
+        self.assertTrue(settings_obj.ai_enabled)
+        self.assertTrue(settings_obj.receive_via_poll)
+        self.assertEqual(settings_obj.gemini_model, "gemini-2.5-flash")
+        self.assertEqual(settings_obj.custom_direct_token, "keep-direct-secret")
+        self.assertEqual(settings_obj.custom_gemini_key, "keep-gemini-secret")
+        self.assertEqual(settings_obj.system_prompt, "keep-system-prompt")
+        self.assertEqual(settings_obj.allowed_senders, "keep-sender")

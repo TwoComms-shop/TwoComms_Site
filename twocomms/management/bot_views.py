@@ -1,5 +1,5 @@
 """
-Вкладка «Бот» (тільки для адміністраторів).
+Вкладка «Бот» (адміністратори + обмежений Meta reviewer).
 
 UI зі станом агента (запущено/зупинено, очікує повідомлення), кнопками
 Start/Stop, вибором джерела ключів і онлайн-консоллю подій.
@@ -16,6 +16,14 @@ from .services import instagram_bot as bot
 
 def _is_admin(user) -> bool:
     return bool(user.is_authenticated and (user.is_staff or user.is_superuser))
+
+
+def _can_use_bot(user) -> bool:
+    return _is_admin(user) or is_meta_bot_reviewer(user)
+
+
+def _is_reviewer_only(user) -> bool:
+    return is_meta_bot_reviewer(user) and not _is_admin(user)
 
 
 def privacy_policy(request):
@@ -48,6 +56,12 @@ def _require_admin_json(request):
     return None
 
 
+def _require_bot_json(request):
+    if not _can_use_bot(request.user):
+        return JsonResponse({"success": False, "error": "Доступ лише до вкладки бота."}, status=403)
+    return None
+
+
 def _log_items(limit: int = 80):
     rows = InstagramBotLog.objects.all()[:limit]
     return [
@@ -65,17 +79,10 @@ def _log_items(limit: int = 80):
 
 @login_required(login_url="management_login")
 def bot_dashboard(request):
-    if is_meta_bot_reviewer(request.user) and not _is_admin(request.user):
-        return render(
-            request,
-            "management/bot_reviewer.html",
-            {
-                "status": bot.status_snapshot(),
-            },
-        )
-    if not _is_admin(request.user):
+    if not _can_use_bot(request.user):
         return redirect("management_home")
     settings_obj = InstagramBotSettings.load()
+    reviewer_mode = _is_reviewer_only(request.user)
     return render(
         request,
         "management/bot.html",
@@ -85,6 +92,7 @@ def bot_dashboard(request):
             "log_items": _log_items(),
             "cred_env": InstagramBotSettings.CredSource.ENV,
             "cred_custom": InstagramBotSettings.CredSource.CUSTOM,
+            "meta_bot_reviewer_mode": reviewer_mode,
         },
     )
 
@@ -92,7 +100,7 @@ def bot_dashboard(request):
 @login_required(login_url="management_login")
 @require_POST
 def bot_start_api(request):
-    blocked = _require_admin_json(request)
+    blocked = _require_bot_json(request)
     if blocked:
         return blocked
     bot.start_bot()
@@ -102,7 +110,7 @@ def bot_start_api(request):
 @login_required(login_url="management_login")
 @require_POST
 def bot_stop_api(request):
-    blocked = _require_admin_json(request)
+    blocked = _require_bot_json(request)
     if blocked:
         return blocked
     bot.stop_bot()
@@ -112,7 +120,7 @@ def bot_stop_api(request):
 @login_required(login_url="management_login")
 @require_GET
 def bot_status_api(request):
-    blocked = _require_admin_json(request)
+    blocked = _require_bot_json(request)
     if blocked:
         return blocked
     try:
@@ -141,29 +149,31 @@ def bot_status_api(request):
 @login_required(login_url="management_login")
 @require_POST
 def bot_settings_save_api(request):
-    blocked = _require_admin_json(request)
+    blocked = _require_bot_json(request)
     if blocked:
         return blocked
     s = InstagramBotSettings.load()
 
-    direct_source = (request.POST.get("direct_source") or "").strip()
-    if direct_source in InstagramBotSettings.CredSource.values:
-        s.direct_source = direct_source
-    gemini_source = (request.POST.get("gemini_source") or "").strip()
-    if gemini_source in InstagramBotSettings.CredSource.values:
-        s.gemini_source = gemini_source
+    reviewer_mode = _is_reviewer_only(request.user)
+    if not reviewer_mode:
+        direct_source = (request.POST.get("direct_source") or "").strip()
+        if direct_source in InstagramBotSettings.CredSource.values:
+            s.direct_source = direct_source
+        gemini_source = (request.POST.get("gemini_source") or "").strip()
+        if gemini_source in InstagramBotSettings.CredSource.values:
+            s.gemini_source = gemini_source
 
-    if "custom_direct_token" in request.POST:
-        s.custom_direct_token = (request.POST.get("custom_direct_token") or "").strip()
-    if "custom_gemini_key" in request.POST:
-        s.custom_gemini_key = (request.POST.get("custom_gemini_key") or "").strip()
+        if "custom_direct_token" in request.POST:
+            s.custom_direct_token = (request.POST.get("custom_direct_token") or "").strip()
+        if "custom_gemini_key" in request.POST:
+            s.custom_gemini_key = (request.POST.get("custom_gemini_key") or "").strip()
 
-    trigger = (request.POST.get("trigger_text") or "").strip()
-    if trigger:
-        s.trigger_text = trigger[:255]
-    reply = (request.POST.get("reply_text") or "").strip()
-    if reply:
-        s.reply_text = reply[:1000]
+        trigger = (request.POST.get("trigger_text") or "").strip()
+        if trigger:
+            s.trigger_text = trigger[:255]
+        reply = (request.POST.get("reply_text") or "").strip()
+        if reply:
+            s.reply_text = reply[:1000]
 
     # AI-режим / модель / правило / білий список.
     s.ai_enabled = (request.POST.get("ai_enabled") or "").strip() in {"1", "true", "on", "yes"}
@@ -172,17 +182,21 @@ def bot_settings_save_api(request):
     if model:
         s.gemini_model = model[:80]
     if "system_prompt" in request.POST:
-        s.system_prompt = (request.POST.get("system_prompt") or "").strip()
+        if not reviewer_mode:
+            s.system_prompt = (request.POST.get("system_prompt") or "").strip()
     if "knowledge_base" in request.POST:
-        s.knowledge_base = (request.POST.get("knowledge_base") or "").strip()
+        if not reviewer_mode:
+            s.knowledge_base = (request.POST.get("knowledge_base") or "").strip()
     if "allowed_senders" in request.POST:
-        s.allowed_senders = (request.POST.get("allowed_senders") or "").strip()
+        if not reviewer_mode:
+            s.allowed_senders = (request.POST.get("allowed_senders") or "").strip()
 
-    try:
-        interval = int(request.POST.get("poll_interval_seconds") or s.poll_interval_seconds)
-        s.poll_interval_seconds = max(2, min(60, interval))
-    except (TypeError, ValueError):
-        pass
+    if not reviewer_mode:
+        try:
+            interval = int(request.POST.get("poll_interval_seconds") or s.poll_interval_seconds)
+            s.poll_interval_seconds = max(2, min(60, interval))
+        except (TypeError, ValueError):
+            pass
 
     s.save()
     # Скинути кеш токена/кулдаун, щоб новий токен підхопився одразу.
@@ -227,7 +241,7 @@ def _client_card(c) -> dict:
 @login_required(login_url="management_login")
 @require_GET
 def bot_clients_api(request):
-    blocked = _require_admin_json(request)
+    blocked = _require_bot_json(request)
     if blocked:
         return blocked
     from django.db.models import Q
@@ -251,7 +265,7 @@ def bot_clients_api(request):
 @login_required(login_url="management_login")
 @require_GET
 def bot_client_detail_api(request, client_id):
-    blocked = _require_admin_json(request)
+    blocked = _require_bot_json(request)
     if blocked:
         return blocked
     from .models import IgClient
@@ -340,7 +354,7 @@ def bot_client_detail_api(request, client_id):
 @require_POST
 def bot_client_pause_api(request, client_id):
     """Зупинити бота для клієнта (менеджер бере діалог на себе)."""
-    blocked = _require_admin_json(request)
+    blocked = _require_bot_json(request)
     if blocked:
         return blocked
     from django.utils import timezone
@@ -361,7 +375,7 @@ def bot_client_pause_api(request, client_id):
 @require_POST
 def bot_client_resume_api(request, client_id):
     """Повернути бота клієнту (зняти паузу/перехоплення)."""
-    blocked = _require_admin_json(request)
+    blocked = _require_bot_json(request)
     if blocked:
         return blocked
     from .models import IgClient
