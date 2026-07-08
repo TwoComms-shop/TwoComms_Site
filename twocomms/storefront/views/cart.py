@@ -1078,7 +1078,7 @@ def remove_from_cart(request):
 @require_POST
 def clear_cart(request):
     """
-    Полная очистка корзины и промокода.
+    Полна�� очистка корзины и промокода.
 
     Для обычного запроса выполняет redirect в корзину, для AJAX возвращает JSON.
     """
@@ -1101,6 +1101,7 @@ def clear_cart(request):
     return redirect('cart')
 
 
+@never_cache  # W3-4 (CRO-032): персональные данные — не должны попасть в page cache
 def get_cart_count(request):
     """
     AJAX endpoint для получения количества товаров в корзине.
@@ -1303,6 +1304,7 @@ def remove_promo_code(request):
 
 # ==================== AJAX ENDPOINTS ====================
 
+@never_cache  # W3-4 (CRO-032): персональные данные — не должны попасть в page cache
 def cart_summary(request):
     """
     Краткая сводка корзины для обновления бейджа (AJAX).

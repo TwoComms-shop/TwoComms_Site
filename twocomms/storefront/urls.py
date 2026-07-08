@@ -140,6 +140,8 @@ urlpatterns = [
     # middleware смотрит её, а не внутренний @csrf_exempt на rum_beacon.
     path('api/rum/', csrf_exempt(_module_view('storefront.views.api', 'rum_beacon')), name='rum_beacon'),
     path('api/track-event/', csrf_exempt(_module_view('storefront.views.api', 'track_event')), name='track_event'),
+    # W3-3: ленивая выдача csrftoken + analytics-кук (см. analytics_bootstrap)
+    path('api/bootstrap/', _module_view('storefront.views.api', 'analytics_bootstrap'), name='analytics_bootstrap'),
     path('cart/clean/', views.clean_cart, name='clean_cart'),
     # path('checkout/', views.checkout, name='checkout'), # REMOVED: Dead code
     # auth - using modular auth views with proper password validation

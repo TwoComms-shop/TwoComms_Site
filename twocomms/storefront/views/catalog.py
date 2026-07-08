@@ -15,7 +15,6 @@ from django.shortcuts import render, get_object_or_404
 from django.http import JsonResponse, Http404, HttpResponsePermanentRedirect
 from django.core.paginator import Paginator, EmptyPage
 from django.db.models import Count, Q
-from django.views.decorators.csrf import ensure_csrf_cookie
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
@@ -329,7 +328,8 @@ def homepage_cache_prefix(request, view_func):
     return f"{base_prefix}:{HOME_SURVEY_VISIBILITY_CACHE_VERSION}"
 
 
-@ensure_csrf_cookie
+# W3-3: @ensure_csrf_cookie снят — Set-Cookie на каждом анонимном GET
+# выключал LiteSpeed page cache; csrftoken выдаётся лениво (/api/bootstrap/).
 @cache_page_for_anon(
     300,
     key_prefix=homepage_cache_prefix,
@@ -547,7 +547,7 @@ def load_more_products(request):
     return JsonResponse({'error': 'Invalid request'}, status=400)
 
 
-@ensure_csrf_cookie
+# W3-3: @ensure_csrf_cookie снят (см. комментарий у home)
 @cache_page_for_anon(600, key_prefix=public_product_listing_cache_prefix)  # Кэшируем каталог на 10 минут только для анонимов
 def catalog(request, cat_slug=None):
     """

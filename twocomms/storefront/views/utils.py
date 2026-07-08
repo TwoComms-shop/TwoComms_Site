@@ -75,13 +75,12 @@ def cache_page_for_anon(timeout, key_prefix=None):
             cache_key = _build_anon_cache_key(request, view_func, key_prefix)
             cached_response = cache.get(cache_key)
             if cached_response is not None:
-                # Ensure CSRF cookie is set even on cached responses.
-                # Django's CsrfViewMiddleware only sets the cookie when
-                # request.META['CSRF_COOKIE_USED'] is True.  Calling
-                # get_token() sets that flag so the middleware's
-                # process_response() will emit the Set-Cookie header.
-                from django.middleware.csrf import get_token
-                get_token(request)
+                # W3-3/W3-4: раньше здесь принудительно вызывался get_token()
+                # → Set-Cookie: csrftoken на КАЖДОМ cache-hit → LiteSpeed
+                # page cache выключался (SEO-010, TTFB 8-18s). Теперь
+                # csrftoken выдаётся лениво через /api/bootstrap/ (дергается
+                # из base.html, если cookie отсутствует) — кэшированный ответ
+                # остаётся чистым от Set-Cookie.
                 return cached_response
 
             response = view_func(request, *args, **kwargs)
@@ -468,7 +467,7 @@ def _record_monobank_status(order, payload, source='api'):
     Args:
         order: Объект заказа
         payload: Данные от Monobank API
-        source: Источник данных ('api' и����и 'webhook')
+        source: Источник данных ('api' и������и 'webhook')
     """
     if not payload or not order or not getattr(order, 'pk', None):
         return

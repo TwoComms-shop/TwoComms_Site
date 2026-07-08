@@ -40,6 +40,24 @@
       var token = getCookie('csrftoken');
       if (token) {
         meta.setAttribute('content', token);
+      } else {
+        // W3-3 (SEO-010): сторінки більше не ставлять csrftoken/twc_vid на
+        // анонімних GET (Set-Cookie вимикав LiteSpeed page cache). Якщо
+        // cookie немає — лінивий bootstrap: він ставить csrftoken і
+        // analytics-куки, після чого заповнюємо meta.
+        var doBootstrap = function () {
+          fetch('/api/bootstrap/', { credentials: 'same-origin' })
+            .then(function () {
+              var t = getCookie('csrftoken');
+              if (t) meta.setAttribute('content', t);
+            })
+            .catch(function () { /* no-op */ });
+        };
+        if ('requestIdleCallback' in window) {
+          requestIdleCallback(doBootstrap, { timeout: 3000 });
+        } else {
+          setTimeout(doBootstrap, 300);
+        }
       }
     })();
   </script>
@@ -1047,7 +1065,7 @@
   такие сессии редки и не критичны для маркетинга.
   
   Phase 19b preload удалён (не нужен — мы больше не догружаем файл
-  во время критического окна, поэтому удержание в HTTP-кэше через
+  во время крит��ческого окна, поэтому удержание в HTTP-кэше через
   preload только тратит bandwidth на Lighthouse-like ботах).
   {% endcomment %}
   <script>
@@ -1355,7 +1373,7 @@
                   </svg>
                 </div>
                 <div class="explanation-text">
-                  <strong>{% trans 'Можливості:' %}</strong> {% trans 'Обмін на промокоди або пожертвування на ЗСУ' %}
+                  <strong>{% trans 'Можливості:' %}</strong> {% trans 'Об��ін на промокоди або пожертвування на ЗСУ' %}
                 </div>
               </div>
             </div>

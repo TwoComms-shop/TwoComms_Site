@@ -9,7 +9,11 @@
         <form class="footer-langs__form"
               method="post"
               action="{% url 'set_language' %}">
-          {% csrf_token %}
+          {# W3-4 (CRO-032, live-подтверждён): {% csrf_token %} убран — страница #}
+          {# кэшируется (cache_page_for_anon), inline-токен «запекался» в HTML и #}
+          {# отдавался ЧУЖИМ посетителям → POST /i18n/setlang = 403 на cache-hit. #}
+          {# Токен подставляется из cookie в submit-обработчике ниже. #}
+          <input type="hidden" name="csrfmiddlewaretoken" value="">
           <input type="hidden" name="language" value="{{ item.code }}">
           <input type="hidden" name="next" value="{{ item.url }}">
           <a class="footer-langs__link{% if item.is_current %} is-active{% endif %}"
@@ -43,13 +47,39 @@
 
 <script>
   (function () {
+    // W3-4: CSRF-токен подставляется из cookie в момент submit —
+    // кэшированный HTML остаётся одинаковым для всех посетителей.
+    function getCsrfCookie() {
+      var m = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+    function submitLangForm(form) {
+      var input = form.querySelector('input[name="csrfmiddlewaretoken"]');
+      var token = getCsrfCookie();
+      if (input && token) {
+        input.value = token;
+        form.submit();
+        return;
+      }
+      // Куки ещё нет (свежий визитор до lazy-bootstrap) — получаем токен
+      // через /api/bootstrap/ и сабмитим после установки cookie.
+      fetch('/api/bootstrap/', { credentials: 'same-origin' })
+        .then(function () {
+          var t = getCsrfCookie();
+          if (input && t) {
+            input.value = t;
+            form.submit();
+          }
+        })
+        .catch(function () { /* остаёмся на странице */ });
+    }
     var links = document.querySelectorAll('.footer-langs__link');
     for (var i = 0; i < links.length; i++) {
       links[i].addEventListener('click', function (e) {
         var form = this.closest('form');
         if (!form) return;
         e.preventDefault();
-        form.submit();
+        submitLangForm(form);
       });
     }
   })();

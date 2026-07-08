@@ -77,7 +77,10 @@ class AnalyticsIdentityMiddleware(MiddlewareMixin):
     """
 
     def process_request(self, request):
-        if is_analytics_noise_path(request.path):
+        # W3-3: /api/bootstrap/ — специальный endpoint ленивой выдачи кук,
+        # он ДОЛЖЕН пройти через identity-логику несмотря на noise-префикс /api/.
+        is_bootstrap = request.path == '/api/bootstrap/'
+        if not is_bootstrap and is_analytics_noise_path(request.path):
             request.analytics_visitor_id = ''
             request.analytics_first_touch_data = {}
             return None
@@ -87,6 +90,8 @@ class AnalyticsIdentityMiddleware(MiddlewareMixin):
             visitor_id = uuid.uuid4().hex
             request._analytics_set_visitor_cookie = True
         request.analytics_visitor_id = visitor_id
+
+
 
         first_touch = {}
         first_touch_raw = request.COOKIES.get(FIRST_TOUCH_COOKIE_NAME)
@@ -105,10 +110,29 @@ class AnalyticsIdentityMiddleware(MiddlewareMixin):
             first_touch = _build_first_touch_snapshot(request)
             request._analytics_set_first_touch_cookie = True
 
+        # W3-3 (SEO-010): Set-Cookie на обычном анонимном GET выключает
+        # LiteSpeed page cache (холодный TTFB 8-18s). Куки разрешено ставить
+        # только когда: (1) не-GET запрос; (2) bootstrap-endpoint (ленивая
+        # выдача из base.html при отсутствии csrftoken); (3) landing с
+        # utm/click-id/внешним referrer — там first-touch атрибуция важнее
+        # кэша, и такие URL уникальны по query-string.
+        request._analytics_cookie_allowed = (
+            request.method not in ('GET', 'HEAD')
+            or request.path == '/api/bootstrap/'
+            or has_utm
+            or has_click_id
+            or external_referrer
+        )
+
         request.analytics_first_touch_data = first_touch
         return None
 
     def process_response(self, request, response):
+        # W3-3: на кэшируемых анонимных GET куки не ставим (см. process_request);
+        # выдача произойдёт лениво через /api/bootstrap/.
+        if not getattr(request, '_analytics_cookie_allowed', True):
+            return response
+
         if getattr(request, '_analytics_set_visitor_cookie', False):
             response.set_cookie(
                 VISITOR_COOKIE_NAME,
@@ -165,7 +189,7 @@ class SimpleAnalyticsMiddleware(MiddlewareMixin):
             # Для анонимов создаём сессию на первом «человеческом» переходе
             # (боты/служебные пути уже отфильтрованы выше). Без этого весь
             # анонимный трафик без корзины оставался невидимым для аналитики.
-            # Защита от мусорных клиентов (feed-пуллеры, json-клиенты):
+            # Защита от мусорны�� клиентов (feed-пуллеры, json-клиенты):
             # новую сессию создаём только для HTML-навигации.
             if not request.user.is_authenticated and not request.session.session_key:
                 accept = (request.META.get('HTTP_ACCEPT') or '').lower()

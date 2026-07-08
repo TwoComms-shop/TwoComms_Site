@@ -28,6 +28,26 @@ logger = logging.getLogger('storefront.analytics')
 # ==================== API ENDPOINTS ====================
 
 
+@require_http_methods(["GET"])
+def analytics_bootstrap(request):
+    """
+    W3-3 (SEO-010): ленивая выдача идентификационных кук.
+
+    Анонимные GET HTML-страниц больше НЕ ставят csrftoken/twc_vid
+    (Set-Cookie выключал LiteSpeed page cache → холодный TTFB 8-18s).
+    Вместо этого base.html при отсутствии csrftoken-cookie дергает этот
+    endpoint: он ставит csrftoken (через get_token) и analytics-куки
+    (AnalyticsIdentityMiddleware знает этот путь как разрешённый).
+    Ответ всегда no-store — кэшировать его нельзя.
+    """
+    from django.middleware.csrf import get_token
+
+    get_token(request)  # помечает CSRF_COOKIE_USED → middleware поставит cookie
+    response = JsonResponse({'ok': True})
+    response['Cache-Control'] = 'no-store, private'
+    return response
+
+
 def _public_product_queryset(request):
     """
     Возвращает queryset товаров c учетом статуса публикации.
