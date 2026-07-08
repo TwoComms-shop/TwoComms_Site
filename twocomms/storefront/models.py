@@ -2136,6 +2136,8 @@ class UserAction(models.Model):
             models.Index(fields=['utm_session', 'action_type'], name='idx_action_utm_type'),
             models.Index(fields=['product_id', '-timestamp'], name='idx_action_product'),
             models.Index(fields=['order_id'], name='idx_action_order'),
+            # W2-10/DB-002: ускоряет воронку по сессии и дедуп-чек W2-4
+            models.Index(fields=['site_session', 'action_type'], name='idx_action_site_type'),
         ]
         verbose_name = 'Дія користувача'
         verbose_name_plural = 'Дії користувачів'
