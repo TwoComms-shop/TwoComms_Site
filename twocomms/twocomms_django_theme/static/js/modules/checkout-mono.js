@@ -305,10 +305,11 @@ function startMonoCheckout(button, statusEl, options) {
         const analytics = getCheckoutAnalyticsPayload();
         try {
           if (window.trackEvent && analytics) {
-            const safeGen = deps().safeGenerateAnalyticsEventId;
             const buildMeta = deps().buildMetaWithUserData;
-            const eventId = data.add_payment_event_id || (safeGen ? safeGen() : String(Date.now()));
-            const meta = buildMeta ? buildMeta(eventId) : {};
+            // W2-9 (AN-012): event_id ТОЛЬКО серверный (детерминированный по заказу),
+            // random-fallback рвал дедуп-пару Pixel↔CAPI → двойной счёт AddPaymentInfo.
+            const eventId = data.add_payment_event_id || null;
+            const meta = buildMeta && eventId ? buildMeta(eventId) : {};
             window.trackEvent('AddPaymentInfo', {
               value: analytics.value,
               currency: analytics.currency,
@@ -497,10 +498,10 @@ function startMonobankPay(button, statusEl) {
         const analytics = getCheckoutAnalyticsPayload();
         try {
           if (window.trackEvent && analytics) {
-            const safeGen = deps().safeGenerateAnalyticsEventId;
             const buildMeta = deps().buildMetaWithUserData;
-            const eventId = data.add_payment_event_id || (safeGen ? safeGen() : String(Date.now()));
-            const meta = buildMeta ? buildMeta(eventId) : {};
+            // W2-9 (AN-012): только серверный event_id — см. комментарий выше.
+            const eventId = data.add_payment_event_id || null;
+            const meta = buildMeta && eventId ? buildMeta(eventId) : {};
             window.trackEvent('AddPaymentInfo', {
               value: analytics.value,
               currency: analytics.currency,
