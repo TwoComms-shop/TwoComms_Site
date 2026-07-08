@@ -244,7 +244,9 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
         slug=slug,
         status='published',
     )
-    record_product_view(request, product.id, product.title)
+    # W2-4 (AN-035): record_product_view перенесён НИЖЕ — после решения о
+    # legacy-301 редиректе, иначе один просмотр считался дважды
+    # (query-string URL + канонический path-URL).
     images = product.images.all()
 
     # Читаем параметры из URL (?size=M&color=123)
@@ -328,6 +330,12 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
         )
         if redirect_url is not None:
             return HttpResponsePermanentRedirect(redirect_url)
+
+    # W2-4: просмотр записывается только когда страница реально рендерится
+    # (все 301-редиректы уже отработали). Дедуп 30 мин session+product —
+    # внутри record_user_action.
+    record_product_view(request, product.id, product.title)
+
     auto_select_first_color = False
     preselected_color = None  # Будем хранить выбранный цвет для шаблона
 
@@ -367,7 +375,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
         for idx, variant in enumerate(color_variants):
             variant['is_default'] = (idx == 0)
 
-        # Если нет главного изображения, автоматически выбираем первый цвет
+        # Если н��т главного изображения, автоматически выбираем первый цвет
         if not product.main_image:
             auto_select_first_color = True
 

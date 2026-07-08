@@ -170,10 +170,11 @@
   Целевое определение: `purchase` = подтверждённая оплата (webhook с п��дписью) ИЛИ получение посылки (NP received); создание заказа = отдельное `place_order`/`lead` во всех слоях.
   Фикс: (а) record-слой в COD create_order; (б) UserAction purchase в NP-delivery-путь; (в) TikTok Purchase в NP-delivery + pre-check `purchase_sent`; (г) server-side GA4 purchase для COD (Measurement Protocol) или задокументировать пробел; (д) `paid_value` отдельным параметром; (е) refund/cancel-события; (ж) задокументировать определение в TECHNICAL_TASKS.md.
 
-- [ ] **W2-4. 🔴 Бот-фильтр и чистота событий (AN-035 / CRO-024 → TECH-063)** `[REPO]`
+- [x] **W2-4. 🔴 Бот-фильтр и чистота событий (AN-035 / CRO-024 → TECH-063)** `[REPO]`
   `SiteSession.is_bot` мёртв (early return); product_view пишется без бот-фильтра; 96,2% product_view без site_session (40 490 views → 55 ATC — метрики врут); двойной счёт на legacy-301; нет дедупа.
   Фикс: единый bot-detect на записи UserAction; запись product_view ПОСЛЕ redirect; дедуп 30 мин session+product; `is_staff` → авто-исключение (AN-004).
   Приёмка: baseline CRO-051 пересчитан; view→ATC правдоподобен.
+  ✅ **DONE (запись событий):** record_user_action (utm_tracking.py) теперь: (1) отбрасывает бот-UA (единый `is_bot` из tracking.py — те же BOT_SIGNALS, что в middleware); (2) отбрасывает `is_staff`-пользователей (AN-004); (3) дедуп product_view — 30 мин на (session_key ИЛИ visitor_id) + product_id (⚠️ поле называется `timestamp`, не `created_at`); (4) SiteSession теперь `get_or_create` вместо `.get()` → фикс 96,2% product_view без site_session. product.py: `record_product_view` перенесён ПОСЛЕ legacy-301 решения — двойной счёт устранён. Тесты: EventHygieneTests (5 шт.) в test_analytics_tracking.py — бот-UA, staff, дедуп ×3, site_session-линк, 301-без-записи; все 12 в файле зелёные. ⚠️ Приёмка «baseline CRO-051 пересчитан» — `[SERVER]`: пересчёт после накопления чистых данных (~1-2 недели). NB: test_product имеет 13 pre-existing падений в песочнице (media/env), НЕ связаны с этим фиксом — проверено на чистом дереве.
 
 - [x] **W2-5. GTM fast-path для платного трафика (CRO-004 / AN-002, P1, ~10 строк)** `[REPO]`
   GTM ��рузится по interaction или 12-35s; fast-path для `utm_*`/fbclid/gclid/ttclid отсутствует → paid-bounce невидим, `_fbc` не создаётся.

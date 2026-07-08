@@ -112,3 +112,70 @@ class AnalyticsTrackingTests(TestCase):
         _apply_monobank_status(order, "success", payload={"status": "success"}, source="test")
 
         self.assertEqual(UserAction.objects.filter(action_type="purchase", order_id=order.id).count(), 1)
+
+
+class EventHygieneTests(TestCase):
+    """W2-4 (AN-035/AN-004/TECH-063): бот-фильтр, staff-исключение, дедуп."""
+
+    def setUp(self):
+        self.category = Category.objects.create(name="Hygiene", slug="hygiene", is_active=True)
+        self.product = Product.objects.create(
+            title="Hygiene Tee",
+            slug="hygiene-tee",
+            category=self.category,
+            price=800,
+            description="p",
+            status="published",
+        )
+        self.url = reverse("product", args=[self.product.slug])
+        self.kwargs = {
+            "HTTP_HOST": "twocomms.shop",
+            "SERVER_PORT": "443",
+            "wsgi.url_scheme": "https",
+        }
+
+    def test_bot_user_agent_records_no_product_view(self):
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (compatible; Googlebot/2.1)", **self.kwargs)
+        response = client.get(self.url, secure=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
+
+    def test_staff_user_records_no_product_view(self):
+        from django.contrib.auth import get_user_model
+        staff = get_user_model().objects.create_user(
+            username="staffer", password="x", is_staff=True
+        )
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)
+        client.force_login(staff)
+        response = client.get(self.url, secure=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
+
+    def test_product_view_deduped_within_window(self):
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)
+        client.get(self.url, secure=True)
+        client.get(self.url, secure=True)
+        client.get(self.url, secure=True)
+        self.assertEqual(
+            UserAction.objects.filter(action_type="product_view", product_id=self.product.id).count(),
+            1,
+        )
+
+    def test_product_view_gets_site_session_link(self):
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)
+        client.get(self.url, secure=True)
+        action = UserAction.objects.get(action_type="product_view")
+        self.assertIsNotNone(action.site_session)
+
+    def test_legacy_query_url_redirects_without_recording_view(self):
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)
+        response = client.get(self.url, {"size": "M"}, secure=True)
+        if response.status_code == 301:
+            # 301 сам по себе не должен записывать просмотр
+            self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
+            # follow-up на канонический URL записывает ровно один просмотр
+            client.get(response["Location"], secure=True)
+        self.assertLessEqual(
+            UserAction.objects.filter(action_type="product_view", product_id=self.product.id).count(),
+            1,
+        )

@@ -11,6 +11,9 @@
 
 import logging
 from typing import Optional
+
+from django.db import models
+
 from .analytics_exclusions import is_request_excluded
 from .models import UTMSession, SiteSession, UserAction
 from .utm_utils import calculate_action_points
@@ -51,6 +54,19 @@ def record_user_action(
         if is_request_excluded(request):
             return None
 
+        # W2-4 (AN-035/TECH-063): единый бот-фильтр на записи UserAction.
+        # Раньше product_view/add_to_cart писались для любых UA —
+        # краулеры и синтетика раздували числитель воронки view→ATC.
+        user_agent = request.META.get('HTTP_USER_AGENT', '') if hasattr(request, 'META') else ''
+        from .tracking import is_bot as _is_bot_ua
+        if _is_bot_ua(user_agent):
+            return None
+
+        # W2-4 (AN-004): staff-пользователи не попадают в аналитику.
+        req_user = getattr(request, 'user', None)
+        if req_user is not None and getattr(req_user, 'is_authenticated', False) and getattr(req_user, 'is_staff', False):
+            return None
+
         # Получаем session_key
         session_key = request.session.session_key
         if not session_key:
@@ -61,6 +77,28 @@ def record_user_action(
             logger.warning("Could not get session_key for user action")
             return None
 
+        # W2-4: дедуп product_view — 30 минут на пару (session, product).
+        # Reload/переход по вариантам цвета-размера не считается новым
+        # просмотром; иначе числитель view→ATC завышен в разы.
+        if action_type == 'product_view' and product_id:
+            from django.utils import timezone as _tz
+            from datetime import timedelta as _td
+            window_start = _tz.now() - _td(minutes=30)
+            already = UserAction.objects.filter(
+                action_type='product_view',
+                product_id=product_id,
+                timestamp__gte=window_start,
+            ).filter(
+                models.Q(site_session__session_key=session_key)
+                | models.Q(metadata__visitor_id=getattr(request, 'analytics_visitor_id', None) or '__none__')
+            ).exists()
+            if already:
+                logger.debug(
+                    "Dedup: product_view for product %s within 30min window (session %s)",
+                    product_id, session_key,
+                )
+                return None
+
         # Получаем UTM сессию
         utm_session = None
         try:
@@ -68,12 +106,26 @@ def record_user_action(
         except UTMSession.DoesNotExist:
             logger.debug(f"No UTM session found for session_key: {session_key}")
 
-        # Получаем Site сессию
+        # Получаем Site сессию.
+        # W2-4: раньше — .get() c DoesNotExist → 96,2% product_view без
+        # site_session (middleware мог не создать строку: не-HTML accept,
+        # cycle_key при логине и т.п.). Теперь создаём при отсутствии.
         site_session = None
         try:
-            site_session = SiteSession.objects.get(session_key=session_key)
-        except SiteSession.DoesNotExist:
-            logger.debug(f"No Site session found for session_key: {session_key}")
+            site_session, _created = SiteSession.objects.get_or_create(
+                session_key=session_key,
+                defaults={
+                    'visitor_id': getattr(request, 'analytics_visitor_id', None) or '',
+                    'user': req_user if (req_user is not None and getattr(req_user, 'is_authenticated', False)) else None,
+                    'user_agent': user_agent,
+                    'is_bot': False,
+                    'last_path': (request.path or '')[:512] if hasattr(request, 'path') else '',
+                    'pageviews': 0,
+                    'first_touch_data': getattr(request, 'analytics_first_touch_data', {}) or {},
+                },
+            )
+        except Exception:
+            logger.debug(f"Could not get_or_create Site session for session_key: {session_key}")
 
         # Получаем пользователя
         user = request.user if request.user.is_authenticated else None
