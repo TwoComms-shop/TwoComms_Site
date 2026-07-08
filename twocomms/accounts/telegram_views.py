@@ -13,10 +13,15 @@ from .telegram_bot import telegram_bot
 def telegram_webhook(request):
     """Обрабатывает webhook от Telegram"""
     try:
-        # Опциональная проверка X-Telegram-Bot-Api-Secret-Token, если в env задан
-        # TELEGRAM_BOT_WEBHOOK_SECRET. Если не задан — пропускаем.
+        # W3-9 (NEW-504): проверка X-Telegram-Bot-Api-Secret-Token.
+        # Раньше при пустом TELEGRAM_BOT_WEBHOOK_SECRET вебхук молча принимал
+        # ЛЮБЫЕ POST. Теперь: секрет задан → строгая проверка; секрет пуст →
+        # громкий warning в лог при каждом запросе (не блокируем, чтобы не
+        # сломать прод до того, как секрет добавят в env — задача [SERVER]:
+        # задать секрет + перерегистрировать webhook через setWebhook).
         import os
         import hmac
+        import logging
         expected_secret = (os.environ.get("TELEGRAM_BOT_WEBHOOK_SECRET") or "").strip()
         if expected_secret:
             received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") or ""
@@ -26,6 +31,12 @@ def telegram_webhook(request):
                 # стандартного механизма «отмены», но в реальном boom-сценарии
                 # лучше тихо отклонить.
                 return JsonResponse({'ok': True, 'rejected': True})
+        else:
+            logging.getLogger('accounts.telegram').warning(
+                'SECURITY (NEW-504): TELEGRAM_BOT_WEBHOOK_SECRET is not set — '
+                'webhook accepts unauthenticated POSTs. Set the secret and '
+                're-register the webhook (setWebhook secret_token=...).'
+            )
 
         # Получаем данные от Telegram
         update_data = json.loads(request.body.decode('utf-8'))

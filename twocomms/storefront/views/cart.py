@@ -1078,7 +1078,7 @@ def remove_from_cart(request):
 @require_POST
 def clear_cart(request):
     """
-    Полна�� очистка корзины и промокода.
+    Полна���� очистка корзины и промокода.
 
     Для обычного запроса выполняет redirect в корзину, для AJAX возвращает JSON.
     """
@@ -1117,7 +1117,9 @@ def get_cart_count(request):
     })
 
 
+# W3-12 (NEW-512): точечный лимит — перебор промокодов скриптом.
 @require_POST
+@ratelimit(key='user_or_ip', rate='10/m', method='POST', block=False)
 def apply_promo_code(request):
     """
     Применение промокода к корзине (AJAX) с проверкой авторизации и групповых ограничений.
@@ -1128,6 +1130,11 @@ def apply_promo_code(request):
     Returns:
         JsonResponse: success, discount, total, message, auth_required (если нужна авторизация)
     """
+    if getattr(request, 'limited', False):
+        return JsonResponse({
+            'success': False,
+            'error': _('Забагато спроб. Спробуйте через хвилину.'),
+        }, status=429)
     try:
         code = request.POST.get('promo_code', '').strip().upper()
 
@@ -1551,7 +1558,7 @@ def contact_manager(request):
             message += f"• {product.title}{size_info}{fit_info} x {qty} шт = {line_total} грн\n"
 
         message += f"\n💰 <b>Всього:</b> {total_sum} грн"
-        message += "\n\n<i>Клієнт очікує на зв'язок менеджера!</i>"
+        message += "\n\n<i>��лієнт очікує на зв'язок менеджера!</i>"
 
         # Отправляем в Telegram
         try:

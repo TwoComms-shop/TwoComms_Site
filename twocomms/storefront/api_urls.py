@@ -26,7 +26,11 @@ router = DefaultRouter()
 router.register(r'categories', CategoryViewSet, basename='api-category')
 router.register(r'products', ProductViewSet, basename='api-product')
 router.register(r'cart', CartViewSet, basename='api-cart')
-router.register(r'analytics', AnalyticsViewSet, basename='api-analytics')
+# W3-5 (TD-024): /api/analytics/track/ снят с маршрутизации — публичный
+# no-op (только logger.info, ничего не сохранял), ни один клиентский код
+# его не вызывал; оставался лишь вектором лог-флуда. Реальный трекинг
+# идёт через /api/track-event/ (storefront.views.api.track_event).
+# router.register(r'analytics', AnalyticsViewSet, basename='api-analytics')
 router.register(r'communication', CommunicationViewSet, basename='api-communication')
 router.register(r'admin/product-builder', AdminProductBuilderViewSet, basename='api-admin-product-builder')
 router.register(r'admin/analytics', AdminAnalyticsViewSet, basename='api-admin-analytics')

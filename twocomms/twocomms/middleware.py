@@ -328,12 +328,19 @@ class SimpleRateLimitMiddleware(MiddlewareMixin):
         if path.startswith(settings.STATIC_URL) or path.startswith(settings.MEDIA_URL):
             return None
 
-        # Get client IP
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0].strip()
-        else:
-            ip = request.META.get('REMOTE_ADDR', '')
+        # W3-5 (TD-023): ключ лимитера — REMOTE_ADDR, а НЕ клиентский
+        # X-Forwarded-For. XFF спуфается тривиально (curl -H) → атакующий
+        # получал бесконечный лимит, а подставляя чужие IP — банил жертв.
+        # На проде (LiteSpeed+Passenger) REMOTE_ADDR = реальный IP клиента.
+        # XFF используем ТОЛЬКО если REMOTE_ADDR — приватный адрес
+        # (доверенный локальный прокси-hop), и берём последний hop.
+        ip = request.META.get('REMOTE_ADDR', '')
+        if ip and (ip.startswith('10.') or ip.startswith('192.168.') or
+                   ip.startswith('127.') or ip.startswith('172.')):
+            x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            if x_forwarded_for:
+                # Последний элемент = добавлен ближайшим (доверенным) прокси
+                ip = x_forwarded_for.split(',')[-1].strip() or ip
 
         # Skip if no IP
         if not ip:
@@ -360,7 +367,11 @@ class SimpleRateLimitMiddleware(MiddlewareMixin):
             cache.set(window_key, request_count + 1, 120)  # Store for 2 minutes
 
         except Exception:
-            # If cache fails, allow the request
-            pass
+            # W3-5: fail-open оставлен осознанно (нельзя ронять весь сайт
+            # из-за Redis), но теперь с алертным логом вместо молчания.
+            import logging
+            logging.getLogger('twocomms.ratelimit').warning(
+                'Rate limiter cache unavailable — failing open (TD-012)'
+            )
 
         return None

@@ -8,13 +8,26 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.core.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password
+from django_ratelimit.decorators import ratelimit
 from storefront.utm_tracking import mark_user_registered
 
 
+def _ratelimited_response(request):
+    return JsonResponse(
+        {'success': False, 'error': 'Забагато спроб. Спробуйте через хвилину.'},
+        status=429,
+    )
+
+
+# W3-5 (TD-024): точечный лимит на логин — брутфорс паролей.
+# key='ip' у django-ratelimit использует REMOTE_ADDR (не спуфаемый XFF).
 @require_http_methods(["POST"])
 @ensure_csrf_cookie
+@ratelimit(key='ip', rate='10/m', method='POST', block=False)
 def ajax_login(request):
     """AJAX вход для дропшипа"""
+    if getattr(request, 'limited', False):
+        return _ratelimited_response(request)
     try:
         username = request.POST.get('username', '').strip()
         password = request.POST.get('password', '')
@@ -54,10 +67,14 @@ def ajax_login(request):
         })
 
 
+# W3-5 (TD-024): лимит на регистрацию — спам-аккаунты.
 @require_http_methods(["POST"])
 @ensure_csrf_cookie
+@ratelimit(key='ip', rate='5/m', method='POST', block=False)
 def ajax_register(request):
     """AJAX регистрация для дропшипа"""
+    if getattr(request, 'limited', False):
+        return _ratelimited_response(request)
     try:
         username = request.POST.get('username', '').strip()
         email = request.POST.get('email', '').strip()

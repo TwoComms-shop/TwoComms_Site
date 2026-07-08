@@ -245,9 +245,10 @@
   Фикс: не кэшировать формы с inline-токеном (пустой meta + заполнение из cookie — паттерн уже есть, НЕ ломать); `/cart/summary/`, `/cart/count/` → `Cache-Control: no-store`.
   ✅ **DONE:** корень бага — language_switcher.html: формы /i18n/setlang «запекали» `{% csrf_token %}` в кэшируемый HTML → чужой токен на cache-hit → 403. Фикс: пустой `value=""` + подстановка из cookie в submit-обработчике (fallback на /api/bootstrap/, если куки ещё нет). `/cart/summary/` и `/cart/count/` → `@never_cache`. Паттерн base.html (пустой meta + заполнение из cookie) сохранён и дополнен lazy-bootstrap. Тесты: test_cache_hygiene.py — 6 шт. (ноль Set-Cookie на анонимном GET, нет inline-токена в HTML, bootstrap ставит csrftoken+twc_vid+no-store, utm-landing получает куки, cart no-store, cache-hit чистый). Регрессия: 49 тестов зелёные; 4 падения test_seo_regressions — pre-existing (проверено на чистом дереве через git stash).
 
-- [ ] **W3-5. Rate limiting и API-поверхность (TD-023 / TD-024)** `[REPO]`
+- [x] **W3-5. Rate limiting и API-поверхность (TD-023 / TD-024)** `[REPO]`
   Лимитер ключуется спуфаемым X-Forwarded-For; fail-open при падении Redis; логи��/регистрация/чекаут/отзывы без точечных лимитов; `/api/analytics/track/` — публичный no-op; Swagger/Redoc публичны.
   Фикс: REMOTE_ADDR-ключ (или доверенный XFF-hop); точечные лимиты auth/checkout; staff-only Swagger; LOG_IGNORED_EXCEPTIONS+алерт для Redis (TD-012).
+  ✅ **DONE:** (1) SimpleRateLimitMiddleware: ключ = REMOTE_ADDR; клиентский XFF учитывается ТОЛЬКО если REMOTE_ADDR приватный (локальный прокси-hop), и берётся последний элемент — спуфинг curl -H больше не работает; (2) fail-open при падении Redis оставлен осознанно (нельзя ронять сайт), но теперь с warning-логом `twocomms.ratelimit` вместо молчания; (3) точечные лимиты: ajax_login 10/m/IP, ajax_register 5/m/IP (django-ratelimit key='ip' = REMOTE_ADDR); чекаут уже покрыт W1 (submit-lock + идемпотентность); (4) Swagger/Redoc/schema → staff-only (404 для анонимов) — публичная карта API закрыта; (5) `/api/analytics/track/` снят с маршрутизации: no-op (только logger.info), ноль клиентских вызовов, реальный трекинг идёт через /api/track-event/. Регрессия: 51 тест зелёный.
 
 - [ ] **W3-6. Логи: 958 MB, ротация, PII (TD-016 / CB-045)** `[SERVER]` + `[REPO]`(конфиг)
   `nova_poshta_cron.log` = 827 MB без ротации; PII-like hits в ��огах; rum.log — 24 secret-like hits.
@@ -261,12 +262,14 @@
   `checkout_capture.py` — `@csrf_exempt` эндпоинт пишет ФИО/телефон/email в `CheckoutCapture` по session_key. Защита — только Sec-Fetch-Site (старые клиенты/curl без заголовка проходят); rate-limit нет (спам-записи); retention нет — `recover_checkouts` читает, никто не чистит (PII копится вечно, связка с NEW-404/AN-051).
   Фикс: rate-limit по session/IP; чи��тка capture-записей старше 30-90 дней в trim-команде; упомянуть в privacy policy.
 
-- [ ] **W3-12. [NEW-512] Брутфорс промокодов (P3, часть TD-023)** `[REPO]`
+- [x] **W3-12. [NEW-512] Брутфорс промокодов (P3, часть TD-023)** `[REPO]`
   `apply_promo_code` без rate-limit — перебор кодов скриптом. Фикс: точечный ratelimit (10/min/session) — включить в W3-5.
+  ✅ **DONE:** `@ratelimit(key='user_or_ip', rate='10/m', block=False)` на apply_promo_code + JSON 429 «Забагато спроб» при превышении (block=False, чтобы отдавать управляемый JSON вместо голого 403).
 
-- [ ] **W3-9. [NEW-504] Telegram-вебхук без секрета при пустом env (P2)** `[REPO]`/`[SERVER]`
+- [x] **W3-9. [NEW-504] Telegram-вебхук без секрета при пустом env (P2)** `[REPO]`/`[SERVER]`
   `accounts/telegram_views.py:20-29`: проверка `X-Telegram-Bot-Api-Secret-Token` ОПЦИОНАЛЬНА — если `TELEGRAM_BOT_WEBHOOK_SECRET` не задан в env, вебхук принимает любые POST.
   Фикс: проверить env на сервере (S-13); если пуст — задать секрет + перерегистрировать webhook у Telegram; в коде — предупреждающий лог при пустом секрете.
+  ✅ **REPO-часть DONE:** при пустом TELEGRAM_BOT_WEBHOOK_SECRET каждый запрос пишет SECURITY-warning в лог `accounts.telegram` с инструкцией (setWebhook secret_token=...). Запросы НЕ блокируются намеренно — иначе бот упадёт до того, как секрет добавят в env. Осталось `[SERVER]`: задать секрет в env + перерегистрировать webhook.
 
 - [ ] **W3-10. [NEW-505] eval() в survey_engine (P3-hardening)** `[REPO]`
   `storefront/services/survey_engine.py:340`: строковые условия опроса исполняются через `eval()` (с `__builtins__={}` — обходится). Источник — JSON-definition (admin-controlled), риск низкий, но паттерн опасный.

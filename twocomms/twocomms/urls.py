@@ -9,18 +9,33 @@ from storefront import views as storefront_views
 from storefront.feeds import BlogRssFeed
 
 
+# W3-5 (TD-024): API-документация — только для staff. Публичный Swagger
+# раскрывал всю API-поверхность (эндпоинты, параметры, схемы) любому
+# анонимному посетителю — готовая карта для атак.
+def _staff_only(view_callable):
+    def wrapped(request, *args, **kwargs):
+        if not (request.user.is_authenticated and request.user.is_staff):
+            from django.http import Http404
+            raise Http404
+        return view_callable(request, *args, **kwargs)
+    return wrapped
+
+
+@_staff_only
 def spectacular_schema_view(request, *args, **kwargs):
     from drf_spectacular.views import SpectacularAPIView
 
     return SpectacularAPIView.as_view()(request, *args, **kwargs)
 
 
+@_staff_only
 def spectacular_swagger_view(request, *args, **kwargs):
     from drf_spectacular.views import SpectacularSwaggerView
 
     return SpectacularSwaggerView.as_view(url_name='api-schema')(request, *args, **kwargs)
 
 
+@_staff_only
 def spectacular_redoc_view(request, *args, **kwargs):
     from drf_spectacular.views import SpectacularRedocView
 
