@@ -126,7 +126,7 @@
   Фикс: edit_profile → та же ProfileSetupForm (или отдельная форма с FileExtension/size-валидаторами); задать `FILE_UPLOAD_MAX_MEMORY_SIZE`/лимит размера.
 
 - [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
-  Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё��ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
+  Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё����ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
   Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + рандомизировать имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
 - [x] **W1-12. [NEW-506] 🔴 Retail-вебхук: нет pull-verify И нет сверки суммы (усиление W1-3)** `[REPO]`
@@ -189,9 +189,10 @@
   Отправка Meta+TikTok ВНУТРИ `transaction.atomic()`+`select_for_update()` — до ~25-40s row-lock; тот же анти-паттерн: Monobank invoice/create внутри atomic (monobank.py:~843) при wait_timeout=60.
   Фикс: `transaction.on_commit()` для внешних отправок; инвойс — после commit.
 
-- [ ] **W2-8. Нормализация utm_source + AI-канал (AN-032 / AN-033 → TECH-009/065, P1/P2)** `[REPO]`
+- [x] **W2-8. Нормализация utm_source + AI-канал (AN-032 / AN-033 → TECH-009/065, P1/P2)** `[REPO]`
   Словаря нормализации нет (ig/Instagram/IGShopping/Inst_Vid = 4 написания); AI-трафик (chatgpt.com — 119 сессий, 3-й источник) не детектится отдельным каналом.
   Фикс: словарь нормализации в UTMTrackingMiddleware; детект chatgpt.com/perplexity.ai/gemini/claude.ai по utm+referrer → канал «AI»; UTM governance-конвенция.
+  ✅ **DONE:** utm_utils.py — `UTM_SOURCE_ALIASES` (instagram/facebook/tiktok/google/telegram/youtube + AI-источники), `normalize_utm_source()` (алиасы → канон, неизвестные → lowercase), `detect_ai_source()` (суффикс-матч referrer-hostname: chatgpt.com, chat.openai.com, perplexity.ai, gemini.google.com, claude.ai, copilot.microsoft.com, you.com, poe.com). UTMTrackingMiddleware: нормализация utm_source при захвате; AI-источник без medium → `utm_medium=ai`; трафик БЕЗ utm с AI-referrer → синтетический `utm_source=<ai>` + `utm_medium=ai` (создаётся UTMSession). Governance-конвенция: docs/UTM_GOVERNANCE.md. Тесты: test_utm_normalization.py — 10 шт. зелёные (unit + интеграция через Client). Нормализация действует только для НОВЫХ сессий; исторические данные не мигрировались (при необходимости — отдельный backfill).
 
 - [ ] **W2-9. Meta CAPI мелочи (AN-011/AN-012 остатки, P3)** `[REPO]`
   fallback `event_source_url` на чужой домен twocomms.com (4 места: facebook_conversions_service.py:561/662/779, tiktok_events_service.py:213) → twocomms.shop; `time.sleep` в retry блокирует воркер; клиентский random-fallback event_id у AddPaymentInfo рвёт дедуп-пару; мёртвые API `send_lead_event`/`send_event_for_order_status` — удалить или подключить осознанно.
@@ -271,7 +272,7 @@
 ## ВОЛНА 4 — СТАТУСНАЯ МОДЕЛЬ И ФИНАНСОВАЯ ТОЧНОСТЬ (P1, TECH-070…074)
 
 - [ ] **W4-1. OrderStatusHistory + timestamps (TD-030 → TECH-070)** `[REPO]` + `[DECISION]` + бэкап W0-3
-  Статусов 5, но нет истории/timestamps; NP-синк авто-переводит в done; refused_rts неотличим от cancelled; delivered≠received склеены.
+  Статусов 5, но нет истории/timestamps; NP-синк авто-переводит в done; refused_rts неотличим от cancelled; delivered≠received ск��еены.
   Фикс (аддитивная схема из `audit_report_td_orders.md`, согласовать с владельцем): таблица OrderStatusHistory (order FK, from, to, ts, source); статус `refused_rts`; разделить delivered/done. Только add-миграции после бэкапа.
   Приёмка: CAC created/paid/delivered и RTS% считаются из БД.
 
@@ -430,7 +431,7 @@
   `management_leadparsingresult` 492 MB(!), pageview 64 MB, UserAction (MyISAM → InnoDB при переносе); расширить trim_analytics на UTMSession/UserAction (= NEW-404, связка W2-10).
 
 - [ ] **W7-18. [GAP] Статика-мелочи (CB-013, P3)** `[REPO]`
-  Мёртвые файлы: logo_fire/stena.png 2.7MB + hero_dtf_graphic.png (0 ссылок) — удалить; stena2.png и configurator/ui/*.png без webp; слияние images/→img/ безопасно (3 ссылки в pro_brand.html), внешние потребители (og:image, GMC placeholder) сидят в img/ — их пути НЕ трогать (RISK-14).
+  Мёртвые файлы: logo_fire/stena.png 2.7MB + hero_dtf_graphic.png (0 ссылок) — удалить; stena2.png и configurator/ui/*.png без webp; слияние images/→img/ безопасно (3 ссылк�� в pro_brand.html), внешние потребители (og:image, GMC placeholder) сидят в img/ — их пути НЕ трогать (RISK-14).
 
 - [ ] **W7-19. [GAP] TODO-хвосты (CB-025, P3)** `[REPO]`
   14 TODO/FIXME/HACK в Python → перенести содержательные в TECHNICAL_TASKS.md с ID, остальные удалить.
