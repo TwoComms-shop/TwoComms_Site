@@ -59,7 +59,7 @@
 > - Полное описание каждой находки — секции `### F-xxx` ниже в этом же файле
 > - Чек-лист аудита: `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` — все строки уже `[x]` (пройдены)
 
-**Итого: 94 находки** (F-001…F-094) · see PLAN_VS_FINDINGS · **Ads gate: BLOCKED** (есть открытые P0)
+**Итого: 94 находки** (F-001…F-098) · see PLAN_VS_FINDINGS · **Ads gate: BLOCKED** (есть открытые P0)
 
 ### Сводка по severity
 
@@ -170,6 +170,10 @@
 | [x] **F-092** | P2 | DONE_OWNER | no | SSH password rotated by owner (W0-1 OWNER complete) |
 | [ ] **F-093** | P1 | OPEN | YES | deploy_paramiko.py still has hardcoded SSH password in git |
 | [ ] **F-094** | P1 | OPEN | YES | Product title≠H1 e.g. last-breath / death-grabs-ass (reconfirm) |
+| [ ] **F-095** | P1 | OPEN | YES | IG bot: Hide UX no list refresh (management) |
+| [ ] **F-096** | P1 | OPEN | YES | IG bot: stats/filters English; thin dashboard |
+| [ ] **F-097** | P0 | OPEN | YES | IG bot: Message Requests / Graph send fails unlabeled |
+| [ ] **F-098** | P1 | OPEN | YES | IG bot: no explicit transfer-to-manager CRM action |
 
 ### P0 OPEN (чинить в первую очередь) — 9
 - [ ] **F-003** — Color landing SEO/grammar (product feed path narrowed via F-077)
@@ -2166,6 +2170,23 @@ Additionally unchecked in IMPLEMENTATION_PLAN:
 - **W7-23**: residual `datetime.now()` in `dropshipper_views.py`.
 
 Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
+
+
+
+### F-095…F-098 — Instagram management bot (analysis pack)
+
+**Status:** OPEN · Full write-up: [`IG_BOT_MANAGEMENT_BUGS_2026-07-09.md`](./IG_BOT_MANAGEMENT_BUGS_2026-07-09.md)
+
+| ID | Topic |
+|----|--------|
+| F-095 | Hide works in API but list not refreshed; EN button labels |
+| F-096 | Stats/filters UI English; metrics lifetime-only |
+| F-097 | Message Requests / Advanced Access / #551 — no CRM flag |
+| F-098 | No explicit «transfer to manager» button (only AI/echo) |
+
+Also IG-006 likes/reactions, IG-001…IG-014 in that file.
+
+---
 
 ## Session changelog
 

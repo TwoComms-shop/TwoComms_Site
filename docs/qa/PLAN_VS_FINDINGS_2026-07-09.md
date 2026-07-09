@@ -151,13 +151,22 @@ Alternate path (API/poll)
 
 ---
 
-## 7. Document control
+## 7. Instagram bot (management) — separate bug pack
+
+Deep analysis (no code fixes): **[`IG_BOT_MANAGEMENT_BUGS_2026-07-09.md`](./IG_BOT_MANAGEMENT_BUGS_2026-07-09.md)**
+
+Covers post-commit `1743661c` sales automation: Hide UX, missing transfer action, English stats UI, Message Requests / Graph send failures, likes/reactions, manager-notify noise.
+
+---
+
+## 8. Document control
 
 | Field | Value |
 |-------|--------|
-| Pass | Strict DONE audit #2 |
+| Pass | Strict DONE audit #2 + IG bot analysis |
 | Plan checkboxes | Updated in IMPLEMENTATION_PLAN.md |
 | Ads gate | **BLOCKED** |
 | SSH | Owner password rotated; no DB shell this pass |
+| IG bot | Analysis-only findings file linked above |
 
 *End of strict DONE re-verify*
