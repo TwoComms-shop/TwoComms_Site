@@ -1271,6 +1271,30 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ---
 
+
+
+### F-049 — Home IP unexclude retest PASS (2026-07-09 ~17:14 UTC)
+
+- [x] **PASS** · Area: **UTM** · Related: F-037, F-038, F-046
+
+**Setup:** `AnalyticsExclusion` for `188.163.49.54` set `is_active=False` (owner). Active exclusions count = **0**.
+
+**Canary from home network:**
+
+| Step | Result |
+|------|--------|
+| GET `/?utm_source=ig&utm_medium=paid_social&utm_campaign=qa_home_after_unexclude_*&fbclid=…` | 200 |
+| Set-Cookie on land | `twc_vid`, `twc_ft`, **`sessionid`** |
+| Normalize | `ig` → **`instagram`** in UTMSession |
+| `utm_medium` / `utm_campaign` / `utm_content` / `fbclid` | all stored |
+| POST `/cart/add/` | ok, offer_id `TC-0001-ЧОРНИЙ-M` |
+| `/api/track-event/` product_view | **`stored: true`** |
+| UserAction on UTMSession | product_view×1, add_to_cart×1 |
+
+**Conclusion:** With exclusion off, home-network traffic is tracked the same as server canary (F-046).  
+**F-037** remains valid as a process note (when exclusion is ON, staff tests lie).  
+**F-021 / order linkage** still open — capture ≠ order attribution.
+
 ## Session changelog
 
 | Time | Action |
@@ -1282,3 +1306,4 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 | 2026-07-09 | sessionid only after ATC; home IP exclusion; track-event stored:false; checkout-mono path map F-037–F-042 |
 | 2026-07-09 | Server canary PASS; sitemap 489/489; order session_key gap F-044/045; help-center 404; FINAL status written |
 | Pass A | **COMPLETE for audit scope** — fixes deferred to after Pass C |
+| 2026-07-09 | F-049 home unexclude canary PASS (sessionid+UTMSession+ATC+stored:true) |
