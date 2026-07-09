@@ -251,8 +251,8 @@ class SalesCockpitApiTests(TestCase):
         )
 
         url = f"/bot/api/clients/{self.active.id}/transfer/"
-        # A route that is not implemented yet must be observable as a 404, not
-        # re-raised as Resolver404 by the Django test client.
+        # A route that is not implemented yet must be observable as an HTTP
+        # failure, not re-raised as Resolver404 by the Django test client.
         client = Client(raise_request_exception=False)
         client.force_login(self.admin)
         first = client.post(url)

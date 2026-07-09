@@ -77,6 +77,7 @@ urlpatterns = [
     path('bot/api/clients/<int:client_id>/', bot_views.bot_client_detail_api, name='management_bot_client_detail_api'),
     path('bot/api/clients/<int:client_id>/pause/', bot_views.bot_client_pause_api, name='management_bot_client_pause_api'),
     path('bot/api/clients/<int:client_id>/resume/', bot_views.bot_client_resume_api, name='management_bot_client_resume_api'),
+    path('bot/api/clients/<int:client_id>/transfer/', bot_views.bot_client_transfer_api, name='management_bot_client_transfer_api'),
     path('bot/api/clients/<int:client_id>/hide/', bot_views.bot_client_hide_api, name='management_bot_client_hide_api'),
     path('bot/api/clients/<int:client_id>/unhide/', bot_views.bot_client_unhide_api, name='management_bot_client_unhide_api'),
     path('bot/api/clients/<int:client_id>/lost/', bot_views.bot_client_mark_lost_api, name='management_bot_client_mark_lost_api'),

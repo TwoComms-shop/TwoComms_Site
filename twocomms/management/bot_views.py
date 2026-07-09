@@ -672,6 +672,54 @@ def bot_client_resume_api(request, client_id):
 
 @login_required(login_url="management_login")
 @require_POST
+def bot_client_transfer_api(request, client_id):
+    """Передати діалог менеджеру та безпечно зупинити автоворонку."""
+    blocked = _require_bot_json(request)
+    if blocked:
+        return blocked
+    from .models import IgClient
+    from .services import bot_followups
+
+    transferred = False
+    with transaction.atomic():
+        c = IgClient.objects.select_for_update().filter(id=client_id).first()
+        if not c:
+            return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+
+        already_transferred = (
+            c.manager_takeover
+            and c.bot_paused
+            and c.paused_reason == "manager_takeover"
+            and c.stage == IgClient.Stage.LEAD_TO_MANAGER
+        )
+        if not already_transferred:
+            c.manager_takeover = True
+            c.bot_paused = True
+            c.paused_reason = "manager_takeover"
+            c.paused_at = timezone.now()
+            c.save(update_fields=[
+                "manager_takeover", "bot_paused", "paused_reason", "paused_at", "updated_at",
+            ])
+            c.set_stage(IgClient.Stage.LEAD_TO_MANAGER, reason="manual_transfer")
+            bot_followups.cancel_pending(c, reason="manager_takeover")
+            transferred = True
+
+    if transferred:
+        bot.notify_manager(
+            "👤 IG: діалог передано менеджеру.\n"
+            f"Клієнт: {c.display_name or c.username or c.igsid}"
+        )
+    return JsonResponse({
+        "success": True,
+        "transferred": transferred,
+        "bot_paused": True,
+        "manager_takeover": True,
+        "stage": IgClient.Stage.LEAD_TO_MANAGER,
+    })
+
+
+@login_required(login_url="management_login")
+@require_POST
 def bot_client_hide_api(request, client_id):
     blocked = _require_bot_json(request)
     if blocked:
