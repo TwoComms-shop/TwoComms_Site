@@ -26,7 +26,7 @@
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
 | P0 | 9 | 0 | 0 | 0 |
-| P1 | 20 | 0 | 0 | 0 |
+| P1 | 22 | 0 | 0 | 0 |
 | P2 | 12 | 0 | 0 | 0 |
 | P3 | 3 | 0 | 0 | 0 |
 
@@ -2005,7 +2005,9 @@ From homepage footer, all primary support URLs **200**:
 | UserAction `purchase` | **3** |
 | UserAction `lead` | **6** |
 
-Only a tiny fraction of successful payments create funnel actions → conversion reporting / `mark_as_converted` almost never runs. Likely monobank webhook path only sometimes calls `record_order_action('purchase')`, or fails silently when session/UTM missing.
+Only a tiny fraction of successful payments create funnel actions → conversion reporting / `mark_as_converted` almost never runs.
+
+**Detail:** purchase UserAction `order_id` set only for **{261, 269, 271}** (all recent monobank web `online_full`). **33/36** paid/prepaid orders have **no** purchase action — includes all `source=manual` (expected if no mono webhook) **and** older monobank web paid/prepay (e.g. 257, 255, 254) where `_apply_monobank_status` → `record_order_action('purchase')` either was not deployed yet or failed. `lead` actions exist for 6 orders (invoice create path).
 
 ---
 
