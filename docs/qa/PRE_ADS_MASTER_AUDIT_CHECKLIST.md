@@ -102,46 +102,48 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 
 ## 0.5 Secrets hygiene (re-check before any commit)
 
-- [ ] **SEC-001** No SSH passwords in MD/git  
-- [ ] **SEC-002** No MySQL credentials in MD/git  
-- [ ] **SEC-003** No Meta/TikTok CAPI tokens in MD/git  
-- [ ] **SEC-004** Findings redact secrets as `***REDACTED***`  
-- [ ] **SEC-005** Screenshots crop admin session cookies  
+- [x] **SEC-001** No SSH passwords in MD/git  
+- [x] **SEC-002** No MySQL credentials in MD/git  
+- [x] **SEC-003** No Meta/TikTok CAPI tokens in MD/git  
+- [x] **SEC-004** Findings redact secrets as `***REDACTED***`  
+- [x] **SEC-005** Screenshots crop admin session cookies _(N/A this session)_  
 
 ## 0.6 Smoke gate (run first; if fail — stop scaling ads)
 
-| ID | Check | Expect | ☐ |
-|----|-------|--------|---|
-| SMK-001 | `GET /` | 200, no fatal console | [ ] |
-| SMK-002 | `GET www` → apex policy | consistent 301/canonical | [ ] |
-| SMK-003 | `GET /catalog/` | 200 + products | [ ] |
-| SMK-004 | PDP published product | 200 + ATC button | [ ] |
-| SMK-005 | Variant PDP | 200 correct variant | [ ] |
-| SMK-006 | Add to cart | mini-cart count +1 | [ ] |
-| SMK-007 | `GET /cart/` with item | line items correct | [ ] |
-| SMK-008 | `/sitemap.xml` | 200 valid index | [ ] |
-| SMK-009 | `/robots.txt` | sitemap host correct | [ ] |
-| SMK-010 | `/healthz/` | 200 JSON | [ ] |
-| SMK-011 | UTM landing open | page 200, params preserved until capture | [ ] |
-| SMK-012 | Pixel PageView | Events Manager / helper | [ ] |
+**Findings log:** `docs/qa/AUDIT_FINDINGS_2026-07-09.md`
+
+| ID | Check | Expect | Status |
+|----|-------|--------|--------|
+| SMK-001 | `GET /` | 200, no fatal console | [x] PASS HTTP (console browser later) |
+| SMK-002 | `GET www` → apex policy | consistent 301/canonical | [x] PASS 301→apex |
+| SMK-003 | `GET /catalog/` | 200 + products | [x] PASS |
+| SMK-004 | PDP published product | 200 + ATC button | [x] PASS 22 PDP sample (ATC click later) |
+| SMK-005 | Variant PDP | 200 correct variant | [ ] partial — see feed F-003 |
+| SMK-006 | Add to cart | mini-cart count +1 | [ ] pending browser |
+| SMK-007 | `GET /cart/` with item | line items correct | [ ] empty only so far |
+| SMK-008 | `/sitemap.xml` | 200 valid index | [x] PASS 8 children |
+| SMK-009 | `/robots.txt` | sitemap host correct | [x] PASS |
+| SMK-010 | `/healthz/` | 200 JSON | [x] PASS |
+| SMK-011 | UTM landing open | page 200, params preserved until capture | [x] PASS twc_ft cookie |
+| SMK-012 | Pixel PageView | Events Manager / helper | [ ] HTML PageView OK; EM pending |
 
 ## 0.7 Progress matrix (fill during Pass A)
 
 | Block | IDs | Done % | Owner | Notes |
 |-------|-----|--------|-------|-------|
-| 0 Smoke / rules | SMK, SEC | | | |
-| 1 Page inventory SEO matrix | PG-* | | | |
-| 2 SEO deep | SEO-* | | | |
-| 3 GEO / i18n | GEO-* | | | |
-| 4 CRO funnel | CRO-* | | | |
-| 5 Cart / checkout UX | CART-* | | | |
-| 6 UTM + Dispatcher | UTM-* | | | |
-| 7 Pixel / GTM / CAPI | PIX-* | | | |
-| 8 Technical / alerts | TECH-* | | | |
-| 9 Feeds / marketplace | FEED-* | | | |
-| 10 Prod DB queries | DB-* | | | |
-| 11 Ads CBO/ABO readiness | ADS-* | | | |
-| 12 Cross-device smoke | DEV-* | | | |
+| 0 Smoke / rules | SMK, SEC | ~85% | agent-A | 2026-07-09 |
+| 1 Page inventory SEO matrix | PG-* | ~45% | agent-A | |
+| 2 SEO deep | SEO-* | ~40% | agent-A | F-001..F-006 |
+| 3 GEO / i18n | GEO-* | ~30% | agent-A | H1 leaks |
+| 4 CRO funnel | CRO-* | ~10% | agent-A | need Dispatcher |
+| 5 Cart / checkout UX | CART-* | ~35% | agent-A | mini empty OK |
+| 6 UTM + Dispatcher | UTM-* | ~25% | agent-A | cookies OK |
+| 7 Pixel / GTM / CAPI | PIX-* | ~30% | agent-A | |
+| 8 Technical / alerts | TECH-* | ~35% | agent-A | 429 F-007 |
+| 9 Feeds / marketplace | FEED-* | ~50% | agent-A | **F-003 P0** |
+| 10 Prod DB queries | DB-* | 0% | | need server |
+| 11 Ads CBO/ABO readiness | ADS-* | ~15% | | |
+| 12 Cross-device smoke | DEV-* | 0% | | |
 
 **Target:** 100% of P0, ≥90% of P1 before ads budget.
 
@@ -171,26 +173,26 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | URL pattern | Template / view | A–K | Notes | ☐ |
 |----|-------------|-----------------|-----|-------|---|
-| PG-001 | `/` | `index.html` / home | | LCP + product rails | [ ] |
-| PG-002 | `/?page=N` | home pagination | | title policy | [ ] |
-| PG-003 | `/page/N/` legacy | 301 → `/?page=N` | | | [ ] |
-| PG-004 | `/catalog/` | `catalog.html` | | | [ ] |
+| PG-001 | `/` | `index.html` / home | | LCP + product rails | [x] HTTP/SEO core PASS |
+| PG-002 | `/?page=N` | home pagination | | title policy | [ ] link seen `?page=9` only |
+| PG-003 | `/page/N/` legacy | 301 → `/?page=N` | | | [x] PASS 301 |
+| PG-004 | `/catalog/` | `catalog.html` | | | [x] PASS |
 | PG-005 | `/catalog/?page=N` | | | | [ ] |
-| PG-006 | `/catalog/page/N/` legacy | 301 | | | [ ] |
-| PG-007 | `/catalog/<cat>/` | each **active** category | | **repeat per category** | [ ] |
-| PG-008 | `/catalog/<cat>/<color>/` | color landings if published | | empty sitemap risk | [ ] |
-| PG-009 | `/catalog/theme/<theme>/` | thematic landings | | | [ ] |
-| PG-010 | `/product/<slug>/` | each **published** product base | | **batch all products** | [ ] |
+| PG-006 | `/catalog/page/N/` legacy | 301 | | | [x] PASS 301 |
+| PG-007 | `/catalog/<cat>/` | each **active** category | | **repeat per category** | [x] 3/3 UK checked — **titles FAIL F-001** |
+| PG-008 | `/catalog/<cat>/<color>/` | color landings if published | | empty sitemap risk | [x] 4 unique — **grammar FAIL F-002**; sitemap dups F-006 |
+| PG-009 | `/catalog/theme/<theme>/` | thematic landings | | | [x] 4/4 PASS HTTP |
+| PG-010 | `/product/<slug>/` | each **published** product base | | **batch all products** | [x] sample 22/65 — more pending |
 | PG-011 | `/product/<slug>/<v1>/` | color/fit samples | | | [ ] |
 | PG-012 | `/product/<slug>/<v1>/<v2>/` | multi-variant | | | [ ] |
 | PG-013 | `/product/<slug>/…/<v3>/` | max arity | | | [ ] |
-| PG-014 | `/cart/` empty | `cart.html` | | noindex? | [ ] |
+| PG-014 | `/cart/` empty | `cart.html` | | noindex? | [x] PASS noindex |
 | PG-015 | `/cart/` with items | | | | [ ] |
 | PG-016 | `/orders/success/<id>/` | `order_success.html` | | thank-you, pixels | [ ] |
 | PG-017 | `/orders/success-preview/` | test only | | not indexed | [ ] |
 | PG-018 | order failed path if any | `order_failed.html` | | | [ ] |
-| PG-019 | `/search/?q=` | search | | **noindex**, not in sitemap | [ ] |
-| PG-020 | `/favorites/` | | | auth states | [ ] |
+| PG-019 | `/search/?q=` | search | | **noindex**, not in sitemap | [x] PASS noindex,follow |
+| PG-020 | `/favorites/` | | | auth states | [x] PASS noindex |
 
 **Category loop protocol (PG-007):**
 
@@ -210,30 +212,30 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | URL | Name | A–K | ☐ |
 |----|-----|------|-----|---|
-| PG-030 | `/pro-brand/` | About (canonical) | | [ ] |
-| PG-031 | `/about/` | legacy → 301 pro-brand | | [ ] |
-| PG-032 | `/contacts/` | contacts (**historical 500 risk**) | | [ ] |
-| PG-033 | `/delivery/` | delivery | | [ ] |
-| PG-034 | `/cooperation/` | cooperation | | [ ] |
-| PG-035 | `/custom-print/` | custom print funnel | | [ ] |
+| PG-030 | `/pro-brand/` | About (canonical) | | [x] PASS |
+| PG-031 | `/about/` | legacy → 301 pro-brand | | [x] PASS 301 |
+| PG-032 | `/contacts/` | contacts (**historical 500 risk**) | | [x] PASS 200 all locales sample |
+| PG-033 | `/delivery/` | delivery | | [x] PASS |
+| PG-034 | `/cooperation/` | cooperation | | [x] PASS (desc long F-008) |
+| PG-035 | `/custom-print/` | custom print funnel | | [x] PASS (desc long F-008) |
 | PG-036 | `/add-print/` | add print (if still public) | | [ ] |
-| PG-037 | wholesale / B2B hub | `wholesale.html` route | | [ ] |
-| PG-038 | `/dopomoga/` | help center | | [ ] |
+| PG-037 | wholesale / B2B hub | `wholesale.html` route | | [x] PASS (desc long F-008) |
+| PG-038 | `/dopomoga/` | help center | | [x] PASS |
 | PG-039 | `/help-center/` if alias | 301? | | [ ] |
-| PG-040 | `/faq/` | FAQ | | [ ] |
-| PG-041 | `/rozmirna-sitka/` | size guide | | [ ] |
-| PG-042 | `/doglyad-za-odyagom/` | care guide | | [ ] |
-| PG-043 | `/vidstezhennya-zamovlennya/` | order tracking | | [ ] |
-| PG-044 | `/mapa-saytu/` | HTML sitemap | | [ ] |
-| PG-045 | `/povernennya-ta-obmin/` | returns | | [ ] |
-| PG-046 | `/polityka-konfidentsiynosti/` | privacy | | [ ] |
-| PG-047 | `/umovy-vykorystannya/` | terms | | [ ] |
-| PG-048 | `/qr/` | QR thanks | | [ ] |
+| PG-040 | `/faq/` | FAQ | | [x] PASS HTTP |
+| PG-041 | `/rozmirna-sitka/` | size guide | | [x] PASS |
+| PG-042 | `/doglyad-za-odyagom/` | care guide | | [x] PASS |
+| PG-043 | `/vidstezhennya-zamovlennya/` | order tracking | | [x] PASS |
+| PG-044 | `/mapa-saytu/` | HTML sitemap | | [x] PASS |
+| PG-045 | `/povernennya-ta-obmin/` | returns | | [x] PASS |
+| PG-046 | `/polityka-konfidentsiynosti/` | privacy | | [x] PASS |
+| PG-047 | `/umovy-vykorystannya/` | terms | | [x] PASS |
+| PG-048 | `/qr/` | QR thanks | | [x] PASS noindex |
 | PG-049 | `/buy-with-points/` | points shop | | [ ] |
 | PG-050 | `/user/points/` | points balance (auth) | | [ ] |
 | PG-051 | `/my/orders/` | order history (auth) | | [ ] |
 | PG-052 | `/my-promocodes/` | promocodes (auth) | | [ ] |
-| PG-053 | `/login/` `/register/` `/logout/` | auth | | [ ] |
+| PG-053 | `/login/` `/register/` `/logout/` | auth | | [ ] login redirect seen |
 | PG-054 | `/profile/setup/` | profile setup | | [ ] |
 
 ### 1.3 Blog
@@ -286,20 +288,20 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-001 | Home title unique + brand | P0 | [ ] |
-| SEO-002 | Catalog root title ≠ home | P0 | [ ] |
-| SEO-003 | Every category title from DB override or good fallback | P0 | [ ] |
-| SEO-004 | Every published product `seo_title` non-empty | P0 | [ ] |
-| SEO-005 | Title length report: list >70 and <20 | P1 | [ ] |
+| SEO-001 | Home title unique + brand | P0 | [x] PASS |
+| SEO-002 | Catalog root title ≠ home | P0 | [x] PASS |
+| SEO-003 | Every category title from DB override or good fallback | P0 | [x] CHECKED — **FAIL F-001 truncated** |
+| SEO-004 | Every published product `seo_title` non-empty | P0 | [x] sample 22 OK; full 65 pending |
+| SEO-005 | Title length report: list >70 and <20 | P1 | [x] sample OK; cats truncated ~52–56 |
 | SEO-006 | Exact duplicate titles across products | P1 | [ ] |
 | SEO-007 | Variant URL titles reflect color/fit when intended | P1 | [ ] |
-| SEO-008 | No double brand `\| TwoComms \| TwoComms` | P2 | [ ] |
-| SEO-009 | No debug strings (test, TODO, None, null) | P1 | [ ] |
+| SEO-008 | No double brand `\| TwoComms \| TwoComms` | P2 | [x] sample PASS |
+| SEO-009 | No debug strings (test, TODO, None, null) | P1 | [x] sample PASS |
 | SEO-010 | Admin SEO overrides win over autofill | P1 | [ ] |
 | SEO-011 | Pagination titles coherent | P2 | [ ] |
 | SEO-012 | Blog titles from DB fields | P1 | [ ] |
-| SEO-013 | Thematic landings titles keyword-aligned | P2 | [ ] |
-| SEO-014 | Color landings titles if published | P2 | [ ] |
+| SEO-013 | Thematic landings titles keyword-aligned | P2 | [x] PASS sample |
+| SEO-014 | Color landings titles if published | P2 | [x] CHECKED — **FAIL F-002 grammar** |
 | SEO-015 | SERP truncation spot-check (copy-paste into SERP simulator) | P2 | [ ] |
 
 ## 2.2 Meta descriptions & social
@@ -358,13 +360,13 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-060 | `/sitemap.xml` index 200 | P0 | [ ] |
-| SEO-061 | All child sitemaps 200 | P0 | [ ] |
-| SEO-062 | **100% locs HEAD** → only 200 (or fix list) | P0 | [ ] |
-| SEO-063 | Only published products | P0 | [ ] |
-| SEO-064 | Draft/archived absent | P0 | [ ] |
-| SEO-065 | Variant locs resolve | P1 | [ ] |
-| SEO-066 | Empty sections removed or filled | P1 | [ ] |
+| SEO-060 | `/sitemap.xml` index 200 | P0 | [x] PASS |
+| SEO-061 | All child sitemaps 200 | P0 | [x] PASS 8/8 |
+| SEO-062 | **100% locs HEAD** → only 200 (or fix list) | P0 | [ ] blocked by 429 then sample OK; full pending slow |
+| SEO-063 | Only published products | P0 | [ ] need DB |
+| SEO-064 | Draft/archived absent | P0 | [ ] need DB |
+| SEO-065 | Variant locs resolve | P1 | [ ] partial |
+| SEO-066 | Empty sections removed or filled | P1 | [x] color has URLs but **dups F-006** |
 | SEO-067 | lastmod honest | P2 | [ ] |
 | SEO-068 | i18n alternates consistent | P1 | [ ] |
 | SEO-069 | robots.txt host + allows/disallows | P0 | [ ] |
@@ -404,12 +406,12 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| GEO-001 | `<html lang>` matches locale | P0 | [ ] |
-| GEO-002 | hreflang set complete + reciprocal | P0 | [ ] |
-| GEO-003 | x-default → UA | P0 | [ ] |
-| GEO-004 | Currency UAH everywhere public | P0 | [ ] |
+| GEO-001 | `<html lang>` matches locale | P0 | [x] uk-UA/ru-UA/en-UA sample PASS |
+| GEO-002 | hreflang set complete + reciprocal | P0 | [x] 4 alternates sample PASS |
+| GEO-003 | x-default → UA | P0 | [x] PASS sample |
+| GEO-004 | Currency UAH everywhere public | P0 | [x] Product schema UAH sample |
 | GEO-005 | Phone/NP/delivery claims UA-correct | P1 | [ ] |
-| GEO-006 | RU/EN content leak inventory (titles, meta, JSON-LD, H2) | P1 | [ ] |
+| GEO-006 | RU/EN content leak inventory (titles, meta, JSON-LD, H2) | P1 | [x] H1 leaks **F-005** (partial inventory) |
 | GEO-007 | modeltranslation fill rates uk/ru/en for products/categories | P1 | [ ] |
 | GEO-008 | Soft 404 translated URLs | P2 | [ ] |
 | GEO-009 | Schema addressCountry if any | P2 | [ ] |
@@ -509,9 +511,9 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| CART-001 | Open mini-cart from header | P0 | [ ] |
-| CART-002 | `GET /cart/mini/` 200 HTML/JSON as designed | P0 | [ ] |
-| CART-003 | Count badge `/cart/count/` sync after ATC | P0 | [ ] |
+| CART-001 | Open mini-cart from header | P0 | [ ] browser |
+| CART-002 | `GET /cart/mini/` 200 HTML/JSON as designed | P0 | [x] PASS empty state |
+| CART-003 | Count badge `/cart/count/` sync after ATC | P0 | [x] empty returns 0; ATC sync later |
 | CART-004 | Line items: name, size, color, price, qty | P0 | [ ] |
 | CART-005 | Qty +/- in mini-cart | P0 | [ ] |
 | CART-006 | Remove line in mini-cart | P0 | [ ] |
@@ -582,9 +584,9 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 |----|-------|---|---|
 | UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [ ] |
 | UTM-002 | Instagram ads template documented & used | P0 | [ ] |
-| UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [ ] |
+| UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [x] PASS via twc_ft cookie (DB row pending) |
 | UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [ ] |
-| UTM-005 | fbclid / gclid / ttclid stored | P0 | [ ] |
+| UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in twc_ft |
 | UTM-006 | _fbp/_fbc captured when present | P0 | [ ] |
 | UTM-007 | session['utm_data'] fallback works | P0 | [ ] |
 | UTM-008 | Bots skipped | P1 | [ ] |
@@ -654,9 +656,9 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| PIX-001 | Live pixel ID from prod env in HTML | P0 | [ ] |
-| PIX-002 | Single PageView (no double snippet) | P0 | [ ] |
-| PIX-003 | ViewContent on PDP | P0 | [ ] |
+| PIX-001 | Live pixel ID from prod env in HTML | P0 | [x] PASS 823958313630148 |
+| PIX-002 | Single PageView (no double snippet) | P0 | [x] PASS init×1 PageView×1 HTML |
+| PIX-003 | ViewContent on PDP | P0 | [ ] JS-only; browser pending F-012 |
 | PIX-004 | AddToCart on ATC with content_ids/value/currency | P0 | [ ] |
 | PIX-005 | InitiateCheckout timing correct | P0 | [ ] |
 | PIX-006 | Lead only for prepay rules | P0 | [ ] |
@@ -684,7 +686,7 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 |----|-------|---|---|
 | PIX-030 | TikTok pixel ID prod | P1 | [ ] |
 | PIX-031 | TT ATC / CompletePayment mapping | P1 | [ ] |
-| PIX-032 | GTM container loads | P0 | [ ] |
+| PIX-032 | GTM container loads | P0 | [x] GTM-PRLLBF9H in HTML |
 | PIX-033 | dataLayer view_item / add_to_cart / begin_checkout / purchase | P0 | [ ] |
 | PIX-034 | No double GTM bootstrap | P1 | [ ] |
 | PIX-035 | Enhanced conversions if configured | P2 | [ ] |
@@ -822,9 +824,9 @@ Mark each: loads 200 / no throw on page.
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| FEED-001 | Google Merchant feed live valid | P0 | [ ] |
-| FEED-002 | g:id format = pixel content_ids | P0 | [ ] |
-| FEED-003 | Sample 20 feed URLs 200 | P0 | [ ] |
+| FEED-001 | Google Merchant feed live valid | P0 | [x] XML 200 ~2.1MB |
+| FEED-002 | g:id format = pixel content_ids | P0 | [ ] TC-* Cyrillic; pixel parity pending |
+| FEED-003 | Sample 20 feed URLs 200 | P0 | [x] 5 checked HTTP 200 but **landing wrong F-003** |
 | FEED-004 | Price/availability parity | P1 | [ ] |
 | FEED-005 | Feed mtime / cron healthy | P1 | [ ] |
 | FEED-006 | Rozetka / Kasta / BuyMe / Prom feeds 200 if used | P2 | [ ] |
