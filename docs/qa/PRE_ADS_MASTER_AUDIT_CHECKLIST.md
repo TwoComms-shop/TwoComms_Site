@@ -266,7 +266,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-081 | `/api/bootstrap/` | sets CSRF/analytics cookies when needed | [ ] |
 | PG-082 | `/api/client-error/` | accepts POST, rate-limited | [ ] |
 | PG-083 | `/api/rum/` | beacon OK | [ ] |
-| PG-084 | `/api/track-event/` | records allowed events | [ ] |
+| PG-084 | `/api/track-event/` | records allowed events | [x] API OK; stored:false if excluded F-039 |
 | PG-085 | `/test-analytics/` | **not public for SEO**; blocked or noindex | [ ] |
 | PG-086 | `/debug/media*` | **not public on prod** | [ ] |
 | PG-087 | `/dev/grant-admin/` | **disabled on prod** | [ ] |
