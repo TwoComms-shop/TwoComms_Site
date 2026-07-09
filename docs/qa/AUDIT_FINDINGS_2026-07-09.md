@@ -50,6 +50,63 @@
 
 ---
 
+
+## OPEN vs PASS findings checklist (for fix agents)
+
+> Fix agent: mark `[x]` only after deploy + retest. Pass C marks CONFIRMED first.
+
+### P0 OPEN
+- [ ] F-003 / F-027 Merchant feed landing loses color
+- [ ] F-019 is_converted always 0
+- [ ] F-021 / F-044 / F-045 Order UTM/session linkage broken
+- [ ] F-029 LSAPI_CHILDREN limit
+- [ ] F-030 initializePixelsImmediately not defined
+
+### P1 OPEN
+- [ ] F-001 Category titles truncated in DB
+- [ ] F-002 Color landing grammar
+- [ ] F-004 UK product title≠H1 (13 URLs)
+- [ ] F-005 RU/EN H1 UA leaks (home/catalog)
+- [ ] F-006 Color sitemap triple dups
+- [ ] F-007 Rate limit 429 under burst (mitigated slow crawl)
+- [ ] F-018 offer_id ЧОРНИЙ vs ЧЕРНЫЙ
+- [ ] F-020 / F-057 Historical dirty utm_source values
+- [ ] F-031 MySQL gone away
+- [ ] F-032 UserAction mostly without utm_session
+- [ ] F-033 link_order_to_utm not reflected in prod orders
+- [ ] F-043 /help-center/ 404
+- [ ] F-050 NP city Latin 502
+
+### P2 OPEN (selected)
+- [ ] F-008 long meta descriptions
+- [ ] F-009 favicon 302
+- [ ] F-011 TikTok deferred load
+- [ ] F-014 sitemap lastmod cluster
+- [ ] F-035 CSP violations
+- [ ] F-036 Telegram disconnects
+- [ ] F-048 CAPI fbp without internal UTM
+- [ ] F-051 capture empty 200
+
+### PASS (do not "fix")
+- [x] F-016 variants titles
+- [x] F-017 mapa links
+- [x] F-024 ATC API
+- [x] F-025 blog UK
+- [x] F-026 static assets
+- [x] F-034 variants sample / recs
+- [x] F-041 CSP allows pixels
+- [x] F-042 early fbq PageView
+- [x] F-046 server canary
+- [x] F-047 sitemap 489/489
+- [x] F-049 home unexclude canary
+- [x] F-052 mono validates city
+- [x] F-053 home links 42/42
+- [x] F-054 blog+colors HTTP
+- [x] F-055 RU/EN product sample alignment
+- [x] F-056 IGShopping canary
+- [x] F-058 scripts matrix
+
+
 ## Funnel snapshot (CRO)
 
 **Source:** production MySQL via Django ORM read-only (2026-07-09). **No secrets stored.**

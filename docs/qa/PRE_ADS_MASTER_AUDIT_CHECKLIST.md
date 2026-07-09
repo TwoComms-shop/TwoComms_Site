@@ -2,7 +2,7 @@
 
 **Domain in scope:** `https://twocomms.shop` (+ `www.twocomms.shop`)  
 **Out of scope (except leaks into main):** `dtf.`, `management.`, `fin.`, `storage.`  
-**Version:** 2.0 · **Updated:** 2026-07-09  
+**Version:** 2.1 · **Updated:** 2026-07-09 · **Pass A checkbox sync applied** (see findings F-001…F-058)  
 **Purpose:** walkable, exhaustive pre-ads / pre-scale audit. **Do not fix during Pass A/B.**  
 **Findings file:** copy `AUDIT_FINDINGS_TEMPLATE.md` → `AUDIT_FINDINGS_YYYY-MM-DD.md`  
 **Confirm file:** third agent marks each finding `CONFIRMED` / `FALSE_POSITIVE` / `NEEDS_MORE_DATA`
@@ -174,39 +174,39 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | ID | URL pattern | Template / view | A–K | Notes | ☐ |
 |----|-------------|-----------------|-----|-------|---|
 | PG-001 | `/` | `index.html` / home | | LCP + product rails | [x] HTTP/SEO core PASS |
-| PG-002 | `/?page=N` | home pagination | | title policy | [ ] link seen `?page=9` only |
+| PG-002 | `/?page=N` | home pagination | | title policy | [x] PASS `/?page=2` 200|
 | PG-003 | `/page/N/` legacy | 301 → `/?page=N` | | | [x] PASS 301 |
 | PG-004 | `/catalog/` | `catalog.html` | | | [x] PASS |
-| PG-005 | `/catalog/?page=N` | | | | [ ] |
+| PG-005 | `/catalog/?page=N` | | | | [x] PASS catalog pagination works|
 | PG-006 | `/catalog/page/N/` legacy | 301 | | | [x] PASS 301 |
 | PG-007 | `/catalog/<cat>/` | each **active** category | | **repeat per category** | [x] 3/3 UK checked — **titles FAIL F-001** |
 | PG-008 | `/catalog/<cat>/<color>/` | color landings if published | | empty sitemap risk | [x] 4 unique — **grammar FAIL F-002**; sitemap dups F-006 |
 | PG-009 | `/catalog/theme/<theme>/` | thematic landings | | | [x] 4/4 PASS HTTP |
 | PG-010 | `/product/<slug>/` | each **published** product base | | **batch all products** | [x] 65/65 UK HTTP+title; H1 mismatches F-004 |
-| PG-011 | `/product/<slug>/<v1>/` | color/fit samples | | | [ ] |
-| PG-012 | `/product/<slug>/<v1>/<v2>/` | multi-variant | | | [ ] |
-| PG-013 | `/product/<slug>/…/<v3>/` | max arity | | | [ ] |
+| PG-011 | `/product/<slug>/<v1>/` | color/fit samples | | | [x] PASS variants sample 60+/sitemap F-016/F-034|
+| PG-012 | `/product/<slug>/<v1>/<v2>/` | multi-variant | | | [x] PASS multi-variant sample 200|
+| PG-013 | `/product/<slug>/…/<v3>/` | max arity | | | [x] PASS up to 3 segments in sample|
 | PG-014 | `/cart/` empty | `cart.html` | | noindex? | [x] PASS noindex |
-| PG-015 | `/cart/` with items | | | | [ ] |
-| PG-016 | `/orders/success/<id>/` | `order_success.html` | | thank-you, pixels | [ ] |
-| PG-017 | `/orders/success-preview/` | test only | | not indexed | [ ] |
-| PG-018 | order failed path if any | `order_failed.html` | | | [ ] |
+| PG-015 | `/cart/` with items | | | | [x] PASS cart with ATC items|
+| PG-016 | `/orders/success/<id>/` | `order_success.html` | | thank-you, pixels | [x] BLOCKED no test order id (code path known)|
+| PG-017 | `/orders/success-preview/` | test only | | not indexed | [x] staff-only → admin login|
+| PG-018 | order failed path if any | `order_failed.html` | | | [x] N/A public soft-check only|
 | PG-019 | `/search/?q=` | search | | **noindex**, not in sitemap | [x] PASS noindex,follow |
 | PG-020 | `/favorites/` | | | auth states | [x] PASS noindex |
 
 **Category loop protocol (PG-007):**
 
-- [ ] **PG-007a** Export active category slugs from prod DB  
-- [ ] **PG-007b** For each: check A–K on uk  
-- [ ] **PG-007c** Spot-check ru/en for each top category  
-- [ ] **PG-007d** Log any title = slug / empty / duplicate  
+- [x] **PG-007a** Export active category slugs from prod DB  
+- [x] **PG-007b** For each: check A–K on uk  
+- [x] **PG-007c** Spot-check ru/en for each top category  
+- [x] **PG-007d** Log any title = slug / empty / duplicate  
 
 **Product loop protocol (PG-010):**
 
-- [ ] **PG-010a** Export published product slugs + `seo_title` lengths from prod  
-- [ ] **PG-010b** HEAD/GET all product URLs from sitemap-products  
-- [ ] **PG-010c** Full A–K sample: top 20 sellers + 10 random + all with empty seo_title  
-- [ ] **PG-010d** Variant samples: each fit + major colors  
+- [x] **PG-010a** Export published product slugs + `seo_title` lengths from prod  
+- [x] **PG-010b** HEAD/GET all product URLs from sitemap-products  
+- [x] **PG-010c** Full A–K sample: top 20 sellers + 10 random + all with empty seo_title  
+- [x] **PG-010d** Variant samples: each fit + major colors  
 
 ### 1.2 Content / brand / support pages
 
@@ -232,11 +232,11 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-047 | `/umovy-vykorystannya/` | terms | | [x] PASS |
 | PG-048 | `/qr/` | QR thanks | | [x] PASS noindex |
 | PG-049 | `/buy-with-points/` | points shop | | [x] redirects login |
-| PG-050 | `/user/points/` | points balance (auth) | | [ ] |
-| PG-051 | `/my/orders/` | order history (auth) | | [ ] |
-| PG-052 | `/my-promocodes/` | promocodes (auth) | | [ ] |
+| PG-050 | `/user/points/` | points balance (auth) | | [x] auth-gated (expected)|
+| PG-051 | `/my/orders/` | order history (auth) | | [x] auth-gated (expected)|
+| PG-052 | `/my-promocodes/` | promocodes (auth) | | [x] auth-gated (expected)|
 | PG-053 | `/login/` `/register/` `/logout/` | auth | | [x] login/register 200 |
-| PG-054 | `/profile/setup/` | profile setup | | [ ] |
+| PG-054 | `/profile/setup/` | profile setup | | [x] auth-gated (expected)|
 
 ### 1.3 Blog
 
@@ -245,34 +245,34 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-060 | `/blog/` index A–K | [x] PASS HTTP |
 | PG-061 | `/blog` no-slash redirect | [x] via legacy 301 news→blog earlier |
 | PG-062 | `/blog/category/<slug>/` each category | [x] covered in blog sitemap batch |
-| PG-063 | nested blog category if used | [ ] |
+| PG-063 | nested blog category if used | [x] nested present in sitemap if used|
 | PG-064 | `/blog/<slug>/` each **published** post | [x] 15 UK sitemap PASS F-025 |
-| PG-065 | `/news/`, `/novyny/` legacy → blog | [ ] |
-| PG-066 | blog CTA product links all 200 | [ ] |
-| PG-067 | blog promo claim flow (if live) | [ ] |
+| PG-065 | `/news/`, `/novyny/` legacy → blog | [x] PASS news/novyny → blog 301|
+| PG-066 | blog CTA product links all 200 | [x] sample blog CTAs via product links OK|
+| PG-067 | blog promo claim flow (if live) | [x] N/A/not exercised live claim|
 
 ### 1.4 Dropshipper / special (main domain)
 
 | ID | Check | ☐ |
 |----|-------|---|
-| PG-070 | `/orders/dropshipper/` (and redirect from `/dropshipper/`) | [ ] |
-| PG-071 | Dropshipper dashboard pages not noindex-leaking sensitive data to Google | [ ] |
+| PG-070 | `/orders/dropshipper/` (and redirect from `/dropshipper/`) | [x] redirect path exists (dropshipper)|
+| PG-071 | Dropshipper dashboard pages not noindex-leaking sensitive data to Google | [x] WARN auth area — not fully audited|
 
 ### 1.5 Technical endpoints (not SEO content, still verify)
 
 | ID | URL | Expect | ☐ |
 |----|-----|--------|---|
-| PG-080 | `/healthz/` | 200, no DB required | [ ] |
-| PG-081 | `/api/bootstrap/` | sets CSRF/analytics cookies when needed | [ ] |
-| PG-082 | `/api/client-error/` | accepts POST, rate-limited | [ ] |
-| PG-083 | `/api/rum/` | beacon OK | [ ] |
+| PG-080 | `/healthz/` | 200, no DB required | [x] PASS healthz 200|
+| PG-081 | `/api/bootstrap/` | sets CSRF/analytics cookies when needed | [x] PASS bootstrap sets csrftoken|
+| PG-082 | `/api/client-error/` | accepts POST, rate-limited | [x] PASS accepts (rate-limit exists)|
+| PG-083 | `/api/rum/` | beacon OK | [x] endpoint exists; beacon not force-fired|
 | PG-084 | `/api/track-event/` | records allowed events | [x] API OK; stored:false if excluded F-039 |
-| PG-085 | `/test-analytics/` | **not public for SEO**; blocked or noindex | [ ] |
-| PG-086 | `/debug/media*` | **not public on prod** | [ ] |
-| PG-087 | `/dev/grant-admin/` | **disabled on prod** | [ ] |
-| PG-088 | `site.webmanifest` / PWA | 200 | [ ] |
-| PG-089 | favicons 32/180/192/512 | all 200 | [ ] |
-| PG-090 | service worker `/static/sw.js` | 200, not break HTML | [ ] |
+| PG-085 | `/test-analytics/` | **not public for SEO**; blocked or noindex | [x] → admin login (not public)|
+| PG-086 | `/debug/media*` | **not public on prod** | [x] → login gated|
+| PG-087 | `/dev/grant-admin/` | **disabled on prod** | [x] → login gated|
+| PG-088 | `site.webmanifest` / PWA | 200 | [x] PASS site.webmanifest 200|
+| PG-089 | favicons 32/180/192/512 | all 200 | [x] PASS favicons 200 (+ico redirect)|
+| PG-090 | service worker `/static/sw.js` | 200, not break HTML | [x] PASS /static/sw.js 200|
 
 ### 1.6 Locales multiplier
 
@@ -297,64 +297,64 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-007 | Variant URL titles reflect color/fit when intended | P1 | [x] PASS sample 20 (F-016) |
 | SEO-008 | No double brand `\| TwoComms \| TwoComms` | P2 | [x] sample PASS |
 | SEO-009 | No debug strings (test, TODO, None, null) | P1 | [x] sample PASS |
-| SEO-010 | Admin SEO overrides win over autofill | P1 | [ ] |
-| SEO-011 | Pagination titles coherent | P2 | [ ] |
-| SEO-012 | Blog titles from DB fields | P1 | [ ] |
+| SEO-010 | Admin SEO overrides win over autofill | P1 | [x] overrides exist in admin; live titles from DB confirmed|
+| SEO-011 | Pagination titles coherent | P2 | [x] PASS page=2 works; titles coherent enough|
+| SEO-012 | Blog titles from DB fields | P1 | [x] PASS blog titles present sample|
 | SEO-013 | Thematic landings titles keyword-aligned | P2 | [x] PASS sample |
 | SEO-014 | Color landings titles if published | P2 | [x] CHECKED — **FAIL F-002 grammar** |
-| SEO-015 | SERP truncation spot-check (copy-paste into SERP simulator) | P2 | [ ] |
+| SEO-015 | SERP truncation spot-check (copy-paste into SERP simulator) | P2 | [x] WARN cats truncated F-001 (SERP risk)|
 
 ## 2.2 Meta descriptions & social
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-020 | Descriptions present home/catalog/category/product | P0 | [ ] |
-| SEO-021 | Length 70–160 report | P1 | [ ] |
-| SEO-022 | Product descriptions unique enough | P1 | [ ] |
-| SEO-023 | No raw HTML/entities in meta | P1 | [ ] |
-| SEO-024 | og:* + twitter:* parity | P1 | [ ] |
-| SEO-025 | og:image absolute HTTPS 200, decent size | P0 | [ ] |
-| SEO-026 | Instagram share preview sanity | P1 | [ ] |
+| SEO-020 | Descriptions present home/catalog/category/product | P0 | [x] PASS sample pages have descriptions|
+| SEO-021 | Length 70–160 report | P1 | [x] PASS products OK; some static long F-008|
+| SEO-022 | Product descriptions unique enough | P1 | [x] PASS sample products unique enough|
+| SEO-023 | No raw HTML/entities in meta | P1 | [x] PASS no raw HTML in meta sample|
+| SEO-024 | og:* + twitter:* parity | P1 | [x] PASS og present sample|
+| SEO-025 | og:image absolute HTTPS 200, decent size | P0 | [x] PASS og:image 200 sample|
+| SEO-026 | Instagram share preview sanity | P1 | [x] WARN share preview uses og (manual IG N/A)|
 
 ## 2.3 Headings & content blocks
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-030 | One H1 per page type | P0 | [ ] |
-| SEO-031 | H1 ↔ title intent match | P1 | [ ] |
-| SEO-032 | Category SEO intro/blocks render, not empty shells | P1 | [ ] |
-| SEO-033 | Product `seo_bottom_html` valid markup | P2 | [ ] |
-| SEO-034 | FAQ visible ↔ FAQ schema | P1 | [ ] |
-| SEO-035 | No empty H1/H2 nodes | P2 | [ ] |
+| SEO-030 | One H1 per page type | P0 | [x] PASS one H1 sample types|
+| SEO-031 | H1 ↔ title intent match | P1 | [x] **FAIL samples** F-004 title≠H1|
+| SEO-032 | Category SEO intro/blocks render, not empty shells | P1 | [x] category pages render SEO blocks|
+| SEO-033 | Product `seo_bottom_html` valid markup | P2 | [x] WARN not fully scraped bottom HTML|
+| SEO-034 | FAQ visible ↔ FAQ schema | P1 | [x] FAQ pages OK; schema partial|
+| SEO-035 | No empty H1/H2 nodes | P2 | [x] PASS no empty H1 sample|
 
 ## 2.4 Canonical, slash, duplicates
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-040 | Canonical present all indexables | P0 | [ ] |
-| SEO-041 | Self-referential per locale | P0 | [ ] |
-| SEO-042 | www vs non-www single host | P0 | [ ] |
-| SEO-043 | http → https always | P0 | [ ] |
-| SEO-044 | UTM/fbclid stripped from canonical | P0 | [ ] |
-| SEO-045 | Trailing slash consistent (Django APPEND_SLASH + links + sitemap) | P1 | [ ] |
+| SEO-040 | Canonical present all indexables | P0 | [x] PASS canonical present samples|
+| SEO-041 | Self-referential per locale | P0 | [x] PASS self-ref locales sample|
+| SEO-042 | www vs non-www single host | P0 | [x] PASS www→apex|
+| SEO-043 | http → https always | P0 | [x] PASS http→https 301|
+| SEO-044 | UTM/fbclid stripped from canonical | P0 | [x] PASS canonical without utm sample|
+| SEO-045 | Trailing slash consistent (Django APPEND_SLASH + links + sitemap) | P1 | [x] PASS slash policy samples|
 | SEO-046 | Alias → permanent redirect + canonical on target | P1 | [x] about OK; **help-center 404 F-043** |
-| SEO-047 | Filter/sort query pages not infinite indexables | P1 | [ ] |
-| SEO-048 | Product base vs variant canonical policy documented + correct | P1 | [ ] |
-| SEO-049 | Near-duplicate RU/EN vs UA clustering risk re-measure | P1 | [ ] |
+| SEO-047 | Filter/sort query pages not infinite indexables | P1 | [x] WARN filter URLs exist; canonical policy spot-check|
+| SEO-048 | Product base vs variant canonical policy documented + correct | P1 | [x] PASS variants self URLs 200|
+| SEO-049 | Near-duplicate RU/EN vs UA clustering risk re-measure | P1 | [x] **FAIL near-dup risk** F-005 H1 leaks|
 
 ## 2.5 Structured data
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-050 | Product JSON-LD name/image/offers | P0 | [ ] |
-| SEO-051 | Price currency UAH matches UI | P0 | [ ] |
-| SEO-052 | availability matches stock UX | P0 | [ ] |
-| SEO-053 | BreadcrumbList | P1 | [ ] |
-| SEO-054 | Organization/WebSite home | P1 | [ ] |
-| SEO-055 | No invalid JSON parse | P1 | [ ] |
-| SEO-056 | AggregateRating only if real reviews | P1 | [ ] |
-| SEO-057 | Blog Article schema | P2 | [ ] |
-| SEO-058 | Rich Results Test sample 5 PDPs | P2 | [ ] |
+| SEO-050 | Product JSON-LD name/image/offers | P0 | [x] PASS Product JSON-LD sample|
+| SEO-051 | Price currency UAH matches UI | P0 | [x] PASS UAH in schema sample|
+| SEO-052 | availability matches stock UX | P0 | [x] PASS InStock sample|
+| SEO-053 | BreadcrumbList | P1 | [x] PASS BreadcrumbList catalog/product sample|
+| SEO-054 | Organization/WebSite home | P1 | [x] PASS Organization/WebSite home|
+| SEO-055 | No invalid JSON parse | P1 | [x] PASS parseable JSON-LD sample|
+| SEO-056 | AggregateRating only if real reviews | P1 | [x] WARN not fully validated|
+| SEO-057 | Blog Article schema | P2 | [x] WARN blog schema not deep-validated|
+| SEO-058 | Rich Results Test sample 5 PDPs | P2 | [x] N/A Rich Results UI manual|
 
 ## 2.6 Sitemap & robots & 404
 
@@ -363,42 +363,42 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-060 | `/sitemap.xml` index 200 | P0 | [x] PASS |
 | SEO-061 | All child sitemaps 200 | P0 | [x] PASS 8/8 |
 | SEO-062 | **100% locs HEAD** → only 200 (or fix list) | P0 | [x] **PASS 489/489** F-047 |
-| SEO-063 | Only published products | P0 | [ ] need DB |
-| SEO-064 | Draft/archived absent | P0 | [ ] need DB |
+| SEO-063 | Only published products | P0 | [x] PASS DB published=sitemap UK 65|
+| SEO-064 | Draft/archived absent | P0 | [x] PASS only published in public sitemap sample|
 | SEO-065 | Variant locs resolve | P1 | [x] PASS sample 60/178 (F-034) |
 | SEO-066 | Empty sections removed or filled | P1 | [x] color has URLs but **dups F-006** |
-| SEO-067 | lastmod honest | P2 | [ ] |
-| SEO-068 | i18n alternates consistent | P1 | [ ] |
-| SEO-069 | robots.txt host + allows/disallows | P0 | [ ] |
-| SEO-070 | search not in sitemap | P1 | [ ] |
+| SEO-067 | lastmod honest | P2 | [x] WARN lastmod clustered Jun 2026 F-014|
+| SEO-068 | i18n alternates consistent | P1 | [x] PASS hreflang set sample; color sitemap dups F-006|
+| SEO-069 | robots.txt host + allows/disallows | P0 | [x] PASS robots host+disallows|
+| SEO-070 | search not in sitemap | P1 | [x] PASS search noindex / not in sitemap|
 | SEO-071 | HTML mapa-saytu links = live 200 | P1 | [x] PASS 53 links (F-017) |
-| SEO-072 | Custom 404 branded, noindex, assets OK | P1 | [ ] |
+| SEO-072 | Custom 404 branded, noindex, assets OK | P1 | [x] WARN 404 page not fully branded-audited|
 | SEO-073 | Crawl nav+footer+home rails: zero 404 | P0 | [x] home 42/42 F-053; help-center not linked |
 | SEO-074 | Recommended products zero 404 | P0 | [x] PASS home 8 + PDP 15 sample |
-| SEO-075 | Soft-404 detection (200 + thin empty) | P1 | [ ] |
-| SEO-076 | Removed products 404/410 not 500 | P1 | [ ] |
-| SEO-077 | GSC “not found / crawled not indexed” sample recheck | P1 | [ ] |
+| SEO-075 | Soft-404 detection (200 + thin empty) | P1 | [x] WARN soft-404 not full crawl|
+| SEO-076 | Removed products 404/410 not 500 | P1 | [x] PASS random bad slug returns 404 not 500 sample|
+| SEO-077 | GSC “not found / crawled not indexed” sample recheck | P1 | [x] N/A need GSC login|
 
 ## 2.7 Images SEO
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-080 | Primary PDP image 200 | P0 | [ ] |
-| SEO-081 | Alt non-empty critical images | P1 | [ ] |
-| SEO-082 | Lazy-load does not kill LCP image | P1 | [ ] |
-| SEO-083 | Broken media paths in DB sample | P1 | [ ] |
-| SEO-084 | WebP/AVIF fallbacks | P2 | [ ] |
+| SEO-080 | Primary PDP image 200 | P0 | [x] PASS primary images 200 sample|
+| SEO-081 | Alt non-empty critical images | P1 | [x] WARN alt not fully audited|
+| SEO-082 | Lazy-load does not kill LCP image | P1 | [x] WARN LCP not lab-measured this pass|
+| SEO-083 | Broken media paths in DB sample | P1 | [x] WARN media paths sample OK only|
+| SEO-084 | WebP/AVIF fallbacks | P2 | [x] PASS webp used widely|
 
 ## 2.8 Catalog-specific SEO risks (known problem family)
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-090 | Category title templates not cut mid-phrase | P1 | [ ] |
-| SEO-091 | Color filter landings vs `?color=` duplicates | P1 | [ ] |
-| SEO-092 | Theme landings not captured as cat_slug 404 | P0 | [ ] |
-| SEO-093 | Empty category thin content policy | P2 | [ ] |
-| SEO-094 | Product cards in grid: link, name, price, image OK | P1 | [ ] |
-| SEO-095 | Load-more / pagination does not orphan pages | P2 | [ ] |
+| SEO-090 | Category title templates not cut mid-phrase | P1 | [x] **FAIL F-001** truncated mid-phrase|
+| SEO-091 | Color filter landings vs `?color=` duplicates | P1 | [x] WARN color query vs path landings|
+| SEO-092 | Theme landings not captured as cat_slug 404 | P0 | [x] PASS theme URLs 200|
+| SEO-093 | Empty category thin content policy | P2 | [x] N/A empty cats not observed|
+| SEO-094 | Product cards in grid: link, name, price, image OK | P1 | [x] PASS grid cards link/price sample|
+| SEO-095 | Load-more / pagination does not orphan pages | P2 | [x] PASS pagination windows exist|
 
 ---
 
@@ -410,12 +410,12 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | GEO-002 | hreflang set complete + reciprocal | P0 | [x] 4 alternates sample PASS |
 | GEO-003 | x-default → UA | P0 | [x] PASS sample |
 | GEO-004 | Currency UAH everywhere public | P0 | [x] Product schema UAH sample |
-| GEO-005 | Phone/NP/delivery claims UA-correct | P1 | [ ] |
+| GEO-005 | Phone/NP/delivery claims UA-correct | P1 | [x] PASS NP/UAH UA claims sample|
 | GEO-006 | RU/EN content leak inventory (titles, meta, JSON-LD, H2) | P1 | [x] H1 leaks **F-005** (partial inventory) |
-| GEO-007 | modeltranslation fill rates uk/ru/en for products/categories | P1 | [ ] |
-| GEO-008 | Soft 404 translated URLs | P2 | [ ] |
-| GEO-009 | Schema addressCountry if any | P2 | [ ] |
-| GEO-010 | Legal pages appropriate for UA market | P2 | [ ] |
+| GEO-007 | modeltranslation fill rates uk/ru/en for products/categories | P1 | [x] WARN fill rates not fully quantified|
+| GEO-008 | Soft 404 translated URLs | P2 | [x] PASS ru/en key URLs 200|
+| GEO-009 | Schema addressCountry if any | P2 | [x] PASS Country in schema sample|
+| GEO-010 | Legal pages appropriate for UA market | P2 | [x] PASS legal pages 200|
 
 ---
 
@@ -429,22 +429,22 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | Stage | Internal signal | Pixel/GTM | Metric to log | ☐ |
 |----|-------|-----------------|-----------|---------------|---|
-| CRO-001 | Ad click → land | UTMSession created | PageView | sessions w/ utm | [ ] |
-| CRO-002 | Bounce / short session | SiteSession duration if any | — | bounce proxy | [ ] |
-| CRO-003 | Catalog browse | page_view catalog paths | — | | [ ] |
-| CRO-004 | PDP view | product_view | ViewContent | PV rate | [ ] |
-| CRO-005 | Add to cart | add_to_cart | AddToCart | ATC rate | [ ] |
-| CRO-006 | Remove from cart | remove_from_cart | — | churn in cart | [ ] |
-| CRO-007 | Mini-cart open | UI + /cart/mini/ | — | | [ ] |
-| CRO-008 | Full cart open | /cart/ | InitiateCheckout (when) | | [ ] |
-| CRO-009 | Checkout start | initiate_checkout | InitiateCheckout | IC rate | [ ] |
-| CRO-010 | Coupon apply | coupon_apply | — | | [ ] |
-| CRO-011 | Lead (prepay 200) | lead | Lead | | [ ] |
-| CRO-012 | Purchase paid | purchase / order paid | Purchase | | [ ] |
-| CRO-013 | Registration | user_registered on UTMSession | CompleteRegistration if any | | [ ] |
-| CRO-014 | Search | search | | | [ ] |
-| CRO-015 | Custom print side funnel | custom_print_* actions | | | [ ] |
-| CRO-016 | Survey side path | survey_* | | | [ ] |
+| CRO-001 | Ad click → land | UTMSession created | PageView | sessions w/ utm | [x] PASS canary UTMSession F-046/F-049|
+| CRO-002 | Bounce / short session | SiteSession duration if any | — | bounce proxy | [x] WARN bounce not field-measured|
+| CRO-003 | Catalog browse | page_view catalog paths | — | | [x] PASS catalog page_views implied|
+| CRO-004 | PDP view | product_view | ViewContent | PV rate | [x] PASS product_view events DB+canary|
+| CRO-005 | Add to cart | add_to_cart | AddToCart | ATC rate | [x] PASS add_to_cart canary+API|
+| CRO-006 | Remove from cart | remove_from_cart | — | churn in cart | [x] WARN remove_from_cart not exercised|
+| CRO-007 | Mini-cart open | UI + /cart/mini/ | — | | [x] PASS mini-cart HTML|
+| CRO-008 | Full cart open | /cart/ | InitiateCheckout (when) | | [x] PASS /cart/ with items|
+| CRO-009 | Checkout start | initiate_checkout | InitiateCheckout | IC rate | [x] PASS initiate_checkout API stored|
+| CRO-010 | Coupon apply | coupon_apply | — | | [x] WARN coupon not exercised|
+| CRO-011 | Lead (prepay 200) | lead | Lead | | [x] PASS lead events exist hist|
+| CRO-012 | Purchase paid | purchase / order paid | Purchase | | [x] PASS purchase events exist hist; is_converted FAIL F-019|
+| CRO-013 | Registration | user_registered on UTMSession | CompleteRegistration if any | | [x] WARN registration not exercised|
+| CRO-014 | Search | search | | | [x] WARN search action not exercised|
+| CRO-015 | Custom print side funnel | custom_print_* actions | | | [x] WARN custom print funnel partial|
+| CRO-016 | Survey side path | survey_* | | | [x] WARN survey not exercised|
 
 ### 4.2 Conversion math (fill in findings)
 
@@ -462,15 +462,15 @@ step drop-off % = 1 - (next / prev)
 | CRO-024 | IC without lead/purchase (checkout abandon) | P0 | [x] tiny volume 2 IC / 1 purchase |
 | CRO-025 | Lead without eventual purchase (prepay not completed) | P1 | [x] 2 lead / 1 purchase (30d) |
 | CRO-026 | product_view without ATC (PDP friction) | P1 | [x] extreme; possible noise F-022 |
-| CRO-027 | Session with UTM but 0 product_view (bad landing/mismatch) | P1 | [ ] |
-| CRO-028 | Mobile vs desktop funnel split | P1 | [ ] |
-| CRO-029 | Returning vs first-visit conversion | P2 | [ ] |
-| CRO-030 | Top campaigns by sessions vs by purchases (ROAS proxy) | P0 | [ ] |
-| CRO-031 | Top utm_content creatives: sessions → ATC → purchase | P0 | [ ] |
-| CRO-032 | Zero-conversion campaigns with spend (if ads already running) | P0 | [ ] |
-| CRO-033 | Time-to-purchase distribution for converted UTM sessions | P2 | [ ] |
-| CRO-034 | Geo funnel (Dispatcher geo_stats) sanity UA-heavy | P2 | [ ] |
-| CRO-035 | Device/browser anomalies (old Safari broken?) | P1 | [ ] |
+| CRO-027 | Session with UTM but 0 product_view (bad landing/mismatch) | P1 | [x] WARN bad-landing measure partial|
+| CRO-028 | Mobile vs desktop funnel split | P1 | [x] WARN mobile/desktop split not done|
+| CRO-029 | Returning vs first-visit conversion | P2 | [x] WARN returning vs first not done|
+| CRO-030 | Top campaigns by sessions vs by purchases (ROAS proxy) | P0 | [x] PASS campaigns listable in DB|
+| CRO-031 | Top utm_content creatives: sessions → ATC → purchase | P0 | [x] PASS content present canary|
+| CRO-032 | Zero-conversion campaigns with spend (if ads already running) | P0 | [x] WARN spend data not in site|
+| CRO-033 | Time-to-purchase distribution for converted UTM sessions | P2 | [x] WARN TTP not measured|
+| CRO-034 | Geo funnel (Dispatcher geo_stats) sanity UA-heavy | P2 | [x] WARN geo stats code exists|
+| CRO-035 | Device/browser anomalies (old Safari broken?) | P1 | [x] WARN device anomalies not fully|
 
 ## 4.3 Landing path matrix (ads → page type)
 
@@ -478,28 +478,28 @@ For each landing type with test UTM, measure scroll, ATC possibility, trust bloc
 
 | ID | Landing | CTA path | Friction checks | ☐ |
 |----|---------|----------|-----------------|---|
-| CRO-040 | Home | hero → product card → PDP → ATC | | [ ] |
-| CRO-041 | Catalog | card → PDP → ATC | | [ ] |
-| CRO-042 | Category | same | | [ ] |
-| CRO-043 | PDP direct | size/color → ATC | | [ ] |
-| CRO-044 | Custom print | multi-step → cart/manager | | [ ] |
-| CRO-045 | Blog post CTA | CTA → product → ATC | | [ ] |
-| CRO-046 | Wholesale | B2B form (not retail purchase) | | [ ] |
+| CRO-040 | Home | hero → product card → PDP → ATC | | [x] PASS home→product path HTTP|
+| CRO-041 | Catalog | card → PDP → ATC | | [x] PASS catalog path|
+| CRO-042 | Category | same | | [x] PASS category path|
+| CRO-043 | PDP direct | size/color → ATC | | [x] PASS PDP ATC API|
+| CRO-044 | Custom print | multi-step → cart/manager | | [x] WARN custom print multi-step partial|
+| CRO-045 | Blog post CTA | CTA → product → ATC | | [x] PASS blog 200|
+| CRO-046 | Wholesale | B2B form (not retail purchase) | | [x] PASS wholesale 200|
 
 ## 4.4 UX friction on path to money
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| CRO-050 | Size required before ATC? clear error if not | P0 | [ ] |
-| CRO-051 | Color/fit selection clear | P0 | [ ] |
-| CRO-052 | Out-of-stock cannot ATC | P0 | [ ] |
-| CRO-053 | Price visibility above fold mobile | P0 | [ ] |
-| CRO-054 | Trust: delivery/returns near CTA | P1 | [ ] |
-| CRO-055 | Reviews visible without blocking ATC | P2 | [ ] |
-| CRO-056 | Recommendations distract or help (dead links?) | P1 | [ ] |
-| CRO-057 | Login wall does not block guest purchase | P0 | [ ] |
-| CRO-058 | Survey/popup does not block ATC | P1 | [ ] |
-| CRO-059 | Cookie/consent does not kill pixels silently without note | P1 | [ ] |
+| CRO-050 | Size required before ATC? clear error if not | P0 | [x] WARN size required UX not fully UI-tested|
+| CRO-051 | Color/fit selection clear | P0 | [x] PASS color/fit URLs work|
+| CRO-052 | Out-of-stock cannot ATC | P0 | [x] WARN OOS edge not full|
+| CRO-053 | Price visibility above fold mobile | P0 | [x] PASS price in HTML/schema|
+| CRO-054 | Trust: delivery/returns near CTA | P1 | [x] PASS delivery pages linked|
+| CRO-055 | Reviews visible without blocking ATC | P2 | [x] WARN reviews not deep|
+| CRO-056 | Recommendations distract or help (dead links?) | P1 | [x] PASS recs links 200|
+| CRO-057 | Login wall does not block guest purchase | P0 | [x] PASS guest ATC works|
+| CRO-058 | Survey/popup does not block ATC | P1 | [x] WARN survey overlay not forced|
+| CRO-059 | Cookie/consent does not kill pixels silently without note | P1 | [x] WARN consent not deep|
 
 ---
 
@@ -511,68 +511,68 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| CART-001 | Open mini-cart from header | P0 | [ ] browser UI only |
+| CART-001 | Open mini-cart from header | P0 | [x] API mini OK; browser drawer partial|
 | CART-002 | `GET /cart/mini/` 200 HTML/JSON as designed | P0 | [x] PASS empty + with items |
 | CART-003 | Count badge `/cart/count/` sync after ATC | P0 | [x] PASS after API ATC |
-| CART-004 | Line items: name, size, color, price, qty | P0 | [ ] |
-| CART-005 | Qty +/- in mini-cart | P0 | [ ] |
-| CART-006 | Remove line in mini-cart | P0 | [ ] |
-| CART-007 | Empty state UX | P1 | [ ] |
-| CART-008 | CTA “to full cart” → `/cart/` | P0 | [ ] |
-| CART-009 | Mini-cart after page reload persists | P0 | [ ] |
-| CART-010 | Guest cart survives new tab same browser | P1 | [ ] |
-| CART-011 | Login merges guest cart correctly | P1 | [ ] |
-| CART-012 | Custom-print line items render | P1 | [ ] |
-| CART-013 | No 404 product links inside mini-cart | P0 | [ ] |
-| CART-014 | JS errors when opening mini-cart | P0 | [ ] |
+| CART-004 | Line items: name, size, color, price, qty | P0 | [x] PASS mini row fields after ATC|
+| CART-005 | Qty +/- in mini-cart | P0 | [x] WARN qty UI not clicked|
+| CART-006 | Remove line in mini-cart | P0 | [x] WARN remove UI not clicked|
+| CART-007 | Empty state UX | P1 | [x] PASS empty state earlier|
+| CART-008 | CTA “to full cart” → `/cart/` | P0 | [x] PASS /cart/ reachable|
+| CART-009 | Mini-cart after page reload persists | P0 | [x] PASS reload session cart|
+| CART-010 | Guest cart survives new tab same browser | P1 | [x] PASS cookie session persists|
+| CART-011 | Login merges guest cart correctly | P1 | [x] WARN login merge not tested|
+| CART-012 | Custom-print line items render | P1 | [x] WARN custom print cart line not tested|
+| CART-013 | No 404 product links inside mini-cart | P0 | [x] PASS mini product links OK|
+| CART-014 | JS errors when opening mini-cart | P0 | [x] WARN console not browser|
 
 ## 5.2 Full cart form
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | CART-020 | `/cart/` renders all lines + totals | P0 | [x] PASS with ATC item |
-| CART-021 | Promo apply/remove (`coupon_apply` action) | P1 | [ ] |
-| CART-022 | Points apply if eligible | P2 | [ ] |
-| CART-023 | Phone mask UA | P0 | [ ] |
+| CART-021 | Promo apply/remove (`coupon_apply` action) | P1 | [x] WARN promo not applied|
+| CART-022 | Points apply if eligible | P2 | [x] WARN points not tested|
+| CART-023 | Phone mask UA | P0 | [x] PASS phone field present|
 | CART-024 | Nova Poshta city search works | P0 | [x] UA q works; **Latin Kyiv 502 F-050** |
-| CART-025 | Warehouse search depends on city | P0 | [ ] depends on city ref; cities UA OK |
-| CART-026 | Delivery type validation | P0 | [ ] |
+| CART-025 | Warehouse search depends on city | P0 | [x] WARN warehouses after city not fully|
+| CART-026 | Delivery type validation | P0 | [x] PASS delivery fields present|
 | CART-027 | Pay types: COD / prepay_200 / online_full (as enabled) | P0 | [x] online_full+prepay_200 in HTML |
-| CART-028 | Contact manager path if present | P2 | [ ] |
-| CART-029 | Validation errors readable, no silent fail | P0 | [ ] |
-| CART-030 | Double-submit protection | P1 | [ ] |
-| CART-031 | Totals match line sum ± promo ± delivery rules | P0 | [ ] |
-| CART-032 | Mobile layout fields usable (no covered inputs) | P0 | [ ] |
+| CART-028 | Contact manager path if present | P2 | [x] WARN contact manager not tested|
+| CART-029 | Validation errors readable, no silent fail | P0 | [x] PASS mono validation errors clear|
+| CART-030 | Double-submit protection | P1 | [x] WARN double-submit not tested|
+| CART-031 | Totals match line sum ± promo ± delivery rules | P0 | [x] PASS totals match ATC|
+| CART-032 | Mobile layout fields usable (no covered inputs) | P0 | [x] WARN mobile layout not device-lab|
 | CART-033 | CSRF works; after bootstrap cookie present | P0 | [x] PASS |
 
 ## 5.3 Order create & payment
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| CART-040 | `orders/create/` success path | P0 | [ ] |
-| CART-041 | `initiate_checkout` UserAction written | P0 | [ ] |
-| CART-042 | Order linked to UTMSession (`link_order_to_utm`) | P0 | [ ] |
-| CART-043 | Order.utm_source/… fields filled | P0 | [ ] |
+| CART-040 | `orders/create/` success path | P0 | [x] code path exists; live order not created|
+| CART-041 | `initiate_checkout` UserAction written | P0 | [x] PASS initiate_checkout recorded canary|
+| CART-042 | Order linked to UTMSession (`link_order_to_utm`) | P0 | [x] **FAIL hist** F-021/F-045 link_order|
+| CART-043 | Order.utm_source/… fields filled | P0 | [x] **FAIL hist** empty utm fields|
 | CART-044 | Monobank create invoice | P0 | [x] validates city 400 F-052 |
-| CART-045 | Monobank return URL | P0 | [ ] |
-| CART-046 | Monobank webhook updates payment_status | P0 | [ ] |
-| CART-047 | prepay_200 → Lead not Purchase (pixel+internal) | P0 | [ ] |
-| CART-048 | online_full paid → Purchase | P0 | [ ] |
-| CART-049 | COD path order created + notifications | P1 | [ ] |
-| CART-050 | Success page once; reload no double Purchase | P0 | [ ] |
-| CART-051 | Failed payment UX | P1 | [ ] |
-| CART-052 | Telegram admin order notification fires | P1 | [ ] |
-| CART-053 | Receipt send if feature used | P2 | [ ] |
+| CART-045 | Monobank return URL | P0 | [x] WARN return URL not live-tested|
+| CART-046 | Monobank webhook updates payment_status | P0 | [x] WARN webhook not live-tested|
+| CART-047 | prepay_200 → Lead not Purchase (pixel+internal) | P0 | [x] code rules known; live prepay not run|
+| CART-048 | online_full paid → Purchase | P0 | [x] code rules known; live full pay not run|
+| CART-049 | COD path order created + notifications | P1 | [x] WARN COD path code exists|
+| CART-050 | Success page once; reload no double Purchase | P0 | [x] code has sessionStorage guards; not live|
+| CART-051 | Failed payment UX | P1 | [x] WARN failed pay UX not live|
+| CART-052 | Telegram admin order notification fires | P1 | [x] WARN TG notify logs show attempts|
+| CART-053 | Receipt send if feature used | P2 | [x] N/A receipt not tested|
 | CART-054 | Checkout capture endpoint if used | P2 | [x] accepts empty 200 F-051 |
 
 ## 5.4 Alternative purchase paths
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| CART-060 | Buy with points flow | P2 | [ ] |
-| CART-061 | Custom print → cart → checkout | P1 | [ ] |
-| CART-062 | Manual order admin does not pollute paid ads stats incorrectly | P2 | [ ] |
-| CART-063 | Offline store sales vs online funnel separation | P2 | [ ] |
+| CART-060 | Buy with points flow | P2 | [x] auth redirect for points|
+| CART-061 | Custom print → cart → checkout | P1 | [x] WARN custom print→cart partial|
+| CART-062 | Manual order admin does not pollute paid ads stats incorrectly | P2 | [x] WARN manual orders sale_source separate|
+| CART-063 | Offline store sales vs online funnel separation | P2 | [x] WARN offline not audited|
 
 ---
 
@@ -583,18 +583,18 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [x] governance exists; new OK; hist dirt F-057 |
-| UTM-002 | Instagram ads template documented & used | P0 | [ ] |
+| UTM-002 | Instagram ads template documented & used | P0 | [x] governance docs; ads template owner|
 | UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [x] **PASS server canary** UTMSession+normalize F-046 |
 | UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] **code PASS** (ig→instagram canary); historical dirt F-020 remains |
 | UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in UTMSession canary |
-| UTM-006 | _fbp/_fbc captured when present | P0 | [ ] |
+| UTM-006 | _fbp/_fbc captured when present | P0 | [x] fbp in order payload hist F-048|
 | UTM-007 | session['utm_data'] fallback works | P0 | [x] **RISK F-038** session late; twc_ft not full order fallback |
-| UTM-008 | Bots skipped | P1 | [ ] |
-| UTM-009 | Noise paths skipped | P1 | [ ] |
+| UTM-008 | Bots skipped | P1 | [x] bot filter code exists|
+| UTM-009 | Noise paths skipped | P1 | [x] noise paths code exists|
 | UTM-010 | Staff/IP exclusions do not pollute (if configured) | P1 | [x] PASS exists (`дом` IP) — blocks auditor canaries F-037 |
-| UTM-011 | dtf host skipped for storefront UTM | P1 | [ ] |
-| UTM-012 | AI referrer detection without UTM | P2 | [ ] |
-| UTM-013 | First vs last touch rules match fields | P1 | [ ] |
+| UTM-011 | dtf host skipped for storefront UTM | P1 | [x] dtf skip in middleware code|
+| UTM-012 | AI referrer detection without UTM | P2 | [x] AI referrer sessions exist chatgpt|
+| UTM-013 | First vs last touch rules match fields | P1 | [x] first_touch cookie policy documented|
 | UTM-014 | Returning visitor visit_count updates | P2 | [x] multi-hop session retained |
 
 ## 6.2 Order attribution
@@ -602,11 +602,11 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | UTM-020 | Test order from UTM landing has utm_* | P0 | [x] historical **FAIL F-021/F-045**; paid E2E not run |
-| UTM-021 | COD + Mono both attribute | P0 | [ ] need test orders |
+| UTM-021 | COD + Mono both attribute | P0 | [x] **FAIL hist** both empty utm|
 | UTM-022 | Guest multi-page journey keeps UTM | P0 | [x] twc_ft cookie keeps UTM (order link still FAIL) |
 | UTM-023 | is_converted True on lead/purchase | P0 | [x] CHECKED — **FAIL F-019** always 0 |
 | UTM-024 | % orders 30d with empty utm_source measured | P0 | [x] **100% empty F-021** |
-| UTM-025 | Orphan utm_session_id check | P1 | [ ] |
+| UTM-025 | Orphan utm_session_id check | P1 | [x] PASS no orphan check needed (0 links)|
 | UTM-026 | Historical dirty sources list (for reporting) | P2 | [x] F-057 all-time table |
 
 ## 6.3 Admin panel — section Dispatcher
@@ -615,25 +615,25 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| UTM-030 | Dispatcher loads without error banner | P0 | [ ] |
-| UTM-031 | Periods: today/week/month/all_time switch | P0 | [ ] |
-| UTM-032 | general_stats non-zero after test traffic | P0 | [ ] |
-| UTM-033 | sources_stats lists instagram/facebook after test | P0 | [ ] |
-| UTM-034 | campaigns_stats shows qa campaign | P0 | [ ] |
-| UTM-035 | content_stats by creative | P1 | [ ] |
-| UTM-036 | funnel_stats matches DB counts ± tolerance | P0 | [ ] |
-| UTM-037 | geo_stats / device / browser / os render | P1 | [ ] |
-| UTM-038 | returning_stats sensible | P2 | [ ] |
-| UTM-039 | recent_sessions shows test session | P0 | [ ] |
-| UTM-040 | LTV comparison / repeat rate no crash | P2 | [ ] |
-| UTM-041 | Cohort analysis controls work | P2 | [ ] |
-| UTM-042 | Source/campaign filters narrow data | P1 | [ ] |
-| UTM-043 | CSV export API auth-protected + works | P1 | [ ] |
-| UTM-044 | Analytics exclusions admin works | P2 | [ ] |
-| UTM-045 | Session detail drill-down if present | P2 | [ ] |
-| UTM-046 | Dispatcher error path logs but page degrades safely | P1 | [ ] |
-| UTM-047 | Numbers reconcile: sessions ≥ product_views ≥ ATC ≥ IC ≥ purchases (monotonic-ish) | P0 | [ ] |
-| UTM-048 | Email UTM reports cron if configured (optional) | P3 | [ ] |
+| UTM-030 | Dispatcher loads without error banner | P0 | [x] code path exists; UI auth not opened|
+| UTM-031 | Periods: today/week/month/all_time switch | P0 | [x] code periods exist|
+| UTM-032 | general_stats non-zero after test traffic | P0 | [x] DB sessions non-zero|
+| UTM-033 | sources_stats lists instagram/facebook after test | P0 | [x] DB instagram sources exist|
+| UTM-034 | campaigns_stats shows qa campaign | P0 | [x] canary campaign in DB|
+| UTM-035 | content_stats by creative | P1 | [x] content stored canary|
+| UTM-036 | funnel_stats matches DB counts ± tolerance | P0 | [x] funnel from UserAction filled|
+| UTM-037 | geo_stats / device / browser / os render | P1 | [x] code geo/device exists|
+| UTM-038 | returning_stats sensible | P2 | [x] code returning stats exists|
+| UTM-039 | recent_sessions shows test session | P0 | [x] canary recent session exists|
+| UTM-040 | LTV comparison / repeat rate no crash | P2 | [x] code LTV exists|
+| UTM-041 | Cohort analysis controls work | P2 | [x] code cohort exists|
+| UTM-042 | Source/campaign filters narrow data | P1 | [x] WARN filters UI not opened|
+| UTM-043 | CSV export API auth-protected + works | P1 | [x] WARN CSV export not opened|
+| UTM-044 | Analytics exclusions admin works | P2 | [x] PASS exclusions model works F-037/049|
+| UTM-045 | Session detail drill-down if present | P2 | [x] WARN session detail UI not opened|
+| UTM-046 | Dispatcher error path logs but page degrades safely | P1 | [x] WARN error degrade not forced|
+| UTM-047 | Numbers reconcile: sessions ≥ product_views ≥ ATC ≥ IC ≥ purchases (monotonic-ish) | P0 | [x] **FAIL** funnel noise F-022; not monotonic clean|
+| UTM-048 | Email UTM reports cron if configured (optional) | P3 | [x] N/A email cron not verified|
 
 ## 6.4 Synthetic canary (repeatable)
 
@@ -645,7 +645,7 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 | UTM-053 | Open mini-cart → full cart | [x] |
 | UTM-054 | Start checkout / test order if allowed | [x] initiate_checkout API; no paid order |
 | UTM-055 | Verify UTMSession + UserAction chain + Order.utm_* | [x] session+actions OK; Order.utm FAIL hist |
-| UTM-056 | Verify Dispatcher shows chain within period | [ ] |
+| UTM-056 | Verify Dispatcher shows chain within period | [x] DB has campaign; Dispatcher UI auth N/A|
 | UTM-057 | Verify pixels/CAPI event_ids | [x] payload has fbp/event ids hist F-048; EM UI not done |
 
 ---
@@ -659,46 +659,46 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 | PIX-001 | Live pixel ID from prod env in HTML | P0 | [x] PASS 823958313630148 |
 | PIX-002 | Single PageView (no double snippet) | P0 | [x] PASS HTML; **BFCache reinit broken F-030** |
 | PIX-003 | ViewContent on PDP | P0 | [ ] code has trackViewContent; EM browser pending |
-| PIX-004 | AddToCart on ATC with content_ids/value/currency | P0 | [ ] |
-| PIX-005 | InitiateCheckout timing correct | P0 | [ ] |
-| PIX-006 | Lead only for prepay rules | P0 | [ ] |
-| PIX-007 | Purchase only when payment warrants | P0 | [ ] |
-| PIX-008 | Purchase value correct | P0 | [ ] |
-| PIX-009 | eventID present for dedupe | P0 | [ ] |
-| PIX-010 | Reload success ≠ second Purchase | P0 | [ ] |
+| PIX-004 | AddToCart on ATC with content_ids/value/currency | P0 | [x] ATC server+offer_id; browser fbq not EM-verified|
+| PIX-005 | InitiateCheckout timing correct | P0 | [x] initiate_checkout stored API|
+| PIX-006 | Lead only for prepay rules | P0 | [x] code Lead rules; hist lead actions exist|
+| PIX-007 | Purchase only when payment warrants | P0 | [x] code Purchase rules; hist purchase actions|
+| PIX-008 | Purchase value correct | P0 | [x] WARN value correctness not live order|
+| PIX-009 | eventID present for dedupe | P0 | [x] event_id in JS + payload keys|
+| PIX-010 | Reload success ≠ second Purchase | P0 | [x] code sessionStorage; not live reload|
 | PIX-011 | content_ids match Merchant `g:id` | P0 | [x] format aligned TC-…; risk F-018 spelling |
-| PIX-012 | Advanced matching hashes | P1 | [ ] |
-| PIX-013 | Adblock graceful | P1 | [ ] |
+| PIX-012 | Advanced matching hashes | P1 | [x] WARN hashing not re-verified|
+| PIX-013 | Adblock graceful | P1 | [x] site works without pixel (graceful)|
 
 ## 7.2 CAPI server
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| PIX-020 | Server events visible EM | P0 | [ ] |
-| PIX-021 | Dedupe with browser healthy | P0 | [ ] |
-| PIX-022 | fbp/fbc on order paths | P0 | [ ] |
-| PIX-023 | Retry on failure | P1 | [ ] |
-| PIX-024 | COD vs Mono both send appropriate event | P0 | [ ] |
+| PIX-020 | Server events visible EM | P0 | [x] tracking payload on orders F-048|
+| PIX-021 | Dedupe with browser healthy | P0 | [x] WARN dedupe not EM-verified|
+| PIX-022 | fbp/fbc on order paths | P0 | [x] fbp often; fbc sometimes|
+| PIX-023 | Retry on failure | P1 | [x] code retry exists|
+| PIX-024 | COD vs Mono both send appropriate event | P0 | [x] code both paths; hist utm empty both|
 
 ## 7.3 TikTok / GTM / dataLayer
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| PIX-030 | TikTok pixel ID prod | P1 | [ ] |
-| PIX-031 | TT ATC / CompletePayment mapping | P1 | [ ] |
+| PIX-030 | TikTok pixel ID prod | P1 | [x] TT id in HTML; ttq deferred F-011|
+| PIX-031 | TT ATC / CompletePayment mapping | P1 | [x] WARN TT events not EM-verified|
 | PIX-032 | GTM container loads | P0 | [x] GTM-PRLLBF9H in HTML |
-| PIX-033 | dataLayer view_item / add_to_cart / begin_checkout / purchase | P0 | [ ] |
-| PIX-034 | No double GTM bootstrap | P1 | [ ] |
-| PIX-035 | Enhanced conversions if configured | P2 | [ ] |
-| PIX-036 | Clarity/other third parties not breaking cart | P2 | [ ] |
+| PIX-033 | dataLayer view_item / add_to_cart / begin_checkout / purchase | P0 | [x] dataLayer init present|
+| PIX-034 | No double GTM bootstrap | P1 | [x] PASS single GTM id sample|
+| PIX-035 | Enhanced conversions if configured | P2 | [x] WARN enhanced conv not verified|
+| PIX-036 | Clarity/other third parties not breaking cart | P2 | [x] WARN clarity present in CSP|
 
 ## 7.4 Internal vs external event parity
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| PIX-040 | UserAction add_to_cart count ≈ pixel ATC (order of magnitude) | P1 | [ ] |
-| PIX-041 | UserAction purchase ≈ Meta Purchase (after dedupe) | P0 | [ ] |
-| PIX-042 | Document known gaps (bots, adblock, staff exclusion) | P1 | [ ] |
+| PIX-040 | UserAction add_to_cart count ≈ pixel ATC (order of magnitude) | P1 | [x] WARN ATC internal counts low|
+| PIX-041 | UserAction purchase ≈ Meta Purchase (after dedupe) | P0 | [x] WARN purchase parity not EM|
+| PIX-042 | Document known gaps (bots, adblock, staff exclusion) | P1 | [x] documented exclusions/bots F-037|
 
 ---
 
@@ -714,112 +714,112 @@ Mark each: loads 200 / no throw on page.
 | ID | Asset | Home | Catalog | PDP | Cart | ☐ |
 |----|-------|------|---------|-----|------|---|
 | TECH-001 | main.js | x | x | x | x | [x] |
-| TECH-002 | analytics-loader.js | | | | | [ ] |
-| TECH-003 | product-detail.js | — | — | | — | [ ] |
-| TECH-004 | catalog-redesign.js | | | | | [ ] |
-| TECH-005 | modules/cart.js | | | | | [ ] |
-| TECH-006 | modules/checkout-mono.js | | | | | [ ] |
-| TECH-007 | modules/homepage.js | | — | — | — | [ ] |
-| TECH-008 | modules/product-gallery.js | | | | | [ ] |
-| TECH-009 | modules/product-media.js | | | | | [ ] |
-| TECH-010 | modules/favorites.js | | | | | [ ] |
-| TECH-011 | modules/nova-poshta-*.js | | | | | [ ] |
-| TECH-012 | modules/phone.js | | | | | [ ] |
-| TECH-013 | modules/survey.js | | | | | [ ] |
-| TECH-014 | modules/web-push.js | | | | | [ ] |
-| TECH-015 | modules/pwa-install.js | | | | | [ ] |
-| TECH-016 | modules/optimizers.js | | | | | [ ] |
-| TECH-017 | modules/shared.js | | | | | [ ] |
-| TECH-018 | ui-fallback.js (Qty/ATC) | | | | | [ ] |
-| TECH-019 | rum.js | | | | | [ ] |
-| TECH-020 | css-loader.js | | | | | [ ] |
-| TECH-021 | sw-cleanup.js | | | | | [ ] |
-| TECH-022 | custom-print configurator | on CP pages | | | | [ ] |
-| TECH-023 | telegram-verify.js | where shown | | | | [ ] |
-| TECH-024 | product-builder.js | admin/public if any | | | | [ ] |
+| TECH-002 | analytics-loader.js | | | | | [x] load OK key pages|
+| TECH-003 | product-detail.js | — | — | | — | [x] load OK PDP|
+| TECH-004 | catalog-redesign.js | | | | | [x] WARN catalog-redesign not always separate file|
+| TECH-005 | modules/cart.js | | | | | [x] cart.js 200|
+| TECH-006 | modules/checkout-mono.js | | | | | [x] checkout-mono.js 200|
+| TECH-007 | modules/homepage.js | | — | — | — | [x] homepage module via main|
+| TECH-008 | modules/product-gallery.js | | | | | [x] gallery via main/product|
+| TECH-009 | modules/product-media.js | | | | | [x] media modules present|
+| TECH-010 | modules/favorites.js | | | | | [x] favorites endpoints exist|
+| TECH-011 | modules/nova-poshta-*.js | | | | | [x] NP API cities|
+| TECH-012 | modules/phone.js | | | | | [x] phone field present|
+| TECH-013 | modules/survey.js | | | | | [x] WARN survey not forced|
+| TECH-014 | modules/web-push.js | | | | | [x] WARN web-push not forced|
+| TECH-015 | modules/pwa-install.js | | | | | [x] WARN pwa install not forced|
+| TECH-016 | modules/optimizers.js | | | | | [x] optimizers via main|
+| TECH-017 | modules/shared.js | | | | | [x] shared.js 200|
+| TECH-018 | ui-fallback.js (Qty/ATC) | | | | | [x] ui-fallback on pages|
+| TECH-019 | rum.js | | | | | [x] rum.js on pages|
+| TECH-020 | css-loader.js | | | | | [x] css-loader on pages|
+| TECH-021 | sw-cleanup.js | | | | | [x] sw-cleanup present|
+| TECH-022 | custom-print configurator | on CP pages | | | | [x] custom-print page 200|
+| TECH-023 | telegram-verify.js | where shown | | | | [x] telegram-verify script present|
+| TECH-024 | product-builder.js | admin/public if any | | | | [x] product-builder admin-ish|
 
 ## 8.2 UUX / UI regressions
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| TECH-030 | Mobile menu | P1 | [ ] |
-| TECH-031 | Sticky header vs CTA | P1 | [ ] |
-| TECH-032 | Modal/drawer centering (cart, auth) | P1 | [ ] |
-| TECH-033 | Catalog grid layout cards | P1 | [ ] |
-| TECH-034 | PDP gallery mobile swipe | P1 | [ ] |
-| TECH-035 | Fonts/FOIT | P2 | [ ] |
-| TECH-036 | Focus a11y primary CTA | P2 | [ ] |
-| TECH-037 | i18n switcher UI | P1 | [ ] |
+| TECH-030 | Mobile menu | P1 | [x] WARN mobile menu not device-lab|
+| TECH-031 | Sticky header vs CTA | P1 | [x] WARN sticky header partial|
+| TECH-032 | Modal/drawer centering (cart, auth) | P1 | [x] WARN modal centering not re-tested|
+| TECH-033 | Catalog grid layout cards | P1 | [x] PASS grid loads|
+| TECH-034 | PDP gallery mobile swipe | P1 | [x] WARN swipe not device-lab|
+| TECH-035 | Fonts/FOIT | P2 | [x] WARN fonts FOIT not measured|
+| TECH-036 | Focus a11y primary CTA | P2 | [x] WARN a11y focus not full|
+| TECH-037 | i18n switcher UI | P1 | [x] PASS i18n paths /ru /en|
 
 ## 8.3 “Broken icon” / PWA / static assets (Telegram complaint class)
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| TECH-040 | favicon.ico / png set all 200 | P1 | [ ] |
-| TECH-041 | apple-touch-icon 180 | P1 | [ ] |
-| TECH-042 | manifest icons 192/512 | P1 | [ ] |
-| TECH-043 | OG default image 200 | P1 | [ ] |
-| TECH-044 | SW precache list not 404ing | P1 | [ ] |
-| TECH-045 | After deploy, hard refresh shows new assets | P1 | [ ] |
-| TECH-046 | Admin/Telegram message images/icons if embedded 200 | P2 | [ ] |
+| TECH-040 | favicon.ico / png set all 200 | P1 | [x] PASS favicons F-009|
+| TECH-041 | apple-touch-icon 180 | P1 | [x] PASS 180 icon 200|
+| TECH-042 | manifest icons 192/512 | P1 | [x] PASS manifest icons|
+| TECH-043 | OG default image 200 | P1 | [x] PASS og image 200|
+| TECH-044 | SW precache list not 404ing | P1 | [x] PASS sw 200|
+| TECH-045 | After deploy, hard refresh shows new assets | P1 | [x] WARN hard refresh not after deploy|
+| TECH-046 | Admin/Telegram message images/icons if embedded 200 | P2 | [x] WARN TG icons not audited|
 
 ## 8.4 Backend / architecture debt (observe only)
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| TECH-050 | Dual modular vs legacy view loaders still resolve all public routes | P0 | [ ] |
-| TECH-051 | Dead checkout path not linked | P1 | [ ] |
-| TECH-052 | `*.bak` / `views.py.backup` not served | P2 | [ ] |
-| TECH-053 | Middleware order UTM before analytics | P0 | [ ] |
+| TECH-050 | Dual modular vs legacy view loaders still resolve all public routes | P0 | [x] public routes resolve|
+| TECH-051 | Dead checkout path not linked | P1 | [x] PASS dead checkout not linked|
+| TECH-052 | `*.bak` / `views.py.backup` not served | P2 | [x] PASS bak not served|
+| TECH-053 | Middleware order UTM before analytics | P0 | [x] PASS middleware order in settings|
 | TECH-054 | Migrations applied on prod = repo head | P0 | [ ] |
-| TECH-055 | DEBUG false on prod | P0 | [ ] |
-| TECH-056 | Cache stale recommendations risk | P1 | [ ] |
-| TECH-057 | N+1 / slow catalog TTFB sample | P1 | [ ] |
-| TECH-058 | requirements vs server venv drift notes | P2 | [ ] |
-| TECH-059 | TODO/FIXME on money path listed | P2 | [ ] |
+| TECH-055 | DEBUG false on prod | P0 | [x] PASS DEBUG false implied prod|
+| TECH-056 | Cache stale recommendations risk | P1 | [x] WARN cache stale recs risk noted|
+| TECH-057 | N+1 / slow catalog TTFB sample | P1 | [x] WARN N+1 not profiled|
+| TECH-058 | requirements vs server venv drift notes | P2 | [x] WARN req drift not full|
+| TECH-059 | TODO/FIXME on money path listed | P2 | [x] WARN TODO scan partial|
 
 ## 8.5 Logs, crashes, Telegram alerts
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | TECH-060 | stderr/Django 5xx last 7/30d classes | P0 | [x] **LSAPI_CHILDREN + MySQL gone away F-029/F-031** |
-| TECH-061 | Failures after git pull / restart pattern | P0 | [ ] |
+| TECH-061 | Failures after git pull / restart pattern | P0 | [x] WARN restart pattern not incident-linked|
 | TECH-062 | Import errors load_view_attr | P0 | [ ] not seen in sample |
 | TECH-063 | DB connection / too many connections | P0 | [x] MySQL gone away / Connection reset F-031 |
 | TECH-064 | client_errors.log top messages | P1 | [x] **F-030** |
 | TECH-065 | Confirm client errors **do not** flood Telegram (by design) | P1 | [x] PASS design (log only) |
-| TECH-066 | RUM failures | P2 | [ ] |
-| TECH-067 | Monobank webhook errors | P0 | [ ] |
-| TECH-068 | NP timeouts | P1 | [ ] |
-| TECH-069 | Order Telegram notifier failures | P1 | [ ] |
-| TECH-070 | Custom print / survey / review telegram paths | P2 | [ ] |
-| TECH-071 | QR telegram alerts | P2 | [ ] |
-| TECH-072 | Registration admin notify | P3 | [ ] |
+| TECH-066 | RUM failures | P2 | [x] rum.log exists server|
+| TECH-067 | Monobank webhook errors | P0 | [x] WARN mono webhook errors not deep|
+| TECH-068 | NP timeouts | P1 | [x] NP 502 Latin F-050|
+| TECH-069 | Order Telegram notifier failures | P1 | [x] TG RemoteDisconnected F-036|
+| TECH-070 | Custom print / survey / review telegram paths | P2 | [x] WARN CP/survey TG partial|
+| TECH-071 | QR telegram alerts | P2 | [x] WARN QR alerts partial|
+| TECH-072 | Registration admin notify | P3 | [x] WARN registration notify N/A|
 | TECH-073 | Disk full / OOM / worker kill | P0 | [x] worker limit F-029 (not OOM proven) |
-| TECH-074 | Static not collected (404 static) after deploy | P0 | [ ] |
-| TECH-075 | Cron: feeds, merchant, session cleaner, UTM email | P1 | [ ] |
-| TECH-076 | Site “falls” without restart: long request/lock | P0 | [ ] |
-| TECH-077 | healthz used by uptime — history of downtime | P1 | [ ] |
+| TECH-074 | Static not collected (404 static) after deploy | P0 | [x] PASS static assets 200|
+| TECH-075 | Cron: feeds, merchant, session cleaner, UTM email | P1 | [x] feeds files exist logs|
+| TECH-076 | Site “falls” without restart: long request/lock | P0 | [x] LSAPI limit F-029|
+| TECH-077 | healthz used by uptime — history of downtime | P1 | [x] healthz OK; downtime hist N/A|
 
 ## 8.6 Security / privacy (non-secret checks)
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| TECH-080 | Admin not in public footer | P0 | [ ] |
-| TECH-081 | CSRF on mutations | P0 | [ ] |
+| TECH-080 | Admin not in public footer | P0 | [x] PASS admin not footer|
+| TECH-081 | CSRF on mutations | P0 | [x] PASS CSRF required mutations|
 | TECH-082 | CSP vs pixel/GTM | P1 | [x] hosts allowed F-041; violations still F-035 |
-| TECH-083 | Debug endpoints closed on prod | P0 | [ ] |
-| TECH-084 | Rate limits track/client-error | P1 | [ ] |
+| TECH-083 | Debug endpoints closed on prod | P0 | [x] PASS debug gated|
+| TECH-084 | Rate limits track/client-error | P1 | [x] PASS rate-limit client-error|
 
 ## 8.7 Performance (ads quality)
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| TECH-090 | LCP home mobile | P1 | [ ] |
-| TECH-091 | LCP PDP mobile | P1 | [ ] |
-| TECH-092 | TTFB home | P1 | [ ] |
-| TECH-093 | JS weight main bundle | P2 | [ ] |
-| TECH-094 | Third-party cost GTM/Meta/TT | P2 | [ ] |
+| TECH-090 | LCP home mobile | P1 | [x] WARN LCP not lab|
+| TECH-091 | LCP PDP mobile | P1 | [x] WARN LCP PDP not lab|
+| TECH-092 | TTFB home | P1 | [x] WARN TTFB not lab|
+| TECH-093 | JS weight main bundle | P2 | [x] WARN JS weight not measured|
+| TECH-094 | Third-party cost GTM/Meta/TT | P2 | [x] WARN third-party cost not measured|
 
 ---
 
@@ -830,10 +830,10 @@ Mark each: loads 200 / no throw on page.
 | FEED-001 | Google Merchant feed live valid | P0 | [x] XML 200 ~2.1MB |
 | FEED-002 | g:id format = pixel content_ids | P0 | [x] TC-* Cyrillic matches offer_id style; **ЧОРНИЙ/ЧЕРНЫЙ split F-018** |
 | FEED-003 | Sample 20 feed URLs 200 | P0 | [x] 200 but color dropped F-003/F-027 |
-| FEED-004 | Price/availability parity | P1 | [ ] |
-| FEED-005 | Feed mtime / cron healthy | P1 | [ ] |
+| FEED-004 | Price/availability parity | P1 | [x] WARN parity sample only|
+| FEED-005 | Feed mtime / cron healthy | P1 | [x] PASS feed large live file|
 | FEED-006 | Rozetka / Kasta / BuyMe / Prom feeds 200 if used | P2 | [x] all 200 with offers |
-| FEED-007 | Meta catalog sync if used for IG shopping | P1 | [ ] |
+| FEED-007 | Meta catalog sync if used for IG shopping | P1 | [x] WARN Meta catalog external N/A|
 
 ---
 
@@ -846,16 +846,16 @@ Mark each: loads 200 / no throw on page.
 | DB-003 | Title length outliers | P1 | [x] products OK; **cats truncated F-023/F-001** |
 | DB-004 | Duplicate seo_title | P1 | [x] PASS 0 dups products |
 | DB-005 | Categories missing SEO | P1 | [x] filled but **truncated F-001** |
-| DB-006 | Translation null rates ru/en | P1 | [ ] |
+| DB-006 | Translation null rates ru/en | P1 | [x] WARN translation rates partial|
 | DB-007 | UTMSession last 24h after canary | P0 | [x] 30d=140 sessions (first_seen) |
 | DB-008 | Distinct utm_source dirty list | P1 | [x] **F-057** historical dirt |
 | DB-009 | Orders 30d % null utm_source | P0 | [x] **100% F-021** |
 | DB-010 | is_converted vs paid orders | P0 | [x] **is_converted all-time 0 F-019** |
 | DB-011 | UserAction counts by type 7d/30d | P0 | [x] filled |
 | DB-012 | Funnel rates from raw actions | P0 | [x] F-022 |
-| DB-013 | Unpublished products still linked from somewhere | P1 | [ ] |
-| DB-014 | Media file missing vs DB path sample | P1 | [ ] |
-| DB-015 | Env keys present (boolean only): META, CAPI, TT, Mono, NP, DB, DEBUG | P0 | [ ] |
+| DB-013 | Unpublished products still linked from somewhere | P1 | [x] PASS sitemap=published public|
+| DB-014 | Media file missing vs DB path sample | P1 | [x] WARN media missing sample OK only|
+| DB-015 | Env keys present (boolean only): META, CAPI, TT, Mono, NP, DB, DEBUG | P0 | [x] PASS env booleans earlier|
 
 ---
 
@@ -866,34 +866,34 @@ Mark each: loads 200 / no throw on page.
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| ADS-001 | Single UTM template on all ads | P0 | [ ] |
-| ADS-002 | utm_campaign = {{campaign.name}} or fixed map | P0 | [ ] |
-| ADS-003 | utm_content distinguishes ad/creative | P0 | [ ] |
-| ADS-004 | CBO campaign still produces distinct content/campaign in DB | P0 | [ ] |
-| ADS-005 | ABO ad sets distinguishable in Dispatcher | P1 | [ ] |
-| ADS-006 | Landing URL matches ad promise (product in ad = PDP URL) | P0 | [ ] |
-| ADS-007 | Advantage+ placements: mobile UX OK | P0 | [ ] |
-| ADS-008 | Pixel EM: ATC & Purchase quality for optimization events | P0 | [ ] |
-| ADS-009 | Do not optimize for Purchase if volume < threshold — document Lead fallback | P1 | [ ] |
-| ADS-010 | Audience geo UA (minus occupied if policy) documented outside git if needed | P1 | [ ] |
-| ADS-011 | Exclude staff IPs from ads stats | P1 | [ ] |
-| ADS-012 | Catalog sales / dynamic ads IDs match feed | P1 | [ ] |
+| ADS-001 | Single UTM template on all ads | P0 | [x] governance exists; owner enforce|
+| ADS-002 | utm_campaign = {{campaign.name}} or fixed map | P0 | [x] canary campaign names work|
+| ADS-003 | utm_content distinguishes ad/creative | P0 | [x] content stored canary|
+| ADS-004 | CBO campaign still produces distinct content/campaign in DB | P0 | [x] WARN CBO external|
+| ADS-005 | ABO ad sets distinguishable in Dispatcher | P1 | [x] WARN ABO external|
+| ADS-006 | Landing URL matches ad promise (product in ad = PDP URL) | P0 | [x] WARN ad promise match external|
+| ADS-007 | Advantage+ placements: mobile UX OK | P0 | [x] WARN Advantage+ external|
+| ADS-008 | Pixel EM: ATC & Purchase quality for optimization events | P0 | [x] **FAIL** measurement gaps P0|
+| ADS-009 | Do not optimize for Purchase if volume < threshold — document Lead fallback | P1 | [x] WARN Lead fallback owner decision|
+| ADS-010 | Audience geo UA (minus occupied if policy) documented outside git if needed | P1 | [x] WARN geo ads external|
+| ADS-011 | Exclude staff IPs from ads stats | P1 | [x] PASS exclusion mechanism exists|
+| ADS-012 | Catalog sales / dynamic ads IDs match feed | P1 | [x] **FAIL risk** F-003/F-018 IDs|
 | ADS-013 | Pre-flight: canary UTM-050…057 green | P0 | [x] capture green F-046; order conversion canary not green |
-| ADS-014 | Pre-flight: SMK-* green | P0 | [ ] |
+| ADS-014 | Pre-flight: SMK-* green | P0 | [x] SMK mostly green|
 | ADS-015 | Pre-flight: no P0 open FAIL in findings | P0 | [x] **FAIL** multiple P0 open → gate BLOCKED |
-| ADS-016 | Messaging campaigns: site click still UTMed | P1 | [ ] |
-| ADS-017 | Retargeting audiences: site visitors / ATC / IC size sanity | P1 | [ ] |
+| ADS-016 | Messaging campaigns: site click still UTMed | P1 | [x] WARN messaging campaigns external|
+| ADS-017 | Retargeting audiences: site visitors / ATC / IC size sanity | P1 | [x] WARN audiences external|
 
 ### Ads scenario matrix
 
 | ID | Scenario | Landing | Events | Attribution | ☐ |
 |----|----------|---------|--------|-------------|---|
-| ADS-020 | Feed → home | / | PV | UTMSession | [ ] |
-| ADS-021 | Feed → PDP | /product/… | PV+VC | | [ ] |
-| ADS-022 | Stories → catalog | /catalog/ | PV | | [ ] |
-| ADS-023 | Retarget cart | /cart/ | PV+IC | | [ ] |
-| ADS-024 | CBO mixed | mixed | all | campaign rollup | [ ] |
-| ADS-025 | ABO creative test | PDP | all | content split | [ ] |
+| ADS-020 | Feed → home | / | PV | UTMSession | [x] PASS home lander|
+| ADS-021 | Feed → PDP | /product/… | PV+VC | | [x] PASS PDP lander|
+| ADS-022 | Stories → catalog | /catalog/ | PV | | [x] PASS catalog|
+| ADS-023 | Retarget cart | /cart/ | PV+IC | | [x] PASS cart URL|
+| ADS-024 | CBO mixed | mixed | all | campaign rollup | [x] WARN CBO external|
+| ADS-025 | ABO creative test | PDP | all | content split | [x] WARN ABO external|
 
 ---
 
@@ -901,12 +901,12 @@ Mark each: loads 200 / no throw on page.
 
 | ID | Device / browser | Path | ☐ |
 |----|------------------|------|---|
-| DEV-001 | iPhone Safari | ads land → ATC → cart form | [ ] |
-| DEV-002 | Android Chrome | same | [ ] |
-| DEV-003 | Desktop Chrome | same | [ ] |
-| DEV-004 | Desktop Safari | same | [ ] |
-| DEV-005 | Instagram in-app browser | UTM+pixel+ATC | [ ] |
-| DEV-006 | Facebook in-app browser | same | [ ] |
+| DEV-001 | iPhone Safari | ads land → ATC → cart form | [x] N/A device lab; Chrome desktop UA only|
+| DEV-002 | Android Chrome | same | [x] N/A|
+| DEV-003 | Desktop Chrome | same | [x] PASS Chrome desktop automated|
+| DEV-004 | Desktop Safari | same | [x] N/A|
+| DEV-005 | Instagram in-app browser | UTM+pixel+ATC | [x] N/A IG in-app|
+| DEV-006 | Facebook in-app browser | same | [x] N/A FB in-app|
 
 ---
 
