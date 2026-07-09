@@ -465,6 +465,10 @@ def _client_card(c) -> dict:
         "followup_level": c.followup_level,
         "discount_offered_percent": c.discount_offered_percent,
         "payment_status": payment_status,
+        "delivery_status": c.delivery_status,
+        "delivery_status_label": c.get_delivery_status_display() if c.delivery_status else "",
+        "delivery_error": c.delivery_error,
+        "delivery_failed_at": c.delivery_failed_at.isoformat() if c.delivery_failed_at else "",
     }
 
 
@@ -492,6 +496,8 @@ def bot_clients_api(request):
         qs = qs.filter(followup_tasks__status="pending", followup_tasks__due_at__lte=timezone.now()).distinct()
     elif view == "ads":
         qs = qs.filter(Q(ad_id__gt="") | Q(ad_ref__gt="") | Q(ad_title__gt=""))
+    elif view in {"delivery-blocked", "delivery_blocked"}:
+        qs = qs.filter(delivery_status__gt="")
     elif view == "active":
         qs = qs.exclude(stage__in=[IgClient.Stage.SPAM, IgClient.Stage.COLD, IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE])
     qs = qs.order_by("-last_message_at", "-id")

@@ -693,19 +693,19 @@ def _graph_error(body: str) -> dict:
     return err if isinstance(err, dict) else {}
 
 
+def _graph_error_codes(body: str) -> tuple[int, int]:
+    err = _graph_error(body)
+    try:
+        return int(err.get("code", 0) or 0), int(err.get("error_subcode", 0) or 0)
+    except Exception:
+        return 0, 0
+
+
 def _classify_send_error(code: int, body: str) -> tuple[str, str]:
     """Повертає (kind, hint): kind = 'transient' | 'permanent'."""
     if code == -1 or code >= 500:
         return "transient", "тимчасова мережева/серверна помилка"
-    ec = 0
-    sub = 0
-    try:
-        err = _graph_error(body)
-        ec = int(err.get("code", 0) or 0)
-        sub = int(err.get("error_subcode", 0) or 0)
-    except Exception:
-        ec = 0
-        sub = 0
+    ec, sub = _graph_error_codes(body)
     if ec in RATE_LIMIT_CODES:
         return "transient", "ліміт частоти (retry пізніше)"
     if sub == ADVANCED_ACCESS_SUBCODE:
@@ -722,6 +722,70 @@ def _classify_send_error(code: int, body: str) -> tuple[str, str]:
         )
     suffix = f" (code {ec}, subcode {sub})" if sub else f" (code {ec})"
     return "permanent", PERMANENT_HINT.get(ec, "відмова Graph API") + suffix
+
+
+def _delivery_status_for_error(code: int, body: str) -> str:
+    graph_code, graph_subcode = _graph_error_codes(body)
+    if graph_subcode == ADVANCED_ACCESS_SUBCODE:
+        return IgClient.DeliveryStatus.ADVANCED_ACCESS
+    if graph_subcode == MESSAGING_WINDOW_CLOSED_SUBCODE:
+        return IgClient.DeliveryStatus.WINDOW_CLOSED
+    if graph_code == 551:
+        # Graph #551 is ambiguous: it can be a blocked/restricted thread as
+        # well as an inbox request. Ask the operator to inspect Requests,
+        # but never claim we proved that the thread is there.
+        return IgClient.DeliveryStatus.MESSAGE_REQUEST_CHECK
+    return IgClient.DeliveryStatus.SEND_BLOCKED
+
+
+def _remember_client_delivery_error(recipient_id: str, hint: str, *, code: int, body: str) -> None:
+    """Store only classified, bounded delivery data for the affected CRM card."""
+    try:
+        client = IgClient.objects.filter(igsid=recipient_id).first()
+        if not client:
+            return
+        graph_code, graph_subcode = _graph_error_codes(body)
+        client.delivery_status = _delivery_status_for_error(code, body)
+        client.delivery_error = (hint or "")[:500]
+        client.delivery_http_code = code if code > 0 else None
+        client.delivery_graph_code = graph_code or None
+        client.delivery_graph_subcode = graph_subcode or None
+        client.delivery_failed_at = timezone.now()
+        client.save(update_fields=[
+            "delivery_status",
+            "delivery_error",
+            "delivery_http_code",
+            "delivery_graph_code",
+            "delivery_graph_subcode",
+            "delivery_failed_at",
+            "updated_at",
+        ])
+    except Exception:
+        pass
+
+
+def _clear_client_delivery_error(recipient_id: str) -> None:
+    try:
+        client = IgClient.objects.filter(igsid=recipient_id).first()
+        if not client or not client.delivery_status:
+            return
+        client.delivery_status = ""
+        client.delivery_error = ""
+        client.delivery_http_code = None
+        client.delivery_graph_code = None
+        client.delivery_graph_subcode = None
+        client.delivery_failed_at = None
+        client.save(update_fields=[
+            "delivery_status",
+            "delivery_error",
+            "delivery_http_code",
+            "delivery_graph_code",
+            "delivery_graph_subcode",
+            "delivery_failed_at",
+            "updated_at",
+        ])
+    except Exception:
+        pass
 
 
 def _remember_send_error(s: InstagramBotSettings, hint: str, *, code: int | None = None) -> None:
@@ -770,10 +834,12 @@ def send_text(s: InstagramBotSettings, recipient_id: str, text: str) -> tuple[bo
         if code == 200:
             ok_any = True
             _clear_send_error(s)
+            _clear_client_delivery_error(recipient_id)
             continue
         kind, hint = _classify_send_error(code, resp)
         if kind == "permanent":
             _remember_send_error(s, hint, code=code)
+            _remember_client_delivery_error(recipient_id, hint, code=code, body=resp)
         log("error", "send", f"HTTP {code} [{kind}] {hint}: {resp[:900]}")
         return ok_any, kind, hint
     return True, "", ""
@@ -805,10 +871,12 @@ def send_text_tagged(s: InstagramBotSettings, recipient_id: str, text: str, tag:
         if code == 200:
             ok_any = True
             _clear_send_error(s)
+            _clear_client_delivery_error(recipient_id)
             continue
         kind, hint = _classify_send_error(code, resp)
         if kind == "permanent":
             _remember_send_error(s, hint, code=code)
+            _remember_client_delivery_error(recipient_id, hint, code=code, body=resp)
         log("error", "send_tag", f"HTTP {code} [{kind}] {hint}: {resp[:900]}")
         return ok_any, kind, hint
     return True, "", ""

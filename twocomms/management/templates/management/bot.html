@@ -370,6 +370,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         <button class="bot-mini-btn" data-client-view="spam-cold">Spam/Cold</button>
         <button class="bot-mini-btn" data-client-view="paid">Paid</button>
         <button class="bot-mini-btn" data-client-view="ads">Ads</button>
+        <button class="bot-mini-btn" data-client-view="delivery-blocked">Не можу відповісти</button>
       </div>
       <div class="bot-clients-wrap">
         <div id="bot-clients-list" class="bot-clients-list"></div>
@@ -526,7 +527,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
               c.primary_objection && c.primary_objection!=='none'?('obj: '+c.primary_objection):'',
               c.next_followup_at?('FU '+fmt(c.next_followup_at)):'',
               c.discount_offered_percent?('discount '+c.discount_offered_percent+'%'):'',
-              c.ad_title?('ad: '+c.ad_title):''
+              c.ad_title?('ad: '+c.ad_title):'',
+              c.delivery_status_label?('⚠ '+c.delivery_status_label):''
             ].filter(Boolean).join(' · ');
             row.innerHTML=ava+'<div class="bot-client-meta"><div class="bot-client-name">'+esc(c.name)+' <span class="bot-client-score">'+(c.buying_readiness||0)+'%</span></div><div class="bot-client-sub">'+esc(sub)+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'">'+esc(c.stage_label)+'</span>';
             row.addEventListener('click',()=>{activeId=c.id;document.querySelectorAll('.bot-client-row').forEach(e=>e.classList.remove('active'));row.classList.add('active');detail(c.id);});
@@ -542,6 +544,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           const c=d.client;
           let h='<div class="bot-detail-head">'+(c.avatar?('<img class="bot-client-ava" style="width:46px;height:46px;" src="'+esc(c.avatar)+'" alt="">'):('<div class="bot-client-ava" style="width:46px;height:46px;">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>'))+'<div><div class="bot-detail-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+(c.phone?(' · '+esc(c.phone)):'')+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'" style="margin-left:auto;">'+esc(c.stage_label)+'</span></div>';
           if(c.ad_title) h+='<div class="bot-client-sub" style="margin-top:8px;">📣 Реклама: '+esc(c.ad_title)+'</div>';
+          if(c.delivery_status_label) h+='<div class="bot-client-sub" style="margin-top:8px;padding:9px 11px;border:1px solid rgba(251,191,36,.42);border-radius:10px;background:rgba(251,191,36,.08);color:#fde68a;">⚠ <b>Не можу відповісти:</b> '+esc(c.delivery_status_label)+(c.delivery_error?(' · '+esc(c.delivery_error)):'')+'</div>';
           h+='<div class="bot-client-sub" style="margin-top:8px;">Readiness: <b style="color:#34d399;">'+(c.buying_readiness||0)+'%</b> · intent: '+esc(c.intent||'')+' · objection: '+esc(c.primary_objection||'')+(c.current_product_title?' · product: '+esc(c.current_product_title):'')+(c.next_followup_at?' · next FU: '+fmt(c.next_followup_at):'')+'</div>';
           const pauseBtn=c.bot_paused?'<button class="bot-save" data-act="resume" style="background:#16a34a;">▶ Включити бота</button>':'<button class="bot-save" data-act="pause" style="background:#dc2626;">⏸ Стоп бота</button>';
           h+='<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">'+pauseBtn+(c.manager_takeover?' <span class="bot-stage-chip st-lead_manager">менеджер веде</span>':'')+'<button class="bot-mini-btn warn" data-act="hide">Hide</button><button class="bot-mini-btn" data-act="unhide">Unhide</button><button class="bot-mini-btn danger" data-act="lost">Mark lost</button></div>';

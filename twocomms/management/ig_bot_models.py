@@ -153,6 +153,12 @@ class IgClient(models.Model):
         DELIVERY = "delivery", _("Доставка")
         OTHER = "other", _("Інше")
 
+    class DeliveryStatus(models.TextChoices):
+        ADVANCED_ACCESS = "advanced_access", _("Meta не дозволяє відповідь: потрібен Advanced Access")
+        WINDOW_CLOSED = "window_closed", _("24-годинне вікно Meta закрито")
+        MESSAGE_REQUEST_CHECK = "message_request_check", _("Перевірте «Запити» в Instagram")
+        SEND_BLOCKED = "send_blocked", _("Meta тимчасово або постійно блокує відповідь")
+
     # Головна воронка (для прогрес-бару/кружечків у картці).
     FUNNEL_ORDER = [
         Stage.NEW,
@@ -226,6 +232,17 @@ class IgClient(models.Model):
     followup_level = models.PositiveSmallIntegerField(default=0)
     last_manager_message_at = models.DateTimeField(null=True, blank=True)
     sales_context = models.JSONField(default=dict, blank=True)
+
+    # Остання підтверджена технічна перешкода доставки. Це не замінює стадію
+    # воронки та не означає автоматичну передачу ліда менеджеру.
+    delivery_status = models.CharField(
+        max_length=32, choices=DeliveryStatus.choices, blank=True, default="", db_index=True
+    )
+    delivery_error = models.CharField(max_length=500, blank=True, default="")
+    delivery_http_code = models.PositiveSmallIntegerField(null=True, blank=True)
+    delivery_graph_code = models.PositiveIntegerField(null=True, blank=True)
+    delivery_graph_subcode = models.PositiveIntegerField(null=True, blank=True)
+    delivery_failed_at = models.DateTimeField(null=True, blank=True)
 
     # Атрибуція реклами (Click-to-IG-Direct)
     ad_ref = models.CharField(max_length=255, blank=True, default="")
