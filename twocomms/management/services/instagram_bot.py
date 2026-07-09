@@ -840,7 +840,7 @@ def send_text(s: InstagramBotSettings, recipient_id: str, text: str) -> tuple[bo
         if kind == "permanent":
             _remember_send_error(s, hint, code=code)
             _remember_client_delivery_error(recipient_id, hint, code=code, body=resp)
-        log("error", "send", f"HTTP {code} [{kind}] {hint}: {resp[:900]}")
+        log("error", "send", f"HTTP {code} [{kind}] {hint}")
         return ok_any, kind, hint
     return True, "", ""
 
@@ -877,7 +877,7 @@ def send_text_tagged(s: InstagramBotSettings, recipient_id: str, text: str, tag:
         if kind == "permanent":
             _remember_send_error(s, hint, code=code)
             _remember_client_delivery_error(recipient_id, hint, code=code, body=resp)
-        log("error", "send_tag", f"HTTP {code} [{kind}] {hint}: {resp[:900]}")
+        log("error", "send_tag", f"HTTP {code} [{kind}] {hint}")
         return ok_any, kind, hint
     return True, "", ""
 
