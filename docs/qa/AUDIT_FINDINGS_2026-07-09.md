@@ -25,9 +25,9 @@
 
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
-| P0 | 5 | 0 | 0 | 0 |
-| P1 | 14 | 0 | 0 | 0 |
-| P2 | 9 | 0 | 0 | 0 |
+| P0 | 6 | 0 | 0 | 0 |
+| P1 | 16 | 0 | 0 | 0 |
+| P2 | 10 | 0 | 0 | 0 |
 | P3 | 3 | 0 | 0 | 0 |
 
 ### Pass A coverage (honest)
@@ -89,6 +89,8 @@
 | IGShopping | 1 |
 
 → normalization **not fully applied** on stored rows (see F-020).
+
+**Note:** Pass A machine IP is AnalyticsExclusion `дом` (F-037) — synthetic UTMSession canaries from this IP are invalid.
 
 **HTML/API readiness for funnel path (rechecked):**
 
@@ -971,6 +973,121 @@ Can cause “Telegram alert missing” perception without site downtime.
 
 ---
 
+
+
+### F-037 — Audit home IP is AnalyticsExclusion (canaries invalid from this network)
+
+- [ ] **Open** · Severity: **P1** · Area: **UTM / PROCESS** · Checklist: UTM-010, UTM-050
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+**Evidence:** prod `AnalyticsExclusion` active entry:
+
+- kind=IP, value=`188.163.49.54`, note=`дом`, is_active=True
+
+`is_request_excluded()` short-circuits **UTMTrackingMiddleware writes** and **UserAction** recording for this IP.
+
+**Effects observed during Pass A from this network:**
+
+- `twc_ft` / `twc_vid` cookies still set (identity middleware)  
+- **Zero** `UTMSession` rows for all `qa_*` canary campaigns  
+- `/api/track-event/` returns `success:true` but **`stored:false`**
+
+**Why it matters:** staff exclusion is correct for analytics hygiene, but:
+
+1. Pass A/C canaries **must use non-excluded network** (or temporary disable) to validate UTM→Order.  
+2. Does **not** excuse F-021 (real customer orders also empty UTM).
+
+**Risk of fix:** low (process); do not delete exclusion without owner OK.
+
+---
+
+### F-038 — `sessionid` not issued on UTM landing GET; only after cart POST
+
+- [ ] **Open** · Severity: **P0** · Area: **UTM / CART** · Checklist: UTM-003, UTM-007, UTM-022
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+**Evidence (Chrome UA, 2026-07-09):**
+
+| Step | Set-Cookie |
+|------|------------|
+| GET `/?utm_source=instagram&...` | `twc_vid`, `twc_ft` only |
+| GET `/api/bootstrap/` | `csrftoken` |
+| POST `/cart/add/` | **`sessionid=...` first appears** |
+
+`UTMSession` creation requires Django `session_key` (`utm_middleware._create_or_update_utm_session`).  
+First-touch UTM lives in **HttpOnly `twc_ft`**, but `link_order_to_utm` primary path uses `UTMSession` / `session['utm_data']`, not a full parse of `twc_ft` for utm_source/medium/campaign (fbclid is read from first_touch in tracking context).
+
+**Why problem (architecture):**
+
+- Ad click lander often is **GET only** (bounce without ATC).  
+- If session cookie is not established on that GET, UTMSession may never bind.  
+- Even with later ATC session, first-touch UTM may stay only in `twc_ft` while order linkage looks for UTMSession → **empty Order.utm_*** (amplifies F-021).  
+- Combined with page-cache goals (avoid Set-Cookie on HTML), this is a deliberate tension between performance and attribution.
+
+**Pass C:** from non-excluded IP, DevTools: confirm whether real browsers get `sessionid` on first HTML response; if not, confirm whether `twc_ft` is copied into order on create.
+
+**Risk of fix:** **HIGH** — changing session cookie policy affects LiteSpeed cache/TTFB. Needs careful design (e.g. write UTMSession by visitor_id from twc_vid without session cookie on land).
+
+---
+
+### F-039 — `/api/track-event/` reports success but often `stored:false`
+
+- [ ] **Open** · Severity: **P1** · Area: **UTM / PIXEL adjacency** · Checklist: PG-084
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+Payload with `event_type=product_view|add_to_cart` → HTTP 200 `{"success":true,"stored":false}`.
+
+`stored` is `bool(action)` from `record_user_action`, which returns `None` when excluded/bot/no session/dedup.
+
+On excluded IP always false. On real users: if client relies on this endpoint for funnel, silent drop is dangerous.
+
+---
+
+### F-040 — Checkout is JS/Mono-driven, not classic form POST to `/orders/create/`
+
+- [x] **INFO / PASS path map** · Area: **CART**
+
+Cart HTML has fields `full_name`, `phone`, `email`, `pay_type`, NP refs, and `/checkout/capture/`.  
+No traditional `<form action="/orders/create/">`. Runtime uses **`modules/checkout-mono.js`** (dynamic import from main.js) + monobank endpoints.
+
+COD path still in `checkout.py` `order_create` with `link_order_to_utm` + `record_order_action('lead')`.  
+Online path: `monobank.py` `link_order_to_utm`.
+
+**success-preview** redirects to Django admin login (not public).
+
+---
+
+### F-041 — CSP allows Meta/TikTok/GTM hosts (positive); report-uri `/csp-report/`
+
+- [x] **PASS partial** · Checklist: TECH-082
+
+`Content-Security-Policy` includes `connect.facebook.net`, `www.facebook.com`, `analytics.tiktok.com`, `googletagmanager.com`, etc.  
+`report-uri /csp-report/` explains stderr `csp_violation` noise (F-035) — need sample blocked URIs in Pass C.
+
+---
+
+### F-042 — Early Meta pixel still inlined in HTML (PageView path exists)
+
+- [x] **PASS partial** · Checklist: PIX-002
+
+Catalog/home HTML contains inline `fbq('init')` + `PageView` (comments about ad attribution without interaction).  
+Heavy events deferred to analytics-loader.  
+BFCache bug F-030 still applies to loader reinit.
+
+---
+
 ## Session changelog
 
 | Time | Action |
@@ -979,4 +1096,5 @@ Can cause “Telegram alert missing” perception without site downtime.
 | 2026-07-09 | Full 65 UK PDP titles; 13 title/H1 mismatches; 20 variants OK; mapa links OK; F-004 expanded; F-016/F-017 |
 | 2026-07-09 | ATC API PASS; DB funnel; **orders 100% empty UTM**; is_converted=0; source dirt; feed color drop confirmed |
 | 2026-07-09 | Logs: LSAPI_CHILDREN, MySQL gone away, pixel init ReferenceError; variants 60/60; recs OK; F-029–F-036 |
-| _next_ | Browser Meta EM; checkout E2E UTM order; Dispatcher UI; CSP blocked URIs detail |
+| 2026-07-09 | sessionid only after ATC; home IP exclusion; track-event stored:false; checkout-mono path map F-037–F-042 |
+| _next_ | Canary from non-excluded IP; real browser Meta EM; optional test COD order UTM |

@@ -137,7 +137,7 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 | 3 GEO / i18n | GEO-* | ~30% | agent-A | H1 leaks |
 | 4 CRO funnel | CRO-* | ~55% | agent-A | DB funnel F-022 |
 | 5 Cart / checkout UX | CART-* | ~60% | agent-A | ATC API PASS |
-| 6 UTM + Dispatcher | UTM-* | ~55% | agent-A | **F-019/020/021 P0** |
+| 6 UTM + Dispatcher | UTM-* | ~70% | agent-A | F-037/038 session+exclusion root causes |
 | 7 Pixel / GTM / CAPI | PIX-* | ~60% | agent-A | **F-030** pixel init bug |
 | 8 Technical / alerts | TECH-* | ~65% | agent-A | LSAPI/MySQL/client_errors |
 | 9 Feeds / marketplace | FEED-* | ~65% | agent-A | F-003/027 color drop |
@@ -588,10 +588,10 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] CHECKED — **FAIL F-020** ig/chatgpt.com still stored |
 | UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in twc_ft |
 | UTM-006 | _fbp/_fbc captured when present | P0 | [ ] |
-| UTM-007 | session['utm_data'] fallback works | P0 | [ ] |
+| UTM-007 | session['utm_data'] fallback works | P0 | [x] **RISK F-038** session late; twc_ft not full order fallback |
 | UTM-008 | Bots skipped | P1 | [ ] |
 | UTM-009 | Noise paths skipped | P1 | [ ] |
-| UTM-010 | Staff/IP exclusions do not pollute (if configured) | P1 | [ ] |
+| UTM-010 | Staff/IP exclusions do not pollute (if configured) | P1 | [x] PASS exists (`дом` IP) — blocks auditor canaries F-037 |
 | UTM-011 | dtf host skipped for storefront UTM | P1 | [ ] |
 | UTM-012 | AI referrer detection without UTM | P2 | [ ] |
 | UTM-013 | First vs last touch rules match fields | P1 | [ ] |
@@ -639,7 +639,7 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 
 | ID | Step | ☐ |
 |----|------|---|
-| UTM-050 | Private window + full UTM + fake fbclid land home | [ ] |
+| UTM-050 | Private window + full UTM + fake fbclid land home | [x] cookies twc_ft OK; UTMSession blocked if excluded IP |
 | UTM-051 | Open 2 PDPs | [ ] |
 | UTM-052 | ATC one product | [ ] |
 | UTM-053 | Open mini-cart → full cart | [ ] |
@@ -804,7 +804,7 @@ Mark each: loads 200 / no throw on page.
 |----|-------|---|---|
 | TECH-080 | Admin not in public footer | P0 | [ ] |
 | TECH-081 | CSRF on mutations | P0 | [ ] |
-| TECH-082 | CSP vs pixel/GTM | P1 | [ ] |
+| TECH-082 | CSP vs pixel/GTM | P1 | [x] hosts allowed F-041; violations still F-035 |
 | TECH-083 | Debug endpoints closed on prod | P0 | [ ] |
 | TECH-084 | Rate limits track/client-error | P1 | [ ] |
 
