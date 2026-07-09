@@ -138,8 +138,8 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 | 4 CRO funnel | CRO-* | ~55% | agent-A | DB funnel F-022 |
 | 5 Cart / checkout UX | CART-* | ~60% | agent-A | ATC API PASS |
 | 6 UTM + Dispatcher | UTM-* | ~55% | agent-A | **F-019/020/021 P0** |
-| 7 Pixel / GTM / CAPI | PIX-* | ~45% | agent-A | JS bridge; EM later |
-| 8 Technical / alerts | TECH-* | ~40% | agent-A | 429 F-007 |
+| 7 Pixel / GTM / CAPI | PIX-* | ~60% | agent-A | **F-030** pixel init bug |
+| 8 Technical / alerts | TECH-* | ~65% | agent-A | LSAPI/MySQL/client_errors |
 | 9 Feeds / marketplace | FEED-* | ~65% | agent-A | F-003/027 color drop |
 | 10 Prod DB queries | DB-* | ~70% | agent-A | SEO+UTM+orders |
 | 11 Ads CBO/ABO readiness | ADS-* | ~25% | agent-A | gate BLOCKED |
@@ -365,7 +365,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-062 | **100% locs HEAD** → only 200 (or fix list) | P0 | [ ] blocked by 429 then sample OK; full pending slow |
 | SEO-063 | Only published products | P0 | [ ] need DB |
 | SEO-064 | Draft/archived absent | P0 | [ ] need DB |
-| SEO-065 | Variant locs resolve | P1 | [ ] partial |
+| SEO-065 | Variant locs resolve | P1 | [x] PASS sample 60/178 (F-034) |
 | SEO-066 | Empty sections removed or filled | P1 | [x] color has URLs but **dups F-006** |
 | SEO-067 | lastmod honest | P2 | [ ] |
 | SEO-068 | i18n alternates consistent | P1 | [ ] |
@@ -374,7 +374,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-071 | HTML mapa-saytu links = live 200 | P1 | [x] PASS 53 links (F-017) |
 | SEO-072 | Custom 404 branded, noindex, assets OK | P1 | [ ] |
 | SEO-073 | Crawl nav+footer+home rails: zero 404 | P0 | [ ] |
-| SEO-074 | Recommended products zero 404 | P0 | [ ] |
+| SEO-074 | Recommended products zero 404 | P0 | [x] PASS home 8 + PDP 15 sample |
 | SEO-075 | Soft-404 detection (200 + thin empty) | P1 | [ ] |
 | SEO-076 | Removed products 404/410 not 500 | P1 | [ ] |
 | SEO-077 | GSC “not found / crawled not indexed” sample recheck | P1 | [ ] |
@@ -657,8 +657,8 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | PIX-001 | Live pixel ID from prod env in HTML | P0 | [x] PASS 823958313630148 |
-| PIX-002 | Single PageView (no double snippet) | P0 | [x] PASS init×1 PageView×1 HTML |
-| PIX-003 | ViewContent on PDP | P0 | [ ] JS-only; browser pending F-012 |
+| PIX-002 | Single PageView (no double snippet) | P0 | [x] PASS HTML; **BFCache reinit broken F-030** |
+| PIX-003 | ViewContent on PDP | P0 | [ ] code has trackViewContent; EM browser pending |
 | PIX-004 | AddToCart on ATC with content_ids/value/currency | P0 | [ ] |
 | PIX-005 | InitiateCheckout timing correct | P0 | [ ] |
 | PIX-006 | Lead only for prepay rules | P0 | [ ] |
@@ -779,12 +779,12 @@ Mark each: loads 200 / no throw on page.
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| TECH-060 | stderr/Django 5xx last 7/30d classes | P0 | [ ] |
+| TECH-060 | stderr/Django 5xx last 7/30d classes | P0 | [x] **LSAPI_CHILDREN + MySQL gone away F-029/F-031** |
 | TECH-061 | Failures after git pull / restart pattern | P0 | [ ] |
-| TECH-062 | Import errors load_view_attr | P0 | [ ] |
-| TECH-063 | DB connection / too many connections | P0 | [ ] |
-| TECH-064 | client_errors.log top messages | P1 | [ ] |
-| TECH-065 | Confirm client errors **do not** flood Telegram (by design) | P1 | [ ] |
+| TECH-062 | Import errors load_view_attr | P0 | [ ] not seen in sample |
+| TECH-063 | DB connection / too many connections | P0 | [x] MySQL gone away / Connection reset F-031 |
+| TECH-064 | client_errors.log top messages | P1 | [x] **F-030 initializePixelsImmediately** |
+| TECH-065 | Confirm client errors **do not** flood Telegram (by design) | P1 | [x] PASS design (log only) |
 | TECH-066 | RUM failures | P2 | [ ] |
 | TECH-067 | Monobank webhook errors | P0 | [ ] |
 | TECH-068 | NP timeouts | P1 | [ ] |
@@ -792,7 +792,7 @@ Mark each: loads 200 / no throw on page.
 | TECH-070 | Custom print / survey / review telegram paths | P2 | [ ] |
 | TECH-071 | QR telegram alerts | P2 | [ ] |
 | TECH-072 | Registration admin notify | P3 | [ ] |
-| TECH-073 | Disk full / OOM / worker kill | P0 | [ ] |
+| TECH-073 | Disk full / OOM / worker kill | P0 | [x] worker limit F-029 (not OOM proven) |
 | TECH-074 | Static not collected (404 static) after deploy | P0 | [ ] |
 | TECH-075 | Cron: feeds, merchant, session cleaner, UTM email | P1 | [ ] |
 | TECH-076 | Site “falls” without restart: long request/lock | P0 | [ ] |

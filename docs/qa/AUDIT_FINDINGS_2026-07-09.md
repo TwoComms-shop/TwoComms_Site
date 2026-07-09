@@ -17,7 +17,7 @@
 
 ## Executive summary
 
-**Ads launch gate (current):** **BLOCKED** for paid ROAS measurement until Pass C confirms **F-021** (0% order UTM linkage), **F-019** (`is_converted` dead), plus feed **F-003** and SEO **F-001/F-002/F-004**.
+**Ads launch gate (current):** **BLOCKED**. Critical: **F-021** order UTM empty, **F-019** is_converted dead, **F-030** pixel BFCache JS error, **F-029** worker limit, **F-003** feed landings, SEO **F-001/F-002/F-004**.
 
 **One paragraph:** Core smoke (home, catalog, cart, healthz, robots, sitemap index, www→apex, UTM first-touch cookies, Meta pixel ID + single PageView snippet, cart mini APIs) **works**. Sitemap children load; **65** UK product URLs + locales present. Sample of **22/22** product PDPs returned **200** with Product JSON-LD and UAH prices. **Serious SEO quality bugs** on category titles (truncated mid-phrase), color landings (broken Ukrainian grammar), product title↔H1 mismatches (including Russian leak in H1). **Merchant feed** `g:link` values use HTML-escaped `&amp;` that the site interprets as path `/s/?amp;color=…` instead of proper size/color query — high risk for Shopping/Meta catalog. Aggressive **HTTP 429** rate limiting mid-crawl. RU/EN pages still show **Ukrainian H1** on home/catalog. Pixel **ViewContent/ATC/Purchase E2E** and **Dispatcher/DB funnel** not fully verified yet (need browser + admin/DB).
 
@@ -25,9 +25,9 @@
 
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
-| P0 | 3 | 0 | 0 | 0 |
-| P1 | 11 | 0 | 0 | 0 |
-| P2 | 8 | 0 | 0 | 0 |
+| P0 | 5 | 0 | 0 | 0 |
+| P1 | 14 | 0 | 0 | 0 |
+| P2 | 9 | 0 | 0 | 0 |
 | P3 | 3 | 0 | 0 | 0 |
 
 ### Pass A coverage (honest)
@@ -811,6 +811,166 @@ Sample 8 products × ru/en: titles/H1 generally **aligned within locale**, but E
 
 ---
 
+
+
+### F-029 — LiteSpeed `LSAPI_CHILDREN` process limit hit (capacity)
+
+- [ ] **Open** · Severity: **P0** · Area: **TECH** · Checklist: TECH-060, TECH-073, TECH-076
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (stderr.log) |
+| Status (C) | |
+
+**Evidence (prod `stderr.log` recent window):** message repeated **200+** times:
+
+```text
+Reached max children process limit: 6, extra: 2, current: 8, busy: 7/8, please increase LSAPI_CHILDREN.
+```
+
+**Why problem**
+
+- Worker pool too small for concurrent traffic + background jobs.  
+- Explains intermittent slowness, timeouts, possible 5xx/429 under ads load.  
+- Correlates with “site falls / hangs without clean restart” reports.
+
+**Fix direction (later):** raise LSAPI_CHILDREN / PHP-LSAPI / app workers carefully; separate cron/heavy jobs from request workers; load test.
+
+**Risk of fix:** medium (hosting limits, memory). **Do not change without capacity plan.**
+
+---
+
+### F-030 — `initializePixelsImmediately is not defined` (analytics-loader bug)
+
+- [ ] **Open** · Severity: **P0** · Area: **PIXEL / TECH** · Checklist: PIX-001–003, TECH-064
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+**Evidence**
+
+1. Prod `client_errors.log` top message (8/9 lines):  
+   `Uncaught ReferenceError: initializePixelsImmediately is not defined`  
+   URLs include `/catalog/tshirts/`, `/ru/catalog/...`, homepage devices.
+
+2. Source: `analytics-loader.js` (hashed `analytics-loader.3975317011e4.js?v=8`) line ~1484 calls `initializePixelsImmediately()` on BFCache `pageshow` restore.
+
+3. Function **`initializePixelsDeferred` exists**; **`initializePixelsImmediately` is never defined** in the same file (local repo + prod hashed bundle).
+
+**Why problem**
+
+- BFCache back/forward (common on mobile Instagram in-app browser) throws.  
+- Pixel re-init on restore fails → possible missed PageView/events after navigation.  
+- Matches user “Telegram alerts / something wrong with scripts/icons” class of frontend failures (client_errors path; not always Telegram).
+
+**Fix direction:** rename call to `initializePixelsDeferred` or implement `initializePixelsImmediately` as alias; add regression test.
+
+**Risk of fix:** low–medium (pixel init only); test IG in-app + Safari BFCache.
+
+---
+
+### F-031 — MySQL “server has gone away” / connection errors in django logs
+
+- [ ] **Open** · Severity: **P1** · Area: **TECH** · Checklist: TECH-063, TECH-060
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (django.log tail window) |
+| Status (C) | |
+
+**Evidence classification (last ~400KB django.log):**
+
+| Class | approx count |
+|-------|-------------:|
+| MySQL server has gone away | 79 |
+| Connection* | 57 |
+| OperationalError | 36 |
+
+**Why problem:** dropped DB connections under load/idle timeout → request failures, partial writes (could contribute to missing UTM/order links if exception swallowed).
+
+**Risk of fix:** medium (CONN_MAX_AGE, wait_timeout, pool) — ops change.
+
+---
+
+### F-032 — UserAction almost never linked to UTMSession (99.8% product_view)
+
+- [ ] **Open** · Severity: **P1** · Area: **UTM / CRO** · Checklist: UTM-003, CRO-020, DB-011
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (prod DB 30d) |
+| Status (C) | |
+
+| action_type | events 30d | % without utm_session |
+|-------------|----------:|----------------------:|
+| product_view | 21708 | **99.8%** |
+| add_to_cart | 25 | **76%** |
+| initiate_checkout | 2 | **100%** |
+| lead | 2 | **100%** |
+| purchase | 1 | **100%** |
+
+**Code note (read-only):** `record_user_action` only attaches existing `UTMSession` by `session_key`; does **not** create one for organic traffic. UTMSession is primarily first-touch with UTM/platform ids. That explains many nulls for organic PV — **but** IC/lead/purchase at 100% null + orders 100% empty (F-021) means **even attributed paths fail** to bind.
+
+**Recent lead order 276** has UserAction lead/initiate_checkout with `utm_sess None` at same second as order create.
+
+**Risk of fix:** high — redesign session binding carefully.
+
+---
+
+### F-033 — `link_order_to_utm` exists in code but attribution still empty in prod
+
+- [ ] **Open** · Severity: **P0** · Area: **UTM** · Checklist: UTM-020, CART-042 (related)
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (code + DB) |
+| Status (C) | |
+
+**Code map:**
+
+- `storefront/views/checkout.py` → `link_order_to_utm(request, order)`  
+- `storefront/views/monobank.py` → `link_order_to_utm(request, order)`  
+- Resolver: `resolve_utm_session` via session_key / visitor_id / session `utm_data`
+
+**Prod reality:** all recent orders `utm_source=None`, `utm_session_id=None`.  
+Some orders have `sale_source` like `Kasta`, `AIO`, `Знайомі` (manual/offline) — those **should not** have web UTM — but **online_full** web orders still empty.
+
+**Pass C must:** create test web order from UTM landing and inspect Order row immediately.
+
+---
+
+### F-034 — Variant sitemap sample healthy + recs links OK
+
+- [x] **PASS** · Checklist: SEO-065, SEO-074
+
+- Variant sitemap: 178 URLs; sample every 3rd → **60/60 HTTP 200**  
+- PDP internal product links (15) → 0 bad  
+- Home product links (8) → 0 bad  
+
+---
+
+### F-035 — CSP violations present in stderr
+
+- [ ] **Open** · Severity: **P2** · Area: **TECH** · Checklist: TECH-082
+
+`stderr.log` contains repeated `csp_violation` (~13 in sample window). May block third-party pixels/scripts intermittently. Pass C: capture blocked URI list.
+
+---
+
+### F-036 — Telegram admin notify intermittent disconnect
+
+- [ ] **Open** · Severity: **P2** · Area: **TECH**
+
+```text
+Exception in send_message to admin ... RemoteDisconnected('Remote end closed connection without response')
+```
+
+Can cause “Telegram alert missing” perception without site downtime.
+
+---
+
 ## Session changelog
 
 | Time | Action |
@@ -818,4 +978,5 @@ Sample 8 products × ru/en: titles/H1 generally **aligned within locale**, but E
 | 2026-07-09 | Pass A started; smoke, SEO sample, sitemap, feed, UTM cookies, findings F-001…F-015 |
 | 2026-07-09 | Full 65 UK PDP titles; 13 title/H1 mismatches; 20 variants OK; mapa links OK; F-004 expanded; F-016/F-017 |
 | 2026-07-09 | ATC API PASS; DB funnel; **orders 100% empty UTM**; is_converted=0; source dirt; feed color drop confirmed |
-| _next_ | Browser Meta EM; Dispatcher UI; full variants; server error logs; checkout E2E attribution test |
+| 2026-07-09 | Logs: LSAPI_CHILDREN, MySQL gone away, pixel init ReferenceError; variants 60/60; recs OK; F-029–F-036 |
+| _next_ | Browser Meta EM; checkout E2E UTM order; Dispatcher UI; CSP blocked URIs detail |
