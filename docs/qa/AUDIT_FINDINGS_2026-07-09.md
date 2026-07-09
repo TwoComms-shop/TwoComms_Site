@@ -26,8 +26,8 @@
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
 | P0 | 9 | 0 | 0 | 0 |
-| P1 | 22 | 0 | 0 | 0 |
-| P2 | 12 | 0 | 0 | 0 |
+| P1 | 25 | 0 | 0 | 0 |
+| P2 | 14 | 0 | 0 | 0 |
 | P3 | 3 | 0 | 0 | 0 |
 
 ### Pass A coverage (honest)
@@ -59,7 +59,7 @@
 > - Полное описание каждой находки — секции `### F-xxx` ниже в этом же файле
 > - Чек-лист аудита: `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` — все строки уже `[x]` (пройдены)
 
-**Итого: 86 находок** (F-001…F-086) · **Ads gate: BLOCKED** (есть открытые P0)
+**Итого: 91 находка** (F-001…F-091) · see PLAN_VS_FINDINGS · **Ads gate: BLOCKED** (есть открытые P0)
 
 ### Сводка по severity
 
@@ -162,6 +162,11 @@
 | [ ] **F-084** | P1 | OPEN | YES | Live dual AI sources chatgpt vs chatgpt.com (still writing) |
 | [x] **F-085** | P3 | PASS | no | Home hreflang×4 + canonical + OG + healthz OK |
 | [x] **F-086** | P3 | PASS | no | Mild burst 20× catalog → 0×429 (F-007 is high-load only) |
+| [ ] **F-087** | P1 | OPEN | YES | ubd_docs publicly HTTP 200 (W1-11 CONFIRMED) |
+| [ ] **F-088** | P1 | OPEN | YES | TELEGRAM_BOT_WEBHOOK_SECRET empty on prod (W3-9) |
+| [ ] **F-089** | P2 | OPEN | YES | FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only) |
+| [ ] **F-090** | P2 | OPEN | YES | No MySQL backup cron (script present; W0-3) |
+| [x] **F-091** | P3 | INFO | no | Full plan re-verify matrix: PLAN_VS_FINDINGS_2026-07-09.md |
 
 ### P0 OPEN (чинить в первую очередь) — 9
 - [ ] **F-003** — Color landing SEO/grammar (product feed path narrowed via F-077)
@@ -2062,6 +2067,53 @@ Landing (+UTM)
 ```
 
 **Ads implication:** Meta CAPI may still get fbp/fbc from order payload, but **internal ROAS / Dispatcher campaign split is blind**. Fix F-071 + paid UTM canary before scaling paid social.
+
+---
+
+
+
+### F-087 — `media/ubd_docs/` publicly downloadable (HTTP 200)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Plan:** W1-11 / S-14 · **Source:** PLAN_VS_FINDINGS recheck 2026-07-09
+
+Live: file exists under media; `curl` to `/media/ubd_docs/<name>` → **200** (with and without Referer). UBD ID photo = PII. Fix: auth-only view, random upload names, deny static listing.
+
+---
+
+### F-088 — `TELEGRAM_BOT_WEBHOOK_SECRET` empty on production
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Plan:** W3-9 / S-13
+
+Django settings report EMPTY. Webhook signature check is optional when empty → accepts unauthenticated POSTs (code logs SECURITY warning only).
+
+---
+
+### F-089 — `FACEBOOK_PIXEL_ID` empty in settings (hardcoded HTML fallback)
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES (config)  
+**Plan:** ADS-1 residual
+
+HTML still boots pixel via template fallback; env/settings empty. Prefer single source of truth from env.
+
+---
+
+### F-090 — MySQL backup script present, no backup cron
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES  
+**Plan:** W0-3
+
+`scripts/backup_mysql.sh` on server; crontab only has log rotate. No scheduled dump / restore drill.
+
+---
+
+### F-091 — Plan re-verify document published
+
+**Status:** [x] INFO · **Severity:** P3 · **Fix required:** no
+
+Full matrix of IMPLEMENTATION_PLAN DONE/OPEN vs prod vs F-*: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.  
+Key: several plan `[x]` items **REOPEN** (W2-1/2, ADS-3 data, pixel BFCache, etc.).
 
 ---
 

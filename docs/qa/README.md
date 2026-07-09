@@ -7,9 +7,10 @@ Large pre-ads / pre-scale audit pack. **No code fixes** during checklist walks.
 | File | Role |
 |------|------|
 | [`PRE_ADS_MASTER_AUDIT_CHECKLIST.md`](./PRE_ADS_MASTER_AUDIT_CHECKLIST.md) | **v2** walkable mega-checklist (IDs: SEO-*, CRO-*, UTM-*, CART-*, PIX-*, TECH-*, …) |
+| [`AUDIT_FINDINGS_2026-07-09.md`](./AUDIT_FINDINGS_2026-07-09.md) | Pass A/B findings F-001…F-086 (prod truth) |
+| [`PLAN_VS_FINDINGS_2026-07-09.md`](./PLAN_VS_FINDINGS_2026-07-09.md) | **Re-verify** `TWOCOMMS_A_TO_B/technical/IMPLEMENTATION_PLAN.md` DONE/OPEN vs prod + F-* (includes REOPEN) |
 | [`AUDIT_FINDINGS_TEMPLATE.md`](./AUDIT_FINDINGS_TEMPLATE.md) | Copy → `AUDIT_FINDINGS_YYYY-MM-DD.md` |
 | (optional) `AUDIT_PROGRESS_YYYY-MM-DD.md` | Checkbox status log if you prefer not to edit master |
-| (future) `AUDIT_FINDINGS_*.md` | Pass B findings only |
 
 ## Four pillars (v2)
 
