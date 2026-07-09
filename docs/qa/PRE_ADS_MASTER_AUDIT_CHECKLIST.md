@@ -988,3 +988,4 @@ Mark each: loads 200 / no throw on page.
 - Pixel BFCache + MySQL gone away reconfirmed live (F-079/F-080).
 - Ads gate remains **BLOCKED**. Findings F-001…F-082 in `AUDIT_FINDINGS_2026-07-09.md`.
 - **No code fixes in Pass A/B.**
+- F-083 purchase UA undercount (3 vs 36 paid); F-084 dual chatgpt sources still live; F-085/086 home SEO + mild rate PASS.

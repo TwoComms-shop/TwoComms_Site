@@ -59,17 +59,17 @@
 > - Полное описание каждой находки — секции `### F-xxx` ниже в этом же файле
 > - Чек-лист аудита: `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` — все строки уже `[x]` (пройдены)
 
-**Итого: 82 находки** (F-001…F-082) · **Ads gate: BLOCKED** (есть открытые P0)
+**Итого: 86 находок** (F-001…F-086) · **Ads gate: BLOCKED** (есть открытые P0)
 
 ### Сводка по severity
 
 | Severity | OPEN (чинить) | PASS/INFO/REVISED |
 |----------|-------------:|------------------:|
 | P0 | **9** | 0 |
-| P1 | **20** | 0 |
+| P1 | **22** | 0 |
 | P2 | **12** | 4 |
-| P3 | **3** | 34 |
-| **Всего** | **~44 open** | **~38 pass/info** |
+| P3 | **3** | 36 |
+| **Всего** | **~46 open** | **~40 pass/info** |
 
 ### Полный список F-001 … F-058
 
@@ -158,6 +158,10 @@
 | [x] **F-080** | P1 | RECONF | no | F-031 live: 565× MySQL server has gone away in django.log |
 | [x] **F-081** | P3 | PASS | no | Footer legal/support pages 14/14 200 |
 | [x] **F-082** | P3 | PASS | no | Feed 384 unique g:id; Cyrillic OK; no dup IDs |
+| [ ] **F-083** | P1 | OPEN | YES | purchase UserAction 3 vs paid/prepaid orders 36 |
+| [ ] **F-084** | P1 | OPEN | YES | Live dual AI sources chatgpt vs chatgpt.com (still writing) |
+| [x] **F-085** | P3 | PASS | no | Home hreflang×4 + canonical + OG + healthz OK |
+| [x] **F-086** | P3 | PASS | no | Mild burst 20× catalog → 0×429 (F-007 is high-load only) |
 
 ### P0 OPEN (чинить в первую очередь) — 9
 - [ ] **F-003** — Color landing SEO/grammar (product feed path narrowed via F-077)
@@ -177,6 +181,8 @@
 - [ ] **F-073** — session in tracking but not Order.session_key (prepay era)
 - [ ] **F-074** — COD missing session_key ensure
 - [ ] **F-076** — PV noise / site_session gap
+- [ ] **F-083** — purchase UserAction undercount vs paid orders
+- [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 
 ### P1 OPEN (continued) — 15
 - [ ] **F-001** — Category titles truncated mid-phrase (also in MySQL F-023)
@@ -394,6 +400,8 @@ Titles end on prepositions/conjunctions (**на / від / та**) — clearly c
 ### F-002 — Color category landings: broken grammar in title/H1
 
 **Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
+> **Reconfirm 2026-07-09 late:** `/catalog/tshirts/black/` title=`Купити чорний футболка з принтом` · h1=`Чорні футболка TwoComms — стрітвір з Харкова` (grammar + «стрітвір» typo). Sitemap still emits each color URL ×3 (F-006).
 
 - [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: SEO-014, PG-008, SEO-090
 
@@ -1986,6 +1994,59 @@ From homepage footer, all primary support URLs **200**:
 
 ---
 
+### F-083 — `purchase` UserAction heavily undercounted vs paid orders
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Related:** F-019, F-021, F-033
+
+| Metric | Count |
+|--------|------:|
+| Orders `payment_status` in paid/prepaid | **36** |
+| UserAction `purchase` | **3** |
+| UserAction `lead` | **6** |
+
+Only a tiny fraction of successful payments create funnel actions → conversion reporting / `mark_as_converted` almost never runs. Likely monobank webhook path only sometimes calls `record_order_action('purchase')`, or fails silently when session/UTM missing.
+
+---
+
+### F-084 — Live dual AI sources: `chatgpt.com` vs `chatgpt` still written
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Related:** F-020, F-057
+
+Last **3 days** UTMSession:
+
+| utm_source | utm_medium | count |
+|------------|------------|------:|
+| chatgpt.com | NULL | 9 |
+| chatgpt | ai | 6 |
+| instagram | paid_social / social | 7 |
+| ig | social | 1 (still appears) |
+
+Canaries normalize `ig`→`instagram`, but production still receives **unnormalized** rows (`chatgpt.com` without medium, occasional `ig`). Either older code path, referrer detector returns bare host, or normalize not applied on AI-referrer branch consistently.
+
+---
+
+### F-085 — Home technical SEO tags PASS
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+- hreflang: uk-UA / ru-UA / en-UA / x-default  
+- canonical: `https://twocomms.shop/`  
+- OG type/url/title/description/image present  
+- `/healthz/` → 200 `{"status":"ok"}`  
+- Home JSON-LD rich (WebSite, OnlineStore, BreadcrumbList, …)
+
+---
+
+### F-086 — Mild rate-limit recheck: 20× catalog all 200
+
+**Status:** [x] PASS note · **Severity:** P3 · **Fix required:** no for mild load
+
+20 sequential requests to `/catalog/tshirts/` → **0×429**. F-007 remains valid for **burst/crawl** (previously observed under full sitemap speed run), not for light traffic.
+
+---
+
 ## Deep attribution root-cause note (2026-07-09 late pass)
 
 ```
@@ -2015,3 +2076,4 @@ Landing (+UTM)
 | Pass A | **COMPLETE for audit scope** — fixes deferred to after Pass C |
 | 2026-07-09 | F-049 home unexclude canary PASS (sessionid+UTMSession+ATC+stored:true) |
 | 2026-07-09 late | Deep monobank/session_key/first_touch analysis; feed recheck; F-071–F-082; ads gate still BLOCKED |
+| 2026-07-09 late+ | F-083 purchase undercount; F-084 dual AI sources live; F-085/F-086 SEO/rate PASS notes; F-002 reconfirm |
