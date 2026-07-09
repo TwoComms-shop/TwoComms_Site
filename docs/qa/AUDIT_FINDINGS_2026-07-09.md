@@ -26,7 +26,7 @@
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
 | P0 | 8 | 0 | 0 | 0 |
-| P1 | 15 | 0 | 0 | 0 |
+| P1 | 17 | 0 | 0 | 0 |
 | P2 | 10 | 0 | 0 | 0 |
 | P3 | 3 | 0 | 0 | 0 |
 
@@ -59,17 +59,17 @@
 > - Полное описание каждой находки — секции `### F-xxx` ниже в этом же файле
 > - Чек-лист аудита: `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` — все строки уже `[x]` (пройдены)
 
-**Итого: 58 находок** · **Ads gate: BLOCKED** (есть открытые P0)
+**Итого: 70 находок** (F-001…F-070) · **Ads gate: BLOCKED** (есть открытые P0)
 
 ### Сводка по severity
 
 | Severity | OPEN (чинить) | PASS/INFO/REVISED |
 |----------|-------------:|------------------:|
 | P0 | **8** | 0 |
-| P1 | **15** | 0 |
-| P2 | **10** | 2 |
-| P3 | **3** | 20 |
-| **Всего** | **36 open** | **22 pass/info** |
+| P1 | **17** | 0 |
+| P2 | **10** | 3 |
+| P3 | **3** | 32 |
+| **Всего** | **~38 open** | **~32 pass/info** |
 
 ### Полный список F-001 … F-058
 
@@ -134,6 +134,19 @@
 | [ ] **F-057** | P1 | OPEN | YES | All-time dirty utm_source inventory |
 | [x] **F-058** | P3 | PASS | no | Scripts matrix key pages PASS |
 
+| [ ] **F-059** | P1 | OPEN | YES | All ProductImage.alt_text empty (36/36) |
+| [x] **F-060** | P3 | PASS | no | Cart qty update works with cart_key |
+| [x] **F-061** | P3 | PASS | no | Cart remove works |
+| [x] **F-062** | P3 | PASS | no | Promo invalid code validation |
+| [x] **F-063** | P2 | PASS | no | NP warehouses via settlement_ref |
+| [x] **F-064** | P3 | PASS | no | Favorites toggle works |
+| [x] **F-065** | P3 | PASS | no | Custom 404 branded noindex |
+| [x] **F-066** | P3 | PASS | no | BlogPosting JSON-LD |
+| [x] **F-067** | P3 | PASS | no | load-more-products works |
+| [ ] **F-068** | P1 | OPEN | YES | prepay_200 orders 19/19 no session_key |
+| [x] **F-069** | P2 | INFO | no | Home exclusion re-enabled |
+| [x] **F-070** | P3 | INFO | no | Promo POST field is promo_code |
+
 ### P0 OPEN (чинить в первую очередь) — 8
 - [ ] **F-003** — Merchant feed g:link / color landing broken
 - [ ] **F-019** — is_converted always 0
@@ -144,7 +157,11 @@
 - [ ] **F-033** — link_order_to_utm in code but orders empty
 - [ ] **F-045** — 0 Order.session_key join UTMSession
 
-### P1 OPEN — 15
+### P1 OPEN —
+- [ ] **F-059** — All ProductImage.alt_text empty (36/36)
+- [ ] **F-068** — prepay_200 orders missing session_key
+
+### P1 OPEN (continued) — 15
 - [ ] **F-001** — Category titles truncated mid-phrase (also in MySQL F-023)
 - [ ] **F-002** — Color landing broken UA grammar
 - [ ] **F-004** — UK product title vs H1 mismatch (13 URLs) + RU leak in H1
@@ -1638,6 +1655,129 @@ Backfill optional after backup (UTM_GOVERNANCE).
 **Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
 - [x] **PASS** · home/catalog/PDP/cart/custom-print/blog load main + analytics-loader + ui-fallback + rum; PDP loads product-detail; modules `checkout-mono.js`, `cart.js`, `shared.js` return 200.
+
+---
+
+
+
+### F-059 — All ProductImage.alt_text empty in production DB (36/36)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+**Evidence:** `ProductImage.objects` count=36, `alt_text` empty/null for **all 36**.  
+HTML may still show generated alts on some `<img>` (e.g. product title), but DB alt field unused → SEO/a11y gap for many images (empty alts observed on PDP: 4/17 empty in sample).
+
+**Checklist:** SEO-081  
+**Risk of fix:** low (content/backfill).
+
+---
+
+### F-060 — Cart qty update works with `cart_key` (PASS)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+`POST /cart/update/` with `cart_key=1:M:29:classic&qty=3` → 200, line_total 2364, cart_count 3.  
+(Earlier 404 was wrong param name `key` instead of `cart_key` — not a product bug.)
+
+---
+
+### F-061 — Cart remove works (PASS)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+`POST /cart/remove/` with `key=1:M:29:classic` → 200, count 0.
+
+---
+
+### F-062 — Promo validation works (PASS for invalid codes)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+`POST /cart/apply-promo/` with `promo_code=INVALIDXYZ` → 404 «Промокод не знайдено».  
+Field name must be `promo_code` (not `code`). Guest may need auth for real codes (not fully tested with valid code).
+
+---
+
+### F-063 — NP warehouses OK with `settlement_ref` (PASS); `city_ref` alone may return empty
+
+**Status:** [x] PASS with note · **Severity:** P2 · **Fix required:** optional UX
+
+Cities UA query returns `settlement_ref` + `city_ref`.  
+Warehouses with **settlement_ref** → items list OK.  
+Warehouses with only **city_ref** for Kyiv → `items: []` (empty). Front must send correct ref type.
+
+Related: F-050 Latin city 502 still open.
+
+---
+
+### F-064 — Favorites toggle works (PASS)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+`POST /favorites/toggle/1/` → success is_favorite true; `/favorites/count/` → 1.
+
+---
+
+### F-065 — Custom 404 page quality (PASS)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+Unknown product URL → HTTP 404, title `404 — Щось пішло не так`, **noindex**, link to home present.
+
+---
+
+### F-066 — BlogPosting JSON-LD present on posts (PASS)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+Sample post includes `"@type":"BlogPosting"`.
+
+---
+
+### F-067 — `load-more-products` works (PASS)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+`GET /load-more-products/?page=2` → 200 HTML product cards JSON wrapper.
+
+---
+
+### F-068 — Web `prepay_200` orders: 19/19 missing session_key
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
+Prod breakdown:
+
+| source | pay_type | total | empty session_key | empty utm |
+|--------|----------|------:|------------------:|----------:|
+| web | prepay_200 | 19 | **19** | 19 |
+| web | online_full | 16 | **9** | 16 |
+| web | cod | 1 | 1 | 1 |
+| manual | online_full | 7 | 7 | 7 |
+
+Prepay path never stores session_key → UTM linkage impossible for that whole segment. Strengthens F-021/F-044.
+
+---
+
+### F-069 — AnalyticsExclusion «дом» re-enabled again
+
+**Status:** [x] INFO · **Severity:** P2 · **Fix required:** process only
+
+As of re-check: `is_active=True` for `188.163.49.54` again.  
+Home canaries again may not write UTMSession (land without sessionid observed). Owner toggles expected; document for testers.
+
+---
+
+### F-070 — Promo field must be `promo_code` (INFO for front contract)
+
+**Status:** [x] INFO · **Severity:** P3 · **Fix required:** no if front correct
+
+Sending `code=` yields «Введіть промокод»; `promo_code=` yields proper not-found. Front must use correct field (verify live form uses `promo_code`).
 
 ---
 
