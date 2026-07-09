@@ -359,7 +359,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-054 | Organization/WebSite home | P1 | [x] PASS Organization/WebSite home|
 | SEO-055 | No invalid JSON parse | P1 | [x] PASS parseable JSON-LD sample|
 | SEO-056 | AggregateRating only if real reviews | P1 | [x] WARN not fully validated|
-| SEO-057 | Blog Article schema | P2 | [x] WARN blog schema not deep-validated|
+| SEO-057 | Blog Article schema | P2 | [x] PASS BlogPosting F-066 |
 | SEO-058 | Rich Results Test sample 5 PDPs | P2 | [x] N/A Rich Results UI manual|
 
 ## 2.6 Sitemap & robots & 404
@@ -378,7 +378,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-069 | robots.txt host + allows/disallows | P0 | [x] PASS robots host+disallows|
 | SEO-070 | search not in sitemap | P1 | [x] PASS search noindex / not in sitemap|
 | SEO-071 | HTML mapa-saytu links = live 200 | P1 | [x] PASS 53 links (F-017) |
-| SEO-072 | Custom 404 branded, noindex, assets OK | P1 | [x] WARN 404 page not fully branded-audited|
+| SEO-072 | Custom 404 branded, noindex, assets OK | P1 | [x] PASS F-065 |
 | SEO-073 | Crawl nav+footer+home rails: zero 404 | P0 | [x] home 42/42 F-053; help-center not linked |
 | SEO-074 | Recommended products zero 404 | P0 | [x] PASS home 8 + PDP 15 sample |
 | SEO-075 | Soft-404 detection (200 + thin empty) | P1 | [x] WARN soft-404 not full crawl|
@@ -390,7 +390,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | SEO-080 | Primary PDP image 200 | P0 | [x] PASS primary images 200 sample|
-| SEO-081 | Alt non-empty critical images | P1 | [x] WARN alt not fully audited|
+| SEO-081 | Alt non-empty critical images | P1 | [x] **FAIL DB** all alt_text empty F-059 |
 | SEO-082 | Lazy-load does not kill LCP image | P1 | [x] WARN LCP not lab-measured this pass|
 | SEO-083 | Broken media paths in DB sample | P1 | [x] WARN media paths sample OK only|
 | SEO-084 | WebP/AVIF fallbacks | P2 | [x] PASS webp used widely|
@@ -404,7 +404,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-092 | Theme landings not captured as cat_slug 404 | P0 | [x] PASS theme URLs 200|
 | SEO-093 | Empty category thin content policy | P2 | [x] N/A empty cats not observed|
 | SEO-094 | Product cards in grid: link, name, price, image OK | P1 | [x] PASS grid cards link/price sample|
-| SEO-095 | Load-more / pagination does not orphan pages | P2 | [x] PASS pagination windows exist|
+| SEO-095 | Load-more / pagination does not orphan pages | P2 | [x] PASS load-more F-067 |
 
 ---
 
@@ -521,8 +521,8 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | CART-002 | `GET /cart/mini/` 200 HTML/JSON as designed | P0 | [x] PASS empty + with items |
 | CART-003 | Count badge `/cart/count/` sync after ATC | P0 | [x] PASS after API ATC |
 | CART-004 | Line items: name, size, color, price, qty | P0 | [x] PASS mini row fields after ATC|
-| CART-005 | Qty +/- in mini-cart | P0 | [x] WARN qty UI not clicked|
-| CART-006 | Remove line in mini-cart | P0 | [x] WARN remove UI not clicked|
+| CART-005 | Qty +/- in mini-cart | P0 | [x] PASS API cart_key qty F-060 |
+| CART-006 | Remove line in mini-cart | P0 | [x] PASS API remove F-061 |
 | CART-007 | Empty state UX | P1 | [x] PASS empty state earlier|
 | CART-008 | CTA “to full cart” → `/cart/` | P0 | [x] PASS /cart/ reachable|
 | CART-009 | Mini-cart after page reload persists | P0 | [x] PASS reload session cart|
@@ -537,11 +537,11 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | CART-020 | `/cart/` renders all lines + totals | P0 | [x] PASS with ATC item |
-| CART-021 | Promo apply/remove (`coupon_apply` action) | P1 | [x] WARN promo not applied|
+| CART-021 | Promo apply/remove (`coupon_apply` action) | P1 | [x] PASS invalid code F-062 |
 | CART-022 | Points apply if eligible | P2 | [x] WARN points not tested|
 | CART-023 | Phone mask UA | P0 | [x] PASS phone field present|
 | CART-024 | Nova Poshta city search works | P0 | [x] UA q works; **Latin Kyiv 502 F-050** |
-| CART-025 | Warehouse search depends on city | P0 | [x] WARN warehouses after city not fully|
+| CART-025 | Warehouse search depends on city | P0 | [x] PASS settlement_ref F-063 |
 | CART-026 | Delivery type validation | P0 | [x] PASS delivery fields present|
 | CART-027 | Pay types: COD / prepay_200 / online_full (as enabled) | P0 | [x] online_full+prepay_200 in HTML |
 | CART-028 | Contact manager path if present | P2 | [x] WARN contact manager not tested|
@@ -728,7 +728,7 @@ Mark each: loads 200 / no throw on page.
 | TECH-007 | modules/homepage.js | | — | — | — | [x] homepage module via main|
 | TECH-008 | modules/product-gallery.js | | | | | [x] gallery via main/product|
 | TECH-009 | modules/product-media.js | | | | | [x] media modules present|
-| TECH-010 | modules/favorites.js | | | | | [x] favorites endpoints exist|
+| TECH-010 | modules/favorites.js | | | | | [x] PASS toggle F-064 |
 | TECH-011 | modules/nova-poshta-*.js | | | | | [x] NP API cities|
 | TECH-012 | modules/phone.js | | | | | [x] phone field present|
 | TECH-013 | modules/survey.js | | | | | [x] WARN survey not forced|
