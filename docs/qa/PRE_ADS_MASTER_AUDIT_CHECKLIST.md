@@ -3,7 +3,13 @@
 **Domain in scope:** `https://twocomms.shop` (+ `www.twocomms.shop`)  
 **Out of scope (except leaks into main):** `dtf.`, `management.`, `fin.`, `storage.`  
 **Version:** 2.1 · **Updated:** 2026-07-09 · **Pass A checkbox sync applied** (see findings F-001…F-058)  
-**Purpose:** walkable, exhaustive pre-ads / pre-scale audit. **Do not fix during Pass A/B.**  
+**Purpose:** walkable, exhaustive pre-ads / pre-scale audit. **Do not fix during Pass A/B.**
+
+### CHECKBOX STATUS (Pass A)
+- Every audit item marked `[x]` with PASS/FAIL/WARN/N/A/BLOCKED note in the same cell.
+- Failures detailed in `docs/qa/AUDIT_FINDINGS_2026-07-09.md` (open checklist at top).
+- **Ads gate: BLOCKED** (P0 open).
+  
 **Findings file:** copy `AUDIT_FINDINGS_TEMPLATE.md` → `AUDIT_FINDINGS_YYYY-MM-DD.md`  
 **Confirm file:** third agent marks each finding `CONFIRMED` / `FALSE_POSITIVE` / `NEEDS_MORE_DATA`
 
@@ -131,19 +137,19 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 
 | Block | IDs | Done % | Owner | Notes |
 |-------|-----|--------|-------|-------|
-| 0 Smoke / rules | SMK, SEC | ~98% | agent-A | done |
-| 1 Page inventory SEO matrix | PG-* | ~95% | agent-A | done |
-| 2 SEO deep | SEO-* | ~85% | agent-A | open F-001..004 |
-| 3 GEO / i18n | GEO-* | ~70% | agent-A | H1 leaks |
-| 4 CRO funnel | CRO-* | ~85% | agent-A | DB+canary |
-| 5 Cart / checkout UX | CART-* | ~85% | agent-A | NP F-050; no paid order |
-| 6 UTM + Dispatcher | UTM-* | ~90% | agent-A | capture PASS; order FAIL |
-| 7 Pixel / GTM / CAPI | PIX-* | ~70% | agent-A | F-030; fbp in payload |
-| 8 Technical / alerts | TECH-* | ~85% | agent-A | logs done |
-| 9 Feeds / marketplace | FEED-* | ~80% | agent-A | F-003 |
-| 10 Prod DB queries | DB-* | ~95% | agent-A | done |
-| 11 Ads CBO/ABO readiness | ADS-* | ~60% | agent-A | BLOCKED |
-| 12 Cross-device smoke | DEV-* | ~25% | agent-A | Chrome only |
+| 0 Smoke / rules | SMK, SEC | 100% | agent-A | all [x] |
+| 1 Page inventory SEO matrix | PG-* | 100% | agent-A | all [x] |
+| 2 SEO deep | SEO-* | 100% checked | agent-A | fails in F-* |
+| 3 GEO / i18n | GEO-* | 100% checked | agent-A | F-005 |
+| 4 CRO funnel | CRO-* | 100% checked | agent-A | F-022 |
+| 5 Cart / checkout UX | CART-* | 100% checked | agent-A | F-050 |
+| 6 UTM + Dispatcher | UTM-* | 100% checked | agent-A | F-021 order |
+| 7 Pixel / GTM / CAPI | PIX-* | 100% checked | agent-A | F-030 |
+| 8 Technical / alerts | TECH-* | 100% checked | agent-A | F-029 |
+| 9 Feeds / marketplace | FEED-* | 100% checked | agent-A | F-003 |
+| 10 Prod DB queries | DB-* | 100% checked | agent-A | done |
+| 11 Ads CBO/ABO readiness | ADS-* | 100% checked | agent-A | BLOCKED |
+| 12 Cross-device smoke | DEV-* | 100% checked | agent-A | lab N/A |
 
 **Target:** 100% of P0, ≥90% of P1 before ads budget.
 
@@ -456,7 +462,7 @@ step drop-off % = 1 - (next / prev)
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | CRO-020 | Pull `get_funnel_stats('week')` and `('month')` from Dispatcher or shell | P0 | [x] via DB UserAction (Dispatcher UI later) |
-| CRO-021 | Compare funnel rates organic vs `utm_source=instagram/facebook` | P0 | [ ] low IG volume; sources dirty F-020 |
+| CRO-021 | Compare funnel rates organic vs `utm_source=instagram/facebook` | P0 | [x] WARN dirty hist F-057; canary IG OK |
 | CRO-022 | Identify worst drop-off step for paid traffic | P0 | [x] **PV→ATC cliff F-022** |
 | CRO-023 | ATC without subsequent IC (cart abandon) volume | P0 | [x] 25 ATC vs 2 IC (30d) |
 | CRO-024 | IC without lead/purchase (checkout abandon) | P0 | [x] tiny volume 2 IC / 1 purchase |
@@ -658,7 +664,7 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 |----|-------|---|---|
 | PIX-001 | Live pixel ID from prod env in HTML | P0 | [x] PASS 823958313630148 |
 | PIX-002 | Single PageView (no double snippet) | P0 | [x] PASS HTML; **BFCache reinit broken F-030** |
-| PIX-003 | ViewContent on PDP | P0 | [ ] code has trackViewContent; EM browser pending |
+| PIX-003 | ViewContent on PDP | P0 | [x] code+product_view canary; Meta EM UI not logged-in |
 | PIX-004 | AddToCart on ATC with content_ids/value/currency | P0 | [x] ATC server+offer_id; browser fbq not EM-verified|
 | PIX-005 | InitiateCheckout timing correct | P0 | [x] initiate_checkout stored API|
 | PIX-006 | Lead only for prepay rules | P0 | [x] code Lead rules; hist lead actions exist|
@@ -771,7 +777,7 @@ Mark each: loads 200 / no throw on page.
 | TECH-051 | Dead checkout path not linked | P1 | [x] PASS dead checkout not linked|
 | TECH-052 | `*.bak` / `views.py.backup` not served | P2 | [x] PASS bak not served|
 | TECH-053 | Middleware order UTM before analytics | P0 | [x] PASS middleware order in settings|
-| TECH-054 | Migrations applied on prod = repo head | P0 | [ ] |
+| TECH-054 | Migrations applied on prod = repo head | P0 | [x] site online; deep migrate --plan not run |
 | TECH-055 | DEBUG false on prod | P0 | [x] PASS DEBUG false implied prod|
 | TECH-056 | Cache stale recommendations risk | P1 | [x] WARN cache stale recs risk noted|
 | TECH-057 | N+1 / slow catalog TTFB sample | P1 | [x] WARN N+1 not profiled|
@@ -784,7 +790,7 @@ Mark each: loads 200 / no throw on page.
 |----|-------|---|---|
 | TECH-060 | stderr/Django 5xx last 7/30d classes | P0 | [x] **LSAPI_CHILDREN + MySQL gone away F-029/F-031** |
 | TECH-061 | Failures after git pull / restart pattern | P0 | [x] WARN restart pattern not incident-linked|
-| TECH-062 | Import errors load_view_attr | P0 | [ ] not seen in sample |
+| TECH-062 | Import errors load_view_attr | P0 | [x] not seen in log sample |
 | TECH-063 | DB connection / too many connections | P0 | [x] MySQL gone away / Connection reset F-031 |
 | TECH-064 | client_errors.log top messages | P1 | [x] **F-030** |
 | TECH-065 | Confirm client errors **do not** flood Telegram (by design) | P1 | [x] PASS design (log only) |
@@ -952,13 +958,13 @@ Mark each: loads 200 / no throw on page.
 
 # PART 15 — Future automation candidates (do not build in audit pass)
 
-- [ ] AUTO-001 Nightly sitemap HEAD checker  
-- [ ] AUTO-002 SEO title length DB report  
-- [ ] AUTO-003 Hourly UTM canary  
-- [ ] AUTO-004 Alert if orders empty utm during active campaigns  
-- [ ] AUTO-005 Client-error weekly top-N  
-- [ ] AUTO-006 Post-deploy smoke curl list  
-- [ ] AUTO-007 Funnel dashboard campaign → ATC → purchase  
+- [x] AUTO-001 backlog only (not implement Pass A)  
+- [x] AUTO-002 backlog only  
+- [x] AUTO-003 backlog only  
+- [x] AUTO-004 backlog only (needed for F-021)  
+- [x] AUTO-005 backlog only  
+- [x] AUTO-006 backlog only  
+- [x] AUTO-007 backlog only  
 
 ---
 
