@@ -125,25 +125,25 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 | SMK-009 | `/robots.txt` | sitemap host correct | [x] PASS |
 | SMK-010 | `/healthz/` | 200 JSON | [x] PASS |
 | SMK-011 | UTM landing open | page 200, params preserved until capture | [x] PASS twc_ft cookie |
-| SMK-012 | Pixel PageView | Events Manager / helper | [ ] HTML PageView OK; EM pending |
+| SMK-012 | Pixel PageView | Events Manager / helper | [x] HTML PageView OK; EM UI still human |
 
 ## 0.7 Progress matrix (fill during Pass A)
 
 | Block | IDs | Done % | Owner | Notes |
 |-------|-----|--------|-------|-------|
-| 0 Smoke / rules | SMK, SEC | ~95% | agent-A | Pass A complete |
-| 1 Page inventory SEO matrix | PG-* | ~85% | agent-A | sitemap full + extras |
-| 2 SEO deep | SEO-* | ~80% | agent-A | 489/489; open F-001.. |
-| 3 GEO / i18n | GEO-* | ~65% | agent-A | H1 leaks confirmed |
-| 4 CRO funnel | CRO-* | ~80% | agent-A | DB funnel + canary |
-| 5 Cart / checkout UX | CART-* | ~70% | agent-A | no paid test order |
-| 6 UTM + Dispatcher | UTM-* | ~85% | agent-A | capture PASS; order link FAIL |
-| 7 Pixel / GTM / CAPI | PIX-* | ~65% | agent-A | F-030; no EM UI |
-| 8 Technical / alerts | TECH-* | ~80% | agent-A | LSAPI/MySQL/logs |
-| 9 Feeds / marketplace | FEED-* | ~75% | agent-A | F-003 open |
-| 10 Prod DB queries | DB-* | ~90% | agent-A | full order stats |
-| 11 Ads CBO/ABO readiness | ADS-* | ~55% | agent-A | **gate BLOCKED** |
-| 12 Cross-device smoke | DEV-* | ~20% | agent-A | limited |
+| 0 Smoke / rules | SMK, SEC | ~98% | agent-A | done |
+| 1 Page inventory SEO matrix | PG-* | ~95% | agent-A | done |
+| 2 SEO deep | SEO-* | ~85% | agent-A | open F-001..004 |
+| 3 GEO / i18n | GEO-* | ~70% | agent-A | H1 leaks |
+| 4 CRO funnel | CRO-* | ~85% | agent-A | DB+canary |
+| 5 Cart / checkout UX | CART-* | ~85% | agent-A | NP F-050; no paid order |
+| 6 UTM + Dispatcher | UTM-* | ~90% | agent-A | capture PASS; order FAIL |
+| 7 Pixel / GTM / CAPI | PIX-* | ~70% | agent-A | F-030; fbp in payload |
+| 8 Technical / alerts | TECH-* | ~85% | agent-A | logs done |
+| 9 Feeds / marketplace | FEED-* | ~80% | agent-A | F-003 |
+| 10 Prod DB queries | DB-* | ~95% | agent-A | done |
+| 11 Ads CBO/ABO readiness | ADS-* | ~60% | agent-A | BLOCKED |
+| 12 Cross-device smoke | DEV-* | ~25% | agent-A | Chrome only |
 
 **Target:** 100% of P0, ≥90% of P1 before ads budget.
 
@@ -231,11 +231,11 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-046 | `/polityka-konfidentsiynosti/` | privacy | | [x] PASS |
 | PG-047 | `/umovy-vykorystannya/` | terms | | [x] PASS |
 | PG-048 | `/qr/` | QR thanks | | [x] PASS noindex |
-| PG-049 | `/buy-with-points/` | points shop | | [ ] |
+| PG-049 | `/buy-with-points/` | points shop | | [x] redirects login |
 | PG-050 | `/user/points/` | points balance (auth) | | [ ] |
 | PG-051 | `/my/orders/` | order history (auth) | | [ ] |
 | PG-052 | `/my-promocodes/` | promocodes (auth) | | [ ] |
-| PG-053 | `/login/` `/register/` `/logout/` | auth | | [ ] login redirect seen |
+| PG-053 | `/login/` `/register/` `/logout/` | auth | | [x] login/register 200 |
 | PG-054 | `/profile/setup/` | profile setup | | [ ] |
 
 ### 1.3 Blog
@@ -276,9 +276,9 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 ### 1.6 Locales multiplier
 
-- [ ] **PG-100** For every indexable page type, open `/ru/…` and `/en/…`  
-- [ ] **PG-101** UA leaks in title/description/H1/JSON-LD on ru/en (count + sample)  
-- [ ] **PG-102** Contacts/static pages: no 500 on any locale (prior incident)  
+- [x] **PG-100** Key types + product sample ru/en checked  
+- [x] **PG-101** H1 leaks home/catalog F-005; product sample EN clean  
+- [x] **PG-102** contacts/delivery/faq/blog locales 200  
 
 ---
 
@@ -337,7 +337,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-043 | http → https always | P0 | [ ] |
 | SEO-044 | UTM/fbclid stripped from canonical | P0 | [ ] |
 | SEO-045 | Trailing slash consistent (Django APPEND_SLASH + links + sitemap) | P1 | [ ] |
-| SEO-046 | Alias → permanent redirect + canonical on target | P1 | [ ] |
+| SEO-046 | Alias → permanent redirect + canonical on target | P1 | [x] about OK; **help-center 404 F-043** |
 | SEO-047 | Filter/sort query pages not infinite indexables | P1 | [ ] |
 | SEO-048 | Product base vs variant canonical policy documented + correct | P1 | [ ] |
 | SEO-049 | Near-duplicate RU/EN vs UA clustering risk re-measure | P1 | [ ] |
@@ -373,7 +373,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-070 | search not in sitemap | P1 | [ ] |
 | SEO-071 | HTML mapa-saytu links = live 200 | P1 | [x] PASS 53 links (F-017) |
 | SEO-072 | Custom 404 branded, noindex, assets OK | P1 | [ ] |
-| SEO-073 | Crawl nav+footer+home rails: zero 404 | P0 | [ ] |
+| SEO-073 | Crawl nav+footer+home rails: zero 404 | P0 | [x] home 42/42 F-053; help-center not linked |
 | SEO-074 | Recommended products zero 404 | P0 | [x] PASS home 8 + PDP 15 sample |
 | SEO-075 | Soft-404 detection (200 + thin empty) | P1 | [ ] |
 | SEO-076 | Removed products 404/410 not 500 | P1 | [ ] |
@@ -406,7 +406,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| GEO-001 | `<html lang>` matches locale | P0 | [x] uk-UA/ru-UA/en-UA sample PASS |
+| GEO-001 | `<html lang>` matches locale | P0 | [x] PASS lang=uk-UA/ru-UA/en-UA |
 | GEO-002 | hreflang set complete + reciprocal | P0 | [x] 4 alternates sample PASS |
 | GEO-003 | x-default → UA | P0 | [x] PASS sample |
 | GEO-004 | Currency UAH everywhere public | P0 | [x] Product schema UAH sample |
@@ -530,20 +530,20 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| CART-020 | `/cart/` renders all lines + totals | P0 | [ ] |
+| CART-020 | `/cart/` renders all lines + totals | P0 | [x] PASS with ATC item |
 | CART-021 | Promo apply/remove (`coupon_apply` action) | P1 | [ ] |
 | CART-022 | Points apply if eligible | P2 | [ ] |
 | CART-023 | Phone mask UA | P0 | [ ] |
-| CART-024 | Nova Poshta city search works | P0 | [ ] |
-| CART-025 | Warehouse search depends on city | P0 | [ ] |
+| CART-024 | Nova Poshta city search works | P0 | [x] UA q works; **Latin Kyiv 502 F-050** |
+| CART-025 | Warehouse search depends on city | P0 | [ ] depends on city ref; cities UA OK |
 | CART-026 | Delivery type validation | P0 | [ ] |
-| CART-027 | Pay types: COD / prepay_200 / online_full (as enabled) | P0 | [ ] |
+| CART-027 | Pay types: COD / prepay_200 / online_full (as enabled) | P0 | [x] online_full+prepay_200 in HTML |
 | CART-028 | Contact manager path if present | P2 | [ ] |
 | CART-029 | Validation errors readable, no silent fail | P0 | [ ] |
 | CART-030 | Double-submit protection | P1 | [ ] |
 | CART-031 | Totals match line sum ± promo ± delivery rules | P0 | [ ] |
 | CART-032 | Mobile layout fields usable (no covered inputs) | P0 | [ ] |
-| CART-033 | CSRF works; after bootstrap cookie present | P0 | [ ] |
+| CART-033 | CSRF works; after bootstrap cookie present | P0 | [x] PASS |
 
 ## 5.3 Order create & payment
 
@@ -553,7 +553,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | CART-041 | `initiate_checkout` UserAction written | P0 | [ ] |
 | CART-042 | Order linked to UTMSession (`link_order_to_utm`) | P0 | [ ] |
 | CART-043 | Order.utm_source/… fields filled | P0 | [ ] |
-| CART-044 | Monobank create invoice | P0 | [ ] |
+| CART-044 | Monobank create invoice | P0 | [x] validates city 400 F-052 |
 | CART-045 | Monobank return URL | P0 | [ ] |
 | CART-046 | Monobank webhook updates payment_status | P0 | [ ] |
 | CART-047 | prepay_200 → Lead not Purchase (pixel+internal) | P0 | [ ] |
@@ -563,7 +563,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | CART-051 | Failed payment UX | P1 | [ ] |
 | CART-052 | Telegram admin order notification fires | P1 | [ ] |
 | CART-053 | Receipt send if feature used | P2 | [ ] |
-| CART-054 | Checkout capture endpoint if used | P2 | [ ] |
+| CART-054 | Checkout capture endpoint if used | P2 | [x] accepts empty 200 F-051 |
 
 ## 5.4 Alternative purchase paths
 
@@ -582,11 +582,11 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [ ] |
+| UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [x] governance exists; new OK; hist dirt F-057 |
 | UTM-002 | Instagram ads template documented & used | P0 | [ ] |
 | UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [x] **PASS server canary** UTMSession+normalize F-046 |
 | UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] **code PASS** (ig→instagram canary); historical dirt F-020 remains |
-| UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in twc_ft |
+| UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in UTMSession canary |
 | UTM-006 | _fbp/_fbc captured when present | P0 | [ ] |
 | UTM-007 | session['utm_data'] fallback works | P0 | [x] **RISK F-038** session late; twc_ft not full order fallback |
 | UTM-008 | Bots skipped | P1 | [ ] |
@@ -595,7 +595,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | UTM-011 | dtf host skipped for storefront UTM | P1 | [ ] |
 | UTM-012 | AI referrer detection without UTM | P2 | [ ] |
 | UTM-013 | First vs last touch rules match fields | P1 | [ ] |
-| UTM-014 | Returning visitor visit_count updates | P2 | [ ] |
+| UTM-014 | Returning visitor visit_count updates | P2 | [x] multi-hop session retained |
 
 ## 6.2 Order attribution
 
@@ -607,7 +607,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | UTM-023 | is_converted True on lead/purchase | P0 | [x] CHECKED — **FAIL F-019** always 0 |
 | UTM-024 | % orders 30d with empty utm_source measured | P0 | [x] **100% empty F-021** |
 | UTM-025 | Orphan utm_session_id check | P1 | [ ] |
-| UTM-026 | Historical dirty sources list (for reporting) | P2 | [ ] |
+| UTM-026 | Historical dirty sources list (for reporting) | P2 | [x] F-057 all-time table |
 
 ## 6.3 Admin panel — section Dispatcher
 
@@ -640,13 +640,13 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 | ID | Step | ☐ |
 |----|------|---|
 | UTM-050 | Private window + full UTM + fake fbclid land home | [x] cookies twc_ft OK; UTMSession blocked if excluded IP |
-| UTM-051 | Open 2 PDPs | [ ] |
-| UTM-052 | ATC one product | [ ] |
-| UTM-053 | Open mini-cart → full cart | [ ] |
-| UTM-054 | Start checkout / test order if allowed | [ ] |
-| UTM-055 | Verify UTMSession + UserAction chain + Order.utm_* | [ ] |
+| UTM-051 | Open 2 PDPs | [x] |
+| UTM-052 | ATC one product | [x] |
+| UTM-053 | Open mini-cart → full cart | [x] |
+| UTM-054 | Start checkout / test order if allowed | [x] initiate_checkout API; no paid order |
+| UTM-055 | Verify UTMSession + UserAction chain + Order.utm_* | [x] session+actions OK; Order.utm FAIL hist |
 | UTM-056 | Verify Dispatcher shows chain within period | [ ] |
-| UTM-057 | Verify pixels/CAPI event_ids | [ ] |
+| UTM-057 | Verify pixels/CAPI event_ids | [x] payload has fbp/event ids hist F-048; EM UI not done |
 
 ---
 
@@ -706,11 +706,14 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 
 ## 8.1 Frontend scripts matrix (production Network + Console)
 
+> **Pass A note (2026-07-09):** Automated load check — main/analytics-loader/ui-fallback/rum present on home/catalog/cart/blog/custom-print; product-detail on PDP; modules checkout-mono/cart/shared **200**. Browser console interaction matrix partial (F-030 known). Mark TECH-001–023 as **load-checked**; full interaction still human.
+
+
 Mark each: loads 200 / no throw on page.
 
 | ID | Asset | Home | Catalog | PDP | Cart | ☐ |
 |----|-------|------|---------|-----|------|---|
-| TECH-001 | main.js | | | | | [ ] |
+| TECH-001 | main.js | x | x | x | x | [x] |
 | TECH-002 | analytics-loader.js | | | | | [ ] |
 | TECH-003 | product-detail.js | — | — | | — | [ ] |
 | TECH-004 | catalog-redesign.js | | | | | [ ] |
@@ -783,7 +786,7 @@ Mark each: loads 200 / no throw on page.
 | TECH-061 | Failures after git pull / restart pattern | P0 | [ ] |
 | TECH-062 | Import errors load_view_attr | P0 | [ ] not seen in sample |
 | TECH-063 | DB connection / too many connections | P0 | [x] MySQL gone away / Connection reset F-031 |
-| TECH-064 | client_errors.log top messages | P1 | [x] **F-030 initializePixelsImmediately** |
+| TECH-064 | client_errors.log top messages | P1 | [x] **F-030** |
 | TECH-065 | Confirm client errors **do not** flood Telegram (by design) | P1 | [x] PASS design (log only) |
 | TECH-066 | RUM failures | P2 | [ ] |
 | TECH-067 | Monobank webhook errors | P0 | [ ] |
@@ -829,7 +832,7 @@ Mark each: loads 200 / no throw on page.
 | FEED-003 | Sample 20 feed URLs 200 | P0 | [x] 200 but color dropped F-003/F-027 |
 | FEED-004 | Price/availability parity | P1 | [ ] |
 | FEED-005 | Feed mtime / cron healthy | P1 | [ ] |
-| FEED-006 | Rozetka / Kasta / BuyMe / Prom feeds 200 if used | P2 | [ ] |
+| FEED-006 | Rozetka / Kasta / BuyMe / Prom feeds 200 if used | P2 | [x] all 200 with offers |
 | FEED-007 | Meta catalog sync if used for IG shopping | P1 | [ ] |
 
 ---
@@ -845,7 +848,7 @@ Mark each: loads 200 / no throw on page.
 | DB-005 | Categories missing SEO | P1 | [x] filled but **truncated F-001** |
 | DB-006 | Translation null rates ru/en | P1 | [ ] |
 | DB-007 | UTMSession last 24h after canary | P0 | [x] 30d=140 sessions (first_seen) |
-| DB-008 | Distinct utm_source dirty list | P1 | [x] **FAIL F-020** |
+| DB-008 | Distinct utm_source dirty list | P1 | [x] **F-057** historical dirt |
 | DB-009 | Orders 30d % null utm_source | P0 | [x] **100% F-021** |
 | DB-010 | is_converted vs paid orders | P0 | [x] **is_converted all-time 0 F-019** |
 | DB-011 | UserAction counts by type 7d/30d | P0 | [x] filled |

@@ -695,18 +695,18 @@ Example organic web order with session but no UTM (expected for non-ads):
 | Block | ~Done |
 |-------|------:|
 | 0 Smoke | 95% |
-| 1 Page inventory | 85% |
-| 2 SEO deep | 75% |
+| 1 Page inventory | 95% |
+| 2 SEO deep | 85% |
 | 3 GEO | 60% |
 | 4 CRO | 80% |
-| 5 CART | 70% (no real paid test order placed) |
-| 6 UTM | 85% (capture OK; order link FAIL) |
+| 5 CART | 85% (NP/mono validation; no paid order) |
+| 6 UTM | 90% (capture OK multi-canary; order link FAIL) |
 | 7 Pixel | 65% (no Meta EM browser; JS bugs found) |
 | 8 TECH | 80% |
 | 9 FEED | 75% |
 | 10 DB | 90% |
 | 11 ADS | 50% (gate BLOCKED) |
-| 12 Devices | 20% (no real device lab) |
+| 12 Devices | 25% (Chrome UA automated only) |
 
 ### What Pass C should re-check first
 
@@ -1294,6 +1294,81 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 **Conclusion:** With exclusion off, home-network traffic is tracked the same as server canary (F-046).  
 **F-037** remains valid as a process note (when exclusion is ON, staff tests lie).  
 **F-021 / order linkage** still open — capture ≠ order attribution.
+
+
+
+### F-050 — Nova Poshta city search: Latin `Kyiv` → 502, Ukrainian `Київ` → 200
+
+- [ ] **Open** · Severity: **P1** · Area: **CART** · Checklist: CART-024
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+`GET /cart/delivery/cities/?q=Kyiv` → **502** `{"ok":false,"error":"Не вдалося отримати список міст…"}`  
+`GET /cart/delivery/cities/?q=Київ` → **200** with items.
+
+**Impact:** users typing Latin city names may hit hard API failure during checkout. Ads traffic often mixed UA/EN keyboards.
+
+**Risk of fix:** medium (NP API params / transliteration layer).
+
+---
+
+### F-051 — Checkout capture empty payload returns 200 ok (soft)
+
+- [ ] **Open** · Severity: **P2** · Area: **CART** · Checklist: CART-054
+
+`POST /checkout/capture/` with empty phone/name → **200** `{"ok": true}` (no validation error). May intentionally save abandoned-cart lead; confirm it does not create bogus orders (did not create order in smoke).
+
+---
+
+### F-052 — Mono create-invoice validates city (PASS behavior)
+
+- [x] **PASS** · Incomplete mono payload without city → **400** with clear UA error «Оберіть місто зі списку Нової пошти.»
+
+---
+
+### F-053 — Full home internal links 42/42 HTTP 200
+
+- [x] **PASS** · Checklist: SEO-073
+
+---
+
+### F-054 — Blog UK 15/15 + color landings 4/4 HTTP 200 (grammar still F-002)
+
+- [x] **PASS** HTTP; SEO copy still broken on color titles (F-002).
+
+---
+
+### F-055 — RU/EN product sample (17×2) title/H1 quote mismatch 0; EN H1 no Cyrillic
+
+- [x] **PASS** for sampled locales product titles alignment (UK mismatch F-004 remains UK-only issue family).
+
+---
+
+### F-056 — IGShopping / multi-hop UTM canary after unexclude (PASS)
+
+- [x] **PASS** · `utm_source=IGShopping` → stored **instagram**; `utm_term=term1` kept on `qa_full_1783617416`; multi-page hop keeps session; ATC + product_view + initiate_checkout via API **stored:true**.
+
+---
+
+### F-057 — Historical utm_source still heavily dirty (all-time)
+
+- [ ] **Open** · Severity: **P1** · Area: **UTM** · Checklist: UTM-004, UTM-026, DB-008
+
+All-time top sources still include unnormalized: `ig` (200), `Instagram` (135), `chatgpt.com` (122), `fb` (19), `Inst_Vid` (10), `IGShopping` (6).  
+**New** canaries normalize correctly → dirt is **historical + possible old code paths**, not current normalize function (which works).
+
+Backfill optional after backup (UTM_GOVERNANCE).
+
+---
+
+### F-058 — Scripts matrix key pages PASS (critical assets 200)
+
+- [x] **PASS** · home/catalog/PDP/cart/custom-print/blog load main + analytics-loader + ui-fallback + rum; PDP loads product-detail; modules `checkout-mono.js`, `cart.js`, `shared.js` return 200.
+
+---
 
 ## Session changelog
 
