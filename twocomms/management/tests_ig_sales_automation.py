@@ -5,7 +5,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -251,8 +251,12 @@ class SalesCockpitApiTests(TestCase):
         )
 
         url = f"/bot/api/clients/{self.active.id}/transfer/"
-        first = self.client.post(url)
-        second = self.client.post(url)
+        # A route that is not implemented yet must be observable as a 404, not
+        # re-raised as Resolver404 by the Django test client.
+        client = Client(raise_request_exception=False)
+        client.force_login(self.admin)
+        first = client.post(url)
+        second = client.post(url)
 
         self.assertEqual(first.status_code, 200)
         self.assertTrue(first.json()["transferred"])
