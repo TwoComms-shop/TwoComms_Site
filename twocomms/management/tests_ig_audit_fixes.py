@@ -147,6 +147,20 @@ class SendApiErrorClassificationTests(TestCase):
         self.assertEqual(getattr(client, "delivery_status", "advanced_access"), "")
         self.assertEqual(getattr(client, "delivery_error", "попередня причина"), "")
 
+    @patch("management.services.instagram_bot.get_page_token", return_value="PT")
+    @patch("management.services.instagram_bot._http")
+    def test_graph_551_requires_message_requests_check_without_claiming_it_is_confirmed(self, mock_http, _mock_pt):
+        client = IgClient.get_or_create_for_sender("delivery-request-check-client")
+        mock_http.return_value = (
+            400,
+            json.dumps({"error": {"code": 551, "message": "Recipient unavailable."}}),
+        )
+
+        bot.send_text(InstagramBotSettings.load(), client.igsid, "Привіт")
+
+        client.refresh_from_db()
+        self.assertEqual(getattr(client, "delivery_status", ""), "message_request_check")
+
 
 class PaylinkProductTests(TestCase):
     """Bug B: paylink має бути на ПРАВИЛЬНИЙ товар, навіть якщо є стара чернетка."""
