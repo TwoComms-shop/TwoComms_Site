@@ -976,3 +976,15 @@ Mark each: loads 200 / no throw on page.
 ---
 
 *End of Master Audit Checklist v2. Scope: main site only. No secrets. No fixes in Pass A/B.*
+
+---
+
+## Pass A deep continuation (2026-07-09 late)
+
+- Attribution root-cause: **F-071** `link_order_to_utm` ignores first_touch → Order.utm always empty even when UserAction has UTM.
+- Session_key: prepay historical empty (F-068/F-073); COD no ensure (F-074); online_full since May usually has sk.
+- Feed product g:link recheck **PASS** (F-077); color landings grammar still F-002.
+- CheckoutCapture.converted 0/4 (F-075).
+- Pixel BFCache + MySQL gone away reconfirmed live (F-079/F-080).
+- Ads gate remains **BLOCKED**. Findings F-001…F-082 in `AUDIT_FINDINGS_2026-07-09.md`.
+- **No code fixes in Pass A/B.**

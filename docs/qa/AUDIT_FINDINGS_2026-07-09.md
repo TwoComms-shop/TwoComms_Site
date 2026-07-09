@@ -17,17 +17,17 @@
 
 ## Executive summary
 
-**Ads launch gate (current):** **BLOCKED**. Critical: **F-021** order UTM empty, **F-019** is_converted dead, **F-030** pixel BFCache JS error, **F-029** worker limit, **F-003** feed landings, SEO **F-001/F-002/F-004**.
+**Ads launch gate (current):** **BLOCKED**. Critical: **F-021/F-033/F-071** order UTM empty (first_touch not copied to Order), **F-019** is_converted dead, **F-030** pixel BFCache JS error, **F-029** worker limit, SEO **F-001/F-002/F-004**, **F-044/F-068** session_key gaps. Product feed `g:link` recheck **PASS** (F-077) — earlier F-027 product-path claim narrowed.
 
-**One paragraph:** Core smoke (home, catalog, cart, healthz, robots, sitemap index, www→apex, UTM first-touch cookies, Meta pixel ID + single PageView snippet, cart mini APIs) **works**. Sitemap children load; **65** UK product URLs + locales present. Sample of **22/22** product PDPs returned **200** with Product JSON-LD and UAH prices. **Serious SEO quality bugs** on category titles (truncated mid-phrase), color landings (broken Ukrainian grammar), product title↔H1 mismatches (including Russian leak in H1). **Merchant feed** `g:link` values use HTML-escaped `&amp;` that the site interprets as path `/s/?amp;color=…` instead of proper size/color query — high risk for Shopping/Meta catalog. Aggressive **HTTP 429** rate limiting mid-crawl. RU/EN pages still show **Ukrainian H1** on home/catalog. Pixel **ViewContent/ATC/Purchase E2E** and **Dispatcher/DB funnel** not fully verified yet (need browser + admin/DB).
+**One paragraph:** Core smoke (home, catalog, cart, healthz, robots, sitemap index, UTM first-touch cookies, Meta pixel ID + PageView, cart APIs) **works**. **Attribution chain is broken for ROAS**: capture/canaries OK, but **43/43 orders have empty `utm_source`**, **0 `is_converted`**, and `link_order_to_utm` **does not read `analytics_first_touch_data`** (F-071) — even audit order 276 had UTM in UserAction first_touch and still blank Order UTM. Historical **prepay_200 = 19/19 no session_key** though many have `payment_payload.tracking.external_id=session:…` (F-073). **COD path** lacks `_ensure_session_key` (F-074). SEO: category titles truncated in MySQL, color landings bad UA grammar, RU/EN home H1 still Ukrainian. Pixel BFCache ReferenceError still live. **CheckoutCapture.converted never flips** (0/4). Ads gate remains **BLOCKED**.
 
 ### Counts (open findings)
 
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
-| P0 | 8 | 0 | 0 | 0 |
-| P1 | 17 | 0 | 0 | 0 |
-| P2 | 10 | 0 | 0 | 0 |
+| P0 | 9 | 0 | 0 | 0 |
+| P1 | 20 | 0 | 0 | 0 |
+| P2 | 12 | 0 | 0 | 0 |
 | P3 | 3 | 0 | 0 | 0 |
 
 ### Pass A coverage (honest)
@@ -59,17 +59,17 @@
 > - Полное описание каждой находки — секции `### F-xxx` ниже в этом же файле
 > - Чек-лист аудита: `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` — все строки уже `[x]` (пройдены)
 
-**Итого: 70 находок** (F-001…F-070) · **Ads gate: BLOCKED** (есть открытые P0)
+**Итого: 82 находки** (F-001…F-082) · **Ads gate: BLOCKED** (есть открытые P0)
 
 ### Сводка по severity
 
 | Severity | OPEN (чинить) | PASS/INFO/REVISED |
 |----------|-------------:|------------------:|
-| P0 | **8** | 0 |
-| P1 | **17** | 0 |
-| P2 | **10** | 3 |
-| P3 | **3** | 32 |
-| **Всего** | **~38 open** | **~32 pass/info** |
+| P0 | **9** | 0 |
+| P1 | **20** | 0 |
+| P2 | **12** | 4 |
+| P3 | **3** | 34 |
+| **Всего** | **~44 open** | **~38 pass/info** |
 
 ### Полный список F-001 … F-058
 
@@ -146,20 +146,37 @@
 | [ ] **F-068** | P1 | OPEN | YES | prepay_200 orders 19/19 no session_key |
 | [x] **F-069** | P2 | INFO | no | Home exclusion re-enabled |
 | [x] **F-070** | P3 | INFO | no | Promo POST field is promo_code |
+| [ ] **F-071** | P0 | OPEN | YES | link_order_to_utm ignores first_touch UTM (root of F-021/033) |
+| [ ] **F-072** | P1 | OPEN | YES | Only 2/36 web orders recoverable to UTM via external_id |
+| [ ] **F-073** | P1 | OPEN | YES | prepay had session in tracking.external_id but empty Order.session_key |
+| [ ] **F-074** | P1 | OPEN | YES | COD create_order no _ensure_session_key (order 275) |
+| [ ] **F-075** | P2 | OPEN | YES | CheckoutCapture.converted never true (0/4) |
+| [ ] **F-076** | P1 | OPEN | YES | product_view 41283 vs ATC 61; 96% PV without site_session |
+| [x] **F-077** | P2 | REVISED | no | Product feed g:link OK when unescaped (narrows F-027) |
+| [ ] **F-078** | P2 | OPEN | YES | /kontakty/ 404; canonical is /contacts/ |
+| [x] **F-079** | P0 | RECONF | no | F-030 live: 8+ client_errors initializePixelsImmediately |
+| [x] **F-080** | P1 | RECONF | no | F-031 live: 565× MySQL server has gone away in django.log |
+| [x] **F-081** | P3 | PASS | no | Footer legal/support pages 14/14 200 |
+| [x] **F-082** | P3 | PASS | no | Feed 384 unique g:id; Cyrillic OK; no dup IDs |
 
-### P0 OPEN (чинить в первую очередь) — 8
-- [ ] **F-003** — Merchant feed g:link / color landing broken
+### P0 OPEN (чинить в первую очередь) — 9
+- [ ] **F-003** — Color landing SEO/grammar (product feed path narrowed via F-077)
 - [ ] **F-019** — is_converted always 0
 - [ ] **F-021** — 100% orders empty utm_source / no utm_session
-- [ ] **F-027** — Feed color dropped even after XML unescape (part of F-003)
+- [ ] **F-027** — (narrowed) legacy color/feed issues; product g:link see F-077
 - [ ] **F-029** — LSAPI_CHILDREN process limit
-- [ ] **F-030** — initializePixelsImmediately is not defined
+- [ ] **F-030** — initializePixelsImmediately is not defined (reconf F-079)
 - [ ] **F-033** — link_order_to_utm in code but orders empty
 - [ ] **F-045** — 0 Order.session_key join UTMSession
+- [ ] **F-071** — link_order_to_utm ignores first_touch cookie UTM
 
 ### P1 OPEN —
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
 - [ ] **F-068** — prepay_200 orders missing session_key
+- [ ] **F-072** — external_id UTM recovery only 2 orders
+- [ ] **F-073** — session in tracking but not Order.session_key (prepay era)
+- [ ] **F-074** — COD missing session_key ensure
+- [ ] **F-076** — PV noise / site_session gap
 
 ### P1 OPEN (continued) — 15
 - [ ] **F-001** — Category titles truncated mid-phrase (also in MySQL F-023)
@@ -171,14 +188,14 @@
 - [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
 - [ ] **F-022** — Extreme PV→ATC cliff / possible product_view noise
 - [ ] **F-023** — Category truncated titles in MySQL (root of F-001)
-- [ ] **F-031** — MySQL server has gone away
+- [ ] **F-031** — MySQL server has gone away (reconf F-080)
 - [ ] **F-032** — UserAction rarely linked to UTMSession
 - [ ] **F-043** — /help-center/ 404 (need 301→/dopomoga/)
 - [ ] **F-044** — Most web orders empty session_key (29/36)
 - [ ] **F-050** — NP city Latin Kyiv 502 / Київ 200
 - [ ] **F-057** — All-time dirty utm_source inventory
 
-### P2 OPEN — 10
+### P2 OPEN — 12
 - [ ] **F-006** — Color sitemap same URL ×3
 - [ ] **F-008** — Meta description too long on some static pages
 - [ ] **F-010** — debug/dev endpoints login-gated not 404
@@ -189,13 +206,15 @@
 - [ ] **F-036** — Telegram admin RemoteDisconnected
 - [ ] **F-048** — Orders have fbp tracking without internal UTM
 - [ ] **F-051** — checkout/capture empty returns 200 ok
+- [ ] **F-075** — CheckoutCapture.converted stuck false
+- [ ] **F-078** — /kontakty/ 404 vs /contacts/
 
 ### P3 OPEN — 3
 - [ ] **F-009** — favicon.ico 302 then 200
 - [ ] **F-014** — Sitemap lastmod clustered 2026-06-11
 - [ ] **F-015** — manifest.webmanifest 404; site.webmanifest OK
 
-### PASS / INFO / REVISED (не чинить как баг) — 22
+### PASS / INFO / REVISED (не чинить как баг) — 26
 - [x] **F-012** — ViewContent JS-only (expected architecture)
 - [x] **F-016** — Variant URL titles work
 - [x] **F-017** — mapa-saytu links all 200
@@ -218,6 +237,10 @@
 - [x] **F-055** — RU/EN product sample title/H1 aligned
 - [x] **F-056** — IGShopping multi-hop canary PASS
 - [x] **F-058** — Scripts matrix key pages PASS
+- [x] **F-077** — Product feed g:link landings PASS
+- [x] **F-079** — reconfirm note for F-030
+- [x] **F-080** — reconfirm note for F-031
+- [x] **F-081** / **F-082** — static pages + feed id inventory PASS
 
 ---
 
@@ -1751,7 +1774,7 @@ Sample post includes `"@type":"BlogPosting"`.
 
 **Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
 
-Prod breakdown:
+Prod breakdown (re-verified 2026-07-09 late):
 
 | source | pay_type | total | empty session_key | empty utm |
 |--------|----------|------:|------------------:|----------:|
@@ -1760,7 +1783,7 @@ Prod breakdown:
 | web | cod | 1 | 1 | 1 |
 | manual | online_full | 7 | 7 | 7 |
 
-Prepay path never stores session_key → UTM linkage impossible for that whole segment. Strengthens F-021/F-044.
+**Timeline nuance:** all online_full with `session_key` are **≥ 2026-05-22** (ids 261, 269, 271, 276). All prepay are **≤ 2026-03-22**. Many prepay still have `tracking.external_id=session:…` (F-073) → session existed but Order field not written historically. No post-May prepay to prove current path. Strengthens F-021/F-044.
 
 ---
 
@@ -1781,6 +1804,204 @@ Sending `code=` yields «Введіть промокод»; `promo_code=` yields
 
 ---
 
+### F-071 — `link_order_to_utm` ignores `analytics_first_touch_data` (ROOT CAUSE of empty Order UTM)
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES  
+**Area:** UTM / checkout · **Checklist:** UTM-*, ADS-*, DB-order-attr  
+**Related:** F-021, F-033, F-019, F-045
+
+#### Evidence (production MySQL + code read-only)
+
+Order **#276** (`TWC06072026N02`, 2026-07-06, `source=web`, `pay_type=online_full`, `session_key` set):
+
+| Layer | Result |
+|-------|--------|
+| `Order.utm_source` | **NULL** |
+| `Order.utm_session_id` | **NULL** |
+| `UserAction` lead metadata `first_touch` | `utm_source=audit`, `utm_medium=test`, `utm_campaign=funnel_check` |
+| UTMSession by order.session_key | **missing** |
+| SiteSession by order.session_key | **missing** |
+
+Code path (`storefront/utm_tracking.py` `link_order_to_utm`):
+
+1. resolve by `session_key` → UTMSession  
+2. resolve by `visitor_id` → UTMSession  
+3. fallback `request.session['utm_data']`  
+
+**Does NOT** read `request.analytics_first_touch_data` / cookie `twc_ft`, even though:
+
+- `record_user_action` / `record_order_action` **do** copy first_touch into UserAction.metadata  
+- `build_order_tracking_context` **does** use first_touch for fbclid/ttclid/gclid  
+
+So Meta click IDs can land in `payment_payload.tracking` while internal ROAS fields on Order stay empty.
+
+#### Why this blocks ads
+
+Dispatcher / order export that reads `Order.utm_*` will always show «direct/empty» even when first-touch cookie had real campaign params. Canaries proving UTMSession capture ≠ order attribution.
+
+#### Fix direction (Pass D only — do not implement here)
+
+- In `link_order_to_utm`, after session/visitor fallbacks, copy UTM from `analytics_first_touch_data` if present.  
+- Prefer creating/linking UTMSession when first_touch has utm_source.  
+- Call `mark_as_converted` only after successful link (F-019).  
+- Paid canary order with UTM → assert Order.utm_source non-empty.
+
+**Risk of fix:** medium (attribution rules / first-touch vs last-touch policy).
+
+---
+
+### F-072 — Historical recoverability: only 2/36 web orders join UTM via session external_id
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES (backfill optional; prevent future)
+
+Full scan of `payment_payload.tracking.external_id` + `Order.session_key` against `UTMSession`:
+
+| Result | Count |
+|--------|------:|
+| web orders | 36 |
+| with `session:…` external_id | 27 |
+| UTMSession match | **2** |
+| Matched | order **232** `utm_source=ig` (dirty, pre-normalize); order **246** `google/cpc/pmax_cid23444801460` |
+
+Even those 2 still have **empty Order.utm_*** today → attribution never written at create time (F-071/F-033).
+
+---
+
+### F-073 — Prepay era: session lived in tracking.external_id but Order.session_key empty
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES (verify current prepay path)
+
+All **19** `prepay_200` web orders: `session_key` empty.  
+Many still have `tracking.external_id = session:<key>` (session existed at invoice create).  
+Examples: 209, 211, 232, 233, 240, 244, 246, 250, 252–257.
+
+Since **2026-05** only `online_full` orders appear (4) and they **do** store `session_key` — suggests field write was fixed for mono path after ~May 2026, but **no post-March prepay** to re-verify prepay branch.
+
+Code today (`monobank_create_invoice`): `_ensure_session_key` + `Order(..., session_key=request.session.session_key)` — should be OK **if** deployed; needs a paid prepay smoke after unexclude.
+
+---
+
+### F-074 — COD / `create_order` path does not `_ensure_session_key`
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
+Order **#275** (`TWC06072026N01`, pay_type=`cod`, source=web, name `AUDIT TEST…`):  
+`session_key=NULL`, no `payment_payload.tracking`, no UTM.
+
+`checkout.create_order` sets `session_key=request.session.session_key` but **never** calls session create helper (unlike monobank `_ensure_session_key`). Guest COD can create order with null session → breaks success-page session match + UTM link + capture convert.
+
+---
+
+### F-075 — CheckoutCapture.converted never true (0/4)
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+
+| id | session_key prefix | phone | converted |
+|----|--------------------|-------|-----------|
+| 2 | zt3ssxlsbmd6 | +380500… | False |
+| 3 | givfox7xmu5v | +380976… | False |
+| 4 | 72u4gmu78aso | +380631… | False |
+| 5 | y3bvq5162u5d | empty | False |
+
+Order **271** and **276** share session keys with captures 2 and 4 but `converted` stayed **False**.  
+`create_order` marks converted; **monobank path** may not call the same CheckoutCapture update → abandoned-cart recovery can spam paid buyers.
+
+---
+
+### F-076 — product_view 41 283 vs ATC 61; ~96% PV without site_session
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES (dedupe already partial; quality still bad)  
+**Related:** F-022, F-032
+
+| Metric | Value |
+|--------|------:|
+| product_view | 41 283 |
+| with site_session | 1 659 (~4%) |
+| with utm_session | 92 (~0.2%) |
+| add_to_cart | 61 |
+| initiate_checkout | 7 |
+| purchase UserAction | 3 |
+
+Code has 30‑min product_view dedupe (W2-4) but historical + residual noise remains. Funnel dashboards using raw PV are misleading for ads creative decisions.
+
+---
+
+### F-077 — REVISED: product Merchant feed `g:link` landings work (narrows F-027)
+
+**Status:** [x] REVISED / PASS for product PDP links · **Severity:** P2 note · **Fix required:** no for product query links
+
+Live `https://twocomms.shop/google-merchant-feed.xml` (**384** items):
+
+- XML correctly encodes `&amp;` in query strings (standard).  
+- After HTML-unescape, sample links `?size=S&color=…` → **HTTP 200**, redirect to size path `/product/…/s/`, title includes size + color.  
+- `g:id` all unique; **384/384** Cyrillic color tokens (e.g. `TC-0106-ЧОРНИЙ-S`).
+
+**Still open separately:** color **category** landings grammar (F-002), duplicate sitemap color URLs (F-006), offer_id RU/UA black split (F-018). Do **not** treat product feed size/color query as broken after this recheck.
+
+---
+
+### F-078 — `/kontakty/` 404; real contacts URL is `/contacts/`
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES (301)
+
+| URL | Status |
+|-----|--------|
+| `/kontakty/` | **404** |
+| `/contacts/` | **200** «Контакти TwoComms…» |
+
+Likely UA-slug expectation / old links. Add 301 → `/contacts/` (same family as F-043 `/help-center/` → `/dopomoga/`).
+
+---
+
+### F-079 — RECONFIRM F-030 still live in production client_errors
+
+**Status:** [x] RECONFIRMED · **Severity:** P0 (parent F-030)
+
+`client_errors.log` still contains **`initializePixelsImmediately is not defined`** (line 1484 of live `analytics-loader.3975317011e4.js`). Recent URLs: `/catalog/tshirts/`, `/ru/catalog/`, mobile + desktop Chrome. BFCache `pageshow` path still broken.
+
+---
+
+### F-080 — RECONFIRM F-031 MySQL «server has gone away»
+
+**Status:** [x] RECONFIRMED · **Severity:** P1 (parent F-031)
+
+`django.log` contains **565** occurrences of `MySQL server has gone away` / `OperationalError: (2006, …)`. Capacity/reliability risk under ads traffic with F-029.
+
+---
+
+### F-081 — Footer legal/support matrix PASS
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+From homepage footer, all primary support URLs **200**:  
+`/contacts/`, `/dopomoga/`, `/faq/`, `/povernennya-ta-obmin/`, `/polityka-konfidentsiynosti/`, `/umovy-vykorystannya/`, `/pro-brand/`, `/mapa-saytu/`, `/blog/`, catalog tree, `/custom-print/`.
+
+---
+
+### F-082 — Feed g:id inventory PASS (no duplicates)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
+384 `g:id`, 384 unique, 0 duplicates. Cyrillic in IDs is intentional for UA catalog (note F-018 language split still open for black color synonyms).
+
+---
+
+## Deep attribution root-cause note (2026-07-09 late pass)
+
+```
+Landing (+UTM)
+  → twc_ft first-touch cookie          ✓ works (canaries)
+  → utm_middleware → session['utm_data'] + UTMSession   ✓ when not excluded + session exists
+  → UserAction.metadata.first_touch    ✓ often written
+  → Order.utm_* via link_order_to_utm  ✗ fails if only first_touch (F-071)
+  → UTMSession.is_converted            ✗ never (F-019) because mark_as_converted needs utm_session on purchase
+  → payment_payload.tracking fbp/fbc   ✓ often present without internal UTM (F-048)
+```
+
+**Ads implication:** Meta CAPI may still get fbp/fbc from order payload, but **internal ROAS / Dispatcher campaign split is blind**. Fix F-071 + paid UTM canary before scaling paid social.
+
+---
+
 ## Session changelog
 
 | Time | Action |
@@ -1793,3 +2014,4 @@ Sending `code=` yields «Введіть промокод»; `promo_code=` yields
 | 2026-07-09 | Server canary PASS; sitemap 489/489; order session_key gap F-044/045; help-center 404; FINAL status written |
 | Pass A | **COMPLETE for audit scope** — fixes deferred to after Pass C |
 | 2026-07-09 | F-049 home unexclude canary PASS (sessionid+UTMSession+ATC+stored:true) |
+| 2026-07-09 late | Deep monobank/session_key/first_touch analysis; feed recheck; F-071–F-082; ads gate still BLOCKED |
