@@ -161,6 +161,21 @@ class SendApiErrorClassificationTests(TestCase):
         client.refresh_from_db()
         self.assertEqual(getattr(client, "delivery_status", ""), "message_request_check")
 
+    @patch("management.services.instagram_bot.log")
+    @patch("management.services.instagram_bot.get_page_token", return_value="PT")
+    @patch("management.services.instagram_bot._http")
+    def test_send_error_log_never_contains_raw_graph_response(self, mock_http, _mock_pt, mock_log):
+        raw_marker = "raw-meta-response-marker"
+        mock_http.return_value = (
+            403,
+            json.dumps({"error": {"code": 200, "message": raw_marker}}),
+        )
+
+        bot.send_text(InstagramBotSettings.load(), "untracked-recipient", "Привіт")
+
+        logged = "\n".join(str(call.args) for call in mock_log.call_args_list)
+        self.assertNotIn(raw_marker, logged)
+
 
 class PaylinkProductTests(TestCase):
     """Bug B: paylink має бути на ПРАВИЛЬНИЙ товар, навіть якщо є стара чернетка."""
