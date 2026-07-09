@@ -3,6 +3,9 @@
 **Дата создания:** 07.07.2026 · **Версия:** 2.0 (единый исполняемый чеклист)
 **Источник:** полный аудит `twocomms_global_audit.md` (150/150 пунктов закрыто) + все `audit_report_*.md` + gap-check 07.07.2026 (перекрёстная сверка 155 ID аудита против плана v1 — добавлены пропущенные пункты, помечены `[GAP]`).
 **Назначение:** ЕДИНСТВЕННЫЙ рабочий документ для агента-исполнителя. Каждый пункт — чекбокс. Выполнил → `[x]` + запись в «Журнал выполнения» внизу (дата, ID, коммит/PR). Ничего из этого ещё НЕ исправлено, кроме пунктов, явно помеченных done.
+
+> **RE-VERIFY PASS 2026-07-09:** false `[x]` cleared for W2-1/W2-2/W2-3/ADS-1/ADS-2/ADS-3/W7-1/W3-9/W3-11/W0-5. Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`. Owner SSH password rotated (W0-1 OWNER). Do not re-mark DONE without live accept criteria.
+
 **Как пользоваться:** брать задачи строго по волнам (Волна 0 → 1 → 2 → …). Перед каждой задачей — свериться с «Матрицей рисков» в `twocomms_global_audit.md` (RISK-01…15). Детали каждой находки — в указанном секционном отчёте.
 
 ---
@@ -61,7 +64,8 @@
   Отчёт: `audit_report_section6_codebase.md` (CB-024).
   ✅ **DONE:** все 5 пунктов покрыты: (а)+(г) test_checkout (guest COD, double-submit, промо — накоплено в W1); (б) НОВЫЙ test_webhook_duplicate_delivery_is_idempotent — повторный success-вебхук не диспатчит side-effects повторно (ретейл-путь `_apply_monobank_status` идемпотентен через old_payment_status-чек); (в) test_cart_sync (merge при логине, мультидевайс); (д) test_utm_attribution (W2-1). Смок-набор зафиксирован в docs/OPS.md («перед каждым деплоем»). Все 12 тестов test_monobank_webhook зелёные. CI-pipeline — отдельная задача при появлении CI-инфраструктуры.
 
-- [x] **W0-5. Зафиксировать crontab/инварианты (CB-043/CB-044/CB-012)** `[REPO]`(docs) + `[OWNER]`
+- [ ] **W0-5. Зафиксировать crontab/инварианты (CB-043/CB-044/CB-012)** `[REPO]`(docs) + `[OWNER]`
+  > **RE-VERIFY W0-5:** PARTIAL 2026-07-09: REPO OPS.md done; OWNER stash review NOT done — uncheck full item.
   crontab: 7 задач, НЕТ бэкап-cron, НЕТ feed-cron; на сервере **10 git-stash** (возможна потерянная работа) + untracked диаг-скрипты.
   Фикс: `[REPO]` — задокументировать crontab и боевой settings-модуль в `docs/OPS.md`; `[OWNER]` — разобрать stash с владельцем (что выбросить, что закоммитить).
   Приёмка: docs/OPS.md существует; судьба каждого stash решена.
@@ -77,6 +81,7 @@
 ## ВОЛНА 1 — ДЕНЬГИ И ПРИЁМ ЗАКАЗОВ (P0)
 
 - [x] **W1-1. 🔴 Гостевой COD-чекаут сломан — HTTP 500 (CRO-040)** `[REPO]` + `[DECISION]`
+  > **RE-VERIFY W1-1:** NUANCE 2026-07-09: COD path fixed but create_order still missing _ensure_session_key (F-074).
   ✅ **DONE (коммит 26702d78):** (1) роутинг гостя на `create_order` уже был исправлен на main до начала работ — перепроверено, `cart.py` вызывает `legacy_views.order_create(request)`; (2) `[DECISION]` владельца: COD в UI **НЕ возвращаем**, остаётся backend-only fallback; (3) обновлены 2 устаревших теста в `test_checkout.py`, которые ожидали удалённый inline-monobank-флоу (online pay_type теперь редиректит в корзину — заказ создаёт кнопка Monobank). Проверка: `storefront.tests.test_checkout` зелёный.
   `storefront/views/cart.py:525-527` вызывает несуществующий `legacy_views.process_guest_order` → AttributeError → 500. Live-подтверждено: гость не может оформить заказ. В guest UI корзины нет `pay_type=cod` и submit-кнопки COD.
   Фикс: (1) `cart.py:525` → `return legacy_views.order_create(request)` (`create_order` поддерживает гостей, поля совпадают — проверено); (2) `[DECISION]` — возвращать ли `cod` в UI (значение есть в `Order.PAY_TYPE_CHOICES`); (3) НЕ использовать ветку `monobank_create_invoice(request, order.id)` — латентный TypeError (см. W1-5д).
@@ -113,6 +118,7 @@
   ✅ **DONE (коммит 6c6b4709):** обе функции восстановлены из backup + усилены: `login_required` + POST-only; владелец проверяется через `Order.objects.get(id=..., user=request.user)` → чужому 404; legacy-значения фронта 'full'/'partial' маппятся на 'online_full'/'prepay_200'; смена метода блокируется (409) при paid/prepaid/checking; в `confirm_payment` скриншот валидируется как реальное изображение (ImageField/Pillow) + лимит 10 МБ, повторная загрузка на paid-заказ → 409, успех → `payment_status='checking'`. Тесты: 3 новых + 2 устаревших stub-теста заменены (test_checkout.py, 27 OK).
 
 - [x] **W1-7. Mobile hero-CTA обрезаны ≤360px (CRO-002, P0-CRO)** `[REPO]`
+  > **RE-VERIFY W1-7:** NUANCE 2026-07-09: CSS fix in theme; ensure collectstatic/deploy on prod.
   hero height:60vh + overflow:hidden при контенте 727px (base.html:517); PWA-prompt закрывает 45% экрана. Кандидат №1 в причины ATC=0,12%.
   Фикс: min-height/auto height на малых viewport; отложить/уменьшить PWA-prompt. После — перепроверить CLS.
   Приёмка: viewport 360×640 — обе CTA видимы и кликабельны.
@@ -159,23 +165,27 @@
 
 ## ВОЛНА 2 — ДАННЫЕ И АТРИБУЦИЯ (P0: без этого аналитика слепа; TECH-060…066)
 
-- [x] **W2-1. 🔴 Единая UTM-привязка любого заказа (CRO-041 / AN-013 / AN-021 / AN-030 / AN-031 → TECH-060)** `[REPO]` ✅ fallback-цепочка session_key→visitor_id→session['utm_data'] в link_order_to_utm; attach_tracking_to_order пишет click-ID (fbp/fbc-синтез из fbclid/ttclid/gclid/external_id/ip/ua) в payment_payload.tracking для COD; тесты test_utm_attribution.py (3) зелёные. Единый order-builder COD+Monobank — отложен как долгосрочный рефакторинг.
+- [ ] **W2-1. 🔴 Единая UTM-привязка любого заказа (CRO-041 / AN-013 / AN-021 / AN-030 / AN-031 → TECH-060)** `[REPO]` ✅ fallback-цепочка session_key→visitor_id→session['utm_data'] в link_order_to_utm; attach_tracking_to_order пишет click-ID (fbp/fbc-синтез из fbclid/ttclid/gclid/external_id/ip/ua) в payment_payload.tracking для COD; тесты test_utm_attribution.py (3) зелёные. Единый order-builder COD+Monobank — отложен как долгосрочный рефакторинг.
+  > **RE-VERIFY W2-1:** REOPEN 2026-07-09: accept CRO-050 fail (Order.utm empty; no first_touch→Order; COD session; mono capture). Was false [x].
   COD-��уть не выз��вает НИ ОДНО�� функции трекинга; даже в monobank `link_order_to_utm` не срабатывает: lookup строго по session_key, `cycle_key()` при логине рвёт ключ, fallback на `session['utm_data']` отсутствует. Click-ID (fbc/fbp/fbclid/gclid/ttclid) не доходят до CAPI для COD. Факт: 0/43 заказов с utm.
   Фикс: (1) в `create_order` после `order.save()`: `order.session_key=...`; `link_order_to_utm(request, order)`; `record_order_action(...)`; (2) fallback-цепочка в `link_order_to_utm`: session_key → `visitor_id` → `session['utm_data']`; (3) копировать/синтезировать click-ID в `payment_payload.tracking` для ЛЮБОГО заказа (fbc из fbclid если куки нет); (4) долгосрочно — единый order-builder COD+Monobank.
   Приёмка (= CRO-050): визит с `?utm_source=audit` → COD-заказ → в БД utm_source='audit', utm_session FK, session_key, UserAction с order_id.
 
-- [x] **W2-2. 🔴 is_converted оживить (CRO-042 → TECH-061)** `[REPO]` ✅ закрыт W2-1 (record_order_action помечает конверсию); мёртвый record_purchase удалён; тест подтверждает is_converted/conversion_type/converted_at.
+- [ ] **W2-2. 🔴 is_converted оживить (CRO-042 → TECH-061)** `[REPO]` ✅ закрыт W2-1 (record_order_action помечает конверсию); мёртвый record_purchase удалён; тест подтверждает is_converted/conversion_type/converted_at.
+  > **RE-VERIFY W2-2:** REOPEN 2026-07-09: is_converted still 0 on prod; depends on W2-1. Was false [x].
   0/1015 UTMSession converted; `record_purchase` — мёртвая функция (0 call-sites).
   Фикс: закрывается fallback-цепочкой W2-1; удалить/переписать мёртвый `record_purchase`.
   Приёмка: после тестового заказа `is_converted=True`, `conversion_type`, `converted_at` заполнены.
 
-- [x] **W2-3. 🔴 Единое определение purchase по всем слоям (CRO-045 → TECH-066)** `[REPO]` + `[REPO]`(docs)
+- [ ] **W2-3. 🔴 Единое определение purchase по всем слоям (CRO-045 → TECH-066)** `[REPO]` + `[REPO]`(docs)
+  > **RE-VERIFY W2-3:** REOPEN PARTIAL 2026-07-09: purchase UA 3 vs 36 paid — not complete. Docs/paths partial only.
   4 слоя × 3 потока = 4 разных определения. COD-покупки видит ТОЛЬКО Meta CAPI (через НП-крон); GA4/TikTok/UserAction — никогда. Prepaid шлёт полную сумму без refund.
   Целевое определение: `purchase` = подтверждённая оплата (webhook с п��дписью) ИЛИ получение посылки (NP received); создание заказа = отдельное `place_order`/`lead` во всех слоях.
   Фикс: (а) record-слой в COD create_order; (б) UserAction purchase в NP-delivery-путь; (в) TikTok Purchase в NP-delivery + pre-check `purchase_sent`; (г) server-side GA4 purchase для COD (Measurement Protocol) или задокументировать пробел; (д) `paid_value` отдельным параметром; (е) refund/cancel-события; (ж) задокументировать определение в TECHNICAL_TASKS.md.
   ✅ **DONE:** (а) закрыто в W1/W2-2 (checkout.py → record_order_action); (б) `_record_purchase_action` в nova_poshta_service.py — UserAction purchase при «посылка получена», дедуп: max 1 на order_id; (в) `_send_tiktok_purchase_event` там же — TikTok Purchase (→CompletePayment после W2-6) с pre-check `tiktok_events.purchase_sent` в payment_payload; (г) GA4 server-side пробел задокументирован — нужен Measurement Protocol api_secret (`[OWNER]`); (д) `_extract_paid_amount()` + `custom_properties.paid_value`/`payment_status` в Meta Purchase — prepaid-заказ больше не выглядит как полная оплата (value=full для ROAS, paid_value=факт); (е) refund/cancel — зафиксировано как TODO в доке; (ж) каноническое определение + матрица «слой × поток»: `twocomms/docs/PURCHASE_DEFINITION.md`. Регрессия: 42 теста (webhook/checkout/attribution/orders) зелёные.
 
 - [x] **W2-4. 🔴 Бот-фильтр и чистота событий (AN-035 / CRO-024 → TECH-063)** `[REPO]`
+  > **RE-VERIFY W2-4:** NUANCE 2026-07-09: code OK; historical PV noise remains.
   `SiteSession.is_bot` мёртв (early return); product_view пишется без бот-фильтра; 96,2% product_view без site_session (40 490 views → 55 ATC — метрики врут); двойной счёт на legacy-301; нет дедупа.
   Фикс: единый bot-detect на записи UserAction; запись product_view ПОСЛЕ redirect; дедуп 30 мин session+product; `is_staff` → авто-исключение (AN-004).
   Приёмка: baseline CRO-051 пересчитан; view→ATC правдоподобен.
@@ -192,10 +202,12 @@
   ✅ **DONE:** (1) клиент — `mapTikTokEventName()` в analytics-loader.js: Purchase→CompletePayment, Lead→PlaceAnOrder перед КАЖДЫМ `ttq.track` (прямая отправка + оба буфер-пути); Meta/GA4/YM продолжают получать оригинальные имена; cache-buster `?v=7`; (2) сервер — tiktok_events_service.py: `EVENT_NAME_MAP` тот же + миграция с legacy `v1.3/pixel/track/` на Events API 2.0 `v1.3/event/track/` (payload переписан на `event_source`/`event_source_id`/`data[]`, `event_time` unix-int); (3) event_id НЕ трогается на обоих слоях → client/server дедуп сохранён. Тесты: `orders/tests/test_tiktok_events.py` (5 шт., зелёные): ма��пинг Purchase/Lead, pass-through ViewContent, структура 2.0-payload, POST через мок. ⚠️ NB: если в env задан кастомный `TIKTOK_EVENTS_API_ENDPOINT` со старым URL — на сервере его надо убрать/обновить.
 
 - [x] **W2-7. CAPI/TikTok внутри row-lock транзакции (AN-011 / DB-009, P1)** `[REPO]` ✅ Telegram/Meta/TikTok вынесены из select_for_update в _send_post_payment_events через transaction.on_commit; попутно добавлен pre-check purchase_sent для TikTok (часть W2-3в). Invoice/create вне atomic — уже закрыт в W1-5в. Тесты PostPaymentEventsDeferralTests зелёные.
+  > **RE-VERIFY W2-7:** NUANCE 2026-07-09: on_commit path; re-grep residual in-lock CAPI.
   Отправка Meta+TikTok ВНУТРИ `transaction.atomic()`+`select_for_update()` — до ~25-40s row-lock; тот же анти-паттерн: Monobank invoice/create внутри atomic (monobank.py:~843) при wait_timeout=60.
   Фикс: `transaction.on_commit()` для внешних отправок; инвойс — после commit.
 
 - [x] **W2-8. Нормализация utm_source + AI-канал (AN-032 / AN-033 → TECH-009/065, P1/P2)** `[REPO]`
+  > **RE-VERIFY W2-8:** NUANCE 2026-07-09: normalize code OK; live dirt chatgpt.com/ig still observed.
   Словаря нормализации нет (ig/Instagram/IGShopping/Inst_Vid = 4 написания); AI-трафик (chatgpt.com — 119 сессий, 3-й источник) не детектится отдельным каналом.
   Фикс: словарь нормализации в UTMTrackingMiddleware; детект chatgpt.com/perplexity.ai/gemini/claude.ai по utm+referrer → канал «AI»; UTM governance-конвенция.
   ✅ **DONE:** utm_utils.py — `UTM_SOURCE_ALIASES` (instagram/facebook/tiktok/google/telegram/youtube + AI-источники), `normalize_utm_source()` (алиасы → канон, неизвестные → lowercase), `detect_ai_source()` (суффикс-матч referrer-hostname: chatgpt.com, chat.openai.com, perplexity.ai, gemini.google.com, claude.ai, copilot.microsoft.com, you.com, poe.com). UTMTrackingMiddleware: нормализация utm_source при захвате; AI-источник без medium → `utm_medium=ai`; трафик БЕЗ utm с AI-referrer → синтетический `utm_source=<ai>` + `utm_medium=ai` (создаётся UTMSession). Governance-конвенция: docs/UTM_GOVERNANCE.md. Тесты: test_utm_normalization.py — 10 шт. зелёные (unit + интеграция через Client). Нормализация действует только для НОВЫХ сессий; исторические данные не мигрировались (при необходимости — отдельный backfill).
@@ -226,6 +238,7 @@
 ## ВОЛНА 3 — НАДЁЖНОСТЬ И ИНФРАСТРУКТУРА (P1)
 
 - [x] **W3-1. Мёртвая Celery-очередь глотает Telegram-уведомления (TD-015 / TD-003)** `[REPO]`
+  > **RE-VERIFY W3-1:** NUANCE 2026-07-09: sync Telegram OK; CELERY_BROKER may still be set in env.
   Прод без Celery-воркера, Redis-брокер жив → `.delay()` публикует в мёртвую очередь: уведомления о смене статуса/ТТН молча теряются; битый импорт `send_telegram_notification_task` → часть отправок синхронна в request-потоке; `CELERY_BEAT_SCHEDULE` survey-check не выполняется.
   Фикс: `async_enabled=False` по умолчанию в `TelegramNotifier.__init__`; survey-check → cron-команда; починить/удалить битый импорт; зафиксировать «Celery не возвращаем»; вычистить no-op шимы.
   Приёмка: смена статуса заказа → Telegram-сообщение приходит.
@@ -262,7 +275,8 @@
   Фикс: убрать fallback, логировать ошибку; select_for_update в dropship-статусах. НЕ менять control flow массово (RISK-04).
   ✅ **DONE:** fallback `save()` после failed `save(update_fields=...)` убран в monobank-status persistence и NP purchase flags: ошибка логируется и пробрасывается, без full-save overwrite; `admin_update_dropship_status` теперь валидирует статус и обновляет `DropshipperOrder` внутри `transaction.atomic()` + `select_for_update()`. Тесты покрывают отсутствие fallback-save и row-lock.
 
-- [x] **W3-11. [NEW-510] CheckoutCapture: публичный PII-приёмник без лимитов и retention (P2)** `[REPO]`
+- [ ] **W3-11. [NEW-510] CheckoutCapture: публичный PII-приёмник без лимитов и retention (P2)** `[REPO]`
+  > **RE-VERIFY W3-11:** PARTIAL 2026-07-09: rate-limit code OK; CheckoutCapture.converted never true on mono path.
   `checkout_capture.py` — `@csrf_exempt` эндпоинт пишет ФИО/телефон/email в `CheckoutCapture` по session_key. Защита — только Sec-Fetch-Site (старые клиенты/curl без заголовка проходят); rate-limit нет (спам-записи); retention нет — `recover_checkouts` читает, никто не чистит (PII копится вечно, связка с NEW-404/AN-051).
   Фикс: rate-limit по session/IP; чи��тка capture-записей старше 30-90 дней в trim-команде; упомянуть в privacy policy.
   ✅ **DONE:** (1) rate-limit `@ratelimit(key='user_or_ip', rate='30/m', block=False)` + JSON 429 — 30/m хватает для дебаунс-автосейва формы, душит скриптовый спам; (2) retention: в `cleanup_analytics_data` добавлен шаг 4 — CheckoutCapture старше `--captures-days` (по умолчанию 60) удаляются, включая конвертированные (данные уже в Order); (3) упоминание в privacy policy — `[OWNER]` (связка с NEW-403).
@@ -271,7 +285,8 @@
   `apply_promo_code` без rate-limit — перебор кодов скриптом. Фикс: точечный ratelimit (10/min/session) — включить в W3-5.
   ✅ **DONE:** `@ratelimit(key='user_or_ip', rate='10/m', block=False)` на apply_promo_code + JSON 429 «Забагато спроб» при превышении (block=False, чтобы отдавать управляемый JSON вместо голого 403).
 
-- [x] **W3-9. [NEW-504] Telegram-вебхук без секрета при пустом env (P2)** `[REPO]`/`[SERVER]`
+- [ ] **W3-9. [NEW-504] Telegram-вебхук без секрета при пустом env (P2)** `[REPO]`/`[SERVER]`
+  > **RE-VERIFY W3-9:** PARTIAL 2026-07-09: REPO warning OK; prod TELEGRAM_BOT_WEBHOOK_SECRET was EMPTY — accept not met.
   `accounts/telegram_views.py:20-29`: проверка `X-Telegram-Bot-Api-Secret-Token` ОПЦИОНАЛЬНА — если `TELEGRAM_BOT_WEBHOOK_SECRET` не задан в env, вебхук принимает любые POST.
   Фикс: проверить env на сервере (S-13); если пуст — задать секрет + перерегистрировать webhook у Telegram; в коде — предупреждающий лог при пустом секрете.
   ✅ **REPO-часть DONE:** при пустом TELEGRAM_BOT_WEBHOOK_SECRET каждый запрос пишет SECURITY-warning в лог `accounts.telegram` с инструкцией (setWebhook secret_token=...). Запросы НЕ блокируются намеренно — иначе бот упадёт до того, как секрет добавят в env. Осталось `[SERVER]`: задать секрет в env + перерегистрировать webhook.
@@ -292,19 +307,22 @@
 > Владелец запускает платный Meta-трафик. Всё в этой волне — блокеры или прямые
 > риски слива бюджета/индексации. Порядок = приоритет исполнения.
 
-- [x] **ADS-1. Meta Pixel: PageView теряется у «отказников» + захардкоженный ID (P0)** `[REPO]`
+- [ ] **ADS-1. Meta Pixel: PageView теряется у «отказников» + захардкоженный ID (P0)** `[REPO]`
+  > **RE-VERIFY ADS-1:** PARTIAL 2026-07-09: early PageView OK live; BFCache initializePixelsImmediately still broken (call without def). Uncheck full done.
   Диагноз: (1) analytics-loader.js (~55KB, содержит fbevents-инициализацию) грузится ТОЛЬКО после первого user interaction (Phase 22e, base.html:1083+) → посетитель из рекламы, который посмотрел и ушёл без клика/скролла, НЕ отправляет PageView → Meta не видит трафик, атрибуция и оптимизация кампаний ломаются, CPM растёт; (2) meta_pixel_id `823958313630148` захардкожен в base.html `{% with %}` (не из env `FACEBOOK_PIXEL_ID`, который пуст); (3) `<div id="am">` (advanced matching) рендерится только для authenticated — для гостей из рекламы AM-параметры пусты; (4) в partials/analytics.html лежит мёртвый закомментированный блок пикселя с placeholder `FACEBOOK_PIXEL_ID` — мусор, вводит в заблуждение.
   Фикс: лёгкий инлайн-сниппет fbq (init+PageView, ~1.5KB) в `<head>` СРАЗУ (без ожидания interaction), тяжёлый loader с событиями (ViewContent/AddToCart/InitiateCheckout/Purchase) оставить лениво; ID из settings/env с fallback; вычистить мёртвый блок.
   Приёмка: Meta Pixel Helper видит PageView без взаимодействия; события e-commerce приходят в Events Manager (Test Events).
   ✅ **DONE (коммит 5aacb163, verified):** `base.html` делает `fbq('init')` + `PageView` сразу в `<head>`, `META_PIXEL_ID` приходит из context/settings с fallback; `analytics-loader.js` не шлёт второй PageView, если head-snippet уже bootstrapped; мёртвый placeholder в partials/analytics.html вычищен. Live Events Manager/Pixel Helper — `[OWNER]`.
 
-- [x] **ADS-2. Английская версия наполовину не переведена (P0 для SEO/рекламы на EN) ** `[REPO]`
+- [ ] **ADS-2. Английская версия наполовину не переведена (P0 для SEO/рекламы на EN) ** `[REPO]`
+  > **RE-VERIFY ADS-2:** PARTIAL 2026-07-09: po may be clean; live /en/ H1 still Ukrainian. Uncheck full done.
   Диагноз: locale/en/django.po — 161 пустой msgstr + 129 fuzzy (fuzzy НЕ компилируются в .mo → показывается украинский). Итого ~290 строк на /en/ остаются украинскими: части хедера, футера, блоки наполовину переведены. Смешанный язык = сигнал низкого качества для Google, ломает EN-индексацию.
   Фикс: перевести все пустые msgstr, снять fuzzy-флаги (проверив корректность), `compilemessages`, прогнать по /en/ ключевые шаблоны (home, catalog, product, cart, checkout, header/footer).
   Приёмка: на /en/ нет украинских строк в header/footer/основных блоках; `msgattrib --untranslated` и `--fuzzy` по en.po → пусто.
   ✅ **DONE (коммит c1c0de5b, verified):** main-site `twocomms/locale/en/LC_MESSAGES/django.po` проверен: `msgattrib --untranslated` = 0, `msgattrib --only-fuzzy` = 0. DTF locale не трогался по scope fence.
 
-- [x] **ADS-3. Title tag каталога обрезан (P1)** `[REPO]`
+- [ ] **ADS-3. Title tag каталога обрезан (P1)** `[REPO]`
+  > **RE-VERIFY ADS-3:** REOPEN 2026-07-09: live titles still truncated mid-phrase; DB seo_title not reseeded. Code TITLE_LIMIT alone insufficient.
   Диагноз: `seo_utils._truncate_at_word_boundary(..., 60)` жёстко режет тайтлы категорий/каталога — в SERP и соцпревью видны «недописанные» тайтлы. 60 — консервативный лимит: Google показывает ~600px (~65-70 символов кириллицы).
   Фикс: аудит фактических тайтлов всех категорий (скриптом); паттерны, которые укладываются в лимит целиком (без обрезки хвоста «| TwoComms» посреди слова); поднять лимит до 65 + не резать, если строка ≤70.
   Приёмка: ни один title категории/каталога не заканчивается обрывком слова/фразы.
@@ -443,7 +461,8 @@
 
 ⚠️ Перед ЛЮБЫМ удалением: crontab инвентаризирован (CB-044: 7 задач, все скрипты в репо), но перепроверить непосредственно перед удалением (RISK-01).
 
-- [x] **W7-1. ⚠️ views.py.backup — ЖИВОЙ рантайм (CB-004/TD-001)** `[REPO]`
+- [ ] **W7-1. ⚠️ views.py.backup — ЖИВОЙ рантайм (CB-004/TD-001)** `[REPO]`
+  > **RE-VERIFY W7-1:** REOPEN 2026-07-09: views.py.backup still exists + lazy-load in views/__init__.py. Was false [x].
   `_load_legacy_views` exec-ит его (whitelist 102 имени, 30 боевых маршрутов). НЕ УДАЛЯТЬ.
   План: миграция 102 имён в нормальные модули → потом удаление. Безопасно удалить сейчас: `styles.css.bak2` (445KB), `order_success_old.html`, `tmp_old_index.html`.
   ✅ **DONE (safe subset only):** живой `views.py.backup` не тронут; безопасные tracked legacy-файлы `styles.css.bak2`, `order_success_old.html`, `tmp_old_index.html` сняты с git-tracking и добавлены в ignore для локальных копий.

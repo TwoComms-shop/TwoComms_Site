@@ -2151,6 +2151,12 @@ Live 2026-07-09 re-pass:
 
 ---
 
+
+
+### Process note — plan false DONE (2026-07-09)
+
+In `IMPLEMENTATION_PLAN.md`, false/incomplete `[x]` cleared for: **W2-1, W2-2, W2-3, ADS-1, ADS-2, ADS-3, W7-1, W3-9, W3-11, W0-5**. Rationale: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
+
 ## Session changelog
 
 | Time | Action |
