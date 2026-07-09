@@ -59,7 +59,7 @@
 > - Полное описание каждой находки — секции `### F-xxx` ниже в этом же файле
 > - Чек-лист аудита: `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` — все строки уже `[x]` (пройдены)
 
-**Итого: 91 находка** (F-001…F-091) · see PLAN_VS_FINDINGS · **Ads gate: BLOCKED** (есть открытые P0)
+**Итого: 94 находки** (F-001…F-094) · see PLAN_VS_FINDINGS · **Ads gate: BLOCKED** (есть открытые P0)
 
 ### Сводка по severity
 
@@ -167,6 +167,9 @@
 | [ ] **F-089** | P2 | OPEN | YES | FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only) |
 | [ ] **F-090** | P2 | OPEN | YES | No MySQL backup cron (script present; W0-3) |
 | [x] **F-091** | P3 | INFO | no | Full plan re-verify matrix: PLAN_VS_FINDINGS_2026-07-09.md |
+| [x] **F-092** | P2 | DONE_OWNER | no | SSH password rotated by owner (W0-1 OWNER complete) |
+| [ ] **F-093** | P1 | OPEN | YES | deploy_paramiko.py still has hardcoded SSH password in git |
+| [ ] **F-094** | P1 | OPEN | YES | Product title≠H1 e.g. last-breath / death-grabs-ass (reconfirm) |
 
 ### P0 OPEN (чинить в первую очередь) — 9
 - [ ] **F-003** — Color landing SEO/grammar (product feed path narrowed via F-077)
@@ -2114,6 +2117,37 @@ HTML still boots pixel via template fallback; env/settings empty. Prefer single 
 
 Full matrix of IMPLEMENTATION_PLAN DONE/OPEN vs prod vs F-*: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.  
 Key: several plan `[x]` items **REOPEN** (W2-1/2, ADS-3 data, pixel BFCache, etc.).
+
+---
+
+
+
+### F-092 — SSH password rotated (W0-1 OWNER DONE)
+
+**Status:** [x] DONE_OWNER · **Severity:** P2 process · **Fix required:** no for password itself
+
+Owner confirmed production SSH password changed (2026-07-09). Auditor key auth not configured. Treat plan W0-1 **OWNER** as complete. See F-093 for remaining REPO secret file.
+
+---
+
+### F-093 — `deploy_paramiko.py` still embeds SSH password (REPO)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Plan:** W0-1 REPO residual
+
+`git grep` shows tracked `deploy_paramiko.py` with `ssh.connect(..., password=...)`. Password rotation does not remove secret from git history/working tree. Fix agent: delete or rewrite to env/keys; scrub history if required.
+
+---
+
+### F-094 — Product title vs H1 mismatch reconfirm (last-breath family)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Related:** F-004
+
+Live 2026-07-09 re-pass:
+- `/product/last-breath/` title «last breath» vs H1 «Череп З Трояндою»
+- `/product/last-breath-hd/` same pattern
+- `/product/death-grabs-ass/` title «death grabs ass» vs H1 «Серце Та Грощі»
 
 ---
 
