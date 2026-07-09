@@ -79,7 +79,9 @@
 | Smoke core pages | 11 | 11 | 0 | home, catalog, cart, contacts, blog, etc. |
 | Sitemap child files | 8 | 8 | 0 | all 200 |
 | Sitemap unique locs (fast crawl) | 489 | 214* | 275×429* | *rate limit; not real 404 |
-| UK products (slow sample) | 22 | 22 | 0 | all 200 + Product schema |
+| UK products (full slow) | 65 | 65 | 0 HTTP; **13 title/H1 name mismatches** | F-004 |
+| Variant URLs sample | 20 | 20 | 0 | titles include color/fit F-016 |
+| mapa-saytu links | 53 | 53 | 0 | F-017 |
 | UK categories | 3 | 3 | 0 | titles **truncated** (see F-001) |
 | Color landings unique | 4 | 4 | grammar FAIL | F-002; sitemap lists 12=3×dups |
 | Thematic landings | 4 | 4 | 0 | military/streetwear/patriotic/kharkiv |
@@ -244,29 +246,49 @@ Interpretation:
 
 ### F-004 — Product title vs H1 mismatch (and RU leak in H1)
 
-- [ ] **Open** · Severity: **P1** · Area: **SEO / GEO** · Checklist: SEO-031, SEO-007, GEO-006
+- [ ] **Open** · Severity: **P1** · Area: **SEO / GEO** · Checklist: SEO-031, SEO-004, SEO-006, GEO-006
 
 | Field | Value |
 |-------|--------|
-| Status (B) | REPRODUCED (sample) |
+| Status (B) | REPRODUCED (full UK catalog 65/65 HTTP 200) |
 | Status (C) | |
 
-**Examples**
+**Batch (2026-07-09 slow crawl, all UK product sitemap locs):**
 
-| URL | `<title>` | H1 |
-|-----|-----------|-----|
-| `/product/death-gbs-ass-ts/` | Футболка «І На Той Світ З Собою Візьму» — TwoComms | **Футболка «Череп с дупою»** (Russian «с») |
-| `/product/lord-of-the-lending-ls/` | Лонгслів «Lord Of The Lending» — … | **Лонгслів «Це Моя Посадка»** |
+- HTTP non-200: **0 / 65**  
+- Title length >65: **0**  
+- Title length <25: **0**  
+- Exact duplicate titles: **0**  
+- Quote-name mismatches title «…» vs H1 «…»: **13 product URLs (≈5 print families)**
+
+**Mismatch table (title quote → H1 quote)**
+
+| URL family | Title name | H1 name |
+|------------|------------|---------|
+| `/product/last-breath/`, `-hd/`, `-ls/` | last breath | Череп З Трояндою |
+| `/product/death-grabs-ass/`, `-hd/`, `-ls/` | death grabs ass | Серце Та Грощі |
+| `/product/lord-of-the-lending/`, `-hd/`, `-ls/` | Lord Of The Lending | Це Моя Посадка |
+| `/product/death-gbs-ass-ts/`, `-hd/`, `-ls/` | І На Той Світ З Собою Візьму | **Череп с дупою** (RU «с») |
+| `/product/hoodie-silent-winter/` | Silent Winter | Дівчина Снайпер |
+
+**Locale twist on same SKU `death-gbs-ass-ts`:**
+
+| Locale | title | H1 |
+|--------|-------|-----|
+| UK | «І На Той Світ…» | «Череп с дупою» |
+| RU | «Череп С Задницей» | «Череп С Задницей» (aligned) |
+| EN | «Last Breath» | «Last Breath» (aligned, different concept) |
 
 **Why problem**
 
-- Title and H1 describe different product names → relevance/duplicate confusion.  
-- Russian fragment on UA page → language leak.  
-- Suggests separate fields (`seo_title` vs `name` / print name) out of sync in **prod MySQL**.
+- Title and H1 describe **different products/names** on UA → SERP vs page mismatch, weak relevance.  
+- UA H1 Russian fragment «с дупою» → language leak.  
+- EN/RU use yet another naming — intentional localization OR data chaos; needs content owner decision.  
+- Source of truth split: likely `seo_title` vs product `name` / print title in **prod MySQL**.
 
-**Fix direction:** align name/seo_title/H1 from single source; QA all published products.
+**Fix direction:** pick one canonical commercial name per locale; sync `seo_title`, H1, schema Product.name, feed title.
 
-**Risk of fix:** medium (content DB edits; may affect feeds/schema Product.name).
+**Risk of fix:** medium–high (content + feed + pixel naming; coordinate with catalog ads).
 
 ---
 
@@ -554,9 +576,31 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 
 ---
 
+### F-016 — Variant URL titles work (positive control)
+
+- [x] **Not a bug** · Area: **SEO** · Checklist: SEO-007, SMK-005 partial
+
+Sample **20/20** variant sitemap URLs returned **200** with titles reflecting color/fit, e.g.:
+
+- `/product/classic-tshirt/black/` → `Футболка класична — чорний — TwoComms`  
+- `/product/classic-tshirt/black/oversize/` → `… — чорний, оверсайз фіт — TwoComms`  
+
+**Note:** some titles may exceed 65 when both color+fit appended (truncation in SERP only) — minor P3 follow-up.
+
+---
+
+### F-017 — HTML site map (`/mapa-saytu/`) internal links all 200
+
+- [x] **PASS** · Checklist: SEO-071, PG-044
+
+53 unique internal links from mapa page checked slowly → **0 non-200**.
+
+---
+
 ## Session changelog
 
 | Time | Action |
 |------|--------|
 | 2026-07-09 | Pass A started; smoke, SEO sample, sitemap, feed, UTM cookies, findings F-001…F-015 |
-| _next_ | Continue: remaining products, variants, browser pixel ATC, server DB funnel, mark more checklist IDs |
+| 2026-07-09 | Full 65 UK PDP titles; 13 title/H1 mismatches; 20 variants OK; mapa links OK; F-004 expanded; F-016/F-017 |
+| _next_ | Browser pixel ATC/Purchase; Dispatcher/DB funnel; server logs; remaining locales products; full variant sitemap |

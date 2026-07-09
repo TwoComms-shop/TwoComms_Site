@@ -118,7 +118,7 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 | SMK-002 | `GET www` → apex policy | consistent 301/canonical | [x] PASS 301→apex |
 | SMK-003 | `GET /catalog/` | 200 + products | [x] PASS |
 | SMK-004 | PDP published product | 200 + ATC button | [x] PASS 22 PDP sample (ATC click later) |
-| SMK-005 | Variant PDP | 200 correct variant | [ ] partial — see feed F-003 |
+| SMK-005 | Variant PDP | 200 correct variant | [x] PASS sample 20 sitemap variants; feed still F-003 |
 | SMK-006 | Add to cart | mini-cart count +1 | [ ] pending browser |
 | SMK-007 | `GET /cart/` with item | line items correct | [ ] empty only so far |
 | SMK-008 | `/sitemap.xml` | 200 valid index | [x] PASS 8 children |
@@ -132,8 +132,8 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 | Block | IDs | Done % | Owner | Notes |
 |-------|-----|--------|-------|-------|
 | 0 Smoke / rules | SMK, SEC | ~85% | agent-A | 2026-07-09 |
-| 1 Page inventory SEO matrix | PG-* | ~45% | agent-A | |
-| 2 SEO deep | SEO-* | ~40% | agent-A | F-001..F-006 |
+| 1 Page inventory SEO matrix | PG-* | ~55% | agent-A | 65 PDP + mapa |
+| 2 SEO deep | SEO-* | ~55% | agent-A | F-001..F-006, F-004 expanded |
 | 3 GEO / i18n | GEO-* | ~30% | agent-A | H1 leaks |
 | 4 CRO funnel | CRO-* | ~10% | agent-A | need Dispatcher |
 | 5 Cart / checkout UX | CART-* | ~35% | agent-A | mini empty OK |
@@ -182,7 +182,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-007 | `/catalog/<cat>/` | each **active** category | | **repeat per category** | [x] 3/3 UK checked — **titles FAIL F-001** |
 | PG-008 | `/catalog/<cat>/<color>/` | color landings if published | | empty sitemap risk | [x] 4 unique — **grammar FAIL F-002**; sitemap dups F-006 |
 | PG-009 | `/catalog/theme/<theme>/` | thematic landings | | | [x] 4/4 PASS HTTP |
-| PG-010 | `/product/<slug>/` | each **published** product base | | **batch all products** | [x] sample 22/65 — more pending |
+| PG-010 | `/product/<slug>/` | each **published** product base | | **batch all products** | [x] 65/65 UK HTTP+title; H1 mismatches F-004 |
 | PG-011 | `/product/<slug>/<v1>/` | color/fit samples | | | [ ] |
 | PG-012 | `/product/<slug>/<v1>/<v2>/` | multi-variant | | | [ ] |
 | PG-013 | `/product/<slug>/…/<v3>/` | max arity | | | [ ] |
@@ -291,10 +291,10 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-001 | Home title unique + brand | P0 | [x] PASS |
 | SEO-002 | Catalog root title ≠ home | P0 | [x] PASS |
 | SEO-003 | Every category title from DB override or good fallback | P0 | [x] CHECKED — **FAIL F-001 truncated** |
-| SEO-004 | Every published product `seo_title` non-empty | P0 | [x] sample 22 OK; full 65 pending |
-| SEO-005 | Title length report: list >70 and <20 | P1 | [x] sample OK; cats truncated ~52–56 |
-| SEO-006 | Exact duplicate titles across products | P1 | [ ] |
-| SEO-007 | Variant URL titles reflect color/fit when intended | P1 | [ ] |
+| SEO-004 | Every published product `seo_title` non-empty | P0 | [x] PASS 65/65 UK non-empty; **name mismatches F-004** |
+| SEO-005 | Title length report: list >70 and <20 | P1 | [x] products OK; cats truncated F-001 |
+| SEO-006 | Exact duplicate titles across products | P1 | [x] PASS no dups UK |
+| SEO-007 | Variant URL titles reflect color/fit when intended | P1 | [x] PASS sample 20 (F-016) |
 | SEO-008 | No double brand `\| TwoComms \| TwoComms` | P2 | [x] sample PASS |
 | SEO-009 | No debug strings (test, TODO, None, null) | P1 | [x] sample PASS |
 | SEO-010 | Admin SEO overrides win over autofill | P1 | [ ] |
@@ -371,7 +371,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-068 | i18n alternates consistent | P1 | [ ] |
 | SEO-069 | robots.txt host + allows/disallows | P0 | [ ] |
 | SEO-070 | search not in sitemap | P1 | [ ] |
-| SEO-071 | HTML mapa-saytu links = live 200 | P1 | [ ] |
+| SEO-071 | HTML mapa-saytu links = live 200 | P1 | [x] PASS 53 links (F-017) |
 | SEO-072 | Custom 404 branded, noindex, assets OK | P1 | [ ] |
 | SEO-073 | Crawl nav+footer+home rails: zero 404 | P0 | [ ] |
 | SEO-074 | Recommended products zero 404 | P0 | [ ] |
