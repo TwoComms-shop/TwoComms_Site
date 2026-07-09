@@ -4,7 +4,7 @@
 **Источник:** полный аудит `twocomms_global_audit.md` (150/150 пунктов закрыто) + все `audit_report_*.md` + gap-check 07.07.2026 (перекрёстная сверка 155 ID аудита против плана v1 — добавлены пропущенные пункты, помечены `[GAP]`).
 **Назначение:** ЕДИНСТВЕННЫЙ рабочий документ для агента-исполнителя. Каждый пункт — чекбокс. Выполнил → `[x]` + запись в «Журнал выполнения» внизу (дата, ID, коммит/PR). Ничего из этого ещё НЕ исправлено, кроме пунктов, явно помеченных done.
 
-> **RE-VERIFY PASS 2026-07-09:** false `[x]` cleared for W2-1/W2-2/W2-3/ADS-1/ADS-2/ADS-3/W7-1/W3-9/W3-11/W0-5. Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`. Owner SSH password rotated (W0-1 OWNER). Do not re-mark DONE without live accept criteria.
+> **RE-VERIFY PASS 2026-07-09 + STRICT pass: additionally unchecked W2-7 (dual mono status path), W7-23 (residual datetime.now).** false `[x]` cleared for W2-1/W2-2/W2-3/ADS-1/ADS-2/ADS-3/W7-1/W3-9/W3-11/W0-5. Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`. Owner SSH password rotated (W0-1 OWNER). Do not re-mark DONE without live accept criteria.
 
 **Как пользоваться:** брать задачи строго по волнам (Волна 0 → 1 → 2 → …). Перед каждой задачей — свериться с «Матрицей рисков» в `twocomms_global_audit.md` (RISK-01…15). Детали каждой находки — в указанном секционном отчёте.
 
@@ -58,6 +58,7 @@
   ✅ **REPO-часть DONE:** `scripts/backup_mysql.sh` создан — mysqldump `--single-transaction --routines --triggers`, атомарная запись через .tmp + sanity-check размера (>10KB) + `gzip -t`, ротация daily 7 дней / weekly 35 дней, chmod 600/700, инструкция установки в шапке скрипта. Осталось `[SERVER]`: mkdir ~/db_backups (вне webroot), ~/.my.cnf, crontab `45 3 * * *`, тест восстановления.
 
 - [x] **W0-4. 🔴 Смок-тесты на деньги (CB-024)** `[REPO]`
+  > **STRICT RE-VERIFY W0-4:** STRICT 2026-07-09: KEEP files present. Full pytest not re-run here (SECRET_KEY/prod settings).
   orders/ — 0 тестов (CAPI 850 строк!), accounts/ — 0; вебхук-подпись без тестов; CI нет.
   Фикс: pytest-набор ПЕРЕД фиксами воронки: (а) создание COD-заказа; (б) идемпотентность monobank-вебхука; (в) слияние корзины при логине; (г) guest COD; (д) `link_order_to_utm` (после W2-1).
   Приёмка: набор зелёный локально; прогоняется перед каждым деплоем.
@@ -201,12 +202,13 @@
   Фикс: маппинг имён на обоих слоях с сохранением event_id-дедупа; уйти с legacy `v1.3/pixel/track/`.
   ✅ **DONE:** (1) клиент — `mapTikTokEventName()` в analytics-loader.js: Purchase→CompletePayment, Lead→PlaceAnOrder перед КАЖДЫМ `ttq.track` (прямая отправка + оба буфер-пути); Meta/GA4/YM продолжают получать оригинальные имена; cache-buster `?v=7`; (2) сервер — tiktok_events_service.py: `EVENT_NAME_MAP` тот же + миграция с legacy `v1.3/pixel/track/` на Events API 2.0 `v1.3/event/track/` (payload переписан на `event_source`/`event_source_id`/`data[]`, `event_time` unix-int); (3) event_id НЕ трогается на обоих слоях → client/server дедуп сохранён. Тесты: `orders/tests/test_tiktok_events.py` (5 шт., зелёные): ма��пинг Purchase/Lead, pass-through ViewContent, структура 2.0-payload, POST через мок. ⚠️ NB: если в env задан кастомный `TIKTOK_EVENTS_API_ENDPOINT` со старым URL — на сервере его надо убрать/обновить.
 
-- [x] **W2-7. CAPI/TikTok внутри row-lock транзакции (AN-011 / DB-009, P1)** `[REPO]` ✅ Telegram/Meta/TikTok вынесены из select_for_update в _send_post_payment_events через transaction.on_commit; попутно добавлен pre-check purchase_sent для TikTok (часть W2-3в). Invoice/create вне atomic — уже закрыт в W1-5в. Тесты PostPaymentEventsDeferralTests зелёные.
-  > **RE-VERIFY W2-7:** NUANCE 2026-07-09: on_commit path; re-grep residual in-lock CAPI.
+- [ ] **W2-7. CAPI/TikTok внутри row-lock транзакции (AN-011 / DB-009, P1)** `[REPO]` ✅ Telegram/Meta/TikTok вынесены из select_for_update в _send_post_payment_events через transaction.on_commit; попутно добавлен pre-check purchase_sent для TikTok (часть W2-3в). Invoice/create вне atomic — уже закрыт в W1-5в. Тесты PostPaymentEventsDeferralTests зелёные.
+  > **STRICT RE-VERIFY W2-7:** STRICT RE-VERIFY 2026-07-09: utils._record_monobank_status_locked uses on_commit+CAPI, BUT live retail webhook monobank.py:1611 calls _apply_monobank_status which does Telegram+record_order_action SYNCHRONOUSLY and does NOT call _dispatch_post_payment_events/CAPI. Dual path — accept W2-7 incomplete. Uncheck.
   Отправка Meta+TikTok ВНУТРИ `transaction.atomic()`+`select_for_update()` — до ~25-40s row-lock; тот же анти-паттерн: Monobank invoice/create внутри atomic (monobank.py:~843) при wait_timeout=60.
   Фикс: `transaction.on_commit()` для внешних отправок; инвойс — после commit.
 
 - [x] **W2-8. Нормализация utm_source + AI-канал (AN-032 / AN-033 → TECH-009/065, P1/P2)** `[REPO]`
+  > **STRICT RE-VERIFY W2-8:** STRICT 2026-07-09: KEEP code. Residual dirty utm rows on prod do not undo middleware fix; track as data/backfill separately.
   > **RE-VERIFY W2-8:** NUANCE 2026-07-09: normalize code OK; live dirt chatgpt.com/ig still observed.
   Словаря нормализации нет (ig/Instagram/IGShopping/Inst_Vid = 4 написания); AI-трафик (chatgpt.com — 119 сессий, 3-й источник) не детектится отдельным каналом.
   Фикс: словарь нормализации в UTMTrackingMiddleware; детект chatgpt.com/perplexity.ai/gemini/claude.ai по utm+referrer → канал «AI»; UTM governance-конвенция.
@@ -271,6 +273,7 @@
   ✅ **REPO-часть DONE:** добавлен `PIIRedactionFilter` в logging handlers, фильтр подключён к console/file/rum/telegram/client-error handlers; добавлен `scripts/rotate_twocomms_logs.sh` с gzip-ротацией, chmod и TTL архивов; `twocomms/docs/OPS.md` содержит cron-инструкцию. Осталось `[SERVER]`: поставить cron, безопасно truncate/архивировать текущие большие логи и удалить мёртвые.
 
 - [x] **W3-7. Идемпотентность и гонки статусов (CB-020-паттерн + DB-010)** `[REPO]`
+  > **STRICT RE-VERIFY W3-7:** STRICT 2026-07-09: KEEP. No obvious update_fields→bare save() fallback pattern in mono/utils/np. Medium confidence without full test run.
   `save(update_fields)` → молчаливый fallback `save()` в 4 местах (utils.py:542/573/723, nova_poshta_service.py:515 — флаг `purchase_sent`!) = риск lost-update и ПОВТОРНОГО CAPI Purchase; admin_update_dropship_status без select_for_update.
   Фикс: убрать fallback, логировать ошибку; select_for_update в dropship-статусах. НЕ менять control flow массово (RISK-04).
   ✅ **DONE:** fallback `save()` после failed `save(update_fields=...)` убран в monobank-status persistence и NP purchase flags: ошибка логируется и пробрасывается, без full-save overwrite; `admin_update_dropship_status` теперь валидирует статус и обновляет `DropshipperOrder` внутри `transaction.atomic()` + `select_for_update()`. Тесты покрывают отсутствие fallback-save и row-lock.
@@ -430,6 +433,7 @@
 ## ВОЛНА 6 — КОРЗИНА / UX (P1/P2)
 
 - [x] **W6-1. Monobank-инвойс не сбрасывается при мутации корзины (CRO-031, P1)** `[REPO]`
+  > **STRICT RE-VERIFY W6-1:** STRICT 2026-07-09: KEEP. `_reset_monobank_session` called from cart update/remove/add paths; tests assert invoice keys cleared.
   `update_cart`/`remove_from_cart` не вызывают `_reset_monobank_session` → оплата устаревшей суммы при сбое JS; `custom_print_remove` — та же родня.
   Фикс: сброс инвойса во всех мутирующих эндпоинтах.
   ✅ **DONE:** `update_cart`, successful `remove_from_cart`, `custom_print_add_to_cart` и `custom_print_remove` вызывают `_reset_monobank_session(..., drop_pending=True)`. Покрыто тестами на stale invoice/pending order.
@@ -439,6 +443,7 @@
   ✅ **DONE:** общий `[data-add-to-cart]` handler в `main.js` ставит `data-add-to-cart-pending`/`aria-busy` и блокирует повторный POST до `.finally()`; `remove_from_cart` больше не удаляет все варианты товара при устаревшем composite key, только exact/case-insensitive key или явный product_id без key.
 
 - [x] **W6-3. Кастом-бейдж и счётчики (CRO-030, P2)** `[REPO]`
+  > **STRICT RE-VERIFY W6-3:** STRICT 2026-07-09: KEEP. Tests: get_cart_count includes custom_print; badge markup in cart.html/cart.js.
   `user_state_hint` читает `custom_cart` вместо `custom_print_cart` (мёртвый код — решить, регистрировать ли); `/cart/count/` игнорирует кастом; GET `cart_summary` мутирует сессию и сбрасывает инвойс.
   ✅ **DONE:** `user_state_hint` читает `SESSION_CUSTOM_CART_KEY` (`custom_print_cart`) с fallback на legacy `custom_cart`; `/cart/count/` суммирует custom-print quantities; `/cart/summary/` учитывает custom-print totals/counts, остаётся `never_cache` и больше не мутирует session/Monobank invoice на GET при missing product. Тестами покрыты badge hint, count и custom summary path.
 
@@ -532,11 +537,13 @@
   ~15+ мест (cart.py:583-939, manual_orders.py, utm_api_views.py, viewsets.py): суммы сериализуются `float(Decimal)` → потенциальные 0.30000000000000004 в JSON/пикселях. Модели правильные (DecimalField), проблема только на границе сериализации.
   Фикс: хелпер `money_str(d) -> str(d.quantize('0.01'))` или DjangoJSONEncoder; менять вместе с касанием соотв. файлов, не массово.
 
-- [x] **W7-23. [NEW-511] Naive datetime.now() (P3)** `[REPO]`
+- [ ] **W7-23. [NEW-511] Naive datetime.now() (P3)** `[REPO]`
+  > **STRICT RE-VERIFY W7-23:** STRICT RE-VERIFY 2026-07-09: residual datetime.now() still in orders/dropshipper_views.py:273-274 (non-test). Uncheck until timezone-aware.
   `promo.py:714-720`, `recommendations.py:202`, `utm_api_views.py:522` — `datetime.now()` без timezone вместо `timezone.now()`/`localdate()` → ��мещение окон «неделя/месяц» в отчётах промо.
   ✅ **DONE:** `promo.py` использует `timezone.localdate()`/`timezone.now()`, `recommendations.py` — `timezone.localdate().month`, `utm_api_views.py` — `timezone.now()` для export filename; статический тест запрещает регресс в этих файлах.
 
 - [x] **W7-24. [NEW-513] /search/ без пагинации (P3, из CRO-015 бонуса)** `[REPO]`
+  > **STRICT RE-VERIFY W7-24:** STRICT 2026-07-09: KEEP. /search/?q=test and page=2 return 200 live.
   `catalog.py:726 def search` — весь результат одним списком; широкий запрос = тяжёлый рендер. Фикс: пагинатор как в каталоге (с сохранением q= в GET — связка W5-2).
   ✅ **DONE:** `/search/` использует `Paginator(..., PRODUCTS_PER_PAGE)`, `results_count=paginator.count`, передаёт `page_obj/paginator`, сохраняет `q` в нижних paginator links и `<link rel=next/prev>`. Регрессионный тест проверяет count, page size и `q=...&page=2`.
 

@@ -1,201 +1,163 @@
-# IMPLEMENTATION_PLAN — re-verify of «DONE» checkboxes
+# IMPLEMENTATION_PLAN — strict re-verify of every remaining `[x]`
 
-**Updated:** 2026-07-09 (dedicated pass: *is [x] really done?*)  
-**Plan file mutated:** `TWOCOMMS_A_TO_B/technical/IMPLEMENTATION_PLAN.md`  
-**After uncheck:** top-level **`[x]` ≈ 35** · **`[ ]` ≈ 82** (was ~45 / ~72)
+**Updated:** 2026-07-09 (strict pass #2 on *remaining* DONE only)  
+**Plan:** `TWOCOMMS_A_TO_B/technical/IMPLEMENTATION_PLAN.md`  
+**Current counts after this pass:** **`[x]` ≈ 33** · **`[ ]` ≈ 84**
 
-**Goal of this pass:** for every plan item marked done, decide:
-1. keep `[x]` (really done),
-2. keep `[x]` + **nuance** (mostly done, residual risk),
-3. **remove `[x]`** (false done / accept criteria fail).
-
-**Truth sources:** repo code + live `https://twocomms.shop` HTTP.  
-**SSH:** owner rotated password; auditor has no key → no fresh MySQL this pass (order/UTM numbers from last shell still cited where relevant).
+**Method:** code inspection + live HTTP for each still-checked item.  
+If accept criteria fail or only half the production path was fixed → **`[x]` removed**.
 
 ---
 
-## 0. Short answer
+## 0. Result in one glance
 
-**Нет — не всё «выполненное» выполнено.**
+### Newly unchecked this strict pass
+| ID | Why uncheck |
+|----|-------------|
+| **W2-7** | **Dual path.** `utils._record_monobank_status_locked` has `on_commit` + CAPI dispatch, but **live retail webhook** (`monobank.py:1611`) calls **`_apply_monobank_status`**, which runs Telegram + `record_order_action` **synchronously** and **never** calls `_dispatch_post_payment_events` / Meta CAPI. W2-7 accept not met for the path that handles paid webhooks. |
+| **W7-23** | Residual **`datetime.now()`** still in `orders/dropshipper_views.py:273-274` (non-test). |
 
-| Категория | Кол-во plan IDs | Что сделали |
-|-----------|----------------:|-------------|
-| **Сняли `[x]` (false / incomplete)** | **10** | W2-1, W2-2, W2-3, ADS-1, ADS-2, ADS-3, W7-1, W3-9, W3-11, W0-5 |
-| **Оставили `[x]` + нюанс** | **~10** | W1-1, W1-7, W2-4/7/8, W3-1/10, W6-3, W7-23/24… |
-| **Оставили `[x]` чисто** | **~25** | W1-2…6,8–10,12–14, W2-5/6/9, W3-2…5,7,12, W5-2, W6-1/2, W0-4, W7-6… |
+### Unchecked in previous re-verify (still `[ ]`)
+W2-1, W2-2, W2-3, ADS-1, ADS-2, ADS-3, W7-1, W3-9, W3-11, W0-5 (+ partials documented earlier).
 
-**W0-1 OWNER (SSH password):** done by owner — **not** a false code fix; REPO still dirty (`deploy_paramiko.py`).
+### Still `[x]` after strict pass (~33)
+W0-4 · W1-1…W1-14 (except already open W1-11) · W2-4, W2-5, W2-6, W2-8, W2-9 · W3-1…W3-5, W3-7, W3-10, W3-12 · W5-2 · W6-1, W6-2, W6-3 · W7-6, W7-24  
 
----
-
-## 1. Снятые галочки — почему (обязательно читать fix-агенту)
-
-### 1.1 Полный false DONE → снова `[ ]`
-
-#### W2-1 — UTM на заказ — **СНЯТО**
-- **Plan claimed:** fallback session_key → visitor → `utm_data`; COD+Mono linked.
-- **Reality:**
-  - `link_order_to_utm` **does not** read `analytics_first_touch_data` / `twc_ft`.
-  - COD `create_order` **no** `_ensure_session_key`.
-  - Mono: **no** `attach_tracking_to_order`, **no** `CheckoutCapture.converted`.
-  - Prod (last DB): **43/43** `Order.utm_source` empty; order 276 had UTM in UserAction first_touch, Order blank.
-  - Tests cover session utm_data / fbclid — **not** first_touch → Order.
-- **Accept CRO-050:** FAIL → **cannot stay [x]**.
-
-#### W2-2 — is_converted — **СНЯТО**
-- Code calls `mark_as_converted` only if `utm_session` present on lead/purchase.
-- Prod: **0 / 1047** `is_converted=True`.
-- Depends on W2-1 → **false done**.
-
-#### W2-3 — единый purchase — **СНЯТО (partial)**
-- Docs + NP path + mono webhook path exist.
-- Prod: **purchase UserAction = 3**, **paid/prepaid orders = 36**.
-- Accept «all layers consistent» not met → uncheck; partial work remains in code/docs.
-
-#### ADS-3 — category titles — **СНЯТО**
-- Code: `TITLE_LIMIT = 70`, `_fit_title` improved.
-- **Live still FAIL:**
-  - tshirts: `…принти **від**`
-  - hoodie: `…принтами **та**`
-  - long-sleeve: `…рукавами **на**`
-- Root: **MySQL `Category.seo_title` still truncated** (seed 0058 had full strings ~72 chars; live ~52).
-- Code-only fix ≠ accept «no mid-phrase titles» → **uncheck**.
-
-#### W7-1 — views.py.backup not live — **СНЯТО**
-- `twocomms/storefront/views.py.backup` **still exists**.
-- `views/__init__.py` **still lazy-loads** from it.
-- Claim «не живой рантайм» is **false** → uncheck.
+Each KEEP has a **STRICT RE-VERIFY** note in the plan where non-obvious.
 
 ---
 
-### 1.2 Partial work → сняли полный `[x]`, оставили пояснение
+## 1. Detailed verdict for each remaining `[x]` (before uncheck of W2-7/W7-23)
 
-#### ADS-1 — early PageView — **СНЯТО с partial**
-| Часть | Статус |
+| ID | Keep? | Live / code proof | Residual nuance (does NOT uncheck unless stated) |
+|----|-------|-------------------|--------------------------------------------------|
+| **W0-4** | **KEEP** | Test modules present: checkout, monobank_webhook, cart_sync, utm_attribution | Full pytest not re-run (local SECRET_KEY/prod settings) |
+| **W1-1** | **KEEP** | `process_guest_order` gone; cart→order_create | COD UI intentionally off; F-074 session ensure still open |
+| **W1-2** | **KEEP** | Live: preview→login, `/orders/success/1/`→404 | — |
+| **W1-3** | **KEEP** | Signature verify in code; POST webhook without sign → **400**; no `status or 'success'` | — |
+| **W1-4** | **KEEP** | `promo_code_id` + `_record_promo_usage_for_order` | — |
+| **W1-5** | **KEEP** | Missing product / zero-total guards | — |
+| **W1-6** | **KEEP** | `update_payment_method` / `confirm_payment` present | Not re-UI-tested |
+| **W1-7** | **KEEP** | Theme CSS hero mobile fix; **live** `cls-ultimate.*.css` contains fix | — |
+| **W1-8** | **KEEP** | Live test-analytics gated | — |
+| **W1-9** | **KEEP** | Dropship uses signature verify | — |
+| **W1-10** | **KEEP** | FILE_UPLOAD limits / validation paths | — |
+| **W1-12** | **KEEP** | `_resolve_retail_invoice_status` + amount | — |
+| **W1-13** | **KEEP** | `MAX_CART_ITEM_QTY = 50` | — |
+| **W1-14** | **KEEP** | `_cart_fingerprint` dedupe | — |
+| **W2-4** | **KEEP** | bot/staff filter + 30m PV dedupe in code | Historical PV noise remains (data) |
+| **W2-5** | **KEEP** | fbclid/utm fastpath in base.html | — |
+| **W2-6** | **KEEP** | CompletePayment client+server | TikTok UI not checked (OWNER) |
+| **W2-7** | **DROP** | See dual-path analysis §2 | — |
+| **W2-8** | **KEEP** | normalize + aliases in middleware/utils | Live dirt rows may still exist (data/backfill) |
+| **W2-9** | **KEEP** | twocomms.shop + server add_payment_event_id | — |
+| **W3-1** | **KEEP** | `async_enabled=False` default | CELERY_BROKER may still be set in env |
+| **W3-2** | **KEEP** | client-error endpoint live POST ok; onerror in base | — |
+| **W3-3** | **KEEP** | Anon `/` **0 Set-Cookie**; bootstrap present | — |
+| **W3-4** | **KEEP** | language_switcher no baked long csrf value | — |
+| **W3-5** | **KEEP** | swagger/redoc 404; REMOTE_ADDR rate limit | — |
+| **W3-7** | **KEEP** | No obvious `update_fields`→bare `.save()` fallback in mono/utils/np | Medium confidence without full suite |
+| **W3-10** | **KEEP** | AST `_safe_eval`; bare eval ≤2 | — |
+| **W3-12** | **KEEP** | apply_promo ratelimit | — |
+| **W5-2** | **KEEP** | Live `/load-more-products/?page=2` → 200; homepage paginator code | — |
+| **W6-1** | **KEEP** | `_reset_monobank_session` on cart mutate; tests assert keys cleared | — |
+| **W6-2** | **KEEP** | cart.js submit lock | — |
+| **W6-3** | **KEEP** | Badge markup + tests cart_count includes custom_print | Not full visual browser pass |
+| **W7-6** | **KEEP** | No cost/purchase xlsx in tree scan | — |
+| **W7-23** | **DROP** | Residual naive `datetime.now()` in dropshipper_views | — |
+| **W7-24** | **KEEP** | Live `/search/?q=test` and `page=2` → 200 | — |
+
+---
+
+## 2. Why W2-7 must not stay checked (important)
+
+```
+Retail Monobank webhook (production path)
+  monobank_webhook
+    → _resolve_retail_invoice_status (pull-verify)     ✓ W1-12
+    → _apply_monobank_status                            ← THIS PATH
+         · order.save(update_fields=…)
+         · record_order_action('purchase')              sync
+         · TelegramNotifier.send_admin…                 sync
+         · NO transaction.on_commit
+         · NO _dispatch_post_payment_events
+         · NO Meta CAPI / TikTok from this function
+
+Alternate path (API/poll)
+  utils._record_monobank_status_locked
+    → transaction.on_commit(_dispatch_post_payment_events)  ← W2-7 fix lives HERE
+```
+
+**Conclusion:** W2-7 fixed the **utils** path, not the **webhook** path that production retail orders use. Marking the whole item done was incorrect → **`[ ]` again**.
+
+**Fix agent should:** route webhook `_apply_monobank_status` success transitions through the same on_commit dispatcher (or call shared helper), without double Telegram/purchase.
+
+---
+
+## 3. Previously unchecked (still false done) — recap
+
+| ID | One-line |
+|----|----------|
+| W2-1 | first_touch not → Order.utm; COD session; mono capture/tracking gaps |
+| W2-2 | is_converted 0 on prod |
+| W2-3 | purchase UA undercount |
+| ADS-1 | early PV OK; BFCache `initializePixelsImmediately` undefined |
+| ADS-2 | /en/ H1 still Ukrainian |
+| ADS-3 | live titles still mid-phrase; DB not reseeded |
+| W7-1 | views.py.backup still lazy-loaded |
+| W3-9 | TG webhook secret empty on prod (was) |
+| W3-11 | CheckoutCapture.converted never on mono |
+| W0-5 | OPS done; stash OWNER not done |
+
+---
+
+## 4. Live checks this strict pass
+
+| Check | Result |
 |-------|--------|
-| Inline `fbq` + PageView in `<head>` | **DONE live** |
-| BFCache `initializePixelsImmediately()` | **BROKEN** — called in live `analytics-loader.3975317011e4.js`, **function not defined** |
-| `FACEBOOK_PIXEL_ID` in settings | was **EMPTY** (template fallback) |
-
-Early PageView alone does not equal full ADS-1 accept → uncheck full item; implement BFCache fix before re-`[x]`.
-
-#### ADS-2 — EN translations — **СНЯТО с partial**
-- django.po may be clean (per earlier plan journal).
-- **Live `/en/` H1:** still `TwoComms — **український** streetwear…` (Ukrainian).
-- Accept «no Ukrainian on /en/ key blocks» **FAIL** → uncheck.
-
-#### W3-9 — Telegram webhook secret — **СНЯТО с partial**
-- REPO: warns if secret empty — OK.
-- Prod: **`TELEGRAM_BOT_WEBHOOK_SECRET` was EMPTY** → webhook effectively open.
-- Accept «secret configured» not met → uncheck full done.
-
-#### W3-11 — CheckoutCapture limits — **СНЯТО с partial**
-- Rate-limit + cleanup command: code OK.
-- **`converted` never true** on mono path (mono has zero CheckoutCapture refs; prod 0/4) → incomplete.
-
-#### W0-5 — OPS + stash — **СНЯТО с partial**
-- `twocomms/docs/OPS.md` written — REPO OK.
-- OWNER: 10 server git-stashes **not** resolved → full item oversold.
+| success-preview / success/1 | gated / 404 |
+| mono webhook POST no sign | **400** |
+| test-analytics | gated |
+| anon home Set-Cookie | **0** |
+| client-error POST | 200/4xx ok |
+| swagger/redoc | 404 |
+| load-more page=2 | 200 |
+| search + page=2 | 200 |
+| live cls-ultimate hero fix | present |
+| category titles mid-phrase | still FAIL (ADS-3 open) |
+| /en/ H1 Ukrainian | still FAIL (ADS-2 open) |
 
 ---
 
-## 2. Оставлены `[x]` — но с нюансами (галочку НЕ снимали)
+## 5. What was changed in the plan file
 
-| ID | Keep [x]? | Nuance (must not ignore) |
-|----|-----------|---------------------------|
-| **W1-1** | yes | COD 500 fixed; UI COD off by decision. **Still:** no session ensure on COD create (F-074). |
-| **W1-7** | yes | Hero CSS fix in theme; confirm **collectstatic** if prod CSS stale. |
-| **W2-4** | yes | Bot/dedupe code OK; **historical** product_view noise remains. |
-| **W2-7** | yes | `on_commit` dispatch exists; re-grep any remaining in-lock CAPI. |
-| **W2-8** | yes | Normalize code OK; live still saw `chatgpt.com` / `ig` — not 100% clean. |
-| **W3-1** | yes | Telegram sync default OK; `CELERY_BROKER` may still be set. |
-| **W3-10** | yes | AST safe eval; low residual risk. |
-| **W6-3** | yes | Badges claimed; not re-browser-tested this pass. |
-| **W7-23/24** | yes | Claimed fixes; not every call site re-audited. |
+1. **`[x]` → `[ ]`:** W2-7, W7-23 (this pass); plus earlier list.  
+2. **STRICT RE-VERIFY** notes under KEEP items W0-4, W2-8, W3-7, W6-1, W6-3, W7-24.  
+3. Banner mentions dual mono path + datetime residual.
 
-If fix agent needs strict «zero residual», treat **OK_NUANCE** as follow-ups, not as reopen of the main bug.
+**Rule for future `[x]`:** prove **production path** (not only helper/utils/tests), then live accept.
 
 ---
 
-## 3. Оставлены `[x]` чисто (re-check OK)
+## 6. Fix agent: do not re-mark DONE without
 
-W0-4 · W1-2 · W1-3 · W1-4 · W1-5 · W1-6 · W1-8 · W1-9 · W1-10 · W1-12 · W1-13 · W1-14 · W2-5 · W2-6 · W2-9 · W3-2 · W3-3 · W3-4 · W3-5 · W3-7 · W3-12 · W5-2 · W6-1 · W6-2 · W7-6  
-
-**Live confirms (sample):** success-preview/test-analytics gated; success/1 → 404; early PageView present; anon home no Set-Cookie; swagger closed; feed links sample OK.
-
-**Do not re-break these** while fixing REOPEN items.
-
----
-
-## 4. Live evidence snapshot (this pass)
-
-| Check | Result | Affects |
-|-------|--------|---------|
-| Category titles mid-phrase | **FAIL** `від`/`та`/`на` | ADS-3 uncheck |
-| `/en/` H1 Ukrainian | **FAIL** | ADS-2 uncheck |
-| Early fbq PageView | PASS | ADS-1 partial |
-| Loader BFCache def | **FAIL** called, not defined | ADS-1 uncheck |
-| success-preview / test-analytics | PASS gated | W1-2, W1-8 keep |
-| last-breath title vs H1 | **FAIL** mismatch | F-004 (not plan DONE) |
-| NP `Kyiv` | **502** | F-050 OPEN |
-| NP `Київ` | 200 | |
+| ID | Minimum accept |
+|----|----------------|
+| W2-7 | Retail webhook success uses on_commit dispatcher; no long HTTP under row-lock; CAPI still fires once |
+| W7-23 | No `datetime.now()` in orders/storefront non-test money/date code (use timezone.now) |
+| W2-1 | Paid/canary order has Order.utm_source from first_touch |
+| ADS-1 | No client_error for initializePixelsImmediately; BFCache restore works |
+| ADS-3 | Live category titles do not end with від/та/на |
 
 ---
 
-## 5. What changed in IMPLEMENTATION_PLAN.md
-
-1. Inserted banner: **RE-VERIFY PASS 2026-07-09**.
-2. Set **`[ ]`** on: W0-5, W2-1, W2-2, W2-3, W3-9, W3-11, ADS-1, ADS-2, ADS-3, W7-1.
-3. Under each: blockquote **`RE-VERIFY <ID>:`** with reason.
-4. Under remaining nuanced DONE: **`RE-VERIFY` nuance** notes (W1-1, W1-7, W2-4, W2-7, W2-8, W3-1).
-
-**Rule for re-checking done later:** only mark `[x]` when **live accept** in the plan item is proven (not only unit tests / partial code).
-
----
-
-## 6. Fix agent priority (after uncheck)
-
-1. **W2-1** first_touch → Order.utm_* + COD session + mono tracking/capture  
-2. **W2-2** is_converted (after W2-1)  
-3. **W2-3** purchase UA completeness  
-4. **ADS-1** define/fix `initializePixelsImmediately` + collectstatic  
-5. **ADS-3** reseed Category.seo_title in DB  
-6. **ADS-2** locale H1/content not only .po  
-7. **W7-1** eliminate views.py.backup lazy load  
-8. **W3-9** set TG webhook secret on server  
-9. **W3-11** mono CheckoutCapture.converted  
-10. **W0-1 REPO** remove `deploy_paramiko.py` password  
-11. **W1-11** ubd public media  
-12. Remaining OPEN plan waves  
-
----
-
-## 7. Related findings IDs
-
-| Topic | F-ID |
-|-------|------|
-| Order UTM empty / first_touch | F-021, F-033, F-071, F-045 |
-| is_converted | F-019 |
-| purchase undercount | F-083 |
-| pixel BFCache | F-030, F-079 |
-| category titles | F-001, F-023 |
-| EN H1 | F-005 |
-| ubd public | F-087 |
-| TG secret | F-088 |
-| backup cron | F-090 |
-| deploy_paramiko secret | F-093 |
-| title≠H1 products | F-004, F-094 |
-| SSH owner done | F-092 |
-
----
-
-## 8. Document control
+## 7. Document control
 
 | Field | Value |
 |-------|--------|
-| Purpose | Honest DONE audit + plan checkbox correction |
-| Plan file | `TWOCOMMS_A_TO_B/technical/IMPLEMENTATION_PLAN.md` (checkboxes updated) |
-| This file | Explanation of every uncheck / nuance |
-| Ads gate | **BLOCKED** (W2-1/2 and ADS residuals open again) |
+| Pass | Strict DONE audit #2 |
+| Plan checkboxes | Updated in IMPLEMENTATION_PLAN.md |
+| Ads gate | **BLOCKED** |
+| SSH | Owner password rotated; no DB shell this pass |
 
-*End — re-verify of completed work only*
+*End of strict DONE re-verify*

@@ -2157,6 +2157,16 @@ Live 2026-07-09 re-pass:
 
 In `IMPLEMENTATION_PLAN.md`, false/incomplete `[x]` cleared for: **W2-1, W2-2, W2-3, ADS-1, ADS-2, ADS-3, W7-1, W3-9, W3-11, W0-5**. Rationale: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
 
+
+
+### Process note — strict DONE re-verify (2026-07-09 later)
+
+Additionally unchecked in IMPLEMENTATION_PLAN:
+- **W2-7**: retail webhook uses `_apply_monobank_status` (sync Telegram, no on_commit CAPI); utils path alone was fixed.
+- **W7-23**: residual `datetime.now()` in `dropshipper_views.py`.
+
+Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
+
 ## Session changelog
 
 | Time | Action |
