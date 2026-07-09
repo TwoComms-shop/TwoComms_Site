@@ -44,6 +44,19 @@ class ClientsApiTests(TestCase):
         self.assertTrue(data["success"])
         self.assertTrue(any(cl["name"] == "Іван" for cl in data["clients"]))
 
+    def test_clients_list_exposes_ukrainian_delivery_block_status(self):
+        setattr(self.c, "delivery_status", "message_request_check")
+        setattr(self.c, "delivery_error", "Перевірте Запити на повідомлення в Instagram.")
+        self.c.save()
+
+        r = self.client.get(reverse("management_bot_clients_api") + "?view=delivery-blocked")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        row = next(client for client in data["clients"] if client["id"] == self.c.id)
+        self.assertEqual(row.get("delivery_status"), "message_request_check")
+        self.assertIn("Запити", row.get("delivery_status_label", ""))
+
     def test_client_detail(self):
         r = self.client.get(reverse("management_bot_client_detail_api", args=[self.c.id]))
         self.assertEqual(r.status_code, 200)

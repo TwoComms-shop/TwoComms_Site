@@ -112,6 +112,41 @@ class SendApiErrorClassificationTests(TestCase):
         self.assertIn("Meta Send API", s.last_error)
         self.assertIn("Advanced Access", s.last_error)
 
+    @patch("management.services.instagram_bot.get_page_token", return_value="PT")
+    @patch("management.services.instagram_bot._http")
+    def test_permanent_send_block_is_persisted_on_the_affected_client(self, mock_http, _mock_pt):
+        client = IgClient.get_or_create_for_sender("delivery-blocked-client")
+        mock_http.return_value = (
+            403,
+            json.dumps({
+                "error": {
+                    "code": 200,
+                    "error_subcode": bot.ADVANCED_ACCESS_SUBCODE,
+                    "message": "App does not have advanced access for Instagram messages.",
+                }
+            }),
+        )
+
+        bot.send_text(InstagramBotSettings.load(), client.igsid, "Привіт")
+
+        client.refresh_from_db()
+        self.assertEqual(getattr(client, "delivery_status", ""), "advanced_access")
+        self.assertIn("Advanced Access", getattr(client, "delivery_error", ""))
+
+    @patch("management.services.instagram_bot.get_page_token", return_value="PT")
+    @patch("management.services.instagram_bot._http", return_value=(200, "{}"))
+    def test_successful_send_clears_client_delivery_block(self, _mock_http, _mock_pt):
+        client = IgClient.get_or_create_for_sender("delivery-cleared-client")
+        setattr(client, "delivery_status", "advanced_access")
+        setattr(client, "delivery_error", "попередня причина")
+        client.save()
+
+        bot.send_text(InstagramBotSettings.load(), client.igsid, "Привіт")
+
+        client.refresh_from_db()
+        self.assertEqual(getattr(client, "delivery_status", "advanced_access"), "")
+        self.assertEqual(getattr(client, "delivery_error", "попередня причина"), "")
+
 
 class PaylinkProductTests(TestCase):
     """Bug B: paylink має бути на ПРАВИЛЬНИЙ товар, навіть якщо є стара чернетка."""
