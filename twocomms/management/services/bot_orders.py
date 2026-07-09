@@ -139,9 +139,13 @@ def pin_product(client, product_id) -> bool:
     if not p:
         return False
     if client.current_product_id == p.id:
+        if not client.current_product_confidence:
+            client.current_product_confidence = 1
+            client.save(update_fields=["current_product_confidence", "updated_at"])
         return True
     client.current_product = p
-    client.save(update_fields=["current_product", "updated_at"])
+    client.current_product_confidence = 1
+    client.save(update_fields=["current_product", "current_product_confidence", "updated_at"])
     return True
 
 

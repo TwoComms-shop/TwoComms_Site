@@ -25,6 +25,7 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 
 from management.models import InstagramBotSettings
+from management.services import bot_followups
 from management.services import instagram_bot as bot
 
 HB_KEY = "ig_bot_daemon_hb"            # heartbeat демона (epoch seconds)
@@ -157,11 +158,13 @@ class Command(BaseCommand):
                     if enabled:
                         # 1) Воркер черги — дешево (локальна БД), щоразу.
                         bot.process_pending(s)
+                        bot_followups.process_due_followups(s)
                         # 2) Резервний інгест із IG — лише якщо увімкнено й настав час.
                         now = time.time()
                         if s.receive_via_poll and (now - last_poll) >= interval:
                             bot.poll_ingest(s)
                             bot.process_pending(s)
+                            bot_followups.process_due_followups(s)
                             last_poll = now
                     # heartbeat для UI навіть коли зупинено (агент онлайн)
                     s.heartbeat_at = tz.now()

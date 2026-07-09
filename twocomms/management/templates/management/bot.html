@@ -24,6 +24,10 @@
 .bot-btn.start{background:#16a34a;}.bot-btn.start:hover{background:#15803d;}
 .bot-btn.stop{background:#dc2626;}.bot-btn.stop:hover{background:#b91c1c;}
 .bot-btn:disabled{opacity:.4;cursor:not-allowed;}
+.bot-mini-btn{border:1px solid #263044;background:#101621;color:#cdd5e1;border-radius:8px;padding:7px 10px;font-size:12px;font-weight:700;cursor:pointer;}
+.bot-mini-btn.active{background:#2563eb;border-color:#2563eb;color:#fff;}
+.bot-mini-btn.warn{background:#3a2410;border-color:#5b3713;color:#fb923c;}
+.bot-mini-btn.danger{background:#2a1416;border-color:#4c1e22;color:#f87171;}
 
 /* ---- Tabs ---- */
 .bot-tabs{position:relative;display:flex;gap:4px;border-bottom:1px solid #1e2430;margin-bottom:20px;overflow-x:auto;}
@@ -51,6 +55,13 @@
 .bot-metric{background:#0c0f17;border:1px solid #1a2030;border-radius:12px;padding:12px;text-align:center;}
 .bot-metric .v{font-size:23px;font-weight:700;line-height:1;}
 .bot-metric .k{font-size:10.5px;color:#8b95a5;text-transform:uppercase;letter-spacing:.04em;margin-top:6px;}
+.bot-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;}
+.bot-stat-box{background:#0c0f17;border:1px solid #1a2030;border-radius:12px;padding:12px;}
+.bot-stat-box .v{font-size:26px;font-weight:800;}
+.bot-stat-box .k{font-size:11px;color:#8b95a5;margin-top:4px;}
+.bot-table{width:100%;border-collapse:collapse;font-size:12px;color:#cdd5e1;}
+.bot-table th,.bot-table td{border-bottom:1px solid #1e2430;padding:8px 6px;text-align:left;vertical-align:top;}
+.bot-table th{color:#8b95a5;font-weight:700;text-transform:uppercase;font-size:10.5px;letter-spacing:.04em;}
 .bot-state-text{font-size:17px;font-weight:600;}
 .bot-state-sub{font-size:12.5px;color:#8b95a5;margin-top:2px;}
 .bot-status-head{display:flex;align-items:center;gap:13px;margin-bottom:16px;}
@@ -102,6 +113,7 @@
 @media(max-width:880px){.bot-clients-wrap{grid-template-columns:1fr;}}
 .bot-clients-search{width:100%;background:#0c0f17;border:1px solid #232a38;border-radius:10px;color:#e7ecf3;padding:10px 12px;font-size:13px;margin-bottom:12px;}
 .bot-clients-list{max-height:560px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;}
+.bot-client-filters{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px;}
 .bot-client-row{display:flex;gap:11px;align-items:center;background:#0c0f17;border:1px solid #1e2430;border-radius:12px;padding:9px 11px;cursor:pointer;transition:transform .12s,border .15s,background .15s;}
 .bot-client-row:hover{border-color:#2a3550;transform:translateX(2px);}
 .bot-client-row.active{border-color:#2563eb;background:#0f1626;}
@@ -110,6 +122,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
 .bot-client-meta{min-width:0;flex:1;}
 .bot-client-name{font-size:13.5px;color:#e7ecf3;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .bot-client-sub{font-size:11.5px;color:#8b95a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.bot-client-score{font-size:10.5px;color:#34d399;font-weight:800;}
 .bot-stage-chip{font-size:10px;padding:3px 8px;border-radius:20px;background:#1a2233;color:#9fb4d6;white-space:nowrap;font-weight:600;}
 .st-new,.st-qualifying{background:#13233f;color:#7fb0ff;}
 .st-product_matched,.st-checkout{background:#3a2c10;color:#fbbf24;}
@@ -130,6 +143,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
 .bot-msg{padding:7px 11px;border-radius:11px;margin:5px 0;font-size:12.5px;max-width:86%;word-break:break-word;line-height:1.45;}
 .bot-msg.user{background:#11151f;border:1px solid #1e2430;}
 .bot-msg.model{background:#13203a;border:1px solid #1d2b48;margin-left:auto;color:#dfe7f5;}
+.bot-msg.manager{background:#1f1930;border:1px solid #352754;margin-left:auto;color:#e9ddff;}
+.bot-signal{display:inline-flex;align-items:center;gap:5px;background:#11151f;border:1px solid #1e2430;border-radius:999px;padding:4px 8px;margin:3px;font-size:11px;color:#aeb8c7;}
 .bot-mem{background:#15110a;border:1px solid #3a2e16;border-radius:10px;padding:9px 11px;font-size:12px;color:#d8c08a;margin:10px 0;}
 .bot-deal{font-size:12px;color:#aeb8c7;background:#11151f;border:1px solid #1a2030;border-radius:9px;padding:7px 10px;margin:5px 0;}
 .bot-empty{color:#7e889a;font-size:13px;text-align:center;padding:40px 10px;}
@@ -166,6 +181,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     <button class="bot-tab" data-tab="kb">Інструкції</button>
     {% endif %}
     <button class="bot-tab" data-tab="clients">Клієнти<span class="badge" id="badge-clients" style="display:none;"></span></button>
+    <button class="bot-tab" data-tab="stats">Статистика</button>
     <span class="bot-tab-ind" id="bot-tab-ind"></span>
   </nav>
 
@@ -272,6 +288,17 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             <input type="number" name="poll_interval_seconds" min="2" max="60" value="{{ settings.poll_interval_seconds }}">
           </div>
         </div>
+        <div class="bot-grid2">
+          <div class="bot-field">
+            <label>Meta CAPI feedback</label>
+            <label class="bot-radio"><input type="checkbox" name="meta_feedback_enabled" {% if settings.meta_feedback_enabled %}checked{% endif %}> Увімкнути safe feedback events</label>
+            <div class="bot-hint">За замовчуванням вимкнено. IG-only події без match data логуються як skipped.</div>
+          </div>
+          <div class="bot-field">
+            <label>Meta test event code</label>
+            <input type="text" name="meta_feedback_test_event_code" value="{{ settings.meta_feedback_test_event_code }}" placeholder="TEST...">
+          </div>
+        </div>
         <div class="bot-field">
           <label>Простий режим (коли AI вимкнено): тригер / відповідь</label>
           <div class="bot-grid2">
@@ -336,12 +363,31 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         <span class="bot-hint" id="clients-total"></span>
       </div>
       <input id="bot-clients-search" class="bot-clients-search" placeholder="Пошук: ім'я / username / телефон">
+      <div class="bot-client-filters" id="bot-client-filters">
+        <button class="bot-mini-btn active" data-client-view="active">Active</button>
+        <button class="bot-mini-btn" data-client-view="due">Due follow-ups</button>
+        <button class="bot-mini-btn" data-client-view="hidden">Hidden</button>
+        <button class="bot-mini-btn" data-client-view="spam-cold">Spam/Cold</button>
+        <button class="bot-mini-btn" data-client-view="paid">Paid</button>
+        <button class="bot-mini-btn" data-client-view="ads">Ads</button>
+      </div>
       <div class="bot-clients-wrap">
         <div id="bot-clients-list" class="bot-clients-list"></div>
         <div id="bot-client-detail" class="bot-client-detail">
           <div class="bot-empty">Оберіть клієнта зі списку, щоб побачити переписку, етап воронки й угоди.</div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- ===== Статистика ===== -->
+  <section class="bot-panel" data-panel="stats">
+    <div class="bot-card">
+      <div class="bot-card-head">
+        <h2>Sales статистика IG Direct</h2>
+        <button class="bot-mini-btn" id="bot-stats-refresh">Оновити</button>
+      </div>
+      <div id="bot-stats-content" class="bot-empty">Завантаження статистики…</div>
     </div>
   </section>
 </div>
@@ -368,6 +414,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     if(save){ try{ localStorage.setItem('bot_tab', btn.dataset.tab); }catch(e){} }
     if(btn.dataset.tab==='clients' && !loaded.clients){ loaded.clients=true; Clients.load(''); }
     if(btn.dataset.tab==='kb' && !loaded.kb){ loaded.kb=true; KB.load(); }
+    if(btn.dataset.tab==='stats'){ Stats.load(); }
   }
   tabs.forEach(t=>t.addEventListener('click',()=>activate(t.dataset.tab,true)));
   window.addEventListener('resize',()=>moveInd(tabs.find(t=>t.classList.contains('active'))));
@@ -455,12 +502,15 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     const listEl=document.getElementById('bot-clients-list');
     const detailEl=document.getElementById('bot-client-detail');
     const searchEl=document.getElementById('bot-clients-search');
+    const filtersEl=document.getElementById('bot-client-filters');
     const totalEl=document.getElementById('clients-total');
     const base='{% url "management_bot_clients_api" %}';
     let activeId=null;
+    let currentView='active';
     function stageCls(s){ return 'st-'+(s||'new'); }
     function load(q){
-      fetch(base+(q?('?q='+encodeURIComponent(q)):''),{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      const params=new URLSearchParams(); params.set('view', currentView); if(q) params.set('q', q);
+      fetch(base+'?'+params.toString(),{headers:{'X-Requested-With':'XMLHttpRequest'}})
         .then(r=>r.json()).then(d=>{
           if(!d.success) return;
           setBadge(document.getElementById('badge-clients'), d.total||0);
@@ -470,7 +520,15 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             const row=document.createElement('div');
             row.className='bot-client-row'+(c.id===activeId?' active':'');
             const ava=c.avatar?('<img class="bot-client-ava" src="'+esc(c.avatar)+'" alt="" onerror="this.outerHTML=\'<div class=&quot;bot-client-ava&quot;>'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>\'">'):('<div class="bot-client-ava">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>');
-            row.innerHTML=ava+'<div class="bot-client-meta"><div class="bot-client-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'">'+esc(c.stage_label)+'</span>';
+            const sub=[
+              c.username||c.igsid,
+              c.current_product_title?('SKU '+c.current_product_id+' · '+c.current_product_title):'',
+              c.primary_objection && c.primary_objection!=='none'?('obj: '+c.primary_objection):'',
+              c.next_followup_at?('FU '+fmt(c.next_followup_at)):'',
+              c.discount_offered_percent?('discount '+c.discount_offered_percent+'%'):'',
+              c.ad_title?('ad: '+c.ad_title):''
+            ].filter(Boolean).join(' · ');
+            row.innerHTML=ava+'<div class="bot-client-meta"><div class="bot-client-name">'+esc(c.name)+' <span class="bot-client-score">'+(c.buying_readiness||0)+'%</span></div><div class="bot-client-sub">'+esc(sub)+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'">'+esc(c.stage_label)+'</span>';
             row.addEventListener('click',()=>{activeId=c.id;document.querySelectorAll('.bot-client-row').forEach(e=>e.classList.remove('active'));row.classList.add('active');detail(c.id);});
             listEl.appendChild(row);
           });
@@ -484,32 +542,36 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           const c=d.client;
           let h='<div class="bot-detail-head">'+(c.avatar?('<img class="bot-client-ava" style="width:46px;height:46px;" src="'+esc(c.avatar)+'" alt="">'):('<div class="bot-client-ava" style="width:46px;height:46px;">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>'))+'<div><div class="bot-detail-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+(c.phone?(' · '+esc(c.phone)):'')+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'" style="margin-left:auto;">'+esc(c.stage_label)+'</span></div>';
           if(c.ad_title) h+='<div class="bot-client-sub" style="margin-top:8px;">📣 Реклама: '+esc(c.ad_title)+'</div>';
+          h+='<div class="bot-client-sub" style="margin-top:8px;">Readiness: <b style="color:#34d399;">'+(c.buying_readiness||0)+'%</b> · intent: '+esc(c.intent||'')+' · objection: '+esc(c.primary_objection||'')+(c.current_product_title?' · product: '+esc(c.current_product_title):'')+(c.next_followup_at?' · next FU: '+fmt(c.next_followup_at):'')+'</div>';
           const pauseBtn=c.bot_paused?'<button class="bot-save" data-act="resume" style="background:#16a34a;">▶ Включити бота</button>':'<button class="bot-save" data-act="pause" style="background:#dc2626;">⏸ Стоп бота</button>';
-          h+='<div style="margin-top:12px;">'+pauseBtn+(c.manager_takeover?' <span class="bot-stage-chip st-lead_manager">менеджер веде</span>':'')+'</div>';
+          h+='<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">'+pauseBtn+(c.manager_takeover?' <span class="bot-stage-chip st-lead_manager">менеджер веде</span>':'')+'<button class="bot-mini-btn warn" data-act="hide">Hide</button><button class="bot-mini-btn" data-act="unhide">Unhide</button><button class="bot-mini-btn danger" data-act="lost">Mark lost</button></div>';
           h+='<div class="bot-funnel">';
           (d.funnel||[]).forEach(f=>{h+='<span class="bot-circle'+(f.done?' done':'')+(f.current?' current':'')+'"><i></i>'+esc(f.label)+'</span>';});
           h+='</div>';
           if(c.memory) h+='<div class="bot-mem">🧠 '+esc(c.memory)+'</div>';
+          if((d.signals||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Signals</div><div>';(d.signals||[]).slice(0,18).forEach(s=>{h+='<span class="bot-signal">'+esc(s.type)+(s.value?': '+esc(s.value):'')+'</span>';});h+='</div>';}
+          if((d.followups||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Follow-ups</div>';(d.followups||[]).forEach(f=>{h+='<div class="bot-deal">#'+f.id+' · '+esc(f.kind)+' · '+esc(f.status)+' · '+fmt(f.due_at)+(f.discount_percent?(' · '+f.discount_percent+'%'):'')+(f.skip_reason?(' · '+esc(f.skip_reason)):'')+'</div>';});}
           if((d.deals||[]).length){h+='<div class="bot-kb-h" style="margin-top:6px;">Угоди</div>';d.deals.forEach(dl=>{h+='<div class="bot-deal">#'+dl.id+' · '+esc(dl.status)+' · '+esc(dl.amount)+' грн'+(dl.order_id?(' · замовлення #'+dl.order_id):'')+(dl.invoice_url?(' · <a href="'+esc(dl.invoice_url)+'" target="_blank" style="color:#7fb0ff;">оплата</a>'):'')+'</div>';});}
           h+='<div class="bot-kb-h" style="margin-top:12px;">Переписка</div><div id="bot-msgs" style="display:flex;flex-direction:column;max-height:440px;overflow-y:auto;">';
-          (d.messages||[]).forEach(m=>{h+='<div class="bot-msg '+(m.role==='user'?'user':'model')+'" data-mid="'+(m.id||0)+'">'+esc(m.text)+'</div>';});
+          (d.messages||[]).forEach(m=>{h+='<div class="bot-msg '+(m.role==='user'?'user':(m.role==='manager'?'manager':'model'))+'" data-mid="'+(m.id||0)+'">'+esc(m.text)+'</div>';});
           h+='</div>';
           detailEl.innerHTML=h;
           convId=id; convLastId=d.last_message_id||0;
           const mc0=document.getElementById('bot-msgs'); if(mc0) mc0.scrollTop=mc0.scrollHeight;
-          const ab=detailEl.querySelector('[data-act]');
-          if(ab) ab.addEventListener('click',()=>{
+          detailEl.querySelectorAll('[data-act]').forEach(ab=>ab.addEventListener('click',()=>{
             ab.disabled=true;
-            fetch(base+id+'/'+ab.getAttribute('data-act')+'/',{method:'POST',headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'}})
+            const act=ab.getAttribute('data-act');
+            const fd=new FormData(); if(act==='hide') fd.append('reason','manual'); if(act==='lost') fd.append('reason','manual_lost');
+            fetch(base+id+'/'+act+'/',{method:'POST',headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'},body:fd})
               .then(r=>r.json()).then(()=>detail(id)).catch(()=>{});
-          });
+          }));
         }).catch(()=>{});
     }
     let convId=null, convLastId=0, convInFlight=false;
     function appendConvMessages(items){
       const mc=document.getElementById('bot-msgs'); if(!mc||!items||!items.length) return;
       const atBottom = mc.scrollHeight - mc.scrollTop - mc.clientHeight < 60;
-      items.forEach(m=>{ const dv=document.createElement('div'); dv.className='bot-msg '+(m.role==='user'?'user':'model'); dv.setAttribute('data-mid', m.id||0); dv.textContent=m.text||''; mc.appendChild(dv); convLastId=Math.max(convLastId, m.id||0); });
+      items.forEach(m=>{ const dv=document.createElement('div'); dv.className='bot-msg '+(m.role==='user'?'user':(m.role==='manager'?'manager':'model')); dv.setAttribute('data-mid', m.id||0); dv.textContent=m.text||''; mc.appendChild(dv); convLastId=Math.max(convLastId, m.id||0); });
       if(atBottom) mc.scrollTop=mc.scrollHeight;
     }
     function pollConv(){
@@ -531,8 +593,50 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     scheduleConv();
     let t=null;
     if(searchEl) searchEl.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(()=>load(searchEl.value.trim()),300);});
+    if(filtersEl) filtersEl.querySelectorAll('[data-client-view]').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        currentView=btn.getAttribute('data-client-view')||'active';
+        filtersEl.querySelectorAll('[data-client-view]').forEach(b=>b.classList.toggle('active', b===btn));
+        activeId=null; detailEl.innerHTML='<div class="bot-empty">Оберіть клієнта зі списку.</div>';
+        load(searchEl?searchEl.value.trim():'');
+      });
+    });
     // фонове оновлення лічильника клієнтів навіть на інших вкладках
     setInterval(()=>{ if(loaded.clients && !activeId){ load(searchEl?searchEl.value.trim():''); } }, 20000);
+    return {load:load};
+  })();
+
+  /* ============ Stats ============ */
+  const Stats=(function(){
+    const box=document.getElementById('bot-stats-content');
+    const btn=document.getElementById('bot-stats-refresh');
+    function stat(k,v){return '<div class="bot-stat-box"><div class="v">'+esc(String(v||0))+'</div><div class="k">'+esc(k)+'</div></div>';}
+    function table(title, rows, cols){
+      let h='<h2 style="margin-top:18px;">'+esc(title)+'</h2><table class="bot-table"><thead><tr>';
+      cols.forEach(c=>h+='<th>'+esc(c[1])+'</th>'); h+='</tr></thead><tbody>';
+      (rows||[]).forEach(r=>{h+='<tr>';cols.forEach(c=>h+='<td>'+esc(String(r[c[0]]||''))+'</td>');h+='</tr>';});
+      h+='</tbody></table>'; return h;
+    }
+    function load(){
+      if(!box) return;
+      box.innerHTML='<div class="bot-empty">Завантаження статистики…</div>';
+      fetch('{% url "management_bot_stats_api" %}',{headers:{'X-Requested-With':'XMLHttpRequest'}})
+        .then(r=>r.json()).then(d=>{
+          if(!d.success){ box.innerHTML='<div class="bot-empty">Не вдалося завантажити.</div>'; return; }
+          const t=d.totals||{};
+          let h='<div class="bot-stat-grid">'+
+            stat('Conversations',t.conversations)+stat('Qualified',t.qualified)+stat('Product matched',t.product_matched)+
+            stat('Checkout/payment',t.checkout_or_payment)+stat('Paid',t.paid)+stat('Pending follow-ups',t.pending_followups)+
+            stat('Discount conversions',t.discount_conversions)+stat('Manager takeovers',t.manager_takeovers)+stat('Custom print handoffs',t.custom_print_handoffs)+
+            '</div>';
+          h+=table('Product/SKU interest', d.products, [['product_id','SKU'],['product_title','Product'],['count','Chats']]);
+          h+=table('Ad/ref performance', d.ads, [['ad_id','Ad ID'],['ad_ref','Ref'],['ad_title','Title'],['chats','Chats'],['paid','Paid'],['revenue','Revenue']]);
+          const obs=Object.entries(d.objections||{}).map(([k,v])=>({name:k,count:v}));
+          h+=table('Objections', obs, [['name','Reason'],['count','Count']]);
+          box.innerHTML=h;
+        }).catch(()=>{box.innerHTML='<div class="bot-empty">Помилка мережі.</div>';});
+    }
+    if(btn) btn.addEventListener('click',load);
     return {load:load};
   })();
 
@@ -569,6 +673,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     });
     return {load:load};
   })();
+
+  let initialTab='overview';
+  try{ initialTab=localStorage.getItem('bot_tab')||'overview'; }catch(e){}
+  activate(initialTab, false);
 
   // початкове завантаження лічильника клієнтів (для бейджа), без відкриття вкладки
   fetch('{% url "management_bot_clients_api" %}',{headers:{'X-Requested-With':'XMLHttpRequest'}})

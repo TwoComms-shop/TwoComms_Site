@@ -3627,6 +3627,10 @@ class InstagramBotSettings(models.Model):
     # бот суто event-driven (webhook), без фонових запитів до IG. Можна
     # увімкнути вручну як backstop, якщо webhook раптом не доставляє.
     receive_via_poll = models.BooleanField(default=False)
+    # Safe Meta CAPI feedback for IG-only funnel stages. Disabled by default until
+    # production match-data/env is verified.
+    meta_feedback_enabled = models.BooleanField(default=False)
+    meta_feedback_test_event_code = models.CharField(max_length=120, blank=True, default="")
 
     # Курсор: відповідаємо лише на повідомлення, новіші за цей момент
     # (виставляється у час старту, щоб не відповідати на старий беклог).
@@ -3700,6 +3704,7 @@ class InstagramBotMessage(models.Model):
     class Role(models.TextChoices):
         USER = "user", "user"
         MODEL = "model", "model"
+        MANAGER = "manager", "manager"
 
     class Status(models.TextChoices):
         PENDING = "pending", "pending"

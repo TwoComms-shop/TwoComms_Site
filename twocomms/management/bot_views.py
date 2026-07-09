@@ -7,10 +7,11 @@ Start/Stop, вибором джерела ключів і онлайн-конс�
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q, Sum
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 import base64
@@ -376,6 +377,10 @@ def bot_settings_save_api(request):
     # AI-режим / модель / правило / білий список.
     s.ai_enabled = (request.POST.get("ai_enabled") or "").strip() in {"1", "true", "on", "yes"}
     s.receive_via_poll = (request.POST.get("receive_via_poll") or "").strip() in {"1", "true", "on", "yes"}
+    if not reviewer_mode:
+        s.meta_feedback_enabled = _truthy(request.POST.get("meta_feedback_enabled"))
+        if "meta_feedback_test_event_code" in request.POST:
+            s.meta_feedback_test_event_code = (request.POST.get("meta_feedback_test_event_code") or "")[:120]
     model = (request.POST.get("gemini_model") or "").strip()
     if model:
         s.gemini_model = model[:80]
@@ -418,6 +423,14 @@ def bot_settings_save_api(request):
 # Вкладка «Клиенти» — CRM IG-клієнтів (Task 13)
 # ---------------------------------------------------------------------------
 def _client_card(c) -> dict:
+    product = getattr(c, "current_product", None)
+    next_followup = getattr(c, "next_followup_at", None)
+    payment_status = ""
+    try:
+        latest_deal = c.deals.order_by("-id").first()
+        payment_status = latest_deal.payment_status if latest_deal else ""
+    except Exception:
+        latest_deal = None
     return {
         "id": c.id,
         "igsid": c.igsid,
@@ -433,6 +446,25 @@ def _client_card(c) -> dict:
         "manager_takeover": c.manager_takeover,
         "spam_strikes": c.spam_strikes,
         "ad_title": c.ad_title,
+        "ad_id": c.ad_id,
+        "ad_ref": c.ad_ref,
+        "language": c.language,
+        "intent": c.intent,
+        "buying_readiness": c.buying_readiness,
+        "primary_objection": c.primary_objection,
+        "lost_reason": c.lost_reason,
+        "hidden": bool(c.hidden_at),
+        "hidden_reason": c.hidden_reason,
+        "current_product_id": c.current_product_id,
+        "current_product_title": getattr(product, "title", "") if product else "",
+        "current_size": c.current_size,
+        "current_color": c.current_color,
+        "current_qty": c.current_qty,
+        "product_confidence": str(c.current_product_confidence),
+        "next_followup_at": next_followup.isoformat() if next_followup else "",
+        "followup_level": c.followup_level,
+        "discount_offered_percent": c.discount_offered_percent,
+        "payment_status": payment_status,
     }
 
 
@@ -446,7 +478,23 @@ def bot_clients_api(request):
 
     from .models import IgClient
 
-    qs = IgClient.objects.all().order_by("-last_message_at", "-id")
+    view = (request.GET.get("view") or "active").strip().lower()
+    qs = IgClient.objects.select_related("current_product").all()
+    if view in {"hidden"}:
+        qs = qs.filter(hidden_at__isnull=False)
+    else:
+        qs = qs.filter(hidden_at__isnull=True)
+    if view in {"spam", "cold", "spam-cold", "spam_cold"}:
+        qs = qs.filter(Q(stage__in=[IgClient.Stage.SPAM, IgClient.Stage.COLD]) | Q(spam_strikes__gt=0))
+    elif view == "paid":
+        qs = qs.filter(stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE])
+    elif view == "due":
+        qs = qs.filter(followup_tasks__status="pending", followup_tasks__due_at__lte=timezone.now()).distinct()
+    elif view == "ads":
+        qs = qs.filter(Q(ad_id__gt="") | Q(ad_ref__gt="") | Q(ad_title__gt=""))
+    elif view == "active":
+        qs = qs.exclude(stage__in=[IgClient.Stage.SPAM, IgClient.Stage.COLD, IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE])
+    qs = qs.order_by("-last_message_at", "-id")
     q = (request.GET.get("q") or "").strip()
     if q:
         qs = qs.filter(
@@ -517,6 +565,29 @@ def bot_client_detail_api(request, client_id):
         }
         for e in c.stage_events.all()[:50]
     ]
+    signals = [
+        {
+            "type": s.signal_type,
+            "confidence": str(s.confidence),
+            "value": s.value,
+            "payload": s.payload,
+            "time": s.created_at.isoformat() if s.created_at else "",
+        }
+        for s in c.conversation_signals.all()[:80]
+    ]
+    followups = [
+        {
+            "id": f.id,
+            "kind": f.kind,
+            "status": f.status,
+            "reason": f.reason,
+            "discount_percent": f.discount_percent,
+            "due_at": f.due_at.isoformat() if f.due_at else "",
+            "meta_window_deadline": f.meta_window_deadline.isoformat() if f.meta_window_deadline else "",
+            "skip_reason": f.skip_reason,
+        }
+        for f in c.followup_tasks.all()[:50]
+    ]
     deals = [
         {
             "id": d.id,
@@ -536,6 +607,9 @@ def bot_client_detail_api(request, client_id):
         "ad_source": c.ad_source,
         "ad_id": c.ad_id,
         "first_contact_at": c.first_contact_at.isoformat() if c.first_contact_at else "",
+        "sales_context": c.sales_context,
+        "hidden": bool(c.hidden_at),
+        "hidden_reason": c.hidden_reason,
     })
     return JsonResponse({
         "success": True,
@@ -543,6 +617,8 @@ def bot_client_detail_api(request, client_id):
         "messages": messages,
         "last_message_id": last_message_id,
         "events": events,
+        "signals": signals,
+        "followups": followups,
         "deals": deals,
         "funnel": c.funnel_progress(),
     })
@@ -586,6 +662,150 @@ def bot_client_resume_api(request, client_id):
     c.paused_reason = ""
     c.save(update_fields=["bot_paused", "manager_takeover", "paused_reason", "updated_at"])
     return JsonResponse({"success": True, "bot_paused": False})
+
+
+@login_required(login_url="management_login")
+@require_POST
+def bot_client_hide_api(request, client_id):
+    blocked = _require_bot_json(request)
+    if blocked:
+        return blocked
+    from django.utils import timezone
+
+    from .models import IgClient
+    from .services import bot_followups
+
+    c = IgClient.objects.filter(id=client_id).first()
+    if not c:
+        return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+    c.hidden_at = timezone.now()
+    c.hidden_reason = (request.POST.get("reason") or "manual")[:255]
+    c.save(update_fields=["hidden_at", "hidden_reason", "updated_at"])
+    bot_followups.cancel_pending(c, reason="hidden")
+    return JsonResponse({"success": True, "hidden": True})
+
+
+@login_required(login_url="management_login")
+@require_POST
+def bot_client_unhide_api(request, client_id):
+    blocked = _require_bot_json(request)
+    if blocked:
+        return blocked
+    from .models import IgClient
+
+    c = IgClient.objects.filter(id=client_id).first()
+    if not c:
+        return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+    c.hidden_at = None
+    c.hidden_reason = ""
+    c.save(update_fields=["hidden_at", "hidden_reason", "updated_at"])
+    return JsonResponse({"success": True, "hidden": False})
+
+
+@login_required(login_url="management_login")
+@require_POST
+def bot_client_mark_lost_api(request, client_id):
+    blocked = _require_bot_json(request)
+    if blocked:
+        return blocked
+    from .models import IgClient
+    from .services import bot_followups
+
+    c = IgClient.objects.filter(id=client_id).first()
+    if not c:
+        return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+    c.lost_reason = (request.POST.get("reason") or "manual_lost")[:64]
+    c.primary_objection = IgClient.Objection.NO_BUY
+    c.set_stage(IgClient.Stage.COLD, reason=c.lost_reason)
+    c.save(update_fields=["lost_reason", "primary_objection", "updated_at"])
+    bot_followups.cancel_pending(c, reason="lost")
+    return JsonResponse({"success": True, "stage": c.stage, "lost_reason": c.lost_reason})
+
+
+@login_required(login_url="management_login")
+@require_GET
+def bot_stats_api(request):
+    blocked = _require_bot_json(request)
+    if blocked:
+        return blocked
+    from .models import IgClient, IgConversationSignal, IgDeal, IgFollowUpTask
+
+    conversations = IgClient.objects.count()
+    stage_counts = {
+        row["stage"]: row["count"]
+        for row in IgClient.objects.values("stage").annotate(count=Count("id")).order_by()
+    }
+    signals = {
+        row["signal_type"]: row["count"]
+        for row in IgConversationSignal.objects.values("signal_type").annotate(count=Count("id")).order_by()
+    }
+    objections = {
+        row["primary_objection"]: row["count"]
+        for row in IgClient.objects.exclude(primary_objection=IgClient.Objection.NONE)
+        .values("primary_objection").annotate(count=Count("id")).order_by()
+    }
+    # Keep signal names too; the frontend can show both high-level client state
+    # and granular event breakdown.
+    objections.update({k: v for k, v in signals.items() if "objection" in k or k in {"no_reply", "lost"}})
+    product_interest = [
+        {
+            "product_id": row["current_product_id"],
+            "product_title": row["current_product__title"] or "",
+            "count": row["count"],
+        }
+        for row in IgClient.objects.exclude(current_product__isnull=True)
+        .values("current_product_id", "current_product__title").annotate(count=Count("id"))
+        .order_by("-count")[:25]
+    ]
+    ad_rows = []
+    for row in (
+        IgClient.objects.exclude(Q(ad_id="") & Q(ad_ref="") & Q(ad_title=""))
+        .values("ad_id", "ad_ref", "ad_title")
+        .annotate(
+            chats=Count("id", distinct=True),
+            paid=Count(
+                "id",
+                filter=Q(stage__in=[
+                    IgClient.Stage.PAID,
+                    IgClient.Stage.ORDER_CREATED,
+                    IgClient.Stage.DONE,
+                ]),
+                distinct=True,
+            ),
+            revenue=Sum("deals__amount", filter=Q(deals__status__in=[IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED])),
+        )
+        .order_by("-chats")[:50]
+    ):
+        ad_rows.append({
+            "ad_id": row["ad_id"],
+            "ad_ref": row["ad_ref"],
+            "ad_title": row["ad_title"],
+            "chats": row["chats"],
+            "paid": row["paid"],
+            "revenue": str(row["revenue"] or 0),
+        })
+    totals = {
+        "conversations": conversations,
+        "qualified": IgClient.objects.filter(buying_readiness__gte=40).count(),
+        "product_matched": IgClient.objects.filter(current_product__isnull=False).count(),
+        "checkout_or_payment": IgClient.objects.filter(stage__in=[IgClient.Stage.CHECKOUT, IgClient.Stage.PAYMENT_PENDING]).count(),
+        "paid": IgClient.objects.filter(stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
+        "hidden": IgClient.objects.filter(hidden_at__isnull=False).count(),
+        "pending_followups": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.PENDING).count(),
+        "followup_recoveries": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.SENT, client__stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
+        "discount_conversions": IgClient.objects.filter(discount_offered_percent__gt=0, stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
+        "manager_takeovers": IgClient.objects.filter(manager_takeover=True).count(),
+        "custom_print_handoffs": IgClient.objects.filter(intent=IgClient.Intent.CUSTOM_PRINT, stage=IgClient.Stage.LEAD_TO_MANAGER).count(),
+    }
+    return JsonResponse({
+        "success": True,
+        "totals": totals,
+        "stages": stage_counts,
+        "objections": objections,
+        "signals": signals,
+        "products": product_interest,
+        "ads": ad_rows,
+    })
 
 
 # ---------------------------------------------------------------------------

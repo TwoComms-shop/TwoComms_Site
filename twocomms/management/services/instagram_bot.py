@@ -98,7 +98,7 @@ PHONE_RE = re.compile(r"(?:\+?38)?0\d{9}")
 
 def _client_blocked(client) -> bool:
     """Бот не відповідає, якщо клієнта поставлено на паузу або заблоковано."""
-    return bool(client and (client.bot_paused or client.is_blocked))
+    return bool(client and (client.bot_paused or client.is_blocked or client.hidden_at))
 
 
 def _register_spam(client) -> bool:
@@ -230,6 +230,19 @@ ANTI_HALLUCINATION_NOTE = (
     "принт, місто/напис на принті). Ціни, наявність і назви бери ЛИШЕ з каталогу."
 )
 
+SALES_AUTOMATION_GUARDRAILS = (
+    "[SALES AUTOMATION GUARDRAILS — службове]\n"
+    "Відповідай короткими Instagram-повідомленнями, мовою клієнта (UA/RU). "
+    "Не вигадуй SKU, товар, наявність, ціну, оплату, знижку чи фінальну ціну "
+    "кастомного принта. Знижку НЕ пропонуй сам: система окремо керує rescue "
+    "оферами 5%, максимум 10% лише як фінальний/узгоджений варіант. Якщо клієнт "
+    "каже «не буду купувати», «стоп», «не пишіть» — зроби максимум одне коротке "
+    "ввічливе закриття без тиску і без повторних follow-up. Для custom print: "
+    "коротко поясни, що можливий будь-який DTF-принт, ціна залежить від крою, "
+    "розміру принта і готовності файлу, фінальний прорахунок робить менеджер; "
+    "збери базове ТЗ і переведи в Telegram менеджера, не називаючи фінальну суму."
+)
+
 
 def _strip_invented_pay_urls(text: str, keep_url: str = "") -> str:
     """Прибирає будь-які платіжні URL (monobank/mbnk), КРІМ keep_url (реального).
@@ -333,15 +346,39 @@ def _handle_echo(recipient_igsid: str, text: str) -> None:
     if text and cache.get(_bot_sent_key(recipient_igsid, text)):
         return  # власне відлуння бота — ігноруємо
     client = IgClient.get_or_create_for_sender(recipient_igsid)
-    if client.manager_takeover and client.bot_paused:
-        return
+    msg = None
+    if text:
+        try:
+            msg = InstagramBotMessage.objects.create(
+                sender_id=recipient_igsid,
+                client=client,
+                role=InstagramBotMessage.Role.MANAGER,
+                text=text,
+                status=InstagramBotMessage.Status.DONE,
+                source="echo",
+                processed_at=timezone.now(),
+            )
+        except Exception:
+            msg = None
     client.manager_takeover = True
     client.bot_paused = True
     client.paused_reason = "manager_takeover"
     client.paused_at = timezone.now()
+    client.last_manager_message_at = timezone.now()
     client.save(update_fields=[
-        "manager_takeover", "bot_paused", "paused_reason", "paused_at", "updated_at",
+        "manager_takeover", "bot_paused", "paused_reason", "paused_at",
+        "last_manager_message_at", "updated_at",
     ])
+    try:
+        from management.services import bot_followups, bot_sales_classifier
+
+        bot_followups.cancel_pending(client, reason="manager_takeover")
+        if msg:
+            bot_sales_classifier.classify_message(
+                client, message=msg, role=InstagramBotMessage.Role.MANAGER
+            )
+    except Exception:
+        pass
     notify_manager(
         f"👤 IG: менеджер підключився до {client.username or client.igsid} — "
         f"бот на паузі для цього клієнта."
@@ -783,7 +820,7 @@ def send_text_tagged(s: InstagramBotSettings, recipient_id: str, text: str, tag:
 def gemini_generate(
     s: InstagramBotSettings, history: list[dict], images: list[tuple[str, bytes]] | None = None,
     match_hint: str | None = None, memory_note: str | None = None,
-    context_note: str | None = None,
+    context_note: str | None = None, client=None,
 ) -> str | None:
     """history: [{'role':'user'|'model','text':str}] хронологічно.
     images: список (mime_type, raw_bytes) для ОСТАННЬОГО (поточного) user-ходу."""
@@ -830,11 +867,12 @@ def gemini_generate(
     except Exception:
         pass
     try:
-        from management.models import BotInstruction, BotQuickLink
+        from management.models import BotQuickLink
+        from management.services.bot_playbooks import active_instruction_block
 
-        instr = BotInstruction.active_block()
+        instr = active_instruction_block(client)
         if instr:
-            sys_text += "\n\n[ДОДАТКОВІ ІНСТРУКЦІЇ]\n" + instr
+            sys_text += "\n\n[ДОДАТКОВІ PLAYBOOK-ІНСТРУКЦІЇ]\n" + instr
         links = BotQuickLink.active_block()
         if links:
             sys_text += "\n\n[ДОСТУПНІ ПОСИЛАННЯ — надсилай доречне за запитом]\n" + links
@@ -846,6 +884,7 @@ def gemini_generate(
         (sys_text + "\n\n" + PAYMENT_PROTOCOL_NOTE).strip() if sys_text else PAYMENT_PROTOCOL_NOTE
     )
     sys_text = (sys_text + "\n\n" + ANTI_HALLUCINATION_NOTE).strip()
+    sys_text = (sys_text + "\n\n" + SALES_AUTOMATION_GUARDRAILS).strip()
     if context_note:
         sys_text = (sys_text + "\n\n" + context_note).strip()
     if memory_note:
@@ -1011,7 +1050,14 @@ def _maybe_pin_from_match(client, match: dict | None) -> bool:
     try:
         from management.services import bot_orders
 
-        return bot_orders.pin_product(client, pid)
+        ok = bot_orders.pin_product(client, pid)
+        if ok:
+            try:
+                client.current_product_confidence = conf
+                client.save(update_fields=["current_product_confidence", "updated_at"])
+            except Exception:
+                pass
+        return ok
     except Exception:
         return False
 
@@ -1146,7 +1192,7 @@ def enqueue_inbound(
     client = IgClient.get_or_create_for_sender(sender_id)
     try:
         with transaction.atomic():
-            InstagramBotMessage.objects.create(
+            msg = InstagramBotMessage.objects.create(
                 sender_id=sender_id,
                 client=client,
                 role=InstagramBotMessage.Role.USER,
@@ -1159,6 +1205,13 @@ def enqueue_inbound(
     except IntegrityError:
         return False  # вже у черзі/оброблено (mid unique)
     client.touch_inbound()
+    try:
+        from management.services import bot_followups, bot_sales_classifier
+
+        bot_followups.schedule_after_inbound(client)
+        bot_sales_classifier.classify_message(client, message=msg)
+    except Exception:
+        pass
     s.last_inbound_at = timezone.now()
     s.save(update_fields=["last_inbound_at"])
     extra = f" (+{len(attachments)} фото)" if attachments else ""
@@ -1180,7 +1233,10 @@ def _build_history(sender_id: str) -> list[dict]:
     for r in rows:
         t = (r.text or "").strip()
         if t:
-            hist.append({"role": r.role, "text": t})
+            if r.role == InstagramBotMessage.Role.MANAGER:
+                hist.append({"role": "model", "text": "Менеджер: " + t})
+            elif r.role in (InstagramBotMessage.Role.USER, InstagramBotMessage.Role.MODEL):
+                hist.append({"role": r.role, "text": t})
     return hist
 
 
@@ -1316,7 +1372,7 @@ def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
                     pass
             reply = gemini_generate(
                 s, history, images=images or None, match_hint=match_hint,
-                memory_note=mem_note, context_note=ctx_note,
+                memory_note=mem_note, context_note=ctx_note, client=row.client if row.client_id else None,
             )
     else:
         if (row.text or "").strip() != s.trigger_text:
@@ -1430,6 +1486,13 @@ def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
             pass
         # Просування воронки за тегом [STAGE:x].
         _apply_stage(row.client, control.get("stage"))
+        try:
+            from management.services import bot_followups
+
+            row.client.refresh_from_db()
+            bot_followups.schedule_after_bot_reply(row.client, reply=reply, control=control)
+        except Exception as exc:
+            log("warning", "followup_schedule", repr(exc))
         # [ORDER] або safety-net: оплачений клієнт надіслав контактні дані, а
         # модель не виставила тег — все одно намагаємось зібрати дані й створити заказ.
         if control.get("order") or (

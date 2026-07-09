@@ -82,6 +82,13 @@ def create_payment_link(deal, *, force: bool = False) -> dict:
     deal.payment_status = "checking"
     deal.status = deal.Status.AWAITING_PAYMENT
     deal.save(update_fields=["invoice_id", "invoice_url", "payment_status", "status", "updated_at"])
+    try:
+        from management.services import bot_followups, ig_meta_events
+
+        bot_followups.schedule_payment_followup(deal)
+        ig_meta_events.log_or_send("InitiateCheckout", client=deal.client, deal=deal)
+    except Exception:
+        pass
     return {"ok": True, "invoice_id": invoice_id, "invoice_url": invoice_url}
 
 
@@ -122,6 +129,13 @@ def apply_payment_status(deal, status_value, payload=None) -> str:
                 from management.models import IgClient
 
                 deal.client.set_stage(IgClient.Stage.PAID, reason="payment")
+            except Exception:
+                pass
+            try:
+                from management.services import bot_followups, ig_meta_events
+
+                bot_followups.cancel_pending(deal.client, reason="payment_paid")
+                ig_meta_events.log_or_send("Purchase", client=deal.client, deal=deal, order=deal.order)
             except Exception:
                 pass
             _on_deal_paid(deal)

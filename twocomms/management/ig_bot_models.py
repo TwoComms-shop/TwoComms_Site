@@ -23,6 +23,9 @@ __all__ = [
     "BotQuickLink",
     "BotAdCampaign",
     "IgClientStageEvent",
+    "IgFollowUpTask",
+    "IgConversationSignal",
+    "IgMetaEventLog",
     "BotDataDeletionRequest",
 ]
 
@@ -126,6 +129,30 @@ class IgClient(models.Model):
         SPAM = "spam", _("Спам / заблоковано")
         COLD = "cold", _("Не відповідає / охолов")
 
+    class Intent(models.TextChoices):
+        UNKNOWN = "unknown", _("Невідомо")
+        PRODUCT = "product", _("Готовий товар")
+        CUSTOM_PRINT = "custom_print", _("Кастомний принт")
+        PRICE = "price", _("Ціна")
+        SIZE = "size", _("Розмір")
+        PAYMENT = "payment", _("Оплата")
+        DELIVERY = "delivery", _("Доставка")
+        ORDER_STATUS = "order_status", _("Статус замовлення")
+        SUPPORT = "support", _("Підтримка")
+        SPAM = "spam", _("Спам")
+
+    class Objection(models.TextChoices):
+        NONE = "none", _("Немає")
+        PRICE = "price", _("Дорого")
+        PREPAYMENT = "prepayment", _("Передоплата")
+        SIZE = "size", _("Розмір")
+        THINKING = "thinking", _("Подумаю")
+        NO_REPLY = "no_reply", _("Не відповідає")
+        NO_BUY = "no_buy", _("Не купує")
+        TRUST = "trust", _("Довіра")
+        DELIVERY = "delivery", _("Доставка")
+        OTHER = "other", _("Інше")
+
     # Головна воронка (для прогрес-бару/кружечків у картці).
     FUNNEL_ORDER = [
         Stage.NEW,
@@ -175,6 +202,30 @@ class IgClient(models.Model):
         related_name="+",
         verbose_name=_("Закріплений товар"),
     )
+    current_size = models.CharField(_("Поточний розмір"), max_length=16, blank=True, default="")
+    current_color = models.CharField(_("Поточний колір"), max_length=64, blank=True, default="")
+    current_qty = models.PositiveIntegerField(_("Поточна кількість"), default=1)
+    current_product_confidence = models.DecimalField(
+        _("Впевненість у товарі"), max_digits=4, decimal_places=2, default=0
+    )
+
+    # Sales brain / CRM state
+    language = models.CharField(max_length=8, blank=True, default="", db_index=True)
+    intent = models.CharField(
+        max_length=32, choices=Intent.choices, default=Intent.UNKNOWN, db_index=True
+    )
+    buying_readiness = models.PositiveSmallIntegerField(default=0, db_index=True)
+    primary_objection = models.CharField(
+        max_length=32, choices=Objection.choices, default=Objection.NONE, db_index=True
+    )
+    lost_reason = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    hidden_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    hidden_reason = models.CharField(max_length=255, blank=True, default="")
+    discount_offered_percent = models.PositiveSmallIntegerField(default=0)
+    next_followup_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    followup_level = models.PositiveSmallIntegerField(default=0)
+    last_manager_message_at = models.DateTimeField(null=True, blank=True)
+    sales_context = models.JSONField(default=dict, blank=True)
 
     # Атрибуція реклами (Click-to-IG-Direct)
     ad_ref = models.CharField(max_length=255, blank=True, default="")
@@ -212,6 +263,9 @@ class IgClient(models.Model):
         indexes = [
             models.Index(fields=["stage", "-last_message_at"], name="ig_client_stage_dt"),
             models.Index(fields=["-last_message_at"], name="ig_client_lastmsg"),
+            models.Index(fields=["intent", "stage"], name="ig_client_intent_stage"),
+            models.Index(fields=["hidden_at", "-last_message_at"], name="ig_client_hidden_dt"),
+            models.Index(fields=["next_followup_at"], name="ig_client_next_fu"),
         ]
 
     def save(self, *args, **kwargs):
@@ -556,3 +610,148 @@ class IgClientStageEvent(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - тривіально
         return f"{self.client_id}: {self.from_stage}→{self.to_stage}"
+
+
+class IgFollowUpTask(models.Model):
+    """Scheduled Instagram follow-up with Meta-window and quiet-hours guardrails."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", _("Очікує")
+        SENT = "sent", _("Надіслано")
+        CANCELLED = "cancelled", _("Скасовано")
+        SKIPPED = "skipped", _("Пропущено")
+
+    class Kind(models.TextChoices):
+        QUALIFICATION = "qualification", _("Уточнення")
+        PAYMENT = "payment", _("Нагадування про оплату")
+        THINKING = "thinking", _("Клієнт думає")
+        RESCUE = "rescue", _("Rescue offer")
+        FINAL = "final", _("Фінальний офер")
+        MANAGER_TASK = "manager_task", _("Завдання менеджеру")
+
+    client = models.ForeignKey(
+        "management.IgClient", on_delete=models.CASCADE, related_name="followup_tasks"
+    )
+    deal = models.ForeignKey(
+        "management.IgDeal", null=True, blank=True, on_delete=models.SET_NULL, related_name="followup_tasks"
+    )
+    due_at = models.DateTimeField(db_index=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
+    kind = models.CharField(max_length=24, choices=Kind.choices, default=Kind.QUALIFICATION, db_index=True)
+    level = models.PositiveSmallIntegerField(default=0)
+    reason = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    discount_percent = models.PositiveSmallIntegerField(default=0)
+    meta_window_deadline = models.DateTimeField(null=True, blank=True, db_index=True)
+    message_text = models.TextField(blank=True, default="")
+    sent_message = models.ForeignKey(
+        "management.InstagramBotMessage",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    skip_reason = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("IG follow-up")
+        verbose_name_plural = _("IG follow-ups")
+        ordering = ["due_at", "id"]
+        indexes = [
+            models.Index(fields=["status", "due_at"], name="ig_fu_status_due"),
+            models.Index(fields=["client", "status"], name="ig_fu_client_status"),
+            models.Index(fields=["kind", "status"], name="ig_fu_kind_status"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - тривіально
+        return f"FollowUp#{self.pk} {self.client_id} {self.kind}/{self.status}"
+
+
+class IgConversationSignal(models.Model):
+    """Classified sales signal extracted from client/bot/manager conversation."""
+
+    class Type(models.TextChoices):
+        PRICE_OBJECTION = "price_objection", _("Дорого")
+        PREPAYMENT_OBJECTION = "prepayment_objection", _("Передоплата")
+        SIZE_CONCERN = "size_concern", _("Розмір")
+        GIFT = "gift", _("На подарунок")
+        SELF_PURCHASE = "self_purchase", _("Для себе")
+        CUSTOM_PRINT = "custom_print", _("Кастомний принт")
+        AD_REPLY = "ad_reply", _("Відповідь з реклами")
+        NO_REPLY = "no_reply", _("Не відповідає")
+        CHECKOUT_STARTED = "checkout_started", _("Checkout started")
+        PAYMENT_PENDING = "payment_pending", _("Очікує оплату")
+        PAID = "paid", _("Оплачено")
+        LOST = "lost", _("Втрачено")
+        SPAM = "spam", _("Спам")
+        MANAGER_TAKEOVER = "manager_takeover", _("Взяв менеджер")
+        DISCOUNT_OFFER = "discount_offer", _("Знижка")
+        PRODUCT_INTEREST = "product_interest", _("Інтерес до товару")
+
+    client = models.ForeignKey(
+        "management.IgClient", on_delete=models.CASCADE, related_name="conversation_signals"
+    )
+    message = models.ForeignKey(
+        "management.InstagramBotMessage",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="conversation_signals",
+    )
+    signal_type = models.CharField(max_length=40, choices=Type.choices, db_index=True)
+    confidence = models.DecimalField(max_digits=4, decimal_places=2, default=Decimal("1.00"))
+    value = models.CharField(max_length=255, blank=True, default="")
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = _("IG conversation signal")
+        verbose_name_plural = _("IG conversation signals")
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["client", "-id"], name="ig_sig_client_id"),
+            models.Index(fields=["signal_type", "-id"], name="ig_sig_type_id"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - тривіально
+        return f"{self.client_id}: {self.signal_type}"
+
+
+class IgMetaEventLog(models.Model):
+    """Audit log for safe Meta CAPI feedback attempts from IG Direct funnel."""
+
+    class Status(models.TextChoices):
+        DISABLED = "disabled", _("Вимкнено")
+        SKIPPED = "skipped", _("Пропущено")
+        SENT = "sent", _("Надіслано")
+        FAILED = "failed", _("Помилка")
+
+    event_name = models.CharField(max_length=80, db_index=True)
+    event_id = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    client = models.ForeignKey(
+        "management.IgClient", null=True, blank=True, on_delete=models.SET_NULL, related_name="meta_events"
+    )
+    deal = models.ForeignKey(
+        "management.IgDeal", null=True, blank=True, on_delete=models.SET_NULL, related_name="meta_events"
+    )
+    order = models.ForeignKey(
+        "orders.Order", null=True, blank=True, on_delete=models.SET_NULL, related_name="ig_meta_events"
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.SKIPPED, db_index=True)
+    reason = models.CharField(max_length=255, blank=True, default="")
+    response_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = _("IG Meta event log")
+        verbose_name_plural = _("IG Meta event logs")
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["event_name", "-id"], name="ig_meta_event_id"),
+            models.Index(fields=["status", "-id"], name="ig_meta_status_id"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - тривіально
+        return f"{self.event_name}:{self.status}"

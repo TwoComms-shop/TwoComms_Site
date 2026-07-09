@@ -1,0 +1,101 @@
+"""Safe Meta CAPI feedback hooks for IG Direct funnel events.
+
+The default behavior is audit-only. We never send IG-only lead stages unless the
+explicit management flag is enabled and there is enough match data or an order.
+"""
+from __future__ import annotations
+
+import uuid
+
+from django.conf import settings
+
+from management.models import IgMetaEventLog, InstagramBotSettings
+
+
+def _has_capi_env() -> bool:
+    return bool(
+        getattr(settings, "FACEBOOK_PIXEL_ID", None)
+        and getattr(settings, "FACEBOOK_CONVERSIONS_API_TOKEN", None)
+    )
+
+
+def _has_match_data(client) -> bool:
+    return bool(getattr(client, "phone_normalized", "") or getattr(client, "phone", ""))
+
+
+def log_or_send(event_name: str, *, client=None, deal=None, order=None, reason: str = "") -> IgMetaEventLog:
+    settings_obj = InstagramBotSettings.load()
+    event_id = f"ig-{event_name.lower()}-{uuid.uuid4().hex[:16]}"
+    if not settings_obj.meta_feedback_enabled:
+        return IgMetaEventLog.objects.create(
+            event_name=event_name,
+            event_id=event_id,
+            client=client,
+            deal=deal,
+            order=order,
+            status=IgMetaEventLog.Status.DISABLED,
+            reason=reason or "meta_feedback_disabled",
+        )
+    if not _has_capi_env():
+        return IgMetaEventLog.objects.create(
+            event_name=event_name,
+            event_id=event_id,
+            client=client,
+            deal=deal,
+            order=order,
+            status=IgMetaEventLog.Status.SKIPPED,
+            reason="skipped_no_capi_env",
+        )
+    if not order and not _has_match_data(client):
+        return IgMetaEventLog.objects.create(
+            event_name=event_name,
+            event_id=event_id,
+            client=client,
+            deal=deal,
+            order=order,
+            status=IgMetaEventLog.Status.SKIPPED,
+            reason="skipped_no_match_data",
+        )
+
+    if order:
+        try:
+            from orders.facebook_conversions_service import FacebookConversionsService
+
+            service = FacebookConversionsService()
+            if not service.enabled:
+                raise RuntimeError("facebook_capi_service_disabled")
+            if event_name.lower() == "purchase":
+                ok = service.send_purchase_event(order)
+            elif event_name.lower() == "lead":
+                ok = service.send_lead_event(order)
+            else:
+                ok = False
+            return IgMetaEventLog.objects.create(
+                event_name=event_name,
+                event_id=event_id,
+                client=client,
+                deal=deal,
+                order=order,
+                status=IgMetaEventLog.Status.SENT if ok else IgMetaEventLog.Status.FAILED,
+                reason="" if ok else "sdk_rejected_or_unavailable",
+            )
+        except Exception as exc:
+            return IgMetaEventLog.objects.create(
+                event_name=event_name,
+                event_id=event_id,
+                client=client,
+                deal=deal,
+                order=order,
+                status=IgMetaEventLog.Status.FAILED,
+                reason=repr(exc)[:255],
+            )
+
+    return IgMetaEventLog.objects.create(
+        event_name=event_name,
+        event_id=event_id,
+        client=client,
+        deal=deal,
+        order=order,
+        status=IgMetaEventLog.Status.SKIPPED,
+        reason=reason or "skipped_no_order_event_mapping",
+    )
