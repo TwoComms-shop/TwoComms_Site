@@ -225,7 +225,16 @@ class SalesCockpitApiTests(TestCase):
         self.assertGreaterEqual(data["stages"].get(IgClient.Stage.PAID, 0), 1)
         self.assertGreaterEqual(data["objections"].get("price_objection", 0), 1)
 
-    def test_hide_and_unhide_actions(self):
+    def test_hide_moves_client_out_of_active_queue_and_statistics(self):
+        from management.models import IgFollowUpTask
+        from management.services import instagram_bot
+
+        IgFollowUpTask.objects.create(
+            client=self.active,
+            due_at=timezone.now() + timedelta(hours=1),
+            kind=IgFollowUpTask.Kind.QUALIFICATION,
+            reason="waiting_for_reply",
+        )
         r = self.client.post(
             reverse("management_bot_client_hide_api", args=[self.active.id]),
             {"reason": "noise"},
@@ -233,8 +242,59 @@ class SalesCockpitApiTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.active.refresh_from_db()
         self.assertIsNotNone(self.active.hidden_at)
+        self.assertTrue(instagram_bot._client_blocked(self.active))
+        self.assertFalse(
+            IgFollowUpTask.objects.filter(
+                client=self.active, status=IgFollowUpTask.Status.PENDING
+            ).exists()
+        )
+
+        active_ids = {
+            item["id"]
+            for item in self.client.get(reverse("management_bot_clients_api") + "?view=active").json()["clients"]
+        }
+        hidden_ids = {
+            item["id"]
+            for item in self.client.get(reverse("management_bot_clients_api") + "?view=hidden").json()["clients"]
+        }
+        self.assertNotIn(self.active.id, active_ids)
+        self.assertIn(self.active.id, hidden_ids)
+
+        stats = self.client.get(reverse("management_bot_stats_api")).json()
+        self.assertEqual(stats["totals"]["conversations"], 0)
+        self.assertEqual(stats["totals"]["qualified"], 0)
+        self.assertEqual(stats["totals"]["hidden"], 2)
+        self.assertEqual(stats["stages"], {})
+
+    def test_unhide_returns_client_to_active_queue(self):
+        self.client.post(
+            reverse("management_bot_client_hide_api", args=[self.active.id]),
+            {"reason": "noise"},
+        )
 
         r = self.client.post(reverse("management_bot_client_unhide_api", args=[self.active.id]))
         self.assertEqual(r.status_code, 200)
         self.active.refresh_from_db()
         self.assertIsNone(self.active.hidden_at)
+        active_ids = {
+            item["id"]
+            for item in self.client.get(reverse("management_bot_clients_api") + "?view=active").json()["clients"]
+        }
+        self.assertIn(self.active.id, active_ids)
+
+    def test_bot_page_has_ukrainian_action_labels_and_visible_action_feedback(self):
+        html = self.client.get(reverse("management_bot")).content.decode("utf-8")
+
+        for label in (
+            "Активні",
+            "Приховані",
+            "Зупинити бота",
+            "Відновити бота",
+            "Приховати",
+            "Повернути до активних",
+            "Позначити як втрачено",
+        ):
+            self.assertIn(label, html)
+        self.assertIn("async function runClientAction", html)
+        self.assertIn("Клієнта приховано", html)
+        self.assertIn("Не вдалося виконати дію", html)

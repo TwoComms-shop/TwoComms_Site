@@ -15,6 +15,14 @@ class BlockedGateTests(TestCase):
         c.save()
         self.assertTrue(bot._client_blocked(c))
 
+    def test_hidden_client_blocked(self):
+        from django.utils import timezone
+
+        c = IgClient.get_or_create_for_sender("b_hidden")
+        c.hidden_at = timezone.now()
+        c.save(update_fields=["hidden_at", "updated_at"])
+        self.assertTrue(bot._client_blocked(c))
+
     def test_normal_not_blocked(self):
         c = IgClient.get_or_create_for_sender("b2")
         self.assertFalse(bot._client_blocked(c))
