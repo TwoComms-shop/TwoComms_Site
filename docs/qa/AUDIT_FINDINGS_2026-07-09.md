@@ -17,7 +17,7 @@
 
 ## Executive summary
 
-**Ads launch gate (current, partial Pass A):** **CONDITIONAL → leans BLOCKED for catalog ads** until Pass C confirms **F-003** (Merchant feed URL mangling) and **F-001/F-002** (category/color SEO quality).
+**Ads launch gate (current):** **BLOCKED** for paid ROAS measurement until Pass C confirms **F-021** (0% order UTM linkage), **F-019** (`is_converted` dead), plus feed **F-003** and SEO **F-001/F-002/F-004**.
 
 **One paragraph:** Core smoke (home, catalog, cart, healthz, robots, sitemap index, www→apex, UTM first-touch cookies, Meta pixel ID + single PageView snippet, cart mini APIs) **works**. Sitemap children load; **65** UK product URLs + locales present. Sample of **22/22** product PDPs returned **200** with Product JSON-LD and UAH prices. **Serious SEO quality bugs** on category titles (truncated mid-phrase), color landings (broken Ukrainian grammar), product title↔H1 mismatches (including Russian leak in H1). **Merchant feed** `g:link` values use HTML-escaped `&amp;` that the site interprets as path `/s/?amp;color=…` instead of proper size/color query — high risk for Shopping/Meta catalog. Aggressive **HTTP 429** rate limiting mid-crawl. RU/EN pages still show **Ukrainian H1** on home/catalog. Pixel **ViewContent/ATC/Purchase E2E** and **Dispatcher/DB funnel** not fully verified yet (need browser + admin/DB).
 
@@ -25,10 +25,10 @@
 
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
-| P0 | 1 | 0 | 0 | 0 |
-| P1 | 7 | 0 | 0 | 0 |
-| P2 | 6 | 0 | 0 | 0 |
-| P3 | 2 | 0 | 0 | 0 |
+| P0 | 3 | 0 | 0 | 0 |
+| P1 | 11 | 0 | 0 | 0 |
+| P2 | 8 | 0 | 0 | 0 |
+| P3 | 3 | 0 | 0 | 0 |
 
 ### Pass A coverage (honest)
 
@@ -52,23 +52,50 @@
 
 ## Funnel snapshot (CRO)
 
-**Status:** NOT YET FILLED from production DB/Dispatcher (blocked without admin session / SSH DB).
+**Source:** production MySQL via Django ORM read-only (2026-07-09). **No secrets stored.**
 
-| Stage | Count | Rate | Notes |
-|-------|------:|------|-------|
-| sessions | — | | need `get_funnel_stats` |
-| product_view | — | | |
-| add_to_cart | — | | |
-| initiate_checkout | — | | |
-| lead | — | | |
-| purchase | — | | |
+### UserAction event counts
 
-**HTML/API readiness for funnel path:**
+| Stage | 7d events | 7d distinct utm_sessions w/ action | 30d events | 30d distinct utm_sessions |
+|-------|----------:|-----------------------------------:|-----------:|--------------------------:|
+| product_view | 7368 | 8 | 21725 | 20 |
+| add_to_cart | 13 | 2 | 25 | 5 |
+| initiate_checkout | 1 | 0 | 2 | 0 |
+| lead | 1 | 0 | 2 | 0 |
+| purchase | 0 | 0 | 1 | 0 |
+| page_view | 0 | — | 0 | — |
 
-- Mini-cart empty: `GET /cart/mini/` → 200, UA empty text «Кошик порожній.»
-- `GET /cart/count/` → `{"cart_count": 0}`
-- `GET /cart/summary/` → ok count/total 0
-- Full cart: `noindex,nofollow`, pay types present: `online_full`, `prepay_200`, monobank + promo + NP signals in HTML
+**Approx rates (events, 30d):** PV→ATC ≈ **0.12%**; ATC→IC ≈ **8%**; IC→purchase ≈ **50%** (tiny volume).  
+**UTMSession 30d:** 140 sessions; **is_converted=True: 0** (all-time also **0** / 1041).
+
+### Orders attribution (field `created`)
+
+| Period | Orders | empty `utm_source` | with `utm_session` |
+|--------|-------:|-------------------:|-------------------:|
+| 7d | 2 | **100%** | **0** |
+| 30d | 6 | **100%** | **0** |
+| 90d | 12 | **100%** | **0** |
+
+### UTM sources (UTMSession.first_seen last 30d, top)
+
+| utm_source | sessions |
+|------------|--------:|
+| chatgpt.com | 113 |
+| ig | 14 |
+| chatgpt | 4 |
+| audit | 3 |
+| instagram | 3 |
+| threads | 2 |
+| IGShopping | 1 |
+
+→ normalization **not fully applied** on stored rows (see F-020).
+
+**HTML/API readiness for funnel path (rechecked):**
+
+- Mini-cart empty: PASS  
+- **ATC API:** `POST /cart/add/` with CSRF → `ok:true`, count increments, mini-cart shows line `TC-0001-ЧОРНИЙ-M`  
+- Cart with items: pay types `online_full`, `prepay_200`; NP city/warehouse fields present  
+- Full browser pixel Events Manager still pending for Pass C  
 
 ---
 
@@ -80,6 +107,8 @@
 | Sitemap child files | 8 | 8 | 0 | all 200 |
 | Sitemap unique locs (fast crawl) | 489 | 214* | 275×429* | *rate limit; not real 404 |
 | UK products (full slow) | 65 | 65 | 0 HTTP; **13 title/H1 name mismatches** | F-004 |
+| Prod DB published products | 65 | empty seo_title **0**, empty seo_description **0**, dup titles **0** | empty seo_title prod DB |
+| Orders 90d UTM | 12 | 0 attributed | **F-021** |
 | Variant URLs sample | 20 | 20 | 0 | titles include color/fit F-016 |
 | mapa-saytu links | 53 | 53 | 0 | F-017 |
 | UK categories | 3 | 3 | 0 | titles **truncated** (see F-001) |
@@ -237,6 +266,20 @@ Interpretation:
 **Likely location:** feed generator (`storefront` feeds / `generate_google_merchant_feed`, marketplace feed services) writing `&amp;` incorrectly into link field or double-escaping.
 
 **Fix direction:** emit raw `&` in XML properly escaped once as `&amp;` only in XML serialization (not in HTTP URL string used by clients after decode); prefer path-style canonical variant URLs already in sitemap (`/product/slug/black/`) without query.
+
+
+
+**Update 2026-07-09 (XML-unescape retest):**  
+Proper HTML unescape of `g:link` yields `?size=S&color=Чорний`. HTTP client final URL becomes:
+
+```text
+https://twocomms.shop/product/.../s/
+```
+
+- Size query is rewritten to path segment `/s/` (OK-ish for size).  
+- **Color query is dropped entirely** from final URL.  
+- Still **P0**: Merchant/Meta think color-specific item lands on size-only URL; color may default wrong.  
+- Combined with **100% Cyrillic `g:id`** (384/384), content_id parity with pixel `offer_id` (also Cyrillic `TC-0001-ЧОРНИЙ-M`) must stay consistent — mixed `ЧОРНИЙ`/`ЧЕРНЫЙ` seen in cart API (F-023).
 
 **Risk of fix:** **HIGH** — feed ID/link changes can break Meta/Google catalogs; need staged regen + re-fetch validation + pixel content_id alignment. **Do not hotfix without Pass C + catalog freeze plan.**
 
@@ -597,10 +640,182 @@ Sample **20/20** variant sitemap URLs returned **200** with titles reflecting co
 
 ---
 
+
+
+### F-018 — Cart `offer_id` color spelling splits (ЧОРНИЙ vs ЧЕРНЫЙ)
+
+- [ ] **Open** · Severity: **P1** · Area: **PIXEL / FEED / CART** · Checklist: PIX-011, FEED-002
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+**Evidence (POST `/cart/add/` 2026-07-09):**
+
+| Payload | offer_id returned |
+|---------|-------------------|
+| product_id=1, size=M, **color_variant_id=29** | `TC-0001-ЧОРНИЙ-M` (UK spelling) |
+| product_id=1, size=M, **no color_variant_id** | `TC-0001-ЧЕРНЫЙ-M` (RU spelling) |
+
+Feed ids use **ЧОРНИЙ** style. If pixel fires without color_variant_id, Meta catalog match **breaks**.
+
+**Why problem:** content_id fragmentation → broken DPA/optimization.  
+**Risk of fix:** medium–high (ID generator + historical feed).
+
+---
+
+### F-019 — `UTMSession.is_converted` is always false (dead field)
+
+- [ ] **Open** · Severity: **P0** · Area: **UTM / CRO** · Checklist: UTM-023, CRO-012
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (prod DB) |
+| Status (C) | |
+
+**Evidence:** `UTMSession.objects.filter(is_converted=True).count() == 0` while `utm_total == 1041`.  
+30d converted also 0 despite purchases/leads existing in `UserAction` and paid orders.
+
+**Why problem:** Dispatcher conversion stats and any is_converted-based reporting are **wrong**. Ads optimization based on internal conversion flags will undercount.
+
+**Likely code:** `utm_tracking.mark_as_converted` / `record_order_action` not called on all order paths, or fails silently.
+
+**Risk of fix:** medium (must not double-mark; test all pay paths).
+
+---
+
+### F-020 — UTM source normalization incomplete in stored sessions
+
+- [ ] **Open** · Severity: **P1** · Area: **UTM** · Checklist: UTM-001, UTM-004
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (prod DB 30d) |
+| Status (C) | |
+
+Despite `UTM_GOVERNANCE.md` + `normalize_utm_source()`, live distinct sources include:
+
+- `chatgpt.com` (113) **and** `chatgpt` (4)  
+- `ig` (14) **and** `instagram` (3) **and** `IGShopping` (1)  
+- `audit` (3) — test pollution  
+- `threads` (2)
+
+**Why problem:** Dispatcher fragments channels; CBO/creative reports unreliable; IG ads under `ig` not rolled into `instagram`.
+
+**Risk of fix:** medium (middleware + optional backfill after backup).
+
+---
+
+### F-021 — 100% of recent orders have empty UTM attribution
+
+- [ ] **Open** · Severity: **P0** · Area: **UTM / ADS** · Checklist: UTM-020–024, ADS-015, DB-009
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (prod DB) |
+| Status (C) | |
+
+**Evidence:**
+
+- Orders 7d: 2/2 empty `utm_source`, **0** `utm_session_id`  
+- Orders 30d: 6/6 empty  
+- Orders 90d: 12/12 empty  
+
+Sample order numbers (public business ids, not secrets): `TWC06072026N02`, `TWC06072026N01`, `TWC23062026N02`, …
+
+**Why problem:** **Cannot attribute Instagram/Meta spend to revenue** in internal analytics. Highest-priority ads blocker with F-019.
+
+**Likely causes to verify in Pass C (no fix now):**
+
+1. `link_order_to_utm` not invoked on create/Mono/COD paths  
+2. Session key / visitor_id mismatch at checkout  
+3. Orders created from admin/manual/Telegram without web session  
+4. Cookie/session not surviving checkout  
+
+**Risk of fix:** high on money path — needs careful tests; do not rush.
+
+---
+
+### F-022 — Extreme funnel cliff product_view → add_to_cart (+ possible PV noise)
+
+- [ ] **Open** · Severity: **P1** · Area: **CRO** · Checklist: CRO-020–026
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (counts) |
+| Status (C) | |
+
+30d: **21725** product_view events vs **25** add_to_cart (~0.12%).  
+7d: 7368 product_view across only **8** utm_sessions with that action → **~921 events/session** average — strongly suggests **bots, double-firing, or missing dedupe** (despite code comments about 30min product_view dedupe).
+
+**Why problem:** CRO dashboards useless; Meta may also see inflated ViewContent if mirrored; hides real PDP friction.
+
+**Pass C:** compare UserAction vs Meta ViewContent; check bot filter; verify dedupe window.
+
+---
+
+### F-023 — Category truncated titles stored in MySQL (root cause of F-001)
+
+- [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: SEO-003, DB-001
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (prod DB) |
+| Status (C) | |
+
+```text
+Category long-sleeve.seo_title = 'Лонгсліви TwoComms — лаконічний стрітвеар з рукавами на'
+Category tshirts.seo_title     = 'Футболки TwoComms — стрітвеар та мілітарі-принти від'
+Category hoodie.seo_title      = 'Худі TwoComms — теплі толстовки зі стрітвеар-принтами та'
+```
+
+Truncation is **in DB content**, not only template. Fix = data + generator.
+
+---
+
+### F-024 — ATC API + mini-cart path works (positive control)
+
+- [x] **PASS** · Area: **CART** · Checklist: CART-002, SMK-006 partial, CART-003
+
+`POST /cart/add/` with CSRF from `/api/bootstrap/` returns ok; `/cart/count/` and mini-cart HTML update with product row and offer_id.  
+Browser UI click still recommended for Pass C.
+
+---
+
+### F-025 — Blog UK sitemap URLs healthy
+
+- [x] **PASS** · 15 UK blog URLs from sitemap-blog → 200, title+H1 present.
+
+---
+
+### F-026 — Home critical static assets 200
+
+- [x] **PASS** · 21 critical JS/CSS/preview assets from homepage → all 200.
+
+---
+
+### F-027 — Feed color lost even after correct XML decode (clarifies F-003)
+
+- [ ] **Open** · Severity: **P0** · (sub-finding of F-003) · Area: **FEED**
+
+Decoded `?size=S&color=...` → final `.../s/` without color. Server routing treats `size` as variant slug and ignores/drops color query. Merchant color variants may all collapse to same default-color size page.
+
+---
+
+### F-028 — RU/EN PDP titles often OK while UK title/H1 diverge
+
+- [ ] **Open** · Severity: **P2** · Area: **GEO/SEO**
+
+Sample 8 products × ru/en: titles/H1 generally **aligned within locale**, but EN sometimes keeps internal English print codes (`death grabs ass`) while RU uses commercial name (`Сердце И Деньги`). Cross-locale naming strategy inconsistent with UK mismatches (F-004).
+
+---
+
 ## Session changelog
 
 | Time | Action |
 |------|--------|
 | 2026-07-09 | Pass A started; smoke, SEO sample, sitemap, feed, UTM cookies, findings F-001…F-015 |
 | 2026-07-09 | Full 65 UK PDP titles; 13 title/H1 mismatches; 20 variants OK; mapa links OK; F-004 expanded; F-016/F-017 |
-| _next_ | Browser pixel ATC/Purchase; Dispatcher/DB funnel; server logs; remaining locales products; full variant sitemap |
+| 2026-07-09 | ATC API PASS; DB funnel; **orders 100% empty UTM**; is_converted=0; source dirt; feed color drop confirmed |
+| _next_ | Browser Meta EM; Dispatcher UI; full variants; server error logs; checkout E2E attribution test |

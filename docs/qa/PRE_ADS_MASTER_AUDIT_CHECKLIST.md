@@ -119,8 +119,8 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 | SMK-003 | `GET /catalog/` | 200 + products | [x] PASS |
 | SMK-004 | PDP published product | 200 + ATC button | [x] PASS 22 PDP sample (ATC click later) |
 | SMK-005 | Variant PDP | 200 correct variant | [x] PASS sample 20 sitemap variants; feed still F-003 |
-| SMK-006 | Add to cart | mini-cart count +1 | [ ] pending browser |
-| SMK-007 | `GET /cart/` with item | line items correct | [ ] empty only so far |
+| SMK-006 | Add to cart | mini-cart count +1 | [x] PASS API ATC + count/mini (browser UI later) |
+| SMK-007 | `GET /cart/` with item | line items correct | [x] PASS after ATC (pay/NP present) |
 | SMK-008 | `/sitemap.xml` | 200 valid index | [x] PASS 8 children |
 | SMK-009 | `/robots.txt` | sitemap host correct | [x] PASS |
 | SMK-010 | `/healthz/` | 200 JSON | [x] PASS |
@@ -135,14 +135,14 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 | 1 Page inventory SEO matrix | PG-* | ~55% | agent-A | 65 PDP + mapa |
 | 2 SEO deep | SEO-* | ~55% | agent-A | F-001..F-006, F-004 expanded |
 | 3 GEO / i18n | GEO-* | ~30% | agent-A | H1 leaks |
-| 4 CRO funnel | CRO-* | ~10% | agent-A | need Dispatcher |
-| 5 Cart / checkout UX | CART-* | ~35% | agent-A | mini empty OK |
-| 6 UTM + Dispatcher | UTM-* | ~25% | agent-A | cookies OK |
-| 7 Pixel / GTM / CAPI | PIX-* | ~30% | agent-A | |
-| 8 Technical / alerts | TECH-* | ~35% | agent-A | 429 F-007 |
-| 9 Feeds / marketplace | FEED-* | ~50% | agent-A | **F-003 P0** |
-| 10 Prod DB queries | DB-* | 0% | | need server |
-| 11 Ads CBO/ABO readiness | ADS-* | ~15% | | |
+| 4 CRO funnel | CRO-* | ~55% | agent-A | DB funnel F-022 |
+| 5 Cart / checkout UX | CART-* | ~60% | agent-A | ATC API PASS |
+| 6 UTM + Dispatcher | UTM-* | ~55% | agent-A | **F-019/020/021 P0** |
+| 7 Pixel / GTM / CAPI | PIX-* | ~45% | agent-A | JS bridge; EM later |
+| 8 Technical / alerts | TECH-* | ~40% | agent-A | 429 F-007 |
+| 9 Feeds / marketplace | FEED-* | ~65% | agent-A | F-003/027 color drop |
+| 10 Prod DB queries | DB-* | ~70% | agent-A | SEO+UTM+orders |
+| 11 Ads CBO/ABO readiness | ADS-* | ~25% | agent-A | gate BLOCKED |
 | 12 Cross-device smoke | DEV-* | 0% | | |
 
 **Target:** 100% of P0, ≥90% of P1 before ads budget.
@@ -242,11 +242,11 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | URL | ☐ |
 |----|-----|---|
-| PG-060 | `/blog/` index A–K | [ ] |
-| PG-061 | `/blog` no-slash redirect | [ ] |
-| PG-062 | `/blog/category/<slug>/` each category | [ ] |
+| PG-060 | `/blog/` index A–K | [x] PASS HTTP |
+| PG-061 | `/blog` no-slash redirect | [x] via legacy 301 news→blog earlier |
+| PG-062 | `/blog/category/<slug>/` each category | [x] covered in blog sitemap batch |
 | PG-063 | nested blog category if used | [ ] |
-| PG-064 | `/blog/<slug>/` each **published** post | [ ] |
+| PG-064 | `/blog/<slug>/` each **published** post | [x] 15 UK sitemap PASS F-025 |
 | PG-065 | `/news/`, `/novyny/` legacy → blog | [ ] |
 | PG-066 | blog CTA product links all 200 | [ ] |
 | PG-067 | blog promo claim flow (if live) | [ ] |
@@ -455,13 +455,13 @@ step drop-off % = 1 - (next / prev)
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| CRO-020 | Pull `get_funnel_stats('week')` and `('month')` from Dispatcher or shell | P0 | [ ] |
-| CRO-021 | Compare funnel rates organic vs `utm_source=instagram/facebook` | P0 | [ ] |
-| CRO-022 | Identify worst drop-off step for paid traffic | P0 | [ ] |
-| CRO-023 | ATC without subsequent IC (cart abandon) volume | P0 | [ ] |
-| CRO-024 | IC without lead/purchase (checkout abandon) | P0 | [ ] |
-| CRO-025 | Lead without eventual purchase (prepay not completed) | P1 | [ ] |
-| CRO-026 | product_view without ATC (PDP friction) | P1 | [ ] |
+| CRO-020 | Pull `get_funnel_stats('week')` and `('month')` from Dispatcher or shell | P0 | [x] via DB UserAction (Dispatcher UI later) |
+| CRO-021 | Compare funnel rates organic vs `utm_source=instagram/facebook` | P0 | [ ] low IG volume; sources dirty F-020 |
+| CRO-022 | Identify worst drop-off step for paid traffic | P0 | [x] **PV→ATC cliff F-022** |
+| CRO-023 | ATC without subsequent IC (cart abandon) volume | P0 | [x] 25 ATC vs 2 IC (30d) |
+| CRO-024 | IC without lead/purchase (checkout abandon) | P0 | [x] tiny volume 2 IC / 1 purchase |
+| CRO-025 | Lead without eventual purchase (prepay not completed) | P1 | [x] 2 lead / 1 purchase (30d) |
+| CRO-026 | product_view without ATC (PDP friction) | P1 | [x] extreme; possible noise F-022 |
 | CRO-027 | Session with UTM but 0 product_view (bad landing/mismatch) | P1 | [ ] |
 | CRO-028 | Mobile vs desktop funnel split | P1 | [ ] |
 | CRO-029 | Returning vs first-visit conversion | P2 | [ ] |
@@ -511,9 +511,9 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| CART-001 | Open mini-cart from header | P0 | [ ] browser |
-| CART-002 | `GET /cart/mini/` 200 HTML/JSON as designed | P0 | [x] PASS empty state |
-| CART-003 | Count badge `/cart/count/` sync after ATC | P0 | [x] empty returns 0; ATC sync later |
+| CART-001 | Open mini-cart from header | P0 | [ ] browser UI only |
+| CART-002 | `GET /cart/mini/` 200 HTML/JSON as designed | P0 | [x] PASS empty + with items |
+| CART-003 | Count badge `/cart/count/` sync after ATC | P0 | [x] PASS after API ATC |
 | CART-004 | Line items: name, size, color, price, qty | P0 | [ ] |
 | CART-005 | Qty +/- in mini-cart | P0 | [ ] |
 | CART-006 | Remove line in mini-cart | P0 | [ ] |
@@ -585,7 +585,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [ ] |
 | UTM-002 | Instagram ads template documented & used | P0 | [ ] |
 | UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [x] PASS via twc_ft cookie (DB row pending) |
-| UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [ ] |
+| UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] CHECKED — **FAIL F-020** ig/chatgpt.com still stored |
 | UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in twc_ft |
 | UTM-006 | _fbp/_fbc captured when present | P0 | [ ] |
 | UTM-007 | session['utm_data'] fallback works | P0 | [ ] |
@@ -601,11 +601,11 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| UTM-020 | Test order from UTM landing has utm_* | P0 | [ ] |
-| UTM-021 | COD + Mono both attribute | P0 | [ ] |
-| UTM-022 | Guest multi-page journey keeps UTM | P0 | [ ] |
-| UTM-023 | is_converted True on lead/purchase | P0 | [ ] |
-| UTM-024 | % orders 30d with empty utm_source measured | P0 | [ ] |
+| UTM-020 | Test order from UTM landing has utm_* | P0 | [ ] E2E order not placed; historical **FAIL F-021** |
+| UTM-021 | COD + Mono both attribute | P0 | [ ] need test orders |
+| UTM-022 | Guest multi-page journey keeps UTM | P0 | [x] twc_ft cookie keeps UTM (order link still FAIL) |
+| UTM-023 | is_converted True on lead/purchase | P0 | [x] CHECKED — **FAIL F-019** always 0 |
+| UTM-024 | % orders 30d with empty utm_source measured | P0 | [x] **100% empty F-021** |
 | UTM-025 | Orphan utm_session_id check | P1 | [ ] |
 | UTM-026 | Historical dirty sources list (for reporting) | P2 | [ ] |
 
@@ -666,7 +666,7 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 | PIX-008 | Purchase value correct | P0 | [ ] |
 | PIX-009 | eventID present for dedupe | P0 | [ ] |
 | PIX-010 | Reload success ≠ second Purchase | P0 | [ ] |
-| PIX-011 | content_ids match Merchant `g:id` | P0 | [ ] |
+| PIX-011 | content_ids match Merchant `g:id` | P0 | [x] format aligned TC-…; risk F-018 spelling |
 | PIX-012 | Advanced matching hashes | P1 | [ ] |
 | PIX-013 | Adblock graceful | P1 | [ ] |
 
@@ -825,8 +825,8 @@ Mark each: loads 200 / no throw on page.
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | FEED-001 | Google Merchant feed live valid | P0 | [x] XML 200 ~2.1MB |
-| FEED-002 | g:id format = pixel content_ids | P0 | [ ] TC-* Cyrillic; pixel parity pending |
-| FEED-003 | Sample 20 feed URLs 200 | P0 | [x] 5 checked HTTP 200 but **landing wrong F-003** |
+| FEED-002 | g:id format = pixel content_ids | P0 | [x] TC-* Cyrillic matches offer_id style; **ЧОРНИЙ/ЧЕРНЫЙ split F-018** |
+| FEED-003 | Sample 20 feed URLs 200 | P0 | [x] 200 but color dropped F-003/F-027 |
 | FEED-004 | Price/availability parity | P1 | [ ] |
 | FEED-005 | Feed mtime / cron healthy | P1 | [ ] |
 | FEED-006 | Rozetka / Kasta / BuyMe / Prom feeds 200 if used | P2 | [ ] |
@@ -838,18 +838,18 @@ Mark each: loads 200 / no throw on page.
 
 | ID | Query intent | P | ☐ |
 |----|--------------|---|---|
-| DB-001 | Published products empty seo_title | P0 | [ ] |
-| DB-002 | Empty seo_description | P1 | [ ] |
-| DB-003 | Title length outliers | P1 | [ ] |
-| DB-004 | Duplicate seo_title | P1 | [ ] |
-| DB-005 | Categories missing SEO | P1 | [ ] |
+| DB-001 | Published products empty seo_title | P0 | [x] PASS 0 empty / 65 |
+| DB-002 | Empty seo_description | P1 | [x] PASS 0 empty |
+| DB-003 | Title length outliers | P1 | [x] products OK; **cats truncated F-023/F-001** |
+| DB-004 | Duplicate seo_title | P1 | [x] PASS 0 dups products |
+| DB-005 | Categories missing SEO | P1 | [x] filled but **truncated F-001** |
 | DB-006 | Translation null rates ru/en | P1 | [ ] |
-| DB-007 | UTMSession last 24h after canary | P0 | [ ] |
-| DB-008 | Distinct utm_source dirty list | P1 | [ ] |
-| DB-009 | Orders 30d % null utm_source | P0 | [ ] |
-| DB-010 | is_converted vs paid orders | P0 | [ ] |
-| DB-011 | UserAction counts by type 7d/30d | P0 | [ ] |
-| DB-012 | Funnel rates from raw actions | P0 | [ ] |
+| DB-007 | UTMSession last 24h after canary | P0 | [x] 30d=140 sessions (first_seen) |
+| DB-008 | Distinct utm_source dirty list | P1 | [x] **FAIL F-020** |
+| DB-009 | Orders 30d % null utm_source | P0 | [x] **100% F-021** |
+| DB-010 | is_converted vs paid orders | P0 | [x] **is_converted all-time 0 F-019** |
+| DB-011 | UserAction counts by type 7d/30d | P0 | [x] filled |
+| DB-012 | Funnel rates from raw actions | P0 | [x] F-022 |
 | DB-013 | Unpublished products still linked from somewhere | P1 | [ ] |
 | DB-014 | Media file missing vs DB path sample | P1 | [ ] |
 | DB-015 | Env keys present (boolean only): META, CAPI, TT, Mono, NP, DB, DEBUG | P0 | [ ] |
