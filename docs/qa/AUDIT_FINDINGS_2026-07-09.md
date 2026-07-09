@@ -25,9 +25,9 @@
 
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
-| P0 | 7 | 0 | 0 | 0 |
-| P1 | 18 | 0 | 0 | 0 |
-| P2 | 11 | 0 | 0 | 0 |
+| P0 | 8 | 0 | 0 | 0 |
+| P1 | 15 | 0 | 0 | 0 |
+| P2 | 10 | 0 | 0 | 0 |
 | P3 | 3 | 0 | 0 | 0 |
 
 ### Pass A coverage (honest)
@@ -51,62 +51,157 @@
 ---
 
 
-## OPEN vs PASS findings checklist (for fix agents)
+## MASTER FINDINGS INDEX (все находки Pass A)
 
-**Checklist file:** all Pass A rows are `[x]` in `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` (496 checks). **Open work = only F-* below.**
+> **Как читать**
+> - `[ ]` = **ещё не исправлено** (для fix-агента / Pass C → fix)
+> - `[x]` = **PASS / INFO** — проверено, чинить не нужно (или только process-note)
+> - Полное описание каждой находки — секции `### F-xxx` ниже в этом же файле
+> - Чек-лист аудита: `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` — все строки уже `[x]` (пройдены)
 
-> Fix agent: mark `[x]` only after deploy + retest. Pass C marks CONFIRMED first.
+**Итого: 58 находок** · **Ads gate: BLOCKED** (есть открытые P0)
 
-### P0 OPEN
-- [ ] F-003 / F-027 Merchant feed landing loses color
-- [ ] F-019 is_converted always 0
-- [ ] F-021 / F-044 / F-045 Order UTM/session linkage broken
-- [ ] F-029 LSAPI_CHILDREN limit
-- [ ] F-030 initializePixelsImmediately not defined
+### Сводка по severity
 
-### P1 OPEN
-- [ ] F-001 Category titles truncated in DB
-- [ ] F-002 Color landing grammar
-- [ ] F-004 UK product title≠H1 (13 URLs)
-- [ ] F-005 RU/EN H1 UA leaks (home/catalog)
-- [ ] F-006 Color sitemap triple dups
-- [ ] F-007 Rate limit 429 under burst (mitigated slow crawl)
-- [ ] F-018 offer_id ЧОРНИЙ vs ЧЕРНЫЙ
-- [ ] F-020 / F-057 Historical dirty utm_source values
-- [ ] F-031 MySQL gone away
-- [ ] F-032 UserAction mostly without utm_session
-- [ ] F-033 link_order_to_utm not reflected in prod orders
-- [ ] F-043 /help-center/ 404
-- [ ] F-050 NP city Latin 502
+| Severity | OPEN | PASS/INFO/REVISED |
+|----------|-----:|------------------:|
+| P0 | 7 | 0 |
+| P1 | 14 | 0 |
+| P2 | 12 | 2 |
+| P3 | 3 | 20 |
 
-### P2 OPEN (selected)
-- [ ] F-008 long meta descriptions
-- [ ] F-009 favicon 302
-- [ ] F-011 TikTok deferred load
-- [ ] F-014 sitemap lastmod cluster
-- [ ] F-035 CSP violations
-- [ ] F-036 Telegram disconnects
-- [ ] F-048 CAPI fbp without internal UTM
-- [ ] F-051 capture empty 200
+### Полный список F-001 … F-058
 
-### PASS (do not "fix")
-- [x] F-016 variants titles
-- [x] F-017 mapa links
-- [x] F-024 ATC API
-- [x] F-025 blog UK
-- [x] F-026 static assets
-- [x] F-034 variants sample / recs
-- [x] F-041 CSP allows pixels
-- [x] F-042 early fbq PageView
-- [x] F-046 server canary
-- [x] F-047 sitemap 489/489
-- [x] F-049 home unexclude canary
-- [x] F-052 mono validates city
-- [x] F-053 home links 42/42
-- [x] F-054 blog+colors HTTP
-- [x] F-055 RU/EN product sample alignment
-- [x] F-056 IGShopping canary
-- [x] F-058 scripts matrix
+| ID | Sev | Status | Fix? | One-line |
+|----|-----|--------|------|----------|
+| [ ] **F-001** | P1 | OPEN | YES | Category titles truncated mid-phrase (also in MySQL F-023) |
+| [ ] **F-002** | P1 | OPEN | YES | Color landing broken UA grammar |
+| [ ] **F-003** | P0 | OPEN | YES | Merchant feed g:link / color landing broken |
+| [ ] **F-004** | P1 | OPEN | YES | UK product title vs H1 mismatch (13 URLs) + RU leak in H1 |
+| [ ] **F-005** | P1 | OPEN | YES | RU/EN home+catalog H1 still Ukrainian |
+| [ ] **F-006** | P2 | OPEN | YES | Color sitemap same URL ×3 |
+| [ ] **F-007** | P1 | OPEN | YES | HTTP 429 under burst crawl |
+| [ ] **F-008** | P2 | OPEN | YES | Meta description too long on some static pages |
+| [ ] **F-009** | P3 | OPEN | YES | favicon.ico 302 then 200 |
+| [ ] **F-010** | P2 | OPEN | YES | debug/dev endpoints login-gated not 404 |
+| [ ] **F-011** | P2 | OPEN | YES | TikTok data-attr present; ttq.load not in initial HTML |
+| [x] **F-012** | P2 | INFO | no | ViewContent JS-only (expected architecture) |
+| [ ] **F-013** | P2 | OPEN | YES | Category title vs H1 length strategy inconsistent |
+| [ ] **F-014** | P3 | OPEN | YES | Sitemap lastmod clustered 2026-06-11 |
+| [ ] **F-015** | P3 | OPEN | YES | manifest.webmanifest 404; site.webmanifest OK |
+| [x] **F-016** | P3 | PASS | no | Variant URL titles work |
+| [x] **F-017** | P3 | PASS | no | mapa-saytu links all 200 |
+| [ ] **F-018** | P1 | OPEN | YES | offer_id ЧОРНИЙ vs ЧЕРНЫЙ split |
+| [ ] **F-019** | P0 | OPEN | YES | is_converted always 0 |
+| [ ] **F-020** | P1 | OPEN | YES | Historical dirty utm_source (new canaries normalize OK) |
+| [ ] **F-021** | P0 | OPEN | YES | 100% orders empty utm_source / no utm_session |
+| [ ] **F-022** | P1 | OPEN | YES | Extreme PV→ATC cliff / possible product_view noise |
+| [ ] **F-023** | P1 | OPEN | YES | Category truncated titles in MySQL (root of F-001) |
+| [x] **F-024** | P3 | PASS | no | ATC API + mini-cart works |
+| [x] **F-025** | P3 | PASS | no | Blog UK sitemap healthy |
+| [x] **F-026** | P3 | PASS | no | Home critical static assets 200 |
+| [ ] **F-027** | P0 | OPEN | YES | Feed color dropped even after XML unescape (part of F-003) |
+| [ ] **F-028** | P2 | OPEN | YES | RU/EN PDP naming strategy vs UK mismatch |
+| [ ] **F-029** | P0 | OPEN | YES | LSAPI_CHILDREN process limit |
+| [ ] **F-030** | P0 | OPEN | YES | initializePixelsImmediately is not defined |
+| [ ] **F-031** | P1 | OPEN | YES | MySQL server has gone away |
+| [ ] **F-032** | P1 | OPEN | YES | UserAction rarely linked to UTMSession |
+| [ ] **F-033** | P0 | OPEN | YES | link_order_to_utm in code but orders empty |
+| [x] **F-034** | P3 | PASS | no | Variants sample + recs links OK |
+| [ ] **F-035** | P2 | OPEN | YES | CSP violations in stderr |
+| [ ] **F-036** | P2 | OPEN | YES | Telegram admin RemoteDisconnected |
+| [x] **F-037** | P2 | INFO | no | Home IP exclusion (owner can toggle; retest F-049) |
+| [x] **F-038** | P2 | REVISED | no | sessionid delay mainly under exclusion; non-excluded OK |
+| [x] **F-039** | P2 | REVISED | no | track-event stored:false under exclusion; stored:true after unexclude |
+| [x] **F-040** | P3 | INFO | no | Checkout is JS/Mono-driven path map |
+| [x] **F-041** | P3 | PASS | no | CSP allows Meta/TikTok/GTM |
+| [x] **F-042** | P3 | PASS | no | Early Meta PageView in HTML |
+| [ ] **F-043** | P1 | OPEN | YES | /help-center/ 404 (need 301→/dopomoga/) |
+| [ ] **F-044** | P1 | OPEN | YES | Most web orders empty session_key (29/36) |
+| [ ] **F-045** | P0 | OPEN | YES | 0 Order.session_key join UTMSession |
+| [x] **F-046** | P3 | PASS | no | Server canary UTM capture |
+| [x] **F-047** | P3 | PASS | no | Sitemap 489/489 HTTP 200 |
+| [ ] **F-048** | P2 | OPEN | YES | Orders have fbp tracking without internal UTM |
+| [x] **F-049** | P3 | PASS | no | Home unexclude canary PASS |
+| [ ] **F-050** | P1 | OPEN | YES | NP city Latin Kyiv 502 / Київ 200 |
+| [ ] **F-051** | P2 | OPEN | YES | checkout/capture empty returns 200 ok |
+| [x] **F-052** | P3 | PASS | no | Mono validates missing city |
+| [x] **F-053** | P3 | PASS | no | Home links 42/42 200 |
+| [x] **F-054** | P3 | PASS | no | Blog+color HTTP OK (grammar still F-002) |
+| [x] **F-055** | P3 | PASS | no | RU/EN product sample title/H1 aligned |
+| [x] **F-056** | P3 | PASS | no | IGShopping multi-hop canary PASS |
+| [ ] **F-057** | P1 | OPEN | YES | All-time dirty utm_source inventory |
+| [x] **F-058** | P3 | PASS | no | Scripts matrix key pages PASS |
+
+### P0 OPEN (чинить в первую очередь) — 8
+- [ ] **F-003** — Merchant feed g:link / color landing broken
+- [ ] **F-019** — is_converted always 0
+- [ ] **F-021** — 100% orders empty utm_source / no utm_session
+- [ ] **F-027** — Feed color dropped even after XML unescape (part of F-003)
+- [ ] **F-029** — LSAPI_CHILDREN process limit
+- [ ] **F-030** — initializePixelsImmediately is not defined
+- [ ] **F-033** — link_order_to_utm in code but orders empty
+- [ ] **F-045** — 0 Order.session_key join UTMSession
+
+### P1 OPEN — 15
+- [ ] **F-001** — Category titles truncated mid-phrase (also in MySQL F-023)
+- [ ] **F-002** — Color landing broken UA grammar
+- [ ] **F-004** — UK product title vs H1 mismatch (13 URLs) + RU leak in H1
+- [ ] **F-005** — RU/EN home+catalog H1 still Ukrainian
+- [ ] **F-007** — HTTP 429 under burst crawl
+- [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
+- [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
+- [ ] **F-022** — Extreme PV→ATC cliff / possible product_view noise
+- [ ] **F-023** — Category truncated titles in MySQL (root of F-001)
+- [ ] **F-031** — MySQL server has gone away
+- [ ] **F-032** — UserAction rarely linked to UTMSession
+- [ ] **F-043** — /help-center/ 404 (need 301→/dopomoga/)
+- [ ] **F-044** — Most web orders empty session_key (29/36)
+- [ ] **F-050** — NP city Latin Kyiv 502 / Київ 200
+- [ ] **F-057** — All-time dirty utm_source inventory
+
+### P2 OPEN — 10
+- [ ] **F-006** — Color sitemap same URL ×3
+- [ ] **F-008** — Meta description too long on some static pages
+- [ ] **F-010** — debug/dev endpoints login-gated not 404
+- [ ] **F-011** — TikTok data-attr present; ttq.load not in initial HTML
+- [ ] **F-013** — Category title vs H1 length strategy inconsistent
+- [ ] **F-028** — RU/EN PDP naming strategy vs UK mismatch
+- [ ] **F-035** — CSP violations in stderr
+- [ ] **F-036** — Telegram admin RemoteDisconnected
+- [ ] **F-048** — Orders have fbp tracking without internal UTM
+- [ ] **F-051** — checkout/capture empty returns 200 ok
+
+### P3 OPEN — 3
+- [ ] **F-009** — favicon.ico 302 then 200
+- [ ] **F-014** — Sitemap lastmod clustered 2026-06-11
+- [ ] **F-015** — manifest.webmanifest 404; site.webmanifest OK
+
+### PASS / INFO / REVISED (не чинить как баг) — 22
+- [x] **F-012** — ViewContent JS-only (expected architecture)
+- [x] **F-016** — Variant URL titles work
+- [x] **F-017** — mapa-saytu links all 200
+- [x] **F-024** — ATC API + mini-cart works
+- [x] **F-025** — Blog UK sitemap healthy
+- [x] **F-026** — Home critical static assets 200
+- [x] **F-034** — Variants sample + recs links OK
+- [x] **F-037** — Home IP exclusion (owner can toggle; retest F-049)
+- [x] **F-038** — sessionid delay mainly under exclusion; non-excluded OK
+- [x] **F-039** — track-event stored:false under exclusion; stored:true after unexclude
+- [x] **F-040** — Checkout is JS/Mono-driven path map
+- [x] **F-041** — CSP allows Meta/TikTok/GTM
+- [x] **F-042** — Early Meta PageView in HTML
+- [x] **F-046** — Server canary UTM capture
+- [x] **F-047** — Sitemap 489/489 HTTP 200
+- [x] **F-049** — Home unexclude canary PASS
+- [x] **F-052** — Mono validates missing city
+- [x] **F-053** — Home links 42/42 200
+- [x] **F-054** — Blog+color HTTP OK (grammar still F-002)
+- [x] **F-055** — RU/EN product sample title/H1 aligned
+- [x] **F-056** — IGShopping multi-hop canary PASS
+- [x] **F-058** — Scripts matrix key pages PASS
+
+---
 
 
 ## Funnel snapshot (CRO)
@@ -210,6 +305,8 @@
 
 ### F-001 — Category `<title>` truncated mid-phrase
 
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: SEO-003, SEO-005, SEO-090, PG-007
 
 | Field | Value |
@@ -255,6 +352,8 @@ Titles end on prepositions/conjunctions (**на / від / та**) — clearly c
 
 ### F-002 — Color category landings: broken grammar in title/H1
 
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: SEO-014, PG-008, SEO-090
 
 | Field | Value |
@@ -289,6 +388,8 @@ Titles end on prepositions/conjunctions (**на / від / та**) — clearly c
 ---
 
 ### F-003 — Google Merchant feed `g:link` mangled (`&amp;` → path `/s/?amp;color=`)
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P0** · Area: **FEED / ADS** · Checklist: FEED-001–003, ADS-012, PIX-011
 
@@ -350,6 +451,8 @@ https://twocomms.shop/product/.../s/
 
 ### F-004 — Product title vs H1 mismatch (and RU leak in H1)
 
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P1** · Area: **SEO / GEO** · Checklist: SEO-031, SEO-004, SEO-006, GEO-006
 
 | Field | Value |
@@ -398,6 +501,8 @@ https://twocomms.shop/product/.../s/
 
 ### F-005 — RU/EN H1 remains Ukrainian (home + catalog)
 
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P1** · Area: **GEO** · Checklist: GEO-006, PG-100, PG-101
 
 | Field | Value |
@@ -422,6 +527,8 @@ https://twocomms.shop/product/.../s/
 
 ### F-006 — Color sitemap duplicates (same loc ×3)
 
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P2** · Area: **SEO** · Checklist: SEO-066, SEO-068
 
 | Field | Value |
@@ -438,6 +545,8 @@ https://twocomms.shop/product/.../s/
 ---
 
 ### F-007 — Aggressive HTTP 429 under moderate crawl
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P1** · Area: **TECH / ADS** · Checklist: TECH-060 family, SEO-062
 
@@ -464,6 +573,8 @@ https://twocomms.shop/product/.../s/
 
 ### F-008 — Meta description length outliers (static commercial pages)
 
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P2** · Area: **SEO** · Checklist: SEO-021
 
 | Field | Value |
@@ -484,6 +595,8 @@ https://twocomms.shop/product/.../s/
 
 ### F-009 — `favicon.ico` redirects (302) before icon
 
+**Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P3** · Area: **TECH** · Checklist: TECH-040
 
 | Field | Value |
@@ -500,6 +613,8 @@ https://twocomms.shop/product/.../s/
 ---
 
 ### F-010 — Debug/dev endpoints reachable as login redirects (not hard 404)
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P2** · Area: **TECH** · Checklist: PG-086, PG-087, TECH-083
 
@@ -522,6 +637,8 @@ https://twocomms.shop/product/.../s/
 
 ### F-011 — TikTok pixel: data attribute present, no `ttq.load` in initial HTML
 
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P2** · Area: **PIXEL** · Checklist: PIX-030
 
 | Field | Value |
@@ -534,6 +651,8 @@ https://twocomms.shop/product/.../s/
 ---
 
 ### F-012 — ViewContent not embedded in PDP HTML (JS-only)
+
+**Status:** [x] INFO · **Severity:** P2 · **Fix required:** no (process/architecture note)
 
 - [ ] **Open** · Severity: **P2** · Area: **PIXEL / CRO** · Checklist: PIX-003, CRO-004
 
@@ -548,6 +667,8 @@ Sample PDPs: no `ViewContent` / `view_item` string in HTML; product-detail.js is
 
 ### F-013 — Category titles vs H1 length strategy inconsistent
 
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P2** · Area: **SEO** · Checklist: SEO-031
 
 Related to F-001: H1s are long complete sentences; titles are shorter and cut. May be intentional length limit with bad truncation.
@@ -556,6 +677,8 @@ Related to F-001: H1s are long complete sentences; titles are shorter and cut. M
 
 ### F-014 — Sitemap product `lastmod` clustered 2026-06-11
 
+**Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P3** · Area: **SEO** · Checklist: SEO-067
 
 Products/variants/categories lastmod in index point to **2026-06-11** while blog newer (2026-06-29). Possible stale lastmod pipeline — Google may under-crawl updates.
@@ -563,6 +686,8 @@ Products/variants/categories lastmod in index point to **2026-06-11** while blog
 ---
 
 ### F-015 — `manifest.webmanifest` 404 while `site.webmanifest` 200
+
+**Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P3** · Area: **TECH** · Checklist: PG-088
 
@@ -797,6 +922,8 @@ Example organic web order with session but no UTM (expected for non-ads):
 
 ### F-016 — Variant URL titles work (positive control)
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **Not a bug** · Area: **SEO** · Checklist: SEO-007, SMK-005 partial
 
 Sample **20/20** variant sitemap URLs returned **200** with titles reflecting color/fit, e.g.:
@@ -810,6 +937,8 @@ Sample **20/20** variant sitemap URLs returned **200** with titles reflecting co
 
 ### F-017 — HTML site map (`/mapa-saytu/`) internal links all 200
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · Checklist: SEO-071, PG-044
 
 53 unique internal links from mapa page checked slowly → **0 non-200**.
@@ -819,6 +948,8 @@ Sample **20/20** variant sitemap URLs returned **200** with titles reflecting co
 
 
 ### F-018 — Cart `offer_id` color spelling splits (ЧОРНИЙ vs ЧЕРНЫЙ)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P1** · Area: **PIXEL / FEED / CART** · Checklist: PIX-011, FEED-002
 
@@ -843,6 +974,8 @@ Feed ids use **ЧОРНИЙ** style. If pixel fires without color_variant_id, Me
 
 ### F-019 — `UTMSession.is_converted` is always false (dead field)
 
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P0** · Area: **UTM / CRO** · Checklist: UTM-023, CRO-012
 
 | Field | Value |
@@ -862,6 +995,8 @@ Feed ids use **ЧОРНИЙ** style. If pixel fires without color_variant_id, Me
 ---
 
 ### F-020 — UTM source normalization incomplete in stored sessions
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P1** · Area: **UTM** · Checklist: UTM-001, UTM-004
 
@@ -884,6 +1019,8 @@ Despite `UTM_GOVERNANCE.md` + `normalize_utm_source()`, live distinct sources in
 ---
 
 ### F-021 — 100% of recent orders have empty UTM attribution
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P0** · Area: **UTM / ADS** · Checklist: UTM-020–024, ADS-015, DB-009
 
@@ -915,6 +1052,8 @@ Sample order numbers (public business ids, not secrets): `TWC06072026N02`, `TWC0
 
 ### F-022 — Extreme funnel cliff product_view → add_to_cart (+ possible PV noise)
 
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P1** · Area: **CRO** · Checklist: CRO-020–026
 
 | Field | Value |
@@ -932,6 +1071,8 @@ Sample order numbers (public business ids, not secrets): `TWC06072026N02`, `TWC0
 ---
 
 ### F-023 — Category truncated titles stored in MySQL (root cause of F-001)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: SEO-003, DB-001
 
@@ -952,6 +1093,8 @@ Truncation is **in DB content**, not only template. Fix = data + generator.
 
 ### F-024 — ATC API + mini-cart path works (positive control)
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · Area: **CART** · Checklist: CART-002, SMK-006 partial, CART-003
 
 `POST /cart/add/` with CSRF from `/api/bootstrap/` returns ok; `/cart/count/` and mini-cart HTML update with product row and offer_id.  
@@ -961,17 +1104,23 @@ Browser UI click still recommended for Pass C.
 
 ### F-025 — Blog UK sitemap URLs healthy
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · 15 UK blog URLs from sitemap-blog → 200, title+H1 present.
 
 ---
 
 ### F-026 — Home critical static assets 200
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · 21 critical JS/CSS/preview assets from homepage → all 200.
 
 ---
 
 ### F-027 — Feed color lost even after correct XML decode (clarifies F-003)
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P0** · (sub-finding of F-003) · Area: **FEED**
 
@@ -980,6 +1129,8 @@ Decoded `?size=S&color=...` → final `.../s/` without color. Server routing tre
 ---
 
 ### F-028 — RU/EN PDP titles often OK while UK title/H1 diverge
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P2** · Area: **GEO/SEO**
 
@@ -990,6 +1141,8 @@ Sample 8 products × ru/en: titles/H1 generally **aligned within locale**, but E
 
 
 ### F-029 — LiteSpeed `LSAPI_CHILDREN` process limit hit (capacity)
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P0** · Area: **TECH** · Checklist: TECH-060, TECH-073, TECH-076
 
@@ -1017,6 +1170,8 @@ Reached max children process limit: 6, extra: 2, current: 8, busy: 7/8, please i
 ---
 
 ### F-030 — `initializePixelsImmediately is not defined` (analytics-loader bug)
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P0** · Area: **PIXEL / TECH** · Checklist: PIX-001–003, TECH-064
 
@@ -1049,6 +1204,8 @@ Reached max children process limit: 6, extra: 2, current: 8, busy: 7/8, please i
 
 ### F-031 — MySQL “server has gone away” / connection errors in django logs
 
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P1** · Area: **TECH** · Checklist: TECH-063, TECH-060
 
 | Field | Value |
@@ -1071,6 +1228,8 @@ Reached max children process limit: 6, extra: 2, current: 8, busy: 7/8, please i
 ---
 
 ### F-032 — UserAction almost never linked to UTMSession (99.8% product_view)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P1** · Area: **UTM / CRO** · Checklist: UTM-003, CRO-020, DB-011
 
@@ -1097,6 +1256,8 @@ Reached max children process limit: 6, extra: 2, current: 8, busy: 7/8, please i
 
 ### F-033 — `link_order_to_utm` exists in code but attribution still empty in prod
 
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P0** · Area: **UTM** · Checklist: UTM-020, CART-042 (related)
 
 | Field | Value |
@@ -1119,6 +1280,8 @@ Some orders have `sale_source` like `Kasta`, `AIO`, `Знайомі` (manual/off
 
 ### F-034 — Variant sitemap sample healthy + recs links OK
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · Checklist: SEO-065, SEO-074
 
 - Variant sitemap: 178 URLs; sample every 3rd → **60/60 HTTP 200**  
@@ -1129,6 +1292,8 @@ Some orders have `sale_source` like `Kasta`, `AIO`, `Знайомі` (manual/off
 
 ### F-035 — CSP violations present in stderr
 
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P2** · Area: **TECH** · Checklist: TECH-082
 
 `stderr.log` contains repeated `csp_violation` (~13 in sample window). May block third-party pixels/scripts intermittently. Pass C: capture blocked URI list.
@@ -1136,6 +1301,8 @@ Some orders have `sale_source` like `Kasta`, `AIO`, `Знайомі` (manual/off
 ---
 
 ### F-036 — Telegram admin notify intermittent disconnect
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P2** · Area: **TECH**
 
@@ -1150,6 +1317,8 @@ Can cause “Telegram alert missing” perception without site downtime.
 
 
 ### F-037 — Audit home IP is AnalyticsExclusion (canaries invalid from this network)
+
+**Status:** [x] INFO · **Severity:** P2 · **Fix required:** no (process/architecture note)
 
 - [ ] **Open** · Severity: **P1** · Area: **UTM / PROCESS** · Checklist: UTM-010, UTM-050
 
@@ -1180,6 +1349,8 @@ Can cause “Telegram alert missing” perception without site downtime.
 ---
 
 ### F-038 — `sessionid` not issued on UTM landing GET; only after cart POST
+
+**Status:** [x] REVISED · **Severity:** P2 · **Fix required:** no (see later findings)
 
 - [ ] **Open** · Severity: **P0** · Area: **UTM / CART** · Checklist: UTM-003, UTM-007, UTM-022
 
@@ -1214,6 +1385,8 @@ First-touch UTM lives in **HttpOnly `twc_ft`**, but `link_order_to_utm` primary 
 
 ### F-039 — `/api/track-event/` reports success but often `stored:false`
 
+**Status:** [x] REVISED · **Severity:** P2 · **Fix required:** no (see later findings)
+
 - [ ] **Open** · Severity: **P1** · Area: **UTM / PIXEL adjacency** · Checklist: PG-084
 
 | Field | Value |
@@ -1231,6 +1404,8 @@ On excluded IP always false. On real users: if client relies on this endpoint fo
 
 ### F-040 — Checkout is JS/Mono-driven, not classic form POST to `/orders/create/`
 
+**Status:** [x] INFO · **Severity:** P3 · **Fix required:** no (process/architecture note)
+
 - [x] **INFO / PASS path map** · Area: **CART**
 
 Cart HTML has fields `full_name`, `phone`, `email`, `pay_type`, NP refs, and `/checkout/capture/`.  
@@ -1245,6 +1420,8 @@ Online path: `monobank.py` `link_order_to_utm`.
 
 ### F-041 — CSP allows Meta/TikTok/GTM hosts (positive); report-uri `/csp-report/`
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS partial** · Checklist: TECH-082
 
 `Content-Security-Policy` includes `connect.facebook.net`, `www.facebook.com`, `analytics.tiktok.com`, `googletagmanager.com`, etc.  
@@ -1253,6 +1430,8 @@ Online path: `monobank.py` `link_order_to_utm`.
 ---
 
 ### F-042 — Early Meta pixel still inlined in HTML (PageView path exists)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
 - [x] **PASS partial** · Checklist: PIX-002
 
@@ -1265,6 +1444,8 @@ BFCache bug F-030 still applies to loader reinit.
 
 
 ### F-043 — `/help-center/` returns 404 (dead alias)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: PG-039, SEO-046
 
@@ -1280,6 +1461,8 @@ If external links/docs still use help-center, link equity + UX break. Should be 
 
 ### F-044 — Most web orders have empty `session_key`
 
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P1** · Area: **UTM / CART** · Checklist: UTM-020, CART-042
 
 | Field | Value |
@@ -1293,6 +1476,8 @@ Without session_key, `link_order_to_utm` / `record_order_action` cannot join UTM
 ---
 
 ### F-045 — Zero historical join Order.session_key → UTMSession
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P0** · Area: **UTM** · Checklist: UTM-020, DB-009
 
@@ -1308,6 +1493,8 @@ Meanwhile **132** `utm_source=instagram` sessions exist. Capture works; **conver
 
 ### F-046 — Server canary UTM capture PASS (positive control)
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · Area: **UTM**
 
 From server IP `195.191.24.169`: land `utm_source=ig` → stored as **instagram**, campaign saved, fbclid saved, ATC+product_view linked to UTMSession.
@@ -1316,6 +1503,8 @@ From server IP `195.191.24.169`: land `utm_source=ig` → stored as **instagram*
 
 ### F-047 — Full sitemap URL inventory PASS (489/489)
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · Checklist: SEO-062
 
 Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
@@ -1323,6 +1512,8 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 ---
 
 ### F-048 — CAPI tracking payload often has fbp without internal UTM
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P2** · Area: **PIXEL** · Checklist: PIX-020
 
@@ -1333,6 +1524,8 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 
 ### F-049 — Home IP unexclude retest PASS (2026-07-09 ~17:14 UTC)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
 - [x] **PASS** · Area: **UTM** · Related: F-037, F-038, F-046
 
@@ -1358,6 +1551,8 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ### F-050 — Nova Poshta city search: Latin `Kyiv` → 502, Ukrainian `Київ` → 200
 
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P1** · Area: **CART** · Checklist: CART-024
 
 | Field | Value |
@@ -1376,6 +1571,8 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ### F-051 — Checkout capture empty payload returns 200 ok (soft)
 
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+
 - [ ] **Open** · Severity: **P2** · Area: **CART** · Checklist: CART-054
 
 `POST /checkout/capture/` with empty phone/name → **200** `{"ok": true}` (no validation error). May intentionally save abandoned-cart lead; confirm it does not create bogus orders (did not create order in smoke).
@@ -1384,11 +1581,15 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ### F-052 — Mono create-invoice validates city (PASS behavior)
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · Incomplete mono payload without city → **400** with clear UA error «Оберіть місто зі списку Нової пошти.»
 
 ---
 
 ### F-053 — Full home internal links 42/42 HTTP 200
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
 - [x] **PASS** · Checklist: SEO-073
 
@@ -1396,11 +1597,15 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ### F-054 — Blog UK 15/15 + color landings 4/4 HTTP 200 (grammar still F-002)
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** HTTP; SEO copy still broken on color titles (F-002).
 
 ---
 
 ### F-055 — RU/EN product sample (17×2) title/H1 quote mismatch 0; EN H1 no Cyrillic
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
 - [x] **PASS** for sampled locales product titles alignment (UK mismatch F-004 remains UK-only issue family).
 
@@ -1408,11 +1613,15 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ### F-056 — IGShopping / multi-hop UTM canary after unexclude (PASS)
 
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
+
 - [x] **PASS** · `utm_source=IGShopping` → stored **instagram**; `utm_term=term1` kept on `qa_full_1783617416`; multi-page hop keeps session; ATC + product_view + initiate_checkout via API **stored:true**.
 
 ---
 
 ### F-057 — Historical utm_source still heavily dirty (all-time)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
 
 - [ ] **Open** · Severity: **P1** · Area: **UTM** · Checklist: UTM-004, UTM-026, DB-008
 
@@ -1424,6 +1633,8 @@ Backfill optional after backup (UTM_GOVERNANCE).
 ---
 
 ### F-058 — Scripts matrix key pages PASS (critical assets 200)
+
+**Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
 - [x] **PASS** · home/catalog/PDP/cart/custom-print/blog load main + analytics-loader + ui-fallback + rum; PDP loads product-detail; modules `checkout-mono.js`, `cart.js`, `shared.js` return 200.
 
