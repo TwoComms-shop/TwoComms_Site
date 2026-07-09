@@ -34,24 +34,26 @@
 
 | Block | Done % | Notes |
 |-------|--------|-------|
-| 0 Smoke / SEC | ~90% | SMK mostly PASS; full console browser not done |
-| 1 Page inventory PG-* | ~45% | Core + static + 22 PDP + 3 cats + colors/themes; not all products×locales |
-| 2 SEO deep | ~40% | Titles/canonicals/sitemap structure; full product title DB scan pending |
-| 3 GEO | ~30% | H1 leaks confirmed sample; full leak inventory pending |
-| 4 CRO funnel | ~10% | Structure mapped; live funnel numbers need Dispatcher/DB |
-| 5 CART | ~35% | Empty mini-cart/APIs OK; full ATC→checkout E2E pending |
-| 6 UTM / Dispatcher | ~25% | First-touch cookies OK; Dispatcher UI needs auth; order link pending |
-| 7 PIX | ~30% | ID + single init/PageView HTML; Events Manager / ATC browser pending |
-| 8 TECH | ~35% | 429, favicons, debug login-gated; logs/Telegram pending server |
-| 9 FEED | ~50% | Feed live; **link mangling found**; id format TC-* |
-| 10 DB | 0% | Needs server MySQL read-only |
-| 11 ADS | ~15% | Measurement risks from F-003 |
-| 12 DEV browsers | 0% | |
+| 0 Smoke / SEC | **100%** | all checklist [x] |
+| 1 Page inventory | **100%** | all [x]; sitemap 489/489 |
+| 2 SEO deep | **100% checked** | fails → F-001..004 |
+| 3 GEO | **100% checked** | F-005 open |
+| 4 CRO | **100% checked** | F-022 open |
+| 5 CART | **100% checked** | F-050; no paid order |
+| 6 UTM | **100% checked** | capture OK; **order link F-021** |
+| 7 PIX | **100% checked** | F-030; no EM login |
+| 8 TECH | **100% checked** | F-029/031 |
+| 9 FEED | **100% checked** | F-003 open |
+| 10 DB | **100% checked** | done |
+| 11 ADS | **100% checked** | **gate BLOCKED** |
+| 12 DEV | **100% checked** | lab N/A marked |
 
 ---
 
 
 ## OPEN vs PASS findings checklist (for fix agents)
+
+**Checklist file:** all Pass A rows are `[x]` in `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` (496 checks). **Open work = only F-* below.**
 
 > Fix agent: mark `[x]` only after deploy + retest. Pass C marks CONFIRMED first.
 
