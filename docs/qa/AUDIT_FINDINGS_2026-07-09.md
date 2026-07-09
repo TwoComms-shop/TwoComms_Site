@@ -113,7 +113,7 @@
 | [ ] | **F-059** | P1 | ProductImage alt empty | §F-059 |
 | [ ] | **F-087** | P1 | ubd_docs public 200 | §F-087; PLAN_VS W1-11 |
 | [ ] | **F-088** | P1 | TG webhook secret empty | §F-088; PLAN_VS W3-9 |
-| [ ] | **F-093** | P1 | deploy_paramiko password in git | §F-093 |
+| [x] | **F-093** | P1 | deploy_paramiko password in git | Fixed `c5b651cf`; production verified; §F-093 |
 | [ ] | **F-095** | P1 | IG Hide list not refreshed | **IG_BOT** IG-001 |
 | [ ] | **F-096** | P1 | IG stats English / thin | **IG_BOT** IG-004 |
 | [ ] | **F-098** | P1 | IG no transfer button | **IG_BOT** IG-003 |
@@ -281,7 +281,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [ ] **F-090** | P2 | OPEN | YES | No MySQL backup cron (script present; W0-3) |
 | [x] **F-091** | P3 | INFO | no | Full plan re-verify matrix: PLAN_VS_FINDINGS_2026-07-09.md |
 | [x] **F-092** | P2 | DONE_OWNER | no | SSH password rotated by owner (W0-1 OWNER complete) |
-| [ ] **F-093** | P1 | OPEN | YES | deploy_paramiko.py still has hardcoded SSH password in git |
+| [x] **F-093** | P1 | FIXED | YES | `deploy_paramiko.py` removed in `c5b651cf`; production verified |
 | [ ] **F-094** | P1 | OPEN | YES | Product title≠H1 e.g. last-breath / death-grabs-ass (reconfirm) |
 | [ ] **F-095** | P1 | OPEN | YES | IG bot: Hide UX no list refresh (management) |
 | [ ] **F-096** | P1 | OPEN | YES | IG bot: stats/filters English; thin dashboard |
@@ -2252,10 +2252,12 @@ Owner confirmed production SSH password changed (2026-07-09). Auditor key auth n
 
 ### F-093 — `deploy_paramiko.py` still embeds SSH password (REPO)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] FIXED · **Severity:** P1 · **Fix required:** YES
 **Plan:** W0-1 REPO residual
 
 `git grep` shows tracked `deploy_paramiko.py` with `ssh.connect(..., password=...)`. Password rotation does not remove secret from git history/working tree. Fix agent: delete or rewrite to env/keys; scrub history if required.
+
+**Fixed:** `c5b651cf` deleted the tracked obsolete script. After server `git pull --ff-only`, production was verified at `c5b651cf` with no tracked changes and no `deploy_paramiko.py` file (2026-07-09).
 
 ---
 
