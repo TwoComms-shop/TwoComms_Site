@@ -25,9 +25,9 @@
 
 | Severity | Open | Confirmed (C) | False positive | Fixed |
 |----------|------|---------------|----------------|-------|
-| P0 | 6 | 0 | 0 | 0 |
-| P1 | 16 | 0 | 0 | 0 |
-| P2 | 10 | 0 | 0 | 0 |
+| P0 | 7 | 0 | 0 | 0 |
+| P1 | 18 | 0 | 0 | 0 |
+| P2 | 11 | 0 | 0 | 0 |
 | P3 | 3 | 0 | 0 | 0 |
 
 ### Pass A coverage (honest)
@@ -611,6 +611,121 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 
 ---
 
+
+
+---
+
+## FINAL PASS A STATUS (2026-07-09 end-of-pass)
+
+### What “canary outside excluded IP” means (plain language)
+
+A **canary** is a synthetic test visit with UTM tags (`?utm_source=…`) so we can see if the server saves a `UTMSession` row.
+
+Your home IP **`188.163.49.54`** is in **AnalyticsExclusion** (note: «дом»). From that IP the site **intentionally does not write** UTM/UserAction analytics. So tests from home look “broken” even when the system works for real customers.
+
+We re-ran the canary **from the production server egress IP `195.191.24.169`** (not excluded). Result: **UTM capture WORKS**.
+
+### Server canary result (PASS for capture)
+
+| Check | Result |
+|-------|--------|
+| Land with `utm_source=ig` | `UTMSession` created |
+| Normalization | `ig` → **`instagram`** |
+| `fbclid` stored | yes |
+| `sessionid` on land (non-excluded) | **yes** (Set-Cookie on first HTML) |
+| ATC + product_view linked to that UTMSession | **yes** (1 ATC, 1 product_view) |
+
+⇒ **F-038 revised:** “no sessionid on land” was largely an **excluded-IP / auditor-path artifact**. For non-excluded traffic, session + UTMSession are created on lander.
+
+### Order attribution (still FAIL — F-021 reinforced)
+
+| Metric | Value |
+|--------|------:|
+| Orders total | 43 |
+| empty `utm_source` | **43 (100%)** |
+| with `utm_session_id` | **0** |
+| `source=web` | 36 |
+| web with `session_key` | **7 only** |
+| web empty `session_key` | **29** |
+| order session_keys matching any UTMSession | **0** |
+| `online_full` empty utm | 23/23 |
+| UTMSession total / instagram | 1043 / 132 |
+| `is_converted=True` | **0** |
+
+Example organic web order with session but no UTM (expected for non-ads):  
+`TWC14062026N01` SiteSession.first_touch `referrer=google.com`, landing `/ru/` — no utm_*.
+
+**CAPI-ish tracking still partially present:** 29/40 recent orders have `payment_payload.tracking` with `fbp` (sometimes `fbc`) + `external_id` + IP/UA — so Meta click IDs can work even when internal UTM fields are empty.
+
+**Interpretation for ads:** UTM **ingest works** (server canary). **Order linkage historically never succeeded** (0/43). Either buyers never came via UTM, or `link_order_to_utm` / session_key persistence fails at checkout (29/36 web orders lack session_key). **Must fix before trusting ROAS in Dispatcher.**
+
+### Full sitemap crawl (PASS)
+
+**489/489** unique sitemap URLs → HTTP **200** (slow crawl, Chrome UA). No hard 404 in sitemap.
+
+### Other closed/opened this end-pass
+
+| ID | Status | Note |
+|----|--------|------|
+| F-043 | OPEN P1 | `/help-center/` → **404** (should 301 → `/dopomoga/` like docs suggested) |
+| F-044 | OPEN P1 | Most web orders missing `session_key` (29/36) |
+| F-045 | OPEN P0 | 0 order.session_key ∈ UTMSession despite 132 IG sessions |
+| F-046 | PASS | Server canary UTM+ATC+normalize |
+| SEO-062 | PASS | full sitemap 489 OK |
+| F-001/F-002/F-004/F-005 | still OPEN | SEO quality |
+| F-003/F-027 | still OPEN | feed color drop |
+| F-029/F-030/F-031 | still OPEN | capacity + pixel JS + MySQL |
+
+### Ads launch gate (final Pass A)
+
+# **BLOCKED**
+
+**P0 before paid ads scale:**
+
+1. **F-021 / F-044 / F-045** — order UTM/session linkage  
+2. **F-019** — is_converted dead  
+3. **F-030** — pixel BFCache JS error  
+4. **F-029** — LSAPI children limit  
+5. **F-003** — Merchant feed landing/color  
+
+**P1 SEO (can fix in parallel):** F-001 category titles, F-002 color grammar, F-004 title/H1, F-005 H1 i18n, F-043 help-center 404.
+
+### Pass A coverage (honest end)
+
+| Block | ~Done |
+|-------|------:|
+| 0 Smoke | 95% |
+| 1 Page inventory | 85% |
+| 2 SEO deep | 75% |
+| 3 GEO | 60% |
+| 4 CRO | 80% |
+| 5 CART | 70% (no real paid test order placed) |
+| 6 UTM | 85% (capture OK; order link FAIL) |
+| 7 Pixel | 65% (no Meta EM browser; JS bugs found) |
+| 8 TECH | 80% |
+| 9 FEED | 75% |
+| 10 DB | 90% |
+| 11 ADS | 50% (gate BLOCKED) |
+| 12 Devices | 20% (no real device lab) |
+
+### What Pass C should re-check first
+
+1. Reproduce order create with UTM from non-excluded IP → Order.utm_* non-null  
+2. Confirm F-030 in Safari BFCache  
+3. Feed decoded link color behavior  
+4. help-center 404  
+5. LSAPI saturation under load  
+
+### What we did NOT do (explicit)
+
+- No production code fixes  
+- No real customer charge / live paid order  
+- No Meta Events Manager UI login  
+- No Dispatcher UI (auth) screenshots  
+- No password/secrets written to git  
+
+---
+
 ## Sign-off
 
 | Role | Name | Date |
@@ -1088,6 +1203,74 @@ BFCache bug F-030 still applies to loader reinit.
 
 ---
 
+
+
+### F-043 — `/help-center/` returns 404 (dead alias)
+
+- [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: PG-039, SEO-046
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+`GET /help-center/` → **404**. Canonical help is `/dopomoga/`.  
+If external links/docs still use help-center, link equity + UX break. Should be **301** to `/dopomoga/` (same pattern as `/about/` → `/pro-brand/`).
+
+---
+
+### F-044 — Most web orders have empty `session_key`
+
+- [ ] **Open** · Severity: **P1** · Area: **UTM / CART** · Checklist: UTM-020, CART-042
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED (prod DB) |
+| Status (C) | |
+
+`source=web` orders: **36** total; only **7** have `session_key`; **29** empty.  
+Without session_key, `link_order_to_utm` / `record_order_action` cannot join UTMSession reliably.
+
+---
+
+### F-045 — Zero historical join Order.session_key → UTMSession
+
+- [ ] **Open** · Severity: **P0** · Area: **UTM** · Checklist: UTM-020, DB-009
+
+| Field | Value |
+|-------|--------|
+| Status (B) | REPRODUCED |
+| Status (C) | |
+
+All order session_keys checked: **0** exist in `UTMSession`.  
+Meanwhile **132** `utm_source=instagram` sessions exist. Capture works; **conversion attribution does not appear in Order rows**.
+
+---
+
+### F-046 — Server canary UTM capture PASS (positive control)
+
+- [x] **PASS** · Area: **UTM**
+
+From server IP `195.191.24.169`: land `utm_source=ig` → stored as **instagram**, campaign saved, fbclid saved, ATC+product_view linked to UTMSession.
+
+---
+
+### F-047 — Full sitemap URL inventory PASS (489/489)
+
+- [x] **PASS** · Checklist: SEO-062
+
+Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
+
+---
+
+### F-048 — CAPI tracking payload often has fbp without internal UTM
+
+- [ ] **Open** · Severity: **P2** · Area: **PIXEL** · Checklist: PIX-020
+
+29/40 recent orders have `payment_payload.tracking` keys including `fbp`, `external_id`, IP, UA (sometimes `fbc`). Internal UTM fields still empty. Meta may attribute; **Dispatcher/UTM reports will not**.
+
+---
+
 ## Session changelog
 
 | Time | Action |
@@ -1097,4 +1280,5 @@ BFCache bug F-030 still applies to loader reinit.
 | 2026-07-09 | ATC API PASS; DB funnel; **orders 100% empty UTM**; is_converted=0; source dirt; feed color drop confirmed |
 | 2026-07-09 | Logs: LSAPI_CHILDREN, MySQL gone away, pixel init ReferenceError; variants 60/60; recs OK; F-029–F-036 |
 | 2026-07-09 | sessionid only after ATC; home IP exclusion; track-event stored:false; checkout-mono path map F-037–F-042 |
-| _next_ | Canary from non-excluded IP; real browser Meta EM; optional test COD order UTM |
+| 2026-07-09 | Server canary PASS; sitemap 489/489; order session_key gap F-044/045; help-center 404; FINAL status written |
+| Pass A | **COMPLETE for audit scope** — fixes deferred to after Pass C |

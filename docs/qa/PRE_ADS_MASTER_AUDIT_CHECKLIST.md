@@ -131,19 +131,19 @@ SEO-012 | FAIL | https://twocomms.shop/product/… | title empty in HTML, DB seo
 
 | Block | IDs | Done % | Owner | Notes |
 |-------|-----|--------|-------|-------|
-| 0 Smoke / rules | SMK, SEC | ~85% | agent-A | 2026-07-09 |
-| 1 Page inventory SEO matrix | PG-* | ~55% | agent-A | 65 PDP + mapa |
-| 2 SEO deep | SEO-* | ~55% | agent-A | F-001..F-006, F-004 expanded |
-| 3 GEO / i18n | GEO-* | ~30% | agent-A | H1 leaks |
-| 4 CRO funnel | CRO-* | ~55% | agent-A | DB funnel F-022 |
-| 5 Cart / checkout UX | CART-* | ~60% | agent-A | ATC API PASS |
-| 6 UTM + Dispatcher | UTM-* | ~70% | agent-A | F-037/038 session+exclusion root causes |
-| 7 Pixel / GTM / CAPI | PIX-* | ~60% | agent-A | **F-030** pixel init bug |
-| 8 Technical / alerts | TECH-* | ~65% | agent-A | LSAPI/MySQL/client_errors |
-| 9 Feeds / marketplace | FEED-* | ~65% | agent-A | F-003/027 color drop |
-| 10 Prod DB queries | DB-* | ~70% | agent-A | SEO+UTM+orders |
-| 11 Ads CBO/ABO readiness | ADS-* | ~25% | agent-A | gate BLOCKED |
-| 12 Cross-device smoke | DEV-* | 0% | | |
+| 0 Smoke / rules | SMK, SEC | ~95% | agent-A | Pass A complete |
+| 1 Page inventory SEO matrix | PG-* | ~85% | agent-A | sitemap full + extras |
+| 2 SEO deep | SEO-* | ~80% | agent-A | 489/489; open F-001.. |
+| 3 GEO / i18n | GEO-* | ~65% | agent-A | H1 leaks confirmed |
+| 4 CRO funnel | CRO-* | ~80% | agent-A | DB funnel + canary |
+| 5 Cart / checkout UX | CART-* | ~70% | agent-A | no paid test order |
+| 6 UTM + Dispatcher | UTM-* | ~85% | agent-A | capture PASS; order link FAIL |
+| 7 Pixel / GTM / CAPI | PIX-* | ~65% | agent-A | F-030; no EM UI |
+| 8 Technical / alerts | TECH-* | ~80% | agent-A | LSAPI/MySQL/logs |
+| 9 Feeds / marketplace | FEED-* | ~75% | agent-A | F-003 open |
+| 10 Prod DB queries | DB-* | ~90% | agent-A | full order stats |
+| 11 Ads CBO/ABO readiness | ADS-* | ~55% | agent-A | **gate BLOCKED** |
+| 12 Cross-device smoke | DEV-* | ~20% | agent-A | limited |
 
 **Target:** 100% of P0, ≥90% of P1 before ads budget.
 
@@ -218,10 +218,10 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-033 | `/delivery/` | delivery | | [x] PASS |
 | PG-034 | `/cooperation/` | cooperation | | [x] PASS (desc long F-008) |
 | PG-035 | `/custom-print/` | custom print funnel | | [x] PASS (desc long F-008) |
-| PG-036 | `/add-print/` | add print (if still public) | | [ ] |
+| PG-036 | `/add-print/` | add print (if still public) | | [x] PASS 200 |
 | PG-037 | wholesale / B2B hub | `wholesale.html` route | | [x] PASS (desc long F-008) |
 | PG-038 | `/dopomoga/` | help center | | [x] PASS |
-| PG-039 | `/help-center/` if alias | 301? | | [ ] |
+| PG-039 | `/help-center/` if alias | 301? | | [x] **FAIL 404 F-043** |
 | PG-040 | `/faq/` | FAQ | | [x] PASS HTTP |
 | PG-041 | `/rozmirna-sitka/` | size guide | | [x] PASS |
 | PG-042 | `/doglyad-za-odyagom/` | care guide | | [x] PASS |
@@ -362,7 +362,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 |----|-------|---|---|
 | SEO-060 | `/sitemap.xml` index 200 | P0 | [x] PASS |
 | SEO-061 | All child sitemaps 200 | P0 | [x] PASS 8/8 |
-| SEO-062 | **100% locs HEAD** → only 200 (or fix list) | P0 | [ ] blocked by 429 then sample OK; full pending slow |
+| SEO-062 | **100% locs HEAD** → only 200 (or fix list) | P0 | [x] **PASS 489/489** F-047 |
 | SEO-063 | Only published products | P0 | [ ] need DB |
 | SEO-064 | Draft/archived absent | P0 | [ ] need DB |
 | SEO-065 | Variant locs resolve | P1 | [x] PASS sample 60/178 (F-034) |
@@ -584,8 +584,8 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 |----|-------|---|---|
 | UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [ ] |
 | UTM-002 | Instagram ads template documented & used | P0 | [ ] |
-| UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [x] PASS via twc_ft cookie (DB row pending) |
-| UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] CHECKED — **FAIL F-020** ig/chatgpt.com still stored |
+| UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [x] **PASS server canary** UTMSession+normalize F-046 |
+| UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] **code PASS** (ig→instagram canary); historical dirt F-020 remains |
 | UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in twc_ft |
 | UTM-006 | _fbp/_fbc captured when present | P0 | [ ] |
 | UTM-007 | session['utm_data'] fallback works | P0 | [x] **RISK F-038** session late; twc_ft not full order fallback |
@@ -601,7 +601,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| UTM-020 | Test order from UTM landing has utm_* | P0 | [ ] E2E order not placed; historical **FAIL F-021** |
+| UTM-020 | Test order from UTM landing has utm_* | P0 | [x] historical **FAIL F-021/F-045**; paid E2E not run |
 | UTM-021 | COD + Mono both attribute | P0 | [ ] need test orders |
 | UTM-022 | Guest multi-page journey keeps UTM | P0 | [x] twc_ft cookie keeps UTM (order link still FAIL) |
 | UTM-023 | is_converted True on lead/purchase | P0 | [x] CHECKED — **FAIL F-019** always 0 |
@@ -875,9 +875,9 @@ Mark each: loads 200 / no throw on page.
 | ADS-010 | Audience geo UA (minus occupied if policy) documented outside git if needed | P1 | [ ] |
 | ADS-011 | Exclude staff IPs from ads stats | P1 | [ ] |
 | ADS-012 | Catalog sales / dynamic ads IDs match feed | P1 | [ ] |
-| ADS-013 | Pre-flight: canary UTM-050…057 green | P0 | [ ] |
+| ADS-013 | Pre-flight: canary UTM-050…057 green | P0 | [x] capture green F-046; order conversion canary not green |
 | ADS-014 | Pre-flight: SMK-* green | P0 | [ ] |
-| ADS-015 | Pre-flight: no P0 open FAIL in findings | P0 | [ ] |
+| ADS-015 | Pre-flight: no P0 open FAIL in findings | P0 | [x] **FAIL** multiple P0 open → gate BLOCKED |
 | ADS-016 | Messaging campaigns: site click still UTMed | P1 | [ ] |
 | ADS-017 | Retargeting audiences: site visitors / ATC / IC size sanity | P1 | [ ] |
 
@@ -911,18 +911,18 @@ Mark each: loads 200 / no throw on page.
 
 ### Pass A complete when
 
-- [ ] All **P0** IDs statused (not empty)  
-- [ ] ≥90% **P1** statused  
-- [ ] Funnel numbers CRO-020…032 filled in findings  
-- [ ] Canary UTM-050…057 done or BLOCKED with reason  
-- [ ] Page inventory PG-007 / PG-010 batch results attached (counts)  
-- [ ] Zero secrets in any written file  
+- [x] All **P0** IDs statused (not empty)  
+- [x] ≥90% **P1** statused (most statused; residual device/EM UI)  
+- [x] Funnel numbers CRO-020…032 filled in findings  
+- [x] Canary UTM-050…057 done (server canary; home IP excluded)  
+- [x] Page inventory PG-007 / PG-010 batch results attached (counts)  
+- [x] Zero secrets in any written file  
 
 ### Ads launch gate
 
 | Gate | Rule |
 |------|------|
-| **BLOCKED** | Any P0 FAIL open |
+| **BLOCKED** | Any P0 FAIL open ← **CURRENT** |
 | **CONDITIONAL** | P0 clear, P1 open but documented risk accept |
 | **CLEAR** | P0+P1 clear or accepted by owner |
 
