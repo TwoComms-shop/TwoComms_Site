@@ -5,8 +5,9 @@
 **Auditor (Pass A/B):** agent-pass-a (production HTTP + HTML + sitemap + feed)  
 **Confirmer (Pass C):** _pending_  
 **Environment:** production `https://twocomms.shop`  
-**Scope:** main site only  
-**Method:** live curl/python fetch; no code changes; no secrets stored  
+**Scope:** main site `twocomms.shop` + management IG bot findings (F-095+) + plan re-verify  
+**Method:** live curl/python/code review; **no product fixes in audit**; no secrets stored  
+**Fix agent entry:** start at `docs/qa/README.md` → **MASTER FIX CHECKLIST** below  
 
 ## Security
 
@@ -51,15 +52,127 @@
 ---
 
 
+## MASTER FIX CHECKLIST (for fix agent)
+
+> **This is the single work queue.**  
+> - `[ ]` = still open for fix  
+> - `[x]` = no fix needed (PASS/INFO) or owner-done  
+> - **Detail** column = where the long write-up lives  
+> - Full narrative for most F-* is still in sections `### F-xxx` **below in this file**  
+> - Plan/IG deep dives are in sibling MDs  
+
+### How to use
+1. Read `docs/qa/README.md` (navigation).  
+2. Work top-down by priority tables.  
+3. After fix: flip `[ ]` → `[x]`, add commit hash in a short note under the finding.  
+4. Do not delete PASS rows — they document what already works.
+
+### Priority A — Storefront P0 (ads blocked without these)
+
+| ☐ | ID | Sev | One-line | Detail / related plan |
+|---|-----|-----|----------|------------------------|
+| [ ] | **F-071** | P0 | `link_order_to_utm` ignores first_touch UTM | §F-071 below; **PLAN_VS W2-1**; code `utm_tracking.py` |
+| [ ] | **F-021** | P0 | 100% orders empty utm_source | §F-021; same as F-071 family |
+| [ ] | **F-033** | P0 | link_order in code but orders empty | §F-033; PLAN_VS W2-1 |
+| [ ] | **F-045** | P0 | 0 Order.session_key join UTMSession | §F-045 |
+| [ ] | **F-019** | P0 | is_converted always 0 | §F-019; **PLAN_VS W2-2** |
+| [ ] | **F-030** | P0 | initializePixelsImmediately not defined | §F-030; **PLAN_VS ADS-1**; `analytics-loader.js` |
+| [ ] | **F-029** | P0 | LSAPI_CHILDREN process limit | §F-029 |
+| [ ] | **F-003** | P0 | Merchant feed / color landing issues | §F-003; narrow with **F-077** |
+| [ ] | **F-027** | P0 | Feed color issues (narrowed) | §F-027; see F-077 REVISED |
+| [ ] | **F-097** | P0 | IG bot Message Requests unlabeled | **IG_BOT** IG-005/013; F-097 |
+| [ ] | **F-099** | P1 | Mono dual path W2-7 (webhook no on_commit CAPI) | **PLAN_VS** W2-7; §F-099 |
+
+### Priority B — Storefront P1 (fix next)
+
+| ☐ | ID | Sev | One-line | Detail |
+|---|-----|-----|----------|--------|
+| [ ] | **F-001** | P1 | Category titles truncated | §F-001; **PLAN_VS ADS-3** (DB reseed) |
+| [ ] | **F-023** | P1 | Truncated titles in MySQL | §F-023; root of F-001 |
+| [ ] | **F-002** | P1 | Color landing UA grammar | §F-002 |
+| [ ] | **F-004** | P1 | Product title vs H1 | §F-004 |
+| [ ] | **F-094** | P1 | title≠H1 reconfirm last-breath etc. | §F-094; F-004 |
+| [ ] | **F-005** | P1 | RU/EN H1 still Ukrainian | §F-005; **PLAN_VS ADS-2** |
+| [ ] | **F-083** | P1 | purchase UA 3 vs 36 paid | §F-083; **PLAN_VS W2-3** |
+| [ ] | **F-044** | P1 | Most web orders empty session_key | §F-044 |
+| [ ] | **F-068** | P1 | prepay_200 all missing session_key | §F-068; F-073 |
+| [ ] | **F-073** | P1 | session in tracking.external_id only | §F-073 |
+| [ ] | **F-074** | P1 | COD no _ensure_session_key | §F-074; PLAN_VS W1-1 nuance |
+| [ ] | **F-072** | P1 | Only 2/36 recoverable via external_id | §F-072 |
+| [ ] | **F-076** | P1 | PV noise / site_session gap | §F-076; PLAN_VS W2-4 |
+| [ ] | **F-084** | P1 | chatgpt vs chatgpt.com dual | §F-084; PLAN_VS W2-8 |
+| [ ] | **F-020** | P1 | Historical dirty utm_source | §F-020 |
+| [ ] | **F-057** | P1 | All-time dirty utm inventory | §F-057 |
+| [ ] | **F-022** | P1 | PV→ATC cliff | §F-022 |
+| [ ] | **F-032** | P1 | UserAction rarely linked UTMSession | §F-032 |
+| [ ] | **F-031** | P1 | MySQL has gone away | §F-031; F-080 |
+| [ ] | **F-007** | P1 | HTTP 429 burst crawl | §F-007 |
+| [ ] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | §F-018 |
+| [ ] | **F-043** | P1 | /help-center/ 404 | §F-043 |
+| [ ] | **F-050** | P1 | NP Kyiv Latin 502 | §F-050 |
+| [ ] | **F-059** | P1 | ProductImage alt empty | §F-059 |
+| [ ] | **F-087** | P1 | ubd_docs public 200 | §F-087; PLAN_VS W1-11 |
+| [ ] | **F-088** | P1 | TG webhook secret empty | §F-088; PLAN_VS W3-9 |
+| [ ] | **F-093** | P1 | deploy_paramiko password in git | §F-093 |
+| [ ] | **F-095** | P1 | IG Hide list not refreshed | **IG_BOT** IG-001 |
+| [ ] | **F-096** | P1 | IG stats English / thin | **IG_BOT** IG-004 |
+| [ ] | **F-098** | P1 | IG no transfer button | **IG_BOT** IG-003 |
+
+### Priority C — P2 / ops / hygiene
+
+| ☐ | ID | Sev | One-line | Detail |
+|---|-----|-----|----------|--------|
+| [ ] | **F-006** | P2 | Color sitemap ×3 | §F-006 |
+| [ ] | **F-008** | P2 | Meta description too long | §F-008 |
+| [ ] | **F-010** | P2 | debug endpoints login not 404 | §F-010 |
+| [ ] | **F-011** | P2 | TikTok ttq.load not in HTML | §F-011 |
+| [ ] | **F-013** | P2 | Category title vs H1 strategy | §F-013 |
+| [ ] | **F-028** | P2 | RU/EN PDP naming | §F-028 |
+| [ ] | **F-035** | P2 | CSP violations | §F-035 |
+| [ ] | **F-036** | P2 | Telegram RemoteDisconnected | §F-036 |
+| [ ] | **F-048** | P2 | fbp without internal UTM | §F-048 |
+| [ ] | **F-051** | P2 | checkout/capture empty 200 | §F-051; PLAN_VS W3-11 |
+| [ ] | **F-075** | P2 | CheckoutCapture.converted 0/4 | §F-075; mono path |
+| [ ] | **F-078** | P2 | /kontakty/ 404 | §F-078 |
+| [ ] | **F-089** | P2 | FACEBOOK_PIXEL_ID empty settings | §F-089 |
+| [ ] | **F-090** | P2 | No MySQL backup cron | §F-090; PLAN_VS W0-3 |
+
+### Priority D — P3 open
+
+| ☐ | ID | Sev | One-line | Detail |
+|---|-----|-----|----------|--------|
+| [ ] | **F-009** | P3 | favicon 302 | §F-009 |
+| [ ] | **F-014** | P3 | sitemap lastmod cluster | §F-014 |
+| [ ] | **F-015** | P3 | manifest.webmanifest 404 | §F-015 |
+
+### Plan-only reopen (not always separate F-*) — still fix
+
+| ☐ | Plan ID | Issue | Detail |
+|---|---------|-------|--------|
+| [ ] | **W2-7** | Dual mono status path: webhook skips on_commit CAPI | **PLAN_VS** STRICT W2-7 |
+| [ ] | **W7-1** | views.py.backup still lazy-loaded | PLAN_VS W7-1 |
+| [ ] | **W7-23** | residual datetime.now dropshipper | PLAN_VS W7-23 |
+| [ ] | **W0-5** | OPS docs OK; server stash OWNER | PLAN_VS W0-5 |
+| [ ] | **IG-002…IG-014** | Full IG bot pack beyond F-095…098 | **IG_BOT_MANAGEMENT_BUGS** |
+
+### PASS / INFO (do not fix as bugs)
+
+See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047, F-077, F-081, F-092 DONE_OWNER, …).
+
+---
+
 ## MASTER FINDINGS INDEX (все находки Pass A)
 
 > **Как читать**
 > - `[ ]` = **ещё не исправлено** (для fix-агента / Pass C → fix)
 > - `[x]` = **PASS / INFO** — проверено, чинить не нужно (или только process-note)
-> - Полное описание каждой находки — секции `### F-xxx` ниже в этом же файле
-> - Чек-лист аудита: `PRE_ADS_MASTER_AUDIT_CHECKLIST.md` — все строки уже `[x]` (пройдены)
+> - Полное описание: секции `### F-xxx` ниже **или** колонка Detail в **MASTER FIX CHECKLIST**
+> - Навигация fix-агента: [`README.md`](./README.md)
+> - Plan false-DONE / dual mono path: [`PLAN_VS_FINDINGS_2026-07-09.md`](./PLAN_VS_FINDINGS_2026-07-09.md)
+> - IG bot deep dive: [`IG_BOT_MANAGEMENT_BUGS_2026-07-09.md`](./IG_BOT_MANAGEMENT_BUGS_2026-07-09.md)
+> - Walk checklist (Pass A done): `PRE_ADS_MASTER_AUDIT_CHECKLIST.md`
 
-**Итого: 94 находки** (F-001…F-098) · see PLAN_VS_FINDINGS · **Ads gate: BLOCKED** (есть открытые P0)
+**Итого: F-001…F-101** (+ IG-001…IG-014 in IG_BOT file) · **Ads gate: BLOCKED** · Fix agent: **MASTER FIX CHECKLIST** above
 
 ### Сводка по severity
 
@@ -174,6 +287,9 @@
 | [ ] **F-096** | P1 | OPEN | YES | IG bot: stats/filters English; thin dashboard |
 | [ ] **F-097** | P0 | OPEN | YES | IG bot: Message Requests / Graph send fails unlabeled |
 | [ ] **F-098** | P1 | OPEN | YES | IG bot: no explicit transfer-to-manager CRM action |
+| [ ] **F-099** | P1 | OPEN | YES | Mono dual path: webhook _apply skips on_commit CAPI (plan W2-7) |
+| [ ] **F-100** | P2 | OPEN | YES | views.py.backup still lazy-loaded (plan W7-1) |
+| [ ] **F-101** | P3 | OPEN | YES | residual datetime.now in dropshipper_views (plan W7-23) |
 
 ### P0 OPEN (чинить в первую очередь) — 9
 - [ ] **F-003** — Color landing SEO/grammar (product feed path narrowed via F-077)
@@ -2185,6 +2301,77 @@ Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
 | F-098 | No explicit «transfer to manager» button (only AI/echo) |
 
 Also IG-006 likes/reactions, IG-001…IG-014 in that file.
+
+---
+
+
+
+
+### F-095 — IG bot Hide: list not refreshed (management)
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Detail (full):** [`IG_BOT_MANAGEMENT_BUGS_2026-07-09.md`](./IG_BOT_MANAGEMENT_BUGS_2026-07-09.md) **IG-001**  
+
+API `bot_client_hide_api` sets `hidden_at`; UI only re-fetches detail, not client list → row stays in Active. Labels `Hide`/`Unhide` English.
+
+**Code:** `bot_views.py` hide API; `templates/management/bot.html` Clients JS.
+
+---
+
+### F-096 — IG bot stats/filters English + thin dashboard
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Detail:** **IG-004** in IG_BOT file  
+
+Hardcoded EN: Active, Conversations, Qualified, Hide, Signals, … Stats API returns raw stage keys. Lifetime only; weak revenue aggregation.
+
+**Code:** `bot.html` Stats; `bot_views.bot_stats_api`.
+
+---
+
+### F-097 — IG bot Message Requests / Graph send fails unlabeled
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES  
+**Detail:** **IG-005, IG-013** in IG_BOT file  
+
+`send_text` RESPONSE only; permanent errors (#551, Advanced Access, 24h window) → FAILED + manager alert; no `IgClient` flag / CRM filter «у запитах».
+
+**Code:** `instagram_bot.send_text`, `_classify_send_error`, `_process_one`.
+
+---
+
+### F-098 — IG bot no explicit transfer-to-manager action
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Detail:** **IG-003** in IG_BOT file  
+
+Only AI `[manager]` / page echo takeover; UI has pause/hide/lost, no «Передати менеджеру».
+
+---
+
+### F-099 — Mono dual status path (webhook vs utils) — plan W2-7
+
+**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Detail:** [`PLAN_VS_FINDINGS_2026-07-09.md`](./PLAN_VS_FINDINGS_2026-07-09.md) STRICT W2-7  
+
+Retail webhook `monobank.py` → `_apply_monobank_status` (sync Telegram/purchase, **no** `on_commit` CAPI).  
+Utils path `_record_monobank_status_locked` has the W2-7 fix. Production paid webhooks use the first path.
+
+---
+
+### F-100 — `views.py.backup` still runtime-reachable — plan W7-1
+
+**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES  
+**Detail:** PLAN_VS W7-1  
+
+File `storefront/views.py.backup` exists; `views/__init__.py` still lazy-loads from it.
+
+---
+
+### F-101 — residual `datetime.now()` in dropshipper — plan W7-23
+
+**Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES  
+**Detail:** PLAN_VS W7-23 · `orders/dropshipper_views.py:273-274`
 
 ---
 
