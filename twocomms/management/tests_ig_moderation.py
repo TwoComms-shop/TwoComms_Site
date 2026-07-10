@@ -3,8 +3,9 @@ from unittest.mock import patch
 
 from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
 
-from management.models import IgClient
+from management.models import IgClient, InstagramBotMessage, InstagramBotSettings
 from management.services import instagram_bot as bot
 
 
@@ -26,6 +27,36 @@ class BlockedGateTests(TestCase):
     def test_normal_not_blocked(self):
         c = IgClient.get_or_create_for_sender("b2")
         self.assertFalse(bot._client_blocked(c))
+
+    @patch("management.services.instagram_bot.send_text", return_value=(True, "", ""))
+    @patch("management.services.instagram_bot.gemini_generate", return_value="Тестова відповідь")
+    @patch("management.services.instagram_bot.send_sender_action")
+    def test_worker_refetches_hidden_state_after_claim_before_send(
+        self, _sender_action, generate_reply, send_text
+    ):
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.save(update_fields=["is_enabled"])
+        client = IgClient.get_or_create_for_sender("claimed_then_hidden")
+        client.profile_fetched_at = timezone.now()
+        client.save(update_fields=["profile_fetched_at", "updated_at"])
+        row = InstagramBotMessage.objects.create(
+            sender_id=client.igsid,
+            client=client,
+            role=InstagramBotMessage.Role.USER,
+            text="потрібна відповідь",
+            status=InstagramBotMessage.Status.PROCESSING,
+        )
+        self.assertIsNone(row.client.hidden_at)  # кешуємо стан до конкурентного hide.
+        IgClient.objects.filter(pk=client.pk).update(hidden_at=timezone.now())
+
+        handled = bot._process_one(settings, row)
+
+        self.assertFalse(handled)
+        generate_reply.assert_not_called()
+        send_text.assert_not_called()
+        row.refresh_from_db()
+        self.assertEqual(row.status, InstagramBotMessage.Status.DONE)
 
 
 class SpamStrikeTests(TestCase):
