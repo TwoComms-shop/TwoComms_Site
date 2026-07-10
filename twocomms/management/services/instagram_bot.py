@@ -1478,6 +1478,20 @@ def _acquire_client_automation_lease(
         return None, ""
     client, token, state = _lease_client_automation(row.client_id)
     if state == "acquired":
+        # Reclaim may have won just before we acquired the client lease. Do not
+        # let this stale Python object send after its DB row returned to pending.
+        ownership = InstagramBotMessage.objects.filter(
+            pk=row.pk,
+            status=InstagramBotMessage.Status.PROCESSING,
+        )
+        if row.processing_started_at:
+            ownership = ownership.filter(
+                processing_started_at=row.processing_started_at
+            )
+        if not ownership.exists():
+            release_client_automation_lease(client.id, token)
+            log("info", "claim_lost", f"{row.sender_id}: row вже повернуто в чергу")
+            return None, ""
         row.client = client  # не використовуємо застарілий relation-cache після claim.
         return client, token
     if state == "blocked" and client:
