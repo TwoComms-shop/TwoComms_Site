@@ -117,6 +117,22 @@ class HiddenClientIngressTests(TestCase):
         self.assertEqual(snapshot["pending"], 1)
         self.assertEqual(snapshot["unique_senders"], 1)
 
+    def test_worker_never_claims_a_hidden_clients_legacy_pending_row(self):
+        client = IgClient.get_or_create_for_sender("hidden_legacy_pending")
+        client.hidden_at = timezone.now()
+        client.save(update_fields=["hidden_at", "updated_at"])
+        queued = InstagramBotMessage.objects.create(
+            sender_id=client.igsid,
+            client=client,
+            role=InstagramBotMessage.Role.USER,
+            text="legacy pending",
+            status=InstagramBotMessage.Status.PENDING,
+        )
+
+        self.assertIsNone(bot._claim_next())
+        queued.refresh_from_db()
+        self.assertEqual(queued.status, InstagramBotMessage.Status.PENDING)
+
 
 class BackfillOrphanMessagesTests(TestCase):
     def test_links_orphan_messages_and_sets_times(self):
