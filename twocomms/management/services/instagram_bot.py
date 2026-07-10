@@ -1705,7 +1705,12 @@ def process_pending(s: InstagramBotSettings | None = None, max_items: int = 15) 
                 handled += 1
         except Exception as exc:
             log("error", "process", repr(exc))
-            InstagramBotMessage.objects.filter(id=row.id).update(
+            # Після успішного Meta Send рядок уже позначено done. Не можна
+            # повертати його в pending через пізній збій CRM/телеметрії — це
+            # призведе до дубльованої відповіді клієнту.
+            InstagramBotMessage.objects.filter(
+                id=row.id, status=InstagramBotMessage.Status.PROCESSING
+            ).update(
                 status=InstagramBotMessage.Status.PENDING
             )
             break
