@@ -1258,14 +1258,15 @@ def enqueue_inbound(
         log("info", "skip_not_allowed", f"[{source}] {sender_id} поза білим списком")
         return False
     client = IgClient.get_or_create_for_sender(sender_id)
-    # Прихований клієнт — це виключення з робочої воронки, а не тільки
-    # приглушена відповідь. Не створюємо чергу, не торкаємо CRM-картку та не
-    # запускаємо класифікацію/наступний контакт.
-    if client.hidden_at:
-        log("info", "skip_hidden", f"[{source}] {sender_id}: прихований клієнт")
-        return False
     try:
         with transaction.atomic():
+            # Серіалізуємо ingress із hide: або вхідне повністю оброблено до
+            # приховування, або приховування вже виграло і жодного side effect
+            # (черги, CRM, classifier, follow-up) не буде.
+            client = IgClient.objects.select_for_update().get(pk=client.pk)
+            if client.hidden_at:
+                log("info", "skip_hidden", f"[{source}] {sender_id}: прихований клієнт")
+                return False
             msg = InstagramBotMessage.objects.create(
                 sender_id=sender_id,
                 client=client,
@@ -1276,16 +1277,16 @@ def enqueue_inbound(
                 source=source,
                 attachments=json.dumps(attachments) if attachments else "",
             )
+            client.touch_inbound()
+            try:
+                from management.services import bot_followups, bot_sales_classifier
+
+                bot_followups.schedule_after_inbound(client)
+                bot_sales_classifier.classify_message(client, message=msg)
+            except Exception:
+                pass
     except IntegrityError:
         return False  # вже у черзі/оброблено (mid unique)
-    client.touch_inbound()
-    try:
-        from management.services import bot_followups, bot_sales_classifier
-
-        bot_followups.schedule_after_inbound(client)
-        bot_sales_classifier.classify_message(client, message=msg)
-    except Exception:
-        pass
     s.last_inbound_at = timezone.now()
     s.save(update_fields=["last_inbound_at"])
     extra = f" (+{len(attachments)} фото)" if attachments else ""
@@ -1372,14 +1373,36 @@ def reclaim_stale_processing(max_age_seconds: int = STALE_PROCESSING_SECONDS) ->
     return requeued
 
 
+def _skip_blocked_row(row: InstagramBotMessage, client: IgClient) -> bool:
+    row.status = InstagramBotMessage.Status.DONE
+    row.processed_at = timezone.now()
+    row.save(update_fields=["status", "processed_at"])
+    log("info", "paused_skip", f"{row.sender_id}: на паузі ({client.paused_reason or 'manual'})")
+    return False
+
+
 def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
-    # Пауза/блок клієнта (стоп вручну або перехоплення менеджером) — не відповідаємо.
+    """Process one message while serializing a client hide with external sends.
+
+    The client lock intentionally spans the per-client processing unit. A hide
+    either wins before this work begins, or waits for its in-flight work and
+    cannot report success while a reply may still be sent.
+    """
+    if not row.client_id:
+        return _process_one_unlocked(s, row)
+    with transaction.atomic():
+        client = IgClient.objects.select_for_update().filter(pk=row.client_id).first()
+        if client and _client_blocked(client):
+            return _skip_blocked_row(row, client)
+        if client:
+            row.client = client  # не використовуємо застарілий relation-cache після claim.
+        return _process_one_unlocked(s, row)
+
+
+def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
+    # Додаткова перевірка для шляхів без картки або прямого виклику helper-а.
     if row.client_id and _client_blocked(row.client):
-        row.status = InstagramBotMessage.Status.DONE
-        row.processed_at = timezone.now()
-        row.save(update_fields=["status", "processed_at"])
-        log("info", "paused_skip", f"{row.sender_id}: на паузі ({row.client.paused_reason or 'manual'})")
-        return False
+        return _skip_blocked_row(row, row.client)
     # Захоплення телефону клієнта (лід), якщо ще немає.
     if row.client_id:
         try:
