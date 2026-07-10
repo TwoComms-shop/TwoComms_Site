@@ -700,6 +700,12 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       size:'Розмір',size_concern:'Розмір',thinking:'Потрібен час подумати',no_reply:'Не відповідає',
       no_buy:'Не купує',lost:'Втрачено',trust:'Недостатньо довіри',delivery:'Доставка',other:'Інше'
     };
+    const stageLabels={
+      new:'Написали',qualifying:'З’ясовуємо потребу',product_matched:'Товар визначено',checkout:'Обирають оплату',
+      payment_pending:'Очікуємо оплату',paid:'Оплачено',order_created:'Замовлення створено',done:'Завершено',
+      lead_manager:'Передано менеджеру',spam:'Спам',cold:'Неактивні'
+    };
+    const funnelOrder=['new','qualifying','product_matched','checkout','payment_pending','paid','order_created','done','lead_manager'];
     function stat(k,v){return '<div class="bot-stat-box"><div class="v">'+esc(String(v||0))+'</div><div class="k">'+esc(k)+'</div></div>';}
     function table(title, rows, cols){
       if(!(rows||[]).length) return '<h2 style="margin-top:18px;">'+esc(title)+'</h2><div class="bot-empty" style="padding:18px 10px;">Даних за цим розділом поки немає.</div>';
@@ -721,6 +727,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             stat('Повернення після нагадування',t.followup_recoveries)+stat('Конверсії зі знижкою',t.discount_conversions)+
             stat('Діалоги веде менеджер',t.manager_takeovers)+stat('Кастомні принти менеджеру',t.custom_print_handoffs)+stat('Приховані',t.hidden)+
             '</div>';
+          const funnel=funnelOrder.filter(key=>(d.stages||{})[key]).map(key=>({
+            stage:stageLabels[key]||key,count:d.stages[key],share:t.conversations?Math.round(d.stages[key]*100/t.conversations)+'%':'0%'
+          }));
+          h+=table('Воронка продажів', funnel, [['stage','Етап'],['count','Клієнти'],['share','Частка від діалогів']]);
           h+=table('Інтерес до товарів / SKU', d.products, [['product_id','SKU'],['product_title','Товар'],['count','Діалоги']]);
           const ads=(d.ads||[]).map(r=>({...r,revenue:new Intl.NumberFormat('uk-UA',{maximumFractionDigits:0}).format(Number(r.revenue||0))}));
           h+=table('Ефективність реклами', ads, [['ad_id','ID реклами'],['ad_ref','Мітка'],['ad_title','Назва'],['chats','Діалоги'],['paid','Оплачені'],['revenue','Дохід, грн']]);
