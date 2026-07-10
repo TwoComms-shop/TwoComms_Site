@@ -221,7 +221,8 @@ class SalesCockpitApiTests(TestCase):
         data = self.client.get(reverse("management_bot_stats_api")).json()
 
         self.assertTrue(data["success"])
-        self.assertGreaterEqual(data["totals"]["conversations"], 3)
+        # Hidden clients are intentionally excluded from sales analytics.
+        self.assertEqual(data["totals"]["conversations"], 2)
         self.assertGreaterEqual(data["stages"].get(IgClient.Stage.PAID, 0), 1)
         self.assertGreaterEqual(data["objections"].get("price_objection", 0), 1)
 
