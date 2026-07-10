@@ -4,7 +4,10 @@ IgClient — це B2C-картка співрозмовника в Instagram Dir
 холодного обзвону). Кожне повідомлення прив'язується до картки; enqueue
 створює/оновлює картку (first_contact_at, last_message_at).
 """
+from unittest.mock import patch
+
 from django.test import TestCase
+from django.utils import timezone
 
 from management.models import (
     IgClient,
@@ -63,6 +66,56 @@ class IgClientMessageLinkTests(TestCase):
         self.assertEqual(msg.client.igsid, "abc")
         self.assertIsNotNone(msg.client.first_contact_at)
         self.assertIsNotNone(msg.client.last_message_at)
+
+
+class HiddenClientIngressTests(TestCase):
+    @patch("management.services.bot_sales_classifier.classify_message")
+    @patch("management.services.bot_followups.schedule_after_inbound")
+    def test_hidden_client_is_not_enqueued_or_classified(self, schedule_followup, classify_message):
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.allowed_senders = ""
+        settings.save()
+        client = IgClient.get_or_create_for_sender("hidden_ingress")
+        client.hidden_at = timezone.now()
+        client.save(update_fields=["hidden_at", "updated_at"])
+
+        queued = bot.enqueue_inbound(
+            settings, sender_id=client.igsid, text="не обробляйте", mid="hidden-mid"
+        )
+
+        self.assertFalse(queued)
+        self.assertFalse(InstagramBotMessage.objects.filter(mid="hidden-mid").exists())
+        schedule_followup.assert_not_called()
+        classify_message.assert_not_called()
+        settings.refresh_from_db()
+        self.assertIsNone(settings.last_inbound_at)
+
+    def test_overview_counters_exclude_hidden_clients_and_messages(self):
+        active = IgClient.get_or_create_for_sender("active_overview")
+        hidden = IgClient.get_or_create_for_sender("hidden_overview")
+        hidden.hidden_at = timezone.now()
+        hidden.save(update_fields=["hidden_at", "updated_at"])
+        InstagramBotMessage.objects.create(
+            sender_id=active.igsid,
+            client=active,
+            role=InstagramBotMessage.Role.USER,
+            text="активне повідомлення",
+            status=InstagramBotMessage.Status.PENDING,
+        )
+        InstagramBotMessage.objects.create(
+            sender_id=hidden.igsid,
+            client=hidden,
+            role=InstagramBotMessage.Role.USER,
+            text="приховане повідомлення",
+            status=InstagramBotMessage.Status.PENDING,
+        )
+
+        self.assertEqual(bot.pending_count(), 1)
+        self.assertEqual(bot.unique_senders_count(), 1)
+        snapshot = bot.status_snapshot()
+        self.assertEqual(snapshot["pending"], 1)
+        self.assertEqual(snapshot["unique_senders"], 1)
 
 
 class BackfillOrphanMessagesTests(TestCase):
