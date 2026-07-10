@@ -1381,28 +1381,31 @@ def _skip_blocked_row(row: InstagramBotMessage, client: IgClient) -> bool:
     return False
 
 
-def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
-    """Process one message while serializing a client hide with external sends.
+def _refresh_active_client(row: InstagramBotMessage) -> bool:
+    """Refresh a client under a short lock and stop work if it was hidden.
 
-    The client lock intentionally spans the per-client processing unit. A hide
-    either wins before this work begins, or waits for its in-flight work and
-    cannot report success while a reply may still be sent.
+    The lock deliberately covers only the state check and local updates. Network
+    work is never performed in a database transaction; guards run again before
+    expensive generation and immediately before sending a reply.
     """
     if not row.client_id:
-        return _process_one_unlocked(s, row)
+        return True
     with transaction.atomic():
         client = IgClient.objects.select_for_update().filter(pk=row.client_id).first()
         if client and _client_blocked(client):
             return _skip_blocked_row(row, client)
         if client:
             row.client = client  # не використовуємо застарілий relation-cache після claim.
-        return _process_one_unlocked(s, row)
+    return True
+
+
+def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
+    if not _refresh_active_client(row):
+        return False
+    return _process_one_unlocked(s, row)
 
 
 def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
-    # Додаткова перевірка для шляхів без картки або прямого виклику helper-а.
-    if row.client_id and _client_blocked(row.client):
-        return _skip_blocked_row(row, row.client)
     # Захоплення телефону клієнта (лід), якщо ще немає.
     if row.client_id:
         try:
@@ -1422,6 +1425,8 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> 
 
     if s.ai_enabled:
         # Відразу показуємо клієнту, що бот побачив і «друкує» (best practice).
+        if not _refresh_active_client(row):
+            return False
         send_sender_action(s, row.sender_id, "mark_seen")
         send_sender_action(s, row.sender_id, "typing_on")
         # Підвантажуємо профіль клієнта (раз на картку) для CRM.
@@ -1436,6 +1441,8 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> 
             reply = "Я вже відповів(-ла) на це трохи вище 🙂 Якщо потрібно щось інше — уточніть, будь ласка."
             log("info", "repeat_guard", f"{row.sender_id}: повтор #{rep}, без Gemini")
         else:
+            if not _refresh_active_client(row):
+                return False
             history = _build_history(row.sender_id)
             if not history:
                 history = [{"role": "user", "text": row.text}]
@@ -1479,6 +1486,9 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> 
             log("info", "ignored", f"{row.sender_id}: не тригер")
             return False
         reply = s.reply_text
+
+    if not _refresh_active_client(row):
+        return False
 
     # Керуючі теги моделі: [MANAGER] (ескалація), [STAGE:x] (воронка) тощо.
     control = {}
@@ -1525,6 +1535,10 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> 
             row.save(update_fields=["status"])
         return False
 
+    # Остання коротка перевірка прямо перед Meta Send API: якщо hide завершився
+    # під час генерації/підготовки відповіді, зовнішнє повідомлення не піде.
+    if not _refresh_active_client(row):
+        return False
     ok, kind, hint = send_text(s, row.sender_id, reply)
     if not ok:
         if kind == "permanent":
