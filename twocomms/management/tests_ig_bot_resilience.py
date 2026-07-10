@@ -100,6 +100,53 @@ class ReclaimStaleProcessingTests(TestCase):
         self.assertEqual(message.status, InstagramBotMessage.Status.PROCESSING)
 
 
+class ProcessingClaimOwnershipTests(TestCase):
+    def test_stale_worker_cannot_requeue_a_newer_processing_claim(self):
+        message = _msg(
+            InstagramBotMessage.Status.PROCESSING,
+            attempts=1,
+            age_seconds=600,
+            processing_age_seconds=600,
+        )
+        stale_worker_row = InstagramBotMessage.objects.get(pk=message.pk)
+        newer_claim_at = timezone.now()
+        InstagramBotMessage.objects.filter(pk=message.pk).update(
+            processing_started_at=newer_claim_at
+        )
+
+        self.assertFalse(bot._requeue_for_active_lease(stale_worker_row))
+
+        message.refresh_from_db()
+        self.assertEqual(message.status, InstagramBotMessage.Status.PROCESSING)
+        self.assertEqual(message.processing_started_at, newer_claim_at)
+
+    def test_process_exception_cannot_requeue_a_newer_processing_claim(self):
+        settings = bot.InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.save(update_fields=["is_enabled"])
+        message = InstagramBotMessage.objects.create(
+            sender_id="exception-ownership",
+            role=InstagramBotMessage.Role.USER,
+            text="привіт",
+            status=InstagramBotMessage.Status.PENDING,
+        )
+        newer_claim_at = timezone.now() + timedelta(seconds=1)
+
+        def lose_claim_then_fail(_settings, claimed_row):
+            InstagramBotMessage.objects.filter(pk=claimed_row.pk).update(
+                status=InstagramBotMessage.Status.PROCESSING,
+                processing_started_at=newer_claim_at,
+            )
+            raise RuntimeError("simulated stale worker failure")
+
+        with patch.object(bot, "_process_one", side_effect=lose_claim_then_fail):
+            self.assertEqual(bot.process_pending(settings, max_items=1), 0)
+
+        message.refresh_from_db()
+        self.assertEqual(message.status, InstagramBotMessage.Status.PROCESSING)
+        self.assertEqual(message.processing_started_at, newer_claim_at)
+
+
 class PoolLoggingTests(TestCase):
     @patch("management.services.call_ai_analysis._gemini_call_once")
     def test_log_cb_called_on_success(self, mock_once):
