@@ -58,6 +58,37 @@ class BlockedGateTests(TestCase):
         row.refresh_from_db()
         self.assertEqual(row.status, InstagramBotMessage.Status.DONE)
 
+    @patch("management.services.instagram_bot.send_text", return_value=(True, "", ""))
+    @patch("management.services.instagram_bot.send_sender_action")
+    def test_worker_rechecks_hidden_state_after_generation_before_send(
+        self, _sender_action, send_text
+    ):
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.save(update_fields=["is_enabled"])
+        client = IgClient.get_or_create_for_sender("hidden_during_generation")
+        client.profile_fetched_at = timezone.now()
+        client.save(update_fields=["profile_fetched_at", "updated_at"])
+        row = InstagramBotMessage.objects.create(
+            sender_id=client.igsid,
+            client=client,
+            role=InstagramBotMessage.Role.USER,
+            text="потрібна відповідь",
+            status=InstagramBotMessage.Status.PROCESSING,
+        )
+
+        def hide_then_reply(*_args, **_kwargs):
+            IgClient.objects.filter(pk=client.pk).update(hidden_at=timezone.now())
+            return "Тестова відповідь"
+
+        with patch("management.services.instagram_bot.gemini_generate", side_effect=hide_then_reply):
+            handled = bot._process_one(settings, row)
+
+        self.assertFalse(handled)
+        send_text.assert_not_called()
+        row.refresh_from_db()
+        self.assertEqual(row.status, InstagramBotMessage.Status.DONE)
+
 
 class SpamStrikeTests(TestCase):
     @patch("management.services.instagram_bot.notify_manager")
