@@ -115,7 +115,7 @@
 | [ ] | **F-088** | P1 | TG webhook secret empty | §F-088; PLAN_VS W3-9 |
 | [x] | **F-093** | P1 | deploy_paramiko password in git | Fixed `c5b651cf`; production verified; §F-093 |
 | [x] | **F-095** | P1 | IG Hide list not refreshed | Fixed `ad2883f0`; production verified: UA actions refresh lists, hidden queue excluded, `hidden_pending=0`; **IG_BOT** IG-001 |
-| [ ] | **F-096** | P1 | IG stats English / thin | **IG_BOT** IG-004 |
+| [x] | **F-096** | P1 | IG stats English / thin | Fixed `15c3bf30` + `337710ce` + `3d4e5d40`; production verified; **IG_BOT** IG-004 |
 | [ ] | **F-098** | P1 | IG no transfer button | **IG_BOT** IG-003 |
 
 ### Priority C — P2 / ops / hygiene
@@ -284,7 +284,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-093** | P1 | FIXED | YES | `deploy_paramiko.py` removed in `c5b651cf`; production verified |
 | [ ] **F-094** | P1 | OPEN | YES | Product title≠H1 e.g. last-breath / death-grabs-ass (reconfirm) |
 | [x] **F-095** | P1 | FIXED | YES | `ad2883f0`: reliable UA actions, hidden folder, automation/follow-up/analytics exclusion; production verified |
-| [ ] **F-096** | P1 | OPEN | YES | IG bot: stats/filters English; thin dashboard |
+| [x] **F-096** | P1 | FIXED | YES | Ukrainian dense KPI dashboard, today/7/30/all ranges, funnel shares and bounded revenue; production verified |
 | [ ] **F-097** | P0 | OPEN | YES | IG bot: Message Requests / Graph send fails unlabeled |
 | [ ] **F-098** | P1 | OPEN | YES | IG bot: no explicit transfer-to-manager CRM action |
 | [ ] **F-099** | P1 | OPEN | YES | Mono dual path: webhook _apply skips on_commit CAPI (plan W2-7) |
@@ -2298,7 +2298,7 @@ Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
 | ID | Topic |
 |----|--------|
 | F-095 | **FIXED `ad2883f0`** — list refresh + UA labels + hidden folder + automation/statistics exclusion |
-| F-096 | Stats/filters UI English; metrics lifetime-only |
+| F-096 | **FIXED `15c3bf30` + `337710ce` + `3d4e5d40`** — Ukrainian dense stats, date ranges and funnel shares |
 | F-097 | Message Requests / Advanced Access / #551 — no CRM flag |
 | F-098 | No explicit «transfer to manager» button (only AI/echo) |
 
@@ -2322,10 +2322,10 @@ Fixed in `ad2883f0`: shared UI mutation feedback refreshes/removes the active ro
 
 ### F-096 — IG bot stats/filters English + thin dashboard
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] FIXED · **Severity:** P1 · **Fix required:** YES
 **Detail:** **IG-004** in IG_BOT file  
 
-Hardcoded EN: Active, Conversations, Qualified, Hide, Signals, … Stats API returns raw stage keys. Lifetime only; weak revenue aggregation.
+Fixed in `15c3bf30`, `337710ce`, and `3d4e5d40`: all visible KPI/table/filter copy is Ukrainian; the dashboard shows 11 compact KPIs, product/ad/objection tables, funnel counts with percentage denominators, and today/7/30/all-time ranges. Range filtering applies to conversations, signals, and paid ad revenue. Production templates were recompressed and the focused server suite passed.
 
 **Code:** `bot.html` Stats; `bot_views.bot_stats_api`.
 
