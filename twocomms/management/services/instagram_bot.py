@@ -1258,6 +1258,12 @@ def enqueue_inbound(
         log("info", "skip_not_allowed", f"[{source}] {sender_id} поза білим списком")
         return False
     client = IgClient.get_or_create_for_sender(sender_id)
+    # Прихований клієнт — це виключення з робочої воронки, а не тільки
+    # приглушена відповідь. Не створюємо чергу, не торкаємо CRM-картку та не
+    # запускаємо класифікацію/наступний контакт.
+    if client.hidden_at:
+        log("info", "skip_hidden", f"[{source}] {sender_id}: прихований клієнт")
+        return False
     try:
         with transaction.atomic():
             msg = InstagramBotMessage.objects.create(
@@ -1615,15 +1621,18 @@ def process_pending(s: InstagramBotSettings | None = None, max_items: int = 15) 
 
 def pending_count() -> int:
     return InstagramBotMessage.objects.filter(
-        role=InstagramBotMessage.Role.USER, status=InstagramBotMessage.Status.PENDING
+        role=InstagramBotMessage.Role.USER,
+        status=InstagramBotMessage.Status.PENDING,
+        client__hidden_at__isnull=True,
     ).count()
 
 
 def unique_senders_count() -> int:
-    """Скільки різних людей писали боту = к-сть карток IgClient (кожен sender має
-    картку). Раніше рахувалось distinct sender_id, але Meta.ordering=['id'] ламав
-    distinct (over-count) — тепер рахуємо картки."""
-    return IgClient.objects.count()
+    """Кількість активних співрозмовників у роботі бота.
+
+    Приховані картки не є частиною робочої черги чи overview-метрики.
+    """
+    return IgClient.objects.filter(hidden_at__isnull=True).count()
 
 
 def link_orphan_messages_to_clients() -> int:
