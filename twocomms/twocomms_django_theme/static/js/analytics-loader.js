@@ -1481,7 +1481,10 @@
     if (console && console.debug) {
       console.debug('[Analytics] BFCache restore detected, re-initializing pixels');
     }
-    initializePixelsImmediately();
+    // The deferred initializer is the single idempotent entry point.  It
+    // loads pixels when BFCache restored the page before the idle trigger,
+    // and safely becomes a no-op when they are already active.
+    initializePixelsDeferred();
   }
 
   if (doc && doc.addEventListener) {
