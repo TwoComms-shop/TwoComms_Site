@@ -16,7 +16,7 @@ from django.db import models
 
 from .analytics_exclusions import is_request_excluded
 from .models import UTMSession, SiteSession, UserAction
-from .utm_utils import calculate_action_points
+from .utm_utils import calculate_action_points, normalize_utm_source, sanitize_utm_param
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +401,85 @@ def resolve_utm_session(request, order=None):
     return None
 
 
+def _rebuild_utm_session_from_attribution(request, order, utm_data, platform_data=None):
+    """Rebuild the durable attribution row from session/cookie data.
+
+    The first-touch cookie outlives both a rotated Django session and an
+    accidentally missing ``UTMSession`` row.  Orders must not lose campaign
+    attribution merely because that intermediate row disappeared.
+    """
+    utm_data = dict(utm_data or {})
+    platform_data = dict(platform_data or {})
+    utm_fields = ('utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term')
+    click_fields = ('fbclid', 'gclid', 'ttclid')
+
+    clean_utm = {}
+    for field in utm_fields:
+        value = sanitize_utm_param(str(utm_data.get(field) or '').strip())
+        if value:
+            clean_utm[field] = value
+    if clean_utm.get('utm_source'):
+        clean_utm['utm_source'] = normalize_utm_source(clean_utm['utm_source'])
+
+    clean_platform = {}
+    for field in click_fields:
+        value = str(platform_data.get(field) or utm_data.get(field) or '').strip()[:255]
+        if value:
+            clean_platform[field] = value
+    for field in ('fbc', 'fbp'):
+        value = str(platform_data.get(field) or '').strip()[:255]
+        if value:
+            clean_platform[field] = value
+
+    if not clean_utm and not clean_platform:
+        return None
+
+    session_key = getattr(order, 'session_key', None) or request.session.session_key
+    if not session_key:
+        request.session.save()
+        session_key = request.session.session_key
+    if not session_key:
+        return None
+
+    site_session = SiteSession.objects.filter(session_key=session_key).first()
+    defaults = {
+        **clean_utm,
+        **clean_platform,
+        'visitor_id': getattr(request, 'analytics_visitor_id', None),
+        'referrer': str(utm_data.get('referrer') or '')[:512] or None,
+        'landing_page': str(utm_data.get('landing_path') or request.path or '')[:512] or None,
+    }
+    if site_session is not None and not UTMSession.objects.filter(session=site_session).exists():
+        defaults['session'] = site_session
+
+    utm_session, created = UTMSession.objects.get_or_create(
+        session_key=session_key,
+        defaults=defaults,
+    )
+    if not created:
+        updated_fields = []
+        for field, value in defaults.items():
+            if value and not getattr(utm_session, f'{field}_id' if field == 'session' else field, None):
+                setattr(utm_session, field, value)
+                updated_fields.append(field)
+        if updated_fields:
+            utm_session.save(update_fields=updated_fields)
+    return utm_session
+
+
+def _apply_utm_session_to_order(order, utm_session):
+    order.utm_session = utm_session
+    order.utm_source = utm_session.utm_source
+    order.utm_medium = utm_session.utm_medium
+    order.utm_campaign = utm_session.utm_campaign
+    order.utm_content = utm_session.utm_content
+    order.utm_term = utm_session.utm_term
+    order.save(update_fields=[
+        'utm_session', 'utm_source', 'utm_medium',
+        'utm_campaign', 'utm_content', 'utm_term'
+    ])
+
+
 def link_order_to_utm(request, order):
     """
     Связывает заказ с UTM-сессией.
@@ -419,16 +498,7 @@ def link_order_to_utm(request, order):
         utm_session = resolve_utm_session(request, order)
 
         if utm_session is not None:
-            order.utm_session = utm_session
-            order.utm_source = utm_session.utm_source
-            order.utm_medium = utm_session.utm_medium
-            order.utm_campaign = utm_session.utm_campaign
-            order.utm_content = utm_session.utm_content
-            order.utm_term = utm_session.utm_term
-            order.save(update_fields=[
-                'utm_session', 'utm_source', 'utm_medium',
-                'utm_campaign', 'utm_content', 'utm_term'
-            ])
+            _apply_utm_session_to_order(order, utm_session)
             logger.info(f"Linked order {order.order_number} to UTM session: {utm_session}")
             return
 
@@ -440,16 +510,31 @@ def link_order_to_utm(request, order):
         except Exception:
             utm_data = {}
         if utm_data:
-            order.utm_source = utm_data.get('utm_source')
-            order.utm_medium = utm_data.get('utm_medium')
-            order.utm_campaign = utm_data.get('utm_campaign')
-            order.utm_content = utm_data.get('utm_content')
-            order.utm_term = utm_data.get('utm_term')
-            order.save(update_fields=[
-                'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'
-            ])
-            logger.info(f"Linked order {order.order_number} to session utm_data (no UTMSession row)")
-            return
+            utm_session = _rebuild_utm_session_from_attribution(
+                request,
+                order,
+                utm_data,
+                request.session.get('platform_data') or {},
+            )
+            if utm_session is not None:
+                _apply_utm_session_to_order(order, utm_session)
+                logger.info(f"Rebuilt and linked UTM session for order {order.order_number} from session data")
+                return
+
+        # Fallback 4 (F-071): the durable first-touch cookie survives session
+        # rotation and is therefore the final source of truth for attribution.
+        first_touch = getattr(request, 'analytics_first_touch_data', None) or {}
+        if first_touch:
+            utm_session = _rebuild_utm_session_from_attribution(
+                request,
+                order,
+                first_touch,
+                request.session.get('platform_data') or {},
+            )
+            if utm_session is not None:
+                _apply_utm_session_to_order(order, utm_session)
+                logger.info(f"Rebuilt and linked UTM session for order {order.order_number} from first-touch data")
+                return
 
         logger.debug("No UTM attribution found for order %s", getattr(order, 'order_number', order.pk))
 

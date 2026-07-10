@@ -82,7 +82,38 @@ class UTMOrderAttributionTests(CheckoutTestSupport):
         order = Order.objects.get()
         self.assertEqual(order.utm_source, 'fallback_src')
         self.assertEqual(order.utm_medium, 'email')
-        self.assertIsNone(order.utm_session)
+        self.assertIsNotNone(order.utm_session)
+        self.assertEqual(order.utm_session.utm_source, 'fallback_src')
+        self.assertTrue(order.utm_session.is_converted)
+
+    def test_cod_order_rebuilds_utm_session_from_first_touch_cookie(self):
+        """F-071: first-touch cookie must keep attribution alive when the
+        original UTMSession row and Django session UTM payload are missing.
+        """
+        self._visit_with_utm('utm_source=IG&utm_medium=paid_social&utm_campaign=summer')
+        UTMSession.objects.all().delete()
+        session = self.client.session
+        session.pop('utm_data', None)
+        session.pop('platform_data', None)
+        session.save()
+
+        self.set_cart()
+        delivery = self.delivery_payload()
+        response = self.client.post(
+            self.order_create_url, self._cod_post_payload(delivery), secure=True
+        )
+
+        self.assertEqual(response.status_code, 302)
+        order = Order.objects.get()
+        self.assertEqual(order.utm_source, 'instagram')
+        self.assertEqual(order.utm_medium, 'paid_social')
+        self.assertEqual(order.utm_campaign, 'summer')
+        self.assertIsNotNone(order.utm_session_id)
+
+        rebuilt_session = UTMSession.objects.get(pk=order.utm_session_id)
+        self.assertEqual(rebuilt_session.session_key, order.session_key)
+        self.assertTrue(rebuilt_session.is_converted)
+        self.assertEqual(rebuilt_session.conversion_type, 'lead')
 
     def test_cod_order_tracking_context_with_fbclid_synthesis(self):
         """W2-1: click-ID контекст пишется в payment_payload.tracking для COD;
