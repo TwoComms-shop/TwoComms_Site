@@ -285,6 +285,44 @@ class SalesCockpitApiTests(TestCase):
         self.active.refresh_from_db()
         self.assertIsNone(self.active.hidden_at)
 
+    def test_hide_conflicts_with_an_inflight_followup_send(self):
+        """A successful Hide must never race with an already-picked follow-up."""
+        from management.models import IgFollowUpTask, InstagramBotSettings
+        from management.services import bot_followups
+
+        now = timezone.now()
+        IgFollowUpTask.objects.create(
+            client=self.active,
+            due_at=now,
+            kind=IgFollowUpTask.Kind.QUALIFICATION,
+            reason="waiting_for_reply",
+        )
+        hide_responses = []
+
+        def send_while_hiding(*_args, **_kwargs):
+            hide_responses.append(self.client.post(
+                reverse("management_bot_client_hide_api", args=[self.active.id]),
+                {"reason": "manual"},
+            ))
+            return True, "", ""
+
+        with patch(
+            "management.services.bot_followups.next_allowed_send_at", return_value=now
+        ), patch(
+            "management.services.instagram_bot.send_text", side_effect=send_while_hiding
+        ):
+            self.assertEqual(
+                bot_followups.process_due_followups(
+                    InstagramBotSettings.load(), now=now, limit=1
+                ),
+                1,
+            )
+
+        self.assertEqual(len(hide_responses), 1)
+        self.assertEqual(hide_responses[0].status_code, 409)
+        self.active.refresh_from_db()
+        self.assertIsNone(self.active.hidden_at)
+
     def test_unhide_returns_client_to_active_queue(self):
         self.client.post(
             reverse("management_bot_client_hide_api", args=[self.active.id]),

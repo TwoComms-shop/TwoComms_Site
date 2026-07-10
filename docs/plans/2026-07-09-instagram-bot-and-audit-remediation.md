@@ -37,23 +37,25 @@
 4. Deploy/migrate/test through SSH. Do not check F-097 until Meta delivery itself has a passing live condition.
 5. Commit `fix(ig): expose client delivery blocks`.
 
-### Task 3: Add explicit manager transfer (IG-003, F-098)
+### Task 3: Preserve automatic manager takeover (IG-003, F-098)
 
-**Files:** modify `bot_views.py`, `urls.py`, `services/instagram_bot.py`, `templates/management/bot.html`; test `tests_ig_sales_automation.py` and `tests_ig_clients_ui.py`.
+**Decision:** The user explicitly rejected a new manual `Передати менеджеру` button. Managers already join conversations automatically, so this item must remain open as an audit/product decision rather than adding duplicate UI or changing the existing automatic takeover flow.
 
-1. Test authorized idempotent transfer: manager stage, paused bot, takeover, cancelled follow-ups, one state event/notification.
-2. Implement Ukrainian `Передати менеджеру` with shared error feedback.
-3. Deploy and verify without manufacturing customer traffic.
-4. Commit `feat(ig): add explicit manager transfer`.
+1. Do not add a manual transfer action.
+2. Keep existing automatic manager-echo/takeover behavior covered while repairing adjacent client actions.
+3. Do not mark F-098 fixed without an agreed replacement acceptance criterion.
 
 ### Task 4: Repair CRM client actions (IG-001/002/009/010/011, F-095)
 
 **Files:** modify `templates/management/bot.html`, `bot_views.py`; test `tests_ig_clients_ui.py`, `tests_ig_sales_automation.py`.
 
 1. Test Hide/Unhide/Lost contract, list refresh, action visibility, and Ukrainian feedback.
-2. Replace silent fetches with a shared JSON mutation helper; reload the relevant list and remove stale detail.
-3. Deploy and verify staff UI interaction.
-4. Commit `fix(ig): make client actions reliable`.
+2. Test Hide against all automation paths: ingress, queued replies, active reply processing, active follow-up processing, and overview/statistics.
+3. Give short-lived automation leases to any send path that must be mutually exclusive with Hide; never hold a DB transaction across Gemini/Meta I/O. A successful Hide must mean a later automated send cannot start.
+4. Make recovery of claimed inbound messages depend on an actual processing claim timestamp and an inactive lease, never on `created_at` alone.
+5. Replace silent fetches with a shared JSON mutation helper; reload the relevant list and remove stale detail.
+6. Deploy and verify staff UI interaction.
+7. Commit scoped fixes only after server-side regression tests pass.
 
 ### Task 5: Localize and improve dashboard (IG-004, F-096)
 

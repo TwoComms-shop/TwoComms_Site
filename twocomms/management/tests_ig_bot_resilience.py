@@ -7,41 +7,97 @@ from unittest.mock import MagicMock, patch
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
-from management.models import InstagramBotMessage
+from management.models import IgClient, InstagramBotMessage
 from management.services import instagram_bot as bot
 from management.services import call_ai_analysis as ai
 
 
-def _msg(status, attempts, age_seconds):
+def _msg(status, attempts, age_seconds, *, processing_age_seconds=None, client=None):
     m = InstagramBotMessage.objects.create(
         sender_id="rs1", role=InstagramBotMessage.Role.USER, text="привіт",
-        status=status, attempts=attempts,
+        status=status, attempts=attempts, client=client,
     )
-    InstagramBotMessage.objects.filter(id=m.id).update(
-        created_at=timezone.now() - timedelta(seconds=age_seconds)
-    )
+    updates = {"created_at": timezone.now() - timedelta(seconds=age_seconds)}
+    if processing_age_seconds is not None:
+        updates["processing_started_at"] = timezone.now() - timedelta(
+            seconds=processing_age_seconds
+        )
+    InstagramBotMessage.objects.filter(id=m.id).update(**updates)
     return m
 
 
 class ReclaimStaleProcessingTests(TestCase):
     def test_requeues_stale_processing(self):
-        m = _msg(InstagramBotMessage.Status.PROCESSING, attempts=1, age_seconds=600)
+        m = _msg(
+            InstagramBotMessage.Status.PROCESSING,
+            attempts=1,
+            age_seconds=10,
+            processing_age_seconds=600,
+        )
         n = bot.reclaim_stale_processing()
         self.assertEqual(n, 1)
         m.refresh_from_db()
         self.assertEqual(m.status, InstagramBotMessage.Status.PENDING)
 
     def test_fails_when_attempts_exhausted(self):
-        m = _msg(InstagramBotMessage.Status.PROCESSING, attempts=3, age_seconds=600)
+        m = _msg(
+            InstagramBotMessage.Status.PROCESSING,
+            attempts=3,
+            age_seconds=10,
+            processing_age_seconds=600,
+        )
         bot.reclaim_stale_processing()
         m.refresh_from_db()
         self.assertEqual(m.status, InstagramBotMessage.Status.FAILED)
 
     def test_ignores_fresh_processing(self):
-        m = _msg(InstagramBotMessage.Status.PROCESSING, attempts=1, age_seconds=10)
+        m = _msg(
+            InstagramBotMessage.Status.PROCESSING,
+            attempts=1,
+            age_seconds=600,
+            processing_age_seconds=10,
+        )
         bot.reclaim_stale_processing()
         m.refresh_from_db()
         self.assertEqual(m.status, InstagramBotMessage.Status.PROCESSING)
+
+    def test_claim_stamps_processing_start_independently_of_queue_age(self):
+        message = InstagramBotMessage.objects.create(
+            sender_id="claimed-old-message",
+            role=InstagramBotMessage.Role.USER,
+            text="привіт",
+            status=InstagramBotMessage.Status.PENDING,
+        )
+        InstagramBotMessage.objects.filter(pk=message.pk).update(
+            created_at=timezone.now() - timedelta(minutes=20)
+        )
+
+        claimed = bot._claim_next()
+
+        self.assertEqual(claimed.pk, message.pk)
+        self.assertIsNotNone(claimed.processing_started_at)
+        self.assertEqual(bot.reclaim_stale_processing(), 0)
+        message.refresh_from_db()
+        self.assertEqual(message.status, InstagramBotMessage.Status.PROCESSING)
+
+    def test_does_not_reclaim_stale_row_while_client_lease_is_active(self):
+        client = IgClient.get_or_create_for_sender("stale-with-active-lease")
+        client.automation_lease_token = "working"
+        client.automation_lease_until = timezone.now() + timedelta(minutes=2)
+        client.save(update_fields=[
+            "automation_lease_token", "automation_lease_until", "updated_at",
+        ])
+        message = _msg(
+            InstagramBotMessage.Status.PROCESSING,
+            attempts=3,
+            age_seconds=600,
+            processing_age_seconds=600,
+            client=client,
+        )
+
+        self.assertEqual(bot.reclaim_stale_processing(), 0)
+        message.refresh_from_db()
+        self.assertEqual(message.status, InstagramBotMessage.Status.PROCESSING)
 
 
 class PoolLoggingTests(TestCase):
