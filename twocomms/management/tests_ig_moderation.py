@@ -1,4 +1,5 @@
 """Тести Phase 7 (Tasks 20-22) — стоп/старт, перехоплення менеджером, антиспам."""
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -88,6 +89,40 @@ class BlockedGateTests(TestCase):
         send_text.assert_not_called()
         row.refresh_from_db()
         self.assertEqual(row.status, InstagramBotMessage.Status.DONE)
+
+    @patch("management.services.instagram_bot.send_text", return_value=(True, "", ""))
+    @patch("management.services.instagram_bot.gemini_generate", return_value="Тестова відповідь")
+    @patch("management.services.instagram_bot.send_sender_action")
+    def test_worker_does_not_process_a_row_reclaimed_before_its_lease(
+        self, _sender_action, generate_reply, send_text
+    ):
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.save(update_fields=["is_enabled"])
+        client = IgClient.get_or_create_for_sender("reclaimed_before_lease")
+        client.profile_fetched_at = timezone.now()
+        client.save(update_fields=["profile_fetched_at", "updated_at"])
+        row = InstagramBotMessage.objects.create(
+            sender_id=client.igsid,
+            client=client,
+            role=InstagramBotMessage.Role.USER,
+            text="прострочена черга",
+            status=InstagramBotMessage.Status.PROCESSING,
+            attempts=1,
+        )
+        InstagramBotMessage.objects.filter(pk=row.pk).update(
+            processing_started_at=timezone.now() - timedelta(minutes=10)
+        )
+        row.refresh_from_db()
+
+        self.assertEqual(bot.reclaim_stale_processing(), 1)
+        handled = bot._process_one(settings, row)
+
+        self.assertFalse(handled)
+        generate_reply.assert_not_called()
+        send_text.assert_not_called()
+        row.refresh_from_db()
+        self.assertEqual(row.status, InstagramBotMessage.Status.PENDING)
 
     @patch("management.services.instagram_bot.send_text", return_value=(True, "", ""))
     @patch("management.services.instagram_bot.gemini_generate", return_value="Тестова відповідь")
