@@ -114,7 +114,7 @@
 | [ ] | **F-087** | P1 | ubd_docs public 200 | §F-087; PLAN_VS W1-11 |
 | [ ] | **F-088** | P1 | TG webhook secret empty | §F-088; PLAN_VS W3-9 |
 | [x] | **F-093** | P1 | deploy_paramiko password in git | Fixed `c5b651cf`; production verified; §F-093 |
-| [ ] | **F-095** | P1 | IG Hide list not refreshed | **IG_BOT** IG-001 |
+| [x] | **F-095** | P1 | IG Hide list not refreshed | Fixed `ad2883f0`; production verified: UA actions refresh lists, hidden queue excluded, `hidden_pending=0`; **IG_BOT** IG-001 |
 | [ ] | **F-096** | P1 | IG stats English / thin | **IG_BOT** IG-004 |
 | [ ] | **F-098** | P1 | IG no transfer button | **IG_BOT** IG-003 |
 
@@ -283,7 +283,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-092** | P2 | DONE_OWNER | no | SSH password rotated by owner (W0-1 OWNER complete) |
 | [x] **F-093** | P1 | FIXED | YES | `deploy_paramiko.py` removed in `c5b651cf`; production verified |
 | [ ] **F-094** | P1 | OPEN | YES | Product title≠H1 e.g. last-breath / death-grabs-ass (reconfirm) |
-| [ ] **F-095** | P1 | OPEN | YES | IG bot: Hide UX no list refresh (management) |
+| [x] **F-095** | P1 | FIXED | YES | `ad2883f0`: reliable UA actions, hidden folder, automation/follow-up/analytics exclusion; production verified |
 | [ ] **F-096** | P1 | OPEN | YES | IG bot: stats/filters English; thin dashboard |
 | [ ] **F-097** | P0 | OPEN | YES | IG bot: Message Requests / Graph send fails unlabeled |
 | [ ] **F-098** | P1 | OPEN | YES | IG bot: no explicit transfer-to-manager CRM action |
@@ -2297,7 +2297,7 @@ Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
 
 | ID | Topic |
 |----|--------|
-| F-095 | Hide works in API but list not refreshed; EN button labels |
+| F-095 | **FIXED `ad2883f0`** — list refresh + UA labels + hidden folder + automation/statistics exclusion |
 | F-096 | Stats/filters UI English; metrics lifetime-only |
 | F-097 | Message Requests / Advanced Access / #551 — no CRM flag |
 | F-098 | No explicit «transfer to manager» button (only AI/echo) |
@@ -2311,10 +2311,10 @@ Also IG-006 likes/reactions, IG-001…IG-014 in that file.
 
 ### F-095 — IG bot Hide: list not refreshed (management)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] FIXED · **Severity:** P1 · **Fix required:** YES
 **Detail (full):** [`IG_BOT_MANAGEMENT_BUGS_2026-07-09.md`](./IG_BOT_MANAGEMENT_BUGS_2026-07-09.md) **IG-001**  
 
-API `bot_client_hide_api` sets `hidden_at`; UI only re-fetches detail, not client list → row stays in Active. Labels `Hide`/`Unhide` English.
+Fixed in `ad2883f0`: shared UI mutation feedback refreshes/removes the active row; actions are Ukrainian; hidden clients move to the dedicated hidden view, queued inbound/follow-ups are finalized, inbound/follow-up workers cannot race a successful Hide, and active statistics exclude hidden clients. Production proof: migrations `0076`/`0077` applied, 33 focused server tests pass, `hidden_pending=0`, `/healthz/` returns 200.
 
 **Code:** `bot_views.py` hide API; `templates/management/bot.html` Clients JS.
 
