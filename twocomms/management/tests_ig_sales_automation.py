@@ -461,3 +461,23 @@ class SalesCockpitApiTests(TestCase):
         self.assertIn("async function runClientAction", html)
         self.assertIn("Клієнта приховано", html)
         self.assertIn("Не вдалося виконати дію", html)
+        for label in (
+            "Статистика продажів IG Direct",
+            "Діалоги",
+            "Кваліфіковані",
+            "Товар визначено",
+            "Заплановані контакти",
+            "Повернення після нагадування",
+            "Ефективність реклами",
+            "Заперечення клієнтів",
+        ):
+            self.assertIn(label, html)
+        for english_label in (
+            "Conversations",
+            "Qualified",
+            "Product matched",
+            "Pending follow-ups",
+            "Ad/ref performance",
+            "Objections",
+        ):
+            self.assertNotIn(english_label, html)

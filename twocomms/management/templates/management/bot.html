@@ -409,7 +409,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   <section class="bot-panel" data-panel="stats">
     <div class="bot-card">
       <div class="bot-card-head">
-        <h2>Sales статистика IG Direct</h2>
+        <h2>Статистика продажів IG Direct</h2>
         <button class="bot-mini-btn" id="bot-stats-refresh">Оновити</button>
       </div>
       <div id="bot-stats-content" class="bot-empty">Завантаження статистики…</div>
@@ -687,8 +687,14 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   const Stats=(function(){
     const box=document.getElementById('bot-stats-content');
     const btn=document.getElementById('bot-stats-refresh');
+    const objectionLabels={
+      price:'Дорого',price_objection:'Дорого',prepayment:'Передоплата',prepayment_objection:'Передоплата',
+      size:'Розмір',size_concern:'Розмір',thinking:'Потрібен час подумати',no_reply:'Не відповідає',
+      no_buy:'Не купує',lost:'Втрачено',trust:'Недостатньо довіри',delivery:'Доставка',other:'Інше'
+    };
     function stat(k,v){return '<div class="bot-stat-box"><div class="v">'+esc(String(v||0))+'</div><div class="k">'+esc(k)+'</div></div>';}
     function table(title, rows, cols){
+      if(!(rows||[]).length) return '<h2 style="margin-top:18px;">'+esc(title)+'</h2><div class="bot-empty" style="padding:18px 10px;">Даних за цим розділом поки немає.</div>';
       let h='<h2 style="margin-top:18px;">'+esc(title)+'</h2><table class="bot-table"><thead><tr>';
       cols.forEach(c=>h+='<th>'+esc(c[1])+'</th>'); h+='</tr></thead><tbody>';
       (rows||[]).forEach(r=>{h+='<tr>';cols.forEach(c=>h+='<td>'+esc(String(r[c[0]]||''))+'</td>');h+='</tr>';});
@@ -702,14 +708,16 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           if(!d.success){ box.innerHTML='<div class="bot-empty">Не вдалося завантажити.</div>'; return; }
           const t=d.totals||{};
           let h='<div class="bot-stat-grid">'+
-            stat('Conversations',t.conversations)+stat('Qualified',t.qualified)+stat('Product matched',t.product_matched)+
-            stat('Checkout/payment',t.checkout_or_payment)+stat('Paid',t.paid)+stat('Pending follow-ups',t.pending_followups)+
-            stat('Discount conversions',t.discount_conversions)+stat('Manager takeovers',t.manager_takeovers)+stat('Custom print handoffs',t.custom_print_handoffs)+
+            stat('Діалоги',t.conversations)+stat('Кваліфіковані',t.qualified)+stat('Товар визначено',t.product_matched)+
+            stat('Оформлення / оплата',t.checkout_or_payment)+stat('Оплачені',t.paid)+stat('Заплановані контакти',t.pending_followups)+
+            stat('Повернення після нагадування',t.followup_recoveries)+stat('Конверсії зі знижкою',t.discount_conversions)+
+            stat('Діалоги веде менеджер',t.manager_takeovers)+stat('Кастомні принти менеджеру',t.custom_print_handoffs)+stat('Приховані',t.hidden)+
             '</div>';
-          h+=table('Product/SKU interest', d.products, [['product_id','SKU'],['product_title','Product'],['count','Chats']]);
-          h+=table('Ad/ref performance', d.ads, [['ad_id','Ad ID'],['ad_ref','Ref'],['ad_title','Title'],['chats','Chats'],['paid','Paid'],['revenue','Revenue']]);
-          const obs=Object.entries(d.objections||{}).map(([k,v])=>({name:k,count:v}));
-          h+=table('Objections', obs, [['name','Reason'],['count','Count']]);
+          h+=table('Інтерес до товарів / SKU', d.products, [['product_id','SKU'],['product_title','Товар'],['count','Діалоги']]);
+          const ads=(d.ads||[]).map(r=>({...r,revenue:new Intl.NumberFormat('uk-UA',{maximumFractionDigits:0}).format(Number(r.revenue||0))}));
+          h+=table('Ефективність реклами', ads, [['ad_id','ID реклами'],['ad_ref','Мітка'],['ad_title','Назва'],['chats','Діалоги'],['paid','Оплачені'],['revenue','Дохід, грн']]);
+          const obs=Object.entries(d.objections||{}).map(([k,v])=>({name:objectionLabels[k]||k,count:v}));
+          h+=table('Заперечення клієнтів', obs, [['name','Причина'],['count','Кількість']]);
           box.innerHTML=h;
         }).catch(()=>{box.innerHTML='<div class="bot-empty">Помилка мережі.</div>';});
     }
