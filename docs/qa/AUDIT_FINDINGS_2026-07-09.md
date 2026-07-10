@@ -72,12 +72,13 @@
 | ☐ | ID | Sev | One-line | Detail / related plan |
 |---|-----|-----|----------|------------------------|
 | [x] | **F-071** | P0 | `link_order_to_utm` ignores first_touch UTM | **FIXED `34275e28`**; server tests 6/6 + production HEAD/health verified 2026-07-10; §F-071 |
-| [ ] | **F-021** | P0 | 100% orders empty utm_source | §F-021; same as F-071 family |
-| [ ] | **F-033** | P0 | link_order in code but orders empty | §F-033; PLAN_VS W2-1 |
-| [ ] | **F-045** | P0 | 0 Order.session_key join UTMSession | §F-045 |
-| [ ] | **F-019** | P0 | is_converted always 0 | §F-019; **PLAN_VS W2-2** |
+| [x] | **F-021** | P0 | 100% orders empty utm_source | **FIXED `34275e28`**; production canary + cleanup verified 2026-07-10; §F-021 |
+| [x] | **F-033** | P0 | link_order in code but orders empty | **FIXED `34275e28`**; production canary + cleanup verified; §F-033 |
+| [x] | **F-045** | P0 | 0 Order.session_key join UTMSession | **FIXED `34275e28`** for new orders; production join canary passed; §F-045 |
+| [x] | **F-019** | P0 | is_converted always 0 | **FIXED `34275e28`** for new conversions; production lead canary passed; §F-019 |
 | [x] | **F-030** | P0 | initializePixelsImmediately not defined | **FIXED `3291ac82`**; production hashed asset verified 2026-07-10; §F-030 |
 | [ ] | **F-029** | P0 | LSAPI_CHILDREN process limit | §F-029 |
+| [ ] | **F-102** | P0 | Core order/UTM tables are MyISAM; `atomic()` cannot roll back | Discovered by production attribution canary 2026-07-10; DB engine migration required |
 | [ ] | **F-003** | P0 | Merchant feed / color landing issues | §F-003; narrow with **F-077** |
 | [ ] | **F-027** | P0 | Feed color issues (narrowed) | §F-027; see F-077 REVISED |
 | [ ] | **F-097** | P0 | IG bot Message Requests unlabeled | **IG_BOT** IG-005/013; F-097 |
@@ -172,7 +173,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 > - IG bot deep dive: [`IG_BOT_MANAGEMENT_BUGS_2026-07-09.md`](./IG_BOT_MANAGEMENT_BUGS_2026-07-09.md)
 > - Walk checklist (Pass A done): `PRE_ADS_MASTER_AUDIT_CHECKLIST.md`
 
-**Итого: F-001…F-101** (+ IG-001…IG-014 in IG_BOT file) · **Ads gate: BLOCKED** · Fix agent: **MASTER FIX CHECKLIST** above
+**Итого: F-001…F-102** (+ IG-001…IG-014 in IG_BOT file) · **Ads gate: BLOCKED** · Fix agent: **MASTER FIX CHECKLIST** above
 
 ### Сводка по severity
 
@@ -1151,9 +1152,14 @@ Feed ids use **ЧОРНИЙ** style. If pixel fires without color_variant_id, Me
 
 ### F-019 — `UTMSession.is_converted` is always false (dead field)
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (`34275e28`) · **Severity:** P0 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P0** · Area: **UTM / CRO** · Checklist: UTM-023, CRO-012
+**Production verification (2026-07-10):** an isolated attribution canary rebuilt
+the UTM row from first-touch, linked its lead `UserAction`, and produced
+`is_converted=True`, `conversion_type=lead`. All canary rows were then explicitly
+deleted and verified absent. Historical sessions are intentionally not rewritten.
+
+- [x] **Fixed** · Severity: **P0** · Area: **UTM / CRO** · Checklist: UTM-023, CRO-012
 
 | Field | Value |
 |-------|--------|
@@ -1197,9 +1203,15 @@ Despite `UTM_GOVERNANCE.md` + `normalize_utm_source()`, live distinct sources in
 
 ### F-021 — 100% of recent orders have empty UTM attribution
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (`34275e28`) · **Severity:** P0 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P0** · Area: **UTM / ADS** · Checklist: UTM-020–024, ADS-015, DB-009
+**Production verification (2026-07-10):** a production MySQL canary with only
+first-touch attribution produced `Order.utm_source=instagram`, medium
+`paid_social`, campaign `production_canary`, and a non-null `utm_session_id`.
+The canary was explicitly removed and zero matching rows remain. The fix applies
+prospectively; unattributable historical orders were not assigned invented UTM.
+
+- [x] **Fixed** · Severity: **P0** · Area: **UTM / ADS** · Checklist: UTM-020–024, ADS-015, DB-009
 
 | Field | Value |
 |-------|--------|
@@ -1439,9 +1451,14 @@ idempotent `initializePixelsDeferred`. The regression test passes on the server,
 
 ### F-033 — `link_order_to_utm` exists in code but attribution still empty in prod
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (`34275e28`) · **Severity:** P0 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P0** · Area: **UTM** · Checklist: UTM-020, CART-042 (related)
+**Production verification (2026-07-10):** the live `link_order_to_utm` path was
+executed against production MySQL with a unique rollback-canary identity and
+successfully persisted normalized order UTM plus the FK. Cleanup was explicit
+and verified at zero remaining rows.
+
+- [x] **Fixed** · Severity: **P0** · Area: **UTM** · Checklist: UTM-020, CART-042 (related)
 
 | Field | Value |
 |-------|--------|
@@ -1660,9 +1677,14 @@ Without session_key, `link_order_to_utm` / `record_order_action` cannot join UTM
 
 ### F-045 — Zero historical join Order.session_key → UTMSession
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (`34275e28`) · **Severity:** P0 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P0** · Area: **UTM** · Checklist: UTM-020, DB-009
+**Production verification (2026-07-10):** the canary proved
+`Order.session_key == UTMSession.session_key` and `Order.utm_session_id` was
+non-null. The generated rows were explicitly deleted and verified absent.
+Historical rows without recoverable attribution remain unchanged.
+
+- [x] **Fixed** · Severity: **P0** · Area: **UTM** · Checklist: UTM-020, DB-009
 
 | Field | Value |
 |-------|--------|
@@ -2388,6 +2410,28 @@ File `storefront/views.py.backup` exists; `views/__init__.py` still lazy-loads f
 
 **Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES  
 **Detail:** PLAN_VS W7-23 · `orders/dropshipper_views.py:273-274`
+
+---
+
+### F-102 — Core checkout/attribution tables use MyISAM
+
+**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+
+**Production evidence (2026-07-10):** `information_schema.TABLES` reports
+`ENGINE=MyISAM` for `orders_order`, `storefront_utmsession`, and
+`storefront_useraction`. An attribution canary inside `transaction.atomic()`
+successfully wrote its rows but `transaction.set_rollback(True)` did not remove
+them; exact-key cleanup deleted all three and a follow-up query returned zero.
+
+**Why problem:** checkout code relies on `transaction.atomic()`, but MyISAM does
+not provide transactional rollback or foreign-key enforcement. A mid-checkout
+failure can therefore leave a partial order/analytics state even though Django
+code is structured as atomic.
+
+**Fix direction:** inventory all related MyISAM tables and FK dependencies,
+verify InnoDB availability/space, take a database backup, then perform a planned
+engine migration with maintenance/lock monitoring and post-migration rollback
+tests. Do not run a blind `ALTER TABLE` during live checkout traffic.
 
 ---
 
