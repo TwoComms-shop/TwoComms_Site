@@ -283,6 +283,21 @@ class ChatTimeoutTests(TestCase):
         self.assertEqual(captured["timeout"], caa.GEMINI_TIMEOUT)
         gk.clear_model_overload()
 
+    @patch.object(caa, "_run_with_pool")
+    def test_management_text_calls_are_bounded_for_bot_automation(self, mock_pool):
+        mock_pool.return_value = {"parsed": "ok"}
+
+        caa.gemini_generate_text({"contents": []}, role="management")
+
+        self.assertEqual(
+            mock_pool.call_args.kwargs.get("timeout"),
+            caa.MANAGEMENT_TEXT_TIMEOUT,
+        )
+        self.assertEqual(
+            mock_pool.call_args.kwargs.get("deadline_seconds"),
+            caa.MANAGEMENT_TEXT_DEADLINE_SECONDS,
+        )
+
 
 class ChatRoundsRetryTests(TestCase):
     def setUp(self):

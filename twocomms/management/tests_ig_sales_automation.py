@@ -342,6 +342,61 @@ class SalesCockpitApiTests(TestCase):
         self.active.refresh_from_db()
         self.assertIsNone(self.active.hidden_at)
 
+    def test_hide_after_vision_lease_expiry_stops_follow_on_processing(self):
+        from management.models import InstagramBotSettings
+        from management.services import instagram_bot
+
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.ai_enabled = True
+        settings.save(update_fields=["is_enabled", "ai_enabled"])
+        self.active.profile_fetched_at = timezone.now()
+        self.active.save(update_fields=["profile_fetched_at", "updated_at"])
+        row = InstagramBotMessage.objects.create(
+            sender_id=self.active.igsid,
+            client=self.active,
+            role=InstagramBotMessage.Role.USER,
+            text="що на фото?",
+            attachments="[]",
+            status=InstagramBotMessage.Status.PROCESSING,
+            processing_started_at=timezone.now(),
+        )
+        hide_responses = []
+
+        def vision_then_hide(*_args, **_kwargs):
+            IgClient.objects.filter(pk=self.active.pk).update(
+                automation_lease_until=timezone.now() - timedelta(seconds=1)
+            )
+            hide_responses.append(self.client.post(
+                reverse("management_bot_client_hide_api", args=[self.active.id]),
+                {"reason": "manual"},
+            ))
+            return {"product_id": None, "confidence": 0.0, "reason": "none"}
+
+        with patch(
+            "management.services.instagram_bot.send_sender_action"
+        ), patch(
+            "management.services.instagram_bot._collect_images",
+            return_value=[("image/jpeg", b"x")],
+        ), patch(
+            "management.services.instagram_bot._match_allowed", return_value=True
+        ), patch(
+            "management.services.bot_vision.match", side_effect=vision_then_hide
+        ), patch(
+            "management.services.instagram_bot._maybe_pin_from_match"
+        ) as pin_match, patch(
+            "management.services.instagram_bot.gemini_generate"
+        ) as generate_reply, patch(
+            "management.services.instagram_bot.send_text"
+        ) as send_text:
+            handled = instagram_bot._process_one(settings, row)
+
+        self.assertFalse(handled)
+        self.assertEqual(hide_responses[0].status_code, 200)
+        pin_match.assert_not_called()
+        generate_reply.assert_not_called()
+        send_text.assert_not_called()
+
     def test_unhide_returns_client_to_active_queue(self):
         self.client.post(
             reverse("management_bot_client_hide_api", args=[self.active.id]),
