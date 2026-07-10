@@ -3730,6 +3730,10 @@ class InstagramBotMessage(models.Model):
     attachments = models.TextField(blank=True, default="")
     attempts = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    # Час саме захоплення воркером, а не надходження webhook. Потрібен для
+    # безпечного reclaim: старе повідомлення могло довго чекати в pending,
+    # але щойно перейти в processing.
+    processing_started_at = models.DateTimeField(null=True, blank=True, db_index=True)
     processed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

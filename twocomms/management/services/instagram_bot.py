@@ -1329,12 +1329,18 @@ def _claim_next() -> InstagramBotMessage | None:
     )
     if not row:
         return None
+    claimed_at = timezone.now()
     claimed = InstagramBotMessage.objects.filter(
         id=row.id, status=InstagramBotMessage.Status.PENDING
-    ).update(status=InstagramBotMessage.Status.PROCESSING, attempts=row.attempts + 1)
+    ).update(
+        status=InstagramBotMessage.Status.PROCESSING,
+        attempts=row.attempts + 1,
+        processing_started_at=claimed_at,
+    )
     if claimed == 1:
         row.status = InstagramBotMessage.Status.PROCESSING
         row.attempts += 1
+        row.processing_started_at = claimed_at
         return row
     return None  # гонка — забрав хтось інший
 
@@ -1353,25 +1359,41 @@ def reclaim_stale_processing(max_age_seconds: int = STALE_PROCESSING_SECONDS) ->
 
     cutoff = timezone.now() - timedelta(seconds=max_age_seconds)
     stale = list(
-        InstagramBotMessage.objects.filter(
+        InstagramBotMessage.objects.select_related("client").filter(
             role=InstagramBotMessage.Role.USER,
             status=InstagramBotMessage.Status.PROCESSING,
-            created_at__lt=cutoff,
+            processing_started_at__lt=cutoff,
         ).order_by("id")[:50]
     )
     requeued = 0
     for row in stale:
-        if row.attempts >= MAX_ATTEMPTS:
-            InstagramBotMessage.objects.filter(id=row.id).update(
-                status=InstagramBotMessage.Status.FAILED
-            )
-            log("error", "stale_failed", f"{row.sender_id}: завис у processing, спроби вичерпано")
-        else:
-            InstagramBotMessage.objects.filter(id=row.id).update(
-                status=InstagramBotMessage.Status.PENDING
-            )
-            log("warning", "stale_requeue", f"{row.sender_id}: завис у processing → повертаю в чергу")
-            requeued += 1
+        # Короткі locks тільки для рішення. Gemini/Meta I/O тут немає.
+        # Порядок lock-ів збігається з Hide та lease: спершу клієнт, потім row.
+        with transaction.atomic():
+            client = None
+            if row.client_id:
+                client = IgClient.objects.select_for_update().filter(pk=row.client_id).first()
+                if client and client_automation_busy(client):
+                    continue
+            locked = InstagramBotMessage.objects.select_for_update().filter(
+                id=row.id,
+                role=InstagramBotMessage.Role.USER,
+                status=InstagramBotMessage.Status.PROCESSING,
+                processing_started_at__lt=cutoff,
+            ).first()
+            if not locked:
+                continue
+            if locked.attempts >= MAX_ATTEMPTS:
+                locked.status = InstagramBotMessage.Status.FAILED
+                locked.processed_at = timezone.now()
+                locked.save(update_fields=["status", "processed_at"])
+                log("error", "stale_failed", f"{locked.sender_id}: завис у processing, спроби вичерпано")
+            else:
+                locked.status = InstagramBotMessage.Status.PENDING
+                locked.processing_started_at = None
+                locked.save(update_fields=["status", "processing_started_at"])
+                log("warning", "stale_requeue", f"{locked.sender_id}: завис у processing → повертаю в чергу")
+                requeued += 1
     return requeued
 
 
@@ -1393,10 +1415,58 @@ def client_automation_busy(client: IgClient | None, *, now: datetime | None = No
     )
 
 
+def _lease_client_automation(
+    client_id: int | None, *, token: str = ""
+) -> tuple[IgClient | None, str, str]:
+    """Atomically acquire or renew the short lease shared by all bot sends.
+
+    Returns ``(client, token, state)`` where state is one of ``acquired``,
+    ``renewed``, ``blocked``, ``busy``, ``token_lost`` or ``missing``. The
+    transaction contains only the state transition, never external I/O.
+    """
+    if not client_id:
+        return None, "", "missing"
+    with transaction.atomic():
+        client = IgClient.objects.select_for_update().filter(pk=client_id).first()
+        if not client:
+            return None, "", "missing"
+        if _client_blocked(client):
+            return client, "", "blocked"
+        now = timezone.now()
+        if token:
+            if client.automation_lease_token != token:
+                return client, "", "token_lost"
+            client.automation_lease_until = now + AUTOMATION_LEASE_TTL
+            client.save(update_fields=["automation_lease_until", "updated_at"])
+            return client, token, "renewed"
+        if client_automation_busy(client, now=now):
+            return client, "", "busy"
+        lease_token = secrets.token_hex(16)
+        client.automation_lease_token = lease_token
+        client.automation_lease_until = now + AUTOMATION_LEASE_TTL
+        client.save(update_fields=[
+            "automation_lease_token", "automation_lease_until", "updated_at",
+        ])
+        return client, lease_token, "acquired"
+
+
+def acquire_client_automation_lease(client_id: int | None) -> tuple[IgClient | None, str]:
+    """Lease one client for a bot send; returns no token when it is unavailable."""
+    client, token, state = _lease_client_automation(client_id)
+    return (client, token) if state == "acquired" else (None, "")
+
+
+def renew_client_automation_lease(client_id: int | None, token: str) -> IgClient | None:
+    """Renew a held client lease immediately before a send boundary."""
+    client, _token, state = _lease_client_automation(client_id, token=token)
+    return client if state == "renewed" else None
+
+
 def _requeue_for_active_lease(row: InstagramBotMessage) -> bool:
     row.status = InstagramBotMessage.Status.PENDING
     row.processed_at = None
-    row.save(update_fields=["status", "processed_at"])
+    row.processing_started_at = None
+    row.save(update_fields=["status", "processed_at", "processing_started_at"])
     log("info", "lease_busy", f"{row.sender_id}: інший worker ще обробляє клієнта")
     return False
 
@@ -1406,49 +1476,46 @@ def _acquire_client_automation_lease(
 ) -> tuple[IgClient | None, str]:
     if not row.client_id:
         return None, ""
-    with transaction.atomic():
-        client = IgClient.objects.select_for_update().filter(pk=row.client_id).first()
-        if client and _client_blocked(client):
-            _skip_blocked_row(row, client)
-            return None, ""
-        if not client:
-            return None, ""
-        now = timezone.now()
-        if client_automation_busy(client, now=now):
-            _requeue_for_active_lease(row)
-            return None, ""
-        token = secrets.token_hex(16)
-        client.automation_lease_token = token
-        client.automation_lease_until = now + AUTOMATION_LEASE_TTL
-        client.save(update_fields=[
-            "automation_lease_token", "automation_lease_until", "updated_at",
-        ])
+    client, token, state = _lease_client_automation(row.client_id)
+    if state == "acquired":
         row.client = client  # не використовуємо застарілий relation-cache після claim.
         return client, token
+    if state == "blocked" and client:
+        _skip_blocked_row(row, client)
+    elif state in {"busy", "token_lost"}:
+        _requeue_for_active_lease(row)
+    else:
+        row.status = InstagramBotMessage.Status.DONE
+        row.processed_at = timezone.now()
+        row.save(update_fields=["status", "processed_at"])
+        log("warning", "client_missing", f"{row.sender_id}: картку клієнта не знайдено")
+    return None, ""
 
 
 def _renew_client_automation_lease(row: InstagramBotMessage, token: str) -> bool:
     """Refresh a short lease before each automation boundary, never over I/O."""
     if not row.client_id:
         return True
-    with transaction.atomic():
-        client = IgClient.objects.select_for_update().filter(pk=row.client_id).first()
-        if client and _client_blocked(client):
-            return _skip_blocked_row(row, client)
-        if not client or client.automation_lease_token != token:
-            return _requeue_for_active_lease(row)
-        client.automation_lease_until = timezone.now() + AUTOMATION_LEASE_TTL
-        client.save(update_fields=["automation_lease_until", "updated_at"])
+    client, _token, state = _lease_client_automation(row.client_id, token=token)
+    if state == "renewed":
         row.client = client
-    return True
+        return True
+    if state == "blocked" and client:
+        return _skip_blocked_row(row, client)
+    return _requeue_for_active_lease(row)
 
 
-def _release_client_automation_lease(client_id: int | None, token: str) -> None:
+def release_client_automation_lease(client_id: int | None, token: str) -> None:
     if not client_id or not token:
         return
     IgClient.objects.filter(pk=client_id, automation_lease_token=token).update(
         automation_lease_token="", automation_lease_until=None
     )
+
+
+def _release_client_automation_lease(client_id: int | None, token: str) -> None:
+    """Backward-compatible internal alias for the inbound worker."""
+    release_client_automation_lease(client_id, token)
 
 
 def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
@@ -1588,7 +1655,8 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
             )
         else:
             row.status = InstagramBotMessage.Status.PENDING
-            row.save(update_fields=["status"])
+            row.processing_started_at = None
+            row.save(update_fields=["status", "processing_started_at"])
         return False
 
     # Останнє продовження lease прямо перед Meta Send API. Поки send триває,
@@ -1623,7 +1691,8 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
             )
         else:
             row.status = InstagramBotMessage.Status.PENDING
-            row.save(update_fields=["status"])
+            row.processing_started_at = None
+            row.save(update_fields=["status", "processing_started_at"])
         return False
 
     # успіх: фіксуємо відповідь у локальній історії
@@ -1711,7 +1780,8 @@ def process_pending(s: InstagramBotSettings | None = None, max_items: int = 15) 
             InstagramBotMessage.objects.filter(
                 id=row.id, status=InstagramBotMessage.Status.PROCESSING
             ).update(
-                status=InstagramBotMessage.Status.PENDING
+                status=InstagramBotMessage.Status.PENDING,
+                processing_started_at=None,
             )
             break
     return handled

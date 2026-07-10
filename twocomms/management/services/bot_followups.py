@@ -282,80 +282,166 @@ def _mark_skipped(task: IgFollowUpTask, reason: str) -> None:
     _update_client_next(task.client)
 
 
+def _claim_due_followup(
+    task_id: int, *, now: datetime, automation
+) -> tuple[IgFollowUpTask, IgClient, str] | None:
+    """Obtain the shared client lease and re-read one pending follow-up.
+
+    The initial due-task list is intentionally only a list of ids. Hide can
+    cancel a task after that list is read, so no stale task/client object may
+    reach the send path.
+    """
+    candidate = IgFollowUpTask.objects.filter(
+        pk=task_id,
+        status=IgFollowUpTask.Status.PENDING,
+        due_at__lte=now,
+    ).values("client_id").first()
+    if not candidate:
+        return None
+    client, lease_token = automation.acquire_client_automation_lease(
+        candidate["client_id"]
+    )
+    if not client:
+        # Busy means another automation owns this client and the task remains
+        # pending. A real policy block keeps the prior behavior: skip it once
+        # so it cannot be reconsidered forever after a pause/hide/paid state.
+        fresh_client = IgClient.objects.filter(pk=candidate["client_id"]).first()
+        if fresh_client:
+            allowed, why = _client_allows_followup(fresh_client)
+            if not allowed:
+                stale_task = IgFollowUpTask.objects.select_related("client").filter(
+                    pk=task_id,
+                    client_id=fresh_client.id,
+                    status=IgFollowUpTask.Status.PENDING,
+                ).first()
+                if stale_task:
+                    stale_task.client = fresh_client
+                    _mark_skipped(stale_task, why)
+        return None
+    task = IgFollowUpTask.objects.select_related("client").filter(
+        pk=task_id,
+        client_id=client.id,
+        status=IgFollowUpTask.Status.PENDING,
+        due_at__lte=now,
+    ).first()
+    if not task:
+        automation.release_client_automation_lease(client.id, lease_token)
+        return None
+    task.client = client
+    allowed, why = _client_allows_followup(client)
+    if not allowed:
+        _mark_skipped(task, why)
+        automation.release_client_automation_lease(client.id, lease_token)
+        return None
+    return task, client, lease_token
+
+
+def _renew_due_followup_claim(
+    task_id: int, client_id: int, lease_token: str, *, now: datetime, automation
+) -> tuple[IgFollowUpTask, IgClient] | None:
+    """Last no-I/O check: task remains pending and the client remains active."""
+    client = automation.renew_client_automation_lease(client_id, lease_token)
+    if not client:
+        return None
+    task = IgFollowUpTask.objects.select_related("client").filter(
+        pk=task_id,
+        client_id=client.id,
+        status=IgFollowUpTask.Status.PENDING,
+        due_at__lte=now,
+    ).first()
+    if not task:
+        return None
+    task.client = client
+    allowed, why = _client_allows_followup(client)
+    if not allowed:
+        _mark_skipped(task, why)
+        return None
+    return task, client
+
+
 def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetime | None = None, limit: int = 20) -> int:
     s = s or InstagramBotSettings.load()
     now = now or _now()
     sent = 0
-    tasks = list(
-        IgFollowUpTask.objects.select_related("client")
+    task_ids = list(
+        IgFollowUpTask.objects
         .filter(status=IgFollowUpTask.Status.PENDING, due_at__lte=now)
         .order_by("due_at", "id")[:limit]
+        .values_list("id", flat=True)
     )
-    for task in tasks:
-        client = task.client
-        allowed, why = _client_allows_followup(client)
-        if not allowed:
-            _mark_skipped(task, why)
-            continue
-        if task.meta_window_deadline and now > task.meta_window_deadline:
-            _mark_skipped(task, "meta_window_closed")
-            continue
-        allowed_time = next_allowed_send_at(now)
-        if allowed_time > now + timedelta(seconds=1):
-            task.due_at = allowed_time
-            task.save(update_fields=["due_at", "updated_at"])
-            _update_client_next(client)
-            continue
-        text = (task.message_text or "").strip() or compose_followup(task)
-        try:
-            from management.services import instagram_bot
+    from management.services import instagram_bot
 
-            ok, kind, hint = instagram_bot.send_text(s, client.igsid, text)
-        except Exception as exc:
-            ok, kind, hint = False, "transient", repr(exc)
-        if not ok:
-            if kind == "permanent":
-                _mark_skipped(task, hint or "send_blocked")
+    for task_id in task_ids:
+        claim = _claim_due_followup(task_id, now=now, automation=instagram_bot)
+        if not claim:
             continue
-        msg = InstagramBotMessage.objects.create(
-            sender_id=client.igsid,
-            client=client,
-            role=InstagramBotMessage.Role.MODEL,
-            text=text,
-            status=InstagramBotMessage.Status.DONE,
-            source="followup",
-            processed_at=now,
-        )
-        task.status = IgFollowUpTask.Status.SENT
-        task.sent_at = now
-        task.sent_message = msg
-        task.save(update_fields=["status", "sent_at", "sent_message", "updated_at"])
-        client.followup_level = max(int(client.followup_level or 0), int(task.level or 0) + 1)
-        if task.discount_percent:
-            client.discount_offered_percent = max(
-                int(client.discount_offered_percent or 0), int(task.discount_percent or 0)
+        task, client, lease_token = claim
+        try:
+            if task.meta_window_deadline and now > task.meta_window_deadline:
+                _mark_skipped(task, "meta_window_closed")
+                continue
+            allowed_time = next_allowed_send_at(now)
+            if allowed_time > now + timedelta(seconds=1):
+                task.due_at = allowed_time
+                task.save(update_fields=["due_at", "updated_at"])
+                _update_client_next(client)
+                continue
+            text = (task.message_text or "").strip() or compose_followup(task)
+            renewed = _renew_due_followup_claim(
+                task.id, client.id, lease_token, now=now, automation=instagram_bot
             )
+            if not renewed:
+                continue
+            task, client = renewed
             try:
-                IgConversationSignal.objects.create(
-                    client=client,
-                    message=msg,
-                    signal_type=IgConversationSignal.Type.DISCOUNT_OFFER,
-                    value=str(task.discount_percent),
-                    payload={"discount_percent": task.discount_percent},
+                ok, kind, hint = instagram_bot.send_text(s, client.igsid, text)
+            except Exception as exc:
+                ok, kind, hint = False, "transient", repr(exc)
+            if not ok:
+                if kind == "permanent":
+                    _mark_skipped(task, hint or "send_blocked")
+                continue
+            msg = InstagramBotMessage.objects.create(
+                sender_id=client.igsid,
+                client=client,
+                role=InstagramBotMessage.Role.MODEL,
+                text=text,
+                status=InstagramBotMessage.Status.DONE,
+                source="followup",
+                processed_at=now,
+            )
+            task.status = IgFollowUpTask.Status.SENT
+            task.sent_at = now
+            task.sent_message = msg
+            task.save(update_fields=["status", "sent_at", "sent_message", "updated_at"])
+            client.followup_level = max(int(client.followup_level or 0), int(task.level or 0) + 1)
+            if task.discount_percent:
+                client.discount_offered_percent = max(
+                    int(client.discount_offered_percent or 0), int(task.discount_percent or 0)
                 )
-            except Exception:
-                pass
-        client.last_bot_reply_at = now
-        client.next_followup_at = None
-        client.save(update_fields=[
-            "followup_level", "discount_offered_percent", "last_bot_reply_at",
-            "next_followup_at", "updated_at",
-        ])
-        sent += 1
-        if not task.discount_percent and task.kind in {
-            IgFollowUpTask.Kind.QUALIFICATION,
-            IgFollowUpTask.Kind.THINKING,
-            IgFollowUpTask.Kind.PAYMENT,
-        }:
-            schedule_rescue_offer(client, now=now)
+                try:
+                    IgConversationSignal.objects.create(
+                        client=client,
+                        message=msg,
+                        signal_type=IgConversationSignal.Type.DISCOUNT_OFFER,
+                        value=str(task.discount_percent),
+                        payload={"discount_percent": task.discount_percent},
+                    )
+                except Exception:
+                    pass
+            client.last_bot_reply_at = now
+            client.next_followup_at = None
+            client.save(update_fields=[
+                "followup_level", "discount_offered_percent", "last_bot_reply_at",
+                "next_followup_at", "updated_at",
+            ])
+            sent += 1
+            if not task.discount_percent and task.kind in {
+                IgFollowUpTask.Kind.QUALIFICATION,
+                IgFollowUpTask.Kind.THINKING,
+                IgFollowUpTask.Kind.PAYMENT,
+            }:
+                schedule_rescue_offer(client, now=now)
+        finally:
+            instagram_bot.release_client_automation_lease(client.id, lease_token)
     return sent
