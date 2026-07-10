@@ -76,7 +76,7 @@
 | [ ] | **F-033** | P0 | link_order in code but orders empty | §F-033; PLAN_VS W2-1 |
 | [ ] | **F-045** | P0 | 0 Order.session_key join UTMSession | §F-045 |
 | [ ] | **F-019** | P0 | is_converted always 0 | §F-019; **PLAN_VS W2-2** |
-| [ ] | **F-030** | P0 | initializePixelsImmediately not defined | §F-030; **PLAN_VS ADS-1**; `analytics-loader.js` |
+| [x] | **F-030** | P0 | initializePixelsImmediately not defined | **FIXED `3291ac82`**; production hashed asset verified 2026-07-10; §F-030 |
 | [ ] | **F-029** | P0 | LSAPI_CHILDREN process limit | §F-029 |
 | [ ] | **F-003** | P0 | Merchant feed / color landing issues | §F-003; narrow with **F-077** |
 | [ ] | **F-027** | P0 | Feed color issues (narrowed) | §F-027; see F-077 REVISED |
@@ -1348,9 +1348,15 @@ Reached max children process limit: 6, extra: 2, current: 8, busy: 7/8, please i
 
 ### F-030 — `initializePixelsImmediately is not defined` (analytics-loader bug)
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (`3291ac82`) · **Severity:** P0 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P0** · Area: **PIXEL / TECH** · Checklist: PIX-001–003, TECH-064
+**Production verification (2026-07-10):** BFCache restore now calls the defined,
+idempotent `initializePixelsDeferred`. The regression test passes on the server,
+`collectstatic` and `compress --force` completed, and the live hashed asset
+`analytics-loader.43cce70b789d.js?v=8` contains the corrected call and no
+`initializePixelsImmediately()` reference. Production health returned 200.
+
+- [x] **Fixed** · Severity: **P0** · Area: **PIXEL / TECH** · Checklist: PIX-001–003, TECH-064
 
 | Field | Value |
 |-------|--------|
