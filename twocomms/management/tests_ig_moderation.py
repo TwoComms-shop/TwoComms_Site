@@ -89,6 +89,33 @@ class BlockedGateTests(TestCase):
         row.refresh_from_db()
         self.assertEqual(row.status, InstagramBotMessage.Status.DONE)
 
+    @patch("management.services.instagram_bot.send_text", return_value=(True, "", ""))
+    @patch("management.services.instagram_bot.gemini_generate", return_value="Тестова відповідь")
+    @patch("management.services.instagram_bot.send_sender_action")
+    def test_post_send_error_never_requeues_a_delivered_message(
+        self, _sender_action, _generate_reply, send_text
+    ):
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.save(update_fields=["is_enabled"])
+        client = IgClient.get_or_create_for_sender("delivered_message")
+        client.profile_fetched_at = timezone.now()
+        client.save(update_fields=["profile_fetched_at", "updated_at"])
+        row = InstagramBotMessage.objects.create(
+            sender_id=client.igsid,
+            client=client,
+            role=InstagramBotMessage.Role.USER,
+            text="відправлене повідомлення",
+            status=InstagramBotMessage.Status.PENDING,
+        )
+
+        with patch.object(InstagramBotSettings, "save", side_effect=RuntimeError("settings write failed")):
+            bot.process_pending(settings, max_items=1)
+
+        send_text.assert_called_once()
+        row.refresh_from_db()
+        self.assertEqual(row.status, InstagramBotMessage.Status.DONE)
+
 
 class SpamStrikeTests(TestCase):
     @patch("management.services.instagram_bot.notify_manager")

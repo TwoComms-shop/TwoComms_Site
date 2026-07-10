@@ -685,9 +685,23 @@ def bot_client_hide_api(request, client_id):
         c = IgClient.objects.select_for_update().filter(id=client_id).first()
         if not c:
             return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
-        c.hidden_at = timezone.now()
+        now = timezone.now()
+        if bot.client_automation_busy(c, now=now):
+            return JsonResponse({
+                "success": False,
+                "retryable": True,
+                "error": "Бот завершує поточну відповідь. Зачекайте кілька секунд і повторіть приховування.",
+            }, status=409)
+        # Прострочена lease не є активною автоматизацією і не повинна заважати
+        # модерації після аварійного завершення worker-а.
+        c.automation_lease_token = ""
+        c.automation_lease_until = None
+        c.hidden_at = now
         c.hidden_reason = (request.POST.get("reason") or "manual")[:255]
-        c.save(update_fields=["hidden_at", "hidden_reason", "updated_at"])
+        c.save(update_fields=[
+            "automation_lease_token", "automation_lease_until",
+            "hidden_at", "hidden_reason", "updated_at",
+        ])
         cancelled_followups = bot_followups.cancel_pending(c, reason="hidden")
     return JsonResponse({
         "success": True,

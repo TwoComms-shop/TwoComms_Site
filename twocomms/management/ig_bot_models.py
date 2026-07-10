@@ -227,6 +227,10 @@ class IgClient(models.Model):
     lost_reason = models.CharField(max_length=64, blank=True, default="", db_index=True)
     hidden_at = models.DateTimeField(null=True, blank=True, db_index=True)
     hidden_reason = models.CharField(max_length=255, blank=True, default="")
+    # Короткоживуча lease одного worker-а. Вона не є станом воронки: потрібна
+    # лише щоб hide не підтверджувався, поки триває відповідь цьому клієнту.
+    automation_lease_token = models.CharField(max_length=40, blank=True, default="")
+    automation_lease_until = models.DateTimeField(null=True, blank=True)
     discount_offered_percent = models.PositiveSmallIntegerField(default=0)
     next_followup_at = models.DateTimeField(null=True, blank=True, db_index=True)
     followup_level = models.PositiveSmallIntegerField(default=0)

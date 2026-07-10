@@ -23,10 +23,11 @@ import hmac
 import json
 import os
 import re
+import secrets
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
@@ -50,6 +51,7 @@ PAGE_TOKEN_TTL = 1200
 HTTP_TIMEOUT = 12
 CONV_LIST_TIMEOUT = 30
 MSG_KEEP_ROWS = 2000        # підрізання історії
+AUTOMATION_LEASE_TTL = timedelta(minutes=3)
 
 # Керуючі теги, які модель може додавати у відповідь (вирізаються перед
 # відправкою клієнту). [STAGE:x] просуває воронку, [MANAGER] кличе людину.
@@ -1381,31 +1383,85 @@ def _skip_blocked_row(row: InstagramBotMessage, client: IgClient) -> bool:
     return False
 
 
-def _refresh_active_client(row: InstagramBotMessage) -> bool:
-    """Refresh a client under a short lock and stop work if it was hidden.
+def client_automation_busy(client: IgClient | None, *, now: datetime | None = None) -> bool:
+    now = now or timezone.now()
+    return bool(
+        client
+        and client.automation_lease_token
+        and client.automation_lease_until
+        and client.automation_lease_until > now
+    )
 
-    The lock deliberately covers only the state check and local updates. Network
-    work is never performed in a database transaction; guards run again before
-    expensive generation and immediately before sending a reply.
-    """
+
+def _requeue_for_active_lease(row: InstagramBotMessage) -> bool:
+    row.status = InstagramBotMessage.Status.PENDING
+    row.processed_at = None
+    row.save(update_fields=["status", "processed_at"])
+    log("info", "lease_busy", f"{row.sender_id}: інший worker ще обробляє клієнта")
+    return False
+
+
+def _acquire_client_automation_lease(
+    row: InstagramBotMessage,
+) -> tuple[IgClient | None, str]:
+    if not row.client_id:
+        return None, ""
+    with transaction.atomic():
+        client = IgClient.objects.select_for_update().filter(pk=row.client_id).first()
+        if client and _client_blocked(client):
+            _skip_blocked_row(row, client)
+            return None, ""
+        if not client:
+            return None, ""
+        now = timezone.now()
+        if client_automation_busy(client, now=now):
+            _requeue_for_active_lease(row)
+            return None, ""
+        token = secrets.token_hex(16)
+        client.automation_lease_token = token
+        client.automation_lease_until = now + AUTOMATION_LEASE_TTL
+        client.save(update_fields=[
+            "automation_lease_token", "automation_lease_until", "updated_at",
+        ])
+        row.client = client  # не використовуємо застарілий relation-cache після claim.
+        return client, token
+
+
+def _renew_client_automation_lease(row: InstagramBotMessage, token: str) -> bool:
+    """Refresh a short lease before each automation boundary, never over I/O."""
     if not row.client_id:
         return True
     with transaction.atomic():
         client = IgClient.objects.select_for_update().filter(pk=row.client_id).first()
         if client and _client_blocked(client):
             return _skip_blocked_row(row, client)
-        if client:
-            row.client = client  # не використовуємо застарілий relation-cache після claim.
+        if not client or client.automation_lease_token != token:
+            return _requeue_for_active_lease(row)
+        client.automation_lease_until = timezone.now() + AUTOMATION_LEASE_TTL
+        client.save(update_fields=["automation_lease_until", "updated_at"])
+        row.client = client
     return True
 
 
+def _release_client_automation_lease(client_id: int | None, token: str) -> None:
+    if not client_id or not token:
+        return
+    IgClient.objects.filter(pk=client_id, automation_lease_token=token).update(
+        automation_lease_token="", automation_lease_until=None
+    )
+
+
 def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
-    if not _refresh_active_client(row):
+    client, lease_token = _acquire_client_automation_lease(row)
+    if row.client_id and not client:
         return False
-    return _process_one_unlocked(s, row)
+    try:
+        return _process_one_unlocked(s, row, lease_token)
+    finally:
+        _release_client_automation_lease(row.client_id, lease_token)
 
 
-def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
+def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lease_token: str = "") -> bool:
     # Захоплення телефону клієнта (лід), якщо ще немає.
     if row.client_id:
         try:
@@ -1425,7 +1481,7 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> 
 
     if s.ai_enabled:
         # Відразу показуємо клієнту, що бот побачив і «друкує» (best practice).
-        if not _refresh_active_client(row):
+        if not _renew_client_automation_lease(row, lease_token):
             return False
         send_sender_action(s, row.sender_id, "mark_seen")
         send_sender_action(s, row.sender_id, "typing_on")
@@ -1441,7 +1497,7 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> 
             reply = "Я вже відповів(-ла) на це трохи вище 🙂 Якщо потрібно щось інше — уточніть, будь ласка."
             log("info", "repeat_guard", f"{row.sender_id}: повтор #{rep}, без Gemini")
         else:
-            if not _refresh_active_client(row):
+            if not _renew_client_automation_lease(row, lease_token):
                 return False
             history = _build_history(row.sender_id)
             if not history:
@@ -1487,7 +1543,7 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> 
             return False
         reply = s.reply_text
 
-    if not _refresh_active_client(row):
+    if not _renew_client_automation_lease(row, lease_token):
         return False
 
     # Керуючі теги моделі: [MANAGER] (ескалація), [STAGE:x] (воронка) тощо.
@@ -1535,9 +1591,9 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage) -> 
             row.save(update_fields=["status"])
         return False
 
-    # Остання коротка перевірка прямо перед Meta Send API: якщо hide завершився
-    # під час генерації/підготовки відповіді, зовнішнє повідомлення не піде.
-    if not _refresh_active_client(row):
+    # Останнє продовження lease прямо перед Meta Send API. Поки send триває,
+    # hide не поверне помилковий success: UI отримає чесний retryable-конфлікт.
+    if not _renew_client_automation_lease(row, lease_token):
         return False
     ok, kind, hint = send_text(s, row.sender_id, reply)
     if not ok:
