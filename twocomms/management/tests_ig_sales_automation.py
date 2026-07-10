@@ -267,6 +267,25 @@ class SalesCockpitApiTests(TestCase):
         self.assertEqual(stats["totals"]["hidden"], 2)
         self.assertEqual(stats["stages"], {})
 
+    def test_hide_finalizes_already_queued_inbound_messages(self):
+        queued = InstagramBotMessage.objects.create(
+            sender_id=self.active.igsid,
+            client=self.active,
+            role=InstagramBotMessage.Role.USER,
+            text="не обробляйте після приховування",
+            status=InstagramBotMessage.Status.PENDING,
+        )
+
+        response = self.client.post(
+            reverse("management_bot_client_hide_api", args=[self.active.id]),
+            {"reason": "manual"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        queued.refresh_from_db()
+        self.assertEqual(queued.status, InstagramBotMessage.Status.DONE)
+        self.assertIsNotNone(queued.processed_at)
+
     def test_hide_never_reports_success_while_client_automation_is_active(self):
         self.active.automation_lease_token = "active-automation"
         self.active.automation_lease_until = timezone.now() + timedelta(minutes=2)
