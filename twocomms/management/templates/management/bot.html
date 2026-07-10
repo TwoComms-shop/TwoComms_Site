@@ -133,6 +133,30 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
 .bot-client-detail{max-height:560px;overflow-y:auto;background:#0c0f17;border:1px solid #1a2030;border-radius:14px;padding:16px;}
 .bot-detail-head{display:flex;gap:12px;align-items:center;}
 .bot-detail-name{font-size:16px;font-weight:700;}
+.bot-action-panel{margin:14px 0 12px;padding:12px;background:#0a0e16;border:1px solid #202a3b;border-radius:12px;}
+.bot-action-label{margin:0 0 7px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#7f8ba0;}
+.bot-action-primary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.bot-action-state{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:11px;padding-top:10px;border-top:1px solid #1d2635;}
+.bot-action-state-copy{font-size:11px;color:#8b95a5;line-height:1.35;}
+.bot-action-state-buttons{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;}
+.bot-client-action{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #2a3548;border-radius:8px;background:#101722;color:#dce5f0;padding:8px 10px;font:700 12px/1.2 inherit;cursor:pointer;transition:transform .12s,background .15s,border-color .15s,color .15s,opacity .15s;}
+.bot-client-action:hover{background:#172131;border-color:#3b4a63;}
+.bot-client-action:active{transform:scale(.98);}
+.bot-client-action:focus-visible{outline:0;box-shadow:0 0 0 3px rgba(96,165,250,.28);}
+.bot-client-action.primary{min-height:38px;border:0;padding:10px 14px;color:#fff;}
+.bot-client-action.resume{background:#15803d;}.bot-client-action.resume:hover{background:#166534;}
+.bot-client-action.pause{background:#b91c1c;}.bot-client-action.pause:hover{background:#991b1b;}
+.bot-client-action.hide{background:#392711;border-color:#6d4a15;color:#fdba74;}.bot-client-action.hide:hover{background:#4b3212;border-color:#a16207;color:#ffcf9f;}
+.bot-client-action.restore{background:#123525;border-color:#1b6540;color:#86efac;}.bot-client-action.restore:hover{background:#16442f;border-color:#269c5a;color:#bbf7d0;}
+.bot-client-action.lost{background:#2c1519;border-color:#63232b;color:#fda4af;}.bot-client-action.lost:hover{background:#3a171d;border-color:#9f2d39;color:#fecdd3;}
+.bot-client-action[disabled]{opacity:.56;cursor:wait;transform:none;}
+.bot-action-feedback{display:flex;align-items:flex-start;gap:7px;margin-top:10px;padding:8px 10px;border:1px solid transparent;border-radius:8px;font-size:11.5px;line-height:1.4;animation:actionFeedbackIn .18s ease-out;}
+.bot-action-feedback[hidden]{display:none;}
+.bot-action-feedback.success{background:#102b1d;border-color:#1f5d3a;color:#bbf7d0;}
+.bot-action-feedback.error{background:#32161b;border-color:#6d2931;color:#fecaca;}
+.bot-action-feedback.info{background:#101f35;border-color:#27456e;color:#bfdbfe;}
+@keyframes actionFeedbackIn{from{opacity:0;transform:translateY(-3px);}to{opacity:1;transform:none;}}
+@media(max-width:560px){.bot-action-state{align-items:flex-start;flex-direction:column;}.bot-action-state-buttons{justify-content:flex-start;}.bot-client-action.primary{width:100%;}.bot-client-action{min-height:36px;}}
 .bot-funnel{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0;}
 .bot-circle{display:flex;align-items:center;gap:6px;font-size:11px;color:#8b95a5;background:#11151f;border:1px solid #1a2030;border-radius:20px;padding:4px 10px;transition:.2s;}
 .bot-circle i{width:10px;height:10px;border-radius:50%;background:#2a3140;display:inline-block;transition:.25s;}
@@ -364,13 +388,13 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       </div>
       <input id="bot-clients-search" class="bot-clients-search" placeholder="Пошук: ім'я / username / телефон">
       <div class="bot-client-filters" id="bot-client-filters">
-        <button class="bot-mini-btn active" data-client-view="active">Active</button>
-        <button class="bot-mini-btn" data-client-view="due">Due follow-ups</button>
-        <button class="bot-mini-btn" data-client-view="hidden">Hidden</button>
-        <button class="bot-mini-btn" data-client-view="spam-cold">Spam/Cold</button>
-        <button class="bot-mini-btn" data-client-view="paid">Paid</button>
-        <button class="bot-mini-btn" data-client-view="ads">Ads</button>
-        <button class="bot-mini-btn" data-client-view="delivery-blocked">Не можу відповісти</button>
+        <button type="button" class="bot-mini-btn active" data-client-view="active">Активні</button>
+        <button type="button" class="bot-mini-btn" data-client-view="due">Заплановані контакти</button>
+        <button type="button" class="bot-mini-btn" data-client-view="hidden">Приховані</button>
+        <button type="button" class="bot-mini-btn" data-client-view="spam-cold">Спам / неактивні</button>
+        <button type="button" class="bot-mini-btn" data-client-view="paid">Оплачені</button>
+        <button type="button" class="bot-mini-btn" data-client-view="ads">З реклами</button>
+        <button type="button" class="bot-mini-btn" data-client-view="delivery-blocked">Не можу відповісти</button>
       </div>
       <div class="bot-clients-wrap">
         <div id="bot-clients-list" class="bot-clients-list"></div>
@@ -511,7 +535,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     function stageCls(s){ return 'st-'+(s||'new'); }
     function load(q){
       const params=new URLSearchParams(); params.set('view', currentView); if(q) params.set('q', q);
-      fetch(base+'?'+params.toString(),{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      return fetch(base+'?'+params.toString(),{headers:{'X-Requested-With':'XMLHttpRequest'}})
         .then(r=>r.json()).then(d=>{
           if(!d.success) return;
           setBadge(document.getElementById('badge-clients'), d.total||0);
@@ -535,25 +559,78 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             listEl.appendChild(row);
           });
           if(!(d.clients||[]).length) listEl.innerHTML='<div class="bot-empty">Ще немає клієнтів.</div>';
-        }).catch(()=>{});
+        }).catch(()=>{ listEl.innerHTML='<div class="bot-empty">Не вдалося завантажити список клієнтів.</div>'; });
+    }
+    function currentQuery(){ return searchEl ? searchEl.value.trim() : ''; }
+    function actionSuccessText(action, data){
+      if(data && data.message) return data.message;
+      return {
+        pause: 'Бота зупинено для цього клієнта.',
+        resume: 'Бота знову ввімкнено для цього клієнта.',
+        hide: 'Клієнта приховано. Він не бере участі в активній черзі та статистиці.',
+        unhide: 'Клієнта повернено до активного списку.',
+        lost: 'Клієнта позначено як втраченого.',
+      }[action] || 'Дію виконано.';
+    }
+    function setActionFeedback(text, kind){
+      const feedback=detailEl.querySelector('#bot-action-feedback');
+      if(!feedback) return;
+      feedback.hidden=false;
+      feedback.className='bot-action-feedback '+(kind||'info');
+      feedback.textContent=text;
+    }
+    async function runClientAction(id, action, button){
+      const originalLabel=button.innerHTML;
+      button.disabled=true;
+      button.textContent='Зберігаємо…';
+      const formData=new FormData();
+      if(action==='hide') formData.append('reason','manual');
+      if(action==='lost') formData.append('reason','manual_lost');
+      try{
+        const response=await fetch(base+id+'/'+action+'/',{
+          method:'POST', headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'}, body:formData
+        });
+        const data=await response.json().catch(()=>({}));
+        if(!response.ok || !data.success) throw new Error(data.error || 'Не вдалося виконати дію.');
+        const message=actionSuccessText(action,data);
+        const removeFromView=(action==='hide' && currentView!=='hidden')
+          || (action==='unhide' && currentView==='hidden')
+          || (action==='lost' && currentView==='active');
+        if(removeFromView){
+          activeId=null; convId=null; convLastId=0;
+          detailEl.innerHTML='<div class="bot-action-feedback success" role="status">'+esc(message)+'</div><div class="bot-empty">Оберіть іншого клієнта зі списку.</div>';
+          await load(currentQuery());
+          return;
+        }
+        await detail(id);
+        await load(currentQuery());
+        setActionFeedback(message,'success');
+      }catch(error){
+        button.disabled=false;
+        button.innerHTML=originalLabel;
+        setActionFeedback(error && error.message ? error.message : 'Не вдалося виконати дію. Спробуйте ще раз.','error');
+      }
     }
     function detail(id){
-      fetch(base+id+'/',{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      return fetch(base+id+'/',{headers:{'X-Requested-With':'XMLHttpRequest'}})
         .then(r=>r.json()).then(d=>{
           if(!d.success){detailEl.innerHTML='<div class="bot-empty">Не знайдено.</div>';return;}
           const c=d.client;
           let h='<div class="bot-detail-head">'+(c.avatar?('<img class="bot-client-ava" style="width:46px;height:46px;" src="'+esc(c.avatar)+'" alt="">'):('<div class="bot-client-ava" style="width:46px;height:46px;">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>'))+'<div><div class="bot-detail-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+(c.phone?(' · '+esc(c.phone)):'')+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'" style="margin-left:auto;">'+esc(c.stage_label)+'</span></div>';
           if(c.ad_title) h+='<div class="bot-client-sub" style="margin-top:8px;">📣 Реклама: '+esc(c.ad_title)+'</div>';
           if(c.delivery_status_label) h+='<div class="bot-client-sub" style="margin-top:8px;padding:9px 11px;border:1px solid rgba(251,191,36,.42);border-radius:10px;background:rgba(251,191,36,.08);color:#fde68a;">⚠ <b>Не можу відповісти:</b> '+esc(c.delivery_status_label)+(c.delivery_error?(' · '+esc(c.delivery_error)):'')+'</div>';
-          h+='<div class="bot-client-sub" style="margin-top:8px;">Readiness: <b style="color:#34d399;">'+(c.buying_readiness||0)+'%</b> · intent: '+esc(c.intent||'')+' · objection: '+esc(c.primary_objection||'')+(c.current_product_title?' · product: '+esc(c.current_product_title):'')+(c.next_followup_at?' · next FU: '+fmt(c.next_followup_at):'')+'</div>';
-          const pauseBtn=c.bot_paused?'<button class="bot-save" data-act="resume" style="background:#16a34a;">▶ Включити бота</button>':'<button class="bot-save" data-act="pause" style="background:#dc2626;">⏸ Стоп бота</button>';
-          h+='<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">'+pauseBtn+(c.manager_takeover?' <span class="bot-stage-chip st-lead_manager">менеджер веде</span>':'')+'<button class="bot-mini-btn warn" data-act="hide">Hide</button><button class="bot-mini-btn" data-act="unhide">Unhide</button><button class="bot-mini-btn danger" data-act="lost">Mark lost</button></div>';
+          h+='<div class="bot-client-sub" style="margin-top:8px;">Готовність: <b style="color:#34d399;">'+(c.buying_readiness||0)+'%</b> · намір: '+esc(c.intent||'')+' · заперечення: '+esc(c.primary_objection||'')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div>';
+          const pauseBtn=c.bot_paused?'<button type="button" class="bot-client-action primary resume" data-act="resume">▶ Відновити бота</button>':'<button type="button" class="bot-client-action primary pause" data-act="pause">⏸ Зупинити бота</button>';
+          const primaryAction=c.hidden?'<span class="bot-stage-chip st-cold">🗂 Бот не обробляє прихованого клієнта</span>':pauseBtn;
+          const visibilityBtn=c.hidden?'<button type="button" class="bot-client-action restore" data-act="unhide">↩ Повернути до активних</button>':'<button type="button" class="bot-client-action hide" data-act="hide">🗂 Приховати</button>';
+          const stateCopy=c.hidden?'Прихований клієнт не отримує автоматичних відповідей і не входить до активної статистики.':(c.manager_takeover?'Менеджер веде діалог; автоматичні відповіді зупинені.':'Керуйте ботом і статусом клієнта без перезавантаження сторінки.');
+          h+='<section class="bot-action-panel" aria-label="Дії з клієнтом"><div class="bot-action-label">Керування діалогом</div><div class="bot-action-primary">'+primaryAction+'</div><div class="bot-action-state"><div class="bot-action-state-copy">'+esc(stateCopy)+'</div><div class="bot-action-state-buttons">'+visibilityBtn+'<button type="button" class="bot-client-action lost" data-act="lost">✕ Позначити як втрачено</button></div></div><div id="bot-action-feedback" class="bot-action-feedback" role="status" aria-live="polite" hidden></div></section>';
           h+='<div class="bot-funnel">';
           (d.funnel||[]).forEach(f=>{h+='<span class="bot-circle'+(f.done?' done':'')+(f.current?' current':'')+'"><i></i>'+esc(f.label)+'</span>';});
           h+='</div>';
           if(c.memory) h+='<div class="bot-mem">🧠 '+esc(c.memory)+'</div>';
-          if((d.signals||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Signals</div><div>';(d.signals||[]).slice(0,18).forEach(s=>{h+='<span class="bot-signal">'+esc(s.type)+(s.value?': '+esc(s.value):'')+'</span>';});h+='</div>';}
-          if((d.followups||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Follow-ups</div>';(d.followups||[]).forEach(f=>{h+='<div class="bot-deal">#'+f.id+' · '+esc(f.kind)+' · '+esc(f.status)+' · '+fmt(f.due_at)+(f.discount_percent?(' · '+f.discount_percent+'%'):'')+(f.skip_reason?(' · '+esc(f.skip_reason)):'')+'</div>';});}
+          if((d.signals||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Сигнали</div><div>';(d.signals||[]).slice(0,18).forEach(s=>{h+='<span class="bot-signal">'+esc(s.type)+(s.value?': '+esc(s.value):'')+'</span>';});h+='</div>';}
+          if((d.followups||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Заплановані контакти</div>';(d.followups||[]).forEach(f=>{h+='<div class="bot-deal">#'+f.id+' · '+esc(f.kind)+' · '+esc(f.status)+' · '+fmt(f.due_at)+(f.discount_percent?(' · '+f.discount_percent+'%'):'')+(f.skip_reason?(' · '+esc(f.skip_reason)):'')+'</div>';});}
           if((d.deals||[]).length){h+='<div class="bot-kb-h" style="margin-top:6px;">Угоди</div>';d.deals.forEach(dl=>{h+='<div class="bot-deal">#'+dl.id+' · '+esc(dl.status)+' · '+esc(dl.amount)+' грн'+(dl.order_id?(' · замовлення #'+dl.order_id):'')+(dl.invoice_url?(' · <a href="'+esc(dl.invoice_url)+'" target="_blank" style="color:#7fb0ff;">оплата</a>'):'')+'</div>';});}
           h+='<div class="bot-kb-h" style="margin-top:12px;">Переписка</div><div id="bot-msgs" style="display:flex;flex-direction:column;max-height:440px;overflow-y:auto;">';
           (d.messages||[]).forEach(m=>{h+='<div class="bot-msg '+(m.role==='user'?'user':(m.role==='manager'?'manager':'model'))+'" data-mid="'+(m.id||0)+'">'+esc(m.text)+'</div>';});
@@ -561,14 +638,11 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           detailEl.innerHTML=h;
           convId=id; convLastId=d.last_message_id||0;
           const mc0=document.getElementById('bot-msgs'); if(mc0) mc0.scrollTop=mc0.scrollHeight;
-          detailEl.querySelectorAll('[data-act]').forEach(ab=>ab.addEventListener('click',()=>{
-            ab.disabled=true;
-            const act=ab.getAttribute('data-act');
-            const fd=new FormData(); if(act==='hide') fd.append('reason','manual'); if(act==='lost') fd.append('reason','manual_lost');
-            fetch(base+id+'/'+act+'/',{method:'POST',headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'},body:fd})
-              .then(r=>r.json()).then(()=>detail(id)).catch(()=>{});
+          detailEl.querySelectorAll('[data-act]').forEach(ab=>ab.addEventListener('click',(event)=>{
+            event.preventDefault();
+            runClientAction(id,ab.getAttribute('data-act'),ab);
           }));
-        }).catch(()=>{});
+        }).catch(()=>{ detailEl.innerHTML='<div class="bot-empty">Не вдалося завантажити картку клієнта.</div>'; });
     }
     let convId=null, convLastId=0, convInFlight=false;
     function appendConvMessages(items){

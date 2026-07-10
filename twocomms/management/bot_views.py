@@ -681,14 +681,21 @@ def bot_client_hide_api(request, client_id):
     from .models import IgClient
     from .services import bot_followups
 
-    c = IgClient.objects.filter(id=client_id).first()
-    if not c:
-        return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
-    c.hidden_at = timezone.now()
-    c.hidden_reason = (request.POST.get("reason") or "manual")[:255]
-    c.save(update_fields=["hidden_at", "hidden_reason", "updated_at"])
-    bot_followups.cancel_pending(c, reason="hidden")
-    return JsonResponse({"success": True, "hidden": True})
+    with transaction.atomic():
+        c = IgClient.objects.select_for_update().filter(id=client_id).first()
+        if not c:
+            return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+        c.hidden_at = timezone.now()
+        c.hidden_reason = (request.POST.get("reason") or "manual")[:255]
+        c.save(update_fields=["hidden_at", "hidden_reason", "updated_at"])
+        cancelled_followups = bot_followups.cancel_pending(c, reason="hidden")
+    return JsonResponse({
+        "success": True,
+        "hidden": True,
+        "automation_disabled": True,
+        "cancelled_followups": cancelled_followups,
+        "message": "Клієнта приховано: бот не оброблятиме його повідомлення, а статистика не враховуватиме цей діалог.",
+    })
 
 
 @login_required(login_url="management_login")
@@ -699,13 +706,18 @@ def bot_client_unhide_api(request, client_id):
         return blocked
     from .models import IgClient
 
-    c = IgClient.objects.filter(id=client_id).first()
-    if not c:
-        return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
-    c.hidden_at = None
-    c.hidden_reason = ""
-    c.save(update_fields=["hidden_at", "hidden_reason", "updated_at"])
-    return JsonResponse({"success": True, "hidden": False})
+    with transaction.atomic():
+        c = IgClient.objects.select_for_update().filter(id=client_id).first()
+        if not c:
+            return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+        c.hidden_at = None
+        c.hidden_reason = ""
+        c.save(update_fields=["hidden_at", "hidden_reason", "updated_at"])
+    return JsonResponse({
+        "success": True,
+        "hidden": False,
+        "message": "Клієнта повернено до активного списку.",
+    })
 
 
 @login_required(login_url="management_login")
@@ -736,18 +748,20 @@ def bot_stats_api(request):
         return blocked
     from .models import IgClient, IgConversationSignal, IgDeal, IgFollowUpTask
 
-    conversations = IgClient.objects.count()
+    active_clients = IgClient.objects.filter(hidden_at__isnull=True)
+    conversations = active_clients.count()
     stage_counts = {
         row["stage"]: row["count"]
-        for row in IgClient.objects.values("stage").annotate(count=Count("id")).order_by()
+        for row in active_clients.values("stage").annotate(count=Count("id")).order_by()
     }
     signals = {
         row["signal_type"]: row["count"]
-        for row in IgConversationSignal.objects.values("signal_type").annotate(count=Count("id")).order_by()
+        for row in IgConversationSignal.objects.filter(client__hidden_at__isnull=True)
+        .values("signal_type").annotate(count=Count("id")).order_by()
     }
     objections = {
         row["primary_objection"]: row["count"]
-        for row in IgClient.objects.exclude(primary_objection=IgClient.Objection.NONE)
+        for row in active_clients.exclude(primary_objection=IgClient.Objection.NONE)
         .values("primary_objection").annotate(count=Count("id")).order_by()
     }
     # Keep signal names too; the frontend can show both high-level client state
@@ -759,13 +773,13 @@ def bot_stats_api(request):
             "product_title": row["current_product__title"] or "",
             "count": row["count"],
         }
-        for row in IgClient.objects.exclude(current_product__isnull=True)
+        for row in active_clients.exclude(current_product__isnull=True)
         .values("current_product_id", "current_product__title").annotate(count=Count("id"))
         .order_by("-count")[:25]
     ]
     ad_rows = []
     for row in (
-        IgClient.objects.exclude(Q(ad_id="") & Q(ad_ref="") & Q(ad_title=""))
+        active_clients.exclude(Q(ad_id="") & Q(ad_ref="") & Q(ad_title=""))
         .values("ad_id", "ad_ref", "ad_title")
         .annotate(
             chats=Count("id", distinct=True),
@@ -792,16 +806,16 @@ def bot_stats_api(request):
         })
     totals = {
         "conversations": conversations,
-        "qualified": IgClient.objects.filter(buying_readiness__gte=40).count(),
-        "product_matched": IgClient.objects.filter(current_product__isnull=False).count(),
-        "checkout_or_payment": IgClient.objects.filter(stage__in=[IgClient.Stage.CHECKOUT, IgClient.Stage.PAYMENT_PENDING]).count(),
-        "paid": IgClient.objects.filter(stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
+        "qualified": active_clients.filter(buying_readiness__gte=40).count(),
+        "product_matched": active_clients.filter(current_product__isnull=False).count(),
+        "checkout_or_payment": active_clients.filter(stage__in=[IgClient.Stage.CHECKOUT, IgClient.Stage.PAYMENT_PENDING]).count(),
+        "paid": active_clients.filter(stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
         "hidden": IgClient.objects.filter(hidden_at__isnull=False).count(),
-        "pending_followups": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.PENDING).count(),
-        "followup_recoveries": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.SENT, client__stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
-        "discount_conversions": IgClient.objects.filter(discount_offered_percent__gt=0, stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
-        "manager_takeovers": IgClient.objects.filter(manager_takeover=True).count(),
-        "custom_print_handoffs": IgClient.objects.filter(intent=IgClient.Intent.CUSTOM_PRINT, stage=IgClient.Stage.LEAD_TO_MANAGER).count(),
+        "pending_followups": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.PENDING, client__hidden_at__isnull=True).count(),
+        "followup_recoveries": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.SENT, client__hidden_at__isnull=True, client__stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
+        "discount_conversions": active_clients.filter(discount_offered_percent__gt=0, stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
+        "manager_takeovers": active_clients.filter(manager_takeover=True).count(),
+        "custom_print_handoffs": active_clients.filter(intent=IgClient.Intent.CUSTOM_PRINT, stage=IgClient.Stage.LEAD_TO_MANAGER).count(),
     }
     return JsonResponse({
         "success": True,

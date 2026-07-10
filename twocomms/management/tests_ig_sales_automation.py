@@ -282,6 +282,38 @@ class SalesCockpitApiTests(TestCase):
         }
         self.assertIn(self.active.id, active_ids)
 
+    def test_pause_resume_and_mark_lost_actions_change_client_state(self):
+        from management.models import IgFollowUpTask
+
+        pause = self.client.post(reverse("management_bot_client_pause_api", args=[self.active.id]))
+        self.assertEqual(pause.status_code, 200)
+        self.active.refresh_from_db()
+        self.assertTrue(self.active.bot_paused)
+
+        resume = self.client.post(reverse("management_bot_client_resume_api", args=[self.active.id]))
+        self.assertEqual(resume.status_code, 200)
+        self.active.refresh_from_db()
+        self.assertFalse(self.active.bot_paused)
+
+        IgFollowUpTask.objects.create(
+            client=self.active,
+            due_at=timezone.now() + timedelta(hours=1),
+            kind=IgFollowUpTask.Kind.QUALIFICATION,
+            reason="waiting_for_reply",
+        )
+        lost = self.client.post(
+            reverse("management_bot_client_mark_lost_api", args=[self.active.id]),
+            {"reason": "manual_lost"},
+        )
+        self.assertEqual(lost.status_code, 200)
+        self.active.refresh_from_db()
+        self.assertEqual(self.active.stage, IgClient.Stage.COLD)
+        self.assertFalse(
+            IgFollowUpTask.objects.filter(
+                client=self.active, status=IgFollowUpTask.Status.PENDING
+            ).exists()
+        )
+
     def test_bot_page_has_ukrainian_action_labels_and_visible_action_feedback(self):
         html = self.client.get(reverse("management_bot")).content.decode("utf-8")
 
