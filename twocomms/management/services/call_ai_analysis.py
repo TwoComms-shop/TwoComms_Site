@@ -57,10 +57,12 @@ MAX_AUDIO_BYTES = 14 * 1024 * 1024
 
 GEMINI_TIMEOUT = (10, 90)  # (connect, read) — аудіо-аналіз може йти десятки секунд
 CHAT_TIMEOUT = (8, 25)      # діалоговий бот: коротка відповідь — не висимо на завислій моделі
+MANAGEMENT_TEXT_TIMEOUT = (8, 25)  # допоміжні text-виклики IG-бота, не аудіо
 BACKOFF_BASE = 2.0          # секунди, експоненційно між ретраями transient
 # Жорсткий стеля часу на ВЕСЬ перебір пулу для чату: краще швидко впасти у фолбек/
 # ретрай повідомлення, ніж тримати клієнта (і чергу) у «processing» хвилинами.
 CHAT_DEADLINE_SECONDS = 75.0
+MANAGEMENT_TEXT_DEADLINE_SECONDS = 75.0
 
 
 
@@ -486,8 +488,18 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
     """Текстовий (не-JSON) запит для діалогового бота. Пул ключів ролі + цепочка
     моделей. У result['parsed'] — сирий текст відповіді моделі.
     log_cb (опц.) отримує короткі рядки про кожну спробу (для консолі бота)."""
-    return _run_with_pool(role, payload, manual_key=(manual_key or "").strip() or None,
-                          parse=False, log_cb=log_cb)
+    bounded_management = role == "management"
+    return _run_with_pool(
+        role,
+        payload,
+        manual_key=(manual_key or "").strip() or None,
+        parse=False,
+        timeout=MANAGEMENT_TEXT_TIMEOUT if bounded_management else None,
+        deadline_seconds=(
+            MANAGEMENT_TEXT_DEADLINE_SECONDS if bounded_management else None
+        ),
+        log_cb=log_cb,
+    )
 
 
 def _gemini_analyze(audio_bytes: bytes, mime: str, manager_context: str, manager_snapshot: str = "") -> dict:

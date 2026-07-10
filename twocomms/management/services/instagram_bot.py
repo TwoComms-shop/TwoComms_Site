@@ -1323,6 +1323,7 @@ def _claim_next() -> InstagramBotMessage | None:
         InstagramBotMessage.objects.filter(
             role=InstagramBotMessage.Role.USER,
             status=InstagramBotMessage.Status.PENDING,
+            client__hidden_at__isnull=True,
         )
         .order_by("id")
         .first()
@@ -1397,11 +1398,26 @@ def reclaim_stale_processing(max_age_seconds: int = STALE_PROCESSING_SECONDS) ->
     return requeued
 
 
+def _own_processing_claim(row: InstagramBotMessage):
+    """Return a conditional update queryset for exactly this worker claim."""
+    claim = InstagramBotMessage.objects.filter(
+        pk=row.pk,
+        status=InstagramBotMessage.Status.PROCESSING,
+    )
+    if row.processing_started_at:
+        return claim.filter(processing_started_at=row.processing_started_at)
+    return claim.filter(processing_started_at__isnull=True)
+
+
 def _skip_blocked_row(row: InstagramBotMessage, client: IgClient) -> bool:
-    row.status = InstagramBotMessage.Status.DONE
-    row.processed_at = timezone.now()
-    row.save(update_fields=["status", "processed_at"])
-    log("info", "paused_skip", f"{row.sender_id}: на паузі ({client.paused_reason or 'manual'})")
+    processed_at = timezone.now()
+    if _own_processing_claim(row).update(
+        status=InstagramBotMessage.Status.DONE,
+        processed_at=processed_at,
+    ):
+        row.status = InstagramBotMessage.Status.DONE
+        row.processed_at = processed_at
+        log("info", "paused_skip", f"{row.sender_id}: на паузі ({client.paused_reason or 'manual'})")
     return False
 
 
@@ -1463,11 +1479,17 @@ def renew_client_automation_lease(client_id: int | None, token: str) -> IgClient
 
 
 def _requeue_for_active_lease(row: InstagramBotMessage) -> bool:
-    row.status = InstagramBotMessage.Status.PENDING
-    row.processed_at = None
-    row.processing_started_at = None
-    row.save(update_fields=["status", "processed_at", "processing_started_at"])
-    log("info", "lease_busy", f"{row.sender_id}: інший worker ще обробляє клієнта")
+    if _own_processing_claim(row).update(
+        status=InstagramBotMessage.Status.PENDING,
+        processed_at=None,
+        processing_started_at=None,
+    ):
+        row.status = InstagramBotMessage.Status.PENDING
+        row.processed_at = None
+        row.processing_started_at = None
+        log("info", "lease_busy", f"{row.sender_id}: інший worker ще обробляє клієнта")
+    else:
+        log("info", "claim_lost", f"{row.sender_id}: row уже належить іншому worker-у")
     return False
 
 
@@ -1480,15 +1502,7 @@ def _acquire_client_automation_lease(
     if state == "acquired":
         # Reclaim may have won just before we acquired the client lease. Do not
         # let this stale Python object send after its DB row returned to pending.
-        ownership = InstagramBotMessage.objects.filter(
-            pk=row.pk,
-            status=InstagramBotMessage.Status.PROCESSING,
-        )
-        if row.processing_started_at:
-            ownership = ownership.filter(
-                processing_started_at=row.processing_started_at
-            )
-        if not ownership.exists():
+        if not _own_processing_claim(row).exists():
             release_client_automation_lease(client.id, token)
             log("info", "claim_lost", f"{row.sender_id}: row вже повернуто в чергу")
             return None, ""
@@ -1499,10 +1513,14 @@ def _acquire_client_automation_lease(
     elif state in {"busy", "token_lost"}:
         _requeue_for_active_lease(row)
     else:
-        row.status = InstagramBotMessage.Status.DONE
-        row.processed_at = timezone.now()
-        row.save(update_fields=["status", "processed_at"])
-        log("warning", "client_missing", f"{row.sender_id}: картку клієнта не знайдено")
+        processed_at = timezone.now()
+        if _own_processing_claim(row).update(
+            status=InstagramBotMessage.Status.DONE,
+            processed_at=processed_at,
+        ):
+            row.status = InstagramBotMessage.Status.DONE
+            row.processed_at = processed_at
+            log("warning", "client_missing", f"{row.sender_id}: картку клієнта не знайдено")
     return None, ""
 
 
@@ -1586,6 +1604,8 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
             # Зображення-вкладення (фото, пересланий пост, reels, сторіс) ->
             # мультимодальний вхід Gemini.
             images = _collect_images(row.attachments)
+            if not _renew_client_automation_lease(row, lease_token):
+                return False
             # Якщо є фото/пост — матчимо з каталогом і даємо моделі підказку.
             match_hint = None
             if images and _match_allowed(row.sender_id):
@@ -1593,6 +1613,8 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
                     from management.services import bot_vision
 
                     match = bot_vision.match(images)
+                    if not _renew_client_automation_lease(row, lease_token):
+                        return False
                     match_hint = _match_hint_text(match)
                     # Впевнений матчинг → закріплюємо товар за клієнтом.
                     if row.client_id:
@@ -1728,12 +1750,20 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
     log("success", "reply_sent", f"→ {row.sender_id}: {reply[:240]}")
     # Періодично оновлюємо стислу пам'ять про клієнта.
     if row.client_id:
+        post_send_client = renew_client_automation_lease(row.client_id, lease_token)
+        if not post_send_client:
+            return True
+        row.client = post_send_client
         try:
             from management.services.bot_memory import maybe_update_memory
 
             maybe_update_memory(row.client)
         except Exception:
             pass
+        post_send_client = renew_client_automation_lease(row.client_id, lease_token)
+        if not post_send_client:
+            return True
+        row.client = post_send_client
         # Просування воронки за тегом [STAGE:x].
         _apply_stage(row.client, control.get("stage"))
         try:
@@ -1791,9 +1821,7 @@ def process_pending(s: InstagramBotSettings | None = None, max_items: int = 15) 
             # Після успішного Meta Send рядок уже позначено done. Не можна
             # повертати його в pending через пізній збій CRM/телеметрії — це
             # призведе до дубльованої відповіді клієнту.
-            InstagramBotMessage.objects.filter(
-                id=row.id, status=InstagramBotMessage.Status.PROCESSING
-            ).update(
+            _own_processing_claim(row).update(
                 status=InstagramBotMessage.Status.PENDING,
                 processing_started_at=None,
             )

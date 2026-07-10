@@ -678,7 +678,7 @@ def bot_client_hide_api(request, client_id):
         return blocked
     from django.utils import timezone
 
-    from .models import IgClient
+    from .models import IgClient, InstagramBotMessage
     from .services import bot_followups
 
     with transaction.atomic():
@@ -703,11 +703,26 @@ def bot_client_hide_api(request, client_id):
             "hidden_at", "hidden_reason", "updated_at",
         ])
         cancelled_followups = bot_followups.cancel_pending(c, reason="hidden")
+        # Не залишаємо legacy pending rows, які могли потрапити в чергу до
+        # натискання Hide: після успішного Hide вони не мають чекати worker-а.
+        cancelled_messages = InstagramBotMessage.objects.filter(
+            client=c,
+            role=InstagramBotMessage.Role.USER,
+            status__in=[
+                InstagramBotMessage.Status.PENDING,
+                InstagramBotMessage.Status.PROCESSING,
+            ],
+        ).update(
+            status=InstagramBotMessage.Status.DONE,
+            processed_at=now,
+            processing_started_at=None,
+        )
     return JsonResponse({
         "success": True,
         "hidden": True,
         "automation_disabled": True,
         "cancelled_followups": cancelled_followups,
+        "cancelled_messages": cancelled_messages,
         "message": "Клієнта приховано: бот не оброблятиме його повідомлення, а статистика не враховуватиме цей діалог.",
     })
 
