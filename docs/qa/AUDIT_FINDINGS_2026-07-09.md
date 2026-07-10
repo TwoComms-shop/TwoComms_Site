@@ -116,7 +116,7 @@
 | [x] | **F-093** | P1 | deploy_paramiko password in git | Fixed `c5b651cf`; production verified; §F-093 |
 | [x] | **F-095** | P1 | IG Hide list not refreshed | Fixed `ad2883f0`; production verified: UA actions refresh lists, hidden queue excluded, `hidden_pending=0`; **IG_BOT** IG-001 |
 | [x] | **F-096** | P1 | IG stats English / thin | Fixed `15c3bf30` + `337710ce` + `3d4e5d40`; production verified; **IG_BOT** IG-004 |
-| [ ] | **F-098** | P1 | IG no transfer button | **IG_BOT** IG-003 |
+| [x] | **F-098** | P1 | IG no transfer button | REVISED_OWNER: duplicate manual action rejected; automatic manager takeover retained; **IG_BOT** IG-003 |
 
 ### Priority C — P2 / ops / hygiene
 
@@ -286,7 +286,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-095** | P1 | FIXED | YES | `ad2883f0`: reliable UA actions, hidden folder, automation/follow-up/analytics exclusion; production verified |
 | [x] **F-096** | P1 | FIXED | YES | Ukrainian dense KPI dashboard, today/7/30/all ranges, funnel shares and bounded revenue; production verified |
 | [ ] **F-097** | P0 | OPEN | YES | IG bot: Message Requests / Graph send fails unlabeled |
-| [ ] **F-098** | P1 | OPEN | YES | IG bot: no explicit transfer-to-manager CRM action |
+| [x] **F-098** | P1 | REVISED_OWNER | no | Owner rejected a duplicate manual transfer button; existing AI/page-echo manager takeover is the intended flow |
 | [ ] **F-099** | P1 | OPEN | YES | Mono dual path: webhook _apply skips on_commit CAPI (plan W2-7) |
 | [ ] **F-100** | P2 | OPEN | YES | views.py.backup still lazy-loaded (plan W7-1) |
 | [ ] **F-101** | P3 | OPEN | YES | residual datetime.now in dropshipper_views (plan W7-23) |
@@ -2300,7 +2300,7 @@ Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
 | F-095 | **FIXED `ad2883f0`** — list refresh + UA labels + hidden folder + automation/statistics exclusion |
 | F-096 | **FIXED `15c3bf30` + `337710ce` + `3d4e5d40`** — Ukrainian dense stats, date ranges and funnel shares |
 | F-097 | Message Requests / Advanced Access / #551 — no CRM flag |
-| F-098 | No explicit «transfer to manager» button (only AI/echo) |
+| F-098 | **REVISED_OWNER** — no manual button; existing automatic AI/page-echo takeover is intentional |
 
 Also IG-006 likes/reactions, IG-001…IG-014 in that file.
 
@@ -2344,10 +2344,10 @@ Fixed in `15c3bf30`, `337710ce`, and `3d4e5d40`: all visible KPI/table/filter co
 
 ### F-098 — IG bot no explicit transfer-to-manager action
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] REVISED_OWNER · **Severity:** P1 · **Fix required:** NO
 **Detail:** **IG-003** in IG_BOT file  
 
-Only AI `[manager]` / page echo takeover; UI has pause/hide/lost, no «Передати менеджеру».
+Owner decision: do not add a duplicate «Передати менеджеру» button. The intended flow remains automatic AI `[manager]` / page-echo takeover, where a human manager joins and the bot pauses. The rejected manual-button implementation was fully reverted before release.
 
 ---
 
