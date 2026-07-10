@@ -635,6 +635,9 @@ elif DB_ENGINE.startswith('mysql') and DB_NAME and DB_USER:
                 'connect_timeout': 10,
                 'read_timeout': 30,
                 'write_timeout': 30,
+                # Shared MariaDB defaults to MyISAM. Ensure every table made
+                # by future Django migrations supports atomic transactions.
+                'init_command': "SET SESSION default_storage_engine=INNODB",
                 # 'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
             },
         }

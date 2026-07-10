@@ -213,7 +213,9 @@ if os.environ.get('DB_NAME') and os.environ.get('DB_USER'):
         _options = {
             'charset': 'utf8mb4',
             'use_unicode': True,
-            'init_command': "SET NAMES 'utf8mb4' COLLATE 'utf8mb4_unicode_ci'",
+            # The shared server default is MyISAM; charset is already applied
+            # by the driver, while this prevents new non-transactional tables.
+            'init_command': "SET SESSION default_storage_engine=INNODB",
             'connect_timeout': int(os.environ.get('DB_CONNECT_TIMEOUT', '10')),
             'read_timeout': int(os.environ.get('DB_READ_TIMEOUT', '30')),
             'write_timeout': int(os.environ.get('DB_WRITE_TIMEOUT', '30')),
