@@ -775,18 +775,40 @@ def bot_stats_api(request):
     blocked = _require_bot_json(request)
     if blocked:
         return blocked
+    from datetime import timedelta
+
     from .models import IgClient, IgConversationSignal, IgDeal, IgFollowUpTask
 
+    try:
+        range_days = int(request.GET.get("days") or 0)
+    except (TypeError, ValueError):
+        range_days = 0
+    if range_days not in {0, 1, 7, 30}:
+        range_days = 0
+    since = None
+    if range_days == 1:
+        local_now = timezone.localtime()
+        since = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif range_days:
+        since = timezone.now() - timedelta(days=range_days)
+
     active_clients = IgClient.objects.filter(hidden_at__isnull=True)
+    if since:
+        active_clients = active_clients.filter(
+            Q(last_message_at__gte=since)
+            | Q(last_message_at__isnull=True, created_at__gte=since)
+        )
     conversations = active_clients.count()
     stage_counts = {
         row["stage"]: row["count"]
         for row in active_clients.values("stage").annotate(count=Count("id")).order_by()
     }
+    signal_qs = IgConversationSignal.objects.filter(client__hidden_at__isnull=True)
+    if since:
+        signal_qs = signal_qs.filter(created_at__gte=since)
     signals = {
         row["signal_type"]: row["count"]
-        for row in IgConversationSignal.objects.filter(client__hidden_at__isnull=True)
-        .values("signal_type").annotate(count=Count("id")).order_by()
+        for row in signal_qs.values("signal_type").annotate(count=Count("id")).order_by()
     }
     objections = {
         row["primary_objection"]: row["count"]
@@ -806,6 +828,12 @@ def bot_stats_api(request):
         .values("current_product_id", "current_product__title").annotate(count=Count("id"))
         .order_by("-count")[:25]
     ]
+    revenue_filter = Q(deals__status__in=[IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED])
+    if since:
+        revenue_filter &= (
+            Q(deals__paid_at__gte=since)
+            | Q(deals__paid_at__isnull=True, deals__created_at__gte=since)
+        )
     ad_rows = []
     for row in (
         active_clients.exclude(Q(ad_id="") & Q(ad_ref="") & Q(ad_title=""))
@@ -821,7 +849,7 @@ def bot_stats_api(request):
                 ]),
                 distinct=True,
             ),
-            revenue=Sum("deals__amount", filter=Q(deals__status__in=[IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED])),
+            revenue=Sum("deals__amount", filter=revenue_filter),
         )
         .order_by("-chats")[:50]
     ):
@@ -848,6 +876,8 @@ def bot_stats_api(request):
     }
     return JsonResponse({
         "success": True,
+        "range_days": range_days,
+        "range_from": since.isoformat() if since else "",
         "totals": totals,
         "stages": stage_counts,
         "objections": objections,

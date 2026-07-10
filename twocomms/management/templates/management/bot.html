@@ -412,6 +412,12 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         <h2>Статистика продажів IG Direct</h2>
         <button class="bot-mini-btn" id="bot-stats-refresh">Оновити</button>
       </div>
+      <div class="bot-client-filters" id="bot-stats-range" style="margin-bottom:12px;">
+        <button type="button" class="bot-mini-btn" data-stats-days="1">Сьогодні</button>
+        <button type="button" class="bot-mini-btn" data-stats-days="7">7 днів</button>
+        <button type="button" class="bot-mini-btn active" data-stats-days="30">30 днів</button>
+        <button type="button" class="bot-mini-btn" data-stats-days="0">Увесь час</button>
+      </div>
       <div id="bot-stats-content" class="bot-empty">Завантаження статистики…</div>
     </div>
   </section>
@@ -687,6 +693,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   const Stats=(function(){
     const box=document.getElementById('bot-stats-content');
     const btn=document.getElementById('bot-stats-refresh');
+    const rangeBox=document.getElementById('bot-stats-range');
+    let rangeDays=30;
     const objectionLabels={
       price:'Дорого',price_objection:'Дорого',prepayment:'Передоплата',prepayment_objection:'Передоплата',
       size:'Розмір',size_concern:'Розмір',thinking:'Потрібен час подумати',no_reply:'Не відповідає',
@@ -703,7 +711,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     function load(){
       if(!box) return;
       box.innerHTML='<div class="bot-empty">Завантаження статистики…</div>';
-      fetch('{% url "management_bot_stats_api" %}',{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      fetch('{% url "management_bot_stats_api" %}?days='+rangeDays,{headers:{'X-Requested-With':'XMLHttpRequest'}})
         .then(r=>r.json()).then(d=>{
           if(!d.success){ box.innerHTML='<div class="bot-empty">Не вдалося завантажити.</div>'; return; }
           const t=d.totals||{};
@@ -722,6 +730,13 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         }).catch(()=>{box.innerHTML='<div class="bot-empty">Помилка мережі.</div>';});
     }
     if(btn) btn.addEventListener('click',load);
+    if(rangeBox) rangeBox.addEventListener('click',event=>{
+      const target=event.target.closest('[data-stats-days]');
+      if(!target) return;
+      rangeDays=Number(target.dataset.statsDays||30);
+      rangeBox.querySelectorAll('[data-stats-days]').forEach(item=>item.classList.toggle('active',item===target));
+      load();
+    });
     return {load:load};
   })();
 

@@ -226,6 +226,21 @@ class SalesCockpitApiTests(TestCase):
         self.assertGreaterEqual(data["stages"].get(IgClient.Stage.PAID, 0), 1)
         self.assertGreaterEqual(data["objections"].get("price_objection", 0), 1)
 
+    def test_stats_date_range_excludes_old_inactive_conversations(self):
+        self.active.last_message_at = timezone.now()
+        self.active.save(update_fields=["last_message_at", "updated_at"])
+        old = IgClient.get_or_create_for_sender("api_old_stats")
+        old.last_message_at = timezone.now() - timedelta(days=60)
+        old.save(update_fields=["last_message_at", "updated_at"])
+
+        data = self.client.get(
+            reverse("management_bot_stats_api") + "?days=7"
+        ).json()
+
+        self.assertEqual(data["range_days"], 7)
+        self.assertTrue(data["range_from"])
+        self.assertEqual(data["totals"]["conversations"], 1)
+
     def test_hide_moves_client_out_of_active_queue_and_statistics(self):
         from management.models import IgFollowUpTask
         from management.services import instagram_bot
@@ -470,6 +485,10 @@ class SalesCockpitApiTests(TestCase):
             "Повернення після нагадування",
             "Ефективність реклами",
             "Заперечення клієнтів",
+            "Сьогодні",
+            "7 днів",
+            "30 днів",
+            "Увесь час",
         ):
             self.assertIn(label, html)
         for english_label in (
