@@ -71,7 +71,7 @@
 
 | ☐ | ID | Sev | One-line | Detail / related plan |
 |---|-----|-----|----------|------------------------|
-| [ ] | **F-071** | P0 | `link_order_to_utm` ignores first_touch UTM | §F-071 below; **PLAN_VS W2-1**; code `utm_tracking.py` |
+| [x] | **F-071** | P0 | `link_order_to_utm` ignores first_touch UTM | **FIXED `34275e28`**; server tests 6/6 + production HEAD/health verified 2026-07-10; §F-071 |
 | [ ] | **F-021** | P0 | 100% orders empty utm_source | §F-021; same as F-071 family |
 | [ ] | **F-033** | P0 | link_order in code but orders empty | §F-033; PLAN_VS W2-1 |
 | [ ] | **F-045** | P0 | 0 Order.session_key join UTMSession | §F-045 |
@@ -1942,9 +1942,17 @@ Sending `code=` yields «Введіть промокод»; `promo_code=` yields
 
 ### F-071 — `link_order_to_utm` ignores `analytics_first_touch_data` (ROOT CAUSE of empty Order UTM)
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES  
+**Status:** [x] FIXED (`34275e28`) · **Severity:** P0 · **Fix required:** DONE
 **Area:** UTM / checkout · **Checklist:** UTM-*, ADS-*, DB-order-attr  
 **Related:** F-021, F-033, F-019, F-045
+
+**Production verification (2026-07-10):** `link_order_to_utm` now rebuilds and
+links a durable `UTMSession` from session UTM or `twc_ft` first-touch data,
+normalizes the source, and preserves click IDs. The regression reproducing a
+missing original UTMSession + missing `session['utm_data']` passes on the server;
+the focused attribution suite is **6/6**, Django check passes, production HEAD is
+`34275e28`, and `/healthz/` returns 200. Aggregate/historical children remain open
+until a production UTM order proves the new-row counters.
 
 #### Evidence (production MySQL + code read-only)
 
