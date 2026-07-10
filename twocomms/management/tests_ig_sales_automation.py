@@ -267,6 +267,24 @@ class SalesCockpitApiTests(TestCase):
         self.assertEqual(stats["totals"]["hidden"], 2)
         self.assertEqual(stats["stages"], {})
 
+    def test_hide_never_reports_success_while_client_automation_is_active(self):
+        self.active.automation_lease_token = "active-automation"
+        self.active.automation_lease_until = timezone.now() + timedelta(minutes=2)
+        self.active.save(update_fields=[
+            "automation_lease_token", "automation_lease_until", "updated_at",
+        ])
+
+        response = self.client.post(
+            reverse("management_bot_client_hide_api", args=[self.active.id]),
+            {"reason": "noise"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(response.json()["success"])
+        self.assertTrue(response.json()["retryable"])
+        self.active.refresh_from_db()
+        self.assertIsNone(self.active.hidden_at)
+
     def test_unhide_returns_client_to_active_queue(self):
         self.client.post(
             reverse("management_bot_client_hide_api", args=[self.active.id]),
