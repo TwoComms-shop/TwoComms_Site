@@ -79,8 +79,8 @@
 | [x] | **F-030** | P0 | initializePixelsImmediately not defined | **FIXED `3291ac82`**; production hashed asset verified 2026-07-10; §F-030 |
 | [x] | **F-029** | P0 | LSAPI_CHILDREN process limit | **FIXED OPS 2026-07-11**; app env 6→10, 30/30 concurrent health checks, zero new limit errors; §F-029 |
 | [x] | **F-102** | P0 | Core order/UTM tables are MyISAM; `atomic()` cannot roll back | **FIXED `02b49553`**; 10 InnoDB engines + production rollback canary verified 2026-07-11 |
-| [ ] | **F-003** | P0 | Merchant feed / color landing issues | §F-003; narrow with **F-077** |
-| [ ] | **F-027** | P0 | Feed color issues (narrowed) | §F-027; see F-077 REVISED |
+| [x] | **F-003** | P0 | Merchant feed / color landing issues | **FIXED `4d72412a`**; 384 canonical links + live landing sample verified 2026-07-11; §F-003 |
+| [x] | **F-027** | P0 | Feed color issues (narrowed) | **FIXED `4d72412a`**; color/size now canonical path, no redirect/query loss; §F-027 |
 | [ ] | **F-097** | P0 | IG bot Message Requests unlabeled | **IG_BOT** IG-005/013; F-097 |
 | [ ] | **F-099** | P1 | Mono dual path W2-7 (webhook no on_commit CAPI) | **PLAN_VS** W2-7; §F-099 |
 
@@ -567,9 +567,16 @@ Titles end on prepositions/conjunctions (**на / від / та**) — clearly c
 
 ### F-003 — Google Merchant feed `g:link` mangled (`&amp;` → path `/s/?amp;color=`)
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (`4d72412a`) · **Severity:** P0 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P0** · Area: **FEED / ADS** · Checklist: FEED-001–003, ADS-012, PIX-011
+**Production verification (2026-07-11):** feed generation now emits the PDP's
+canonical color→size path directly, e.g. `/product/<slug>/black/s/`, instead of
+the legacy query whose translated color label could not be resolved. The server
+suite passes **11/11**. The live feed has **384/384 query-free canonical links**
+and 384 unique offer IDs; 20 evenly sampled live landings returned **20/20 HTTP
+200** with **zero redirects**.
+
+- [x] **Fixed** · Severity: **P0** · Area: **FEED / ADS** · Checklist: FEED-001–003, ADS-012, PIX-011
 
 | Field | Value |
 |-------|--------|
@@ -1309,9 +1316,13 @@ Browser UI click still recommended for Pass C.
 
 ### F-027 — Feed color lost even after correct XML decode (clarifies F-003)
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (`4d72412a`) · **Severity:** P0 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P0** · (sub-finding of F-003) · Area: **FEED**
+**Production verification (2026-07-11):** explicit color variants now use the
+stored `ProductColorVariant.slug` followed by size in the canonical PDP path.
+The live feed/link sample proves color is no longer discarded by a redirect.
+
+- [x] **Fixed** · Severity: **P0** · (sub-finding of F-003) · Area: **FEED**
 
 Decoded `?size=S&color=...` → final `.../s/` without color. Server routing treats `size` as variant slug and ignores/drops color query. Merchant color variants may all collapse to same default-color size page.
 
