@@ -790,6 +790,17 @@ def _send_post_payment_events(order_pk, previous_status, pay_type):
     except Exception as e:
         monobank_logger.exception(f'Failed to send TikTok event for order {order.order_number}: {e}')
 
+    # 4. Customer receipt email. The sender itself persists an idempotency flag
+    # in payment_payload, so webhook + return races cannot duplicate the email.
+    try:
+        if getattr(order, 'email', None):
+            from orders.email_receipt import send_order_receipt_email
+            send_order_receipt_email(order)
+    except Exception:
+        monobank_logger.exception(
+            'Failed to send receipt email for order %s', order.pk
+        )
+
 
 def _verify_monobank_signature(request):
     """

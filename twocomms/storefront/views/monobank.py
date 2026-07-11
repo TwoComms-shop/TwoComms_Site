@@ -36,10 +36,10 @@ from orders.nova_poshta_data import apply_nova_poshta_refs
 from orders.nova_poshta_documents import normalize_checkout_phone
 from orders.models import Order as OrderModel, OrderItem
 from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_delivery_selection
-from orders.telegram_notifications import TelegramNotifier
 from orders.facebook_conversions_service import get_facebook_conversions_service
 from ..utm_tracking import link_order_to_utm, record_initiate_checkout, record_lead, record_order_action
 from .utils import (
+    _dispatch_post_payment_events,
     _reset_monobank_session,
     get_cart_from_session,
     _get_color_variant_safe,
@@ -1300,65 +1300,62 @@ def _record_promo_usage_for_order(order):
 
 def _apply_monobank_status(order, status_value, payload=None, source='webhook'):
     """
-    Apply Monobank status to Order, update history and payment_status.
+    Apply Monobank status once under a row lock and dispatch external events
+    only after the database transaction commits.
     """
     status_lower = (status_value or '').lower()
-    _append_payment_history(order, status_lower, payload, source)
-
-    updated_fields = ['payment_payload', 'updated']
-    old_payment_status = order.payment_status
-    canonical_pay_type = _normalize_order_pay_type(getattr(order, 'pay_type', None))
-    target_payment_status = 'prepaid' if canonical_pay_type == 'prepay_200' else 'paid'
-
-    if status_lower in MONOBANK_SUCCESS_STATUSES:
-        order.payment_status = target_payment_status
-        updated_fields.append('payment_status')
-    elif status_lower in MONOBANK_PENDING_STATUSES:
-        order.payment_status = 'checking'
-        updated_fields.append('payment_status')
-    elif status_lower in MONOBANK_FAILURE_STATUSES:
-        order.payment_status = 'unpaid'
-        updated_fields.append('payment_status')
-    else:
-        # Unknown status, keep history only
-        order.save(update_fields=['payment_payload'])
-        return status_lower
-
-    order.save(update_fields=list(set(updated_fields)))
-
-    # Уведомление в Telegram при смене статуса оплаты на оплачено/предоплата
-    if order.payment_status in ('paid', 'prepaid') and order.payment_status != old_payment_status:
-        # W1-4б: лимиты промокода сжигаются только при подтверждённой оплате.
-        _record_promo_usage_for_order(order)
-        record_order_action(
-            'purchase',
-            order,
-            cart_value=float(order.total_sum or 0),
-            metadata={
-                'monobank_status': status_lower,
-                'source': source,
-                'payment_status': order.payment_status,
-            },
+    with transaction.atomic():
+        order = (
+            OrderModel.objects.select_for_update()
+            .select_related('user', 'promo_code')
+            .get(pk=order.pk)
         )
-        try:
-            notifier = TelegramNotifier()
-            notifier.send_admin_payment_status_update(
-                order,
-                old_status=old_payment_status or 'unpaid',
-                new_status=order.payment_status,
-                pay_type=canonical_pay_type,
-            )
-        except Exception:
-            # Не блокируем основной поток при ошибке уведомления
-            pass
+        _append_payment_history(order, status_lower, payload, source)
 
-        # Лист-квитанція клієнту (якщо є email). Не блокуємо основний потік.
-        try:
-            if getattr(order, 'email', None):
-                from orders.email_receipt import send_order_receipt_email
-                send_order_receipt_email(order)
-        except Exception:
-            monobank_logger.warning('Failed to send receipt email for order %s', order.pk, exc_info=True)
+        updated_fields = ['payment_payload', 'updated']
+        old_payment_status = order.payment_status
+        canonical_pay_type = _normalize_order_pay_type(getattr(order, 'pay_type', None))
+        target_payment_status = 'prepaid' if canonical_pay_type == 'prepay_200' else 'paid'
+
+        if status_lower in MONOBANK_SUCCESS_STATUSES:
+            order.payment_status = target_payment_status
+            updated_fields.append('payment_status')
+        elif status_lower in MONOBANK_PENDING_STATUSES:
+            order.payment_status = 'checking'
+            updated_fields.append('payment_status')
+        elif status_lower in MONOBANK_FAILURE_STATUSES:
+            order.payment_status = 'unpaid'
+            updated_fields.append('payment_status')
+        else:
+            # Unknown status, keep history only.
+            order.save(update_fields=['payment_payload'])
+            return status_lower
+
+        order.save(update_fields=list(set(updated_fields)))
+
+        if order.payment_status in ('paid', 'prepaid') and order.payment_status != old_payment_status:
+            # Transactional, idempotent DB side-effects remain under the same
+            # order lock. Network calls are delegated after commit below.
+            _record_promo_usage_for_order(order)
+            record_order_action(
+                'purchase',
+                order,
+                cart_value=float(order.total_sum or 0),
+                metadata={
+                    'monobank_status': status_lower,
+                    'source': source,
+                    'payment_status': order.payment_status,
+                },
+            )
+            transaction.on_commit(
+                lambda order_pk=order.pk,
+                previous=old_payment_status or 'unpaid',
+                pay_type=canonical_pay_type: _dispatch_post_payment_events(
+                    order_pk,
+                    previous,
+                    pay_type,
+                )
+            )
 
     return status_lower
 

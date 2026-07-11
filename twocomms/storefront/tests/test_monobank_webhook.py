@@ -142,21 +142,19 @@ class MonobankWebhookSecurityTests(TestCase):
             'storefront.views.monobank._monobank_api_request',
             return_value={'status': 'success', 'amount': 26000, 'paidAmount': 26000},
         ), patch(
-            'storefront.views.monobank.TelegramNotifier'
-        ) as mock_notifier:
-            first = self.post_webhook(x_sign=_sign(private_key, self.payload))
+            'storefront.views.monobank._dispatch_post_payment_events'
+        ) as mock_dispatch:
+            with self.captureOnCommitCallbacks(execute=True):
+                first = self.post_webhook(x_sign=_sign(private_key, self.payload))
             self.assertEqual(first.status_code, 200)
-            notifications_after_first = mock_notifier.return_value.send_admin_payment_status_update.call_count
-            self.assertEqual(notifications_after_first, 1)
+            self.assertEqual(mock_dispatch.call_count, 1)
 
             # Повторная доставка того же вебхука
-            second = self.post_webhook(x_sign=_sign(private_key, self.payload))
+            with self.captureOnCommitCallbacks(execute=True):
+                second = self.post_webhook(x_sign=_sign(private_key, self.payload))
             self.assertEqual(second.status_code, 200)
-            # Статус уже paid → уведомление НЕ отправляется второй раз
-            self.assertEqual(
-                mock_notifier.return_value.send_admin_payment_status_update.call_count,
-                notifications_after_first,
-            )
+            # Статус уже paid → post-payment dispatcher не запускається вдруге.
+            self.assertEqual(mock_dispatch.call_count, 1)
 
         self.order.refresh_from_db()
         self.assertEqual(self.order.payment_status, 'paid')
@@ -385,3 +383,63 @@ class PostPaymentEventsDeferralTests(TestCase):
                     self.order, {'status': 'success'}, source='webhook'
                 )
             mock_send.assert_not_called()
+
+    def test_retail_status_helper_uses_shared_dispatcher_after_commit_once(self):
+        from storefront.views.monobank import _apply_monobank_status
+
+        with patch(
+            'storefront.views.monobank._dispatch_post_payment_events',
+        ) as mock_dispatch:
+            with self.captureOnCommitCallbacks(execute=False) as callbacks:
+                _apply_monobank_status(
+                    self.order,
+                    'success',
+                    payload={'status': 'success'},
+                    source='webhook',
+                )
+
+            mock_dispatch.assert_not_called()
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()
+            mock_dispatch.assert_called_once_with(
+                self.order.pk,
+                'unpaid',
+                'online_full',
+            )
+
+            with self.captureOnCommitCallbacks(execute=False) as duplicate_callbacks:
+                _apply_monobank_status(
+                    self.order,
+                    'success',
+                    payload={'status': 'success'},
+                    source='webhook',
+                )
+            self.assertEqual(duplicate_callbacks, [])
+
+    def test_shared_dispatcher_sends_idempotent_receipt_outside_status_lock(self):
+        from types import SimpleNamespace
+        from storefront.views.utils import _send_post_payment_events
+
+        self.order.email = 'buyer@example.com'
+        self.order.payment_status = 'paid'
+        self.order.save(update_fields=['email', 'payment_status'])
+
+        with patch(
+            'orders.telegram_notifications.TelegramNotifier'
+        ), patch(
+            'orders.facebook_conversions_service.get_facebook_conversions_service',
+            return_value=SimpleNamespace(enabled=False),
+        ), patch(
+            'orders.tiktok_events_service.get_tiktok_events_service',
+            return_value=SimpleNamespace(enabled=False),
+        ), patch(
+            'orders.email_receipt.send_order_receipt_email'
+        ) as mock_receipt:
+            _send_post_payment_events(
+                self.order.pk,
+                'unpaid',
+                'online_full',
+            )
+
+        mock_receipt.assert_called_once()
+        self.assertEqual(mock_receipt.call_args.args[0].pk, self.order.pk)
