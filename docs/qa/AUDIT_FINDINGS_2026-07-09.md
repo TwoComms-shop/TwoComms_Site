@@ -81,7 +81,7 @@
 | [x] | **F-102** | P0 | Core order/UTM tables are MyISAM; `atomic()` cannot roll back | **FIXED `02b49553`**; 10 InnoDB engines + production rollback canary verified 2026-07-11 |
 | [x] | **F-003** | P0 | Merchant feed / color landing issues | **FIXED `4d72412a`**; 384 canonical links + live landing sample verified 2026-07-11; §F-003 |
 | [x] | **F-027** | P0 | Feed color issues (narrowed) | **FIXED `4d72412a`**; color/size now canonical path, no redirect/query loss; §F-027 |
-| [ ] | **F-097** | P0 | IG bot Message Requests unlabeled | **IG_BOT** IG-005/013; F-097 |
+| [x] | **F-097** | P0 | IG bot Message Requests unlabeled | **FIXED_APP `e47c1498`**; 26/26 server tests + live advanced_access client verified 2026-07-11; Meta permission remains external |
 | [ ] | **F-099** | P1 | Mono dual path W2-7 (webhook no on_commit CAPI) | **PLAN_VS** W2-7; §F-099 |
 
 ### Priority B — Storefront P1 (fix next)
@@ -2387,10 +2387,16 @@ Fixed in `15c3bf30`, `337710ce`, and `3d4e5d40`: all visible KPI/table/filter co
 
 ### F-097 — IG bot Message Requests / Graph send fails unlabeled
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES  
+**Status:** [x] FIXED_APP (`e47c1498`) · **Severity:** P0 · **Fix required:** DONE
 **Detail:** **IG-005, IG-013** in IG_BOT file  
 
-`send_text` RESPONSE only; permanent errors (#551, Advanced Access, 24h window) → FAILED + manager alert; no `IgClient` flag / CRM filter «у запитах».
+Permanent errors (#551, Advanced Access, 24h window) now persist a bounded
+Ukrainian delivery status/reason and Graph metadata on `IgClient`; successful
+send clears the block. CRM has a dedicated «Не можу відповісти» filter and
+warning badge. Production migration `0075` is applied, the focused server suite
+passes **26/26**, and one live client is already classified `advanced_access`.
+Granting the Meta app Advanced Access remains an external Meta review action,
+not an application-code bug.
 
 **Code:** `instagram_bot.send_text`, `_classify_send_error`, `_process_one`.
 

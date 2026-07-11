@@ -98,6 +98,11 @@ Per-client mute: `bot_paused` / `manager_takeover` / `is_blocked` / **`hidden_at
 
 ### IG-005 — Message Requests / non-role recipients: bot fails send, manager spam · **P0 ops**
 
+**Status:** [x] FIXED_APP (`e47c1498`, production verified 2026-07-11). Permanent
+delivery blocks are classified and persisted on the client, shown in Ukrainian
+in the dedicated CRM filter, and cleared after a successful send. Meta Advanced
+Access itself still requires external app review.
+
 **Owner:** many people write; threads sit in IG **Message Requests**; bot «cannot reply» / «forwarded to manager».
 
 **Root cause (Meta + code):**
@@ -171,10 +176,13 @@ Commit adds migration `0074_ig_sales_automation.py` and models fields. If manage
 
 ### IG-013 — No Message Request flag in data model · **P1 product**
 
-Required product behavior («все що висить у запитах — окремо помічати») **not implemented**:
-- no `IgClient.message_request_state`
-- no UI filter «У запитах»
-- no parse of Graph error → set flag on client
+**Status:** [x] FIXED (`e47c1498`, production verified 2026-07-11).
+
+Equivalent product behavior is implemented through `IgClient.delivery_status`
+plus bounded error/HTTP/Graph fields, rather than a speculative boolean that
+Meta does not expose reliably. The UI filter is «Не можу відповісти» and includes
+Message Requests checks, Advanced Access, #551/restricted recipient, and the 24h
+window. One live production client is already classified `advanced_access`.
 
 ---
 
