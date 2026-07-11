@@ -123,6 +123,10 @@ class MarketplaceFeedServiceTests(TestCase):
         self.assertEqual(first.findtext("g:google_product_category", namespaces=G_NS), "1604")
         self.assertEqual(first.findtext("g:condition", namespaces=G_NS), "new")
         self.assertEqual(
+            first.findtext("g:link", namespaces=G_NS),
+            f"https://twocomms.shop/product/{self.product.slug}/black/s/",
+        )
+        self.assertEqual(
             first.findtext("g:video_link", namespaces=G_NS),
             "https://twocomms.shop/media/products/test-shirt.mp4",
         )

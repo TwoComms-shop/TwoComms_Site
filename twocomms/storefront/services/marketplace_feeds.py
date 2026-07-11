@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 import re
 import xml.etree.ElementTree as ET
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urljoin
 
 from django.conf import settings
 from django.utils import timezone
@@ -659,11 +659,19 @@ def _video_link(product: Product) -> str:
     return ""
 
 
-def _product_url(base_url: str, product: Product, *, size: str, color: str) -> str:
+def _product_url(base_url: str, product: Product, *, size: str, color_slug: str = "") -> str:
+    """Return the canonical PDP URL for the exact feed variant.
+
+    Product redirects only understand a numeric ``?color=<variant_id>`` while
+    the old feed passed the translated colour label.  The size redirect then
+    discarded that unresolved colour.  Feed links now bypass legacy query
+    handling and use the same colour/size path contract as PDP canonicals.
+    """
     slug = getattr(product, "slug", "") or f"product-{product.id}"
-    url = urljoin(base_url, f"/product/{slug}/")
-    query = urlencode({"size": size, "color": color})
-    return iri_to_uri(f"{url}?{query}")
+    segments = [str(value).strip().lower() for value in (color_slug, size) if str(value).strip()]
+    variant_path = "/".join(segments)
+    path = f"/product/{slug}/{variant_path}/" if variant_path else f"/product/{slug}/"
+    return iri_to_uri(urljoin(base_url, path))
 
 
 def _collect_base_images(product: Product, base_url: str) -> list[str]:
@@ -755,7 +763,7 @@ def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOff
                         rozetka_offer_id=_rozetka_offer_id(product.id, None, size),
                         article=article,
                         group_id=group_id,
-                        product_url=_product_url(base_url, product, size=size, color=color_ua),
+                        product_url=_product_url(base_url, product, size=size),
                         base_price=base_price,
                         price=price,
                         old_price=old_price,
@@ -812,7 +820,12 @@ def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOff
                         rozetka_offer_id=_rozetka_offer_id(product.id, variant.id, size),
                         article=article,
                         group_id=group_id,
-                        product_url=_product_url(base_url, product, size=size, color=color_ua),
+                        product_url=_product_url(
+                            base_url,
+                            product,
+                            size=size,
+                            color_slug=getattr(variant, "slug", ""),
+                        ),
                         base_price=base_price,
                         price=price,
                         old_price=old_price,
