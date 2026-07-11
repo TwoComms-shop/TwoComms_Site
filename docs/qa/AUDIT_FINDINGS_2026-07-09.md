@@ -78,7 +78,7 @@
 | [x] | **F-019** | P0 | is_converted always 0 | **FIXED `34275e28`** for new conversions; production lead canary passed; §F-019 |
 | [x] | **F-030** | P0 | initializePixelsImmediately not defined | **FIXED `3291ac82`**; production hashed asset verified 2026-07-10; §F-030 |
 | [ ] | **F-029** | P0 | LSAPI_CHILDREN process limit | §F-029 |
-| [ ] | **F-102** | P0 | Core order/UTM tables are MyISAM; `atomic()` cannot roll back | Discovered by production attribution canary 2026-07-10; DB engine migration required |
+| [x] | **F-102** | P0 | Core order/UTM tables are MyISAM; `atomic()` cannot roll back | **FIXED `02b49553`**; 10 InnoDB engines + production rollback canary verified 2026-07-11 |
 | [ ] | **F-003** | P0 | Merchant feed / color landing issues | §F-003; narrow with **F-077** |
 | [ ] | **F-027** | P0 | Feed color issues (narrowed) | §F-027; see F-077 REVISED |
 | [ ] | **F-097** | P0 | IG bot Message Requests unlabeled | **IG_BOT** IG-005/013; F-097 |
@@ -2415,7 +2415,14 @@ File `storefront/views.py.backup` exists; `views/__init__.py` still lazy-loads f
 
 ### F-102 — Core checkout/attribution tables use MyISAM
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (`02b49553`) · **Severity:** P0 · **Fix required:** DONE
+
+**Production fix verification (2026-07-11):** a compressed 3.7 MB pre-change
+backup was created, migration `orders.0048_checkout_tables_innodb` applied, and
+all ten checkout/session/attribution tables report `ENGINE=InnoDB`. A live
+canary created Order + UTMSession + UserAction inside `transaction.atomic()`;
+after forced rollback the three matching counts were exactly `(0, 0, 0)` with
+no manual cleanup. New MySQL tables also default to InnoDB via connection policy.
 
 **Production evidence (2026-07-10):** `information_schema.TABLES` reports
 `ENGINE=MyISAM` for `orders_order`, `storefront_utmsession`, and
