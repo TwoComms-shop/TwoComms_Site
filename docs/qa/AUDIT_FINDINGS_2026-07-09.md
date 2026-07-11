@@ -77,7 +77,7 @@
 | [x] | **F-045** | P0 | 0 Order.session_key join UTMSession | **FIXED `34275e28`** for new orders; production join canary passed; §F-045 |
 | [x] | **F-019** | P0 | is_converted always 0 | **FIXED `34275e28`** for new conversions; production lead canary passed; §F-019 |
 | [x] | **F-030** | P0 | initializePixelsImmediately not defined | **FIXED `3291ac82`**; production hashed asset verified 2026-07-10; §F-030 |
-| [ ] | **F-029** | P0 | LSAPI_CHILDREN process limit | §F-029 |
+| [x] | **F-029** | P0 | LSAPI_CHILDREN process limit | **FIXED OPS 2026-07-11**; app env 6→10, 30/30 concurrent health checks, zero new limit errors; §F-029 |
 | [x] | **F-102** | P0 | Core order/UTM tables are MyISAM; `atomic()` cannot roll back | **FIXED `02b49553`**; 10 InnoDB engines + production rollback canary verified 2026-07-11 |
 | [ ] | **F-003** | P0 | Merchant feed / color landing issues | §F-003; narrow with **F-077** |
 | [ ] | **F-027** | P0 | Feed color issues (narrowed) | §F-027; see F-077 REVISED |
@@ -1331,9 +1331,16 @@ Sample 8 products × ru/en: titles/H1 generally **aligned within locale**, but E
 
 ### F-029 — LiteSpeed `LSAPI_CHILDREN` process limit hit (capacity)
 
-**Status:** [ ] OPEN · **Severity:** P0 · **Fix required:** YES
+**Status:** [x] FIXED (production ops 2026-07-11) · **Severity:** P0 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P0** · Area: **TECH** · Checklist: TECH-060, TECH-073, TECH-076
+**Production verification (2026-07-11):** CloudLinux Python Selector app env
+now has `LSAPI_CHILDREN=10` (previous default: 6), and every active TwoComms
+`lswsgi` process reports the new value. Three rounds of ten concurrent dynamic
+`/healthz/` requests returned **30/30 HTTP 200**, maximum duration 1.9 seconds,
+with **zero** new `Reached max children process limit` records. A pre-change
+selector config backup is retained on the server.
+
+- [x] **Fixed** · Severity: **P0** · Area: **TECH** · Checklist: TECH-060, TECH-073, TECH-076
 
 | Field | Value |
 |-------|--------|
