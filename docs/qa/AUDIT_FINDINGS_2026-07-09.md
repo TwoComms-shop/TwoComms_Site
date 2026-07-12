@@ -27,7 +27,7 @@
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 24 | 8 |
+| P1 | 23 | 9 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -90,7 +90,7 @@
 |---|-----|-----|----------|--------|
 | [x] | **F-001** | P1 | Category titles truncated | **FIXED `e2558396`**; 9/9 UA/RU/EN live pages verified; §F-001 |
 | [x] | **F-023** | P1 | Truncated titles in MySQL | **FIXED `e2558396`**; guarded production data migration; §F-023 |
-| [ ] | **F-002** | P1 | Color landing UA grammar | §F-002 |
+| [x] | **F-002** | P1 | Color landing UA grammar | **FIXED `0b9ecc1c`**; 21/21 server tests + DB/live 4/4 verified; §F-002 |
 | [ ] | **F-004** | P1 | Product title vs H1 | §F-004 |
 | [ ] | **F-094** | P1 | title≠H1 reconfirm last-breath etc. | §F-094; F-004 |
 | [ ] | **F-005** | P1 | RU/EN H1 still Ukrainian | §F-005; **PLAN_VS ADS-2** |
@@ -190,7 +190,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | ID | Sev | Status | Fix? | One-line |
 |----|-----|--------|------|----------|
 | [x] **F-001** | P1 | FIXED | DONE | `e2558396`: complete category titles on 9/9 live localized URLs |
-| [ ] **F-002** | P1 | OPEN | YES | Color landing broken UA grammar |
+| [x] **F-002** | P1 | FIXED | DONE | `0b9ecc1c`: Ukrainian inflection generator + 4/4 production landings verified |
 | [x] **F-003** | P0 | FIXED | DONE | `4d72412a`: 384 canonical feed links; live landing sample verified |
 | [ ] **F-004** | P1 | OPEN | YES | UK product title vs H1 mismatch (13 URLs) + RU leak in H1 |
 | [ ] **F-005** | P1 | OPEN | YES | RU/EN home+catalog H1 still Ukrainian |
@@ -242,7 +242,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [ ] **F-051** | P2 | OPEN | YES | checkout/capture empty returns 200 ok |
 | [x] **F-052** | P3 | PASS | no | Mono validates missing city |
 | [x] **F-053** | P3 | PASS | no | Home links 42/42 200 |
-| [x] **F-054** | P3 | PASS | no | Blog+color HTTP OK (grammar still F-002) |
+| [x] **F-054** | P3 | PASS | no | Blog+color HTTP OK; F-002 grammar fixed in `0b9ecc1c` |
 | [x] **F-055** | P3 | PASS | no | RU/EN product sample title/H1 aligned |
 | [x] **F-056** | P3 | PASS | no | IGShopping multi-hop canary PASS |
 | [ ] **F-057** | P1 | OPEN | YES | All-time dirty utm_source inventory |
@@ -307,8 +307,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-083** — purchase UserAction undercount vs paid orders
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 
-### P1 OPEN (continued) — 13
-- [ ] **F-002** — Color landing broken UA grammar
+### P1 OPEN (continued) — 12
 - [ ] **F-004** — UK product title vs H1 mismatch (13 URLs) + RU leak in H1
 - [ ] **F-005** — RU/EN home+catalog H1 still Ukrainian
 - [ ] **F-007** — HTTP 429 under burst crawl
@@ -360,7 +359,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-049** — Home unexclude canary PASS
 - [x] **F-052** — Mono validates missing city
 - [x] **F-053** — Home links 42/42 200
-- [x] **F-054** — Blog+color HTTP OK (grammar still F-002)
+- [x] **F-054** — Blog+color HTTP OK; grammar fixed by F-002
 - [x] **F-055** — RU/EN product sample title/H1 aligned
 - [x] **F-056** — IGShopping multi-hop canary PASS
 - [x] **F-058** — Scripts matrix key pages PASS
@@ -436,7 +435,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | Variant URLs sample | 20 | 20 | 0 | titles include color/fit F-016 |
 | mapa-saytu links | 53 | 53 | 0 | F-017 |
 | UK categories | 3 | 3 | 0 | titles **truncated** (see F-001) |
-| Color landings unique | 4 | 4 | grammar FAIL | F-002; sitemap lists 12=3×dups |
+| Color landings unique | 4 | 4 | grammar PASS 2026-07-12 | F-002 fixed; F-006 sitemap duplicates remain |
 | Thematic landings | 4 | 4 | 0 | military/streetwear/patriotic/kharkiv |
 | Static support set | 13 | 13 | 0 | favorites/qr noindex OK |
 | Merchant feed links sample | 5 | 5 HTTP | **canonical path wrong** | F-003 |
@@ -526,11 +525,11 @@ passed **5/5**. Production MySQL contains complete base/UK titles, and all
 
 ### F-002 — Color category landings: broken grammar in title/H1
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`0b9ecc1c`) · **Severity:** P1 · **Fix required:** DONE
 
 > **Reconfirm 2026-07-09 late:** `/catalog/tshirts/black/` title=`Купити чорний футболка з принтом` · h1=`Чорні футболка TwoComms — стрітвір з Харкова` (grammar + «стрітвір» typo). Sitemap still emits each color URL ×3 (F-006).
 
-- [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: SEO-014, PG-008, SEO-090
+- [x] **Fixed** · Severity: **P1** · Area: **SEO** · Checklist: SEO-014, PG-008, SEO-090
 
 | Field | Value |
 |-------|--------|
@@ -560,6 +559,15 @@ passed **5/5**. Production MySQL contains complete base/UK titles, and all
 **Risk of fix:** low–medium (SEO strings + maybe template).
 
 **Pass C:** enumerate all published color landings; grammar checklist.
+
+**Production fix verification (2026-07-12):** `0b9ecc1c` replaces direct
+category-name substitution with Ukrainian accusative/plural morphology and
+safe colour forms, and removes malformed phrases from editorial/FAQ templates.
+The server suite passed **21/21**. After a dry-run selected exactly the four
+existing published rows, production apply reported `created=0 updated=4`.
+DB grammar scan passed **4/4**; all four live pages returned HTTP 200 with the
+expected title/H1. Backup:
+`/home/qlknpodo/backups/twocomms/pre_f002_color_landings_20260712.json`.
 
 ---
 
@@ -969,7 +977,7 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 ## Follow-ups after Pass C only (not now)
 
 - [x] Fix category title truncation (F-001) — `e2558396`, production verified
-- [ ] Fix color landing copy (F-002)  
+- [x] Fix color landing copy (F-002) — `0b9ecc1c`, production verified
 - [x] Fix merchant feed links + ID parity (F-003) — `4d72412a`, production verified
 - [ ] Align product title/H1 (F-004)  
 - [ ] Translate RU/EN H1 (F-005)  
@@ -1043,7 +1051,8 @@ Example organic web order with session but no UTM (expected for non-ads):
 | F-046 | PASS | Server canary UTM+ATC+normalize |
 | SEO-062 | PASS | full sitemap 489 OK |
 | F-001 | FIXED `e2558396` | Production MySQL + 9 localized pages verified |
-| F-002/F-004/F-005 | still OPEN | SEO quality |
+| F-002 | FIXED `0b9ecc1c` | 4/4 production landings and generator verified |
+| F-004/F-005 | still OPEN | SEO quality |
 | F-003/F-027 | FIXED `4d72412a` | canonical feed color/size paths verified |
 | F-029/F-030 | FIXED | capacity + pixel BFCache verified |
 | F-031 | still OPEN | MySQL connection resilience |
@@ -1060,7 +1069,7 @@ Example organic web order with session but no UTM (expected for non-ads):
 4. **F-029** — LSAPI children limit  
 5. **F-003** — Merchant feed landing/color  
 
-**P1 SEO (can fix in parallel):** F-001 category titles, F-002 color grammar, F-004 title/H1, F-005 H1 i18n, F-043 help-center 404.
+**P1 SEO (remaining):** F-004 title/H1, F-005 H1 i18n, F-043 help-center 404.
 
 ### Pass A coverage (honest end)
 
@@ -1826,11 +1835,11 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ---
 
-### F-054 — Blog UK 15/15 + color landings 4/4 HTTP 200 (grammar still F-002)
+### F-054 — Blog UK 15/15 + color landings 4/4 HTTP 200
 
 **Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
-- [x] **PASS** HTTP; SEO copy still broken on color titles (F-002).
+- [x] **PASS** HTTP; SEO copy subsequently fixed by F-002 (`0b9ecc1c`).
 
 ---
 
@@ -2134,7 +2143,7 @@ Live `https://twocomms.shop/google-merchant-feed.xml` (**384** items):
 - After HTML-unescape, sample links `?size=S&color=…` → **HTTP 200**, redirect to size path `/product/…/s/`, title includes size + color.  
 - `g:id` all unique; **384/384** Cyrillic color tokens (e.g. `TC-0106-ЧОРНИЙ-S`).
 
-**Still open separately:** color **category** landings grammar (F-002), duplicate sitemap color URLs (F-006), offer_id RU/UA black split (F-018). Do **not** treat product feed size/color query as broken after this recheck.
+**Still open separately:** duplicate sitemap color URLs (F-006), offer_id RU/UA black split (F-018). Color category grammar was fixed later in `0b9ecc1c`. Do **not** treat product feed size/color query as broken after this recheck.
 
 ---
 

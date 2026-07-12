@@ -51,7 +51,7 @@
 | Topic | IDs | Detail | Code / data |
 |-------|-----|--------|-------------|
 | Category titles cut mid-word | F-001, F-023 **FIXED `e2558396`** | PLAN_VS **ADS-3** | MySQL `Category.seo_title*`; guarded data migration + trim regression |
-| Color landing grammar | F-002, F-006 | Findings §F-002 | color landing templates/SEO generators |
+| Color landing grammar | F-002 **FIXED `0b9ecc1c`**; F-006 sitemap duplicates open | Findings §F-002 | `seed_color_landings`; production DB reseed |
 | Product title ≠ H1 | F-004, F-094 | Findings | product SEO fields |
 | RU/EN H1 Ukrainian | F-005 | PLAN_VS ADS-2 | home/catalog templates + locales |
 | Feed g:link | F-003, F-027, F-077 | F-077 revised product links often OK | feed generators |
@@ -100,7 +100,7 @@
 9. F-090 backup cron (SERVER)  
 
 ### Wave Fix-C — SEO / cart polish
-10. F-002, F-004/F-094, F-005, F-043/F-078, F-050, F-059, …  
+10. F-002 **FIXED `0b9ecc1c`**; then F-004/F-094, F-005, F-043/F-078, F-050, F-059, …
 
 ### Wave Fix-D — management IG bot
 11. F-095…F-098 + full IG-001…IG-014 in IG_BOT file  
