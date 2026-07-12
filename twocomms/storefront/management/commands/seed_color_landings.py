@@ -37,12 +37,6 @@ from django.db import transaction
 # ``pink``, ``white-burgundy``) — they map to ``english_slug_for_color_name``.
 _COLOR_BANK: Dict[str, Dict[str, object]] = {
     "black": {
-        "h1": "Чорні {category_phrase} TwoComms — стрітвір з Харкова",
-        "title": "Купити чорний {category_phrase} з принтом — TwoComms",
-        "description": (
-            "Чорний {category_phrase} TwoComms з авторським DTF-друком. "
-            "Щільна база, посадка regular і oversize, доставка по Україні."
-        ),
         "lead": (
             "Чорний — головний колір каталогу TwoComms. На ньому ми будуємо "
             "усі основні авторські серії: 225-й ОШП, харківські відсилки, "
@@ -56,7 +50,7 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
             "контроль якості у одному цеху — від крою до пакування."
         ),
         "wear": (
-            "Чорна {category_phrase} працює і у соло-сетапі, і в шарі: "
+            "Чорний колір працює і у соло-сетапі, і в шарі: "
             "під технічну куртку, бомбер, парку. Поєднується з прямими "
             "денімами, технічними штанами, карго, робочими черевиками."
         ),
@@ -66,7 +60,7 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
             "Pokrovsk Girl, Kha Style, Glory of Ukraine, «Reality Bends» "
             "Future 2026. Список оновлюється: дивись поточну добірку у фільтрі."
         ),
-        "faq_care_q": "Чи злазить друк з чорного {category_phrase} після прання?",
+        "faq_care_q": "Чи злазить DTF-друк після прання?",
         "faq_care_a": (
             "При дотриманні режиму прання (30 °C, без хлору, виворіт) "
             "DTF-принт TwoComms тримає колір 30+ циклів без помітної "
@@ -74,12 +68,6 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
         ),
     },
     "coyote": {
-        "h1": "{category_phrase_cap} кольору Кайот — TwoComms",
-        "title": "Купити {category_phrase} кольору Кайот — TwoComms",
-        "description": (
-            "{category_phrase_cap} кольору Кайот (теплий пісок) із "
-            "авторським DTF-принтом TwoComms. Streetwear із харківським ДНК."
-        ),
         "lead": (
             "Кайот — теплий пісочний відтінок, який працює як нейтральна "
             "база у міському casual і добре поєднується з мілітарі-adjacent "
@@ -102,7 +90,7 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
             "і олива — холодніший зелений з військовим акцентом. У нашому "
             "каталозі це різні відтінки із власною роллю у гардеробі."
         ),
-        "faq_care_q": "Чи маркіє {category_phrase} кольору Кайот?",
+        "faq_care_q": "Чи практичний одяг кольору «Кайот» у щоденному носінні?",
         "faq_care_a": (
             "Кайот темніший за беж і світліший за коричневий, тому він "
             "терпиміший до повсякденної носки, ніж біла база. При "
@@ -110,12 +98,6 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
         ),
     },
     "menthol": {
-        "h1": "{category_phrase_cap} кольору Ментол — TwoComms",
-        "title": "Купити {category_phrase} кольору Ментол — TwoComms",
-        "description": (
-            "{category_phrase_cap} кольору Ментол (свіжий світлий зелений) "
-            "із авторським DTF-принтом TwoComms."
-        ),
         "lead": (
             "Ментол — світлий пастельний зелений з легким голубим відтінком. "
             "У TwoComms цей колір зарезервований для свіжих весна-літо "
@@ -132,7 +114,7 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
             "темно-сіру або чорну верхню. Поєднується зі світлим денімом, "
             "білими кросами, легкими технічними штанами."
         ),
-        "faq_color_q": "Чи буде ментоловий {category_phrase} жовтіти від прання?",
+        "faq_color_q": "Чи змінюється ментоловий колір після прання?",
         "faq_color_a": (
             "При прання у режимі 30 °C з засобами без хлору і сушці без "
             "прямого сонячного потрапляння ментоловий тон тримається без "
@@ -147,12 +129,6 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
         ),
     },
     "pink": {
-        "h1": "{category_phrase_cap} кольору Рожевий — TwoComms",
-        "title": "Купити рожевий {category_phrase} з принтом — TwoComms",
-        "description": (
-            "Рожевий {category_phrase} TwoComms з авторським DTF-принтом. "
-            "Streetwear із харківським ДНК і характером."
-        ),
         "lead": (
             "Рожевий у TwoComms — це не «дівчачий» колір, а свідомий вибір "
             "контрасту. Ми використовуємо його у серіях, де треба зламати "
@@ -175,7 +151,7 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
             "людьми, яким важлива графіка і характер бренду, а не сама "
             "по собі гендерна асоціація з кольором."
         ),
-        "faq_care_q": "Чи буде рожевий {category_phrase} вицвітати від сонця?",
+        "faq_care_q": "Чи буде рожевий колір вицвітати від сонця?",
         "faq_care_a": (
             "Незначне вицвітання можливе при тривалій носці на відкритому "
             "сонці. Сушити річ у тіні, прати з виворіту — і колір тримається "
@@ -183,14 +159,8 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
         ),
     },
     "white-burgundy": {
-        "h1": "{category_phrase_cap} «бело-бордовий» — TwoComms",
-        "title": "Купити {category_phrase} бело-бордовий — TwoComms",
-        "description": (
-            "{category_phrase_cap} у поєднанні білого і бордо. Авторський "
-            "DTF-принт від TwoComms, виробництво Україна."
-        ),
         "lead": (
-            "Бело-бордовий — це сложний двохкомпонентний колір, який рідко "
+            "Біло-бордовий — це складний двокомпонентний колір, який рідко "
             "зустрічається у масовому streetwear. У TwoComms ми ввели його "
             "у каталог точково: для серій, де графіка вимагає теплої червоної "
             "акцентної зони і нейтральної світлої бази одночасно."
@@ -201,7 +171,7 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
             "тонів і сумісність з DTF-друком."
         ),
         "wear": (
-            "Бело-бордовий — окремий statement-look. Поєднується з чорним "
+            "Біло-бордовий — окремий statement-look. Поєднується з чорним "
             "низом, прямими денімами, темно-сірими технічними штанами. "
             "Не потребує додаткових акцентів — сама база вже несе характер."
         ),
@@ -212,7 +182,7 @@ _COLOR_BANK: Dict[str, Dict[str, object]] = {
             "контрастні вставки. Для деяких моделей пропорції змінюються — "
             "уточнюй на сторінці конкретного товару."
         ),
-        "faq_care_q": "Чи не лінйує бордо на білий при пранні?",
+        "faq_care_q": "Чи не линяє бордо на білий під час прання?",
         "faq_care_a": (
             "Ні. Тканина проходить тест на міграцію кольору перед запуском "
             "у виробництво. Прати при 30 °C, окремо від білих речей у "
@@ -235,6 +205,51 @@ def _category_phrase(slug: str) -> Tuple[str, str]:
 def _category_phrase_plural(slug: str) -> str:
     table = {"tshirts": "футболки", "hoodie": "худі", "long-sleeve": "лонгсліви"}
     return table.get(slug, slug)
+
+
+def _category_accusative(slug: str) -> str:
+    table = {
+        "tshirts": "футболку",
+        "hoodie": "худі",
+        "long-sleeve": "лонгслів",
+    }
+    return table.get(slug, slug)
+
+
+_COLOR_META_FORMS = {
+    "black": ("чорного кольору", "Чорні"),
+    "coyote": ("кольору «Кайот»", ""),
+    "menthol": ("ментолового кольору", "Ментолові"),
+    "pink": ("рожевого кольору", "Рожеві"),
+    "white-burgundy": ("біло-бордового кольору", "Біло-бордові"),
+}
+
+
+def _build_landing_meta(cat_slug: str, color_slug: str, color_label: str):
+    """Build grammatically complete Ukrainian title, H1 and description."""
+    plural = _category_phrase_plural(cat_slug)
+    plural_cap = plural[:1].upper() + plural[1:]
+    accusative = _category_accusative(cat_slug)
+    descriptor, plural_adjective = _COLOR_META_FORMS.get(
+        color_slug,
+        (f"кольору «{color_label}»", ""),
+    )
+    subject = (
+        f"{plural_adjective} {plural}"
+        if plural_adjective
+        else f"{plural_cap} {descriptor}"
+    )
+    print_phrase = "" if color_slug == "coyote" else " з принтом"
+    title = f"Купити {accusative} {descriptor}{print_phrase} — TwoComms"
+    if color_slug == "coyote":
+        h1 = f"{subject} — TwoComms"
+    else:
+        h1 = f"{subject} TwoComms — стрітвеар з Харкова"
+    description = (
+        f"{subject} TwoComms з авторським DTF-друком. Щільна база, "
+        "посадка regular і oversize, доставка по Україні."
+    )
+    return title, h1, description
 
 
 def _build_editorial_html(
@@ -263,7 +278,7 @@ def _build_editorial_html(
 
     paragraphs = [
         f"<p>{lead}</p>",
-        f"<p>У {cat_phrase_plural} цього кольору каталог TwoComms тримає "
+        f"<p>У цій добірці каталог TwoComms має "
         f"{product_count} модел{'ь' if product_count == 1 else 'і' if 2 <= product_count <= 4 else 'ей'} "
         f"з авторськими принтами. Усі моделі — щільна бавовна або "
         f"трьохнитка з начосом для худі, посадка regular і oversize, "
@@ -287,7 +302,7 @@ def _build_faq(cat_slug: str, color_label: str, bank: Dict[str, str]) -> List[Di
     }
     return [
         {
-            "question": f"Який матеріал у {color_label.lower()} {cat_phrase}?",
+            "question": f"Який матеріал у виробах кольору «{color_label}»?",
             "answer": (
                 f"Для футболок і лонгслівів — щільна бавовна 180–200 г/м²; "
                 f"для худі — трьохнитка 320 г/м² з начосом всередині. "
@@ -304,7 +319,7 @@ def _build_faq(cat_slug: str, color_label: str, bank: Dict[str, str]) -> List[Di
             "answer": bank["faq_care_a"].format(**tokens),
         },
         {
-            "question": f"Скільки коштує доставка {cat_phrase} {color_label.lower()}?",
+            "question": "Скільки коштує доставка замовлення?",
             "answer": (
                 "За тарифами Нової Пошти / Укрпошти. Безкоштовно при "
                 "замовленні від 2 500 грн на основні відділення. Можлива "
@@ -410,9 +425,11 @@ class Command(BaseCommand):
                 "product_count": count,
             }
             cat_url = f"/catalog/{cat.slug}/"
-            seo_title = bank["title"].format(**tokens)
-            seo_h1 = bank["h1"].format(**tokens)
-            seo_description = bank["description"].format(**tokens)
+            seo_title, seo_h1, seo_description = _build_landing_meta(
+                cat.slug,
+                color_slug,
+                color.name,
+            )
             editorial_html = _build_editorial_html(
                 cat.slug, color.name, color_slug, bank, count, cat_url
             )
