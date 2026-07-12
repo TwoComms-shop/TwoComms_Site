@@ -42,6 +42,18 @@ from storefront.models import Category, Product
 
 CATEGORY_TITLE_MAX = 60
 
+# A title cut at a whitespace boundary can still be grammatically incomplete.
+# Keep this intentionally small and language-agnostic enough for the three
+# translated category columns handled by the command.
+_DANGLING_CONNECTORS = {
+    # Ukrainian / Russian
+    "і", "й", "та", "або", "чи", "з", "зі", "із", "у", "в", "на",
+    "до", "від", "от", "для", "про", "по", "під", "под", "над", "за",
+    "и", "или", "с", "со", "из",
+    # English
+    "and", "or", "with", "in", "on", "at", "by", "for", "from", "to", "of",
+}
+
 # Pattern matches a balanced pair of ASCII double-quotes around any run of
 # characters that doesn't itself contain a quote. Used to upgrade the
 # legacy «"Дрони навколо"» wording to typographic «Дрони навколо».
@@ -83,9 +95,19 @@ def _trim_to_word_boundary(value: str, max_len: int) -> str:
         head = value[: -len(suffix)]
         if len(head) > head_max:
             head = head[:head_max].rsplit(" ", 1)[0].rstrip(",.;:- ")
+            head = _drop_dangling_connectors(head)
         return head + suffix
 
-    return value[:max_len].rsplit(" ", 1)[0].rstrip(",.;:- ")
+    trimmed = value[:max_len].rsplit(" ", 1)[0].rstrip(",.;:- ")
+    return _drop_dangling_connectors(trimmed)
+
+
+def _drop_dangling_connectors(value: str) -> str:
+    """Remove connector/preposition tokens that cannot finish a title."""
+    words = value.split()
+    while words and words[-1].strip(",.;:-–—").casefold() in _DANGLING_CONNECTORS:
+        words.pop()
+    return " ".join(words).rstrip(",.;:-–— ")
 
 
 class Command(BaseCommand):
