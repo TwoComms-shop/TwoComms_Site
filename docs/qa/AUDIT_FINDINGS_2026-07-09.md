@@ -27,7 +27,7 @@
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 23 | 9 |
+| P1 | 21 | 11 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -91,8 +91,8 @@
 | [x] | **F-001** | P1 | Category titles truncated | **FIXED `e2558396`**; 9/9 UA/RU/EN live pages verified; §F-001 |
 | [x] | **F-023** | P1 | Truncated titles in MySQL | **FIXED `e2558396`**; guarded production data migration; §F-023 |
 | [x] | **F-002** | P1 | Color landing UA grammar | **FIXED `0b9ecc1c`**; 21/21 server tests + DB/live 4/4 verified; §F-002 |
-| [ ] | **F-004** | P1 | Product title vs H1 | §F-004 |
-| [ ] | **F-094** | P1 | title≠H1 reconfirm last-breath etc. | §F-094; F-004 |
+| [x] | **F-004** | P1 | Product title vs H1 | **FIXED `81da8e22`**; DB/live 39/39 localized pages verified; §F-004 |
+| [x] | **F-094** | P1 | title≠H1 reconfirm last-breath etc. | **FIXED `81da8e22`**; covered by F-004 production crawl |
 | [ ] | **F-005** | P1 | RU/EN H1 still Ukrainian | §F-005; **PLAN_VS ADS-2** |
 | [ ] | **F-083** | P1 | purchase UA 3 vs 36 paid | §F-083; **PLAN_VS W2-3** |
 | [ ] | **F-044** | P1 | Most web orders empty session_key | §F-044 |
@@ -192,7 +192,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-001** | P1 | FIXED | DONE | `e2558396`: complete category titles on 9/9 live localized URLs |
 | [x] **F-002** | P1 | FIXED | DONE | `0b9ecc1c`: Ukrainian inflection generator + 4/4 production landings verified |
 | [x] **F-003** | P0 | FIXED | DONE | `4d72412a`: 384 canonical feed links; live landing sample verified |
-| [ ] **F-004** | P1 | OPEN | YES | UK product title vs H1 mismatch (13 URLs) + RU leak in H1 |
+| [x] **F-004** | P1 | FIXED | DONE | `81da8e22`: 13 SKU × 3 locales DB/live title-H1 names aligned |
 | [ ] **F-005** | P1 | OPEN | YES | RU/EN home+catalog H1 still Ukrainian |
 | [ ] **F-006** | P2 | OPEN | YES | Color sitemap same URL ×3 |
 | [ ] **F-007** | P1 | OPEN | YES | HTTP 429 under burst crawl |
@@ -283,7 +283,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-091** | P3 | INFO | no | Full plan re-verify matrix: PLAN_VS_FINDINGS_2026-07-09.md |
 | [x] **F-092** | P2 | DONE_OWNER | no | SSH password rotated by owner (W0-1 OWNER complete) |
 | [x] **F-093** | P1 | FIXED | YES | `deploy_paramiko.py` removed in `c5b651cf`; production verified |
-| [ ] **F-094** | P1 | OPEN | YES | Product title≠H1 e.g. last-breath / death-grabs-ass (reconfirm) |
+| [x] **F-094** | P1 | FIXED | DONE | `81da8e22`: last-breath/death-grabs families included in 39/39 production crawl |
 | [x] **F-095** | P1 | FIXED | YES | `ad2883f0`: reliable UA actions, hidden folder, automation/follow-up/analytics exclusion; production verified |
 | [x] **F-096** | P1 | FIXED | YES | Ukrainian dense KPI dashboard, today/7/30/all ranges, funnel shares and bounded revenue; production verified |
 | [x] **F-097** | P0 | FIXED_APP | DONE | `e47c1498`: Ukrainian delivery-block state/filter; 26/26 server tests and live classification verified |
@@ -307,8 +307,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-083** — purchase UserAction undercount vs paid orders
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 
-### P1 OPEN (continued) — 12
-- [ ] **F-004** — UK product title vs H1 mismatch (13 URLs) + RU leak in H1
+### P1 OPEN (continued) — 11
 - [ ] **F-005** — RU/EN home+catalog H1 still Ukrainian
 - [ ] **F-007** — HTTP 429 under burst crawl
 - [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
@@ -429,7 +428,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | Smoke core pages | 11 | 11 | 0 | home, catalog, cart, contacts, blog, etc. |
 | Sitemap child files | 8 | 8 | 0 | all 200 |
 | Sitemap unique locs (fast crawl) | 489 | 214* | 275×429* | *rate limit; not real 404 |
-| UK products (full slow) | 65 | 65 | 0 HTTP; **13 title/H1 name mismatches** | F-004 |
+| UK products (full slow) | 65 | 65 | F-004 mismatches fixed 2026-07-12 | `81da8e22`; 13/13 UK and 39/39 localized live checks |
 | Prod DB published products | 65 | empty seo_title **0**, empty seo_description **0**, dup titles **0** | empty seo_title prod DB |
 | Orders 90d UTM | 12 | 0 attributed | **F-021** |
 | Variant URLs sample | 20 | 20 | 0 | titles include color/fit F-016 |
@@ -642,9 +641,9 @@ https://twocomms.shop/product/.../s/
 
 ### F-004 — Product title vs H1 mismatch (and RU leak in H1)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`81da8e22`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **SEO / GEO** · Checklist: SEO-031, SEO-004, SEO-006, GEO-006
+- [x] **Fixed** · Severity: **P1** · Area: **SEO / GEO** · Checklist: SEO-031, SEO-004, SEO-006, GEO-006
 
 | Field | Value |
 |-------|--------|
@@ -687,6 +686,14 @@ https://twocomms.shop/product/.../s/
 **Fix direction:** pick one canonical commercial name per locale; sync `seo_title`, H1, schema Product.name, feed title.
 
 **Risk of fix:** medium–high (content + feed + pixel naming; coordinate with catalog ads).
+
+**Production fix verification (2026-07-12):** `81da8e22` adds a runtime guard
+that rejects stale quoted SEO overrides when they name a different print than
+the canonical product title. Guarded migration `storefront.0082` aligns the 13
+audited Ukrainian rows and changes «Череп с дупою» to Ukrainian «Череп із
+дупою». Server tests passed **5/5**. DB and live HTTP comparisons both passed
+**39/39** (13 SKU × UA/RU/EN). Backup:
+`/home/qlknpodo/backups/twocomms/pre_f004_products_20260712.json`.
 
 ---
 
@@ -979,7 +986,7 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 - [x] Fix category title truncation (F-001) — `e2558396`, production verified
 - [x] Fix color landing copy (F-002) — `0b9ecc1c`, production verified
 - [x] Fix merchant feed links + ID parity (F-003) — `4d72412a`, production verified
-- [ ] Align product title/H1 (F-004)  
+- [x] Align product title/H1 (F-004) — `81da8e22`, DB/live 39/39 verified
 - [ ] Translate RU/EN H1 (F-005)  
 - [ ] Dedupe color sitemap (F-006)  
 - [ ] Review 429 policy (F-007)  
@@ -1052,7 +1059,8 @@ Example organic web order with session but no UTM (expected for non-ads):
 | SEO-062 | PASS | full sitemap 489 OK |
 | F-001 | FIXED `e2558396` | Production MySQL + 9 localized pages verified |
 | F-002 | FIXED `0b9ecc1c` | 4/4 production landings and generator verified |
-| F-004/F-005 | still OPEN | SEO quality |
+| F-004 | FIXED `81da8e22` | 13 SKU × 3 locales aligned in DB and live HTML |
+| F-005 | still OPEN | homepage/catalog H1 localization |
 | F-003/F-027 | FIXED `4d72412a` | canonical feed color/size paths verified |
 | F-029/F-030 | FIXED | capacity + pixel BFCache verified |
 | F-031 | still OPEN | MySQL connection resilience |
@@ -1069,7 +1077,7 @@ Example organic web order with session but no UTM (expected for non-ads):
 4. **F-029** — LSAPI children limit  
 5. **F-003** — Merchant feed landing/color  
 
-**P1 SEO (remaining):** F-004 title/H1, F-005 H1 i18n, F-043 help-center 404.
+**P1 SEO (remaining):** F-005 H1 i18n, F-043 help-center 404.
 
 ### Pass A coverage (honest end)
 
@@ -1351,7 +1359,7 @@ Decoded `?size=S&color=...` → final `.../s/` without color. Server routing tre
 
 - [ ] **Open** · Severity: **P2** · Area: **GEO/SEO**
 
-Sample 8 products × ru/en: titles/H1 generally **aligned within locale**, but EN sometimes keeps internal English print codes (`death grabs ass`) while RU uses commercial name (`Сердце И Деньги`). Cross-locale naming strategy inconsistent with UK mismatches (F-004).
+Sample 8 products × ru/en: titles/H1 generally **aligned within locale**, but EN sometimes keeps internal English print codes (`death grabs ass`) while RU uses commercial name (`Сердце И Деньги`). F-004 later aligned title/H1 within all three locales; cross-locale naming strategy remains the separate F-028 content decision.
 
 ---
 
@@ -1847,7 +1855,7 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 **Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
-- [x] **PASS** for sampled locales product titles alignment (UK mismatch F-004 remains UK-only issue family).
+- [x] **PASS** for sampled locales product titles alignment; the former UK mismatch was fixed later in `81da8e22`.
 
 ---
 
@@ -2195,7 +2203,7 @@ From homepage footer, all primary support URLs **200**:
 
 ### F-083 — `purchase` UserAction heavily undercounted vs paid orders
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] FIXED (`81da8e22`) · **Severity:** P1 · **Fix required:** DONE
 **Related:** F-019, F-021, F-033
 
 | Metric | Count |
@@ -2341,6 +2349,9 @@ Live 2026-07-09 re-pass:
 - `/product/last-breath/` title «last breath» vs H1 «Череп З Трояндою»
 - `/product/last-breath-hd/` same pattern
 - `/product/death-grabs-ass/` title «death grabs ass» vs H1 «Серце Та Грощі»
+
+Resolved 2026-07-12 by the F-004 fix. The three reconfirmed URLs are included
+in the successful 39/39 localized production crawl.
 
 ---
 
