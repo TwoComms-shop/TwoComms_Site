@@ -5,7 +5,7 @@
 **Date pack:** 2026-07-09  
 **Main site:** `https://twocomms.shop`  
 **Management IG bot:** management subdomain (separate from storefront ads gate)  
-**Ads launch gate (storefront):** **BLOCKED** until storefront P0 attribution/pixel fixed.
+**Ads launch gate (storefront):** **P0 attribution/pixel gate CLEARED**; the wider audit queue remains in progress.
 
 ---
 
@@ -50,7 +50,7 @@
 
 | Topic | IDs | Detail | Code / data |
 |-------|-----|--------|-------------|
-| Category titles cut mid-word | F-001, F-023 | PLAN_VS **ADS-3** (DB not code-only) | MySQL `Category.seo_title*`; `seo_utils.TITLE_LIMIT` |
+| Category titles cut mid-word | F-001, F-023 **FIXED `e2558396`** | PLAN_VS **ADS-3** | MySQL `Category.seo_title*`; guarded data migration + trim regression |
 | Color landing grammar | F-002, F-006 | Findings §F-002 | color landing templates/SEO generators |
 | Product title ≠ H1 | F-004, F-094 | Findings | product SEO fields |
 | RU/EN H1 Ukrainian | F-005 | PLAN_VS ADS-2 | home/catalog templates + locales |
@@ -91,7 +91,7 @@
 2. F-019 / F-083 — is_converted + purchase recording  
 3. Plan **W2-7** — unify mono webhook with on_commit CAPI path (see PLAN_VS)  
 4. F-030 — pixel BFCache function  
-5. F-001/F-023 — reseed category titles in DB  
+5. F-001/F-023 — **FIXED `e2558396`**; production MySQL + 9 live localized URLs verified
 
 ### Wave Fix-B — security / ops
 6. F-087 ubd_docs  

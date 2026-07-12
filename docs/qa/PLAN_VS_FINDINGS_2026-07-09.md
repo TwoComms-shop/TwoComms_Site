@@ -108,7 +108,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 | W2-3 | purchase UA undercount |
 | ADS-1 | early PV OK; BFCache `initializePixelsImmediately` undefined |
 | ADS-2 | /en/ H1 still Ukrainian |
-| ADS-3 | live titles still mid-phrase; DB not reseeded |
+| ADS-3 | **RESOLVED `e2558396` (2026-07-12):** guarded DB repair + connector-aware trim |
 | W7-1 | views.py.backup still lazy-loaded |
 | W3-9 | TG webhook secret empty on prod (was) |
 | W3-11 | CheckoutCapture.converted never on mono |
@@ -129,7 +129,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 | load-more page=2 | 200 |
 | search + page=2 | 200 |
 | live cls-ultimate hero fix | present |
-| category titles mid-phrase | still FAIL (ADS-3 open) |
+| category titles mid-phrase | **PASS 2026-07-12:** 9/9 UA/RU/EN live pages, migration `0081` |
 | /en/ H1 Ukrainian | still FAIL (ADS-2 open) |
 
 ---
@@ -153,6 +153,10 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 | W2-1 | Paid/canary order has Order.utm_source from first_touch |
 | ADS-1 | No client_error for initializePixelsImmediately; BFCache restore works |
 | ADS-3 | Live category titles do not end with від/та/на |
+
+**ADS-3 resolution (2026-07-12):** fixed in `e2558396`. Production migration
+`storefront.0081` repaired only exact damaged values; the server regression
+suite passed 5/5 and all nine localized category pages returned complete titles.
 
 ---
 

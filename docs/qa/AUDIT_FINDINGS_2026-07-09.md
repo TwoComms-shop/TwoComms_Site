@@ -18,18 +18,18 @@
 
 ## Executive summary
 
-**Ads launch gate (current):** **BLOCKED**. Critical: **F-021/F-033/F-071** order UTM empty (first_touch not copied to Order), **F-019** is_converted dead, **F-030** pixel BFCache JS error, **F-029** worker limit, SEO **F-001/F-002/F-004**, **F-044/F-068** session_key gaps. Product feed `g:link` recheck **PASS** (F-077) — earlier F-027 product-path claim narrowed.
+**Ads launch gate (current):** **P0 attribution/pixel gate CLEARED**. The production fixes for order attribution, conversion linking, BFCache pixels, worker capacity, canonical feed links and transactional checkout storage are verified. The wider P1/P2 audit queue remains in progress and is tracked below.
 
-**One paragraph:** Core smoke (home, catalog, cart, healthz, robots, sitemap index, UTM first-touch cookies, Meta pixel ID + PageView, cart APIs) **works**. **Attribution chain is broken for ROAS**: capture/canaries OK, but **43/43 orders have empty `utm_source`**, **0 `is_converted`**, and `link_order_to_utm` **does not read `analytics_first_touch_data`** (F-071) — even audit order 276 had UTM in UserAction first_touch and still blank Order UTM. Historical **prepay_200 = 19/19 no session_key** though many have `payment_payload.tracking.external_id=session:…` (F-073). **COD path** lacks `_ensure_session_key` (F-074). SEO: category titles truncated in MySQL, color landings bad UA grammar, RU/EN home H1 still Ukrainian. Pixel BFCache ReferenceError still live. **CheckoutCapture.converted never flips** (0/4). Ads gate remains **BLOCKED**.
+**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
 
 ### Counts (open findings)
 
-| Severity | Open | Confirmed (C) | False positive | Fixed |
-|----------|------|---------------|----------------|-------|
-| P0 | 9 | 0 | 0 | 0 |
-| P1 | 25 | 0 | 0 | 0 |
-| P2 | 14 | 0 | 0 | 0 |
-| P3 | 3 | 0 | 0 | 0 |
+| Severity | Open | Closed / pass / info |
+|----------|-----:|---------------------:|
+| P0 | 0 | 12 |
+| P1 | 24 | 8 |
+| P2 | 15 | 8 |
+| P3 | 4 | 31 |
 
 ### Pass A coverage (honest)
 
@@ -88,8 +88,8 @@
 
 | ☐ | ID | Sev | One-line | Detail |
 |---|-----|-----|----------|--------|
-| [ ] | **F-001** | P1 | Category titles truncated | §F-001; **PLAN_VS ADS-3** (DB reseed) |
-| [ ] | **F-023** | P1 | Truncated titles in MySQL | §F-023; root of F-001 |
+| [x] | **F-001** | P1 | Category titles truncated | **FIXED `e2558396`**; 9/9 UA/RU/EN live pages verified; §F-001 |
+| [x] | **F-023** | P1 | Truncated titles in MySQL | **FIXED `e2558396`**; guarded production data migration; §F-023 |
 | [ ] | **F-002** | P1 | Color landing UA grammar | §F-002 |
 | [ ] | **F-004** | P1 | Product title vs H1 | §F-004 |
 | [ ] | **F-094** | P1 | title≠H1 reconfirm last-breath etc. | §F-094; F-004 |
@@ -189,7 +189,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 | ID | Sev | Status | Fix? | One-line |
 |----|-----|--------|------|----------|
-| [ ] **F-001** | P1 | OPEN | YES | Category titles truncated mid-phrase (also in MySQL F-023) |
+| [x] **F-001** | P1 | FIXED | DONE | `e2558396`: complete category titles on 9/9 live localized URLs |
 | [ ] **F-002** | P1 | OPEN | YES | Color landing broken UA grammar |
 | [x] **F-003** | P0 | FIXED | DONE | `4d72412a`: 384 canonical feed links; live landing sample verified |
 | [ ] **F-004** | P1 | OPEN | YES | UK product title vs H1 mismatch (13 URLs) + RU leak in H1 |
@@ -211,7 +211,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [ ] **F-020** | P1 | OPEN | YES | Historical dirty utm_source (new canaries normalize OK) |
 | [x] **F-021** | P0 | FIXED | DONE | `34275e28`: first-touch order attribution production canary verified |
 | [ ] **F-022** | P1 | OPEN | YES | Extreme PV→ATC cliff / possible product_view noise |
-| [ ] **F-023** | P1 | OPEN | YES | Category truncated titles in MySQL (root of F-001) |
+| [x] **F-023** | P1 | FIXED | DONE | `e2558396`: exact-value production migration repaired base/UK DB columns |
 | [x] **F-024** | P3 | PASS | no | ATC API + mini-cart works |
 | [x] **F-025** | P3 | PASS | no | Blog UK sitemap healthy |
 | [x] **F-026** | P3 | PASS | no | Home critical static assets 200 |
@@ -307,8 +307,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-083** — purchase UserAction undercount vs paid orders
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 
-### P1 OPEN (continued) — 15
-- [ ] **F-001** — Category titles truncated mid-phrase (also in MySQL F-023)
+### P1 OPEN (continued) — 13
 - [ ] **F-002** — Color landing broken UA grammar
 - [ ] **F-004** — UK product title vs H1 mismatch (13 URLs) + RU leak in H1
 - [ ] **F-005** — RU/EN home+catalog H1 still Ukrainian
@@ -316,7 +315,6 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
 - [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
 - [ ] **F-022** — Extreme PV→ATC cliff / possible product_view noise
-- [ ] **F-023** — Category truncated titles in MySQL (root of F-001)
 - [ ] **F-031** — MySQL server has gone away (reconf F-080)
 - [ ] **F-032** — UserAction rarely linked to UTMSession
 - [ ] **F-043** — /help-center/ 404 (need 301→/dopomoga/)
@@ -475,9 +473,9 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 ### F-001 — Category `<title>` truncated mid-phrase
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`e2558396`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: SEO-003, SEO-005, SEO-090, PG-007
+- [x] **Fixed** · Severity: **P1** · Area: **SEO** · Checklist: SEO-003, SEO-005, SEO-090, PG-007
 
 | Field | Value |
 |-------|--------|
@@ -517,6 +515,12 @@ Titles end on prepositions/conjunctions (**на / від / та**) — clearly c
 **Risk of fix:** low if only SEO text fields; medium if changing shared title template (test all categories).
 
 **Pass C recheck:** fetch all category titles uk/ru/en; ensure no trailing prepositions.
+
+**Production fix verification (2026-07-12):** `e2558396` adds connector-aware
+word-boundary trimming and migration `storefront.0081`, guarded by the exact
+three damaged values so editor-managed copy is preserved. The server suite
+passed **5/5**. Production MySQL contains complete base/UK titles, and all
+**9/9** UA/RU/EN category pages returned HTTP 200 with complete `<title>` text.
 
 ---
 
@@ -964,9 +968,9 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 
 ## Follow-ups after Pass C only (not now)
 
-- [ ] Fix category title truncation (F-001)  
+- [x] Fix category title truncation (F-001) — `e2558396`, production verified
 - [ ] Fix color landing copy (F-002)  
-- [ ] Fix merchant feed links + ID parity (F-003) — **careful**  
+- [x] Fix merchant feed links + ID parity (F-003) — `4d72412a`, production verified
 - [ ] Align product title/H1 (F-004)  
 - [ ] Translate RU/EN H1 (F-005)  
 - [ ] Dedupe color sitemap (F-006)  
@@ -978,7 +982,10 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 
 ---
 
-## FINAL PASS A STATUS (2026-07-09 end-of-pass)
+## FINAL PASS A STATUS (2026-07-09 end-of-pass; historical snapshot)
+
+> This section preserves the original audit evidence. For current fix status,
+> use the priority queue and MASTER FINDINGS INDEX above.
 
 ### What “canary outside excluded IP” means (plain language)
 
@@ -1032,12 +1039,14 @@ Example organic web order with session but no UTM (expected for non-ads):
 |----|--------|------|
 | F-043 | OPEN P1 | `/help-center/` → **404** (should 301 → `/dopomoga/` like docs suggested) |
 | F-044 | OPEN P1 | Most web orders missing `session_key` (29/36) |
-| F-045 | OPEN P0 | 0 order.session_key ∈ UTMSession despite 132 IG sessions |
+| F-045 | FIXED `34275e28` | New-order UTMSession join production canary passed |
 | F-046 | PASS | Server canary UTM+ATC+normalize |
 | SEO-062 | PASS | full sitemap 489 OK |
-| F-001/F-002/F-004/F-005 | still OPEN | SEO quality |
-| F-003/F-027 | still OPEN | feed color drop |
-| F-029/F-030/F-031 | still OPEN | capacity + pixel JS + MySQL |
+| F-001 | FIXED `e2558396` | Production MySQL + 9 localized pages verified |
+| F-002/F-004/F-005 | still OPEN | SEO quality |
+| F-003/F-027 | FIXED `4d72412a` | canonical feed color/size paths verified |
+| F-029/F-030 | FIXED | capacity + pixel BFCache verified |
+| F-031 | still OPEN | MySQL connection resilience |
 
 ### Ads launch gate (final Pass A)
 
@@ -1262,9 +1271,9 @@ Sample order numbers (public business ids, not secrets): `TWC06072026N02`, `TWC0
 
 ### F-023 — Category truncated titles stored in MySQL (root cause of F-001)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`e2558396`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: SEO-003, DB-001
+- [x] **Fixed** · Severity: **P1** · Area: **SEO** · Checklist: SEO-003, DB-001
 
 | Field | Value |
 |-------|--------|
@@ -1278,6 +1287,11 @@ Category hoodie.seo_title      = 'Худі TwoComms — теплі толсто�
 ```
 
 Truncation is **in DB content**, not only template. Fix = data + generator.
+
+Fixed by guarded migration `storefront.0081`: only the exact damaged
+`seo_title` / `seo_title_uk` values were replaced. A pre-change category JSON
+backup exists at
+`/home/qlknpodo/backups/twocomms/pre_f001_categories_20260712.json`.
 
 ---
 
