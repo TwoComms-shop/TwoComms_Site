@@ -82,7 +82,7 @@
 | [x] | **F-003** | P0 | Merchant feed / color landing issues | **FIXED `4d72412a`**; 384 canonical links + live landing sample verified 2026-07-11; §F-003 |
 | [x] | **F-027** | P0 | Feed color issues (narrowed) | **FIXED `4d72412a`**; color/size now canonical path, no redirect/query loss; §F-027 |
 | [x] | **F-097** | P0 | IG bot Message Requests unlabeled | **FIXED_APP `e47c1498`**; 26/26 server tests + live advanced_access client verified 2026-07-11; Meta permission remains external |
-| [ ] | **F-099** | P1 | Mono dual path W2-7 (webhook no on_commit CAPI) | **PLAN_VS** W2-7; §F-099 |
+| [x] | **F-099** | P1 | Mono dual path W2-7 (webhook no on_commit CAPI) | **FIXED `78814344`**; 29/29 server tests + production post-commit canary/cleanup verified 2026-07-12; §F-099 |
 
 ### Priority B — Storefront P1 (fix next)
 
@@ -150,7 +150,7 @@
 
 | ☐ | Plan ID | Issue | Detail |
 |---|---------|-------|--------|
-| [ ] | **W2-7** | Dual mono status path: webhook skips on_commit CAPI | **PLAN_VS** STRICT W2-7 |
+| [x] | **W2-7** | Dual mono status path: webhook skips on_commit CAPI | **FIXED `78814344`**; shared post-commit dispatcher, once-only production canary |
 | [ ] | **W7-1** | views.py.backup still lazy-loaded | PLAN_VS W7-1 |
 | [ ] | **W7-23** | residual datetime.now dropshipper | PLAN_VS W7-23 |
 | [ ] | **W0-5** | OPS docs OK; server stash OWNER | PLAN_VS W0-5 |
@@ -191,7 +191,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 |----|-----|--------|------|----------|
 | [ ] **F-001** | P1 | OPEN | YES | Category titles truncated mid-phrase (also in MySQL F-023) |
 | [ ] **F-002** | P1 | OPEN | YES | Color landing broken UA grammar |
-| [ ] **F-003** | P0 | OPEN | YES | Merchant feed g:link / color landing broken |
+| [x] **F-003** | P0 | FIXED | DONE | `4d72412a`: 384 canonical feed links; live landing sample verified |
 | [ ] **F-004** | P1 | OPEN | YES | UK product title vs H1 mismatch (13 URLs) + RU leak in H1 |
 | [ ] **F-005** | P1 | OPEN | YES | RU/EN home+catalog H1 still Ukrainian |
 | [ ] **F-006** | P2 | OPEN | YES | Color sitemap same URL ×3 |
@@ -207,21 +207,21 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-016** | P3 | PASS | no | Variant URL titles work |
 | [x] **F-017** | P3 | PASS | no | mapa-saytu links all 200 |
 | [ ] **F-018** | P1 | OPEN | YES | offer_id ЧОРНИЙ vs ЧЕРНЫЙ split |
-| [ ] **F-019** | P0 | OPEN | YES | is_converted always 0 |
+| [x] **F-019** | P0 | FIXED | DONE | `34275e28`: new conversion canary sets is_converted; cleanup verified |
 | [ ] **F-020** | P1 | OPEN | YES | Historical dirty utm_source (new canaries normalize OK) |
-| [ ] **F-021** | P0 | OPEN | YES | 100% orders empty utm_source / no utm_session |
+| [x] **F-021** | P0 | FIXED | DONE | `34275e28`: first-touch order attribution production canary verified |
 | [ ] **F-022** | P1 | OPEN | YES | Extreme PV→ATC cliff / possible product_view noise |
 | [ ] **F-023** | P1 | OPEN | YES | Category truncated titles in MySQL (root of F-001) |
 | [x] **F-024** | P3 | PASS | no | ATC API + mini-cart works |
 | [x] **F-025** | P3 | PASS | no | Blog UK sitemap healthy |
 | [x] **F-026** | P3 | PASS | no | Home critical static assets 200 |
-| [ ] **F-027** | P0 | OPEN | YES | Feed color dropped even after XML unescape (part of F-003) |
+| [x] **F-027** | P0 | FIXED | DONE | `4d72412a`: color/size encoded in canonical path without query loss |
 | [ ] **F-028** | P2 | OPEN | YES | RU/EN PDP naming strategy vs UK mismatch |
-| [ ] **F-029** | P0 | OPEN | YES | LSAPI_CHILDREN process limit |
-| [ ] **F-030** | P0 | OPEN | YES | initializePixelsImmediately is not defined |
+| [x] **F-029** | P0 | FIXED_OPS | DONE | LSAPI_CHILDREN 6→10; 30/30 concurrent health checks, zero new limit errors |
+| [x] **F-030** | P0 | FIXED | DONE | `3291ac82`: BFCache pixel restore; live hashed asset verified |
 | [ ] **F-031** | P1 | OPEN | YES | MySQL server has gone away |
 | [ ] **F-032** | P1 | OPEN | YES | UserAction rarely linked to UTMSession |
-| [ ] **F-033** | P0 | OPEN | YES | link_order_to_utm in code but orders empty |
+| [x] **F-033** | P0 | FIXED | DONE | `34275e28`: production order/session attribution canary verified |
 | [x] **F-034** | P3 | PASS | no | Variants sample + recs links OK |
 | [ ] **F-035** | P2 | OPEN | YES | CSP violations in stderr |
 | [ ] **F-036** | P2 | OPEN | YES | Telegram admin RemoteDisconnected |
@@ -233,7 +233,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-042** | P3 | PASS | no | Early Meta PageView in HTML |
 | [ ] **F-043** | P1 | OPEN | YES | /help-center/ 404 (need 301→/dopomoga/) |
 | [ ] **F-044** | P1 | OPEN | YES | Most web orders empty session_key (29/36) |
-| [ ] **F-045** | P0 | OPEN | YES | 0 Order.session_key join UTMSession |
+| [x] **F-045** | P0 | FIXED | DONE | `34275e28`: new-order UTMSession join production canary verified |
 | [x] **F-046** | P3 | PASS | no | Server canary UTM capture |
 | [x] **F-047** | P3 | PASS | no | Sitemap 489/489 HTTP 200 |
 | [ ] **F-048** | P2 | OPEN | YES | Orders have fbp tracking without internal UTM |
@@ -260,7 +260,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [ ] **F-068** | P1 | OPEN | YES | prepay_200 orders 19/19 no session_key |
 | [x] **F-069** | P2 | INFO | no | Home exclusion re-enabled |
 | [x] **F-070** | P3 | INFO | no | Promo POST field is promo_code |
-| [ ] **F-071** | P0 | OPEN | YES | link_order_to_utm ignores first_touch UTM (root of F-021/033) |
+| [x] **F-071** | P0 | FIXED | DONE | `34275e28`: first-touch cookie reconstruction and normalized source verified |
 | [ ] **F-072** | P1 | OPEN | YES | Only 2/36 web orders recoverable to UTM via external_id |
 | [ ] **F-073** | P1 | OPEN | YES | prepay had session in tracking.external_id but empty Order.session_key |
 | [ ] **F-074** | P1 | OPEN | YES | COD create_order no _ensure_session_key (order 275) |
@@ -286,22 +286,16 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [ ] **F-094** | P1 | OPEN | YES | Product title≠H1 e.g. last-breath / death-grabs-ass (reconfirm) |
 | [x] **F-095** | P1 | FIXED | YES | `ad2883f0`: reliable UA actions, hidden folder, automation/follow-up/analytics exclusion; production verified |
 | [x] **F-096** | P1 | FIXED | YES | Ukrainian dense KPI dashboard, today/7/30/all ranges, funnel shares and bounded revenue; production verified |
-| [ ] **F-097** | P0 | OPEN | YES | IG bot: Message Requests / Graph send fails unlabeled |
+| [x] **F-097** | P0 | FIXED_APP | DONE | `e47c1498`: Ukrainian delivery-block state/filter; 26/26 server tests and live classification verified |
 | [x] **F-098** | P1 | REVISED_OWNER | no | Owner rejected a duplicate manual transfer button; existing AI/page-echo manager takeover is the intended flow |
-| [ ] **F-099** | P1 | OPEN | YES | Mono dual path: webhook _apply skips on_commit CAPI (plan W2-7) |
+| [x] **F-099** | P1 | FIXED | DONE | `78814344`: webhook uses shared on-commit dispatcher; server tests and production canary verified |
 | [ ] **F-100** | P2 | OPEN | YES | views.py.backup still lazy-loaded (plan W7-1) |
 | [ ] **F-101** | P3 | OPEN | YES | residual datetime.now in dropshipper_views (plan W7-23) |
+| [x] **F-102** | P0 | FIXED | DONE | `02b49553`: checkout/attribution tables converted to InnoDB; rollback canary verified |
 
-### P0 OPEN (чинить в первую очередь) — 9
-- [ ] **F-003** — Color landing SEO/grammar (product feed path narrowed via F-077)
-- [ ] **F-019** — is_converted always 0
-- [ ] **F-021** — 100% orders empty utm_source / no utm_session
-- [ ] **F-027** — (narrowed) legacy color/feed issues; product g:link see F-077
-- [ ] **F-029** — LSAPI_CHILDREN process limit
-- [ ] **F-030** — initializePixelsImmediately is not defined (reconf F-079)
-- [ ] **F-033** — link_order_to_utm in code but orders empty
-- [ ] **F-045** — 0 Order.session_key join UTMSession
-- [ ] **F-071** — link_order_to_utm ignores first_touch cookie UTM
+### P0 OPEN — 0
+
+Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
 ### P1 OPEN —
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
@@ -2338,7 +2332,7 @@ In `IMPLEMENTATION_PLAN.md`, false/incomplete `[x]` cleared for: **W2-1, W2-2, W
 ### Process note — strict DONE re-verify (2026-07-09 later)
 
 Additionally unchecked in IMPLEMENTATION_PLAN:
-- **W2-7**: retail webhook uses `_apply_monobank_status` (sync Telegram, no on_commit CAPI); utils path alone was fixed.
+- **W2-7**: **RESOLVED `78814344` (2026-07-12)** — retail webhook now commits through the shared post-payment dispatcher; server suite and once-only production canary passed.
 - **W7-23**: residual `datetime.now()` in `dropshipper_views.py`.
 
 Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
@@ -2353,7 +2347,7 @@ Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`.
 |----|--------|
 | F-095 | **FIXED `ad2883f0`** — list refresh + UA labels + hidden folder + automation/statistics exclusion |
 | F-096 | **FIXED `15c3bf30` + `337710ce` + `3d4e5d40`** — Ukrainian dense stats, date ranges and funnel shares |
-| F-097 | Message Requests / Advanced Access / #551 — no CRM flag |
+| F-097 | **FIXED_APP `e47c1498`** — CRM delivery-block state, filter and Ukrainian warning badge |
 | F-098 | **REVISED_OWNER** — no manual button; existing automatic AI/page-echo takeover is intentional |
 
 Also IG-006 likes/reactions, IG-001…IG-014 in that file.
@@ -2413,11 +2407,19 @@ Owner decision: do not add a duplicate «Передати менеджеру» b
 
 ### F-099 — Mono dual status path (webhook vs utils) — plan W2-7
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] FIXED (`78814344`) · **Severity:** P1 · **Fix required:** DONE
 **Detail:** [`PLAN_VS_FINDINGS_2026-07-09.md`](./PLAN_VS_FINDINGS_2026-07-09.md) STRICT W2-7  
 
-Retail webhook `monobank.py` → `_apply_monobank_status` (sync Telegram/purchase, **no** `on_commit` CAPI).  
-Utils path `_record_monobank_status_locked` has the W2-7 fix. Production paid webhooks use the first path.
+Fixed in `78814344`: retail webhook `_apply_monobank_status` now locks the order
+inside `transaction.atomic()`, records the purchase transition once, and
+registers the shared `_dispatch_post_payment_events` with
+`transaction.on_commit()`. Telegram, Meta, TikTok and the receipt email are
+therefore dispatched only after a successful commit and are not duplicated on
+repeated paid callbacks.
+
+**Production proof (2026-07-12):** focused server suite passed **29/29**. A
+MySQL canary produced `status=paid`, `post_commit=1`, `duplicate_dispatch=0`,
+and `purchase_actions=1`; cleanup left **0 orders / 0 actions**.
 
 ---
 

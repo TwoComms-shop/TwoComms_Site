@@ -92,6 +92,11 @@ Alternate path (API/poll)
 
 **Fix agent should:** route webhook `_apply_monobank_status` success transitions through the same on_commit dispatcher (or call shared helper), without double Telegram/purchase.
 
+**Resolution (2026-07-12):** fixed in `78814344`. The retail webhook now uses
+the shared post-commit dispatcher under an atomic row lock. Focused server tests
+passed **29/29**; the production MySQL canary observed one post-commit dispatch,
+zero duplicate dispatches, one purchase action, and clean canary removal.
+
 ---
 
 ## 3. Previously unchecked (still false done) — recap
