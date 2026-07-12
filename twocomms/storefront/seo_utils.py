@@ -50,6 +50,19 @@ def _clean_text(raw: str | None) -> str:
     return cleaned.strip()
 
 
+_QUOTED_PRODUCT_NAME_RE = re.compile(r"«\s*([^»]+?)\s*»")
+
+
+def _quoted_product_names_conflict(product_title: str, seo_title: str) -> bool:
+    """Return true when both titles name different designs inside «…»."""
+    product_match = _QUOTED_PRODUCT_NAME_RE.search(product_title or "")
+    seo_match = _QUOTED_PRODUCT_NAME_RE.search(seo_title or "")
+    if not product_match or not seo_match:
+        return False
+    normalize = lambda value: " ".join(value.casefold().split())
+    return normalize(product_match.group(1)) != normalize(seo_match.group(1))
+
+
 def _truncate_at_word_boundary(text: str, limit: int) -> str:
     if not text or len(text) <= limit:
         return text
@@ -495,6 +508,14 @@ class SEOKeywordGenerator:
     def generate_meta_title(cls, product: Product) -> str:
         """Генерирует мета-заголовок для товара"""
         stored_title = _clean_text(getattr(product, "seo_title", ""))
+        canonical_title = _clean_text(getattr(product, "title", ""))
+        if stored_title and _quoted_product_names_conflict(
+            canonical_title,
+            stored_title,
+        ):
+            # A stale SEO override must not advertise a different print than
+            # the H1, product cards, feed and Product schema.
+            stored_title = ""
         if stored_title:
             # ADS-3: было limit=60 c «...» — обрубленные тайтлы в SERP
             return _fit_title(stored_title)
@@ -524,11 +545,11 @@ class SEOKeywordGenerator:
             if len(with_category) <= TITLE_LIMIT:
                 return with_category
 
-        title = f"{product.title} - TwoComms"
+        title = f"{canonical_title} - TwoComms"
         if len(title) <= TITLE_LIMIT:
             return title
 
-        return _fit_title(str(product.title))
+        return _fit_title(canonical_title)
 
 
 class SEOMetaGenerator:
