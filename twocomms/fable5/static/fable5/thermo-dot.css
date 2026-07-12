@@ -1,0 +1,55 @@
+/*
+ * Fable 5 — кружечки кольорів з індикатором термохромної тканини.
+ * Підключається на публічних сторінках (головна, картка товару):
+ *   <link rel="stylesheet" href="{% static 'fable5/thermo-dot.css' %}">
+ * Розмітку дає тег {% fable5_color_dot variant %} (templates/fable5/_color_dot.html).
+ */
+
+.f5-dot {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	border-radius: 50%;
+	border: 1px solid rgba(0, 0, 0, 0.25);
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+	vertical-align: middle;
+	overflow: hidden;
+}
+
+.f5-dot--thermo {
+	box-shadow:
+		inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+		0 0 0 2px rgba(255, 159, 46, 0.4);
+}
+
+.f5-dot__flame {
+	width: 64%;
+	height: 64%;
+	filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.45));
+	animation: f5-flame-flicker 1.6s ease-in-out infinite;
+	transform-origin: 50% 85%;
+}
+
+@keyframes f5-flame-flicker {
+	0%,
+	100% {
+		transform: scale(1);
+		opacity: 1;
+	}
+	40% {
+		transform: scale(0.92) rotate(-2deg);
+		opacity: 0.92;
+	}
+	70% {
+		transform: scale(1.05) rotate(2deg);
+		opacity: 1;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.f5-dot__flame {
+		animation: none;
+	}
+}

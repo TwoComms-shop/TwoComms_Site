@@ -1,0 +1,20 @@
+{% comment %}
+Fable 5 — кружечок кольору з індикатором термо-тканини.
+Контекст (див. templatetags/fable5_tags.py -> fable5_color_dot):
+  primary    — HEX основного кольору
+  secondary  — HEX другого кольору (може бути порожнім)
+  is_thermo  — True, якщо колір термохромний
+  size       — розмір кружечка в px
+  title      — підказка (назва кольору)
+{% endcomment %}
+<span class="f5-dot{% if is_thermo %} f5-dot--thermo{% endif %}"
+	{% if title %}title="{{ title }}{% if is_thermo %} (термо){% endif %}"{% endif %}
+	aria-label="{% if title %}{{ title }}{% else %}Колір{% endif %}{% if is_thermo %} — термохромна тканина{% endif %}"
+	style="width:{{ size }}px;height:{{ size }}px;{% if secondary %}background:linear-gradient(135deg, {{ primary }} 0%, {{ primary }} 49%, {{ secondary }} 51%, {{ secondary }} 100%);{% else %}background:{{ primary }};{% endif %}">
+	{% if is_thermo %}
+	<svg class="f5-dot__flame" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+		<path d="M12 2c.6 3.2-1.1 4.9-2.6 6.5C7.8 10.2 6 12 6 15a6 6 0 0 0 12 0c0-2.1-.9-3.6-1.9-5-.4 1-.9 1.7-1.8 2.3.2-3.3-.9-7.6-2.3-10.3z" fill="#ff9f2e"/>
+		<path d="M12 22a4.2 4.2 0 0 1-4.2-4.2c0-1.7.9-2.7 1.8-3.7.6-.7 1.3-1.4 1.7-2.4 1.6 1.5 4.9 3.7 4.9 6.1A4.2 4.2 0 0 1 12 22z" fill="#ffd84d"/>
+	</svg>
+	{% endif %}
+</span>

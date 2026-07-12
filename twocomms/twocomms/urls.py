@@ -46,6 +46,7 @@ def spectacular_redoc_view(request, *args, **kwargs):
 handler500 = 'twocomms.error_views.server_error'
 
 urlpatterns = [
+    path("", include("fable5.urls")),
     # Phase 17a — language switcher endpoint (POST). Stays outside i18n_patterns
     # so it is reachable from any prefix.
     path("i18n/", include("django.conf.urls.i18n")),

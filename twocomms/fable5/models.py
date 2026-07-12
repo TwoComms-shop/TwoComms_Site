@@ -1,0 +1,275 @@
+"""
+Fable 5 — розширені моделі для нового уніфікованого редактора товарів.
+
+ВАЖЛИВО: цей застосунок НЕ змінює жодної існуючої таблиці storefront /
+productcolors. Тільки нові таблиці з FK/OneToOne на існуючі моделі, тому
+старий редактор і сайт продовжують працювати як раніше (старе = бекап).
+"""
+from django.db import models
+
+from productcolors.models import Color, ProductColorImage, ProductColorVariant
+from storefront.models import Product, ProductImage
+
+
+class ColorProfile(models.Model):
+    """Розширення довідника кольорів: термохром + опис тканини.
+
+    Колір існує один раз у бібліотеці (name + hex + прапорець «термо»),
+    без подвійного вводу назви, як було у старій панелі.
+    """
+
+    color = models.OneToOneField(Color, on_delete=models.CASCADE, related_name="fable5_profile")
+    is_thermo = models.BooleanField(default=False, verbose_name="Термохромний")
+    thermo_note = models.CharField(
+        max_length=255, blank=True, default="",
+        verbose_name="Коротка примітка",
+        help_text="Наприклад: «Реагує на тепло — змінює відтінок». Показується біля кружечка.",
+    )
+    description = models.TextField(
+        blank=True, default="",
+        verbose_name="Опис тканини/кольору",
+        help_text="SEO-дружній опис (що таке термохромна тканина, чим відрізняється тощо).",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Fable5: профіль кольору"
+        verbose_name_plural = "Fable5: профілі кольорів"
+
+    def __str__(self):
+        return f"{self.color}{' (термо)' if self.is_thermo else ''}"
+
+
+class VariantDetails(models.Model):
+    """Кожен колір — «майже окремий товар»: назва, SEO, надбавка до ціни, відео."""
+
+    variant = models.OneToOneField(ProductColorVariant, on_delete=models.CASCADE, related_name="fable5_details")
+    display_name = models.CharField(
+        max_length=220, blank=True, default="",
+        verbose_name="Назва для цього кольору",
+        help_text="Напр.: «Сіра футболка оверсайз \"Бойова квіточка\"». Порожньо — назва товару.",
+    )
+    price_delta = models.IntegerField(
+        default=0, verbose_name="Надбавка до ціни (грн)",
+        help_text="Напр. +300 за термохромну тканину. Може бути відʼємною.",
+    )
+    price_delta_reason = models.CharField(
+        max_length=255, blank=True, default="",
+        verbose_name="Причина надбавки",
+        help_text="Показується покупцю: «Для цього кольору ціна +300 грн — термохромна тканина».",
+    )
+    marketing_html = models.TextField(
+        blank=True, default="", verbose_name="Маркетинговий опис (HTML)",
+        help_text="Красивий блок про цю тканину/колір у картці товару.",
+    )
+    youtube_url = models.URLField(
+        max_length=500, blank=True, default="",
+        verbose_name="YouTube для кольору",
+        help_text="Порожньо — використовується спільне відео товару (Product.video_url).",
+    )
+    seo_title = models.CharField(max_length=180, blank=True, default="", verbose_name="SEO Title")
+    seo_description = models.CharField(max_length=320, blank=True, default="", verbose_name="SEO Description")
+    seo_keywords = models.CharField(max_length=300, blank=True, default="", verbose_name="SEO Keywords")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Fable5: деталі кольору товару"
+        verbose_name_plural = "Fable5: деталі кольорів товарів"
+
+    def __str__(self):
+        return f"Details for variant #{self.variant_id}"
+
+
+class ProductFitNote(models.Model):
+    """Доступність посадки (класика/оверсайз) на рівні товару + причина.
+
+    Доповнює storefront.ProductFitOption: там вкл/викл, тут — текст причини,
+    який показується покупцю («Для цієї моделі доступний лише оверсайз»).
+    """
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="fable5_fit_notes")
+    fit_code = models.SlugField(max_length=50, verbose_name="Код посадки")
+    is_enabled = models.BooleanField(default=True, verbose_name="Доступна")
+    reason = models.CharField(
+        max_length=255, blank=True, default="",
+        verbose_name="Причина (якщо вимкнена)",
+        help_text="Пишеться у картці товару під перемикачем посадок.",
+    )
+
+    class Meta:
+        verbose_name = "Fable5: посадка товару"
+        verbose_name_plural = "Fable5: посадки товарів"
+        unique_together = (("product", "fit_code"),)
+
+    def __str__(self):
+        return f"{self.product_id}:{self.fit_code} ({'on' if self.is_enabled else 'off'})"
+
+
+class VariantFitRule(models.Model):
+    """Доступність посадки для конкретного КОЛЬОРУ (напр., термо — лише оверсайз)."""
+
+    variant = models.ForeignKey(ProductColorVariant, on_delete=models.CASCADE, related_name="fable5_fit_rules")
+    fit_code = models.SlugField(max_length=50, verbose_name="Код посадки")
+    is_enabled = models.BooleanField(default=True, verbose_name="Доступна")
+    reason = models.CharField(max_length=255, blank=True, default="", verbose_name="Причина (якщо вимкнена)")
+
+    class Meta:
+        verbose_name = "Fable5: посадка кольору"
+        verbose_name_plural = "Fable5: посадки кольорів"
+        unique_together = (("variant", "fit_code"),)
+
+    def __str__(self):
+        return f"v{self.variant_id}:{self.fit_code} ({'on' if self.is_enabled else 'off'})"
+
+
+class VariantSizeRule(models.Model):
+    """Розмір у межах кольору: вкл/викл + залишок на складі.
+
+    Приклад: для кольору koyote вимкнути S у конкретній футболці.
+    stock = NULL — залишок не відстежується (розмір просто ввімкнений).
+    """
+
+    variant = models.ForeignKey(ProductColorVariant, on_delete=models.CASCADE, related_name="fable5_size_rules")
+    fit_code = models.SlugField(
+        max_length=50, blank=True, default="",
+        verbose_name="Код посадки", help_text="Порожньо — правило для всіх посадок.",
+    )
+    size = models.CharField(max_length=12, verbose_name="Розмір")
+    is_enabled = models.BooleanField(default=True, verbose_name="Доступний")
+    stock = models.IntegerField(null=True, blank=True, verbose_name="Залишок, шт")
+    note = models.CharField(max_length=255, blank=True, default="", verbose_name="Примітка")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Fable5: розмір кольору"
+        verbose_name_plural = "Fable5: розміри кольорів"
+        unique_together = (("variant", "fit_code", "size"),)
+        ordering = ["variant_id", "fit_code", "id"]
+
+    def __str__(self):
+        return f"v{self.variant_id} {self.size} ({'on' if self.is_enabled else 'off'})"
+
+
+class VariantFAQ(models.Model):
+    """FAQ для конкретного кольору (окремо від загальних ProductFAQ) у 3 мовах."""
+
+    variant = models.ForeignKey(ProductColorVariant, on_delete=models.CASCADE, related_name="fable5_faqs")
+    question_uk = models.CharField(max_length=255, blank=True, default="", verbose_name="Питання (укр)")
+    question_ru = models.CharField(max_length=255, blank=True, default="", verbose_name="Питання (рос)")
+    question_en = models.CharField(max_length=255, blank=True, default="", verbose_name="Питання (англ)")
+    answer_uk = models.TextField(blank=True, default="", verbose_name="Відповідь (укр)")
+    answer_ru = models.TextField(blank=True, default="", verbose_name="Відповідь (рос)")
+    answer_en = models.TextField(blank=True, default="", verbose_name="Відповідь (англ)")
+    order = models.PositiveIntegerField(default=0, verbose_name="Порядок")
+    is_active = models.BooleanField(default=True, verbose_name="Активне")
+
+    class Meta:
+        verbose_name = "Fable5: FAQ кольору"
+        verbose_name_plural = "Fable5: FAQ кольорів"
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return self.question_uk or self.question_ru or self.question_en or f"FAQ #{self.pk}"
+
+
+class FeedProfile(models.Model):
+    """Фід (Google Merchant, Meta DS тощо) — «селекція з фід» в адмінці."""
+
+    FEED_TYPES = [
+        ("google_merchant", "Google Merchant"),
+        ("meta_ds", "Meta / Facebook DS"),
+        ("custom", "Інший / кастомний"),
+    ]
+
+    name = models.CharField(max_length=160, verbose_name="Назва", help_text="Напр.: «Meta DS фід версія 1»")
+    slug = models.SlugField(max_length=160, unique=True, verbose_name="Код фіда")
+    feed_type = models.CharField(max_length=30, choices=FEED_TYPES, default="custom", verbose_name="Тип")
+    is_active = models.BooleanField(default=True, verbose_name="Активний")
+    default_include = models.BooleanField(
+        default=False, verbose_name="Включати товари за замовчуванням",
+        help_text="Вимкнено — у фід потрапляють лише товари, явно додані у «Селекції з фід».",
+    )
+    settings = models.JSONField(default=dict, blank=True, verbose_name="Налаштування")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Fable5: фід"
+        verbose_name_plural = "Fable5: фіди"
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class FeedProductRule(models.Model):
+    """Участь товару у фіді + кастомні тайтл/опис саме для цього фіда."""
+
+    feed = models.ForeignKey(FeedProfile, on_delete=models.CASCADE, related_name="product_rules")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="fable5_feed_rules")
+    is_included = models.BooleanField(default=True, verbose_name="Товар у фіді")
+    custom_title = models.CharField(max_length=220, blank=True, default="", verbose_name="Тайтл для фіда")
+    custom_description = models.TextField(blank=True, default="", verbose_name="Опис для фіда")
+    note = models.CharField(max_length=255, blank=True, default="", verbose_name="Примітка")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Fable5: товар у фіді"
+        verbose_name_plural = "Fable5: товари у фідах"
+        unique_together = (("feed", "product"),)
+
+    def __str__(self):
+        return f"{self.feed_id}:{self.product_id} ({'in' if self.is_included else 'out'})"
+
+
+class FeedImageRule(models.Model):
+    """Дозвіл/заборона конкретної картинки товару у конкретному фіді.
+
+    Якщо для (feed, product) немає жодного дозволеного правила — фід бере
+    картинки як зазвичай. Якщо є хоча б одне is_allowed=True — у фід ідуть
+    ТІЛЬКИ дозволені (у вказаному порядку) + FeedOnlyImage.
+    """
+
+    feed = models.ForeignKey(FeedProfile, on_delete=models.CASCADE, related_name="image_rules")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="fable5_feed_image_rules")
+    product_image = models.ForeignKey(
+        ProductImage, on_delete=models.CASCADE, null=True, blank=True, related_name="fable5_feed_rules",
+    )
+    color_image = models.ForeignKey(
+        ProductColorImage, on_delete=models.CASCADE, null=True, blank=True, related_name="fable5_feed_rules",
+    )
+    use_main_image = models.BooleanField(default=False, verbose_name="Головне зображення товару")
+    is_allowed = models.BooleanField(default=True, verbose_name="Дозволено у фіді")
+    order = models.PositiveIntegerField(default=0, verbose_name="Порядок у фіді")
+
+    class Meta:
+        verbose_name = "Fable5: картинка у фіді"
+        verbose_name_plural = "Fable5: картинки у фідах"
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return f"feed{self.feed_id}:p{self.product_id}:img ({'allow' if self.is_allowed else 'deny'})"
+
+
+class FeedOnlyImage(models.Model):
+    """Картинка, прикріплена ТІЛЬКИ до фіда — не показується у картці товару."""
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="fable5_feed_only_images")
+    feed = models.ForeignKey(
+        FeedProfile, on_delete=models.CASCADE, null=True, blank=True, related_name="extra_images",
+        verbose_name="Фід", help_text="Порожньо — доступна будь-якому фіду.",
+    )
+    image = models.ImageField(upload_to="fable5/feed_images/", verbose_name="Зображення")
+    alt = models.CharField(max_length=200, blank=True, default="", verbose_name="Alt-текст")
+    order = models.PositiveIntegerField(default=0, verbose_name="Порядок")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Fable5: фід-картинка"
+        verbose_name_plural = "Fable5: фід-картинки"
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return f"Feed-only image for product {self.product_id}"
