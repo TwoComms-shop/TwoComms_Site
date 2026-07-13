@@ -23,7 +23,7 @@ class Migration(migrations.Migration):
                 ("description", models.TextField(blank=True, default="", help_text="SEO-дружній опис (що таке термохромна тканина, чим відрізняється тощо).", verbose_name="Опис тканини/кольору")),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
-                ("color", models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_profile", to="productcolors.color")),
+                ("color", models.OneToOneField(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_profile", to="productcolors.color")),
             ],
             options={
                 "verbose_name": "Fable5: профіль кольору",
@@ -44,7 +44,7 @@ class Migration(migrations.Migration):
                 ("seo_keywords", models.CharField(blank=True, default="", max_length=300, verbose_name="SEO Keywords")),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
-                ("variant", models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_details", to="productcolors.productcolorvariant")),
+                ("variant", models.OneToOneField(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_details", to="productcolors.productcolorvariant")),
             ],
             options={
                 "verbose_name": "Fable5: деталі кольору товару",
@@ -58,7 +58,7 @@ class Migration(migrations.Migration):
                 ("fit_code", models.SlugField(max_length=50, verbose_name="Код посадки")),
                 ("is_enabled", models.BooleanField(default=True, verbose_name="Доступна")),
                 ("reason", models.CharField(blank=True, default="", help_text="Пишеться у картці товару під перемикачем посадок.", max_length=255, verbose_name="Причина (якщо вимкнена)")),
-                ("product", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_fit_notes", to="storefront.product")),
+                ("product", models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_fit_notes", to="storefront.product")),
             ],
             options={
                 "verbose_name": "Fable5: посадка товару",
@@ -73,7 +73,7 @@ class Migration(migrations.Migration):
                 ("fit_code", models.SlugField(max_length=50, verbose_name="Код посадки")),
                 ("is_enabled", models.BooleanField(default=True, verbose_name="Доступна")),
                 ("reason", models.CharField(blank=True, default="", max_length=255, verbose_name="Причина (якщо вимкнена)")),
-                ("variant", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_fit_rules", to="productcolors.productcolorvariant")),
+                ("variant", models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_fit_rules", to="productcolors.productcolorvariant")),
             ],
             options={
                 "verbose_name": "Fable5: посадка кольору",
@@ -91,7 +91,7 @@ class Migration(migrations.Migration):
                 ("stock", models.IntegerField(blank=True, null=True, verbose_name="Залишок, шт")),
                 ("note", models.CharField(blank=True, default="", max_length=255, verbose_name="Примітка")),
                 ("updated_at", models.DateTimeField(auto_now=True)),
-                ("variant", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_size_rules", to="productcolors.productcolorvariant")),
+                ("variant", models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_size_rules", to="productcolors.productcolorvariant")),
             ],
             options={
                 "verbose_name": "Fable5: розмір кольору",
@@ -112,7 +112,7 @@ class Migration(migrations.Migration):
                 ("answer_en", models.TextField(blank=True, default="", verbose_name="Відповідь (англ)")),
                 ("order", models.PositiveIntegerField(default=0, verbose_name="Порядок")),
                 ("is_active", models.BooleanField(default=True, verbose_name="Активне")),
-                ("variant", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_faqs", to="productcolors.productcolorvariant")),
+                ("variant", models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_faqs", to="productcolors.productcolorvariant")),
             ],
             options={
                 "verbose_name": "Fable5: FAQ кольору",
@@ -149,7 +149,7 @@ class Migration(migrations.Migration):
                 ("note", models.CharField(blank=True, default="", max_length=255, verbose_name="Примітка")),
                 ("updated_at", models.DateTimeField(auto_now=True)),
                 ("feed", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="product_rules", to="fable5.feedprofile")),
-                ("product", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_rules", to="storefront.product")),
+                ("product", models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_rules", to="storefront.product")),
             ],
             options={
                 "verbose_name": "Fable5: товар у фіді",
@@ -164,10 +164,10 @@ class Migration(migrations.Migration):
                 ("use_main_image", models.BooleanField(default=False, verbose_name="Головне зображення товару")),
                 ("is_allowed", models.BooleanField(default=True, verbose_name="Дозволено у фіді")),
                 ("order", models.PositiveIntegerField(default=0, verbose_name="Порядок у фіді")),
-                ("color_image", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_rules", to="productcolors.productcolorimage")),
+                ("color_image", models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_rules", to="productcolors.productcolorimage")),
                 ("feed", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="image_rules", to="fable5.feedprofile")),
-                ("product", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_image_rules", to="storefront.product")),
-                ("product_image", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_rules", to="storefront.productimage")),
+                ("product", models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_image_rules", to="storefront.product")),
+                ("product_image", models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_rules", to="storefront.productimage")),
             ],
             options={
                 "verbose_name": "Fable5: картинка у фіді",
@@ -184,7 +184,7 @@ class Migration(migrations.Migration):
                 ("order", models.PositiveIntegerField(default=0, verbose_name="Порядок")),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("feed", models.ForeignKey(blank=True, help_text="Порожньо — доступна будь-якому фіду.", null=True, on_delete=django.db.models.deletion.CASCADE, related_name="extra_images", to="fable5.feedprofile", verbose_name="Фід")),
-                ("product", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_only_images", to="storefront.product")),
+                ("product", models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="fable5_feed_only_images", to="storefront.product")),
             ],
             options={
                 "verbose_name": "Fable5: фід-картинка",

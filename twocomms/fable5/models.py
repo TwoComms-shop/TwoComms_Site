@@ -18,7 +18,12 @@ class ColorProfile(models.Model):
     без подвійного вводу назви, як було у старій панелі.
     """
 
-    color = models.OneToOneField(Color, on_delete=models.CASCADE, related_name="fable5_profile")
+    color = models.OneToOneField(
+        Color,
+        on_delete=models.CASCADE,
+        related_name="fable5_profile",
+        db_constraint=False,
+    )
     is_thermo = models.BooleanField(default=False, verbose_name="Термохромний")
     thermo_note = models.CharField(
         max_length=255, blank=True, default="",
@@ -44,7 +49,12 @@ class ColorProfile(models.Model):
 class VariantDetails(models.Model):
     """Кожен колір — «майже окремий товар»: назва, SEO, надбавка до ціни, відео."""
 
-    variant = models.OneToOneField(ProductColorVariant, on_delete=models.CASCADE, related_name="fable5_details")
+    variant = models.OneToOneField(
+        ProductColorVariant,
+        on_delete=models.CASCADE,
+        related_name="fable5_details",
+        db_constraint=False,
+    )
     display_name = models.CharField(
         max_length=220, blank=True, default="",
         verbose_name="Назва для цього кольору",
@@ -89,7 +99,12 @@ class ProductFitNote(models.Model):
     який показується покупцю («Для цієї моделі доступний лише оверсайз»).
     """
 
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="fable5_fit_notes")
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_fit_notes",
+        db_constraint=False,
+    )
     fit_code = models.SlugField(max_length=50, verbose_name="Код посадки")
     is_enabled = models.BooleanField(default=True, verbose_name="Доступна")
     reason = models.CharField(
@@ -110,7 +125,12 @@ class ProductFitNote(models.Model):
 class VariantFitRule(models.Model):
     """Доступність посадки для конкретного КОЛЬОРУ (напр., термо — лише оверсайз)."""
 
-    variant = models.ForeignKey(ProductColorVariant, on_delete=models.CASCADE, related_name="fable5_fit_rules")
+    variant = models.ForeignKey(
+        ProductColorVariant,
+        on_delete=models.CASCADE,
+        related_name="fable5_fit_rules",
+        db_constraint=False,
+    )
     fit_code = models.SlugField(max_length=50, verbose_name="Код посадки")
     is_enabled = models.BooleanField(default=True, verbose_name="Доступна")
     reason = models.CharField(max_length=255, blank=True, default="", verbose_name="Причина (якщо вимкнена)")
@@ -131,7 +151,12 @@ class VariantSizeRule(models.Model):
     stock = NULL — залишок не відстежується (розмір просто ввімкнений).
     """
 
-    variant = models.ForeignKey(ProductColorVariant, on_delete=models.CASCADE, related_name="fable5_size_rules")
+    variant = models.ForeignKey(
+        ProductColorVariant,
+        on_delete=models.CASCADE,
+        related_name="fable5_size_rules",
+        db_constraint=False,
+    )
     fit_code = models.SlugField(
         max_length=50, blank=True, default="",
         verbose_name="Код посадки", help_text="Порожньо — правило для всіх посадок.",
@@ -155,7 +180,12 @@ class VariantSizeRule(models.Model):
 class VariantFAQ(models.Model):
     """FAQ для конкретного кольору (окремо від загальних ProductFAQ) у 3 мовах."""
 
-    variant = models.ForeignKey(ProductColorVariant, on_delete=models.CASCADE, related_name="fable5_faqs")
+    variant = models.ForeignKey(
+        ProductColorVariant,
+        on_delete=models.CASCADE,
+        related_name="fable5_faqs",
+        db_constraint=False,
+    )
     question_uk = models.CharField(max_length=255, blank=True, default="", verbose_name="Питання (укр)")
     question_ru = models.CharField(max_length=255, blank=True, default="", verbose_name="Питання (рос)")
     question_en = models.CharField(max_length=255, blank=True, default="", verbose_name="Питання (англ)")
@@ -208,7 +238,12 @@ class FeedProductRule(models.Model):
     """Участь товару у фіді + кастомні тайтл/опис саме для цього фіда."""
 
     feed = models.ForeignKey(FeedProfile, on_delete=models.CASCADE, related_name="product_rules")
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="fable5_feed_rules")
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_feed_rules",
+        db_constraint=False,
+    )
     is_included = models.BooleanField(default=True, verbose_name="Товар у фіді")
     custom_title = models.CharField(max_length=220, blank=True, default="", verbose_name="Тайтл для фіда")
     custom_description = models.TextField(blank=True, default="", verbose_name="Опис для фіда")
@@ -233,12 +268,19 @@ class FeedImageRule(models.Model):
     """
 
     feed = models.ForeignKey(FeedProfile, on_delete=models.CASCADE, related_name="image_rules")
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="fable5_feed_image_rules")
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_feed_image_rules",
+        db_constraint=False,
+    )
     product_image = models.ForeignKey(
-        ProductImage, on_delete=models.CASCADE, null=True, blank=True, related_name="fable5_feed_rules",
+        ProductImage, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="fable5_feed_rules", db_constraint=False,
     )
     color_image = models.ForeignKey(
-        ProductColorImage, on_delete=models.CASCADE, null=True, blank=True, related_name="fable5_feed_rules",
+        ProductColorImage, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="fable5_feed_rules", db_constraint=False,
     )
     use_main_image = models.BooleanField(default=False, verbose_name="Головне зображення товару")
     is_allowed = models.BooleanField(default=True, verbose_name="Дозволено у фіді")
@@ -256,7 +298,12 @@ class FeedImageRule(models.Model):
 class FeedOnlyImage(models.Model):
     """Картинка, прикріплена ТІЛЬКИ до фіда — не показується у картці товару."""
 
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="fable5_feed_only_images")
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_feed_only_images",
+        db_constraint=False,
+    )
     feed = models.ForeignKey(
         FeedProfile, on_delete=models.CASCADE, null=True, blank=True, related_name="extra_images",
         verbose_name="Фід", help_text="Порожньо — доступна будь-якому фіду.",

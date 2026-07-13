@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -211,3 +212,25 @@ class Fable5EditorAccessTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "Не вдалося виконати операцію")
+
+    def test_legacy_myisam_relations_do_not_create_database_constraints(self):
+        external_relations = (
+            ("ColorProfile", "color"),
+            ("VariantDetails", "variant"),
+            ("ProductFitNote", "product"),
+            ("VariantFitRule", "variant"),
+            ("VariantSizeRule", "variant"),
+            ("VariantFAQ", "variant"),
+            ("FeedProductRule", "product"),
+            ("FeedImageRule", "product"),
+            ("FeedImageRule", "product_image"),
+            ("FeedImageRule", "color_image"),
+            ("FeedOnlyImage", "product"),
+        )
+
+        for model_name, field_name in external_relations:
+            field = apps.get_model("fable5", model_name)._meta.get_field(field_name)
+            self.assertFalse(
+                field.db_constraint,
+                f"{model_name}.{field_name} must remain compatible with legacy MyISAM tables",
+            )
