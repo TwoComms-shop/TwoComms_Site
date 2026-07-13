@@ -107,7 +107,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 | W2-2 | is_converted 0 on prod |
 | W2-3 | purchase UA undercount |
 | ADS-1 | early PV OK; BFCache `initializePixelsImmediately` undefined |
-| ADS-2 | /en/ H1 still Ukrainian |
+| ADS-2 | **RESOLVED `d773bee6` (2026-07-13):** missing RU/EN home/catalog translations added; server 2/2 + live H1 4/4 |
 | ADS-3 | **RESOLVED `e2558396` (2026-07-12):** guarded DB repair + connector-aware trim |
 | W7-1 | views.py.backup still lazy-loaded |
 | W3-9 | TG webhook secret empty on prod (was) |
@@ -130,7 +130,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 | search + page=2 | 200 |
 | live cls-ultimate hero fix | present |
 | category titles mid-phrase | **PASS 2026-07-12:** 9/9 UA/RU/EN live pages, migration `0081` |
-| /en/ H1 Ukrainian | still FAIL (ADS-2 open) |
+| /en/ H1 Ukrainian | **PASS 2026-07-13:** ADS-2 resolved in `d773bee6`; RU/EN home/catalog live H1 4/4 |
 
 ---
 

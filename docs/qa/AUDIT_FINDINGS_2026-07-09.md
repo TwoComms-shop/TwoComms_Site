@@ -20,14 +20,14 @@
 
 **Ads launch gate (current):** **P0 attribution/pixel gate CLEARED**. The production fixes for order attribution, conversion linking, BFCache pixels, worker capacity, canonical feed links and transactional checkout storage are verified. The wider P1/P2 audit queue remains in progress and is tracked below.
 
-**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
+**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
 
 ### Counts (open findings)
 
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 21 | 11 |
+| P1 | 20 | 12 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -38,7 +38,7 @@
 | 0 Smoke / SEC | **100%** | all checklist [x] |
 | 1 Page inventory | **100%** | all [x]; sitemap 489/489 |
 | 2 SEO deep | **100% checked** | fails → F-001..004 |
-| 3 GEO | **100% checked** | F-005 open |
+| 3 GEO | **100% checked** | F-005 fixed `d773bee6` |
 | 4 CRO | **100% checked** | F-022 open |
 | 5 CART | **100% checked** | F-050; no paid order |
 | 6 UTM | **100% checked** | capture OK; **order link F-021** |
@@ -93,7 +93,7 @@
 | [x] | **F-002** | P1 | Color landing UA grammar | **FIXED `0b9ecc1c`**; 21/21 server tests + DB/live 4/4 verified; §F-002 |
 | [x] | **F-004** | P1 | Product title vs H1 | **FIXED `81da8e22`**; DB/live 39/39 localized pages verified; §F-004 |
 | [x] | **F-094** | P1 | title≠H1 reconfirm last-breath etc. | **FIXED `81da8e22`**; covered by F-004 production crawl |
-| [ ] | **F-005** | P1 | RU/EN H1 still Ukrainian | §F-005; **PLAN_VS ADS-2** |
+| [x] | **F-005** | P1 | RU/EN H1 still Ukrainian | **FIXED `d773bee6`**; server tests 2/2 + live H1 4/4 + health 200; §F-005; **PLAN_VS ADS-2** |
 | [ ] | **F-083** | P1 | purchase UA 3 vs 36 paid | §F-083; **PLAN_VS W2-3** |
 | [ ] | **F-044** | P1 | Most web orders empty session_key | §F-044 |
 | [ ] | **F-068** | P1 | prepay_200 all missing session_key | §F-068; F-073 |
@@ -193,7 +193,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-002** | P1 | FIXED | DONE | `0b9ecc1c`: Ukrainian inflection generator + 4/4 production landings verified |
 | [x] **F-003** | P0 | FIXED | DONE | `4d72412a`: 384 canonical feed links; live landing sample verified |
 | [x] **F-004** | P1 | FIXED | DONE | `81da8e22`: 13 SKU × 3 locales DB/live title-H1 names aligned |
-| [ ] **F-005** | P1 | OPEN | YES | RU/EN home+catalog H1 still Ukrainian |
+| [x] **F-005** | P1 | FIXED | DONE | `d773bee6`: RU/EN home+catalog H1 localized; server tests 2/2 and live 4/4 |
 | [ ] **F-006** | P2 | OPEN | YES | Color sitemap same URL ×3 |
 | [ ] **F-007** | P1 | OPEN | YES | HTTP 429 under burst crawl |
 | [ ] **F-008** | P2 | OPEN | YES | Meta description too long on some static pages |
@@ -307,8 +307,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-083** — purchase UserAction undercount vs paid orders
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 
-### P1 OPEN (continued) — 11
-- [ ] **F-005** — RU/EN home+catalog H1 still Ukrainian
+### P1 OPEN (continued) — 10
 - [ ] **F-007** — HTTP 429 under burst crawl
 - [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
 - [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
@@ -699,16 +698,16 @@ audited Ukrainian rows and changes «Череп с дупою» to Ukrainian «�
 
 ### F-005 — RU/EN H1 remains Ukrainian (home + catalog)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED `d773bee6` · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **GEO** · Checklist: GEO-006, PG-100, PG-101
+- [x] **Fixed** · Severity: **P1** · Area: **GEO** · Checklist: GEO-006, PG-100, PG-101
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED |
-| Status (C) | |
+| Status (C) | FIXED `d773bee6`; production verified 2026-07-13 |
 
-**Evidence**
+**Evidence (pre-fix)**
 
 | URL | title language | H1 |
 |-----|----------------|-----|
@@ -720,6 +719,14 @@ audited Ukrainian rows and changes «Череп с дупою» to Ukrainian «�
 **Why problem:** near-duplicate clustering; poor UX for RU/EN users; known historical leak family from `_audit_seo.md` still live on H1.
 
 **Risk of fix:** medium (i18n templates/modeltranslation for hero/H1).
+
+**Production fix verification (2026-07-13):** `d773bee6` adds the missing
+RU/EN translations for the existing `{% trans %}` home and catalog H1 strings,
+ships the compiled catalogs, and adds a route-level regression test. The
+focused server suite passed **2/2**. Fresh live requests passed **4/4** with the
+expected localized H1 text on `/ru/`, `/en/`, `/ru/catalog/`, and
+`/en/catalog/`; `/healthz/` returned **200** after cache clear and Passenger
+restart.
 
 ---
 
@@ -987,7 +994,7 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 - [x] Fix color landing copy (F-002) — `0b9ecc1c`, production verified
 - [x] Fix merchant feed links + ID parity (F-003) — `4d72412a`, production verified
 - [x] Align product title/H1 (F-004) — `81da8e22`, DB/live 39/39 verified
-- [ ] Translate RU/EN H1 (F-005)  
+- [x] Translate RU/EN H1 (F-005) — `d773bee6`, server 2/2 + live 4/4 verified
 - [ ] Dedupe color sitemap (F-006)  
 - [ ] Review 429 policy (F-007)  
 
@@ -1060,7 +1067,7 @@ Example organic web order with session but no UTM (expected for non-ads):
 | F-001 | FIXED `e2558396` | Production MySQL + 9 localized pages verified |
 | F-002 | FIXED `0b9ecc1c` | 4/4 production landings and generator verified |
 | F-004 | FIXED `81da8e22` | 13 SKU × 3 locales aligned in DB and live HTML |
-| F-005 | still OPEN | homepage/catalog H1 localization |
+| F-005 | FIXED `d773bee6` | RU/EN homepage/catalog H1; server 2/2 + live 4/4 |
 | F-003/F-027 | FIXED `4d72412a` | canonical feed color/size paths verified |
 | F-029/F-030 | FIXED | capacity + pixel BFCache verified |
 | F-031 | still OPEN | MySQL connection resilience |
@@ -1077,7 +1084,7 @@ Example organic web order with session but no UTM (expected for non-ads):
 4. **F-029** — LSAPI children limit  
 5. **F-003** — Merchant feed landing/color  
 
-**P1 SEO (remaining):** F-005 H1 i18n, F-043 help-center 404.
+**P1 SEO (remaining):** F-043 help-center 404.
 
 ### Pass A coverage (honest end)
 
