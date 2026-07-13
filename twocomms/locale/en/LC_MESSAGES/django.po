@@ -10169,3 +10169,15 @@ msgstr "Save to profile"
 
 msgid "Ми в Instagram"
 msgstr "We're on Instagram"
+
+#: twocomms_django_theme/templates/pages/index.html:164
+msgid "TwoComms — український streetwear"
+msgstr "TwoComms — Ukrainian streetwear"
+
+#: twocomms_django_theme/templates/pages/index.html:165
+msgid "з кодом продовження"
+msgstr "built to carry the story forward"
+
+#: twocomms_django_theme/templates/pages/catalog.html:211
+msgid "Каталог одягу TwoComms"
+msgstr "TwoComms clothing catalog"

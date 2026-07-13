@@ -9867,3 +9867,15 @@ msgstr "Сохранить в профиле"
 
 msgid "Ми в Instagram"
 msgstr "Мы в Instagram"
+
+#: twocomms_django_theme/templates/pages/index.html:164
+msgid "TwoComms — український streetwear"
+msgstr "TwoComms — украинский streetwear"
+
+#: twocomms_django_theme/templates/pages/index.html:165
+msgid "з кодом продовження"
+msgstr "с кодом продолжения"
+
+#: twocomms_django_theme/templates/pages/catalog.html:211
+msgid "Каталог одягу TwoComms"
+msgstr "Каталог одежды TwoComms"
