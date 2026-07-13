@@ -1,5 +1,5 @@
 # Django и основные зависимости
-Django==5.2.11
+Django==5.2.15
 asgiref==3.9.1
 sqlparse==0.5.3
 
