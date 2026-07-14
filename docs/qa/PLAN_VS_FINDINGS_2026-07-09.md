@@ -103,7 +103,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 
 | ID | One-line |
 |----|----------|
-| W2-1 | new COD first-touch/session linkage verified in production; Monobank capture/tracking residuals remain |
+| W2-1 | new COD and prepay session/UTM/tracking linkage verified in production; CheckoutCapture conversion residual remains (F-075/W3-11) |
 | W2-2 | is_converted 0 on prod |
 | W2-3 | **RESOLVED `fba4dc85` + `d561c11d` (2026-07-14):** DB-backed purchase idempotency, all confirmed writers, safe historical reconciliation; production trusted parity 31/31, 0 missing/duplicates |
 | ADS-1 | early PV OK; BFCache `initializePixelsImmediately` undefined |
@@ -128,8 +128,17 @@ durable anonymous session before the COD Order writer and shares the invariant
 with Monobank/UTM code. At production HEAD `bb217bd9`, the rollback canary
 matched the response cookie, Order and UTMSession key, preserved first-touch
 `utm_source`, created the order-linked action, and left zero rows after cleanup.
-This closes the COD-session residual only; W2-1 stays open for its separate
-Monobank capture/tracking acceptance.
+This closes the COD-session residual. The prepay acceptance is documented
+below; W2-1 remains open only for the separate CheckoutCapture conversion gap.
+
+**F-068/F-073 prepay evidence (2026-07-14):** Git history proves that the old
+writer created the Order before the later tracking block established a session
+external ID; `7936ab6e` added the pre-create ensure and Order field write.
+Regression `30808819` covers a truly lazy guest session. Its production
+rollback canary matched cookie, Order, UTMSession and
+`tracking.external_id=session:<key>`, sent a 20,000-minor-unit mocked invoice,
+marked UTM as `lead`, and left zero DB or session-cache traces. The historical
+19/19 cohort was not changed; F-072 remains the recovery question.
 
 ---
 
@@ -149,6 +158,7 @@ Monobank capture/tracking acceptance.
 | category titles mid-phrase | **PASS 2026-07-12:** 9/9 UA/RU/EN live pages, migration `0081` |
 | /en/ H1 Ukrainian | **PASS 2026-07-13:** ADS-2 resolved in `d773bee6`; RU/EN home/catalog live H1 4/4 |
 | guest COD session/first-touch join | **PASS 2026-07-14:** `394a247c`; cookie = Order.session_key = UTMSession.session_key, rollback cleanup 0 |
+| guest prepay session/tracking join | **PASS 2026-07-14:** `30808819`; cookie = Order = UTMSession = tracking external session, amount 20,000; DB/cache cleanup 0 |
 
 ---
 
@@ -168,7 +178,7 @@ Monobank capture/tracking acceptance.
 |----|----------------|
 | W2-7 | Retail webhook success uses on_commit dispatcher; no long HTTP under row-lock; CAPI still fires once |
 | W7-23 | No `datetime.now()` in orders/storefront non-test money/date code (use timezone.now) |
-| W2-1 | Monobank/prepay canary preserves session/UTM/tracking and marks CheckoutCapture converted; COD acceptance already passed |
+| W2-1 | Monobank path marks the matching CheckoutCapture converted; COD and prepay session/UTM/tracking acceptance already passed |
 | ADS-1 | No client_error for initializePixelsImmediately; BFCache restore works |
 | ADS-3 | Live category titles do not end with від/та/на |
 

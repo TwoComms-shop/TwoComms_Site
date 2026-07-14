@@ -34,7 +34,7 @@
 | is_converted dead | F-019 | PLAN_VS **W2-2** | `utm_tracking.mark_as_converted` / purchase path |
 | purchase UserAction undercount | F-083 **FIXED `fba4dc85` + `d561c11d`** | PLAN_VS **W2-3 RESOLVED** | shared confirmed-order helper + migration 0083 + guarded reconciliation |
 | Dual mono webhook path / CAPI | (plan W2-7 reopen) | PLAN_VS §W2-7 dual path | `monobank.py` `_apply_monobank_status` vs `utils._record_monobank_status_locked` |
-| session_key gaps | F-044/F-074 **FIXED `394a247c`**; F-068/F-073 OPEN | Findings + PLAN_VS | new guest COD has a durable key; historical prepay remains separate and is not backfilled |
+| session_key gaps | F-044/F-074 **FIXED `394a247c`**; F-068/F-073 **FIXED `7936ab6e` + regression `30808819`** | Findings + PLAN_VS | new guest COD/prepay use durable keys; F-072 historical recovery remains open and no guessed backfill was done |
 | Dirty utm_source live | F-020, F-057, F-084 | PLAN_VS **W2-8** nuance | `utm_middleware` / `utm_utils` |
 | CheckoutCapture.converted | F-075 | PLAN_VS W3-11 / mono | mono missing capture update |
 

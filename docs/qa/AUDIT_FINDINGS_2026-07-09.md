@@ -20,14 +20,14 @@
 
 **Ads launch gate (current):** **P0 attribution/pixel gate CLEARED**. The production fixes for order attribution, conversion linking, BFCache pixels, worker capacity, canonical feed links and transactional checkout storage are verified. The wider P1/P2 audit queue remains in progress and is tracked below.
 
-**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD establishes a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
+**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD and `prepay_200` establish a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
 
 ### Counts (open findings)
 
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 17 | 15 |
+| P1 | 15 | 17 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -96,8 +96,8 @@
 | [x] | **F-005** | P1 | RU/EN H1 still Ukrainian | **FIXED `d773bee6`**; server tests 2/2 + live H1 4/4 + health 200; §F-005; **PLAN_VS ADS-2** |
 | [x] | **F-083** | P1 | purchase UA 3 vs 36 paid | **FIXED `fba4dc85` + `d561c11d`**; migration 0083, production 31/31 trusted orders, 0 missing/duplicates; §F-083; **PLAN_VS W2-3** |
 | [x] | **F-044** | P1 | Most web orders empty session_key | **FIXED `394a247c`** for new web orders; server tests + production MariaDB rollback canary passed; historical rows intentionally unchanged; §F-044 |
-| [ ] | **F-068** | P1 | prepay_200 all missing session_key | §F-068; F-073 |
-| [ ] | **F-073** | P1 | session in tracking.external_id only | §F-073 |
+| [x] | **F-068** | P1 | prepay_200 all missing session_key | **FIXED since `7936ab6e`; regression `30808819`**; production prepay rollback canary passed; historical 19 unchanged; §F-068; F-073 |
+| [x] | **F-073** | P1 | session in tracking.external_id only | **FIXED since `7936ab6e`; regression `30808819`**; current `Order.session_key` = tracking external session in production canary; §F-073 |
 | [x] | **F-074** | P1 | COD no _ensure_session_key | **FIXED `394a247c`**; durable guest session is created before `Order`, production cookie/order/UTM join canary passed; §F-074; PLAN_VS W1-1 |
 | [ ] | **F-072** | P1 | Only 2/36 recoverable via external_id | §F-072 |
 | [ ] | **F-076** | P1 | PV noise / site_session gap | §F-076; PLAN_VS W2-4 |
@@ -257,12 +257,12 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-065** | P3 | PASS | no | Custom 404 branded noindex |
 | [x] **F-066** | P3 | PASS | no | BlogPosting JSON-LD |
 | [x] **F-067** | P3 | PASS | no | load-more-products works |
-| [ ] **F-068** | P1 | OPEN | YES | prepay_200 orders 19/19 no session_key |
+| [x] **F-068** | P1 | FIXED | DONE | `7936ab6e` writer fix + `30808819` regression; production prepay session/UTM/tracking rollback canary passed; historical 19 retained |
 | [x] **F-069** | P2 | INFO | no | Home exclusion re-enabled |
 | [x] **F-070** | P3 | INFO | no | Promo POST field is promo_code |
 | [x] **F-071** | P0 | FIXED | DONE | `34275e28`: first-touch cookie reconstruction and normalized source verified |
 | [ ] **F-072** | P1 | OPEN | YES | Only 2/36 web orders recoverable to UTM via external_id |
-| [ ] **F-073** | P1 | OPEN | YES | prepay had session in tracking.external_id but empty Order.session_key |
+| [x] **F-073** | P1 | FIXED | DONE | Current prepay writer stores one key in Order, UTMSession and `tracking.external_id`; production canary and cache cleanup passed |
 | [x] **F-074** | P1 | FIXED | DONE | `394a247c`: guest COD ensures the session before Order persistence; production cookie/order/UTM join canary passed |
 | [ ] **F-075** | P2 | OPEN | YES | CheckoutCapture.converted never true (0/4) |
 | [ ] **F-076** | P1 | OPEN | YES | product_view 41283 vs ATC 61; 96% PV without site_session |
@@ -297,11 +297,9 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
-### P1 OPEN — 8
+### P1 OPEN — 6
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
-- [ ] **F-068** — prepay_200 orders missing session_key
 - [ ] **F-072** — external_id UTM recovery only 2 orders
-- [ ] **F-073** — session in tracking but not Order.session_key (prepay era)
 - [ ] **F-076** — PV noise / site_session gap
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 - [ ] **F-087** — ubd_docs publicly HTTP 200
@@ -1742,9 +1740,9 @@ UserAction rows. All six tables reported InnoDB. Storefront health returned
 
 The historical **29** empty keys are intentionally unchanged. Most underlying
 sessions are expired/unrecoverable, and inventing keys would create false
-attribution and could affect session-based order access. F-068/F-073 continue
-to track the historical prepay cohort separately; F-072 remains open for
-historical recoverability.
+attribution and could affect session-based order access. F-068/F-073 separately
+prove that the current prepay writer no longer creates this gap; F-072 remains
+open for historical recoverability.
 
 ---
 
@@ -2009,7 +2007,7 @@ Sample post includes `"@type":"BlogPosting"`.
 
 ### F-068 — Web `prepay_200` orders: 19/19 missing session_key
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (writer `7936ab6e`; regression `30808819`) · **Severity:** P1 · **Fix required:** DONE
 
 Prod breakdown (re-verified 2026-07-09 late):
 
@@ -2020,7 +2018,31 @@ Prod breakdown (re-verified 2026-07-09 late):
 | web | cod | 1 | 1 | 1 |
 | manual | online_full | 7 | 7 | 7 |
 
-**Timeline nuance:** all online_full with `session_key` are **≥ 2026-05-22** (ids 261, 269, 271, 276). All prepay are **≤ 2026-03-22**. Many prepay still have `tracking.external_id=session:…` (F-073) → session existed but Order field not written historically. No post-May prepay to prove current path. Strengthens F-021/F-044.
+**Timeline nuance:** all online_full with `session_key` are **≥ 2026-05-22** (ids 261, 269, 271, 276). All prepay are **≤ 2026-03-22**. Many prepay still have `tracking.external_id=session:…` (F-073) → session existed but Order field not written historically. Production re-verification on 2026-07-14 confirmed the cohort is still exactly **19/19 empty**, spanning 2025-10-21…2026-03-22; those rows were not rewritten.
+
+**Historical root cause:** the session helper already existed, but the active
+`monobank_create_invoice` writer did not call it before `Order.objects.create()`
+and did not pass `session_key` into the Order. Later tracking code created/read
+the session only after the Order existed and stored it as
+`payment_payload.tracking.external_id=session:…`. Commit `7936ab6e`
+(2026-04-22) added both the pre-create ensure and the Order field write. The
+writer path is proven for orders from 2025-10-30 onward; the exact route of the
+few earliest 2025-10-21…29 rows is not asserted without evidence.
+
+**Current-path proof (2026-07-14):** regression `30808819` starts with a truly
+unsaved anonymous session and verifies `prepay_200`, a durable session row,
+`Order.session_key == UTMSession.session_key`,
+`tracking.external_id=session:<same key>` and a 20,000-minor-unit invoice.
+Focused local tests passed **94/94** and the exact server regression passed
+**1/1**. A production MariaDB rollback canary exercised the real writer with
+Monobank, Telegram and Facebook replaced by mocks: Order/UTM/tracking keys
+matched, UTM converted as `lead`, and the invoice amount was **20,000**. Forced
+rollback plus explicit cached-session cleanup left **0** Order, OrderItem,
+django_session, session-cache, SiteSession, UTMSession and UserAction traces;
+the historical 19/19 aggregate was unchanged.
+
+No synthetic backfill was performed: F-072 documents why unverifiable expired
+session IDs must not be attached to historical orders.
 
 ---
 
@@ -2114,7 +2136,7 @@ Even those 2 still have **empty Order.utm_*** today → attribution never writte
 
 ### F-073 — Prepay era: session lived in tracking.external_id but Order.session_key empty
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES (verify current prepay path)
+**Status:** [x] FIXED (writer `7936ab6e`; regression `30808819`) · **Severity:** P1 · **Fix required:** DONE
 
 All **19** `prepay_200` web orders: `session_key` empty.  
 Many still have `tracking.external_id = session:<key>` (session existed at invoice create).  
@@ -2122,7 +2144,17 @@ Examples: 209, 211, 232, 233, 240, 244, 246, 250, 252–257.
 
 Since **2026-05** only `online_full` orders appear (4) and they **do** store `session_key` — suggests field write was fixed for mono path after ~May 2026, but **no post-March prepay** to re-verify prepay branch.
 
-Code today (`monobank_create_invoice`): `_ensure_session_key` + `Order(..., session_key=request.session.session_key)` — should be OK **if** deployed; needs a paid prepay smoke after unexclude.
+The historical mismatch is explained by the old writer creating the Order
+before the later tracking block established `external_id=session:…`.
+Since `7936ab6e`, the writer establishes the session before Order persistence;
+`394a247c` centralized that invariant in `ensure_request_session_key()`.
+
+**Production acceptance (2026-07-14):** at HEAD `30808819`, an unsaved guest
+prepay session produced the same key in the response cookie, Order,
+UTMSession and tracking external ID. The exact regression passed on the server,
+all external delivery channels were mocked, and rollback/cache cleanup left no
+canary state. Historical rows remain evidence, not candidates for guessed key
+injection; F-072 stays open.
 
 ---
 
@@ -2567,3 +2599,4 @@ tests. Do not run a blind `ALTER TABLE` during live checkout traffic.
 | 2026-07-09 late+ | F-083 purchase undercount; F-084 dual AI sources live; F-085/F-086 SEO/rate PASS notes; F-002 reconfirm |
 | 2026-07-14 | F-083 fixed and production-verified: migration 0083, trusted purchase parity 31/31, safe 26-row historical reconciliation, idempotent cron and live forged-event rejection |
 | 2026-07-14 | F-044/F-074 fixed in `394a247c`: durable guest session before COD Order persistence; local 93/93, server 2/2, production MariaDB cookie/order/UTM rollback canary and zero-row cleanup passed. Test-only Telegram credentials were isolated in `bb217bd9` before server verification |
+| 2026-07-14 | F-068/F-073 closed: historical writer root fixed in `7936ab6e`, regression `30808819`; local 94/94, server 1/1 and production prepay Order/UTM/tracking/20,000-minor-unit rollback canary passed; DB and session-cache cleanup 0, historical 19/19 unchanged |
