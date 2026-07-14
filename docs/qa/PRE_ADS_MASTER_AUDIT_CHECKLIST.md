@@ -982,7 +982,7 @@ Mark each: loads 200 / no throw on page.
 ## Pass A deep continuation (2026-07-09 late)
 
 - Attribution root-cause: **F-071** `link_order_to_utm` ignores first_touch → Order.utm always empty even when UserAction has UTM.
-- Session_key: prepay historical empty (F-068/F-073); COD no ensure (F-074); online_full since May usually has sk.
+- Session_key: guest COD ensure **FIXED `394a247c`** and production rollback-canary verified (F-044/F-074); historical prepay remains open (F-068/F-073); online_full since May usually has sk.
 - Feed product g:link recheck **PASS** (F-077); color landings grammar still F-002.
 - CheckoutCapture.converted 0/4 (F-075).
 - Pixel BFCache + MySQL gone away reconfirmed live (F-079/F-080).

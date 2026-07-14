@@ -82,8 +82,9 @@
 ## ВОЛНА 1 — ДЕНЬГИ И ПРИЁМ ЗАКАЗОВ (P0)
 
 - [x] **W1-1. 🔴 Гостевой COD-чекаут сломан — HTTP 500 (CRO-040)** `[REPO]` + `[DECISION]`
-  > **RE-VERIFY W1-1:** NUANCE 2026-07-09: COD path fixed but create_order still missing _ensure_session_key (F-074).
+  > **RE-VERIFY W1-1 RESOLVED 2026-07-14:** `394a247c`; `create_order` now establishes a durable guest session before persisting the Order. Production cookie/Order/UTMSession rollback canary passed at `bb217bd9`; F-074 closed.
   ✅ **DONE (коммит 26702d78):** (1) роутинг гостя на `create_order` уже был исправлен на main до начала работ — перепроверено, `cart.py` вызывает `legacy_views.order_create(request)`; (2) `[DECISION]` владельца: COD в UI **НЕ возвращаем**, остаётся backend-only fallback; (3) обновлены 2 устаревших теста в `test_checkout.py`, которые ожидали удалённый inline-monobank-флоу (online pay_type теперь редиректит в корзину — заказ создаёт кнопка Monobank). Проверка: `storefront.tests.test_checkout` зелёный.
+  ✅ **SESSION RESIDUAL DONE (`394a247c`):** общий `ensure_request_session_key()` вызывается до COD Order writer; регрессионные тесты проверяют новую lazy guest session и healing UTM-link. Production InnoDB-canary подтвердил cookie = Order.session_key = UTMSession.session_key и нулевой остаток после rollback. Исторические пустые ключи не фабриковались.
   `storefront/views/cart.py:525-527` вызывает несуществующий `legacy_views.process_guest_order` → AttributeError → 500. Live-подтверждено: гость не может оформить заказ. В guest UI корзины нет `pay_type=cod` и submit-кнопки COD.
   Фикс: (1) `cart.py:525` → `return legacy_views.order_create(request)` (`create_order` поддерживает гостей, поля совпадают — проверено); (2) `[DECISION]` — возвращать ли `cod` в UI (значение есть в `Order.PAY_TYPE_CHOICES`); (3) НЕ использовать ветку `monobank_create_invoice(request, order.id)` — латентный TypeError (см. W1-5д).
   Приёмка: live guest COD-заказ создаётся (тест-пометка); invalid phone → controlled error; 0 JS-ошибок.
@@ -168,6 +169,7 @@
 
 - [ ] **W2-1. 🔴 Единая UTM-привязка любого заказа (CRO-041 / AN-013 / AN-021 / AN-030 / AN-031 → TECH-060)** `[REPO]` ✅ fallback-цепочка session_key→visitor_id→session['utm_data'] в link_order_to_utm; attach_tracking_to_order пишет click-ID (fbp/fbc-синтез из fbclid/ttclid/gclid/external_id/ip/ua) в payment_payload.tracking для COD; тесты test_utm_attribution.py (3) зелёные. Единый order-builder COD+Monobank — отложен как долгосрочный рефакторинг.
   > **RE-VERIFY W2-1:** REOPEN 2026-07-09: accept CRO-050 fail (Order.utm empty; no first_touch→Order; COD session; mono capture). Was false [x].
+  > **PARTIAL RE-CLOSE 2026-07-14 (`394a247c`):** COD session + first-touch Order/UTMSession/UserAction acceptance passed in a production rollback canary. Keep W2-1 open only for the separate Monobank capture/tracking acceptance; do not reopen the resolved COD-session residual.
   COD-��уть не выз��вает НИ ОДНО�� функции трекинга; даже в monobank `link_order_to_utm` не срабатывает: lookup строго по session_key, `cycle_key()` при логине рвёт ключ, fallback на `session['utm_data']` отсутствует. Click-ID (fbc/fbp/fbclid/gclid/ttclid) не доходят до CAPI для COD. Факт: 0/43 заказов с utm.
   Фикс: (1) в `create_order` после `order.save()`: `order.session_key=...`; `link_order_to_utm(request, order)`; `record_order_action(...)`; (2) fallback-цепочка в `link_order_to_utm`: session_key → `visitor_id` → `session['utm_data']`; (3) копировать/синтезировать click-ID в `payment_payload.tracking` для ЛЮБОГО заказа (fbc из fbclid если куки нет); (4) долгосрочно — единый order-builder COD+Monobank.
   Приёмка (= CRO-050): визит с `?utm_source=audit` → COD-заказ → в БД utm_source='audit', utm_session FK, session_key, UserAction с order_id.
@@ -632,6 +634,7 @@ O-5 (GSC-экспорт) ──→ W5-6 (правки мета)
 
 | Дата | ID | Что сделано | Коммит/PR |
 |---|---|---|---|
+| 14.07.2026 | W1-1 / F-044 / F-074 | Durable guest session до COD Order writer; общий helper для COD/Monobank/UTM; local 93/93, server 2/2, production InnoDB rollback-canary: cookie = Order = UTMSession, first-touch/UserAction есть, cleanup 0. Исторические 29 пустых ключей не подменялись | 394a247c, bb217bd9 |
 | 08.07.2026 | W3-6, W3-7, W5-2, W6-1/W6-2/W6-3, W7-1/W7-6/W7-20/W7-23/W7-24 | Кодовая пачка: PII-redaction filter + log-rotation script, removed status-save full-save fallbacks, row-lock for dropship admin status, pagination query preservation, search pagination, Monobank invoice reset on cart mutations, add-to-cart in-flight guard, custom-print badge/count, safe legacy/xlsx untracking, timezone-aware dates. SERVER/OWNER leftovers left open where required. | этот коммит |
 | 08.07.2026 | ADS-1/ADS-2/ADS-3 | Повторная проверка уже сделанных ADS-коммитов: head PageView + settings Pixel ID, main-site EN untranslated/fuzzy = 0/0, title fitting without mid-word ellipsis. DTF locale kept out of scope. | 5aacb163, c1c0de5b, 9e0994b2 |
 | 08.07.2026 | W1-7 | Mobile hero-CTA: 60vh-лок + overflow:hidden найден в 3 местах (base.html inline, cls-ultimate.css via inline_static, critical-home.min.css) — во все добавлен mobile-override (height:auto, overflow:visible, min-height:60vh для CLS); проверено в реальном браузере 360×640 — обе CTA видимы; PWA-prompt: 30s + т��лько после взаимодействия, max-height 50vh | 0caf8b04, f59f7827 |

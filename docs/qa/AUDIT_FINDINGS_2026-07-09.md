@@ -20,14 +20,14 @@
 
 **Ads launch gate (current):** **P0 attribution/pixel gate CLEARED**. The production fixes for order attribution, conversion linking, BFCache pixels, worker capacity, canonical feed links and transactional checkout storage are verified. The wider P1/P2 audit queue remains in progress and is tracked below.
 
-**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
+**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD establishes a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
 
 ### Counts (open findings)
 
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 19 | 13 |
+| P1 | 17 | 15 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -95,10 +95,10 @@
 | [x] | **F-094** | P1 | title≠H1 reconfirm last-breath etc. | **FIXED `81da8e22`**; covered by F-004 production crawl |
 | [x] | **F-005** | P1 | RU/EN H1 still Ukrainian | **FIXED `d773bee6`**; server tests 2/2 + live H1 4/4 + health 200; §F-005; **PLAN_VS ADS-2** |
 | [x] | **F-083** | P1 | purchase UA 3 vs 36 paid | **FIXED `fba4dc85` + `d561c11d`**; migration 0083, production 31/31 trusted orders, 0 missing/duplicates; §F-083; **PLAN_VS W2-3** |
-| [ ] | **F-044** | P1 | Most web orders empty session_key | §F-044 |
+| [x] | **F-044** | P1 | Most web orders empty session_key | **FIXED `394a247c`** for new web orders; server tests + production MariaDB rollback canary passed; historical rows intentionally unchanged; §F-044 |
 | [ ] | **F-068** | P1 | prepay_200 all missing session_key | §F-068; F-073 |
 | [ ] | **F-073** | P1 | session in tracking.external_id only | §F-073 |
-| [ ] | **F-074** | P1 | COD no _ensure_session_key | §F-074; PLAN_VS W1-1 nuance |
+| [x] | **F-074** | P1 | COD no _ensure_session_key | **FIXED `394a247c`**; durable guest session is created before `Order`, production cookie/order/UTM join canary passed; §F-074; PLAN_VS W1-1 |
 | [ ] | **F-072** | P1 | Only 2/36 recoverable via external_id | §F-072 |
 | [ ] | **F-076** | P1 | PV noise / site_session gap | §F-076; PLAN_VS W2-4 |
 | [ ] | **F-084** | P1 | chatgpt vs chatgpt.com dual | §F-084; PLAN_VS W2-8 |
@@ -232,7 +232,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-041** | P3 | PASS | no | CSP allows Meta/TikTok/GTM |
 | [x] **F-042** | P3 | PASS | no | Early Meta PageView in HTML |
 | [ ] **F-043** | P1 | OPEN | YES | /help-center/ 404 (need 301→/dopomoga/) |
-| [ ] **F-044** | P1 | OPEN | YES | Most web orders empty session_key (29/36) |
+| [x] **F-044** | P1 | FIXED | DONE | `394a247c`: new web orders persist a durable session key; production rollback canary passed; historical 29/36 baseline retained |
 | [x] **F-045** | P0 | FIXED | DONE | `34275e28`: new-order UTMSession join production canary verified |
 | [x] **F-046** | P3 | PASS | no | Server canary UTM capture |
 | [x] **F-047** | P3 | PASS | no | Sitemap 489/489 HTTP 200 |
@@ -263,7 +263,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-071** | P0 | FIXED | DONE | `34275e28`: first-touch cookie reconstruction and normalized source verified |
 | [ ] **F-072** | P1 | OPEN | YES | Only 2/36 web orders recoverable to UTM via external_id |
 | [ ] **F-073** | P1 | OPEN | YES | prepay had session in tracking.external_id but empty Order.session_key |
-| [ ] **F-074** | P1 | OPEN | YES | COD create_order no _ensure_session_key (order 275) |
+| [x] **F-074** | P1 | FIXED | DONE | `394a247c`: guest COD ensures the session before Order persistence; production cookie/order/UTM join canary passed |
 | [ ] **F-075** | P2 | OPEN | YES | CheckoutCapture.converted never true (0/4) |
 | [ ] **F-076** | P1 | OPEN | YES | product_view 41283 vs ATC 61; 96% PV without site_session |
 | [x] **F-077** | P2 | REVISED | no | Product feed g:link OK when unescaped (narrows F-027) |
@@ -297,18 +297,17 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
-### P1 OPEN — 9
+### P1 OPEN — 8
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
 - [ ] **F-068** — prepay_200 orders missing session_key
 - [ ] **F-072** — external_id UTM recovery only 2 orders
 - [ ] **F-073** — session in tracking but not Order.session_key (prepay era)
-- [ ] **F-074** — COD missing session_key ensure
 - [ ] **F-076** — PV noise / site_session gap
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 - [ ] **F-087** — ubd_docs publicly HTTP 200
 - [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
 
-### P1 OPEN (continued) — 10
+### P1 OPEN (continued) — 9
 - [ ] **F-007** — HTTP 429 under burst crawl
 - [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
 - [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
@@ -316,7 +315,6 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-031** — MySQL server has gone away (reconf F-080)
 - [ ] **F-032** — UserAction rarely linked to UTMSession
 - [ ] **F-043** — /help-center/ 404 (need 301→/dopomoga/)
-- [ ] **F-044** — Most web orders empty session_key (29/36)
 - [ ] **F-050** — NP city Latin Kyiv 502 / Київ 200
 - [ ] **F-057** — All-time dirty utm_source inventory
 
@@ -1061,7 +1059,7 @@ Example organic web order with session but no UTM (expected for non-ads):
 | ID | Status | Note |
 |----|--------|------|
 | F-043 | OPEN P1 | `/help-center/` → **404** (should 301 → `/dopomoga/` like docs suggested) |
-| F-044 | OPEN P1 | Most web orders missing `session_key` (29/36) |
+| F-044 | FIXED `394a247c` | New web orders persist a durable key; historical 29/36 baseline intentionally unchanged |
 | F-045 | FIXED `34275e28` | New-order UTMSession join production canary passed |
 | F-046 | PASS | Server canary UTM+ATC+normalize |
 | SEO-062 | PASS | full sitemap 489 OK |
@@ -1712,17 +1710,41 @@ If external links/docs still use help-center, link equity + UX break. Should be 
 
 ### F-044 — Most web orders have empty `session_key`
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`394a247c`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **UTM / CART** · Checklist: UTM-020, CART-042
+- [x] **Fixed** · Severity: **P1** · Area: **UTM / CART** · Checklist: UTM-020, CART-042
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED (prod DB) |
-| Status (C) | |
+| Status (C) | FIXED `394a247c`; production HEAD `bb217bd9`, 2026-07-14 |
 
 `source=web` orders: **36** total; only **7** have `session_key`; **29** empty.  
 Without session_key, `link_order_to_utm` / `record_order_action` cannot join UTMSession reliably.
+
+**Root cause:** anonymous Django sessions are lazy. The COD writer copied
+`request.session.session_key` before any durable session row/key was created;
+analytics could create the key only after `Order(session_key=NULL)` had already
+been saved. `link_order_to_utm` also healed attribution without reliably
+healing a missing order key.
+
+**Fix and verification (2026-07-14):** `ensure_request_session_key()` is now the
+shared invariant for COD, Monobank and attribution writers. COD establishes the
+session before entering the order transaction, and the UTM linker fills a
+missing order key defensively. Focused tests passed **93/93 locally**; the two
+new session regressions passed **2/2 on the server**. A production MariaDB
+rollback canary proved that the response cookie, `Order.session_key` and
+`UTMSession.session_key` were identical, first-touch `utm_source=f044_canary`
+and one order-linked `UserAction` were persisted inside the transaction, and
+cleanup left **0** Order, OrderItem, django_session, SiteSession, UTMSession and
+UserAction rows. All six tables reported InnoDB. Storefront health returned
+200 and management returned the expected 302 after restart.
+
+The historical **29** empty keys are intentionally unchanged. Most underlying
+sessions are expired/unrecoverable, and inventing keys would create false
+attribution and could affect session-based order access. F-068/F-073 continue
+to track the historical prepay cohort separately; F-072 remains open for
+historical recoverability.
 
 ---
 
@@ -2106,12 +2128,21 @@ Code today (`monobank_create_invoice`): `_ensure_session_key` + `Order(..., sess
 
 ### F-074 — COD / `create_order` path does not `_ensure_session_key`
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`394a247c`) · **Severity:** P1 · **Fix required:** DONE
 
 Order **#275** (`TWC06072026N01`, pay_type=`cod`, source=web, name `AUDIT TEST…`):  
 `session_key=NULL`, no `payment_payload.tracking`, no UTM.
 
 `checkout.create_order` sets `session_key=request.session.session_key` but **never** calls session create helper (unlike monobank `_ensure_session_key`). Guest COD can create order with null session → breaks success-page session match + UTM link + capture convert.
+
+**Resolution (2026-07-14):** `create_order` now calls the shared
+`ensure_request_session_key()` before constructing the `Order` and copies the
+returned durable key. The production rollback canary started with an unsaved
+anonymous session, created a real COD Order/OrderItem plus first-touch UTM and
+analytics rows, received a matching session cookie, and then removed every
+canary row through a forced MariaDB rollback. Code commit `394a247c`; deployed
+and verified at production HEAD `bb217bd9`. The old order #275 remains audit
+baseline evidence and was not rewritten.
 
 ---
 
@@ -2535,3 +2566,4 @@ tests. Do not run a blind `ALTER TABLE` during live checkout traffic.
 | 2026-07-09 late | Deep monobank/session_key/first_touch analysis; feed recheck; F-071–F-082; ads gate still BLOCKED |
 | 2026-07-09 late+ | F-083 purchase undercount; F-084 dual AI sources live; F-085/F-086 SEO/rate PASS notes; F-002 reconfirm |
 | 2026-07-14 | F-083 fixed and production-verified: migration 0083, trusted purchase parity 31/31, safe 26-row historical reconciliation, idempotent cron and live forged-event rejection |
+| 2026-07-14 | F-044/F-074 fixed in `394a247c`: durable guest session before COD Order persistence; local 93/93, server 2/2, production MariaDB cookie/order/UTM rollback canary and zero-row cleanup passed. Test-only Telegram credentials were isolated in `bb217bd9` before server verification |

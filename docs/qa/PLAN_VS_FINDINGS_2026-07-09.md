@@ -32,7 +32,7 @@ Each KEEP has a **STRICT RE-VERIFY** note in the plan where non-obvious.
 | ID | Keep? | Live / code proof | Residual nuance (does NOT uncheck unless stated) |
 |----|-------|-------------------|--------------------------------------------------|
 | **W0-4** | **KEEP** | Test modules present: checkout, monobank_webhook, cart_sync, utm_attribution | Full pytest not re-run (local SECRET_KEY/prod settings) |
-| **W1-1** | **KEEP** | `process_guest_order` gone; cart→order_create | COD UI intentionally off; F-074 session ensure still open |
+| **W1-1** | **KEEP** | `process_guest_order` gone; cart→order_create; `394a247c` ensures a durable guest session before Order persistence | COD UI intentionally off; F-074 residual resolved by production rollback canary on 2026-07-14 |
 | **W1-2** | **KEEP** | Live: preview→login, `/orders/success/1/`→404 | — |
 | **W1-3** | **KEEP** | Signature verify in code; POST webhook without sign → **400**; no `status or 'success'` | — |
 | **W1-4** | **KEEP** | `promo_code_id` + `_record_promo_usage_for_order` | — |
@@ -103,7 +103,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 
 | ID | One-line |
 |----|----------|
-| W2-1 | first_touch not → Order.utm; COD session; mono capture/tracking gaps |
+| W2-1 | new COD first-touch/session linkage verified in production; Monobank capture/tracking residuals remain |
 | W2-2 | is_converted 0 on prod |
 | W2-3 | **RESOLVED `fba4dc85` + `d561c11d` (2026-07-14):** DB-backed purchase idempotency, all confirmed writers, safe historical reconciliation; production trusted parity 31/31, 0 missing/duplicates |
 | ADS-1 | early PV OK; BFCache `initializePixelsImmediately` undefined |
@@ -123,6 +123,14 @@ canary and a live forged-event HTTP check also passed. The documented GA4
 Measurement Protocol owner dependency and refund/cancel follow-up remain
 explicit gaps, not falsely claimed implementations.
 
+**F-044/F-074 / W1-1 residual evidence (2026-07-14):** `394a247c` creates a
+durable anonymous session before the COD Order writer and shares the invariant
+with Monobank/UTM code. At production HEAD `bb217bd9`, the rollback canary
+matched the response cookie, Order and UTMSession key, preserved first-touch
+`utm_source`, created the order-linked action, and left zero rows after cleanup.
+This closes the COD-session residual only; W2-1 stays open for its separate
+Monobank capture/tracking acceptance.
+
 ---
 
 ## 4. Live checks this strict pass
@@ -140,6 +148,7 @@ explicit gaps, not falsely claimed implementations.
 | live cls-ultimate hero fix | present |
 | category titles mid-phrase | **PASS 2026-07-12:** 9/9 UA/RU/EN live pages, migration `0081` |
 | /en/ H1 Ukrainian | **PASS 2026-07-13:** ADS-2 resolved in `d773bee6`; RU/EN home/catalog live H1 4/4 |
+| guest COD session/first-touch join | **PASS 2026-07-14:** `394a247c`; cookie = Order.session_key = UTMSession.session_key, rollback cleanup 0 |
 
 ---
 
@@ -159,7 +168,7 @@ explicit gaps, not falsely claimed implementations.
 |----|----------------|
 | W2-7 | Retail webhook success uses on_commit dispatcher; no long HTTP under row-lock; CAPI still fires once |
 | W7-23 | No `datetime.now()` in orders/storefront non-test money/date code (use timezone.now) |
-| W2-1 | Paid/canary order has Order.utm_source from first_touch |
+| W2-1 | Monobank/prepay canary preserves session/UTM/tracking and marks CheckoutCapture converted; COD acceptance already passed |
 | ADS-1 | No client_error for initializePixelsImmediately; BFCache restore works |
 | ADS-3 | Live category titles do not end with від/та/на |
 
