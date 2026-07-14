@@ -36,6 +36,26 @@ class ReconcilePurchaseActionsCommandTests(TestCase):
         self.assertIn('dry_run=True', output.getvalue())
         self.assertFalse(UserAction.objects.filter(action_type='purchase').exists())
 
+    def test_apply_does_not_rewrite_existing_purchase(self):
+        order = self._order(source='web', payment_status='paid')
+        action = UserAction.objects.create(
+            action_type='purchase',
+            order_id=order.pk,
+            metadata={'source': 'np_delivery', 'keep': 'unchanged'},
+        )
+        original_timestamp = action.timestamp
+        output = StringIO()
+
+        call_command('reconcile_purchase_actions', apply=True, stdout=output)
+
+        action.refresh_from_db()
+        self.assertEqual(
+            action.metadata,
+            {'source': 'np_delivery', 'keep': 'unchanged'},
+        )
+        self.assertEqual(action.timestamp, original_timestamp)
+        self.assertIn('created=0', output.getvalue())
+
     def test_apply_backfills_only_trusted_orders_and_is_idempotent(self):
         site_session = SiteSession.objects.create(session_key='reconcile-session')
         utm_session = UTMSession.objects.create(

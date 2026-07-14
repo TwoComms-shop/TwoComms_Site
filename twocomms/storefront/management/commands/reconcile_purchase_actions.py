@@ -94,8 +94,9 @@ class Command(BaseCommand):
             action_type='purchase',
             order_id__isnull=False,
         ).values('order_id')
+        missing_candidates = candidates.exclude(pk__in=purchase_order_ids)
         eligible_count = candidates.count()
-        missing_count = candidates.exclude(pk__in=purchase_order_ids).count()
+        missing_count = missing_candidates.count()
 
         if not apply_changes:
             self.stdout.write(
@@ -106,7 +107,10 @@ class Command(BaseCommand):
 
         created_count = 0
         with transaction.atomic():
-            locked_orders = candidates.select_for_update().select_related('utm_session')
+            # Existing purchase rows are intentionally left byte-for-byte
+            # untouched. This command repairs only the proven gap and must not
+            # rewrite attribution metadata from live webhook/delivery paths.
+            locked_orders = missing_candidates.select_for_update()
             for order in locked_orders.iterator(chunk_size=100):
                 existed = UserAction.objects.filter(
                     action_type='purchase',
