@@ -21,6 +21,9 @@ class Fable5V2SchemaSafetyContractTests(SimpleTestCase):
         ("CoverSource", "color_image"),
         ("CoverSource", "product_image"),
         ("ProductEditorState", "product"),
+        ("ProductEditorState", "updated_by"),
+        ("EditorDraft", "user"),
+        ("EditorDraft", "product"),
     )
 
     def test_every_v2_relation_to_a_legacy_table_is_unconstrained(self):

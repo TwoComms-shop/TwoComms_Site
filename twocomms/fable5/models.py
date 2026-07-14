@@ -5,10 +5,14 @@ Fable 5 — розширені моделі для нового уніфіков
 productcolors. Тільки нові таблиці з FK/OneToOne на існуючі моделі, тому
 старий редактор і сайт продовжують працювати як раніше (старе = бекап).
 """
+from django.conf import settings
 from django.db import models
 
 from productcolors.models import Color, ProductColorImage, ProductColorVariant
-from storefront.models import Product, ProductImage
+from storefront.models import Category, Product, ProductImage, SizeGrid
+
+
+LANGUAGE_CHOICES = (("uk", "Українська"), ("ru", "Російська"), ("en", "English"))
 
 
 class ColorProfile(models.Model):
@@ -320,3 +324,448 @@ class FeedOnlyImage(models.Model):
 
     def __str__(self):
         return f"Feed-only image for product {self.product_id}"
+
+
+# ---------------------------------------------------------------------------
+# Fable 5 v2: sparse, localised merchandising overrides
+# ---------------------------------------------------------------------------
+
+
+class LocalizedMerchandisingContent(models.Model):
+    """Shared fields for concrete language rows at each inheritance layer."""
+
+    lang = models.CharField(max_length=2, choices=LANGUAGE_CHOICES)
+    display_name = models.CharField(max_length=220, blank=True, default="")
+    short_description = models.TextField(blank=True, default="")
+    full_description = models.TextField(blank=True, default="")
+    marketing_text = models.TextField(blank=True, default="")
+    seo_title = models.CharField(max_length=180, blank=True, default="")
+    seo_description = models.CharField(max_length=320, blank=True, default="")
+    seo_keywords = models.CharField(max_length=300, blank=True, default="")
+    og_title = models.CharField(max_length=180, blank=True, default="")
+    og_description = models.CharField(max_length=320, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+
+class VariantDetailsI18n(LocalizedMerchandisingContent):
+    details = models.ForeignKey(
+        VariantDetails,
+        on_delete=models.CASCADE,
+        related_name="i18n",
+    )
+
+    class Meta:
+        verbose_name = "Fable5: локалізація кольору"
+        verbose_name_plural = "Fable5: локалізації кольорів"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("details", "lang"),
+                name="f5_unique_variant_details_lang",
+            )
+        ]
+
+    def __str__(self):
+        return f"details:{self.details_id}:{self.lang}"
+
+
+class ProductOptionProfile(models.Model):
+    """Product-wide override for an option, e.g. fit=oversize."""
+
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_option_profiles",
+        db_constraint=False,
+    )
+    option_key = models.CharField(max_length=160)
+    option_values = models.JSONField(default=dict, blank=True)
+    price_delta = models.IntegerField(default=0)
+    price_delta_reason = models.CharField(max_length=255, blank=True, default="")
+    youtube_url = models.URLField(max_length=500, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("product_id", "option_key")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("product", "option_key"),
+                name="f5_unique_product_option",
+            )
+        ]
+
+    def __str__(self):
+        return f"p{self.product_id}:{self.option_key}"
+
+
+class ProductOptionProfileI18n(LocalizedMerchandisingContent):
+    profile = models.ForeignKey(
+        ProductOptionProfile,
+        on_delete=models.CASCADE,
+        related_name="i18n",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("profile", "lang"),
+                name="f5_unique_product_option_lang",
+            )
+        ]
+
+    def __str__(self):
+        return f"option:{self.profile_id}:{self.lang}"
+
+
+class VariantCombinationProfile(models.Model):
+    """Exact color × option combination override."""
+
+    variant = models.ForeignKey(
+        ProductColorVariant,
+        on_delete=models.CASCADE,
+        related_name="fable5_combinations",
+        db_constraint=False,
+    )
+    combination_key = models.CharField(max_length=240)
+    option_values = models.JSONField(default=dict, blank=True)
+    price_delta = models.IntegerField(default=0)
+    price_delta_reason = models.CharField(max_length=255, blank=True, default="")
+    youtube_url = models.URLField(max_length=500, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("variant_id", "combination_key")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("variant", "combination_key"),
+                name="f5_unique_variant_combination",
+            )
+        ]
+
+    def __str__(self):
+        return f"v{self.variant_id}:{self.combination_key}"
+
+
+class VariantCombinationProfileI18n(LocalizedMerchandisingContent):
+    profile = models.ForeignKey(
+        VariantCombinationProfile,
+        on_delete=models.CASCADE,
+        related_name="i18n",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("profile", "lang"),
+                name="f5_unique_variant_combo_lang",
+            )
+        ]
+
+    def __str__(self):
+        return f"combination:{self.profile_id}:{self.lang}"
+
+
+class VariantImageAltI18n(models.Model):
+    color_image = models.ForeignKey(
+        ProductColorImage,
+        on_delete=models.CASCADE,
+        related_name="fable5_alts",
+        db_constraint=False,
+    )
+    lang = models.CharField(max_length=2, choices=LANGUAGE_CHOICES)
+    alt = models.CharField(max_length=220, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("color_image", "lang"),
+                name="f5_unique_color_image_alt_lang",
+            )
+        ]
+
+
+class ProductImageAltI18n(models.Model):
+    product_image = models.ForeignKey(
+        ProductImage,
+        on_delete=models.CASCADE,
+        related_name="fable5_alts",
+        db_constraint=False,
+    )
+    lang = models.CharField(max_length=2, choices=LANGUAGE_CHOICES)
+    alt = models.CharField(max_length=220, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("product_image", "lang"),
+                name="f5_unique_product_image_alt_lang",
+            )
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Garment flows and product-scoped print compatibility
+# ---------------------------------------------------------------------------
+
+
+class GarmentFlow(models.Model):
+    code = models.SlugField(max_length=50, unique=True)
+    name = models.CharField(max_length=100)
+    axes = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True)
+    categories = models.ManyToManyField(
+        Category,
+        through="GarmentFlowCategory",
+        related_name="fable5_flows",
+        blank=True,
+    )
+
+    class Meta:
+        ordering = ("name", "code")
+
+    def __str__(self):
+        return self.name
+
+
+class GarmentFlowCategory(models.Model):
+    flow = models.ForeignKey(
+        GarmentFlow,
+        on_delete=models.CASCADE,
+        related_name="category_links",
+    )
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.CASCADE,
+        related_name="fable5_flow_links",
+        db_constraint=False,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("flow", "category"),
+                name="f5_unique_flow_category",
+            )
+        ]
+
+
+class ProductPrintLink(models.Model):
+    product = models.OneToOneField(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_print_link",
+        db_constraint=False,
+    )
+    print_ref = models.ForeignKey(
+        "warehouse.Print",
+        on_delete=models.SET_NULL,
+        related_name="fable5_product_links",
+        null=True,
+        blank=True,
+        db_constraint=False,
+    )
+    note = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"p{self.product_id}:print{self.print_ref_id or '-'}"
+
+
+class ProductPrintCompatibility(models.Model):
+    link = models.ForeignKey(
+        ProductPrintLink,
+        on_delete=models.CASCADE,
+        related_name="compatibility",
+    )
+    combination_key = models.CharField(max_length=240)
+    is_allowed = models.BooleanField(default=True)
+    note = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("link", "combination_key"),
+                name="f5_unique_print_link_combo",
+            )
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Reusable fit-specific size grids and availability
+# ---------------------------------------------------------------------------
+
+
+class SizeGridProfile(models.Model):
+    size_grid = models.OneToOneField(
+        SizeGrid,
+        on_delete=models.CASCADE,
+        related_name="fable5_profile",
+        db_constraint=False,
+    )
+    garment_code = models.SlugField(max_length=50, blank=True, default="")
+    option_key = models.CharField(max_length=160, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"grid{self.size_grid_id}:{self.option_key or self.garment_code or '-'}"
+
+
+class ProductOptionSizeGrid(models.Model):
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_size_grid_assignments",
+        db_constraint=False,
+    )
+    option_key = models.CharField(max_length=160)
+    size_grid = models.ForeignKey(
+        SizeGrid,
+        on_delete=models.PROTECT,
+        related_name="fable5_product_assignments",
+        db_constraint=False,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("product", "option_key"),
+                name="f5_unique_product_option_grid",
+            )
+        ]
+
+    def __str__(self):
+        return f"p{self.product_id}:{self.option_key}:grid{self.size_grid_id}"
+
+
+class ProductSizeRule(models.Model):
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_size_rules",
+        db_constraint=False,
+    )
+    option_key = models.CharField(max_length=160)
+    size = models.CharField(max_length=20)
+    is_enabled = models.BooleanField(default=True)
+    note = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("product_id", "option_key", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("product", "option_key", "size"),
+                name="f5_unique_product_option_size",
+            )
+        ]
+
+    def __str__(self):
+        return f"p{self.product_id}:{self.option_key}:{self.size}"
+
+
+# ---------------------------------------------------------------------------
+# Cover provenance, optimistic concurrency, and drafts
+# ---------------------------------------------------------------------------
+
+
+class CoverSource(models.Model):
+    class SourceType(models.TextChoices):
+        UPLOAD = "upload", "Завантажено окремо"
+        COLOR_IMAGE = "color_image", "З фото кольору"
+        PRODUCT_IMAGE = "product_image", "З галереї товару"
+
+    product = models.OneToOneField(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_cover",
+        db_constraint=False,
+    )
+    source_type = models.CharField(
+        max_length=20,
+        choices=SourceType.choices,
+        default=SourceType.UPLOAD,
+    )
+    color_image = models.ForeignKey(
+        ProductColorImage,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        null=True,
+        blank=True,
+        db_constraint=False,
+    )
+    product_image = models.ForeignKey(
+        ProductImage,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        null=True,
+        blank=True,
+        db_constraint=False,
+    )
+    source_missing = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"p{self.product_id}:{self.source_type}"
+
+
+class ProductEditorState(models.Model):
+    product = models.OneToOneField(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_editor_state",
+        db_constraint=False,
+    )
+    revision = models.PositiveBigIntegerField(default=0)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="fable5_product_edits",
+        null=True,
+        blank=True,
+        db_constraint=False,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"p{self.product_id}:r{self.revision}"
+
+
+class EditorDraft(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="fable5_editor_drafts",
+        db_constraint=False,
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_editor_drafts",
+        null=True,
+        blank=True,
+        db_constraint=False,
+    )
+    draft_key = models.CharField(max_length=64, default="default")
+    payload = models.JSONField(default=dict, blank=True)
+    product_revision = models.PositiveBigIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "draft_key"),
+                name="f5_unique_user_draft_key",
+            )
+        ]
+
+    def __str__(self):
+        return f"user{self.user_id}:{self.draft_key}"

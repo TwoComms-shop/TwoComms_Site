@@ -2,14 +2,31 @@ from django.contrib import admin
 
 from .models import (
     ColorProfile,
+    CoverSource,
+    EditorDraft,
     FeedImageRule,
     FeedOnlyImage,
     FeedProductRule,
     FeedProfile,
+    GarmentFlow,
+    GarmentFlowCategory,
+    ProductEditorState,
     ProductFitNote,
+    ProductImageAltI18n,
+    ProductOptionProfile,
+    ProductOptionProfileI18n,
+    ProductOptionSizeGrid,
+    ProductPrintCompatibility,
+    ProductPrintLink,
+    ProductSizeRule,
+    SizeGridProfile,
+    VariantCombinationProfile,
+    VariantCombinationProfileI18n,
     VariantDetails,
+    VariantDetailsI18n,
     VariantFAQ,
     VariantFitRule,
+    VariantImageAltI18n,
     VariantSizeRule,
 )
 
@@ -74,3 +91,63 @@ class FeedImageRuleAdmin(admin.ModelAdmin):
 @admin.register(FeedOnlyImage)
 class FeedOnlyImageAdmin(admin.ModelAdmin):
     list_display = ("product", "feed", "alt", "order", "created_at")
+
+
+@admin.register(GarmentFlow)
+class GarmentFlowAdmin(admin.ModelAdmin):
+    list_display = ("code", "name", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("code", "name")
+
+
+@admin.register(ProductOptionProfile)
+class ProductOptionProfileAdmin(admin.ModelAdmin):
+    list_display = ("product", "option_key", "price_delta", "is_active", "updated_at")
+    search_fields = ("product__title", "option_key")
+
+
+@admin.register(VariantCombinationProfile)
+class VariantCombinationProfileAdmin(admin.ModelAdmin):
+    list_display = ("variant", "combination_key", "price_delta", "is_active", "updated_at")
+    search_fields = ("variant__product__title", "combination_key")
+
+
+@admin.register(ProductOptionSizeGrid)
+class ProductOptionSizeGridAdmin(admin.ModelAdmin):
+    list_display = ("product", "option_key", "size_grid", "updated_at")
+    search_fields = ("product__title", "option_key", "size_grid__name")
+
+
+@admin.register(ProductSizeRule)
+class ProductSizeRuleAdmin(admin.ModelAdmin):
+    list_display = ("product", "option_key", "size", "is_enabled", "updated_at")
+    list_filter = ("is_enabled", "size")
+    search_fields = ("product__title", "option_key")
+
+
+@admin.register(ProductPrintLink)
+class ProductPrintLinkAdmin(admin.ModelAdmin):
+    list_display = ("product", "print_ref", "updated_at")
+    search_fields = ("product__title", "print_ref__name")
+
+
+@admin.register(ProductEditorState)
+class ProductEditorStateAdmin(admin.ModelAdmin):
+    list_display = ("product", "revision", "updated_by", "updated_at")
+    search_fields = ("product__title", "updated_by__username")
+
+
+admin.site.register(
+    [
+        VariantDetailsI18n,
+        ProductOptionProfileI18n,
+        VariantCombinationProfileI18n,
+        VariantImageAltI18n,
+        ProductImageAltI18n,
+        GarmentFlowCategory,
+        ProductPrintCompatibility,
+        SizeGridProfile,
+        CoverSource,
+        EditorDraft,
+    ]
+)
