@@ -467,7 +467,7 @@ step drop-off % = 1 - (next / prev)
 | CRO-023 | ATC without subsequent IC (cart abandon) volume | P0 | [x] 25 ATC vs 2 IC (30d) |
 | CRO-024 | IC without lead/purchase (checkout abandon) | P0 | [x] tiny volume 2 IC / 1 purchase |
 | CRO-025 | Lead without eventual purchase (prepay not completed) | P1 | [x] 2 lead / 1 purchase (30d) |
-| CRO-026 | product_view without ATC (PDP friction) | P1 | [x] extreme; possible noise F-022 |
+| CRO-026 | product_view without ATC (PDP friction) | P1 | [x] historical raw noise quarantined by F-076; trusted-cohort rebaseline remains F-022 |
 | CRO-027 | Session with UTM but 0 product_view (bad landing/mismatch) | P1 | [x] WARN bad-landing measure partial|
 | CRO-028 | Mobile vs desktop funnel split | P1 | [x] WARN mobile/desktop split not done|
 | CRO-029 | Returning vs first-visit conversion | P2 | [x] WARN returning vs first not done|
@@ -638,7 +638,7 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 | UTM-044 | Analytics exclusions admin works | P2 | [x] PASS exclusions model works F-037/049|
 | UTM-045 | Session detail drill-down if present | P2 | [x] WARN session detail UI not opened|
 | UTM-046 | Dispatcher error path logs but page degrades safely | P1 | [x] WARN error degrade not forced|
-| UTM-047 | Numbers reconcile: sessions ≥ product_views ≥ ATC ≥ IC ≥ purchases (monotonic-ish) | P0 | [x] **FAIL** funnel noise F-022; not monotonic clean|
+| UTM-047 | Numbers reconcile: sessions ≥ product_views ≥ ATC ≥ IC ≥ purchases (monotonic-ish) | P0 | [x] F-076 trusted product_view read-path reconciles 33/33; fresh monotonic rebaseline remains F-022 |
 | UTM-048 | Email UTM reports cron if configured (optional) | P3 | [x] N/A email cron not verified|
 
 ## 6.4 Synthetic canary (repeatable)

@@ -20,14 +20,14 @@
 
 **Ads launch gate (current):** **P0 attribution/pixel gate CLEARED**. The production fixes for order attribution, conversion linking, BFCache pixels, worker capacity, canonical feed links and transactional checkout storage are verified. The wider P1/P2 audit queue remains in progress and is tracked below.
 
-**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD and `prepay_200` establish a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. The two provable historical Order→UTM links were recovered without synthesizing access-bearing session keys; unverifiable historical gaps remain deliberately unchanged. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. The remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
+**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD and `prepay_200` establish a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. The two provable historical Order→UTM links were recovered without synthesizing access-bearing session keys; unverifiable historical gaps remain deliberately unchanged. Product-view business metrics now accept only a committed page navigation linked to a non-bot `SiteSession`; historical raw rows remain available for audit but no longer inflate product or UTM dashboards. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. The remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
 
 ### Counts (open findings)
 
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 14 | 18 |
+| P1 | 13 | 19 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -100,7 +100,7 @@
 | [x] | **F-073** | P1 | session in tracking.external_id only | **FIXED since `7936ab6e`; regression `30808819`**; current `Order.session_key` = tracking external session in production canary; §F-073 |
 | [x] | **F-074** | P1 | COD no _ensure_session_key | **FIXED `394a247c`**; durable guest session is created before `Order`, production cookie/order/UTM join canary passed; §F-074; PLAN_VS W1-1 |
 | [x] | **F-072** | P1 | Only 2/36 recoverable via external_id | **FIXED `bdd04e4c`**; 2/2 provable links restored, 34 unverifiable historical rows untouched; §F-072 |
-| [ ] | **F-076** | P1 | PV noise / site_session gap | §F-076; PLAN_VS W2-4 |
+| [x] | **F-076** | P1 | PV noise / site_session gap | **FIXED `fdf6563a`**; committed-PageView gate + trusted dashboard quarantine; server 46/46 and production canary/metrics verified; §F-076; PLAN_VS W2-4 |
 | [ ] | **F-084** | P1 | chatgpt vs chatgpt.com dual | §F-084; PLAN_VS W2-8 |
 | [ ] | **F-020** | P1 | Historical dirty utm_source | §F-020 |
 | [ ] | **F-057** | P1 | All-time dirty utm inventory | §F-057 |
@@ -265,7 +265,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-073** | P1 | FIXED | DONE | Current prepay writer stores one key in Order, UTMSession and `tracking.external_id`; production canary and cache cleanup passed |
 | [x] **F-074** | P1 | FIXED | DONE | `394a247c`: guest COD ensures the session before Order persistence; production cookie/order/UTM join canary passed |
 | [ ] **F-075** | P2 | OPEN | YES | CheckoutCapture.converted never true (0/4) |
-| [ ] **F-076** | P1 | OPEN | YES | product_view 41283 vs ATC 61; 96% PV without site_session |
+| [x] **F-076** | P1 | FIXED | DONE | `fdf6563a`: writer fails closed without committed PageView/SiteSession; dashboards use trusted PV cohort; production 1713/1713 parity |
 | [x] **F-077** | P2 | REVISED | no | Product feed g:link OK when unescaped (narrows F-027) |
 | [ ] **F-078** | P2 | OPEN | YES | /kontakty/ 404; canonical is /contacts/ |
 | [x] **F-079** | P0 | RECONF | no | F-030 live: 8+ client_errors initializePixelsImmediately |
@@ -297,9 +297,8 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
-### P1 OPEN — 5
+### P1 OPEN — 4
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
-- [ ] **F-076** — PV noise / site_session gap
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 - [ ] **F-087** — ubd_docs publicly HTTP 200
 - [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
@@ -2231,7 +2230,7 @@ Order **271** and **276** share session keys with captures 2 and 4 but `converte
 
 ### F-076 — product_view 41 283 vs ATC 61; ~96% PV without site_session
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES (dedupe already partial; quality still bad)  
+**Status:** [x] FIXED `fdf6563a` · **Severity:** P1 · **Fix required:** DONE
 **Related:** F-022, F-032
 
 | Metric | Value |
@@ -2243,7 +2242,18 @@ Order **271** and **276** share session keys with captures 2 and 4 but `converte
 | initiate_checkout | 7 |
 | purchase UserAction | 3 |
 
-Code has 30‑min product_view dedupe (W2-4) but historical + residual noise remains. Funnel dashboards using raw PV are misleading for ads creative decisions.
+The historical raw rows are retained unchanged for auditability. Root-cause review found two generations of noise: the old writer persisted `product_view` after failing to find a `SiteSession`, while the partially fixed writer could still manufacture a zero-pageview session for HEAD, non-navigation fetches, non-HTML clients, a disabled analytics middleware, or a rolled-back `PageView` write. Administrative product metrics and the UTM Dispatcher also continued to consume those raw rows.
+
+**Fixed 2026-07-14:**
+
+- `SimpleAnalyticsMiddleware` now records request-scoped proof only after the `PageView` transaction succeeds; the product writer requires that proof, the matching `SiteSession`, and a positive pageview counter.
+- HEAD, `Sec-Fetch-Mode: no-cors`, new anonymous non-HTML traffic, bots/staff, public POST `product_view`, and a failed session/pageview write all fail closed without creating a product event.
+- Default product/admin metrics quarantine null, bot and zero-pageview product events without deleting history; `include_bots=1` retains only valid linked bot events for diagnostics.
+- UTM funnel and source/campaign/content score aggregates use the same trusted product-view rule. Null-session purchase/lead and unrelated actions remain intact.
+
+**Verification:** local and server Python 3.14 suites passed **46/46**; production normal navigation repeated three times created exactly **1** linked `product_view` and **3** `PageView` rows, while HEAD/no-cors/non-HTML/bot each created **0**. Live `/api/track-event/` returned `stored:false` for POST `product_view`; both canaries were cleaned to **0** residual rows. Production raw/current-product history was **41 626**, while the direct trusted cohort, admin product metrics and dashboard queryset reconciled **1 713 / 1 713 / 1 713**. UTM product-view sessions reconciled **33 / 33** between the direct query and funnel.
+
+**Still open separately:** F-022 needs a new PV→ATC baseline using the trusted cohort after enough fresh traffic; F-032 concerns UTM linkage coverage and is not closed merely because organic product views legitimately have no UTMSession.
 
 ---
 

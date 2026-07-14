@@ -45,7 +45,7 @@ Each KEEP has a **STRICT RE-VERIFY** note in the plan where non-obvious.
 | **W1-12** | **KEEP** | `_resolve_retail_invoice_status` + amount | — |
 | **W1-13** | **KEEP** | `MAX_CART_ITEM_QTY = 50` | — |
 | **W1-14** | **KEEP** | `_cart_fingerprint` dedupe | — |
-| **W2-4** | **KEEP** | bot/staff filter + 30m PV dedupe in code | Historical PV noise remains (data) |
+| **W2-4** | **KEEP / CLOSED `fdf6563a`** | bot/staff filter + 30m PV dedupe retained; product writer now requires committed PageView proof | Historical raw PV retained for audit, but null/bot/zero-pageview rows are quarantined from product and UTM business metrics; production 1713/1713 parity |
 | **W2-5** | **KEEP** | fbclid/utm fastpath in base.html | — |
 | **W2-6** | **KEEP** | CompletePayment client+server | TikTok UI not checked (OWNER) |
 | **W2-7** | **DROP** | See dual-path analysis §2 | — |

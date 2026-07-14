@@ -35,6 +35,7 @@
 | purchase UserAction undercount | F-083 **FIXED `fba4dc85` + `d561c11d`** | PLAN_VS **W2-3 RESOLVED** | shared confirmed-order helper + migration 0083 + guarded reconciliation |
 | Dual mono webhook path / CAPI | (plan W2-7 reopen) | PLAN_VS §W2-7 dual path | `monobank.py` `_apply_monobank_status` vs `utils._record_monobank_status_locked` |
 | session_key gaps / historical UTM recovery | F-044/F-074 **FIXED `394a247c`**; F-068/F-073 **FIXED `7936ab6e` + regression `30808819`**; F-072 **FIXED `bdd04e4c`** | Findings + PLAN_VS | new guest COD/prepay use durable keys; 2/2 provable historical UTM links restored, 34 unverifiable rows and every historical access-bearing `Order.session_key` left untouched |
+| product_view noise / missing SiteSession | F-076 **FIXED `fdf6563a`** | Findings §F-076 + PLAN_VS **W2-4** | committed-PageView writer gate; admin/product/UTM metrics quarantine historical null/bot/zero-pageview rows without deleting them |
 | Dirty utm_source live | F-020, F-057, F-084 | PLAN_VS **W2-8** nuance | `utm_middleware` / `utm_utils` |
 | CheckoutCapture.converted | F-075 | PLAN_VS W3-11 / mono | mono missing capture update |
 

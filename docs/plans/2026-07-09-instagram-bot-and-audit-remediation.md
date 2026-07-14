@@ -108,6 +108,13 @@ non-candidate digests.
 2. Repair initialization, pixel configuration, and attribution-quality roots in small releases.
 3. Deploy and verify client-error absence plus live pixel lifecycle before ads gate changes.
 
+F-076 closed in `fdf6563a`: product events now require a committed PageView and
+matching SiteSession; historical null/bot/zero-pageview rows remain stored but
+are excluded from product and UTM business metrics. Server runtime tests passed
+46/46; production writer canaries cleaned to zero, admin/dashboard trusted PV
+reconciled 1713/1713, and UTM funnel sessions reconciled 33/33. F-022 and F-032
+remain separate open baselines.
+
 ### Task 10: Security/ops findings (F-087/F-088/F-090/F-029/F-031/F-035/F-036/W0-5)
 
 Use read-only SSH to identify the owning system first. Protect documents, configure a non-secret webhook secret, install a verified backup cron, and resolve capacity/DB/CSP/provider defects only where production ownership is clear. Do not mark external-owner work complete without live proof.
