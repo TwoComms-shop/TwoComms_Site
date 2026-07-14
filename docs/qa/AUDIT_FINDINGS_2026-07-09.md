@@ -20,14 +20,14 @@
 
 **Ads launch gate (current):** **P0 attribution/pixel gate CLEARED**. The production fixes for order attribution, conversion linking, BFCache pixels, worker capacity, canonical feed links and transactional checkout storage are verified. The wider P1/P2 audit queue remains in progress and is tracked below.
 
-**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD and `prepay_200` establish a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
+**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD and `prepay_200` establish a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. The two provable historical Order→UTM links were recovered without synthesizing access-bearing session keys; unverifiable historical gaps remain deliberately unchanged. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. The remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
 
 ### Counts (open findings)
 
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 15 | 17 |
+| P1 | 14 | 18 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -99,7 +99,7 @@
 | [x] | **F-068** | P1 | prepay_200 all missing session_key | **FIXED since `7936ab6e`; regression `30808819`**; production prepay rollback canary passed; historical 19 unchanged; §F-068; F-073 |
 | [x] | **F-073** | P1 | session in tracking.external_id only | **FIXED since `7936ab6e`; regression `30808819`**; current `Order.session_key` = tracking external session in production canary; §F-073 |
 | [x] | **F-074** | P1 | COD no _ensure_session_key | **FIXED `394a247c`**; durable guest session is created before `Order`, production cookie/order/UTM join canary passed; §F-074; PLAN_VS W1-1 |
-| [ ] | **F-072** | P1 | Only 2/36 recoverable via external_id | §F-072 |
+| [x] | **F-072** | P1 | Only 2/36 recoverable via external_id | **FIXED `bdd04e4c`**; 2/2 provable links restored, 34 unverifiable historical rows untouched; §F-072 |
 | [ ] | **F-076** | P1 | PV noise / site_session gap | §F-076; PLAN_VS W2-4 |
 | [ ] | **F-084** | P1 | chatgpt vs chatgpt.com dual | §F-084; PLAN_VS W2-8 |
 | [ ] | **F-020** | P1 | Historical dirty utm_source | §F-020 |
@@ -261,7 +261,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-069** | P2 | INFO | no | Home exclusion re-enabled |
 | [x] **F-070** | P3 | INFO | no | Promo POST field is promo_code |
 | [x] **F-071** | P0 | FIXED | DONE | `34275e28`: first-touch cookie reconstruction and normalized source verified |
-| [ ] **F-072** | P1 | OPEN | YES | Only 2/36 web orders recoverable to UTM via external_id |
+| [x] **F-072** | P1 | FIXED | DONE | `bdd04e4c`: guarded recovery applied to 2/2 provable links; no guessed session keys or synthetic actions |
 | [x] **F-073** | P1 | FIXED | DONE | Current prepay writer stores one key in Order, UTMSession and `tracking.external_id`; production canary and cache cleanup passed |
 | [x] **F-074** | P1 | FIXED | DONE | `394a247c`: guest COD ensures the session before Order persistence; production cookie/order/UTM join canary passed |
 | [ ] **F-075** | P2 | OPEN | YES | CheckoutCapture.converted never true (0/4) |
@@ -297,9 +297,8 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
-### P1 OPEN — 6
+### P1 OPEN — 5
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
-- [ ] **F-072** — external_id UTM recovery only 2 orders
 - [ ] **F-076** — PV noise / site_session gap
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 - [ ] **F-087** — ubd_docs publicly HTTP 200
@@ -1741,8 +1740,9 @@ UserAction rows. All six tables reported InnoDB. Storefront health returned
 The historical **29** empty keys are intentionally unchanged. Most underlying
 sessions are expired/unrecoverable, and inventing keys would create false
 attribution and could affect session-based order access. F-068/F-073 separately
-prove that the current prepay writer no longer creates this gap; F-072 remains
-open for historical recoverability.
+prove that the current prepay writer no longer creates this gap. F-072 later
+restored only the two independently provable UTM links and still left all
+historical `Order.session_key` values unchanged.
 
 ---
 
@@ -2041,8 +2041,9 @@ rollback plus explicit cached-session cleanup left **0** Order, OrderItem,
 django_session, session-cache, SiteSession, UTMSession and UserAction traces;
 the historical 19/19 aggregate was unchanged.
 
-No synthetic backfill was performed: F-072 documents why unverifiable expired
-session IDs must not be attached to historical orders.
+No synthetic session-key backfill was performed. F-072 later copied UTM
+attribution for the two exact surviving joins, while unverifiable expired
+session IDs remained detached from historical orders.
 
 ---
 
@@ -2119,7 +2120,7 @@ Dispatcher / order export that reads `Order.utm_*` will always show «direct/emp
 
 ### F-072 — Historical recoverability: only 2/36 web orders join UTM via session external_id
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES (backfill optional; prevent future)
+**Status:** [x] FIXED (`bdd04e4c`) · **Severity:** P1 · **Fix required:** DONE
 
 Full scan of `payment_payload.tracking.external_id` + `Order.session_key` against `UTMSession`:
 
@@ -2130,7 +2131,40 @@ Full scan of `payment_payload.tracking.external_id` + `Order.session_key` agains
 | UTMSession match | **2** |
 | Matched | order **232** `utm_source=ig` (dirty, pre-normalize); order **246** `google/cpc/pmax_cid23444801460` |
 
-Even those 2 still have **empty Order.utm_*** today → attribution never written at create time (F-071/F-033).
+At audit time even those 2 had empty `Order.utm_*` → attribution had not been
+written at create time (F-071/F-033).
+
+**Safe recovery policy (2026-07-14):** `reconcile_order_utm_attribution` is a
+dry-run by default and requires explicit expected Order/action/conversion
+counts for every `--apply`. It accepts only an exact existing Django session
+key from `Order.session_key` or
+`payment_payload.tracking.external_id=session:<key>`, fails closed if the two
+sources disagree, requires an existing `UTMSession` with a real source inside
+the configured session lifetime, and never infers attribution from phone,
+IP, user agent, `fbp` or time proximity. It copies the existing UTM FK and five
+raw UTM fields byte-for-byte; `ig` is intentionally not normalized here
+(F-020/F-057 own that policy).
+
+The recovery never writes `Order.session_key` (it is also a guest access
+credential), never changes `payment_payload`, never creates a session or
+`UserAction`, and never sends an external event. Existing lead/purchase actions
+are linked only when their UTM/SiteSession evidence does not conflict. The live
+writer and reconciliation now serialize on the Order row so a concurrent
+conversion cannot persist stale empty attribution.
+
+**Production acceptance (2026-07-14):** at code HEAD `bdd04e4c`, server tests
+passed **20/20** and the guarded dry-run reported exactly **2 Orders / 1
+existing action / 1 conversion / 0 ambiguity**. A private mode-600 snapshot was
+hashed before mutation. The real command first passed inside a forced MariaDB
+rollback canary, then applied **2/1/1** with **0 newly created actions**; a
+second guarded apply changed **0/0/0**. Post-apply verification matched all
+three non-candidate digests, kept both historical `Order.session_key` values
+unchanged, and confirmed storefront **200** plus management **302**.
+
+Result: the **2/2 provable** historical links (Orders 232 and 246) are restored.
+The other **34 orders in the original 36-order cohort** have no trustworthy
+surviving UTM join and were intentionally not modified. This is not a claim of
+36/36 recovery; prevention for new orders is covered by F-044/F-068/F-073/F-074.
 
 ---
 
@@ -2154,7 +2188,8 @@ prepay session produced the same key in the response cookie, Order,
 UTMSession and tracking external ID. The exact regression passed on the server,
 all external delivery channels were mocked, and rollback/cache cleanup left no
 canary state. Historical rows remain evidence, not candidates for guessed key
-injection; F-072 stays open.
+injection; F-072 subsequently restored only the two exact surviving UTM links
+without populating historical Order session keys.
 
 ---
 

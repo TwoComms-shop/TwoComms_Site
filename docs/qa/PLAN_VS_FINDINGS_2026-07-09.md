@@ -138,7 +138,12 @@ Regression `30808819` covers a truly lazy guest session. Its production
 rollback canary matched cookie, Order, UTMSession and
 `tracking.external_id=session:<key>`, sent a 20,000-minor-unit mocked invoice,
 marked UTM as `lead`, and left zero DB or session-cache traces. The historical
-19/19 cohort was not changed; F-072 remains the recovery question.
+19/19 session-key cohort was not changed. F-072 was subsequently closed by
+`bdd04e4c`: a guarded dry-run/rollback/apply flow restored the only two exact
+surviving Order→UTM links, linked one existing purchase action, preserved every
+historical `Order.session_key`, created no actions, and left the other 34
+unverifiable orders untouched. Repeated apply changed 0 rows and three
+non-candidate digests remained identical.
 
 ---
 

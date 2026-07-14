@@ -83,6 +83,14 @@
 3. Deploy and prove a safe canary plus read-only ORM joins.
 4. Commit `fix(attribution): link order to first-touch session`.
 
+**Acceptance update (2026-07-14):** current-path writers are covered by
+F-044/F-068/F-073/F-074. Historical F-072 closed in `bdd04e4c` with a
+default-dry-run reconciliation, mandatory count guards and Order-row
+serialization: production rollback/apply restored exactly two provable UTM
+links plus one existing action, created no actions, changed 0 rows on retry,
+kept all historical `Order.session_key` values unchanged and preserved three
+non-candidate digests.
+
 ### Task 8: Payment conversion/dispatch (F-019/F-083/F-075/F-099/W2-7)
 
 **Files:** modify `twocomms/storefront/monobank.py` and shared payment utility; extend Monobank webhook/payment tests.
