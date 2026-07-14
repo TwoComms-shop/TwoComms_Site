@@ -24,6 +24,7 @@ from .utils import (
 # from .cart import clear_cart
 from ..utm_tracking import (
     attach_tracking_to_order,
+    ensure_request_session_key,
     link_order_to_utm,
     record_initiate_checkout,
     record_order_action,
@@ -232,6 +233,11 @@ def create_order(request):
         return redirect('cart')
 
     try:
+        # F-044/F-074: anonymous Django sessions are lazy. Establish the key
+        # before the atomic order writer instead of hoping analytics creates it
+        # after Order(session_key=None) has already been saved.
+        session_key = ensure_request_session_key(request)
+
         with transaction.atomic():
             # Validate optional email
             normalized_email = None
@@ -255,7 +261,7 @@ def create_order(request):
                 email=normalized_email,
                 city=city,
                 np_office=np_office,
-                session_key=request.session.session_key,
+                session_key=session_key,
                 pay_type=pay_type,
                 status='new',
                 payment_status='unpaid'

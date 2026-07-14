@@ -481,7 +481,7 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
         )
 
     @patch('storefront.views.monobank.get_facebook_conversions_service')
-    @patch('storefront.views.monobank.TelegramNotifier.send_new_order_notification')
+    @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification')
     @patch('storefront.views.monobank.record_lead')
     @patch('storefront.views.monobank.record_initiate_checkout')
     @patch('storefront.views.monobank.link_order_to_utm')

@@ -185,6 +185,44 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(bulk_items[0].unit_price, self.product.final_price)
         self.assertEqual(bulk_items[0].line_total, self.product.final_price * 2)
 
+    def test_create_order_guest_cod_persists_new_session_key(self):
+        """F-044/F-074: an unsaved guest session must be established before
+        the Order row is created, not later by analytics side effects.
+        """
+        from django.contrib.auth.models import AnonymousUser
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.contrib.sessions.middleware import SessionMiddleware
+        from django.test import RequestFactory
+
+        from storefront.views.checkout import create_order
+
+        delivery = self.delivery_payload()
+        request = RequestFactory().post(
+            self.order_create_url,
+            self._cod_post_payload(delivery, full_name='New Session Buyer'),
+            secure=True,
+        )
+        SessionMiddleware(lambda req: None).process_request(request)
+        request.user = AnonymousUser()
+        request.session['cart'] = {
+            f'{self.product.id}:M': {
+                'product_id': self.product.id,
+                'qty': 1,
+                'size': 'M',
+            },
+        }
+        request._messages = FallbackStorage(request)
+        self.assertIsNone(request.session.session_key)
+
+        fake_order_item_class, _ = self.make_fake_order_item_class()
+        with patch('storefront.views.checkout.OrderItem', fake_order_item_class):
+            response = create_order(request)
+
+        order = Order.objects.get()
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNotNone(request.session.session_key)
+        self.assertEqual(order.session_key, request.session.session_key)
+
     def test_create_order_snapshots_fit_option_on_order_item(self):
         self.set_cart(fit_option_code='classic', fit_option_label='Класичний')
         delivery = self.delivery_payload()

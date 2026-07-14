@@ -39,6 +39,7 @@ from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_delive
 from orders.facebook_conversions_service import get_facebook_conversions_service
 from ..utm_tracking import (
     ensure_order_purchase_action,
+    ensure_request_session_key,
     link_order_to_utm,
     record_initiate_checkout,
     record_lead,
@@ -292,15 +293,6 @@ def _verify_signature_with_key(public_key_raw, signature_bytes, body):
         return False
 
 
-def _ensure_session_key(request):
-    """
-    Обеспечивает наличие session_key у request.
-    Django не создает сессию автоматически для анонимных пользователей.
-    """
-    if not request.session.session_key:
-        request.session.create()
-
-
 def _validate_checkout_payload(raw_payload):
     """
     Валидирует полезную нагрузку для checkout API.
@@ -424,7 +416,7 @@ def monobank_create_invoice(request):
     # Получаем cart
     cart = get_cart_from_session(request)
 
-    _ensure_session_key(request)
+    ensure_request_session_key(request)
 
     # Approved custom-print items must join the paid order. Pending items stay in
     # the custom cart until moderation is complete.

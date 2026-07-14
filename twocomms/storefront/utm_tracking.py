@@ -21,6 +21,27 @@ from .utm_utils import calculate_action_points, normalize_utm_source, sanitize_u
 logger = logging.getLogger(__name__)
 
 
+def ensure_request_session_key(request) -> str:
+    """Return a durable Django session key or fail before order creation.
+
+    Anonymous sessions are lazy. Reading ``request.session.session_key`` alone
+    can therefore yield ``None`` even though the request already contains cart
+    data. Paid/COD writers must establish the row before copying the key into
+    ``Order``; creating it later from analytics leaves an unjoinable order.
+    """
+    session = getattr(request, 'session', None)
+    if session is None:
+        raise RuntimeError('Checkout request has no Django session')
+
+    session_key = session.session_key
+    if not session_key:
+        session.create()
+        session_key = session.session_key
+    if not session_key:
+        raise RuntimeError('Could not establish a durable checkout session')
+    return session_key
+
+
 def record_user_action(
     request,
     action_type: str,
@@ -68,14 +89,7 @@ def record_user_action(
             return None
 
         # Получаем session_key
-        session_key = request.session.session_key
-        if not session_key:
-            request.session.save()
-            session_key = request.session.session_key
-
-        if not session_key:
-            logger.warning("Could not get session_key for user action")
-            return None
+        session_key = ensure_request_session_key(request)
 
         # W2-4: дедуп product_view — 30 минут на пару (session, product).
         # Reload/переход по вариантам цвета-размера не считается новым
@@ -385,10 +399,7 @@ def record_order_action(
     try:
         session_key = None
         if request is not None:
-            session_key = request.session.session_key
-            if not session_key:
-                request.session.save()
-                session_key = request.session.session_key
+            session_key = ensure_request_session_key(request)
         session_key = session_key or getattr(order, 'session_key', None)
 
         utm_session = getattr(order, 'utm_session', None)
@@ -613,12 +624,10 @@ def _rebuild_utm_session_from_attribution(request, order, utm_data, platform_dat
     if not clean_utm and not clean_platform:
         return None
 
-    session_key = getattr(order, 'session_key', None) or request.session.session_key
-    if not session_key:
-        request.session.save()
-        session_key = request.session.session_key
-    if not session_key:
-        return None
+    session_key = (
+        getattr(order, 'session_key', None)
+        or ensure_request_session_key(request)
+    )
 
     site_session = SiteSession.objects.filter(session_key=session_key).first()
     defaults = {
@@ -647,16 +656,20 @@ def _rebuild_utm_session_from_attribution(request, order, utm_data, platform_dat
 
 
 def _apply_utm_session_to_order(order, utm_session):
+    update_fields = [
+        'utm_session', 'utm_source', 'utm_medium',
+        'utm_campaign', 'utm_content', 'utm_term',
+    ]
+    if not getattr(order, 'session_key', None) and utm_session.session_key:
+        order.session_key = utm_session.session_key
+        update_fields.append('session_key')
     order.utm_session = utm_session
     order.utm_source = utm_session.utm_source
     order.utm_medium = utm_session.utm_medium
     order.utm_campaign = utm_session.utm_campaign
     order.utm_content = utm_session.utm_content
     order.utm_term = utm_session.utm_term
-    order.save(update_fields=[
-        'utm_session', 'utm_source', 'utm_medium',
-        'utm_campaign', 'utm_content', 'utm_term'
-    ])
+    order.save(update_fields=update_fields)
 
 
 def link_order_to_utm(request, order):
@@ -669,9 +682,11 @@ def link_order_to_utm(request, order):
     логин (`cycle_key()`) рвал связь и заказ оставался без атрибуции.
     """
     try:
-        # Гарантируем session_key на заказе (для record_order_action и вебхуков)
-        if not getattr(order, 'session_key', None) and request.session.session_key:
-            order.session_key = request.session.session_key
+        # Защитный инвариант для будущих web-writer'ов: даже если caller не
+        # сделал ensure до Order.save(), UTM-link не оставляет пустой join key.
+        session_key = ensure_request_session_key(request)
+        if not getattr(order, 'session_key', None):
+            order.session_key = session_key
             order.save(update_fields=['session_key'])
 
         utm_session = resolve_utm_session(request, order)
