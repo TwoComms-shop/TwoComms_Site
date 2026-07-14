@@ -3,9 +3,10 @@ W2-8 (AN-032/AN-033): нормализация utm_source + детект AI-тр
 """
 from django.test import TestCase, Client
 
-from storefront.models import UTMSession
+from storefront.models import SiteSession, UTMSession
 from storefront.utm_utils import (
     normalize_utm_source,
+    normalize_utm_attribution,
     detect_ai_source,
     AI_SOURCES,
 )
@@ -30,6 +31,12 @@ class NormalizeUtmSourceTests(TestCase):
     def test_ai_sources_normalized(self):
         self.assertEqual(normalize_utm_source('chat.openai.com'), 'chatgpt')
         self.assertIn(normalize_utm_source('perplexity.ai'), AI_SOURCES)
+        self.assertEqual(normalize_utm_source('you.com'), 'you')
+        self.assertIn(normalize_utm_source('you.com'), AI_SOURCES)
+        self.assertEqual(normalize_utm_source('poe.com'), 'poe')
+        self.assertIn(normalize_utm_source('poe.com'), AI_SOURCES)
+        self.assertEqual(normalize_utm_attribution('you.com', None), ('you', 'ai'))
+        self.assertEqual(normalize_utm_attribution('poe.com', None), ('poe', 'ai'))
 
 
 class DetectAiSourceTests(TestCase):
@@ -40,6 +47,8 @@ class DetectAiSourceTests(TestCase):
             'https://www.perplexity.ai/search?q=x': 'perplexity',
             'https://gemini.google.com/app': 'gemini',
             'https://claude.ai/chat/1': 'claude',
+            'https://you.com/search?q=x': 'you',
+            'https://poe.com/chat/1': 'poe',
         }
         for ref, expected in cases.items():
             self.assertEqual(detect_ai_source(ref), expected, ref)
@@ -79,3 +88,13 @@ class MiddlewareIntegrationTests(TestCase):
         self.assertIsNotNone(session)
         self.assertEqual(session.utm_source, 'perplexity')
         self.assertEqual(session.utm_medium, 'ai')
+
+    def test_ai_query_normalizes_first_touch_snapshot(self):
+        """F-084: the fallback cookie/session path must not retain an alias."""
+        client = Client(HTTP_USER_AGENT='Mozilla/5.0 (X11; Linux x86_64)')
+
+        client.get('/?utm_source=chatgpt.com')
+
+        site_session = SiteSession.objects.get()
+        self.assertEqual(site_session.first_touch_data['utm_source'], 'chatgpt')
+        self.assertEqual(site_session.first_touch_data['utm_medium'], 'ai')

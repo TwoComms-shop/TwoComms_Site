@@ -152,6 +152,38 @@ class UTMOrderAttributionTests(CheckoutTestSupport):
         self.assertEqual(order.session_key, request.session.session_key)
         self.assertEqual(order.utm_session.session_key, order.session_key)
 
+    def test_link_order_to_utm_normalizes_legacy_ai_first_touch(self):
+        """F-084: a raw legacy cookie must rebuild canonical AI attribution."""
+        from django.contrib.auth.models import AnonymousUser
+        from django.contrib.sessions.middleware import SessionMiddleware
+        from django.test import RequestFactory
+
+        from storefront.utm_tracking import link_order_to_utm
+
+        request = RequestFactory().get('/', secure=True)
+        SessionMiddleware(lambda req: None).process_request(request)
+        request.user = AnonymousUser()
+        request.analytics_first_touch_data = {'utm_source': 'chatgpt.com'}
+
+        order = Order.objects.create(
+            full_name='AI Attribution Buyer',
+            phone='+380501112233',
+            city='Київ',
+            np_office='Відділення №1',
+            pay_type='cod',
+            payment_status='unpaid',
+            total_sum=130,
+            source='web',
+        )
+
+        link_order_to_utm(request, order)
+
+        order.refresh_from_db()
+        self.assertEqual(order.utm_source, 'chatgpt')
+        self.assertEqual(order.utm_medium, 'ai')
+        self.assertEqual(order.utm_session.utm_source, 'chatgpt')
+        self.assertEqual(order.utm_session.utm_medium, 'ai')
+
     def test_cod_order_tracking_context_with_fbclid_synthesis(self):
         """W2-1: click-ID контекст пишется в payment_payload.tracking для COD;
         fbc синтезируется из fbclid при отсутствии куки _fbc."""

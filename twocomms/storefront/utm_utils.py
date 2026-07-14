@@ -395,6 +395,8 @@ UTM_SOURCE_ALIASES = {
     'gemini': ['gemini', 'gemini.google.com', 'bard'],
     'claude': ['claude', 'claude.ai'],
     'copilot': ['copilot', 'copilot.microsoft.com', 'bing_chat'],
+    'you': ['you', 'you.com'],
+    'poe': ['poe', 'poe.com'],
 }
 
 # Обратный индекс: alias (lowercase) → канон
@@ -405,7 +407,9 @@ for _canonical, _aliases in UTM_SOURCE_ALIASES.items():
         _UTM_SOURCE_REVERSE[_alias] = _canonical
 
 # Источники, относящиеся к каналу «AI» (utm_medium=ai)
-AI_SOURCES = {'chatgpt', 'perplexity', 'gemini', 'claude', 'copilot'}
+AI_SOURCES = {
+    'chatgpt', 'perplexity', 'gemini', 'claude', 'copilot', 'you', 'poe',
+}
 
 # Referrer-домен → канонический AI-источник (суффикс-матч по hostname)
 AI_REFERRER_DOMAINS = {
@@ -456,6 +460,44 @@ def detect_ai_source(referrer: Optional[str]) -> Optional[str]:
         if hostname == domain or hostname.endswith('.' + domain):
             return source
     return None
+
+
+def normalize_utm_attribution(
+    source: Optional[str],
+    medium: Optional[str],
+    *,
+    referrer: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Return one canonical source/medium pair for every attribution writer.
+
+    The source can come from an explicit UTM value, a legacy first-touch
+    cookie, or an AI referrer. Explicit non-empty media remain untouched; an
+    AI source receives ``ai`` only when the medium is absent.
+    """
+    canonical_source = normalize_utm_source(source)
+    if not canonical_source:
+        canonical_source = detect_ai_source(referrer)
+
+    clean_medium = str(medium).strip() if medium is not None else None
+    if canonical_source in AI_SOURCES and not clean_medium:
+        clean_medium = 'ai'
+
+    return canonical_source, clean_medium or None
+
+
+def normalize_first_touch_attribution(snapshot: Optional[dict]) -> dict:
+    """Canonicalize a first-touch payload without dropping unrelated keys."""
+    normalized = dict(snapshot or {})
+    source, medium = normalize_utm_attribution(
+        normalized.get('utm_source'),
+        normalized.get('utm_medium'),
+        referrer=normalized.get('referrer'),
+    )
+    if source:
+        normalized['utm_source'] = source
+    if medium:
+        normalized['utm_medium'] = medium
+    return normalized
 
 
 def is_bot_user_agent(user_agent: str) -> bool:

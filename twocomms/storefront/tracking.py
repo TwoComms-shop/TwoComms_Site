@@ -12,7 +12,11 @@ from django.utils.deprecation import MiddlewareMixin
 from .analytics_exclusions import is_request_excluded
 from .analytics_noise import is_analytics_noise_path
 from .models import PageView, SiteSession
-from .utm_utils import get_client_ip, sanitize_utm_param
+from .utm_utils import (
+    get_client_ip,
+    normalize_first_touch_attribution,
+    sanitize_utm_param,
+)
 
 
 BOT_SIGNALS = (
@@ -95,7 +99,7 @@ def _build_first_touch_snapshot(request) -> dict:
         snapshot['fbclid'] = (request.GET.get('fbclid') or '')[:255]
     if request.GET.get('ttclid'):
         snapshot['ttclid'] = (request.GET.get('ttclid') or '')[:255]
-    return snapshot
+    return normalize_first_touch_attribution(snapshot)
 
 
 class AnalyticsIdentityMiddleware(MiddlewareMixin):
@@ -129,6 +133,11 @@ class AnalyticsIdentityMiddleware(MiddlewareMixin):
                     first_touch = parsed
             except Exception:
                 first_touch = {}
+
+        normalized_first_touch = normalize_first_touch_attribution(first_touch)
+        if normalized_first_touch != first_touch:
+            first_touch = normalized_first_touch
+            request._analytics_set_first_touch_cookie = True
 
         has_utm = any((request.GET.get(key) or '').strip() for key in ('utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'))
         has_click_id = any((request.GET.get(key) or '').strip() for key in ('gclid', 'fbclid', 'ttclid'))

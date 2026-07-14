@@ -20,9 +20,8 @@ from .utm_utils import (
     parse_user_agent,
     sanitize_utm_param,
     is_bot_user_agent,
-    normalize_utm_source,
+    normalize_utm_attribution,
     detect_ai_source,
-    AI_SOURCES,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,18 +86,22 @@ class UTMTrackingMiddleware(MiddlewareMixin):
             # W2-8 (AN-032): нормализация utm_source по словарю алиасов —
             # ig/Instagram/IGShopping/Inst_Vid схлопываются в 'instagram' и т.д.
             if utm_data.get('utm_source'):
-                utm_data['utm_source'] = normalize_utm_source(utm_data['utm_source'])
-                # AI-источник из utm → канал «AI», если medium не задан явно
-                if utm_data['utm_source'] in AI_SOURCES and not utm_data.get('utm_medium'):
-                    utm_data['utm_medium'] = 'ai'
+                source, medium = normalize_utm_attribution(
+                    utm_data['utm_source'],
+                    utm_data.get('utm_medium'),
+                )
+                utm_data['utm_source'] = source
+                if medium:
+                    utm_data['utm_medium'] = medium
 
             # W2-8 (AN-033): AI-трафик без UTM (chatgpt.com — 3-й источник)
             # детектим по referrer → синтетический utm_source + канал «AI».
             if not has_utm:
                 ai_source = detect_ai_source(request.META.get('HTTP_REFERER', ''))
                 if ai_source:
-                    utm_data['utm_source'] = ai_source
-                    utm_data['utm_medium'] = 'ai'
+                    source, medium = normalize_utm_attribution(ai_source, None)
+                    utm_data['utm_source'] = source
+                    utm_data['utm_medium'] = medium
                     has_utm = True
                     logger.info(f"Detected AI referrer traffic: {ai_source}")
 

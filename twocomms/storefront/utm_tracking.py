@@ -16,7 +16,7 @@ from django.db import models, transaction
 
 from .analytics_exclusions import is_request_excluded
 from .models import UTMSession, SiteSession, UserAction
-from .utm_utils import calculate_action_points, normalize_utm_source, sanitize_utm_param
+from .utm_utils import calculate_action_points, normalize_utm_attribution, sanitize_utm_param
 
 logger = logging.getLogger(__name__)
 
@@ -662,7 +662,14 @@ def _rebuild_utm_session_from_attribution(request, order, utm_data, platform_dat
         if value:
             clean_utm[field] = value
     if clean_utm.get('utm_source'):
-        clean_utm['utm_source'] = normalize_utm_source(clean_utm['utm_source'])
+        source, medium = normalize_utm_attribution(
+            clean_utm['utm_source'],
+            clean_utm.get('utm_medium'),
+            referrer=utm_data.get('referrer'),
+        )
+        clean_utm['utm_source'] = source
+        if medium:
+            clean_utm['utm_medium'] = medium
 
     clean_platform = {}
     for field in click_fields:
