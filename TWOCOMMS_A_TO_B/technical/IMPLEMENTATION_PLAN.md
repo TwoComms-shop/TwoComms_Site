@@ -4,7 +4,7 @@
 **Источник:** полный аудит `twocomms_global_audit.md` (150/150 пунктов закрыто) + все `audit_report_*.md` + gap-check 07.07.2026 (перекрёстная сверка 155 ID аудита против плана v1 — добавлены пропущенные пункты, помечены `[GAP]`).
 **Назначение:** ЕДИНСТВЕННЫЙ рабочий документ для агента-исполнителя. Каждый пункт — чекбокс. Выполнил → `[x]` + запись в «Журнал выполнения» внизу (дата, ID, коммит/PR). Ничего из этого ещё НЕ исправлено, кроме пунктов, явно помеченных done.
 
-> **RE-VERIFY PASS 2026-07-09 + STRICT pass: additionally unchecked W2-7 (dual mono status path), W7-23 (residual datetime.now).** false `[x]` cleared for W2-1/W2-2/W2-3/ADS-1/ADS-2/ADS-3/W7-1/W3-9/W3-11/W0-5. Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`. Owner SSH password rotated (W0-1 OWNER). Do not re-mark DONE without live accept criteria.
+> **RE-VERIFY PASS 2026-07-09 + STRICT pass: additionally unchecked W2-7 (dual mono status path), W7-23 (residual datetime.now).** false `[x]` cleared for W2-1/W2-2/W2-3/ADS-1/ADS-2/ADS-3/W7-1/W3-9/W3-11/W0-5; W2-3 was re-closed only after its live acceptance passed on 2026-07-14. Details: `docs/qa/PLAN_VS_FINDINGS_2026-07-09.md`. Owner SSH password rotated (W0-1 OWNER). Do not re-mark DONE without live accept criteria.
 
 **Как пользоваться:** брать задачи строго по волнам (Волна 0 → 1 → 2 → …). Перед каждой задачей — свериться с «Матрицей рисков» в `twocomms_global_audit.md` (RISK-01…15). Детали каждой находки — в указанном секционном отчёте.
 
@@ -178,12 +178,13 @@
   Фикс: закрывается fallback-цепочкой W2-1; удалить/переписать мёртвый `record_purchase`.
   Приёмка: после тестового заказа `is_converted=True`, `conversion_type`, `converted_at` заполнены.
 
-- [ ] **W2-3. 🔴 Единое определение purchase по всем слоям (CRO-045 → TECH-066)** `[REPO]` + `[REPO]`(docs)
-  > **RE-VERIFY W2-3:** REOPEN PARTIAL 2026-07-09: purchase UA 3 vs 36 paid — not complete. Docs/paths partial only.
+- [x] **W2-3. 🔴 Единое определение purchase по всем слоям (CRO-045 → TECH-066)** `[REPO]` + `[REPO]`(docs)
+  > **RE-VERIFY W2-3 RESOLVED 2026-07-14:** `fba4dc85` + `d561c11d`; production trusted purchase parity 31/31, 0 missing, 0 duplicate groups; the reopened UserAction blocker is closed.
   4 слоя × 3 потока = 4 разных определения. COD-покупки видит ТОЛЬКО Meta CAPI (через НП-крон); GA4/TikTok/UserAction — никогда. Prepaid шлёт полную сумму без refund.
   Целевое определение: `purchase` = подтверждённая оплата (webhook с п��дписью) ИЛИ получение посылки (NP received); создание заказа = отдельное `place_order`/`lead` во всех слоях.
   Фикс: (а) record-слой в COD create_order; (б) UserAction purchase в NP-delivery-путь; (в) TikTok Purchase в NP-delivery + pre-check `purchase_sent`; (г) server-side GA4 purchase для COD (Measurement Protocol) или задокументировать пробел; (д) `paid_value` отдельным параметром; (е) refund/cancel-события; (ж) задокументировать определение в TECHNICAL_TASKS.md.
   ✅ **DONE:** (а) закрыто в W1/W2-2 (checkout.py → record_order_action); (б) `_record_purchase_action` в nova_poshta_service.py — UserAction purchase при «посылка получена», дедуп: max 1 на order_id; (в) `_send_tiktok_purchase_event` там же — TikTok Purchase (→CompletePayment после W2-6) с pre-check `tiktok_events.purchase_sent` в payment_payload; (г) GA4 server-side пробел задокументирован — нужен Measurement Protocol api_secret (`[OWNER]`); (д) `_extract_paid_amount()` + `custom_properties.paid_value`/`payment_status` в Meta Purchase — prepaid-заказ больше не выглядит как полная оплата (value=full для ROAS, paid_value=факт); (е) refund/cancel — зафиксировано как TODO в доке; (ж) каноническое определение + матрица «слой × поток»: `twocomms/docs/PURCHASE_DEFINITION.md`. Регрессия: 42 теста (webhook/checkout/attribution/orders) зелёные.
+  ✅ **LIVE RE-CLOSE:** migration 0083 enforces one `(action_type, order_id)` row in MariaDB; confirmed Monobank/admin/manual/Instagram/NP paths converge on the same helper; guarded reconciliation restored 26 historical trusted rows and is idempotent. Local 172/172 + server 186/186 focused tests, rollback-canary and live HTTP rejection passed. GA4 MP remains `[OWNER]`; refund/cancel remains the separately documented follow-up.
 
 - [x] **W2-4. 🔴 Бот-фильтр и чистота событий (AN-035 / CRO-024 → TECH-063)** `[REPO]`
   > **RE-VERIFY W2-4:** NUANCE 2026-07-09: code OK; historical PV noise remains.

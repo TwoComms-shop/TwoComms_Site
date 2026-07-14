@@ -105,7 +105,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 |----|----------|
 | W2-1 | first_touch not → Order.utm; COD session; mono capture/tracking gaps |
 | W2-2 | is_converted 0 on prod |
-| W2-3 | purchase UA undercount |
+| W2-3 | **RESOLVED `fba4dc85` + `d561c11d` (2026-07-14):** DB-backed purchase idempotency, all confirmed writers, safe historical reconciliation; production trusted parity 31/31, 0 missing/duplicates |
 | ADS-1 | early PV OK; BFCache `initializePixelsImmediately` undefined |
 | ADS-2 | **RESOLVED `d773bee6` (2026-07-13):** missing RU/EN home/catalog translations added; server 2/2 + live H1 4/4 |
 | ADS-3 | **RESOLVED `e2558396` (2026-07-12):** guarded DB repair + connector-aware trim |
@@ -113,6 +113,15 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 | W3-9 | TG webhook secret empty on prod (was) |
 | W3-11 | CheckoutCapture.converted never on mono |
 | W0-5 | OPS done; stash OWNER not done |
+
+**W2-3 resolution evidence (2026-07-14):** migration 0083 created the real
+MariaDB unique key `(action_type, order_id)`; a guarded backfill restored exactly
+26 missing trusted purchases without rewriting the five existing rows or the
+seven ambiguous legacy manual orders. Repeated apply created 0 rows. Focused
+tests passed 172/172 locally and 186/186 on the server; a MariaDB rollback
+canary and a live forged-event HTTP check also passed. The documented GA4
+Measurement Protocol owner dependency and refund/cancel follow-up remain
+explicit gaps, not falsely claimed implementations.
 
 ---
 

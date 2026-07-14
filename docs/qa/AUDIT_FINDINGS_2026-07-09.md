@@ -20,14 +20,14 @@
 
 **Ads launch gate (current):** **P0 attribution/pixel gate CLEARED**. The production fixes for order attribution, conversion linking, BFCache pixels, worker capacity, canonical feed links and transactional checkout storage are verified. The wider P1/P2 audit queue remains in progress and is tracked below.
 
-**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
+**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. Historical session/UTM data gaps and the remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
 
 ### Counts (open findings)
 
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 20 | 12 |
+| P1 | 19 | 13 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -94,7 +94,7 @@
 | [x] | **F-004** | P1 | Product title vs H1 | **FIXED `81da8e22`**; DB/live 39/39 localized pages verified; §F-004 |
 | [x] | **F-094** | P1 | title≠H1 reconfirm last-breath etc. | **FIXED `81da8e22`**; covered by F-004 production crawl |
 | [x] | **F-005** | P1 | RU/EN H1 still Ukrainian | **FIXED `d773bee6`**; server tests 2/2 + live H1 4/4 + health 200; §F-005; **PLAN_VS ADS-2** |
-| [ ] | **F-083** | P1 | purchase UA 3 vs 36 paid | §F-083; **PLAN_VS W2-3** |
+| [x] | **F-083** | P1 | purchase UA 3 vs 36 paid | **FIXED `fba4dc85` + `d561c11d`**; migration 0083, production 31/31 trusted orders, 0 missing/duplicates; §F-083; **PLAN_VS W2-3** |
 | [ ] | **F-044** | P1 | Most web orders empty session_key | §F-044 |
 | [ ] | **F-068** | P1 | prepay_200 all missing session_key | §F-068; F-073 |
 | [ ] | **F-073** | P1 | session in tracking.external_id only | §F-073 |
@@ -272,7 +272,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-080** | P1 | RECONF | no | F-031 live: 565× MySQL server has gone away in django.log |
 | [x] **F-081** | P3 | PASS | no | Footer legal/support pages 14/14 200 |
 | [x] **F-082** | P3 | PASS | no | Feed 384 unique g:id; Cyrillic OK; no dup IDs |
-| [ ] **F-083** | P1 | OPEN | YES | purchase UserAction 3 vs paid/prepaid orders 36 |
+| [x] **F-083** | P1 | FIXED | DONE | `fba4dc85` + `d561c11d`: DB idempotency, all confirmed writers + safe backfill; production trusted parity 31/31, 0 missing/duplicates |
 | [ ] **F-084** | P1 | OPEN | YES | Live dual AI sources chatgpt vs chatgpt.com (still writing) |
 | [x] **F-085** | P3 | PASS | no | Home hreflang×4 + canonical + OG + healthz OK |
 | [x] **F-086** | P3 | PASS | no | Mild burst 20× catalog → 0×429 (F-007 is high-load only) |
@@ -297,15 +297,16 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
-### P1 OPEN —
+### P1 OPEN — 9
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
 - [ ] **F-068** — prepay_200 orders missing session_key
 - [ ] **F-072** — external_id UTM recovery only 2 orders
 - [ ] **F-073** — session in tracking but not Order.session_key (prepay era)
 - [ ] **F-074** — COD missing session_key ensure
 - [ ] **F-076** — PV noise / site_session gap
-- [ ] **F-083** — purchase UserAction undercount vs paid orders
 - [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
+- [ ] **F-087** — ubd_docs publicly HTTP 200
+- [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
 
 ### P1 OPEN (continued) — 10
 - [ ] **F-007** — HTTP 429 under burst crawl
@@ -2210,18 +2211,28 @@ From homepage footer, all primary support URLs **200**:
 
 ### F-083 — `purchase` UserAction heavily undercounted vs paid orders
 
-**Status:** [x] FIXED (`81da8e22`) · **Severity:** P1 · **Fix required:** DONE
-**Related:** F-019, F-021, F-033
+**Status:** [x] FIXED (`fba4dc85` + hardening `d561c11d`) · **Severity:** P1 · **Fix required:** DONE
+**Related:** F-019, F-021, F-033; PLAN_VS W2-3
 
-| Metric | Count |
-|--------|------:|
+**Audit baseline (2026-07-09, retained for history):**
+
+| Metric | Historical count |
+|--------|-----------------:|
 | Orders `payment_status` in paid/prepaid | **36** |
 | UserAction `purchase` | **3** |
 | UserAction `lead` | **6** |
 
-Only a tiny fraction of successful payments create funnel actions → conversion reporting / `mark_as_converted` almost never runs.
+At audit time only a tiny fraction of successful payments created funnel actions, so conversion reporting / `mark_as_converted` almost never ran.
 
 **Detail:** purchase UserAction `order_id` set only for **{261, 269, 271}** (all recent monobank web `online_full`). **33/36** paid/prepaid orders have **no** purchase action — includes all `source=manual` (expected if no mono webhook) **and** older monobank web paid/prepay (e.g. 257, 255, 254) where `_apply_monobank_status` → `record_order_action('purchase')` either was not deployed yet or failed. `lead` actions exist for 6 orders (invoice create path).
+
+**Resolution verified on production 2026-07-14:**
+
+- `fba4dc85` routes every confirmed path through one idempotent helper: retail Monobank webhook/API retries, manual/admin paid states, paid Instagram deals and Nova Poshta delivered retries. The public `/api/track-event/` rejects server-only `lead`/`purchase` events.
+- Migration `0083_useraction_unique_order_action` added the MariaDB unique key `(action_type, order_id)` after a fail-closed duplicate preflight. `d561c11d` restricts historical reconciliation to missing rows only, leaving the five existing purchases byte-for-byte untouched.
+- Pre-backfill production split: **38** confirmed orders = **31 trusted** web/Monobank orders + **7 legacy manual** orders whose paid/free meaning cannot be proven. Trusted parity was 5/31, so a private rollback snapshot was taken and exactly **26** missing actions were restored with historical timestamps. The 7 ambiguous manual rows were deliberately excluded.
+- Post-backfill evidence: trusted **31/31**, missing **0**, duplicates **0**, reconciled set exactly **26/26**, legacy ambiguous with purchase **0**, and the second apply created **0**. Historical timestamps match the deterministic callback/delivery/order-time resolver; range 2025-10-15…2026-03-22, not deploy time.
+- Verification: local **172/172** and server Python 3.14 **186/186** focused tests; MariaDB rollback-canary proved lead→purchase promotion and retry idempotency; live forged `purchase` returned HTTP 400 and wrote 0 rows; storefront health 200. Daily `reconcile_purchase_actions --apply` cron was installed and its exact cron command returned `created=0`.
 
 ---
 
@@ -2523,3 +2534,4 @@ tests. Do not run a blind `ALTER TABLE` during live checkout traffic.
 | 2026-07-09 | F-049 home unexclude canary PASS (sessionid+UTMSession+ATC+stored:true) |
 | 2026-07-09 late | Deep monobank/session_key/first_touch analysis; feed recheck; F-071–F-082; ads gate still BLOCKED |
 | 2026-07-09 late+ | F-083 purchase undercount; F-084 dual AI sources live; F-085/F-086 SEO/rate PASS notes; F-002 reconfirm |
+| 2026-07-14 | F-083 fixed and production-verified: migration 0083, trusted purchase parity 31/31, safe 26-row historical reconciliation, idempotent cron and live forged-event rejection |

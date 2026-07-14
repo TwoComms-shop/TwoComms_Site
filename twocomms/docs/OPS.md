@@ -9,24 +9,28 @@
 - Тесты в песочнице/CI: `test_settings` (sqlite in-memory) / `preview_settings`.
 - Ключевые env-инварианты: `MONOBANK_TOKEN`, `MONOBANK_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `FACEBOOK_CAPI_TOKEN`, `TIKTOK_EVENTS_TOKEN` — все берутся из env, НЕ из кода (после W0-2-ротации).
 
-## Crontab (7 задач, снято `crontab -l` 05.07.2026)
+## Crontab (live snapshot 14.07.2026: 2 задачи)
+
+> Важно: инвентаризация 05.07.2026 содержала 7 задач, но повторный production
+> `crontab -l` 13–14.07.2026 показал только ротацию логов. F-083 добавил вторую
+> задачу ниже. Старые записи нельзя считать действующими и нельзя массово
+> восстанавливать без отдельной проверки их команд, логов и альтернативных
+> scheduler-процессов.
 
 | # | Расписание | Команда | Лог | Назначение / риск |
 |---|---|---|---|---|
-| 1 | `20 4 * * *` | `manage.py trim_analytics` | `logs/trim_analytics.log` | retention UserAction (DB-004) |
-| 2 | `*/30 * * * *` | `manage.py recover_checkouts` | `logs/recover_checkouts.log` | **ДЕНЬГИ**: добор брошенных чекаутов; правки checkout.py учитывают этот фон |
-| 3 | `* * * * *` | `manage.py run_instagram_bot --ensure` | `tmp/ig_bot_cron.log` | держит IG-бота живым; лог без ротации |
-| 4 | `*/5 * * * *` | `manage.py checker_tick` | `tmp/checker_tick.log` | тики management-приложения |
-| 5 | `*/4 * * * *` | `manage.py poll_ig_deal_payments` | `tmp/poll_ig_deal_payments.log` | **ДЕНЬГИ**: опрос оплат IG-сделок |
-| 6 | `30 4 * * *` | `manage.py purge_ig_clients` | `tmp/purge_ig_clients.log` | чистка IG-клиентов |
-| 7 | `15 3 * * *` | `manage.py generate_bot_fingerprints --limit 15 --sleep 2` | `tmp/fp_cron.log` | fingerprints для бота |
+| 1 | `10 4 * * *` | `scripts/rotate_twocomms_logs.sh` | `$HOME/log_archives/twocomms/rotate_twocomms_logs.log` | ротация/retention persistent logs |
+| 2 | `17 4 * * *` | `manage.py reconcile_purchase_actions --apply` | `logs/reconcile_purchase_actions.log` | F-083: идемпотентно лечит доказуемые пропуски внутренних purchase |
 
 ### Чего в cron НЕТ (известные дыры)
 
 1. **Бэкапа MySQL** — P0, см. W0-3 (скрипт `scripts/backup_mysql.sh` в репо; добавить cron `[SERVER]`).
 2. Генерации Google Merchant feed (SEO-008) — фид статикой, устаревает.
 3. IndexNow/sitemap-пингов.
-4. logrotate для `tmp/*.log` (W3-6) — REPO-часть готова: `scripts/rotate_twocomms_logs.sh`; добавить cron `[SERVER]`.
+4. Задач из старого snapshot: `trim_analytics`, `recover_checkouts`,
+   `run_instagram_bot --ensure`, `checker_tick`, `poll_ig_deal_payments`,
+   `purge_ig_clients`, `generate_bot_fingerprints`. Их отсутствие подтверждено,
+   но способ восстановления требует отдельного production-аудита.
 5. **`manage.py check_survey_inactivity`** (W3-1/TD-015) — survey-репорты о брошенных опросах. Раньше висела в `CELERY_BEAT_SCHEDULE` (каждые 2 мин), но beat не запущен → не выполнялась никогда. Добавить cron `*/5 * * * *` `[SERVER]`.
 6. **`manage.py cleanup_analytics_data`** (W2-10/AN-051) — retention аналитики (UserAction >180д, неконверсионные UTMSession >90д, orphan-события). Добавить cron `20 4 * * 0` (раз в неделю) `[SERVER]`.
 
@@ -41,9 +45,9 @@
 
 ### Инварианты
 
-- Все 7 cron-команд — management-команды из репо; loose-скрипты корня кроном НЕ вызываются (CB-044) → их можно архивировать без риска для cron.
+- Обе текущие cron-команды находятся в репо; loose-скрипты корня кроном не вызываются.
 - НИКОГДА не добавляйте cron-задачу без записи в эту таблицу.
-- Логи в `tmp/` ротируются только после установки cron для `scripts/rotate_twocomms_logs.sh`; новые задачи логируйте в `logs/` и добавляйте в этот rotation-путь.
+- Новые задачи логируйте в `logs/`; `reconcile_purchase_actions` пишет одну короткую итоговую строку в сутки.
 
 ### Log rotation / PII (W3-6)
 
@@ -56,6 +60,7 @@ SERVER-часть:
 
 ```cron
 10 4 * * * /bin/bash /home/qlknpodo/TWC/TwoComms_Site/scripts/rotate_twocomms_logs.sh >> /home/qlknpodo/log_archives/twocomms/rotate_twocomms_logs.log 2>&1
+17 4 * * * cd /home/qlknpodo/TWC/TwoComms_Site/twocomms && /home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/bin/python manage.py reconcile_purchase_actions --apply >> /home/qlknpodo/TWC/TwoComms_Site/twocomms/logs/reconcile_purchase_actions.log 2>&1
 ```
 
 ## Git-состояние сервера (CB-043, снято 05.07.2026)

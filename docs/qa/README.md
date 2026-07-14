@@ -32,7 +32,7 @@
 |-------|-------------|-------------|-------------------|
 | Order UTM always empty | F-021, F-033, F-071, F-045 | Findings detail sections + PLAN_VS **W2-1** | `storefront/utm_tracking.py` `link_order_to_utm`; mono+checkout create paths |
 | is_converted dead | F-019 | PLAN_VS **W2-2** | `utm_tracking.mark_as_converted` / purchase path |
-| purchase UserAction undercount | F-083 | PLAN_VS **W2-3** | mono `_apply_monobank_status` vs utils path |
+| purchase UserAction undercount | F-083 **FIXED `fba4dc85` + `d561c11d`** | PLAN_VS **W2-3 RESOLVED** | shared confirmed-order helper + migration 0083 + guarded reconciliation |
 | Dual mono webhook path / CAPI | (plan W2-7 reopen) | PLAN_VS §W2-7 dual path | `monobank.py` `_apply_monobank_status` vs `utils._record_monobank_status_locked` |
 | session_key gaps | F-044, F-068, F-073, F-074 | Findings + PLAN_VS | checkout COD ensure session; historical prepay |
 | Dirty utm_source live | F-020, F-057, F-084 | PLAN_VS **W2-8** nuance | `utm_middleware` / `utm_utils` |
@@ -88,7 +88,7 @@
 
 ### Wave Fix-A — storefront P0 (ads ROAS)
 1. F-071 / F-021 / F-033 / F-045 — first_touch → Order.utm_* + session ensure  
-2. F-019 / F-083 — is_converted + purchase recording  
+2. F-019 / F-083 — **FIXED**; F-083 production trusted parity 31/31, 0 missing/duplicates
 3. Plan **W2-7** — unify mono webhook with on_commit CAPI path (see PLAN_VS)  
 4. F-030 — pixel BFCache function  
 5. F-001/F-023 — **FIXED `e2558396`**; production MySQL + 9 live localized URLs verified
