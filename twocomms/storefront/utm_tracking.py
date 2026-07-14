@@ -397,58 +397,83 @@ def record_order_action(
     able to heal a missing conversion link without creating another purchase.
     """
     try:
-        session_key = None
-        if request is not None:
-            session_key = ensure_request_session_key(request)
-        session_key = session_key or getattr(order, 'session_key', None)
-
-        utm_session = getattr(order, 'utm_session', None)
-        if utm_session is None and session_key:
-            utm_session = UTMSession.objects.filter(session_key=session_key).first()
-
-        site_session = SiteSession.objects.filter(session_key=session_key).first() if session_key else None
-        user = getattr(order, 'user', None)
-        if user is None and request is not None and getattr(request.user, 'is_authenticated', False):
-            user = request.user
-
-        points = calculate_action_points(
-            action_type,
-            cart_value=cart_value,
-            order_value=cart_value,
-        )
-
-        base_metadata = dict(metadata or {})
-        if request is not None:
-            visitor_id = getattr(request, 'analytics_visitor_id', None)
-            first_touch = getattr(request, 'analytics_first_touch_data', None)
-        else:
-            visitor_id = getattr(site_session, 'visitor_id', None) or getattr(utm_session, 'visitor_id', None)
-            first_touch = getattr(site_session, 'first_touch_data', None)
-
-        if visitor_id and 'visitor_id' not in base_metadata:
-            base_metadata['visitor_id'] = visitor_id
-        if first_touch and 'first_touch' not in base_metadata:
-            base_metadata['first_touch'] = first_touch
-
         order_id = getattr(order, 'pk', None)
-        defaults = {
-            'utm_session': utm_session,
-            'site_session': site_session,
-            'user': user,
-            'page_path': request.path[:512] if request is not None and hasattr(request, 'path') else None,
-            'cart_value': cart_value if cart_value is not None else getattr(order, 'total_sum', None),
-            'order_number': (getattr(order, 'order_number', None) or '')[:20] or None,
-            'metadata': base_metadata,
-            'points_earned': points,
-        }
-        action, created = _persist_order_action(
-            action_type=action_type,
-            order_id=order_id,
-            defaults=defaults,
-            base_metadata=base_metadata,
-            occurred_at=occurred_at,
-            utm_session=utm_session,
-        )
+        with transaction.atomic():
+            # Serialize attribution repair and live conversion writers on the
+            # Order row.  If a writer held a stale Python object while a
+            # reconciliation committed, it must read the current DB linkage
+            # after acquiring this lock instead of persisting a null UTM.
+            locked_order = None
+            if order_id is not None:
+                locked_order = (
+                    type(order)._default_manager.select_for_update()
+                    .only('session_key', 'utm_session')
+                    .get(pk=order_id)
+                )
+
+            session_key = None
+            if request is not None:
+                session_key = ensure_request_session_key(request)
+            session_key = (
+                session_key
+                or getattr(order, 'session_key', None)
+                or getattr(locked_order, 'session_key', None)
+            )
+
+            utm_session = getattr(order, 'utm_session', None)
+            if (
+                utm_session is None
+                and locked_order is not None
+                and locked_order.utm_session_id is not None
+            ):
+                utm_session = locked_order.utm_session
+            if utm_session is None and session_key:
+                utm_session = UTMSession.objects.filter(session_key=session_key).first()
+
+            site_session = getattr(utm_session, 'session', None) if utm_session else None
+            if site_session is None and session_key:
+                site_session = SiteSession.objects.filter(session_key=session_key).first()
+            user = getattr(order, 'user', None)
+            if user is None and request is not None and getattr(request.user, 'is_authenticated', False):
+                user = request.user
+
+            points = calculate_action_points(
+                action_type,
+                cart_value=cart_value,
+                order_value=cart_value,
+            )
+
+            base_metadata = dict(metadata or {})
+            if request is not None:
+                visitor_id = getattr(request, 'analytics_visitor_id', None)
+                first_touch = getattr(request, 'analytics_first_touch_data', None)
+            else:
+                visitor_id = getattr(site_session, 'visitor_id', None) or getattr(utm_session, 'visitor_id', None)
+                first_touch = getattr(site_session, 'first_touch_data', None)
+
+            if visitor_id and 'visitor_id' not in base_metadata:
+                base_metadata['visitor_id'] = visitor_id
+            if first_touch and 'first_touch' not in base_metadata:
+                base_metadata['first_touch'] = first_touch
+
+            defaults = {
+                'utm_session': utm_session,
+                'site_session': site_session,
+                'user': user,
+                'page_path': request.path[:512] if request is not None and hasattr(request, 'path') else None,
+                'cart_value': cart_value if cart_value is not None else getattr(order, 'total_sum', None),
+                'order_number': (getattr(order, 'order_number', None) or '')[:20] or None,
+                'metadata': base_metadata,
+                'points_earned': points,
+            }
+            action, created = _persist_order_action(
+                action_type=action_type,
+                order_id=order_id,
+                defaults=defaults,
+                base_metadata=base_metadata,
+                occurred_at=occurred_at,
+                utm_session=utm_session,
+            )
 
         logger.info(
             "%s order action: %s for order %s",

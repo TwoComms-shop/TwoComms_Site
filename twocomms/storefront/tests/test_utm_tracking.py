@@ -120,6 +120,22 @@ class RecordOrderActionTests(TestCase):
         self.assertTrue(utm_session.is_converted)
         self.assertEqual(utm_session.conversion_type, 'purchase')
 
+    def test_stale_order_instance_uses_current_locked_utm_attribution(self):
+        site_session = SiteSession.objects.create(session_key='sess-locked-utm-1')
+        utm_session = UTMSession.objects.create(
+            session=site_session,
+            session_key='sess-locked-utm-1',
+            utm_source='instagram',
+        )
+        stale_order = self._build_order(session_key=None)
+        Order.objects.filter(pk=stale_order.pk).update(utm_session=utm_session)
+
+        action = record_order_action('purchase', stale_order)
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action.utm_session_id, utm_session.pk)
+        self.assertEqual(action.site_session_id, site_session.pk)
+
     def test_purchase_upgrades_lead_conversion_at_purchase_time(self):
         site_session = SiteSession.objects.create(session_key='sess-upgrade-1')
         utm_session = UTMSession.objects.create(
