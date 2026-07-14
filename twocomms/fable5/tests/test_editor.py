@@ -234,3 +234,16 @@ class Fable5EditorAccessTests(TestCase):
                 field.db_constraint,
                 f"{model_name}.{field_name} must remain compatible with legacy MyISAM tables",
             )
+
+    def test_legacy_admin_panel_links_to_fable5_editor(self):
+        template = (
+            Path(__file__).resolve().parents[2]
+            / "twocomms_django_theme"
+            / "templates"
+            / "pages"
+            / "admin_panel.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("{% url 'fable5_product_new' %}", template)
+        self.assertIn("{% url 'fable5_product_edit' product.id %}", template)
+        self.assertIn("Новий товар · Fable 5", template)

@@ -1645,11 +1645,15 @@
               Товари ({{ products|length }})
             </h3>
             <div class="subsection-actions">
-              <a href="{% url 'admin_product_new' %}" class="add-btn">
+              <a href="{% url 'fable5_product_new' %}" class="add-btn" title="Новий єдиний редактор товарів">
+                <span aria-hidden="true">✨</span>
+                Новий товар · Fable 5
+              </a>
+              <a href="{% url 'admin_product_new' %}" class="add-btn add-btn-outline" title="Резервний старий редактор товарів">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                 </svg>
-                Додати товар
+                Старий редактор
               </a>
             </div>
           </div>
@@ -1746,6 +1750,10 @@
                       {% endfor %}
                     </select>
                   </div>
+                  <a href="{% url 'fable5_product_edit' product.id %}" class="action-btn manage" title="Редагувати товар у новому редакторі Fable 5">
+                    <span aria-hidden="true">✨</span>
+                    Fable 5
+                  </a>
                   <a href="{% url 'admin_product_edit_unified' product.id %}" class="action-btn edit">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
@@ -1781,11 +1789,15 @@
                 </div>
                 <h4>Товари відсутні</h4>
                 <p>Створіть перший товар для поповнення каталогу</p>
-                <a href="{% url 'admin_product_new' %}" class="btn btn-primary">
+                <a href="{% url 'fable5_product_new' %}" class="btn btn-primary">
+                  <span aria-hidden="true">✨</span>
+                  Новий товар · Fable 5
+                </a>
+                <a href="{% url 'admin_product_new' %}" class="btn btn-outline-secondary">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                   </svg>
-                  Додати товар
+                  Старий редактор
                 </a>
               </div>
                 {% endfor %}
