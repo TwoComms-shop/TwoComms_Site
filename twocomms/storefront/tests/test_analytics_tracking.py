@@ -73,6 +73,40 @@ class AnalyticsTrackingTests(TestCase):
         action = UserAction.objects.get(action_type="custom_print_step_enter")
         self.assertEqual(action.metadata.get("step_key"), "artwork")
 
+    def test_track_event_rejects_server_only_order_events(self):
+        order = Order.objects.create(
+            full_name="Server Event Buyer",
+            phone="+380991112233",
+            city="Київ",
+            np_office="Відділення №1",
+            pay_type="online_full",
+            total_sum=Decimal("1200.00"),
+            status="new",
+            payment_status="paid",
+        )
+
+        for event_type in ("lead", "purchase"):
+            with self.subTest(event_type=event_type):
+                response = self.client.post(
+                    reverse("track_event"),
+                    data=json.dumps({
+                        "event_type": event_type,
+                        "order_id": order.pk,
+                        "cart_value": "1.00",
+                        "metadata": {"source": "forged-browser-event"},
+                    }),
+                    content_type="application/json",
+                    secure=True,
+                )
+                self.assertEqual(response.status_code, 400)
+
+        self.assertFalse(
+            UserAction.objects.filter(
+                action_type__in=("lead", "purchase"),
+                order_id=order.pk,
+            ).exists()
+        )
+
     @patch("storefront.views.static_pages.notify_custom_print_safe_exit")
     def test_custom_print_safe_exit_records_server_side_event(self, notify_mock):
         payload = {

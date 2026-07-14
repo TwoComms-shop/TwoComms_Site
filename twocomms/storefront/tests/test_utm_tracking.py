@@ -1,10 +1,13 @@
 from decimal import Decimal
+from datetime import timedelta
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 
 from orders.models import Order
-from storefront.models import SiteSession, UTMSession
+from storefront.models import SiteSession, UTMSession, UserAction
 from storefront.utm_tracking import record_order_action
 
 
@@ -80,3 +83,104 @@ class RecordOrderActionTests(TestCase):
         utm_session.refresh_from_db()
         self.assertTrue(utm_session.is_converted)
         self.assertEqual(utm_session.conversion_type, 'lead')
+
+    def test_purchase_reuses_existing_order_action_and_heals_conversion(self):
+        site_session = SiteSession.objects.create(session_key='sess-heal-1')
+        utm_session = UTMSession.objects.create(
+            session=site_session,
+            session_key='sess-heal-1',
+            utm_source='instagram',
+        )
+        order = self._build_order(
+            session_key='sess-heal-1',
+            utm_session=utm_session,
+        )
+        existing = UserAction.objects.create(
+            utm_session=utm_session,
+            site_session=site_session,
+            action_type='purchase',
+            order_id=order.pk,
+            order_number=order.order_number,
+            cart_value=order.total_sum,
+        )
+
+        action = record_order_action(
+            'purchase',
+            order,
+            cart_value=float(order.total_sum),
+            metadata={'source': 'recovery'},
+        )
+
+        self.assertEqual(action.pk, existing.pk)
+        self.assertEqual(
+            UserAction.objects.filter(action_type='purchase', order_id=order.pk).count(),
+            1,
+        )
+        utm_session.refresh_from_db()
+        self.assertTrue(utm_session.is_converted)
+        self.assertEqual(utm_session.conversion_type, 'purchase')
+
+    def test_purchase_upgrades_lead_conversion_at_purchase_time(self):
+        site_session = SiteSession.objects.create(session_key='sess-upgrade-1')
+        utm_session = UTMSession.objects.create(
+            session=site_session,
+            session_key='sess-upgrade-1',
+            utm_source='instagram',
+        )
+        utm_session.mark_as_converted(conversion_type='lead')
+        order = self._build_order(
+            session_key='sess-upgrade-1',
+            utm_session=utm_session,
+        )
+        occurred_at = timezone.now() - timedelta(days=2)
+
+        record_order_action(
+            'purchase',
+            order,
+            occurred_at=occurred_at,
+        )
+
+        utm_session.refresh_from_db()
+        self.assertEqual(utm_session.conversion_type, 'purchase')
+        self.assertAlmostEqual(
+            utm_session.converted_at.timestamp(),
+            occurred_at.timestamp(),
+            delta=1,
+        )
+
+    def test_stale_lead_write_cannot_downgrade_purchase_conversion(self):
+        site_session = SiteSession.objects.create(session_key='sess-strongest-1')
+        utm_session = UTMSession.objects.create(
+            session=site_session,
+            session_key='sess-strongest-1',
+            utm_source='instagram',
+        )
+        stale_session = UTMSession.objects.get(pk=utm_session.pk)
+        purchase_time = timezone.now() - timedelta(hours=1)
+
+        utm_session.mark_as_converted(
+            conversion_type='purchase',
+            converted_at=purchase_time,
+        )
+        stale_session.mark_as_converted(conversion_type='lead')
+
+        utm_session.refresh_from_db()
+        self.assertEqual(utm_session.conversion_type, 'purchase')
+        self.assertAlmostEqual(
+            utm_session.converted_at.timestamp(),
+            purchase_time.timestamp(),
+            delta=1,
+        )
+
+    def test_strict_order_action_propagates_storage_errors(self):
+        order = self._build_order(session_key='sess-strict-1')
+
+        with (
+            patch.object(
+                UserAction.objects,
+                'get_or_create',
+                side_effect=RuntimeError('storage unavailable'),
+            ),
+            self.assertRaisesMessage(RuntimeError, 'storage unavailable'),
+        ):
+            record_order_action('purchase', order, raise_errors=True)

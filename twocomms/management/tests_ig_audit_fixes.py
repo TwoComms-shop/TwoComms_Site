@@ -11,6 +11,7 @@ from django.test import TestCase
 from management.models import IgClient, IgDeal, IgDealItem, InstagramBotSettings
 from management.services import bot_orders
 from management.services import instagram_bot as bot
+from storefront.models import UserAction
 
 
 class EchoChunkAndScopeTests(TestCase):
@@ -228,6 +229,24 @@ class SafetyNetTests(TestCase):
     def test_fulfill_skips_without_np(self, _n):
         c, d = self._paid_deal("sn2", with_np=False)
         self.assertEqual(bot_orders.fulfill_ready_paid_deals(), 0)
+
+    @patch("management.services.bot_orders.notify_manager")
+    def test_safety_net_heals_missing_purchase_for_existing_order(self, _n):
+        c, deal = self._paid_deal("sn-heal", with_np=True)
+        order = bot_orders.create_order_from_deal(deal)
+        UserAction.objects.filter(
+            action_type='purchase',
+            order_id=order.pk,
+        ).delete()
+
+        self.assertEqual(bot_orders.fulfill_ready_paid_deals(), 0)
+
+        self.assertTrue(
+            UserAction.objects.filter(
+                action_type='purchase',
+                order_id=order.pk,
+            ).exists()
+        )
 
     def test_looks_like_contact_info(self):
         self.assertTrue(bot._looks_like_contact_info("0931112233"))

@@ -2010,13 +2010,36 @@ class UTMSession(models.Model):
             parts.append(f"term={self.utm_term}")
         return "&".join(parts) if parts else "direct"
 
-    def mark_as_converted(self, conversion_type='purchase'):
-        """Отмечает сессию как конверсионную"""
-        if not self.is_converted:
-            self.is_converted = True
-            self.converted_at = timezone.now()
-            self.conversion_type = conversion_type
-            self.save(update_fields=['is_converted', 'converted_at', 'conversion_type'])
+    def mark_as_converted(self, conversion_type='purchase', converted_at=None):
+        """Mark the strongest known conversion without downgrading purchase.
+
+        A prepayment can first create a ``lead`` and later become a confirmed
+        ``purchase``. That second transition must upgrade the funnel stage and
+        use the purchase time (including during a historical reconciliation).
+        """
+        db_alias = self._state.db or 'default'
+        with transaction.atomic(using=db_alias):
+            current = (
+                type(self)._default_manager.using(db_alias)
+                .select_for_update()
+                .get(pk=self.pk)
+            )
+            should_upgrade = (
+                conversion_type == 'purchase'
+                and current.conversion_type != 'purchase'
+            )
+            if not current.is_converted or should_upgrade:
+                current.is_converted = True
+                current.converted_at = converted_at or timezone.now()
+                current.conversion_type = conversion_type
+                current.save(
+                    using=db_alias,
+                    update_fields=['is_converted', 'converted_at', 'conversion_type'],
+                )
+
+            self.is_converted = current.is_converted
+            self.converted_at = current.converted_at
+            self.conversion_type = current.conversion_type
 
     # W2-10/AN-036: «визит» = сессионное окно 30 минут (стандарт GA).
     VISIT_WINDOW_MINUTES = 30
@@ -2131,6 +2154,12 @@ class UserAction(models.Model):
 
     class Meta:
         ordering = ['-timestamp']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['action_type', 'order_id'],
+                name='uniq_user_action_type_order',
+            ),
+        ]
         indexes = [
             models.Index(fields=['action_type', '-timestamp'], name='idx_action_type_time'),
             models.Index(fields=['utm_session', 'action_type'], name='idx_action_utm_type'),

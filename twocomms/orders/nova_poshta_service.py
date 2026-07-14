@@ -18,6 +18,7 @@ from django.utils import timezone
 from django.core.cache import cache
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import close_old_connections, transaction
+from django.db.models import Q
 from .models import Order
 from .telegram_notifications import TelegramNotifier
 
@@ -340,6 +341,11 @@ class NovaPoshtaService:
         status_code = self._normalize_status_code(
             tracking_info.get('StatusCode'), order.order_number
         )
+        delivered_status = self._status_indicates_delivered(
+            status,
+            status_description,
+            status_code,
+        )
 
         # Полное описание для отображения, усечённое под длину поля
         full_status = f"{status} - {status_description}" if status_description else status
@@ -364,6 +370,13 @@ class NovaPoshtaService:
             close_old_connections()
 
         if decision is None:
+            # Notification dedup must not disable analytics healing. If a
+            # previous post-commit write failed, a repeated delivered poll is
+            # the retry path for COD/manual orders excluded from backfill.
+            if delivered_status:
+                order.refresh_from_db()
+                if order.status == 'done':
+                    self._record_purchase_action(order)
             logger.debug(f"Order {order.order_number}: no changes")
             return False
 
@@ -376,6 +389,9 @@ class NovaPoshtaService:
         order.shipment_status_updated = fresh.shipment_status_updated
         order.payment_payload = fresh.payment_payload
 
+        if delivered_status and order.status == 'done':
+            self._record_purchase_action(order)
+
         if not decision['notify']:
             return decision['changed']
 
@@ -387,7 +403,6 @@ class NovaPoshtaService:
                 # только Meta CAPI; TikTok и внутренний UserAction — никогда.
                 self._send_facebook_purchase_event(order)
                 self._send_tiktok_purchase_event(order)
-                self._record_purchase_action(order)
             self._send_admin_delivery_notification(
                 order, decision['old_order_status'], decision['payment_status_changed']
             )
@@ -591,19 +606,10 @@ class NovaPoshtaService:
         Дедуп: не пишем второй purchase для того же заказа.
         """
         try:
-            from storefront.models import UserAction
-            from storefront.utm_tracking import record_order_action
+            from storefront.utm_tracking import ensure_order_purchase_action
 
-            if UserAction.objects.filter(action_type='purchase', order_id=order.pk).exists():
-                logger.debug(
-                    f"UserAction purchase already recorded for order {order.order_number}, skipping"
-                )
-                return
-
-            record_order_action(
-                'purchase',
+            ensure_order_purchase_action(
                 order,
-                cart_value=float(order.total_sum or 0),
                 metadata={'source': 'np_delivery', 'trigger': 'parcel_received'},
             )
         except Exception as e:
@@ -924,16 +930,43 @@ class NovaPoshtaService:
         logger.info("Starting update of all tracking statuses")
 
         # Получаем заказы с ТТН
-        orders_with_ttn = Order.objects.filter(
+        from storefront.models import UserAction
+
+        purchase_order_ids = UserAction.objects.filter(
+            action_type='purchase',
+            order_id__isnull=False,
+        ).values('order_id')
+        base_orders = Order.objects.filter(
             tracking_number__isnull=False
         ).exclude(
             tracking_number=''
         ).exclude(
             status='cancelled'
-        ).exclude(
-            status='done',
-            shipment_status__icontains='отримано'
         )
+        done_received = Q(status='done', shipment_status__icontains='отримано')
+        monobank_evidence = (
+            Q(payment_provider__startswith='monobank')
+            & Q(payment_invoice_id__isnull=False)
+            & ~Q(payment_invoice_id='')
+        )
+        has_manual_preset = Q(payment_payload__has_key='manual_payment_preset')
+        explicit_free = (
+            has_manual_preset
+            & Q(payment_payload__manual_payment_preset='free')
+        )
+        trusted_retry = (
+            Q(source='web')
+            | monobank_evidence
+            | (has_manual_preset & ~Q(payment_payload__manual_payment_preset='free'))
+        )
+        retry_missing_purchase = (
+            done_received
+            & Q(payment_status__in=('paid', 'prepaid', 'partial'))
+            & ~Q(pk__in=purchase_order_ids)
+            & ~explicit_free
+            & trusted_retry
+        )
+        orders_with_ttn = base_orders.filter(~done_received | retry_missing_purchase)
 
         close_old_connections()
         order_ids = list(orders_with_ttn.values_list('pk', flat=True))

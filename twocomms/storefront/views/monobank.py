@@ -37,7 +37,12 @@ from orders.nova_poshta_documents import normalize_checkout_phone
 from orders.models import Order as OrderModel, OrderItem
 from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_delivery_selection
 from orders.facebook_conversions_service import get_facebook_conversions_service
-from ..utm_tracking import link_order_to_utm, record_initiate_checkout, record_lead, record_order_action
+from ..utm_tracking import (
+    ensure_order_purchase_action,
+    link_order_to_utm,
+    record_initiate_checkout,
+    record_lead,
+)
 from .utils import (
     _dispatch_post_payment_events,
     _reset_monobank_session,
@@ -1333,20 +1338,21 @@ def _apply_monobank_status(order, status_value, payload=None, source='webhook'):
 
         order.save(update_fields=list(set(updated_fields)))
 
+        if order.payment_status in ('paid', 'prepaid'):
+            # Heal the internal funnel even when this is a repeated success
+            # delivery for an order that became paid before UserAction existed.
+            ensure_order_purchase_action(
+                order,
+                metadata={
+                    'monobank_status': status_lower,
+                    'source': source,
+                },
+            )
+
         if order.payment_status in ('paid', 'prepaid') and order.payment_status != old_payment_status:
             # Transactional, idempotent DB side-effects remain under the same
             # order lock. Network calls are delegated after commit below.
             _record_promo_usage_for_order(order)
-            record_order_action(
-                'purchase',
-                order,
-                cart_value=float(order.total_sum or 0),
-                metadata={
-                    'monobank_status': status_lower,
-                    'source': source,
-                    'payment_status': order.payment_status,
-                },
-            )
             transaction.on_commit(
                 lambda order_pk=order.pk,
                 previous=old_payment_status or 'unpaid',

@@ -12,7 +12,7 @@ from django.urls import reverse
 from orders.models import Order, OrderItem
 from orders.nova_poshta_checkout import build_city_choice_token, build_warehouse_choice_token
 from productcolors.models import Color, ProductColorVariant
-from storefront.models import Category, Product, ProductStatus
+from storefront.models import Category, Product, ProductStatus, UserAction
 
 User = get_user_model()
 
@@ -156,6 +156,35 @@ class ManualOrderCreateTests(TestCase):
         self.assertEqual(item.color_name_custom, 'Сірий')
         self.assertEqual(item.color_name, 'Сірий')
         self.assertEqual(order.total_sum, Decimal('1200.00'))
+        self.assertEqual(
+            UserAction.objects.filter(action_type='purchase', order_id=order.pk).count(),
+            1,
+        )
+
+    def test_free_manual_order_does_not_record_purchase(self):
+        payload = {
+            'full_name': 'Подарунок Клієнту',
+            'phone': '+380671112233',
+            'payment_preset': 'free',
+            'items': [
+                {
+                    'kind': 'custom',
+                    'title': 'Подарункова футболка',
+                    'unit_price': 1200,
+                    'qty': 1,
+                },
+            ],
+        }
+        payload.update(_delivery_payload())
+
+        response, _ = self._post(payload)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual(order.payment_status, 'paid')
+        self.assertFalse(
+            UserAction.objects.filter(action_type='purchase', order_id=order.pk).exists()
+        )
 
     def test_invalid_phone_rejected(self):
         payload = {

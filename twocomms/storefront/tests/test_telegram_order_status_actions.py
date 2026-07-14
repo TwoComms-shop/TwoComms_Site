@@ -126,6 +126,8 @@ class TelegramOrderStatusActionTests(TestCase):
         self.assertEqual(order.tracking_number, "20450000000001")
 
     def test_staff_payment_status_update_canonicalizes_prepaid(self):
+        from storefront.models import UserAction
+
         order = self._create_order(payment_status="unpaid")
         staff = User.objects.create_user(username="staff-pay", password="pass12345", is_staff=True)
         self.client.force_login(staff)
@@ -140,6 +142,10 @@ class TelegramOrderStatusActionTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.payment_status, "prepaid")
         self.assertEqual(response.json()["payment_status_label"], "Внесена передплата")
+        self.assertEqual(
+            UserAction.objects.filter(action_type="purchase", order_id=order.pk).count(),
+            1,
+        )
 
     def test_staff_payment_snapshot_endpoint_merges_legacy_partial_into_prepaid(self):
         order = self._create_order(payment_status="partial", pay_type="prepay_200")

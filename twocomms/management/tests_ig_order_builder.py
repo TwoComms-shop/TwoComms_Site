@@ -4,12 +4,14 @@
 Instagram. Ідемпотентно (один заказ на угоду). Дані НП — текстом (Q3=a).
 """
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase
 
 from management.models import IgClient, IgDeal, IgDealItem
 from orders.models import Order
 from orders.services.order_builder import create_order_from_deal
+from storefront.models import UserAction
 
 
 class CreateOrderFromDealTests(TestCase):
@@ -43,6 +45,10 @@ class CreateOrderFromDealTests(TestCase):
         self.c.refresh_from_db()
         self.assertEqual(self.c.purchases_count, 1)
         self.assertEqual(self.c.stage, IgClient.Stage.ORDER_CREATED)
+        self.assertEqual(
+            UserAction.objects.filter(action_type="purchase", order_id=order.pk).count(),
+            1,
+        )
 
     def test_prepay_payment_status_and_full_total(self):
         self.deal.pay_type = IgDeal.PayType.PREPAY_200
@@ -56,3 +62,38 @@ class CreateOrderFromDealTests(TestCase):
         o2 = create_order_from_deal(self.deal)
         self.assertEqual(o1.id, o2.id)
         self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(
+            UserAction.objects.filter(action_type="purchase", order_id=o1.pk).count(),
+            1,
+        )
+
+    def test_existing_order_retry_heals_missing_purchase_action(self):
+        order = create_order_from_deal(self.deal)
+        UserAction.objects.filter(
+            action_type="purchase",
+            order_id=order.pk,
+        ).delete()
+
+        retried_order = create_order_from_deal(self.deal)
+
+        self.assertEqual(retried_order.pk, order.pk)
+        self.assertEqual(
+            UserAction.objects.filter(action_type="purchase", order_id=order.pk).count(),
+            1,
+        )
+
+    def test_analytics_storage_failure_does_not_rollback_paid_order(self):
+        with patch.object(
+            UserAction.objects,
+            'get_or_create',
+            side_effect=RuntimeError('analytics unavailable'),
+        ):
+            order = create_order_from_deal(self.deal)
+
+        self.assertIsNotNone(order.pk)
+        self.assertEqual(Order.objects.count(), 1)
+        self.deal.refresh_from_db()
+        self.assertEqual(self.deal.order_id, order.pk)
+        self.assertFalse(
+            UserAction.objects.filter(action_type='purchase', order_id=order.pk).exists()
+        )

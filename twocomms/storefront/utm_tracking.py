@@ -12,7 +12,7 @@
 import logging
 from typing import Optional
 
-from django.db import models
+from django.db import models, transaction
 
 from .analytics_exclusions import is_request_excluded
 from .models import UTMSession, SiteSession, UserAction
@@ -299,6 +299,73 @@ def record_survey_event(request, action_type: str, *, session=None, question_id:
     return record_user_action(request, action_type=action_type, metadata=payload)
 
 
+def _persist_order_action(
+    *,
+    action_type,
+    order_id,
+    defaults,
+    base_metadata,
+    occurred_at,
+    utm_session,
+):
+    """Persist and convert inside a savepoint-safe atomic block."""
+    with transaction.atomic():
+        if order_id is not None:
+            action, created = UserAction.objects.get_or_create(
+                action_type=action_type,
+                order_id=order_id,
+                defaults=defaults,
+            )
+        else:
+            action = UserAction.objects.create(
+                action_type=action_type,
+                order_id=None,
+                **defaults,
+            )
+            created = True
+
+        if not created:
+            update_fields = []
+            for field, value in (
+                ('utm_session', utm_session),
+                ('site_session', defaults['site_session']),
+                ('user', defaults['user']),
+                ('page_path', defaults['page_path']),
+                ('cart_value', defaults['cart_value']),
+                ('order_number', defaults['order_number']),
+            ):
+                if field in {'utm_session', 'site_session', 'user'}:
+                    current_value = getattr(action, f'{field}_id', None)
+                    target_value = getattr(value, 'pk', None)
+                else:
+                    current_value = getattr(action, field)
+                    target_value = value
+                if current_value is None and target_value is not None:
+                    setattr(action, field, value)
+                    update_fields.append(field)
+
+            merged_metadata = dict(base_metadata)
+            merged_metadata.update(action.metadata or {})
+            if merged_metadata != (action.metadata or {}):
+                action.metadata = merged_metadata
+                update_fields.append('metadata')
+            if update_fields:
+                action.save(update_fields=update_fields)
+
+        if created and occurred_at is not None:
+            UserAction.objects.filter(pk=action.pk).update(timestamp=occurred_at)
+            action.timestamp = occurred_at
+
+        conversion_session = action.utm_session if action.utm_session_id else utm_session
+        if conversion_session is not None and action_type in {'lead', 'purchase'}:
+            conversion_session.mark_as_converted(
+                conversion_type=action_type,
+                converted_at=occurred_at,
+            )
+
+    return action, created
+
+
 def record_order_action(
     action_type: str,
     order,
@@ -306,8 +373,15 @@ def record_order_action(
     request=None,
     cart_value: Optional[float] = None,
     metadata: Optional[dict] = None,
+    occurred_at=None,
+    raise_errors: bool = False,
 ) -> Optional[UserAction]:
-    """Records an order-level action even when payment confirmation arrives from a webhook."""
+    """Record one idempotent order-level action.
+
+    ``action_type`` + ``order_id`` is a database-backed idempotency key. This
+    is essential for payment and delivery retries: a repeated webhook must be
+    able to heal a missing conversion link without creating another purchase.
+    """
     try:
         session_key = None
         if request is not None:
@@ -345,27 +419,132 @@ def record_order_action(
         if first_touch and 'first_touch' not in base_metadata:
             base_metadata['first_touch'] = first_touch
 
-        action = UserAction.objects.create(
-            utm_session=utm_session,
-            site_session=site_session,
-            user=user,
+        order_id = getattr(order, 'pk', None)
+        defaults = {
+            'utm_session': utm_session,
+            'site_session': site_session,
+            'user': user,
+            'page_path': request.path[:512] if request is not None and hasattr(request, 'path') else None,
+            'cart_value': cart_value if cart_value is not None else getattr(order, 'total_sum', None),
+            'order_number': (getattr(order, 'order_number', None) or '')[:20] or None,
+            'metadata': base_metadata,
+            'points_earned': points,
+        }
+        action, created = _persist_order_action(
             action_type=action_type,
-            page_path=request.path[:512] if request is not None and hasattr(request, 'path') else None,
-            cart_value=cart_value if cart_value is not None else getattr(order, 'total_sum', None),
-            order_id=getattr(order, 'pk', None),
-            order_number=(getattr(order, 'order_number', None) or '')[:20] or None,
-            metadata=base_metadata,
-            points_earned=points,
+            order_id=order_id,
+            defaults=defaults,
+            base_metadata=base_metadata,
+            occurred_at=occurred_at,
+            utm_session=utm_session,
         )
 
-        if utm_session is not None and action_type in {'lead', 'purchase'}:
-            utm_session.mark_as_converted(conversion_type=action_type)
-
-        logger.info("Recorded order action: %s for order %s", action_type, getattr(order, 'order_number', getattr(order, 'pk', None)))
+        logger.info(
+            "%s order action: %s for order %s",
+            "Recorded" if created else "Reused",
+            action_type,
+            getattr(order, 'order_number', getattr(order, 'pk', None)),
+        )
         return action
     except Exception as e:
         logger.error(f"Error recording order action: {e}", exc_info=True)
+        if raise_errors:
+            raise
         return None
+
+
+CONFIRMED_PURCHASE_STATUSES = frozenset({'paid', 'prepaid', 'partial'})
+
+
+def ensure_order_purchase_action(
+    order,
+    *,
+    request=None,
+    metadata: Optional[dict] = None,
+    occurred_at=None,
+    raise_errors: bool = False,
+) -> Optional[UserAction]:
+    """Ensure a confirmed, non-free order has exactly one purchase action."""
+    payment_status = str(getattr(order, 'payment_status', '') or '').strip().lower()
+    if payment_status not in CONFIRMED_PURCHASE_STATUSES:
+        return None
+
+    payment_payload = getattr(order, 'payment_payload', None)
+    if isinstance(payment_payload, dict) and payment_payload.get('manual_payment_preset') == 'free':
+        return None
+
+    payload = dict(metadata or {})
+    payload.setdefault('payment_status', payment_status)
+    return record_order_action(
+        'purchase',
+        order,
+        request=request,
+        cart_value=float(getattr(order, 'total_sum', 0) or 0),
+        metadata=payload,
+        occurred_at=occurred_at,
+        raise_errors=raise_errors,
+    )
+
+
+def remove_order_purchase_action(order) -> int:
+    """Remove a reclassified manual purchase and rebuild affected UTM state.
+
+    This is intentionally separate from refunds/cancellations. It is used
+    only when staff explicitly changes a manually created order to the
+    ``free`` preset, meaning the original internal purchase was invalid.
+    """
+    with transaction.atomic():
+        actions = list(
+            UserAction.objects.select_for_update().filter(
+                action_type='purchase',
+                order_id=getattr(order, 'pk', None),
+            )
+        )
+        session_ids = {
+            action.utm_session_id
+            for action in actions
+            if action.utm_session_id is not None
+        }
+        order_utm_session_id = getattr(order, 'utm_session_id', None)
+        if order_utm_session_id is not None:
+            session_ids.add(order_utm_session_id)
+
+        deleted_count = len(actions)
+        if actions:
+            UserAction.objects.filter(pk__in=[action.pk for action in actions]).delete()
+
+        for session_id in sorted(session_ids):
+            session = UTMSession.objects.select_for_update().get(pk=session_id)
+            strongest_action = (
+                UserAction.objects.filter(
+                    utm_session_id=session_id,
+                    action_type='purchase',
+                )
+                .order_by('timestamp', 'pk')
+                .first()
+            )
+            if strongest_action is None:
+                strongest_action = (
+                    UserAction.objects.filter(
+                        utm_session_id=session_id,
+                        action_type='lead',
+                    )
+                    .order_by('timestamp', 'pk')
+                    .first()
+                )
+
+            session.is_converted = strongest_action is not None
+            session.conversion_type = (
+                strongest_action.action_type if strongest_action is not None else None
+            )
+            session.converted_at = (
+                strongest_action.timestamp if strongest_action is not None else None
+            )
+            session.save(
+                update_fields=['is_converted', 'conversion_type', 'converted_at'],
+            )
+
+    return deleted_count
 
 
 def resolve_utm_session(request, order=None):

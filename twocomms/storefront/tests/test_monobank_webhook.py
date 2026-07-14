@@ -373,6 +373,7 @@ class PostPaymentEventsDeferralTests(TestCase):
 
     def test_no_dispatch_when_status_unchanged(self):
         from storefront.views.utils import _record_monobank_status
+        from storefront.models import UserAction
 
         self.order.payment_status = 'paid'
         self.order.save(update_fields=['payment_status'])
@@ -383,6 +384,34 @@ class PostPaymentEventsDeferralTests(TestCase):
                     self.order, {'status': 'success'}, source='webhook'
                 )
             mock_send.assert_not_called()
+        self.assertEqual(
+            UserAction.objects.filter(action_type='purchase', order_id=self.order.pk).count(),
+            1,
+        )
+
+    def test_retail_duplicate_success_heals_missing_purchase_without_dispatch(self):
+        from storefront.models import UserAction
+        from storefront.views.monobank import _apply_monobank_status
+
+        self.order.payment_status = 'paid'
+        self.order.save(update_fields=['payment_status'])
+
+        with patch(
+            'storefront.views.monobank._dispatch_post_payment_events',
+        ) as mock_dispatch:
+            with self.captureOnCommitCallbacks(execute=True):
+                _apply_monobank_status(
+                    self.order,
+                    'success',
+                    payload={'status': 'success'},
+                    source='webhook',
+                )
+
+        mock_dispatch.assert_not_called()
+        self.assertEqual(
+            UserAction.objects.filter(action_type='purchase', order_id=self.order.pk).count(),
+            1,
+        )
 
     def test_retail_status_helper_uses_shared_dispatcher_after_commit_once(self):
         from storefront.views.monobank import _apply_monobank_status

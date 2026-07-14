@@ -122,6 +122,7 @@ from storefront.services.indexnow import (
     is_indexnow_configured,
     submit_indexnow_urls,
 )
+from storefront.utm_tracking import ensure_order_purchase_action
 from storefront.services.google_indexing import (
     NOTIFICATION_URL_DELETED,
     NOTIFICATION_URL_UPDATED,
@@ -635,9 +636,15 @@ def admin_update_payment_status(request):
     if not order_id or payment_status not in {'unpaid', 'checking', 'prepaid', 'paid'}:
         return JsonResponse({'success': False, 'error': 'Невірний статус оплати'}, status=400)
 
-    order = get_object_or_404(Order, pk=order_id)
-    order.payment_status = payment_status
-    order.save(update_fields=['payment_status', 'updated'])
+    with transaction.atomic():
+        order = get_object_or_404(Order.objects.select_for_update(), pk=order_id)
+        order.payment_status = payment_status
+        order.save(update_fields=['payment_status', 'updated'])
+        ensure_order_purchase_action(
+            order,
+            metadata={'source': 'admin_payment_status'},
+            raise_errors=True,
+        )
 
     return JsonResponse(
         {

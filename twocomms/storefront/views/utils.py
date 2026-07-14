@@ -549,6 +549,11 @@ def _record_monobank_status_locked(order, payload, source='api'):
                 f'Пропускаем обновление.'
             )
             _save_status_fields(['payment_payload'], 'duplicate_success_payload')
+            from storefront.utm_tracking import ensure_order_purchase_action
+            ensure_order_purchase_action(
+                order,
+                metadata={'source': source, 'monobank_status': status},
+            )
             return
 
         if normalized_previous == 'paid' and target_status == 'prepaid':
@@ -577,6 +582,12 @@ def _record_monobank_status_locked(order, payload, source='api'):
             )
 
         _save_status_fields(update_fields, 'success_transition')
+
+        from storefront.utm_tracking import ensure_order_purchase_action
+        ensure_order_purchase_action(
+            order,
+            metadata={'source': source, 'monobank_status': status},
+        )
 
         # W2-7 (AN-011/DB-009): внешние HTTP-вызовы (Telegram, Meta CAPI,
         # TikTok) раньше выполнялись ЗДЕСЬ — внутри select_for_update()

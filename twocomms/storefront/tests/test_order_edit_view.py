@@ -15,7 +15,14 @@ from django.urls import reverse
 
 from orders.models import Order, OrderItem
 from productcolors.models import Color, ProductColorVariant
-from storefront.models import Category, Product, ProductStatus
+from storefront.models import (
+    Category,
+    Product,
+    ProductStatus,
+    SiteSession,
+    UTMSession,
+    UserAction,
+)
 
 User = get_user_model()
 
@@ -59,6 +66,16 @@ class OrderEditViewTests(TestCase):
         self.assertEqual(data['order']['id'], self.order.id)
         self.assertEqual(len(data['order']['items']), 1)
         self.assertTrue(any(p['id'] == self.product.id for p in data['products']))
+
+    def test_free_payment_preset_round_trips_without_becoming_paid_full(self):
+        self.order.source = 'manual'
+        self.order.payment_payload = {'manual_payment_preset': 'free'}
+        self.order.save(update_fields=['source', 'payment_payload'])
+
+        response = self.client.get(reverse('manual_order_edit_data', args=[self.order.id]))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['order']['payment_preset'], 'free')
 
     def test_edit_data_endpoint_requires_staff(self):
         self.client.logout()
@@ -133,6 +150,64 @@ class OrderEditViewTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         diff = edit_notify.call_args.args[1]
         self.assertFalse(diff['has_changes'])
+
+    def test_edit_paid_manual_order_to_free_removes_manual_purchase(self):
+        site_session = SiteSession.objects.create(session_key='manual-free-edit')
+        utm_session = UTMSession.objects.create(
+            session=site_session,
+            session_key='manual-free-edit',
+            utm_source='instagram',
+        )
+        self.order.source = 'manual'
+        self.order.session_key = 'manual-free-edit'
+        self.order.utm_session = utm_session
+        self.order.payment_payload = {'manual_payment_preset': 'paid_full'}
+        self.order.save(update_fields=['source', 'session_key', 'utm_session', 'payment_payload'])
+        UserAction.objects.create(
+            utm_session=utm_session,
+            action_type='lead',
+            order_id=self.order.pk,
+            order_number=self.order.order_number,
+            cart_value=self.order.total_sum,
+        )
+        UserAction.objects.create(
+            utm_session=utm_session,
+            action_type='purchase',
+            order_id=self.order.pk,
+            order_number=self.order.order_number,
+            cart_value=self.order.total_sum,
+            metadata={'source': 'np_delivery'},
+        )
+        utm_session.mark_as_converted(conversion_type='purchase')
+        payload = {
+            'full_name': 'Лагош Олег',
+            'phone': '+380500234363',
+            'delivery_method': 'keep',
+            'payment_preset': 'free',
+            'items': [
+                {
+                    'kind': 'catalog',
+                    'product_id': self.product.id,
+                    'color_variant_id': self.variant_mint.id,
+                    'size': 'XXL',
+                    'qty': 1,
+                    'unit_price': 880,
+                },
+            ],
+        }
+
+        response, _ = self._edit(payload)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(
+            UserAction.objects.filter(
+                action_type='purchase',
+                order_id=self.order.pk,
+            ).exists()
+        )
+        utm_session.refresh_from_db()
+        self.assertTrue(utm_session.is_converted)
+        self.assertEqual(utm_session.conversion_type, 'lead')
 
 
 class OrderEditButtonRenderTests(TestCase):

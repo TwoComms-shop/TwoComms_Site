@@ -10,12 +10,17 @@
 """
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
+
+from django.db.models import Q
 
 from management.services.bot_payments import create_payment_link
 from management.services.call_ai_analysis import gemini_generate_text
 from management.services.instagram_bot import notify_manager, send_text_tagged
 from orders.services.order_builder import create_order_from_deal
+
+logger = logging.getLogger(__name__)
 
 NP_EXTRACT_INSTRUCTION = (
     "З наведеного діалогу витягни дані доставки Новою Поштою у форматі JSON без "
@@ -303,14 +308,37 @@ def fulfill_ready_paid_deals(limit: int = 50) -> int:
     """Safety-net: створює замовлення для ОПЛАЧЕНИХ угод без замовлення, у яких
     уже є повні дані НП (якщо модель не виставила тег [ORDER]). Для крону."""
     from management.models import IgDeal
+    from storefront.models import UserAction
 
-    qs = IgDeal.objects.filter(
-        status=IgDeal.Status.PAID, order__isnull=True
-    ).order_by("id")[:limit]
+    purchase_order_ids = UserAction.objects.filter(
+        action_type='purchase',
+        order_id__isnull=False,
+    ).values('order_id')
+    missing_order = Q(status=IgDeal.Status.PAID, order__isnull=True)
+    missing_purchase = (
+        Q(
+            status=IgDeal.Status.ORDER_CREATED,
+            order__isnull=False,
+            order__payment_status__in=('paid', 'prepaid', 'partial'),
+        )
+        & ~Q(order_id__in=purchase_order_ids)
+    )
+    qs = (
+        IgDeal.objects.filter(missing_order | missing_purchase)
+        .select_related('order')
+        .order_by('id')[:limit]
+    )
     created = 0
     for deal in qs:
-        if deal_has_np_data(deal) and fulfill_if_ready(deal):
-            created += 1
+        try:
+            if deal.order_id:
+                # Four-minute cron retry for a post-commit analytics failure.
+                create_order_from_deal(deal)
+            elif deal_has_np_data(deal) and fulfill_if_ready(deal):
+                created += 1
+        except Exception:
+            # One broken deal must not abort healing/creation for the batch.
+            logger.exception('Failed to fulfil or heal paid IG deal %s', deal.pk)
     return created
 
 

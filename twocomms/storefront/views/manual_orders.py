@@ -42,6 +42,10 @@ from orders.telegram_notifications import telegram_notifier
 from productcolors.models import ProductColorVariant
 from storefront.models import Product, ProductStatus
 from storefront.services.size_guides import resolve_product_sizes
+from storefront.utm_tracking import (
+    ensure_order_purchase_action,
+    remove_order_purchase_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +87,11 @@ DEFAULT_PAYMENT_PRESET = 'cod'
 
 def _preset_key_for_order(order):
     """Зворотний маппінг (pay_type, payment_status) → ключ пресету для UI."""
+    payment_payload = order.payment_payload if isinstance(order.payment_payload, dict) else {}
+    stored_preset = payment_payload.get('manual_payment_preset')
+    if stored_preset in PAYMENT_PRESETS:
+        return stored_preset
+
     payment_status = (order.payment_status or '').strip()
     pay_type = (order.pay_type or '').strip()
     if payment_status == 'paid':
@@ -468,6 +477,7 @@ def manual_order_create(request):
                 created_by=request.user,
                 sale_source=sale_source,
                 manager_comment=manager_comment,
+                payment_payload={'manual_payment_preset': preset_key},
             )
             apply_nova_poshta_refs(order, delivery['refs'])
             order.save()
@@ -482,6 +492,14 @@ def manual_order_create(request):
             OrderItem.objects.bulk_create(order_items)
             order.total_sum = total_sum
             order.save(update_fields=['total_sum'])
+            ensure_order_purchase_action(
+                order,
+                metadata={
+                    'source': 'manual_admin',
+                    'payment_preset': preset_key,
+                },
+                raise_errors=True,
+            )
     except ValueError as exc:
         return JsonResponse({'success': False, 'message': str(exc)}, status=422)
     except Exception:
@@ -561,6 +579,9 @@ def manual_order_edit(request, order_id):
             locked.payment_status = preset['payment_status']
             locked.sale_source = sale_source
             locked.manager_comment = manager_comment
+            payment_payload = dict(locked.payment_payload or {})
+            payment_payload['manual_payment_preset'] = preset_key
+            locked.payment_payload = payment_payload
 
             if delivery is not None:
                 locked.city = delivery['city']
@@ -581,6 +602,19 @@ def manual_order_edit(request, order_id):
             OrderItem.objects.bulk_create(order_items)
             locked.total_sum = total_sum
             locked.save()
+            if preset_key == 'free':
+                # This is an explicit staff reclassification, not a refund:
+                # any internal purchase for this manual order is invalid.
+                remove_order_purchase_action(locked)
+            else:
+                ensure_order_purchase_action(
+                    locked,
+                    metadata={
+                        'source': 'manual_admin',
+                        'payment_preset': preset_key,
+                    },
+                    raise_errors=True,
+                )
             order = locked
             after_snapshot = snapshot_order(order)
     except ValueError as exc:

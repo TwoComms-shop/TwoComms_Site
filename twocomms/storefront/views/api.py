@@ -24,6 +24,7 @@ from cache_utils import get_fragment_cache
 
 
 logger = logging.getLogger('storefront.analytics')
+SERVER_ONLY_EVENT_TYPES = frozenset({'lead', 'purchase'})
 
 
 # ==================== API ENDPOINTS ====================
@@ -205,6 +206,11 @@ def track_event(request):
             return JsonResponse({
                 'success': False,
                 'error': f'Unsupported event_type: {event_type}'
+            }, status=400)
+        if event_type in SERVER_ONLY_EVENT_TYPES:
+            return JsonResponse({
+                'success': False,
+                'error': f'Server-only event_type: {event_type}',
             }, status=400)
 
         if product_id in ("", None):

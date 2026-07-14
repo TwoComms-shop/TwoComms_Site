@@ -13,10 +13,23 @@ from decimal import Decimal
 from django.db import transaction
 
 
+def _ensure_purchase_action(order, deal_id):
+    from storefront.utm_tracking import ensure_order_purchase_action
+
+    return ensure_order_purchase_action(
+        order,
+        metadata={
+            'source': 'instagram_deal',
+            'ig_deal_id': deal_id,
+        },
+    )
+
+
 def create_order_from_deal(deal, *, created_by=None):
     """Створює Order + OrderItem з оплаченої угоди. Повертає Order.
     Якщо замовлення для угоди вже є — повертає його (ідемпотентність)."""
     if deal.order_id:
+        _ensure_purchase_action(deal.order, deal.pk)
         return deal.order
 
     from orders.models import Order, OrderItem
@@ -37,6 +50,7 @@ def create_order_from_deal(deal, *, created_by=None):
         # при гонці (вебхук Monobank + cron-поллінг одночасно).
         locked = deal.__class__.objects.select_for_update().get(pk=deal.pk)
         if locked.order_id:
+            _ensure_purchase_action(locked.order, locked.pk)
             deal.order_id = locked.order_id
             deal.status = locked.status
             return locked.order
@@ -74,6 +88,8 @@ def create_order_from_deal(deal, *, created_by=None):
             )
         if items:
             OrderItem.objects.bulk_create(items)
+
+        _ensure_purchase_action(order, locked.pk)
 
         locked.order = order
         locked.status = locked.Status.ORDER_CREATED
