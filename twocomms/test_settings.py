@@ -11,6 +11,20 @@ Django Test Settings для запуска тестов с SQLite вместо M
 # Устанавливаем тестовый SECRET_KEY перед импортом settings.
 os.environ.setdefault('SECRET_KEY', 'test-secret-key-for-testing-only-do-not-use-in-production')
 
+# Test runs are also executed on the production host. The notification layer
+# reads these values directly from ``os.environ`` (not only from Django
+# settings), so inherited production credentials would make tests contact the
+# real Telegram API. Empty them before importing the base settings; individual
+# tests that exercise delivery pass explicit fake credentials or patch env.
+for _telegram_env_name in (
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_CHAT_ID',
+    'TELEGRAM_ADMIN_ID',
+    'TELEGRAM_STORAGE_BOT_TOKEN',
+    'TELEGRAM_STORAGE_CHAT_IDS',
+):
+    os.environ[_telegram_env_name] = ''
+
 from twocomms.settings import *  # noqa: F401,F403
 
 
