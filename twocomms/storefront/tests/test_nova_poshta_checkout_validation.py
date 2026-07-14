@@ -480,6 +480,100 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
             },
         )
 
+    def test_guest_prepay_persists_new_session_key_and_tracking(self):
+        """F-068/F-073: characterize the current prepay writer with a truly
+        lazy anonymous session; production has no post-March prepay control.
+        """
+        from django.contrib.auth.models import AnonymousUser
+        from django.contrib.sessions.middleware import SessionMiddleware
+        from django.contrib.sessions.models import Session
+        from django.test import RequestFactory
+
+        from storefront.views.monobank import monobank_create_invoice
+
+        delivery = self._delivery_payload()
+        request = RequestFactory().post(
+            self.monobank_create_invoice_url,
+            data=json.dumps(
+                {
+                    'full_name': 'Prepay Session Buyer',
+                    'phone': '0991112233',
+                    'city': delivery['city'],
+                    'np_office': delivery['np_office'],
+                    'np_settlement_ref': delivery['np_settlement_ref'],
+                    'np_city_ref': delivery['np_city_ref'],
+                    'np_city_token': delivery['np_city_token'],
+                    'np_warehouse_ref': delivery['np_warehouse_ref'],
+                    'np_warehouse_token': delivery['np_warehouse_token'],
+                    'pay_type': 'prepay_200',
+                }
+            ),
+            content_type='application/json',
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+            HTTP_USER_AGENT='TwoComms F-068 regression',
+            REMOTE_ADDR='127.0.0.1',
+            secure=True,
+        )
+        SessionMiddleware(lambda req: None).process_request(request)
+        request.user = AnonymousUser()
+        request.session['cart'] = {
+            f'{self.product.pk}:M': {
+                'product_id': self.product.pk,
+                'qty': 3,
+                'size': 'M',
+            },
+        }
+        request.analytics_first_touch_data = {
+            'utm_source': 'f068_regression',
+            'utm_medium': 'test',
+        }
+        self.assertIsNone(request.session.session_key)
+
+        facebook_service = Mock()
+        with (
+            patch(
+                'storefront.views.monobank._monobank_api_request',
+                return_value={
+                    'invoiceId': 'mono-prepay-session',
+                    'pageUrl': 'https://pay.monobank.test/prepay-session',
+                },
+            ) as monobank_request_mock,
+            patch(
+                'orders.telegram_notifications.TelegramNotifier.send_new_order_notification'
+            ) as notify_mock,
+            patch(
+                'storefront.views.monobank.get_facebook_conversions_service',
+                return_value=facebook_service,
+            ),
+        ):
+            response = monobank_create_invoice(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(json.loads(response.content)['success'])
+        self.assertIsNotNone(request.session.session_key)
+        self.assertTrue(
+            Session.objects.filter(session_key=request.session.session_key).exists()
+        )
+
+        order = Order.objects.select_related('utm_session').get()
+        self.assertEqual(order.pay_type, 'prepay_200')
+        self.assertEqual(order.total_sum, Decimal('300'))
+        self.assertEqual(order.payment_status, 'checking')
+        self.assertEqual(order.payment_invoice_id, 'mono-prepay-session')
+        self.assertEqual(order.session_key, request.session.session_key)
+        self.assertIsNotNone(order.utm_session_id)
+        self.assertEqual(order.utm_session.session_key, order.session_key)
+        self.assertEqual(order.utm_source, 'f068_regression')
+        self.assertEqual(
+            order.payment_payload['tracking']['external_id'],
+            f'session:{order.session_key}',
+        )
+
+        invoice_payload = monobank_request_mock.call_args.kwargs['json_payload']
+        self.assertEqual(invoice_payload['amount'], 20_000)
+        notify_mock.assert_called_once_with(order)
+        facebook_service.send_add_payment_info_event.assert_called_once()
+
     @patch('storefront.views.monobank.get_facebook_conversions_service')
     @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification')
     @patch('storefront.views.monobank.record_lead')
