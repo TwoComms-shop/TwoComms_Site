@@ -115,6 +115,12 @@ are excluded from product and UTM business metrics. Server runtime tests passed
 reconciled 1713/1713, and UTM funnel sessions reconciled 33/33. F-022 and F-032
 remain separate open baselines.
 
+F-084 closed in `069f4efa`: one source/medium normalizer now covers middleware,
+first-touch and order reconstruction. A guarded, backed-up production operation
+normalized 122 UTM and 158 first-touch rows with zero conflicts or unintended
+field changes; aliases are 0 and Dispatcher reports one `chatgpt` cohort with
+161 sessions. F-020/F-057 remain open for non-AI historical aliases.
+
 ### Task 10: Security/ops findings (F-087/F-088/F-090/F-029/F-031/F-035/F-036/W0-5)
 
 Use read-only SSH to identify the owning system first. Protect documents, configure a non-secret webhook secret, install a verified backup cron, and resolve capacity/DB/CSP/provider defects only where production ownership is clear. Do not mark external-owner work complete without live proof.

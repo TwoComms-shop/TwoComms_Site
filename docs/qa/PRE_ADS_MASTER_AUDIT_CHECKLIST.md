@@ -591,7 +591,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [x] governance exists; new OK; hist dirt F-057 |
 | UTM-002 | Instagram ads template documented & used | P0 | [x] governance docs; ads template owner|
 | UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [x] **PASS server canary** UTMSession+normalize F-046 |
-| UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] **code PASS** (ig→instagram canary); historical dirt F-020 remains |
+| UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] F-084 AI writers/backfill verified (`chatgpt.com` 0, `chatgpt` 161); broader historical dirt F-020 remains |
 | UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in UTMSession canary |
 | UTM-006 | _fbp/_fbc captured when present | P0 | [x] fbp in order payload hist F-048|
 | UTM-007 | session['utm_data'] fallback works | P0 | [x] **RISK F-038** session late; twc_ft not full order fallback |
@@ -599,7 +599,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | UTM-009 | Noise paths skipped | P1 | [x] noise paths code exists|
 | UTM-010 | Staff/IP exclusions do not pollute (if configured) | P1 | [x] PASS exists (`дом` IP) — blocks auditor canaries F-037 |
 | UTM-011 | dtf host skipped for storefront UTM | P1 | [x] dtf skip in middleware code|
-| UTM-012 | AI referrer detection without UTM | P2 | [x] AI referrer sessions exist chatgpt|
+| UTM-012 | AI referrer detection without UTM | P2 | [x] F-084 live WSGI + first-touch canary stored canonical `chatgpt/ai`; cleanup 0 |
 | UTM-013 | First vs last touch rules match fields | P1 | [x] first_touch cookie policy documented|
 | UTM-014 | Returning visitor visit_count updates | P2 | [x] multi-hop session retained |
 
@@ -988,4 +988,4 @@ Mark each: loads 200 / no throw on page.
 - Pixel BFCache + MySQL gone away reconfirmed live (F-079/F-080).
 - Ads gate remains **BLOCKED**. Findings F-001…F-082 in `AUDIT_FINDINGS_2026-07-09.md`.
 - **No code fixes in Pass A/B.**
-- F-083 purchase UA undercount (historical baseline 3 vs 36 paid; **resolved 2026-07-14 in `fba4dc85` + `d561c11d`, live trusted parity 31/31**); F-084 dual chatgpt sources still live; F-085/086 home SEO + mild rate PASS.
+- F-083 purchase UA undercount (historical baseline 3 vs 36 paid; **resolved 2026-07-14 in `fba4dc85` + `d561c11d`, live trusted parity 31/31**); F-084 dual ChatGPT sources **resolved in `069f4efa`, production aliases 0 / canonical 161**; F-085/086 home SEO + mild rate PASS.

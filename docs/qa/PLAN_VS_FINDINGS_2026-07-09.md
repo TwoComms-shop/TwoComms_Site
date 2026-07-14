@@ -49,7 +49,7 @@ Each KEEP has a **STRICT RE-VERIFY** note in the plan where non-obvious.
 | **W2-5** | **KEEP** | fbclid/utm fastpath in base.html | — |
 | **W2-6** | **KEEP** | CompletePayment client+server | TikTok UI not checked (OWNER) |
 | **W2-7** | **DROP** | See dual-path analysis §2 | — |
-| **W2-8** | **KEEP** | normalize + aliases in middleware/utils | Live dirt rows may still exist (data/backfill) |
+| **W2-8** | **KEEP / AI CLOSED `069f4efa`** | shared source/medium normalizer covers middleware, first-touch and order rebuild; guarded AI history command | Production alias counts 0 and Dispatcher `chatgpt` 161/161; non-AI historical sources remain F-020/F-057 |
 | **W2-9** | **KEEP** | twocomms.shop + server add_payment_event_id | — |
 | **W3-1** | **KEEP** | `async_enabled=False` default | CELERY_BROKER may still be set in env |
 | **W3-2** | **KEEP** | client-error endpoint live POST ok; onerror in base | — |

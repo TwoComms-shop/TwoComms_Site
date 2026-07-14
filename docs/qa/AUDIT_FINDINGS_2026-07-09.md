@@ -20,14 +20,14 @@
 
 **Ads launch gate (current):** **P0 attribution/pixel gate CLEARED**. The production fixes for order attribution, conversion linking, BFCache pixels, worker capacity, canonical feed links and transactional checkout storage are verified. The wider P1/P2 audit queue remains in progress and is tracked below.
 
-**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD and `prepay_200` establish a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. The two provable historical Order→UTM links were recovered without synthesizing access-bearing session keys; unverifiable historical gaps remain deliberately unchanged. Product-view business metrics now accept only a committed page navigation linked to a non-bot `SiteSession`; historical raw rows remain available for audit but no longer inflate product or UTM dashboards. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. The remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
+**Current state:** Core smoke works. New orders now preserve first-touch attribution and conversion links; guest COD and `prepay_200` establish a durable Django session before persisting the order; pixels restore safely after BFCache; the Monobank webhook dispatches post-payment events after commit; core checkout tables are InnoDB. Internal purchase analytics now has DB-backed idempotency and production trusted parity 31/31. The two provable historical Order→UTM links were recovered without synthesizing access-bearing session keys; unverifiable historical gaps remain deliberately unchanged. Product-view business metrics now accept only a committed page navigation linked to a non-bot `SiteSession`; historical raw rows remain available for audit but no longer inflate product or UTM dashboards. ChatGPT attribution is canonical across middleware, first-touch and order-rebuild paths; the historical AI alias split was backed up, normalized and reconciled to one `chatgpt/ai` cohort. Category titles were repaired in production MySQL and all nine UA/RU/EN category pages serve complete titles. RU/EN home and catalog H1s are now localized and verified live. The remaining P1/P2 SEO, checkout, security and operations findings are still open unless checked below.
 
 ### Counts (open findings)
 
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 13 | 19 |
+| P1 | 12 | 20 |
 | P2 | 15 | 8 |
 | P3 | 4 | 31 |
 
@@ -101,7 +101,7 @@
 | [x] | **F-074** | P1 | COD no _ensure_session_key | **FIXED `394a247c`**; durable guest session is created before `Order`, production cookie/order/UTM join canary passed; §F-074; PLAN_VS W1-1 |
 | [x] | **F-072** | P1 | Only 2/36 recoverable via external_id | **FIXED `bdd04e4c`**; 2/2 provable links restored, 34 unverifiable historical rows untouched; §F-072 |
 | [x] | **F-076** | P1 | PV noise / site_session gap | **FIXED `fdf6563a`**; committed-PageView gate + trusted dashboard quarantine; server 46/46 and production canary/metrics verified; §F-076; PLAN_VS W2-4 |
-| [ ] | **F-084** | P1 | chatgpt vs chatgpt.com dual | §F-084; PLAN_VS W2-8 |
+| [x] | **F-084** | P1 | chatgpt vs chatgpt.com dual | **FIXED `069f4efa`**; all writers canonical, guarded historical normalization reconciled 122 UTM + 158 first-touch rows; §F-084; PLAN_VS W2-8 |
 | [ ] | **F-020** | P1 | Historical dirty utm_source | §F-020 |
 | [ ] | **F-057** | P1 | All-time dirty utm inventory | §F-057 |
 | [ ] | **F-022** | P1 | PV→ATC cliff | §F-022 |
@@ -273,7 +273,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-081** | P3 | PASS | no | Footer legal/support pages 14/14 200 |
 | [x] **F-082** | P3 | PASS | no | Feed 384 unique g:id; Cyrillic OK; no dup IDs |
 | [x] **F-083** | P1 | FIXED | DONE | `fba4dc85` + `d561c11d`: DB idempotency, all confirmed writers + safe backfill; production trusted parity 31/31, 0 missing/duplicates |
-| [ ] **F-084** | P1 | OPEN | YES | Live dual AI sources chatgpt vs chatgpt.com (still writing) |
+| [x] **F-084** | P1 | FIXED | DONE | `069f4efa`: shared writer normalization + guarded backfill; production aliases 0, `chatgpt/ai` 161, Dispatcher one cohort |
 | [x] **F-085** | P3 | PASS | no | Home hreflang×4 + canonical + OG + healthz OK |
 | [x] **F-086** | P3 | PASS | no | Mild burst 20× catalog → 0×429 (F-007 is high-load only) |
 | [ ] **F-087** | P1 | OPEN | YES | ubd_docs publicly HTTP 200 (W1-11 CONFIRMED) |
@@ -297,9 +297,8 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
-### P1 OPEN — 4
+### P1 OPEN — 3
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
-- [ ] **F-084** — dual chatgpt / chatgpt.com sources still live
 - [ ] **F-087** — ubd_docs publicly HTTP 200
 - [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
 
@@ -1217,12 +1216,15 @@ deleted and verified absent. Historical sessions are intentionally not rewritten
 | Status (B) | REPRODUCED (prod DB 30d) |
 | Status (C) | |
 
-Despite `UTM_GOVERNANCE.md` + `normalize_utm_source()`, live distinct sources include:
+In the 2026-07-09 audit snapshot, despite `UTM_GOVERNANCE.md` +
+`normalize_utm_source()`, stored distinct sources included:
 
-- `chatgpt.com` (113) **and** `chatgpt` (4)  
+- `chatgpt.com` (113) **and** `chatgpt` (4) — historical snapshot; the AI split is closed by F-084
 - `ig` (14) **and** `instagram` (3) **and** `IGShopping` (1)  
 - `audit` (3) — test pollution  
 - `threads` (2)
+
+**2026-07-14 update:** F-084 normalized every ChatGPT alias in `UTMSession` and first-touch storage, but this finding remains open for the separate Instagram/test-source policy and guarded all-source inventory. No unrelated source was rewritten by the AI-scoped operation.
 
 **Why problem:** Dispatcher fragments channels; CBO/creative reports unreliable; IG ads under `ig` not rolled into `instagram`.
 
@@ -1900,7 +1902,7 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 - [ ] **Open** · Severity: **P1** · Area: **UTM** · Checklist: UTM-004, UTM-026, DB-008
 
-All-time top sources still include unnormalized: `ig` (200), `Instagram` (135), `chatgpt.com` (122), `fb` (19), `Inst_Vid` (10), `IGShopping` (6).  
+The original all-time snapshot included unnormalized: `ig` (200), `Instagram` (135), `chatgpt.com` (122), `fb` (19), `Inst_Vid` (10), `IGShopping` (6). F-084 has since reduced the ChatGPT alias count to **0**, but the Instagram/Facebook inventory and policy remain open here.
 **New** canaries normalize correctly → dirt is **historical + possible old code paths**, not current normalize function (which works).
 
 Backfill optional after backup (UTM_GOVERNANCE).
@@ -2344,12 +2346,12 @@ At audit time only a tiny fraction of successful payments created funnel actions
 
 ---
 
-### F-084 — Live dual AI sources: `chatgpt.com` vs `chatgpt` still written
+### F-084 — Historical dual AI sources: `chatgpt.com` vs `chatgpt`
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] FIXED `069f4efa` · **Severity:** P1 · **Fix required:** DONE
 **Related:** F-020, F-057
 
-Last **3 days** UTMSession:
+Original audit **last-3-day** `UTMSession` snapshot:
 
 | utm_source | utm_medium | count |
 |------------|------------|------:|
@@ -2358,7 +2360,13 @@ Last **3 days** UTMSession:
 | instagram | paid_social / social | 7 |
 | ig | social | 1 (still appears) |
 
-Canaries normalize `ig`→`instagram`, but production still receives **unnormalized** rows (`chatgpt.com` without medium, occasional `ig`). Either older code path, referrer detector returns bare host, or normalize not applied on AI-referrer branch consistently.
+This was a deployment-window plus residual-storage defect, not evidence that the current primary middleware kept writing aliases: the last `chatgpt.com` row was first seen at **2026-07-08 16:08 UTC**, before the first canonical post-deploy `chatgpt/ai` row at **20:22 UTC**, and no alias was created after the 2026-07-09 audit. However, 122 historical `UTMSession` rows and 156 raw first-touch payloads still split reports; two referrer-only first-touch rows had no source. The order-attribution rebuild also normalized the source but could recreate `chatgpt / NULL`.
+
+**Fixed 2026-07-14:** `normalize_utm_attribution()` is now shared by the UTM middleware, first-touch cookie/session snapshot and order reconstruction. Missing AI medium becomes `ai`, explicit non-empty media remain unchanged, and `you.com`/`poe.com` use the same AI invariant. The guarded `normalize_ai_attribution` command is dry-run by default, requires exact candidate counts for apply, compares linked `(source, medium)` pairs, locks and revalidates current values, aborts on conflicts/drift, and rolls all models back on a mid-write failure.
+
+**Production proof:** local and isolated server Python 3.14 suites passed **75/75**. A real WSGI request with `utm_source=chatgpt.com` wrote exactly one `chatgpt/ai` `UTMSession` and canonical first-touch row; cleanup left **0** canary rows/sessions/actions. Dry-run returned **122 UTMSession / 158 SiteSession / 0 Order / 0 conflicts**. After a private mode-600 rollback dump, guarded apply updated exactly those rows; dry-run and a second apply both returned **0/0/0/0**. Alias UTM, first-touch and order counts are now **0**; `chatgpt/ai` is **161**, and Dispatcher returns one `chatgpt` row for **161** sessions. Pre/post totals stayed identical (`UTMSession` 1088, `SiteSession` 5862, orders 46 / 70,457.00, actions 42,765), while a field-by-field snapshot comparison of all **280** touched objects found **0** unintended differences.
+
+**Scope kept open:** F-020 and F-057 still own non-AI historical aliases (`ig`, `Instagram`, `fb`, `Inst_Vid`, `IGShopping`) and test-source policy; F-084 did not rename or delete them.
 
 ---
 
@@ -2641,7 +2649,8 @@ tests. Do not run a blind `ALTER TABLE` during live checkout traffic.
 | Pass A | **COMPLETE for audit scope** — fixes deferred to after Pass C |
 | 2026-07-09 | F-049 home unexclude canary PASS (sessionid+UTMSession+ATC+stored:true) |
 | 2026-07-09 late | Deep monobank/session_key/first_touch analysis; feed recheck; F-071–F-082; ads gate still BLOCKED |
-| 2026-07-09 late+ | F-083 purchase undercount; F-084 dual AI sources live; F-085/F-086 SEO/rate PASS notes; F-002 reconfirm |
+| 2026-07-09 late+ | F-083 purchase undercount; F-084 dual AI sources reported (fixed 2026-07-14); F-085/F-086 SEO/rate PASS notes; F-002 reconfirm |
 | 2026-07-14 | F-083 fixed and production-verified: migration 0083, trusted purchase parity 31/31, safe 26-row historical reconciliation, idempotent cron and live forged-event rejection |
 | 2026-07-14 | F-044/F-074 fixed in `394a247c`: durable guest session before COD Order persistence; local 93/93, server 2/2, production MariaDB cookie/order/UTM rollback canary and zero-row cleanup passed. Test-only Telegram credentials were isolated in `bb217bd9` before server verification |
 | 2026-07-14 | F-068/F-073 closed: historical writer root fixed in `7936ab6e`, regression `30808819`; local 94/94, server 1/1 and production prepay Order/UTM/tracking/20,000-minor-unit rollback canary passed; DB and session-cache cleanup 0, historical 19/19 unchanged |
+| 2026-07-14 | F-084 fixed in `069f4efa`: all AI attribution writers share canonical normalization; local/server 75/75, live WSGI canary and guarded reconciliation updated 122 UTM + 158 first-touch rows, left aliases at 0 and `chatgpt/ai` at 161; all 280 touched rows matched the rollback snapshot outside intended fields |
