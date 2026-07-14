@@ -2,6 +2,7 @@ import json
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import DatabaseError
 from django.test import Client, TestCase
 from django.urls import reverse
 
@@ -14,6 +15,8 @@ class AnalyticsTrackingTests(TestCase):
     def setUp(self):
         self.client = Client(
             HTTP_HOST="twocomms.shop",
+            HTTP_ACCEPT="text/html,application/xhtml+xml",
+            HTTP_SEC_FETCH_MODE="navigate",
             SERVER_PORT="443",
             **{"wsgi.url_scheme": "https"},
         )
@@ -33,6 +36,9 @@ class AnalyticsTrackingTests(TestCase):
         action = UserAction.objects.get(action_type="product_view")
         self.assertEqual(action.product_id, self.product.id)
         self.assertEqual(action.product_name, self.product.title)
+        self.assertIsNotNone(action.site_session)
+        self.assertEqual(action.site_session.pageviews, 1)
+        self.assertTrue(PageView.objects.filter(session=action.site_session).exists())
 
     def test_search_records_query(self):
         response = self.client.get(reverse("search"), {"q": "Analytics"}, secure=True)
@@ -164,6 +170,8 @@ class EventHygieneTests(TestCase):
         self.url = reverse("product", args=[self.product.slug])
         self.kwargs = {
             "HTTP_HOST": "twocomms.shop",
+            "HTTP_ACCEPT": "text/html,application/xhtml+xml",
+            "HTTP_SEC_FETCH_MODE": "navigate",
             "SERVER_PORT": "443",
             "wsgi.url_scheme": "https",
         }
@@ -200,6 +208,79 @@ class EventHygieneTests(TestCase):
         client.get(self.url, secure=True)
         action = UserAction.objects.get(action_type="product_view")
         self.assertIsNotNone(action.site_session)
+        self.assertGreater(action.site_session.pageviews, 0)
+        self.assertTrue(PageView.objects.filter(session=action.site_session).exists())
+
+    def test_head_product_request_records_no_product_view(self):
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)
+
+        response = client.head(self.url, secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
+
+    def test_non_navigation_fetch_records_no_product_view(self):
+        kwargs = {**self.kwargs, "HTTP_SEC_FETCH_MODE": "no-cors"}
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **kwargs)
+
+        response = client.get(self.url, secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
+
+    def test_new_anonymous_non_html_request_records_no_product_view(self):
+        kwargs = {**self.kwargs, "HTTP_ACCEPT": "application/json"}
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **kwargs)
+
+        response = client.get(self.url, secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
+
+    def test_product_view_fails_closed_when_site_session_link_fails(self):
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)
+
+        with patch(
+            "storefront.utm_tracking.SiteSession.objects.get_or_create",
+            side_effect=DatabaseError("simulated SiteSession failure"),
+        ):
+            response = client.get(self.url, secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
+
+    def test_product_view_fails_closed_when_page_view_write_fails(self):
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)
+
+        with patch(
+            "storefront.tracking.PageView.objects.create",
+            side_effect=DatabaseError("simulated PageView failure"),
+        ):
+            response = client.get(self.url, secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
+
+    def test_existing_session_does_not_mask_current_page_view_failure(self):
+        client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)
+        django_session = client.session
+        django_session["existing"] = True
+        django_session.save()
+        site_session = SiteSession.objects.create(
+            session_key=django_session.session_key,
+            pageviews=1,
+            last_path="/catalog/",
+        )
+        PageView.objects.create(session=site_session, path="/catalog/", is_bot=False)
+
+        with patch(
+            "storefront.tracking.PageView.objects.create",
+            side_effect=DatabaseError("simulated current PageView failure"),
+        ):
+            response = client.get(self.url, secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserAction.objects.filter(action_type="product_view").exists())
 
     def test_legacy_query_url_redirects_without_recording_view(self):
         client = Client(HTTP_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)", **self.kwargs)

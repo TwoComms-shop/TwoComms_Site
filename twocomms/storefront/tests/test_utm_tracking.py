@@ -7,7 +7,14 @@ from django.test import TestCase
 from django.utils import timezone
 
 from orders.models import Order
-from storefront.models import SiteSession, UTMSession, UserAction
+from storefront.models import PageView, SiteSession, UTMSession, UserAction
+from storefront.utm_analytics import (
+    get_campaigns_stats,
+    get_content_stats,
+    get_funnel_stats,
+    get_general_stats,
+    get_sources_stats,
+)
 from storefront.utm_tracking import record_order_action
 
 
@@ -200,3 +207,61 @@ class RecordOrderActionTests(TestCase):
             self.assertRaisesMessage(RuntimeError, 'storage unavailable'),
         ):
             record_order_action('purchase', order, raise_errors=True)
+
+
+class FunnelStatsProductViewQualityTests(TestCase):
+    def _utm_session(self, suffix: str, *, pageviews: int, is_bot: bool = False):
+        site_session = SiteSession.objects.create(
+            session_key=f"funnel-{suffix}",
+            pageviews=pageviews,
+            is_bot=is_bot,
+            last_path="/product/funnel/",
+        )
+        if pageviews:
+            PageView.objects.create(
+                session=site_session,
+                path="/product/funnel/",
+                is_bot=is_bot,
+            )
+        utm_session = UTMSession.objects.create(
+            session=site_session,
+            session_key=site_session.session_key,
+            utm_source="instagram",
+        )
+        return site_session, utm_session
+
+    def test_funnel_counts_only_trusted_product_view_sessions(self):
+        trusted_site, trusted_utm = self._utm_session("trusted", pageviews=1)
+        bot_site, bot_utm = self._utm_session("bot", pageviews=1, is_bot=True)
+        zero_site, zero_utm = self._utm_session("zero", pageviews=0)
+        _unlinked_site, unlinked_utm = self._utm_session("unlinked", pageviews=1)
+
+        for site_session, utm_session in (
+            (trusted_site, trusted_utm),
+            (bot_site, bot_utm),
+            (zero_site, zero_utm),
+            (None, unlinked_utm),
+        ):
+            UserAction.objects.create(
+                site_session=site_session,
+                utm_session=utm_session,
+                action_type="product_view",
+                product_id=991,
+                points_earned=3,
+            )
+        UserAction.objects.create(
+            utm_session=trusted_utm,
+            action_type="add_to_cart",
+            product_id=991,
+            points_earned=7,
+        )
+
+        stats = get_funnel_stats("all_time")
+
+        self.assertEqual(stats["total"], 4)
+        self.assertEqual(stats["product_views"], 1)
+        self.assertEqual(stats["product_views_rate"], 25.0)
+        self.assertEqual(get_general_stats("all_time")["total_score"], 10)
+        self.assertEqual(get_sources_stats("all_time")[0]["total_score"], 10)
+        self.assertEqual(get_campaigns_stats("all_time")[0]["total_score"], 10)
+        self.assertEqual(get_content_stats("all_time")[0]["total_score"], 10)

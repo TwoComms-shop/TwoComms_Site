@@ -549,6 +549,15 @@ def _actions_queryset(filters: AnalyticsFilters, scope: AnalyticsScope):
         qs = qs.filter(utm_session__device_type=filters.device_type)
     if not filters.include_bots:
         qs = qs.filter(Q(site_session__is_bot=False) | Q(site_session__isnull=True))
+    # F-076: quarantine legacy/residual product-view rows that cannot be tied
+    # to an actual page navigation, even in the opt-in bot diagnostic view.
+    # Keep null-session lead and purchase actions: their linkage is repaired
+    # by separate order flows. A linked bot PV remains visible with
+    # include_bots=1.
+    qs = qs.exclude(
+        Q(action_type="product_view")
+        & (Q(site_session__isnull=True) | Q(site_session__pageviews__lte=0))
+    )
     if scope.session_keys is not None:
         qs = qs.filter(
             Q(site_session__session_key__in=scope.session_keys)
@@ -1181,8 +1190,17 @@ def build_cart_widget(filters: AnalyticsFilters) -> dict[str, Any]:
 def build_product_admin_metrics(product_ids: list[int]) -> dict[int, dict[str, int]]:
     if not product_ids:
         return {}
+    product_views = UserAction.objects.filter(
+        action_type="product_view",
+        product_id__in=product_ids,
+        site_session__is_bot=False,
+        site_session__pageviews__gt=0,
+    )
+    action_exclusion = action_exclusion_q()
+    if action_exclusion:
+        product_views = product_views.exclude(action_exclusion)
     totals = (
-        UserAction.objects.filter(action_type="product_view", product_id__in=product_ids)
+        product_views
         .values("product_id")
         .annotate(
             total_views=Count("id"),

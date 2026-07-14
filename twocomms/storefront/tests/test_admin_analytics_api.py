@@ -7,7 +7,11 @@ from django.test import Client, TestCase
 
 from orders.models import Order
 from storefront.models import PageView, SiteSession, UserAction
-from storefront.services.admin_analytics import build_integration_status_widget, parse_analytics_filters
+from storefront.services.admin_analytics import (
+    build_integration_status_widget,
+    build_product_admin_metrics,
+    parse_analytics_filters,
+)
 
 
 class AdminAnalyticsApiTests(TestCase):
@@ -64,6 +68,78 @@ class AdminAnalyticsApiTests(TestCase):
         payload = response.json()
         self.assertIn("data", payload)
         self.assertEqual(payload.get("source"), "internal")
+
+    def test_product_metrics_count_only_trusted_human_page_views(self):
+        trusted = SiteSession.objects.create(
+            session_key="trusted-product-view",
+            ip_address="188.163.49.61",
+            pageviews=1,
+            last_path="/product/trusted/",
+        )
+        bot = SiteSession.objects.create(
+            session_key="bot-product-view",
+            ip_address="188.163.49.62",
+            pageviews=1,
+            last_path="/product/trusted/",
+            is_bot=True,
+        )
+        no_pageview = SiteSession.objects.create(
+            session_key="zero-page-product-view",
+            ip_address="188.163.49.63",
+            pageviews=0,
+            last_path="/product/trusted/",
+        )
+        PageView.objects.create(
+            session=trusted,
+            path="/product/trusted/",
+            is_bot=False,
+        )
+        PageView.objects.create(
+            session=bot,
+            path="/product/trusted/",
+            is_bot=True,
+        )
+        for session in (trusted, bot, no_pageview, None):
+            UserAction.objects.create(
+                site_session=session,
+                action_type="product_view",
+                product_id=991,
+                product_name="Trusted product",
+            )
+
+        metrics = build_product_admin_metrics([991])
+
+        self.assertEqual(metrics[991]["total_views"], 1)
+        self.assertEqual(metrics[991]["unique_ip_views"], 1)
+
+        self.client.force_login(self.staff)
+        response = self.client.get("/api/admin/analytics/products/?period=all_time", secure=True)
+        self.assertEqual(response.status_code, 200)
+        product = next(
+            row for row in response.json()["data"]["top_viewed"] if row["product_id"] == 991
+        )
+        self.assertEqual(product["total_views"], 1)
+        self.assertEqual(product["unique_ip_views"], 1)
+
+        response = self.client.get(
+            "/api/admin/analytics/products/?period=all_time&include_bots=1",
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        product = next(
+            row for row in response.json()["data"]["top_viewed"] if row["product_id"] == 991
+        )
+        self.assertEqual(product["total_views"], 2)
+        self.assertEqual(product["unique_ip_views"], 2)
+
+    def test_unlinked_purchase_remains_in_dashboard_actions(self):
+        UserAction.objects.create(action_type="purchase", order_id=12345)
+
+        self.client.force_login(self.staff)
+        response = self.client.get("/api/admin/analytics/?period=all_time", secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["overview"]["data"]["headline"]["purchases"], 1)
 
     def test_sales_widget_endpoint_is_available_for_staff(self):
         Order.objects.create(

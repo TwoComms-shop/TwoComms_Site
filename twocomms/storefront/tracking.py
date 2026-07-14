@@ -39,6 +39,33 @@ def is_bot(ua: str | None) -> bool:
     return any(sig in ua_l for sig in BOT_SIGNALS)
 
 
+def is_trackable_navigation_request(request) -> bool:
+    """Match the navigation gates used by page and product-view tracking.
+
+    A product view is only meaningful when the same request is eligible to
+    create a real page view. Keeping this small predicate shared prevents the
+    two writers from drifting and manufacturing zero-pageview sessions for
+    HEAD, fetch/subresource, or non-HTML clients.
+    """
+    if request.method != 'GET':
+        return False
+
+    fetch_mode = (request.META.get('HTTP_SEC_FETCH_MODE') or '').strip().lower()
+    if fetch_mode and fetch_mode not in {'navigate', 'nested-navigate'}:
+        return False
+
+    user = getattr(request, 'user', None)
+    is_authenticated = bool(user is not None and getattr(user, 'is_authenticated', False))
+    session = getattr(request, 'session', None)
+    session_key = getattr(session, 'session_key', None) if session is not None else None
+    if not is_authenticated and not session_key:
+        accept = (request.META.get('HTTP_ACCEPT') or '').lower()
+        if 'text/html' not in accept:
+            return False
+
+    return True
+
+
 def _is_internal_referrer(request, referrer: str | None) -> bool:
     if not referrer:
         return False
@@ -173,28 +200,16 @@ class SimpleAnalyticsMiddleware(MiddlewareMixin):
             # Не трекаем ботов и служебные пути
             ua = request.META.get('HTTP_USER_AGENT', '')
             path = request.path or ''
-            fetch_mode = (request.META.get('HTTP_SEC_FETCH_MODE') or '').strip().lower()
             if (
                 is_bot(ua)
                 or is_analytics_noise_path(path)
-                or request.method != 'GET'
-                or (fetch_mode and fetch_mode not in {'navigate', 'nested-navigate'})
+                or not is_trackable_navigation_request(request)
             ):
                 return None  # Пропускаем ботов дальше по цепочке middleware
 
             # Skip writes for IPs / users / agents listed in AnalyticsExclusion.
             if is_request_excluded(request, user_agent=ua, path=path):
                 return None
-
-            # Для анонимов создаём сессию на первом «человеческом» переходе
-            # (боты/служебные пути уже отфильтрованы выше). Без этого весь
-            # анонимный трафик без корзины оставался невидимым для аналитики.
-            # Защита от мусорны�� клиентов (feed-пуллеры, json-клиенты):
-            # новую сессию создаём только для HTML-навигации.
-            if not request.user.is_authenticated and not request.session.session_key:
-                accept = (request.META.get('HTTP_ACCEPT') or '').lower()
-                if 'text/html' not in accept:
-                    return None
 
             # На этом этапе сессия может существовать (или пользователь авторизован)
             if not request.session.session_key:
@@ -206,6 +221,7 @@ class SimpleAnalyticsMiddleware(MiddlewareMixin):
             visitor_id = getattr(request, 'analytics_visitor_id', None)
             first_touch_data = getattr(request, 'analytics_first_touch_data', {}) or {}
 
+            tracked_session_id = None
             with transaction.atomic():
                 sess, _ = SiteSession.objects.select_for_update().get_or_create(
                     session_key=session_key,
@@ -242,6 +258,13 @@ class SimpleAnalyticsMiddleware(MiddlewareMixin):
                     referrer=request.META.get('HTTP_REFERER', '')[:512],
                     is_bot=bot,
                 )
+                tracked_session_id = sess.pk
+
+            # Set only after the transaction commits. Product-view tracking
+            # uses this proof to avoid writing an event when page analytics is
+            # disabled, excluded, or rolled back after a PageView failure.
+            request._analytics_pageview_recorded = True
+            request._analytics_site_session_id = tracked_session_id
         except Exception as e:
             # Никогда не ломаем страницу из-за аналитики
             pass

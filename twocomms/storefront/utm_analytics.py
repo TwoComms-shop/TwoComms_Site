@@ -24,6 +24,18 @@ from orders.models import Order
 logger = logging.getLogger(__name__)
 
 
+def _exclude_untrusted_product_views(queryset):
+    """Keep audit rows in storage while removing them from business metrics."""
+    return queryset.exclude(
+        Q(action_type='product_view')
+        & (
+            Q(site_session__isnull=True)
+            | Q(site_session__is_bot=True)
+            | Q(site_session__pageviews__lte=0)
+        )
+    )
+
+
 def get_period_dates(period: str) -> Tuple[Optional[datetime], Optional[datetime]]:
     """
     Возвращает даты начала и конца периода.
@@ -107,7 +119,9 @@ def get_general_stats(period: str = 'today') -> Dict:
     avg_order_value = revenue_data['avg'] or Decimal('0')
 
     # Баллы (из действий)
-    actions_qs = UserAction.objects.filter(utm_session__in=sessions_qs)
+    actions_qs = _exclude_untrusted_product_views(
+        UserAction.objects.filter(utm_session__in=sessions_qs)
+    )
     score_data = actions_qs.aggregate(
         total=Sum('points_earned'),
         avg=Avg('points_earned')
@@ -172,7 +186,9 @@ def get_sources_stats(period: str = 'today', limit: int = 20) -> List[Dict]:
         avg_order_value = revenue_data['avg'] or Decimal('0')
 
         # Баллы
-        actions_qs = UserAction.objects.filter(utm_session__in=source_sessions)
+        actions_qs = _exclude_untrusted_product_views(
+            UserAction.objects.filter(utm_session__in=source_sessions)
+        )
         total_score = actions_qs.aggregate(total=Sum('points_earned'))['total'] or 0
 
         results.append({
@@ -232,7 +248,9 @@ def get_campaigns_stats(period: str = 'today', source_filter: Optional[str] = No
         revenue = orders_qs.aggregate(total=Sum('total_sum'))['total'] or Decimal('0')
 
         # Баллы
-        actions_qs = UserAction.objects.filter(utm_session__in=campaign_sessions)
+        actions_qs = _exclude_untrusted_product_views(
+            UserAction.objects.filter(utm_session__in=campaign_sessions)
+        )
         total_score = actions_qs.aggregate(total=Sum('points_earned'))['total'] or 0
 
         results.append({
@@ -284,7 +302,9 @@ def get_content_stats(period: str = 'today', campaign_filter: Optional[str] = No
         revenue = orders_qs.aggregate(total=Sum('total_sum'))['total'] or Decimal('0')
 
         # Баллы
-        actions_qs = UserAction.objects.filter(utm_session__in=content_sessions)
+        actions_qs = _exclude_untrusted_product_views(
+            UserAction.objects.filter(utm_session__in=content_sessions)
+        )
         total_score = actions_qs.aggregate(total=Sum('points_earned'))['total'] or 0
 
         results.append({
@@ -338,10 +358,25 @@ def get_funnel_stats(period: str = 'today') -> Dict:
             'purchase_rate': 0,
         }
 
-    actions_qs = UserAction.objects.filter(utm_session__in=sessions_qs)
+    actions_qs = _exclude_untrusted_product_views(
+        UserAction.objects.filter(utm_session__in=sessions_qs)
+    )
 
     # Подсчитываем уникальные сессии для каждого этапа
-    product_views = actions_qs.filter(action_type='product_view').values('utm_session').distinct().count()
+    # F-076: product views are trustworthy only when the action is linked to
+    # a non-bot SiteSession that recorded a real page navigation. Historical
+    # null/zero-page rows remain in the DB for auditability but must not inflate
+    # the UTM Dispatcher or scheduled funnel report.
+    product_views = (
+        actions_qs.filter(
+            action_type='product_view',
+            site_session__is_bot=False,
+            site_session__pageviews__gt=0,
+        )
+        .values('utm_session')
+        .distinct()
+        .count()
+    )
     add_to_cart = actions_qs.filter(action_type='add_to_cart').values('utm_session').distinct().count()
     initiate_checkout = actions_qs.filter(action_type='initiate_checkout').values('utm_session').distinct().count()
     leads = actions_qs.filter(action_type='lead').values('utm_session').distinct().count()

@@ -79,7 +79,7 @@ def record_user_action(
         # Раньше product_view/add_to_cart писались для любых UA —
         # краулеры и синтетика раздували числитель воронки view→ATC.
         user_agent = request.META.get('HTTP_USER_AGENT', '') if hasattr(request, 'META') else ''
-        from .tracking import is_bot as _is_bot_ua
+        from .tracking import is_bot as _is_bot_ua, is_trackable_navigation_request
         if _is_bot_ua(user_agent):
             return None
 
@@ -87,6 +87,16 @@ def record_user_action(
         req_user = getattr(request, 'user', None)
         if req_user is not None and getattr(req_user, 'is_authenticated', False) and getattr(req_user, 'is_staff', False):
             return None
+
+        # F-076: a server-side product_view must describe the same human page
+        # navigation accepted by SimpleAnalyticsMiddleware. Previously HEAD,
+        # no-cors/subresource and new anonymous non-HTML requests skipped the
+        # PageView writer but still manufactured a SiteSession + product_view.
+        if action_type == 'product_view':
+            if not is_trackable_navigation_request(request):
+                return None
+            if not getattr(request, '_analytics_pageview_recorded', False):
+                return None
 
         # Получаем session_key
         session_key = ensure_request_session_key(request)
@@ -139,7 +149,25 @@ def record_user_action(
                 },
             )
         except Exception:
-            logger.debug(f"Could not get_or_create Site session for session_key: {session_key}")
+            logger.debug(
+                "Could not get_or_create Site session for session_key: %s",
+                session_key,
+                exc_info=True,
+            )
+            # A product view without this link is not analytically useful and
+            # was the direct source of the historical F-076 inflation. Other
+            # action types retain their existing best-effort fallback.
+            if action_type == 'product_view':
+                return None
+
+        if action_type == 'product_view':
+            tracked_session_id = getattr(request, '_analytics_site_session_id', None)
+            if (
+                site_session is None
+                or site_session.pk != tracked_session_id
+                or (site_session.pageviews or 0) <= 0
+            ):
+                return None
 
         # Получаем пользователя
         user = request.user if request.user.is_authenticated else None
