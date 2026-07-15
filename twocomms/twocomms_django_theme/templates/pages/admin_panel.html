@@ -900,6 +900,12 @@
           </svg>
           Каталоги
         </a>
+        <a href="?section=size_grids" class="admin-nav-item {% if section == 'size_grids' %}active{% endif %}">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 5h16M4 12h16M4 19h16M8 3v4M14 10v4M18 17v4"/>
+          </svg>
+          Розмірні сітки
+        </a>
         <a href="?section=promocodes" class="admin-nav-item {% if section == 'promocodes' %}active{% endif %}">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
@@ -1804,6 +1810,9 @@
           </div>
         </div>
       </div>
+    {% elif section == 'size_grids' %}
+      {% include "fable5/size_grid_editor.html" %}
+
     {% elif section == 'promocodes' %}
       <!-- ПРОМОКОДИ - єдина панель з табами -->
       {% include 'pages/admin_promocodes.html' %}

@@ -723,6 +723,27 @@ def _build_catalogs_context():
     }
 
 
+def _build_size_grids_context():
+    """Minimal, JSON-safe bootstrap for the Fable size-grid workspace."""
+    catalogs = list(
+        Catalog.objects.filter(is_active=True)
+        .order_by('order', 'name')
+        .values('id', 'name', 'slug')
+    )
+    return {
+        'size_grid_bootstrap': {
+            'catalogs': catalogs,
+            'urls': {
+                'list': reverse('fable5_api_size_grids'),
+                'save': reverse('fable5_api_size_grid_save'),
+                'duplicate': reverse('fable5_api_size_grid_duplicate'),
+                'archive': reverse('fable5_api_size_grid_archive'),
+                'preview': reverse('fable5_api_size_grid_preview'),
+            },
+        },
+    }
+
+
 def _build_offline_stores_context():
     """Контекст для оффлайн-магазинов."""
     stores = OfflineStore.objects.all().order_by('order', 'name')
@@ -1119,6 +1140,8 @@ def admin_panel(request):
         context.update(_build_users_context())
     elif section == 'catalogs':
         context.update(_build_catalogs_context())
+    elif section == 'size_grids':
+        context.update(_build_size_grids_context())
     elif section == 'promocodes':
         context.update(get_promo_admin_context(request))
         context['section'] = 'promocodes'

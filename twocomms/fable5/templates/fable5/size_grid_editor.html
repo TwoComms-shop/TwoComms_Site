@@ -1,0 +1,253 @@
+{% load static %}
+<link rel="stylesheet" href="{% static 'fable5/size-grids.css' %}?v=20260715-1">
+
+<section class="f5-sg" data-state="loading" aria-labelledby="f5-sg-title">
+  <header class="f5-sg__header">
+    <div class="f5-sg__heading">
+      <span class="f5-sg__eyebrow">Fable 5 · garment system</span>
+      <h2 id="f5-sg-title">Розмірні сітки</h2>
+      <p>Створюйте еталонні заміри для кожної посадки та одразу перевіряйте вигляд у картці товару.</p>
+    </div>
+    <div class="f5-sg__header-actions">
+      <div class="f5-sg__readiness" data-readiness="loading" role="status">
+        <span class="f5-sg__pulse" aria-hidden="true"></span>
+        <span data-status-text>Завантаження бібліотеки…</span>
+      </div>
+      <button class="f5-sg__button f5-sg__button--primary" type="button" data-action="new-grid">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Нова сітка
+      </button>
+    </div>
+  </header>
+
+  <div class="f5-sg__workbench">
+    <aside class="f5-sg__library" aria-labelledby="f5-sg-library-title">
+      <div class="f5-sg__panel-head">
+        <div>
+          <span class="f5-sg__panel-index">01</span>
+          <h3 id="f5-sg-library-title">Бібліотека сіток</h3>
+        </div>
+        <span class="f5-sg__count" data-grid-count>0</span>
+      </div>
+
+      <div class="f5-sg__filters">
+        <label class="f5-sg__search">
+          <span class="f5-sg__sr-only">Пошук розмірної сітки</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+          <input type="search" placeholder="Назва, одяг або посадка" data-filter="search" autocomplete="off">
+        </label>
+        <label class="f5-sg__field f5-sg__field--compact">
+          <span>Каталог</span>
+          <select data-filter="catalog"><option value="">Усі каталоги</option></select>
+        </label>
+        <div class="f5-sg__chip-group" aria-label="Фільтр за типом одягу" data-garment-filters>
+          <button class="f5-sg__chip is-active" type="button" data-garment="" aria-pressed="true">Увесь одяг</button>
+          <button class="f5-sg__chip" type="button" data-garment="tshirt" aria-pressed="false">Футболки</button>
+          <button class="f5-sg__chip" type="button" data-garment="hoodie" aria-pressed="false">Худі</button>
+        </div>
+        <div class="f5-sg__chip-group" aria-label="Фільтр за посадкою" data-fit-filters>
+          <button class="f5-sg__chip is-active" type="button" data-fit="" aria-pressed="true">Усі</button>
+          <button class="f5-sg__chip" type="button" data-fit="classic" aria-pressed="false">Класика</button>
+          <button class="f5-sg__chip" type="button" data-fit="oversize" aria-pressed="false">Oversize</button>
+        </div>
+      </div>
+
+      <div class="f5-sg__library-state" data-library-state>
+        <div class="f5-sg__skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+      </div>
+      <div class="f5-sg__grid-list" data-grid-list aria-live="polite"></div>
+    </aside>
+
+    <main class="f5-sg__editor" aria-labelledby="f5-sg-editor-title">
+      <div class="f5-sg__panel-head f5-sg__panel-head--editor">
+        <div>
+          <span class="f5-sg__panel-index">02</span>
+          <h3 id="f5-sg-editor-title" data-editor-heading>Нова розмірна сітка</h3>
+        </div>
+        <span class="f5-sg__edit-state" data-edit-state>Чернетка</span>
+      </div>
+
+      <form class="f5-sg__form" data-grid-form novalidate>
+        <input type="hidden" name="id" value="">
+        <fieldset class="f5-sg__fieldset">
+          <legend>Профіль</legend>
+          <div class="f5-sg__form-grid">
+            <label class="f5-sg__field f5-sg__field--wide">
+              <span>Назва сітки <b aria-hidden="true">*</b></span>
+              <input name="name" maxlength="200" required placeholder="Футболка · класична посадка">
+              <small data-error-for="name"></small>
+            </label>
+            <label class="f5-sg__field">
+              <span>Каталог <b aria-hidden="true">*</b></span>
+              <select name="catalog_id" required><option value="">Оберіть каталог</option></select>
+              <small data-error-for="catalog_id"></small>
+            </label>
+            <label class="f5-sg__field">
+              <span>Тип одягу</span>
+              <input name="garment_code" maxlength="50" placeholder="tshirt" list="f5-sg-garments">
+              <datalist id="f5-sg-garments">
+                <option value="tshirt">Футболка</option>
+                <option value="hoodie">Худі</option>
+                <option value="longsleeve">Лонгслів</option>
+                <option value="sweatshirt">Світшот</option>
+              </datalist>
+            </label>
+            <label class="f5-sg__field">
+              <span>Посадка / ключ опції <b aria-hidden="true">*</b></span>
+              <input name="option_key" required placeholder="fit=classic" list="f5-sg-fits">
+              <datalist id="f5-sg-fits">
+                <option value="fit=classic">Класика</option>
+                <option value="fit=oversize">Oversize</option>
+                <option value="fit=regular">Regular</option>
+                <option value="fit=slim">Slim</option>
+              </datalist>
+              <small data-error-for="option_key"></small>
+            </label>
+            <label class="f5-sg__field f5-sg__field--order">
+              <span>Порядок</span>
+              <input type="number" name="order" min="0" step="1" value="0" inputmode="numeric">
+            </label>
+            <label class="f5-sg__field f5-sg__field--wide">
+              <span>Опис для адміністратора</span>
+              <textarea name="description" rows="2" placeholder="Коли і для яких товарів використовувати цю сітку"></textarea>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset class="f5-sg__fieldset f5-sg__fieldset--measurements">
+          <legend>Полотно вимірювань</legend>
+          <div class="f5-sg__canvas-copy">
+            <div>
+              <span>Структура картки</span>
+              <strong>Колонки та розміри</strong>
+            </div>
+            <p>Коди колонок латиницею; перша колонка <code>size</code> є обов’язковою.</p>
+          </div>
+
+          <div class="f5-sg__guide-copy">
+            <label class="f5-sg__field">
+              <span>Мітка над заголовком</span>
+              <input name="eyebrow" placeholder="Гід посадки">
+            </label>
+            <label class="f5-sg__field">
+              <span>Заголовок у картці</span>
+              <input name="guide_title" placeholder="Класична посадка">
+            </label>
+            <label class="f5-sg__field f5-sg__field--wide">
+              <span>Коротке пояснення</span>
+              <input name="intro" placeholder="Заміри готового виробу у сантиметрах">
+            </label>
+          </div>
+
+          <section class="f5-sg__columns" aria-labelledby="f5-sg-columns-title">
+            <div class="f5-sg__subhead">
+              <div><span>Вісь X</span><h4 id="f5-sg-columns-title">Колонки</h4></div>
+              <button class="f5-sg__text-button" type="button" data-action="add-column">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                Додати колонку
+              </button>
+            </div>
+            <div class="f5-sg__column-list" data-column-list></div>
+            <small class="f5-sg__table-error" data-error-for="columns"></small>
+          </section>
+
+          <section class="f5-sg__rows" aria-labelledby="f5-sg-rows-title">
+            <div class="f5-sg__subhead">
+              <div><span>Вісь Y</span><h4 id="f5-sg-rows-title">Розміри та заміри</h4></div>
+              <button class="f5-sg__text-button" type="button" data-action="add-row">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                Додати розмір
+              </button>
+            </div>
+            <div class="f5-sg__measurement-scroll" tabindex="0" aria-label="Редактор замірів">
+              <table class="f5-sg__measurement-table">
+                <thead data-measurement-head></thead>
+                <tbody data-measurement-body></tbody>
+              </table>
+            </div>
+            <small class="f5-sg__table-error" data-error-for="rows"></small>
+          </section>
+        </fieldset>
+
+        <footer class="f5-sg__form-actions">
+          <p data-form-summary>Заповніть профіль і щонайменше один рядок замірів.</p>
+          <button class="f5-sg__button f5-sg__button--primary" type="submit" data-action="save-grid">
+            <span data-save-label>Зберегти сітку</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+          </button>
+        </footer>
+      </form>
+    </main>
+
+    <aside class="f5-sg__preview" aria-labelledby="f5-sg-preview-title">
+      <div class="f5-sg__panel-head">
+        <div>
+          <span class="f5-sg__panel-index">03</span>
+          <h3 id="f5-sg-preview-title">Попередній перегляд</h3>
+        </div>
+        <div class="f5-sg__viewport-toggle" aria-label="Ширина попереднього перегляду">
+          <button type="button" class="is-active" data-viewport="desktop" aria-pressed="true" title="Ширина картки на комп’ютері" aria-label="Перегляд на комп’ютері">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="1"/><path d="M8 21h8M12 17v4"/></svg>
+          </button>
+          <button type="button" data-viewport="mobile" aria-pressed="false" title="Ширина картки 375 пікселів" aria-label="Мобільний перегляд 375 пікселів">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>
+          </button>
+        </div>
+        <output class="f5-sg__viewport-readout" data-viewport-readout>Авто</output>
+      </div>
+
+      <div class="f5-sg__preview-stage" data-preview-stage>
+        <div class="f5-sg__preview-ruler" aria-hidden="true"><span>0</span><span>125</span><span>250</span><span>375</span></div>
+        <article class="f5-sg__pdp-card tc-size-guide-card" data-preview-card>
+          <div>
+            <div class="tc-guide-eyebrow" data-preview-eyebrow>Гід посадки</div>
+            <h2 class="tc-guide-title" data-preview-title>Нова розмірна сітка</h2>
+            <p class="tc-muted-copy" data-preview-intro>Заміри готового виробу у сантиметрах.</p>
+          </div>
+          <div class="tc-size-table-wrap">
+            <table class="tc-size-table">
+              <thead data-preview-head></thead>
+              <tbody data-preview-body></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+      <p class="f5-sg__preview-note"><span aria-hidden="true"></span> Локальний синхронний перегляд. Після збереження дані повторно звіряються із сервером.</p>
+    </aside>
+  </div>
+
+  <template id="f5-sg-column-template">
+    <div class="f5-sg__column-row" data-column>
+      <span class="f5-sg__grip" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <label><span>Код</span><input data-column-key maxlength="50" placeholder="length"></label>
+      <label><span>Назва</span><input data-column-label maxlength="80" placeholder="Довжина, см"></label>
+      <button class="f5-sg__icon-button f5-sg__icon-button--danger" type="button" data-action="remove-column" title="Видалити колонку" aria-label="Видалити колонку">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M8 7l1 13h6l1-13"/></svg>
+      </button>
+    </div>
+  </template>
+
+  <template id="f5-sg-row-template">
+    <tr data-measurement-row>
+      <td class="f5-sg__row-tools">
+        <span class="f5-sg__drag-handle" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <button type="button" data-action="move-row-up" title="Перемістити вище" aria-label="Перемістити рядок вище">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 14 5-5 5 5"/></svg>
+        </button>
+        <button type="button" data-action="move-row-down" title="Перемістити нижче" aria-label="Перемістити рядок нижче">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+        </button>
+      </td>
+      <td class="f5-sg__row-remove-cell">
+        <button class="f5-sg__icon-button f5-sg__icon-button--danger" type="button" data-action="remove-row" title="Видалити розмір" aria-label="Видалити рядок розміру">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+        </button>
+      </td>
+    </tr>
+  </template>
+
+  <div class="f5-sg__toast" data-toast hidden aria-live="polite" aria-atomic="true"></div>
+</section>
+
+{{ size_grid_bootstrap|json_script:"f5-size-grid-bootstrap" }}
+<script src="{% static 'fable5/size-grids.js' %}?v=20260715-1" defer></script>
