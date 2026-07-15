@@ -450,3 +450,27 @@ class MarketplaceFeedServiceTests(TestCase):
         self.assertNotIn("<g:id>", buyme_xml)
         self.assertIn("<oldprice>1500</oldprice>", prom_xml)
         self.assertNotIn("<article>", prom_xml)
+
+    def test_snapshot_regenerator_refreshes_every_file_backed_marketplace_feed(self):
+        with TemporaryDirectory() as tmp_dir:
+            media_root = Path(tmp_dir)
+            with override_settings(MEDIA_ROOT=media_root), patch(
+                "storefront.management.commands.regenerate_feeds_if_dirty.call_command"
+            ) as generate:
+                call_command("regenerate_feeds_if_dirty", force=True)
+
+        generated = {
+            call.args[0]: Path(call.kwargs["output"]).name
+            for call in generate.call_args_list
+        }
+        self.assertEqual(
+            generated,
+            {
+                "generate_google_merchant_feed": "google-merchant-v3.xml",
+                "generate_rozetka_feed": "rozetka-feed.xml",
+                "generate_kasta_feed": "kasta-feed.xml",
+                "generate_buyme_feed": "buyme-feed.xml",
+                "generate_prom_feed": "prom-feed.xml",
+                "generate_instagram_feed": "instagram-feed.xml",
+            },
+        )

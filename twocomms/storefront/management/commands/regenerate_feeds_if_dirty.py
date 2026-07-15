@@ -36,6 +36,7 @@ FEED_COMMANDS = {
     "generate_kasta_feed": "kasta-feed.xml",
     "generate_buyme_feed": "buyme-feed.xml",
     "generate_prom_feed": "prom-feed.xml",
+    "generate_instagram_feed": "instagram-feed.xml",
 }
 
 
