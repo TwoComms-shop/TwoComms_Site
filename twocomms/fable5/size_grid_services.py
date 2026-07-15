@@ -14,6 +14,7 @@ from .content_resolution import build_combination_key, normalize_option_values
 from .models import (
     ProductOptionSizeGrid,
     ProductSizeRule,
+    VariantOptionSizeGrid,
     VariantSizeRule,
 )
 
@@ -153,8 +154,19 @@ def normalize_size_grid_payload(payload: dict | None) -> dict:
     return normalized
 
 
-def resolve_option_size_grid(product, option_key: str | dict):
+def resolve_option_size_grid(product, option_key: str | dict, variant=None):
     key = normalize_option_key(option_key)
+    if variant is not None and getattr(variant, "product_id", None) == product.id:
+        variant_assignment = (
+            VariantOptionSizeGrid.objects
+            .filter(variant=variant, option_key=key, size_grid__is_active=True)
+            .select_related("size_grid")
+            .first()
+        )
+        if variant_assignment is not None:
+            profile = getattr(variant_assignment.size_grid, "fable5_profile", None)
+            if profile is None or profile.is_active:
+                return variant_assignment.size_grid
     assignment = (
         ProductOptionSizeGrid.objects
         .filter(product=product, option_key=key, size_grid__is_active=True)
@@ -187,7 +199,7 @@ def resolve_effective_sizes(product, option_key, variant=None) -> list[dict]:
     """Return ordered, enabled rows after product and color/fit overrides."""
 
     key = normalize_option_key(option_key)
-    size_grid = resolve_option_size_grid(product, key)
+    size_grid = resolve_option_size_grid(product, key, variant=variant)
     if size_grid is None:
         return []
     try:
@@ -241,36 +253,160 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
 
     language = lang if lang in {"uk", "ru", "en"} else "uk"
     variants = list(variants or [])
+    fit_options = list(product.fit_options.all())
+    fit_notes = {note.fit_code: note for note in product.fable5_fit_notes.all()}
+    active_fit_codes = {
+        item.code
+        for item in fit_options
+        if item.is_active and (
+            fit_notes.get(item.code) is None
+            or fit_notes[item.code].is_enabled
+        )
+    }
     fit_order = {
         item.code: (item.order, item.id)
-        for item in product.fit_options.all()
+        for item in fit_options
     }
     assignments = list(
         ProductOptionSizeGrid.objects
         .filter(product=product)
-        .select_related("size_grid")
+        .select_related("size_grid", "size_grid__fable5_profile")
         .order_by("id")
     )
-    assignments.sort(
-        key=lambda item: (*fit_order.get(_fit_code(item.option_key), (10_000, item.id)), item.id)
+    assignment_by_key = {item.option_key: item for item in assignments}
+    variant_assignments = list(
+        VariantOptionSizeGrid.objects
+        .filter(variant__in=variants)
+        .select_related("size_grid", "size_grid__fable5_profile")
+        .order_by("id")
+    ) if variants else []
+    variant_assignment_map = {
+        (item.variant_id, item.option_key): item
+        for item in variant_assignments
+    }
+    product_rule_map = {
+        (rule.option_key, normalize_size_value(rule.size)): rule
+        for rule in ProductSizeRule.objects.filter(product=product).order_by("id")
+    }
+    variant_rule_map = {
+        (rule.variant_id, rule.fit_code, normalize_size_value(rule.size)): rule
+        for rule in VariantSizeRule.objects.filter(variant__in=variants).order_by("id")
+    } if variants else {}
+    guide_cache = {}
+
+    def usable_grid(grid):
+        if grid is None or not grid.is_active:
+            return None
+        try:
+            profile = grid.fable5_profile
+        except Exception:
+            profile = None
+        return grid if profile is None or profile.is_active else None
+
+    def grid_for(option_key, variant=None):
+        if variant is not None:
+            override = variant_assignment_map.get((variant.id, option_key))
+            override_grid = usable_grid(override.size_grid if override else None)
+            if override_grid is not None:
+                return override_grid
+        shared = assignment_by_key.get(option_key)
+        return usable_grid(shared.size_grid if shared else None)
+
+    def normalized_guide(grid):
+        if grid.id not in guide_cache:
+            try:
+                guide_cache[grid.id] = normalize_size_grid_payload(
+                    deepcopy(grid.guide_data or {})
+                )
+            except ValidationError:
+                guide_cache[grid.id] = None
+        return guide_cache[grid.id]
+
+    def effective_rows(grid, option_key, variant=None):
+        guide = normalized_guide(grid)
+        if guide is None:
+            return []
+        fit_code = _fit_code(option_key)
+        rows = []
+        for source_row in guide["rows"]:
+            row = deepcopy(source_row)
+            size = normalize_size_value(row.get("size"))
+            product_rule = product_rule_map.get((option_key, size))
+            enabled = product_rule.is_enabled if product_rule is not None else True
+            if variant is not None:
+                color_rule = (
+                    variant_rule_map.get((variant.id, fit_code, size))
+                    or variant_rule_map.get((variant.id, "", size))
+                )
+                if color_rule is not None:
+                    enabled = color_rule.is_enabled and (
+                        color_rule.stock is None or color_rule.stock > 0
+                    )
+            if enabled:
+                row["is_enabled"] = True
+                rows.append(row)
+        return rows
+    option_keys = set(assignment_by_key)
+    option_keys.update(item.option_key for item in variant_assignments)
+    ordered_keys = sorted(
+        option_keys,
+        key=lambda key: (*fit_order.get(_fit_code(key), (10_000, 10_000)), key),
     )
 
     comparison = []
-    for assignment in assignments:
-        size_grid = resolve_option_size_grid(product, assignment.option_key)
+    for option_key in ordered_keys:
+        fit_code = _fit_code(option_key)
+        if fit_options and fit_code and fit_code not in active_fit_codes:
+            continue
+        assignment = assignment_by_key.get(option_key)
+        size_grid = grid_for(option_key)
+        if size_grid is None:
+            for variant in variants:
+                size_grid = grid_for(option_key, variant)
+                if size_grid is not None:
+                    break
         if size_grid is None:
             continue
         try:
-            guide = normalize_size_grid_payload(deepcopy(size_grid.guide_data or {}))
-        except ValidationError:
+            guide = normalized_guide(size_grid)
+        except Exception:
+            guide = None
+        if guide is None:
             continue
-        fit_code = _fit_code(assignment.option_key)
-        base_sizes = resolve_effective_sizes(product, assignment.option_key)
+        base_sizes = effective_rows(size_grid, option_key) if assignment is not None else []
+        if not base_sizes and assignment is None:
+            for variant in variants:
+                variant_grid = grid_for(option_key, variant)
+                base_sizes = effective_rows(
+                    variant_grid,
+                    option_key,
+                    variant,
+                ) if variant_grid is not None else []
+                if base_sizes:
+                    break
+        variant_payloads = []
+        for variant in variants:
+            variant_grid = grid_for(option_key, variant)
+            variant_guide = normalized_guide(variant_grid) if variant_grid is not None else guide
+            if variant_guide is None:
+                variant_guide = guide
+            variant_payloads.append({
+                "variant_id": variant.id,
+                "color_id": variant.color_id,
+                "color_name": getattr(getattr(variant, "color", None), "name", ""),
+                "grid_id": variant_grid.id if variant_grid is not None else None,
+                "guide": variant_guide,
+                "sizes": effective_rows(
+                    variant_grid,
+                    option_key,
+                    variant,
+                ) if variant_grid is not None else [],
+            })
         comparison.append(
             {
-                "option_key": assignment.option_key,
+                "option_key": option_key,
                 "option_values": normalize_option_values(
-                    dict(part.split("=", 1) for part in assignment.option_key.split(";"))
+                    dict(part.split("=", 1) for part in option_key.split(";"))
                 ),
                 "fit_code": fit_code,
                 "label": _fit_label(product, fit_code, language),
@@ -278,18 +414,7 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
                 "grid_name": size_grid.name,
                 "guide": guide,
                 "sizes": base_sizes,
-                "variants": [
-                    {
-                        "variant_id": variant.id,
-                        "color_id": variant.color_id,
-                        "sizes": resolve_effective_sizes(
-                            product,
-                            assignment.option_key,
-                            variant=variant,
-                        ),
-                    }
-                    for variant in variants
-                ],
+                "variants": variant_payloads,
             }
         )
     return comparison

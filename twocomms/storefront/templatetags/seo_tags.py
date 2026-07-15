@@ -155,7 +155,7 @@ def seo_meta_tags(context, product=None, category=None):
 
 
 @register.simple_tag
-def product_schema(product, canonical_path=None, selected_variant=None, review_summary=None):
+def product_schema(product, canonical_path=None, selected_variant=None, review_summary=None, fit_code=""):
     """
     Возвращает JSON-LD schema для товара.
 
@@ -175,6 +175,7 @@ def product_schema(product, canonical_path=None, selected_variant=None, review_s
         canonical_path=canonical_path,
         selected_variant=selected_variant,
         review_summary=review_summary,
+        fit_code=fit_code,
     )
     return mark_safe(f'<script type="application/ld+json">{schema}</script>')
 
@@ -205,7 +206,7 @@ def breadcrumb_schema(breadcrumbs):
 
 @register.simple_tag
 def product_graph(product, breadcrumbs=None, canonical_path=None,
-                  selected_variant=None, review_summary=None):
+                  selected_variant=None, review_summary=None, fit_code=""):
     """Phase 21 (PR-6 T15.1) — emit Product + BreadcrumbList together
     inside a single ``@graph`` JSON-LD block.
 
@@ -224,6 +225,7 @@ def product_graph(product, breadcrumbs=None, canonical_path=None,
         canonical_path=canonical_path,
         selected_variant=selected_variant,
         review_summary=review_summary,
+        fit_code=fit_code,
     )
     # Drop the stand-alone @context — it lives on the wrapper graph.
     product_node.pop("@context", None)

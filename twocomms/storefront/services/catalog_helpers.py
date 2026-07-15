@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import hashlib
 from collections import defaultdict
+from decimal import Decimal
 from typing import Iterable, List, Dict, Any
 
 from django.apps import apps
@@ -226,8 +227,25 @@ def _load_product_color_variant_queryset(product_ids: Iterable[int]):
 
     try:
         return (
-            ProductColorVariant.objects.select_related('color')
-            .prefetch_related('images')
+            ProductColorVariant.objects.select_related(
+                'product',
+                'color',
+                'color__fable5_profile',
+                'fable5_details',
+            )
+            .prefetch_related(
+                'images',
+                'fable5_fit_rules',
+                'fable5_size_rules',
+                'fable5_faqs',
+                'fable5_details__i18n',
+                'fable5_combinations',
+                'fable5_combinations__i18n',
+                'product__fit_options',
+                'product__fable5_fit_notes',
+                'product__fable5_option_profiles',
+                'product__fable5_option_profiles__i18n',
+            )
             .filter(product_id__in=product_ids)
             .order_by('product_id', 'order', 'id')
         )
@@ -240,6 +258,7 @@ def build_color_preview_map(products: Iterable[Any]) -> Dict[int, List[Dict[str,
     """
     Returns mapping {product_id: [colour preview dicts]} suitable for product cards / featured.
     """
+    products = list(products)
     product_ids = [p.id for p in products if getattr(p, 'id', None)]
     if not product_ids:
         return {}
@@ -250,7 +269,23 @@ def build_color_preview_map(products: Iterable[Any]) -> Dict[int, List[Dict[str,
 
     preview_map: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for variant in queryset:
+        from fable5.services import variant_public_context
+
         color = getattr(variant, 'color', None)
+        merchandising = variant_public_context(variant)
+        fit_merchandising = []
+        for fit_code in merchandising.get('available_fit_codes') or []:
+            fit_merchandising.append(
+                variant_public_context(variant, fit_code=fit_code)
+            )
+        if fit_merchandising:
+            # Cards communicate the lowest purchasable combination price. This
+            # avoids presenting a thermo/default colour as more expensive when
+            # another allowed fit or colour is cheaper.
+            merchandising = min(
+                fit_merchandising,
+                key=lambda item: Decimal(str(item['final_price'])),
+            )
         # Use the prefetched images directly without calling .all() again
         # This prevents N+1 queries
         images = getattr(variant, '_prefetched_objects_cache', {}).get('images', [])
@@ -277,13 +312,48 @@ def build_color_preview_map(products: Iterable[Any]) -> Dict[int, List[Dict[str,
         preview_map[variant.product_id].append(
             {
                 'id': variant.id,
+                'slug': getattr(variant, 'slug', '') or '',
                 'name': _display_color_name(color),
                 'primary_hex': getattr(color, 'primary_hex', '') or '',
                 'secondary_hex': getattr(color, 'secondary_hex', '') or '',
                 'first_image_url': first_image,
                 'original_image_url': original_image,
                 'is_default': bool(getattr(variant, 'is_default', False)),
+                'is_thermo': merchandising['is_thermo'],
+                'thermo_note': merchandising['thermo_note'],
+                'final_price': merchandising['final_price'],
+                'price_difference': merchandising['price_difference'],
+                'price_reason': merchandising['price_delta_reason'],
+                'has_price_adjustment': merchandising['has_price_adjustment'],
+                'fit_rules': merchandising['fit_rules'],
             }
+        )
+
+    for product in products:
+        variants = preview_map.get(product.id, [])
+        prices = [
+            Decimal(str(item['final_price']))
+            for item in variants
+            if item.get('final_price') is not None
+        ]
+        fallback = Decimal(str(getattr(product, 'final_price', 0) or 0))
+        product.card_price_min = min(prices) if prices else fallback
+        product.card_price_max = max(prices) if prices else fallback
+        product.card_has_variant_prices = product.card_price_min != product.card_price_max
+        default_variant = next(
+            (item for item in variants if item.get('is_default')),
+            variants[0] if variants else None,
+        )
+        product.card_selected_price = (
+            Decimal(str(default_variant['final_price']))
+            if default_variant is not None
+            else fallback
+        )
+        product.card_selected_price_reason = (
+            default_variant.get('price_reason', '') if default_variant else ''
+        )
+        product.card_selected_is_thermo = bool(
+            default_variant and default_variant.get('is_thermo')
         )
 
     return preview_map
@@ -299,7 +369,11 @@ def build_color_preview_key(variants: Iterable[Dict[str, Any]]) -> str:
 
     digest = hashlib.blake2s(digest_size=8)
     for variant in variants:
-        for field in ("id", "name", "primary_hex", "secondary_hex", "first_image_url", "is_default"):
+        for field in (
+            "id", "name", "primary_hex", "secondary_hex", "first_image_url",
+            "is_default", "is_thermo", "final_price", "price_reason",
+            "has_price_adjustment", "fit_rules",
+        ):
             digest.update(str(variant.get(field, "")).encode("utf-8"))
             digest.update(b"\0")
 
@@ -358,7 +432,10 @@ def get_detailed_color_variants(product) -> List[Dict[str, Any]]:
 
     variants: List[Dict[str, Any]] = []
     for variant in queryset:
+        from fable5.services import variant_public_context
+
         color = getattr(variant, 'color', None)
+        merchandising = variant_public_context(variant)
         # Use the prefetched images directly without calling .all() again
         # This prevents N+1 queries
         images = getattr(variant, '_prefetched_objects_cache', {}).get('images', [])
@@ -393,6 +470,21 @@ def get_detailed_color_variants(product) -> List[Dict[str, Any]]:
                 'primary_hex': getattr(color, 'primary_hex', '') or '',
                 'secondary_hex': getattr(color, 'secondary_hex', '') or '',
                 'is_default': bool(getattr(variant, 'is_default', False)),
+                'is_thermo': merchandising['is_thermo'],
+                'thermo_note': merchandising['thermo_note'],
+                'thermo_description': merchandising['thermo_description'],
+                'final_price': merchandising['final_price'],
+                'price_difference': merchandising['price_difference'],
+                'price_reason': merchandising['price_delta_reason'],
+                'has_price_adjustment': merchandising['has_price_adjustment'],
+                'fit_rules': merchandising['fit_rules'],
+                'available_fit_codes': merchandising['available_fit_codes'],
+                'size_rules': merchandising['size_rules'],
+                'display_name': merchandising['display_name'],
+                'marketing_html': merchandising['marketing_html'],
+                'seo_title': merchandising['seo_title'],
+                'seo_description': merchandising['seo_description'],
+                'seo_keywords': merchandising['seo_keywords'],
                 'images': image_urls,
             }
         )

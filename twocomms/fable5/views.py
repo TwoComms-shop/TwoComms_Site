@@ -47,14 +47,19 @@ except Exception:  # pragma: no cover
 
 from .models import (
     ColorProfile,
+    CoverSource,
     FeedImageRule,
     FeedOnlyImage,
     FeedProductRule,
     FeedProfile,
     ProductFitNote,
+    VariantBlankLink,
+    VariantCombinationProfile,
+    VariantCombinationProfileI18n,
     VariantDetails,
     VariantFAQ,
     VariantFitRule,
+    VariantOptionSizeGrid,
     VariantSizeRule,
 )
 from .translit import smart_slugify, unique_product_slug
@@ -234,6 +239,53 @@ def _variant_payload(variant):
             {"fit_code": r.fit_code, "size": r.size, "is_enabled": r.is_enabled, "stock": r.stock, "note": r.note}
             for r in variant.fable5_size_rules.all()
         ],
+        "size_grids": [
+            {
+                "option_key": assignment.option_key,
+                "size_grid_id": assignment.size_grid_id,
+            }
+            for assignment in variant.fable5_size_grid_assignments.all().order_by("option_key", "id")
+        ],
+        "blank_links": [
+            {
+                "option_key": link.option_key,
+                "storage_subcategory_id": link.storage_subcategory_id,
+                "note": link.note,
+            }
+            for link in variant.fable5_blank_links.all().order_by("option_key", "id")
+        ],
+        "combinations": [
+            {
+                "id": profile.id,
+                "combination_key": profile.combination_key,
+                "option_values": profile.option_values,
+                "is_active": profile.is_active,
+                "price_delta": profile.price_delta,
+                "price_delta_reason": profile.price_delta_reason,
+                "youtube_url": profile.youtube_url,
+                "content": {
+                    field: getattr(content, field, "") if content else ""
+                    for field in (
+                        "display_name", "short_description", "full_description",
+                        "marketing_text", "seo_title", "seo_description",
+                        "seo_keywords", "og_title", "og_description",
+                    )
+                },
+                "content_by_lang": {
+                    row.lang: {
+                        field: getattr(row, field, "")
+                        for field in (
+                            "display_name", "short_description", "full_description",
+                            "marketing_text", "seo_title", "seo_description",
+                            "seo_keywords", "og_title", "og_description",
+                        )
+                    }
+                    for row in profile.i18n.all()
+                },
+            }
+            for profile in variant.fable5_combinations.prefetch_related("i18n").all()
+            for content in [next((row for row in profile.i18n.all() if row.lang == "uk"), None)]
+        ],
         "faqs": [
             {
                 "id": f.id, "order": f.order, "is_active": f.is_active,
@@ -272,6 +324,7 @@ def _product_fits_payload(product):
 
 
 def _product_payload(product):
+    cover_source = CoverSource.objects.filter(product=product).first()
     data = {
         "id": product.id,
         "title": product.title or "",
@@ -298,6 +351,12 @@ def _product_payload(product):
         "fit_selector_enabled": bool(getattr(product, "fit_selector_enabled", True)),
         "main_image_url": _img_url(product.main_image),
         "home_card_image_url": _img_url(getattr(product, "home_card_image", None)),
+        "cover_source": {
+            "source_type": cover_source.source_type if cover_source else "upload",
+            "color_image_id": cover_source.color_image_id if cover_source else None,
+            "product_image_id": cover_source.product_image_id if cover_source else None,
+            "source_missing": bool(cover_source and cover_source.source_missing),
+        },
         "images": [
             {"id": im.id, "url": _img_url(im.image), "alt": im.alt_text or "", "order": im.order}
             for im in product.images.all()
@@ -319,6 +378,8 @@ def _product_payload(product):
 
 
 def _bootstrap_payload(product=None):
+    from warehouse.models import StorageSubcategory
+
     return {
         "dictionaries": {
             "categories": [
@@ -329,6 +390,16 @@ def _bootstrap_payload(product=None):
             "size_grids": [
                 {"id": g.id, "name": getattr(g, "name", str(g)), "catalog_id": getattr(g, "catalog_id", None)}
                 for g in SizeGrid.objects.all()
+            ],
+            "storage_blanks": [
+                {
+                    "id": blank.id,
+                    "name": str(blank),
+                    "category_id": blank.category_id,
+                }
+                for blank in StorageSubcategory.objects.select_related("category")
+                .filter(is_active=True)
+                .order_by("category__order", "category__name", "order", "name")
             ],
             "colors": [
                 _color_payload(c)
@@ -464,6 +535,15 @@ def api_product_save(request):
 
     product.save()
     if request.FILES.get("main_image"):
+        CoverSource.objects.update_or_create(
+            product=product,
+            defaults={
+                "source_type": CoverSource.SourceType.UPLOAD,
+                "color_image": None,
+                "product_image": None,
+                "source_missing": False,
+            },
+        )
         _optimize_async(product, "main_image")
     if request.FILES.get("home_card_image"):
         _optimize_async(product, "home_card_image")
@@ -581,6 +661,19 @@ def api_image_update(request):
     product = get_object_or_404(Product, pk=_int_or_none(data.get("product_id")))
     image = _get_image(data.get("kind") or "product", _int_or_none(data.get("id")), product)
     if data.get("delete"):
+        cover = CoverSource.objects.filter(product=product).first()
+        if cover and (
+            (
+                isinstance(image, ProductColorImage)
+                and cover.color_image_id == getattr(image, "id", None)
+            )
+            or (
+                isinstance(image, ProductImage)
+                and cover.product_image_id == getattr(image, "id", None)
+            )
+        ):
+            cover.source_missing = True
+            cover.save(update_fields=["source_missing", "updated_at"])
         image.delete()
         return JsonResponse({"ok": True, "deleted": True})
     if "alt" in data:
@@ -628,10 +721,26 @@ def api_set_cover(request):
             product.main_image_alt = image.alt_text
             update_fields.append("main_image_alt")
     product.save(update_fields=update_fields)
+    if target != "home_card":
+        is_color_image = isinstance(image, ProductColorImage)
+        CoverSource.objects.update_or_create(
+            product=product,
+            defaults={
+                "source_type": (
+                    CoverSource.SourceType.COLOR_IMAGE
+                    if is_color_image
+                    else CoverSource.SourceType.PRODUCT_IMAGE
+                ),
+                "color_image": image if is_color_image else None,
+                "product_image": image if not is_color_image else None,
+                "source_missing": False,
+            },
+        )
     return JsonResponse({
         "ok": True,
         "main_image_url": _img_url(product.main_image),
         "home_card_image_url": _img_url(getattr(product, "home_card_image", None)),
+        "cover_source": _product_payload(product)["cover_source"],
     })
 
 
@@ -680,6 +789,8 @@ def api_colors(request):
     if request.method == "POST":
         data = _json_body(request)
         color = _resolve_color(data)
+        from storefront.services.catalog_helpers import bump_public_product_order_version
+        transaction.on_commit(bump_public_product_order_version)
         return JsonResponse({"ok": True, "color": _color_payload(color)})
     query = (request.GET.get("q") or "").strip()
     colors = Color.objects.all().order_by("name")
@@ -758,6 +869,131 @@ def api_variant_save(request):
             ))
         VariantSizeRule.objects.bulk_create(rules)
 
+    # A colour may inherit the shared product/fit grid or override it.
+    if "size_grids" in data:
+        from .size_grid_services import normalize_option_key
+
+        variant.fable5_size_grid_assignments.all().delete()
+        assignments = []
+        seen_keys = set()
+        for item in data.get("size_grids") or []:
+            grid_id = _int_or_none(item.get("size_grid_id"))
+            if not grid_id:
+                continue
+            option_key = normalize_option_key(item.get("option_key"))
+            if option_key in seen_keys:
+                continue
+            seen_keys.add(option_key)
+            assignments.append(VariantOptionSizeGrid(
+                variant=variant,
+                option_key=option_key,
+                size_grid=get_object_or_404(SizeGrid, pk=grid_id, is_active=True),
+            ))
+        VariantOptionSizeGrid.objects.bulk_create(assignments)
+
+    # The warehouse link points to a blank family/cut; concrete stock is still
+    # selected by colour and size when the order is written off.
+    if "blank_links" in data:
+        from warehouse.models import StorageSubcategory
+        from .size_grid_services import normalize_option_key
+
+        variant.fable5_blank_links.all().delete()
+        links = []
+        seen_keys = set()
+        for item in data.get("blank_links") or []:
+            blank_id = _int_or_none(item.get("storage_subcategory_id"))
+            if not blank_id:
+                continue
+            option_key = normalize_option_key(item.get("option_key"))
+            if option_key in seen_keys:
+                continue
+            seen_keys.add(option_key)
+            links.append(VariantBlankLink(
+                variant=variant,
+                option_key=option_key,
+                storage_subcategory=get_object_or_404(
+                    StorageSubcategory,
+                    pk=blank_id,
+                    is_active=True,
+                ),
+                note=(item.get("note") or "")[:255],
+            ))
+        VariantBlankLink.objects.bulk_create(links)
+
+    # Sparse color × fit overrides. Blank fields intentionally inherit the
+    # color-level VariantDetails values resolved by content_resolution.py.
+    if "combinations" in data:
+        from .content_resolution import build_combination_key, normalize_option_values
+
+        content_fields = (
+            "display_name", "short_description", "full_description",
+            "marketing_text", "seo_title", "seo_description", "seo_keywords",
+            "og_title", "og_description",
+        )
+        with transaction.atomic():
+            existing = {
+                profile.combination_key: profile
+                for profile in variant.fable5_combinations.prefetch_related("i18n")
+            }
+            seen_keys = set()
+            for item in data.get("combinations") or []:
+                values = normalize_option_values(item.get("option_values") or {})
+                combination_key = build_combination_key(values)
+                if not combination_key or combination_key in seen_keys:
+                    continue
+                seen_keys.add(combination_key)
+                profile = existing.get(combination_key)
+                profile_values = {
+                    "option_values": values,
+                    "is_active": bool(item.get("is_active", True)),
+                    "price_delta": _int_or_none(item.get("price_delta")),
+                    "price_delta_reason": (item.get("price_delta_reason") or "")[:255],
+                    "youtube_url": (item.get("youtube_url") or "")[:500],
+                }
+                if profile is None:
+                    profile = VariantCombinationProfile.objects.create(
+                        variant=variant,
+                        combination_key=combination_key,
+                        **profile_values,
+                    )
+                else:
+                    for field, value in profile_values.items():
+                        setattr(profile, field, value)
+                    profile.save(update_fields=[*profile_values.keys(), "updated_at"])
+
+                translations = item.get("content_by_lang")
+                if not isinstance(translations, dict):
+                    translations = {"uk": item.get("content") or {}}
+                for lang, content in translations.items():
+                    if lang not in {"uk", "ru", "en"} or not isinstance(content, dict):
+                        continue
+                    localized = {
+                        "display_name": (content.get("display_name") or "")[:220],
+                        "short_description": content.get("short_description") or "",
+                        "full_description": content.get("full_description") or "",
+                        "marketing_text": content.get("marketing_text") or "",
+                        "seo_title": (content.get("seo_title") or "")[:180],
+                        "seo_description": (content.get("seo_description") or "")[:320],
+                        "seo_keywords": (content.get("seo_keywords") or "")[:300],
+                        "og_title": (content.get("og_title") or "")[:180],
+                        "og_description": (content.get("og_description") or "")[:320],
+                    }
+                    if any(str(localized[field]).strip() for field in content_fields):
+                        VariantCombinationProfileI18n.objects.update_or_create(
+                            profile=profile,
+                            lang=lang,
+                            defaults=localized,
+                        )
+                    else:
+                        VariantCombinationProfileI18n.objects.filter(
+                            profile=profile,
+                            lang=lang,
+                        ).delete()
+
+            variant.fable5_combinations.exclude(
+                combination_key__in=seen_keys
+            ).delete()
+
     # FAQ для цього кольору (3 мови)
     if "faqs" in data:
         variant.fable5_faqs.all().delete()
@@ -802,6 +1038,8 @@ def api_variants_reorder(request):
     product = get_object_or_404(Product, pk=_int_or_none(data.get("product_id")))
     for index, variant_id in enumerate(data.get("ids") or []):
         ProductColorVariant.objects.filter(pk=_int_or_none(variant_id), product=product).update(order=index)
+    from storefront.services.catalog_helpers import bump_public_product_order_version
+    transaction.on_commit(bump_public_product_order_version)
     return JsonResponse({"ok": True})
 
 

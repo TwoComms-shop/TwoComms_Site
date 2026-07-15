@@ -185,6 +185,129 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(bulk_items[0].unit_price, self.product.final_price)
         self.assertEqual(bulk_items[0].line_total, self.product.final_price * 2)
 
+    def test_create_order_uses_fable5_color_variant_price(self):
+        from productcolors.models import Color, ProductColorVariant
+
+        color = Color.objects.create(name="Термо-зелена", primary_hex="#82956f")
+        variant = ProductColorVariant.objects.create(
+            product=self.product,
+            color=color,
+            price_override=1450,
+        )
+        session = self.client.session
+        session["cart"] = {
+            f"{self.product.id}:M:{variant.id}": {
+                "product_id": self.product.id,
+                "color_variant_id": variant.id,
+                "qty": 1,
+                "size": "M",
+            }
+        }
+        session.save()
+        delivery = self.delivery_payload()
+        fake_order_item_class, fake_manager = self.make_fake_order_item_class()
+
+        with patch("storefront.views.checkout.OrderItem", fake_order_item_class):
+            response = self.client.post(
+                self.order_create_url,
+                {
+                    "full_name": "Thermo Buyer",
+                    "phone": "+380501112233",
+                    "city": delivery["city"],
+                    "np_office": delivery["np_office"],
+                    "np_settlement_ref": delivery["np_settlement_ref"],
+                    "np_city_ref": delivery["np_city_ref"],
+                    "np_city_token": delivery["np_city_token"],
+                    "np_warehouse_ref": delivery["np_warehouse_ref"],
+                    "np_warehouse_token": delivery["np_warehouse_token"],
+                    "pay_type": "cod",
+                },
+                secure=True,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        order = Order.objects.get()
+        self.assertEqual(order.total_sum, Decimal("1450"))
+        created_item = fake_manager.bulk_create.call_args.args[0][0]
+        self.assertEqual(created_item.unit_price, Decimal("1450"))
+
+    def test_create_order_rejects_variant_size_disabled_after_cart_add(self):
+        from fable5.models import VariantSizeRule
+        from productcolors.models import Color, ProductColorVariant
+        from storefront.models import ProductFitOption
+
+        ProductFitOption.objects.create(
+            product=self.product,
+            code="oversize",
+            label="Оверсайз",
+            is_active=True,
+            is_default=True,
+        )
+        variant = ProductColorVariant.objects.create(
+            product=self.product,
+            color=Color.objects.create(name="Олива", primary_hex="#687057"),
+        )
+        VariantSizeRule.objects.create(
+            variant=variant,
+            fit_code="oversize",
+            size="M",
+            is_enabled=False,
+        )
+        session = self.client.session
+        session["cart"] = {
+            "stale-line": {
+                "product_id": self.product.pk,
+                "color_variant_id": variant.pk,
+                "fit_option_code": "oversize",
+                "fit_option_label": "Оверсайз",
+                "size": "M",
+                "qty": 1,
+            },
+        }
+        session.save()
+        delivery = self.delivery_payload()
+
+        response = self.client.post(
+            self.order_create_url,
+            self._cod_post_payload(delivery, full_name="Stale Variant Buyer"),
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("cart"))
+        self.assertFalse(Order.objects.exists())
+
+    def test_create_order_rejects_deleted_color_variant_from_stale_cart(self):
+        from productcolors.models import Color, ProductColorVariant
+
+        variant = ProductColorVariant.objects.create(
+            product=self.product,
+            color=Color.objects.create(name="Тимчасовий колір", primary_hex="#777777"),
+        )
+        stale_variant_id = variant.pk
+        session = self.client.session
+        session["cart"] = {
+            "deleted-variant-line": {
+                "product_id": self.product.pk,
+                "color_variant_id": stale_variant_id,
+                "size": "M",
+                "qty": 1,
+            },
+        }
+        session.save()
+        variant.delete()
+        delivery = self.delivery_payload()
+
+        response = self.client.post(
+            self.order_create_url,
+            self._cod_post_payload(delivery, full_name="Stale Color Buyer"),
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("cart"))
+        self.assertFalse(Order.objects.exists())
+
     def test_create_order_guest_cod_persists_new_session_key(self):
         """F-044/F-074: an unsaved guest session must be established before
         the Order row is created, not later by analytics side effects.

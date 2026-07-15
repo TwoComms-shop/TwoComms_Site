@@ -53,3 +53,42 @@
 		animation: none;
 	}
 }
+
+/* Shared public flame: readable at 14–28 px and independent of emoji fonts. */
+.tc-thermo-flame {
+	display: block;
+	width: 1em;
+	height: 1em;
+	color: #ff7824;
+	filter:
+		drop-shadow(0 1px 1px rgba(20, 6, 0, 0.72))
+		drop-shadow(0 0 4px rgba(255, 111, 24, 0.82));
+	transform-origin: 50% 84%;
+	animation: tc-thermo-flame-live 1.8s cubic-bezier(.2, .8, .2, 1) infinite;
+	pointer-events: none;
+}
+
+.tc-thermo-flame__outer {
+	color: #ff7824;
+}
+
+.tc-thermo-flame__core {
+	color: #ffd166;
+}
+
+@keyframes tc-thermo-flame-live {
+	0%, 100% { transform: translateY(0) scale(1) rotate(0deg); }
+	36% { transform: translateY(-1px) scale(.93, 1.06) rotate(-2deg); }
+	68% { transform: translateY(0) scale(1.06, .96) rotate(2deg); }
+}
+
+html[data-device-class="low"] .tc-thermo-flame,
+html.perf-lite .tc-thermo-flame {
+	animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tc-thermo-flame {
+		animation: none;
+	}
+}

@@ -261,6 +261,79 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
     # Варианты цветов с изображениями (если есть приложение и данные)
     color_variants = get_detailed_color_variants(product)
 
+    # Fable5 size grids can differ by fit and by colour. Build the complete
+    # matrix before parsing variant URLs so a size that exists only in a
+    # colour override is still a valid path segment and receives an offer ID.
+    has_fable_size_matrix = False
+    grid_variants = []
+    try:
+        from fable5.size_grid_services import build_size_grid_comparison
+        from productcolors.models import ProductColorVariant as _GridVariant
+
+        grid_variants = list(
+            _GridVariant.objects
+            .filter(product=product)
+            .select_related(
+                'product',
+                'color',
+                'color__fable5_profile',
+                'fable5_details',
+            )
+            .prefetch_related(
+                'fable5_details__i18n',
+                'fable5_fit_rules',
+                'fable5_size_rules',
+                'fable5_faqs',
+                'fable5_combinations',
+                'fable5_combinations__i18n',
+                'product__fit_options',
+                'product__fable5_fit_notes',
+                'product__fable5_option_profiles',
+                'product__fable5_option_profiles__i18n',
+            )
+            .order_by('order', 'id')
+        )
+        size_grid_comparison = build_size_grid_comparison(
+            product,
+            variants=grid_variants,
+            lang=getattr(request, 'LANGUAGE_CODE', 'uk')[:2],
+        )
+        variant_size_matrix = {}
+        color_entries_by_id = {
+            entry.get('id'): entry for entry in color_variants
+        }
+        fable_size_order = []
+        for grid_item in size_grid_comparison:
+            fit_code = grid_item.get('fit_code', '')
+            for variant_item in grid_item.get('variants', []):
+                sizes = [
+                    row.get('size')
+                    for row in variant_item.get('sizes', [])
+                    if row.get('size')
+                ]
+                variant_size_matrix.setdefault(
+                    variant_item.get('variant_id'), {}
+                )[fit_code] = sizes
+                color_entry = color_entries_by_id.get(variant_item.get('variant_id'))
+                if color_entry is not None:
+                    color_entry.setdefault('size_guides_by_fit', {})[fit_code] = (
+                        variant_item.get('guide') or grid_item.get('guide') or {}
+                    )
+                for size in sizes:
+                    if size not in fable_size_order:
+                        fable_size_order.append(size)
+        for variant in color_variants:
+            variant['available_sizes_by_fit'] = variant_size_matrix.get(
+                variant.get('id'), {}
+            )
+        if fable_size_order:
+            has_fable_size_matrix = True
+            available_sizes = fable_size_order
+            if preselected_size not in available_sizes:
+                preselected_size = available_sizes[0]
+    except Exception:
+        size_grid_comparison = []
+
     # Phase 7.2 — path-style variant URLs. Segments may arrive in any
     # order; we dispatch content-addressably (a segment is a size if it
     # matches ``available_sizes``, a colour if it matches a variant
@@ -304,10 +377,12 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
 
         if parsed_size is not None:
             preselected_size = parsed_size
-            # Re-resolve size context so ``selected_size`` reflects the
-            # path choice rather than the earlier query/default value.
-            size_context = resolve_product_size_context(product, parsed_size)
-            preselected_size = size_context["selected_size"]
+            # Fable grids are authoritative when present. Passing a size that
+            # exists only in a color/fit override through the legacy resolver
+            # would silently replace it with a different default size.
+            if not has_fable_size_matrix:
+                size_context = resolve_product_size_context(product, parsed_size)
+                preselected_size = size_context["selected_size"]
         if parsed_color_id is not None:
             preselected_color_id = str(parsed_color_id)
         if parsed_fit is not None:
@@ -378,6 +453,27 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
         # Если н��т главного изображения, автоматически выбираем первый цвет
         if not product.main_image:
             auto_select_first_color = True
+
+        # A colour/fit/size URL is a purchasable variant contract, not merely
+        # decorative SEO text. Reject impossible combinations instead of
+        # silently rendering another fit under the requested canonical URL.
+        selected_entry = color_variants[0]
+        if path_fit_code:
+            fit_rule = selected_entry.get('fit_rules', {}).get(path_fit_code)
+            if fit_rule is not None and not fit_rule.get('is_enabled', True):
+                raise Http404("Fit is unavailable for the selected colour")
+        if path_parsed_size:
+            size_matrix = selected_entry.get('available_sizes_by_fit', {})
+            if path_fit_code and path_fit_code in size_matrix:
+                allowed_path_sizes = size_matrix[path_fit_code]
+            else:
+                allowed_path_sizes = [
+                    size
+                    for sizes in size_matrix.values()
+                    for size in sizes
+                ]
+            if size_matrix and path_parsed_size not in allowed_path_sizes:
+                raise Http404("Size is unavailable for the selected colour")
 
     # Генерируем offer_id mapping для всех комбинаций (цвет × размер)
     # Формат: { "variant_id:size": "offer_id" } или { "default:size": "offer_id" }
@@ -487,6 +583,25 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
 
     public_product_order_version = get_public_product_order_version()
     fit_options = _resolve_fit_options(product)
+
+    # Fable5 is colour-first: the first entry is the active colour after the
+    # preselection/default reordering above.  Price, thermo messaging and fit
+    # availability must therefore all be derived from that same entry.
+    selected_variant_merchandising = color_variants[0] if color_variants else {}
+    selected_variant_price = selected_variant_merchandising.get('final_price') or product.final_price
+    selected_variant_original_price = product.price
+
+    # Do not render a fit that cannot be purchased for any visible colour.
+    # When several colours differ, JS keeps the union in the DOM and toggles
+    # each option for the currently selected colour without a page reload.
+    if fit_options and color_variants:
+        fit_options = [
+            option for option in fit_options
+            if any(
+                variant.get('fit_rules', {}).get(option.code, {}).get('is_enabled', True)
+                for variant in color_variants
+            )
+        ]
     # Phase 7.2 — path fit wins over query fit; fallback chain is
     # path → ``?fit=`` query → default option.
     requested_fit_code = path_fit_code or preselected_fit_from_query
@@ -495,10 +610,96 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
         if selected_fit is None:
             selected_fit = next((option for option in fit_options if option.is_default), fit_options[0])
         preselected_fit_code = selected_fit.code
+        # Query-selected defaults may be unavailable for the active colour.
+        # Choose that colour's first purchasable fit so server-rendered price,
+        # SEO and the checked control start from one exact combination.
+        if color_variants:
+            active_rules = color_variants[0].get('fit_rules', {})
+            if not active_rules.get(preselected_fit_code, {}).get('is_enabled', True):
+                allowed_fit = next(
+                    (
+                        option for option in fit_options
+                        if active_rules.get(option.code, {}).get('is_enabled', True)
+                    ),
+                    None,
+                )
+                if allowed_fit is not None:
+                    preselected_fit_code = allowed_fit.code
         for option in fit_options:
             option.is_default = option.code == preselected_fit_code
     else:
         preselected_fit_code = ''
+
+    # Resolve sparse color × fit content and pricing for the active fit. This
+    # keeps PDP display, cart snapshots and SEO on the same inheritance layer.
+    if preselected_fit_code and color_variants:
+        try:
+            from fable5.services import variant_public_context
+
+            variants_by_id = {variant.id: variant for variant in grid_variants}
+            for entry in color_variants:
+                db_variant = variants_by_id.get(entry.get('id'))
+                if db_variant is None:
+                    continue
+                by_fit = {}
+                for option in fit_options:
+                    rule = entry.get('fit_rules', {}).get(option.code, {})
+                    if not rule.get('is_enabled', True):
+                        continue
+                    resolved = variant_public_context(
+                        db_variant,
+                        fit_code=option.code,
+                        lang=getattr(request, 'LANGUAGE_CODE', 'uk')[:2],
+                    )
+                    by_fit[option.code] = {
+                        'final_price': resolved['final_price'],
+                        'price_difference': resolved['price_difference'],
+                        'price_reason': resolved['price_delta_reason'],
+                        'has_price_adjustment': resolved['has_price_adjustment'],
+                        'display_name': resolved['display_name'],
+                        'marketing_html': resolved['marketing_html'],
+                        'seo_title': resolved['seo_title'],
+                        'seo_description': resolved['seo_description'],
+                        'seo_keywords': resolved['seo_keywords'],
+                    }
+                entry['merchandising_by_fit'] = by_fit
+                fit_merchandising = (
+                    by_fit.get(preselected_fit_code)
+                    or next(iter(by_fit.values()), {})
+                )
+                entry.update({
+                    key: value for key, value in fit_merchandising.items()
+                })
+        except Exception:
+            pass
+
+    selected_variant_merchandising = color_variants[0] if color_variants else {}
+    selected_variant_price = selected_variant_merchandising.get('final_price') or product.final_price
+
+    # Select the currently active colour's override for the visible comparison
+    # tables; both fit cards remain visible side-by-side.
+    try:
+        selected_grid_variant_id = color_variants[0].get('id') if color_variants else None
+        for grid_item in size_grid_comparison:
+            selected_grid_variant = next(
+                (
+                    item for item in grid_item.get('variants', [])
+                    if item.get('variant_id') == selected_grid_variant_id
+                ),
+                None,
+            )
+            grid_item['display_guide'] = (
+                selected_grid_variant.get('guide')
+                if selected_grid_variant
+                else grid_item.get('guide')
+            )
+            grid_item['selected_color_name'] = (
+                selected_grid_variant.get('color_name', '')
+                if selected_grid_variant
+                else ''
+            )
+    except Exception:
+        pass
 
     # Phase 7.3 — dynamic canonical + title/description for path-style
     # variant URLs. Only the path (``/product/x/black/m/``) drives
@@ -507,6 +708,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
     base_path = reverse('product', kwargs={'slug': product.slug})
     active_color_name = ""
     active_color_slug = ""
+    active_variant_entry = None
     if path_parsed_color_id is not None and color_variants:
         active_variant_entry = next(
             (v for v in color_variants if v.get('id') == path_parsed_color_id),
@@ -555,6 +757,13 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             fit_code=path_fit_code or None,
         )
     )
+    if active_variant_entry is not None:
+        if active_variant_entry.get('seo_title'):
+            variant_meta['page_title'] = active_variant_entry['seo_title']
+        if active_variant_entry.get('seo_description'):
+            variant_meta['page_description'] = active_variant_entry['seo_description']
+        if active_variant_entry.get('seo_keywords'):
+            variant_meta['page_keywords'] = active_variant_entry['seo_keywords']
 
     # Phase 21 (2026-05-10) — review summary + approved review list for
     # the PDP. Summary feeds the ``aggregateRating`` block (rendered
@@ -617,10 +826,14 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             'size_display_labels': size_context["display_labels"],
             'resolved_size_guide': size_context["guide"],
             'resolved_size_profile': size_context["profile"],
+            'size_grid_comparison': size_grid_comparison,
             'public_product_order_version': public_product_order_version,
             'fit_options': fit_options,
             'show_fit_selector': bool(fit_options),
             'preselected_fit_code': preselected_fit_code,
+            'selected_variant_price': selected_variant_price,
+            'selected_variant_original_price': selected_variant_original_price,
+            'selected_variant_merchandising': selected_variant_merchandising,
             # Phase 7.3 — variant-aware SEO meta.
             'variant_canonical_path': variant_meta['canonical_path'],
             'variant_page_title': variant_meta['page_title'],

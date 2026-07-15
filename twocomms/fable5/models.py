@@ -646,6 +646,67 @@ class ProductOptionSizeGrid(models.Model):
         return f"p{self.product_id}:{self.option_key}:grid{self.size_grid_id}"
 
 
+class VariantOptionSizeGrid(models.Model):
+    """Optional per-colour override of a shared product/fit size grid."""
+
+    variant = models.ForeignKey(
+        ProductColorVariant,
+        on_delete=models.CASCADE,
+        related_name="fable5_size_grid_assignments",
+        db_constraint=False,
+    )
+    option_key = models.CharField(max_length=160)
+    size_grid = models.ForeignKey(
+        SizeGrid,
+        on_delete=models.PROTECT,
+        related_name="fable5_variant_assignments",
+        db_constraint=False,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("variant", "option_key"),
+                name="f5_unique_variant_option_grid",
+            )
+        ]
+
+    def __str__(self):
+        return f"v{self.variant_id}:{self.option_key}:grid{self.size_grid_id}"
+
+
+class VariantBlankLink(models.Model):
+    """Warehouse blank family used by a colour/fit during fulfilment."""
+
+    variant = models.ForeignKey(
+        ProductColorVariant,
+        on_delete=models.CASCADE,
+        related_name="fable5_blank_links",
+        db_constraint=False,
+    )
+    option_key = models.CharField(max_length=160)
+    storage_subcategory = models.ForeignKey(
+        "warehouse.StorageSubcategory",
+        on_delete=models.PROTECT,
+        related_name="fable5_variant_links",
+        db_constraint=False,
+    )
+    note = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("variant", "option_key"),
+                name="f5_unique_variant_blank_link",
+            )
+        ]
+
+    def __str__(self):
+        return f"v{self.variant_id}:{self.option_key}:blank{self.storage_subcategory_id}"
+
+
 class ProductSizeRule(models.Model):
     product = models.ForeignKey(
         Product,

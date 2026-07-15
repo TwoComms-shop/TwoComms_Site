@@ -10,8 +10,10 @@ from accounts.models import UserProfile
 from orders.models import Order
 from orders.nova_poshta_documents import normalize_checkout_phone, normalize_phone, normalize_phone_for_np
 from orders.nova_poshta_checkout import build_city_choice_token, build_warehouse_choice_token
+from fable5.models import ProductOptionProfile, VariantDetails
+from productcolors.models import Color, ProductColorVariant
 from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
-from storefront.models import Category, CustomPrintLead, CustomPrintModerationStatus, Product
+from storefront.models import Category, CustomPrintLead, CustomPrintModerationStatus, Product, ProductFitOption
 
 
 class PhoneNormalizationTests(TestCase):
@@ -573,6 +575,87 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
         self.assertEqual(invoice_payload['amount'], 20_000)
         notify_mock.assert_called_once_with(order)
         facebook_service.send_add_payment_info_event.assert_called_once()
+
+    @patch('storefront.views.monobank.get_facebook_conversions_service')
+    @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification')
+    @patch('storefront.views.monobank.record_lead')
+    @patch('storefront.views.monobank.record_initiate_checkout')
+    @patch('storefront.views.monobank.link_order_to_utm')
+    @patch('storefront.views.monobank._monobank_api_request')
+    def test_monobank_invoice_uses_authoritative_color_variant_price(
+        self,
+        monobank_request_mock,
+        _link_order_mock,
+        _checkout_mock,
+        _record_lead_mock,
+        _notify_mock,
+        facebook_service_mock,
+    ):
+        variant = ProductColorVariant.objects.create(
+            product=self.product,
+            color=Color.objects.create(name='Thermo green', primary_hex='#84956f'),
+            price_override=145,
+        )
+        VariantDetails.objects.create(variant=variant, price_delta=15)
+        ProductOptionProfile.objects.create(
+            product=self.product,
+            option_key='fit=oversize',
+            option_values={'fit': 'oversize'},
+            price_delta=25,
+        )
+        ProductFitOption.objects.create(
+            product=self.product,
+            code='oversize',
+            label='Оверсайз',
+            is_active=True,
+            is_default=True,
+        )
+        session = self.client.session
+        session['cart'] = {
+            'thermo-line': {
+                'product_id': self.product.pk,
+                'color_variant_id': variant.pk,
+                'qty': 2,
+                'size': 'M',
+                'fit_option_code': 'oversize',
+            },
+        }
+        session.save()
+        delivery = self._delivery_payload()
+        monobank_request_mock.return_value = {
+            'invoiceId': 'mono-thermo-price',
+            'pageUrl': 'https://pay.monobank.test/thermo-price',
+        }
+        facebook_service_mock.return_value = Mock()
+
+        response = self.client.post(
+            self.monobank_create_invoice_url,
+            data=json.dumps({
+                'full_name': 'Thermo Buyer',
+                'phone': '0991112233',
+                'city': delivery['city'],
+                'np_office': delivery['np_office'],
+                'np_settlement_ref': delivery['np_settlement_ref'],
+                'np_city_ref': delivery['np_city_ref'],
+                'np_city_token': delivery['np_city_token'],
+                'np_warehouse_ref': delivery['np_warehouse_ref'],
+                'np_warehouse_token': delivery['np_warehouse_token'],
+                'pay_type': 'online_full',
+            }),
+            content_type='application/json',
+            HTTP_X_REQUESTED_WITH='XMLHttpRequest',
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+        order = Order.objects.get()
+        item = order.items.get()
+        self.assertEqual(order.total_sum, Decimal('340'))
+        self.assertEqual(item.unit_price, Decimal('170'))
+        self.assertEqual(item.color_variant_id, variant.pk)
+        invoice_payload = monobank_request_mock.call_args.kwargs['json_payload']
+        self.assertEqual(invoice_payload['amount'], 34_000)
 
     @patch('storefront.views.monobank.get_facebook_conversions_service')
     @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification')

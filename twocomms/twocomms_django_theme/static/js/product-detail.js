@@ -29,6 +29,8 @@
     initColorSelection(state);
     initSizeSelection(state);
     initFitSelection(root);
+    initVariantPriceNote(root);
+    applyCurrentVariantMerchandising(state);
     initTabs(root);
     initDescriptionCollapse(root);
     initShare(root, container);
@@ -339,6 +341,7 @@
         swatches.forEach((item) => item.classList.remove('active'));
         button.classList.add('active');
         state.container.dataset.currentVariant = button.getAttribute('data-variant') || 'default';
+        applyCurrentVariantMerchandising(state);
         const images = imagesForCurrentSelection(state);
         renderThumbnails(state, images);
         hideVideo(state);
@@ -346,6 +349,228 @@
         const offerId = updateCurrentOfferId(state);
         trackCustomizeProduct(state, button.getAttribute('data-variant'), offerId);
       });
+    });
+  }
+
+  function formatVariantPrice(value) {
+    const number = Number.parseFloat(String(value == null ? '' : value).replace(',', '.'));
+    if (!Number.isFinite(number)) return '';
+    return new Intl.NumberFormat('uk-UA', {
+      minimumFractionDigits: Number.isInteger(number) ? 0 : 2,
+      maximumFractionDigits: 2,
+    }).format(number);
+  }
+
+  function currentVariantData(state) {
+    const id = String(state.container.dataset.currentVariant || '');
+    return state.variants.find((variant) => String(variant && variant.id) === id) || null;
+  }
+
+  function applyCurrentVariantMerchandising(state) {
+    const baseVariant = currentVariantData(state);
+    if (!baseVariant) return;
+
+    // Selecting a colour may disable the previously active fit. Resolve the
+    // fallback fit first, then use that exact colour × fit merchandising row
+    // for title, price and SEO-adjacent buyer copy.
+    applyVariantFitRules(state, baseVariant.fit_rules || {});
+    const activeFit = String(state.container.dataset.currentFit || '').toLowerCase();
+    const fitOverrides = baseVariant.merchandising_by_fit || {};
+    const variant = Object.assign({}, baseVariant, fitOverrides[activeFit] || {});
+
+    if (variant.seo_title) document.title = String(variant.seo_title);
+    const metaDescription = document.querySelector('meta[name="description"]');
+    if (metaDescription && variant.seo_description) {
+      metaDescription.setAttribute('content', String(variant.seo_description));
+    }
+    const metaKeywords = document.querySelector('meta[name="keywords"]');
+    if (metaKeywords && variant.seo_keywords) {
+      metaKeywords.setAttribute('content', String(variant.seo_keywords));
+    }
+
+    const formatted = formatVariantPrice(variant.final_price);
+    const title = state.root.querySelector('[data-pdp-product-title]');
+    if (title && variant.display_name) title.textContent = variant.display_name;
+    if (formatted) {
+      state.root.querySelectorAll('[data-pdp-current-price], [data-pdp-sticky-price]').forEach((node) => {
+        node.textContent = `${formatted} грн`;
+      });
+      const addButton = state.root.querySelector('.tc-add-btn[data-add-to-cart]');
+      if (addButton) addButton.dataset.productPrice = String(variant.final_price);
+      const analytics = document.getElementById('product-analytics-payload');
+      if (analytics) analytics.dataset.price = String(variant.final_price);
+    }
+
+    const reason = String(variant.price_reason || '').trim();
+    const hasAdjustment = Boolean(variant.has_price_adjustment || reason);
+    const note = state.root.querySelector('[data-pdp-price-note]');
+    if (note) {
+      note.classList.toggle('is-hidden', !hasAdjustment);
+      const title = note.querySelector('[data-pdp-price-note-title]');
+      const copy = note.querySelector('[data-pdp-price-note-copy]');
+      if (title) title.textContent = reason || 'Особливість вибраного кольору';
+      if (copy) {
+        copy.textContent = variant.is_thermo
+          ? 'Термохромна тканина реагує на тепло, тому коштує дорожче. Звичайні кольори можуть мати нижчу ціну.'
+          : 'Ціна залежить від вибраного кольору та матеріалу.';
+      }
+    }
+
+    const story = state.root.querySelector('[data-pdp-variant-story]');
+    if (story) {
+      const storyText = String(variant.thermo_description || variant.marketing_html || '').trim();
+      story.classList.toggle('is-hidden', !storyText);
+      story.classList.toggle('is-thermo', Boolean(variant.is_thermo));
+      const storyTitle = story.querySelector('[data-pdp-variant-story-title]');
+      const storyCopy = story.querySelector('[data-pdp-variant-story-text]');
+      const storyIcon = story.querySelector('[data-pdp-variant-story-icon]');
+      if (storyTitle) storyTitle.textContent = variant.is_thermo ? 'Термохромна тканина' : 'Особливість кольору';
+      if (storyCopy) storyCopy.textContent = storyText;
+      if (storyIcon) storyIcon.hidden = !variant.is_thermo;
+    }
+
+    applyVariantSizeRules(
+      state,
+      baseVariant.size_rules || [],
+      baseVariant.available_sizes_by_fit || {}
+    );
+    applyVariantSizeGuides(state, baseVariant);
+  }
+
+  function applyVariantSizeGuides(state, variant) {
+    const guides = variant.size_guides_by_fit && typeof variant.size_guides_by_fit === 'object'
+      ? variant.size_guides_by_fit
+      : {};
+    state.root.querySelectorAll('[data-size-grid-fit]').forEach((card) => {
+      const fitCode = card.getAttribute('data-size-grid-fit') || '';
+      const guide = guides[fitCode];
+      if (!guide || !Array.isArray(guide.columns) || !Array.isArray(guide.rows)) return;
+
+      const colorLabel = card.querySelector('.tc-size-comparison__head small');
+      if (colorLabel) colorLabel.textContent = variant.name || '';
+      const intro = card.querySelector('.tc-muted-copy');
+      if (intro) {
+        intro.textContent = guide.intro || '';
+        intro.hidden = !guide.intro;
+      }
+      const table = card.querySelector('.tc-size-table');
+      if (!table) return;
+      const headRow = table.querySelector('thead tr');
+      const body = table.querySelector('tbody');
+      if (!headRow || !body) return;
+
+      headRow.replaceChildren(...guide.columns.map((column) => {
+        const cell = document.createElement('th');
+        cell.scope = 'col';
+        cell.textContent = column.label || column.key || '';
+        return cell;
+      }));
+      body.replaceChildren(...guide.rows.map((row) => {
+        const tr = document.createElement('tr');
+        guide.columns.forEach((column) => {
+          const cell = document.createElement('td');
+          if (column.key === 'size') cell.className = 'tc-size-table-key';
+          cell.textContent = column.key === 'size'
+            ? (row.display_size || row.size || '')
+            : (row[column.key] || '');
+          tr.appendChild(cell);
+        });
+        return tr;
+      }));
+    });
+  }
+
+  function applyVariantFitRules(state, rules) {
+    const selector = state.root.querySelector('[data-fit-selector]');
+    if (!selector) return;
+    const enabledInputs = [];
+    selector.querySelectorAll('input[name="fit_option"]').forEach((input) => {
+      const rule = rules[input.value] || {};
+      const enabled = rule.is_enabled !== false;
+      const label = selector.querySelector(`label[for="${input.id}"]`);
+      input.disabled = !enabled;
+      if (label) {
+        label.hidden = !enabled;
+        label.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+        if (rule.reason) label.setAttribute('title', rule.reason);
+        else label.removeAttribute('title');
+      }
+      state.root.querySelectorAll(`[data-size-grid-fit="${input.value}"]`).forEach((card) => {
+        card.hidden = !enabled;
+      });
+      if (enabled) enabledInputs.push(input);
+    });
+
+    let selected = selector.querySelector('input[name="fit_option"]:checked:not(:disabled)');
+    if (!selected && enabledInputs.length) {
+      selected = enabledInputs[0];
+      selected.checked = true;
+    }
+    selector.querySelectorAll('[data-fit-option]').forEach((label) => {
+      const input = selector.querySelector(`#${label.getAttribute('for')}`);
+      label.classList.toggle('active', Boolean(input && input.checked && !input.disabled));
+    });
+    if (selected) state.container.dataset.currentFit = selected.value || '';
+  }
+
+  function applyVariantSizeRules(state, rules, sizeMatrix) {
+    const fit = String(state.container.dataset.currentFit || '').toLowerCase();
+    const normalizedRules = Array.isArray(rules) ? rules : [];
+    const matrix = sizeMatrix && typeof sizeMatrix === 'object' ? sizeMatrix : {};
+    const hasFitGrid = Object.prototype.hasOwnProperty.call(matrix, fit);
+    const fitGridSizes = new Set((matrix[fit] || []).map((size) => String(size || '').toUpperCase()));
+    const enabledInputs = [];
+    state.root.querySelectorAll('input[name="size"]').forEach((input) => {
+      const size = String(input.value || '').toUpperCase();
+      const general = normalizedRules.filter((rule) =>
+        String(rule.size || '').toUpperCase() === size && !String(rule.fit_code || '')
+      ).pop();
+      const specific = normalizedRules.filter((rule) =>
+        String(rule.size || '').toUpperCase() === size && String(rule.fit_code || '').toLowerCase() === fit
+      ).pop();
+      const rule = specific || general;
+      const enabledByGrid = !hasFitGrid || fitGridSizes.has(size);
+      const enabledByRule = !rule || (rule.is_enabled !== false && (rule.stock == null || Number(rule.stock) > 0));
+      const enabled = enabledByGrid && enabledByRule;
+      const label = state.root.querySelector(`label[for="${input.id}"]`);
+      input.disabled = !enabled;
+      if (label) {
+        label.classList.toggle('is-unavailable', !enabled);
+        label.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+        if (rule && rule.note) label.setAttribute('title', rule.note);
+        else label.removeAttribute('title');
+      }
+      if (enabled) enabledInputs.push(input);
+    });
+
+    let selected = state.root.querySelector('input[name="size"]:checked:not(:disabled)');
+    if (!selected && enabledInputs.length) {
+      selected = enabledInputs[0];
+      selected.checked = true;
+    }
+    updateCurrentOfferId(state);
+  }
+
+  function initVariantPriceNote(root) {
+    const note = root.querySelector('[data-pdp-price-note]');
+    const trigger = note && note.querySelector('[data-pdp-price-note-trigger]');
+    if (!note || !trigger) return;
+
+    const close = () => {
+      note.classList.remove('is-open');
+      trigger.setAttribute('aria-expanded', 'false');
+    };
+    trigger.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const open = !note.classList.contains('is-open');
+      note.classList.toggle('is-open', open);
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    document.addEventListener('click', (event) => {
+      if (!note.contains(event.target)) close();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') close();
     });
   }
 

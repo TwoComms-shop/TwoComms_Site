@@ -766,6 +766,7 @@ class StructuredDataGenerator:
         canonical_path: Optional[str] = None,
         selected_variant=None,
         review_summary=None,
+        fit_code: str = "",
     ) -> Dict:
         """Генерирует Product schema для товара (совместимо с Google Merchant Center).
 
@@ -833,6 +834,28 @@ class StructuredDataGenerator:
             320,
         )
         material = _guess_product_material(product)
+        variant_merchandising = None
+        if selected_variant is not None:
+            try:
+                from fable5.services import variant_public_context
+                variant_merchandising = variant_public_context(
+                    selected_variant,
+                    fit_code=fit_code,
+                )
+            except Exception:
+                variant_merchandising = None
+        schema_name = (
+            variant_merchandising.get("display_name")
+            if variant_merchandising else ""
+        ) or product.title
+        schema_description = (
+            variant_merchandising.get("seo_description")
+            if variant_merchandising else ""
+        ) or description
+        schema_price = (
+            variant_merchandising.get("final_price")
+            if variant_merchandising else product.final_price
+        )
 
         # Phase 21 — schema URL must mirror the page's canonical strategy.
         # ``canonical_path`` (if provided by the view) already reflects
@@ -861,9 +884,12 @@ class StructuredDataGenerator:
             # caused Google Search Console to flag /ru/ and /en/ as
             # "schema language doesn't match page language".
             "inLanguage": StructuredDataGenerator._resolve_inlanguage_code(),
-            "name": product.title,
-            "description": description,
-            "sku": f"TC-{product.id}",
+            "name": schema_name,
+            "description": schema_description,
+            "sku": (
+                getattr(selected_variant, "sku", "")
+                if selected_variant is not None else ""
+            ) or f"TC-{product.id}",
             "mpn": f"TC-{product.id}",  # Manufacturer Part Number
             "url": product_canonical_url,
             "image": images[0] if len(images) == 1 else images,
@@ -901,7 +927,7 @@ class StructuredDataGenerator:
             },
             "offers": {
                 "@type": "Offer",
-                "price": str(product.final_price),
+                "price": str(schema_price),
                 "priceCurrency": "UAH",
                 "availability": StructuredDataGenerator._get_product_availability(product),
                 "itemCondition": "https://schema.org/NewCondition",
@@ -1319,10 +1345,10 @@ class StructuredDataGenerator:
         price_valid_until = StructuredDataGenerator._get_dynamic_price_valid_until()
         inlanguage = StructuredDataGenerator._resolve_inlanguage_code()
 
-        def _variant_offer(offer_url: str) -> Dict:
+        def _variant_offer(offer_url: str, variant_price=None) -> Dict:
             return {
                 "@type": "Offer",
-                "price": price,
+                "price": str(variant_price if variant_price is not None else price),
                 "priceCurrency": "UAH",
                 "availability": availability,
                 "itemCondition": "https://schema.org/NewCondition",
@@ -1372,15 +1398,25 @@ class StructuredDataGenerator:
         for variant in slugged_color_variants:
             slug = (getattr(variant, "slug", "") or "").strip()
             variant_url = _build_absolute_url(f"{prefix}product/{product.slug}/{slug}/")
+            try:
+                from fable5.services import variant_public_context
+                variant_context = variant_public_context(variant)
+            except Exception:
+                variant_context = {}
             node: Dict = {
                 "@type": "Product",
                 "@id": f"{variant_url}#product",
-                "name": product.title,
+                "name": variant_context.get("display_name") or product.title,
                 "url": variant_url,
-                "sku": f"TC-{product.id}-{slug}",
+                "sku": getattr(variant, "sku", "") or f"TC-{product.id}-{slug}",
                 "inProductGroupWithID": product.slug,
-                "offers": _variant_offer(variant_url),
+                "offers": _variant_offer(
+                    variant_url,
+                    variant_context.get("final_price"),
+                ),
             }
+            if variant_context.get("seo_description"):
+                node["description"] = variant_context["seo_description"]
             if size_value:
                 node["size"] = size_value
             # Colour label so Google can map the variant to ``variesBy``.
@@ -1929,6 +1965,7 @@ def get_product_schema(
     canonical_path: Optional[str] = None,
     selected_variant=None,
     review_summary=None,
+    fit_code: str = "",
 ) -> str:
     """Возвращает JSON-LD schema для товара.
 
@@ -1943,6 +1980,7 @@ def get_product_schema(
             canonical_path=canonical_path,
             selected_variant=selected_variant,
             review_summary=review_summary,
+            fit_code=fit_code,
         )
         return json.dumps(schema, ensure_ascii=False, indent=2)
     except Exception:

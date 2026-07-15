@@ -1,0 +1,39 @@
+{% load admin_filters %}
+<div class="tc-size-comparison" data-size-grid-comparison>
+  {% for item in size_grid_comparison %}
+    <article class="tc-size-comparison__card" data-size-grid-fit="{{ item.fit_code }}">
+      <header class="tc-size-comparison__head">
+        <div>
+          <span>Посадка</span>
+          <h3>{{ item.label }}</h3>
+        </div>
+        <small>{{ item.selected_color_name|default:"" }}</small>
+      </header>
+      {% with guide=item.display_guide %}
+        {% if guide.intro %}<p class="tc-muted-copy">{{ guide.intro }}</p>{% endif %}
+        {% if guide.rows %}
+          <div class="tc-size-table-wrap">
+            <table class="tc-size-table">
+              <thead>
+                <tr>
+                  {% for column in guide.columns %}<th scope="col">{{ column.label }}</th>{% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in guide.rows %}
+                  <tr>
+                    {% for column in guide.columns %}
+                      <td{% if column.key == 'size' %} class="tc-size-table-key"{% endif %}>
+                        {% if column.key == 'size' %}{{ row.display_size|default:row.size }}{% else %}{{ row|get_item:column.key }}{% endif %}
+                      </td>
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+      {% endwith %}
+    </article>
+  {% endfor %}
+</div>

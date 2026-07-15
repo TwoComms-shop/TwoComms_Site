@@ -5,171 +5,144 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>{% if product %}Редагування: {{ product.title }}{% else %}Новий товар{% endif %} · Fable 5</title>
-<link rel="stylesheet" href="{% static 'fable5/editor.css' %}">
+<link rel="stylesheet" href="{% static 'fable5/editor.css' %}?v=20260715-2">
 <link rel="stylesheet" href="{% static 'fable5/thermo-dot.css' %}">
 </head>
 <body>
 {% csrf_token %}
 
-<!-- Шапка: все керування в ОДНОМУ місці — назва, статус, зберегти -->
+<svg class="f5-icon-sprite" aria-hidden="true">
+  <symbol id="f5-i-arrow" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6M9 12h11"/></symbol>
+  <symbol id="f5-i-core" viewBox="0 0 24 24"><path d="M4 7h16M7 3v4m10-4v4M6 11h12v9H6z"/></symbol>
+  <symbol id="f5-i-variants" viewBox="0 0 24 24"><circle cx="8" cy="8" r="4"/><circle cx="16" cy="16" r="4"/><path d="M11 10.5 13 13"/></symbol>
+  <symbol id="f5-i-media" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m4 17 5-5 4 4 2-2 5 5"/></symbol>
+  <symbol id="f5-i-fit" viewBox="0 0 24 24"><path d="m8 4 4 2 4-2 4 4-3 3v9H7v-9L4 8z"/></symbol>
+  <symbol id="f5-i-seo" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M8 9h5M8 12h3"/></symbol>
+  <symbol id="f5-i-faq" viewBox="0 0 24 24"><path d="M5 4h14v13H9l-4 3z"/><path d="M9.5 9a2.5 2.5 0 1 1 3.2 2.4c-.7.3-.7.8-.7 1.6m0 2h.01"/></symbol>
+  <symbol id="f5-i-feed" viewBox="0 0 24 24"><circle cx="6" cy="18" r="1.5"/><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"/></symbol>
+  <symbol id="f5-i-save" viewBox="0 0 24 24"><path d="M5 3h12l2 2v16H5zM8 3v6h8V3M8 21v-8h8v8"/></symbol>
+  <symbol id="f5-i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+  <symbol id="f5-i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="f5-i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v5h14v-5"/></symbol>
+  <symbol id="f5-i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+  <symbol id="f5-i-warning" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19zM12 9v5m0 3h.01"/></symbol>
+</svg>
+
 <header class="f5-topbar">
   <div class="f5-topbar__brand">
-    <span class="f5-logo">F5</span>
-    <div>
+    <a class="f5-back" href="/admin-panel/?section=catalogs" aria-label="Повернутися до каталогу">
+      <svg class="f5-icon"><use href="#f5-i-arrow"/></svg>
+    </a>
+    <span class="f5-logo" aria-hidden="true">F5</span>
+    <div class="f5-title-stack">
+      <div class="f5-topbar__eyebrow">Студія товару</div>
       <div class="f5-topbar__title" id="f5-header-title">Новий товар</div>
-      <div class="f5-topbar__subtitle">Редактор товарів «Fable 5» · додавання = редагування, без перезавантажень</div>
     </div>
   </div>
   <div class="f5-topbar__actions">
     <span class="f5-badge" id="f5-mode-badge">новий</span>
-    <span class="f5-dirty" id="f5-dirty" hidden>• незбережені зміни</span>
-    <select id="f5-status" class="f5-input f5-input--status" title="Статус публікації"></select>
-    <a id="f5-view-link" class="f5-btn f5-btn--ghost" target="_blank" rel="noopener" hidden>Відкрити на сайті</a>
-    <button id="f5-save" class="f5-btn f5-btn--primary" type="button">💾 Зберегти <span class="f5-kbd">Ctrl+S</span></button>
+    <span class="f5-save-state" id="f5-dirty" hidden><span class="f5-status-dot"></span>Незбережені зміни</span>
+    <select id="f5-status" class="f5-input f5-input--status" aria-label="Статус публікації"></select>
+    <a id="f5-view-link" class="f5-btn f5-btn--ghost" target="_blank" rel="noopener" hidden>
+      <svg class="f5-icon"><use href="#f5-i-eye"/></svg><span>На сайті</span>
+    </a>
+    <button id="f5-save" class="f5-btn f5-btn--primary" type="button">
+      <svg class="f5-icon f5-save-icon"><use href="#f5-i-save"/></svg>
+      <span id="f5-save-label">Зберегти</span><span class="f5-kbd">Ctrl+S</span>
+    </button>
   </div>
 </header>
 
-<!-- Вкладки: звичайні поля ОКРЕМО від SEO-простору -->
-<nav class="f5-tabs" id="f5-tabs" role="tablist" aria-label="Розділи редактора товару">
-  <button class="f5-tab is-active" data-tab="main" role="tab" aria-selected="true" aria-controls="f5-panel-main">⚙️ Основне</button>
-  <button class="f5-tab" data-tab="media" role="tab" aria-selected="false" aria-controls="f5-panel-media">🖼️ Медіа</button>
-  <button class="f5-tab" data-tab="colors" role="tab" aria-selected="false" aria-controls="f5-panel-colors">🎨 Кольори</button>
-  <button class="f5-tab" data-tab="fits" role="tab" aria-selected="false" aria-controls="f5-panel-fits">👕 Посадки та склад</button>
-  <button class="f5-tab" data-tab="seo" role="tab" aria-selected="false" aria-controls="f5-panel-seo">🔍 SEO-простір</button>
-  <button class="f5-tab" data-tab="faq" role="tab" aria-selected="false" aria-controls="f5-panel-faq">❓ FAQ</button>
-  <button class="f5-tab" data-tab="feeds" role="tab" aria-selected="false" aria-controls="f5-panel-feeds">📡 Фіди</button>
-</nav>
+<div class="f5-shell">
+  <nav class="f5-tabs" id="f5-tabs" role="tablist" aria-label="Розділи редактора товару">
+    <div class="f5-nav-head">
+      <span>Редагування</span>
+      <small id="f5-nav-progress">0% готово</small>
+    </div>
+    <button class="f5-tab{% if not product %} is-active{% endif %}" data-tab="main" role="tab" aria-selected="{% if product %}false{% else %}true{% endif %}" aria-controls="f5-panel-main"><svg class="f5-icon"><use href="#f5-i-core"/></svg><span>Основне</span><i class="f5-tab__state"></i></button>
+    <button class="f5-tab{% if product %} is-active{% endif %}" data-tab="colors" role="tab" aria-selected="{% if product %}true{% else %}false{% endif %}" aria-controls="f5-panel-colors"><svg class="f5-icon"><use href="#f5-i-variants"/></svg><span>Варіанти</span><b id="f5-variant-count">0</b><i class="f5-tab__state"></i></button>
+    <button class="f5-tab" data-tab="media" role="tab" aria-selected="false" aria-controls="f5-panel-media"><svg class="f5-icon"><use href="#f5-i-media"/></svg><span>Медіа та обкладинка</span><i class="f5-tab__state"></i></button>
+    <button class="f5-tab" data-tab="fits" role="tab" aria-selected="false" aria-controls="f5-panel-fits"><svg class="f5-icon"><use href="#f5-i-fit"/></svg><span>Посадки й розміри</span><i class="f5-tab__state"></i></button>
+    <button class="f5-tab" data-tab="seo" role="tab" aria-selected="false" aria-controls="f5-panel-seo"><svg class="f5-icon"><use href="#f5-i-seo"/></svg><span>Контент і SEO</span><i class="f5-tab__state"></i></button>
+    <button class="f5-tab" data-tab="faq" role="tab" aria-selected="false" aria-controls="f5-panel-faq"><svg class="f5-icon"><use href="#f5-i-faq"/></svg><span>FAQ</span><i class="f5-tab__state"></i></button>
+    <button class="f5-tab" data-tab="feeds" role="tab" aria-selected="false" aria-controls="f5-panel-feeds"><svg class="f5-icon"><use href="#f5-i-feed"/></svg><span>Канали продажу</span><i class="f5-tab__state"></i></button>
 
-<main class="f5-main">
-  <!-- ОСНОВНЕ: без SEO-шуму, тільки головне -->
-  <section class="f5-panel is-active" data-panel="main" id="f5-panel-main" role="tabpanel">
-    <div class="f5-grid">
-      <div class="f5-card">
-        <h2 class="f5-card__title">Назва та посилання</h2>
-        <label class="f5-field"><span>Назва товару *</span>
-          <input id="f-title" class="f5-input" placeholder="Напр.: Футболка оверсайз «Бойова квіточка»">
-        </label>
-        <label class="f5-field"><span>Slug (автотранслітерація укр/рос → латиниця, КМУ-2010)</span>
-          <div class="f5-slug-row">
-            <input id="f-slug" class="f5-input" placeholder="генерується з назви">
-            <button type="button" class="f5-btn f5-btn--ghost" id="f-slug-auto" title="Згенерувати з назви знову">↻ Авто</button>
-          </div>
-          <small class="f5-hint" id="f-slug-hint">ч → ch, ш → sh, щ → shch, ї → yi… Лапки викидаються, пробіли → дефіси.</small>
-        </label>
-        <div class="f5-row">
-          <label class="f5-field"><span>Категорія *</span><select id="f-category" class="f5-input"></select></label>
-          <label class="f5-field"><span>Каталог</span><select id="f-catalog" class="f5-input"></select></label>
-          <label class="f5-field"><span>Розмірна сітка</span><select id="f-size-grid" class="f5-input"></select></label>
-        </div>
+    <aside class="f5-readiness" aria-labelledby="f5-readiness-title">
+      <div class="f5-readiness__head"><span id="f5-readiness-title">Готовність</span><strong id="f5-readiness-score">0%</strong></div>
+      <div class="f5-progress" aria-hidden="true"><i id="f5-readiness-bar"></i></div>
+      <div id="f5-readiness-issues" class="f5-readiness__issues"></div>
+    </aside>
+  </nav>
+
+  <main class="f5-main">
+    <section class="f5-panel{% if not product %} is-active{% endif %}" data-panel="main" id="f5-panel-main" role="tabpanel">
+      <header class="f5-section-head"><div><span class="f5-section-kicker">Основа каталогу</span><h1>Ідентичність товару</h1><p>Спільні дані. Усе, що відрізняється за кольором, налаштовується у «Варіантах».</p></div></header>
+      <div class="f5-grid">
+        <section class="f5-card">
+          <h2 class="f5-card__title">Назва та адреса</h2>
+          <label class="f5-field"><span>Загальна назва товару *</span><input id="f-title" class="f5-input" placeholder="Напр.: Футболка «Бойова квіточка»"><small>Без кольору й посадки — вони підставляються з варіанта.</small></label>
+          <label class="f5-field"><span>Slug</span><div class="f5-slug-row"><input id="f-slug" class="f5-input" placeholder="генерується з назви"><button type="button" class="f5-btn f5-btn--ghost" id="f-slug-auto" title="Згенерувати slug з назви">Авто</button></div><small class="f5-hint" id="f-slug-hint"></small></label>
+          <div class="f5-row"><label class="f5-field"><span>Категорія *</span><select id="f-category" class="f5-input"></select></label><label class="f5-field"><span>Каталог</span><select id="f-catalog" class="f5-input"></select></label><label class="f5-field"><span>Спільна сітка</span><select id="f-size-grid" class="f5-input"></select><small>Fallback, якщо для посадки або кольору не задано окрему.</small></label></div>
+        </section>
+        <section class="f5-card">
+          <h2 class="f5-card__title">Комерція та публікація</h2>
+          <div class="f5-price-fields"><label class="f5-field"><span>Базова ціна, грн *</span><input id="f-price" type="number" min="0" class="f5-input f5-input--price"></label><label class="f5-field"><span>Знижка, %</span><input id="f-discount" type="number" min="0" max="95" class="f5-input"></label><label class="f5-field"><span>Бали</span><input id="f-points" type="number" min="0" class="f5-input"></label></div>
+          <div class="f5-row"><label class="f5-check f5-check--tile"><input type="checkbox" id="f-featured"><span><strong>Добірки головної</strong><small>Показувати товар у промоблоках</small></span></label><label class="f5-field"><span>Пріоритет</span><input id="f-priority" type="number" class="f5-input"></label></div>
+          <label class="f5-field"><span>Спільне YouTube-відео</span><input id="f-video" class="f5-input" placeholder="Порожньо — без відео; колір може мати власне"></label>
+        </section>
       </div>
+    </section>
 
-      <div class="f5-card">
-        <h2 class="f5-card__title">Ціна та вітрина</h2>
-        <div class="f5-row">
-          <label class="f5-field"><span>Ціна, грн *</span><input id="f-price" type="number" min="0" class="f5-input"></label>
-          <label class="f5-field"><span>Знижка, %</span><input id="f-discount" type="number" min="0" max="95" class="f5-input"></label>
-          <label class="f5-field"><span>Бали за покупку</span><input id="f-points" type="number" min="0" class="f5-input"></label>
-        </div>
-        <div class="f5-row">
-          <label class="f5-check"><input type="checkbox" id="f-featured"> У добірках на головній</label>
-          <label class="f5-field"><span>Пріоритет сортування</span><input id="f-priority" type="number" class="f5-input"></label>
-        </div>
-        <label class="f5-field"><span>YouTube відео (спільне для товару; у кожного кольору може бути своє)</span>
-          <input id="f-video" class="f5-input" placeholder="https://www.youtube.com/watch?v=...">
-        </label>
+    <section class="f5-panel{% if product %} is-active{% endif %}" data-panel="colors" id="f5-panel-colors" role="tabpanel">
+      <header class="f5-section-head f5-section-head--variants"><div><span class="f5-section-kicker">Головний робочий простір</span><h1>Кольори як окремі пропозиції</h1><p>Оберіть колір у стрічці: одразу побачите його ціну, термо-стан, контент, SEO, фото, посадки та розміри.</p></div><button class="f5-btn f5-btn--primary" type="button" id="f-add-variant"><svg class="f5-icon"><use href="#f5-i-plus"/></svg>Додати колір</button></header>
+      <div class="f5-variant-studio">
+        <div class="f5-variant-rail-wrap"><div class="f5-variant-rail-label"><span>Варіанти на вітрині</span><small>перетягування порядку — після збереження</small></div><div id="f-variant-rail" class="f5-variant-rail" role="tablist" aria-label="Кольорові варіанти"></div></div>
+        <div id="f-variants" class="f5-variant-workspace"></div>
       </div>
+    </section>
 
-      <div class="f5-card f5-card--wide">
-        <h2 class="f5-card__title">Описи (звичайні, НЕ SEO)</h2>
-        <label class="f5-field"><span>Короткий опис (до 300 символів)</span><textarea id="f-short-desc" class="f5-input" rows="2"></textarea></label>
-        <label class="f5-field"><span>Повний опис</span><textarea id="f-full-desc" class="f5-input" rows="6"></textarea></label>
-        <div class="f5-row">
-          <label class="f5-field"><span>Деталі (тканина, щільність…)</span><textarea id="f-details" class="f5-input" rows="3"></textarea></label>
-          <label class="f5-field"><span>Для кого</span><textarea id="f-audience" class="f5-input" rows="3"></textarea></label>
-          <label class="f5-field"><span>Догляд</span><textarea id="f-care" class="f5-input" rows="3"></textarea></label>
-        </div>
-      </div>
-    </div>
-  </section>
+    <section class="f5-panel" data-panel="media" id="f5-panel-media" role="tabpanel">
+      <header class="f5-section-head"><div><span class="f5-section-kicker">Візуальна ієрархія</span><h1>Медіа та обкладинка</h1><p>Дві ролі замість двох однакових полів: головна обкладинка працює всюди, картка головної — лише як необов’язковий override.</p></div></header>
+      <section class="f5-cover-studio">
+        <article class="f5-cover f5-cover--primary">
+          <div class="f5-cover__head"><div><span class="f5-cover__label">Обкладинка товару</span><strong>PDP · каталог · фіди</strong></div><span class="f5-source-badge" id="f-main-image-source">Джерело: окремий файл</span></div>
+          <div class="f5-cover__visual"><img id="f-main-image" alt=""><span class="f5-cover__placeholder"><svg class="f5-icon"><use href="#f5-i-media"/></svg>Оберіть сильний кадр товару</span></div>
+          <p>Показується першою у картці товару, каталозі та фідах.</p>
+          <div class="f5-cover__actions"><button class="f5-btn f5-btn--ghost" type="button" data-act="show-variant-photos">Обрати з фото варіанта</button><input type="file" id="f-main-image-file" accept="image/*" hidden><button class="f5-btn" type="button" id="f-main-image-btn"><svg class="f5-icon"><use href="#f5-i-upload"/></svg>Завантажити окремо</button></div>
+        </article>
+        <article class="f5-cover f5-cover--secondary">
+          <div class="f5-cover__head"><div><span class="f5-cover__label">Картка на головній</span><strong>Необов’язковий override</strong></div><span class="f5-source-badge" id="f-home-image-source">Fallback: обкладинка</span></div>
+          <div class="f5-cover__visual"><img id="f-home-image" alt=""><span class="f5-cover__placeholder"><svg class="f5-icon"><use href="#f5-i-media"/></svg>Зараз використовується обкладинка</span></div>
+          <p>Потрібна лише якщо для головної сторінки потрібне інше кадрування.</p>
+          <div class="f5-cover__actions"><input type="file" id="f-home-image-file" accept="image/*" hidden><button class="f5-btn" type="button" id="f-home-image-btn"><svg class="f5-icon"><use href="#f5-i-upload"/></svg>Завантажити override</button><button class="f5-btn f5-btn--ghost" type="button" disabled title="Скидання буде доступне після підключення джерел обкладинки">Скинути до обкладинки</button></div>
+        </article>
+      </section>
+      <label class="f5-field f5-cover-alt"><span>Alt обкладинки</span><input id="f-main-alt" class="f5-input" placeholder="Опишіть товар і колір для пошуку та скринрідера"></label>
+      <section class="f5-card f5-card--wide"><div class="f5-card-head"><div><h2 class="f5-card__title">Спільна галерея товару</h2><p>Фото додаються в кінець. Потягніть за мініатюру, щоб змінити порядок; зірка визначає обкладинку.</p></div></div><div class="f5-dropzone" id="f-product-dropzone"><svg class="f5-icon"><use href="#f5-i-upload"/></svg><span><strong>Перетягніть фото сюди</strong><small>або оберіть з папки · JPG, PNG, WEBP до 15 МБ</small></span><button type="button" class="f5-btn f5-btn--ghost" id="f-product-upload-btn">Обрати файли</button><input type="file" id="f-product-upload" accept="image/*" multiple hidden></div><div class="f5-gallery" id="f-product-gallery"></div></section>
+    </section>
 
-  <!-- МЕДІА: append-завантаження, drag&drop, вибір головної з усіх картинок -->
-  <section class="f5-panel" data-panel="media" id="f5-panel-media" role="tabpanel">
-    <div class="f5-card f5-card--wide">
-      <h2 class="f5-card__title">Головні зображення</h2>
-      <p class="f5-hint">Головну картинку можна обрати з БУДЬ-ЯКОЇ завантаженої нижче (кнопка ⭐ на мініатюрі) або завантажити окремо тут.</p>
-      <div class="f5-covers">
-        <div class="f5-cover"><span class="f5-cover__label">Головна картинка</span><img id="f-main-image" alt=""><input type="file" id="f-main-image-file" accept="image/*" hidden><button class="f5-btn f5-btn--ghost" type="button" id="f-main-image-btn">Завантажити</button></div>
-        <div class="f5-cover"><span class="f5-cover__label">Картка на головній</span><img id="f-home-image" alt=""><input type="file" id="f-home-image-file" accept="image/*" hidden><button class="f5-btn f5-btn--ghost" type="button" id="f-home-image-btn">Завантажити</button></div>
-        <label class="f5-field f5-cover-alt"><span>Alt головної картинки</span><input id="f-main-alt" class="f5-input"></label>
-      </div>
-    </div>
-    <div class="f5-card f5-card--wide">
-      <h2 class="f5-card__title">Галерея товару <small class="f5-hint">довантаження ЗАВЖДИ додає, нічого не перезаписує · порядок — перетягуванням</small></h2>
-      <div class="f5-dropzone" id="f-product-dropzone">Перетягніть файли сюди або <button type="button" class="f5-btn f5-btn--ghost" id="f-product-upload-btn">оберіть з папки</button><input type="file" id="f-product-upload" accept="image/*" multiple hidden></div>
-      <div class="f5-gallery" id="f-product-gallery"></div>
-    </div>
-  </section>
+    <section class="f5-panel" data-panel="fits" id="f5-panel-fits" role="tabpanel">
+      <header class="f5-section-head"><div><span class="f5-section-kicker">Спільні правила</span><h1>Посадки й розміри</h1><p>Налаштуйте defaults товару. Відмінності конкретного кольору змінюються в його workspace.</p></div></header>
+      <section class="f5-card f5-card--wide"><div class="f5-card-head"><div><h2 class="f5-card__title">Посадки моделі</h2><p>Вимкнена посадка автоматично стає недоступною для вибору; причина пояснює це покупцю.</p></div><label class="f5-check f5-check--tile"><input type="checkbox" id="f-fit-selector"><span><strong>Перемикач на PDP</strong><small>Показувати, коли доступно кілька посадок</small></span></label></div><div id="f-fits"></div></section>
+      <section class="f5-card f5-card--wide"><div class="f5-card-head"><div><h2 class="f5-card__title">Доступність за кольорами</h2><p>Тактильні чипи: яскравий — доступний, сірий із рискою — вимкнений. Порожній залишок означає необмежений облік.</p></div></div><div id="f-stock"></div></section>
+    </section>
 
-  <!-- КОЛЬОРИ: inline-редагування, термо, надбавка ціни, свої картинки/SEO/FAQ/відео -->
-  <section class="f5-panel" data-panel="colors" id="f5-panel-colors" role="tabpanel">
-    <div class="f5-colors-head">
-      <h2 class="f5-card__title">Кольори товару <small class="f5-hint">кожен колір — як окремий товар: своя назва, SEO, ціна, відео, FAQ</small></h2>
-      <button class="f5-btn f5-btn--primary" type="button" id="f-add-variant">＋ Додати колір</button>
-    </div>
-    <div id="f-variants"></div>
-  </section>
+    <section class="f5-panel" data-panel="seo" id="f5-panel-seo" role="tabpanel">
+      <header class="f5-section-head"><div><span class="f5-section-kicker">Fallback-контент</span><h1>Контент і SEO товару</h1><p>Основна робота з SEO відбувається всередині кожного кольору. Тут зберігається лише спільний контент і fallback.</p></div></header>
+      <section class="f5-card f5-card--wide"><h2 class="f5-card__title">Спільні описи</h2><label class="f5-field"><span>Короткий опис</span><textarea id="f-short-desc" class="f5-input" rows="2"></textarea></label><label class="f5-field"><span>Повний опис</span><textarea id="f-full-desc" class="f5-input" rows="6"></textarea></label><div class="f5-row"><label class="f5-field"><span>Деталі тканини</span><textarea id="f-details" class="f5-input" rows="3"></textarea></label><label class="f5-field"><span>Для кого</span><textarea id="f-audience" class="f5-input" rows="3"></textarea></label><label class="f5-field"><span>Догляд</span><textarea id="f-care" class="f5-input" rows="3"></textarea></label></div></section>
+      <details class="f5-advanced"><summary><span><strong>SEO за замовчуванням для основної сторінки</strong><small>Для базової URL товару та як fallback, якщо в кольорі поле порожнє</small></span><span class="f5-source-badge">Рівень: товар</span></summary><div class="f5-advanced__body"><label class="f5-field"><span>SEO Title <small class="f5-hint" id="f-seo-title-count"></small></span><input id="f-seo-title" class="f5-input" maxlength="160"></label><label class="f5-field"><span>SEO Description <small class="f5-hint" id="f-seo-desc-count"></small></span><textarea id="f-seo-desc" class="f5-input" rows="3" maxlength="320"></textarea></label><label class="f5-field"><span>SEO Keywords</span><input id="f-seo-keywords" class="f5-input" maxlength="300"></label><div class="f5-google-preview"><span>twocomms.shop › product › <b id="f-google-slug">slug</b></span><strong id="f-google-title">Назва товару — TwoComms</strong><p id="f-google-description">Опис основної сторінки товару буде показано тут.</p></div></div></details>
+    </section>
 
-  <!-- ПОСАДКИ ТА СКЛАД -->
-  <section class="f5-panel" data-panel="fits" id="f5-panel-fits" role="tabpanel">
-    <div class="f5-card f5-card--wide">
-      <h2 class="f5-card__title">Посадки моделі (класика / оверсайз)</h2>
-      <label class="f5-check"><input type="checkbox" id="f-fit-selector"> Показувати перемикач посадок у картці товару</label>
-      <p class="f5-hint">Якщо посадку вимкнено — вкажіть причину: вона буде написана покупцю в картці товару (напр. «Для цієї моделі доступний лише оверсайз»).</p>
-      <div id="f-fits"></div>
-    </div>
-    <div class="f5-card f5-card--wide">
-      <h2 class="f5-card__title">Склад: розміри за кольорами <small class="f5-hint">вимикайте окремі розміри (напр. S у koyote) та ведіть залишки</small></h2>
-      <div id="f-stock"></div>
-    </div>
-  </section>
+    <section class="f5-panel" data-panel="faq" id="f5-panel-faq" role="tabpanel"><header class="f5-section-head"><div><span class="f5-section-kicker">Питання покупців</span><h1>FAQ товару</h1><p>Спільні питання. FAQ конкретного кольору редагується всередині цього варіанта.</p></div><button class="f5-btn f5-btn--primary" type="button" id="f-add-faq"><svg class="f5-icon"><use href="#f5-i-plus"/></svg>Додати питання</button></header><section class="f5-card f5-card--wide"><div id="f-faqs"></div></section></section>
 
-  <!-- SEO-ПРОСТІР: все SEO в одному місці, окремо від звичайних полів -->
-  <section class="f5-panel" data-panel="seo" id="f5-panel-seo" role="tabpanel">
-    <div class="f5-card f5-card--wide">
-      <h2 class="f5-card__title">SEO товару (базове)</h2>
-      <label class="f5-field"><span>SEO Title <small class="f5-hint" id="f-seo-title-count"></small></span><input id="f-seo-title" class="f5-input" maxlength="160"></label>
-      <label class="f5-field"><span>SEO Description <small class="f5-hint" id="f-seo-desc-count"></small></span><textarea id="f-seo-desc" class="f5-input" rows="3" maxlength="320"></textarea></label>
-      <label class="f5-field"><span>SEO Keywords</span><input id="f-seo-keywords" class="f5-input" maxlength="300"></label>
-      <p class="f5-hint">SEO для кожного окремого кольору (тайтл/опис/ключі під «Біла…», «Сіра…») — на вкладці «Кольори» всередині кожного кольору, блок «SEO цього кольору».</p>
-    </div>
-  </section>
+    <section class="f5-panel" data-panel="feeds" id="f5-panel-feeds" role="tabpanel"><header class="f5-section-head"><div><span class="f5-section-kicker">Дистрибуція</span><h1>Канали продажу</h1><p>Керуйте участю товару та окремим набором зображень для Google Merchant, Meta й інших фідів.</p></div><button class="f5-btn f5-btn--primary" type="button" id="f-add-feed"><svg class="f5-icon"><use href="#f5-i-plus"/></svg>Створити фід</button></header><section class="f5-card f5-card--wide"><div id="f-feeds"></div></section></section>
+  </main>
+</div>
 
-  <!-- FAQ товару: доступні вже ПРИ ДОДАВАННІ -->
-  <section class="f5-panel" data-panel="faq" id="f5-panel-faq" role="tabpanel">
-    <div class="f5-card f5-card--wide">
-      <div class="f5-colors-head">
-        <h2 class="f5-card__title">FAQ товару <small class="f5-hint">укр / рос / англ · доступні одразу, а не лише після створення</small></h2>
-        <button class="f5-btn f5-btn--primary" type="button" id="f-add-faq">＋ Додати питання</button>
-      </div>
-      <div id="f-faqs"></div>
-    </div>
-  </section>
-
-  <!-- ФІДИ: участь товару, вибір картинок, фід-тільки картинки -->
-  <section class="f5-panel" data-panel="feeds" id="f5-panel-feeds" role="tabpanel">
-    <div class="f5-card f5-card--wide">
-      <div class="f5-colors-head">
-        <h2 class="f5-card__title">Селекція з фід <small class="f5-hint">Google Merchant, Meta DS… Керуйте участю товару й картинками для кожного фіда</small></h2>
-        <button class="f5-btn f5-btn--primary" type="button" id="f-add-feed">＋ Створити фід</button>
-      </div>
-      <div id="f-feeds"></div>
-    </div>
-  </section>
-</main>
-
+<div class="f5-mobile-save" aria-label="Мобільне збереження"><span id="f5-mobile-state">Зміни збережено</span><button id="f5-mobile-save" class="f5-btn f5-btn--primary" type="button"><svg class="f5-icon"><use href="#f5-i-save"/></svg>Зберегти</button></div>
 <div class="f5-toast" id="f5-toast" role="status" aria-live="polite" hidden></div>
 
 {{ bootstrap|json_script:"f5-bootstrap" }}
-<script src="{% static 'fable5/editor.js' %}?v=20260713-1"></script>
+<script src="{% static 'fable5/editor.js' %}?v=20260715-2"></script>
 </body>
 </html>

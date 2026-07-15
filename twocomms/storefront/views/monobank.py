@@ -577,13 +577,56 @@ def monobank_create_invoice(request):
                     'error': 'Деякі товари з кошика більше недоступні. Оновіть кошик і спробуйте ще раз.'
                 })
 
+            from productcolors.models import ProductColorVariant
+            from fable5.services import effective_cart_unit_price
+
+            variant_ids = [
+                item.get('color_variant_id')
+                for item in cart.values()
+                if item.get('color_variant_id')
+            ]
+            variants_map = ProductColorVariant.objects.in_bulk(variant_ids)
+
+            def _line_variant(item, product):
+                raw_variant_id = item.get('color_variant_id')
+                try:
+                    variant = variants_map.get(int(raw_variant_id)) if raw_variant_id else None
+                except (TypeError, ValueError):
+                    variant = None
+                if variant is not None and variant.product_id != product.pk:
+                    return None
+                return variant
+
+            from fable5.services import variant_allows_purchase
+            for item in cart.values():
+                product = prods.get(item['product_id'])
+                raw_variant_id = item.get('color_variant_id')
+                variant = _line_variant(item, product)
+                if raw_variant_id and (
+                    variant is None
+                    or not variant_allows_purchase(
+                        product,
+                        variant,
+                        fit_code=item.get('fit_option_code') or item.get('fit') or '',
+                        size=item.get('size') or '',
+                    )
+                ):
+                    return JsonResponse({
+                        'success': False,
+                        'error': 'Обраний колір, посадка або розмір більше недоступні. Оновіть кошик.'
+                    })
+
             # Подсчитываем общую сумму
             total_sum = Decimal('0')
             for key, it in cart.items():
                 p = prods.get(it['product_id'])
                 if not p:
                     continue
-                unit = p.final_price
+                unit = effective_cart_unit_price(
+                    p,
+                    _line_variant(it, p),
+                    fit_code=it.get('fit_option_code') or it.get('fit') or '',
+                )
                 line = unit * it['qty']
                 total_sum += line
 
@@ -630,8 +673,12 @@ def monobank_create_invoice(request):
                 if not p:
                     continue
 
-                color_variant = _get_color_variant_safe(it.get('color_variant_id'))
-                unit = p.final_price
+                color_variant = _line_variant(it, p)
+                unit = effective_cart_unit_price(
+                    p,
+                    color_variant,
+                    fit_code=it.get('fit_option_code') or it.get('fit') or '',
+                )
                 line = unit * it['qty']
 
                 order_item = OrderItem(

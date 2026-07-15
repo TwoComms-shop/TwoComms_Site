@@ -90,6 +90,43 @@ def find_stock_items_for_order_item(order_item) -> list[StockItem]:
             qs = qs.filter(color_id=color_id)
         return list(qs.order_by(*_STOCK_ORDER))
 
+    # Fable5 can explicitly bind a colour+fit to a warehouse blank family.
+    # Prefer it for Telegram/manual write-off, while preserving the complete
+    # graceful matcher below when the linked family has no stock rows yet.
+    fit_code = str(
+        getattr(order_item, "fit_option_code", "")
+        or getattr(order_item, "fit", "")
+        or ""
+    ).strip().lower()
+    if color_variant is not None and fit_code:
+        try:
+            from fable5.models import VariantBlankLink
+
+            blank_link = (
+                VariantBlankLink.objects
+                .filter(variant=color_variant, option_key=f"fit={fit_code}")
+                .first()
+            )
+        except Exception:
+            blank_link = None
+        if blank_link is not None:
+            preferred_qs = base.filter(
+                subcategory_id=blank_link.storage_subcategory_id
+            )
+            for use_size, use_color in (
+                (True, True),
+                (True, False),
+                (False, True),
+                (False, False),
+            ):
+                result = _apply(
+                    preferred_qs,
+                    use_size=use_size,
+                    use_color=use_color,
+                )
+                if result:
+                    return result
+
     for use_size, use_color in (
         (True, True),
         (True, False),

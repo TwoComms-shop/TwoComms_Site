@@ -232,6 +232,35 @@ def create_order(request):
         )
         return redirect('cart')
 
+    variant_ids = [
+        item.get('color_variant_id')
+        for item in cart.values()
+        if item.get('color_variant_id')
+    ]
+    variants_map = ProductColorVariant.objects.in_bulk(variant_ids)
+    from fable5.services import variant_allows_purchase
+    for item in cart.values():
+        product = products_map.get(int(item['product_id']))
+        raw_variant_id = item.get('color_variant_id')
+        try:
+            variant = variants_map.get(int(raw_variant_id)) if raw_variant_id else None
+        except (TypeError, ValueError):
+            variant = None
+        if raw_variant_id and (
+            variant is None
+            or not variant_allows_purchase(
+                product,
+                variant,
+                fit_code=item.get('fit_option_code') or item.get('fit') or '',
+                size=item.get('size') or '',
+            )
+        ):
+            messages.error(
+                request,
+                _("Обраний колір, посадка або розмір більше недоступні. Оновіть позицію в кошику."),
+            )
+            return redirect('cart')
+
     try:
         # F-044/F-074: anonymous Django sessions are lazy. Establish the key
         # before the atomic order writer instead of hoping analytics creates it
@@ -286,20 +315,22 @@ def create_order(request):
             # Create Order Items (products_map подготовлен выше, до atomic)
             total_sum = Decimal('0')
 
-            variant_ids = [item.get('color_variant_id') for item in cart.values() if item.get('color_variant_id')]
-            variants_map = ProductColorVariant.objects.in_bulk(variant_ids)
-
             order_items = []
+            from fable5.services import effective_cart_unit_price
             for item in cart.values():
                 product = products_map.get(int(item['product_id']))
                 if not product:
                     continue
 
                 qty = int(item['qty'])
-                price = product.final_price
-
                 variant_id = item.get('color_variant_id')
                 variant = variants_map.get(int(variant_id)) if variant_id else None
+                fit_code = item.get('fit_option_code') or item.get('fit') or ''
+                price = effective_cart_unit_price(
+                    product,
+                    variant,
+                    fit_code=fit_code,
+                )
 
                 order_items.append(OrderItem(
                     order=order,
@@ -307,7 +338,7 @@ def create_order(request):
                     color_variant=variant,
                     title=product.title,
                     size=item.get('size', 'S'),
-                    fit_option_code=(item.get('fit_option_code') or item.get('fit') or ''),
+                    fit_option_code=fit_code,
                     fit_option_label=(item.get('fit_option_label') or item.get('fit_label') or ''),
                     qty=qty,
                     unit_price=price,

@@ -130,6 +130,29 @@ def _resolve_product_fit_payload(product, requested_code):
     return selected.code, selected.label
 
 
+def _effective_item_price(product, item_data, color_variant=None):
+    """Resolve a line price from trusted DB state, never from the session."""
+
+    from fable5.services import effective_cart_unit_price
+
+    if color_variant is None:
+        raw_variant_id = item_data.get('color_variant_id') if item_data else None
+        if raw_variant_id:
+            try:
+                color_variant = ProductColorVariant.objects.get(
+                    pk=int(raw_variant_id),
+                    product_id=product.pk,
+                )
+            except (ProductColorVariant.DoesNotExist, TypeError, ValueError):
+                color_variant = None
+    fit_code = str(
+        (item_data or {}).get('fit_option_code')
+        or (item_data or {}).get('fit')
+        or ''
+    ).strip().lower()
+    return effective_cart_unit_price(product, color_variant, fit_code=fit_code)
+
+
 def _fit_display_from_cart_item(item_data):
     code = str(item_data.get('fit_option_code') or item_data.get('fit') or '').strip()
     label = str(item_data.get('fit_option_label') or item_data.get('fit_label') or '').strip()
@@ -559,20 +582,19 @@ def view_cart(request):
             if not product:
                 continue
 
-            # Цена всегда берется из Product (актуальная цена)
-            price = product.final_price
             original_price = Decimal(product.price)
             qty = int(item_data.get('qty', 1))
-            line_total = price * qty
-            original_line_total = original_price * qty
-            site_line_discount = original_line_total - line_total
-            if site_line_discount < 0:
-                site_line_discount = Decimal('0.00')
 
             # Информация о цвете из color_variant_id
             # color_variant = _get_color_variant_safe(item_data.get('color_variant_id')) # OLD N+1 risk
             color_variant_id = item_data.get('color_variant_id')
             color_variant = color_variants_map.get(int(color_variant_id)) if color_variant_id else None
+            price = _effective_item_price(product, item_data, color_variant)
+            line_total = price * qty
+            original_line_total = original_price * qty
+            site_line_discount = original_line_total - line_total
+            if site_line_discount < 0:
+                site_line_discount = Decimal('0.00')
 
             color_label = _color_label_from_variant(color_variant)
             size_value = normalize_requested_size(product, item_data.get('size'))
@@ -792,11 +814,79 @@ def add_to_cart(request):
     qty = min(max(qty, 1), MAX_CART_ITEM_QTY)
 
     product = get_object_or_404(Product, pk=pid)
-    size = normalize_requested_size(product, request.POST.get('size'))
-    fit_option_code, fit_option_label = _resolve_product_fit_payload(product, request.POST.get('fit_option'))
-    price = product.final_price
-    if not isinstance(price, Decimal):
-        price = Decimal(str(price))
+    requested_size_raw = request.POST.get('size')
+    size = normalize_requested_size(product, requested_size_raw)
+    color_variant = None
+    if color_variant_id:
+        try:
+            color_variant = ProductColorVariant.objects.get(
+                pk=int(color_variant_id),
+                product_id=product.pk,
+            )
+        except (ProductColorVariant.DoesNotExist, TypeError, ValueError):
+            return JsonResponse({
+                'ok': False,
+                'error': _('Обраний колір недоступний для цього товару'),
+            }, status=400)
+
+    requested_fit = str(request.POST.get('fit_option') or '').strip().lower()
+    if color_variant and requested_fit:
+        from fable5.services import variant_allows_fit
+        if not variant_allows_fit(color_variant, requested_fit):
+            return JsonResponse({
+                'ok': False,
+                'error': _('Обрана посадка недоступна для цього кольору'),
+            }, status=400)
+
+    fit_option_code, fit_option_label = _resolve_product_fit_payload(product, requested_fit)
+    if color_variant and fit_option_code:
+        from fable5.services import variant_allows_fit, variant_public_context
+        if not variant_allows_fit(color_variant, fit_option_code):
+            context = variant_public_context(color_variant)
+            available_codes = context.get('available_fit_codes') or []
+            if available_codes:
+                fit_option_code, fit_option_label = _resolve_product_fit_payload(product, available_codes[0])
+
+    if color_variant:
+        from fable5.services import variant_allows_size
+        if fit_option_code:
+            from fable5.size_grid_services import (
+                resolve_effective_sizes,
+                resolve_option_size_grid,
+            )
+            option_key = f"fit={fit_option_code}"
+            if resolve_option_size_grid(product, option_key, variant=color_variant):
+                from fable5.size_grid_services import normalize_size_value
+                grid_sizes = {
+                    str(row.get('size') or '').strip().upper()
+                    for row in resolve_effective_sizes(
+                        product,
+                        option_key,
+                        variant=color_variant,
+                    )
+                }
+                requested_grid_size = normalize_size_value(requested_size_raw)
+                if requested_grid_size and requested_grid_size not in grid_sizes:
+                    return JsonResponse({
+                        'ok': False,
+                        'error': _('Обраний розмір відсутній у розмірній сітці цього кольору'),
+                    }, status=400)
+                if requested_grid_size:
+                    size = requested_grid_size
+        if not variant_allows_size(color_variant, size, fit_option_code):
+            return JsonResponse({
+                'ok': False,
+                'error': _('Обраний розмір недоступний для цього кольору та посадки'),
+            }, status=400)
+
+    price = _effective_item_price(
+        product,
+        {
+            'color_variant_id': color_variant_id,
+            'fit_option_code': fit_option_code,
+        },
+        color_variant,
+    )
 
     cart = request.session.get('cart', {})
     key = f"{product.id}:{size}:{color_variant_id or 'default'}"
@@ -822,10 +912,7 @@ def add_to_cart(request):
 
     _reset_monobank_session(request, drop_pending=True)
 
-    try:
-        color_variant_int = int(color_variant_id) if color_variant_id else None
-    except (TypeError, ValueError):
-        color_variant_int = None
+    color_variant_int = color_variant.id if color_variant else None
     offer_id = product.get_offer_id(color_variant_int, size)
     item_value = (price * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
@@ -833,10 +920,17 @@ def add_to_cart(request):
     prods = Product.objects.in_bulk(ids)
     total_qty = sum(i['qty'] for i in cart.values())
     total_sum = Decimal('0')
+    variant_ids = [i.get('color_variant_id') for i in cart.values() if i.get('color_variant_id')]
+    cart_variants = ProductColorVariant.objects.in_bulk(variant_ids)
     for i in cart.values():
         p = prods.get(i['product_id'])
         if p:
-            price_decimal = p.final_price if isinstance(p.final_price, Decimal) else Decimal(str(p.final_price))
+            raw_variant_id = i.get('color_variant_id')
+            try:
+                line_variant = cart_variants.get(int(raw_variant_id)) if raw_variant_id else None
+            except (TypeError, ValueError):
+                line_variant = None
+            price_decimal = _effective_item_price(p, i, line_variant)
             total_sum += Decimal(i['qty']) * price_decimal
 
     cart_total = total_sum.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -917,7 +1011,7 @@ def update_cart(request):
         product_id = cart[cart_key]['product_id']
         try:
             product = Product.objects.get(id=product_id)
-            price = product.final_price
+            price = _effective_item_price(product, cart[cart_key])
         except Product.DoesNotExist:
             return JsonResponse({
                 'success': False,
@@ -1020,7 +1114,7 @@ def remove_from_cart(request):
     for i in cart.values():
         p = prods.get(i['product_id'])
         if p:
-            price_decimal = p.final_price if isinstance(p.final_price, Decimal) else Decimal(str(p.final_price))
+            price_decimal = _effective_item_price(p, i)
             total_sum += Decimal(i['qty']) * price_decimal
 
     # Учитываем промокод при расчете итоговой суммы
@@ -1373,7 +1467,7 @@ def cart_summary(request):
     for i in cart.values():
         p = prods.get(i['product_id'])
         if p:
-            total_sum += Decimal(str(i['qty'])) * Decimal(str(p.final_price))
+            total_sum += Decimal(str(i['qty'])) * _effective_item_price(p, i)
 
     total_sum += custom_total
     total_qty += custom_qty
@@ -1427,7 +1521,7 @@ def cart_mini(request):
         variant_id = it.get('color_variant_id')
         color_variant = variants_map.get(int(variant_id)) if variant_id else None
 
-        unit = p.final_price
+        unit = _effective_item_price(p, it, color_variant)
         line = unit * it['qty']
         total += line
 
@@ -1551,7 +1645,7 @@ def contact_manager(request):
                 continue
 
             qty = item_data.get('qty', 1)
-            unit_price = product.final_price
+            unit_price = _effective_item_price(product, item_data)
             line_total = unit_price * qty
             total_sum += line_total
 
@@ -1630,18 +1724,18 @@ def cart_items_api(request):
             if not product:
                 continue
 
-            price = product.final_price
             original_price = Decimal(product.price)
             qty = int(item_data.get('qty', 1))
+            total_quantity += qty
+
+            variant_id = item_data.get('color_variant_id')
+            color_variant = variants_map.get(int(variant_id)) if variant_id else None
+            price = _effective_item_price(product, item_data, color_variant)
             line_total = price * qty
             original_line_total = original_price * qty
             site_line_discount = original_line_total - line_total
             if site_line_discount < 0:
                 site_line_discount = Decimal('0.00')
-            total_quantity += qty
-
-            variant_id = item_data.get('color_variant_id')
-            color_variant = variants_map.get(int(variant_id)) if variant_id else None
             color_label = _color_label_from_variant(color_variant)
             size_value = normalize_requested_size(product, item_data.get('size'))
             fit_option_code, fit_option_label = _fit_display_from_cart_item(item_data)

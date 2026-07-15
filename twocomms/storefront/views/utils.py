@@ -191,6 +191,8 @@ def calculate_cart_total(cart):
     """
     from decimal import Decimal
     from ..models import Product
+    from productcolors.models import ProductColorVariant
+    from fable5.services import effective_cart_unit_price
 
     if not cart:
         return Decimal('0')
@@ -198,13 +200,27 @@ def calculate_cart_total(cart):
     # Получаем все товары одним запросом
     ids = [item['product_id'] for item in cart.values()]
     products = Product.objects.in_bulk(ids)
+    variant_ids = [item.get('color_variant_id') for item in cart.values() if item.get('color_variant_id')]
+    variants = ProductColorVariant.objects.in_bulk(variant_ids)
 
     total = Decimal('0')
     for item in cart.values():
         product = products.get(item['product_id'])
         if product:
             qty = int(item.get('qty', 0))
-            total += product.final_price * qty
+            variant_id = item.get('color_variant_id')
+            try:
+                variant = variants.get(int(variant_id)) if variant_id else None
+            except (TypeError, ValueError):
+                variant = None
+            fit_code = str(
+                item.get('fit_option_code') or item.get('fit') or ''
+            ).strip().lower()
+            total += effective_cart_unit_price(
+                product,
+                variant,
+                fit_code=fit_code,
+            ) * qty
 
     return total
 

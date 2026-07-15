@@ -42,13 +42,13 @@ silently dropped from FB Commerce Manager. Add the standard product
 namespace + the legacy og:price aliases for the older social parsers.
 {% endcomment %}
 {% block product_og_meta %}
-  <meta property="product:price:amount" content="{{ product.final_price }}">
+  <meta property="product:price:amount" content="{{ selected_variant_price|default:product.final_price }}">
   <meta property="product:price:currency" content="UAH">
   <meta property="product:availability" content="{% if product_in_stock_for_og %}instock{% else %}out of stock{% endif %}">
   <meta property="product:retailer_item_id" content="TC-{{ product.id }}">
   <meta property="product:condition" content="new">
   <meta property="product:brand" content="TwoComms">
-  <meta property="og:price:amount" content="{{ product.final_price }}">
+  <meta property="og:price:amount" content="{{ selected_variant_price|default:product.final_price }}">
   <meta property="og:price:currency" content="UAH">
   <meta property="og:availability" content="{% if product_in_stock_for_og %}instock{% else %}out of stock{% endif %}">
 {% endblock %}
@@ -98,7 +98,7 @@ namespace + the legacy og:price aliases for the older social parsers.
   with stable ``@id``, so Search Console still resolves them across
   the page graph.
   {% endcomment %}
-  {% product_graph product breadcrumbs=breadcrumbs canonical_path=variant_canonical_path selected_variant=selected_color_variant review_summary=product_review_summary %}
+  {% product_graph product breadcrumbs=breadcrumbs canonical_path=variant_canonical_path selected_variant=selected_color_variant review_summary=product_review_summary fit_code=preselected_fit_code %}
   {% comment %}
   SEO 2026-05-16 (P1-1) — restored a per-product FAQPage JSON-LD,
   but ONLY when ``product_faq_items`` is non-empty. The previous
@@ -125,7 +125,7 @@ namespace + the legacy og:price aliases for the older social parsers.
 {% block extra_css %}
 {% comment %}Above-fold (hero/gallery/buybox/fit-selector) — render-blocking is OK,
    нужен сразу для корректного LCP/CLS.{% endcomment %}
-<link rel="stylesheet" href="{% static 'css/product-detail.css' %}?v=20260511-pdp-layout-v8">
+<link rel="stylesheet" href="{% static 'css/product-detail.css' %}?v=20260715-fable5-v1">
 <link rel="stylesheet" href="{% static 'css/product-media-fit.css' %}?v=20260428-media-fit-v1">
 {% comment %}
 Phase 19c (2026-05-10) — below-fold CSS lazy-load.
@@ -255,7 +255,7 @@ CSS rules на mobile FCP/LCP window.
         </button>
       </div>
 
-      <h1 class="tc-product-title">{{ product.title }}</h1>
+      <h1 class="tc-product-title" data-pdp-product-title>{{ selected_variant_merchandising.display_name|default:product.title }}</h1>
       <div class="tc-product-kicker">{{ product.category.name|default:"TwoComms drop" }}</div>
       {% comment %}
       Phase 21+ (2026-05-11) — meta line redesigned.
@@ -297,11 +297,18 @@ CSS rules на mobile FCP/LCP window.
 
       <div class="tc-price-row">
         <div class="tc-price-values">
-          <span class="tc-current-price">{{ product.final_price }} {% trans 'грн' %}</span>
+          <span class="tc-current-price" data-pdp-current-price>{{ selected_variant_price|default:product.final_price }} {% trans 'грн' %}</span>
           {% if product.has_discount %}
             <span class="tc-old-price">{{ product.price }} {% trans 'грн' %}</span>
             <span class="tc-discount-badge">-{{ product.discount_percent }}%</span>
           {% endif %}
+          <span class="tc-variant-price-note{% if not selected_variant_merchandising.has_price_adjustment %} is-hidden{% endif %}" data-pdp-price-note>
+            <button type="button" class="tc-variant-price-note__trigger" data-pdp-price-note-trigger aria-expanded="false" aria-describedby="pdp-price-note-popover" aria-label="{% trans 'Чому відрізняється ціна' %}">!</button>
+            <span class="tc-variant-price-note__popover" id="pdp-price-note-popover" role="tooltip" data-pdp-price-note-popover>
+              <strong data-pdp-price-note-title>{{ selected_variant_merchandising.price_reason|default:_('Особливість вибраного кольору') }}</strong>
+              <span data-pdp-price-note-copy>{% if selected_variant_merchandising.is_thermo %}{% trans 'Термохромна тканина реагує на тепло, тому коштує дорожче. Звичайні кольори можуть мати нижчу ціну.' %}{% else %}{% trans 'Ціна залежить від вибраного кольору та матеріалу.' %}{% endif %}</span>
+            </span>
+          </span>
         </div>
         {% if product.points_reward > 0 %}
           <button type="button" class="tc-points-pill" data-bs-toggle="modal" data-bs-target="#pointsInfoModal" data-product-title="{{ product.title }}" data-points-amount="{{ product.points_reward }}" aria-label="{% blocktrans with n=product.points_reward %}Бонусні бали за покупку: {{ n }}{% endblocktrans %}">
@@ -310,6 +317,16 @@ CSS rules на mobile FCP/LCP window.
           </button>
         {% endif %}
       </div>
+
+      <aside class="tc-variant-story{% if selected_variant_merchandising.is_thermo %} is-thermo{% endif %}{% if not selected_variant_merchandising.is_thermo and not selected_variant_merchandising.marketing_html %} is-hidden{% endif %}" data-pdp-variant-story>
+        <span class="tc-variant-story__icon" data-pdp-variant-story-icon>
+          {% include 'fable5/_thermo_flame.html' with class_suffix=' tc-thermo-flame--story' %}
+        </span>
+        <span class="tc-variant-story__copy">
+          <strong data-pdp-variant-story-title>{% if selected_variant_merchandising.is_thermo %}{% trans 'Термохромна тканина' %}{% else %}{% trans 'Особливість кольору' %}{% endif %}</strong>
+          <span data-pdp-variant-story-text>{% if selected_variant_merchandising.thermo_description %}{{ selected_variant_merchandising.thermo_description }}{% else %}{{ selected_variant_merchandising.marketing_html|default:"" }}{% endif %}</span>
+        </span>
+      </aside>
 
       <div class="tc-selector-block">
         <div class="tc-selector-head">
@@ -352,11 +369,15 @@ CSS rules на mobile FCP/LCP window.
                     class="color-swatch tc-color-option{% if v.is_default %} active{% endif %}"
                     data-variant="{{ v.id }}"
                     data-variant-slug="{{ v.slug }}"
+                    data-variant-price="{{ v.final_price }}"
+                    data-price-reason="{{ v.price_reason|default:'' }}"
+                    data-is-thermo="{{ v.is_thermo|yesno:'1,0' }}"
                     data-primary="{{ v.primary_hex }}"
                     data-secondary="{{ v.secondary_hex|default:'' }}"
                     style="--primary-color: {{ v.primary_hex }}; --secondary-color: {{ v.secondary_hex|default:v.primary_hex }};"
                     aria-label="{% trans 'Колір' %} {{ v.name|translate_color|default:forloop.counter }}">
                     <span class="tc-color-dot"></span>
+                    {% if v.is_thermo %}{% include 'fable5/_thermo_flame.html' with class_suffix=' tc-thermo-flame--swatch' %}{% endif %}
                   </button>
                   <span>{{ v.name|translate_color|default:_('Колір') }}</span>
                 </span>
@@ -396,6 +417,13 @@ CSS rules на mobile FCP/LCP window.
                 </label>
               {% endfor %}
             </div>
+            {% if size_grid_comparison %}
+              <button type="button" class="tc-size-compare-link" data-pdp-tab-trigger="size">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4V5Zm3 3v2m3-2v3m3-3v2m3-2v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                <span>{% trans 'Порівняти розмірні сітки' %}</span>
+                <small>{% trans 'Класика та оверсайз поруч' %}</small>
+              </button>
+            {% endif %}
           </div>
         {% endif %}
       </div>
@@ -472,7 +500,9 @@ CSS rules на mobile FCP/LCP window.
         </div>
 
         <div class="tc-tab-panel" id="panel-size" role="tabpanel" aria-labelledby="tab-size" data-pdp-panel="size" hidden>
-          {% if resolved_size_guide %}
+          {% if size_grid_comparison %}
+            {% include 'fable5/_size_grid_comparison.html' %}
+          {% elif resolved_size_guide %}
             <div class="tc-size-guide-card">
               <div>
                 <div class="tc-guide-eyebrow">{{ resolved_size_guide.eyebrow|default:"Fit guide" }}</div>
@@ -625,7 +655,7 @@ CSS rules на mobile FCP/LCP window.
           data-add-to-cart="{{ product.id }}"
           data-product-name="{{ product.title|escapejs }}"
           data-product-category="{{ product.category.name|default_if_none:''|escapejs }}"
-          data-product-price="{{ product.final_price }}">
+          data-product-price="{{ selected_variant_price|default:product.final_price }}">
           <span>{% trans 'ДОДАТИ В КОШИК' %}</span>
           <svg class="tc-add-cart-icon" width="19" height="19" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.2 18.4a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Zm9.8 0a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6ZM2 3h2.75l2.7 10.08A2.6 2.6 0 0 0 10 15h7.45a2.6 2.6 0 0 0 2.48-1.82L22 6.5H7.07L6.55 4.55A2.1 2.1 0 0 0 4.52 3H2Zm5.6 5.5h11.7l-1.28 4.05a.6.6 0 0 1-.57.45H10a.6.6 0 0 1-.58-.45L7.6 8.5Z" fill="currentColor"/></svg>
         </button>
@@ -731,7 +761,7 @@ CSS rules на mobile FCP/LCP window.
 
   <div class="tc-sticky-mobile" id="productStickyMobile">
     <div class="tc-sticky-price">
-      <span>{{ product.final_price }} грн</span>
+      <span data-pdp-sticky-price>{{ selected_variant_price|default:product.final_price }} грн</span>
       {% if product.has_discount %}<small>{{ product.price }} грн</small>{% endif %}
     </div>
     <button type="button" class="tc-sticky-add-btn" data-pdp-sticky-add>
@@ -752,7 +782,7 @@ CSS rules на mobile FCP/LCP window.
   data-id="{{ product.id }}"
   data-title="{{ product.title|escapejs }}"
   data-category="{{ product.category.name|default_if_none:''|escapejs }}"
-  data-price="{{ product.final_price }}"
+  data-price="{{ selected_variant_price|default:product.final_price }}"
   data-has-discount="{{ product.has_discount|yesno:'1,0' }}">
 </div>
 {% endblock %}
@@ -763,7 +793,7 @@ CSS rules на mobile FCP/LCP window.
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/product-detail.js' %}?v=20260511-pdp-layout-v8" defer></script>
+<script src="{% static 'js/product-detail.js' %}?v=20260715-fable5-v1" defer></script>
 <script src="{% static 'js/product-media-fit.js' %}?v=20260428-media-fit-v1" defer></script>
 <script src="{% static 'js/product-variant-history.js' %}?v=20260509-phase8-v1" defer></script>
 {% endblock %}

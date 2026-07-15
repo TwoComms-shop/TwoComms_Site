@@ -5,6 +5,8 @@ Fable 5 — сервісні хелпери для ПУБЛІЧНОЇ части
 повертаються нейтральні значення, і сайт працює як раніше.
 Див. INTEGRATION.md — як підключити до картки товару, головної та фідів.
 """
+from decimal import Decimal, InvalidOperation
+
 from .models import (
     ColorProfile,
     FeedImageRule,
@@ -32,7 +34,68 @@ def color_is_thermo(color) -> bool:
     return bool(profile and profile.is_thermo)
 
 
-def variant_public_context(variant) -> dict:
+DEFAULT_THERMO_NOTE = "Реагує на тепло — змінює відтінок"
+DEFAULT_THERMO_DESCRIPTION = (
+    "Термохромна тканина змінює відтінок під дією тепла, тому кожна річ "
+    "виглядає по-різному залежно від температури."
+)
+DEFAULT_THERMO_PRICE_REASON = "Термохромна тканина"
+
+
+def _decimal(value, default="0") -> Decimal:
+    try:
+        return Decimal(str(value if value is not None else default))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal(str(default))
+
+
+def _effective_fit_rules(variant) -> dict:
+    """Resolve product and color fit rules with buyer-facing explanations."""
+
+    product = variant.product
+    product_notes = {
+        row.fit_code: row
+        for row in product.fable5_fit_notes.all()
+    }
+    color_rules = {
+        row.fit_code: row
+        for row in variant.fable5_fit_rules.all()
+    }
+    options = sorted(
+        product.fit_options.all(),
+        key=lambda option: (option.order, option.id),
+    )
+    result = {}
+    for option in options:
+        note = product_notes.get(option.code)
+        color_rule = color_rules.get(option.code)
+        enabled = bool(option.is_active)
+        if note is not None:
+            enabled = enabled and bool(note.is_enabled)
+        if color_rule is not None:
+            enabled = enabled and bool(color_rule.is_enabled)
+        reason = ""
+        if color_rule is not None:
+            reason = (color_rule.reason or "").strip()
+        if not reason and note is not None:
+            reason = (note.reason or "").strip()
+        result[option.code] = {
+            "is_enabled": enabled,
+            "reason": reason,
+            "label": option.label or option.code,
+            "is_default": bool(option.is_default),
+        }
+
+    enabled = [item for item in result.values() if item["is_enabled"]]
+    if len(enabled) == 1:
+        only_label = (enabled[0]["label"] or "").strip().lower()
+        for item in result.values():
+            if not item["is_enabled"] and not item["reason"]:
+                item["reason"] = f"Для цього кольору доступний лише {only_label}"
+    return result
+
+
+def variant_public_context(variant, *, fit_code="", lang="uk") -> dict:
     """Все потрібне для картки товару про конкретний колір:
 
     - is_thermo + опис термохромної тканини
@@ -41,48 +104,138 @@ def variant_public_context(variant) -> dict:
     - per-color SEO (title/description/keywords), відео, FAQ
     - доступність посадок і розмірів з причинами
     """
-    details = VariantDetails.objects.filter(variant=variant).first()
-    profile = ColorProfile.objects.filter(color=variant.color).first()
+    fields_cache = getattr(getattr(variant, "_state", None), "fields_cache", {})
+    if "fable5_details" in fields_cache:
+        details = fields_cache.get("fable5_details")
+    else:
+        details = VariantDetails.objects.filter(variant=variant).first()
+    color_cache = getattr(getattr(variant.color, "_state", None), "fields_cache", {})
+    if "fable5_profile" in color_cache:
+        profile = color_cache.get("fable5_profile")
+    else:
+        profile = ColorProfile.objects.filter(color=variant.color).first()
     product = variant.product
-
-    base_price = variant.price_override if variant.price_override is not None else None
-    if base_price is None:
-        try:
-            base_price = product.final_price
-        except Exception:
-            base_price = product.price
-    price_delta = details.price_delta if details else 0
+    options = {"fit": fit_code} if fit_code else None
+    merchandising = resolve_merchandising_context(
+        product,
+        variant=variant,
+        option_values=options,
+        lang=lang,
+    )
+    product_price = _decimal(getattr(product, "final_price", product.price))
+    base_price = _decimal(
+        variant.price_override
+        if variant.price_override is not None
+        else product_price
+    )
+    price_delta = _decimal(merchandising.get("price_delta", 0))
+    final_price = base_price + price_delta
+    is_thermo = bool(profile and profile.is_thermo)
+    price_reason = (merchandising.get("price_delta_reason") or "").strip()
+    if not price_reason and is_thermo and final_price != product_price:
+        price_reason = DEFAULT_THERMO_PRICE_REASON
+    fit_rules = _effective_fit_rules(variant)
 
     return {
         "variant_id": variant.id,
-        "is_thermo": bool(profile and profile.is_thermo),
-        "thermo_note": (profile.thermo_note if profile else "") or "",
-        "thermo_description": (profile.description if profile else "") or "",
-        "display_name": (details.display_name if details else "") or product.title,
+        "is_thermo": is_thermo,
+        "thermo_note": (
+            ((profile.thermo_note if profile else "") or "").strip()
+            or (DEFAULT_THERMO_NOTE if is_thermo else "")
+        ),
+        "thermo_description": (
+            ((profile.description if profile else "") or "").strip()
+            or (DEFAULT_THERMO_DESCRIPTION if is_thermo else "")
+        ),
+        "display_name": merchandising["display_name"],
+        "base_product_price": product_price,
+        "base_variant_price": base_price,
         "price_delta": price_delta,
-        "price_delta_reason": (details.price_delta_reason if details else "") or "",
-        "final_price": (base_price or 0) + price_delta,
-        "marketing_html": (details.marketing_html if details else "") or "",
-        "youtube_url": (details.youtube_url if details else "") or getattr(product, "video_url", "") or "",
-        "seo_title": (details.seo_title if details else "") or "",
-        "seo_description": (details.seo_description if details else "") or "",
-        "seo_keywords": (details.seo_keywords if details else "") or "",
+        "price_difference": final_price - product_price,
+        "price_delta_reason": price_reason,
+        "final_price": final_price,
+        "has_price_adjustment": final_price != product_price,
+        "marketing_html": merchandising["marketing_text"],
+        "youtube_url": merchandising["youtube_url"],
+        "seo_title": merchandising["seo_title"],
+        "seo_description": merchandising["seo_description"],
+        "seo_keywords": merchandising["seo_keywords"],
         "faqs": [
             {
                 "question_uk": f.question_uk, "question_ru": f.question_ru, "question_en": f.question_en,
                 "answer_uk": f.answer_uk, "answer_ru": f.answer_ru, "answer_en": f.answer_en,
             }
-            for f in VariantFAQ.objects.filter(variant=variant, is_active=True)
+            for f in variant.fable5_faqs.all() if f.is_active
         ],
-        "fit_rules": {
-            r.fit_code: {"is_enabled": r.is_enabled, "reason": r.reason}
-            for r in VariantFitRule.objects.filter(variant=variant)
-        },
+        "fit_rules": fit_rules,
+        "available_fit_codes": [
+            code for code, rule in fit_rules.items() if rule["is_enabled"]
+        ],
         "size_rules": [
             {"fit_code": r.fit_code, "size": r.size, "is_enabled": r.is_enabled, "stock": r.stock}
-            for r in VariantSizeRule.objects.filter(variant=variant)
+            for r in variant.fable5_size_rules.all()
         ],
     }
+
+
+def variant_allows_fit(variant, fit_code: str) -> bool:
+    """Return whether the selected color can be purchased in this fit."""
+
+    code = str(fit_code or "").strip().lower()
+    if not code:
+        return True
+    rule = variant_public_context(variant)["fit_rules"].get(code)
+    return bool(rule and rule["is_enabled"])
+
+
+def effective_cart_unit_price(product, color_variant=None, fit_code: str = "") -> Decimal:
+    """Authoritative server-side unit price for a cart/order line.
+
+    The colour variant is accepted only when it belongs to ``product``.  This
+    prevents a client from posting a cheaper variant ID from another item.
+    """
+
+    if color_variant is None:
+        return _decimal(getattr(product, "final_price", product.price))
+    if getattr(color_variant, "product_id", None) != getattr(product, "id", None):
+        return _decimal(getattr(product, "final_price", product.price))
+    return _decimal(
+        variant_public_context(color_variant, fit_code=fit_code)["final_price"]
+    )
+
+
+def variant_allows_purchase(product, color_variant, *, fit_code: str = "", size: str = "") -> bool:
+    """Validate a persisted cart selection against current variant rules."""
+
+    if color_variant is None:
+        return True
+    if getattr(color_variant, "product_id", None) != getattr(product, "id", None):
+        return False
+    fit = str(fit_code or "").strip().lower()
+    if fit and not variant_allows_fit(color_variant, fit):
+        return False
+
+    wanted_size = str(size or "").strip()
+    if wanted_size and fit:
+        from .size_grid_services import (
+            normalize_size_value,
+            resolve_effective_sizes,
+            resolve_option_size_grid,
+        )
+
+        option_key = f"fit={fit}"
+        if resolve_option_size_grid(product, option_key, variant=color_variant):
+            allowed = {
+                normalize_size_value(row.get("size"))
+                for row in resolve_effective_sizes(
+                    product,
+                    option_key,
+                    variant=color_variant,
+                )
+            }
+            if normalize_size_value(wanted_size) not in allowed:
+                return False
+    return variant_allows_size(color_variant, wanted_size, fit)
 
 
 def product_fit_notes(product) -> dict:
@@ -99,6 +252,26 @@ def disabled_sizes_for_variant(variant, fit_code: str = "") -> list:
     if fit_code:
         rules = rules.filter(fit_code__in=["", fit_code])
     return sorted({r.size for r in rules})
+
+
+def variant_allows_size(variant, size: str, fit_code: str = "") -> bool:
+    """Resolve general and fit-specific colour size availability."""
+
+    wanted_size = str(size or "").strip().upper()
+    wanted_fit = str(fit_code or "").strip().lower()
+    if not wanted_size:
+        return True
+    rules = list(
+        VariantSizeRule.objects
+        .filter(variant=variant, size__iexact=wanted_size, fit_code__in=["", wanted_fit])
+        .order_by("id")
+    )
+    if not rules:
+        return True
+    general = next((rule for rule in reversed(rules) if not rule.fit_code), None)
+    specific = next((rule for rule in reversed(rules) if rule.fit_code == wanted_fit), None)
+    rule = specific or general
+    return bool(rule and rule.is_enabled and (rule.stock is None or rule.stock > 0))
 
 
 # ---------------------------------------------------------------------------

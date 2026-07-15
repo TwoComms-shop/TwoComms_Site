@@ -123,6 +123,33 @@ class Fable5EditorAccessTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(ProductImage.objects.filter(product=self.product).exists())
 
+    def test_setting_gallery_image_as_cover_records_its_source(self):
+        from fable5.models import CoverSource
+
+        image = ProductImage.objects.create(
+            product=self.product,
+            image="products/extra/cover-source.webp",
+            alt_text="Cover source",
+        )
+        self.client.force_login(self.staff)
+
+        response = self.client.post(
+            reverse("fable5_api_set_cover"),
+            data=json.dumps({
+                "product_id": self.product.pk,
+                "kind": "product",
+                "image_id": image.pk,
+                "target": "main",
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        source = CoverSource.objects.get(product=self.product)
+        self.assertEqual(source.source_type, CoverSource.SourceType.PRODUCT_IMAGE)
+        self.assertEqual(source.product_image, image)
+        self.assertEqual(response.json()["cover_source"]["product_image_id"], image.pk)
+
     def test_editor_css_preserves_hidden_buttons_and_wraps_mobile_actions(self):
         css = (
             Path(__file__).resolve().parents[1]

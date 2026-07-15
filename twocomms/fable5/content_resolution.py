@@ -110,36 +110,60 @@ def _load_layers(product, variant, values: dict[str, str]):
     combination_key = build_combination_key(values)
     exact = None
     if variant is not None and combination_key:
-        exact = (
-            VariantCombinationProfile.objects
-            .filter(
-                variant=variant,
-                combination_key=combination_key,
-                is_active=True,
-            )
-            .prefetch_related("i18n")
-            .first()
+        prefetched = getattr(variant, "_prefetched_objects_cache", {}).get(
+            "fable5_combinations"
         )
+        if prefetched is not None:
+            exact = next(
+                (
+                    profile for profile in prefetched
+                    if profile.combination_key == combination_key and profile.is_active
+                ),
+                None,
+            )
+        else:
+            exact = (
+                VariantCombinationProfile.objects
+                .filter(
+                    variant=variant,
+                    combination_key=combination_key,
+                    is_active=True,
+                )
+                .prefetch_related("i18n")
+                .first()
+            )
 
     option_keys = _option_candidate_keys(values)
-    options_by_key = {
-        profile.option_key: profile
-        for profile in (
+    prefetched_options = getattr(product, "_prefetched_objects_cache", {}).get(
+        "fable5_option_profiles"
+    )
+    if prefetched_options is not None:
+        option_rows = (
+            profile for profile in prefetched_options
+            if profile.option_key in option_keys and profile.is_active
+        )
+    else:
+        option_rows = (
             ProductOptionProfile.objects
             .filter(product=product, option_key__in=option_keys, is_active=True)
             .prefetch_related("i18n")
         )
-    }
+    options_by_key = {profile.option_key: profile for profile in option_rows}
     options = [options_by_key[key] for key in option_keys if key in options_by_key]
 
     details = None
     if variant is not None:
-        details = (
-            VariantDetails.objects
-            .filter(variant=variant)
-            .prefetch_related("i18n")
-            .first()
-        )
+        cached_details = getattr(variant, "_state", None)
+        fields_cache = getattr(cached_details, "fields_cache", {})
+        if "fable5_details" in fields_cache:
+            details = fields_cache.get("fable5_details")
+        else:
+            details = (
+                VariantDetails.objects
+                .filter(variant=variant)
+                .prefetch_related("i18n")
+                .first()
+            )
 
     layers: list[_Layer] = []
     if exact is not None:

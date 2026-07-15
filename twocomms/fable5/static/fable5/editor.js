@@ -61,6 +61,22 @@
 		return Number.isFinite(n) ? n : null;
 	};
 
+	const DEFAULTS = {
+		thermoNote: "Реагує на тепло — змінює відтінок",
+		priceReason: "Термохромна тканина",
+		fitReason: "Для цього кольору доступний лише оверсайз",
+	};
+	const defaultFitReason = (code) => code === "classic"
+		? DEFAULTS.fitReason
+		: "Ця посадка недоступна для цього кольору";
+
+	function flameHtml(className) {
+		return `<svg class="${className || "f5-flame-icon"}" viewBox="0 0 24 24" aria-hidden="true">
+			<path d="M12 2c.7 3.4-1 5.2-2.5 6.8C7.8 10.6 6 12.5 6 15.3a6 6 0 0 0 12 0c0-2.2-.9-3.8-2-5.2-.4 1.1-1 1.9-1.9 2.5.3-3.5-.8-7.9-2.1-10.6Z" fill="currentColor"/>
+			<path d="M12 21.2a3.7 3.7 0 0 1-3.7-3.7c0-1.5.8-2.4 1.7-3.4.6-.6 1.2-1.3 1.6-2.2 1.4 1.4 4.1 3.3 4.1 5.6a3.7 3.7 0 0 1-3.7 3.7Z" fill="#ffd166"/>
+		</svg>`;
+	}
+
 	/* ---------------- транслітерація (дзеркало fable5/translit.py, КМУ-2010) ---------------- */
 	const f5Translit = (function () {
 		const UK = {
@@ -149,6 +165,7 @@
 		dirty: false,
 		slugTouched: !!(boot.product && boot.product.slug),
 		saving: false,
+		selectedVariantIndex: 0,
 	};
 
 	function fitDefaults() {
@@ -168,6 +185,22 @@
 	function setDirty(value) {
 		state.dirty = value;
 		$("#f5-dirty").hidden = !value;
+		const mobile = $("#f5-mobile-state");
+		if (mobile) mobile.textContent = value ? "Є незбережені зміни" : "Зміни збережено";
+		$$('.f5-rail-save').forEach((dot) => dot.classList.toggle("is-dirty", value));
+		updateReadiness();
+	}
+
+	function setSaveVisual(mode) {
+		const button = $("#f5-save");
+		const label = $("#f5-save-label");
+		if (!button || !label) return;
+		button.classList.toggle("is-saving", mode === "saving");
+		if (mode === "saving") label.textContent = "Зберігаємо…";
+		else if (mode === "saved") label.textContent = "Збережено";
+		else if (mode === "error") label.textContent = "Спробувати ще";
+		else label.textContent = "Зберегти";
+		if (mode === "saved") setTimeout(() => { if (!state.dirty && !state.saving) label.textContent = "Зберегти"; }, 1400);
 	}
 
 	/* ---------------- шапка ---------------- */
@@ -221,11 +254,80 @@
 		if (p.home_card_image_url) $("#f-home-image").src = p.home_card_image_url;
 		updateSeoCounters();
 		updateSlugHint();
+		updateCoverState();
 	}
 
 	function updateSeoCounters() {
 		$("#f-seo-title-count").textContent = ($("#f-seo-title").value || "").length + "/160";
 		$("#f-seo-desc-count").textContent = ($("#f-seo-desc").value || "").length + "/320";
+		updateBaseSeoPreview();
+	}
+
+	function updateBaseSeoPreview() {
+		const title = $("#f-google-title");
+		const description = $("#f-google-description");
+		const slug = $("#f-google-slug");
+		if (!title || !description || !slug) return;
+		title.textContent = $("#f-seo-title").value.trim() || (($("#f-title").value.trim() || "Назва товару") + " — TwoComms");
+		description.textContent = $("#f-seo-desc").value.trim() || $("#f-short-desc").value.trim() || "Опис основної сторінки товару буде показано тут.";
+		slug.textContent = $("#f-slug").value.trim() || "slug";
+	}
+
+	function updateCoverState() {
+		const main = $("#f-main-image");
+		const home = $("#f-home-image");
+		const mainSource = $("#f-main-image-source");
+		const homeSource = $("#f-home-image-source");
+		if (home && main && !home.getAttribute("src") && main.getAttribute("src")) {
+			home.src = main.src;
+			home.dataset.fallback = "true";
+		}
+		if (home && home.dataset.fallback === "true" && main && main.getAttribute("src") && home.src !== main.src) home.src = main.src;
+		const coverSource = (state.product && state.product.cover_source) || {};
+		const coverLabels = {
+			upload: "Джерело: окремий файл",
+			color_image: "Джерело: фото кольору",
+			product_image: "Джерело: галерея товару",
+		};
+		if (mainSource) {
+			mainSource.textContent = main && main.getAttribute("src")
+				? (coverLabels[coverSource.source_type] || "Обкладинка обрана")
+				: "Обкладинка не обрана";
+		}
+		if (homeSource) homeSource.textContent = home && home.getAttribute("src") && home.dataset.fallback !== "true" ? "Власний override" : "Fallback: обкладинка";
+	}
+
+	function updateReadiness() {
+		const scoreEl = $("#f5-readiness-score");
+		if (!scoreEl) return;
+		const titleReady = !!($("#f-title") && $("#f-title").value.trim());
+		const priceReady = !!($("#f-price") && Number($("#f-price").value) > 0);
+		const variantReady = state.variants.length > 0;
+		const coverReady = !!(state.files.main_image || (state.product && state.product.main_image_url));
+		const fitReady = (state.fits || []).some((fit) => fit.is_enabled);
+		const checks = [
+			{ ok: titleReady, label: "Додайте назву", tab: "main" },
+			{ ok: priceReady, label: "Вкажіть ціну", tab: "main" },
+			{ ok: variantReady, label: "Додайте колір", tab: "colors" },
+			{ ok: coverReady, label: "Оберіть обкладинку", tab: "media" },
+			{ ok: fitReady, label: "Увімкніть посадку", tab: "fits" },
+		];
+		const score = Math.round((checks.filter((item) => item.ok).length / checks.length) * 100);
+		scoreEl.textContent = score + "%";
+		const navProgress = $("#f5-nav-progress");
+		if (navProgress) navProgress.textContent = score + "% готово";
+		const bar = $("#f5-readiness-bar");
+		if (bar) bar.style.width = score + "%";
+		const issues = $("#f5-readiness-issues");
+		if (issues) issues.innerHTML = checks.filter((item) => !item.ok).slice(0, 3).map((item) => `<button type="button" data-readiness-tab="${item.tab}">• ${esc(item.label)}</button>`).join("") || '<span class="f5-hint">Критичні поля заповнено</span>';
+		const count = $("#f5-variant-count");
+		if (count) count.textContent = String(state.variants.length);
+		const mainTab = $('.f5-tab[data-tab="main"]');
+		const colorTab = $('.f5-tab[data-tab="colors"]');
+		const mediaTab = $('.f5-tab[data-tab="media"]');
+		if (mainTab) mainTab.classList.toggle("is-complete", titleReady && priceReady);
+		if (colorTab) colorTab.classList.toggle("is-complete", variantReady);
+		if (mediaTab) mediaTab.classList.toggle("is-complete", coverReady);
 	}
 
 	function updateSlugHint() {
@@ -233,6 +335,7 @@
 		$("#f-slug-hint").textContent = slug
 			? "Посилання: /product/" + slug + "/"
 			: "ч → ch, ш → sh, щ → shch, ї → yi… Лапки викидаються, пробіли → дефіси.";
+		updateBaseSeoPreview();
 	}
 
 	function autoSlug() {
@@ -256,13 +359,16 @@
 	}
 
 	function collectFits() {
-		return $$("#f-fits .f5-fit-row").map((row) => ({
-			code: row.dataset.code,
-			label: row.dataset.label,
-			is_enabled: $("[data-f=enabled]", row).checked,
-			is_default: $("[data-f=default]", row).checked,
-			reason: $("[data-f=reason]", row).value,
-		}));
+		return $$("#f-fits .f5-fit-row").map((row) => {
+			const enabled = $("[data-f=enabled]", row).checked;
+			return {
+				code: row.dataset.code,
+				label: row.dataset.label,
+				is_enabled: enabled,
+				is_default: $("[data-f=default]", row).checked,
+				reason: $("[data-f=reason]", row).value || (enabled ? "" : defaultFitReason(row.dataset.code)),
+			};
+		});
 	}
 
 	function collectPayload() {
@@ -317,6 +423,8 @@
 		}
 		state.saving = true;
 		$("#f5-save").disabled = true;
+		$("#f5-mobile-save").disabled = true;
+		setSaveVisual("saving");
 		try {
 			const fd = new FormData();
 			fd.append("payload", JSON.stringify(payload));
@@ -360,14 +468,17 @@
 			renderVariants();
 			if (wasNew) loadFeeds();
 			setDirty(false);
+			setSaveVisual("saved");
 			if (!silent) toast(resp.created ? "Товар створено — працюємо далі без виходу" : "Збережено");
 			return state.product;
 		} catch (err) {
+			setSaveVisual("error");
 			toast("Помилка збереження: " + err.message, true);
 			throw err;
 		} finally {
 			state.saving = false;
 			$("#f5-save").disabled = false;
+			$("#f5-mobile-save").disabled = false;
 		}
 	}
 
@@ -386,7 +497,7 @@
 			? `background:linear-gradient(135deg, ${esc(primary)} 0%, ${esc(primary)} 49%, ${esc(secondary)} 51%, ${esc(secondary)} 100%);`
 			: `background:${esc(primary)};`;
 		const flame = color && color.is_thermo
-			? '<svg class="f5-dot__flame" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c.6 3.2-1.1 4.9-2.6 6.5C7.8 10.2 6 12 6 15a6 6 0 0 0 12 0c0-2.1-.9-3.6-1.9-5-.4 1-.9 1.7-1.8 2.3.2-3.3-.9-7.6-2.3-10.3z" fill="#ff9f2e"/><path d="M12 22a4.2 4.2 0 0 1-4.2-4.2c0-1.7.9-2.7 1.8-3.7.6-.7 1.3-1.4 1.7-2.4 1.6 1.5 4.9 3.7 4.9 6.1A4.2 4.2 0 0 1 12 22z" fill="#ffd84d"/></svg>'
+			? flameHtml("f5-dot__flame")
 			: "";
 		const cls = "f5-dot" + (color && color.is_thermo ? " f5-dot--thermo" : "");
 		return `<span class="${cls}" style="width:${s}px;height:${s}px;${bg}" title="${esc((color && color.name) || "")}">${flame}</span>`;
@@ -398,9 +509,9 @@
 			<span class="f5-thumb__order">${index + 1}</span>
 			<img src="${esc(img.url)}" alt="" loading="lazy">
 			<div class="f5-thumb__bar">
-				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="cover" title="Зробити головною картинкою товару">⭐</button>
-				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="home" title="Зробити карткою на головній">🏠</button>
-				<button type="button" class="f5-btn f5-btn--danger f5-btn--small" data-act="del" title="Видалити">✕</button>
+				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="cover" aria-label="Зробити обкладинкою" title="Зробити обкладинкою">Обкладинка</button>
+				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="home" aria-label="Зробити карткою на головній" title="Картка на головній">Головна</button>
+				<button type="button" class="f5-btn f5-btn--danger f5-btn--small" data-act="del" aria-label="Видалити зображення" title="Видалити">×</button>
 			</div>
 			<input class="f5-input f5-thumb__alt" value="${esc(img.alt)}" placeholder="alt для SEO">
 		</figure>`;
@@ -411,7 +522,7 @@
 		const images = (state.product && state.product.images) || [];
 		gallery.innerHTML = images.length
 			? images.map((img, i) => thumbHtml(img, "product", null, i)).join("")
-			: '<p class="f5-hint">Поки порожньо. Нові картинки завжди додаються в кінець і НЕ перезаписують вже завантажені.</p>';
+			: '<p class="f5-hint">Галерея поки порожня. Додайте перший кадр — нові фото завжди додаються в кінець.</p>';
 	}
 
 	async function uploadImages(kind, variantId, fileList) {
@@ -469,8 +580,10 @@
 				});
 				state.product.main_image_url = resp.main_image_url;
 				state.product.home_card_image_url = resp.home_card_image_url;
+				if (resp.cover_source) state.product.cover_source = resp.cover_source;
 				if (resp.main_image_url) $("#f-main-image").src = resp.main_image_url;
-				if (resp.home_card_image_url) $("#f-home-image").src = resp.home_card_image_url;
+				if (resp.home_card_image_url) { $("#f-home-image").src = resp.home_card_image_url; delete $("#f-home-image").dataset.fallback; }
+				updateCoverState();
 				toast(act === "home" ? "Встановлено карткою на головній" : "Встановлено головною картинкою");
 			}
 		} catch (err) {
@@ -519,13 +632,55 @@
 	/* ---------------- посадки товару ---------------- */
 	function renderFits() {
 		$("#f-fits").innerHTML = state.fits.map((fit) => `
-			<div class="f5-fit-row" data-code="${esc(fit.code)}" data-label="${esc(fit.label)}">
+			<div class="f5-fit-row${fit.is_enabled ? "" : " is-disabled"}" data-code="${esc(fit.code)}" data-label="${esc(fit.label)}">
 				<label class="f5-switch" title="Доступність посадки"><input type="checkbox" data-f="enabled" ${fit.is_enabled ? "checked" : ""}><i></i></label>
 				<strong>${esc(fit.label)}</strong>
 				<label class="f5-check"><input type="radio" name="f5-fit-default" data-f="default" ${fit.is_default ? "checked" : ""}> за замовчуванням</label>
-				<input class="f5-input" data-f="reason" value="${esc(fit.reason)}" placeholder="Причина, якщо вимкнена — показується в картці товару">
+				<input class="f5-input" data-f="reason" value="${esc(fit.reason)}" placeholder="${esc(defaultFitReason(fit.code))}">
 			</div>`).join("");
 	}
+
+	$("#f-fits").addEventListener("change", (e) => {
+		if (!e.target.matches("[data-f=enabled]")) return;
+		const row = e.target.closest(".f5-fit-row");
+		const code = row.dataset.code;
+		const enabled = e.target.checked;
+		row.classList.toggle("is-disabled", !enabled);
+		const fit = state.fits.find((item) => item.code === code);
+		if (fit) fit.is_enabled = enabled;
+		$$(`[data-fit-cluster="${code}"]`).forEach((cluster) => {
+			const checkbox = $("[data-f=fit_enabled]", cluster);
+			if (checkbox) checkbox.disabled = !enabled;
+			const variantEnabled = !checkbox || checkbox.checked;
+			const effectiveEnabled = enabled && variantEnabled;
+			cluster.dataset.productEnabled = enabled ? "true" : "false";
+			cluster.classList.toggle("is-disabled", !effectiveEnabled);
+			const grid = $("[data-f=variant_size_grid]", cluster);
+			const reasonWrap = $("[data-role=fit-reason]", cluster);
+			const reason = $("[data-f=fit_reason]", cluster);
+			const globalNote = $("[data-role=fit-global-note]", cluster);
+			const sourceBadge = $(".f5-fit-row .f5-source-badge", cluster);
+			if (grid) grid.disabled = !effectiveEnabled;
+			if (reasonWrap) reasonWrap.hidden = !enabled || variantEnabled;
+			if (reason) reason.disabled = !enabled || variantEnabled;
+			if (globalNote) globalNote.hidden = enabled;
+			if (sourceBadge) sourceBadge.textContent = enabled ? "Для цього кольору" : "Вимкнено в товарі";
+			$$('.f5-size-cell', cluster).forEach((cell) => {
+				const button = $("[data-act=size-toggle]", cell);
+				const stock = $("[data-f=stock]", cell);
+				if (button) { button.disabled = !effectiveEnabled; button.setAttribute("aria-pressed", effectiveEnabled && !cell.classList.contains("is-off") ? "true" : "false"); }
+				if (stock) stock.disabled = !effectiveEnabled;
+			});
+			const card = cluster.closest(".f5-variant");
+			if (card) syncCombinationAvailability($(`[data-combination-fit="${code}"]`, card), effectiveEnabled);
+		});
+		$$(`#f-stock .f5-size-cell[data-fit="${code}"]`).forEach((cell) => {
+			if (!enabled) cell.classList.add("is-off");
+			const button = $("[data-act=size-toggle]", cell);
+			if (button) { button.disabled = !enabled; button.setAttribute("aria-pressed", enabled && !cell.classList.contains("is-off") ? "true" : "false"); }
+		});
+		setDirty(true);
+	});
 
 	/* ---------------- FAQ ---------------- */
 	function faqHtml(faq) {
@@ -562,7 +717,7 @@
 			images: [],
 			details: { display_name: "", price_delta: 0, price_delta_reason: "", marketing_html: "", youtube_url: "", seo_title: "", seo_description: "", seo_keywords: "" },
 			fits: state.fits.map((f) => ({ fit_code: f.code, is_enabled: true, reason: "" })),
-			sizes: [], faqs: [],
+			sizes: [], size_grids: [], blank_links: [], combinations: [], faqs: [],
 			_open: true,
 		};
 	}
@@ -571,116 +726,211 @@
 		return (variant.sizes || []).find((s) => s.fit_code === fitCode && s.size === size);
 	}
 
-	function sizeGridHtml(variant) {
-		const enabledFits = state.fits.filter((f) => f.is_enabled);
-		const rows = enabledFits.length ? enabledFits : [{ code: "", label: "Всі посадки" }];
+	function sizeGridHtml(variant, onlyFit) {
+		const enabledFits = state.fits.filter((f) => f.is_enabled && (!onlyFit || f.code === onlyFit));
+		const rows = enabledFits.length ? enabledFits : (onlyFit ? state.fits.filter((f) => f.code === onlyFit) : [{ code: "", label: "Всі посадки" }]);
 		return rows.map((fit) => {
+			const fitRule = (variant.fits || []).find((rule) => rule.fit_code === fit.code);
+			const fitEnabled = fit.is_enabled && (!fitRule || fitRule.is_enabled);
 			const cells = sizesList().map((size) => {
 				const rule = sizeRule(variant, fit.code, size) || { is_enabled: true, stock: null };
 				const stockCls = rule.stock === 0 ? " f5-stock-zero" : (rule.stock != null && rule.stock <= 3 ? " f5-stock-low" : "");
-				return `<div class="f5-size-cell${rule.is_enabled ? "" : " is-off"}${stockCls}" data-fit="${esc(fit.code)}" data-size="${esc(size)}">
-					<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="size-toggle" title="Увімкнути/вимкнути розмір для цього кольору">${esc(size)}</button>
-					<input type="number" min="0" data-f="stock" value="${rule.stock != null ? rule.stock : ""}" placeholder="∞" title="Залишок на складі (порожньо — не ведеться)">
+				const enabled = fitEnabled && rule.is_enabled;
+				return `<div class="f5-size-cell${enabled ? "" : " is-off"}${stockCls}" data-fit="${esc(fit.code)}" data-size="${esc(size)}">
+					<button type="button" data-act="size-toggle" aria-pressed="${enabled ? "true" : "false"}" title="${enabled ? "Вимкнути" : "Увімкнути"} розмір ${esc(size)}"${fitEnabled ? "" : " disabled"}>${esc(size)}</button>
+					<input type="number" min="0" data-f="stock" value="${rule.stock != null ? rule.stock : ""}" placeholder="∞" aria-label="Залишок ${esc(size)}"${fitEnabled ? "" : " disabled"}>
 				</div>`;
 			}).join("");
-			return `<div class="f5-subsection"><div class="f5-hint">${esc(fit.label)}</div><div class="f5-size-grid">${cells}</div></div>`;
+			return `<div class="f5-size-grid" data-role="fit-sizes" data-fit="${esc(fit.code)}">${cells}</div>`;
 		}).join("");
 	}
 
 	function colorPickerHtml(variant) {
 		const options = (dict.colors || []).map((c) => `
 			<button type="button" class="f5-color-option${variant.color.id === c.id ? " is-selected" : ""}" data-act="pick-color" data-color='${esc(JSON.stringify(c))}'>
-				${dotHtml(c, 16)} <span>${esc(c.name || c.primary_hex)}</span>${c.is_thermo ? " 🔥" : ""}
+				${dotHtml(c, 18)} <span>${esc(c.name || c.primary_hex)}</span>
 			</button>`).join("");
-		return `<div class="f5-subsection">
-			<div class="f5-hint">Бібліотека кольорів — один клік, без подвійного вводу назви. Зміна HEX нижче = новий колір.</div>
-			<div class="f5-color-picker">${options || '<span class="f5-hint">Бібліотека порожня — створіть перший колір нижче</span>'}</div>
-			<div class="f5-row">
-				<label class="f5-field"><span>Назва кольору</span><input class="f5-input" data-f="color_name" value="${esc(variant.color.name)}" placeholder="Напр.: Койот"></label>
-				<label class="f5-field"><span>HEX основний</span><span class="f5-row"><input type="color" data-f="color_pick" value="${/^#[0-9a-fA-F]{6}$/.test(variant.color.primary_hex || "") ? esc(variant.color.primary_hex) : "#222222"}"><input class="f5-input" data-f="color_hex" value="${esc(variant.color.primary_hex)}" placeholder="#000000"></span></label>
-				<label class="f5-field"><span>HEX другий (двоколірний)</span><input class="f5-input" data-f="color_hex2" value="${esc(variant.color.secondary_hex)}" placeholder="порожньо = одноколірний"></label>
+		return `<div class="f5-color-builder">
+			<div class="f5-swatch-stage"><div><span data-role="dot-preview">${dotHtml(variant.color, 112)}</span><p data-role="swatch-name">${esc(variant.color.name || "Новий колір")}</p></div></div>
+			<div>
+				<div class="f5-variant-pane__head"><div><h3>Матеріал і колір</h3><p>Оберіть готовий колір або створіть власний. Preview оновлюється одразу.</p></div><span class="f5-source-badge">Рівень: колір</span></div>
+				<div class="f5-color-picker">${options || '<span class="f5-hint">Бібліотека порожня — створіть перший колір</span>'}</div>
+				<div class="f5-row">
+					<label class="f5-field"><span>Назва кольору</span><input class="f5-input" data-f="color_name" value="${esc(variant.color.name)}" placeholder="Напр.: Термо-зелена"></label>
+					<label class="f5-field"><span>Основний HEX</span><span class="f5-row"><input class="f5-color-native" type="color" data-f="color_pick" value="${/^#[0-9a-fA-F]{6}$/.test(variant.color.primary_hex || "") ? esc(variant.color.primary_hex) : "#222222"}" aria-label="Основний колір"><input class="f5-input" data-f="color_hex" value="${esc(variant.color.primary_hex)}" placeholder="#000000"></span></label>
+					<label class="f5-field"><span>Другий HEX</span><input class="f5-input" data-f="color_hex2" value="${esc(variant.color.secondary_hex)}" placeholder="Для split-свотча"></label>
+				</div>
+				<div class="f5-thermo-toggle">
+					<label class="f5-switch" title="Термохромна тканина"><input type="checkbox" data-f="is_thermo" ${variant.color.is_thermo ? "checked" : ""}><i></i></label>
+					<span><strong>Термохромна тканина</strong><small>Додає анімований SVG-вогонь у preview та публічний swatch</small></span>
+					<span class="f5-flame-mark">${flameHtml()}</span>
+				</div>
+				<label class="f5-field"><span>Коротка примітка про термо</span><input class="f5-input" data-f="thermo_note" value="${esc(variant.color.thermo_note)}" placeholder="${esc(DEFAULTS.thermoNote)}"><small data-role="thermo-fallback">${variant.color.thermo_note ? "Власний текст" : "Порожньо — автоматично: “" + esc(DEFAULTS.thermoNote) + "”"}</small></label>
+				<label class="f5-field"><span>Опис тканини / кольору</span><textarea class="f5-input" rows="3" data-f="color_description" placeholder="Що відрізняє цей матеріал і як поводиться колір">${esc(variant.color.description)}</textarea></label>
 			</div>
-			<div class="f5-row">
-				<label class="f5-check"><input type="checkbox" data-f="is_thermo" ${variant.color.is_thermo ? "checked" : ""}> 🔥 Термохромний — кружечок із вогником у картці й на головній</label>
-				<span data-role="dot-preview">${dotHtml(variant.color, 26)}</span>
-				<label class="f5-field"><span>Примітка термо</span><input class="f5-input" data-f="thermo_note" value="${esc(variant.color.thermo_note)}" placeholder="Реагує на тепло — змінює відтінок"></label>
-			</div>
-			<label class="f5-field"><span>Опис тканини/кольору (SEO-дружній, показується в картці)</span><textarea class="f5-input" rows="2" data-f="color_description">${esc(variant.color.description)}</textarea></label>
 		</div>`;
+	}
+
+	function effectiveVariantPrice(variant) {
+		const base = variant.price_override != null ? Number(variant.price_override) : Number($("#f-price").value || (state.product && state.product.price) || 0);
+		return Math.max(0, base + Number((variant.details && variant.details.price_delta) || 0));
+	}
+
+	function variantRailHtml(variant, index) {
+		const details = variant.details || {};
+		const image = (variant.images || [])[0] || null;
+		const enabledFits = state.fits.filter((fit) => {
+			const rule = (variant.fits || []).find((item) => item.fit_code === fit.code);
+			return fit.is_enabled && (!rule || rule.is_enabled);
+		});
+		const seoReady = !!(details.seo_title && details.seo_description);
+		return `<button type="button" id="f5-variant-tab-${index}" class="f5-rail-item${index === state.selectedVariantIndex ? " is-active" : ""}" data-variant-select="${index}" role="tab" aria-controls="f5-variant-panel-${index}" aria-selected="${index === state.selectedVariantIndex ? "true" : "false"}" tabindex="${index === state.selectedVariantIndex ? "0" : "-1"}">
+			<span class="f5-rail-media">${image ? `<img src="${esc(image.url)}" alt="" loading="lazy">` : '<span class="f5-rail-placeholder"><svg class="f5-icon"><use href="#f5-i-media"/></svg></span>'}${dotHtml(variant.color, 18)}</span>
+			${variant.color.is_thermo ? `<span class="f5-rail-thermo" title="Термохромна тканина">${flameHtml()}</span>` : ""}
+			<span class="f5-rail-copy"><span class="f5-rail-title">${esc(details.display_name || variant.color.name || "Новий колір")}</span><span class="f5-rail-price">${effectiveVariantPrice(variant)} грн</span><span class="f5-rail-meta">${enabledFits.map((fit) => `<span>${esc(fit.label)}</span>`).join("") || "Посадки вимкнено"}</span><span class="f5-rail-health"><span class="${seoReady ? "is-ok" : ""}">SEO ${seoReady ? "готово" : "неповне"}</span><span>${(variant.images || []).length} фото</span></span></span>
+			<span class="f5-rail-save${state.dirty ? " is-dirty" : ""}" title="${state.dirty ? "Є незбережені зміни" : "Збережено"}"></span>
+		</button>`;
+	}
+
+	function fitOptionKey(fitCode) {
+		return fitCode ? "fit=" + fitCode : "";
+	}
+
+	function selectOptions(items, selected, emptyLabel) {
+		const rows = items || [];
+		const missing = selected && !rows.some((item) => String(item.id) === String(selected));
+		return `<option value="">${esc(emptyLabel || "— успадкувати —")}</option>`
+			+ rows.map((item) => `<option value="${esc(item.id)}"${String(item.id) === String(selected || "") ? " selected" : ""}>${esc(item.name)}</option>`).join("")
+			+ (missing ? `<option value="${esc(selected)}" selected>Недоступний ресурс #${esc(selected)} — збережено</option>` : "");
+	}
+
+	function storageBlankHtml(variant) {
+		const enabledFits = state.fits.filter((fit) => {
+			const rule = (variant.fits || []).find((item) => item.fit_code === fit.code);
+			return fit.is_enabled && (!rule || rule.is_enabled);
+		});
+		return `<div class="f5-storage-list">${(enabledFits.length ? enabledFits : state.fits.slice(0, 1)).map((fit) => {
+			const key = fitOptionKey(fit.code);
+			const link = (variant.blank_links || []).find((item) => item.option_key === key) || {};
+			return `<div class="f5-storage-slot" data-role="warehouse-blank" data-option-key="${esc(key)}" data-state="${link.storage_subcategory_id ? "selected" : "empty"}"><span class="f5-storage-slot__icon"><svg class="f5-icon"><use href="#f5-i-core"/></svg></span><span class="f5-storage-slot__copy"><strong>${esc(fit.label)}</strong><small>Списання за кольором, посадкою та розміром після покупки</small></span><label class="f5-field"><span>Заготовка</span><select class="f5-input" data-f="storage_blank" aria-label="Заготовка ${esc(fit.label)}">${selectOptions(dict.storage_blanks || [], link.storage_subcategory_id, "— не прив’язано —")}</select></label><label class="f5-field"><span>Примітка</span><input class="f5-input" data-f="storage_note" value="${esc(link.note || "")}" placeholder="Напр.: CRC термо-зелена"></label></div>`;
+		}).join("")}</div>`;
+	}
+
+	function fitWorkspaceHtml(variant) {
+		return state.fits.map((fit) => {
+			const rule = (variant.fits || []).find((item) => item.fit_code === fit.code) || { is_enabled: true, reason: "" };
+			const productEnabled = fit.is_enabled !== false;
+			const effectiveEnabled = productEnabled && rule.is_enabled;
+			const key = fitOptionKey(fit.code);
+			const assignment = (variant.size_grids || []).find((item) => item.option_key === key) || {};
+			return `<section class="f5-fit-cluster${effectiveEnabled ? "" : " is-disabled"}" data-fit-cluster="${esc(fit.code)}" data-product-enabled="${productEnabled ? "true" : "false"}">
+				<div class="f5-fit-row" data-fit="${esc(fit.code)}">
+					<label class="f5-switch" title="Доступність ${esc(fit.label)}"><input type="checkbox" data-f="fit_enabled" ${rule.is_enabled ? "checked" : ""}${productEnabled ? "" : " disabled"}><i></i></label>
+					<strong>${esc(fit.label)}</strong>
+					<span class="f5-source-badge">${productEnabled ? "Для цього кольору" : "Вимкнено в товарі"}</span>
+					<label class="f5-field f5-fit-reason" data-role="fit-reason"${productEnabled && !rule.is_enabled ? "" : " hidden"}><span>Причина для покупця</span><input class="f5-input" data-f="fit_reason" value="${esc(rule.reason)}" placeholder="${esc(defaultFitReason(fit.code))}" aria-label="Причина недоступності ${esc(fit.label)}"${productEnabled && !rule.is_enabled ? "" : " disabled"}></label>
+				</div>
+				<div class="f5-fit-global-note" data-role="fit-global-note"${productEnabled ? " hidden" : ""}><svg class="f5-icon"><use href="#f5-i-warning"/></svg><span>Спочатку увімкніть цю посадку в розділі «Посадки й розміри» товару.</span></div>
+				<div class="f5-source-row"><label class="f5-field"><span>Розмірна сітка ${esc(fit.label)}</span><select class="f5-input" data-f="variant_size_grid" data-option-key="${esc(key)}"${effectiveEnabled ? "" : " disabled"}>${selectOptions(dict.size_grids || [], assignment.size_grid_id, "Успадкувати спільну сітку")}</select><small>${assignment.size_grid_id ? "Окрема сітка цього кольору" : "Порожньо — використовується сітка посадки або товару"}</small></label><span class="f5-source-badge">${assignment.size_grid_id ? "Override кольору" : "Успадковано"}</span></div>
+				<div data-role="size-grid">${sizeGridHtml(variant, fit.code)}</div>
+				${!productEnabled || rule.is_enabled || rule.reason ? "" : `<div class="f5-fallback-preview" data-role="fit-fallback">${flameHtml()}<span>Порожньо — покупець побачить: “${esc(defaultFitReason(fit.code))}”</span></div>`}
+			</section>`;
+		}).join("");
+	}
+
+	function combinationForFit(variant, fitCode) {
+		return (variant.combinations || []).find((item) => {
+			const values = item.option_values || {};
+			return values.fit === fitCode || values.fit_code === fitCode || item.combination_key === `fit=${fitCode}`;
+		}) || null;
+	}
+
+	function combinationWorkspaceHtml(variant) {
+		const color = variant.details || {};
+		return `<div class="f5-combination-section">
+			<div class="f5-variant-pane__head"><div><h3>Контент за посадкою</h3><p>За замовчуванням класика й оверсайз успадковують дані кольору. Власний режим створює точний профіль «колір × посадка».</p></div><span class="f5-source-badge">Колір → посадка</span></div>
+			<div class="f5-combination-list">${state.fits.map((fit) => {
+				const rule = (variant.fits || []).find((item) => item.fit_code === fit.code) || { is_enabled: true };
+				const fitEnabled = fit.is_enabled !== false && rule.is_enabled !== false;
+				const profile = combinationForFit(variant, fit.code);
+				const custom = !!profile;
+				const content = (profile && profile.content) || {};
+				const disabled = !fitEnabled || !custom;
+				return `<section class="f5-combination${custom ? " is-custom" : " is-inherited"}${fitEnabled ? "" : " is-unavailable"}" data-combination-fit="${esc(fit.code)}"${profile && profile.id ? ` data-combination-id="${profile.id}"` : ""} data-youtube-url="${esc((profile && profile.youtube_url) || "")}">
+					<header class="f5-combination__head"><span class="f5-combination__fit"><strong>${esc(fit.label)}</strong><small>${fitEnabled ? "Окремий контент лише коли він справді відрізняється" : "Посадка зараз недоступна для цього кольору"}</small></span><label class="f5-inherit-toggle"><input type="checkbox" data-f="combo_custom" ${custom ? "checked" : ""}${fitEnabled ? "" : " disabled"}><span aria-hidden="true"><i>Успадкувати</i><i>Власні</i></span><b data-role="combo-state">${custom ? "Власні" : "Успадковано"}</b></label></header>
+					<fieldset data-role="combination-fields"${disabled ? " disabled" : ""}>
+						<div class="f5-row"><label class="f5-field"><span>Назва для ${esc(fit.label)}</span><input class="f5-input" data-c="display_name" value="${esc(content.display_name || "")}" placeholder="${esc(color.display_name || variant.color.name || "Назва кольору")}"></label><label class="f5-field"><span>Надбавка посадки</span><input type="number" class="f5-input" data-c="price_delta" value="${profile && profile.price_delta != null ? profile.price_delta : ""}" placeholder="Успадкувати"></label></div>
+						<label class="f5-field"><span>Маркетинговий опис</span><textarea class="f5-input" rows="3" data-c="marketing_text" placeholder="Успадкувати опис кольору">${esc(content.marketing_text || "")}</textarea></label>
+						<label class="f5-field"><span>Причина надбавки</span><input class="f5-input" data-c="price_delta_reason" value="${esc((profile && profile.price_delta_reason) || "")}" placeholder="${esc(color.price_delta_reason || DEFAULTS.priceReason)}"></label>
+						<div class="f5-row"><label class="f5-field"><span>SEO Title</span><input class="f5-input" data-c="seo_title" maxlength="180" value="${esc(content.seo_title || "")}" placeholder="Успадкувати SEO кольору"></label><label class="f5-field"><span>SEO Keywords</span><input class="f5-input" data-c="seo_keywords" maxlength="300" value="${esc(content.seo_keywords || "")}" placeholder="Успадкувати ключі кольору"></label></div>
+						<label class="f5-field"><span>SEO Description</span><textarea class="f5-input" rows="3" maxlength="320" data-c="seo_description" placeholder="Успадкувати SEO-опис кольору">${esc(content.seo_description || "")}</textarea></label>
+					</fieldset>
+				</section>`;
+			}).join("")}</div>
+		</div>`;
+	}
+
+	function syncCombinationAvailability(row, fitEnabled) {
+		if (!row) return;
+		const toggle = $("[data-f=combo_custom]", row);
+		const fields = $("[data-role=combination-fields]", row);
+		const stateLabel = $("[data-role=combo-state]", row);
+		const custom = !!(toggle && toggle.checked);
+		if (toggle) toggle.disabled = !fitEnabled;
+		if (fields) fields.disabled = !fitEnabled || !custom;
+		row.classList.toggle("is-unavailable", !fitEnabled);
+		row.classList.toggle("is-custom", custom);
+		row.classList.toggle("is-inherited", !custom);
+		if (stateLabel) stateLabel.textContent = !fitEnabled ? "Недоступна" : (custom ? "Власні" : "Успадковано");
 	}
 
 	function variantHtml(variant, index) {
 		const d = variant.details || {};
+		const selected = index === state.selectedVariantIndex;
+		const basePrice = variant.price_override != null ? variant.price_override : Number($("#f-price").value || (state.product && state.product.price) || 0);
+		const finalPrice = Number(basePrice) + Number(d.price_delta || 0);
+		const previewImage = ((variant.images || [])[0] || {}).url || (state.product && state.product.main_image_url) || "";
 		const chips = [
 			variant.is_default ? '<span class="f5-chip f5-chip--default">головний на вітрині</span>' : "",
-			variant.color.is_thermo ? '<span class="f5-chip f5-chip--thermo">🔥 термо</span>' : "",
-			`<span class="f5-chip">картинок: ${(variant.images || []).length}</span>`,
+			variant.color.is_thermo ? `<span class="f5-chip f5-chip--thermo">${flameHtml()} термо</span>` : "",
+			`<span class="f5-chip">${(variant.images || []).length} фото</span>`,
 			d.price_delta ? `<span class="f5-chip">${d.price_delta > 0 ? "+" : ""}${d.price_delta} грн</span>` : "",
 		].join("");
 		const uploadBlock = variant.id
-			? `<div class="f5-dropzone" data-role="variant-drop">Перетягніть картинки цього кольору або <button type="button" class="f5-btn f5-btn--ghost" data-act="variant-upload-btn">оберіть файли</button><input type="file" accept="image/*" multiple hidden data-role="variant-upload"></div><div class="f5-gallery" data-role="variant-gallery">${(variant.images || []).map((img, i) => thumbHtml(img, "variant", variant.id, i)).join("")}</div>`
-			: '<p class="f5-hint">Щоб завантажити картинки цього кольору — спочатку натисніть «Зберегти колір».</p>';
-		const fitRows = state.fits.map((f) => {
-			const rule = (variant.fits || []).find((r) => r.fit_code === f.code) || { is_enabled: true, reason: "" };
-			return `<div class="f5-fit-row" data-fit="${esc(f.code)}">
-				<label class="f5-switch"><input type="checkbox" data-f="fit_enabled" ${rule.is_enabled ? "checked" : ""}><i></i></label>
-				<strong>${esc(f.label)}</strong>
-				<input class="f5-input" data-f="fit_reason" value="${esc(rule.reason)}" placeholder="Причина для покупця, якщо вимкнено (напр.: термо — лише оверсайз)">
-			</div>`;
-		}).join("");
+			? `<div class="f5-dropzone" data-role="variant-drop"><svg class="f5-icon"><use href="#f5-i-upload"/></svg><span><strong>Додайте фото цього кольору</strong><small>Drag & drop · нові кадри додаються в кінець</small></span><button type="button" class="f5-btn f5-btn--ghost" data-act="variant-upload-btn">Обрати файли</button><input type="file" accept="image/*" multiple hidden data-role="variant-upload"></div><div class="f5-gallery" data-role="variant-gallery">${(variant.images || []).map((img, i) => thumbHtml(img, "variant", variant.id, i)).join("") || '<p class="f5-hint">Фото цього кольору ще немає.</p>'}</div>`
+			: '<div class="f5-fallback-preview"><svg class="f5-icon"><use href="#f5-i-warning"/></svg><span>Збережіть колір один раз — після цього відкриється завантаження та оптимізація фото.</span></div>';
 		const variantFaqs = (variant.faqs || []).map(faqHtml).join("");
-		return `<article class="f5-variant${variant._open ? " is-open" : ""}" data-index="${index}"${variant.id ? ` data-id="${variant.id}"` : ""}>
-			<header class="f5-variant__head" data-act="variant-toggle">
-				${dotHtml(variant.color, 22)}
-				<span class="f5-variant__name">${esc(d.display_name || variant.color.name || "Новий колір")}</span>
-				<span class="f5-variant__meta">${chips}</span>
+		return `<article id="f5-variant-panel-${index}" class="f5-variant${selected ? " is-selected" : ""}" data-index="${index}" role="tabpanel" aria-labelledby="f5-variant-tab-${index}"${selected ? "" : " hidden"}${variant.id ? ` data-id="${variant.id}"` : ""}>
+			<header class="f5-variant__head">
+				${dotHtml(variant.color, 42)}
+				<span class="f5-variant__identity"><span class="f5-variant__name">${esc(d.display_name || variant.color.name || "Новий колір")}</span><span class="f5-variant__meta">${chips}</span></span>
 				<span class="f5-variant__spacer"></span>
-				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="variant-up" title="Вище">↑</button>
-				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="variant-down" title="Нижче">↓</button>
-				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="variant-toggle-btn" aria-expanded="${variant._open ? "true" : "false"}">${variant._open ? "Згорнути" : "Редагувати"}</button>
+				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small f5-variant-move" data-act="variant-up" title="Перемістити вище" aria-label="Перемістити варіант вище">↑</button>
+				<button type="button" class="f5-btn f5-btn--ghost f5-btn--small f5-variant-move" data-act="variant-down" title="Перемістити нижче" aria-label="Перемістити варіант нижче">↓</button>
 			</header>
 			<div class="f5-variant__body">
-				${colorPickerHtml(variant)}
-				<div class="f5-subsection">
-					<div class="f5-row">
-						<label class="f5-field"><span>Артикул (SKU)</span><input class="f5-input" data-f="sku" value="${esc(variant.sku)}"></label>
-						<label class="f5-field"><span>Ціна замість базової, грн</span><input type="number" min="0" class="f5-input" data-f="price_override" value="${variant.price_override != null ? variant.price_override : ""}" placeholder="порожньо = базова"></label>
-						<label class="f5-check"><input type="checkbox" data-f="is_default" ${variant.is_default ? "checked" : ""}> головний колір на головній/вітрині</label>
-					</div>
-					<div class="f5-row">
-						<label class="f5-field"><span>Надбавка до ціни за цей колір, грн</span><input type="number" class="f5-input" data-f="price_delta" value="${d.price_delta || 0}"></label>
-						<label class="f5-field"><span>Причина надбавки (бачить покупець)</span><input class="f5-input" data-f="price_delta_reason" value="${esc(d.price_delta_reason)}" placeholder="термохромна тканина"></label>
-						<label class="f5-field"><span>YouTube для цього кольору</span><input class="f5-input" data-f="youtube_url" value="${esc(d.youtube_url)}" placeholder="порожньо = спільне відео товару"></label>
-					</div>
-					<label class="f5-field"><span>Назва-вітрина цього кольору (як окремий товар)</span><input class="f5-input" data-f="display_name" value="${esc(d.display_name)}" placeholder="Напр.: Сіра футболка оверсайз — колір койот"></label>
-					<label class="f5-field"><span>Маркетинговий опис тканини/кольору (HTML, показується в картці)</span><textarea class="f5-input" rows="3" data-f="marketing_html">${esc(d.marketing_html)}</textarea></label>
-				</div>
-				<div class="f5-subsection">
-					<div class="f5-hint">SEO цього кольору — кожен колір як окремий товар у пошуку</div>
-					<div class="f5-row">
-						<label class="f5-field"><span>SEO Title</span><input class="f5-input" data-f="seo_title" maxlength="180" value="${esc(d.seo_title)}"></label>
-						<label class="f5-field"><span>SEO Keywords</span><input class="f5-input" data-f="seo_keywords" maxlength="300" value="${esc(d.seo_keywords)}"></label>
-					</div>
-					<label class="f5-field"><span>SEO Description</span><textarea class="f5-input" rows="2" maxlength="320" data-f="seo_description">${esc(d.seo_description)}</textarea></label>
-				</div>
-				<div class="f5-subsection"><div class="f5-hint">Посадки для цього кольору</div>${fitRows}</div>
-				<div class="f5-subsection"><div class="f5-hint">Розміри та склад (клік по розміру = увімк/вимк, число = залишок)</div><div data-role="size-grid">${sizeGridHtml(variant)}</div></div>
-				<div class="f5-subsection"><div class="f5-hint">Картинки цього кольору (append + drag&drop; звідси теж можна ⭐ обрати головну картинку товару)</div>${uploadBlock}</div>
-				<div class="f5-subsection"><div class="f5-colors-head"><div class="f5-hint">FAQ цього кольору (UA/RU/EN)</div><button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="variant-faq-add">＋ питання</button></div><div data-role="variant-faqs">${variantFaqs}</div></div>
-				<div class="f5-colors-head">
-					<button type="button" class="f5-btn f5-btn--primary" data-act="variant-save">💾 Зберегти колір</button>
-					<button type="button" class="f5-btn f5-btn--danger" data-act="variant-delete">Видалити колір</button>
-				</div>
+				<nav class="f5-variant-subnav" role="tablist" aria-label="Налаштування ${esc(variant.color.name || "кольору")}">${[["overview","Огляд"],["content","Контент"],["seo","SEO"],["photos","Фото"],["fits","Посадки й розміри"],["faq","FAQ"]].map((tab, tabIndex) => `<button type="button" id="f5-variant-${index}-tab-${tab[0]}" class="f5-variant-subtab${tabIndex === 0 ? " is-active" : ""}" data-variant-pane="${tab[0]}" role="tab" aria-controls="f5-variant-${index}-pane-${tab[0]}" aria-selected="${tabIndex === 0 ? "true" : "false"}" tabindex="${tabIndex === 0 ? "0" : "-1"}">${tab[1]}</button>`).join("")}</nav>
+				<section id="f5-variant-${index}-pane-overview" class="f5-variant-pane is-active" data-pane="overview" role="tabpanel" aria-labelledby="f5-variant-${index}-tab-overview"><div class="f5-overview-grid"><div class="f5-store-card"><div class="f5-store-card__media">${previewImage ? `<img src="${esc(previewImage)}" alt="">` : '<span class="f5-store-card__placeholder">Фото варіанта з’явиться тут</span>'}${variant.color.is_thermo ? `<span class="f5-store-card__thermo">${flameHtml()} Термотканина</span>` : ""}</div><div class="f5-store-card__body"><h4 data-role="preview-title">${esc(d.display_name || ((state.product && state.product.title) || "Назва товару") + " · " + (variant.color.name || "колір"))}</h4><div class="f5-store-card__price"><strong data-role="preview-price">${finalPrice} грн</strong>${d.price_delta ? `<span data-role="preview-delta">+${d.price_delta} за матеріал</span>` : ""}</div><div class="f5-store-card__colors">${dotHtml(variant.color, 18)}<span>Так покупець розпізнає варіант</span></div></div></div><div class="f5-overview-stack"><div class="f5-merch-block"><div class="f5-merch-block__head"><strong>Ціна цього кольору</strong><span class="f5-source-badge">Результат для вітрини</span></div><div class="f5-price-equation"><label class="f5-field"><span>База / override</span><input type="number" min="0" class="f5-input" data-f="price_override" value="${variant.price_override != null ? variant.price_override : ""}" placeholder="${basePrice}"></label><span>+</span><label class="f5-field"><span>Надбавка</span><input type="number" class="f5-input" data-f="price_delta" value="${d.price_delta || 0}"></label><span>=</span><output class="f5-effective-price" data-role="effective-price">${finalPrice} грн</output></div><label class="f5-field"><span>Чому дорожче — бачить покупець</span><input class="f5-input" data-f="price_delta_reason" value="${esc(d.price_delta_reason)}" placeholder="${esc(DEFAULTS.priceReason)}"></label><div class="f5-fallback-preview" data-role="price-fallback"${d.price_delta && !d.price_delta_reason ? "" : " hidden"}><svg class="f5-icon"><use href="#f5-i-warning"/></svg><span>Порожньо — автоматично буде використано: “${esc(DEFAULTS.priceReason)}”</span></div></div><div class="f5-merch-block"><div class="f5-merch-block__head"><strong>Ідентифікація</strong><span class="f5-source-badge">Варіант</span></div><div class="f5-row"><label class="f5-field"><span>SKU кольору</span><input class="f5-input" data-f="sku" value="${esc(variant.sku)}" placeholder="Напр.: CRC-THERMO-GREEN"></label><label class="f5-check f5-check--tile"><input type="checkbox" data-f="is_default" ${variant.is_default ? "checked" : ""}><span><strong>Головний колір</strong><small>Перший на вітрині</small></span></label></div></div><div class="f5-merch-block"><div class="f5-merch-block__head"><strong>Заготовка зі складу</strong><span class="f5-source-badge">На посадку цього кольору</span></div>${storageBlankHtml(variant)}</div></div></div></section>
+				<section id="f5-variant-${index}-pane-content" class="f5-variant-pane" data-pane="content" role="tabpanel" aria-labelledby="f5-variant-${index}-tab-content" hidden>${colorPickerHtml(variant)}<div class="f5-subsection"><div class="f5-source-row"><strong>Текст для цього кольору</strong><span class="f5-source-badge">Порожньо = з товару</span></div><label class="f5-field"><span>Назва на вітрині</span><input class="f5-input" data-f="display_name" value="${esc(d.display_name)}" placeholder="${esc(((state.product && state.product.title) || "Назва товару") + " · " + (variant.color.name || "колір"))}"></label><label class="f5-field"><span>Маркетинговий опис кольору</span><textarea class="f5-input" rows="5" data-f="marketing_html" placeholder="Порожньо — використовується спільний опис товару">${esc(d.marketing_html)}</textarea></label><label class="f5-field"><span>YouTube для кольору</span><input class="f5-input" data-f="youtube_url" value="${esc(d.youtube_url)}" placeholder="Порожньо — спільне відео товару"></label></div></section>
+				<section id="f5-variant-${index}-pane-seo" class="f5-variant-pane" data-pane="seo" role="tabpanel" aria-labelledby="f5-variant-${index}-tab-seo" hidden><div class="f5-variant-pane__head"><div><h3>SEO саме цього кольору</h3><p>Цей блок головний для кольорової URL. Порожні поля успадковуються з товару.</p></div><span class="f5-source-badge">Колір → товар</span></div><div class="f5-row"><label class="f5-field"><span>SEO Title <small data-role="variant-seo-title-count">${(d.seo_title || "").length}/60</small></span><input class="f5-input" data-f="seo_title" maxlength="180" value="${esc(d.seo_title)}"></label><label class="f5-field"><span>SEO Keywords</span><input class="f5-input" data-f="seo_keywords" maxlength="300" value="${esc(d.seo_keywords)}"></label></div><label class="f5-field"><span>SEO Description <small data-role="variant-seo-desc-count">${(d.seo_description || "").length}/160</small></span><textarea class="f5-input" rows="3" maxlength="320" data-f="seo_description">${esc(d.seo_description)}</textarea></label><div class="f5-google-preview" data-role="variant-google"><span>twocomms.shop › product › ${esc((state.product && state.product.slug) || "slug")}</span><strong>${esc(d.seo_title || d.display_name || (state.product && state.product.title) || "Назва кольорового варіанта")}</strong><p>${esc(d.seo_description || (state.product && state.product.seo_description) || "Опис буде успадковано з основної сторінки товару.")}</p></div>${combinationWorkspaceHtml(variant)}</section>
+				<section id="f5-variant-${index}-pane-photos" class="f5-variant-pane" data-pane="photos" role="tabpanel" aria-labelledby="f5-variant-${index}-tab-photos" hidden><div class="f5-variant-pane__head"><div><h3>Галерея кольору</h3><p>Порядок = порядок у каруселі. «Обкладинка» робить обране фото канонічним для товару.</p></div><span class="f5-source-badge">${(variant.images || []).length} фото</span></div>${uploadBlock}</section>
+				<section id="f5-variant-${index}-pane-fits" class="f5-variant-pane" data-pane="fits" role="tabpanel" aria-labelledby="f5-variant-${index}-tab-fits" hidden><div class="f5-variant-pane__head"><div><h3>Посадки, сітки та доступні розміри</h3><p>Вимкнена посадка деактивує її сітку й розміри. Окрема сітка перевизначає спільну лише для цього кольору й посадки; порожньо — успадкувати.</p></div><span class="f5-source-badge">Цей колір</span></div>${fitWorkspaceHtml(variant)}</section>
+				<section id="f5-variant-${index}-pane-faq" class="f5-variant-pane" data-pane="faq" role="tabpanel" aria-labelledby="f5-variant-${index}-tab-faq" hidden><div class="f5-variant-pane__head"><div><h3>FAQ кольору</h3><p>Відповіді, що стосуються лише матеріалу або відтінку.</p></div><button type="button" class="f5-btn f5-btn--ghost" data-act="variant-faq-add">Додати питання</button></div><div data-role="variant-faqs">${variantFaqs || '<p class="f5-hint">Спеціальних питань для кольору ще немає.</p>'}</div></section>
+				<footer class="f5-variant-footer"><button type="button" class="f5-btn f5-btn--danger" data-act="variant-delete">Видалити колір</button><button type="button" class="f5-btn f5-btn--primary" data-act="variant-save"><svg class="f5-icon"><use href="#f5-i-save"/></svg>Зберегти колір</button></footer>
 			</div>
 		</article>`;
 	}
 
 	function renderVariants() {
 		const box = $("#f-variants");
+		if (state.selectedVariantIndex >= state.variants.length) state.selectedVariantIndex = Math.max(0, state.variants.length - 1);
+		const rail = $("#f-variant-rail");
+		if (rail) rail.innerHTML = state.variants.length ? state.variants.map(variantRailHtml).join("") : '<p class="f5-hint">Додайте перший колір — тут з’явиться його preview, ціна та стан готовності.</p>';
 		box.innerHTML = state.variants.length
 			? state.variants.map(variantHtml).join("")
-			: '<p class="f5-hint">Кольорів ще немає. Натисніть «＋ Додати колір» — все редагується тут же, без переходів на інші сторінки.</p>';
+			: '<div class="f5-card"><h2 class="f5-card__title">Ще немає варіантів</h2><p class="f5-hint">Додайте перший колір. Він отримає власну ціну, SEO, термо-стан, посадки, розміри та фото.</p></div>';
 		renderStock();
+		updateReadiness();
 	}
 
 	function collectVariantData(card, variant) {
@@ -696,11 +946,14 @@
 				note: "",
 			});
 		});
-		const fits = $$(".f5-fit-row[data-fit]", card).map((row) => ({
-			fit_code: row.dataset.fit,
-			is_enabled: $("[data-f=fit_enabled]", row).checked,
-			reason: $("[data-f=fit_reason]", row).value,
-		}));
+		const fits = $$(".f5-fit-row[data-fit]", card).map((row) => {
+			const enabled = $("[data-f=fit_enabled]", row).checked;
+			return {
+				fit_code: row.dataset.fit,
+				is_enabled: enabled,
+					reason: $("[data-f=fit_reason]", row).value || (enabled ? "" : defaultFitReason(row.dataset.fit)),
+			};
+		});
 		const faqs = $$("[data-role=variant-faqs] .f5-faq", card).map((node) => ({
 			question_uk: $("[data-f=question_uk]", node).value,
 			question_ru: $("[data-f=question_ru]", node).value,
@@ -710,6 +963,39 @@
 			answer_en: $("[data-f=answer_en]", node).value,
 			is_active: $("[data-f=is_active]", node).checked,
 		}));
+		const sizeGrids = $$("[data-f=variant_size_grid]", card).map((select) => ({
+			option_key: select.dataset.optionKey || "",
+			size_grid_id: intOrNull(select.value),
+		})).filter((item) => item.size_grid_id);
+		const blankLinks = $$("[data-role=warehouse-blank]", card).map((row) => ({
+			option_key: row.dataset.optionKey || "",
+			storage_subcategory_id: intOrNull($("[data-f=storage_blank]", row).value),
+			note: $("[data-f=storage_note]", row).value,
+		})).filter((item) => item.storage_subcategory_id);
+		const combinations = $$("[data-combination-fit]", card).filter((row) => {
+			const custom = $("[data-f=combo_custom]", row);
+			return custom && custom.checked;
+		}).map((row) => {
+			const value = (name) => { const input = $(`[data-c="${name}"]`, row); return input ? input.value : ""; };
+			const combinationDelta = intOrNull(value("price_delta"));
+			return {
+				id: intOrNull(row.dataset.combinationId),
+				option_values: { fit: row.dataset.combinationFit },
+				is_active: true,
+				price_delta: combinationDelta,
+				price_delta_reason: value("price_delta_reason") || (combinationDelta ? (val("[data-f=price_delta_reason]") || DEFAULTS.priceReason) : ""),
+				youtube_url: row.dataset.youtubeUrl || "",
+				content: {
+					display_name: value("display_name"),
+					marketing_text: value("marketing_text"),
+					seo_title: value("seo_title"),
+					seo_description: value("seo_description"),
+					seo_keywords: value("seo_keywords"),
+				},
+			};
+		});
+		const thermoEnabled = checked("[data-f=is_thermo]");
+		const priceDelta = intOrNull(val("[data-f=price_delta]")) || 0;
 		return {
 			id: variant.id,
 			product_id: state.product.id,
@@ -718,8 +1004,8 @@
 				name: val("[data-f=color_name]"),
 				primary_hex: val("[data-f=color_hex]").trim(),
 				secondary_hex: val("[data-f=color_hex2]").trim(),
-				is_thermo: checked("[data-f=is_thermo]"),
-				thermo_note: val("[data-f=thermo_note]"),
+				is_thermo: thermoEnabled,
+				thermo_note: val("[data-f=thermo_note]") || (thermoEnabled ? DEFAULTS.thermoNote : ""),
 				description: val("[data-f=color_description]"),
 			},
 			sku: val("[data-f=sku]"),
@@ -727,8 +1013,8 @@
 			is_default: checked("[data-f=is_default]"),
 			details: {
 				display_name: val("[data-f=display_name]"),
-				price_delta: intOrNull(val("[data-f=price_delta]")) || 0,
-				price_delta_reason: val("[data-f=price_delta_reason]"),
+				price_delta: priceDelta,
+				price_delta_reason: val("[data-f=price_delta_reason]") || (priceDelta ? DEFAULTS.priceReason : ""),
 				marketing_html: val("[data-f=marketing_html]"),
 				youtube_url: val("[data-f=youtube_url]"),
 				seo_title: val("[data-f=seo_title]"),
@@ -737,6 +1023,9 @@
 			},
 			fits: fits,
 			sizes: sizes,
+			size_grids: sizeGrids,
+			blank_links: blankLinks,
+			combinations: combinations,
 			faqs: faqs,
 		};
 	}
@@ -784,6 +1073,7 @@
 		}
 		state.variants.splice(index, 1);
 		if (variant.is_default && state.variants.length) state.variants[0].is_default = true;
+		state.selectedVariantIndex = Math.min(state.selectedVariantIndex, Math.max(0, state.variants.length - 1));
 		renderVariants();
 		toast("Колір видалено");
 	}
@@ -793,6 +1083,7 @@
 		if (target < 0 || target >= state.variants.length) return;
 		const item = state.variants.splice(index, 1)[0];
 		state.variants.splice(target, 0, item);
+		state.selectedVariantIndex = target;
 		renderVariants();
 		const ids = state.variants.filter((v) => v.id).map((v) => v.id);
 		if (state.product && ids.length > 1) {
@@ -812,18 +1103,115 @@
 			name: $("[data-f=color_name]", card).value,
 		};
 		const preview = $("[data-role=dot-preview]", card);
-		if (preview) preview.innerHTML = dotHtml(color, 26);
+		if (preview) preview.innerHTML = dotHtml(color, 112);
+		const swatchName = $("[data-role=swatch-name]", card);
+		if (swatchName) swatchName.textContent = color.name || "Новий колір";
+		const headerDot = $(".f5-variant__head > .f5-dot", card);
+		if (headerDot) headerDot.outerHTML = dotHtml(color, 42);
+		const rail = $(`[data-variant-select="${card.dataset.index}"]`);
+		const railDot = rail && $(".f5-rail-media .f5-dot", rail);
+		if (railDot) railDot.outerHTML = dotHtml(color, 18);
+		if (rail) {
+			const railThermo = $(".f5-rail-thermo", rail);
+			if (color.is_thermo && !railThermo) rail.insertAdjacentHTML("beforeend", `<span class="f5-rail-thermo" title="Термохромна тканина">${flameHtml()}</span>`);
+			if (!color.is_thermo && railThermo) railThermo.remove();
+		}
+		const storeMedia = $(".f5-store-card__media", card);
+		const storeThermo = storeMedia && $(".f5-store-card__thermo", storeMedia);
+		if (storeMedia && color.is_thermo && !storeThermo) storeMedia.insertAdjacentHTML("beforeend", `<span class="f5-store-card__thermo">${flameHtml()} Термотканина</span>`);
+		if (!color.is_thermo && storeThermo) storeThermo.remove();
+		const meta = $(".f5-variant__meta", card);
+		const thermoChip = meta && $(".f5-chip--thermo", meta);
+		if (meta && color.is_thermo && !thermoChip) meta.insertAdjacentHTML("beforeend", `<span class="f5-chip f5-chip--thermo">${flameHtml()} термо</span>`);
+		if (!color.is_thermo && thermoChip) thermoChip.remove();
 		if (variant) {
 			variant.color.primary_hex = color.primary_hex;
 			variant.color.secondary_hex = color.secondary_hex;
 			variant.color.is_thermo = color.is_thermo;
+			variant.color.name = color.name;
 		}
+		refreshVariantPreview(card, variant);
 	}
+
+	function refreshVariantPreview(card, variant) {
+		if (!card || !variant) return;
+		const read = (name) => { const el = $(`[data-f="${name}"]`, card); return el ? el.value : ""; };
+		const override = intOrNull(read("price_override"));
+		const base = override != null ? override : Number($("#f-price").value || (state.product && state.product.price) || 0);
+		const delta = intOrNull(read("price_delta")) || 0;
+		const finalPrice = Math.max(0, base + delta);
+		const title = read("display_name") || ((state.product && state.product.title) || $("#f-title").value || "Назва товару") + " · " + (read("color_name") || variant.color.name || "колір");
+		const priceOut = $("[data-role=effective-price]", card);
+		const previewPrice = $("[data-role=preview-price]", card);
+		const previewTitle = $("[data-role=preview-title]", card);
+		if (priceOut) priceOut.textContent = finalPrice + " грн";
+		if (previewPrice) previewPrice.textContent = finalPrice + " грн";
+		if (previewTitle) previewTitle.textContent = title;
+		const fallback = $("[data-role=price-fallback]", card);
+		if (fallback) fallback.hidden = !(delta && !read("price_delta_reason").trim());
+		const titleCount = $("[data-role=variant-seo-title-count]", card);
+		const descCount = $("[data-role=variant-seo-desc-count]", card);
+		if (titleCount) titleCount.textContent = read("seo_title").length + "/60";
+		if (descCount) descCount.textContent = read("seo_description").length + "/160";
+		const google = $("[data-role=variant-google]", card);
+		if (google) {
+			$("strong", google).textContent = read("seo_title") || title;
+			$("p", google).textContent = read("seo_description") || (state.product && state.product.seo_description) || "Опис буде успадковано з основної сторінки товару.";
+		}
+		const rail = $(`[data-variant-select="${card.dataset.index}"]`);
+		if (rail) {
+			const railTitle = $(".f5-rail-title", rail);
+			const railPrice = $(".f5-rail-price", rail);
+			if (railTitle) railTitle.textContent = title;
+			if (railPrice) railPrice.textContent = finalPrice + " грн";
+		}
+		variant.price_override = override;
+		variant.details = Object.assign({}, variant.details, { display_name: read("display_name"), price_delta: delta, price_delta_reason: read("price_delta_reason"), seo_title: read("seo_title"), seo_description: read("seo_description") });
+	}
+
+	$("#f-variant-rail").addEventListener("click", (e) => {
+		const item = e.target.closest("[data-variant-select]");
+		if (!item) return;
+		state.selectedVariantIndex = parseInt(item.dataset.variantSelect, 10);
+		$$('.f5-rail-item').forEach((node) => {
+			const active = node === item;
+			node.classList.toggle("is-active", active);
+			node.setAttribute("aria-selected", active ? "true" : "false");
+			node.tabIndex = active ? 0 : -1;
+		});
+		$$('.f5-variant').forEach((node) => {
+			const active = parseInt(node.dataset.index, 10) === state.selectedVariantIndex;
+			node.classList.toggle("is-selected", active);
+			node.hidden = !active;
+		});
+		const workspace = $("#f-variants");
+		if (workspace && window.matchMedia("(max-width: 760px)").matches) workspace.scrollIntoView({ behavior: "smooth", block: "start" });
+	});
+
+	$("#f-variant-rail").addEventListener("keydown", (e) => {
+		if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+		const tabs = $$('.f5-rail-item', e.currentTarget);
+		const current = tabs.indexOf(document.activeElement);
+		if (current < 0 || !tabs.length) return;
+		e.preventDefault();
+		let next = current;
+		if (e.key === "Home") next = 0;
+		else if (e.key === "End") next = tabs.length - 1;
+		else next = (current + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+		tabs[next].focus();
+		tabs[next].click();
+	});
 
 	/* події всередині списку кольорів */
 	$("#f-variants").addEventListener("click", (e) => {
 		const card = e.target.closest(".f5-variant");
 		if (!card) return;
+		const paneButton = e.target.closest("[data-variant-pane]");
+		if (paneButton) {
+			$$('.f5-variant-subtab', card).forEach((node) => { const active = node === paneButton; node.classList.toggle("is-active", active); node.setAttribute("aria-selected", active ? "true" : "false"); node.tabIndex = active ? 0 : -1; });
+			$$('.f5-variant-pane', card).forEach((node) => { const active = node.dataset.pane === paneButton.dataset.variantPane; node.classList.toggle("is-active", active); node.hidden = !active; });
+			return;
+		}
 		const index = parseInt(card.dataset.index, 10);
 		const variant = state.variants[index];
 		const actEl = e.target.closest("[data-act]");
@@ -860,15 +1248,29 @@
 			setDirty(true);
 			return;
 		}
-		if (act === "variant-toggle" || act === "variant-toggle-btn") {
-			variant._open = !variant._open;
-			card.classList.toggle("is-open", variant._open);
-			const btn = $("[data-act=variant-toggle-btn]", card);
-			if (btn) {
-				btn.textContent = variant._open ? "Згорнути" : "Редагувати";
-				btn.setAttribute("aria-expanded", variant._open ? "true" : "false");
-			}
-		}
+	});
+
+	$("#f-variants").addEventListener("keydown", (e) => {
+		const current = e.target.closest && e.target.closest(".f5-variant-subtab");
+		if (!current || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+		const nav = current.closest(".f5-variant-subnav");
+		const tabs = $$('.f5-variant-subtab', nav);
+		const index = tabs.indexOf(current);
+		if (index < 0) return;
+		e.preventDefault();
+		let next = index;
+		if (e.key === "Home") next = 0;
+		else if (e.key === "End") next = tabs.length - 1;
+		else next = (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+		tabs[next].focus();
+		tabs[next].click();
+	});
+
+	$("#f-variants").addEventListener("input", (e) => {
+		const card = e.target.closest(".f5-variant");
+		if (!card || !e.target.dataset.f) return;
+		const variant = state.variants[parseInt(card.dataset.index, 10)];
+		refreshVariantPreview(card, variant);
 	});
 
 	$("#f-variants").addEventListener("change", (e) => {
@@ -896,7 +1298,37 @@
 			updateDotPreview(card, variant);
 		} else if (f === "is_thermo") {
 			updateDotPreview(card, variant);
+			const fallback = $("[data-role=thermo-fallback]", card);
+			if (fallback) fallback.textContent = $("[data-f=thermo_note]", card).value ? "Власний текст" : `Порожньо — автоматично: “${DEFAULTS.thermoNote}”`;
+		} else if (f === "combo_custom") {
+			const combination = e.target.closest("[data-combination-fit]");
+			const fitRule = combination && $(`[data-fit-cluster="${combination.dataset.combinationFit}"]`, card);
+			const fitToggle = fitRule && $("[data-f=fit_enabled]", fitRule);
+			const fitEnabled = !!(fitToggle && !fitToggle.disabled && fitToggle.checked);
+			syncCombinationAvailability(combination, fitEnabled);
+		} else if (f === "fit_enabled") {
+			const row = e.target.closest(".f5-fit-row");
+			const cluster = e.target.closest("[data-fit-cluster]");
+			const enabled = e.target.checked && (!cluster || cluster.dataset.productEnabled !== "false");
+			if (cluster) {
+				cluster.classList.toggle("is-disabled", !enabled);
+				const grid = $("[data-f=variant_size_grid]", cluster);
+				const reasonWrap = $("[data-role=fit-reason]", cluster);
+				const reason = $("[data-f=fit_reason]", cluster);
+				if (grid) grid.disabled = !enabled;
+				if (reasonWrap) reasonWrap.hidden = enabled;
+				if (reason) reason.disabled = enabled;
+				$$(`.f5-size-cell[data-fit="${row.dataset.fit}"]`, cluster).forEach((cell) => {
+					if (!enabled) cell.classList.add("is-off");
+					const button = $("[data-act=size-toggle]", cell);
+					const stock = $("[data-f=stock]", cell);
+					if (button) { button.disabled = !enabled; button.setAttribute("aria-pressed", enabled && !cell.classList.contains("is-off") ? "true" : "false"); }
+					if (stock) stock.disabled = !enabled;
+				});
+				syncCombinationAvailability($(`[data-combination-fit="${row.dataset.fit}"]`, card), enabled);
+			}
 		}
+		refreshVariantPreview(card, variant);
 	});
 
 	$("#f-variants").addEventListener("dragover", (e) => {
@@ -928,7 +1360,9 @@
 			const node = btn.closest(".f5-faq");
 			if (node && confirm("Видалити це питання FAQ?")) { node.remove(); setDirty(true); }
 		} else if (act === "size-toggle") {
-			btn.closest(".f5-size-cell").classList.toggle("is-off");
+			const cell = btn.closest(".f5-size-cell");
+			cell.classList.toggle("is-off");
+			btn.setAttribute("aria-pressed", cell.classList.contains("is-off") ? "false" : "true");
 			const stockBlock = btn.closest("#f-stock [data-variant-index]");
 			if (stockBlock) stockBlock.dataset.dirty = "true";
 			setDirty(true);
@@ -963,11 +1397,11 @@
 		}
 		box.innerHTML = state.variants.map((v, i) => `
 			<div class="f5-subsection" data-variant-index="${i}">
-				<div class="f5-colors-head">
+				<div class="f5-card-head">
 					<div>${dotHtml(v.color, 18)} <strong>${esc((v.details && v.details.display_name) || v.color.name || "Колір")}</strong></div>
-					<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="stock-save"${v.id ? "" : " disabled title='Спершу збережіть колір'"}>💾 Зберегти склад</button>
+					<button type="button" class="f5-btn f5-btn--ghost f5-btn--small" data-act="stock-save"${v.id ? "" : " disabled title='Спершу збережіть колір'"}>Зберегти доступність</button>
 				</div>
-				<div data-role="stock-grid">${sizeGridHtml(v)}</div>
+				<div data-role="stock-grid">${state.fits.filter((fit) => fit.is_enabled).map((fit) => `<div class="f5-subsection"><div class="f5-source-row"><strong>${esc(fit.label)}</strong><span class="f5-source-badge">Всі кольори → цей колір</span></div>${sizeGridHtml(v, fit.code)}</div>`).join("")}</div>
 			</div>`).join("");
 	}
 
@@ -1064,7 +1498,7 @@
 					<strong>${esc(feed.name)}</strong>
 					<span class="f5-chip">${esc(feed.feed_type)}</span>
 					<span class="f5-variant__spacer"></span>
-					<button type="button" class="f5-btn f5-btn--primary f5-btn--small" data-act="feed-save">💾 Зберегти фід</button>
+					<button type="button" class="f5-btn f5-btn--primary f5-btn--small" data-act="feed-save"><svg class="f5-icon"><use href="#f5-i-save"/></svg>Зберегти фід</button>
 				</header>
 				<div class="f5-feed__body">
 					<label class="f5-field"><span>Тайтл для фіда (порожньо = звичайний)</span><input class="f5-input" data-f="custom_title" value="${esc(rule.custom_title)}"></label>
@@ -1214,7 +1648,12 @@
 			const file = e.target.files[0];
 			if (!file) return;
 			state.files[fileKey] = file;
+			if (fileKey === "main_image" && state.product) {
+				state.product.cover_source = { source_type: "upload", source_missing: false };
+			}
 			$(imgSel).src = URL.createObjectURL(file);
+			if (fileKey === "home_card_image") delete $(imgSel).dataset.fallback;
+			updateCoverState();
 			setDirty(true);
 			toast("Зображення буде завантажено разом із «Зберегти»");
 		});
@@ -1243,14 +1682,22 @@
 	});
 
 	/* ---------------- вкладки, збереження, гарячі клавіші ---------------- */
+	function activateTab(tabName, focusTab) {
+		const tab = $(`.f5-tab[data-tab="${tabName}"]`);
+		if (!tab) return;
+		$$('.f5-tab').forEach((node) => {
+			const active = node === tab;
+			node.classList.toggle("is-active", active);
+			node.setAttribute("aria-selected", active ? "true" : "false");
+		});
+		$$('.f5-panel').forEach((panel) => panel.classList.toggle("is-active", panel.dataset.panel === tabName));
+		if (focusTab) tab.focus();
+	}
+
 	$("#f5-tabs").addEventListener("click", (e) => {
 		const tab = e.target.closest(".f5-tab");
 		if (!tab) return;
-		$$(".f5-tab").forEach((t) => {
-			t.classList.toggle("is-active", t === tab);
-			t.setAttribute("aria-selected", t === tab ? "true" : "false");
-		});
-		$$(".f5-panel").forEach((p) => p.classList.toggle("is-active", p.dataset.panel === tab.dataset.tab));
+		activateTab(tab.dataset.tab, false);
 	});
 	$("#f5-tabs").addEventListener("keydown", (e) => {
 		if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -1265,6 +1712,20 @@
 	});
 
 	$("#f5-save").addEventListener("click", () => { saveAll().catch(() => {}); });
+	$("#f5-mobile-save").addEventListener("click", () => { saveAll().catch(() => {}); });
+	$("#f5-readiness-issues").addEventListener("click", (e) => {
+		const target = e.target.closest("[data-readiness-tab]");
+		if (target) activateTab(target.dataset.readinessTab, true);
+	});
+	document.addEventListener("click", (e) => {
+		const action = e.target.closest('[data-act="show-variant-photos"]');
+		if (!action) return;
+		activateTab("colors", true);
+		const selected = $(`.f5-variant[data-index="${state.selectedVariantIndex}"]`);
+		const photos = selected && $('[data-variant-pane="photos"]', selected);
+		if (photos) photos.click();
+		if (selected) selected.scrollIntoView({ behavior: "smooth", block: "start" });
+	});
 	document.addEventListener("keydown", (e) => {
 		if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "s") {
 			e.preventDefault();
@@ -1279,6 +1740,7 @@
 	$("#f-title").addEventListener("input", () => {
 		$("#f5-header-title").textContent = $("#f-title").value.trim() || "Новий товар";
 		autoSlug();
+		updateBaseSeoPreview();
 	});
 	$("#f-slug").addEventListener("input", () => { state.slugTouched = true; updateSlugHint(); });
 	$("#f-slug-auto").addEventListener("click", () => {
@@ -1289,10 +1751,15 @@
 	});
 	$("#f-seo-title").addEventListener("input", updateSeoCounters);
 	$("#f-seo-desc").addEventListener("input", updateSeoCounters);
+	$("#f-short-desc").addEventListener("input", updateBaseSeoPreview);
+	$("#f-price").addEventListener("input", () => {
+		$$('.f5-variant').forEach((card) => refreshVariantPreview(card, state.variants[parseInt(card.dataset.index, 10)]));
+	});
 
 	$("#f-add-variant").addEventListener("click", async () => {
 		try { await ensureProduct(); } catch (err) { return; }
 		state.variants.push(emptyVariant());
+		state.selectedVariantIndex = state.variants.length - 1;
 		renderVariants();
 		const cards = $$(".f5-variant");
 		if (cards.length) cards[cards.length - 1].scrollIntoView({ behavior: "smooth", block: "start" });

@@ -93,6 +93,25 @@ class MatchingTests(TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].size, "L")
 
+    def test_fable5_color_fit_blank_link_is_preferred(self):
+        from fable5.models import VariantBlankLink
+
+        VariantBlankLink.objects.create(
+            variant=self.variant,
+            option_key="fit=oversize",
+            storage_subcategory=self.sub_oversize,
+        )
+        self.item.fit_option_code = "oversize"
+        self.item.fit_option_label = "Оверсайз"
+        self.item.save(update_fields=["fit_option_code", "fit_option_label"])
+
+        results = find_stock_items_for_order_item(self.item)
+
+        self.assertTrue(results)
+        self.assertTrue(all(item.subcategory_id == self.sub_oversize.id for item in results))
+        self.assertEqual(results[0].size, "M")
+        self.assertEqual(results[0].color_id, self.color.id)
+
     def test_no_match_if_no_link_falls_back_to_all(self):
         # Прибираємо прив'язку категорії — раніше повертало [].
         # Тепер graceful-каскад має повернути позиції з усього складу

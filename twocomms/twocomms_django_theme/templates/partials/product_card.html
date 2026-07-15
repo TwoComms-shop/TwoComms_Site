@@ -67,8 +67,10 @@
       aria-label="{% blocktrans with title=p.title %}Показати кольори {{ title }}{% endblocktrans %}">
       <span class="home-color-trigger-stack" aria-hidden="true">
         {% for v in p.colors_preview|slice:":3" %}
-        <span class="home-color-mini-swatch"
-          style="--c1: {{ v.primary_hex }}; --c2: {% if v.secondary_hex %}{{ v.secondary_hex }}{% else %}{{ v.primary_hex }}{% endif %};"></span>
+        <span class="home-color-mini-swatch{% if v.is_thermo %} is-thermo{% endif %}"
+          style="--c1: {{ v.primary_hex }}; --c2: {% if v.secondary_hex %}{{ v.secondary_hex }}{% else %}{{ v.primary_hex }}{% endif %};">
+          {% if v.is_thermo %}{% include "fable5/_thermo_flame.html" %}{% endif %}
+        </span>
         {% endfor %}
       </span>
       <span class="home-color-count">{{ p.colors_preview|length }}</span>
@@ -76,11 +78,17 @@
     <div class="home-color-panel" role="group" aria-label="{% trans 'Кольори товару' %}">
       {% for v in p.colors_preview %}
       <button type="button"
-        class="home-color-dot color-dot{% if v.is_default %} active{% endif %}"
-        title="{% if v.name %}{{ v.name|translate_color }}{% else %}{{ v.primary_hex }}{% if v.secondary_hex %}+{{ v.secondary_hex }}{% endif %}{% endif %}"
+        class="home-color-dot color-dot{% if v.is_default %} active{% endif %}{% if v.is_thermo %} is-thermo{% endif %}"
+        title="{% if v.name %}{{ v.name|translate_color }}{% else %}{{ v.primary_hex }}{% if v.secondary_hex %}+{{ v.secondary_hex }}{% endif %}{% endif %}{% if v.is_thermo %} — термохромна тканина{% endif %}"
         style="--c1: {{ v.primary_hex }}; --c2: {% if v.secondary_hex %}{{ v.secondary_hex }}{% else %}{{ v.primary_hex }}{% endif %};"
         data-image-url="{{ v.first_image_url|default:'' }}"
-        aria-label="{% trans 'Колір' %} {% if v.name %}{{ v.name|translate_color }}{% else %}{{ v.primary_hex }}{% if v.secondary_hex %} {% trans 'плюс' %} {{ v.secondary_hex }}{% endif %}{% endif %}"></button>
+        data-variant-price="{{ v.final_price }}"
+        data-price-reason="{{ v.price_reason|escape }}"
+        data-is-thermo="{{ v.is_thermo|yesno:'1,0' }}"
+        data-variant-url="{% url 'product' p.slug v.slug %}"
+        aria-label="{% trans 'Колір' %} {% if v.name %}{{ v.name|translate_color }}{% else %}{{ v.primary_hex }}{% if v.secondary_hex %} {% trans 'плюс' %} {{ v.secondary_hex }}{% endif %}{% endif %}{% if v.is_thermo %} — термохромна тканина{% endif %}">
+        {% if v.is_thermo %}{% include "fable5/_thermo_flame.html" %}{% endif %}
+      </button>
       {% endfor %}
     </div>
   </div>
@@ -90,7 +98,30 @@
     <a href="{{ product_url }}" class="home-product-title" data-product-card-link>{{ p.title }}</a>
 
     <div class="home-product-price-row">
-      <span class="home-product-price">{{ p.final_price }} {% trans 'грн' %}</span>
+      <span class="home-product-price" data-card-price>
+        {% if p.card_has_variant_prices %}{% trans 'Від' %} {{ p.card_price_min }}{% else %}{{ p.card_price_min|default:p.final_price }}{% endif %} {% trans 'грн' %}
+      </span>
+      <span class="home-price-explain{% if not p.card_has_variant_prices and not p.card_selected_price_reason %} is-hidden{% endif %}"
+            data-price-explain>
+        <button type="button"
+                class="home-price-explain__trigger"
+                aria-label="{% trans 'Чому ціна відрізняється' %}"
+                aria-expanded="false"
+                data-price-explain-trigger>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M12 7.5v6.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="12" cy="17" r="1.15" fill="currentColor"/>
+          </svg>
+        </button>
+        <span class="home-price-explain__popover" role="status" data-price-explain-copy>
+          {% if p.card_has_variant_prices %}
+            {% trans 'Ціна залежить від кольору. Термохромна тканина коштує дорожче — оберіть колір, щоб побачити точну ціну.' %}
+          {% else %}
+            {{ p.card_selected_price_reason }}{% if p.card_selected_is_thermo %}. {% trans 'Термохромна тканина реагує на тепло та змінює відтінок.' %}{% endif %}
+          {% endif %}
+        </span>
+      </span>
       {% if p.has_discount %}
       <span class="home-product-old-price">{{ p.price }}</span>
       {% endif %}
