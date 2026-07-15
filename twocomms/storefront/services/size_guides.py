@@ -455,6 +455,56 @@ def normalize_requested_size(product, requested_size):
 
 
 def resolve_product_size_context(product, requested_size=None):
+    fable_assignments = getattr(product, "fable5_size_grid_assignments", None)
+    if fable_assignments is not None and fable_assignments.exists():
+        # Import lazily: storefront remains usable when the optional Fable app
+        # is not part of a deployment, and legacy products keep their exact
+        # resolver path below.
+        from fable5.size_grid_services import build_size_grid_comparison
+
+        comparisons = build_size_grid_comparison(product)
+        if comparisons:
+            default_fit = (
+                product.fit_options
+                .filter(is_active=True, is_default=True)
+                .order_by("order", "id")
+                .first()
+            )
+            default_key = f"fit={default_fit.code}" if default_fit else ""
+            selected_comparison = next(
+                (item for item in comparisons if item["option_key"] == default_key),
+                comparisons[0],
+            )
+            sizes = [row["size"] for row in selected_comparison["sizes"]]
+            selected_size = _normalize_size_value(requested_size)
+            if selected_size not in sizes:
+                selected_size = sizes[0] if sizes else ""
+            size_grid = selected_comparison["guide"]
+            display_labels = {
+                row["size"]: row.get("display_size") or row["size"]
+                for row in selected_comparison["sizes"]
+            }
+            guide = _build_structured_guide(
+                size_grid.get("profile_key") or detect_size_profile(product),
+                "product_override",
+                size_grid=selected_comparison["guide"].get("size_grid"),
+                guide_data=size_grid,
+            )
+            return {
+                "sizes": sizes,
+                "selected_size": selected_size,
+                "display_labels": display_labels,
+                "guide": guide,
+                "profile": {
+                    "guide_key": guide.get("guide_key"),
+                    "profile_key": guide.get("profile_key"),
+                    "source": guide.get("source"),
+                },
+                "size_help_cta": deepcopy(guide.get("cta") or _default_cta()),
+                "size_grid_comparison": comparisons,
+                "fable5_size_grids": True,
+            }
+
     guide = resolve_product_size_guide(product)
     sizes = _ordered_size_values_from_catalog(product) or _size_values_from_guide(guide) or list(guide.get("sizes", [])) or get_default_sizes_for_profile(guide.get("profile_key"))
     selected_size = normalize_requested_size(product, requested_size)

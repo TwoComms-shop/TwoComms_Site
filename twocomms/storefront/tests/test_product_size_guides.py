@@ -155,6 +155,71 @@ class ProductSizeGuideResolverTests(TestCase):
 
         self.assertEqual([block["guide_key"] for block in populated_blocks["blocks"]], ["hoodie", "basic_tshirt"])
 
+    def test_legacy_context_shape_is_unchanged_without_fable_assignment(self):
+        product = Product.objects.create(
+            title="Legacy guide product",
+            slug="legacy-guide-product",
+            category=self.hoodie_category,
+            catalog=self.hoodie_catalog,
+            price=1700,
+        )
+
+        context = resolve_product_size_context(product)
+
+        self.assertEqual(
+            set(context),
+            {
+                "sizes",
+                "selected_size",
+                "display_labels",
+                "guide",
+                "profile",
+                "size_help_cta",
+            },
+        )
+
+    def test_fable_assignments_add_both_fit_grids_to_context(self):
+        from fable5.models import ProductOptionSizeGrid, SizeGridProfile
+
+        product = Product.objects.create(
+            title="Fable comparison product",
+            slug="fable-comparison-product",
+            category=self.tshirt_category,
+            catalog=self.tshirt_catalog,
+            price=1200,
+        )
+        for order, code in enumerate(("classic", "oversize")):
+            product.fit_options.create(
+                code=code,
+                label="Класика" if code == "classic" else "Оверсайз",
+                order=order,
+                is_default=code == "classic",
+            )
+            grid = SizeGrid.objects.create(
+                catalog=self.tshirt_catalog,
+                name=f"{code} structured grid",
+                order=order,
+                guide_data={
+                    "columns": [{"key": "size", "label": "Розмір"}],
+                    "rows": [{"size": "S"}, {"size": "M"}],
+                },
+            )
+            SizeGridProfile.objects.create(size_grid=grid, option_key=f"fit={code}")
+            ProductOptionSizeGrid.objects.create(
+                product=product,
+                option_key=f"fit={code}",
+                size_grid=grid,
+            )
+
+        context = resolve_product_size_context(product, requested_size="M")
+
+        self.assertTrue(context["fable5_size_grids"])
+        self.assertEqual(context["selected_size"], "M")
+        self.assertEqual(
+            [item["fit_code"] for item in context["size_grid_comparison"]],
+            ["classic", "oversize"],
+        )
+
 
 class ProductDetailSizeGuideViewTests(TestCase):
     def setUp(self):
