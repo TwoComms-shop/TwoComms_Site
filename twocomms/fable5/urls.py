@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import views, views_size_grids
 
 urlpatterns = [
     # Єдиний редактор: додавання і редагування — ОДИН шаблон
@@ -24,4 +24,9 @@ urlpatterns = [
     path("admin-panel/fable5/api/feeds/rule/", views.api_feed_rule_save, name="fable5_api_feed_rule_save"),
     path("admin-panel/fable5/api/feeds/image/upload/", views.api_feed_only_image_upload, name="fable5_api_feed_image_upload"),
     path("admin-panel/fable5/api/feeds/image/delete/", views.api_feed_only_image_delete, name="fable5_api_feed_image_delete"),
+    path("admin-panel/fable5/api/size-grids/", views_size_grids.api_size_grids, name="fable5_api_size_grids"),
+    path("admin-panel/fable5/api/size-grids/save/", views_size_grids.api_size_grid_save, name="fable5_api_size_grid_save"),
+    path("admin-panel/fable5/api/size-grids/duplicate/", views_size_grids.api_size_grid_duplicate, name="fable5_api_size_grid_duplicate"),
+    path("admin-panel/fable5/api/size-grids/archive/", views_size_grids.api_size_grid_archive, name="fable5_api_size_grid_archive"),
+    path("admin-panel/fable5/api/size-grids/preview/", views_size_grids.api_size_grid_preview, name="fable5_api_size_grid_preview"),
 ]
