@@ -454,15 +454,26 @@ class MarketplaceFeedServiceTests(TestCase):
     def test_snapshot_regenerator_refreshes_every_file_backed_marketplace_feed(self):
         with TemporaryDirectory() as tmp_dir:
             media_root = Path(tmp_dir)
+
+            def write_snapshot(command_name, *, output, **kwargs):
+                Path(output).write_text(command_name, encoding="utf-8")
+
             with override_settings(MEDIA_ROOT=media_root), patch(
-                "storefront.management.commands.regenerate_feeds_if_dirty.call_command"
+                "storefront.management.commands.regenerate_feeds_if_dirty.call_command",
+                side_effect=write_snapshot,
             ) as generate:
                 call_command("regenerate_feeds_if_dirty", force=True)
 
-        generated = {
-            call.args[0]: Path(call.kwargs["output"]).name
-            for call in generate.call_args_list
-        }
+            generated = {
+                call.args[0]: Path(call.kwargs["output"]).name
+                for call in generate.call_args_list
+            }
+            self.assertTrue((media_root / "google-merchant-v2.xml").exists())
+            self.assertEqual(
+                (media_root / "google-merchant-v2.xml").read_bytes(),
+                (media_root / "google-merchant-v3.xml").read_bytes(),
+            )
+
         self.assertEqual(
             generated,
             {

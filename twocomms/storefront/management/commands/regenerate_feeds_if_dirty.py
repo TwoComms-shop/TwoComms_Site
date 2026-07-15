@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -87,6 +88,10 @@ class Command(BaseCommand):
             try:
                 call_command(command_name, output=str(out_path), verbosity=0)
                 self.stdout.write(f"ok {command_name} -> {out_path}")
+                if command_name == "generate_google_merchant_feed":
+                    legacy_path = media_root / "google-merchant-v2.xml"
+                    shutil.copyfile(out_path, legacy_path)
+                    self.stdout.write(f"ok legacy alias -> {legacy_path}")
             except Exception as exc:
                 failures += 1
                 logger.error("Feed %s failed: %s", command_name, exc, exc_info=True)
