@@ -18,6 +18,14 @@ from .models import (
     VariantSizeRule,
 )
 
+# Public compatibility exports for code that already imports fable5.services.
+from .content_resolution import (  # noqa: E402,F401
+    build_combination_key,
+    normalize_option_values,
+    resolve_merchandising_context,
+    resolve_variant_text,
+)
+
 
 def color_is_thermo(color) -> bool:
     profile = ColorProfile.objects.filter(color=color).only("is_thermo").first()
