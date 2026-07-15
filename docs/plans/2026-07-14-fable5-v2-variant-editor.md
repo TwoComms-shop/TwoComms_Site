@@ -213,7 +213,7 @@ git commit -m "feat(fable5): add inherited variant and size-grid models"
 ### Task 3: Implement localized content inheritance
 
 **Files:**
-- Create: `twocomms/fable5/services/content_resolution.py`
+- Create: `twocomms/fable5/content_resolution.py`
 - Modify: `twocomms/fable5/services.py`
 - Test: `twocomms/fable5/tests/test_content_resolution.py`
 
@@ -263,7 +263,7 @@ $PYTHON manage.py test fable5.tests.test_content_resolution --settings=test_sett
 **Step 5: Commit**
 
 ```bash
-git add twocomms/fable5/services.py twocomms/fable5/services/content_resolution.py twocomms/fable5/tests/test_content_resolution.py
+git add twocomms/fable5/services.py twocomms/fable5/content_resolution.py twocomms/fable5/tests/test_content_resolution.py
 git commit -m "feat(fable5): resolve inherited localized variant content"
 ```
 
@@ -272,8 +272,8 @@ git commit -m "feat(fable5): resolve inherited localized variant content"
 ### Task 4: Implement size-grid normalization and effective availability
 
 **Files:**
-- Create: `twocomms/fable5/services/size_grids.py`
-- Create: `twocomms/fable5/services/readiness.py`
+- Create: `twocomms/fable5/size_grid_services.py`
+- Create: `twocomms/fable5/readiness.py`
 - Modify: `twocomms/storefront/services/size_guides.py`
 - Test: `twocomms/fable5/tests/test_size_grid_resolution.py`
 - Test: `twocomms/storefront/tests/test_product_size_guides.py`
@@ -337,7 +337,7 @@ $PYTHON manage.py test fable5.tests.test_size_grid_resolution storefront.tests.t
 **Step 7: Commit**
 
 ```bash
-git add twocomms/fable5/services twocomms/storefront/services/size_guides.py twocomms/fable5/tests twocomms/storefront/tests/test_product_size_guides.py
+git add twocomms/fable5/size_grid_services.py twocomms/fable5/readiness.py twocomms/storefront/services/size_guides.py twocomms/fable5/tests twocomms/storefront/tests/test_product_size_guides.py
 git commit -m "feat(fable5): resolve fit-specific grids and size availability"
 ```
 
@@ -448,7 +448,7 @@ git commit -m "feat(admin): add interactive size-grid workspace"
 
 **Files:**
 - Modify: `twocomms/fable5/views.py`
-- Create: `twocomms/fable5/services/product_save.py`
+- Create: `twocomms/fable5/product_save.py`
 - Modify: `twocomms/fable5/urls.py`
 - Test: `twocomms/fable5/tests/test_product_save_v2.py`
 
@@ -492,7 +492,7 @@ $PYTHON manage.py test fable5.tests.test_product_save_v2 --settings=test_setting
 **Step 6: Commit**
 
 ```bash
-git add twocomms/fable5/views.py twocomms/fable5/urls.py twocomms/fable5/services/product_save.py twocomms/fable5/tests/test_product_save_v2.py
+git add twocomms/fable5/views.py twocomms/fable5/urls.py twocomms/fable5/product_save.py twocomms/fable5/tests/test_product_save_v2.py
 git commit -m "feat(fable5): save product structures atomically with revisions"
 ```
 
@@ -550,7 +550,7 @@ git commit -m "feat(fable5): add inherited combination variant APIs"
 
 **Files:**
 - Create: `twocomms/fable5/views_prints.py`
-- Create: `twocomms/fable5/services/prints.py`
+- Create: `twocomms/fable5/print_services.py`
 - Modify: `twocomms/fable5/urls.py`
 - Test: `twocomms/fable5/tests/test_print_api.py`
 
@@ -579,7 +579,7 @@ Use `ProductPrintLink` + `ProductPrintCompatibility`. Do not implement the suppl
 
 ```bash
 $PYTHON manage.py test fable5.tests.test_print_api --settings=test_settings -v 2
-git add twocomms/fable5/views_prints.py twocomms/fable5/services/prints.py twocomms/fable5/urls.py twocomms/fable5/tests/test_print_api.py
+git add twocomms/fable5/views_prints.py twocomms/fable5/print_services.py twocomms/fable5/urls.py twocomms/fable5/tests/test_print_api.py
 git commit -m "feat(fable5): scope print compatibility per product"
 ```
 
@@ -590,8 +590,8 @@ git commit -m "feat(fable5): scope print compatibility per product"
 **Files:**
 - Modify: `twocomms/fable5/views.py`
 - Create: `twocomms/fable5/views_media.py`
-- Create: `twocomms/fable5/services/image_import.py`
-- Create: `twocomms/fable5/services/covers.py`
+- Create: `twocomms/fable5/image_import.py`
+- Create: `twocomms/fable5/cover_services.py`
 - Modify: `twocomms/fable5/urls.py`
 - Test: `twocomms/fable5/tests/test_media_v2.py`
 
@@ -630,7 +630,7 @@ Return deterministic stages and stop polling after two minutes on the client. Mi
 
 ```bash
 $PYTHON manage.py test fable5.tests.test_media_v2 --settings=test_settings -v 2
-git add twocomms/fable5/views.py twocomms/fable5/views_media.py twocomms/fable5/services twocomms/fable5/urls.py twocomms/fable5/tests/test_media_v2.py
+git add twocomms/fable5/views.py twocomms/fable5/views_media.py twocomms/fable5/image_import.py twocomms/fable5/cover_services.py twocomms/fable5/urls.py twocomms/fable5/tests/test_media_v2.py
 git commit -m "feat(fable5): harden media and canonical cover workflow"
 ```
 
