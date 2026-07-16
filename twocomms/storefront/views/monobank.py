@@ -37,6 +37,7 @@ from orders.nova_poshta_documents import normalize_checkout_phone
 from orders.models import Order as OrderModel, OrderItem
 from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_delivery_selection
 from orders.facebook_conversions_service import get_facebook_conversions_service
+from accounts.payment import normalize_pay_type
 from ..utm_tracking import (
     ensure_order_purchase_action,
     ensure_request_session_key,
@@ -47,7 +48,7 @@ from ..utm_tracking import (
 from .utils import (
     _dispatch_post_payment_events,
     _reset_monobank_session,
-    get_cart_from_session,
+    get_validated_cart_from_session,
     _get_color_variant_safe,
     _normalize_order_pay_type,
 )
@@ -414,7 +415,7 @@ def monobank_create_invoice(request):
         monobank_logger.info(f'📊 Client tracking data received: {client_tracking}')
 
     # Получаем cart
-    cart = get_cart_from_session(request)
+    cart = get_validated_cart_from_session(request)
 
     ensure_request_session_key(request)
 
@@ -437,12 +438,6 @@ def monobank_create_invoice(request):
         return JsonResponse({
             'success': False,
             'error': 'Кошик порожній. Додайте товари перед оплатою.'
-        })
-
-    if has_custom_items and body.get('pay_type') == 'prepay_200':
-        return JsonResponse({
-            'success': False,
-            'error': 'Передплата 200 грн недоступна, коли у кошику є кастомний принт. Оберіть повну онлайн-оплату.'
         })
 
     if has_custom_items and not cart and not approved_custom_leads:
@@ -495,11 +490,7 @@ def monobank_create_invoice(request):
         customer_email = _body_override('email', getattr(prof, 'email', '') or (request.user.email or ''))
 
         pay_type_raw = (body.get('pay_type') or prof.pay_type or 'online_full')
-        normalized_pay_type = (pay_type_raw or '').strip().lower()
-        if normalized_pay_type in {'prepay_200', 'prepay', 'prepaid', 'partial', 'partial_payment', 'prepay200', 'cod'}:
-            pay_type = 'prepay_200'
-        else:
-            pay_type = 'online_full'
+        pay_type = pay_type_raw
 
         monobank_logger.info(
             f"Auth user: pay_type raw={body.get('pay_type')}, profile={prof.pay_type}, normalized={pay_type}"
@@ -522,6 +513,25 @@ def monobank_create_invoice(request):
                 'error': 'Будь ласка, заповніть всі обов\'язкові поля!'
             })
 
+    try:
+        pay_type = normalize_pay_type(pay_type, default=None)
+    except ValueError:
+        return JsonResponse({
+            'success': False,
+            'field': 'pay_type',
+            'error': 'Оберіть коректний тип оплати.',
+        }, status=400)
+    if pay_type == 'cod':
+        # This endpoint always creates an online invoice. A COD profile default
+        # therefore falls back to full online payment, never hidden prepayment.
+        pay_type = 'online_full'
+
+    if has_custom_items and pay_type == 'prepay_200':
+        return JsonResponse({
+            'success': False,
+            'error': 'Передплата 200 грн недоступна, коли у кошику є кастомний принт. Оберіть повну онлайн-оплату.'
+        }, status=400)
+
     if raw_phone and not phone:
         return JsonResponse({
             'success': False,
@@ -536,16 +546,6 @@ def monobank_create_invoice(request):
             'success': False,
             'error': 'Будь ласка, заповніть всі обов\'язкові поля!'
         }, status=400)
-
-    # Нормализуем pay_type
-    monobank_logger.info(f'🔍 BEFORE normalization: pay_type={pay_type}')
-    if pay_type in ['partial', 'prepaid']:
-        pay_type = 'prepay_200'
-        monobank_logger.info(f'✅ Normalized partial/prepaid to prepay_200')
-    elif pay_type in ['full']:
-        pay_type = 'online_full'
-        monobank_logger.info(f'✅ Normalized full to online_full')
-    monobank_logger.info(f'🔍 AFTER normalization: pay_type={pay_type}')
 
     # Email опціональний. Якщо вказано некоректний — просто ігноруємо (не блокуємо оплату).
     normalized_email = ''

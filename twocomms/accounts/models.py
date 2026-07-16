@@ -7,6 +7,7 @@ from django.utils import timezone
 # Persistent cart for cross-device synchronization.
 # Imported here so Django app loader registers the model.
 from .cart_models import UserCart  # noqa: F401
+from .payment import PAY_TYPE_CHOICES
 
 
 class UserProfile(models.Model):
@@ -17,10 +18,7 @@ class UserProfile(models.Model):
     np_settlement_ref = models.CharField(max_length=36, blank=True)
     np_city_ref = models.CharField(max_length=36, blank=True)
     np_warehouse_ref = models.CharField(max_length=36, blank=True)
-    pay_type = models.CharField(max_length=10, choices=[
-        ('full', 'Повна оплата'),
-        ('partial', 'Часткова оплата')
-    ], default='full')
+    pay_type = models.CharField(max_length=20, choices=PAY_TYPE_CHOICES, default='online_full')
     avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
     full_name = models.CharField(max_length=200, blank=True)
     email = models.EmailField(max_length=254, blank=True, verbose_name='Email')

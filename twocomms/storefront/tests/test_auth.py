@@ -289,6 +289,7 @@ class ProfileSetupViewTests(AuthViewTestCase):
         self.assertEqual(self.user.userprofile.full_name, "Test User")
         self.assertEqual(self.user.userprofile.city, delivery["canonical_city"])
         self.assertEqual(self.user.userprofile.np_office, delivery["canonical_np_office"])
+        self.assertEqual(self.user.userprofile.pay_type, "online_full")
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, "user@example.com")
 

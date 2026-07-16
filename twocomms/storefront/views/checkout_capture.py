@@ -16,7 +16,7 @@ from django_ratelimit.decorators import ratelimit
 
 from orders.models import CheckoutCapture
 
-from .utils import calculate_cart_total, get_cart_from_session
+from .utils import calculate_cart_total, get_validated_cart_from_session
 
 _MAX_LEN = {'full_name': 255, 'phone': 32, 'email': 254}
 
@@ -54,7 +54,7 @@ def capture_checkout(request):
         except ValidationError:
             email = ''
 
-    cart = get_cart_from_session(request)
+    cart = get_validated_cart_from_session(request)
     if not (full_name or phone or email) and not cart:
         return JsonResponse({'ok': False})
 

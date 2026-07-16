@@ -16,9 +16,10 @@ from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_delive
 from storefront.models import Product, PromoCode, CustomPrintLead, CustomPrintModerationStatus
 from productcolors.models import ProductColorVariant
 from accounts.models import UserProfile
+from accounts.payment import normalize_pay_type
 from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
 from .utils import (
-    get_cart_from_session,
+    get_validated_cart_from_session,
     clear_cart,
 )
 # from .cart import clear_cart
@@ -95,7 +96,7 @@ def create_order(request):
     """
     Creates an order from the current cart.
     """
-    cart = get_cart_from_session(request)
+    cart = get_validated_cart_from_session(request)
     custom_cart = request.session.get(SESSION_CUSTOM_CART_KEY) or {}
     if not cart and not (isinstance(custom_cart, dict) and custom_cart):
         messages.error(request, _("Ваш кошик порожній"))
@@ -180,6 +181,12 @@ def create_order(request):
         # by the Monobank button, which creates its own order and invoice.
         pay_type = request.POST.get('pay_type', 'cod')
         customer_email = (request.POST.get('email') or '').strip()
+
+    try:
+        pay_type = normalize_pay_type(pay_type, default=None)
+    except ValueError:
+        messages.error(request, _("Оберіть коректний тип оплати."))
+        return redirect('cart')
 
     if raw_phone and not phone:
         messages.error(request, _("Вкажіть коректний український номер телефону. Можна без +380."))

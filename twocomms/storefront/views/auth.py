@@ -16,6 +16,7 @@ from django.utils.translation import gettext as _, gettext_lazy as _lazy
 
 from ..models import Product
 from accounts.models import UserProfile, FavoriteProduct
+from accounts.payment import PAY_TYPE_CHOICES, normalize_pay_type
 from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_optional_delivery_selection
 from orders.nova_poshta_documents import normalize_checkout_phone
 
@@ -35,6 +36,17 @@ logger = logging.getLogger(__name__)
 
 
 # ==================== FORMS ====================
+
+
+class CanonicalPayTypeChoiceField(forms.ChoiceField):
+    """Render canonical choices while accepting legacy values during rollout."""
+
+    def valid_value(self, value):
+        try:
+            normalize_pay_type(value, default=None)
+        except ValueError:
+            return False
+        return True
 
 class LoginForm(forms.Form):
     """Форма входа в систему."""
@@ -204,13 +216,10 @@ class ProfileSetupForm(forms.Form):
         required=False,
         widget=forms.HiddenInput(attrs={"data-np-warehouse-token": "1"}),
     )
-    pay_type = forms.ChoiceField(
+    pay_type = CanonicalPayTypeChoiceField(
         label=_lazy("Тип оплати"),
         required=False,
-        choices=(
-            ("partial", _lazy("Часткова передоплата")),
-            ("full", _lazy("Повна передоплата"))
-        ),
+        choices=PAY_TYPE_CHOICES,
         widget=forms.Select(attrs={"class": "form-select bg-elevate"})
     )
     avatar = forms.ImageField(label=_lazy("Аватар"), required=False)
@@ -223,6 +232,9 @@ class ProfileSetupForm(forms.Form):
         label=_lazy("Фото посвідчення УБД"),
         required=False
     )
+
+    def clean_pay_type(self):
+        return normalize_pay_type(self.cleaned_data.get("pay_type"))
 
     def clean_avatar(self):
         return validate_profile_upload_size(self.cleaned_data.get("avatar"))

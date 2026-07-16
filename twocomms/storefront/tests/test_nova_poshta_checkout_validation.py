@@ -740,3 +740,50 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
         self.assertEqual(order.payment_status, 'checking')
         monobank_request_mock.assert_called_once()
         facebook_service.send_add_payment_info_event.assert_called_once()
+
+    def test_monobank_rejects_legacy_prepay_alias_with_custom_print(self):
+        delivery = self._delivery_payload()
+        lead = CustomPrintLead.objects.create(
+            service_kind='ready',
+            product_type='hoodie',
+            placements=['front'],
+            quantity=1,
+            client_kind='personal',
+            size_mode='single',
+            pricing_snapshot_json={'final_total': '1200.00'},
+            name='Custom Client',
+            contact_channel='telegram',
+            contact_value='@custom_client',
+            brief='Кастомний худі',
+            source='custom_print_cart',
+            moderation_status=CustomPrintModerationStatus.APPROVED,
+            approved_price='1200.00',
+        )
+        session = self.client.session
+        session[SESSION_CUSTOM_CART_KEY] = {
+            f'custom:{lead.pk}': {
+                'lead_id': lead.pk,
+                'moderation_status': CustomPrintModerationStatus.APPROVED,
+            }
+        }
+        session.save()
+
+        for pay_type in ('partial', 'prepay'):
+            with self.subTest(pay_type=pay_type):
+                response = self.client.post(
+                    self.monobank_create_invoice_url,
+                    data=json.dumps({
+                        'full_name': 'Guest User',
+                        'phone': '0991112233',
+                        'np_city_token': delivery['np_city_token'],
+                        'np_warehouse_token': delivery['np_warehouse_token'],
+                        'pay_type': pay_type,
+                    }),
+                    content_type='application/json',
+                    secure=True,
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(response.json()['success'])
+
+        self.assertFalse(Order.objects.exists())

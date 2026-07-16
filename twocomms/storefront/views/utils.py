@@ -151,6 +151,92 @@ def unique_slugify(model, base_slug):
     return uniq
 
 
+MAX_CART_ITEM_QTY = 50
+MAX_CART_ID = 2_147_483_647
+MAX_CART_ITEMS = 100
+
+
+def normalize_cart_session(
+    raw_cart,
+    *,
+    max_qty=MAX_CART_ITEM_QTY,
+    max_items=MAX_CART_ITEMS,
+):
+    """Drop malformed cart rows and coerce trusted fields before ORM use."""
+    if not isinstance(raw_cart, dict):
+        return {}, True
+
+    cleaned = {}
+    changed = False
+    for key, raw_item in raw_cart.items():
+        if len(cleaned) >= max_items:
+            changed = True
+            break
+        if not isinstance(raw_item, dict):
+            changed = True
+            continue
+        try:
+            product_id = int(raw_item.get('product_id'))
+        except (TypeError, ValueError, OverflowError):
+            changed = True
+            continue
+        if product_id <= 0 or product_id > MAX_CART_ID:
+            changed = True
+            continue
+
+        variant_value = raw_item.get('color_variant_id')
+        variant_id = None
+        if variant_value not in (None, '', 0, '0'):
+            try:
+                variant_id = int(variant_value)
+            except (TypeError, ValueError, OverflowError):
+                changed = True
+                continue
+            if variant_id <= 0 or variant_id > MAX_CART_ID:
+                changed = True
+                continue
+
+        try:
+            qty = int(raw_item.get('qty', 1))
+        except (TypeError, ValueError, OverflowError):
+            qty = 1
+            changed = True
+        qty = max(1, min(qty, max_qty))
+
+        item = dict(raw_item)
+        item['product_id'] = product_id
+        item['color_variant_id'] = variant_id
+        item['qty'] = qty
+        for field in ('size', 'fit', 'fit_option_code', 'fit_option_label', 'fit_label'):
+            if field in item and item[field] is not None:
+                value = str(item[field]).strip()
+                item[field] = value[:100]
+        normalized_key = str(key)
+        if normalized_key in cleaned:
+            # Preserve one bounded row when a malformed session has duplicate keys.
+            changed = True
+            continue
+        cleaned[normalized_key] = item
+        if item != raw_item:
+            changed = True
+    return cleaned, changed
+
+
+def filter_cart_variant_ownership(cart, variants):
+    """Drop rows whose variant is missing or belongs to another product."""
+    cleaned = {}
+    changed = False
+    for key, item in cart.items():
+        variant_id = item.get('color_variant_id')
+        if variant_id:
+            variant = variants.get(variant_id)
+            if variant is None or variant.product_id != item['product_id']:
+                changed = True
+                continue
+        cleaned[key] = item
+    return cleaned, changed
+
+
 def get_cart_from_session(request):
     """
     Извлекает корзину из сессии.
@@ -161,7 +247,34 @@ def get_cart_from_session(request):
     Returns:
         dict: Словарь с данными корзины
     """
-    return request.session.get('cart', {})
+    raw_cart = request.session.get('cart', {})
+    cart, changed = normalize_cart_session(raw_cart)
+    if changed:
+        request.session['cart'] = cart
+        request.session.modified = True
+    return cart
+
+
+def get_validated_cart_from_session(request):
+    """Return a typed cart with variant ownership verified in one bulk query."""
+    cart = get_cart_from_session(request)
+    variant_ids = [
+        item['color_variant_id']
+        for item in cart.values()
+        if item.get('color_variant_id')
+    ]
+    if not variant_ids:
+        return cart
+
+    from productcolors.models import ProductColorVariant
+
+    variants = ProductColorVariant.objects.in_bulk(variant_ids)
+    cart, changed = filter_cart_variant_ownership(cart, variants)
+    if changed:
+        request.session['cart'] = cart
+        request.session.modified = True
+        _reset_monobank_session(request, drop_pending=True)
+    return cart
 
 
 def save_cart_to_session(request, cart):
@@ -194,6 +307,7 @@ def calculate_cart_total(cart):
     from productcolors.models import ProductColorVariant
     from fable5.services import effective_cart_unit_price
 
+    cart, _ = normalize_cart_session(cart)
     if not cart:
         return Decimal('0')
 
@@ -202,12 +316,13 @@ def calculate_cart_total(cart):
     products = Product.objects.in_bulk(ids)
     variant_ids = [item.get('color_variant_id') for item in cart.values() if item.get('color_variant_id')]
     variants = ProductColorVariant.objects.in_bulk(variant_ids)
+    cart, _ = filter_cart_variant_ownership(cart, variants)
 
     total = Decimal('0')
     for item in cart.values():
         product = products.get(item['product_id'])
         if product:
-            qty = int(item.get('qty', 0))
+            qty = item['qty']
             variant_id = item.get('color_variant_id')
             try:
                 variant = variants.get(int(variant_id)) if variant_id else None
@@ -259,33 +374,9 @@ SEARCH_RESULTS_PER_PAGE = 20
 # ==================== MONOBANK & CART HELPERS ====================
 
 import logging
+from accounts.payment import normalize_pay_type
 
 monobank_logger = logging.getLogger('storefront.monobank')
-
-
-_PAY_TYPE_CANONICAL_MAP = {
-    # Canonical values
-    'online_full': 'online_full',
-    'prepay_200': 'prepay_200',
-    # Legacy/full-payment aliases
-    'full': 'online_full',
-    'online': 'online_full',
-    'online-full': 'online_full',
-    'online_full_payment': 'online_full',
-    'онлайн оплата (повна сума)': 'online_full',
-    'оплата повністю': 'online_full',
-    'оплатити повністю': 'online_full',
-    # Legacy/prepayment aliases
-    'prepay': 'prepay_200',
-    'prepay200': 'prepay_200',
-    'prepaid': 'prepay_200',
-    'partial': 'prepay_200',
-    'partial_payment': 'prepay_200',
-    'cod': 'prepay_200',
-    'внести передплату 200 грн': 'prepay_200',
-    'передплата 200 грн': 'prepay_200',
-    'передплата 200 грн (решта при отриманні)': 'prepay_200',
-}
 
 
 def _normalize_order_pay_type(value):
@@ -295,22 +386,7 @@ def _normalize_order_pay_type(value):
     Всегда приводит строку к нижнему регистру и убирает пробелы, чтобы
     поддерживать устаревшие/локализованные значения.
     """
-    if not value:
-        return 'online_full'
-
-    normalized = str(value).strip()
-    if not normalized:
-        return 'online_full'
-
-    canonical = _PAY_TYPE_CANONICAL_MAP.get(normalized.lower())
-    if canonical:
-        return canonical
-
-    # Если значение уже одно из допустимых - возвращаем его, иначе online_full
-    if normalized in ('online_full', 'prepay_200'):
-        return normalized
-
-    return 'online_full'
+    return normalize_pay_type(value)
 
 
 def _reset_monobank_session(request, drop_pending=False):

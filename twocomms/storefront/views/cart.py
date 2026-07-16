@@ -24,6 +24,7 @@ import json
 from ..models import Product, PromoCode, CustomPrintLead, CustomPrintModerationStatus
 from productcolors.models import ProductColorVariant
 from accounts.models import UserProfile
+from accounts.payment import normalize_pay_type
 from orders.nova_poshta_data import apply_nova_poshta_refs
 from orders.nova_poshta_lookup import (
     NovaPoshtaDirectoryService,
@@ -50,9 +51,11 @@ from storefront.custom_print_config import (
 from storefront.custom_print_notifications import notify_custom_print_moderation_request
 from storefront.services.size_guides import normalize_requested_size
 from .utils import (
-    get_cart_from_session,
+    get_validated_cart_from_session,
     save_cart_to_session,
     calculate_cart_total,
+    filter_cart_variant_ownership,
+    MAX_CART_ITEMS,
     _reset_monobank_session,
     _color_label_from_variant,
 )
@@ -519,17 +522,13 @@ def view_cart(request):
 
                     pay_type_raw = request.POST.get('pay_type')
                     if pay_type_raw:
-                        # Импортируем функцию нормализации типа оплаты из старого views
                         try:
-                            import storefront.views as old_views
-                            if hasattr(old_views, '_normalize_pay_type'):
-                                profile.pay_type = old_views._normalize_pay_type(pay_type_raw)
-                            else:
-                                # Fallback: если функция не найдена, используем значение напрямую или по умолчанию
-                                profile.pay_type = pay_type_raw if pay_type_raw in ['online_full', 'prepay_200'] else 'online_full'
-                        except Exception as e:
-                            cart_logger.error('Error normalizing pay_type: %s', e)
-                            # В случае ошибки не обновляем pay_type
+                            profile.pay_type = normalize_pay_type(pay_type_raw, default=None)
+                        except ValueError:
+                            if is_autosave:
+                                return JsonResponse({'ok': False, 'reason': 'pay_type'}, status=400)
+                            messages.error(request, _('Оберіть коректний тип оплати.'))
+                            return redirect('cart')
 
                     profile.save()
                     if is_autosave:
@@ -555,7 +554,7 @@ def view_cart(request):
             from storefront import views as legacy_views
             return legacy_views.order_create(request)
 
-    cart = get_cart_from_session(request)
+    cart = get_validated_cart_from_session(request)
     cart_items = []
     subtotal = Decimal('0')
     original_subtotal = Decimal('0')
@@ -572,6 +571,11 @@ def view_cart(request):
     color_variant_ids = [item_data.get('color_variant_id') for item_data in cart.values() if item_data.get('color_variant_id')]
     from productcolors.models import ProductColorVariant
     color_variants_map = ProductColorVariant.objects.select_related('color').in_bulk(color_variant_ids)
+    cart, dropped_variants = filter_cart_variant_ownership(cart, color_variants_map)
+    if dropped_variants:
+        _reset_monobank_session(request, drop_pending=True)
+        request.session['cart'] = cart
+        request.session.modified = True
 
     for item_key, item_data in cart.items():
         try:
@@ -677,14 +681,8 @@ def view_cart(request):
     selected_pay_type = 'online_full'
     if request.user.is_authenticated:
         try:
-            import storefront.views as old_views
             prof = request.user.userprofile
-            # Нормализуем pay_type для корректного сравнения
-            # В UserProfile pay_type может быть 'partial' или 'full', нужно нормализовать
-            if hasattr(old_views, '_normalize_pay_type') and prof.pay_type:
-                normalized_pay_type = old_views._normalize_pay_type(prof.pay_type)
-            else:
-                normalized_pay_type = prof.pay_type if prof.pay_type else None
+            normalized_pay_type = normalize_pay_type(prof.pay_type)
             if normalized_pay_type == 'prepay_200':
                 pay_now_amount = Decimal('200.00')
                 selected_pay_type = 'prepay_200'
@@ -804,6 +802,15 @@ def add_to_cart(request):
     ВОССТАНОВЛЕНА РАБОЧАЯ ЛОГИКА из старого views.py
     """
     pid = request.POST.get('product_id')
+    try:
+        product_id = int(pid)
+        if product_id <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        return JsonResponse({
+            'ok': False,
+            'error': _('Некоректний ідентифікатор товару'),
+        }, status=400)
     size = None
     color_variant_id = request.POST.get('color_variant_id')
     try:
@@ -813,7 +820,7 @@ def add_to_cart(request):
     # W1-13 (NEW-508): верхний cap, иначе qty=999999 => гигантский инвойс
     qty = min(max(qty, 1), MAX_CART_ITEM_QTY)
 
-    product = get_object_or_404(Product, pk=pid)
+    product = get_object_or_404(Product, pk=product_id)
     requested_size_raw = request.POST.get('size')
     size = normalize_requested_size(product, requested_size_raw)
     color_variant = None
@@ -879,23 +886,29 @@ def add_to_cart(request):
                 'error': _('Обраний розмір недоступний для цього кольору та посадки'),
             }, status=400)
 
+    color_variant_int = color_variant.id if color_variant else None
     price = _effective_item_price(
         product,
         {
-            'color_variant_id': color_variant_id,
+            'color_variant_id': color_variant_int,
             'fit_option_code': fit_option_code,
         },
         color_variant,
     )
 
-    cart = request.session.get('cart', {})
-    key = f"{product.id}:{size}:{color_variant_id or 'default'}"
+    cart = get_validated_cart_from_session(request)
+    key = f"{product.id}:{size}:{color_variant_int or 'default'}"
     if fit_option_code:
         key = f"{key}:{fit_option_code}"
+    if key not in cart and len(cart) >= MAX_CART_ITEMS:
+        return JsonResponse({
+            'ok': False,
+            'error': _('Кошик містить забагато окремих позицій'),
+        }, status=400)
     item = cart.get(key, {
         'product_id': product.id,
         'size': size,
-        'color_variant_id': color_variant_id,
+        'color_variant_id': color_variant_int,
         'fit_option_code': fit_option_code,
         'fit_option_label': fit_option_label,
         'qty': 0
@@ -912,7 +925,6 @@ def add_to_cart(request):
 
     _reset_monobank_session(request, drop_pending=True)
 
-    color_variant_int = color_variant.id if color_variant else None
     offer_id = product.get_offer_id(color_variant_int, size)
     item_value = (price * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
@@ -994,7 +1006,7 @@ def update_cart(request):
         # W1-13 (NEW-508): верхний cap количества
         qty = min(qty, MAX_CART_ITEM_QTY)
 
-        cart = get_cart_from_session(request)
+        cart = get_validated_cart_from_session(request)
 
         if cart_key not in cart:
             return JsonResponse({
@@ -1056,7 +1068,7 @@ def remove_from_cart(request):
     Удаление позиции из корзины: поддерживает key="productId:size:color" и (product_id + size).
     ВОССТАНОВЛЕНА РАБОЧАЯ ЛОГИКА из старого cart_remove
     """
-    cart = request.session.get('cart', {})
+    cart = get_validated_cart_from_session(request)
 
     key = (request.POST.get('key') or '').strip()
     pid = request.POST.get('product_id')
@@ -1200,7 +1212,7 @@ def get_cart_count(request):
     Returns:
         JsonResponse: cart_count
     """
-    cart = get_cart_from_session(request)
+    cart = get_validated_cart_from_session(request)
     cart_count = sum(item.get('qty', 0) for item in cart.values())
     custom_cart = request.session.get(SESSION_CUSTOM_CART_KEY) or {}
     if isinstance(custom_cart, dict):
@@ -1272,7 +1284,7 @@ def apply_promo_code(request):
             }, status=400)
 
         # Рассчитываем скидку
-        cart = get_cart_from_session(request)
+        cart = get_validated_cart_from_session(request)
         subtotal = calculate_cart_total(cart)
         original_subtotal = _calculate_original_subtotal(cart)
         discount = promo_code.calculate_discount(subtotal)
@@ -1379,7 +1391,7 @@ def remove_promo_code(request):
 
             request.session.modified = True
 
-        cart = get_cart_from_session(request)
+        cart = get_validated_cart_from_session(request)
         subtotal = calculate_cart_total(cart)
         # После удаления промокода скидка = 0
         total = subtotal
@@ -1419,7 +1431,7 @@ def cart_summary(request):
     Returns:
         JsonResponse: {ok, count, total}
     """
-    cart = request.session.get('cart', {})
+    cart = get_validated_cart_from_session(request)
     custom_cart = request.session.get(SESSION_CUSTOM_CART_KEY) or {}
 
     # Custom cart items count
@@ -1482,9 +1494,7 @@ def cart_mini(request):
     Returns:
         HttpResponse: Rendered HTML partial
     """
-    cart_sess = request.session.get('cart', {})
-    if not isinstance(cart_sess, dict):
-        cart_sess = {}
+    cart_sess = get_validated_cart_from_session(request)
 
     ids = [i['product_id'] for i in cart_sess.values()]
     prods = Product.objects.in_bulk(ids)
@@ -1492,6 +1502,11 @@ def cart_mini(request):
     # Optimization: Fetch color variants
     variant_ids = [i.get('color_variant_id') for i in cart_sess.values() if i.get('color_variant_id')]
     variants_map = ProductColorVariant.objects.select_related('color').in_bulk(variant_ids)
+    cart_sess, dropped_variants = filter_cart_variant_ownership(cart_sess, variants_map)
+    if dropped_variants:
+        _reset_monobank_session(request, drop_pending=True)
+        request.session['cart'] = cart_sess
+        request.session.modified = True
 
     # Проверяем, какие товары найдены
     found_products = set(prods.keys())
@@ -1557,7 +1572,7 @@ def cart_mini(request):
     custom_items_total = custom_cart_state['custom_items_total']
     custom_items_qty = custom_cart_state['custom_items_qty']
 
-    combined_total = total + float(custom_items_total)
+    combined_total = (Decimal(total) + custom_items_total).quantize(Decimal('0.01'))
 
     return render(request, 'partials/mini_cart.html', {
         'items': items,
@@ -1610,7 +1625,7 @@ def contact_manager(request):
             })
 
         # Получаем корзину
-        cart = get_cart_from_session(request)
+        cart = get_validated_cart_from_session(request)
 
         if not cart:
             return JsonResponse({
@@ -1703,7 +1718,7 @@ def cart_items_api(request):
             'cart_count': int
         }
     """
-    cart = get_cart_from_session(request)
+    cart = get_validated_cart_from_session(request)
     cart_items = []
     subtotal = Decimal('0')
     original_subtotal = Decimal('0')

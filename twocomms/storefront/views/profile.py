@@ -21,6 +21,7 @@ from django.urls import reverse
 from django.utils.translation import gettext as _
 
 from accounts.models import UserProfile, FavoriteProduct, UserPoints, PointsHistory
+from accounts.payment import normalize_pay_type
 from orders.models import Order
 from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_optional_delivery_selection
 from orders.nova_poshta_data import apply_nova_poshta_refs
@@ -159,6 +160,15 @@ def edit_profile(request):
             messages.error(request, exc.message)
             return redirect('profile_setup')
 
+        try:
+            canonical_pay_type = normalize_pay_type(
+                request.POST.get('pay_type', 'online_full'),
+                default=None,
+            )
+        except ValueError:
+            messages.error(request, _('Оберіть коректний тип оплати.'))
+            return redirect('profile_setup')
+
         # Обновляем основные данные пользователя
         request.user.first_name = request.POST.get('first_name', '')[:150]
         request.user.last_name = request.POST.get('last_name', '')[:150]
@@ -172,7 +182,7 @@ def edit_profile(request):
         user_profile.telegram = request.POST.get('telegram', '')
         user_profile.instagram = request.POST.get('instagram', '')
         _apply_profile_delivery_selection(user_profile, delivery_selection)
-        user_profile.pay_type = request.POST.get('pay_type', 'full')
+        user_profile.pay_type = canonical_pay_type
 
         # Аватар
         if avatar_file:
@@ -232,7 +242,7 @@ def profile_setup(request):
             prof.telegram = form.cleaned_data.get('telegram', '')
             prof.instagram = form.cleaned_data.get('instagram', '')
             _apply_profile_delivery_selection(prof, delivery_selection)
-            prof.pay_type = form.cleaned_data.get('pay_type', 'full')
+            prof.pay_type = form.cleaned_data.get('pay_type', 'online_full')
             prof.is_ubd = form.cleaned_data.get('is_ubd', False)
 
             if form.cleaned_data.get('avatar'):
