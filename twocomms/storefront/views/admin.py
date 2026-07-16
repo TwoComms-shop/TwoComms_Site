@@ -405,6 +405,7 @@ def _build_push_notifications_context(request, form=None):
 
 def _build_orders_context(request):
     """Формирует данные для секции заказов."""
+    orders_per_page = 50
     status_filter = request.GET.get('status', 'all')
     payment_filter_raw = request.GET.get('payment', 'all')
     payment_filter = (
@@ -414,7 +415,7 @@ def _build_orders_context(request):
     )
     user_id_filter = request.GET.get('user_id')
 
-    orders_qs = Order.objects.select_related('user').order_by('-created')
+    orders_qs = Order.objects.select_related('user').order_by('-created', '-pk')
 
     if status_filter != 'all':
         orders_qs = orders_qs.filter(status=status_filter)
@@ -449,7 +450,23 @@ def _build_orders_context(request):
         'paid': Order.objects.filter(payment_status='paid').count(),
     }
 
-    orders_page = Paginator(orders_qs, 50).get_page(request.GET.get('page'))
+    page_number = request.GET.get('page')
+    if 'page' not in request.GET:
+        try:
+            edit_order_id = int(request.GET.get('edit_order', ''))
+        except (TypeError, ValueError):
+            edit_order_id = None
+
+        if edit_order_id and edit_order_id > 0:
+            target_order = orders_qs.filter(pk=edit_order_id).values('pk', 'created').first()
+            if target_order:
+                newer_orders = orders_qs.filter(
+                    Q(created__gt=target_order['created'])
+                    | Q(created=target_order['created'], pk__gt=target_order['pk'])
+                ).count()
+                page_number = (newer_orders // orders_per_page) + 1
+
+    orders_page = Paginator(orders_qs, orders_per_page).get_page(page_number)
     selected_page_qs = orders_page.object_list.prefetch_related(
         Prefetch('items', queryset=OrderItem.objects.select_related('product')),
         'custom_print_leads',

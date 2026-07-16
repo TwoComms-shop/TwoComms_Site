@@ -3086,6 +3086,7 @@ function filterOrders(status, payment) {
   
   const currentUrl = new URL(window.location);
   currentUrl.searchParams.set('section', 'orders');
+  currentUrl.searchParams.delete('page');
   
   /* Устанавливаем фильтры только если они не 'all' */
   if (status !== 'all') {

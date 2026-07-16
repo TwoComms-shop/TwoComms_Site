@@ -105,3 +105,41 @@ class FeedAdminTests(TestCase):
             content.index('href="?section=orders"'),
             content.index('href="?section=stats"'),
         )
+
+    def test_order_deep_link_selects_the_page_containing_an_older_order(self):
+        self._create_orders(55)
+        target = Order.objects.get(order_number="PAGE-0000")
+
+        response = self.client.get(
+            "/admin-panel/",
+            {
+                "section": "orders",
+                "status": "new",
+                "payment": "unpaid",
+                "user_id": self.staff.pk,
+                "edit_order": target.pk,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["orders_page"].number, 2)
+        self.assertIn(target.pk, [order.pk for order in response.context["orders"]])
+        self.assertContains(response, f'data-edit-order="{target.pk}"')
+
+    def test_invalid_order_deep_links_fall_back_to_the_first_page(self):
+        self._create_orders(55)
+
+        for edit_order in ("not-an-id", "999999"):
+            with self.subTest(edit_order=edit_order):
+                response = self.client.get(
+                    "/admin-panel/",
+                    {"section": "orders", "edit_order": edit_order},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["orders_page"].number, 1)
+
+    def test_order_filters_reset_the_current_page(self):
+        response = self.client.get("/admin-panel/")
+
+        self.assertContains(response, "currentUrl.searchParams.delete('page');")
