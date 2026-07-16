@@ -185,7 +185,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-004 | `/catalog/` | `catalog.html` | | | [x] PASS |
 | PG-005 | `/catalog/?page=N` | | | | [x] PASS catalog pagination works|
 | PG-006 | `/catalog/page/N/` legacy | 301 | | | [x] PASS 301 |
-| PG-007 | `/catalog/<cat>/` | each **active** category | | **repeat per category** | [x] 3/3 UK checked — **titles FAIL F-001** |
+| PG-007 | `/catalog/<cat>/` | each **active** category | | **repeat per category** | [x] F-001/F-013 resolved; fresh UK/RU/EN 9/9 titles+H1 valid |
 | PG-008 | `/catalog/<cat>/<color>/` | color landings if published | | empty sitemap risk | [x] 4 unique; grammar F-002 fixed; sitemap F-006 fixed `a6c3c39b` |
 | PG-009 | `/catalog/theme/<theme>/` | thematic landings | | | [x] 4/4 PASS HTTP |
 | PG-010 | `/product/<slug>/` | each **published** product base | | **batch all products** | [x] 65/65 UK HTTP+title; H1 mismatches F-004 |
@@ -296,9 +296,9 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 |----|-------|---|---|
 | SEO-001 | Home title unique + brand | P0 | [x] PASS |
 | SEO-002 | Catalog root title ≠ home | P0 | [x] PASS |
-| SEO-003 | Every category title from DB override or good fallback | P0 | [x] CHECKED — **FAIL F-001 truncated** |
+| SEO-003 | Every category title from DB override or good fallback | P0 | [x] F-001 fixed `e2558396`; fresh live 9/9 valid |
 | SEO-004 | Every published product `seo_title` non-empty | P0 | [x] PASS 65/65 UK non-empty; **name mismatches F-004** |
-| SEO-005 | Title length report: list >70 and <20 | P1 | [x] products OK; cats truncated F-001 |
+| SEO-005 | Title length report: list >70 and <20 | P1 | [x] category sample 9/9 is 44–57 chars after F-001 |
 | SEO-006 | Exact duplicate titles across products | P1 | [x] PASS no dups UK |
 | SEO-007 | Variant URL titles reflect color/fit when intended | P1 | [x] PASS sample 20 (F-016) |
 | SEO-008 | No double brand `\| TwoComms \| TwoComms` | P2 | [x] sample PASS |
@@ -308,7 +308,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-012 | Blog titles from DB fields | P1 | [x] PASS blog titles present sample|
 | SEO-013 | Thematic landings titles keyword-aligned | P2 | [x] PASS sample |
 | SEO-014 | Color landings titles if published | P2 | [x] CHECKED — **FAIL F-002 grammar** |
-| SEO-015 | SERP truncation spot-check (copy-paste into SERP simulator) | P2 | [x] WARN cats truncated F-001 (SERP risk)|
+| SEO-015 | SERP truncation spot-check (copy-paste into SERP simulator) | P2 | [x] category titles complete after F-001; F-013 resolved |
 
 ## 2.2 Meta descriptions & social
 
@@ -327,7 +327,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | SEO-030 | One H1 per page type | P0 | [x] PASS one H1 sample types|
-| SEO-031 | H1 ↔ title intent match | P1 | [x] **FAIL samples** F-004 title≠H1|
+| SEO-031 | H1 ↔ title intent match | P1 | [x] F-004 products fixed; F-013 categories 9/9 intent-aligned |
 | SEO-032 | Category SEO intro/blocks render, not empty shells | P1 | [x] category pages render SEO blocks|
 | SEO-033 | Product `seo_bottom_html` valid markup | P2 | [x] WARN not fully scraped bottom HTML|
 | SEO-034 | FAQ visible ↔ FAQ schema | P1 | [x] FAQ pages OK; schema partial|
@@ -399,7 +399,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| SEO-090 | Category title templates not cut mid-phrase | P1 | [x] **FAIL F-001** truncated mid-phrase|
+| SEO-090 | Category title templates not cut mid-phrase | P1 | [x] F-001 fixed `e2558396`; connector-aware trimming tested |
 | SEO-091 | Color filter landings vs `?color=` duplicates | P1 | [x] WARN color query vs path landings|
 | SEO-092 | Theme landings not captured as cat_slug 404 | P0 | [x] PASS theme URLs 200|
 | SEO-093 | Empty category thin content policy | P2 | [x] N/A empty cats not observed|
@@ -849,9 +849,9 @@ Mark each: loads 200 / no throw on page.
 |----|--------------|---|---|
 | DB-001 | Published products empty seo_title | P0 | [x] PASS 0 empty / 65 |
 | DB-002 | Empty seo_description | P1 | [x] PASS 0 empty |
-| DB-003 | Title length outliers | P1 | [x] products OK; **cats truncated F-023/F-001** |
+| DB-003 | Title length outliers | P1 | [x] F-001/F-023 category truncation fixed; fresh live 9/9 valid |
 | DB-004 | Duplicate seo_title | P1 | [x] PASS 0 dups products |
-| DB-005 | Categories missing SEO | P1 | [x] filled but **truncated F-001** |
+| DB-005 | Categories missing SEO | P1 | [x] filled; F-001 truncation fixed, F-013 resolved |
 | DB-006 | Translation null rates ru/en | P1 | [x] WARN translation rates partial|
 | DB-007 | UTMSession last 24h after canary | P0 | [x] 30d=140 sessions (first_seen) |
 | DB-008 | Distinct utm_source dirty list | P1 | [x] **F-057** final production normalization diff empty |

@@ -127,7 +127,7 @@
 | [x] | **F-008** | P2 | Meta description too long | **FIXED `7fa568b1`**; 12 localized live pages 120–160 chars; §F-008 |
 | [x] | **F-010** | P2 | debug endpoints login not 404 | **FIXED `efd7f192`**; server 7/7, live 21/21 hard 404; §F-010 |
 | [x] | **F-011** | P2 | TikTok ttq.load not in HTML | **FIXED `c0b324c3`**; deferred bootstrap verified, paid-low live asset matrix PASS; §F-011 |
-| [ ] | **F-013** | P2 | Category title vs H1 strategy | §F-013 |
+| [x] | **F-013** | P2 | Category title vs H1 strategy | **RESOLVED by F-001 `e2558396`**; fresh live 9/9 aligned, complete title/H1 pairs; §F-013 |
 | [ ] | **F-028** | P2 | RU/EN PDP naming | §F-028 |
 | [ ] | **F-035** | P2 | CSP violations | §F-035 |
 | [ ] | **F-036** | P2 | Telegram RemoteDisconnected | §F-036 |
@@ -201,7 +201,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-010** | P2 | FIXED | DONE | `efd7f192`: seven internal routes absent when DEBUG=False; live 21/21 hard 404 |
 | [x] **F-011** | P2 | FIXED | DONE | `c0b324c3`: immediate paid init; server 3/3, intercepted live asset matrix 3/3 |
 | [x] **F-012** | P2 | INFO | no | ViewContent JS-only (expected architecture) |
-| [ ] **F-013** | P2 | OPEN | YES | Category title vs H1 length strategy inconsistent |
+| [x] **F-013** | P2 | FIXED | DONE | resolved by F-001 `e2558396`; distinct title/H1 fields are intentional, live 9/9 valid |
 | [ ] **F-014** | P3 | OPEN | YES | Sitemap lastmod clustered 2026-06-11 |
 | [x] **F-015** | P3 | FIXED | DONE | `169e6032`: manifest.webmanifest aliases the canonical manifest; production 200 |
 | [x] **F-016** | P3 | PASS | no | Variant URL titles work |
@@ -313,12 +313,12 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 OPEN — 7
+### P2 OPEN — 6
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
 - [x] **F-011** — fixed `c0b324c3`; deferred owner confirmed and paid-low/organic-low/paid-normal matrix passed
-- [ ] **F-013** — Category title vs H1 length strategy inconsistent
+- [x] **F-013** — resolved by F-001 `e2558396`; fresh live 9/9 complete and intent-aligned
 - [ ] **F-028** — RU/EN PDP naming strategy vs UK mismatch
 - [ ] **F-035** — CSP violations in stderr
 - [ ] **F-036** — Telegram admin RemoteDisconnected
@@ -959,11 +959,26 @@ Sample PDPs: no `ViewContent` / `view_item` string in HTML; product-detail.js is
 
 ### F-013 — Category titles vs H1 length strategy inconsistent
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [x] RESOLVED by F-001 (`e2558396`) · **Severity:** P2 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P2** · Area: **SEO** · Checklist: SEO-031
+- [x] **Resolved** · Severity: **P2** · Area: **SEO** · Checklist: SEO-003, SEO-005, SEO-031, SEO-090
 
-Related to F-001: H1s are long complete sentences; titles are shorter and cut. May be intentional length limit with bad truncation.
+**Historical observation 09.07.2026:** H1s were complete while category titles
+were shorter and cut mid-phrase. This was not a separate title/H1 strategy
+defect: it was the same damaged DB title data tracked and fixed as F-001.
+
+**Resolution verification 16.07.2026:** `e2558396` repaired the three exact
+damaged UK/base title values and added connector-aware word-boundary trimming.
+Fresh live parsing of `tshirts`, `hoodie` and `long-sleeve` across UK/RU/EN
+returned **9/9 HTTP 200**, one H1 per page, complete localized titles of
+**44–57 chars** and complete H1s of **45–73 chars**. All pairs share category
+intent; RU/EN titles intentionally use transactional `купить`/`buy` wording
+while visible H1 copy is descriptive.
+
+The architecture explicitly supports distinct fields: `Category.seo_title`
+feeds `<title>` and `Category.seo_h1` feeds the visible H1. Existing
+`CategorySeoOverridePhase21Tests` proves both independent overrides render
+exactly. F-013 therefore closes without new code or DB mutation.
 
 ---
 
