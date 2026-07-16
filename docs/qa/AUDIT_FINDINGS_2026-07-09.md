@@ -130,7 +130,7 @@
 | [x] | **F-013** | P2 | Category title vs H1 strategy | **RESOLVED by F-001 `e2558396`**; fresh live 9/9 aligned, complete title/H1 pairs; §F-013 |
 | [o] | **F-028** | P2 | RU/EN PDP naming | **PARTIAL `da910c46`**; locale runtime fixed, live 39/39 aligned; owner-approved cross-locale naming policy remains; §F-028 |
 | [o] | **F-035** | P2 | CSP violations | **PARTIAL `341d42a9`**; telemetry fixed and production-verified; whether any current allowlist residual exists awaits >=24h observation from 2026-07-16 16:07:50 UTC; §F-035 |
-| [ ] | **F-036** | P2 | Telegram RemoteDisconnected | §F-036 |
+| [o] | **F-036** | P2 | Telegram RemoteDisconnected | **PARTIAL `48d1c9fe`**; bounded transient retry and truthful caller state deployed; natural delivery observation remains; §F-036 |
 | [ ] | **F-048** | P2 | fbp without internal UTM | §F-048 |
 | [ ] | **F-051** | P2 | checkout/capture empty 200 | §F-051; PLAN_VS W3-11 |
 | [ ] | **F-075** | P2 | CheckoutCapture.converted 0/4 | §F-075; mono path |
@@ -224,7 +224,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-033** | P0 | FIXED | DONE | `34275e28`: production order/session attribution canary verified |
 | [x] **F-034** | P3 | PASS | no | Variants sample + recs links OK |
 | [o] **F-035** | P2 | PARTIAL | YES | `341d42a9`: receiver/logging fixed; current CSP policy breakage remains unproven pending >=24h observation |
-| [ ] **F-036** | P2 | OPEN | YES | Telegram admin RemoteDisconnected |
+| [o] **F-036** | P2 | PARTIAL | YES | `48d1c9fe`: retry/partial delivery deployed; natural order/admin notification remains to be observed |
 | [x] **F-037** | P2 | INFO | no | Home IP exclusion (owner can toggle; retest F-049) |
 | [x] **F-038** | P2 | REVISED | no | sessionid delay mainly under exclusion; non-excluded OK |
 | [x] **F-039** | P2 | REVISED | no | track-event stored:false under exclusion; stored:true after unexclude |
@@ -313,7 +313,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 STATUS — 2 PARTIAL / 7 OPEN
+### P2 STATUS — 3 PARTIAL / 6 OPEN
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
@@ -321,7 +321,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-013** — resolved by F-001 `e2558396`; fresh live 9/9 complete and intent-aligned
 - [o] **F-028** — `da910c46` fixed runtime locale propagation (live 39/39); owner-approved cross-locale naming policy remains
 - [o] **F-035** — `341d42a9` fixed and production-verified telemetry; observe real reports for >=24h from 2026-07-16 16:07:50 UTC before any policy change
-- [ ] **F-036** — Telegram admin RemoteDisconnected
+- [o] **F-036** — `48d1c9fe` retries transient Telegram text failures and removes false success state; natural delivery observation remains
 - [ ] **F-048** — Orders have fbp tracking without internal UTM
 - [ ] **F-051** — checkout/capture empty returns 200 ok
 - [ ] **F-075** — CheckoutCapture.converted stuck false
@@ -1798,15 +1798,43 @@ configuration.
 
 ### F-036 — Telegram admin notify intermittent disconnect
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [o] PARTIAL (`48d1c9fe`) · **Severity:** P2 · **Fix required:** YES
 
-- [ ] **Open** · Severity: **P2** · Area: **TECH**
+- [o] **Partial** · Severity: **P2** · Area: **TECH**
 
 ```text
 Exception in send_message to admin ... RemoteDisconnected('Remote end closed connection without response')
 ```
 
 Can cause “Telegram alert missing” perception without site downtime.
+
+**Production baseline (2026-07-16):** the historical signature appeared 27
+times across available rotations and 17 times in the current `stderr.log` (12
+SSL/EOF, four `RemoteDisconnected`, one other transport failure). The order bot
+and two delivery targets are configured; a read-only Telegram `getMe` probe
+returned HTTP 200 with `ok=true`.
+
+**Deployed partial fix (`48d1c9fe`, 2026-07-16):** Telegram text delivery now
+uses at most three attempts for connection/timeouts, HTTP 429 and HTTP 5xx.
+Telegram `ok:false` and other 4xx responses stop immediately. One failed target
+does not block the next target, partial delivery is reported, and retry logs
+contain only event/class/status metadata. File/media uploads remain
+single-attempt because replaying stream state is a separate problem. Task,
+post-payment and contact-manager callers no longer record or report delivery as
+successful after a `False` result.
+
+Fresh local and production verification passed **36/36** focused tests, Django
+checks and scoped compilation. Passenger was restarted at the deployed SHA;
+the storefront returned HTTP 200 and the post-deploy `getMe` probe returned
+HTTP 200 with `ok=true`. Immediately after deployment there were 0 new
+structured retry events and the historical current-log count remained 17; no
+synthetic Telegram message was sent.
+
+**Residual:** keep `[o] PARTIAL` until a natural order/admin notification proves
+truthful successful delivery or recovery. A retry can duplicate a message when
+Telegram accepted the first request but its response was lost because the API
+has no idempotency key. Daemon-thread process-exit loss and a durable outbox are
+separate follow-up scope.
 
 ---
 
@@ -2986,3 +3014,4 @@ tests. Do not run a blind `ALTER TABLE` during live checkout traffic.
 | 2026-07-14 | F-044/F-074 fixed in `394a247c`: durable guest session before COD Order persistence; local 93/93, server 2/2, production MariaDB cookie/order/UTM rollback canary and zero-row cleanup passed. Test-only Telegram credentials were isolated in `bb217bd9` before server verification |
 | 2026-07-14 | F-068/F-073 closed: historical writer root fixed in `7936ab6e`, regression `30808819`; local 94/94, server 1/1 and production prepay Order/UTM/tracking/20,000-minor-unit rollback canary passed; DB and session-cache cleanup 0, historical 19/19 unchanged |
 | 2026-07-14 | F-084 fixed in `069f4efa`: all AI attribution writers share canonical normalization; local/server 75/75, live WSGI canary and guarded reconciliation updated 122 UTM + 158 first-touch rows, left aliases at 0 and `chatgpt/ai` at 161; all 280 touched rows matched the rollback snapshot outside intended fields |
+| 2026-07-16 | F-036 partial in `48d1c9fe`: bounded transient Telegram text retries and truthful caller state; local/server 36/36, check/compile/getMe/storefront passed; no synthetic message, natural delivery evidence remains |

@@ -94,15 +94,15 @@ Evidence (2026-07-16): final focused GREEN passed 36/36 tests, including the per
 **Files:**
 - Modify: `docs/superpowers/plans/2026-07-16-f036-telegram-delivery-reliability.md`
 
-- [ ] **Step 1: Complete spec and code-quality review**
+- [x] **Step 1: Complete spec and code-quality review**
 
 Review duplicate-delivery tradeoffs, retry classification/bounds, target isolation, sanitized logs, daemon-thread residual, and all false-success state paths. Confirm no bot token/chat ID/message text enters new logs or tests.
 
-- [ ] **Step 2: Commit, push, deploy, and restart Passenger**
+- [x] **Step 2: Commit, push, deploy, and restart Passenger**
 
 Commit only the plan, focused tests, notifier, tasks, and two critical storefront callers. Push/pull `main`, run focused server tests/check/compile, and `touch tmp/restart.txt`. No migration/static/DB mutation is required.
 
-- [ ] **Step 3: Run safe production checks**
+- [x] **Step 3: Run safe production checks**
 
 Run Telegram `getMe` and report only HTTP/`ok` booleans. Inspect logger/code SHA and pre/post error counters without exposing IDs or messages. Do not send a synthetic admin/customer message.
 
@@ -117,11 +117,11 @@ Keep F-036 `[o] PARTIAL` until natural order/admin traffic proves either `retry_
 - Modify: `TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`
 - Modify: `docs/superpowers/plans/2026-07-16-f036-telegram-delivery-reliability.md`
 
-- [ ] **Step 1: Preserve historical evidence and corrected scope**
+- [x] **Step 1: Preserve historical evidence and corrected scope**
 
 Retain the original `RemoteDisconnected` sample and add sanitized current counts/config/getMe evidence. State explicitly that F-036 concerns notification reliability, not site uptime.
 
-- [ ] **Step 2: Mark status from natural production evidence**
+- [x] **Step 2: Mark status from natural production evidence**
 
 Use `[o] PARTIAL` after code/server verification while natural delivery observation is pending. Use `[x] FIXED/DONE` only after a real notification demonstrates truthful success/recovery and no remaining finding-specific defect.
 
