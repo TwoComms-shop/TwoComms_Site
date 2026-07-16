@@ -423,6 +423,21 @@ AI_REFERRER_DOMAINS = {
     'poe.com': 'poe',
 }
 
+CLICK_ID_ATTRIBUTION = (
+    ('fbclid', 'facebook', 'paid_social'),
+    ('gclid', 'google', 'cpc'),
+    ('ttclid', 'tiktok', 'paid_social'),
+)
+
+
+def infer_click_id_attribution(payload: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
+    """Infer canonical acquisition fields when a landing has only a click ID."""
+    values = payload or {}
+    for field, source, medium in CLICK_ID_ATTRIBUTION:
+        if str(values.get(field) or '').strip():
+            return source, medium
+    return None, None
+
 
 def normalize_utm_source(value: Optional[str]) -> Optional[str]:
     """
@@ -493,6 +508,8 @@ def normalize_first_touch_attribution(snapshot: Optional[dict]) -> dict:
         normalized.get('utm_medium'),
         referrer=normalized.get('referrer'),
     )
+    if not source:
+        source, medium = infer_click_id_attribution(normalized)
     if source:
         normalized['utm_source'] = source
     if medium:

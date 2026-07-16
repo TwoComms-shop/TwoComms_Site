@@ -21,6 +21,7 @@ from .utm_utils import (
     sanitize_utm_param,
     is_bot_user_agent,
     normalize_utm_attribution,
+    infer_click_id_attribution,
     detect_ai_source,
 )
 
@@ -110,6 +111,15 @@ class UTMTrackingMiddleware(MiddlewareMixin):
                 value = request.GET.get(param, '').strip()
                 if value:
                     platform_data[param] = value[:255]
+
+            # F-032: click IDs are durable paid-attribution evidence even when
+            # an ad landing omitted explicit utm_source/utm_medium parameters.
+            if not has_utm:
+                source, medium = infer_click_id_attribution(platform_data)
+                if source:
+                    utm_data['utm_source'] = source
+                    utm_data['utm_medium'] = medium
+                    has_utm = True
 
             # Cookies для Meta
             fbc = request.COOKIES.get('_fbc', '')

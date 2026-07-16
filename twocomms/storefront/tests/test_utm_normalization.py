@@ -7,6 +7,7 @@ from storefront.models import SiteSession, UTMSession
 from storefront.utm_utils import (
     normalize_utm_source,
     normalize_utm_attribution,
+    infer_click_id_attribution,
     detect_ai_source,
     AI_SOURCES,
 )
@@ -37,6 +38,19 @@ class NormalizeUtmSourceTests(TestCase):
         self.assertIn(normalize_utm_source('poe.com'), AI_SOURCES)
         self.assertEqual(normalize_utm_attribution('you.com', None), ('you', 'ai'))
         self.assertEqual(normalize_utm_attribution('poe.com', None), ('poe', 'ai'))
+
+    def test_click_ids_map_to_canonical_source_and_medium(self):
+        cases = {
+            'fbclid': ('facebook', 'paid_social'),
+            'gclid': ('google', 'cpc'),
+            'ttclid': ('tiktok', 'paid_social'),
+        }
+        for click_field, expected in cases.items():
+            with self.subTest(click_field=click_field):
+                self.assertEqual(
+                    infer_click_id_attribution({click_field: 'click-id'}),
+                    expected,
+                )
 
 
 class DetectAiSourceTests(TestCase):
@@ -98,3 +112,44 @@ class MiddlewareIntegrationTests(TestCase):
         site_session = SiteSession.objects.get()
         self.assertEqual(site_session.first_touch_data['utm_source'], 'chatgpt')
         self.assertEqual(site_session.first_touch_data['utm_medium'], 'ai')
+
+    def test_click_id_only_visit_creates_durable_attribution(self):
+        cases = {
+            'fbclid': ('facebook', 'paid_social'),
+            'gclid': ('google', 'cpc'),
+            'ttclid': ('tiktok', 'paid_social'),
+        }
+
+        for index, (click_field, expected) in enumerate(cases.items(), start=1):
+            with self.subTest(click_field=click_field):
+                client = Client(
+                    HTTP_USER_AGENT='Mozilla/5.0 (X11; Linux x86_64)'
+                )
+                client.get(f'/?{click_field}=click-{index}')
+
+                utm_session = UTMSession.objects.get(
+                    **{click_field: f'click-{index}'}
+                )
+                self.assertEqual(
+                    (utm_session.utm_source, utm_session.utm_medium),
+                    expected,
+                )
+                site_session = SiteSession.objects.get(
+                    session_key=utm_session.session_key
+                )
+                self.assertEqual(
+                    (
+                        site_session.first_touch_data['utm_source'],
+                        site_session.first_touch_data['utm_medium'],
+                    ),
+                    expected,
+                )
+
+    def test_explicit_utm_wins_over_click_id_inference(self):
+        client = Client(HTTP_USER_AGENT='Mozilla/5.0 (X11; Linux x86_64)')
+
+        client.get('/?utm_source=newsletter&utm_medium=email&fbclid=click-explicit')
+
+        utm_session = UTMSession.objects.get(fbclid='click-explicit')
+        self.assertEqual(utm_session.utm_source, 'newsletter')
+        self.assertEqual(utm_session.utm_medium, 'email')
