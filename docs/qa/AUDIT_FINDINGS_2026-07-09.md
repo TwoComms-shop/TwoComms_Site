@@ -27,7 +27,7 @@
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 11 | 21 |
+| P1 | 10 | 22 |
 | P2 | 14 | 9 |
 | P3 | 1 | 34 |
 
@@ -110,7 +110,7 @@
 | [ ] | **F-007** | P1 | HTTP 429 burst crawl | §F-007 |
 | [ ] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | §F-018 |
 | [x] | **F-043** | P1 | /help-center/ 404 | **FIXED `169e6032`**; production 301 to `/dopomoga/`; §F-043 |
-| [ ] | **F-050** | P1 | NP Kyiv Latin 502 | §F-050 |
+| [x] | **F-050** | P1 | NP Kyiv Latin 502 | **FIXED `75b1f6fb`**; production Kyiv/Kiev/Київ 200; §F-050 |
 | [ ] | **F-059** | P1 | ProductImage alt empty | §F-059 |
 | [ ] | **F-087** | P1 | ubd_docs public 200 | §F-087; PLAN_VS W1-11 |
 | [ ] | **F-088** | P1 | TG webhook secret empty | §F-088; PLAN_VS W3-9 |
@@ -238,7 +238,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-047** | P3 | PASS | no | Sitemap 489/489 HTTP 200 |
 | [ ] **F-048** | P2 | OPEN | YES | Orders have fbp tracking without internal UTM |
 | [x] **F-049** | P3 | PASS | no | Home unexclude canary PASS |
-| [ ] **F-050** | P1 | OPEN | YES | NP city Latin Kyiv 502 / Київ 200 |
+| [x] **F-050** | P1 | FIXED | DONE | `75b1f6fb`: Latin aliases share canonical NP query/cache; live 3/3 200 |
 | [ ] **F-051** | P2 | OPEN | YES | checkout/capture empty returns 200 ok |
 | [x] **F-052** | P3 | PASS | no | Mono validates missing city |
 | [x] **F-053** | P3 | PASS | no | Home links 42/42 200 |
@@ -302,7 +302,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-087** — ubd_docs publicly HTTP 200
 - [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
 
-### P1 OPEN (continued) — 8
+### P1 OPEN (continued) — 7
 - [ ] **F-007** — HTTP 429 under burst crawl
 - [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
 - [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
@@ -310,7 +310,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-031** — MySQL server has gone away (reconf F-080)
 - [ ] **F-032** — UserAction rarely linked to UTMSession
 - [x] **F-043** — fixed `169e6032`; production 301 to `/dopomoga/`
-- [ ] **F-050** — NP city Latin Kyiv 502 / Київ 200
+- [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [ ] **F-057** — All-time dirty utm_source inventory
 
 ### P2 OPEN — 11
@@ -1840,14 +1840,14 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ### F-050 — Nova Poshta city search: Latin `Kyiv` → 502, Ukrainian `Київ` → 200
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`75b1f6fb`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **CART** · Checklist: CART-024
+- [x] **Fixed** · Severity: **P1** · Area: **CART** · Checklist: CART-024
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED |
-| Status (C) | |
+| Status (C) | FIXED `75b1f6fb`; local/server tests and production 3/3 live queries, 2026-07-16 |
 
 `GET /cart/delivery/cities/?q=Kyiv` → **502** `{"ok":false,"error":"Не вдалося отримати список міст…"}`  
 `GET /cart/delivery/cities/?q=Київ` → **200** with items.
@@ -1855,6 +1855,12 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 **Impact:** users typing Latin city names may hit hard API failure during checkout. Ads traffic often mixed UA/EN keyboards.
 
 **Risk of fix:** medium (NP API params / transliteration layer).
+
+**Resolution:** common `Kyiv`/`Kiev` spellings map to the canonical `Київ`
+Nova Poshta query and share the same cache identity as the Cyrillic form. This
+prevents both the 502 and duplicate upstream cache producers. The focused class
+passed 9/9 locally and on production; live `Kyiv`, `Kiev`, and `Київ` requests
+all returned 200 with `ok:true` and settlement items.
 
 ---
 
