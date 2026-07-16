@@ -20,6 +20,8 @@ class BackfillFbcOrderAttributionCommandTests(TestCase):
         'expect_no_key',
         'expect_invalid',
         'expect_conflicting',
+        'expect_create_sessions',
+        'expect_reuse_sessions',
     )
 
     def _fbc(self, created_at, click_id='meta-click'):
@@ -80,7 +82,20 @@ class BackfillFbcOrderAttributionCommandTests(TestCase):
         fbc = overrides.pop('fbc', self._fbc(created - timedelta(days=2), click_id))
         return self._order(key=key, fbc=fbc, created=created, **overrides)
 
-    def _apply(self, *, groups, orders, stale=0, no_key=0, invalid=0, conflicting=0):
+    def _apply(
+        self,
+        *,
+        groups,
+        orders,
+        stale=0,
+        no_key=0,
+        invalid=0,
+        conflicting=0,
+        create_sessions=None,
+        reuse_sessions=0,
+    ):
+        if create_sessions is None:
+            create_sessions = groups
         output = StringIO()
         call_command(
             'backfill_fbc_order_attribution',
@@ -91,6 +106,8 @@ class BackfillFbcOrderAttributionCommandTests(TestCase):
             expect_no_key=no_key,
             expect_invalid=invalid,
             expect_conflicting=conflicting,
+            expect_create_sessions=create_sessions,
+            expect_reuse_sessions=reuse_sessions,
             stdout=output,
         )
         return output.getvalue()
@@ -133,6 +150,8 @@ class BackfillFbcOrderAttributionCommandTests(TestCase):
                 'expect_no_key': 0,
                 'expect_invalid': 0,
                 'expect_conflicting': 0,
+                'expect_create_sessions': 1,
+                'expect_reuse_sessions': 0,
                 'stdout': StringIO(),
             }
             kwargs.pop(missing_guard)
@@ -229,6 +248,53 @@ class BackfillFbcOrderAttributionCommandTests(TestCase):
         self.assertIsNone(first.utm_session_id)
         self.assertIsNone(second.utm_session_id)
 
+    def test_invalid_or_stale_member_poisons_every_resolvable_key_group(self):
+        now = timezone.now()
+        stale_key = '7' * 32
+        future_key = '8' * 32
+        malformed_key = '9' * 32
+        mismatch_order_key = 'a' * 32
+        mismatch_external_key = 'b' * 32
+        fresh_orders = [
+            self._fresh_order(key=stale_key, click_id='fresh-stale-peer'),
+            self._fresh_order(key=future_key, click_id='fresh-future-peer'),
+            self._fresh_order(key=malformed_key, click_id='fresh-malformed-peer'),
+            self._fresh_order(key=mismatch_order_key, click_id='fresh-order-key-peer'),
+            self._fresh_order(key=mismatch_external_key, click_id='fresh-external-key-peer'),
+        ]
+        self._order(
+            key=stale_key,
+            fbc=self._fbc(now - timedelta(days=8), 'stale-click'),
+            created=now,
+        )
+        self._order(
+            key=future_key,
+            fbc=self._fbc(now + timedelta(minutes=10), 'future-click'),
+            created=now,
+        )
+        self._order(key=malformed_key, fbc='fb.1.bad.click', created=now)
+        self._fresh_order(
+            key=mismatch_order_key,
+            external_key=mismatch_external_key,
+            click_id='mismatched-key-click',
+        )
+
+        report = self._apply(
+            groups=0,
+            orders=0,
+            stale=1,
+            invalid=3,
+            conflicting=5,
+        )
+
+        self.assertIn('stale=1', report)
+        self.assertIn('invalid=3', report)
+        self.assertIn('conflicting=5', report)
+        for order in fresh_orders:
+            order.refresh_from_db()
+            self.assertIsNone(order.utm_session_id)
+        self.assertFalse(UTMSession.objects.exists())
+
     def test_residual_categories_cover_stale_future_malformed_fbp_and_keys(self):
         now = timezone.now()
         stale = self._order(
@@ -310,7 +376,13 @@ class BackfillFbcOrderAttributionCommandTests(TestCase):
             utm_medium='email',
         )
 
-        report = self._apply(groups=1, orders=1, conflicting=1)
+        report = self._apply(
+            groups=1,
+            orders=1,
+            conflicting=1,
+            create_sessions=0,
+            reuse_sessions=1,
+        )
 
         reusable.refresh_from_db()
         conflict.refresh_from_db()
@@ -322,6 +394,73 @@ class BackfillFbcOrderAttributionCommandTests(TestCase):
         self.assertEqual(reusable_utm.utm_source, 'facebook')
         self.assertIsNone(conflict.utm_session_id)
         self.assertEqual(conflicting_utm.utm_source, 'newsletter')
+
+    def test_create_to_reuse_drift_aborts_before_mutating_existing_session(self):
+        key = 'c' * 32
+        order = self._fresh_order(key=key, click_id='guarded-click')
+        existing = UTMSession.objects.create(session_key=key)
+        original_timestamps = (existing.first_seen, existing.last_seen)
+
+        with self.assertRaises(CommandError):
+            self._apply(
+                groups=1,
+                orders=1,
+                create_sessions=1,
+                reuse_sessions=0,
+            )
+
+        order.refresh_from_db()
+        existing.refresh_from_db()
+        self.assertIsNone(order.utm_session_id)
+        self.assertIsNone(existing.utm_source)
+        self.assertIsNone(existing.fbc)
+        self.assertEqual((existing.first_seen, existing.last_seen), original_timestamps)
+
+    def test_reuse_is_blocked_when_out_of_scope_order_already_uses_session(self):
+        key = 'd' * 32
+        existing = UTMSession.objects.create(session_key=key)
+        candidate = self._fresh_order(key=key, click_id='candidate-click')
+        outside = self._fresh_order(
+            key='e' * 32,
+            source='manual',
+            utm_session=existing,
+            utm_source='manual-source',
+        )
+
+        report = self._apply(groups=0, orders=0, conflicting=1)
+
+        candidate.refresh_from_db()
+        outside.refresh_from_db()
+        existing.refresh_from_db()
+        self.assertIn('conflicting=1', report)
+        self.assertIsNone(candidate.utm_session_id)
+        self.assertEqual(outside.utm_session_id, existing.pk)
+        self.assertEqual(outside.utm_source, 'manual-source')
+        self.assertIsNone(existing.utm_source)
+
+    def test_reused_session_preserves_existing_timestamps(self):
+        key = 'f' * 32
+        order = self._fresh_order(key=key, click_id='reuse-timestamp-click')
+        existing = UTMSession.objects.create(session_key=key)
+        first_seen = timezone.now() - timedelta(days=30)
+        last_seen = timezone.now() - timedelta(days=20)
+        UTMSession.objects.filter(pk=existing.pk).update(
+            first_seen=first_seen,
+            last_seen=last_seen,
+        )
+
+        self._apply(
+            groups=1,
+            orders=1,
+            create_sessions=0,
+            reuse_sessions=1,
+        )
+
+        order.refresh_from_db()
+        existing.refresh_from_db()
+        self.assertEqual(order.utm_session_id, existing.pk)
+        self.assertEqual(existing.first_seen, first_seen)
+        self.assertEqual(existing.last_seen, last_seen)
 
     def test_site_session_and_user_action_linkage_conflicts_skip_groups(self):
         site_conflict_key = 's' * 32

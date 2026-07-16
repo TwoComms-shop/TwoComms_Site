@@ -42,6 +42,8 @@ GUARD_FIELDS = (
     ('expect_no_key', 'no_key'),
     ('expect_invalid', 'invalid'),
     ('expect_conflicting', 'conflicting'),
+    ('expect_create_sessions', 'create_sessions'),
+    ('expect_reuse_sessions', 'reuse_sessions'),
 )
 
 
@@ -55,21 +57,28 @@ def _tracking(order):
     return tracking if isinstance(tracking, dict) else {}
 
 
-def _resolve_session_key(order, tracking):
+def _session_key_evidence(order, tracking):
     order_key = order.session_key
-    if order_key and not _valid_session_key(order_key):
-        return None, True
+    valid_keys = set()
+    invalid = False
+    if order_key:
+        if _valid_session_key(order_key):
+            valid_keys.add(order_key)
+        else:
+            invalid = True
 
     external_id = tracking.get('external_id')
-    external_key = None
     if isinstance(external_id, str) and external_id.startswith('session:'):
         external_key = external_id[len('session:'):]
-        if not _valid_session_key(external_key):
-            return None, True
+        if _valid_session_key(external_key):
+            valid_keys.add(external_key)
+        else:
+            invalid = True
 
-    if order_key and external_key and order_key != external_key:
-        return None, True
-    return order_key or external_key, False
+    if len(valid_keys) > 1:
+        invalid = True
+    resolved = next(iter(valid_keys)) if len(valid_keys) == 1 and not invalid else None
+    return resolved, valid_keys, invalid
 
 
 def _base_orders(*, lock):
@@ -138,13 +147,16 @@ def _collect_plan(*, lock=False):
     report['scanned'] = len(orders)
     window = timedelta(days=settings.META_FBC_ATTRIBUTION_WINDOW_DAYS)
     grouped = defaultdict(list)
+    poisoned_keys = set()
 
     for order in orders:
         tracking = _tracking(order)
+        key, evidence_keys, invalid_key = _session_key_evidence(order, tracking)
         fbc = tracking.get('fbc')
         parsed = parse_fbc(fbc)
         if parsed is None:
             report['invalid'] += 1
+            poisoned_keys.update(evidence_keys)
             continue
 
         click_time = datetime.fromtimestamp(
@@ -156,15 +168,17 @@ def _collect_plan(*, lock=False):
         age = order.created - click_time
         if age < -CLOCK_SKEW:
             report['invalid'] += 1
+            poisoned_keys.update(evidence_keys)
             continue
         if age > window:
             report['stale'] += 1
+            poisoned_keys.update(evidence_keys)
             continue
 
         report['eligible'] += 1
-        key, invalid_key = _resolve_session_key(order, tracking)
         if invalid_key:
             report['invalid'] += 1
+            poisoned_keys.update(evidence_keys)
             continue
         if key is None:
             report['no_key'] += 1
@@ -224,6 +238,17 @@ def _collect_plan(*, lock=False):
         action_queryset = action_queryset.select_for_update()
     actions = list(action_queryset)
 
+    linked_order_queryset = Order.objects.filter(utm_session_id__in=utm_ids).only(
+        'id',
+        'utm_session',
+    ).order_by('pk')
+    if lock:
+        linked_order_queryset = linked_order_queryset.select_for_update()
+    used_utm_ids = {
+        linked_order.utm_session_id
+        for linked_order in linked_order_queryset
+    }
+
     plan = []
     for key in sorted(grouped):
         group = grouped[key]
@@ -233,9 +258,14 @@ def _collect_plan(*, lock=False):
         existing_utm = matching_utms[0] if len(matching_utms) == 1 else None
         group_order_ids = {item['order'].pk for item in group}
         conflict = (
-            any(item['raw_conflict'] for item in group)
+            key in poisoned_keys
+            or any(item['raw_conflict'] for item in group)
             or len(evidence) != 1
             or len(matching_utms) > 1
+            or (
+                existing_utm is not None
+                and existing_utm.pk in used_utm_ids
+            )
         )
         if not conflict and existing_utm is not None:
             fbc, fbclid = next(iter(evidence))
@@ -312,20 +342,24 @@ def _upsert_utm_session(item):
     if created:
         utm_session = UTMSession.objects.create(session_key=item['key'])
 
-    UTMSession.objects.filter(pk=utm_session.pk).update(
-        session_id=getattr(item['site_session'], 'pk', None),
-        utm_source='facebook',
-        utm_medium='paid_social',
-        utm_campaign=None,
-        utm_content=None,
-        utm_term=None,
-        fbc=item['fbc'],
-        fbclid=item['fbclid'],
-        gclid=None,
-        ttclid=None,
-        first_seen=item['click_time'],
-        last_seen=item['click_time'],
-    )
+    values = {
+        'session_id': getattr(item['site_session'], 'pk', None),
+        'utm_source': 'facebook',
+        'utm_medium': 'paid_social',
+        'utm_campaign': None,
+        'utm_content': None,
+        'utm_term': None,
+        'fbc': item['fbc'],
+        'fbclid': item['fbclid'],
+        'gclid': None,
+        'ttclid': None,
+    }
+    if created:
+        values.update(
+            first_seen=item['click_time'],
+            last_seen=item['click_time'],
+        )
+    UTMSession.objects.filter(pk=utm_session.pk).update(**values)
     utm_session.refresh_from_db()
     return utm_session, created
 

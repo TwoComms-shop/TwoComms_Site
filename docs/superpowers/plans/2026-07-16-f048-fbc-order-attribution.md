@@ -78,13 +78,15 @@ Scan only web Orders with no UTM FK and no raw UTM fields. Require valid fresh F
 
 - [x] **Step 3: Apply atomically with exact guards**
 
-Require `--expect-groups`, `--expect-orders`, and all residual-category counts before `--apply`. Lock candidate Orders and matching UTMSessions, rescan, create at most one UTMSession per safe key, set `facebook/paid_social`, validated FBC/fbclid, evidence-based `first_seen/last_seen`, and link every safe Order while copying five raw UTM fields. Never mutate `Order.session_key`, `payment_payload`, SiteSession, UserAction, or create events. Any drift/conflict rolls back the entire apply.
+Require `--expect-groups`, `--expect-orders`, all residual-category counts, `--expect-create-sessions`, and `--expect-reuse-sessions` before `--apply`. Lock candidate Orders and matching UTMSessions, rescan, create at most one UTMSession per safe key, set `facebook/paid_social`, validated FBC/fbclid, evidence-based `first_seen/last_seen` on newly created sessions, and link every safe Order while copying five raw UTM fields. Reused sessions preserve their existing timestamps. Never mutate `Order.session_key`, `payment_payload`, SiteSession, UserAction, or create events. Any drift/conflict rolls back the entire apply.
 
 - [x] **Step 4: Run command tests and full attribution suite**
 
 Run the new command tests plus normalization, order attribution, existing click-ID backfill, and existing Order reconciliation tests.
 
 GREEN evidence (2026-07-16): the focused command suite passed 13/13 after an additional RED regression caught and fixed reuse of a SiteSession-linked UTM with a different session key. The combined command, normalization, order-attribution, click-ID backfill, and Order reconciliation suite passed 60/60. Django check reported no issues; scoped compileall, `git diff --check`, and the scoped secret scan exited clean. This task did not run or apply the command against production.
+
+Reviewer hardening evidence (2026-07-16): four Important follow-up regressions first failed against `d368825d`. Invalid/stale/future/mismatched evidence did not poison otherwise-valid peers sharing its key, an out-of-scope Order did not block reuse of its UTMSession, and reuse overwrote `first_seen/last_seen`; the new create/reuse CLI guards were initially absent. After the fail-closed changes, the focused command suite passed 17/17 and the combined attribution suite passed 64/64. Create-to-reuse drift now aborts before mutation, any existing Order link blocks UTM reuse, reused timestamps remain unchanged, and residual rows poison every valid key they expose without losing their residual bucket counts.
 
 ### Task 4: Ship, back up, apply, and reconcile docs
 
