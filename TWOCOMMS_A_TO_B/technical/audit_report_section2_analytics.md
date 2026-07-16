@@ -374,6 +374,18 @@ production URL resolver вместе с шестью родственными de
 
 **Остаток (SSH/владелец):** TikTok Events Manager — приходят ли события и под какими именами; грep боевых логов `TikTok Events API accepted/failed`; env TIKTOK_EVENTS_* на проде.
 
+**Post-fix 16.07.2026 (F-011, `c0b324c3`):** отсутствие `ttq.load` в
+initial HTML является штатным: bootstrap принадлежит внешнему
+`analytics-loader.js`. Браузерная проверка выявила и закрыла более узкий
+дефект: paid landing на low-device загружал orchestrator, но не запускал pixel
+до interaction/idle. Теперь paid markers вызывают idempotent initializer
+немедленно, organic low-device по-прежнему не грузит TikTok. Server suite 3/3;
+live HTML `analytics-loader.d995de1c1b68.js?v=9`; local/server/live SHA-256
+`e5159c826e19196cc659507ceac0399433bd5441280d61e8cae1e9a3c104c3b8`;
+intercepted live-asset matrix paid-low/organic-low/paid-normal прошла без
+дублей и без отправки реальных событий. Остальные находки AN-020/AN-021 выше
+остаются отдельными.
+
 ---
 
 ## AN-038. Отчётность UTM в админке (код-слой, 07.07.2026)

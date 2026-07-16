@@ -690,7 +690,7 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| PIX-030 | TikTok pixel ID prod | P1 | [x] TT id in HTML; ttq deferred F-011|
+| PIX-030 | TikTok pixel ID prod | P1 | [x] F-011 fixed `c0b324c3`; deferred ID/bootstrap + paid-low live asset verified|
 | PIX-031 | TT ATC / CompletePayment mapping | P1 | [x] WARN TT events not EM-verified|
 | PIX-032 | GTM container loads | P0 | [x] GTM-PRLLBF9H in HTML |
 | PIX-033 | dataLayer view_item / add_to_cart / begin_checkout / purchase | P0 | [x] dataLayer init present|

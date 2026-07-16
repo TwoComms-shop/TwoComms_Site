@@ -107,7 +107,7 @@ non-calling stub before loading the JavaScript and intercepts
 script immediately; organic-low requests none; one interaction after paid init
 does not produce a duplicate request.
 
-- [ ] **Step 6: Commit, push, deploy, and verify server assets**
+- [x] **Step 6: Commit, push, deploy, and verify server assets**
 
 Commit the plan, test, JavaScript and template only. Push `main`, pull with `--ff-only`, run the focused server suite, run `collectstatic --noinput`, restart Passenger, and verify live HTML references `v=9` and live/local loader hashes match.
 
@@ -120,7 +120,7 @@ Commit the plan, test, JavaScript and template only. Push `main`, pull with `--f
 - Modify: `TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`
 - Modify: `docs/superpowers/plans/2026-07-16-f011-low-device-paid-tiktok.md`
 
-- [ ] **Step 1: Run intercepted Playwright production checks**
+- [x] **Step 1: Run intercepted Playwright production checks**
 
 Before navigation, intercept `analytics.tiktok.com` so the browser records but does not execute the third-party SDK. Emulate a low device before page scripts run, freeze `requestIdleCallback`, then verify:
 
@@ -132,7 +132,7 @@ paid + normal device: events.js request observed
 
 Also verify `window.ttq.load` exists for both paid cases and no duplicate SDK request occurs after one interaction.
 
-- [ ] **Step 2: Reclassify and close F-011 with exact evidence**
+- [x] **Step 2: Reclassify and close F-011 with exact evidence**
 
 Record that missing inline `ttq.load` was a false-positive assumption because the external deferred loader owns bootstrap. Close the actual paid low-device residual only after server tests and the intercepted browser matrix pass. Use `[x]/FIXED/DONE`; preserve the dated raw-HTML observation as historical evidence.
 

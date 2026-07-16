@@ -126,7 +126,7 @@
 | [x] | **F-006** | P2 | Color sitemap ×3 | **FIXED `a6c3c39b`**; live 12/12 unique, locale alternates valid; §F-006 |
 | [x] | **F-008** | P2 | Meta description too long | **FIXED `7fa568b1`**; 12 localized live pages 120–160 chars; §F-008 |
 | [x] | **F-010** | P2 | debug endpoints login not 404 | **FIXED `efd7f192`**; server 7/7, live 21/21 hard 404; §F-010 |
-| [ ] | **F-011** | P2 | TikTok ttq.load not in HTML | §F-011 |
+| [x] | **F-011** | P2 | TikTok ttq.load not in HTML | **FIXED `c0b324c3`**; deferred bootstrap verified, paid-low live asset matrix PASS; §F-011 |
 | [ ] | **F-013** | P2 | Category title vs H1 strategy | §F-013 |
 | [ ] | **F-028** | P2 | RU/EN PDP naming | §F-028 |
 | [ ] | **F-035** | P2 | CSP violations | §F-035 |
@@ -199,7 +199,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-008** | P2 | FIXED | DONE | `7fa568b1`: localized commercial copy; server 4/4, live 12/12 within 120–160 |
 | [x] **F-009** | P3 | FIXED | DONE | `169e6032`: favicon.ico direct 200; production verified |
 | [x] **F-010** | P2 | FIXED | DONE | `efd7f192`: seven internal routes absent when DEBUG=False; live 21/21 hard 404 |
-| [ ] **F-011** | P2 | OPEN | YES | TikTok data-attr present; ttq.load not in initial HTML |
+| [x] **F-011** | P2 | FIXED | DONE | `c0b324c3`: immediate paid init; server 3/3, intercepted live asset matrix 3/3 |
 | [x] **F-012** | P2 | INFO | no | ViewContent JS-only (expected architecture) |
 | [ ] **F-013** | P2 | OPEN | YES | Category title vs H1 length strategy inconsistent |
 | [ ] **F-014** | P3 | OPEN | YES | Sitemap lastmod clustered 2026-06-11 |
@@ -313,11 +313,11 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 OPEN — 8
+### P2 OPEN — 7
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
-- [ ] **F-011** — TikTok data-attr present; ttq.load not in initial HTML
+- [x] **F-011** — fixed `c0b324c3`; deferred owner confirmed and paid-low/organic-low/paid-normal matrix passed
 - [ ] **F-013** — Category title vs H1 length strategy inconsistent
 - [ ] **F-028** — RU/EN PDP naming strategy vs UK mismatch
 - [ ] **F-035** — CSP violations in stderr
@@ -449,7 +449,7 @@ F-084 and F-020/F-057.
 | Visitor id | PASS | `twc_vid=…` set |
 | Meta pixel ID in HTML | PASS | `823958313630148` (fbq init ×1, PageView ×1 on home) |
 | GTM container | PASS | `GTM-PRLLBF9H` present |
-| TikTok data attr | PASS/WARN | `D43L7DBC77UA61AHLTVG` on body; `ttq.load` not found in raw HTML (likely deferred JS) |
+| TikTok data attr | PASS | `D43L7DBC77UA61AHLTVG`; F-011 confirmed deferred `ttq.load`, live asset matrix PASS |
 | UTMSession DB row | BLOCKED | needs server/admin |
 | ATC + Purchase E2E | BLOCKED | needs browser + test order |
 | Dispatcher sees campaign | BLOCKED | needs auth |
@@ -906,16 +906,39 @@ process still resolves every developer tool.
 
 ### F-011 — TikTok pixel: data attribute present, no `ttq.load` in initial HTML
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [x] FIXED (`c0b324c3`) · **Severity:** P2 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P2** · Area: **PIXEL** · Checklist: PIX-030
+- [x] **Fixed** · Severity: **P2** · Area: **PIXEL** · Checklist: PIX-030
 
 | Field | Value |
 |-------|--------|
-| Status (B) | SUSPECTED |
-| Status (C) | |
+| Status (B) | SUSPECTED (raw-HTML assumption) |
+| Status (C) | FIXED 2026-07-16 |
 
-`data-tiktok-pixel-id="D43L7DBC77UA61AHLTVG"` present; raw HTML search found **no** `ttq.load` / `ttq('load'`. May load via `analytics-loader.js` after bootstrap — **must verify in browser Network tab**.
+**Historical observation 09.07.2026:**
+`data-tiktok-pixel-id="D43L7DBC77UA61AHLTVG"` was present while raw HTML
+contained no `ttq.load`. That absence is expected: the external deferred
+`analytics-loader.js` owns TikTok bootstrap, so the original raw-HTML
+assumption was a false positive.
+
+**Actual residual and fix 16.07.2026:** browser tracing found that low-device
+paid traffic injected the loader file but still waited for interaction/idle,
+then the low-device guard suppressed TikTok. `c0b324c3` detects the same paid
+markers inside the loader, invokes the idempotent initializer immediately and
+keeps TikTok suppressed only for low-device organic traffic.
+
+- Focused local and server suite: **3/3 PASS**; `node --check` PASS.
+- Server `collectstatic` + `compress --force` published
+  `analytics-loader.d995de1c1b68.js?v=9`; local/server/live SHA-256 match:
+  `e5159c826e19196cc659507ceac0399433bd5441280d61e8cae1e9a3c104c3b8`.
+- Intercepted live-asset Playwright matrix with frozen idle callback: paid-low
+  and paid-normal each requested exactly one TikTok SDK and exposed
+  `ttq.load` before interaction; organic-low requested zero; interaction did
+  not duplicate either paid request. Third-party requests were aborted, so no
+  fake production events were sent and no production UTM row was created.
+
+TikTok Events Manager visibility, standard event names, server API/retry and
+COD coverage remain separate AN-020/AN-021/PIX-031 scopes.
 
 ---
 
