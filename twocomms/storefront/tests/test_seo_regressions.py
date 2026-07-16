@@ -3,6 +3,7 @@ from unittest.mock import patch
 import json
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.sites.models import Site
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -957,13 +958,25 @@ class PublicUrlIndexationSeoRegressionTests(TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertContains(response, 'content="noindex, follow"', html=False)
 
-    def test_test_analytics_requires_staff(self):
-        """AN-015/W1-8 — /test-analytics/ авто-стреляет Purchase в боевой
-        Pixel, поэтому анонимный доступ запрещён (redirect на admin login)."""
-        response = self.client.get(reverse("test_analytics"), follow=False)
+    def test_debug_and_dev_routes_are_absent_when_debug_is_false(self):
+        """F-010: production must not expose internal route names at all."""
+        self.assertFalse(settings.DEBUG)
+        internal_paths = (
+            "debug/media/",
+            "debug/media-page/",
+            "debug/product-images/",
+            "dev/grant-admin/",
+            "test-analytics/",
+            "test-pricelist/",
+            "wholesale/debug-invoices/",
+        )
+        locale_prefixes = ("", "ru/", "en/")
 
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("login", response["Location"])
+        for locale_prefix in locale_prefixes:
+            for internal_path in internal_paths:
+                url = f"/{locale_prefix}{internal_path}"
+                with self.subTest(url=url):
+                    self.assertEqual(self.client.get(url, follow=False).status_code, 404)
 
     def test_private_user_flow_pages_are_noindex_nofollow(self):
         cases = [reverse("cart"), reverse("login"), reverse("register")]

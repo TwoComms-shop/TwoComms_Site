@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic.base import RedirectView
@@ -452,11 +453,6 @@ urlpatterns = [
     path('payments/monobank/webhook/', csrf_exempt(views.monobank_webhook), name='monobank_webhook'),
     # API endpoints
     path('api/colors/', _legacy_view('api_colors'), name='api_colors'),
-    path('debug/media/', views.debug_media, name='debug_media'),
-    path('debug/media-page/', views.debug_media_page, name='debug_media_page'),
-    path('debug/product-images/', views.debug_product_images, name='debug_product_images'),
-    # dev helper
-    path('dev/grant-admin/', views.dev_grant_admin, name='dev_grant_admin'),
     # static pages
     path('add-print/', views.add_print, name='add_print'),
     path('custom-print/', _module_view('storefront.views.static_pages', 'custom_print'), name='custom_print'),
@@ -559,8 +555,6 @@ urlpatterns = [
 
     path('contacts/', views.contacts, name='contacts'),
     path('search/', views.search, name='search'),
-    # Test analytics events page
-    path('test-analytics/', views.test_analytics_events, name='test_analytics'),
     # favorites
     path('favorites/', views.favorites_list, name='favorites'),
     path('favorites/toggle/<int:product_id>/', views.toggle_favorite, name='toggle_favorite'),
@@ -577,7 +571,6 @@ urlpatterns = [
     # wholesale prices
     path('pricelist_opt.xlsx', _legacy_view('wholesale_prices_xlsx'), name='wholesale_prices_xlsx'),
     path('pricelist/', _module_view('storefront.views.legacy_stubs', 'pricelist_page'), name='pricelist_page'),
-    path('test-pricelist/', _legacy_view('test_pricelist'), name='test_wholesale_prices'),
     path('wholesale/', _module_view('storefront.views.legacy_stubs', 'wholesale_page'), name='wholesale_page'),
     path('opt/', RedirectView.as_view(url='/wholesale/', permanent=True), name='wholesale_page_alt'),
     path('wholesale/order-form/', _module_view('storefront.views.legacy_stubs', 'wholesale_order_form'), name='wholesale_order_form'),
@@ -586,7 +579,6 @@ urlpatterns = [
     path('wholesale/delete-invoice/<int:invoice_id>/', _legacy_view('delete_wholesale_invoice'), name='delete_wholesale_invoice'),
     path('wholesale/check-approval/<int:invoice_id>/', _legacy_view('check_invoice_approval_status'), name='check_invoice_approval_status'),
     path('wholesale/check-payment-status/<int:invoice_id>/', _legacy_view('check_payment_status'), name='check_payment_status'),
-    path('wholesale/debug-invoices/', _legacy_view('debug_invoices'), name='debug_invoices'),
     path('wholesale/create-payment/', _legacy_view('create_wholesale_payment'), name='create_wholesale_payment'),
     path('wholesale/payment-webhook/', _legacy_view('wholesale_payment_webhook'), name='wholesale_payment_webhook'),
     path('wholesale/invoices/', _legacy_view('get_user_invoices'), name='get_user_invoices'),
@@ -601,3 +593,18 @@ urlpatterns = [
     path('admin-panel/dropship/update-order/<int:order_id>/', views.admin_update_dropship_order, name='admin_update_dropship_order'),
     path('admin-panel/dropship/delete-order/<int:order_id>/', views.admin_delete_dropship_order, name='admin_delete_dropship_order'),
 ]
+
+
+# F-010: these tools must not exist in the production URL resolver. Keeping
+# their registration behind DEBUG preserves local diagnostics without exposing
+# route names or login redirects on the public host.
+if settings.DEBUG:
+    urlpatterns += [
+        path('debug/media/', views.debug_media, name='debug_media'),
+        path('debug/media-page/', views.debug_media_page, name='debug_media_page'),
+        path('debug/product-images/', views.debug_product_images, name='debug_product_images'),
+        path('dev/grant-admin/', views.dev_grant_admin, name='dev_grant_admin'),
+        path('test-analytics/', views.test_analytics_events, name='test_analytics'),
+        path('test-pricelist/', _legacy_view('test_pricelist'), name='test_wholesale_prices'),
+        path('wholesale/debug-invoices/', _legacy_view('debug_invoices'), name='debug_invoices'),
+    ]
