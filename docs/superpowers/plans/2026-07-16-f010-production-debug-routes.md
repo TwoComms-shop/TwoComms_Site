@@ -94,7 +94,7 @@ assertions also fail in isolated runs. The deployment check exits 0 with 15
 pre-existing warnings when supplied a non-production check-only secret; the
 real production configuration remains a server-stage check.
 
-- [ ] **Step 5: Commit, push, deploy, and verify production paths**
+- [x] **Step 5: Commit, push, deploy, and verify production paths**
 
 Commit the plan, regression test, and URL change. Push `main`, pull with `--ff-only` on the server, restart Passenger, run the focused test on the server, and verify the 21 live routes return 404 without redirects.
 
@@ -106,11 +106,11 @@ Commit the plan, regression test, and URL change. Push `main`, pull with `--ff-o
 - Modify: `TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`
 - Modify the directly related technical audit report if it contains the stale F-010 claim.
 
-- [ ] **Step 1: Change only current F-010 status records to `[x]`, `FIXED`, and `DONE`**
+- [x] **Step 1: Change only current F-010 status records to `[x]`, `FIXED`, and `DONE`**
 
 Record the implementation commit, server test count, and live UK/RU/EN 404 matrix. Preserve the original dated reproduction table as historical evidence and append a post-fix note.
 
-- [ ] **Step 2: Verify the documentation diff**
+- [x] **Step 2: Verify the documentation diff**
 
 Run: `git diff --check`
 

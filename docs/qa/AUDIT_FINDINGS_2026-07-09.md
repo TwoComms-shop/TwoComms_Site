@@ -125,7 +125,7 @@
 |---|-----|-----|----------|--------|
 | [x] | **F-006** | P2 | Color sitemap ×3 | **FIXED `a6c3c39b`**; live 12/12 unique, locale alternates valid; §F-006 |
 | [x] | **F-008** | P2 | Meta description too long | **FIXED `7fa568b1`**; 12 localized live pages 120–160 chars; §F-008 |
-| [ ] | **F-010** | P2 | debug endpoints login not 404 | §F-010 |
+| [x] | **F-010** | P2 | debug endpoints login not 404 | **FIXED `efd7f192`**; server 7/7, live 21/21 hard 404; §F-010 |
 | [ ] | **F-011** | P2 | TikTok ttq.load not in HTML | §F-011 |
 | [ ] | **F-013** | P2 | Category title vs H1 strategy | §F-013 |
 | [ ] | **F-028** | P2 | RU/EN PDP naming | §F-028 |
@@ -198,7 +198,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-007** | P1 | FIXED | DONE | `3d217ebb`: atomic route/host buckets; 600 catalog requests allowed, 601st returns 429 |
 | [x] **F-008** | P2 | FIXED | DONE | `7fa568b1`: localized commercial copy; server 4/4, live 12/12 within 120–160 |
 | [x] **F-009** | P3 | FIXED | DONE | `169e6032`: favicon.ico direct 200; production verified |
-| [ ] **F-010** | P2 | OPEN | YES | debug/dev endpoints login-gated not 404 |
+| [x] **F-010** | P2 | FIXED | DONE | `efd7f192`: seven internal routes absent when DEBUG=False; live 21/21 hard 404 |
 | [ ] **F-011** | P2 | OPEN | YES | TikTok data-attr present; ttq.load not in initial HTML |
 | [x] **F-012** | P2 | INFO | no | ViewContent JS-only (expected architecture) |
 | [ ] **F-013** | P2 | OPEN | YES | Category title vs H1 length strategy inconsistent |
@@ -313,10 +313,10 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 OPEN — 9
+### P2 OPEN — 8
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
-- [ ] **F-010** — debug/dev endpoints login-gated not 404
+- [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
 - [ ] **F-011** — TikTok data-attr present; ttq.load not in initial HTML
 - [ ] **F-013** — Category title vs H1 length strategy inconsistent
 - [ ] **F-028** — RU/EN PDP naming strategy vs UK mismatch
@@ -868,24 +868,39 @@ route returned 200 without a redirect after deployment.
 
 ### F-010 — Debug/dev endpoints reachable as login redirects (not hard 404)
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [x] FIXED (`efd7f192`) · **Severity:** P2 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P2** · Area: **TECH** · Checklist: PG-086, PG-087, TECH-083
+- [x] **Fixed** · Severity: **P2** · Area: **TECH** · Checklist: PG-085, PG-086, PG-087, TECH-083
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED |
-| Status (C) | |
+| Status (C) | FIXED 2026-07-16 |
 
-| Path | Result |
+| Historical path sample (09.07.2026) | Result before fix |
 |------|--------|
 | `/debug/media/` | 200 login `?next=/debug/media/` |
 | `/dev/grant-admin/` | 200 login `?next=/dev/grant-admin/` |
 | `/test-analytics/` | → `/admin/login/?next=/test-analytics/` |
+| `/test-pricelist/` | public 200 JSON stub |
+| `/wholesale/debug-invoices/` | public 200 JSON stub |
 
 **Why issue:** auth-gated is better than open, but **dev/grant-admin** should not exist on prod URL surface even behind login (attack surface / misconfig risk). robots Disallow `/debug/` `/dev/` present — good for SEO, not for security.
 
 **Risk of fix:** medium (URL removal must not break internal tools).
+
+**Fix verification 2026-07-16:** all seven debug/dev/test routes are now
+registered only when `settings.DEBUG` is true. Production and test settings
+therefore omit the route names entirely, while an isolated `DEBUG=True`
+process still resolves every developer tool.
+
+- Focused RED reproduced 21 failures: five login redirects and two public 200
+  stubs across UK/RU/EN. After the fix, local and server focused classes pass
+  **7/7**, including the full 21-URL matrix.
+- Production Django shell confirmed `DEBUG=False`; deploy check exited 0 with
+  14 pre-existing warnings and no F-010 error.
+- After Passenger worker rotation, a cache-busted no-follow live pass returned
+  **21/21 HTTP 404** with no redirect target; `/healthz/` remained 200.
 
 ---
 

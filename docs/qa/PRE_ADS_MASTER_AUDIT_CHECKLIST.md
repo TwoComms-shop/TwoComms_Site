@@ -273,9 +273,9 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-082 | `/api/client-error/` | accepts POST, rate-limited | [x] PASS accepts (rate-limit exists)|
 | PG-083 | `/api/rum/` | beacon OK | [x] endpoint exists; beacon not force-fired|
 | PG-084 | `/api/track-event/` | records allowed events | [x] API OK; stored:false if excluded F-039 |
-| PG-085 | `/test-analytics/` | **not public for SEO**; blocked or noindex | [x] → admin login (not public)|
-| PG-086 | `/debug/media*` | **not public on prod** | [x] → login gated|
-| PG-087 | `/dev/grant-admin/` | **disabled on prod** | [x] → login gated|
+| PG-085 | `/test-analytics/` | **not public for SEO**; blocked or noindex | [x] F-010: hard 404 in UK/RU/EN|
+| PG-086 | `/debug/media*` | **not public on prod** | [x] F-010: hard 404 in UK/RU/EN|
+| PG-087 | `/dev/grant-admin/` | **disabled on prod** | [x] F-010: hard 404 in UK/RU/EN|
 | PG-088 | `site.webmanifest` / PWA | 200 | [x] PASS site.webmanifest 200|
 | PG-089 | favicons 32/180/192/512 | all 200 | [x] PASS favicons 200 (+ico redirect)|
 | PG-090 | service worker `/static/sw.js` | 200, not break HTML | [x] PASS /static/sw.js 200|
@@ -814,7 +814,7 @@ Mark each: loads 200 / no throw on page.
 | TECH-080 | Admin not in public footer | P0 | [x] PASS admin not footer|
 | TECH-081 | CSRF on mutations | P0 | [x] PASS CSRF required mutations|
 | TECH-082 | CSP vs pixel/GTM | P1 | [x] hosts allowed F-041; violations still F-035 |
-| TECH-083 | Debug endpoints closed on prod | P0 | [x] PASS debug gated|
+| TECH-083 | Debug endpoints closed on prod | P0 | [x] F-010 fixed `efd7f192`; 7 routes x 3 locales = 21/21 live 404|
 | TECH-084 | Rate limits track/client-error | P1 | [x] PASS rate-limit client-error|
 
 ## 8.7 Performance (ads quality)
