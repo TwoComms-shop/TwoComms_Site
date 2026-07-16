@@ -19,7 +19,7 @@ import re
 
 from django import forms
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Prefetch
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -120,6 +120,24 @@ def _img_url(field):
         return field.url if field else ""
     except Exception:
         return ""
+
+
+def _print_preview(item):
+    image_url = _img_url(item.main_image)
+    if image_url:
+        return image_url, "print"
+
+    for variant in getattr(item, "fable5_image_variants", []):
+        image_url = _img_url(variant.image)
+        if image_url:
+            return image_url, "variant"
+
+    for product in getattr(item, "fable5_preview_products", []):
+        image_url = _img_url(product.main_image)
+        if image_url:
+            return image_url, "product"
+
+    return "", "missing"
 
 
 def _int_or_none(value):
@@ -396,7 +414,41 @@ def _product_payload(product):
 
 
 def _bootstrap_payload(product=None):
-    from warehouse.models import Print, StorageSubcategory
+    from warehouse.models import Print, PrintColorVariant, StorageSubcategory
+
+    prints = (
+        Print.objects.select_related("category")
+        .prefetch_related(
+            Prefetch(
+                "color_variants",
+                queryset=PrintColorVariant.objects.exclude(image="")
+                .exclude(image__isnull=True)
+                .only("id", "print_id", "image", "is_default", "order")
+                .order_by("-is_default", "order", "id"),
+                to_attr="fable5_image_variants",
+            ),
+            Prefetch(
+                "default_products",
+                queryset=Product.objects.exclude(main_image="")
+                .only("id", "main_image")
+                .order_by("id"),
+                to_attr="fable5_preview_products",
+            ),
+        )
+        .order_by("category__order", "category__name", "name", "id")
+    )
+
+    print_rows = []
+    for item in prints:
+        image_url, image_source = _print_preview(item)
+        print_rows.append({
+            "id": item.id,
+            "name": item.name,
+            "category": item.category.name if item.category_id else "",
+            "image_url": image_url,
+            "image_source": image_source,
+            "is_active": item.is_active,
+        })
 
     return {
         "dictionaries": {
@@ -419,18 +471,7 @@ def _bootstrap_payload(product=None):
                 .filter(is_active=True)
                 .order_by("category__order", "category__name", "order", "name")
             ],
-            "prints": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    "category": item.category.name if item.category_id else "",
-                    "image_url": _img_url(item.main_image),
-                    "is_active": item.is_active,
-                }
-                for item in Print.objects.select_related("category").order_by(
-                    "category__order", "category__name", "name", "id"
-                )
-            ],
+            "prints": print_rows,
             "colors": [
                 _color_payload(c)
                 for c in Color.objects.all().prefetch_related("fable5_profile").order_by("name")

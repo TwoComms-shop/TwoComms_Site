@@ -4,6 +4,7 @@ from pathlib import Path
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
 
@@ -67,6 +68,24 @@ class GenericOptionEditorTests(TestCase):
             [row["id"] for row in bootstrap["dictionaries"]["prints"]],
             [self.print_a.id, self.print_b.id],
         )
+
+    def test_print_picker_uses_linked_product_image_as_preview_fallback(self):
+        self.product.main_image = SimpleUploadedFile(
+            "linked-product.gif",
+            b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;",
+            content_type="image/gif",
+        )
+        self.product.save(update_fields=["main_image"])
+
+        response = self.client.get(reverse("fable5_product_edit", args=[self.product.pk]))
+
+        row = next(
+            item
+            for item in response.context["bootstrap"]["dictionaries"]["prints"]
+            if item["id"] == self.print_a.id
+        )
+        self.assertIn("linked-product", row["image_url"])
+        self.assertEqual(row["image_source"], "product")
 
     def test_product_save_updates_option_profiles_and_print_m2m(self):
         response = self.client.post(

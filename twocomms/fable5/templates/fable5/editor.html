@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>{% if product %}Редагування: {{ product.title }}{% else %}Новий товар{% endif %} · Fable 5</title>
-<link rel="stylesheet" href="{% static 'fable5/editor.css' %}?v=20260716-responsive-v1">
+<link rel="stylesheet" href="{% static 'fable5/editor.css' %}?v=20260716-print-preview-v2">
 <link rel="stylesheet" href="{% static 'fable5/thermo-dot.css' %}">
 </head>
 <body>
@@ -150,6 +150,6 @@
 
 {{ bootstrap|json_script:"f5-bootstrap" }}
 <script src="{% static 'fable5/editor-inventory.js' %}?v=20260716-inventory-v3"></script>
-<script src="{% static 'fable5/editor.js' %}?v=20260716-dirty-v7"></script>
+<script src="{% static 'fable5/editor.js' %}?v=20260716-print-preview-v8"></script>
 </body>
 </html>

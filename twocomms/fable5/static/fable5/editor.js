@@ -786,10 +786,13 @@
 		box.innerHTML = prints.map((item) => {
 			const selected = state.selectedPrintIds.has(String(item.id));
 			const search = `${item.name || ""} ${item.category || ""}`.toLocaleLowerCase("uk");
+			const sourceLabel = item.image_source === "product"
+				? " · мокап товару"
+				: item.image_source === "variant" ? " · варіант принта" : "";
 			return `<label class="f5-print-card${selected ? " is-selected" : ""}${item.is_active ? "" : " is-inactive"}" data-print-card data-print-search="${esc(search)}">
 				<input type="checkbox" data-print-id="${item.id}" ${selected ? "checked" : ""}>
-				<span class="f5-print-card__media">${item.image_url ? `<img src="${esc(item.image_url)}" alt="">` : '<span aria-hidden="true">PR</span>'}</span>
-				<span class="f5-print-card__copy"><strong>${esc(item.name)}</strong><small>${esc(item.category || "Без категорії")}</small></span>
+				<span class="f5-print-card__media">${item.image_url ? `<img src="${esc(item.image_url)}" alt="">` : '<span class="f5-print-card__placeholder" aria-hidden="true"><svg class="f5-icon"><use href="#f5-i-media"/></svg></span>'}</span>
+				<span class="f5-print-card__copy"><strong>${esc(item.name)}</strong><small>${esc(item.category || "Без категорії")}${esc(sourceLabel)}</small></span>
 				<span class="f5-print-card__state">${item.is_active ? "Обрати" : "Архів"}</span>
 			</label>`;
 		}).join("");
