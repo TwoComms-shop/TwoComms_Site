@@ -2,11 +2,12 @@ from django.core.management.base import BaseCommand, CommandError
 
 from storefront.services.restock import (
     claim_due_subscription,
-    due_subscriptions_queryset,
     finalize_delivery,
     recover_stale_sending,
+    scan_candidate_queryset,
     send_claimed_subscription,
     subscription_is_available,
+    wake_unscheduled_active_subscriptions,
 )
 
 
@@ -33,16 +34,22 @@ class Command(BaseCommand):
             "subscription_id": options.get("subscription_id"),
         }
         if options["dry_run"]:
-            due = due_subscriptions_queryset(**filters).select_related(
+            candidates = scan_candidate_queryset(**filters).select_related(
                 "product", "color_variant"
-            )[:limit]
-            available = sum(1 for row in due if subscription_is_available(row))
+            )
+            available = 0
+            for row in candidates.iterator():
+                if subscription_is_available(row):
+                    available += 1
+                    if available >= limit:
+                        break
             self.stdout.write(
                 f"dry-run: {available} available automatic delivery(s) would be claimed"
             )
             return
 
         recovered = recover_stale_sending(**filters)
+        woken = wake_unscheduled_active_subscriptions(**filters)
         processed = 0
         delivered = 0
         failed = 0
@@ -70,6 +77,6 @@ class Command(BaseCommand):
                     failed += 1
 
         self.stdout.write(self.style.SUCCESS(
-            f"restock: recovered={recovered} processed={processed} "
+            f"restock: recovered={recovered} woken={woken} processed={processed} "
             f"delivered={delivered} failed={failed}"
         ))

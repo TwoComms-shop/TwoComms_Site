@@ -12,6 +12,7 @@ from django.core.mail import EmailMultiAlternatives
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import transaction
+from django.db.models import Q
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
@@ -178,6 +179,18 @@ def schedule_restock_scan(product_id, variant_id):
     ).update(next_attempt_at=timezone.now())
 
 
+def _filter_delivery_scope(
+    queryset, *, product_id=None, variant_id=None, subscription_id=None
+):
+    if product_id:
+        queryset = queryset.filter(product_id=product_id)
+    if variant_id:
+        queryset = queryset.filter(color_variant_id=variant_id)
+    if subscription_id:
+        queryset = queryset.filter(pk=subscription_id)
+    return queryset
+
+
 def due_subscriptions_queryset(
     *, product_id=None, variant_id=None, subscription_id=None, now=None
 ):
@@ -187,13 +200,53 @@ def due_subscriptions_queryset(
         status__in=DELIVERY_STATUSES,
         next_attempt_at__lte=now,
     )
-    if product_id:
-        queryset = queryset.filter(product_id=product_id)
-    if variant_id:
-        queryset = queryset.filter(color_variant_id=variant_id)
-    if subscription_id:
-        queryset = queryset.filter(pk=subscription_id)
+    queryset = _filter_delivery_scope(
+        queryset,
+        product_id=product_id,
+        variant_id=variant_id,
+        subscription_id=subscription_id,
+    )
     return queryset.order_by("next_attempt_at", "created_at", "pk")
+
+
+def scan_candidate_queryset(
+    *, product_id=None, variant_id=None, subscription_id=None, now=None
+):
+    """Return due rows plus unscheduled ACTIVE rows without changing state."""
+
+    now = now or timezone.now()
+    queryset = RestockSubscription.objects.filter(
+        channel__in=AUTOMATIC_CHANNELS,
+    ).filter(
+        Q(status=RestockSubscription.Status.ACTIVE, next_attempt_at__isnull=True)
+        | Q(status__in=DELIVERY_STATUSES, next_attempt_at__lte=now)
+    )
+    return _filter_delivery_scope(
+        queryset,
+        product_id=product_id,
+        variant_id=variant_id,
+        subscription_id=subscription_id,
+    ).order_by("created_at", "pk")
+
+
+def wake_unscheduled_active_subscriptions(
+    *, product_id=None, variant_id=None, subscription_id=None, now=None
+) -> int:
+    """Cron fallback for stock/configuration changes made outside Fable5."""
+
+    now = now or timezone.now()
+    queryset = RestockSubscription.objects.filter(
+        channel__in=AUTOMATIC_CHANNELS,
+        status=RestockSubscription.Status.ACTIVE,
+        next_attempt_at__isnull=True,
+    )
+    queryset = _filter_delivery_scope(
+        queryset,
+        product_id=product_id,
+        variant_id=variant_id,
+        subscription_id=subscription_id,
+    )
+    return queryset.update(next_attempt_at=now)
 
 
 @transaction.atomic
@@ -348,12 +401,12 @@ def recover_stale_sending(
         status=RestockSubscription.Status.SENDING,
         last_attempt_at__lte=now - STALE_SENDING_AFTER,
     )
-    if product_id:
-        queryset = queryset.filter(product_id=product_id)
-    if variant_id:
-        queryset = queryset.filter(color_variant_id=variant_id)
-    if subscription_id:
-        queryset = queryset.filter(pk=subscription_id)
+    queryset = _filter_delivery_scope(
+        queryset,
+        product_id=product_id,
+        variant_id=variant_id,
+        subscription_id=subscription_id,
+    )
     return queryset.update(
         status=RestockSubscription.Status.FAILED,
         delivery_token=None,
@@ -454,9 +507,11 @@ def activate_telegram_subscription(session):
     )
     subscription.normalized_contact = session.phone or str(session.telegram_user_id or "")
     subscription.status = RestockSubscription.Status.ACTIVE
+    subscription.next_attempt_at = timezone.now()
     subscription.save(update_fields=[
         "telegram_user_id", "telegram_chat_id", "telegram_username",
-        "verified_phone", "contact", "normalized_contact", "status", "updated_at",
+        "verified_phone", "contact", "normalized_contact", "status",
+        "next_attempt_at", "updated_at",
     ])
     transaction.on_commit(lambda: mark_admin_notification(subscription))
     return subscription

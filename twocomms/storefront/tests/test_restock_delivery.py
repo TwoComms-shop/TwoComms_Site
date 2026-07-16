@@ -315,6 +315,64 @@ class RestockDeliveryTests(TestCase):
         bot_class.return_value.send_message.assert_not_called()
         self.assertIn("dry-run", output.getvalue().lower())
 
+    def test_cron_fallback_delivers_after_direct_stock_change(self):
+        self.rule.stock = 0
+        self.rule.save(update_fields=["stock"])
+        subscription = self.subscription(next_attempt_at=None)
+        self.rule.stock = 5
+        self.rule.save(update_fields=["stock"])
+
+        call_command("process_restock_notifications")
+
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, RestockSubscription.Status.NOTIFIED)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_cron_fallback_respects_subscription_filter(self):
+        target = self.subscription(next_attempt_at=None)
+        untouched = self.subscription(
+            next_attempt_at=None,
+            normalized_contact="other@example.com",
+            contact="other@example.com",
+        )
+
+        call_command(
+            "process_restock_notifications",
+            subscription_id=target.pk,
+        )
+
+        target.refresh_from_db()
+        untouched.refresh_from_db()
+        self.assertEqual(target.status, RestockSubscription.Status.NOTIFIED)
+        self.assertEqual(untouched.status, RestockSubscription.Status.ACTIVE)
+        self.assertIsNone(untouched.next_attempt_at)
+
+    def test_dry_run_scans_past_unavailable_rows_until_limit_available(self):
+        VariantSizeRule.objects.create(
+            variant=self.variant,
+            size="S",
+            is_enabled=False,
+            stock=0,
+        )
+        unavailable = self.subscription(size="S", next_attempt_at=None)
+        available = self.subscription(size="M", next_attempt_at=None)
+        output = io.StringIO()
+
+        call_command(
+            "process_restock_notifications",
+            "--limit",
+            "1",
+            "--dry-run",
+            stdout=output,
+        )
+
+        self.assertIn("dry-run: 1 available", output.getvalue().lower())
+        for row in (unavailable, available):
+            row.refresh_from_db()
+            self.assertEqual(row.status, RestockSubscription.Status.ACTIVE)
+            self.assertIsNone(row.next_attempt_at)
+            self.assertEqual(row.notification_attempts, 0)
+
     def test_sending_status_participates_in_subscription_deduplication(self):
         from storefront.services.restock import create_subscription
 

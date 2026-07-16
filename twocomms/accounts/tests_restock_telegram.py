@@ -3,12 +3,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
+from django.core.management import call_command
 from django.urls import reverse
 from django.utils import timezone
 
 from accounts.models import TelegramVerificationSession
 from accounts.telegram_bot import TelegramBot
 from productcolors.models import Color, ProductColorVariant
+from fable5.models import VariantSizeRule
 from storefront.models import Category, Product
 
 
@@ -94,7 +96,50 @@ class RestockTelegramVerificationTests(TestCase):
         self.assertEqual(subscription.telegram_user_id, 123456)
         self.assertEqual(subscription.telegram_chat_id, 123456)
         self.assertEqual(subscription.normalized_contact, "+380991234567")
+        self.assertIsNotNone(subscription.next_attempt_at)
         notify_mock.assert_called_once_with(subscription)
+
+    @patch("storefront.services.restock.notify_restock_admin", return_value=True)
+    @patch("storefront.services.restock.TelegramBot")
+    def test_available_during_draft_is_delivered_after_verification(
+        self, delivery_bot, _notify
+    ):
+        from storefront.models import RestockSubscription
+
+        self.product.status = "published"
+        self.product.save(update_fields=["status"])
+        rule = VariantSizeRule.objects.create(
+            variant=self.variant,
+            size="M",
+            is_enabled=False,
+            stock=0,
+        )
+        subscription = self.make_subscription()
+        session = TelegramVerificationSession.objects.create(
+            token="restock-late-availability",
+            purpose="restock",
+            status=TelegramVerificationSession.STATUS_VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=5),
+            completed_at=timezone.now(),
+            telegram_user_id=654321,
+            chat_id=654321,
+            metadata={"restock_id": subscription.id},
+        )
+        rule.is_enabled = True
+        rule.stock = 3
+        rule.save(update_fields=["is_enabled", "stock"])
+        delivery_bot.return_value.send_message.return_value = True
+
+        with self.captureOnCommitCallbacks(execute=True):
+            TelegramBot()._post_verify_purpose_action(session)
+        call_command(
+            "process_restock_notifications",
+            subscription_id=subscription.pk,
+        )
+
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, RestockSubscription.Status.NOTIFIED)
+        delivery_bot.return_value.send_message.assert_called_once()
 
     @patch.object(TelegramBot, "send_message", return_value=True)
     def test_contact_completes_only_the_session_opened_by_same_chat(self, _send):
