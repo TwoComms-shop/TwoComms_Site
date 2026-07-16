@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from xml.etree import ElementTree as ET
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -89,6 +90,50 @@ class CategoryColorLandingSitemapTests(TestCase):
         body = response.content.decode("utf-8")
         self.assertIn("/catalog/tshirts/black/", body)
         self.assertNotIn("/catalog/tshirts/white/", body)
+
+    def test_sitemap_emits_unique_locale_urls_and_reciprocal_alternates(self):
+        CategoryColorLanding.objects.create(
+            category=self.category,
+            color=self.black,
+            seo_title="Чорні футболки",
+            seo_description="Чорні футболки TwoComms.",
+            editorial_html=_LONG,
+            is_published=True,
+        )
+
+        response = self.client.get("/sitemap-color-categories.xml")
+
+        self.assertEqual(response.status_code, 200)
+        root = ET.fromstring(response.content)
+        sitemap_ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
+        xhtml_ns = "http://www.w3.org/1999/xhtml"
+        urls = root.findall(f"{{{sitemap_ns}}}url")
+        locations = {
+            url.findtext(f"{{{sitemap_ns}}}loc")
+            for url in urls
+        }
+        expected_locations = {
+            "https://twocomms.shop/catalog/tshirts/black/",
+            "https://twocomms.shop/ru/catalog/tshirts/black/",
+            "https://twocomms.shop/en/catalog/tshirts/black/",
+        }
+        self.assertEqual(len(urls), 3)
+        self.assertEqual(locations, expected_locations)
+
+        for url in urls:
+            alternates = {
+                (link.attrib["hreflang"], link.attrib["href"])
+                for link in url.findall(f"{{{xhtml_ns}}}link")
+            }
+            self.assertEqual(
+                alternates,
+                {
+                    ("uk", "https://twocomms.shop/catalog/tshirts/black/"),
+                    ("ru", "https://twocomms.shop/ru/catalog/tshirts/black/"),
+                    ("en", "https://twocomms.shop/en/catalog/tshirts/black/"),
+                    ("x-default", "https://twocomms.shop/catalog/tshirts/black/"),
+                },
+            )
 
     def test_publishing_landing_pings_indexnow(self):
         # Create as draft — should NOT ping IndexNow.

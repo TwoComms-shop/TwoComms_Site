@@ -348,7 +348,13 @@ class CategoryColorLandingSitemap(Sitemap):
         return getattr(obj, 'updated_at', None)
 
     def location(self, obj):
-        return f"/catalog/{obj.category.slug}/{obj.color_slug}/"
+        return reverse(
+            'catalog_by_cat_color',
+            kwargs={
+                'cat_slug': obj.category.slug,
+                'color_slug': obj.color_slug,
+            },
+        )
 
 
 class ThematicLandingSitemap(Sitemap):
