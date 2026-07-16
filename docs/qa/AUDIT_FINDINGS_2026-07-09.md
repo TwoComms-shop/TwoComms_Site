@@ -39,7 +39,7 @@
 | 1 Page inventory | **100%** | all [x]; sitemap 489/489 |
 | 2 SEO deep | **100% checked** | fails → F-001..004 |
 | 3 GEO | **100% checked** | F-005 fixed `d773bee6` |
-| 4 CRO | **100% checked** | F-022 open |
+| 4 CRO | **100% checked** | F-022 fixed `fdf6563a`, production baseline verified 2026-07-16 |
 | 5 CART | **100% checked** | F-050; no paid order |
 | 6 UTM | **100% checked** | capture OK; **order link F-021** |
 | 7 PIX | **100% checked** | F-030; no EM login |
@@ -104,10 +104,10 @@
 | [x] | **F-084** | P1 | chatgpt vs chatgpt.com dual | **FIXED `069f4efa`**; all writers canonical, guarded historical normalization reconciled 122 UTM + 158 first-touch rows; §F-084; PLAN_VS W2-8 |
 | [ ] | **F-020** | P1 | Historical dirty utm_source | §F-020 |
 | [ ] | **F-057** | P1 | All-time dirty utm inventory | §F-057 |
-| [ ] | **F-022** | P1 | PV→ATC cliff | §F-022 |
-| [ ] | **F-032** | P1 | UserAction rarely linked UTMSession | §F-032 |
-| [ ] | **F-031** | P1 | MySQL has gone away | §F-031; F-080 |
-| [ ] | **F-007** | P1 | HTTP 429 burst crawl | §F-007 |
+| [x] | **F-022** | P1 | PV→ATC cliff | **FIXED `fdf6563a`**; trusted production baseline 389 PV / 20 ATC (7d), 140 / 9 post-fix; §F-022 |
+| [o] | **F-032** | P1 | UserAction rarely linked UTMSession | **PARTIAL:** organic nulls are expected, but 16 fresh click-attributed actions lack UTMSession; §F-032 |
+| [o] | **F-031** | P1 | MySQL has gone away | **PARTIAL:** no DB errors after request fallback disable marker; 7-day recurrence window and hosting 1040 remain; §F-031; F-080 |
+| [o] | **F-007** | P1 | HTTP 429 burst crawl | **PARTIAL:** static/media exempt + Retry-After present; generic counter remains non-atomic/not route-aware; §F-007 |
 | [ ] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | §F-018 |
 | [x] | **F-043** | P1 | /help-center/ 404 | **FIXED `169e6032`**; production 301 to `/dopomoga/`; §F-043 |
 | [x] | **F-050** | P1 | NP Kyiv Latin 502 | **FIXED `75b1f6fb`**; production Kyiv/Kiev/Київ 200; §F-050 |
@@ -195,7 +195,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-004** | P1 | FIXED | DONE | `81da8e22`: 13 SKU × 3 locales DB/live title-H1 names aligned |
 | [x] **F-005** | P1 | FIXED | DONE | `d773bee6`: RU/EN home+catalog H1 localized; server tests 2/2 and live 4/4 |
 | [ ] **F-006** | P2 | OPEN | YES | Color sitemap same URL ×3 |
-| [ ] **F-007** | P1 | OPEN | YES | HTTP 429 under burst crawl |
+| [o] **F-007** | P1 | PARTIAL | YES | Retry-After/static exemptions exist; non-atomic generic 100/min policy remains |
 | [ ] **F-008** | P2 | OPEN | YES | Meta description too long on some static pages |
 | [x] **F-009** | P3 | FIXED | DONE | `169e6032`: favicon.ico direct 200; production verified |
 | [ ] **F-010** | P2 | OPEN | YES | debug/dev endpoints login-gated not 404 |
@@ -210,7 +210,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-019** | P0 | FIXED | DONE | `34275e28`: new conversion canary sets is_converted; cleanup verified |
 | [ ] **F-020** | P1 | OPEN | YES | Historical dirty utm_source (new canaries normalize OK) |
 | [x] **F-021** | P0 | FIXED | DONE | `34275e28`: first-touch order attribution production canary verified |
-| [ ] **F-022** | P1 | OPEN | YES | Extreme PV→ATC cliff / possible product_view noise |
+| [x] **F-022** | P1 | FIXED | DONE | `fdf6563a`: trusted PV writer/dashboard; live 7d PV→ATC = 389→20 (~5.1%) |
 | [x] **F-023** | P1 | FIXED | DONE | `e2558396`: exact-value production migration repaired base/UK DB columns |
 | [x] **F-024** | P3 | PASS | no | ATC API + mini-cart works |
 | [x] **F-025** | P3 | PASS | no | Blog UK sitemap healthy |
@@ -219,8 +219,8 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [ ] **F-028** | P2 | OPEN | YES | RU/EN PDP naming strategy vs UK mismatch |
 | [x] **F-029** | P0 | FIXED_OPS | DONE | LSAPI_CHILDREN 6→10; 30/30 concurrent health checks, zero new limit errors |
 | [x] **F-030** | P0 | FIXED | DONE | `3291ac82`: BFCache pixel restore; live hashed asset verified |
-| [ ] **F-031** | P1 | OPEN | YES | MySQL server has gone away |
-| [ ] **F-032** | P1 | OPEN | YES | UserAction rarely linked to UTMSession |
+| [o] **F-031** | P1 | PARTIAL | YES | Stale/request-path connection source contained; observe 7 days and track shared-host 1040 separately |
+| [o] **F-032** | P1 | PARTIAL | YES | Fresh organic nulls valid; 16 click-attributed actions still missing UTMSession |
 | [x] **F-033** | P0 | FIXED | DONE | `34275e28`: production order/session attribution canary verified |
 | [x] **F-034** | P3 | PASS | no | Variants sample + recs links OK |
 | [ ] **F-035** | P2 | OPEN | YES | CSP violations in stderr |
@@ -303,12 +303,12 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
 
 ### P1 OPEN (continued) — 7
-- [ ] **F-007** — HTTP 429 under burst crawl
+- [o] **F-007** — HTTP 429 under burst crawl; Retry-After exists, atomic route-aware policy remains
 - [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
 - [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
-- [ ] **F-022** — Extreme PV→ATC cliff / possible product_view noise
-- [ ] **F-031** — MySQL server has gone away (reconf F-080)
-- [ ] **F-032** — UserAction rarely linked to UTMSession
+- [x] **F-022** — trusted PV→ATC baseline restored by `fdf6563a`; production recheck passed
+- [o] **F-031** — no recurrence after fallback-disable marker, but observation/hosting residual remains
+- [o] **F-032** — organic nulls expected; click-attributed linkage residual confirmed
 - [x] **F-043** — fixed `169e6032`; production 301 to `/dopomoga/`
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [ ] **F-057** — All-time dirty utm_source inventory
@@ -745,9 +745,9 @@ restart.
 
 ### F-007 — Aggressive HTTP 429 under moderate crawl
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [o] PARTIAL · **Severity:** P1 · **Fix required:** YES
 
-- [ ] **Open** · Severity: **P1** · Area: **TECH / ADS** · Checklist: TECH-060 family, SEO-062
+- [o] **Partial** · Severity: **P1** · Area: **TECH / ADS** · Checklist: TECH-060 family, SEO-062
 
 | Field | Value |
 |-------|--------|
@@ -767,6 +767,12 @@ restart.
 **Fix direction:** allowlist known bots; tune thresholds; ensure 429 Retry-After.
 
 **Risk of fix:** high if loosening security carelessly.
+
+**Recheck 2026-07-16:** static/media requests are exempt and 429 responses
+carry `Retry-After: 60`. The generic fixed-window implementation still uses a
+non-atomic cache `get`/`set`, applies one 100/minute threshold to unrelated
+dynamic routes, and has no verified crawler/monitoring policy. Keep `[o]` until
+an atomic route-aware policy is tested without an aggressive production burst.
 
 ---
 
@@ -998,7 +1004,7 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 - [x] Align product title/H1 (F-004) — `81da8e22`, DB/live 39/39 verified
 - [x] Translate RU/EN H1 (F-005) — `d773bee6`, server 2/2 + live 4/4 verified
 - [ ] Dedupe color sitemap (F-006)  
-- [ ] Review 429 policy (F-007)  
+- [o] Review 429 policy (F-007): atomic route-aware residual
 
 ---
 
@@ -1072,7 +1078,7 @@ Example organic web order with session but no UTM (expected for non-ads):
 | F-005 | FIXED `d773bee6` | RU/EN homepage/catalog H1; server 2/2 + live 4/4 |
 | F-003/F-027 | FIXED `4d72412a` | canonical feed color/size paths verified |
 | F-029/F-030 | FIXED | capacity + pixel BFCache verified |
-| F-031 | still OPEN | MySQL connection resilience |
+| F-031 | PARTIAL `[o]` | no post-marker recurrence; seven-day/hosting residual |
 
 ### Ads launch gate (final Pass A)
 
@@ -1280,9 +1286,9 @@ Sample order numbers (public business ids, not secrets): `TWC06072026N02`, `TWC0
 
 ### F-022 — Extreme funnel cliff product_view → add_to_cart (+ possible PV noise)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED `fdf6563a` · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **CRO** · Checklist: CRO-020–026
+- [x] **Fixed** · Severity: **P1** · Area: **CRO** · Checklist: CRO-020–026
 
 | Field | Value |
 |-------|--------|
@@ -1295,6 +1301,13 @@ Sample order numbers (public business ids, not secrets): `TWC06072026N02`, `TWC0
 **Why problem:** CRO dashboards useless; Meta may also see inflated ViewContent if mirrored; hides real PDP friction.
 
 **Pass C:** compare UserAction vs Meta ViewContent; check bot filter; verify dedupe window.
+
+**Production verification 2026-07-16:** the trusted cohort introduced by
+F-076 now shows 389 product views and 20 add-to-cart actions over 7 days
+(~5.1%), and 140/9 (~6.4%) since the 14 July writer gate. The historical raw
+30-day numerator remains retained for audit, but current dashboards exclude
+the unlinked/bot/zero-pageview rows. The original 0.12% cliff no longer
+reproduces on the governed metric.
 
 ---
 
@@ -1454,9 +1467,9 @@ idempotent `initializePixelsDeferred`. The regression test passes on the server,
 
 ### F-031 — MySQL “server has gone away” / connection errors in django logs
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [o] PARTIAL · **Severity:** P1 · **Fix required:** YES
 
-- [ ] **Open** · Severity: **P1** · Area: **TECH** · Checklist: TECH-063, TECH-060
+- [o] **Partial** · Severity: **P1** · Area: **TECH** · Checklist: TECH-063, TECH-060
 
 | Field | Value |
 |-------|--------|
@@ -1475,13 +1488,21 @@ idempotent `initializePixelsDeferred`. The regression test passes on the server,
 
 **Risk of fix:** medium (CONN_MAX_AGE, wait_timeout, pool) — ops change.
 
+**Recheck 2026-07-16:** production keeps `CONN_MAX_AGE=0`, closes old
+connections at long-running task boundaries, and has request-path Nova Poshta
+fallback disabled. The last retained code-2006 reset is at stderr line 52579;
+the last global code-1040 is line 57747, immediately followed by the first
+fallback-disabled marker. There are zero 2006/1040/reset matches in the 624
+subsequent log lines. Keep `[o]` until the documented seven-day recurrence
+window passes; shared-host global exhaustion remains tracked by PROD-001.
+
 ---
 
 ### F-032 — UserAction almost never linked to UTMSession (99.8% product_view)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [o] PARTIAL · **Severity:** P1 · **Fix required:** YES
 
-- [ ] **Open** · Severity: **P1** · Area: **UTM / CRO** · Checklist: UTM-003, CRO-020, DB-011
+- [o] **Partial** · Severity: **P1** · Area: **UTM / CRO** · Checklist: UTM-003, CRO-020, DB-011
 
 | Field | Value |
 |-------|--------|
@@ -1501,6 +1522,14 @@ idempotent `initializePixelsDeferred`. The regression test passes on the server,
 **Recent lead order 276** has UserAction lead/initiate_checkout with `utm_sess None` at same second as order create.
 
 **Risk of fix:** high — redesign session binding carefully.
+
+**Recheck 2026-07-16:** F-076 removed the misleading null-SiteSession
+product-view population from current metrics. Over the last 7 days, 48/502
+product views and 8/20 add-to-cart actions have a UTMSession; most remaining
+nulls are legitimate organic traffic. A post-14-July read-only join still found
+16 null-UTM actions whose linked SiteSession first-touch contains `fbclid`
+(7 product views and 9 custom-print actions), and no UTMSession exists for the
+same session key. That click-attributed residual keeps this finding `[o]`.
 
 ---
 
@@ -2273,7 +2302,10 @@ The historical raw rows are retained unchanged for auditability. Root-cause revi
 
 **Verification:** local and server Python 3.14 suites passed **46/46**; production normal navigation repeated three times created exactly **1** linked `product_view` and **3** `PageView` rows, while HEAD/no-cors/non-HTML/bot each created **0**. Live `/api/track-event/` returned `stored:false` for POST `product_view`; both canaries were cleaned to **0** residual rows. Production raw/current-product history was **41 626**, while the direct trusted cohort, admin product metrics and dashboard queryset reconciled **1 713 / 1 713 / 1 713**. UTM product-view sessions reconciled **33 / 33** between the direct query and funnel.
 
-**Still open separately:** F-022 needs a new PV→ATC baseline using the trusted cohort after enough fresh traffic; F-032 concerns UTM linkage coverage and is not closed merely because organic product views legitimately have no UTMSession.
+**Follow-up 2026-07-16:** F-022 is closed by the new trusted production
+baseline. F-032 remains `[o]`: organic product views legitimately have no
+UTMSession, but fresh `fbclid` first-touch actions without a matching UTM row
+still require a writer fix.
 
 ---
 
