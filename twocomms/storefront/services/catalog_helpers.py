@@ -415,14 +415,17 @@ def get_active_fit_options(product) -> List[Any]:
     return rows
 
 
-def get_detailed_color_variants(product) -> List[Dict[str, Any]]:
+def get_detailed_color_variants(product, lang='uk') -> List[Dict[str, Any]]:
     """
     Returns list of colour variants with full image sets for product detail page.
-    Memoized per product instance (the detail view needs it several times).
+    Memoized per product instance and language (the detail view needs it several times).
     """
-    cached = getattr(product, '_detailed_color_variants_cache', None)
-    if cached is not None:
-        return cached
+    language = str(lang or 'uk').split('-', 1)[0].lower()
+    if language not in {'uk', 'ru', 'en'}:
+        language = 'uk'
+    cached_by_language = getattr(product, '_detailed_color_variants_cache', None)
+    if isinstance(cached_by_language, dict) and language in cached_by_language:
+        return cached_by_language[language]
     if not getattr(product, 'id', None):
         return []
 
@@ -435,7 +438,7 @@ def get_detailed_color_variants(product) -> List[Dict[str, Any]]:
         from fable5.services import variant_public_context
 
         color = getattr(variant, 'color', None)
-        merchandising = variant_public_context(variant)
+        merchandising = variant_public_context(variant, lang=language)
         # Use the prefetched images directly without calling .all() again
         # This prevents N+1 queries
         images = getattr(variant, '_prefetched_objects_cache', {}).get('images', [])
@@ -489,7 +492,10 @@ def get_detailed_color_variants(product) -> List[Dict[str, Any]]:
             }
         )
     try:
-        product._detailed_color_variants_cache = variants
+        if not isinstance(cached_by_language, dict):
+            cached_by_language = {}
+        cached_by_language[language] = variants
+        product._detailed_color_variants_cache = cached_by_language
     except Exception:
         pass
     return variants

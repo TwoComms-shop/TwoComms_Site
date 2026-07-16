@@ -1,11 +1,15 @@
 """Public contracts for Fable 5 color merchandising metadata."""
 
+import html
+import json
+import re
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.core.cache import cache, caches
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import translation
 
 from fable5.models import (
     ColorProfile,
@@ -20,10 +24,15 @@ from fable5.models import (
 from fable5.services import effective_cart_unit_price, variant_public_context
 from productcolors.models import Color, ProductColorVariant
 from storefront.models import Catalog, Category, Product, ProductFitOption, SizeGrid
-from storefront.services.catalog_helpers import build_color_preview_map
+from storefront.services.catalog_helpers import (
+    build_color_preview_map,
+    get_detailed_color_variants,
+)
 
 
 class Fable5VariantMerchandisingTests(TestCase):
+    LEGACY_UK_MARKER = "ЛЕГАСІ УК ВАРІАНТ"
+
     def setUp(self):
         super().setUp()
         cache.clear()
@@ -93,6 +102,165 @@ class Fable5VariantMerchandisingTests(TestCase):
             is_enabled=True,
             reason="",
         )
+
+    def _create_localized_no_fit_hoodie(self):
+        product = Product.objects.create(
+            title="Худі «UK fallback»",
+            slug="fable5-localized-no-fit-hoodie",
+            category=self.category,
+            price=1690,
+            status="published",
+        )
+        localized_values = {
+            "uk": {
+                "title": "Худі «UK fallback»",
+                "seo_title": "UK fallback SEO",
+                "seo_description": "UK fallback SEO description",
+                "full_description": "UK fallback marketing",
+            },
+            "ru": {
+                "title": "Худи «RU fallback»",
+                "seo_title": "RU fallback SEO",
+                "seo_description": "RU fallback SEO description",
+                "full_description": "RU fallback marketing",
+            },
+            "en": {
+                "title": 'Hoodie "EN fallback"',
+                "seo_title": "EN fallback SEO",
+                "seo_description": "EN fallback SEO description",
+                "full_description": "EN fallback marketing",
+            },
+        }
+        for language, values in localized_values.items():
+            for field, value in values.items():
+                setattr(product, f"{field}_{language}", value)
+        product.save()
+
+        color = Color.objects.create(name="Чорний", primary_hex="#111111")
+        variant = ProductColorVariant.objects.create(
+            product=product,
+            color=color,
+            slug="legacy-uk-color",
+            is_default=True,
+            order=0,
+        )
+        VariantDetails.objects.create(
+            variant=variant,
+            display_name=f"{self.LEGACY_UK_MARKER} display",
+            marketing_html=f"{self.LEGACY_UK_MARKER} marketing",
+            seo_title=f"{self.LEGACY_UK_MARKER} SEO title",
+            seo_description=f"{self.LEGACY_UK_MARKER} SEO description",
+        )
+        return product, localized_values
+
+    def _restore_active_language_after_test(self):
+        previous_language = translation.get_language()
+        if previous_language is None:
+            self.addCleanup(translation.deactivate)
+        else:
+            self.addCleanup(translation.activate, previous_language)
+
+    def test_detailed_variants_memo_is_isolated_by_language(self):
+        product, localized_values = self._create_localized_no_fit_hoodie()
+
+        russian = get_detailed_color_variants(product, lang="ru")[0]
+        english = get_detailed_color_variants(product, lang="en")[0]
+
+        for language, payload in (("ru", russian), ("en", english)):
+            expected = localized_values[language]
+            with self.subTest(language=language):
+                self.assertEqual(payload["display_name"], expected["title"])
+                self.assertEqual(payload["seo_title"], expected["seo_title"])
+                self.assertEqual(
+                    payload["seo_description"],
+                    expected["seo_description"],
+                )
+                self.assertEqual(
+                    payload["marketing_html"],
+                    expected["full_description"],
+                )
+                self.assertNotIn(self.LEGACY_UK_MARKER, str(payload))
+
+    def test_localized_pdp_and_variants_api_do_not_leak_legacy_uk_content(self):
+        self._restore_active_language_after_test()
+        product, localized_values = self._create_localized_no_fit_hoodie()
+
+        for language in ("ru", "en"):
+            expected = localized_values[language]
+            with self.subTest(language=language):
+                response = self.client.get(
+                    f"/{language}/product/{product.slug}/"
+                )
+
+                self.assertEqual(response.status_code, 200)
+                h1_match = re.search(
+                    r"<h1[^>]*data-pdp-product-title[^>]*>(.*?)</h1>",
+                    response.content.decode(),
+                    flags=re.DOTALL,
+                )
+                self.assertIsNotNone(h1_match)
+                self.assertEqual(
+                    html.unescape(h1_match.group(1).strip()),
+                    expected["title"],
+                )
+                self.assertEqual(
+                    response.context["selected_variant_merchandising"]["display_name"],
+                    expected["title"],
+                )
+                self.assertNotContains(response, self.LEGACY_UK_MARKER)
+
+                with translation.override(language):
+                    variants_url = reverse(
+                        "get_product_variants",
+                        args=[product.pk],
+                    )
+                api_response = self.client.get(variants_url)
+                self.assertEqual(api_response.status_code, 200)
+                payload = api_response.json()["variants"][0]
+                self.assertEqual(payload["display_name"], expected["title"])
+                self.assertNotIn(self.LEGACY_UK_MARKER, str(payload))
+
+    def test_localized_color_pdp_json_ld_uses_product_fallbacks(self):
+        self._restore_active_language_after_test()
+        product, localized_values = self._create_localized_no_fit_hoodie()
+
+        for language in ("ru", "en"):
+            expected = localized_values[language]
+            variant_path = (
+                f"/{language}/product/{product.slug}/legacy-uk-color/"
+            )
+            with self.subTest(language=language):
+                response = self.client.get(variant_path)
+
+                self.assertEqual(response.status_code, 200)
+                json_ld_payloads = [
+                    json.loads(payload)
+                    for payload in re.findall(
+                        r'<script type="application/ld\+json">(.*?)</script>',
+                        response.content.decode(),
+                        flags=re.DOTALL,
+                    )
+                ]
+                graph_nodes = [
+                    node
+                    for payload in json_ld_payloads
+                    for node in payload.get("@graph", [payload])
+                ]
+                variant_node = next(
+                    node
+                    for node in graph_nodes
+                    if node.get("@type") == "Product"
+                    and node.get("url", "").endswith(variant_path)
+                )
+                self.assertEqual(variant_node["name"], expected["title"])
+                self.assertEqual(
+                    variant_node["description"],
+                    expected["seo_description"],
+                )
+                self.assertNotIn(
+                    self.LEGACY_UK_MARKER,
+                    json.dumps(variant_node, ensure_ascii=False),
+                )
 
     def test_public_context_uses_variant_price_and_safe_thermo_defaults(self):
         context = variant_public_context(self.thermo_variant)

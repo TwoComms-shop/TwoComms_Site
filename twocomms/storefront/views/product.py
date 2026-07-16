@@ -259,7 +259,8 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
     preselected_size = size_context["selected_size"]
 
     # Варианты цветов с изображениями (если есть приложение и данные)
-    color_variants = get_detailed_color_variants(product)
+    language = (getattr(request, 'LANGUAGE_CODE', None) or 'uk').split('-', 1)[0].lower()
+    color_variants = get_detailed_color_variants(product, lang=language)
 
     # Fable5 size grids can differ by fit and by colour. Build the complete
     # matrix before parsing variant URLs so a size that exists only in a
@@ -928,7 +929,8 @@ def get_product_variants(request, product_id):
     """
     try:
         product = Product.objects.get(id=product_id, status='published')
-        color_variants = get_detailed_color_variants(product)
+        language = (getattr(request, 'LANGUAGE_CODE', None) or 'uk').split('-', 1)[0].lower()
+        color_variants = get_detailed_color_variants(product, lang=language)
 
         return JsonResponse({
             'success': True,
@@ -955,7 +957,8 @@ def quick_view(request, product_id):
     """
     try:
         product = Product.objects.select_related('category').get(id=product_id, status='published')
-        color_variants = get_detailed_color_variants(product)
+        language = (getattr(request, 'LANGUAGE_CODE', None) or 'uk').split('-', 1)[0].lower()
+        color_variants = get_detailed_color_variants(product, lang=language)
 
         from django.template.loader import render_to_string
 

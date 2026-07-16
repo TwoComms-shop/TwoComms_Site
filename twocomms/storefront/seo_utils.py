@@ -838,9 +838,11 @@ class StructuredDataGenerator:
         if selected_variant is not None:
             try:
                 from fable5.services import variant_public_context
+                language = (get_language() or "uk").split("-", 1)[0].lower()
                 variant_merchandising = variant_public_context(
                     selected_variant,
                     fit_code=fit_code,
+                    lang=language,
                 )
             except Exception:
                 variant_merchandising = None
@@ -1400,7 +1402,8 @@ class StructuredDataGenerator:
             variant_url = _build_absolute_url(f"{prefix}product/{product.slug}/{slug}/")
             try:
                 from fable5.services import variant_public_context
-                variant_context = variant_public_context(variant)
+                language = (get_language() or "uk").split("-", 1)[0].lower()
+                variant_context = variant_public_context(variant, lang=language)
             except Exception:
                 variant_context = {}
             node: Dict = {
