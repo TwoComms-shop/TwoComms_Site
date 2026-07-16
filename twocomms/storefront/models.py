@@ -1174,11 +1174,30 @@ class Product(models.Model):
 
         Examples:
             >>> product.get_offer_id()
-            'TC-0001-CHERNYI-S'
+            'TC-0001-ЧОРНИЙ-S'
             >>> product.get_offer_id(color_variant_id=2, size='M')
-            'TC-0001-RED-M'
+            'TC-0001-БІЛИЙ-M'
         """
         from storefront.utils.analytics_helpers import get_offer_id
+
+        # F-018: a cart request can omit color_variant_id even for a product
+        # that has real variants. In that case the feed contains the default
+        # variant colour, so using the generic Russian fallback fragments the
+        # pixel content_id. Resolve the same default/first variant once per
+        # Product instance; truly colourless products retain the feed fallback.
+        if color_variant_id is None and not color_name:
+            sentinel = object()
+            default_color = getattr(self, '_offer_id_default_color', sentinel)
+            if default_color is sentinel:
+                variants = list(self.color_variants.all())
+                selected = next(
+                    (variant for variant in variants if variant.is_default),
+                    variants[0] if variants else None,
+                )
+                color = getattr(selected, 'color', None) if selected else None
+                default_color = getattr(color, 'name', None) or None
+                self._offer_id_default_color = default_color
+            color_name = default_color
         return get_offer_id(self.id, color_variant_id, size, color_name)
 
     def get_all_offer_ids(self, sizes=None):
