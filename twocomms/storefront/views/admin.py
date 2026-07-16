@@ -1126,7 +1126,7 @@ def admin_panel(request):
     if not request.user.is_staff:
         return redirect('home')
 
-    section = request.GET.get('section', 'stats')
+    section = request.GET.get('section', 'orders')
     period_param = request.GET.get('period', 'today')
 
     context = {
