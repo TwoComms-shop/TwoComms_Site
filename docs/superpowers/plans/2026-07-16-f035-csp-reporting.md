@@ -121,6 +121,11 @@ Keep the original bare stderr count as historical evidence. Record that current 
 
 Use `[x] FIXED/DONE` only if the telemetry pipeline works and enough real reports prove no policy residual. Use `[o] PARTIAL` if observation is still needed or a verified blocked origin remains unresolved.
 
-- [ ] **Step 3: Commit, push, deploy, and verify documentation**
+- [x] **Step 3: Commit, push, deploy, and verify documentation**
 
 Commit only audit-plan/document changes, push/pull `main`, and verify every current F-035 row and linked report agrees on status, evidence, and observation requirements.
+
+Documentation evidence (2026-07-16): `34210b27` was pushed and fast-forwarded
+on production. Server HEAD `34210b277e9c1a35892822053671e3f149179412`
+shows all current F-035 rows as `[o] PARTIAL`, the P2 summary as
+`2 PARTIAL / 7 OPEN`, and TECH-082 linked to the exact section 4 report.
