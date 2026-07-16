@@ -123,7 +123,7 @@
 
 | ☐ | ID | Sev | One-line | Detail |
 |---|-----|-----|----------|--------|
-| [ ] | **F-006** | P2 | Color sitemap ×3 | §F-006 |
+| [x] | **F-006** | P2 | Color sitemap ×3 | **FIXED `a6c3c39b`**; live 12/12 unique, locale alternates valid; §F-006 |
 | [ ] | **F-008** | P2 | Meta description too long | §F-008 |
 | [ ] | **F-010** | P2 | debug endpoints login not 404 | §F-010 |
 | [ ] | **F-011** | P2 | TikTok ttq.load not in HTML | §F-011 |
@@ -194,7 +194,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-003** | P0 | FIXED | DONE | `4d72412a`: 384 canonical feed links; live landing sample verified |
 | [x] **F-004** | P1 | FIXED | DONE | `81da8e22`: 13 SKU × 3 locales DB/live title-H1 names aligned |
 | [x] **F-005** | P1 | FIXED | DONE | `d773bee6`: RU/EN home+catalog H1 localized; server tests 2/2 and live 4/4 |
-| [ ] **F-006** | P2 | OPEN | YES | Color sitemap same URL ×3 |
+| [x] **F-006** | P2 | FIXED | DONE | `a6c3c39b`: reverse-based locale URLs; server 26/26, live 12/12 unique |
 | [x] **F-007** | P1 | FIXED | DONE | `3d217ebb`: atomic route/host buckets; 600 catalog requests allowed, 601st returns 429 |
 | [ ] **F-008** | P2 | OPEN | YES | Meta description too long on some static pages |
 | [x] **F-009** | P3 | FIXED | DONE | `169e6032`: favicon.ico direct 200; production verified |
@@ -313,8 +313,8 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 OPEN — 11
-- [ ] **F-006** — Color sitemap same URL ×3
+### P2 OPEN — 10
+- [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [ ] **F-008** — Meta description too long on some static pages
 - [ ] **F-010** — debug/dev endpoints login-gated not 404
 - [ ] **F-011** — TikTok data-attr present; ttq.load not in initial HTML
@@ -428,7 +428,7 @@ F-084 and F-020/F-057.
 | Variant URLs sample | 20 | 20 | 0 | titles include color/fit F-016 |
 | mapa-saytu links | 53 | 53 | 0 | F-017 |
 | UK categories | 3 | 3 | 0 | titles **truncated** (see F-001) |
-| Color landings unique | 4 | 4 | grammar PASS 2026-07-12 | F-002 fixed; F-006 sitemap duplicates remain |
+| Color landings unique | 4 | 4 | grammar PASS 2026-07-12 | F-002 fixed; F-006 sitemap fixed `a6c3c39b` |
 | Thematic landings | 4 | 4 | 0 | military/streetwear/patriotic/kharkiv |
 | Static support set | 13 | 13 | 0 | favorites/qr noindex OK |
 | Merchant feed links sample | 5 | 5 HTTP | **canonical path wrong** | F-003 |
@@ -520,7 +520,7 @@ passed **5/5**. Production MySQL contains complete base/UK titles, and all
 
 **Status:** [x] FIXED (`0b9ecc1c`) · **Severity:** P1 · **Fix required:** DONE
 
-> **Reconfirm 2026-07-09 late:** `/catalog/tshirts/black/` title=`Купити чорний футболка з принтом` · h1=`Чорні футболка TwoComms — стрітвір з Харкова` (grammar + «стрітвір» typo). Sitemap still emits each color URL ×3 (F-006).
+> **Historical reconfirm 2026-07-09 late:** `/catalog/tshirts/black/` title=`Купити чорний футболка з принтом` · h1=`Чорні футболка TwoComms — стрітвір з Харкова` (grammar + «стрітвір» typo). At that recheck the sitemap still emitted each color URL ×3; F-006 was later fixed in `a6c3c39b`.
 
 - [x] **Fixed** · Severity: **P1** · Area: **SEO** · Checklist: SEO-014, PG-008, SEO-090
 
@@ -727,20 +727,31 @@ restart.
 
 ### F-006 — Color sitemap duplicates (same loc ×3)
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [x] FIXED (`a6c3c39b`) · **Severity:** P2 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P2** · Area: **SEO** · Checklist: SEO-066, SEO-068
+- [x] **Fixed** · Severity: **P2** · Area: **SEO** · Checklist: SEO-066, SEO-068
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED |
-| Status (C) | |
+| Status (C) | FIXED 2026-07-16 |
 
 **Evidence:** `sitemap-color-categories.xml` — 12 `<loc>`, 4 unique URLs, each appears **3 times** (likely i18n×3 emitting same non-prefixed URL, or loop bug).
 
 **Impact:** crawl budget noise; signals generator bug (may miss ru/en color URLs entirely).
 
 **Risk of fix:** low–medium (sitemap only).
+
+**Fix verification 2026-07-16:** `CategoryColorLandingSitemap.location()` now
+uses the named i18n route instead of a hardcoded unprefixed path. This preserves
+the intended three locale entries and makes them unique rather than hiding the
+problem by disabling i18n.
+
+- Local and server related sitemap suites: **26/26 PASS**.
+- Live XML: **12 loc / 12 unique**; UK/RU/EN each 4; every URL contains the
+  reciprocal `uk`, `ru`, `en`, and `x-default` alternates.
+- Live URL validation: **12/12 HTTP 200**; three fresh XML requests remained
+  **12/12 unique** after Passenger restart.
 
 ---
 
@@ -1023,7 +1034,7 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 - [x] Fix merchant feed links + ID parity (F-003) — `4d72412a`, production verified
 - [x] Align product title/H1 (F-004) — `81da8e22`, DB/live 39/39 verified
 - [x] Translate RU/EN H1 (F-005) — `d773bee6`, server 2/2 + live 4/4 verified
-- [ ] Dedupe color sitemap (F-006)  
+- [x] Dedupe color sitemap (F-006) — fixed `a6c3c39b`; server/live verified
 - [x] Review 429 policy (F-007) — fixed `3d217ebb`; server and production verified
 
 ---
@@ -2411,10 +2422,11 @@ Live `https://twocomms.shop/google-merchant-feed.xml` (**384** items):
 - After HTML-unescape, sample links `?size=S&color=…` → **HTTP 200**, redirect to size path `/product/…/s/`, title includes size + color.  
 - `g:id` all unique; **384/384** Cyrillic color tokens (e.g. `TC-0106-ЧОРНИЙ-S`).
 
-**Still open separately:** duplicate sitemap color URLs (F-006). The offer_id
-RU/UA split (F-018) was fixed later in `3a458b51`; color category grammar was
-fixed in `0b9ecc1c`. Do **not** treat product feed size/color query as broken
-after this recheck.
+**Historical scope note:** duplicate sitemap color URLs (F-006) were still open
+at this recheck and were fixed later in `a6c3c39b`. The offer_id RU/UA split
+(F-018) was fixed in `3a458b51`; color category grammar was fixed in
+`0b9ecc1c`. Do **not** treat product feed size/color query as broken after this
+recheck.
 
 ---
 

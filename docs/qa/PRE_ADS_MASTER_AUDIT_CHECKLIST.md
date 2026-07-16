@@ -186,7 +186,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-005 | `/catalog/?page=N` | | | | [x] PASS catalog pagination works|
 | PG-006 | `/catalog/page/N/` legacy | 301 | | | [x] PASS 301 |
 | PG-007 | `/catalog/<cat>/` | each **active** category | | **repeat per category** | [x] 3/3 UK checked — **titles FAIL F-001** |
-| PG-008 | `/catalog/<cat>/<color>/` | color landings if published | | empty sitemap risk | [x] 4 unique — **grammar FAIL F-002**; sitemap dups F-006 |
+| PG-008 | `/catalog/<cat>/<color>/` | color landings if published | | empty sitemap risk | [x] 4 unique; grammar F-002 fixed; sitemap F-006 fixed `a6c3c39b` |
 | PG-009 | `/catalog/theme/<theme>/` | thematic landings | | | [x] 4/4 PASS HTTP |
 | PG-010 | `/product/<slug>/` | each **published** product base | | **batch all products** | [x] 65/65 UK HTTP+title; H1 mismatches F-004 |
 | PG-011 | `/product/<slug>/<v1>/` | color/fit samples | | | [x] PASS variants sample 60+/sitemap F-016/F-034|
@@ -372,9 +372,9 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-063 | Only published products | P0 | [x] PASS DB published=sitemap UK 65|
 | SEO-064 | Draft/archived absent | P0 | [x] PASS only published in public sitemap sample|
 | SEO-065 | Variant locs resolve | P1 | [x] PASS sample 60/178 (F-034) |
-| SEO-066 | Empty sections removed or filled | P1 | [x] color has URLs but **dups F-006** |
+| SEO-066 | Empty sections removed or filled | P1 | [x] color sitemap live 12/12 unique; F-006 fixed `a6c3c39b` |
 | SEO-067 | lastmod honest | P2 | [x] WARN lastmod clustered Jun 2026 F-014|
-| SEO-068 | i18n alternates consistent | P1 | [x] PASS hreflang set sample; color sitemap dups F-006|
+| SEO-068 | i18n alternates consistent | P1 | [x] color sitemap UK/RU/EN reciprocal alternates live-verified; F-006 fixed |
 | SEO-069 | robots.txt host + allows/disallows | P0 | [x] PASS robots host+disallows|
 | SEO-070 | search not in sitemap | P1 | [x] PASS search noindex / not in sitemap|
 | SEO-071 | HTML mapa-saytu links = live 200 | P1 | [x] PASS 53 links (F-017) |

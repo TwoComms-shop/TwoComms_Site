@@ -52,7 +52,7 @@
 | Topic | IDs | Detail | Code / data |
 |-------|-----|--------|-------------|
 | Category titles cut mid-word | F-001, F-023 **FIXED `e2558396`** | PLAN_VS **ADS-3** | MySQL `Category.seo_title*`; guarded data migration + trim regression |
-| Color landing grammar | F-002 **FIXED `0b9ecc1c`**; F-006 sitemap duplicates open | Findings §F-002 | `seed_color_landings`; production DB reseed |
+| Color landing grammar | F-002 **FIXED `0b9ecc1c`**; F-006 sitemap **FIXED `a6c3c39b`** | Findings §F-002/F-006 | production DB reseed; live sitemap 12/12 unique |
 | Product title ≠ H1 | F-004, F-094 **FIXED `81da8e22`** | Findings | guarded product SEO fallback + migration `0082` |
 | RU/EN H1 Ukrainian | F-005 **FIXED `d773bee6`** | PLAN_VS ADS-2 | RU/EN locale catalogs + regression test; 4/4 live pages verified |
 | Feed g:link | F-003, F-027, F-077 | F-077 revised product links often OK | feed generators |
