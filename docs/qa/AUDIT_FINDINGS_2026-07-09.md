@@ -129,7 +129,7 @@
 | [x] | **F-011** | P2 | TikTok ttq.load not in HTML | **FIXED `c0b324c3`**; deferred bootstrap verified, paid-low live asset matrix PASS; §F-011 |
 | [x] | **F-013** | P2 | Category title vs H1 strategy | **RESOLVED by F-001 `e2558396`**; fresh live 9/9 aligned, complete title/H1 pairs; §F-013 |
 | [o] | **F-028** | P2 | RU/EN PDP naming | **PARTIAL `da910c46`**; locale runtime fixed, live 39/39 aligned; owner-approved cross-locale naming policy remains; §F-028 |
-| [ ] | **F-035** | P2 | CSP violations | §F-035 |
+| [o] | **F-035** | P2 | CSP violations | **PARTIAL `341d42a9`**; telemetry fixed and production-verified; whether any current allowlist residual exists awaits >=24h observation from 2026-07-16 16:07:50 UTC; §F-035 |
 | [ ] | **F-036** | P2 | Telegram RemoteDisconnected | §F-036 |
 | [ ] | **F-048** | P2 | fbp without internal UTM | §F-048 |
 | [ ] | **F-051** | P2 | checkout/capture empty 200 | §F-051; PLAN_VS W3-11 |
@@ -223,7 +223,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-032** | P1 | FIXED | DONE | `9854c18b` + `b33b8ce4`: click-ID writer + guarded 72-session/116-action production backfill |
 | [x] **F-033** | P0 | FIXED | DONE | `34275e28`: production order/session attribution canary verified |
 | [x] **F-034** | P3 | PASS | no | Variants sample + recs links OK |
-| [ ] **F-035** | P2 | OPEN | YES | CSP violations in stderr |
+| [o] **F-035** | P2 | PARTIAL | YES | `341d42a9`: receiver/logging fixed; current CSP policy breakage remains unproven pending >=24h observation |
 | [ ] **F-036** | P2 | OPEN | YES | Telegram admin RemoteDisconnected |
 | [x] **F-037** | P2 | INFO | no | Home IP exclusion (owner can toggle; retest F-049) |
 | [x] **F-038** | P2 | REVISED | no | sessionid delay mainly under exclusion; non-excluded OK |
@@ -313,14 +313,14 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 STATUS — 1 PARTIAL / 8 OPEN
+### P2 STATUS — 2 PARTIAL / 7 OPEN
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
 - [x] **F-011** — fixed `c0b324c3`; deferred owner confirmed and paid-low/organic-low/paid-normal matrix passed
 - [x] **F-013** — resolved by F-001 `e2558396`; fresh live 9/9 complete and intent-aligned
 - [o] **F-028** — `da910c46` fixed runtime locale propagation (live 39/39); owner-approved cross-locale naming policy remains
-- [ ] **F-035** — CSP violations in stderr
+- [o] **F-035** — `341d42a9` fixed and production-verified telemetry; observe real reports for >=24h from 2026-07-16 16:07:50 UTC before any policy change
 - [ ] **F-036** — Telegram admin RemoteDisconnected
 - [ ] **F-048** — Orders have fbp tracking without internal UTM
 - [ ] **F-051** — checkout/capture empty returns 200 ok
@@ -1757,11 +1757,42 @@ Some orders have `sale_source` like `Kasta`, `AIO`, `Знайомі` (manual/off
 
 ### F-035 — CSP violations present in stderr
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [o] PARTIAL (`341d42a9`) · **Severity:** P2 · **Fix required:** YES (observation/policy only)
 
-- [ ] **Open** · Severity: **P2** · Area: **TECH** · Checklist: TECH-082
+- [o] **Partial** · Severity: **P2** · Area: **TECH** · Checklist: TECH-082
 
-`stderr.log` contains repeated `csp_violation` (~13 in sample window). May block third-party pixels/scripts intermittently. Pass C: capture blocked URI list.
+Historical audit sample: `stderr.log` contained repeated bare `csp_violation`
+messages (~13 in that sample window). The current pre-fix production baseline was
+**588** bare messages across `stderr.log*`; the `csp` logger had no handlers,
+`propagate=True`, and no dedicated `csp.log`. The live header still had **13 CSP
+directives** with the expected analytics/social origins. The historical count
+therefore did not prove a currently missing allowlist origin.
+
+The confirmed defect was the telemetry receiver: standard Reporting API
+`application/reports+json` arrays reached mapping-only `.get(...)` logic and
+crashed, while the old log message discarded the fields needed to identify the
+blocked origin/directive. Commit `341d42a9e9a1ca5bbd1a0c060763f4c958899ec0`
+normalizes modern and legacy reports, bounds and sanitizes fields, and writes
+privacy-safe JSON to an isolated rotating `csp.log`; it does **not** change the
+CSP header or allowlist.
+
+Verification: initial RED was 9 tests with 7 failures plus 9 subtest errors.
+Security review added encoded PII/userinfo, request/field bounds, UTC timestamp,
+and lone-surrogate regressions; final local and server focused suites were
+**16/16**, Django check and scoped compile were clean, and spec/quality reviews
+were APPROVED. Production runs the code SHA above; the `csp` logger uses
+`RotatingFileHandler`, WARNING, and `propagate=False`, followed by a Passenger
+restart. Live `/healthz/` returned 200; valid Reporting API and malformed posts
+both returned 204; public `/csp.log` returned 404. The newest log line parsed as
+JSON and retained timestamp/directive/event while omitting query, fragment, and
+secret marker data. Exactly one synthetic canary exists; real post-deploy
+reports = **0**, invalid lines = **0**. No migration, static build, DB mutation,
+or CSP source-policy change was performed.
+
+Residual: keep `[o] PARTIAL` until at least 24 hours after the canary timestamp
+**2026-07-16 16:07:50 UTC** and inventory sanitized non-canary reports. Do not
+add an origin unless a report maps it to deployed code or verified GTM
+configuration.
 
 ---
 
@@ -1890,7 +1921,7 @@ Online path: `monobank.py` `link_order_to_utm`.
 - [x] **PASS partial** · Checklist: TECH-082
 
 `Content-Security-Policy` includes `connect.facebook.net`, `www.facebook.com`, `analytics.tiktok.com`, `googletagmanager.com`, etc.  
-`report-uri /csp-report/` explains stderr `csp_violation` noise (F-035) — need sample blocked URIs in Pass C.
+The current live header has 13 directives with the expected analytics/social origins, so this positive check remains PASS. F-035 now records that the reporting pipeline is fixed while real non-canary evidence is still required before changing policy.
 
 ---
 

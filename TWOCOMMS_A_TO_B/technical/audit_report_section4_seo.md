@@ -202,6 +202,33 @@ quick-view/images = 200. Примеры во всех четырёх слоях:
 различиях EN print identity и RU/UK требует owner-approved slug-family mapping.
 Автономное переименование контента/данных не выполнялось и не разрешено.
 
+## Follow-up 16.07.2026 — F-035 / TECH-082 CSP reporting
+
+Статус **[o] PARTIAL**. Историческая выборка ~13 bare `csp_violation`
+сохранена в master findings; текущий pre-fix baseline на production — **588**
+сообщений в `stderr.log*`, при этом `csp` logger был без handlers,
+`propagate=True`, а `csp.log` отсутствовал. Live CSP содержал 13 директив и
+ожидаемые analytics/social origins. Подтверждённый дефект был в telemetry:
+стандартный `application/reports+json` list падал на `.get(...)`, а bare-лог
+терял origin/directive и дополнительные поля.
+
+`341d42a9e9a1ca5bbd1a0c060763f4c958899ec0` исправил modern/legacy receiver,
+privacy sanitation и изолированный rotating JSON log без изменения CSP header
+или allowlist. Initial RED: 9 тестов, 7 failures + 9 subtest errors; после
+security follow-ups по encoded PII/userinfo, bounds, UTC timestamp и surrogate
+final local/server = **16/16**, check/compile clean, spec/quality APPROVED.
+Production HEAD совпадает с code SHA; logger = `RotatingFileHandler`, WARNING,
+`propagate=False`; Passenger перезапущен. Live: health 200, valid report 204,
+malformed 204, `/csp.log` 404; последняя строка — parseable JSON с
+timestamp/directive/event и без query/fragment/secret marker. В логе ровно
+1 synthetic canary, real reports = 0, invalid lines = 0. Миграций,
+collectstatic/compress и DB mutation не было.
+
+До минимум **24 часов от 2026-07-16 16:07:50 UTC** нельзя считать исходное
+policy-breakage закрытым. После окна собрать sanitized non-canary origins и
+directives; allowlist менять только для origin, подтверждённого deployed code
+или GTM configuration. F-041 остаётся PASS для текущего header/host baseline.
+
 ## AEO-001. AI-трафик уже идёт — какие страницы цитирует ChatGPT (БД, 07.07.2026)
 
 **Источник:** read-only SSH/Django shell batch, `data/server_audit_batch_output.txt`.
@@ -248,6 +275,7 @@ AI-трафик уже не гипотеза, а стабильный канал
 
 | Дата | Пункт | Резюме |
 |---|---|---|
+| 16.07.2026 | F-035 / TECH-082 | `341d42a9`: CSP telemetry fixed/deployed; local/server 16/16, check/compile clean, live 204/204 + private JSON log verified; [o] PARTIAL до >=24h real-report observation from 16:07:50 UTC; allowlist unchanged |
 | 16.07.2026 | F-028 / SEO-007 | `da910c46`: locale runtime fixed; local/server 16/16 + API 7/7 + check clean, live 39/39 aligned, health 200; [o] PARTIAL до owner-approved cross-locale naming map; без data mutation |
 | 07.07.2026 | SEO-022 | Organization/WebSite/founder глобально через теги в base.html со стабильными @id, logo есть, BreadcrumbList на каталоге/карточке/индексе/контактах; P3 — sameAs без TikTok (нужен подтверждённый handle); остаток — Rich Results Test |
 | 07.07.2026 | SEO-023 | FAQPage через единый тег faq_schema на 6 страницах, разметка строится из видимого контента (один источник), TECH-032 фактически закрыт; остаток — выборочная валидация в��адельцем |

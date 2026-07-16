@@ -86,21 +86,23 @@ Evidence (2026-07-16): the initial focused GREEN ran 9 tests with 9 passes. Qual
 **Files:**
 - Modify: `docs/superpowers/plans/2026-07-16-f035-csp-reporting.md`
 
-- [ ] **Step 1: Complete spec and code-quality review**
+- [x] **Step 1: Complete spec and code-quality review**
 
 Review normalization coverage, privacy controls, logging isolation, rate/amplification bounds, and confirm no CSP source directive changed. Re-run Task 2 verification immediately before the code commit.
 
-- [ ] **Step 2: Commit, push, deploy, and restart Passenger**
+- [x] **Step 2: Commit, push, deploy, and restart Passenger**
 
 Commit only the plan, focused test, receiver, and logging settings. Push `main`, pull production with `--ff-only`, run focused server tests/check, and `touch tmp/restart.txt`. No migration, collectstatic, compress, or DB mutation is required.
 
-- [ ] **Step 3: Run safe live canaries**
+- [x] **Step 3: Run safe live canaries**
 
 POST one synthetic Reporting API report using `https://audit.invalid/f035.js?secret=redacted` and one malformed payload. Both must return 204. Parse the newest `csp.log` line as JSON and assert event/directive fields exist, the URL is query-free, the marker is identifiable, the logger owns a rotating handler with `propagate=False`, and direct public GET `/csp.log` is 403/404.
 
-- [ ] **Step 4: Observe real production evidence before policy changes**
+- [x] **Step 4: Observe real production evidence before policy changes**
 
 Inventory sanitized non-canary `blocked_uri` origins/directives from the new log. Do not add an allowlist origin unless it maps to deployed code or verified GTM configuration. If no real reports have arrived yet, keep F-035 `[o] PARTIAL` with an observation window rather than claiming the original violations fixed.
+
+Evidence (2026-07-16): spec and code-quality reviews were APPROVED after security follow-ups for encoded PII/userinfo, request and field bounds, UTC timestamps, and lone-surrogate handling. Final local focused suite passed 16/16; Django check and scoped compileall were clean. Commit `341d42a9e9a1ca5bbd1a0c060763f4c958899ec0` was pushed and deployed; production HEAD matched, server focused suite passed 16/16, Django check was clean, the logger resolved to `RotatingFileHandler` at WARNING with `propagate=False`, and Passenger was restarted. No migration, collectstatic, compress, or DB mutation ran. Live `/healthz/` returned 200; one valid Reporting API canary and one malformed payload returned 204; direct `/csp.log` returned 404. The newest line parsed as JSON with timestamp/directive/event present and query, fragment, and secret marker absent. The dedicated log held one synthetic canary, zero real post-deploy reports, and zero invalid lines. Therefore observation was started, not declared complete: F-035 remains `[o] PARTIAL` for at least 24 hours from the canary at 2026-07-16 16:07:50 UTC, with no allowlist/header change unless a sanitized real report maps to deployed code or verified GTM configuration.
 
 ### Task 4: Reconcile F-035 audit status
 
@@ -111,11 +113,11 @@ Inventory sanitized non-canary `blocked_uri` origins/directives from the new log
 - Modify: `TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`
 - Modify: `docs/superpowers/plans/2026-07-16-f035-csp-reporting.md`
 
-- [ ] **Step 1: Preserve the historical finding and record corrected scope**
+- [x] **Step 1: Preserve the historical finding and record corrected scope**
 
 Keep the original bare stderr count as historical evidence. Record that current breakage was the receiver/logging pipeline; distinguish it from an unproven current CSP allowlist defect.
 
-- [ ] **Step 2: Mark status from production evidence**
+- [x] **Step 2: Mark status from production evidence**
 
 Use `[x] FIXED/DONE` only if the telemetry pipeline works and enough real reports prove no policy residual. Use `[o] PARTIAL` if observation is still needed or a verified blocked origin remains unresolved.
 

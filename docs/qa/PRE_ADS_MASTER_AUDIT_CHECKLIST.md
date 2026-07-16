@@ -813,7 +813,7 @@ Mark each: loads 200 / no throw on page.
 |----|-------|---|---|
 | TECH-080 | Admin not in public footer | P0 | [x] PASS admin not footer|
 | TECH-081 | CSRF on mutations | P0 | [x] PASS CSRF required mutations|
-| TECH-082 | CSP vs pixel/GTM | P1 | [x] hosts allowed F-041; violations still F-035 |
+| TECH-082 | CSP vs pixel/GTM | P1 | [o] F-041 host/header check remains PASS; F-035 telemetry fixed, >=24h real-report observation pending; [`audit_report_section4_seo.md`](../../TWOCOMMS_A_TO_B/technical/audit_report_section4_seo.md) |
 | TECH-083 | Debug endpoints closed on prod | P0 | [x] F-010 fixed `efd7f192`; 7 routes x 3 locales = 21/21 live 404|
 | TECH-084 | Rate limits track/client-error | P1 | [x] PASS rate-limit client-error|
 
