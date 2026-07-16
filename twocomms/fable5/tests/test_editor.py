@@ -54,7 +54,7 @@ class Fable5EditorAccessTests(TestCase):
             reverse("fable5_product_edit", args=[self.product.pk])
         ).content.decode()
 
-        self.assertIn("fable5/editor.js?v=20260716-dirty-v1", content)
+        self.assertIn("fable5/editor.js?v=20260716-dirty-v2", content)
 
     def test_staff_can_create_product_with_unified_save_endpoint(self):
         self.client.force_login(self.staff)
@@ -210,6 +210,45 @@ class Fable5EditorAccessTests(TestCase):
         self.assertIn("if (includeSizes) data.sizes = sizes", javascript)
         self.assertIn('card.dataset.sizesDirty = "true"', javascript)
         self.assertIn("variant._sizesDirty = true", javascript)
+
+    def test_global_save_keeps_changes_made_after_revision_snapshot_dirty(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("revision: 0", javascript)
+        self.assertIn("state.revision += 1", javascript)
+        self.assertIn("const saveRevision = state.revision", javascript)
+        self.assertIn("revision: variant._revision || 0", javascript)
+        self.assertIn("currentVariant._revision === draft.revision", javascript)
+        self.assertIn(
+            "const changedDuringSave = state.revision !== saveRevision",
+            javascript,
+        )
+        changed_branch = javascript.index("if (changedDuringSave)")
+        full_render = javascript.index("renderHeader()", changed_branch)
+        self.assertLess(changed_branch, full_render)
+
+    def test_stock_only_save_merges_inventory_without_clearing_content_draft(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+        start = javascript.index('$("#f-stock").addEventListener("click"')
+        end = javascript.index("/* ---------------- фіди", start)
+        stock_save = javascript[start:end]
+
+        self.assertIn("variant.sizes = resp.variant.sizes || []", stock_save)
+        self.assertIn("variant._sizesDirty = false", stock_save)
+        self.assertIn("variant._dirty = Boolean(variant._contentDirty)", stock_save)
+        self.assertNotIn("clearVariantDirty", stock_save)
+        self.assertNotIn("state.variants[index] = resp.variant", stock_save)
+        self.assertNotIn("renderVariants()", stock_save)
 
     def test_global_save_includes_dirty_stock_and_feed_drafts(self):
         javascript = (
