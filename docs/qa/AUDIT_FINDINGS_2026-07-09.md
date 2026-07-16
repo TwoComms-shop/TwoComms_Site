@@ -111,7 +111,7 @@
 | [ ] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | §F-018 |
 | [x] | **F-043** | P1 | /help-center/ 404 | **FIXED `169e6032`**; production 301 to `/dopomoga/`; §F-043 |
 | [x] | **F-050** | P1 | NP Kyiv Latin 502 | **FIXED `75b1f6fb`**; production Kyiv/Kiev/Київ 200; §F-050 |
-| [ ] | **F-059** | P1 | ProductImage alt empty | §F-059 |
+| [x] | **F-059** | P1 | ProductImage alt empty | **FIXED `b3930e08`**; guarded production backfill 36/36, zero empty; §F-059 |
 | [x] | **F-087** | P1 | ubd_docs public 200 | **FIXED `ead5fd70` + `e89fd17d`**; direct live URL 200->403, owner/staff route verified; §F-087 |
 | [x] | **F-088** | P1 | TG webhook secret empty | **FIXED `d7c6812a` + server config**; fail-closed code, secret_token registered, live probes passed; §F-088 |
 | [x] | **F-093** | P1 | deploy_paramiko password in git | Fixed `c5b651cf`; production verified; §F-093 |
@@ -248,7 +248,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-057** | P1 | FIXED | DONE | `f42b537a`: all-time UTM/first-touch/order alias inventory reconciled |
 | [x] **F-058** | P3 | PASS | no | Scripts matrix key pages PASS |
 
-| [ ] **F-059** | P1 | OPEN | YES | All ProductImage.alt_text empty (36/36) |
+| [x] **F-059** | P1 | FIXED | DONE | `b3930e08`: guarded 36/36 ProductImage alt backfill, idempotent production verification |
 | [x] **F-060** | P3 | PASS | no | Cart qty update works with cart_key |
 | [x] **F-061** | P3 | PASS | no | Cart remove works |
 | [x] **F-062** | P3 | PASS | no | Promo invalid code validation |
@@ -298,7 +298,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
 ### P1 OPEN — 3
-- [ ] **F-059** — All ProductImage.alt_text empty (36/36)
+- [x] **F-059** — guarded production backfill completed; 36/36 non-empty
 - [x] **F-087** — direct UBD media denied; authenticated owner/staff delivery deployed
 - [x] **F-088** — production secret configured and webhook header enforcement verified
 
@@ -1170,7 +1170,7 @@ Sample **20/20** variant sitemap URLs returned **200** with titles reflecting co
 
 ### F-018 — Cart `offer_id` color spelling splits (ЧОРНИЙ vs ЧЕРНЫЙ)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`b3930e08`) · **Severity:** P1 · **Fix required:** DONE
 
 - [ ] **Open** · Severity: **P1** · Area: **PIXEL / FEED / CART** · Checklist: PIX-011, FEED-002
 
@@ -2023,6 +2023,21 @@ HTML may still show generated alts on some `<img>` (e.g. product title), but DB 
 
 **Checklist:** SEO-081  
 **Risk of fix:** low (content/backfill).
+
+**Fixed and verified 2026-07-16:** `backfill_product_image_alt_texts` is
+dry-run by default, locks the complete gallery ordering, requires an exact
+`--expect-images` guard, updates only blank ProductImage alt fields in one
+atomic `bulk_update`, and preserves all existing manual alt text. Generated
+text uses the product title plus its stable position in the complete gallery.
+
+The focused local and isolated server suites passed 4/4. Production dry-run
+returned exactly 36 candidates. Before apply, a mode-0600 rollback snapshot was
+stored at `tmp/audit_backups/f059_product_image_alt_20260716T121105Z.json`.
+Guarded apply updated 36/36 rows; subsequent dry-run and guarded apply both
+returned zero. Final DB verification reconciled 36 total rows, 0 blank/null
+alts, and 0 values over the 200-character model limit. The unrelated general
+alt generator was intentionally not run because its dry-run would also change
+1 Product and 56 color-image rows outside F-059.
 
 ---
 

@@ -390,7 +390,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | SEO-080 | Primary PDP image 200 | P0 | [x] PASS primary images 200 sample|
-| SEO-081 | Alt non-empty critical images | P1 | [x] **FAIL DB** all alt_text empty F-059 |
+| SEO-081 | Alt non-empty critical images | P1 | [x] **PASS `b3930e08`** production ProductImage 36/36 non-empty |
 | SEO-082 | Lazy-load does not kill LCP image | P1 | [x] WARN LCP not lab-measured this pass|
 | SEO-083 | Broken media paths in DB sample | P1 | [x] WARN media paths sample OK only|
 | SEO-084 | WebP/AVIF fallbacks | P2 | [x] PASS webp used widely|

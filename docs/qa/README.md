@@ -57,7 +57,7 @@
 | RU/EN H1 Ukrainian | F-005 **FIXED `d773bee6`** | PLAN_VS ADS-2 | RU/EN locale catalogs + regression test; 4/4 live pages verified |
 | Feed g:link | F-003, F-027, F-077 | F-077 revised product links often OK | feed generators |
 | help-center / kontakty 404 | F-043, F-078 | Findings | redirects |
-| Empty image alts | F-059 | Findings | ProductImage.alt_text |
+| Empty image alts | F-059 **FIXED `b3930e08`** | Findings / SEO-081 | guarded 36/36 ProductImage backfill; production empty count 0 |
 
 ### D. Storefront — cart / NP / security / ops
 
@@ -101,7 +101,7 @@
 9. F-090 backup cron (SERVER)  
 
 ### Wave Fix-C — SEO / cart polish
-10. F-002 **FIXED `0b9ecc1c`**, F-004/F-094 **FIXED `81da8e22`**, F-005 **FIXED `d773bee6`**; then F-043/F-078, F-050, F-059, …
+10. F-002 **FIXED `0b9ecc1c`**, F-004/F-094 **FIXED `81da8e22`**, F-005 **FIXED `d773bee6`**; F-043/F-078, F-050 and F-059 are also closed.
 
 ### Wave Fix-D — management IG bot
 11. F-095…F-098 + full IG-001…IG-014 in IG_BOT file  
