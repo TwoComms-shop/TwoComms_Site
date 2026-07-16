@@ -83,9 +83,9 @@ and `[ ]` remains open.
 
 ### Phase 1 — stop the active load amplifier and false 500s
 
-- [ ] **P0** Canonicalize color filters as a deduplicated stable set and redirect non-canonical orderings. [PROD-002](../production_incidents/2026-07-13/issues/PROD-002-gptbot-catalog-crawl-trap.md)
-- [ ] **P0** Generate cache keys from canonical filters; do not hash raw query order. [PROD-002](../production_incidents/2026-07-13/issues/PROD-002-gptbot-catalog-crawl-trap.md)
-- [ ] **P0** Make multi-select permutations non-crawlable and add an immediate edge/robots/rate control for GPTBot query variants. [PROD-002](../production_incidents/2026-07-13/issues/PROD-002-gptbot-catalog-crawl-trap.md)
+- [x] **P0** Canonicalize color filters as a deduplicated stable set and redirect non-canonical orderings. **FIXED `20079875`:** production redirects noisy/unknown filters to one sorted URL and resets pagination only when filter identity changes. [PROD-002](../production_incidents/2026-07-13/issues/PROD-002-gptbot-catalog-crawl-trap.md)
+- [x] **P0** Generate cache keys from canonical filters; do not hash raw query order. **FIXED `20079875`:** repeated, duplicate and reordered color parameters share one semantic anonymous-cache identity. [PROD-002](../production_incidents/2026-07-13/issues/PROD-002-gptbot-catalog-crawl-trap.md)
+- [x] **P0** Make multi-select permutations non-crawlable and add an immediate edge/robots/rate control for GPTBot query variants. **FIXED `20079875`:** multi-select is `noindex, nofollow`, facet links are `nofollow`, and the live GPTBot block disallows catalog `color` query variants. [PROD-002](../production_incidents/2026-07-13/issues/PROD-002-gptbot-catalog-crawl-trap.md)
 - [x] **P0** Give `management` and `fin` autonomous, DB-free 404/500 handlers and regression tests across every host. **FIXED `013f6f9d`**; server error/middleware suite 5/5. [PROD-004](../production_incidents/2026-07-13/issues/PROD-004-subdomain-404-becomes-500.md)
 - [x] **P1** Make redirect fallback fail open on DB errors and skip hosts/paths that do not need DB redirects. **FIXED `59d1ad1f`**; routed subdomains skip DB and DB errors preserve 404. [PROD-005](../production_incidents/2026-07-13/issues/PROD-005-db-dependent-404-redirects.md)
 - [ ] **P2** Reject `.env`, WordPress and backup probes before Passenger, consistently for every vhost. [PROD-008](../production_incidents/2026-07-13/issues/PROD-008-scanner-probes-edge-filtering.md)
@@ -133,7 +133,7 @@ and `[ ]` remains open.
 | ID | Priority | State at cutoff | Ownership | Issue |
 |---|---:|---|---|---|
 | PROD-001 | P0 | Confirmed/open | Hosting + app mitigation | [Shared MariaDB global connection exhaustion](../production_incidents/2026-07-13/issues/PROD-001-shared-mariadb-exhaustion.md) |
-| PROD-002 | P0 | Confirmed/open | Application + edge | [GPTBot catalog crawl trap and file-cache churn](../production_incidents/2026-07-13/issues/PROD-002-gptbot-catalog-crawl-trap.md) |
+| PROD-002 | P0 | Partial `20079875`; app/robots fixed, traffic monitoring and edge rate control open | Application + edge | [GPTBot catalog crawl trap and file-cache churn](../production_incidents/2026-07-13/issues/PROD-002-gptbot-catalog-crawl-trap.md) |
 | PROD-003 | P1 | Confirmed/open; cause needs hosting | Hosting + capacity | [LSAPI worker saturation and forced termination](../production_incidents/2026-07-13/issues/PROD-003-lsapi-worker-saturation.md) |
 | PROD-004 | P0 | Fixed `013f6f9d` | Application | [Subdomain 404 becomes 500](../production_incidents/2026-07-13/issues/PROD-004-subdomain-404-becomes-500.md) |
 | PROD-005 | P1 | Fixed `59d1ad1f` | Application | [404 redirect fallback depends on DB](../production_incidents/2026-07-13/issues/PROD-005-db-dependent-404-redirects.md) |

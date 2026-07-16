@@ -1,7 +1,7 @@
 # PROD-002 — GPTBot catalog crawl trap and file-cache churn
 
 **Priority:** P0
-**State:** confirmed and actively reproducible from URL construction
+**State:** `[o]` application containment deployed in `20079875`; traffic monitoring, bounded cache cleanup and edge rate control remain
 **Owner:** storefront/SEO plus web edge
 **Fixability:** fully fixable in application and edge configuration
 
@@ -47,17 +47,17 @@ The application treats selection order as URL identity even though product resul
 
 ## Implementation plan
 
-1. Write failing tests for duplicate, reversed and unknown color slugs.
-2. Parse color input into allowed published slugs, deduplicate and sort by one stable domain order.
-3. Redirect GET requests with non-canonical ordering/duplicates to the canonical URL. Preserve unrelated allowed filters and pagination rules deliberately.
-4. Build anonymous cache fingerprints from canonical semantic parameters, never raw query order.
-5. Define SEO policy:
+1. [x] Write failing tests for duplicate, reversed and unknown color slugs.
+2. [x] Parse color input into allowed published slugs, deduplicate and sort by one stable domain order.
+3. [x] Redirect GET requests with non-canonical ordering/duplicates to the canonical URL. Preserve unrelated allowed filters and pagination rules deliberately.
+4. [x] Build anonymous cache fingerprints from canonical semantic parameters, never raw query order.
+5. [x] Define SEO policy:
    - base catalog and curated single-color pages may be index/follow;
    - multi-select combinations should be `noindex, nofollow` and their chips should not expose an unbounded crawl graph;
    - reject or cap excessive selection count.
-6. Add immediate edge/robots protection for catalog query variants from GPTBot until the release is live. Confirm robots behavior against the exact generated file.
-7. Make rate limiting atomic and route-aware. Distinguish legitimate users from high-cardinality crawler requests.
-8. Remove stale file-cache entries after deployment using a safe, bounded procedure; do not delete unrelated caches blindly.
+6. [x] Add immediate robots protection for catalog query variants from GPTBot and confirm the exact live generated block.
+7. [ ] Make rate limiting atomic and route-aware. Distinguish legitimate users from high-cardinality crawler requests.
+8. [ ] Remove stale file-cache entries after deployment using a safe, bounded procedure; do not delete unrelated caches blindly.
 
 ## Tests
 
@@ -70,6 +70,11 @@ The application treats selection order as URL identity even though product resul
 
 ## Production verification
 
+- Deployed commit `20079875` on 16 July 2026; server focused suites passed 28/28 and `manage.py check` reported no issues.
+- A noisy URL with duplicate, reversed and unknown slugs plus `page=7` returned 301 to `/catalog/?utm_source=instagram&color=black%2Ccoyote`; an unknown-only filter returned 301 to `/catalog/`.
+- The canonical multi-select URL returned 200 with `noindex, nofollow`; generated facet links carried `rel="nofollow"`.
+- The live `User-agent: GPTBot` block included `Disallow: /*?color=` and `Disallow: /*&color=`.
+- Remaining `[o]` evidence: compare unique catalog URLs/hour, GPTBot requests/hour, cache files/hour, catalog DB connects and 5xx after enough post-deploy traffic has accumulated.
 - Compare unique catalog URLs/hour, GPTBot requests/hour, cache files/hour, catalog DB connects and 5xx before/after.
 - Expect a steep fall in unique URLs and file-cache churn without harming human catalog conversion.
 - Confirm no new 1040 occurs under the reduced traffic, while remembering that shared DB saturation still requires PROD-001.
