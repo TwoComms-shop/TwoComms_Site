@@ -5,9 +5,14 @@ from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 
-from fable5.models import VariantSizeRule
+from fable5.models import (
+    ProductOptionSizeGrid,
+    ProductSizeRule,
+    SizeGridProfile,
+    VariantSizeRule,
+)
 from productcolors.models import Color, ProductColorVariant
-from storefront.models import Category, Product
+from storefront.models import Catalog, Category, Product, ProductFitOption, SizeGrid
 
 
 class RestockSubscriptionEndpointTests(TestCase):
@@ -95,6 +100,50 @@ class RestockSubscriptionEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(RestockSubscription.objects.count(), 0)
+
+    @patch("storefront.services.restock.notify_restock_admin", return_value=True)
+    def test_grid_only_unavailable_fit_size_can_create_subscription(self, _notify):
+        VariantSizeRule.objects.filter(variant=self.variant, size="M").delete()
+        catalog = Catalog.objects.create(name="Restock grids", slug="restock-grids")
+        self.product.catalog = catalog
+        self.product.save(update_fields=["catalog"])
+        ProductFitOption.objects.create(
+            product=self.product,
+            code="classic",
+            label="Classic",
+            is_active=True,
+            is_default=True,
+        )
+        grid = SizeGrid.objects.create(
+            catalog=catalog,
+            name="Classic restock grid",
+            guide_data={
+                "columns": [{"key": "size", "label": "Size"}],
+                "rows": [{"size": "M"}, {"size": "L"}],
+            },
+            is_active=True,
+        )
+        SizeGridProfile.objects.create(size_grid=grid, option_key="fit=classic")
+        ProductOptionSizeGrid.objects.create(
+            product=self.product,
+            option_key="fit=classic",
+            size_grid=grid,
+        )
+        ProductSizeRule.objects.create(
+            product=self.product,
+            option_key="fit=classic",
+            size="M",
+            is_enabled=False,
+        )
+
+        response = self.client.post(
+            self.url,
+            json.dumps(self.payload(option_values={"fit": "classic"})),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["ok"], True)
 
     @patch("storefront.services.restock.notify_restock_admin", return_value=True)
     def test_telegram_subscription_starts_as_draft(self, notify_mock):

@@ -9,9 +9,12 @@ Product views - Детальная информация о товарах.
 """
 
 import json
+import logging
 import re
 from itertools import product as option_product
 
+from django.core.exceptions import ValidationError
+from django.db import DatabaseError
 from django.shortcuts import render, get_object_or_404
 from django.http import Http404, HttpResponsePermanentRedirect, JsonResponse
 from django.urls import reverse
@@ -29,6 +32,16 @@ from ..services.size_guides import resolve_product_size_context
 from ..services.variant_meta import VariantMetaInputs, build_variant_meta
 from ..recommendations import ProductRecommendationEngine
 from ..utm_tracking import record_product_view
+
+
+logger = logging.getLogger(__name__)
+MAX_PRODUCT_OPTION_COMBINATIONS = 128
+CONFIGURATOR_EXPECTED_EXCEPTIONS = (
+    ValidationError,
+    DatabaseError,
+    TypeError,
+    ValueError,
+)
 
 
 def _resolve_og_availability_flag(product) -> bool:
@@ -690,6 +703,9 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
     # resolve the same normalized option dictionary, price, and availability.
     product_option_payload = {"axes": [], "selected_values": {}}
     product_size_options = []
+    configurator_failed = False
+    failed_option_context = None
+    variants_by_id = {variant.id: variant for variant in grid_variants}
     if color_variants and grid_variants:
         try:
             from fable5.content_resolution import build_combination_key
@@ -697,10 +713,10 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                 product_option_context,
                 variant_allows_options,
                 variant_allows_purchase,
+                variant_allows_size,
                 variant_public_context,
             )
 
-            variants_by_id = {variant.id: variant for variant in grid_variants}
             language = getattr(request, 'LANGUAGE_CODE', 'uk')[:2]
             for entry in color_variants:
                 db_variant = variants_by_id.get(entry.get('id'))
@@ -713,24 +729,43 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                     option_values=seed_values,
                     lang=language,
                 )
+                failed_option_context = option_context
                 axes = option_context.get("axes") or []
                 choice_groups = [axis.get("choices") or [] for axis in axes]
                 configurations = {}
                 if choice_groups and all(choice_groups):
+                    combination_count = 1
+                    for choices in choice_groups:
+                        combination_count *= len(choices)
+                        if combination_count > MAX_PRODUCT_OPTION_COMBINATIONS:
+                            raise ValidationError(
+                                "Product option matrix exceeds the public PDP limit",
+                                code="combination_limit",
+                            )
                     for choices in option_product(*choice_groups):
                         values = {
                             axis["code"]: choice["code"]
                             for axis, choice in zip(axes, choices)
                         }
-                        if not variant_allows_options(db_variant, values):
+                        key = build_combination_key(values)
+                        is_available = variant_allows_options(db_variant, values)
+                        if not is_available:
+                            configurations[key] = {
+                                "option_values": values,
+                                "is_available": False,
+                                "size_availability": {
+                                    str(size): False for size in available_sizes
+                                },
+                            }
                             continue
                         resolved = variant_public_context(
                             db_variant,
                             option_values=values,
                             lang=language,
                         )
-                        configurations[build_combination_key(values)] = {
+                        configurations[key] = {
                             "option_values": values,
+                            "is_available": True,
                             "final_price": resolved["final_price"],
                             "price_difference": resolved["price_difference"],
                             "price_reason": resolved["price_delta_reason"],
@@ -760,21 +795,79 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             selected_configuration = (
                 color_variants[0].get("configurations", {}).get(selected_key) or {}
             )
-            if selected_configuration:
+            if selected_configuration.get("is_available") is False:
+                available_configurations = [
+                    configuration
+                    for configuration in color_variants[0].get("configurations", {}).values()
+                    if configuration.get("is_available") is not False
+                ]
+                if available_configurations:
+                    selected_configuration = max(
+                        available_configurations,
+                        key=lambda configuration: sum(
+                            configuration.get("option_values", {}).get(axis.get("code"))
+                            == selected_values.get(axis.get("code"))
+                            for axis in product_option_payload.get("axes", [])
+                        ),
+                    )
+                    selected_values = dict(selected_configuration["option_values"])
+                    product_option_payload["selected_values"] = selected_values
+                    for axis in product_option_payload.get("axes", []):
+                        axis["selected_value"] = selected_values.get(axis.get("code"), "")
+            if selected_configuration.get("is_available") is not False and selected_configuration:
                 selected_variant_merchandising.update(selected_configuration)
                 selected_variant_merchandising["price_reason"] = selected_configuration.get("price_reason", "")
                 selected_variant_price = selected_configuration["final_price"]
             size_availability = selected_configuration.get("size_availability", {})
+            default_size_availability = not bool(selected_configuration)
             product_size_options = [
                 {
                     "value": size,
                     "label": size_context["display_labels"].get(size, size),
-                    "is_available": bool(size_availability.get(str(size), True)),
+                    "is_available": bool(
+                        size_availability.get(str(size), default_size_availability)
+                    ),
                 }
                 for size in available_sizes
             ]
-        except Exception:
-            product_option_payload = {"axes": [], "selected_values": {}}
+        except CONFIGURATOR_EXPECTED_EXCEPTIONS as exc:
+            configurator_failed = True
+            logger.exception(
+                "PDP configurator generation failed for product_id=%s",
+                product.pk,
+            )
+            error_code = (
+                "combination_limit"
+                if getattr(exc, "code", "") == "combination_limit"
+                else "resolver_error"
+            )
+            product_option_payload = failed_option_context or product_option_payload
+            for entry in color_variants:
+                entry.setdefault("option_context", product_option_payload)
+                entry["configurations"] = {}
+                entry["configurator_error"] = error_code
+            active_variant_id = color_variants[0].get("id") if color_variants else None
+            active_variant = variants_by_id.get(active_variant_id)
+            product_size_options = []
+            for size in available_sizes:
+                try:
+                    is_available = (
+                        variant_allows_size(active_variant, str(size), preselected_fit_code)
+                        if active_variant is not None
+                        else True
+                    )
+                except CONFIGURATOR_EXPECTED_EXCEPTIONS:
+                    logger.exception(
+                        "Legacy PDP size fallback failed for product_id=%s size=%s",
+                        product.pk,
+                        size,
+                    )
+                    is_available = False
+                product_size_options.append({
+                    "value": size,
+                    "label": size_context["display_labels"].get(size, size),
+                    "is_available": bool(is_available),
+                })
 
     if not product_size_options:
         product_size_options = [
@@ -790,7 +883,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
         option["is_available"] for option in product_size_options
     )
 
-    if not product_option_payload.get("axes"):
+    if not product_option_payload.get("axes") and not configurator_failed:
         try:
             from fable5.services import product_option_context
 
@@ -799,7 +892,11 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                 option_values={"fit": preselected_fit_code} if preselected_fit_code else {},
                 lang=getattr(request, 'LANGUAGE_CODE', 'uk')[:2],
             )
-        except Exception:
+        except CONFIGURATOR_EXPECTED_EXCEPTIONS:
+            logger.exception(
+                "PDP option context fallback failed for product_id=%s",
+                product.pk,
+            )
             product_option_payload = {"axes": [], "selected_values": {}}
 
     if not fit_options and product_option_payload.get("axes"):

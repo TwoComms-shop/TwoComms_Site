@@ -38,6 +38,81 @@ function focusTrapIndex({ currentIndex = -1, total = 0, shiftKey = false } = {})
   return current < 0 || current >= count - 1 ? 0 : current + 1;
 }
 
+function resolveOptionSelection({ axes = [], configurations = {}, selectedValues = {} } = {}) {
+  const normalizedSelection = {};
+  axes.forEach((axis) => {
+    const code = String(axis && axis.code || '').trim();
+    const value = String(selectedValues[code] || '').trim();
+    if (code && value) normalizedSelection[code] = value;
+  });
+  const matrixEntries = Object.values(configurations || {}).filter((configuration) => (
+    configuration && typeof configuration.option_values === 'object'
+  ));
+  if (!matrixEntries.length) {
+    const choiceAvailability = {};
+    axes.forEach((axis) => {
+      choiceAvailability[axis.code] = {};
+      (axis.choices || []).forEach((choice) => {
+        choiceAvailability[axis.code][choice.code] = choice.is_enabled !== false;
+      });
+    });
+    return {
+      selectedValues: normalizedSelection,
+      choiceAvailability,
+      isAvailable: true,
+      hasMatrix: false,
+    };
+  }
+
+  const available = matrixEntries.filter((configuration) => configuration.is_available !== false);
+  let selected = normalizedSelection;
+  const exact = configurations[buildOptionKey(selected)];
+  if ((!exact || exact.is_available === false) && available.length) {
+    let best = available[0];
+    let bestScore = -1;
+    available.forEach((configuration) => {
+      const values = configuration.option_values || {};
+      const score = axes.reduce(
+        (total, axis) => total + (values[axis.code] === selected[axis.code] ? 1 : 0),
+        0
+      );
+      if (score > bestScore) {
+        best = configuration;
+        bestScore = score;
+      }
+    });
+    selected = {};
+    axes.forEach((axis) => {
+      const value = best.option_values && best.option_values[axis.code];
+      if (value) selected[axis.code] = value;
+    });
+  }
+
+  const selectedConfiguration = configurations[buildOptionKey(selected)];
+  const isAvailable = Boolean(
+    selectedConfiguration && selectedConfiguration.is_available !== false
+  );
+  const choiceAvailability = {};
+  axes.forEach((axis) => {
+    choiceAvailability[axis.code] = {};
+    (axis.choices || []).forEach((choice) => {
+      choiceAvailability[axis.code][choice.code] = available.some((configuration) => {
+        const values = configuration.option_values || {};
+        if (values[axis.code] !== choice.code) return false;
+        return axes.every((otherAxis) => (
+          otherAxis.code === axis.code || values[otherAxis.code] === selected[otherAxis.code]
+        ));
+      });
+    });
+  });
+  return {
+    selectedValues: selected,
+    choiceAvailability,
+    isAvailable,
+    hasMatrix: true,
+  };
+}
+
 const MODAL_FOCUSABLE_SELECTOR = [
   'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
   'a[href]:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
@@ -53,6 +128,7 @@ if (typeof module !== 'undefined' && module.exports) {
     galleryStatus,
     MODAL_FOCUSABLE_SELECTOR,
     resolveMaterialStory,
+    resolveOptionSelection,
     resolveSwipe,
   };
 }
@@ -559,7 +635,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     return values;
   }
 
-  function applyVariantOptionRules(state, optionContext) {
+  function applyVariantOptionRules(state, optionContext, configurations) {
     const axes = (optionContext && optionContext.axes) || [];
     axes.forEach((axis) => {
       const choices = axis.choices || [];
@@ -582,30 +658,74 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
         }
       });
-      let selected = inputs.find((input) => input.checked && !input.disabled);
-      if (!selected) {
-        selected = inputs.find((input) => !input.disabled);
-        if (selected) selected.checked = true;
+    });
+    const requestedValues = selectedOptionValues(state);
+    axes.forEach((axis) => {
+      if (!requestedValues[axis.code] && axis.selected_value) {
+        requestedValues[axis.code] = axis.selected_value;
       }
-      inputs.forEach((input) => {
+    });
+    const resolution = resolveOptionSelection({
+      axes,
+      configurations,
+      selectedValues: requestedValues,
+    });
+    axes.forEach((axis) => {
+      const choices = axis.choices || [];
+      state.root.querySelectorAll(`[data-product-option-axis="${axis.code}"]`).forEach((input) => {
+        const choice = choices.find((item) => String(item.code) === String(input.value));
+        const baseEnabled = Boolean(choice && choice.is_enabled !== false);
+        const completionEnabled = resolution.choiceAvailability[axis.code]
+          ? resolution.choiceAvailability[axis.code][input.value] !== false
+          : true;
+        const enabled = baseEnabled && completionEnabled;
+        input.disabled = !enabled;
+        input.checked = enabled && resolution.selectedValues[axis.code] === input.value;
         const card = state.root.querySelector(`label[for="${input.id}"]`);
-        if (card) card.classList.toggle('active', input.checked && !input.disabled);
+        if (card) {
+          card.classList.toggle('is-disabled', !enabled);
+          card.classList.toggle('active', input.checked);
+          card.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+        }
       });
     });
     const fit = state.root.querySelector('[data-product-option-axis="fit"]:checked');
     state.container.dataset.currentFit = fit ? fit.value : '';
+    return resolution;
   }
 
   function applyCurrentVariantMerchandising(state) {
     const baseVariant = currentVariantData(state);
     if (!baseVariant) return;
 
-    applyVariantOptionRules(state, baseVariant.option_context || {});
+    const configurations = baseVariant.configurations || {};
+    const optionResolution = applyVariantOptionRules(
+      state,
+      baseVariant.option_context || {},
+      configurations
+    );
     const optionValues = selectedOptionValues(state);
-    const configuration = (baseVariant.configurations || {})[buildOptionKey(optionValues)] || {};
+    const configuration = configurations[buildOptionKey(optionValues)] || null;
+    const configurationAvailable = !optionResolution.hasMatrix || Boolean(
+      configuration && configuration.is_available !== false
+    );
+    setConfiguratorPurchaseAvailability(state, configurationAvailable);
+    if (!configurationAvailable) {
+      state.root.querySelectorAll('[data-pdp-current-price], [data-pdp-sticky-price]').forEach((node) => {
+        node.textContent = 'Недоступно';
+      });
+      applyConfigurationSizeAvailability(
+        state,
+        Object.fromEntries(Array.from(state.root.querySelectorAll('input[name="size"]')).map(
+          (input) => [String(input.value || '').toUpperCase(), false]
+        ))
+      );
+      applyVariantSizeGuides(state, baseVariant);
+      return;
+    }
     const activeFit = optionValues.fit || String(state.container.dataset.currentFit || '').toLowerCase();
     const fitOverrides = baseVariant.merchandising_by_fit || {};
-    const variant = Object.assign({}, baseVariant, fitOverrides[activeFit] || {}, configuration);
+    const variant = Object.assign({}, baseVariant, fitOverrides[activeFit] || {}, configuration || {});
 
     if (variant.seo_title) document.title = String(variant.seo_title);
     const metaDescription = document.querySelector('meta[name="description"]');
@@ -670,7 +790,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
-    if (configuration.size_availability) {
+    if (configuration && configuration.size_availability) {
       applyConfigurationSizeAvailability(state, configuration.size_availability);
     } else {
       applyVariantSizeRules(
@@ -680,6 +800,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       );
     }
     applyVariantSizeGuides(state, baseVariant);
+  }
+
+  function setConfiguratorPurchaseAvailability(state, available) {
+    state.root.querySelectorAll('.tc-add-btn[data-add-to-cart], [data-pdp-sticky-add]').forEach((button) => {
+      if (!available) {
+        button.disabled = true;
+        button.dataset.configuratorDisabled = '1';
+      } else if (button.dataset.configuratorDisabled === '1') {
+        button.disabled = false;
+        delete button.dataset.configuratorDisabled;
+      }
+    });
   }
 
   function applyConfigurationSizeAvailability(state, availability) {

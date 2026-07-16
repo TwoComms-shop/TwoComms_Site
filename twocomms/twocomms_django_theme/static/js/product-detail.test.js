@@ -6,6 +6,7 @@ const {
   focusTrapIndex,
   galleryStatus,
   MODAL_FOCUSABLE_SELECTOR,
+  resolveOptionSelection,
   resolveMaterialStory,
   resolveSwipe,
 } = require('./product-detail.js');
@@ -62,4 +63,42 @@ test('every modal focusable selector branch excludes inert and aria-hidden contr
     assert.match(branch, /:not\(\[tabindex="-1"\]\)/);
     assert.match(branch, /:not\(\[aria-hidden="true"\]\)/);
   });
+});
+
+test('invalid exact option selection repairs deterministically and disables impossible choice', () => {
+  assert.equal(typeof resolveOptionSelection, 'function');
+  const axes = [
+    { code: 'lining', choices: [{ code: 'fleece' }, { code: 'no_fleece' }] },
+    { code: 'fit', choices: [{ code: 'classic' }, { code: 'oversize' }] },
+  ];
+  const configurations = {
+    'fit=classic;lining=fleece': {
+      is_available: true,
+      option_values: { lining: 'fleece', fit: 'classic' },
+    },
+    'fit=oversize;lining=fleece': {
+      is_available: false,
+      option_values: { lining: 'fleece', fit: 'oversize' },
+    },
+    'fit=classic;lining=no_fleece': {
+      is_available: true,
+      option_values: { lining: 'no_fleece', fit: 'classic' },
+    },
+    'fit=oversize;lining=no_fleece': {
+      is_available: true,
+      option_values: { lining: 'no_fleece', fit: 'oversize' },
+    },
+  };
+
+  const resolved = resolveOptionSelection({
+    axes,
+    configurations,
+    selectedValues: { lining: 'fleece', fit: 'oversize' },
+  });
+
+  assert.deepEqual(resolved.selectedValues, { lining: 'fleece', fit: 'classic' });
+  assert.equal(resolved.isAvailable, true);
+  assert.equal(resolved.choiceAvailability.fit.oversize, false);
+  assert.equal(resolved.choiceAvailability.fit.classic, true);
+  assert.equal(resolved.choiceAvailability.lining.no_fleece, true);
 });

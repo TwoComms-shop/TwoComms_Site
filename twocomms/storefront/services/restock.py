@@ -12,7 +12,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from fable5.content_resolution import normalize_option_values
-from fable5.services import product_option_context, variant_allows_options, variant_allows_size
+from fable5.services import (
+    product_option_context,
+    variant_allows_options,
+    variant_allows_purchase,
+)
 from orders.telegram_notifications import TelegramNotifier
 from storefront.models import RestockSubscription
 
@@ -137,7 +141,13 @@ def create_subscription(
     if variant is not None and options and not variant_allows_options(variant, options):
         raise ValidationError("Обрана конфігурація недоступна")
     fit_code = options.get("fit", "")
-    if variant is not None and variant_allows_size(variant, size, fit_code):
+    if variant is not None and variant_allows_purchase(
+        product,
+        variant,
+        fit_code=fit_code,
+        size=size,
+        option_values=options,
+    ):
         raise ValidationError("SIZE_ALREADY_AVAILABLE")
     normalized = normalize_contact(channel, contact)
     labels = build_option_labels(product, variant, options)

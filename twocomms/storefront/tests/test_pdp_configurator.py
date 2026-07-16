@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from django.core.cache import cache, caches
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
 
@@ -10,6 +11,7 @@ from fable5.models import (
     GarmentFlow,
     GarmentFlowCategory,
     ProductOptionProfile,
+    VariantCombinationProfile,
     VariantFitRule,
     VariantSizeRule,
 )
@@ -176,8 +178,93 @@ class ProductConfiguratorRenderTests(TestCase):
         self.assertIn("css/product-detail.css?v=20260716-pdp-v2", html)
         self.assertIn("css/product-seo-landing.css?v=20260716-pdp-v2", html)
         self.assertIn("js/product-detail.js?v=20260716-pdp-v2", html)
+        self.assertIn("js/telegram-verify.js?v=20260716-pdp-v2", html)
         self.assertNotIn("20260715-fable5-v1", html)
         self.assertNotIn("20260716-configurator-v1", html)
+
+    def test_exact_inactive_combination_is_serialized_as_unavailable(self):
+        VariantFitRule.objects.filter(
+            variant=self.variant,
+            fit_code="classic",
+        ).update(is_enabled=True, reason="")
+        ProductOptionProfile.objects.filter(
+            product=self.product,
+            option_key="lining=no_fleece",
+        ).update(is_active=True, price_delta_reason="")
+        key = "fit=oversize;lining=fleece"
+        VariantCombinationProfile.objects.create(
+            variant=self.variant,
+            combination_key=key,
+            option_values={"fit": "oversize", "lining": "fleece"},
+            is_active=False,
+        )
+
+        response = self.client.get(self.url)
+        configuration = response.context["color_variants"][0]["configurations"][key]
+
+        self.assertFalse(configuration["is_available"])
+        self.assertTrue(configuration["size_availability"])
+        self.assertFalse(any(configuration["size_availability"].values()))
+
+    @patch("storefront.views.product.logger")
+    @patch(
+        "fable5.services.variant_allows_purchase",
+        side_effect=ValidationError("resolver unavailable"),
+    )
+    def test_configurator_error_logs_and_preserves_legacy_size_availability(
+        self,
+        _allows_purchase,
+        logger_mock,
+    ):
+        response = self.client.get(self.url)
+        sizes = {
+            item["value"]: item["is_available"]
+            for item in response.context["product_size_options"]
+        }
+
+        self.assertEqual(response.status_code, 200)
+        logger_mock.exception.assert_called()
+        self.assertFalse(sizes["XXL"])
+        self.assertIn('data-restock-size="XXL"', response.content.decode())
+
+    @patch("storefront.views.product.logger")
+    @patch("fable5.services.variant_allows_options")
+    def test_over_cap_flow_skips_cartesian_resolvers_and_returns_safe_state(
+        self,
+        allows_options_mock,
+        logger_mock,
+    ):
+        from storefront.views.product import MAX_PRODUCT_OPTION_COMBINATIONS
+
+        option_count = 6
+        self.flow.axes = [
+            {
+                "code": f"axis_{axis}",
+                "label": f"Axis {axis}",
+                "options": [
+                    {"code": f"value_{index}", "label": f"Value {index}"}
+                    for index in range(option_count)
+                ],
+            }
+            for axis in range(3)
+        ]
+        self.flow.save(update_fields=["axes"])
+        self.assertGreater(option_count ** 3 * 2, MAX_PRODUCT_OPTION_COMBINATIONS)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        allows_options_mock.assert_not_called()
+        logger_mock.exception.assert_called()
+        self.assertEqual(
+            response.context["color_variants"][0]["configurator_error"],
+            "combination_limit",
+        )
+        sizes = {
+            item["value"]: item["is_available"]
+            for item in response.context["product_size_options"]
+        }
+        self.assertFalse(sizes["XXL"])
 
     def test_restock_modal_exposes_all_contact_channels(self):
         html = self.client.get(self.url).content.decode()
