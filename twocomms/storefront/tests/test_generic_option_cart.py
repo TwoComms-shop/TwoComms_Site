@@ -1,5 +1,6 @@
 import json
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 
 from django.core.cache import cache, caches
@@ -152,3 +153,15 @@ class GenericOptionCartTests(TestCase):
             ),
             Decimal("1250"),
         )
+
+    def test_main_javascript_posts_checked_generic_option_values(self):
+        javascript = (
+            Path(__file__).resolve().parents[2]
+            / "twocomms_django_theme"
+            / "static"
+            / "js"
+            / "main.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("[data-product-option-axis]:checked", javascript)
+        self.assertIn("body.append('option_values', JSON.stringify(optionValues))", javascript)

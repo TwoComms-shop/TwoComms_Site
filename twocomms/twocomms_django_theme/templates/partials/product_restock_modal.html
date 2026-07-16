@@ -1,0 +1,28 @@
+{% load i18n %}
+<div class="tc-restock-modal" id="productRestockModal" data-restock-modal data-restock-endpoint="{% url 'restock_subscribe' %}" hidden>
+  <div class="tc-restock-modal__backdrop" data-restock-close></div>
+  <section class="tc-restock-dialog" role="dialog" aria-modal="true" aria-labelledby="productRestockTitle" tabindex="-1">
+    <button type="button" class="tc-restock-close" data-restock-close aria-label="{% trans 'Закрити' %}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+    <header class="tc-restock-head">
+      <span class="tc-restock-head__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Zm-8 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <div><h2 id="productRestockTitle">{% trans 'Повідомити про наявність' %}</h2><p>{% trans "Оберіть зручний канал. Ми напишемо лише один раз, коли потрібна конфігурація з'явиться." %}</p></div>
+    </header>
+    <form class="tc-restock-form" data-restock-form novalidate>
+      <div class="tc-restock-summary" aria-live="polite"><span>{% trans 'Розмір' %}</span><strong data-restock-selected-size>—</strong><small data-restock-selected-options></small></div>
+      <div class="tc-restock-channels" role="radiogroup" aria-label="{% trans 'Канал сповіщення' %}">
+        <button type="button" class="is-active" data-restock-channel="telegram" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 4-3 16-6-5-3 3v-5l9-7-11 6-5-2 19-6Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span>Telegram</span></button>
+        <button type="button" data-restock-channel="phone" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h3l1 5-2 1c1.2 2.5 3.2 4.5 5.8 5.7l1.2-2 5 1v3c0 2-1.6 3.5-3.6 3.3C10 19.2 4.8 14 4 6.6 3.8 4.6 5 3 7 3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span>{% trans 'Дзвінок' %}</span></button>
+        <button type="button" data-restock-channel="email" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v12H3V6Zm1 1 8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span>Email</span></button>
+        <button type="button" data-restock-channel="whatsapp" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.6a8 8 0 0 1-11.7 7.1L4 20l1.4-4.1A8 8 0 1 1 20 11.6Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 8.2c.4 3 2.2 4.8 5.3 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>WhatsApp</span></button>
+      </div>
+      <label class="tc-restock-field"><span>{% trans 'Як до вас звертатися' %}</span><input type="text" name="name" maxlength="160" autocomplete="name" placeholder="{% trans "Ім'я" %}"></label>
+      <label class="tc-restock-field" data-restock-contact-field hidden><span data-restock-contact-label>{% trans 'Контакт' %}</span><input type="text" name="contact" maxlength="254"></label>
+      <input type="text" name="website" tabindex="-1" autocomplete="off" class="tc-restock-honeypot" aria-hidden="true">
+      <div class="tc-restock-telegram-note" data-restock-telegram-note><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 14-4-4 1.4-1.4L11 13.2l5.6-5.6L18 9l-7 7Z" fill="currentColor"/></svg><span>{% trans "Telegram прив'яжеться через бота з підтвердженням номера." %}</span></div>
+      <p class="tc-restock-status" data-restock-status role="status" aria-live="polite"></p>
+      <button type="submit" class="tc-restock-submit"><span>{% trans 'Повідомити мене' %}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    </form>
+  </section>
+</div>

@@ -247,6 +247,11 @@ CSS rules на mobile FCP/LCP window.
       data-product-base-path="{% url 'product' slug=product.slug %}"
       data-product-title-base="{{ product.title|escapejs }}">
       <div class="tc-product-panel-actions" aria-label="{% trans 'Дії з товаром' %}">
+        {% if request.user.is_staff %}
+        <a class="tc-panel-icon-btn tc-admin-edit-btn" href="{% url 'fable5_product_edit' product.id %}" data-admin-product-edit aria-label="{% trans 'Редагувати товар у Fable5' %}" title="{% trans 'Редагувати товар' %}">
+          <svg width="21" height="21" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16.5-.8 4.3 4.3-.8L19 8.5 15.5 5 4 16.5Zm10-10L17.5 10M3.2 20.8l3-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+        {% endif %}
         <button type="button" class="tc-panel-icon-btn" data-product-id="{{ product.id }}" onclick="event.stopPropagation(); toggleFavorite(this.getAttribute('data-product-id'), this);" aria-label="{% trans 'Додати до обраних' %}">
           <svg width="21" height="21" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.1 20.55 12 20.65l-.11-.1C7.14 16.24 4 13.39 4 10.5A3.5 3.5 0 0 1 7.5 7c1.54 0 3.04.99 3.57 2.36h1.87A3.9 3.9 0 0 1 16.5 7a3.5 3.5 0 0 1 3.5 3.5c0 2.89-3.14 5.74-7.9 10.05ZM16.5 5c-1.74 0-3.41.81-4.5 2.08A5.96 5.96 0 0 0 7.5 5 5.5 5.5 0 0 0 2 10.5c0 3.75 3.4 6.84 8.55 11.51L12 23.35l1.45-1.32C18.6 17.34 22 14.25 22 10.5A5.5 5.5 0 0 0 16.5 5Z" fill="currentColor"/></svg>
         </button>
@@ -282,15 +287,11 @@ CSS rules на mobile FCP/LCP window.
 
       <div class="tc-badge-row" aria-label="{% trans 'Особливості товару' %}">
         <span class="tc-info-badge">
-          <span class="tc-badge-emoji" aria-hidden="true">💎</span>
-          {% trans 'Преміум тканина' %}
-        </span>
-        <span class="tc-info-badge">
-          <span class="tc-badge-emoji" aria-hidden="true">🇺🇦</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 12h16" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 4h16v8H4z" fill="#4f8cff"/><path d="M4 12h16v8H4z" fill="#ffd64f"/></svg>
           Made in UA
         </span>
         <span class="tc-info-badge">
-          <span class="tc-badge-emoji" aria-hidden="true">🛡️</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 2.8 8.2 7 10 4.2-1.8 7-5.6 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m8.8 12 2.1 2.1 4.5-4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
           {% trans 'Частина прибутку — на ЗСУ' %}
         </span>
       </div>
@@ -302,13 +303,6 @@ CSS rules на mobile FCP/LCP window.
             <span class="tc-old-price">{{ product.price }} {% trans 'грн' %}</span>
             <span class="tc-discount-badge">-{{ product.discount_percent }}%</span>
           {% endif %}
-          <span class="tc-variant-price-note{% if not selected_variant_merchandising.has_price_adjustment %} is-hidden{% endif %}" data-pdp-price-note>
-            <button type="button" class="tc-variant-price-note__trigger" data-pdp-price-note-trigger aria-expanded="false" aria-describedby="pdp-price-note-popover" aria-label="{% trans 'Чому відрізняється ціна' %}">!</button>
-            <span class="tc-variant-price-note__popover" id="pdp-price-note-popover" role="tooltip" data-pdp-price-note-popover>
-              <strong data-pdp-price-note-title>{{ selected_variant_merchandising.price_reason|default:_('Особливість вибраного кольору') }}</strong>
-              <span data-pdp-price-note-copy>{% if selected_variant_merchandising.is_thermo %}{% trans 'Термохромна тканина реагує на тепло, тому коштує дорожче. Звичайні кольори можуть мати нижчу ціну.' %}{% else %}{% trans 'Ціна залежить від вибраного кольору та матеріалу.' %}{% endif %}</span>
-            </span>
-          </span>
         </div>
         {% if product.points_reward > 0 %}
           <button type="button" class="tc-points-pill" data-bs-toggle="modal" data-bs-target="#pointsInfoModal" data-product-title="{{ product.title }}" data-points-amount="{{ product.points_reward }}" aria-label="{% blocktrans with n=product.points_reward %}Бонусні бали за покупку: {{ n }}{% endblocktrans %}">
@@ -318,7 +312,7 @@ CSS rules на mobile FCP/LCP window.
         {% endif %}
       </div>
 
-      <aside class="tc-variant-story{% if selected_variant_merchandising.is_thermo %} is-thermo{% endif %}{% if not selected_variant_merchandising.is_thermo and not selected_variant_merchandising.marketing_html %} is-hidden{% endif %}" data-pdp-variant-story>
+      <aside class="tc-variant-story{% if selected_variant_merchandising.is_thermo %} is-thermo{% endif %}{% if not selected_variant_merchandising.is_thermo and not selected_variant_merchandising.marketing_html %} is-hidden{% endif %}" data-pdp-variant-story data-pdp-material-story>
         <span class="tc-variant-story__icon" data-pdp-variant-story-icon>
           {% include 'fable5/_thermo_flame.html' with class_suffix=' tc-thermo-flame--story' %}
         </span>
@@ -336,20 +330,26 @@ CSS rules на mobile FCP/LCP window.
             {% trans 'Як обрати розмір?' %}
           </a>
         </div>
-        {% if available_sizes %}
+        {% if product_size_options %}
           <div class="tc-size-grid" role="radiogroup" aria-label="{% trans 'Розмір' %}">
-            {% for size in available_sizes %}
-              <input
-                type="radio"
-                class="btn-check"
-                name="size"
-                id="size-{{ size|lower }}"
-                value="{{ size }}"
-                autocomplete="off"
-                {% if preselected_size == size %}checked{% endif %}>
-              <label class="tc-size-option" for="size-{{ size|lower }}">
-                {{ size_display_labels|get_item:size|default:size }}
-              </label>
+            {% for size in product_size_options %}
+              <span class="tc-size-choice{% if not size.is_available %} is-unavailable{% endif %}" data-size-choice="{{ size.value }}">
+                <input
+                  type="radio"
+                  class="btn-check"
+                  name="size"
+                  id="size-{{ size.value|lower }}"
+                  value="{{ size.value }}"
+                  autocomplete="off"
+                  {% if preselected_size == size.value and size.is_available %}checked{% endif %}
+                  {% if not size.is_available %}disabled{% endif %}>
+                <label class="tc-size-option" for="size-{{ size.value|lower }}"{% if not size.is_available %} aria-disabled="true"{% endif %}>
+                  {{ size.label }}
+                </label>
+                <button type="button" class="tc-restock-size-btn" data-restock-trigger data-restock-size="{{ size.value }}" aria-label="{% blocktrans with size=size.label %}Повідомити, коли розмір {{ size }} з'явиться{% endblocktrans %}"{% if size.is_available %} hidden{% endif %}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Zm-8 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </span>
             {% endfor %}
           </div>
         {% else %}
@@ -357,7 +357,7 @@ CSS rules на mobile FCP/LCP window.
         {% endif %}
       </div>
 
-      <div class="tc-selector-split">
+      <div class="tc-configurator-grid">
         <div class="tc-selector-block">
           <div class="tc-selector-head"><span>{% trans 'Колір' %}</span></div>
           {% if color_variants %}
@@ -387,45 +387,36 @@ CSS rules на mobile FCP/LCP window.
             <p class="tc-muted-copy mb-0">{% trans 'Для цього товару доступний один колір.' %}</p>
           {% endif %}
         </div>
-
-        {% if show_fit_selector %}
-          <div class="tc-selector-block" data-fit-selector>
-            <div class="tc-selector-head"><span>{% trans 'Посадка' %}</span></div>
-            <div class="tc-fit-grid" role="radiogroup" aria-label="{% trans 'Посадка' %}">
-              {% for option in fit_options %}
-                <input
-                  type="radio"
-                  class="btn-check"
-                  name="fit_option"
-                  id="fit-{{ option.code }}"
-                  value="{{ option.code }}"
-                  autocomplete="off"
-                  {% if preselected_fit_code == option.code %}checked{% endif %}>
-                <label class="tc-fit-option{% if preselected_fit_code == option.code %} active{% endif %}" for="fit-{{ option.code }}" data-fit-option>
-                  <span class="tc-fit-check" aria-hidden="true"></span>
-                  <span class="tc-fit-icon" aria-hidden="true">
-                    {% if option.code == "oversize" %}
-                      <img class="tc-fit-icon-img" src="{% static 'img/pdp/fit-oversize.png' %}" alt="" width="64" height="64" loading="lazy">
+        {% for axis in product_option_context.axes %}
+          <div class="tc-selector-block tc-option-axis" data-option-axis-block="{{ axis.code }}"{% if axis.code == 'fit' %} data-fit-selector{% endif %}>
+            <div class="tc-selector-head"><span>{{ axis.label }}</span></div>
+            <div class="tc-option-grid{% if axis.code == 'fit' %} tc-option-grid--fit{% endif %}" role="radiogroup" aria-label="{{ axis.label }}">
+              {% for option in axis.choices %}
+                <input type="radio" class="btn-check" {% if axis.code == 'fit' %}name="fit_option"{% else %}name="product_option_{{ axis.code }}"{% endif %} id="{% if axis.code == 'fit' %}fit-{{ option.code }}{% else %}option-{{ axis.code }}-{{ option.code }}{% endif %}" value="{{ option.code }}" data-product-option-axis="{{ axis.code }}" data-product-option-choice="{{ option.code }}" autocomplete="off" {% if axis.selected_value == option.code and option.is_enabled %}checked{% endif %} {% if not option.is_enabled %}disabled{% endif %}>
+                <label class="tc-option-card{% if axis.selected_value == option.code and option.is_enabled %} active{% endif %}{% if not option.is_enabled %} is-disabled{% endif %}" for="{% if axis.code == 'fit' %}fit-{{ option.code }}{% else %}option-{{ axis.code }}-{{ option.code }}{% endif %}" data-product-option-card{% if axis.code == 'fit' %} data-fit-option{% endif %} {% if not option.is_enabled %}aria-disabled="true"{% endif %}>
+                  <span class="tc-option-card__icon" aria-hidden="true">
+                    {% if axis.code == 'fit' %}
+                      <img src="{% if option.code == 'oversize' %}{% static 'img/pdp/fit-oversize.png' %}{% else %}{% static 'img/pdp/fit-classic.png' %}{% endif %}" alt="" width="52" height="52" loading="lazy">
+                    {% elif option.code == 'fleece' %}
+                      <svg viewBox="0 0 24 24"><path d="M7 5.5 12 3l5 2.5v13L12 21l-5-2.5v-13Zm5-2.5v18M7 7.5l5 2.5 5-2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
                     {% else %}
-                      <img class="tc-fit-icon-img" src="{% static 'img/pdp/fit-classic.png' %}" alt="" width="64" height="64" loading="lazy">
+                      <svg viewBox="0 0 24 24"><path d="M4 8c2.2-2.2 4.4-2.2 6.6 0s4.4 2.2 6.6 0M4 13c2.2-2.2 4.4-2.2 6.6 0s4.4 2.2 6.6 0M4 18c2.2-2.2 4.4-2.2 6.6 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
                     {% endif %}
                   </span>
-                  <span class="tc-fit-copy">
-                    <strong>{{ option.label }}</strong>
-                    {% if option.description %}<small>{{ option.description }}</small>{% endif %}
-                  </span>
+                  <span class="tc-option-card__copy"><strong>{{ option.label }}</strong>{% if option.description %}<small>{{ option.description }}</small>{% endif %}</span>
+                  <span class="tc-option-card__price" data-option-price{% if not option.price_delta %} hidden{% endif %}>{% if option.price_delta %}+{{ option.price_delta }} грн{% endif %}</span>
+                  {% if not option.is_enabled %}<span class="tc-option-card__status">{{ option.reason|default:_('Незабаром') }}</span>{% else %}<span class="tc-option-card__check" aria-hidden="true"></span>{% endif %}
                 </label>
               {% endfor %}
             </div>
-            {% if size_grid_comparison %}
+            {% if axis.code == 'fit' and size_grid_comparison %}
               <button type="button" class="tc-size-compare-link" data-pdp-tab-trigger="size">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4V5Zm3 3v2m3-2v3m3-3v2m3-2v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-                <span>{% trans 'Порівняти розмірні сітки' %}</span>
-                <small>{% trans 'Класика та оверсайз поруч' %}</small>
+                <span>{% trans 'Порівняти розмірні сітки' %}</span><small>{% trans 'Класика та оверсайз поруч' %}</small>
               </button>
             {% endif %}
           </div>
-        {% endif %}
+        {% endfor %}
       </div>
 
       <div class="tc-product-tabs" data-pdp-tabs>
@@ -691,17 +682,6 @@ CSS rules на mobile FCP/LCP window.
     </section>
   </div>
 
-  {% comment %}
-  SEO molecular-upgrade US-3 (2026-05-16) — per-product SEO block.
-  Adds 600–1000 unique words below the main product card so each
-  PDP no longer shares 80% of its text with every other PDP. The
-  helper auto-detects a topic key from slug/title and renders 7
-  long-form sections plus a 4-item FAQ — all server-rendered so AI
-  crawlers can cite them. See
-  ``storefront/services/product_seo_block.py``.
-  {% endcomment %}
-  {% product_seo_block product %}
-
   {% include "partials/product_reviews.html" %}
 
   {% if recommended_products %}
@@ -768,10 +748,18 @@ CSS rules на mobile FCP/LCP window.
       <span>{% trans 'ДОДАТИ В КОШИК' %}</span>
     </button>
   </div>
-</div>
 
-{# Phase 15 — per-product SEO landing block (theme + top queries + category top_filters/top_menu reuse). #}
-{% include 'partials/product_seo_landing.html' %}
+  {% comment %}
+  SEO molecular-upgrade US-3 (2026-05-16) — per-product SEO block.
+  Kept after reviews, recommendations and recently viewed so useful shopping
+  content stays ahead of the long-form crawler copy. Both SEO sections remain
+  inside the full-width PDP shell.
+  {% endcomment %}
+  {% product_seo_block product %}
+
+  {# Phase 15 — per-product SEO landing block (theme + top queries + category filters). #}
+  {% include 'partials/product_seo_landing.html' %}
+</div>
 
 {{ color_variants|json_script:"variant-data" }}
 {{ extra_image_urls|json_script:"product-extra-images" }}
@@ -790,10 +778,11 @@ CSS rules на mobile FCP/LCP window.
 {% block modals %}
   {{ block.super }}
   {% include 'partials/product_delivery_modal.html' %}
+  {% include 'partials/product_restock_modal.html' %}
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/product-detail.js' %}?v=20260715-fable5-v1" defer></script>
+<script src="{% static 'js/product-detail.js' %}?v=20260716-configurator-v1" defer></script>
 <script src="{% static 'js/product-media-fit.js' %}?v=20260428-media-fit-v1" defer></script>
 <script src="{% static 'js/product-variant-history.js' %}?v=20260509-phase8-v1" defer></script>
 {% endblock %}

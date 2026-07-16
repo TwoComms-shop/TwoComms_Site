@@ -1,4 +1,5 @@
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -53,6 +54,18 @@ class RestockTelegramVerificationTests(TestCase):
         session = TelegramVerificationSession.objects.get(token=response.json()["token"])
         self.assertEqual(session.purpose, "restock")
         self.assertEqual(session.metadata["restock_id"], subscription.id)
+
+    def test_shared_telegram_frontend_passes_restock_id_to_start_endpoint(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "twocomms_django_theme"
+            / "static"
+            / "js"
+            / "telegram-verify.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("restockId: opts && opts.restockId", javascript)
+        self.assertIn("reqPayload.restock_id = currentRequest.restockId", javascript)
 
     @patch("storefront.services.restock.notify_restock_admin", return_value=True)
     def test_bot_completion_activates_restock_subscription(self, notify_mock):

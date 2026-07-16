@@ -1,3 +1,22 @@
+function buildOptionKey(values) {
+  return Object.entries(values || {})
+    .map(([key, value]) => [String(key).trim().toLowerCase(), String(value).trim().toLowerCase()])
+    .filter(([key, value]) => key && value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join(';');
+}
+
+function resolveSwipe({ dx = 0, dy = 0 } = {}) {
+  if (Math.abs(dx) < 42 || Math.abs(dx) <= Math.abs(dy) * 1.25) return 0;
+  return dx < 0 ? 1 : -1;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { buildOptionKey, resolveSwipe };
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function () {
   'use strict';
 
@@ -23,12 +42,15 @@
       videoStage: document.getElementById('productVideoStage'),
       videoActive: false,
       viewContentTracked: false,
+      galleryIndex: 0,
+      suppressZoomUntil: 0,
     };
 
     initGallery(state);
+    initGallerySwipe(state);
     initColorSelection(state);
     initSizeSelection(state);
-    initFitSelection(root);
+    initProductOptionSelection(state);
     initVariantPriceNote(root);
     applyCurrentVariantMerchandising(state);
     initTabs(root);
@@ -40,6 +62,7 @@
     updateCurrentOfferId(state);
     trackViewContent(state);
     initRecentViewed(state);
+    initRestockModal(state);
   }
 
   function readJsonScript(id, fallback) {
@@ -161,6 +184,7 @@
     renderThumbnails(state, images);
     initThumbnailNav(state);
     if (images[0]) {
+      state.galleryIndex = 0;
       setMainImage(state, images[0], { immediate: true });
     }
   }
@@ -175,6 +199,7 @@
       button.className = `tc-thumbnail${index === 0 ? ' active' : ''}`;
       button.setAttribute('aria-label', `Фото товару ${index + 1}`);
       button.dataset.image = image.url;
+      button.dataset.galleryIndex = String(index);
 
       const img = document.createElement('img');
       img.src = image.thumbnailUrl || image.url;
@@ -187,6 +212,7 @@
         state.thumbs.querySelectorAll('.tc-thumbnail').forEach((item) => item.classList.remove('active'));
         button.classList.add('active');
         hideVideo(state);
+        state.galleryIndex = index;
         setMainImage(state, image);
       });
       state.thumbs.appendChild(button);
@@ -232,6 +258,74 @@
     });
 
     state.thumbs.appendChild(button);
+  }
+
+  function showGalleryIndex(state, index) {
+    const images = imagesForCurrentSelection(state);
+    if (!images.length) return;
+    const nextIndex = Math.max(0, Math.min(images.length - 1, index));
+    if (nextIndex === state.galleryIndex && !state.videoActive) return;
+    state.galleryIndex = nextIndex;
+    hideVideo(state);
+    setMainImage(state, images[nextIndex]);
+    if (state.thumbs) {
+      state.thumbs.querySelectorAll('.tc-thumbnail').forEach((thumb) => {
+        thumb.classList.toggle('active', Number(thumb.dataset.galleryIndex) === nextIndex);
+      });
+      const active = state.thumbs.querySelector(`[data-gallery-index="${nextIndex}"]`);
+      if (active) active.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }
+
+  function initGallerySwipe(state) {
+    const stage = state.root.querySelector('.tc-media-stage');
+    if (!stage || !state.mainImage) return;
+    let pointerId = null;
+    let startX = 0;
+    let startY = 0;
+    let currentX = 0;
+    let currentY = 0;
+    let horizontalIntent = false;
+
+    const reset = () => {
+      pointerId = null;
+      horizontalIntent = false;
+      stage.style.removeProperty('--tc-gallery-drag-x');
+      stage.classList.remove('is-dragging');
+    };
+    stage.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse' || event.button !== 0 || event.target.closest('button, a, iframe')) return;
+      pointerId = event.pointerId;
+      startX = currentX = event.clientX;
+      startY = currentY = event.clientY;
+    }, { passive: true });
+    stage.addEventListener('pointermove', (event) => {
+      if (event.pointerId !== pointerId) return;
+      currentX = event.clientX;
+      currentY = event.clientY;
+      const dx = currentX - startX;
+      const dy = currentY - startY;
+      if (!horizontalIntent && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+        horizontalIntent = true;
+        stage.classList.add('is-dragging');
+      }
+      if (horizontalIntent) {
+        const images = imagesForCurrentSelection(state);
+        const atEdge = (state.galleryIndex === 0 && dx > 0) || (state.galleryIndex === images.length - 1 && dx < 0);
+        stage.style.setProperty('--tc-gallery-drag-x', `${dx * (atEdge ? 0.16 : 0.34)}px`);
+      }
+    }, { passive: true });
+    const finish = (event) => {
+      if (event.pointerId !== pointerId) return;
+      const direction = resolveSwipe({ dx: currentX - startX, dy: currentY - startY });
+      if (direction) {
+        showGalleryIndex(state, state.galleryIndex + direction);
+        state.suppressZoomUntil = Date.now() + 450;
+      }
+      reset();
+    };
+    stage.addEventListener('pointerup', finish, { passive: true });
+    stage.addEventListener('pointercancel', reset, { passive: true });
   }
 
   function initThumbnailNav(state) {
@@ -344,6 +438,7 @@
         applyCurrentVariantMerchandising(state);
         const images = imagesForCurrentSelection(state);
         renderThumbnails(state, images);
+        state.galleryIndex = 0;
         hideVideo(state);
         if (images[0]) setMainImage(state, images[0]);
         const offerId = updateCurrentOfferId(state);
@@ -366,17 +461,63 @@
     return state.variants.find((variant) => String(variant && variant.id) === id) || null;
   }
 
+  function selectedOptionValues(state) {
+    const values = {};
+    state.root.querySelectorAll('[data-product-option-axis]:checked').forEach((input) => {
+      const axis = String(input.dataset.productOptionAxis || '').trim().toLowerCase();
+      const value = String(input.value || '').trim().toLowerCase();
+      if (axis && value) values[axis] = value;
+    });
+    return values;
+  }
+
+  function applyVariantOptionRules(state, optionContext) {
+    const axes = (optionContext && optionContext.axes) || [];
+    axes.forEach((axis) => {
+      const choices = axis.choices || [];
+      const inputs = Array.from(state.root.querySelectorAll(`[data-product-option-axis="${axis.code}"]`));
+      inputs.forEach((input) => {
+        const choice = choices.find((item) => String(item.code) === String(input.value));
+        const enabled = Boolean(choice && choice.is_enabled !== false);
+        const card = state.root.querySelector(`label[for="${input.id}"]`);
+        input.disabled = !enabled;
+        if (card) {
+          card.classList.toggle('is-disabled', !enabled);
+          card.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+          if (choice && choice.reason) card.setAttribute('title', choice.reason);
+          else card.removeAttribute('title');
+          const price = card.querySelector('[data-option-price]');
+          if (price && choice) {
+            const delta = Number(choice.price_delta || 0);
+            price.textContent = delta ? `+${formatVariantPrice(delta)} грн` : '';
+            price.hidden = !delta;
+          }
+        }
+      });
+      let selected = inputs.find((input) => input.checked && !input.disabled);
+      if (!selected) {
+        selected = inputs.find((input) => !input.disabled);
+        if (selected) selected.checked = true;
+      }
+      inputs.forEach((input) => {
+        const card = state.root.querySelector(`label[for="${input.id}"]`);
+        if (card) card.classList.toggle('active', input.checked && !input.disabled);
+      });
+    });
+    const fit = state.root.querySelector('[data-product-option-axis="fit"]:checked');
+    state.container.dataset.currentFit = fit ? fit.value : '';
+  }
+
   function applyCurrentVariantMerchandising(state) {
     const baseVariant = currentVariantData(state);
     if (!baseVariant) return;
 
-    // Selecting a colour may disable the previously active fit. Resolve the
-    // fallback fit first, then use that exact colour × fit merchandising row
-    // for title, price and SEO-adjacent buyer copy.
-    applyVariantFitRules(state, baseVariant.fit_rules || {});
-    const activeFit = String(state.container.dataset.currentFit || '').toLowerCase();
+    applyVariantOptionRules(state, baseVariant.option_context || {});
+    const optionValues = selectedOptionValues(state);
+    const configuration = (baseVariant.configurations || {})[buildOptionKey(optionValues)] || {};
+    const activeFit = optionValues.fit || String(state.container.dataset.currentFit || '').toLowerCase();
     const fitOverrides = baseVariant.merchandising_by_fit || {};
-    const variant = Object.assign({}, baseVariant, fitOverrides[activeFit] || {});
+    const variant = Object.assign({}, baseVariant, fitOverrides[activeFit] || {}, configuration);
 
     if (variant.seo_title) document.title = String(variant.seo_title);
     const metaDescription = document.querySelector('meta[name="description"]');
@@ -429,12 +570,40 @@
       if (storyIcon) storyIcon.hidden = !variant.is_thermo;
     }
 
-    applyVariantSizeRules(
-      state,
-      baseVariant.size_rules || [],
-      baseVariant.available_sizes_by_fit || {}
-    );
+    if (configuration.size_availability) {
+      applyConfigurationSizeAvailability(state, configuration.size_availability);
+    } else {
+      applyVariantSizeRules(
+        state,
+        baseVariant.size_rules || [],
+        baseVariant.available_sizes_by_fit || {}
+      );
+    }
     applyVariantSizeGuides(state, baseVariant);
+  }
+
+  function applyConfigurationSizeAvailability(state, availability) {
+    const enabledInputs = [];
+    state.root.querySelectorAll('input[name="size"]').forEach((input) => {
+      const enabled = availability[String(input.value || '').toUpperCase()] !== false;
+      const choice = input.closest('[data-size-choice]');
+      const label = state.root.querySelector(`label[for="${input.id}"]`);
+      const restock = choice && choice.querySelector('[data-restock-trigger]');
+      input.disabled = !enabled;
+      if (choice) choice.classList.toggle('is-unavailable', !enabled);
+      if (label) {
+        label.classList.toggle('is-unavailable', !enabled);
+        label.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+      }
+      if (restock) restock.hidden = enabled;
+      if (enabled) enabledInputs.push(input);
+    });
+    let selected = state.root.querySelector('input[name="size"]:checked:not(:disabled)');
+    if (!selected && enabledInputs.length) {
+      selected = enabledInputs[0];
+      selected.checked = true;
+    }
+    updateCurrentOfferId(state);
   }
 
   function applyVariantSizeGuides(state, variant) {
@@ -532,14 +701,18 @@
       const enabledByGrid = !hasFitGrid || fitGridSizes.has(size);
       const enabledByRule = !rule || (rule.is_enabled !== false && (rule.stock == null || Number(rule.stock) > 0));
       const enabled = enabledByGrid && enabledByRule;
+      const choice = input.closest('[data-size-choice]');
       const label = state.root.querySelector(`label[for="${input.id}"]`);
+      const restock = choice && choice.querySelector('[data-restock-trigger]');
       input.disabled = !enabled;
+      if (choice) choice.classList.toggle('is-unavailable', !enabled);
       if (label) {
         label.classList.toggle('is-unavailable', !enabled);
         label.setAttribute('aria-disabled', enabled ? 'false' : 'true');
         if (rule && rule.note) label.setAttribute('title', rule.note);
         else label.removeAttribute('title');
       }
+      if (restock) restock.hidden = enabled;
       if (enabled) enabledInputs.push(input);
     });
 
@@ -629,36 +802,23 @@
     return selection.offerId;
   }
 
-  function initFitSelection(root) {
-    const selector = root.querySelector('[data-fit-selector]');
-    if (!selector) return;
-
-    const options = Array.from(selector.querySelectorAll('[data-fit-option]'));
-    const container = document.getElementById('product-detail-container');
-    const checked = selector.querySelector('input[name="fit_option"]:checked');
-    if (checked && container) {
-      container.dataset.currentFit = checked.value || '';
-      const label = selector.querySelector(`label[for="${checked.id}"]`);
-      if (label) label.classList.add('active');
-    }
-    selector.querySelectorAll('input[name="fit_option"]').forEach((input) => {
+  function initProductOptionSelection(state) {
+    const inputs = Array.from(state.root.querySelectorAll('[data-product-option-axis]'));
+    if (!inputs.length) return;
+    inputs.forEach((input) => {
       input.addEventListener('change', () => {
-        options.forEach((option) => option.classList.remove('active'));
-        const label = selector.querySelector(`label[for="${input.id}"]`);
-        if (label) label.classList.add('active');
-        if (container) container.dataset.currentFit = input.value || '';
-
-        // Phase 19h (2026-05-10): fit toggle was JS-only — page kept
-        // serving the previous fit's bottom SEO copy (Phase 16). Now
-        // navigate with ``?fit=<code>`` so the server re-renders with
-        // the correct ``fit_code`` (Phase 7.5 then 301-redirects to
-        // canonical ``/<color>/<size>/<fit>/``).
-        const fitValue = (input.value || '').trim();
-        if (!fitValue) return;
+        applyCurrentVariantMerchandising(state);
+        const values = selectedOptionValues(state);
         const currentUrl = new URL(window.location.href);
-        if (currentUrl.searchParams.get('fit') === fitValue) return;
-        currentUrl.searchParams.set('fit', fitValue);
-        window.location.assign(currentUrl.toString());
+        Object.entries(values).forEach(([axis, value]) => currentUrl.searchParams.set(axis, value));
+        window.history.replaceState({}, '', currentUrl.toString());
+        const offerId = updateCurrentOfferId(state);
+        trackCustomizeProduct(
+          state,
+          state.container.dataset.currentVariant || null,
+          offerId,
+          { option: input.dataset.productOptionAxis }
+        );
       });
     });
   }
@@ -1010,6 +1170,7 @@
       button.addEventListener('click', () => openLightbox(state.mainImage.getAttribute('data-zoom') || state.mainImage.src, state.mainImage.alt));
     });
     state.mainImage.addEventListener('click', () => {
+      if (Date.now() < state.suppressZoomUntil) return;
       openLightbox(state.mainImage.getAttribute('data-zoom') || state.mainImage.currentSrc || state.mainImage.src, state.mainImage.alt);
     });
     state.mainImage.setAttribute('tabindex', '0');
@@ -1288,6 +1449,138 @@
     panel.hidden = false;
   }
 
+  function initRestockModal(state) {
+    const modal = document.querySelector('[data-restock-modal]');
+    const form = modal && modal.querySelector('[data-restock-form]');
+    if (!modal || !form) return;
+    const dialog = modal.querySelector('.tc-restock-dialog');
+    const contactField = modal.querySelector('[data-restock-contact-field]');
+    const contactLabel = modal.querySelector('[data-restock-contact-label]');
+    const contactInput = form.elements.contact;
+    const telegramNote = modal.querySelector('[data-restock-telegram-note]');
+    const status = modal.querySelector('[data-restock-status]');
+    const submit = modal.querySelector('.tc-restock-submit');
+    let channel = 'telegram';
+    let size = '';
+    let opener = null;
+
+    const csrf = () => {
+      const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+      return match ? decodeURIComponent(match[1]) : '';
+    };
+    const setChannel = (next) => {
+      channel = next;
+      modal.querySelectorAll('[data-restock-channel]').forEach((button) => {
+        const active = button.dataset.restockChannel === channel;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      const configs = {
+        phone: ['Номер телефону', 'tel', '+380 00 000 00 00', 'tel'],
+        email: ['Email', 'email', 'name@example.com', 'email'],
+        whatsapp: ['Номер WhatsApp', 'tel', '+380 00 000 00 00', 'tel'],
+      };
+      const config = configs[channel];
+      contactField.hidden = !config;
+      telegramNote.hidden = Boolean(config);
+      contactInput.required = Boolean(config);
+      contactInput.value = '';
+      if (config) {
+        contactLabel.textContent = config[0];
+        contactInput.type = config[1];
+        contactInput.placeholder = config[2];
+        contactInput.autocomplete = config[3];
+      }
+      status.textContent = '';
+    };
+    const optionSummary = () => Array.from(state.root.querySelectorAll('[data-product-option-axis]:checked'))
+      .map((input) => {
+        const card = state.root.querySelector(`label[for="${input.id}"]`);
+        const label = card && card.querySelector('strong');
+        return label ? label.textContent.trim() : input.value;
+      }).filter(Boolean).join(' · ');
+    const open = (button) => {
+      opener = button;
+      size = String(button.dataset.restockSize || '').toUpperCase();
+      modal.querySelector('[data-restock-selected-size]').textContent = size;
+      modal.querySelector('[data-restock-selected-options]').textContent = optionSummary();
+      status.textContent = '';
+      submit.disabled = false;
+      modal.hidden = false;
+      document.body.classList.add('tc-modal-open');
+      window.requestAnimationFrame(() => modal.classList.add('is-open'));
+      if (dialog) dialog.focus({ preventScroll: true });
+    };
+    const close = () => {
+      modal.classList.remove('is-open');
+      document.body.classList.remove('tc-modal-open');
+      window.setTimeout(() => { modal.hidden = true; }, prefersReducedMotion ? 0 : 160);
+      if (opener) opener.focus({ preventScroll: true });
+    };
+
+    state.root.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-restock-trigger]');
+      if (button) open(button);
+    });
+    modal.querySelectorAll('[data-restock-close]').forEach((button) => button.addEventListener('click', close));
+    modal.querySelectorAll('[data-restock-channel]').forEach((button) => {
+      button.addEventListener('click', () => setChannel(button.dataset.restockChannel));
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !modal.hidden) close();
+    });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      submit.disabled = true;
+      status.textContent = 'Зберігаємо заявку…';
+      const activeColor = state.root.querySelector('#color-picker .color-swatch.active');
+      const payload = {
+        product_id: Number(state.container.dataset.productId),
+        color_variant_id: activeColor ? Number(activeColor.dataset.variant) : null,
+        size,
+        option_values: selectedOptionValues(state),
+        channel,
+        name: String(form.elements.name.value || '').trim(),
+        contact: channel === 'telegram' ? '' : String(contactInput.value || '').trim(),
+        website: String(form.elements.website.value || ''),
+      };
+      try {
+        const response = await fetch(modal.dataset.restockEndpoint, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          if (result.error === 'SIZE_ALREADY_AVAILABLE') throw new Error('Цей розмір уже доступний. Оновіть сторінку та додайте його в кошик.');
+          throw new Error(result.error || 'Не вдалося зберегти заявку.');
+        }
+        if (channel === 'telegram') {
+          if (!window.TelegramVerify || typeof window.TelegramVerify.start !== 'function') {
+            throw new Error('Telegram-верифікація ще завантажується. Спробуйте ще раз.');
+          }
+          close();
+          window.TelegramVerify.start({
+            purpose: 'restock',
+            restockId: result.subscription_id,
+            onSuccess: () => { form.reset(); setChannel('telegram'); },
+          });
+          return;
+        }
+        status.textContent = result.created
+          ? 'Готово. Ми повідомимо, щойно розмір з\u2019явиться.'
+          : 'Заявка вже активна. Ми не дублювали її.';
+        form.reset();
+      } catch (error) {
+        status.textContent = error.message || 'Сталася помилка. Спробуйте ще раз.';
+        submit.disabled = false;
+      }
+    });
+    setChannel('telegram');
+  }
+
   function escapeHtml(value) {
     return String(value || '')
       .replace(/&/g, '&amp;')
@@ -1460,3 +1753,4 @@
     return `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
   }
 })();
+}

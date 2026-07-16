@@ -964,6 +964,25 @@ html[data-route-name="product"] .breadcrumb-nav {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 
+.tc-info-badge > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+
+.tc-admin-edit-btn {
+  color: #ffd16a;
+  border-color: rgba(255, 189, 74, 0.38);
+  background: rgba(255, 171, 55, 0.08);
+}
+
+.tc-admin-edit-btn:hover,
+.tc-admin-edit-btn:focus-visible {
+  color: #ffe4a6;
+  border-color: rgba(255, 205, 112, 0.74);
+  background: rgba(255, 171, 55, 0.15);
+}
+
 .tc-info-badge:first-child {
   border-color: rgba(255, 122, 47, 0.46);
   background:
@@ -1119,7 +1138,7 @@ html[data-route-name="product"] .breadcrumb-nav {
   margin-top: 10px;
   padding: 11px 13px;
   border: 1px solid rgba(255, 139, 63, 0.22);
-  border-radius: 15px;
+  border-radius: 8px;
   background:
     radial-gradient(circle at 0 0, rgba(255, 115, 50, 0.13), transparent 46%),
     rgba(255, 255, 255, 0.026);
@@ -1136,9 +1155,11 @@ html[data-route-name="product"] .breadcrumb-nav {
 .tc-variant-story__icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 136, 70, 0.3);
+  border-radius: 50%;
   color: #ff7d32;
   background: rgba(255, 118, 49, 0.1);
 }
@@ -1148,8 +1169,8 @@ html[data-route-name="product"] .breadcrumb-nav {
 }
 
 .tc-thermo-flame--story {
-  width: 23px;
-  height: 23px;
+  width: 20px;
+  height: 20px;
 }
 
 .tc-variant-story__copy {
@@ -1238,6 +1259,53 @@ html[data-route-name="product"] .breadcrumb-nav {
   scrollbar-color: rgba(141, 92, 255, 0.58) transparent;
   scrollbar-width: thin;
   scroll-snap-type: x proximity;
+}
+
+.tc-size-choice {
+  position: relative;
+  flex: 0 0 68px;
+  min-width: 68px;
+  scroll-snap-align: start;
+}
+
+.tc-size-choice .tc-size-option {
+  width: 100%;
+  min-width: 0;
+}
+
+.tc-restock-size-btn {
+  position: absolute;
+  right: -4px;
+  bottom: -5px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 190, 87, 0.55);
+  border-radius: 50%;
+  color: #ffd16a;
+  background: #171823;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.34);
+  cursor: pointer;
+}
+
+.tc-restock-size-btn[hidden] {
+  display: none;
+}
+
+.tc-restock-size-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.tc-restock-size-btn:hover,
+.tc-restock-size-btn:focus-visible {
+  color: #17120a;
+  background: #ffd16a;
+  outline: 2px solid rgba(255, 209, 106, 0.28);
+  outline-offset: 2px;
 }
 
 .tc-size-grid::-webkit-scrollbar {
@@ -1346,18 +1414,422 @@ html[data-route-name="product"] .breadcrumb-nav {
 
 .tc-color-option .tc-thermo-flame--swatch {
   position: absolute;
-  right: -6px;
-  top: -8px;
-  width: 18px;
-  height: 18px;
+  right: 1px;
+  top: 1px;
+  z-index: 2;
+  width: 15px;
+  height: 15px;
   color: #ff7d32;
   filter: drop-shadow(0 2px 5px rgba(255, 79, 35, 0.55));
   pointer-events: none;
 }
 
 .tc-color-option.active .tc-thermo-flame--swatch {
+  width: 16px;
+  height: 16px;
+}
+
+.tc-configurator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  align-items: start;
+  gap: 10px 14px;
+}
+
+.tc-option-axis {
+  min-width: 0;
+}
+
+.tc-option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 8px;
+}
+
+.tc-option-card {
+  position: relative;
+  min-width: 0;
+  min-height: 70px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 38px 9px 10px;
+  overflow: hidden;
+  border: 1px solid var(--pdp-border);
+  border-radius: 8px;
+  color: var(--pdp-text);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.024));
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms var(--pdp-ease);
+}
+
+.tc-option-card:hover,
+.tc-option-card:focus-visible,
+.btn-check:focus-visible + .tc-option-card,
+.btn-check:checked + .tc-option-card,
+.tc-option-card.active {
+  border-color: var(--pdp-violet);
+  background: rgba(141, 92, 255, 0.11);
+  box-shadow: 0 0 0 1px rgba(141, 92, 255, 0.36), 0 8px 20px rgba(84, 54, 171, 0.15);
+  transform: translateY(-1px);
+}
+
+.tc-option-card.is-disabled {
+  border-color: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.44);
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.tc-option-card__icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  color: #b39bff;
+}
+
+.tc-option-card__icon img,
+.tc-option-card__icon svg {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+}
+
+.tc-option-card.is-disabled .tc-option-card__icon {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+
+.tc-option-card__copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.tc-option-card__copy strong,
+.tc-option-card__copy small {
+  overflow-wrap: anywhere;
+}
+
+.tc-option-card__copy strong {
+  font-size: 0.86rem;
+  line-height: 1.14;
+}
+
+.tc-option-card__copy small {
+  color: var(--pdp-soft);
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+.tc-option-card__check {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+}
+
+.btn-check:checked + .tc-option-card .tc-option-card__check,
+.tc-option-card.active .tc-option-card__check {
+  border-color: var(--pdp-violet);
+  background: var(--pdp-violet);
+  box-shadow: 0 0 12px rgba(141, 92, 255, 0.48);
+}
+
+.btn-check:checked + .tc-option-card .tc-option-card__check::before,
+.tc-option-card.active .tc-option-card__check::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  width: 8px;
+  height: 5px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg);
+}
+
+.tc-option-card__price,
+.tc-option-card__status {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  max-width: calc(100% - 58px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.tc-option-card__price {
+  color: #ffd16a;
+}
+
+.tc-option-card__status {
+  color: rgba(255, 209, 106, 0.72);
+}
+
+.tc-media-stage {
+  touch-action: pan-y;
+}
+
+.tc-media-stage picture {
+  transform: translateX(var(--tc-gallery-drag-x, 0));
+  transition: transform 180ms var(--pdp-ease);
+}
+
+.tc-media-stage.is-dragging picture {
+  transition: none;
+}
+
+body.tc-modal-open {
+  overflow: hidden;
+}
+
+.tc-restock-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.tc-restock-modal[hidden] {
+  display: none;
+}
+
+.tc-restock-modal.is-open {
+  opacity: 1;
+}
+
+.tc-restock-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 5, 9, 0.76);
+  backdrop-filter: blur(10px);
+}
+
+.tc-restock-dialog {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid rgba(160, 132, 255, 0.34);
+  border-radius: 8px;
+  color: #f6f4ff;
+  background: #151620;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.58);
+  transform: translateY(10px);
+  transition: transform 160ms var(--pdp-ease);
+}
+
+.tc-restock-modal.is-open .tc-restock-dialog {
+  transform: none;
+}
+
+.tc-restock-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tc-restock-close svg {
+  width: 18px;
+  height: 18px;
+}
+
+.tc-restock-head {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 12px;
+  padding-right: 38px;
+}
+
+.tc-restock-head__icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 209, 106, 0.32);
+  border-radius: 50%;
+  color: #ffd16a;
+  background: rgba(255, 181, 62, 0.08);
+}
+
+.tc-restock-head__icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.tc-restock-head h2 {
+  margin: 0;
+  font-size: 1.24rem;
+}
+
+.tc-restock-head p {
+  margin: 5px 0 0;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.tc-restock-form {
+  display: grid;
+  gap: 13px;
+  margin-top: 18px;
+}
+
+.tc-restock-summary {
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 2px 10px;
+  padding: 10px 12px;
+  border-left: 2px solid #ffd16a;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.tc-restock-summary span,
+.tc-restock-summary small {
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 0.72rem;
+}
+
+.tc-restock-summary small {
+  grid-column: 1 / -1;
+}
+
+.tc-restock-channels {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.tc-restock-channels button {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  place-items: center;
+  gap: 4px;
+  padding: 7px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.68);
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 0.68rem;
+}
+
+.tc-restock-channels button svg {
   width: 20px;
   height: 20px;
+}
+
+.tc-restock-channels button.is-active {
+  border-color: #9a72ff;
+  color: #fff;
+  background: rgba(141, 92, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(141, 92, 255, 0.22);
+}
+
+.tc-restock-field {
+  display: grid;
+  gap: 6px;
+}
+
+.tc-restock-field > span {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.tc-restock-field input {
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(4, 5, 9, 0.46);
+}
+
+.tc-restock-field input:focus {
+  outline: 2px solid rgba(154, 114, 255, 0.42);
+  outline-offset: 1px;
+  border-color: #9a72ff;
+}
+
+.tc-restock-honeypot {
+  position: absolute !important;
+  left: -10000px !important;
+  width: 1px !important;
+  height: 1px !important;
+}
+
+.tc-restock-telegram-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.76rem;
+}
+
+.tc-restock-telegram-note svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: #58d69d;
+}
+
+.tc-restock-status {
+  min-height: 18px;
+  margin: 0;
+  color: #ffd16a;
+  font-size: 0.76rem;
+}
+
+.tc-restock-submit {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px solid #9a72ff;
+  border-radius: 8px;
+  color: #fff;
+  background: #7650df;
+  font-weight: 850;
+}
+
+.tc-restock-submit svg {
+  width: 18px;
+  height: 18px;
+}
+
+.tc-restock-submit:disabled {
+  opacity: 0.58;
+  cursor: wait;
 }
 
 .tc-color-dot {
@@ -3091,6 +3563,11 @@ html[data-route-name="product"] .breadcrumb-nav {
     padding: 4px 2px 5px;
   }
 
+  .tc-size-choice {
+    width: 100%;
+    min-width: 0;
+  }
+
   .tc-size-option {
     flex: initial;
     min-width: 0;
@@ -3099,11 +3576,35 @@ html[data-route-name="product"] .breadcrumb-nav {
   }
 
   .tc-selector-split,
+  .tc-configurator-grid,
   .tc-fit-grid,
   .tc-care-grid,
   .tc-delivery-grid,
   .tc-desc-layout {
     grid-template-columns: 1fr;
+  }
+
+  .tc-option-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tc-option-card {
+    min-height: 72px;
+  }
+
+  .tc-restock-modal {
+    align-items: end;
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .tc-restock-dialog {
+    width: 100%;
+    max-height: calc(100dvh - 24px - env(safe-area-inset-bottom));
+    padding: 18px;
+  }
+
+  .tc-restock-channels {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .tc-desc-collapse {
@@ -3465,7 +3966,7 @@ html[data-route-name="product"] .breadcrumb-nav {
 
 /* =========================================================================
    SEO molecular-upgrade US-3 — per-product SEO content block.
-   Renders below the main product card (and above reviews) with
+   Renders at the bottom of the PDP after shopping content with
    readable typography and grid spacing that doesn't compete with the
    purchase-flow surface.
    ========================================================================= */
@@ -3473,7 +3974,7 @@ html[data-route-name="product"] .breadcrumb-nav {
 .pdp-seo-block {
   margin: clamp(40px, 6vw, 64px) auto;
   padding: clamp(24px, 4vw, 40px) clamp(20px, 4vw, 32px);
-  max-width: 1080px;
+  max-width: 100%;
   background: rgba(15, 18, 24, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 18px;
