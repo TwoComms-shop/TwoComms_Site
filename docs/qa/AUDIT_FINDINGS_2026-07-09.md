@@ -27,9 +27,9 @@
 | Severity | Open | Closed / pass / info |
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
-| P1 | 12 | 20 |
-| P2 | 15 | 8 |
-| P3 | 4 | 31 |
+| P1 | 11 | 21 |
+| P2 | 14 | 9 |
+| P3 | 2 | 33 |
 
 ### Pass A coverage (honest)
 
@@ -109,7 +109,7 @@
 | [ ] | **F-031** | P1 | MySQL has gone away | §F-031; F-080 |
 | [ ] | **F-007** | P1 | HTTP 429 burst crawl | §F-007 |
 | [ ] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | §F-018 |
-| [ ] | **F-043** | P1 | /help-center/ 404 | §F-043 |
+| [x] | **F-043** | P1 | /help-center/ 404 | **FIXED `169e6032`**; production 301 to `/dopomoga/`; §F-043 |
 | [ ] | **F-050** | P1 | NP Kyiv Latin 502 | §F-050 |
 | [ ] | **F-059** | P1 | ProductImage alt empty | §F-059 |
 | [ ] | **F-087** | P1 | ubd_docs public 200 | §F-087; PLAN_VS W1-11 |
@@ -134,7 +134,7 @@
 | [ ] | **F-048** | P2 | fbp without internal UTM | §F-048 |
 | [ ] | **F-051** | P2 | checkout/capture empty 200 | §F-051; PLAN_VS W3-11 |
 | [ ] | **F-075** | P2 | CheckoutCapture.converted 0/4 | §F-075; mono path |
-| [ ] | **F-078** | P2 | /kontakty/ 404 | §F-078 |
+| [x] | **F-078** | P2 | /kontakty/ 404 | **FIXED `169e6032`**; production 301 to `/contacts/`; §F-078 |
 | [ ] | **F-089** | P2 | FACEBOOK_PIXEL_ID empty settings | §F-089 |
 | [ ] | **F-090** | P2 | No MySQL backup cron | §F-090; PLAN_VS W0-3 |
 
@@ -142,9 +142,9 @@
 
 | ☐ | ID | Sev | One-line | Detail |
 |---|-----|-----|----------|--------|
-| [ ] | **F-009** | P3 | favicon 302 | §F-009 |
+| [x] | **F-009** | P3 | favicon 302 | **FIXED `169e6032`**; production direct 200 `image/x-icon`; §F-009 |
 | [ ] | **F-014** | P3 | sitemap lastmod cluster | §F-014 |
-| [ ] | **F-015** | P3 | manifest.webmanifest 404 | §F-015 |
+| [x] | **F-015** | P3 | manifest.webmanifest 404 | **FIXED `169e6032`**; production 200 manifest alias; §F-015 |
 
 ### Plan-only reopen (not always separate F-*) — still fix
 
@@ -197,13 +197,13 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [ ] **F-006** | P2 | OPEN | YES | Color sitemap same URL ×3 |
 | [ ] **F-007** | P1 | OPEN | YES | HTTP 429 under burst crawl |
 | [ ] **F-008** | P2 | OPEN | YES | Meta description too long on some static pages |
-| [ ] **F-009** | P3 | OPEN | YES | favicon.ico 302 then 200 |
+| [x] **F-009** | P3 | FIXED | DONE | `169e6032`: favicon.ico direct 200; production verified |
 | [ ] **F-010** | P2 | OPEN | YES | debug/dev endpoints login-gated not 404 |
 | [ ] **F-011** | P2 | OPEN | YES | TikTok data-attr present; ttq.load not in initial HTML |
 | [x] **F-012** | P2 | INFO | no | ViewContent JS-only (expected architecture) |
 | [ ] **F-013** | P2 | OPEN | YES | Category title vs H1 length strategy inconsistent |
 | [ ] **F-014** | P3 | OPEN | YES | Sitemap lastmod clustered 2026-06-11 |
-| [ ] **F-015** | P3 | OPEN | YES | manifest.webmanifest 404; site.webmanifest OK |
+| [x] **F-015** | P3 | FIXED | DONE | `169e6032`: manifest.webmanifest aliases the canonical manifest; production 200 |
 | [x] **F-016** | P3 | PASS | no | Variant URL titles work |
 | [x] **F-017** | P3 | PASS | no | mapa-saytu links all 200 |
 | [ ] **F-018** | P1 | OPEN | YES | offer_id ЧОРНИЙ vs ЧЕРНЫЙ split |
@@ -231,7 +231,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-040** | P3 | INFO | no | Checkout is JS/Mono-driven path map |
 | [x] **F-041** | P3 | PASS | no | CSP allows Meta/TikTok/GTM |
 | [x] **F-042** | P3 | PASS | no | Early Meta PageView in HTML |
-| [ ] **F-043** | P1 | OPEN | YES | /help-center/ 404 (need 301→/dopomoga/) |
+| [x] **F-043** | P1 | FIXED | DONE | `169e6032`: /help-center/ permanently redirects to /dopomoga/ |
 | [x] **F-044** | P1 | FIXED | DONE | `394a247c`: new web orders persist a durable session key; production rollback canary passed; historical 29/36 baseline retained |
 | [x] **F-045** | P0 | FIXED | DONE | `34275e28`: new-order UTMSession join production canary verified |
 | [x] **F-046** | P3 | PASS | no | Server canary UTM capture |
@@ -267,7 +267,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [ ] **F-075** | P2 | OPEN | YES | CheckoutCapture.converted never true (0/4) |
 | [x] **F-076** | P1 | FIXED | DONE | `fdf6563a`: writer fails closed without committed PageView/SiteSession; dashboards use trusted PV cohort; production 1713/1713 parity |
 | [x] **F-077** | P2 | REVISED | no | Product feed g:link OK when unescaped (narrows F-027) |
-| [ ] **F-078** | P2 | OPEN | YES | /kontakty/ 404; canonical is /contacts/ |
+| [x] **F-078** | P2 | FIXED | DONE | `169e6032`: /kontakty/ permanently redirects to /contacts/ |
 | [x] **F-079** | P0 | RECONF | no | F-030 live: 8+ client_errors initializePixelsImmediately |
 | [x] **F-080** | P1 | RECONF | no | F-031 live: 565× MySQL server has gone away in django.log |
 | [x] **F-081** | P3 | PASS | no | Footer legal/support pages 14/14 200 |
@@ -302,18 +302,18 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-087** — ubd_docs publicly HTTP 200
 - [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
 
-### P1 OPEN (continued) — 9
+### P1 OPEN (continued) — 8
 - [ ] **F-007** — HTTP 429 under burst crawl
 - [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
 - [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
 - [ ] **F-022** — Extreme PV→ATC cliff / possible product_view noise
 - [ ] **F-031** — MySQL server has gone away (reconf F-080)
 - [ ] **F-032** — UserAction rarely linked to UTMSession
-- [ ] **F-043** — /help-center/ 404 (need 301→/dopomoga/)
+- [x] **F-043** — fixed `169e6032`; production 301 to `/dopomoga/`
 - [ ] **F-050** — NP city Latin Kyiv 502 / Київ 200
 - [ ] **F-057** — All-time dirty utm_source inventory
 
-### P2 OPEN — 12
+### P2 OPEN — 11
 - [ ] **F-006** — Color sitemap same URL ×3
 - [ ] **F-008** — Meta description too long on some static pages
 - [ ] **F-010** — debug/dev endpoints login-gated not 404
@@ -325,12 +325,12 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-048** — Orders have fbp tracking without internal UTM
 - [ ] **F-051** — checkout/capture empty returns 200 ok
 - [ ] **F-075** — CheckoutCapture.converted stuck false
-- [ ] **F-078** — /kontakty/ 404 vs /contacts/
+- [x] **F-078** — fixed `169e6032`; production 301 to `/contacts/`
 
-### P3 OPEN — 3
-- [ ] **F-009** — favicon.ico 302 then 200
+### P3 OPEN — 1
+- [x] **F-009** — fixed `169e6032`; production direct 200
 - [ ] **F-014** — Sitemap lastmod clustered 2026-06-11
-- [ ] **F-015** — manifest.webmanifest 404; site.webmanifest OK
+- [x] **F-015** — fixed `169e6032`; production 200
 
 ### PASS / INFO / REVISED (не чинить как баг) — 26
 - [x] **F-012** — ViewContent JS-only (expected architecture)
@@ -794,20 +794,24 @@ restart.
 
 ### F-009 — `favicon.ico` redirects (302) before icon
 
-**Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES
+**Status:** [x] FIXED (`169e6032`) · **Severity:** P3 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P3** · Area: **TECH** · Checklist: TECH-040
+- [x] **Fixed** · Severity: **P3** · Area: **TECH** · Checklist: TECH-040
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED |
-| Status (C) | |
+| Status (C) | FIXED `169e6032`; production direct 200 `image/x-icon`, 2026-07-16 |
 
 - Direct `/favicon.ico` → **302**, follow → `static/img/favicon.*.ico` **200** image/x-icon.  
 - PNG favicons 192/512/180 **200**.  
 - May relate to “icon” Telegram complaints if some clients don’t follow redirect.
 
 **Risk of fix:** low.
+
+**Resolution:** the root route now streams the favicon directly and applies the
+same cache headers as other platform assets. Focused tests passed 4/4; the live
+route returned 200 without a redirect after deployment.
 
 ---
 
@@ -886,11 +890,15 @@ Products/variants/categories lastmod in index point to **2026-06-11** while blog
 
 ### F-015 — `manifest.webmanifest` 404 while `site.webmanifest` 200
 
-**Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES
+**Status:** [x] FIXED (`169e6032`) · **Severity:** P3 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P3** · Area: **TECH** · Checklist: PG-088
+- [x] **Fixed** · Severity: **P3** · Area: **TECH** · Checklist: PG-088
 
 Only an issue if some code references the wrong path. `site.webmanifest` OK.
+
+**Resolution:** `/manifest.webmanifest` now serves the same validated payload as
+`/site.webmanifest`. Focused tests passed 4/4; production returned 200 with
+`application/manifest+json` after deployment of `169e6032`.
 
 ---
 
@@ -1053,7 +1061,7 @@ Example organic web order with session but no UTM (expected for non-ads):
 
 | ID | Status | Note |
 |----|--------|------|
-| F-043 | OPEN P1 | `/help-center/` → **404** (should 301 → `/dopomoga/` like docs suggested) |
+| F-043 | FIXED `169e6032` | `/help-center/` → production **301** to `/dopomoga/` |
 | F-044 | FIXED `394a247c` | New web orders persist a durable key; historical 29/36 baseline intentionally unchanged |
 | F-045 | FIXED `34275e28` | New-order UTMSession join production canary passed |
 | F-046 | PASS | Server canary UTM+ATC+normalize |
@@ -1692,17 +1700,21 @@ BFCache bug F-030 still applies to loader reinit.
 
 ### F-043 — `/help-center/` returns 404 (dead alias)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`169e6032`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **SEO** · Checklist: PG-039, SEO-046
+- [x] **Fixed** · Severity: **P1** · Area: **SEO** · Checklist: PG-039, SEO-046
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED |
-| Status (C) | |
+| Status (C) | FIXED `169e6032`; production 301 to `/dopomoga/`, 2026-07-16 |
 
 `GET /help-center/` → **404**. Canonical help is `/dopomoga/`.  
 If external links/docs still use help-center, link equity + UX break. Should be **301** to `/dopomoga/` (same pattern as `/about/` → `/pro-brand/`).
+
+**Resolution:** the legacy alias permanently redirects to the locale-preserving
+canonical help route. Root, RU and EN regression cases passed; production root
+returned 301 to `/dopomoga/`.
 
 ---
 
@@ -2275,7 +2287,7 @@ Live `https://twocomms.shop/google-merchant-feed.xml` (**384** items):
 
 ### F-078 — `/kontakty/` 404; real contacts URL is `/contacts/`
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES (301)
+**Status:** [x] FIXED (`169e6032`) · **Severity:** P2 · **Fix required:** DONE
 
 | URL | Status |
 |-----|--------|
@@ -2283,6 +2295,10 @@ Live `https://twocomms.shop/google-merchant-feed.xml` (**384** items):
 | `/contacts/` | **200** «Контакти TwoComms…» |
 
 Likely UA-slug expectation / old links. Add 301 → `/contacts/` (same family as F-043 `/help-center/` → `/dopomoga/`).
+
+**Resolution:** the legacy alias permanently redirects to the locale-preserving
+canonical contacts route. Root, RU and EN regression cases passed; production
+root returned 301 to `/contacts/`.
 
 ---
 
