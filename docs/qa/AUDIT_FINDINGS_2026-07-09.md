@@ -131,7 +131,7 @@
 | [o] | **F-028** | P2 | RU/EN PDP naming | **PARTIAL `da910c46`**; locale runtime fixed, live 39/39 aligned; owner-approved cross-locale naming policy remains; §F-028 |
 | [o] | **F-035** | P2 | CSP violations | **PARTIAL `341d42a9`**; telemetry fixed and production-verified; whether any current allowlist residual exists awaits >=24h observation from 2026-07-16 16:07:50 UTC; §F-035 |
 | [o] | **F-036** | P2 | Telegram RemoteDisconnected | **PARTIAL `48d1c9fe`**; bounded transient retry and truthful caller state deployed; natural delivery observation remains; §F-036 |
-| [ ] | **F-048** | P2 | fbp without internal UTM | §F-048 |
+| [o] | **F-048** | P2 | fbp without internal UTM | **PARTIAL `7ff879bf` + `d368825d..c8b8abec`**; fresh FBC writer fixed, 5/5 safe historical orders linked; stale/no-key/conflicting evidence remains; §F-048 |
 | [ ] | **F-051** | P2 | checkout/capture empty 200 | §F-051; PLAN_VS W3-11 |
 | [ ] | **F-075** | P2 | CheckoutCapture.converted 0/4 | §F-075; mono path |
 | [x] | **F-078** | P2 | /kontakty/ 404 | **FIXED `169e6032`**; production 301 to `/contacts/`; §F-078 |
@@ -236,7 +236,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-045** | P0 | FIXED | DONE | `34275e28`: new-order UTMSession join production canary verified |
 | [x] **F-046** | P3 | PASS | no | Server canary UTM capture |
 | [x] **F-047** | P3 | PASS | no | Sitemap 489/489 HTTP 200 |
-| [ ] **F-048** | P2 | OPEN | YES | Orders have fbp tracking without internal UTM |
+| [o] **F-048** | P2 | PARTIAL | YES | Fresh FBC order fallback deployed; guarded production reconciliation linked 5 orders/5 sessions, residuals intentionally untouched |
 | [x] **F-049** | P3 | PASS | no | Home unexclude canary PASS |
 | [x] **F-050** | P1 | FIXED | DONE | `75b1f6fb`: Latin aliases share canonical NP query/cache; live 3/3 200 |
 | [ ] **F-051** | P2 | OPEN | YES | checkout/capture empty returns 200 ok |
@@ -313,7 +313,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 STATUS — 3 PARTIAL / 6 OPEN
+### P2 STATUS — 4 PARTIAL / 5 OPEN
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
@@ -322,7 +322,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [o] **F-028** — `da910c46` fixed runtime locale propagation (live 39/39); owner-approved cross-locale naming policy remains
 - [o] **F-035** — `341d42a9` fixed and production-verified telemetry; observe real reports for >=24h from 2026-07-16 16:07:50 UTC before any policy change
 - [o] **F-036** — `48d1c9fe` retries transient Telegram text failures and removes false success state; natural delivery observation remains
-- [ ] **F-048** — Orders have fbp tracking without internal UTM
+- [o] **F-048** — fresh validated FBC now links orders; 5/5 safe historical rows reconciled, stale/no-key/conflicting evidence remains untouched
 - [ ] **F-051** — checkout/capture empty returns 200 ok
 - [ ] **F-075** — CheckoutCapture.converted stuck false
 - [x] **F-078** — fixed `169e6032`; production 301 to `/contacts/`
@@ -2071,11 +2071,55 @@ Slow Chrome-UA crawl of all unique sitemap locs: **ok=489, bad=0, 429=0**.
 
 ### F-048 — CAPI tracking payload often has fbp without internal UTM
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [o] PARTIAL (`7ff879bf` + `d368825d..c8b8abec`) · **Severity:** P2 · **Fix required:** YES
 
-- [ ] **Open** · Severity: **P2** · Area: **PIXEL** · Checklist: PIX-020
+- [o] **Partial** · Severity: **P2** · Area: **PIXEL** · Checklist: PIX-020
 
 29/40 recent orders have `payment_payload.tracking` keys including `fbp`, `external_id`, IP, UA (sometimes `fbc`). Internal UTM fields still empty. Meta may attribute; **Dispatcher/UTM reports will not**.
+
+**Corrected scope (2026-07-16):** `_fbp` is a browser identifier created for
+ordinary Pixel visitors and is not acquisition evidence by itself. It must not
+create internal UTM attribution. The real current-path gap was a returning Meta
+buyer with a fresh, structurally valid `_fbc` cookie after the original
+`fbclid` query/session evidence was gone.
+
+**Future writer fix (`7ff879bf`):** FBC is parsed without logging identifiers
+and considered only at Order link time, after explicit UTM, current click-ID,
+session and first-touch evidence. The click timestamp must fall inside the
+configurable, clamped seven-day policy window (with five minutes of clock skew).
+A valid fallback creates only `facebook/paid_social`, FBC and extracted fbclid;
+campaign/content/term remain empty. FBP-only, malformed, future, stale and
+already-attributed cases do not synthesize attribution. General page-view
+middleware behavior was not changed.
+
+**Historical reconciliation (`d368825d`, hardened by `69e8b398` and
+`c8b8abec`):** a separate dry-run-first command groups only deterministic
+32-character session evidence, rejects whole groups on stale/malformed/mixed
+FBC, key mismatch, existing Order/UTM/UserAction conflicts or incompatible
+durable first-touch data, requires exact residual/create/reuse guards, locks and
+rescans inside one transaction, and never writes Order session keys, payment
+payloads, SiteSession, UserAction or synthetic events.
+
+Production dry-run found **36** unattributed web orders: **9** had fresh valid
+FBC evidence, but durable-evidence checks left only **5 groups / 5 orders** safe
+to link. Residuals were 4 stale, 1 without a deterministic key, 3 conflicting
+and 23 invalid/non-FBC rows. A mode-0600 rollback snapshot was stored outside
+Git at
+`tmp/audit_backups/f048_fbc_order_attribution_20260716T182913Z.json`.
+
+Apply with exact guards created **5 UTMSession** rows and linked **5/5 Orders**.
+In-transaction verification confirmed `facebook/paid_social`, no campaign-level
+fabrication, unchanged payment payload/session keys, unchanged targeted
+SiteSession/UserAction evidence and a clean post-report. A first verification
+attempt deliberately rolled back when a global live SiteSession count changed
+concurrently; exact targeted verification then committed successfully. The
+post-apply dry-run returned linkable groups/orders **0/0**, with the intentional
+4 stale + 1 no-key + 3 conflicting residuals unchanged. Local and server
+attribution suites passed **67/67**; storefront health remained HTTP 200.
+
+**Residual:** keep `[o] PARTIAL`. Do not widen the seven-day owner policy, infer
+from FBP, invent a session key or override conflicting durable evidence merely
+to make historical totals reach zero.
 
 ---
 
@@ -2723,7 +2767,7 @@ Landing (+UTM)
   → UserAction.metadata.first_touch    ✓ often written
   → Order.utm_* via link_order_to_utm  ✗ fails if only first_touch (F-071)
   → UTMSession.is_converted            ✗ never (F-019) because mark_as_converted needs utm_session on purchase
-  → payment_payload.tracking fbp/fbc   ✓ often present without internal UTM (F-048)
+  → payment_payload.tracking fbp/fbc   ✓ FBP is browser-only; fresh FBC now has guarded Order attribution (F-048 partial)
 ```
 
 **Ads implication:** Meta CAPI may still get fbp/fbc from order payload, but **internal ROAS / Dispatcher campaign split is blind**. Fix F-071 + paid UTM canary before scaling paid social.
@@ -3015,3 +3059,4 @@ tests. Do not run a blind `ALTER TABLE` during live checkout traffic.
 | 2026-07-14 | F-068/F-073 closed: historical writer root fixed in `7936ab6e`, regression `30808819`; local 94/94, server 1/1 and production prepay Order/UTM/tracking/20,000-minor-unit rollback canary passed; DB and session-cache cleanup 0, historical 19/19 unchanged |
 | 2026-07-14 | F-084 fixed in `069f4efa`: all AI attribution writers share canonical normalization; local/server 75/75, live WSGI canary and guarded reconciliation updated 122 UTM + 158 first-touch rows, left aliases at 0 and `chatgpt/ai` at 161; all 280 touched rows matched the rollback snapshot outside intended fields |
 | 2026-07-16 | F-036 partial in `48d1c9fe`: bounded transient Telegram text retries and truthful caller state; local/server 36/36, check/compile/getMe/storefront passed; no synthetic message, natural delivery evidence remains |
+| 2026-07-16 | F-048 partial in `7ff879bf` + `d368825d..c8b8abec`: fresh FBC Order fallback and fail-closed historical command; local/server 67/67, private snapshot, production 5 Orders/5 UTMSessions reconciled, post dry-run linkable 0; stale/no-key/conflicting rows preserved |

@@ -97,17 +97,21 @@ Quality-review evidence (2026-07-16): two new whole-group regressions first fail
 - Modify: `TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`
 - Modify: this plan
 
-- [ ] **Step 1: Review, commit, push, and deploy code**
+- [x] **Step 1: Review, commit, push, and deploy code**
 
 Run spec and data-safety review, commit only the scoped code/tests/plan, push `main`, pull on production, run the focused server suite/check/compile, restart Passenger, and verify storefront HTTP 200.
 
-- [ ] **Step 2: Dry-run production and create a private rollback snapshot**
+- [x] **Step 2: Dry-run production and create a private rollback snapshot**
 
 Run the command without `--apply`. Before mutation, write a mode-0600 JSON snapshot under untracked `twocomms/tmp/audit_backups/` containing only candidate primary keys and original Order/UTMSession fields needed for rollback. Print only path, mode, and aggregate counts, never FBC/FBP/session values.
 
-- [ ] **Step 3: Apply with exact observed guards and verify**
+Production evidence (2026-07-16): server 67/67, check and compile passed at `c8b8abec`. Dry-run reported `scanned=36`, `eligible=9`, `linkable_groups=5`, `linkable_orders=5`, `stale=4`, `no_key=1`, `invalid=23`, `conflicting=3`, `create_sessions=5`, `reuse_sessions=0`. The private rollback snapshot is `tmp/audit_backups/f048_fbc_order_attribution_20260716T182913Z.json`, directory mode 700 and file mode 600.
+
+- [x] **Step 3: Apply with exact observed guards and verify**
 
 Apply only if dry-run counts equal the reviewed baseline. Re-run dry-run expecting zero linkable candidates, verify every changed Order/session against the private snapshot, confirm raw-only/no-key and stale rows stayed unchanged, and verify storefront health. Do not delete the snapshot in this slice.
+
+Apply evidence (2026-07-16): a first outer-transaction attempt intentionally rolled back after a live global SiteSession count changed concurrently; exact rollback verification restored all five candidates and reported zero candidate sessions. The second outer-transaction apply used targeted SiteSession/UserAction hashes and committed `updated_orders=5`, `created_sessions=5`. In-transaction verification proved five exact Order/session links, `facebook/paid_social`, no campaign fabrication, unchanged payment payloads/session keys and unchanged four targeted UserActions. Post dry-run returned linkable groups/orders 0/0 with 4 stale, 1 no-key and 3 conflicting residuals; storefront returned HTTP 200.
 
 - [ ] **Step 4: Mark F-048 partial, not fixed**
 
