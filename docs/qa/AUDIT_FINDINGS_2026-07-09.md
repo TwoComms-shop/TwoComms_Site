@@ -29,7 +29,7 @@
 | P0 | 0 | 12 |
 | P1 | 11 | 21 |
 | P2 | 14 | 9 |
-| P3 | 2 | 33 |
+| P3 | 1 | 34 |
 
 ### Pass A coverage (honest)
 
@@ -152,7 +152,7 @@
 |---|---------|-------|--------|
 | [x] | **W2-7** | Dual mono status path: webhook skips on_commit CAPI | **FIXED `78814344`**; shared post-commit dispatcher, once-only production canary |
 | [ ] | **W7-1** | views.py.backup still lazy-loaded | PLAN_VS W7-1 |
-| [ ] | **W7-23** | residual datetime.now dropshipper | PLAN_VS W7-23 |
+| [x] | **W7-23** | residual datetime.now dropshipper | **FIXED `3df4c2fc`**; local/server tests 2/2; PLAN_VS W7-23 |
 | [ ] | **W0-5** | OPS docs OK; server stash OWNER | PLAN_VS W0-5 |
 | [ ] | **IG-002…IG-014** | Full IG bot pack beyond F-095…098 | **IG_BOT_MANAGEMENT_BUGS** |
 
@@ -290,7 +290,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-098** | P1 | REVISED_OWNER | no | Owner rejected a duplicate manual transfer button; existing AI/page-echo manager takeover is the intended flow |
 | [x] **F-099** | P1 | FIXED | DONE | `78814344`: webhook uses shared on-commit dispatcher; server tests and production canary verified |
 | [ ] **F-100** | P2 | OPEN | YES | views.py.backup still lazy-loaded (plan W7-1) |
-| [ ] **F-101** | P3 | OPEN | YES | residual datetime.now in dropshipper_views (plan W7-23) |
+| [x] **F-101** | P3 | FIXED | DONE | `3df4c2fc`: one Kyiv-local reporting date; boundary regression; server 2/2 |
 | [x] **F-102** | P0 | FIXED | DONE | `02b49553`: checkout/attribution tables converted to InnoDB; rollback canary verified |
 
 ### P0 OPEN — 0
@@ -2618,8 +2618,15 @@ File `storefront/views.py.backup` exists; `views/__init__.py` still lazy-loads f
 
 ### F-101 — residual `datetime.now()` in dropshipper — plan W7-23
 
-**Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES  
-**Detail:** PLAN_VS W7-23 · `orders/dropshipper_views.py:273-274`
+**Status:** [x] FIXED (`3df4c2fc`) · **Severity:** P3 · **Fix required:** DONE
+**Detail:** PLAN_VS W7-23 · `orders/dropshipper_views.py`
+
+The dashboard now derives year and month from one `timezone.localdate()` value,
+so UTC/month boundaries cannot select the wrong Kyiv reporting period or split
+month and year across two clock reads. The regression covers the Kyiv New Year
+boundary and the AST hygiene guard covers aliased datetime imports. Local and
+production focused suites passed 2/2; production HEAD and home health were
+verified on 2026-07-16.
 
 ---
 

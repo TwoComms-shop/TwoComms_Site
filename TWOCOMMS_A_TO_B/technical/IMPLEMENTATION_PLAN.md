@@ -540,10 +540,11 @@
   ~15+ мест (cart.py:583-939, manual_orders.py, utm_api_views.py, viewsets.py): суммы сериализуются `float(Decimal)` → потенциальные 0.30000000000000004 в JSON/пикселях. Модели правильные (DecimalField), проблема только на границе сериализации.
   Фикс: хелпер `money_str(d) -> str(d.quantize('0.01'))` или DjangoJSONEncoder; менять вместе с касанием соотв. файлов, не массово.
 
-- [ ] **W7-23. [NEW-511] Naive datetime.now() (P3)** `[REPO]`
+- [x] **W7-23. [NEW-511] Naive datetime.now() (P3)** `[REPO]`
   > **STRICT RE-VERIFY W7-23:** STRICT RE-VERIFY 2026-07-09: residual datetime.now() still in orders/dropshipper_views.py:273-274 (non-test). Uncheck until timezone-aware.
   `promo.py:714-720`, `recommendations.py:202`, `utm_api_views.py:522` — `datetime.now()` без timezone вместо `timezone.now()`/`localdate()` → ��мещение окон «неделя/месяц» в отчётах промо.
   ✅ **DONE:** `promo.py` использует `timezone.localdate()`/`timezone.now()`, `recommendations.py` — `timezone.localdate().month`, `utm_api_views.py` — `timezone.now()` для export filename; статический тест запрещает регресс в этих файлах.
+  ✅ **RESOLVED `3df4c2fc` (2026-07-16):** dropshipper payout reporting derives year/month from one Kyiv-local date. A New Year boundary regression and AST alias-aware hygiene guard passed 2/2 locally and on production.
 
 - [x] **W7-24. [NEW-513] /search/ без пагинации (P3, из CRO-015 бонуса)** `[REPO]`
   > **STRICT RE-VERIFY W7-24:** STRICT 2026-07-09: KEEP. /search/?q=test and page=2 return 200 live.

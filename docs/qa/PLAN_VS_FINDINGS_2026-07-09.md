@@ -15,7 +15,7 @@ If accept criteria fail or only half the production path was fixed → **`[x]` r
 | ID | Why uncheck |
 |----|-------------|
 | **W2-7** | **Dual path.** `utils._record_monobank_status_locked` has `on_commit` + CAPI dispatch, but **live retail webhook** (`monobank.py:1611`) calls **`_apply_monobank_status`**, which runs Telegram + `record_order_action` **synchronously** and **never** calls `_dispatch_post_payment_events` / Meta CAPI. W2-7 accept not met for the path that handles paid webhooks. |
-| **W7-23** | Residual **`datetime.now()`** still in `orders/dropshipper_views.py:273-274` (non-test). |
+| **W7-23** | Historical strict-pass finding; **resolved `3df4c2fc`** with one Kyiv-local reporting date and boundary regression. |
 
 ### Unchecked in previous re-verify (still `[ ]`)
 W2-1, W2-2, W2-3, ADS-1, ADS-2, ADS-3, W7-1, W3-9, W3-11, W0-5 (+ partials documented earlier).
@@ -64,7 +64,7 @@ Each KEEP has a **STRICT RE-VERIFY** note in the plan where non-obvious.
 | **W6-2** | **KEEP** | cart.js submit lock | — |
 | **W6-3** | **KEEP** | Badge markup + tests cart_count includes custom_print | Not full visual browser pass |
 | **W7-6** | **KEEP** | No cost/purchase xlsx in tree scan | — |
-| **W7-23** | **DROP** | Residual naive `datetime.now()` in dropshipper_views | — |
+| **W7-23** | **KEEP / CLOSED `3df4c2fc`** | Uses one `timezone.localdate()` for the payout reporting period | Kyiv New Year boundary + AST hygiene regression; local/server 2/2 |
 | **W7-24** | **KEEP** | Live `/search/?q=test` and `page=2` → 200 | — |
 
 ---
@@ -169,7 +169,7 @@ non-candidate digests remained identical.
 
 ## 5. What was changed in the plan file
 
-1. **`[x]` → `[ ]`:** W2-7, W7-23 (this pass); plus earlier list.  
+1. **`[x]` → `[ ]`:** W2-7, W7-23 during this historical pass; both were subsequently resolved.
 2. **STRICT RE-VERIFY** notes under KEEP items W0-4, W2-8, W3-7, W6-1, W6-3, W7-24.  
 3. Banner mentions dual mono path + datetime residual.
 
@@ -182,7 +182,7 @@ non-candidate digests remained identical.
 | ID | Minimum accept |
 |----|----------------|
 | W2-7 | Retail webhook success uses on_commit dispatcher; no long HTTP under row-lock; CAPI still fires once |
-| W7-23 | No `datetime.now()` in orders/storefront non-test money/date code (use timezone.now) |
+| W7-23 | **PASS `3df4c2fc`:** one Kyiv-local date, boundary regression and AST guard; local/server 2/2 |
 | W2-1 | Monobank path marks the matching CheckoutCapture converted; COD and prepay session/UTM/tracking acceptance already passed |
 | ADS-1 | No client_error for initializePixelsImmediately; BFCache restore works |
 | ADS-3 | Live category titles do not end with від/та/на |
