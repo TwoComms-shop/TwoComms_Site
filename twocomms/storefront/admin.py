@@ -22,10 +22,28 @@ from .models import (
     ProductImage,
     PushNotificationCampaign,
     PushNotificationDelivery,
+    RestockSubscription,
     SurveySession,
     UserPromoCode,
     WebPushDeviceSubscription,
 )
+
+
+@admin.register(RestockSubscription)
+class RestockSubscriptionAdmin(admin.ModelAdmin):
+    list_display = (
+        'product', 'size', 'channel', 'status', 'name',
+        'normalized_contact', 'created_at', 'admin_notified_at',
+    )
+    list_filter = ('channel', 'status', 'created_at')
+    search_fields = (
+        'product__title', 'name', 'contact', 'normalized_contact',
+        'telegram_username', 'size',
+    )
+    readonly_fields = (
+        'fingerprint', 'browser_session_key', 'request_ip_hash', 'user_agent',
+        'created_at', 'updated_at', 'admin_notified_at', 'customer_notified_at',
+    )
 from .services.indexnow import (
     get_category_public_url,
     get_product_public_url,

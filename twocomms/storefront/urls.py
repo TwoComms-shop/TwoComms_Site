@@ -108,6 +108,11 @@ urlpatterns = [
         views.category_color_landing,
         name='catalog_by_cat_color',
     ),
+    path(
+        'product/restock/subscribe/',
+        _module_view('storefront.views.restock', 'restock_subscribe'),
+        name='restock_subscribe',
+    ),
     path('product/<slug:slug>/', views.product_detail, name='product'),
     # Phase 7.2 — path-style variant URLs. Up to three ``slug`` segments
     # capture any combination of size code / colour slug / fit code.
