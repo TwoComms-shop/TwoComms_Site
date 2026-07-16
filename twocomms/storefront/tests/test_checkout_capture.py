@@ -109,6 +109,18 @@ class CheckoutCaptureTests(TestCase):
         self.assert_rejected(response, "contact_required")
         self.assertEqual(CheckoutCapture.objects.count(), 0)
 
+    def test_invalid_phone_only_json_is_rejected(self):
+        response = self.post_json({"phone": "x"})
+
+        self.assert_rejected(response, "contact_required")
+        self.assertEqual(CheckoutCapture.objects.count(), 0)
+
+    def test_invalid_phone_only_form_is_rejected(self):
+        response = self.client.post(self.url, {"phone": "abc"})
+
+        self.assert_rejected(response, "contact_required")
+        self.assertEqual(CheckoutCapture.objects.count(), 0)
+
     def test_non_string_contact_fields_are_rejected_without_server_error(self):
         response = self.post_json(
             {"full_name": 123, "phone": ["+380501112233"], "email": {}}
@@ -212,7 +224,7 @@ class CheckoutCaptureTests(TestCase):
         self.assertEqual(capture.phone, "+380671112233")
         self.assertEqual(capture.full_name, "Form Buyer")
 
-    def test_valid_update_preserves_nonblank_fields_and_resets_converted(self):
+    def test_valid_update_preserves_nonblank_fields_on_active_capture(self):
         session = self.client.session
         session["marker"] = "keep"
         session.save()
@@ -221,7 +233,7 @@ class CheckoutCaptureTests(TestCase):
             full_name="Existing Buyer",
             phone="+380501111111",
             email="existing@example.com",
-            converted=True,
+            converted=False,
         )
 
         response = self.post_json({"phone": "+380672222222"})
@@ -232,6 +244,38 @@ class CheckoutCaptureTests(TestCase):
         self.assertEqual(capture.phone, "+380672222222")
         self.assertEqual(capture.email, "existing@example.com")
         self.assertFalse(capture.converted)
+
+    def test_valid_request_does_not_touch_converted_capture(self):
+        product = self.create_product()
+        self.set_cart(product)
+        session = self.client.session
+        notified_at = timezone.now()
+        recovery_at = notified_at.replace(microsecond=0)
+        capture = CheckoutCapture.objects.create(
+            session_key=session.session_key,
+            full_name="Converted Buyer",
+            phone="+380501111111",
+            email="converted@example.com",
+            cart_snapshot={"original": {"product_id": 987, "qty": 3}},
+            cart_total=Decimal("456.78"),
+            converted=True,
+            admin_notified_at=notified_at,
+            recovery_sent_at=recovery_at,
+        )
+        before = CheckoutCapture.objects.filter(pk=capture.pk).values().get()
+
+        response = self.post_json(
+            {
+                "full_name": "Late Beacon",
+                "phone": "+380672222222",
+                "email": "late@example.com",
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        after = CheckoutCapture.objects.filter(pk=capture.pk).values().get()
+        self.assertEqual(after, before)
 
     def test_valid_capture_attaches_validated_cart_and_total(self):
         product = self.create_product()
@@ -258,6 +302,49 @@ class CheckoutCaptureTests(TestCase):
         capture = CheckoutCapture.objects.get()
         self.assertEqual(capture.user, user)
         self.assertEqual(capture.email, "account@example.com")
+
+    def test_authenticated_name_capture_uses_valid_account_email(self):
+        user = User.objects.create_user(
+            username="named-account-buyer",
+            email="named@example.com",
+            password="test-password",
+        )
+        self.client.force_login(user)
+
+        response = self.post_json({"full_name": "Named Account Buyer"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        capture = CheckoutCapture.objects.get()
+        self.assertEqual(capture.full_name, "Named Account Buyer")
+        self.assertEqual(capture.email, "named@example.com")
+        self.assertEqual(capture.user, user)
+
+    def test_authenticated_empty_payload_does_not_use_account_email(self):
+        user = User.objects.create_user(
+            username="empty-account-buyer",
+            email="empty@example.com",
+            password="test-password",
+        )
+        self.client.force_login(user)
+
+        response = self.post_json({})
+
+        self.assert_rejected(response, "contact_required")
+        self.assertEqual(CheckoutCapture.objects.count(), 0)
+
+    def test_authenticated_name_capture_rejects_invalid_account_email(self):
+        user = User.objects.create_user(
+            username="invalid-email-account-buyer",
+            email="not-an-email",
+            password="test-password",
+        )
+        self.client.force_login(user)
+
+        response = self.post_json({"full_name": "Invalid Email Buyer"})
+
+        self.assert_rejected(response, "contact_required")
+        self.assertEqual(CheckoutCapture.objects.count(), 0)
 
     def test_cross_site_request_remains_forbidden(self):
         response = self.post_json(

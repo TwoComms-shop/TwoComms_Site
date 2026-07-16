@@ -4,7 +4,7 @@
 
 **Goal:** Make `/checkout/capture/` reject empty or unusable abandoned-checkout data with a truthful HTTP 400 response and no database/session mutation.
 
-**Architecture:** Keep the existing same-origin guard, 30/min rate limit and debounced JSON/form clients. Parse JSON fail-closed as an object, retain form-encoded compatibility, and require at least one actionable recovery channel (phone or valid email); a cart or name alone is not recoverable. Return stable machine-readable error codes while the valid upsert behavior remains unchanged.
+**Architecture:** Keep the existing same-origin guard, 30/min rate limit and debounced JSON/form clients. Parse JSON fail-closed as an object, retain form-encoded compatibility, and require at least one actionable recovery channel (a normalized Ukrainian phone or valid email); a cart or name alone is not recoverable. For authenticated name-bearing captures, a validated account email may supply the recovery channel, but an empty payload may not. Treat `converted=True` as a terminal state: lock the row, leave it unchanged and never reopen it from a late autosave. Return stable machine-readable error codes while active-capture upserts remain compatible.
 
 **Tech Stack:** Django 5.2, `JsonResponse`, Django validators/TestCase, MariaDB production verification.
 
@@ -31,7 +31,7 @@ Create an existing capture with `converted=True` and timestamps/contact data, is
 
 - [x] **Step 4: Prove valid recovery channels still upsert**
 
-Assert phone-only, valid-email-only and phone+name form/JSON requests return 200 `ok:true`, preserve prior nonblank fields, attach validated cart/total where present, and keep authenticated user/email behavior.
+Assert normalized phone-only, valid-email-only and phone+name form/JSON requests return 200 `ok:true`, preserve prior nonblank fields, attach validated cart/total where present, and keep authenticated user/email behavior. Reject invalid phone-only JSON/form payloads. A valid authenticated account email may recover a name-bearing capture, but not an empty payload, and an invalid account email is ignored.
 
 - [x] **Step 5: Run focused RED**
 
@@ -51,11 +51,11 @@ For `application/json`, decode UTF-8 JSON and require a dictionary; malformed/no
 
 - [x] **Step 2: Require a recovery channel before cart/session work**
 
-Clean fields and validate email as today, then require `phone or email`. Return `JsonResponse({'ok': False, 'error': 'contact_required'}, status=400)` before reading/persisting the session cart. Full name and cart remain optional context only.
+Clean fields, normalize phone through the checkout Ukrainian-phone validator, and validate submitted/account emails. Then require a normalized `phone` or valid `email`. A validated authenticated account email may be used only when the submitted payload also contains a name or normalized phone. Return `JsonResponse({'ok': False, 'error': 'contact_required'}, status=400)` before reading/persisting the session cart. Full name and cart remain optional context only.
 
 - [x] **Step 3: Preserve valid upsert behavior**
 
-Keep same-origin/rate-limit status codes, one row per session, nonblank field preservation, validated cart total, authenticated user binding, and `converted=False` only after an accepted capture.
+Keep same-origin/rate-limit status codes, one row per session, nonblank field preservation, validated cart total and authenticated user binding. Serialize active-row updates with `transaction.atomic()` plus `select_for_update()`, save only named mutable fields, never write `converted`, and return `ok:true` without changing any field when the locked row is already converted.
 
 - [x] **Step 4: Run GREEN and adjacent checks**
 
@@ -74,6 +74,17 @@ Final local verification: 99 focused and neighboring tests passed; Django check
 reported no issues; scoped compileall and `git diff --check` passed; the scoped
 secret/SSH fingerprint scan found no matches.
 
+**Quality-review follow-up (2026-07-16):** The expanded focused suite ran 26
+tests with 4 expected RED failures before the follow-up implementation: invalid
+JSON phone, invalid form phone, authenticated name plus valid account email, and
+a valid late beacon changing a converted row. After phone normalization,
+validated account-email policy and locked narrow-field upserts, focused GREEN is
+26/26 and the unchanged checkout/cart/UTM neighbor set is 79/79. Converted rows
+are now terminal and byte-for-byte unchanged by accepted late autosaves.
+Final follow-up verification passed all 105 focused-plus-neighbor tests and the
+4 existing checkout phone-normalizer tests; Django check, scoped compileall,
+`git diff --check` and the scoped secret/SSH fingerprint scan were clean.
+
 ### Task 3: Review, ship and reconcile audit docs
 
 **Files:**
@@ -83,7 +94,7 @@ secret/SSH fingerprint scan found no matches.
 
 - [ ] **Step 1: Complete spec and quality reviews**
 
-Confirm the browser autosave remains silent/compatible, no valid phone/email capture is lost, invalid requests cannot update existing rows, and errors expose no submitted PII.
+Confirm the browser autosave remains silent/compatible, no valid normalized-phone/email capture is lost, invalid requests cannot update existing rows, converted rows cannot be reopened, and errors expose no submitted PII.
 
 - [ ] **Step 2: Commit, push, deploy and restart Passenger**
 
@@ -91,7 +102,7 @@ Push only the view/tests/plan, pull `main`, run focused server tests/check/compi
 
 - [ ] **Step 3: Run live negative acceptance**
 
-POST `{}`, name-only, invalid-email-only and non-object JSON without a cart; assert HTTP 400 with stable error codes and production CheckoutCapture count delta 0. Do not create a synthetic valid capture.
+POST `{}`, name-only, invalid-email-only, invalid-phone-only and non-object JSON without a cart; assert HTTP 400 with stable error codes and production CheckoutCapture count delta 0. Do not create a synthetic valid capture.
 
 - [ ] **Step 4: Mark F-051 fixed and deploy docs**
 
