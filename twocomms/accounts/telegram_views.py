@@ -4,8 +4,14 @@ Views для обработки Telegram webhook
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+import hmac
 import json
+import logging
+import os
 from .telegram_bot import telegram_bot
+
+
+logger = logging.getLogger('accounts.telegram')
 
 
 @csrf_exempt
@@ -19,24 +25,21 @@ def telegram_webhook(request):
         # громкий warning в лог при каждом запросе (не блокируем, чтобы не
         # сломать прод до того, как секрет добавят в env — задача [SERVER]:
         # задать секрет + перерегистрировать webhook через setWebhook).
-        import os
-        import hmac
-        import logging
         expected_secret = (os.environ.get("TELEGRAM_BOT_WEBHOOK_SECRET") or "").strip()
-        if expected_secret:
-            received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") or ""
-            if not hmac.compare_digest(received, expected_secret):
-                print(f"❌ Telegram webhook secret mismatch: got '{received[:8]}...'")
-                # Возвращаем 200 чтобы Telegram не повторял; Telegram сам не имеет
-                # стандартного механизма «отмены», но в реальном boom-сценарии
-                # лучше тихо отклонить.
-                return JsonResponse({'ok': True, 'rejected': True})
-        else:
-            logging.getLogger('accounts.telegram').warning(
-                'SECURITY (NEW-504): TELEGRAM_BOT_WEBHOOK_SECRET is not set — '
-                'webhook accepts unauthenticated POSTs. Set the secret and '
-                're-register the webhook (setWebhook secret_token=...).'
+        if not expected_secret:
+            logger.error(
+                'SECURITY (NEW-504): TELEGRAM_BOT_WEBHOOK_SECRET is not set; '
+                'webhook request rejected before processing.'
             )
+            return JsonResponse(
+                {'ok': False, 'rejected': True, 'error': 'Webhook unavailable'},
+                status=503,
+            )
+
+        received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") or ""
+        if not hmac.compare_digest(received, expected_secret):
+            logger.warning('Telegram webhook request rejected: secret mismatch')
+            return JsonResponse({'ok': True, 'rejected': True})
 
         # Получаем данные от Telegram
         update_data = json.loads(request.body.decode('utf-8'))

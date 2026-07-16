@@ -2,7 +2,9 @@
 
 import shutil
 import tempfile
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.conf import settings
@@ -471,3 +473,49 @@ class UbdDocumentSecurityTests(AuthViewTestCase):
         self.assertIn('[F,L,NC]', root_htaccess)
         self.assertIn('Require all denied', private_htaccess)
         self.assertIn('Deny from all', private_htaccess)
+
+
+class TelegramWebhookSecurityTests(AuthViewTestCase):
+    def setUp(self):
+        super().setUp()
+        self.url = reverse('telegram_webhook')
+
+    def _post(self, *, secret=None):
+        headers = {}
+        if secret is not None:
+            headers['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] = secret
+        return self.client.post(
+            self.url,
+            data='{}',
+            content_type='application/json',
+            secure=True,
+            **headers,
+        )
+
+    @patch('accounts.telegram_views.telegram_bot.process_webhook_update')
+    def test_missing_server_secret_fails_closed(self, process):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('TELEGRAM_BOT_WEBHOOK_SECRET', None)
+            response = self._post()
+
+        self.assertEqual(response.status_code, 503)
+        self.assertTrue(response.json()['rejected'])
+        process.assert_not_called()
+
+    @patch('accounts.telegram_views.telegram_bot.process_webhook_update')
+    def test_wrong_secret_is_rejected_without_processing(self, process):
+        with patch.dict(os.environ, {'TELEGRAM_BOT_WEBHOOK_SECRET': 'expected-secret'}):
+            response = self._post(secret='wrong-secret')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['rejected'])
+        process.assert_not_called()
+
+    @patch('accounts.telegram_views.telegram_bot.process_webhook_update', return_value=True)
+    def test_matching_secret_processes_update(self, process):
+        with patch.dict(os.environ, {'TELEGRAM_BOT_WEBHOOK_SECRET': 'expected-secret'}):
+            response = self._post(secret='expected-secret')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json().get('rejected', False))
+        process.assert_called_once_with({})
