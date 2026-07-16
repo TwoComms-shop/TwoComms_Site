@@ -149,7 +149,7 @@ Push only the view/tests/plan, pull `main`, run focused server tests/check/compi
 
 POST `{}`, name-only, invalid-email-only, invalid-phone-only and non-object JSON without a cart; assert HTTP 400 with stable error codes and production CheckoutCapture count delta 0. Do not create a synthetic valid capture.
 
-- [ ] **Step 4: Mark F-051 fixed and deploy docs**
+- [x] **Step 4: Mark F-051 fixed and deploy docs**
 
 Use `[x] FIXED` only after local/server tests and live negative acceptance pass. Preserve the historical one cart-only row under retention rather than deleting it in this slice. Commit/push/deploy docs and add a final plan checkpoint.
 
@@ -163,3 +163,10 @@ HTTP 400 errors and the production row count stayed 10→10. Historical
 reconciliation updated exactly captures 2, 4, 7 and 8, each with a matching
 Order session; final production state is 4 converted and 6 active no-order
 captures. Root/product returned 200 and anonymous admin returned 302.
+
+**Documentation closeout (2026-07-16):** Audit commit `d2d3477e` was pushed
+and pulled on production. Because the intervening `d5937675` Fable5 commit also
+changed static/template assets, the server additionally passed Fable5 31/31,
+ran collectstatic (2 copied, 943 post-processed), rebuilt 4 compressor blocks
+and restarted Passenger. Final live checks: root/product 200, capture GET 405
+(POST-only), canonical anonymous Fable5 editor 403, server HEAD `d2d3477e`.
