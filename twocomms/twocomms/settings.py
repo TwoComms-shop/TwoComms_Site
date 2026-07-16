@@ -371,6 +371,8 @@ META_PIXEL_ID = (
     or os.environ.get('FACEBOOK_PIXEL_ID')
     or '823958313630148'
 ).strip()
+# Backward-compatible Django setting name. Runtime consumers use META_PIXEL_ID.
+FACEBOOK_PIXEL_ID = META_PIXEL_ID
 META_FBC_ATTRIBUTION_WINDOW_DAYS = max(
     1,
     min(90, _env_int('META_FBC_ATTRIBUTION_WINDOW_DAYS', 7)),
@@ -1397,9 +1399,6 @@ SPECTACULAR_SETTINGS = {
 }
 
 # ==================== FACEBOOK CONVERSIONS API ====================
-
-# Facebook Pixel ID (находится в Events Manager)
-FACEBOOK_PIXEL_ID = os.environ.get('FACEBOOK_PIXEL_ID', '')
 
 # Facebook Conversions API Access Token
 # Получается в Events Manager → Settings → Conversions API → Generate Access Token

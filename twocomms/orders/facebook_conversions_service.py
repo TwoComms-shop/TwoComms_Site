@@ -12,7 +12,7 @@ pip install facebook-business
 
 ENV переменные (настраиваются в cPanel):
 - FACEBOOK_CONVERSIONS_API_TOKEN: Access Token для Conversions API
-- FACEBOOK_PIXEL_ID: ID Facebook Pixel
+- META_PIXEL_ID: ID Meta Pixel (FACEBOOK_PIXEL_ID поддерживается как legacy alias)
 """
 
 import logging
@@ -53,7 +53,7 @@ class FacebookConversionsService:
     def __init__(self):
         """Инициализация сервиса с настройками из ENV"""
         self.access_token = getattr(settings, 'FACEBOOK_CONVERSIONS_API_TOKEN', None)
-        self.pixel_id = getattr(settings, 'FACEBOOK_PIXEL_ID', None)
+        self.pixel_id = getattr(settings, 'META_PIXEL_ID', None)
         self.test_event_code = getattr(settings, 'FACEBOOK_CAPI_TEST_EVENT_CODE', None)
         self.retry_max_attempts = getattr(settings, 'FACEBOOK_CAPI_MAX_RETRIES', 3)
         self.retry_initial_delay = getattr(settings, 'FACEBOOK_CAPI_RETRY_DELAY', 1)
@@ -63,7 +63,7 @@ class FacebookConversionsService:
         if not self.access_token or not self.pixel_id:
             logger.error(
                 "❌ Facebook Conversions API не настроен! "
-                "Необходимо установить FACEBOOK_CONVERSIONS_API_TOKEN и FACEBOOK_PIXEL_ID в ENV. "
+                "Необходимо установить FACEBOOK_CONVERSIONS_API_TOKEN и META_PIXEL_ID в ENV. "
                 f"Access Token: {'установлен' if self.access_token else 'НЕ установлен'}, "
                 f"Pixel ID: {'установлен' if self.pixel_id else 'НЕ установлен'}"
             )

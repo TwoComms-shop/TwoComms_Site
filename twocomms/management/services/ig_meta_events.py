@@ -14,7 +14,7 @@ from management.models import IgMetaEventLog, InstagramBotSettings
 
 def _has_capi_env() -> bool:
     return bool(
-        getattr(settings, "FACEBOOK_PIXEL_ID", None)
+        getattr(settings, "META_PIXEL_ID", None)
         and getattr(settings, "FACEBOOK_CONVERSIONS_API_TOKEN", None)
     )
 
