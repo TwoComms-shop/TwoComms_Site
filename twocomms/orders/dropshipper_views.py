@@ -35,6 +35,11 @@ monobank_logger = logging.getLogger('monobank')
 LONG_SLEEVE_SLUG = 'long-sleeve'
 
 
+def _current_reporting_year_month():
+    today = timezone.localdate()
+    return today.year, today.month
+
+
 def _extract_client_delivery_payload(data):
     return {
         'city': data.get('client_city', ''),
@@ -255,7 +260,6 @@ def dropshipper_dashboard(request):
     inactive_categories = [category for category in categories_info if category['disabled']]
 
     # Статистика по выплатам
-    from datetime import datetime
     from django.db.models import Sum
     from decimal import Decimal
 
@@ -270,8 +274,7 @@ def dropshipper_dashboard(request):
         status='pending'
     ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 
-    current_month = datetime.now().month
-    current_year = datetime.now().year
+    current_year, current_month = _current_reporting_year_month()
     completed_payouts_sum = DropshipperPayout.objects.filter(
         dropshipper=request.user,
         status='completed',
