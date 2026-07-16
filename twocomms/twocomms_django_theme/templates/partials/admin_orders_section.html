@@ -367,6 +367,11 @@
 .oadm-empty svg { opacity:.4; }
 .oadm-empty h2 { margin:0; font-size:1.1rem; color:var(--o-text); }
 .oadm-empty p { margin:0; font-size:.9rem; }
+.oadm-pagination { min-height:38px; display:flex; align-items:center; justify-content:center; gap:12px; margin-top:16px; }
+.oadm-pagination__link { min-width:100px; height:36px; display:inline-flex; align-items:center; justify-content:center; padding:0 14px; border:1px solid var(--o-line-2); border-radius:6px; color:var(--o-text); background:var(--o-card); text-decoration:none; font-size:.82rem; font-weight:700; }
+.oadm-pagination__link:hover { border-color:var(--o-accent); color:#fff; }
+.oadm-pagination__link.is-disabled { opacity:.45; cursor:default; }
+.oadm-pagination__page { color:var(--o-muted); font-size:.82rem; font-weight:700; white-space:nowrap; }
 
 /* Responsive */
 @media (max-width:780px) {
@@ -852,6 +857,21 @@
       </div>
     {% endfor %}
   </div>
+  {% if orders_page.paginator.num_pages > 1 %}
+    <nav class="oadm-pagination" aria-label="Сторінки замовлень">
+      {% if orders_page.has_previous %}
+        <a class="oadm-pagination__link" href="?section=orders&amp;status={{ status_filter|urlencode }}&amp;payment={{ payment_filter|urlencode }}{% if user_id_filter %}&amp;user_id={{ user_id_filter|urlencode }}{% endif %}&amp;page={{ orders_page.previous_page_number }}">Попередня</a>
+      {% else %}
+        <span class="oadm-pagination__link is-disabled" aria-disabled="true">Попередня</span>
+      {% endif %}
+      <span class="oadm-pagination__page">Сторінка {{ orders_page.number }} з {{ orders_page.paginator.num_pages }}</span>
+      {% if orders_page.has_next %}
+        <a class="oadm-pagination__link" href="?section=orders&amp;status={{ status_filter|urlencode }}&amp;payment={{ payment_filter|urlencode }}{% if user_id_filter %}&amp;user_id={{ user_id_filter|urlencode }}{% endif %}&amp;page={{ orders_page.next_page_number }}">Наступна</a>
+      {% else %}
+        <span class="oadm-pagination__link is-disabled" aria-disabled="true">Наступна</span>
+      {% endif %}
+    </nav>
+  {% endif %}
 </div>
 
 <style>

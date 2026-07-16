@@ -17,6 +17,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.conf import settings
+from django.core.paginator import Paginator
 from django.db import models, transaction
 from django.db.models import (
     Avg,
@@ -413,14 +414,7 @@ def _build_orders_context(request):
     )
     user_id_filter = request.GET.get('user_id')
 
-    orders_qs = (
-        Order.objects.select_related('user')
-        .prefetch_related(
-            Prefetch('items', queryset=OrderItem.objects.select_related('product')),
-            'custom_print_leads',
-        )
-        .order_by('-created')
-    )
+    orders_qs = Order.objects.select_related('user').order_by('-created')
 
     if status_filter != 'all':
         orders_qs = orders_qs.filter(status=status_filter)
@@ -455,7 +449,13 @@ def _build_orders_context(request):
         'paid': Order.objects.filter(payment_status='paid').count(),
     }
 
-    orders = list(orders_qs)
+    orders_page = Paginator(orders_qs, 50).get_page(request.GET.get('page'))
+    selected_page_qs = orders_page.object_list.prefetch_related(
+        Prefetch('items', queryset=OrderItem.objects.select_related('product')),
+        'custom_print_leads',
+    )
+    orders = list(selected_page_qs)
+    orders_page.object_list = orders
     for order in orders:
         snapshot = build_order_payment_snapshot(order)
         payload = order.payment_payload or {}
@@ -470,11 +470,13 @@ def _build_orders_context(request):
 
     return {
         'orders': orders,
+        'orders_page': orders_page,
         'status_counts': status_counts,
         'payment_status_counts': payment_status_counts,
         'total_orders': Order.objects.count(),
         'status_filter': status_filter,
         'payment_filter': payment_filter,
+        'user_id_filter': user_id_filter,
         'user_filter_info': user_filter_info,
     }
 
@@ -1129,11 +1131,9 @@ def admin_panel(request):
     section = request.GET.get('section', 'orders')
     period_param = request.GET.get('period', 'today')
 
-    context = {
-        'section': section,
-        'stats': _build_stats(period_param),
-    }
+    context = {'section': section}
     if section == 'stats':
+        context['stats'] = _build_stats(period_param)
         context.update(build_admin_analytics_context(request))
 
     if section == 'users':
