@@ -152,10 +152,13 @@
 	const boot = JSON.parse($("#f5-bootstrap").textContent || "null") || {};
 	const dict = boot.dictionaries || {};
 	const urls = boot.urls || {};
+	const buildDefaultInventoryRows = window.f5Inventory.buildDefaultInventoryRows;
 	const resolveInventoryRule = window.f5Inventory.resolveInventoryRule;
 	const canonicalizeInventoryRows = window.f5Inventory.canonicalizeInventoryRows;
+	const isVariantDraftRevisionCurrent = window.f5Inventory.isVariantDraftRevisionCurrent;
 	const replaceInventoryDraft = window.f5Inventory.replaceInventoryDraft;
 	const snapshotInventoryDraft = window.f5Inventory.snapshotInventoryDraft;
+	const snapshotVariantDraftRevision = window.f5Inventory.snapshotVariantDraftRevision;
 
 	const state = {
 		product: boot.product || null,
@@ -895,6 +898,10 @@
 
 	/* ---------------- кольори (inline-редагування) ---------------- */
 	function emptyVariant() {
+		const defaultSizes = buildDefaultInventoryRows(
+			state.fits.filter((fit) => fit.is_enabled).map((fit) => fit.code),
+			sizesList()
+		);
 		return {
 			id: null, order: state.variants.length, is_default: state.variants.length === 0,
 			sku: "", price_override: null,
@@ -902,7 +909,7 @@
 			images: [],
 			details: { display_name: "", price_delta: 0, price_delta_reason: "", marketing_html: "", youtube_url: "", seo_title: "", seo_description: "", seo_keywords: "" },
 			fits: state.fits.map((f) => ({ fit_code: f.code, is_enabled: true, reason: "" })),
-			sizes: [], size_grids: [], blank_links: [], combinations: [], faqs: [],
+			sizes: defaultSizes, size_grids: [], blank_links: [], combinations: [], faqs: [],
 			_open: true,
 			_dirty: true, _contentDirty: true, _sizesDirty: true,
 			_revision: 0, _sizesRevision: 1,
@@ -1268,6 +1275,7 @@
 	async function saveVariant(card, index) {
 		await ensureProduct();
 		const variant = state.variants[index];
+		const draftRevision = snapshotVariantDraftRevision(variant);
 		const data = collectVariantData(card, variant);
 		if (!data.color.id && !/^#?[0-9a-fA-F]{6}$/.test(data.color.primary_hex)) {
 			toast("Вкажіть коректний HEX кольору (#RRGGBB) або оберіть з бібліотеки", true);
@@ -1275,11 +1283,23 @@
 		}
 		try {
 			const resp = await postJSON(urls.variant_save, data);
+			const currentIndex = state.variants.indexOf(variant);
+			const currentVariant = currentIndex >= 0 ? state.variants[currentIndex] : null;
+			const variantUnchanged = currentVariant === variant
+				&& isVariantDraftRevisionCurrent(currentVariant, draftRevision);
+			if (!variantUnchanged) {
+				if (!data.id && currentVariant && !currentVariant.id) {
+					currentVariant.id = resp.variant.id;
+					if (card && card.isConnected) card.dataset.id = String(resp.variant.id);
+				}
+				toast("Збережено попередній стан кольору. Нові зміни ще не збережені.");
+				return;
+			}
 			resp.variant._open = true;
 			clearVariantDirty(card, resp.variant);
-			state.variants[index] = resp.variant;
+			state.variants[currentIndex] = resp.variant;
 			if (resp.variant.is_default) {
-				state.variants.forEach((v, i) => { if (i !== index) v.is_default = false; });
+				state.variants.forEach((v, i) => { if (i !== currentIndex) v.is_default = false; });
 			}
 			refreshColorLibrary(resp.variant.color);
 			renderVariants();

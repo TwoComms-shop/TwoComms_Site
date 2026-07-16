@@ -272,6 +272,45 @@ class VariantResourceEditorApiTests(VariantResourceResolutionTests):
         self.assertTrue(self.variant.is_default)
         self.assertFalse(other.is_default)
 
+    def test_new_variant_save_persists_initial_default_inventory(self):
+        color = Color.objects.create(name="New black", primary_hex="#222222")
+
+        response = self.client.post(
+            reverse("fable5_api_variant_save"),
+            data=json.dumps({
+                "product_id": self.product.pk,
+                "color": {"id": color.pk},
+                "sizes": [
+                    {
+                        "fit_code": "",
+                        "size": "S",
+                        "is_enabled": True,
+                        "stock": None,
+                        "note": "",
+                    },
+                    {
+                        "fit_code": "",
+                        "size": "M",
+                        "is_enabled": True,
+                        "stock": None,
+                        "note": "",
+                    },
+                ],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        created = ProductColorVariant.objects.get(pk=response.json()["variant"]["id"])
+        self.assertEqual(
+            list(
+                created.fable5_size_rules.order_by("size").values_list(
+                    "fit_code", "size", "is_enabled", "stock"
+                )
+            ),
+            [("", "M", True, None), ("", "S", True, None)],
+        )
+
     def test_variant_save_preserves_unsubmitted_combination_translations(self):
         profile = VariantCombinationProfile.objects.create(
             variant=self.variant,

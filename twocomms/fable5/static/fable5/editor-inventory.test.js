@@ -122,3 +122,35 @@ test('shared draft keeps exact inventory where fits differ and generalizes equal
     { fit_code: '', size: 'L', is_enabled: true, stock: 5, note: '' },
   ]);
 });
+
+test('new variant starts with canonical default inventory matching its visible grid', () => {
+  assert.equal(typeof inventory.buildDefaultInventoryRows, 'function');
+
+  assert.deepEqual(
+    inventory.buildDefaultInventoryRows(['classic', 'oversize'], ['S', 'M']),
+    [
+      { fit_code: '', size: 'S', is_enabled: true, stock: null, note: '' },
+      { fit_code: '', size: 'M', is_enabled: true, stock: null, note: '' },
+    ]
+  );
+});
+
+test('variant revision snapshot rejects late content or inventory edits', () => {
+  assert.equal(typeof inventory.snapshotVariantDraftRevision, 'function');
+  assert.equal(typeof inventory.isVariantDraftRevisionCurrent, 'function');
+  const variant = { sizes: [], _revision: 4, _sizesRevision: 2 };
+  const original = inventory.snapshotVariantDraftRevision(variant);
+
+  assert.equal(inventory.isVariantDraftRevisionCurrent(variant, original), true);
+  variant._revision += 1;
+  assert.equal(inventory.isVariantDraftRevisionCurrent(variant, original), false);
+
+  const inventorySnapshot = inventory.snapshotVariantDraftRevision(variant);
+  inventory.replaceInventoryDraft(variant, [
+    { fit_code: '', size: 'M', is_enabled: true, stock: 8, note: '' },
+  ]);
+  assert.equal(
+    inventory.isVariantDraftRevisionCurrent(variant, inventorySnapshot),
+    false
+  );
+});

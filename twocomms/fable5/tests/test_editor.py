@@ -54,8 +54,8 @@ class Fable5EditorAccessTests(TestCase):
             reverse("fable5_product_edit", args=[self.product.pk])
         ).content.decode()
 
-        self.assertIn("fable5/editor-inventory.js?v=20260716-inventory-v2", content)
-        self.assertIn("fable5/editor.js?v=20260716-dirty-v5", content)
+        self.assertIn("fable5/editor-inventory.js?v=20260716-inventory-v3", content)
+        self.assertIn("fable5/editor.js?v=20260716-dirty-v6", content)
 
     def test_staff_can_create_product_with_unified_save_endpoint(self):
         self.client.force_login(self.staff)
@@ -235,6 +235,44 @@ class Fable5EditorAccessTests(TestCase):
         changed_branch = javascript.index("if (changedDuringSave)")
         full_render = javascript.index("renderHeader()", changed_branch)
         self.assertLess(changed_branch, full_render)
+
+    def test_individual_variant_save_preserves_late_draft_and_only_merges_new_id(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+        start = javascript.index("async function saveVariant(card, index)")
+        end = javascript.index("function refreshColorLibrary", start)
+        variant_save = javascript[start:end]
+
+        self.assertIn("snapshotVariantDraftRevision(variant)", variant_save)
+        self.assertIn(
+            "isVariantDraftRevisionCurrent(currentVariant, draftRevision)",
+            variant_save,
+        )
+        self.assertIn("if (!variantUnchanged)", variant_save)
+        self.assertIn("currentVariant.id = resp.variant.id", variant_save)
+        late_branch = variant_save.index("if (!variantUnchanged)")
+        render = variant_save.index("renderVariants()")
+        self.assertLess(late_branch, render)
+        self.assertNotIn("clearVariantDirty(card, resp.variant);\n\t\t\tstate.variants[index]", variant_save)
+
+    def test_new_variant_initializes_inventory_draft_before_first_render(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+        start = javascript.index("function emptyVariant()")
+        end = javascript.index("function sizeRule", start)
+        empty_variant = javascript[start:end]
+
+        self.assertIn("buildDefaultInventoryRows(", empty_variant)
+        self.assertIn("state.fits.filter((fit) => fit.is_enabled)", empty_variant)
+        self.assertIn("sizesList()", empty_variant)
 
     def test_stock_only_save_merges_inventory_without_clearing_content_draft(self):
         javascript = (

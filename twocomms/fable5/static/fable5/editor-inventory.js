@@ -57,6 +57,41 @@
       .map((row) => Object.assign({}, row));
   }
 
+  function buildDefaultInventoryRows(fitCodes, sizes) {
+    const normalizedFits = Array.from(new Set(
+      (fitCodes || []).map((fitCode) => String(fitCode || '')).filter(Boolean)
+    ));
+    const fits = normalizedFits.length ? normalizedFits : [''];
+    const rows = [];
+    fits.forEach((fitCode) => {
+      (sizes || []).forEach((size) => {
+        const normalizedSize = String(size || '');
+        if (!normalizedSize) return;
+        rows.push({
+          fit_code: fitCode,
+          size: normalizedSize,
+          is_enabled: true,
+          stock: null,
+          note: '',
+        });
+      });
+    });
+    return canonicalizeInventoryRows(rows);
+  }
+
+  function snapshotVariantDraftRevision(variant) {
+    return {
+      revision: (variant && variant._revision) || 0,
+      sizesRevision: (variant && variant._sizesRevision) || 0,
+    };
+  }
+
+  function isVariantDraftRevisionCurrent(variant, snapshot) {
+    if (!variant || !snapshot) return false;
+    return (variant._revision || 0) === snapshot.revision
+      && (variant._sizesRevision || 0) === snapshot.sizesRevision;
+  }
+
   function replaceInventoryDraft(variant, rows) {
     if (!variant) return [];
     variant.sizes = canonicalizeInventoryRows(rows)
@@ -69,9 +104,12 @@
   }
 
   return {
+    buildDefaultInventoryRows,
     canonicalizeInventoryRows,
+    isVariantDraftRevisionCurrent,
     replaceInventoryDraft,
     resolveInventoryRule,
     snapshotInventoryDraft,
+    snapshotVariantDraftRevision,
   };
 }));
