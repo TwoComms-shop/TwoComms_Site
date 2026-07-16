@@ -8,6 +8,7 @@ from django.core import signing
 from django.utils.deprecation import MiddlewareMixin
 from django.core.cache import cache
 from django.core.exceptions import DisallowedHost
+from django.db import DatabaseError
 from django.contrib.redirects.middleware import RedirectFallbackMiddleware
 from django.utils.crypto import constant_time_compare
 import os
@@ -226,19 +227,34 @@ class SubdomainURLRoutingMiddleware(MiddlewareMixin):
 
 class SubdomainRedirectFallbackMiddleware(RedirectFallbackMiddleware):
     """
-    RedirectFallbackMiddleware only for non-DTF hosts.
+    RedirectFallbackMiddleware only for the primary storefront host.
 
-    DTF pages should not hit django_redirect lookups for each 404 path probe.
+    Routed subdomains should not hit django_redirect lookups for each 404 path
+    probe. Besides adding avoidable database work, that lookup can turn an
+    otherwise harmless subdomain 404 into a 500 while the database is down.
     """
+
+    PRIMARY_HOST = "twocomms.shop"
+
+    def _is_routed_subdomain(self, host):
+        return bool(host) and host.endswith(f".{self.PRIMARY_HOST}")
 
     def process_response(self, request, response):
         try:
             host = request.get_host().split(":")[0].lower()
         except Exception:
-            host = ""
-        if host.startswith("dtf."):
+            raw_host = request.META.get("HTTP_HOST") or request.META.get(
+                "SERVER_NAME", ""
+            )
+            host = raw_host.split(":")[0].lower()
+        if self._is_routed_subdomain(host):
             return response
-        return super().process_response(request, response)
+        try:
+            return super().process_response(request, response)
+        except DatabaseError:
+            # Redirect lookups are optional; a missing URL must remain a 404
+            # while the database is unavailable.
+            return response
 
 
 class SecurityHeadersMiddleware(MiddlewareMixin):
