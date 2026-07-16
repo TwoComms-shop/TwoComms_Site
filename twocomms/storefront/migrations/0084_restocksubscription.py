@@ -39,7 +39,7 @@ class Migration(migrations.Migration):
                 ("updated_at", models.DateTimeField(auto_now=True)),
                 ("color_variant", models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="restock_subscriptions", to="productcolors.productcolorvariant")),
                 ("product", models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name="restock_subscriptions", to="storefront.product")),
-                ("user", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="restock_subscriptions", to=settings.AUTH_USER_MODEL)),
+                ("user", models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="restock_subscriptions", to=settings.AUTH_USER_MODEL)),
             ],
             options={
                 "verbose_name": "Очікування наявності",

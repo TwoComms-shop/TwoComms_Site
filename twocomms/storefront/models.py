@@ -1354,6 +1354,7 @@ class RestockSubscription(models.Model):
         related_name='restock_subscriptions',
         null=True,
         blank=True,
+        db_constraint=False,
     )
     size = models.CharField(max_length=20)
     option_values = models.JSONField(blank=True, default=dict)
