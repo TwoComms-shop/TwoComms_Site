@@ -2,9 +2,10 @@
 URLs для accounts приложения
 """
 from django.urls import path
-from . import telegram_views, ajax_auth_views, telegram_verify_views
+from . import ajax_auth_views, telegram_verify_views, telegram_views, views
 
 urlpatterns = [
+    path('ubd-document/<int:profile_id>/', views.ubd_document, name='ubd_document'),
     # Telegram (legacy webhook + старий username-based підтвердження)
     path('telegram/webhook/', telegram_views.telegram_webhook, name='telegram_webhook'),
     path('telegram/link/', telegram_views.link_telegram_account, name='link_telegram_account'),

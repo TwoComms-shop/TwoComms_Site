@@ -1,6 +1,11 @@
 """Contract tests for storefront auth views."""
 
+import shutil
+import tempfile
+from pathlib import Path
+
 from django.contrib.auth.models import User
+from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
@@ -398,3 +403,66 @@ class ProfileSetupViewTests(AuthViewTestCase):
         self.user.userprofile.refresh_from_db()
         self.assertTrue(self.user.userprofile.is_ubd)
         self.assertTrue(bool(self.user.userprofile.ubd_doc))
+
+
+class UbdDocumentSecurityTests(AuthViewTestCase):
+    def setUp(self):
+        super().setUp()
+        self.media_root = tempfile.mkdtemp(prefix='ubd-document-tests-')
+        self.addCleanup(shutil.rmtree, self.media_root, True)
+        self.settings_override = override_settings(MEDIA_ROOT=self.media_root)
+        self.settings_override.enable()
+        self.addCleanup(self.settings_override.disable)
+
+        self.owner = self.create_user(username='ubd-owner')
+        self.owner.userprofile.ubd_doc = SimpleUploadedFile(
+            'predictable-name.jpg',
+            b'private-ubd-document',
+            content_type='image/jpeg',
+        )
+        self.owner.userprofile.save(update_fields=['ubd_doc'])
+        self.url = reverse('ubd_document', args=[self.owner.userprofile.pk])
+
+    def test_new_upload_uses_randomized_private_filename(self):
+        name = self.owner.userprofile.ubd_doc.name
+
+        self.assertTrue(name.startswith('ubd_docs/'))
+        self.assertTrue(name.endswith('.jpg'))
+        self.assertNotIn('predictable-name', name)
+
+    def test_anonymous_and_other_user_cannot_download_document(self):
+        anonymous = self.get(self.url)
+        self.assertEqual(anonymous.status_code, 302)
+        self.assertIn(reverse('login'), anonymous['Location'])
+
+        other = self.create_user(username='ubd-other')
+        self.client.force_login(other, backend='django.contrib.auth.backends.ModelBackend')
+        self.assertEqual(self.get(self.url).status_code, 404)
+
+    def test_owner_and_staff_receive_private_document_response(self):
+        self.client.force_login(self.owner, backend='django.contrib.auth.backends.ModelBackend')
+        owner_response = self.get(self.url)
+        self.assertEqual(owner_response.status_code, 200)
+        self.assertEqual(b''.join(owner_response.streaming_content), b'private-ubd-document')
+        self.assertEqual(owner_response['Cache-Control'], 'private, no-store')
+        self.assertEqual(owner_response['X-Content-Type-Options'], 'nosniff')
+
+        staff = self.create_user(username='ubd-staff')
+        staff.is_staff = True
+        staff.save(update_fields=['is_staff'])
+        self.client.force_login(staff, backend='django.contrib.auth.backends.ModelBackend')
+        self.assertEqual(self.get(self.url).status_code, 200)
+
+    def test_profile_preview_uses_authenticated_route_not_media_url(self):
+        self.client.force_login(self.owner, backend='django.contrib.auth.backends.ModelBackend')
+
+        response = self.get(reverse('profile_setup'))
+
+        self.assertContains(response, self.url)
+        self.assertNotContains(response, self.owner.userprofile.ubd_doc.url)
+
+    def test_apache_configuration_denies_direct_ubd_media_path(self):
+        htaccess = (Path(settings.BASE_DIR) / '.htaccess').read_text(encoding='utf-8')
+
+        self.assertIn('^media/ubd_docs/', htaccess)
+        self.assertIn('[F,L,NC]', htaccess)

@@ -2,6 +2,11 @@
 
 # Принудительный редирект HTTP -> HTTPS
 RewriteEngine On
+
+# F-087: combat-veteran identity documents are never public media. Owners and
+# staff retrieve them through the authenticated Django endpoint instead.
+RewriteRule ^media/ubd_docs/ - [F,L,NC]
+
 RewriteCond %{HTTPS} off
 RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 

@@ -3,11 +3,20 @@ from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
+from pathlib import Path
+from uuid import uuid4
 
 # Persistent cart for cross-device synchronization.
 # Imported here so Django app loader registers the model.
 from .cart_models import UserCart  # noqa: F401
 from .payment import PAY_TYPE_CHOICES
+
+
+def private_ubd_document_path(_instance, filename):
+    suffix = Path(filename or '').suffix.lower()
+    if suffix not in {'.jpg', '.jpeg', '.png', '.webp'}:
+        suffix = '.bin'
+    return f'ubd_docs/{uuid4().hex}{suffix}'
 
 
 class UserProfile(models.Model):
@@ -29,7 +38,7 @@ class UserProfile(models.Model):
     viber = models.CharField(max_length=100, blank=True, verbose_name='Viber')
     birth_date = models.DateField(null=True, blank=True, verbose_name='Дата народження')
     is_ubd = models.BooleanField(default=False, verbose_name='УБД')
-    ubd_doc = models.ImageField(upload_to='ubd_docs/', blank=True, null=True, verbose_name='Фото посвідчення УБД')
+    ubd_doc = models.ImageField(upload_to=private_ubd_document_path, blank=True, null=True, verbose_name='Фото посвідчення УБД')
     # Менеджмент-бот
     tg_manager_chat_id = models.BigIntegerField(null=True, blank=True, verbose_name='Telegram Management Chat ID')
     tg_manager_username = models.CharField(max_length=255, blank=True, verbose_name='Telegram Management Username')

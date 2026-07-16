@@ -90,7 +90,7 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_filter = ('is_ubd', 'pay_type', 'payment_method')
     search_fields = ('user__username', 'phone', 'email', 'full_name',
                      'company_name', 'telegram', 'instagram')
-    readonly_fields = ('user',)
+    readonly_fields = ('user', 'ubd_doc_download')
 
     fieldsets = (
         ('Основна інформація', {
@@ -108,7 +108,7 @@ class UserProfileAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
         ('УБД статус', {
-            'fields': ('is_ubd', 'ubd_doc'),
+            'fields': ('is_ubd', 'ubd_doc', 'ubd_doc_download'),
             'classes': ('collapse',)
         }),
         ('Інше', {
@@ -116,6 +116,17 @@ class UserProfileAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+
+    def ubd_doc_download(self, obj):
+        if not obj or not obj.ubd_doc:
+            return '—'
+        from django.urls import reverse
+
+        return format_html(
+            '<a href="{}" target="_blank" rel="noopener">Відкрити захищений документ</a>',
+            reverse('ubd_document', args=[obj.pk]),
+        )
+    ubd_doc_download.short_description = 'Захищений перегляд УБД'
 
 
 @admin.register(FavoriteProduct)
