@@ -462,7 +462,12 @@ class UbdDocumentSecurityTests(AuthViewTestCase):
         self.assertNotContains(response, self.owner.userprofile.ubd_doc.url)
 
     def test_apache_configuration_denies_direct_ubd_media_path(self):
-        htaccess = (Path(settings.BASE_DIR) / '.htaccess').read_text(encoding='utf-8')
+        root_htaccess = (Path(settings.BASE_DIR) / '.htaccess').read_text(encoding='utf-8')
+        private_htaccess = (
+            Path(settings.BASE_DIR) / 'media' / 'ubd_docs' / '.htaccess'
+        ).read_text(encoding='utf-8')
 
-        self.assertIn('^media/ubd_docs/', htaccess)
-        self.assertIn('[F,L,NC]', htaccess)
+        self.assertIn('^media/ubd_docs/', root_htaccess)
+        self.assertIn('[F,L,NC]', root_htaccess)
+        self.assertIn('Require all denied', private_htaccess)
+        self.assertIn('Deny from all', private_htaccess)
