@@ -118,6 +118,6 @@ Run: `rg -n "F-010" docs/qa/AUDIT_FINDINGS_2026-07-09.md docs/qa/PRE_ADS_MASTER_
 
 Expected: no current `[ ]`, `OPEN`, or `YES` status remains for F-010; historical reproduction text remains labeled by date/context.
 
-- [ ] **Step 3: Commit, push, deploy, and verify server documentation**
+- [x] **Step 3: Commit, push, deploy, and verify server documentation**
 
 Commit only the audit-document changes, push `main`, deploy with `git pull --ff-only`, and verify server HEAD plus the F-010 `[x]/FIXED/DONE` entries.
