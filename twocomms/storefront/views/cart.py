@@ -1666,7 +1666,7 @@ def contact_manager(request):
 
             # Информация о размере и цвете
             size_info = f" ({item_data.get('size')})" if item_data.get('size') else ""
-            _, fit_label = _fit_display_from_cart_item(item_data)
+            _fit_code, fit_label = _fit_display_from_cart_item(item_data)
             fit_info = f" / {fit_label}" if fit_label else ""
 
             message += f"• {product.title}{size_info}{fit_info} x {qty} шт = {line_total} грн\n"
@@ -1678,9 +1678,14 @@ def contact_manager(request):
         try:
             from orders.telegram_notifications import TelegramNotifier
             notifier = TelegramNotifier()
-            notifier.send_admin_message(message)
+            delivered = notifier.send_admin_message(message)
 
-            return JsonResponse({'success': True})
+            if delivered:
+                return JsonResponse({'success': True})
+            return JsonResponse({
+                'success': False,
+                'error': _('Не вдалося відправити повідомлення. Спробуйте пізніше')
+            })
 
         except Exception as telegram_error:
             cart_logger.error(

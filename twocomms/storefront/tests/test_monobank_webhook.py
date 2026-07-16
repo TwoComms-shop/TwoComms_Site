@@ -472,3 +472,46 @@ class PostPaymentEventsDeferralTests(TestCase):
 
         mock_receipt.assert_called_once()
         self.assertEqual(mock_receipt.call_args.args[0].pk, self.order.pk)
+
+    def _send_with_telegram_result(self, delivered):
+        from types import SimpleNamespace
+        from storefront.views.utils import _send_post_payment_events
+
+        self.order.email = 'buyer@example.com'
+        self.order.payment_status = 'paid'
+        self.order.save(update_fields=['email', 'payment_status'])
+
+        with patch(
+            'orders.telegram_notifications.TelegramNotifier'
+        ) as notifier_class, patch(
+            'orders.facebook_conversions_service.get_facebook_conversions_service',
+            return_value=SimpleNamespace(enabled=False),
+        ), patch(
+            'orders.tiktok_events_service.get_tiktok_events_service',
+            return_value=SimpleNamespace(enabled=False),
+        ), patch(
+            'orders.email_receipt.send_order_receipt_email'
+        ) as receipt:
+            notifier_class.return_value.send_new_order_notification.return_value = delivered
+            _send_post_payment_events(
+                self.order.pk,
+                'unpaid',
+                'online_full',
+            )
+
+        self.order.refresh_from_db()
+        return receipt
+
+    def test_shared_dispatcher_does_not_persist_telegram_flag_after_false(self):
+        receipt = self._send_with_telegram_result(False)
+
+        notifications = (self.order.payment_payload or {}).get('telegram_notifications', {})
+        self.assertFalse(notifications.get('order_notification_sent', False))
+        receipt.assert_called_once()
+
+    def test_shared_dispatcher_persists_telegram_flag_after_true(self):
+        receipt = self._send_with_telegram_result(True)
+
+        notifications = (self.order.payment_payload or {}).get('telegram_notifications', {})
+        self.assertTrue(notifications.get('order_notification_sent'))
+        receipt.assert_called_once()

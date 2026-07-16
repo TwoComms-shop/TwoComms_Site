@@ -34,19 +34,27 @@ def _send_notification(order_id, notification_type, **kwargs):
             logger.warning("Order %s not found for Telegram notification", order_id)
             return
 
+        delivered = False
         if notification_type == 'new_order':
-            telegram_notifier.send_new_order_notification(order)
+            delivered = telegram_notifier.send_new_order_notification(order)
         elif notification_type == 'status_update':
             old_status = kwargs.get('old_status')
             new_status = kwargs.get('new_status')
             if old_status and new_status:
-                telegram_notifier.send_order_status_update(order, old_status, new_status)
+                delivered = telegram_notifier.send_order_status_update(order, old_status, new_status)
         elif notification_type == 'ttn_added':
-            telegram_notifier.send_ttn_added_notification(order)
+            delivered = telegram_notifier.send_ttn_added_notification(order)
 
-        logger.info(
-            "Telegram notification '%s' sent for order %s", notification_type, order_id
-        )
+        if delivered:
+            logger.info(
+                "Telegram notification '%s' sent for order %s", notification_type, order_id
+            )
+        else:
+            logger.warning(
+                "Telegram notification '%s' delivery failed for order %s",
+                notification_type,
+                order_id,
+            )
     except Exception:
         logger.exception(
             "Error sending Telegram notification '%s' for order %s",

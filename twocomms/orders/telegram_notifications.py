@@ -2,8 +2,10 @@
 Telegram уведомления для заказов
 """
 import json
+import logging
 import os
 import re
+import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -20,6 +22,12 @@ from orders.telegram_status_links import build_order_action_url, build_order_sta
 # Celery на прод не возвращаем (решение зафиксировано в docs/OPS.md);
 # фоновая отправка живёт в orders/tasks.py (daemon-thread).
 send_telegram_notification_task = None
+
+logger = logging.getLogger(__name__)
+
+_SEND_MESSAGE_MAX_ATTEMPTS = 3
+_SEND_MESSAGE_RETRY_BASE_SECONDS = 0.1
+_SEND_MESSAGE_RETRY_MAX_SECONDS = 0.25
 
 
 def _parse_chat_ids(raw_value):
@@ -153,29 +161,129 @@ class TelegramNotifier:
         payload = self._post_json(method, data=data, files=files, timeout=timeout)
         return bool(payload and payload.get("ok"))
 
+    def _post_send_message_json(self, *, data, timeout, target_index, target_count):
+        """POST one text message with bounded retries for transient failures."""
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        for attempt in range(1, _SEND_MESSAGE_MAX_ATTEMPTS + 1):
+            status_code = None
+            try:
+                response = requests.post(url, data=data, timeout=timeout)
+                status_code = response.status_code
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                if attempt == _SEND_MESSAGE_MAX_ATTEMPTS:
+                    logger.warning(
+                        "telegram_send_message retry_exhausted attempt=%s target_index=%s "
+                        "target_count=%s reason=exception exception_class=%s",
+                        attempt,
+                        target_index,
+                        target_count,
+                        type(exc).__name__,
+                    )
+                    return None
+                logger.warning(
+                    "telegram_send_message retry_scheduled attempt=%s target_index=%s "
+                    "target_count=%s reason=exception exception_class=%s",
+                    attempt,
+                    target_index,
+                    target_count,
+                    type(exc).__name__,
+                )
+                self._sleep_before_send_message_retry(attempt)
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "telegram_send_message delivery_failed attempt=%s target_index=%s "
+                    "target_count=%s reason=exception exception_class=%s",
+                    attempt,
+                    target_index,
+                    target_count,
+                    type(exc).__name__,
+                )
+                return None
+
+            if status_code == 429 or status_code >= 500:
+                if attempt == _SEND_MESSAGE_MAX_ATTEMPTS:
+                    logger.warning(
+                        "telegram_send_message retry_exhausted attempt=%s target_index=%s "
+                        "target_count=%s reason=http_status status=%s",
+                        attempt,
+                        target_index,
+                        target_count,
+                        status_code,
+                    )
+                    return None
+                logger.warning(
+                    "telegram_send_message retry_scheduled attempt=%s target_index=%s "
+                    "target_count=%s reason=http_status status=%s",
+                    attempt,
+                    target_index,
+                    target_count,
+                    status_code,
+                )
+                self._sleep_before_send_message_retry(attempt)
+                continue
+
+            try:
+                payload = response.json()
+            except ValueError:
+                logger.warning(
+                    "telegram_send_message api_rejected attempt=%s target_index=%s "
+                    "target_count=%s status=%s reason=invalid_json",
+                    attempt,
+                    target_index,
+                    target_count,
+                    status_code,
+                )
+                return None
+
+            if payload and payload.get("ok"):
+                if attempt > 1:
+                    logger.info(
+                        "telegram_send_message retry_recovered attempt=%s target_index=%s "
+                        "target_count=%s",
+                        attempt,
+                        target_index,
+                        target_count,
+                    )
+                return payload
+
+            logger.warning(
+                "telegram_send_message api_rejected attempt=%s target_index=%s "
+                "target_count=%s status=%s",
+                attempt,
+                target_index,
+                target_count,
+                status_code,
+            )
+            return None
+        return None
+
+    @staticmethod
+    def _sleep_before_send_message_retry(attempt):
+        delay = min(
+            _SEND_MESSAGE_RETRY_BASE_SECONDS * attempt,
+            _SEND_MESSAGE_RETRY_MAX_SECONDS,
+        )
+        time.sleep(delay)
+
     def send_message(self, message, parse_mode='HTML', reply_markup=None, return_results=False):
         """Отправляет сообщение в Telegram админу"""
-        print(f"🔵 send_message to ADMIN called")
-        print(f"🔵 bot_token: {'SET' if self.bot_token else 'NOT SET'}")
-        print(f"🔵 admin_id: {self.admin_id if self.admin_id else 'NOT SET'}")
-        print(f"🔵 chat_id: {self.chat_id if self.chat_id else 'NOT SET'}")
-
         if not self.is_configured():
-            print(f"❌ Telegram not configured (bot_token={bool(self.bot_token)}, admin_id={bool(self.admin_id)}, chat_id={bool(self.chat_id)})")
+            logger.warning("telegram_send_message not_configured")
             return False
 
         # Используем админ ID, если он доступен, иначе chat_id
         target_ids = self._resolve_targets(admin=True)
-        print(f"🟡 Target admin IDs: {', '.join(target_ids) if target_ids else 'NOT SET'}")
         if not target_ids:
             return [] if return_results else False
 
         # W3-1: async-ветка удалена — она зависела от битого импорта и
         # никогда не выполнялась. Отправка синхронная; фоновость
         # обеспечивает вызывающий код (orders/tasks.py, daemon-thread).
-        success = False
         sent_results = []
-        for target_id in target_ids:
+        delivered_count = 0
+        target_count = len(target_ids)
+        for target_index, target_id in enumerate(target_ids, start=1):
             try:
                 data = {
                     'chat_id': target_id,
@@ -184,16 +292,33 @@ class TelegramNotifier:
                 }
                 if reply_markup is not None:
                     data['reply_markup'] = json.dumps(reply_markup, ensure_ascii=False)
-                print(f"🟢 Sending SYNC POST to Telegram API for admin (chat_id={target_id})")
-                payload = self._post_json("sendMessage", data=data, timeout=10)
+                payload = self._post_send_message_json(
+                    data=data,
+                    timeout=10,
+                    target_index=target_index,
+                    target_count=target_count,
+                )
                 if payload and payload.get("ok"):
-                    success = True
+                    delivered_count += 1
                     result = payload.get("result") or {}
                     if return_results:
                         sent_results.append(result)
-            except Exception as e:
-                print(f"❌ Exception in send_message to admin (chat_id={target_id}): {e}")
-        return sent_results if return_results else success
+            except Exception as exc:
+                logger.warning(
+                    "telegram_send_message delivery_failed target_index=%s target_count=%s "
+                    "exception_class=%s",
+                    target_index,
+                    target_count,
+                    type(exc).__name__,
+                )
+
+        if 0 < delivered_count < target_count:
+            logger.warning(
+                "telegram_send_message partial_delivery delivered_count=%s target_count=%s",
+                delivered_count,
+                target_count,
+            )
+        return sent_results if return_results else delivered_count > 0
 
     def send_admin_message(self, message, parse_mode='HTML', reply_markup=None):
         """
@@ -354,30 +479,27 @@ class TelegramNotifier:
 
     def send_personal_message(self, telegram_id, message, parse_mode='HTML'):
         """Отправляет личное сообщение пользователю по telegram_id"""
-        print(f"🔵 send_personal_message: telegram_id={telegram_id}, bot_token={'SET' if self.bot_token else 'NOT SET'}")
-
         if not self.bot_token:
-            print(f"❌ No bot_token configured")
+            logger.warning("telegram_send_message not_configured channel=personal")
             return False
 
         if not telegram_id:
-            print(f"❌ No telegram_id provided")
+            logger.warning("telegram_send_message invalid_target channel=personal")
             return False
 
         # W3-1: мёртвая async-ветка удалена (см. комментарий у импорта).
-        try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            data = {
-                'chat_id': telegram_id,
-                'text': message,
-                'parse_mode': parse_mode
-            }
-            print(f"🟡 Sending SYNC POST to {url[:50]}... with chat_id={telegram_id}")
-            response = requests.post(url, data=data, timeout=10)
-            return response.status_code == 200
-        except Exception as e:
-            print(f"❌ Exception in send_personal_message: {e}")
-            return False
+        data = {
+            'chat_id': telegram_id,
+            'text': message,
+            'parse_mode': parse_mode,
+        }
+        payload = self._post_send_message_json(
+            data=data,
+            timeout=10,
+            target_index=1,
+            target_count=1,
+        )
+        return bool(payload and payload.get("ok"))
 
     def _format_payment_info(self, order):
         """

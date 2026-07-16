@@ -786,21 +786,27 @@ def _send_post_payment_events(order_pk, previous_status, pay_type):
         try:
             from orders.telegram_notifications import TelegramNotifier
             notifier = TelegramNotifier()
-            notifier.send_new_order_notification(order)
+            delivered = notifier.send_new_order_notification(order)
 
-            # Сохраняем в payment_payload что уведомление отправлено
-            if 'telegram_notifications' not in payment_payload:
-                payment_payload['telegram_notifications'] = {}
-            payment_payload['telegram_notifications']['order_notification_sent'] = True
-            payment_payload['telegram_notifications']['order_notification_sent_at'] = timezone.now().isoformat()
-            payment_payload['telegram_notifications']['order_notification_status'] = order.payment_status
-            order.payment_payload = payment_payload
-            order.save(update_fields=['payment_payload'])
+            if delivered:
+                # Сохраняем в payment_payload что уведомление отправлено
+                if 'telegram_notifications' not in payment_payload:
+                    payment_payload['telegram_notifications'] = {}
+                payment_payload['telegram_notifications']['order_notification_sent'] = True
+                payment_payload['telegram_notifications']['order_notification_sent_at'] = timezone.now().isoformat()
+                payment_payload['telegram_notifications']['order_notification_status'] = order.payment_status
+                order.payment_payload = payment_payload
+                order.save(update_fields=['payment_payload'])
 
-            monobank_logger.info(
-                f'📱 Telegram notification sent for order {order.order_number} '
-                f'(status: {previous_status} → {order.payment_status})'
-            )
+                monobank_logger.info(
+                    f'📱 Telegram notification sent for order {order.order_number} '
+                    f'(status: {previous_status} → {order.payment_status})'
+                )
+            else:
+                monobank_logger.warning(
+                    'Telegram notification delivery failed for order %s',
+                    order.order_number,
+                )
         except Exception as e:
             monobank_logger.exception(f'Failed to send Telegram notification for order {order.order_number}: {e}')
     else:
