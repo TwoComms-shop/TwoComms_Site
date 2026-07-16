@@ -6,14 +6,25 @@ from django.http import HttpResponsePermanentRedirect, HttpResponse
 from django.conf import settings
 from django.core import signing
 from django.utils.deprecation import MiddlewareMixin
-from django.core.cache import cache
+from django.core.cache import caches
+from django.core.cache.backends.filebased import FileBasedCache
 from django.core.exceptions import DisallowedHost
 from django.db import DatabaseError
 from django.contrib.redirects.middleware import RedirectFallbackMiddleware
 from django.utils.crypto import constant_time_compare
+import hashlib
+import ipaddress
+import logging
 import os
 import re
+import threading
 import time
+from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production and supported dev hosts are POSIX.
+    fcntl = None
 
 
 class ForceHTTPSMiddleware(MiddlewareMixin):
@@ -319,10 +330,239 @@ class RequestTraceMiddleware(MiddlewareMixin):
         return response
 
 
+_RATE_LIMIT_DEFAULTS = {
+    'auth': 20,
+    'webhook': 1200,
+    'telemetry': 1200,
+    'staff_write': 600,
+    'commerce_write': 120,
+    'expensive': 120,
+    'catalog': 600,
+    'read': 600,
+}
+_RATE_LIMIT_AUTH_PATHS = {
+    '/login/',
+    '/register/',
+    '/accounts/ajax/login/',
+    '/accounts/ajax/register/',
+    '/api-auth/login/',
+    '/admin/login/',
+}
+_RATE_LIMIT_CATALOG_PREFIXES = (
+    '/catalog/',
+    '/product/',
+    '/load-more-products/',
+    '/api/products/',
+    '/api/categories/',
+    '/search/',
+    '/blog/',
+    '/sitemap',
+)
+_RATE_LIMIT_EXPENSIVE_READ_PREFIXES = (
+    '/google-merchant',
+    '/merchant/product-feed',
+    '/products_feed.xml',
+    '/rozetka',
+    '/kasta',
+    '/buyme',
+    '/prom-feed.xml',
+    '/media/prom-feed.xml',
+)
+_RATE_LIMIT_DTF_EXPENSIVE_PREFIXES = (
+    '/api/quote/',
+    '/status/',
+    '/constructor/sessions/',
+    '/cabinet/',
+    '/admin-panel/',
+)
+_RATE_LIMIT_WEBHOOK_PREFIXES = (
+    '/payments/monobank/webhook/',
+    '/wholesale/payment-webhook/',
+    '/accounts/telegram/webhook/',
+    '/orders/dropshipper/monobank/callback/',
+    '/tg-manager/webhook/',
+    '/bot/webhook/',
+    '/data-deletion/request/',
+    '/bot/data-deletion/request/',
+    '/binotel/webhook/',
+    '/hooks/mono/',
+    '/tg/webhook/',
+)
+_RATE_LIMIT_TELEMETRY_PATHS = {
+    '/api/rum/',
+    '/api/track-event/',
+    '/api/client-error/',
+    '/csp-report/',
+    '/checkout/capture/',
+    '/push/events/',
+}
+_RATE_LIMIT_STAFF_PATH_PREFIXES = (
+    '/admin/',
+    '/admin-panel/',
+)
+_RATE_LIMIT_HOST_GROUPS = {
+    'twocomms.shop': 'storefront',
+    'www.twocomms.shop': 'storefront',
+    'dtf.twocomms.shop': 'dtf',
+    'www.dtf.twocomms.shop': 'dtf',
+    'management.twocomms.shop': 'management',
+    'www.management.twocomms.shop': 'management',
+    'fin.twocomms.shop': 'finance',
+    'www.fin.twocomms.shop': 'finance',
+    'storage.twocomms.shop': 'storage',
+    'www.storage.twocomms.shop': 'storage',
+}
+_RATE_LIMIT_SAFE_METHODS = {'GET', 'HEAD', 'OPTIONS'}
+_RATE_LIMIT_STAFF_HOST_GROUPS = {'management', 'finance', 'storage'}
+_RATE_LIMIT_LOGGER = logging.getLogger('twocomms.ratelimit')
+_rate_limit_warning_after = 0.0
+_rate_limit_warning_lock = threading.Lock()
+
+
+def _rate_limit_host_group(host):
+    return _RATE_LIMIT_HOST_GROUPS.get(host.lower().rstrip('.'), 'other')
+
+
+def _log_rate_limit_warning(message, *, exc_info=False):
+    global _rate_limit_warning_after
+
+    now = time.monotonic()
+    interval = float(getattr(settings, 'SIMPLE_RATE_LIMIT_WARNING_INTERVAL', 60))
+    with _rate_limit_warning_lock:
+        if now < _rate_limit_warning_after:
+            return
+        _rate_limit_warning_after = now + max(interval, 0)
+    _RATE_LIMIT_LOGGER.warning(message, exc_info=exc_info)
+
+
+def _route_rate_limit_name(request, host):
+    path = re.sub(r'^/(?:uk|ru|en)(?=/)', '', request.path)
+    host_group = _rate_limit_host_group(host)
+    if path in _RATE_LIMIT_AUTH_PATHS and request.method not in _RATE_LIMIT_SAFE_METHODS:
+        return 'auth'
+    if path.startswith(_RATE_LIMIT_WEBHOOK_PREFIXES):
+        return 'webhook'
+    if path in _RATE_LIMIT_TELEMETRY_PATHS:
+        return 'telemetry'
+    if request.method not in _RATE_LIMIT_SAFE_METHODS:
+        if host_group == 'dtf' and path == '/api/preflight/':
+            return 'expensive'
+        if (
+            host_group in _RATE_LIMIT_STAFF_HOST_GROUPS
+            or path.startswith(_RATE_LIMIT_STAFF_PATH_PREFIXES)
+        ):
+            return 'staff_write'
+        return 'commerce_write'
+    if host_group == 'dtf' and path.startswith(_RATE_LIMIT_DTF_EXPENSIVE_PREFIXES):
+        return 'expensive'
+    if path.startswith(_RATE_LIMIT_EXPENSIVE_READ_PREFIXES):
+        return 'expensive'
+    if path.startswith(_RATE_LIMIT_CATALOG_PREFIXES):
+        return 'catalog'
+    return 'read'
+
+
+def _client_rate_limit_ip(request):
+    remote_addr = (request.META.get('REMOTE_ADDR') or '').strip()
+    if not remote_addr:
+        return ''
+
+    try:
+        remote_ip = ipaddress.ip_address(remote_addr)
+    except ValueError:
+        return remote_addr
+
+    trusted_networks = []
+    for cidr in getattr(settings, 'SIMPLE_RATE_LIMIT_TRUSTED_PROXY_CIDRS', ()):
+        try:
+            trusted_networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            continue
+
+    if not any(remote_ip in network for network in trusted_networks):
+        return str(remote_ip)
+
+    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if not forwarded:
+        return str(remote_ip)
+
+    forwarded_ips = []
+    try:
+        for value in forwarded.split(','):
+            forwarded_ips.append(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return str(remote_ip)
+
+    for candidate in reversed(forwarded_ips):
+        if not any(candidate in network for network in trusted_networks):
+            return str(candidate)
+    return str(remote_ip)
+
+
+def _file_rate_limit_lock(backend, key):
+    if fcntl is None:
+        raise RuntimeError('fcntl is required for atomic file-cache rate limiting')
+
+    configured_dir = getattr(settings, 'SIMPLE_RATE_LIMIT_LOCK_DIR', '')
+    lock_dir = (
+        Path(configured_dir)
+        if configured_dir
+        else Path(backend._dir).parent / 'ratelimit_locks'
+    )
+    lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_dir.chmod(0o700)
+
+    stripe = int(hashlib.sha256(key.encode('utf-8')).hexdigest()[:8], 16) % 64
+    lock_path = lock_dir / f'counter-{stripe:02d}.lock'
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _increment_rate_limit_counter(key, *, timeout):
+    cache_alias = getattr(settings, 'SIMPLE_RATE_LIMIT_CACHE_ALIAS', 'default')
+    backend = caches[cache_alias]
+    if isinstance(backend, FileBasedCache):
+        descriptor = _file_rate_limit_lock(backend, key)
+        locked = False
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            locked = True
+            value = backend.get(key)
+            value = 1 if value is None else value + 1
+            backend.set(key, value, timeout=timeout)
+            return value
+        finally:
+            try:
+                if locked:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+
+    if backend.add(key, 1, timeout=timeout):
+        return 1
+
+    # A fixed-window key can expire between add() and incr(). Retry the create
+    # once instead of turning that harmless boundary race into a 500/429.
+    try:
+        value = backend.incr(key)
+    except ValueError:
+        if backend.add(key, 1, timeout=timeout):
+            return 1
+        value = backend.incr(key)
+
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise RuntimeError('rate-limit cache increment did not return a counter')
+    return value
+
+
 class SimpleRateLimitMiddleware(MiddlewareMixin):
     """
-    Simple rate limiting middleware to prevent abuse.
-    Limits requests per IP address.
+    Route-aware fixed-window rate limiting per IP address.
     """
 
     def process_request(self, request):
@@ -330,64 +570,61 @@ class SimpleRateLimitMiddleware(MiddlewareMixin):
         if settings.DEBUG or not getattr(settings, 'SIMPLE_RATE_LIMIT_ENABLED', True):
             return None
 
-        # DTF public pages are read-heavy and already protected by endpoint-level limits.
-        # Skip generic IP limiter for safe methods to reduce cache I/O in hot path.
         try:
             host = request.get_host().split(':')[0].lower()
         except Exception:
             host = ''
-        if host.startswith('dtf.') and request.method in ('GET', 'HEAD', 'OPTIONS'):
-            return None
-
         # Skip static and media files (double check, though WhiteNoise handles them first now)
         path = request.path
-        if path.startswith(settings.STATIC_URL) or path.startswith(settings.MEDIA_URL):
+        normalized_path = re.sub(r'^/(?:uk|ru|en)(?=/)', '', path)
+        is_dynamic_media = normalized_path == '/media/prom-feed.xml'
+        if (
+            path.startswith(settings.STATIC_URL)
+            or (path.startswith(settings.MEDIA_URL) and not is_dynamic_media)
+        ):
             return None
 
-        # W3-5 (TD-023): ключ лимитера — REMOTE_ADDR, а НЕ клиентский
-        # X-Forwarded-For. XFF спуфается тривиально (curl -H) → атакующий
-        # получал бесконечный лимит, а подставляя чужие IP — банил жертв.
-        # На проде (LiteSpeed+Passenger) REMOTE_ADDR = реальный IP клиента.
-        # XFF используем ТОЛЬКО если REMOTE_ADDR — приватный адрес
-        # (доверенный локальный прокси-hop), и берём последний hop.
-        ip = request.META.get('REMOTE_ADDR', '')
-        if ip and (ip.startswith('10.') or ip.startswith('192.168.') or
-                   ip.startswith('127.') or ip.startswith('172.')):
-            x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-            if x_forwarded_for:
-                # Последний элемент = добавлен ближайшим (доверенным) прокси
-                ip = x_forwarded_for.split(',')[-1].strip() or ip
-
-        # Skip if no IP
+        # XFF is only accepted through explicitly configured proxy CIDRs.
+        ip = _client_rate_limit_ip(request)
         if not ip:
             return None
 
-        # Rate limit: 100 requests per minute per IP
-        cache_key = f'ratelimit:ip:{ip}'
         current_time = int(time.time())
-        window_key = f'{cache_key}:{current_time // 60}'  # 1-minute window
+        window_seconds = int(getattr(settings, 'SIMPLE_RATE_LIMIT_WINDOW', 60))
+        route_name = _route_rate_limit_name(request, host)
+        configured_limits = getattr(settings, 'SIMPLE_RATE_LIMITS', {})
+        route_limit = int(configured_limits.get(route_name, _RATE_LIMIT_DEFAULTS[route_name]))
+        if window_seconds <= 0 or route_limit <= 0:
+            _log_rate_limit_warning(
+                'Rate limiter configuration invalid - failing open',
+            )
+            return None
+
+        window_number = current_time // window_seconds
+        retry_after = window_seconds - (current_time % window_seconds)
+        host_group = _rate_limit_host_group(host)
+        identity = f'{host_group}|{ip}'
+        ip_digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]
+        window_key = f'ratelimit:{route_name}:{ip_digest}:{window_number}'
 
         try:
-            request_count = cache.get(window_key, 0)
-
-            # Check if limit exceeded
-            if request_count >= 100:
+            request_count = _increment_rate_limit_counter(
+                window_key,
+                timeout=retry_after + 1,
+            )
+            if request_count > route_limit:
                 response = HttpResponse(
                     'Rate limit exceeded. Please try again later.',
                     status=429
                 )
-                response['Retry-After'] = '60'
+                response['Retry-After'] = str(retry_after)
                 return response
-
-            # Increment counter
-            cache.set(window_key, request_count + 1, 120)  # Store for 2 minutes
-
         except Exception:
             # W3-5: fail-open оставлен осознанно (нельзя ронять весь сайт
             # из-за Redis), но теперь с алертным логом вместо молчания.
-            import logging
-            logging.getLogger('twocomms.ratelimit').warning(
-                'Rate limiter cache unavailable — failing open (TD-012)'
+            _log_rate_limit_warning(
+                'Rate limiter cache unavailable - failing open (TD-012)',
+                exc_info=True,
             )
 
         return None

@@ -457,6 +457,24 @@ if CACHE_BACKEND == 'redis':
             'KEY_PREFIX': 'twocomms:frag',
             'TIMEOUT': int(os.environ.get('CACHE_FRAGMENT_TIMEOUT', '900')),  # 15 минут
         },
+        'ratelimit': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': _build_redis_location(REDIS_DB, REDIS_CACHE_URL),
+            'OPTIONS': {
+                **COMMON_REDIS_OPTIONS,
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+                'IGNORE_EXCEPTIONS': False,
+                'SOCKET_CONNECT_TIMEOUT': 0.25,
+                'SOCKET_TIMEOUT': 0.25,
+                'PASSWORD': REDIS_PASSWORD or None,
+                'CONNECTION_POOL_KWARGS': {
+                    'max_connections': max(REDIS_FRAGMENT_MAX_CONNECTIONS // 2, 10),
+                    'retry_on_timeout': False,
+                },
+            },
+            'KEY_PREFIX': 'twocomms:ratelimit',
+            'TIMEOUT': 120,
+        },
     }
 elif CACHE_BACKEND == 'locmem':
     CACHES = {
@@ -478,6 +496,12 @@ elif CACHE_BACKEND == 'locmem':
             'TIMEOUT': int(os.environ.get('CACHE_FRAGMENT_TIMEOUT', '900')),
             'OPTIONS': {'MAX_ENTRIES': 10000},
         },
+        'ratelimit': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'twocomms-ratelimit',
+            'TIMEOUT': 120,
+            'OPTIONS': {'MAX_ENTRIES': 20000},
+        },
     }
 else:
     preferred_cache_root = Path(os.environ.get('DJANGO_FILE_CACHE_DIR', '/home/qlknpodo/tmp/django_cache'))
@@ -488,7 +512,13 @@ else:
     file_cache_default = file_cache_root / 'default'
     file_cache_static = file_cache_root / 'staticfiles'
     file_cache_fragments = file_cache_root / 'fragments'
-    for cache_dir in (file_cache_default, file_cache_static, file_cache_fragments):
+    file_cache_ratelimit = file_cache_root / 'ratelimit'
+    for cache_dir in (
+        file_cache_default,
+        file_cache_static,
+        file_cache_fragments,
+        file_cache_ratelimit,
+    ):
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -496,7 +526,13 @@ else:
             file_cache_default = file_cache_root / 'default'
             file_cache_static = file_cache_root / 'staticfiles'
             file_cache_fragments = file_cache_root / 'fragments'
-            for fallback_dir in (file_cache_default, file_cache_static, file_cache_fragments):
+            file_cache_ratelimit = file_cache_root / 'ratelimit'
+            for fallback_dir in (
+                file_cache_default,
+                file_cache_static,
+                file_cache_fragments,
+                file_cache_ratelimit,
+            ):
                 fallback_dir.mkdir(parents=True, exist_ok=True)
             break
 
@@ -519,7 +555,38 @@ else:
             'TIMEOUT': int(os.environ.get('CACHE_FRAGMENT_TIMEOUT', '900')),
             'OPTIONS': {'MAX_ENTRIES': 12000},
         },
+        'ratelimit': {
+            'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+            'LOCATION': str(file_cache_ratelimit),
+            'TIMEOUT': 120,
+            'OPTIONS': {'MAX_ENTRIES': 20000},
+        },
     }
+
+SIMPLE_RATE_LIMIT_CACHE_ALIAS = 'ratelimit'
+SIMPLE_RATE_LIMIT_ENABLED = os.environ.get(
+    'SIMPLE_RATE_LIMIT_ENABLED',
+    'true',
+).lower() in ('1', 'true', 'yes')
+SIMPLE_RATE_LIMIT_WINDOW = int(os.environ.get('SIMPLE_RATE_LIMIT_WINDOW', '60'))
+SIMPLE_RATE_LIMIT_WARNING_INTERVAL = float(
+    os.environ.get('SIMPLE_RATE_LIMIT_WARNING_INTERVAL', '60')
+)
+SIMPLE_RATE_LIMITS = {
+    'auth': int(os.environ.get('SIMPLE_RATE_LIMIT_AUTH', '20')),
+    'webhook': int(os.environ.get('SIMPLE_RATE_LIMIT_WEBHOOK', '1200')),
+    'telemetry': int(os.environ.get('SIMPLE_RATE_LIMIT_TELEMETRY', '1200')),
+    'staff_write': int(os.environ.get('SIMPLE_RATE_LIMIT_STAFF_WRITE', '600')),
+    'commerce_write': int(os.environ.get('SIMPLE_RATE_LIMIT_COMMERCE_WRITE', '120')),
+    'expensive': int(os.environ.get('SIMPLE_RATE_LIMIT_EXPENSIVE', '120')),
+    'catalog': int(os.environ.get('SIMPLE_RATE_LIMIT_CATALOG', '600')),
+    'read': int(os.environ.get('SIMPLE_RATE_LIMIT_READ', '600')),
+}
+SIMPLE_RATE_LIMIT_TRUSTED_PROXY_CIDRS = tuple(
+    value.strip()
+    for value in os.environ.get('SIMPLE_RATE_LIMIT_TRUSTED_PROXY_CIDRS', '').split(',')
+    if value.strip()
+)
 
 SESSION_ENGINE = os.environ.get('SESSION_ENGINE', 'django.contrib.sessions.backends.cached_db')
 if SESSION_ENGINE == 'django.contrib.sessions.backends.cached_db':
