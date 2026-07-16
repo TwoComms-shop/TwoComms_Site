@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
@@ -563,7 +564,7 @@ class CartUtilityEndpointTests(CartViewTestCase):
         self.assertEqual(session["monobank_pending_order_id"], 123)
 
     def test_main_js_guards_global_add_to_cart_double_clicks(self):
-        js_path = "twocomms/twocomms_django_theme/static/js/main.js"
+        js_path = settings.BASE_DIR / "twocomms_django_theme" / "static" / "js" / "main.js"
         with open(js_path, encoding="utf-8") as handle:
             js = handle.read()
 
