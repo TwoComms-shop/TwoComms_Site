@@ -1413,6 +1413,7 @@
       : ['scroll', 'click', 'touchstart', 'pointerdown', 'keydown']);
   var deviceClass = (doc.documentElement.dataset.deviceClass || '').toLowerCase();
   var isLowDevice = deviceClass === 'low';
+  var isPaidLanding = /[?&](gclid|fbclid|ttclid|wbraid|gbraid|msclkid|utm_source|utm_medium|utm_campaign)=/i.test(win.location.search);
 
   function initializePixelsDeferred() {
     if (pixelsLoaded) return;
@@ -1428,8 +1429,9 @@
     }
 
     loadMetaPixel();
-    // TikTok pixel ~250 KB unused JS — пропускаем на low-end устройствах до реального интереса.
-    if (!isLowDevice) {
+    // Paid bounces need TikTok attribution even on low-end devices. Organic
+    // low-end traffic keeps the existing ~250 KB suppression.
+    if (!isLowDevice || isPaidLanding) {
       loadTikTokPixel();
     }
     
@@ -1457,21 +1459,27 @@
     }, 1000);
   }
   
-  // Load on user interaction (helps PageSpeed score)
-  interactionEvents.forEach(function(evt) {
-    win.addEventListener(evt, initializePixelsDeferred, {passive: true, capture: true, once: true});
-  });
-  
-  // Fallback: Load after idle window to ensure pixels work if no interaction.
-  // Раньше был setTimeout(..., 3000) — на mobile это давало post-load long tasks.
-  // Используем requestIdleCallback с большим timeout, fallback на 10s setTimeout.
-  var idleDelay = isPassiveAnalytics
-    ? (isLowDevice ? 22000 : 14000)
-    : (isLowDevice ? 15000 : 8000);
-  if (typeof win.requestIdleCallback === 'function') {
-    win.requestIdleCallback(initializePixelsDeferred, { timeout: idleDelay });
+  // Loading the orchestrator early is not enough for paid-bounce attribution:
+  // invoke the idempotent initializer before waiting for interaction or idle.
+  if (isPaidLanding) {
+    initializePixelsDeferred();
   } else {
-    setTimeout(initializePixelsDeferred, idleDelay);
+    // Organic traffic keeps the deferred PageSpeed path.
+    interactionEvents.forEach(function(evt) {
+      win.addEventListener(evt, initializePixelsDeferred, {passive: true, capture: true, once: true});
+    });
+
+    // Fallback: Load after idle window to ensure pixels work if no interaction.
+    // Раньше был setTimeout(..., 3000) — на mobile это давало post-load long tasks.
+    // Используем requestIdleCallback с большим timeout, fallback на 10s setTimeout.
+    var idleDelay = isPassiveAnalytics
+      ? (isLowDevice ? 22000 : 14000)
+      : (isLowDevice ? 15000 : 8000);
+    if (typeof win.requestIdleCallback === 'function') {
+      win.requestIdleCallback(initializePixelsDeferred, { timeout: idleDelay });
+    } else {
+      setTimeout(initializePixelsDeferred, idleDelay);
+    }
   }
 
   function handleBFCacherestore(event) {
