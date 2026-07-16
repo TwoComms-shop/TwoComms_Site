@@ -18,6 +18,7 @@
       <a class="color-filter-chip{% if chip.is_selected %} is-selected{% endif %}"
          href="{{ chip.url }}"
          data-color-slug="{{ chip.slug }}"
+         {% if not chip.is_landing %}rel="nofollow"{% endif %}
          {% if chip.is_selected %}aria-current="true"{% endif %}
          title="{{ chip.label }} ({{ chip.count }})">
         <span class="color-filter-chip__swatch"

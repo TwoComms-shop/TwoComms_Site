@@ -44,6 +44,7 @@ from ..services.color_filter import (
     build_available_colors,
     build_home_color_chips,
     build_reset_url,
+    canonical_color_filter,
     parse_color_filter,
 )
 from ..services.survey_engine import load_survey_definition
@@ -555,6 +556,7 @@ def load_more_products(request):
 
 
 # W3-3: @ensure_csrf_cookie снят (см. комментарий у home)
+@canonical_color_filter
 @cache_page_for_anon(600, key_prefix=public_product_listing_cache_prefix)  # Кэшируем каталог на 10 минут только для анонимов
 def catalog(request, cat_slug=None):
     """
@@ -731,6 +733,7 @@ def _build_search_tokens(query: str) -> list[str]:
     return deduped
 
 
+@canonical_color_filter
 def search(request):
     """
     Поиск товаров.
@@ -1120,6 +1123,7 @@ THEMATIC_LANDINGS_CONFIG = {
 }
 
 
+@canonical_color_filter
 @cache_page_for_anon(600, key_prefix=public_product_listing_cache_prefix)
 def thematic_landing(request, theme_slug):
     """Render an indexable thematic SEO landing.

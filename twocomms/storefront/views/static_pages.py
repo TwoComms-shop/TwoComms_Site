@@ -180,6 +180,11 @@ AI_ROBOTS_USER_AGENTS = (
     "anthropic-ai",
 )
 
+GPTBOT_COLOR_FILTER_DISALLOW_PATTERNS = (
+    "/*?color=",
+    "/*&color=",
+)
+
 
 def _site_base_url():
     return (getattr(settings, "SITE_BASE_URL", "") or "https://twocomms.shop").rstrip("/")
@@ -357,6 +362,9 @@ def robots_txt(request):
     for user_agent in AI_ROBOTS_USER_AGENTS:
         lines.append(f"User-agent: {user_agent}")
         append_public_rules(lines)
+        if user_agent == "GPTBot":
+            for pattern in GPTBOT_COLOR_FILTER_DISALLOW_PATTERNS:
+                lines.append(f"Disallow: {pattern}")
         lines.append("")
 
     lines.append(f"Sitemap: {_absolute_site_url('/sitemap.xml')}")

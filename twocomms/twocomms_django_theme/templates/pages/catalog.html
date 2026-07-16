@@ -44,7 +44,7 @@ Treat them like any other facet: noindex, follow + canonical → base catalog.
 {# ItemList) — NOT by hiding pagination from the index, which would block discovery of products only #}
 {# reachable via the paginator. Sort/colour-filter facets keep noindex,follow because they re-order #}
 {# the same dataset on the same canonical URL. #}
-{% block robots %}{% if is_search_page or has_active_color_filter or request.GET.sort %}noindex, follow{% else %}index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1{% endif %}{% endblock %}
+{% block robots %}{% if selected_color_slugs|length > 1 %}noindex, nofollow{% elif is_search_page or has_active_color_filter or request.GET.sort %}noindex, follow{% else %}index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1{% endif %}{% endblock %}
 
 {# SEO 2026-05-16 — self-canonical on every paginator state (Google explicitly recommends "do not designate the first page as the canonical for paginator pages — give each its own canonical URL"; #}
 {# https://developers.google.com/search/docs/specialty/ecommerce/pagination-and-incremental-page-loading). #}

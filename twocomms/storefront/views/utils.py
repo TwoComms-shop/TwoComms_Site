@@ -18,6 +18,12 @@ def _build_query_string(querydict):
         return ''
     parts = []
     for key, values in sorted(querydict.lists()):
+        if key == 'color':
+            from ..services.color_filter import normalise_color_slugs
+
+            values = [','.join(normalise_color_slugs(values))]
+            if not values[0]:
+                continue
         for value in values:
             parts.append((key, value))
     return urlencode(parts, doseq=True)

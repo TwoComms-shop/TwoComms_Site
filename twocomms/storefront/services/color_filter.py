@@ -16,12 +16,15 @@ which is exactly what we want for faceted browsing.
 from __future__ import annotations
 
 from collections import defaultdict
+from functools import wraps
 from typing import Iterable, List, Dict, Any
 from urllib.parse import urlencode
 
 from django.apps import apps
+from django.core.cache import cache
 from django.db import DatabaseError
 from django.db.models import QuerySet
+from django.http import HttpResponsePermanentRedirect
 from django.utils.translation import gettext_lazy as _
 
 
@@ -70,6 +73,8 @@ def _translate_color_label(label: str):
 # Maximum number of colour slugs we accept in a single ``?color=`` value.
 # Keeps query strings sane and shields us from accidental FACET-style abuse.
 MAX_COLOR_SLUGS = 10
+ALLOWED_COLOR_SLUGS_CACHE_KEY = "catalog:allowed-color-slugs:v1"
+ALLOWED_COLOR_SLUGS_CACHE_TIMEOUT = 300
 # Slugs follow a simple ``[a-z0-9-]+`` shape — we sanitise aggressively.
 _VALID_SLUG_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-")
 
@@ -81,29 +86,112 @@ def _normalise_slug(value: str) -> str:
     return "".join(ch for ch in value if ch in _VALID_SLUG_CHARS).strip("-")
 
 
-def parse_color_filter(request) -> List[str]:
-    """Return the ordered, de-duplicated list of selected colour slugs.
+def normalise_color_slugs(
+    raw_values: Iterable[str],
+    *,
+    allowed_slugs: Iterable[str] | None = None,
+) -> List[str]:
+    """Return a bounded, sorted set of normalized colour slugs."""
+    allowed = None
+    if allowed_slugs is not None:
+        allowed = {_normalise_slug(value) for value in allowed_slugs}
+        allowed.discard("")
+
+    result = set()
+    for raw_value in raw_values:
+        for piece in (raw_value or "").split(","):
+            slug = _normalise_slug(piece)
+            if not slug or (allowed is not None and slug not in allowed):
+                continue
+            result.add(slug)
+
+    return sorted(result)[:MAX_COLOR_SLUGS]
+
+
+def parse_color_filter(request, *, allowed_slugs=None) -> List[str]:
+    """Return the canonical list of selected colour slugs.
 
     Accepts both ``?color=black,red`` and repeated ``?color=black&color=red``.
     """
     if request is None:
         return []
-    raw_values: List[str] = []
-    for raw in request.GET.getlist("color"):
-        for piece in raw.split(","):
-            raw_values.append(piece)
+    return normalise_color_slugs(
+        request.GET.getlist("color"),
+        allowed_slugs=allowed_slugs,
+    )
 
-    seen = set()
-    result: List[str] = []
-    for raw in raw_values:
-        slug = _normalise_slug(raw)
-        if not slug or slug in seen:
+
+def get_allowed_color_slugs() -> List[str] | None:
+    """Return cached slugs used by published products, or ``None`` on DB failure."""
+    cached = cache.get(ALLOWED_COLOR_SLUGS_CACHE_KEY)
+    if cached is not None:
+        return list(cached)
+
+    try:
+        ProductColorVariant = apps.get_model("productcolors", "ProductColorVariant")
+        slugs = sorted(
+            set(
+                ProductColorVariant.objects.filter(product__status="published")
+                .exclude(slug="")
+                .values_list("slug", flat=True)
+            )
+        )
+    except (LookupError, DatabaseError):
+        return None
+
+    cache.set(
+        ALLOWED_COLOR_SLUGS_CACHE_KEY,
+        slugs,
+        ALLOWED_COLOR_SLUGS_CACHE_TIMEOUT,
+    )
+    return slugs
+
+
+def build_canonical_color_filter_url(request, *, allowed_slugs) -> str | None:
+    """Return a canonical redirect target, or ``None`` for an already canonical URL."""
+    if "color" not in request.GET:
+        return None
+
+    selected = parse_color_filter(request, allowed_slugs=allowed_slugs)
+    canonical_value = ",".join(selected)
+    color_identity_changed = request.GET.getlist("color") != [canonical_value]
+
+    params: List[tuple[str, str]] = []
+    for key, values in sorted(request.GET.lists()):
+        if key == "color" or (key == "page" and color_identity_changed):
             continue
-        seen.add(slug)
-        result.append(slug)
-        if len(result) >= MAX_COLOR_SLUGS:
-            break
-    return result
+        params.extend((key, value) for value in values)
+    if canonical_value:
+        params.append(("color", canonical_value))
+
+    current_params = [
+        (key, value)
+        for key, values in request.GET.lists()
+        for value in values
+    ]
+    if current_params == params:
+        return None
+
+    query = urlencode(params, doseq=True)
+    return f"{request.path}?{query}" if query else request.path
+
+
+def canonical_color_filter(view_func):
+    """Redirect noisy colour-filter GETs before a page-cache lookup or write."""
+    @wraps(view_func)
+    def _wrapped_view(request, *args, **kwargs):
+        if request.method in {"GET", "HEAD"} and "color" in request.GET:
+            allowed_slugs = get_allowed_color_slugs()
+            if allowed_slugs is not None:
+                redirect_url = build_canonical_color_filter_url(
+                    request,
+                    allowed_slugs=allowed_slugs,
+                )
+                if redirect_url is not None:
+                    return HttpResponsePermanentRedirect(redirect_url)
+        return view_func(request, *args, **kwargs)
+
+    return _wrapped_view
 
 
 def apply_color_filter(queryset: QuerySet, slugs: Iterable[str]) -> QuerySet:
@@ -147,7 +235,7 @@ def build_available_colors(
     traffic — and PageRank — toward the indexable landing while
     preserving the legacy filter for unmapped colours.
     """
-    selected = list(selected_slugs or [])
+    selected = normalise_color_slugs(selected_slugs or [])
     selected_set = set(selected)
 
     try:
@@ -240,7 +328,7 @@ def build_available_colors(
         if is_selected:
             next_slugs = [s for s in selected if s != slug]
         else:
-            next_slugs = selected + [slug]
+            next_slugs = normalise_color_slugs([*selected, slug])
         # Default URL: the legacy ``?color=`` toggle. If a published
         # colour-category landing exists for this slug, swap to the
         # dedicated landing URL — but only when the chip would *enter*
