@@ -35,6 +35,14 @@ function resolveRestockSummary({
   };
 }
 
+function resolveGalleryStep({ currentIndex = 0, total = 0, direction = 0 } = {}) {
+  const count = Math.max(0, Number(total) || 0);
+  if (!count) return 0;
+  const current = Math.max(0, Math.min(count - 1, Number(currentIndex) || 0));
+  const step = Number(direction) < 0 ? -1 : (Number(direction) > 0 ? 1 : 0);
+  return Math.max(0, Math.min(count - 1, current + step));
+}
+
 function galleryStatus(index, total) {
   const count = Math.max(1, Number(total) || 1);
   const position = Math.max(0, Math.min(count - 1, Number(index) || 0));
@@ -158,6 +166,7 @@ if (typeof module !== 'undefined' && module.exports) {
     focusTrapIndex,
     galleryStatus,
     MODAL_FOCUSABLE_SELECTOR,
+    resolveGalleryStep,
     resolveMaterialStory,
     resolveOptionSelection,
     resolveRestockSummary,
@@ -531,15 +540,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     prev.dataset.bound = '1';
     next.dataset.bound = '1';
 
-    const scrollByThumb = (direction) => {
-      if (!state.thumbs) return;
-      const firstThumb = state.thumbs.querySelector('.tc-thumbnail');
-      const amount = firstThumb ? firstThumb.getBoundingClientRect().width + 12 : 124;
-      state.thumbs.scrollBy({ left: direction * amount, behavior: prefersReducedMotion ? 'auto' : 'smooth' });
+    const navigate = (direction) => {
+      const images = imagesForCurrentSelection(state);
+      const nextIndex = resolveGalleryStep({
+        currentIndex: state.galleryIndex,
+        total: images.length,
+        direction,
+      });
+      showGalleryIndex(state, nextIndex);
     };
 
-    prev.addEventListener('click', () => scrollByThumb(-1));
-    next.addEventListener('click', () => scrollByThumb(1));
+    prev.addEventListener('click', () => navigate(-1));
+    next.addEventListener('click', () => navigate(1));
   }
 
   function setMainImage(state, image, options) {

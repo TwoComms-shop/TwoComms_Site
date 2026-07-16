@@ -7,6 +7,7 @@ const {
   galleryStatus,
   MODAL_FOCUSABLE_SELECTOR,
   resolveOptionSelection,
+  resolveGalleryStep,
   resolveMaterialStory,
   resolveRestockSummary,
   resolveSwipe,
@@ -54,6 +55,14 @@ test('gallery status and modal focus trap wrap in both directions', () => {
   assert.equal(focusTrapIndex?.({ currentIndex: 3, total: 4, shiftKey: false }), 0);
   assert.equal(focusTrapIndex?.({ currentIndex: 0, total: 4, shiftKey: true }), 3);
   assert.equal(focusTrapIndex?.({ currentIndex: 1, total: 4, shiftKey: false }), 2);
+});
+
+test('gallery arrow step advances one image and clamps at both boundaries', () => {
+  assert.equal(resolveGalleryStep?.({ currentIndex: 0, total: 3, direction: 1 }), 1);
+  assert.equal(resolveGalleryStep?.({ currentIndex: 1, total: 3, direction: -1 }), 0);
+  assert.equal(resolveGalleryStep?.({ currentIndex: 0, total: 3, direction: -1 }), 0);
+  assert.equal(resolveGalleryStep?.({ currentIndex: 2, total: 3, direction: 1 }), 2);
+  assert.equal(resolveGalleryStep?.({ currentIndex: 4, total: 0, direction: 1 }), 0);
 });
 
 test('every modal focusable selector branch excludes inert and aria-hidden controls', () => {

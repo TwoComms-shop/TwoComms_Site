@@ -177,7 +177,7 @@ class ProductConfiguratorRenderTests(TestCase):
 
         self.assertIn("css/product-detail.css?v=20260716-pdp-v2", html)
         self.assertIn("css/product-seo-landing.css?v=20260716-pdp-v2", html)
-        self.assertIn("js/product-detail.js?v=20260716-pdp-v3", html)
+        self.assertIn("js/product-detail.js?v=20260716-pdp-v4", html)
         self.assertIn("js/telegram-verify.js?v=20260716-pdp-v2", html)
         self.assertNotIn("20260715-fable5-v1", html)
         self.assertNotIn("20260716-configurator-v1", html)
