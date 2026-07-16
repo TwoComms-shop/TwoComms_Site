@@ -235,7 +235,7 @@
   - [x] **[GAP] AN-039 (P3):** search-query пишется сырым — обрезка длины + маскировка (однострочник). ✅ record_search: обрезка до 200 симв. + маскировка email → `[email]` и 12-19-значных числовых последовательностей (карты) → `[number]`.
   - [ ] **[GAP] AN-001/CB-034 (P2):** gtag.js G-109EFTWM05 грузится ПАРАЛЛЕЛЬНО GTM (риск двойного GA4 page_view); dataLayer получает 2 события на ATC (`AddToCart` + `add_to_cart`). Код-часть: убрать прямой gtag после сверки контейнера в����адельц��м (см. OWNER-1).
   - [ ] **[GAP] AN-003 (P2):** `payment_type` параметр не существует (TECH-007); `add_shipping_info`/`add_payment_info` в GA4-схеме отсутствуют; item_id ��истинга `TC-pid-default-S` н�� матчится с offer_id покупок.
-  - [ ] **[GAP] NEW-406 (P3):** русский цвет в offer_id «TC-0020-ЧЕРНЫЙ-M» — латинизировать слаг цвета (согласовать с Merchant-фидом, не ломать существующие id без маппинга).
+  - [x] **[GAP] NEW-406 (P3):** fixed `3a458b51` without feed-ID migration: omitted variant now resolves the real default variant color; 74/74 production parity + live cart POST passed.
   - [ ] **[GAP] NEW-407 (P3):** legacy-дефолт `pay_type='cod'` в checkout.py:119 при отсутствии cod в UI — согласовать с W1-1 п.2.
 
 ---

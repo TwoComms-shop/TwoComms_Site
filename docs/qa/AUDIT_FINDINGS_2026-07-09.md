@@ -108,7 +108,7 @@
 | [x] | **F-032** | P1 | UserAction rarely linked UTMSession | **FIXED `9854c18b` + `b33b8ce4`**; future writer repaired, guarded production backfill linked 116/116 deterministic actions; §F-032 |
 | [o] | **F-031** | P1 | MySQL has gone away | **PARTIAL:** no DB errors after request fallback disable marker; 7-day recurrence window and hosting 1040 remain; §F-031; F-080 |
 | [o] | **F-007** | P1 | HTTP 429 burst crawl | **PARTIAL:** static/media exempt + Retry-After present; generic counter remains non-atomic/not route-aware; §F-007 |
-| [ ] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | §F-018 |
+| [x] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | **FIXED `3a458b51`**; 74/74 production products + live cart/feed parity verified; §F-018 |
 | [x] | **F-043** | P1 | /help-center/ 404 | **FIXED `169e6032`**; production 301 to `/dopomoga/`; §F-043 |
 | [x] | **F-050** | P1 | NP Kyiv Latin 502 | **FIXED `75b1f6fb`**; production Kyiv/Kiev/Київ 200; §F-050 |
 | [x] | **F-059** | P1 | ProductImage alt empty | **FIXED `b3930e08`**; guarded production backfill 36/36, zero empty; §F-059 |
@@ -206,7 +206,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-015** | P3 | FIXED | DONE | `169e6032`: manifest.webmanifest aliases the canonical manifest; production 200 |
 | [x] **F-016** | P3 | PASS | no | Variant URL titles work |
 | [x] **F-017** | P3 | PASS | no | mapa-saytu links all 200 |
-| [ ] **F-018** | P1 | OPEN | YES | offer_id ЧОРНИЙ vs ЧЕРНЫЙ split |
+| [x] **F-018** | P1 | FIXED | DONE | `3a458b51`: omitted variant resolves default color; production/live parity passed |
 | [x] **F-019** | P0 | FIXED | DONE | `34275e28`: new conversion canary sets is_converted; cleanup verified |
 | [x] **F-020** | P1 | FIXED | DONE | `f42b537a`: guarded historical source normalization and audit-test cleanup |
 | [x] **F-021** | P0 | FIXED | DONE | `34275e28`: first-touch order attribution production canary verified |
@@ -304,7 +304,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 ### P1 OPEN (continued) — 7
 - [o] **F-007** — HTTP 429 under burst crawl; Retry-After exists, atomic route-aware policy remains
-- [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
+- [x] **F-018** — default/explicit variant offer_id parity verified in production
 - [x] **F-020** — guarded historical source normalization and audit-test cleanup completed
 - [x] **F-022** — trusted PV→ATC baseline restored by `fdf6563a`; production recheck passed
 - [o] **F-031** — no recurrence after fallback-disable marker, but observation/hosting residual remains
@@ -1170,9 +1170,9 @@ Sample **20/20** variant sitemap URLs returned **200** with titles reflecting co
 
 ### F-018 — Cart `offer_id` color spelling splits (ЧОРНИЙ vs ЧЕРНЫЙ)
 
-**Status:** [x] FIXED (`b3930e08`) · **Severity:** P1 · **Fix required:** DONE
+**Status:** [x] FIXED (`3a458b51`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **PIXEL / FEED / CART** · Checklist: PIX-011, FEED-002
+- [x] **Fixed** · Severity: **P1** · Area: **PIXEL / FEED / CART** · Checklist: PIX-011, FEED-002
 
 | Field | Value |
 |-------|--------|
@@ -1190,6 +1190,21 @@ Feed ids use **ЧОРНИЙ** style. If pixel fires without color_variant_id, Me
 
 **Why problem:** content_id fragmentation → broken DPA/optimization.  
 **Risk of fix:** medium–high (ID generator + historical feed).
+
+**Fixed and verified 2026-07-16:** when `color_variant_id` is omitted for a
+product that has variants, `Product.get_offer_id()` now resolves the same
+default (or first) real variant color used by feeds. The generic Russian
+fallback remains only for genuinely colorless products, preserving their
+existing feed IDs. Explicit non-default variants remain authoritative and the
+resolved default color is cached per Product instance to avoid repeated size
+lookups.
+
+The focused cart/feed suite passed 26/26 locally and 4/4 on the isolated
+server. A production invariant checked all 74 products with variants and found
+zero implicit/default offer-id mismatches. A real CSRF-protected cart POST for
+a published product, intentionally omitting `color_variant_id`, returned 200
+with the exact expected default variant/feed ID; the canary session and linked
+analytics rows were then removed.
 
 ---
 
@@ -2377,7 +2392,10 @@ Live `https://twocomms.shop/google-merchant-feed.xml` (**384** items):
 - After HTML-unescape, sample links `?size=S&color=…` → **HTTP 200**, redirect to size path `/product/…/s/`, title includes size + color.  
 - `g:id` all unique; **384/384** Cyrillic color tokens (e.g. `TC-0106-ЧОРНИЙ-S`).
 
-**Still open separately:** duplicate sitemap color URLs (F-006), offer_id RU/UA black split (F-018). Color category grammar was fixed later in `0b9ecc1c`. Do **not** treat product feed size/color query as broken after this recheck.
+**Still open separately:** duplicate sitemap color URLs (F-006). The offer_id
+RU/UA split (F-018) was fixed later in `3a458b51`; color category grammar was
+fixed in `0b9ecc1c`. Do **not** treat product feed size/color query as broken
+after this recheck.
 
 ---
 
@@ -2427,7 +2445,8 @@ From homepage footer, all primary support URLs **200**:
 
 **Status:** [x] PASS · **Severity:** P3 · **Fix required:** no
 
-384 `g:id`, 384 unique, 0 duplicates. Cyrillic in IDs is intentional for UA catalog (note F-018 language split still open for black color synonyms).
+384 `g:id`, 384 unique, 0 duplicates. Cyrillic in IDs is intentional for the
+UA catalog; the former F-018 black-color split was closed by `3a458b51`.
 
 ---
 

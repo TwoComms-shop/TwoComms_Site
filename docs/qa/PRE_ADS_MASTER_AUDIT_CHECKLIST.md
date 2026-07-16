@@ -672,7 +672,7 @@ Path: `/admin-panel/?…` section `dispatcher` (filters period/source/campaign).
 | PIX-008 | Purchase value correct | P0 | [x] WARN value correctness not live order|
 | PIX-009 | eventID present for dedupe | P0 | [x] event_id in JS + payload keys|
 | PIX-010 | Reload success ≠ second Purchase | P0 | [x] code sessionStorage; not live reload|
-| PIX-011 | content_ids match Merchant `g:id` | P0 | [x] format aligned TC-…; risk F-018 spelling |
+| PIX-011 | content_ids match Merchant `g:id` | P0 | [x] **PASS `3a458b51`** implicit/default variant IDs reconcile in production and live cart |
 | PIX-012 | Advanced matching hashes | P1 | [x] WARN hashing not re-verified|
 | PIX-013 | Adblock graceful | P1 | [x] site works without pixel (graceful)|
 
@@ -834,7 +834,7 @@ Mark each: loads 200 / no throw on page.
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | FEED-001 | Google Merchant feed live valid | P0 | [x] XML 200 ~2.1MB |
-| FEED-002 | g:id format = pixel content_ids | P0 | [x] TC-* Cyrillic matches offer_id style; **ЧОРНИЙ/ЧЕРНЫЙ split F-018** |
+| FEED-002 | g:id format = pixel content_ids | P0 | [x] **PASS `3a458b51`** default/explicit variant parity verified across 74 production products + live cart |
 | FEED-003 | Sample 20 feed URLs 200 | P0 | [x] 200 but color dropped F-003/F-027 |
 | FEED-004 | Price/availability parity | P1 | [x] WARN parity sample only|
 | FEED-005 | Feed mtime / cron healthy | P1 | [x] PASS feed large live file|
@@ -883,7 +883,7 @@ Mark each: loads 200 / no throw on page.
 | ADS-009 | Do not optimize for Purchase if volume < threshold — document Lead fallback | P1 | [x] WARN Lead fallback owner decision|
 | ADS-010 | Audience geo UA (minus occupied if policy) documented outside git if needed | P1 | [x] WARN geo ads external|
 | ADS-011 | Exclude staff IPs from ads stats | P1 | [x] PASS exclusion mechanism exists|
-| ADS-012 | Catalog sales / dynamic ads IDs match feed | P1 | [x] **FAIL risk** F-003/F-018 IDs|
+| ADS-012 | Catalog sales / dynamic ads IDs match feed | P1 | [x] **PASS** F-003/F-018 ID risks closed; 74/74 production parity verified |
 | ADS-013 | Pre-flight: canary UTM-050…057 green | P0 | [x] capture green F-046; order conversion canary not green |
 | ADS-014 | Pre-flight: SMK-* green | P0 | [x] SMK mostly green|
 | ADS-015 | Pre-flight: no P0 open FAIL in findings | P0 | [x] **FAIL** multiple P0 open → gate BLOCKED |
