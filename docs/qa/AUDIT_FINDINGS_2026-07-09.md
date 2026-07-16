@@ -128,7 +128,7 @@
 | [x] | **F-010** | P2 | debug endpoints login not 404 | **FIXED `efd7f192`**; server 7/7, live 21/21 hard 404; §F-010 |
 | [x] | **F-011** | P2 | TikTok ttq.load not in HTML | **FIXED `c0b324c3`**; deferred bootstrap verified, paid-low live asset matrix PASS; §F-011 |
 | [x] | **F-013** | P2 | Category title vs H1 strategy | **RESOLVED by F-001 `e2558396`**; fresh live 9/9 aligned, complete title/H1 pairs; §F-013 |
-| [ ] | **F-028** | P2 | RU/EN PDP naming | §F-028 |
+| [o] | **F-028** | P2 | RU/EN PDP naming | **PARTIAL `da910c46`**; locale runtime fixed, live 39/39 aligned; owner-approved cross-locale naming policy remains; §F-028 |
 | [ ] | **F-035** | P2 | CSP violations | §F-035 |
 | [ ] | **F-036** | P2 | Telegram RemoteDisconnected | §F-036 |
 | [ ] | **F-048** | P2 | fbp without internal UTM | §F-048 |
@@ -216,7 +216,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-025** | P3 | PASS | no | Blog UK sitemap healthy |
 | [x] **F-026** | P3 | PASS | no | Home critical static assets 200 |
 | [x] **F-027** | P0 | FIXED | DONE | `4d72412a`: color/size encoded in canonical path without query loss |
-| [ ] **F-028** | P2 | OPEN | YES | RU/EN PDP naming strategy vs UK mismatch |
+| [o] **F-028** | P2 | PARTIAL | YES | `da910c46`: locale runtime fixed; commercial cross-locale naming policy still needs owner-approved slug-family mapping |
 | [x] **F-029** | P0 | FIXED_OPS | DONE | LSAPI_CHILDREN 6→10; 30/30 concurrent health checks, zero new limit errors |
 | [x] **F-030** | P0 | FIXED | DONE | `3291ac82`: BFCache pixel restore; live hashed asset verified |
 | [o] **F-031** | P1 | PARTIAL | YES | Stale/request-path connection source contained; observe 7 days and track shared-host 1040 separately |
@@ -313,19 +313,22 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 OPEN — 6
+### P2 STATUS — 1 PARTIAL / 8 OPEN
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
 - [x] **F-011** — fixed `c0b324c3`; deferred owner confirmed and paid-low/organic-low/paid-normal matrix passed
 - [x] **F-013** — resolved by F-001 `e2558396`; fresh live 9/9 complete and intent-aligned
-- [ ] **F-028** — RU/EN PDP naming strategy vs UK mismatch
+- [o] **F-028** — `da910c46` fixed runtime locale propagation (live 39/39); owner-approved cross-locale naming policy remains
 - [ ] **F-035** — CSP violations in stderr
 - [ ] **F-036** — Telegram admin RemoteDisconnected
 - [ ] **F-048** — Orders have fbp tracking without internal UTM
 - [ ] **F-051** — checkout/capture empty returns 200 ok
 - [ ] **F-075** — CheckoutCapture.converted stuck false
 - [x] **F-078** — fixed `169e6032`; production 301 to `/contacts/`
+- [ ] **F-089** — FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only)
+- [ ] **F-090** — No MySQL backup cron (script present; W0-3)
+- [ ] **F-100** — views.py.backup still lazy-loaded (plan W7-1)
 
 ### P3 OPEN — 1
 - [x] **F-009** — fixed `169e6032`; production direct 200
@@ -1510,13 +1513,41 @@ Decoded `?size=S&color=...` → final `.../s/` without color. Server routing tre
 
 ---
 
-### F-028 — RU/EN PDP titles often OK while UK title/H1 diverge
+### F-028 — PDP variant locale propagation fixed; naming policy remains
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [o] PARTIAL (`da910c46`) · **Severity:** P2 · **Fix required:** YES (owner policy only)
 
-- [ ] **Open** · Severity: **P2** · Area: **GEO/SEO**
+- [o] **Partial** · Severity: **P2** · Area: **GEO/SEO**
 
-Sample 8 products × ru/en: titles/H1 generally **aligned within locale**, but EN sometimes keeps internal English print codes (`death grabs ass`) while RU uses commercial name (`Сердце И Деньги`). F-004 later aligned title/H1 within all three locales; cross-locale naming strategy remains the separate F-028 content decision.
+**Historical snapshot (2026-07-09; not current):** the original 8-product RU/EN
+sample generally had title/H1 aligned within each locale, but EN sometimes used an
+internal English print code (`death grabs ass`) while RU used the commercial name
+(`Сердце И Деньги`). F-004 later aligned title/H1 within all three locales. This
+snapshot records the discovery context; current runtime behavior is documented by
+the production verification below.
+
+**Runtime fix and production verification (2026-07-16):** code commit `da910c46`
+normalizes and propagates the active UK/RU/EN locale through PDP merchandising,
+localized variants API, quick view and Product JSON-LD, with language-keyed variant
+memoization. Local focused tests passed **16/16**, integer API route contracts **7/7**,
+and Django check was clean. `origin/main` and server HEAD both equal
+`da910c469fd91b8b5bb3535890e74ad9acf384b4`; the server repeated **16/16**,
+**7/7** and a clean Django check, Passenger was restarted, and `/healthz/` returned
+HTTP 200. The live audited matrix covered **13 SKU × 3 locales = 39/39** pages:
+HTTP, title base, H1, variant data and Product JSON-LD were locale-aligned.
+Localized variants API responses for RU/EN were HTTP 200 and correct; quick-view
+and images endpoints were HTTP 200.
+
+Representative four-layer parity (title base / H1 / variant data / Product
+JSON-LD): RU `death-grabs-ass-hd` = `Худи «Сердце И Деньги»`, EN =
+`Hoodie «death grabs ass»`; RU `last-breath-ls` =
+`Лонгслив «Череп С Розой»`, EN = `Longsleeve «Skull and Rose»`.
+No migration or production data mutation was required.
+
+**Residual policy scope:** runtime leakage is fixed, but whether an EN print identity
+should intentionally differ from RU/UK is a commercial content decision. F-028 stays
+PARTIAL until the owner approves a slug-family naming map. No autonomous content or
+data rename is authorized.
 
 ---
 

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stop Fable5 colour merchandising from leaking Ukrainian names and SEO text into RU/EN product pages, variant APIs, quick view, and structured data without changing the approved commercial identities of print designs.
+**Goal:** Stop Fable5 colour merchandising from leaking Ukrainian names and SEO text into RU/EN product pages, variant APIs, quick view, and structured data without changing the existing per-locale commercial values of print designs.
 
-**Architecture:** Normalize the active locale at each request/schema boundary and pass it explicitly into `variant_public_context()`. Make the product-instance detailed-variant memo language-keyed so one Product object cannot reuse Ukrainian results for RU/EN. Keep the original cross-locale naming-policy question separate because the curated content intentionally uses different UK/RU/EN print identities.
+**Architecture:** Normalize the active locale at each request/schema boundary and pass it explicitly into `variant_public_context()`. Make the product-instance detailed-variant memo language-keyed so one Product object cannot reuse Ukrainian results for RU/EN. Keep the cross-locale naming-policy question separate: the curated source currently encodes different UK/RU/EN identities, which remain untouched, while the cross-locale slug-family policy awaits owner approval.
 
 **Tech Stack:** Django 5.2, modeltranslation, Django `TestCase`, Fable5 merchandising services, JSON-LD, production MariaDB/live HTTP verification.
 
@@ -74,17 +74,29 @@ Local evidence: the focused F-028 module passed 16/16, including RU/EN color-PDP
 **Files:**
 - Modify: `docs/superpowers/plans/2026-07-16-f028-pdp-variant-locale.md`
 
-- [ ] **Step 1: Review the exact diff and rerun focused verification**
+- [x] **Step 1: Review the exact diff and rerun focused verification**
 
 Confirm only the plan, regression test, helper, request callers, and structured-data language propagation changed. Re-run the Task 2 commands immediately before committing.
 
-- [ ] **Step 2: Commit, push, deploy, and restart Passenger**
+- [x] **Step 2: Commit, push, deploy, and restart Passenger**
 
 Commit the plan/test/code slice on the explicitly authorized `main`, push `origin/main`, pull with `--ff-only` on production, run the focused test module with `--settings=test_settings`, and `touch tmp/restart.txt` because Python code changed.
 
-- [ ] **Step 3: Verify production behavior**
+- [x] **Step 3: Verify production behavior**
 
 Verify server HEAD equals local/origin. Crawl the audited 13 product slugs across UK/RU/EN and require HTTP 200 plus locale-consistent title/H1. For RU/EN hoodie/long-sleeve samples, inspect `variant-data` and Product JSON-LD to ensure Ukrainian variant name/SEO text no longer leaks. Verify `/healthz/` returns 200.
+
+Production evidence (2026-07-16): code commit `da910c46`; `origin/main` and server
+HEAD are `da910c469fd91b8b5bb3535890e74ad9acf384b4`. Local and server focused
+modules passed **16/16**, integer product API route contracts passed **7/7**, and
+Django check was clean. Passenger was restarted and `/healthz/` returned HTTP 200.
+The live crawl passed **13 SKU × 3 locales = 39/39** for HTTP, title base, H1,
+variant data and Product JSON-LD. RU/EN localized variants API responses were 200
+and correct; quick-view/images endpoints were 200. Representative four-layer
+values: RU `death-grabs-ass-hd` = `Худи «Сердце И Деньги»`, EN =
+`Hoodie «death grabs ass»`; RU `last-breath-ls` =
+`Лонгслив «Череп С Розой»`, EN = `Longsleeve «Skull and Rose»`. No migration or
+production data mutation was required.
 
 ### Task 4: Reconcile the audit status
 
@@ -95,11 +107,11 @@ Verify server HEAD equals local/origin. Crawl the audited 13 product slugs acros
 - Modify: `TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`
 - Modify: `docs/superpowers/plans/2026-07-16-f028-pdp-variant-locale.md`
 
-- [ ] **Step 1: Record exact test, deploy, server, DB, and live evidence**
+- [x] **Step 1: Record exact test, deploy, server, DB, and live evidence**
 
 Document the code commit, server test counts, server HEAD, live crawl count, and representative RU/EN H1/variant JSON/JSON-LD values. State explicitly that no data migration was required.
 
-- [ ] **Step 2: Mark the finding according to its real remaining scope**
+- [x] **Step 2: Mark the finding according to its real remaining scope**
 
 Mark the locale-propagation defect fixed. Keep F-028 as `[o] PARTIAL` while the separate commercial naming-policy decision is unapproved; use `[x] FIXED/DONE` only if the audit evidence proves no owner decision remains.
 

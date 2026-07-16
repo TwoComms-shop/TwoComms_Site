@@ -184,6 +184,24 @@
 
 **Связки:** SEO-005 (hreflang), TECH-030 (шаблоны мета), RISK-13 (батчи при массовой правке мета).
 
+### Follow-up 16.07.2026 — F-028 PDP variant locale
+
+`da910c46` закрыл runtime-протекание UK merchandising в RU/EN PDP, variants API,
+quick view и Product JSON-LD. Локально и на сервере: focused **16/16**, integer API
+routes **7/7**, Django check clean; `origin/main` и server HEAD =
+`da910c469fd91b8b5bb3535890e74ad9acf384b4`, Passenger перезапущен,
+`/healthz/` = 200. Live-матрица **13 SKU × 3 локали = 39/39** согласована по
+HTTP/title base/H1/variant data/Product JSON-LD; RU/EN variants API корректны,
+quick-view/images = 200. Примеры во всех четырёх слоях: RU
+`death-grabs-ass-hd` = `Худи «Сердце И Деньги»`, EN =
+`Hoodie «death grabs ass»`; RU `last-breath-ls` =
+`Лонгслив «Череп С Розой»`, EN = `Longsleeve «Skull and Rose»`.
+Миграций и изменения данных не было.
+
+Статус **[o] PARTIAL**: runtime-дефект исправлен, но коммерческое решение о
+различиях EN print identity и RU/UK требует owner-approved slug-family mapping.
+Автономное переименование контента/данных не выполнялось и не разрешено.
+
 ## AEO-001. AI-трафик уже идёт — какие страницы цитирует ChatGPT (БД, 07.07.2026)
 
 **Источник:** read-only SSH/Django shell batch, `data/server_audit_batch_output.txt`.
@@ -230,6 +248,7 @@ AI-трафик уже не гипотеза, а стабильный канал
 
 | Дата | Пункт | Резюме |
 |---|---|---|
+| 16.07.2026 | F-028 / SEO-007 | `da910c46`: locale runtime fixed; local/server 16/16 + API 7/7 + check clean, live 39/39 aligned, health 200; [o] PARTIAL до owner-approved cross-locale naming map; без data mutation |
 | 07.07.2026 | SEO-022 | Organization/WebSite/founder глобально через теги в base.html со стабильными @id, logo есть, BreadcrumbList на каталоге/карточке/индексе/контактах; P3 — sameAs без TikTok (нужен подтверждённый handle); остаток — Rich Results Test |
 | 07.07.2026 | SEO-023 | FAQPage через единый тег faq_schema на 6 страницах, разметка строится из видимого контента (один источник), TECH-032 фактически закрыт; остаток — выборочная валидация в��адельцем |
 | 07.07.2026 | SEO-010 | CWV mobile НЕ зелёные: LCP главная 4.8s, каталог 16.4s, карточка 2.5s; CLS 0.0 везде; корень — Vary:Cookie + Set-Cookie на каждом GET выключают LiteSpeed cache + cold-start Passenger (TTFB бимодальный 0.5s/8–18s, интермиттентные 503); остаток — CrUX/GSC поле + панель Hostsila |

@@ -346,7 +346,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-046 | Alias → permanent redirect + canonical on target | P1 | [x] about OK; **help-center 404 F-043** |
 | SEO-047 | Filter/sort query pages not infinite indexables | P1 | [x] WARN filter URLs exist; canonical policy spot-check|
 | SEO-048 | Product base vs variant canonical policy documented + correct | P1 | [x] PASS variants self URLs 200|
-| SEO-049 | Near-duplicate RU/EN vs UA clustering risk re-measure | P1 | [x] **FAIL near-dup risk** F-005 H1 leaks|
+| SEO-049 | Near-duplicate RU/EN vs UA clustering risk re-measure | P1 | [o] F-028 runtime fixed `da910c46`: live 39/39 title/H1/variant/schema aligned; owner-approved cross-locale naming policy remains; [F-028 evidence](../../TWOCOMMS_A_TO_B/technical/audit_report_section4_seo.md) |
 
 ## 2.5 Structured data
 
@@ -417,7 +417,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | GEO-003 | x-default → UA | P0 | [x] PASS sample |
 | GEO-004 | Currency UAH everywhere public | P0 | [x] Product schema UAH sample |
 | GEO-005 | Phone/NP/delivery claims UA-correct | P1 | [x] PASS NP/UAH UA claims sample|
-| GEO-006 | RU/EN content leak inventory (titles, meta, JSON-LD, H2) | P1 | [x] H1 leaks **F-005** (partial inventory) |
+| GEO-006 | RU/EN content leak inventory (titles, meta, JSON-LD, H2) | P1 | [o] F-028 runtime fixed `da910c46`: live 39/39 and RU/EN API layers aligned; owner-approved slug-family naming map remains; [F-028 evidence](../../TWOCOMMS_A_TO_B/technical/audit_report_section4_seo.md) |
 | GEO-007 | modeltranslation fill rates uk/ru/en for products/categories | P1 | [x] WARN fill rates not fully quantified|
 | GEO-008 | Soft 404 translated URLs | P2 | [x] PASS ru/en key URLs 200|
 | GEO-009 | Schema addressCountry if any | P2 | [x] PASS Country in schema sample|
