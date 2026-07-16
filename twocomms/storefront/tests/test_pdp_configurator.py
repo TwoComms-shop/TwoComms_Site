@@ -139,11 +139,45 @@ class ProductConfiguratorRenderTests(TestCase):
         self.assertIn('aria-disabled="true"', html)
 
     def test_material_story_is_single_and_replaces_generic_premium_badge(self):
-        html = self.client.get(self.url).content.decode()
+        response = self.client.get(self.url)
+        html = response.content.decode()
 
         self.assertEqual(html.count("data-pdp-material-story"), 1)
         self.assertNotIn("data-generic-premium-fabric", html)
         self.assertEqual(html.count("Змінює відтінок під дією тепла."), 1)
+        self.assertIn('data-material-story-kind="thermo"', html)
+        self.assertEqual(
+            response.context["selected_variant_merchandising"]["material_story"],
+            {
+                "kind": "thermo",
+                "title": "Термохромна тканина",
+                "copy": "Змінює відтінок під дією тепла.",
+                "icon": "thermo",
+            },
+        )
+
+    def test_material_story_uses_fleece_context_without_product_description_fallback(self):
+        self.product.description = "Загальний опис товару не є історією матеріалу."
+        self.product.save(update_fields=["description"])
+        ColorProfile.objects.filter(color=self.color).delete()
+
+        response = self.client.get(self.url)
+        html = response.content.decode()
+        story = response.context["selected_variant_merchandising"]["material_story"]
+
+        self.assertEqual(story["kind"], "fleece")
+        self.assertEqual(story["title"], "Флісова основа")
+        self.assertNotEqual(story["copy"], self.product.description)
+        self.assertIn('data-material-story-kind="fleece"', html)
+
+    def test_versioned_pdp_assets_use_one_fresh_release_key(self):
+        html = self.client.get(self.url).content.decode()
+
+        self.assertIn("css/product-detail.css?v=20260716-pdp-v2", html)
+        self.assertIn("css/product-seo-landing.css?v=20260716-pdp-v2", html)
+        self.assertIn("js/product-detail.js?v=20260716-pdp-v2", html)
+        self.assertNotIn("20260715-fable5-v1", html)
+        self.assertNotIn("20260716-configurator-v1", html)
 
     def test_restock_modal_exposes_all_contact_channels(self):
         html = self.client.get(self.url).content.decode()
@@ -152,6 +186,35 @@ class ProductConfiguratorRenderTests(TestCase):
         for channel in ("telegram", "phone", "email", "whatsapp"):
             self.assertIn(f'data-restock-channel="{channel}"', html)
         self.assertIn(reverse("restock_subscribe"), html)
+        for summary in ("product", "color", "options", "size"):
+            self.assertIn(f'data-restock-selected-{summary}', html)
+        self.assertIn("data-restock-size-select", html)
+
+    def test_all_sizes_unavailable_renders_one_primary_notify_action(self):
+        first_response = self.client.get(self.url)
+        for size in first_response.context["available_sizes"]:
+            VariantSizeRule.objects.update_or_create(
+                variant=self.variant,
+                fit_code="oversize",
+                size=size,
+                defaults={"is_enabled": False},
+            )
+
+        html = self.client.get(self.url).content.decode()
+
+        self.assertIn("data-restock-empty-state>", html)
+        self.assertNotIn("data-restock-empty-state hidden", html)
+        self.assertEqual(html.count("data-restock-primary"), 1)
+        self.assertIn("Наразі всі розміри розібрано", html)
+        self.assertIn('data-restock-size=""', html)
+
+    def test_gallery_has_position_dots_and_accessible_live_status(self):
+        html = self.client.get(self.url).content.decode()
+
+        self.assertIn("data-gallery-dots", html)
+        self.assertIn("data-gallery-status", html)
+        self.assertIn('role="status"', html)
+        self.assertIn('aria-live="polite"', html)
 
     def test_context_exposes_generic_option_axes_and_selected_values(self):
         response = self.client.get(self.url)

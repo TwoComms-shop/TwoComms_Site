@@ -45,6 +45,57 @@ DEFAULT_THERMO_DESCRIPTION = (
 DEFAULT_THERMO_PRICE_REASON = "Термохромна тканина"
 
 
+def _material_story(*, profile, is_thermo, merchandising, options):
+    """Return only contextual material copy, never canonical product prose."""
+
+    if is_thermo:
+        return {
+            "kind": "thermo",
+            "title": "Термохромна тканина",
+            "copy": (
+                ((profile.description if profile else "") or "").strip()
+                or DEFAULT_THERMO_DESCRIPTION
+            ),
+            "icon": "thermo",
+        }
+
+    marketing_source = str(
+        (merchandising.get("sources") or {}).get("marketing_text") or ""
+    )
+    manual_copy = str(merchandising.get("marketing_text") or "").strip()
+    if manual_copy and not marketing_source.startswith("product:"):
+        return {
+            "kind": "manual",
+            "title": "Особливість матеріалу",
+            "copy": manual_copy,
+            "icon": "spark",
+        }
+
+    lining = str(options.get("lining") or "").lower()
+    if lining in {"fleece", "with_fleece", "flis"}:
+        return {
+            "kind": "fleece",
+            "title": "Флісова основа",
+            "copy": "М'який утеплений внутрішній шар краще зберігає тепло.",
+            "icon": "fleece",
+        }
+
+    material = str(
+        options.get("material")
+        or options.get("fabric")
+        or options.get("base")
+        or ""
+    ).lower()
+    if material in {"cotton", "bavovna", "бавовна"}:
+        return {
+            "kind": "cotton",
+            "title": "Бавовняна основа",
+            "copy": "Дихаюча бавовняна тканина приємна до тіла та підходить на щодень.",
+            "icon": "cotton",
+        }
+    return None
+
+
 def _decimal(value, default="0") -> Decimal:
     try:
         return Decimal(str(value if value is not None else default))
@@ -342,6 +393,12 @@ def variant_public_context(
     if not price_reason and is_thermo and final_price != product_price:
         price_reason = DEFAULT_THERMO_PRICE_REASON
     fit_rules = _effective_fit_rules(variant)
+    material_story = _material_story(
+        profile=profile,
+        is_thermo=is_thermo,
+        merchandising=merchandising,
+        options=options,
+    )
 
     return {
         "variant_id": variant.id,
@@ -365,6 +422,7 @@ def variant_public_context(
         "final_price": final_price,
         "has_price_adjustment": final_price != product_price,
         "marketing_html": merchandising["marketing_text"],
+        "material_story": material_story,
         "youtube_url": merchandising["youtube_url"],
         "seo_title": merchandising["seo_title"],
         "seo_description": merchandising["seo_description"],

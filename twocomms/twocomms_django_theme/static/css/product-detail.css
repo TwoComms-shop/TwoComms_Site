@@ -1148,10 +1148,6 @@ html[data-route-name="product"] .breadcrumb-nav {
   display: none;
 }
 
-.tc-variant-story:not(.is-thermo) {
-  grid-template-columns: 1fr;
-}
-
 .tc-variant-story__icon {
   display: grid;
   place-items: center;
@@ -1169,6 +1165,11 @@ html[data-route-name="product"] .breadcrumb-nav {
 }
 
 .tc-thermo-flame--story {
+  width: 20px;
+  height: 20px;
+}
+
+.tc-variant-story__icon > svg {
   width: 20px;
   height: 20px;
 }
@@ -1308,6 +1309,64 @@ html[data-route-name="product"] .breadcrumb-nav {
   outline-offset: 2px;
 }
 
+.tc-restock-empty {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 209, 106, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 181, 62, 0.07);
+}
+
+.tc-restock-empty[hidden] {
+  display: none;
+}
+
+.tc-restock-empty__icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffd16a;
+  background: rgba(255, 209, 106, 0.1);
+}
+
+.tc-restock-empty__icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.tc-restock-empty__copy {
+  display: grid;
+  gap: 3px;
+}
+
+.tc-restock-empty__copy strong {
+  color: #fff4d6;
+  font-size: 0.86rem;
+}
+
+.tc-restock-empty__copy small {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.tc-restock-empty__action {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #ffd16a;
+  border-radius: 8px;
+  color: #17120a;
+  background: #ffd16a;
+  font-size: 0.76rem;
+  font-weight: 850;
+}
+
 .tc-size-grid::-webkit-scrollbar {
   height: 4px;
 }
@@ -1402,31 +1461,36 @@ html[data-route-name="product"] .breadcrumb-nav {
 
 .tc-color-option {
   position: relative;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 999px;
-  padding: 3px;
+  padding: 5px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.07);
   cursor: pointer;
   transition: transform 160ms var(--pdp-ease), border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
-.tc-color-option .tc-thermo-flame--swatch {
+.tc-thermo-flame-badge {
   position: absolute;
-  right: 1px;
-  top: 1px;
+  right: 3px;
+  top: 3px;
   z-index: 2;
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 224, 194, 0.72);
+  border-radius: 50%;
   color: #ff7d32;
+  background: rgba(22, 13, 10, 0.9);
   filter: drop-shadow(0 2px 5px rgba(255, 79, 35, 0.55));
   pointer-events: none;
 }
 
-.tc-color-option.active .tc-thermo-flame--swatch {
-  width: 16px;
-  height: 16px;
+.tc-thermo-flame-badge .tc-thermo-flame--swatch {
+  width: 11px;
+  height: 11px;
 }
 
 .tc-configurator-grid {
@@ -1712,13 +1776,27 @@ body.tc-modal-open {
 }
 
 .tc-restock-summary span,
-.tc-restock-summary small {
+.tc-restock-summary label {
   color: rgba(255, 255, 255, 0.56);
   font-size: 0.72rem;
 }
 
-.tc-restock-summary small {
-  grid-column: 1 / -1;
+.tc-restock-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tc-restock-summary select {
+  min-height: 36px;
+  padding: 6px 30px 6px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  color: #fff;
+  background: #20212d;
 }
 
 .tc-restock-channels {
@@ -1834,14 +1912,44 @@ body.tc-modal-open {
 
 .tc-color-dot {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: 36px;
+  height: 36px;
   border-radius: inherit;
   background: linear-gradient(135deg, var(--primary-color, #111) 0 50%, var(--secondary-color, var(--primary-color, #111)) 50% 100%);
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.42),
     inset 0 0 0 3px rgba(0, 0, 0, 0.2),
     inset 0 -8px 14px rgba(0, 0, 0, 0.24);
+}
+
+.tc-gallery-dots {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: calc(100% - 96px);
+  transform: translateX(-50%);
+}
+
+.tc-gallery-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.42);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+  transition: width 160ms var(--pdp-ease), background 160ms ease;
+}
+
+.tc-gallery-dot.is-active {
+  width: 20px;
+  border-radius: 999px;
+  background: #fff;
 }
 
 .tc-color-option.active,
@@ -3590,6 +3698,15 @@ body.tc-modal-open {
 
   .tc-option-card {
     min-height: 72px;
+  }
+
+  .tc-restock-empty {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .tc-restock-empty__action {
+    grid-column: 1 / -1;
+    width: 100%;
   }
 
   .tc-restock-modal {

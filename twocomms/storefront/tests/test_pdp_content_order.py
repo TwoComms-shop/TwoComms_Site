@@ -127,3 +127,29 @@ class ProductDetailContentOrderTests(TestCase):
 
         self.assertIn("max-width: 100%;", rule)
         self.assertNotIn("max-width: 1080px;", rule)
+
+        landing_css = Path(
+            settings.BASE_DIR,
+            "twocomms_django_theme/static/css/product-seo-landing.css",
+        ).read_text(encoding="utf-8")
+        landing_rule = landing_css.split(".product-seo-landing__container {", 1)[1].split("}", 1)[0]
+        self.assertIn("max-width: 100%;", landing_rule)
+        self.assertNotIn("max-width: 1280px;", landing_rule)
+
+    def test_thermo_swatch_has_stable_outer_inner_and_badge_sizes(self):
+        css = Path(
+            settings.BASE_DIR,
+            "twocomms_django_theme/static/css/product-detail.css",
+        ).read_text(encoding="utf-8")
+        self.assertIn(".tc-thermo-flame-badge {", css)
+        outer = css.split(".tc-color-option {", 1)[1].split("}", 1)[0]
+        inner = css.split(".tc-color-dot {", 1)[1].split("}", 1)[0]
+        badge = css.split(".tc-thermo-flame-badge {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("width: 48px;", outer)
+        self.assertIn("height: 48px;", outer)
+        self.assertIn("width: 36px;", inner)
+        self.assertIn("height: 36px;", inner)
+        self.assertIn("border-radius: 50%;", badge)
+        self.assertIn("width: 18px;", badge)
+        self.assertIn("height: 18px;", badge)

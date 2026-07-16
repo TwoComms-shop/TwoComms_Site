@@ -125,7 +125,7 @@ namespace + the legacy og:price aliases for the older social parsers.
 {% block extra_css %}
 {% comment %}Above-fold (hero/gallery/buybox/fit-selector) — render-blocking is OK,
    нужен сразу для корректного LCP/CLS.{% endcomment %}
-<link rel="stylesheet" href="{% static 'css/product-detail.css' %}?v=20260715-fable5-v1">
+<link rel="stylesheet" href="{% static 'css/product-detail.css' %}?v=20260716-pdp-v2">
 <link rel="stylesheet" href="{% static 'css/product-media-fit.css' %}?v=20260428-media-fit-v1">
 {% comment %}
 Phase 19c (2026-05-10) — below-fold CSS lazy-load.
@@ -136,12 +136,12 @@ fold. <noscript> fallback для no-JS браузеров. Экономия: ~12
 CSS rules на mobile FCP/LCP window.
 {% endcomment %}
 <link rel="stylesheet" href="{% static 'css/category-seo-blocks.css' %}?v=20260510-phase15-v1" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="{% static 'css/product-seo-landing.css' %}?v=20260510-phase15-v1" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="{% static 'css/product-seo-landing.css' %}?v=20260716-pdp-v2" media="print" onload="this.media='all'">
 {# Phase 21 — review block (loaded async, below the fold). #}
 <link rel="stylesheet" href="{% static 'css/product-reviews.css' %}?v=20260511-pdp-layout-v8" media="print" onload="this.media='all'">
 <noscript>
   <link rel="stylesheet" href="{% static 'css/category-seo-blocks.css' %}?v=20260510-phase15-v1">
-  <link rel="stylesheet" href="{% static 'css/product-seo-landing.css' %}?v=20260510-phase15-v1">
+  <link rel="stylesheet" href="{% static 'css/product-seo-landing.css' %}?v=20260716-pdp-v2">
   <link rel="stylesheet" href="{% static 'css/product-reviews.css' %}?v=20260511-pdp-layout-v8">
 </noscript>
 {% endblock %}
@@ -183,6 +183,8 @@ CSS rules на mobile FCP/LCP window.
             </svg>
           </button>
         </div>
+        <div class="tc-gallery-dots" data-gallery-dots aria-label="{% trans 'Позиція у галереї' %}"></div>
+        <span class="visually-hidden" data-gallery-status role="status" aria-live="polite" aria-atomic="true">{% trans 'Фото 1 з 1' %}</span>
         {% if product_video %}
         <button type="button" class="tc-media-video-pill" data-video-open aria-label="{% trans 'Переглянути відео товару' %}">
           <span class="tc-media-video-pill__icon" aria-hidden="true">
@@ -312,15 +314,25 @@ CSS rules на mobile FCP/LCP window.
         {% endif %}
       </div>
 
-      <aside class="tc-variant-story{% if selected_variant_merchandising.is_thermo %} is-thermo{% endif %}{% if not selected_variant_merchandising.is_thermo and not selected_variant_merchandising.marketing_html %} is-hidden{% endif %}" data-pdp-variant-story data-pdp-material-story>
-        <span class="tc-variant-story__icon" data-pdp-variant-story-icon>
-          {% include 'fable5/_thermo_flame.html' with class_suffix=' tc-thermo-flame--story' %}
+      {% with story=selected_variant_merchandising.material_story %}
+      <aside class="tc-variant-story{% if story.kind == 'thermo' %} is-thermo{% endif %}{% if not story %} is-hidden{% endif %}" data-pdp-variant-story data-pdp-material-story data-material-story-kind="{{ story.kind|default:'' }}">
+        <span class="tc-variant-story__icon" data-pdp-variant-story-icon data-story-icon="{{ story.icon|default:'' }}">
+          {% if story.icon == 'thermo' %}
+            {% include 'fable5/_thermo_flame.html' with class_suffix=' tc-thermo-flame--story' %}
+          {% elif story.icon == 'fleece' %}
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5.5 12 3l5 2.5v13L12 21l-5-2.5v-13Zm5-2.5v18M7 7.5l5 2.5 5-2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          {% elif story.icon == 'cotton' %}
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v-7m0 2c-4.8 0-7-2.6-7-6.5 3.8-.4 6.2 1.2 7 4.5m0 2c4.8 0 7-2.6 7-6.5-3.8-.4-6.2 1.2-7 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          {% else %}
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          {% endif %}
         </span>
         <span class="tc-variant-story__copy">
-          <strong data-pdp-variant-story-title>{% if selected_variant_merchandising.is_thermo %}{% trans 'Термохромна тканина' %}{% else %}{% trans 'Особливість кольору' %}{% endif %}</strong>
-          <span data-pdp-variant-story-text>{% if selected_variant_merchandising.thermo_description %}{{ selected_variant_merchandising.thermo_description }}{% else %}{{ selected_variant_merchandising.marketing_html|default:"" }}{% endif %}</span>
+          <strong data-pdp-variant-story-title>{{ story.title|default:"" }}</strong>
+          <span data-pdp-variant-story-text>{{ story.copy|default:"" }}</span>
         </span>
       </aside>
+      {% endwith %}
 
       <div class="tc-selector-block">
         <div class="tc-selector-head">
@@ -352,6 +364,11 @@ CSS rules на mobile FCP/LCP window.
               </span>
             {% endfor %}
           </div>
+          <div class="tc-restock-empty" data-restock-empty-state{% if not all_product_sizes_unavailable %} hidden{% endif %}>
+            <span class="tc-restock-empty__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Zm-8 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="tc-restock-empty__copy"><strong>{% trans 'Наразі всі розміри розібрано' %}</strong><small>{% trans 'Оберіть потрібний розмір у заявці, і ми повідомимо про його появу.' %}</small></span>
+            <button type="button" class="tc-restock-empty__action" data-restock-trigger data-restock-primary data-restock-size="">{% trans 'Повідомити про наявність' %}</button>
+          </div>
         {% else %}
           <p class="tc-muted-copy mb-0">{% trans 'Розміри уточнюються менеджером після замовлення.' %}</p>
         {% endif %}
@@ -377,7 +394,7 @@ CSS rules на mobile FCP/LCP window.
                     style="--primary-color: {{ v.primary_hex }}; --secondary-color: {{ v.secondary_hex|default:v.primary_hex }};"
                     aria-label="{% trans 'Колір' %} {{ v.name|translate_color|default:forloop.counter }}">
                     <span class="tc-color-dot"></span>
-                    {% if v.is_thermo %}{% include 'fable5/_thermo_flame.html' with class_suffix=' tc-thermo-flame--swatch' %}{% endif %}
+                    {% if v.is_thermo %}<span class="tc-thermo-flame-badge">{% include 'fable5/_thermo_flame.html' with class_suffix=' tc-thermo-flame--swatch' %}</span>{% endif %}
                   </button>
                   <span>{{ v.name|translate_color|default:_('Колір') }}</span>
                 </span>
@@ -782,7 +799,7 @@ CSS rules на mobile FCP/LCP window.
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/product-detail.js' %}?v=20260716-configurator-v1" defer></script>
+<script src="{% static 'js/product-detail.js' %}?v=20260716-pdp-v2" defer></script>
 <script src="{% static 'js/product-media-fit.js' %}?v=20260428-media-fit-v1" defer></script>
 <script src="{% static 'js/product-variant-history.js' %}?v=20260509-phase8-v1" defer></script>
 {% endblock %}

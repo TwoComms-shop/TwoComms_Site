@@ -667,6 +667,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                         'has_price_adjustment': resolved['has_price_adjustment'],
                         'display_name': resolved['display_name'],
                         'marketing_html': resolved['marketing_html'],
+                        'material_story': resolved['material_story'],
                         'seo_title': resolved['seo_title'],
                         'seo_description': resolved['seo_description'],
                         'seo_keywords': resolved['seo_keywords'],
@@ -736,6 +737,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                             "has_price_adjustment": resolved["has_price_adjustment"],
                             "display_name": resolved["display_name"],
                             "marketing_html": resolved["marketing_html"],
+                            "material_story": resolved["material_story"],
                             "is_thermo": resolved["is_thermo"],
                             "thermo_description": resolved["thermo_description"],
                             "size_availability": {
@@ -783,6 +785,10 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             }
             for size in available_sizes
         ]
+
+    all_product_sizes_unavailable = bool(product_size_options) and not any(
+        option["is_available"] for option in product_size_options
+    )
 
     if not product_option_payload.get("axes"):
         try:
@@ -951,6 +957,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             'product_faq_items': product_faq_items,
             'available_sizes': available_sizes,
             'product_size_options': product_size_options,
+            'all_product_sizes_unavailable': all_product_sizes_unavailable,
             'product_option_context': product_option_payload,
             'size_display_labels': size_context["display_labels"],
             'resolved_size_guide': size_context["guide"],

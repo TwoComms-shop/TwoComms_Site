@@ -482,6 +482,7 @@ def get_detailed_color_variants(product) -> List[Dict[str, Any]]:
                 'size_rules': merchandising['size_rules'],
                 'display_name': merchandising['display_name'],
                 'marketing_html': merchandising['marketing_html'],
+                'material_story': merchandising['material_story'],
                 'seo_title': merchandising['seo_title'],
                 'seo_description': merchandising['seo_description'],
                 'seo_keywords': merchandising['seo_keywords'],

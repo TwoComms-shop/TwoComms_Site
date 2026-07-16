@@ -12,8 +12,40 @@ function resolveSwipe({ dx = 0, dy = 0 } = {}) {
   return dx < 0 ? 1 : -1;
 }
 
+function resolveMaterialStory(variant) {
+  const story = variant && variant.material_story;
+  if (!story || typeof story !== 'object') return null;
+  const normalized = {
+    kind: String(story.kind || '').trim(),
+    title: String(story.title || '').trim(),
+    copy: String(story.copy || '').trim(),
+    icon: String(story.icon || '').trim(),
+  };
+  return normalized.kind && normalized.title && normalized.copy ? normalized : null;
+}
+
+function galleryStatus(index, total) {
+  const count = Math.max(1, Number(total) || 1);
+  const position = Math.max(0, Math.min(count - 1, Number(index) || 0));
+  return `Фото ${position + 1} з ${count}`;
+}
+
+function focusTrapIndex({ currentIndex = -1, total = 0, shiftKey = false } = {}) {
+  const count = Math.max(0, Number(total) || 0);
+  if (!count) return -1;
+  const current = Number(currentIndex);
+  if (shiftKey) return current <= 0 ? count - 1 : current - 1;
+  return current < 0 || current >= count - 1 ? 0 : current + 1;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { buildOptionKey, resolveSwipe };
+  module.exports = {
+    buildOptionKey,
+    focusTrapIndex,
+    galleryStatus,
+    resolveMaterialStory,
+    resolveSwipe,
+  };
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
@@ -38,6 +70,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       offerIdMap: readOfferMap(container),
       mainImage: document.getElementById('mainProductImage'),
       thumbs: document.getElementById('productThumbnails'),
+      galleryDots: root.querySelector('[data-gallery-dots]'),
+      galleryStatus: root.querySelector('[data-gallery-status]'),
       video: readJsonScript('product-video', null),
       videoStage: document.getElementById('productVideoStage'),
       videoActive: false,
@@ -209,16 +243,51 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       button.appendChild(img);
       button.addEventListener('click', () => {
-        state.thumbs.querySelectorAll('.tc-thumbnail').forEach((item) => item.classList.remove('active'));
-        button.classList.add('active');
-        hideVideo(state);
-        state.galleryIndex = index;
-        setMainImage(state, image);
+        showGalleryIndex(state, index);
       });
       state.thumbs.appendChild(button);
     });
 
     appendVideoThumbnail(state);
+    renderGalleryDots(state, images);
+    syncGalleryPosition(state, images);
+  }
+
+  function renderGalleryDots(state, images) {
+    if (!state.galleryDots) return;
+    state.galleryDots.replaceChildren(...images.map((_, index) => {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'tc-gallery-dot';
+      dot.dataset.galleryDot = String(index);
+      dot.setAttribute('aria-label', galleryStatus(index, images.length));
+      dot.addEventListener('click', () => showGalleryIndex(state, index));
+      return dot;
+    }));
+    state.galleryDots.hidden = images.length <= 1;
+  }
+
+  function syncGalleryPosition(state, images) {
+    const currentImages = images || imagesForCurrentSelection(state);
+    const index = Math.max(0, Math.min(currentImages.length - 1, state.galleryIndex));
+    state.galleryIndex = Number.isFinite(index) ? index : 0;
+    if (state.thumbs) {
+      state.thumbs.querySelectorAll('[data-gallery-index]').forEach((thumb) => {
+        const active = Number(thumb.dataset.galleryIndex) === state.galleryIndex;
+        thumb.classList.toggle('active', active);
+        thumb.setAttribute('aria-current', active ? 'true' : 'false');
+      });
+    }
+    if (state.galleryDots) {
+      state.galleryDots.querySelectorAll('[data-gallery-dot]').forEach((dot) => {
+        const active = Number(dot.dataset.galleryDot) === state.galleryIndex;
+        dot.classList.toggle('is-active', active);
+        dot.setAttribute('aria-current', active ? 'true' : 'false');
+      });
+    }
+    if (state.galleryStatus) {
+      state.galleryStatus.textContent = galleryStatus(state.galleryIndex, currentImages.length);
+    }
   }
 
   function appendVideoThumbnail(state) {
@@ -268,10 +337,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     state.galleryIndex = nextIndex;
     hideVideo(state);
     setMainImage(state, images[nextIndex]);
+    syncGalleryPosition(state, images);
     if (state.thumbs) {
-      state.thumbs.querySelectorAll('.tc-thumbnail').forEach((thumb) => {
-        thumb.classList.toggle('active', Number(thumb.dataset.galleryIndex) === nextIndex);
-      });
       const active = state.thumbs.querySelector(`[data-gallery-index="${nextIndex}"]`);
       if (active) active.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'nearest', inline: 'center' });
     }
@@ -288,6 +355,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let horizontalIntent = false;
 
     const reset = () => {
+      const capturedPointer = pointerId;
+      if (
+        capturedPointer != null &&
+        typeof stage.hasPointerCapture === 'function' &&
+        stage.hasPointerCapture(capturedPointer) &&
+        typeof stage.releasePointerCapture === 'function'
+      ) {
+        stage.releasePointerCapture(capturedPointer);
+      }
       pointerId = null;
       horizontalIntent = false;
       stage.style.removeProperty('--tc-gallery-drag-x');
@@ -296,6 +372,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     stage.addEventListener('pointerdown', (event) => {
       if (event.pointerType === 'mouse' || event.button !== 0 || event.target.closest('button, a, iframe')) return;
       pointerId = event.pointerId;
+      if (typeof stage.setPointerCapture === 'function') {
+        stage.setPointerCapture(pointerId);
+      }
       startX = currentX = event.clientX;
       startY = currentY = event.clientY;
     }, { passive: true });
@@ -437,8 +516,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         state.container.dataset.currentVariant = button.getAttribute('data-variant') || 'default';
         applyCurrentVariantMerchandising(state);
         const images = imagesForCurrentSelection(state);
-        renderThumbnails(state, images);
         state.galleryIndex = 0;
+        renderThumbnails(state, images);
         hideVideo(state);
         if (images[0]) setMainImage(state, images[0]);
         const offerId = updateCurrentOfferId(state);
@@ -559,15 +638,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     const story = state.root.querySelector('[data-pdp-variant-story]');
     if (story) {
-      const storyText = String(variant.thermo_description || variant.marketing_html || '').trim();
-      story.classList.toggle('is-hidden', !storyText);
-      story.classList.toggle('is-thermo', Boolean(variant.is_thermo));
+      const materialStory = resolveMaterialStory(variant);
+      story.classList.toggle('is-hidden', !materialStory);
+      story.classList.toggle('is-thermo', Boolean(materialStory && materialStory.kind === 'thermo'));
+      story.dataset.materialStoryKind = materialStory ? materialStory.kind : '';
       const storyTitle = story.querySelector('[data-pdp-variant-story-title]');
       const storyCopy = story.querySelector('[data-pdp-variant-story-text]');
       const storyIcon = story.querySelector('[data-pdp-variant-story-icon]');
-      if (storyTitle) storyTitle.textContent = variant.is_thermo ? 'Термохромна тканина' : 'Особливість кольору';
-      if (storyCopy) storyCopy.textContent = storyText;
-      if (storyIcon) storyIcon.hidden = !variant.is_thermo;
+      if (storyTitle) storyTitle.textContent = materialStory ? materialStory.title : '';
+      if (storyCopy) storyCopy.textContent = materialStory ? materialStory.copy : '';
+      if (storyIcon) {
+        const icon = materialStory ? materialStory.icon : '';
+        storyIcon.dataset.storyIcon = icon;
+        storyIcon.hidden = !materialStory;
+        const icons = {
+          thermo: '<svg class="tc-thermo-flame tc-thermo-flame--story" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.14 2.25c.31 2.96-1.47 4.45-2.9 6.02-1.11 1.21-1.98 2.48-1.23 4.54.72-1.25 1.72-2.07 2.86-2.88-.27 2.09.59 3.21 1.66 4.16.78-1.04 1.18-2.23.81-3.91 2.3 1.66 3.66 3.76 3.66 6.07 0 3.06-2.55 5.5-6 5.5s-6-2.44-6-5.5c0-2.7 1.64-4.63 3.47-6.61 2.08-2.25 4.33-4.68 3.67-7.39Z" fill="currentColor"/></svg>',
+          fleece: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5.5 12 3l5 2.5v13L12 21l-5-2.5v-13Zm5-2.5v18M7 7.5l5 2.5 5-2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+          cotton: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v-7m0 2c-4.8 0-7-2.6-7-6.5 3.8-.4 6.2 1.2 7 4.5m0 2c4.8 0 7-2.6 7-6.5-3.8-.4-6.2 1.2-7 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+          spark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+        };
+        storyIcon.innerHTML = icons[icon] || icons.spark;
+      }
     }
 
     if (configuration.size_availability) {
@@ -590,6 +681,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       const label = state.root.querySelector(`label[for="${input.id}"]`);
       const restock = choice && choice.querySelector('[data-restock-trigger]');
       input.disabled = !enabled;
+      if (!enabled) input.checked = false;
       if (choice) choice.classList.toggle('is-unavailable', !enabled);
       if (label) {
         label.classList.toggle('is-unavailable', !enabled);
@@ -603,7 +695,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       selected = enabledInputs[0];
       selected.checked = true;
     }
+    updateSizeEmptyState(state, enabledInputs);
     updateCurrentOfferId(state);
+  }
+
+  function updateSizeEmptyState(state, enabledInputs) {
+    const emptyState = state.root.querySelector('[data-restock-empty-state]');
+    if (!emptyState) return;
+    emptyState.hidden = enabledInputs.length > 0;
   }
 
   function applyVariantSizeGuides(state, variant) {
@@ -705,6 +804,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       const label = state.root.querySelector(`label[for="${input.id}"]`);
       const restock = choice && choice.querySelector('[data-restock-trigger]');
       input.disabled = !enabled;
+      if (!enabled) input.checked = false;
       if (choice) choice.classList.toggle('is-unavailable', !enabled);
       if (label) {
         label.classList.toggle('is-unavailable', !enabled);
@@ -721,6 +821,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       selected = enabledInputs[0];
       selected.checked = true;
     }
+    updateSizeEmptyState(state, enabledInputs);
     updateCurrentOfferId(state);
   }
 
@@ -1460,6 +1561,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const telegramNote = modal.querySelector('[data-restock-telegram-note]');
     const status = modal.querySelector('[data-restock-status]');
     const submit = modal.querySelector('.tc-restock-submit');
+    const sizeSelect = modal.querySelector('[data-restock-size-select]');
+    const closeButton = modal.querySelector('.tc-restock-close');
     let channel = 'telegram';
     let size = '';
     let opener = null;
@@ -1499,17 +1602,52 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const label = card && card.querySelector('strong');
         return label ? label.textContent.trim() : input.value;
       }).filter(Boolean).join(' · ');
+    const restockSizes = () => Array.from(state.root.querySelectorAll('input[name="size"]'))
+      .filter((input) => input.disabled)
+      .map((input) => ({
+        value: String(input.value || '').toUpperCase(),
+        label: (state.root.querySelector(`label[for="${input.id}"]`) || {}).textContent || input.value,
+      }))
+      .filter((item) => item.value);
+    const renderSizeOptions = (requestedSize) => {
+      const items = restockSizes();
+      if (requestedSize && !items.some((item) => item.value === requestedSize)) {
+        items.unshift({ value: requestedSize, label: requestedSize });
+      }
+      sizeSelect.replaceChildren(...items.map((item) => {
+        const option = document.createElement('option');
+        option.value = item.value;
+        option.textContent = String(item.label || item.value).trim();
+        return option;
+      }));
+      size = requestedSize || (items[0] && items[0].value) || '';
+      sizeSelect.value = size;
+    };
+    const focusableElements = () => Array.from(dialog.querySelectorAll(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter((element) => !element.hidden && !element.closest('[hidden]'));
     const open = (button) => {
       opener = button;
-      size = String(button.dataset.restockSize || '').toUpperCase();
-      modal.querySelector('[data-restock-selected-size]').textContent = size;
-      modal.querySelector('[data-restock-selected-options]').textContent = optionSummary();
+      const requestedSize = String(button.dataset.restockSize || '').toUpperCase();
+      renderSizeOptions(requestedSize);
+      const activeColor = currentVariantData(state);
+      const visibleTitle = state.root.querySelector('[data-pdp-product-title]');
+      modal.querySelector('[data-restock-selected-product]').textContent = visibleTitle
+        ? visibleTitle.textContent.trim()
+        : state.container.dataset.productTitle || '';
+      modal.querySelector('[data-restock-selected-color]').textContent = activeColor
+        ? String(activeColor.name || '').trim()
+        : '—';
+      modal.querySelector('[data-restock-selected-options]').textContent = optionSummary() || '—';
       status.textContent = '';
       submit.disabled = false;
       modal.hidden = false;
       document.body.classList.add('tc-modal-open');
-      window.requestAnimationFrame(() => modal.classList.add('is-open'));
-      if (dialog) dialog.focus({ preventScroll: true });
+      window.requestAnimationFrame(() => {
+        modal.classList.add('is-open');
+        if (closeButton) closeButton.focus({ preventScroll: true });
+        else if (dialog) dialog.focus({ preventScroll: true });
+      });
     };
     const close = () => {
       modal.classList.remove('is-open');
@@ -1526,8 +1664,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     modal.querySelectorAll('[data-restock-channel]').forEach((button) => {
       button.addEventListener('click', () => setChannel(button.dataset.restockChannel));
     });
+    sizeSelect.addEventListener('change', () => {
+      size = String(sizeSelect.value || '').toUpperCase();
+    });
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && !modal.hidden) close();
+      if (modal.hidden) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = focusableElements();
+      if (!focusable.length) return;
+      event.preventDefault();
+      const targetIndex = focusTrapIndex({
+        currentIndex: focusable.indexOf(document.activeElement),
+        total: focusable.length,
+        shiftKey: event.shiftKey,
+      });
+      focusable[targetIndex].focus();
     });
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
