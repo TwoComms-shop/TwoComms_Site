@@ -81,6 +81,23 @@ class NovaPoshtaDirectoryServiceTests(SimpleTestCase):
         self.assertEqual(items[0]['warehouses'], 1473)
 
     @override_settings(NOVA_POSHTA_API_KEY='test-key')
+    def test_search_settlements_maps_common_latin_kyiv_aliases(self):
+        service = NovaPoshtaDirectoryService()
+        settlement = {'label': 'м. Київ, Київ', 'settlement_ref': 's', 'city_ref': 'c'}
+
+        with patch.object(
+            service,
+            '_search_settlements_uncached',
+            return_value=[settlement],
+        ) as mock_uncached:
+            for query in ('Kyiv', 'Kiev', '  KYIV  ', 'Київ'):
+                with self.subTest(query=query):
+                    self.assertEqual(service.search_settlements(query, limit=5), [settlement])
+
+        self.assertEqual(mock_uncached.call_count, 1)
+        self.assertEqual(mock_uncached.call_args.args, ('Київ', 5))
+
+    @override_settings(NOVA_POSHTA_API_KEY='test-key')
     def test_search_warehouses_uses_full_directory_for_text_query(self):
         service = NovaPoshtaDirectoryService()
 

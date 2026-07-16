@@ -36,6 +36,13 @@ class NovaPoshtaDirectoryService:
     WAREHOUSE_DIRECTORY_CACHE_TTL = 15 * 60
     WAREHOUSE_TYPES_CACHE_TTL = 24 * 60 * 60
     FAST_WAREHOUSE_PAGE_SIZE = 50
+    # Nova Poshta's legacy endpoint is Cyrillic-first. Keep common Latin
+    # spellings working for checkout users and crawlers without changing the
+    # canonical label returned in the response.
+    SETTLEMENT_QUERY_ALIASES = {
+        "kyiv": "Київ",
+        "kiev": "Київ",
+    }
 
     def __init__(self) -> None:
         self.api_key = getattr(settings, "NOVA_POSHTA_API_KEY", "") or ""
@@ -47,6 +54,7 @@ class NovaPoshtaDirectoryService:
 
     def search_settlements(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         normalized_query = " ".join(str(query or "").split())
+        api_query = self.SETTLEMENT_QUERY_ALIASES.get(normalized_query.casefold(), normalized_query)
         normalized_limit = max(1, min(int(limit or 10), 20))
         if len(normalized_query) < 2:
             return []
@@ -54,13 +62,13 @@ class NovaPoshtaDirectoryService:
         cache_key = self._cache_key(
             "settlements",
             {
-                "query": normalized_query.lower(),
+                "query": api_query.casefold(),
                 "limit": normalized_limit,
             },
         )
         return self._cached_lookup(
             cache_key,
-            lambda: self._search_settlements_uncached(normalized_query, normalized_limit),
+            lambda: self._search_settlements_uncached(api_query, normalized_limit),
             self.SETTLEMENT_CACHE_TTL,
         )
 
