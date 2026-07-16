@@ -125,6 +125,6 @@ Retain the original `RemoteDisconnected` sample and add sanitized current counts
 
 Use `[o] PARTIAL` after code/server verification while natural delivery observation is pending. Use `[x] FIXED/DONE` only after a real notification demonstrates truthful success/recovery and no remaining finding-specific defect.
 
-- [ ] **Step 3: Commit, push, deploy, and verify documentation**
+- [x] **Step 3: Commit, push, deploy, and verify documentation**
 
 Push/pull only the audit/plan documentation and verify every F-036 row agrees on status, evidence, duplicate risk, and residual observation.
