@@ -141,6 +141,70 @@ def _has_linkage_conflict(actions, *, order_ids, site_session, utm_session):
     return False
 
 
+def _durable_first_touch_is_compatible(payload, *, fbc, fbclid):
+    if not payload:
+        return True
+    if not isinstance(payload, dict):
+        return False
+
+    source = payload.get('utm_source')
+    medium = payload.get('utm_medium')
+    has_source = bool(str(source or '').strip())
+    has_medium = bool(str(medium or '').strip())
+    if has_source or has_medium:
+        if source != 'facebook' or medium != 'paid_social':
+            return False
+
+    if any(
+        str(payload.get(field) or '').strip()
+        for field in ('utm_campaign', 'utm_content', 'utm_term', 'gclid', 'ttclid')
+    ):
+        return False
+    for field, expected in (('fbc', fbc), ('fbclid', fbclid)):
+        value = payload.get(field)
+        if str(value or '').strip() and value != expected:
+            return False
+    return True
+
+
+def _has_durable_first_touch_conflict(
+    actions,
+    *,
+    order_ids,
+    site_session,
+    utm_session,
+    fbc,
+    fbclid,
+):
+    if site_session is not None and not _durable_first_touch_is_compatible(
+        site_session.first_touch_data,
+        fbc=fbc,
+        fbclid=fbclid,
+    ):
+        return True
+
+    site_id = getattr(site_session, 'pk', None)
+    utm_id = getattr(utm_session, 'pk', None)
+    for action in actions:
+        belongs_to_group = (
+            action.order_id in order_ids
+            or (site_id is not None and action.site_session_id == site_id)
+            or (utm_id is not None and action.utm_session_id == utm_id)
+        )
+        if not belongs_to_group:
+            continue
+        metadata = action.metadata if isinstance(action.metadata, dict) else {}
+        if 'first_touch' not in metadata:
+            continue
+        if not _durable_first_touch_is_compatible(
+            metadata['first_touch'],
+            fbc=fbc,
+            fbclid=fbclid,
+        ):
+            return True
+    return False
+
+
 def _collect_plan(*, lock=False):
     report = {field: 0 for field in REPORT_FIELDS}
     orders = _base_orders(lock=lock)
@@ -233,7 +297,7 @@ def _collect_plan(*, lock=False):
         Q(order_id__in=order_ids)
         | Q(site_session_id__in=site_ids)
         | Q(utm_session_id__in=utm_ids)
-    ).only('id', 'order_id', 'site_session', 'utm_session').order_by('pk')
+    ).only('id', 'order_id', 'site_session', 'utm_session', 'metadata').order_by('pk')
     if lock:
         action_queryset = action_queryset.select_for_update()
     actions = list(action_queryset)
@@ -282,6 +346,16 @@ def _collect_plan(*, lock=False):
                 order_ids=group_order_ids,
                 site_session=site_session,
                 utm_session=existing_utm,
+            )
+        if not conflict:
+            fbc, fbclid = next(iter(evidence))
+            conflict = _has_durable_first_touch_conflict(
+                actions,
+                order_ids=group_order_ids,
+                site_session=site_session,
+                utm_session=existing_utm,
+                fbc=fbc,
+                fbclid=fbclid,
             )
         if conflict:
             report['conflicting'] += len(group)

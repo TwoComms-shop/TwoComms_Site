@@ -492,6 +492,93 @@ class BackfillFbcOrderAttributionCommandTests(TestCase):
         self.assertEqual(action.site_session_id, other_site.pk)
         self.assertIsNone(action.utm_session_id)
 
+    def test_site_session_durable_first_touch_conflict_skips_whole_group(self):
+        key = 'g' * 32
+        created = timezone.now()
+        fbc = self._fbc(created - timedelta(days=1), 'meta-site-click')
+        SiteSession.objects.create(
+            session_key=key,
+            first_touch_data={
+                'utm_source': 'google',
+                'utm_medium': 'cpc',
+                'gclid': 'durable-google-click',
+            },
+        )
+        first = self._order(key=key, fbc=fbc, created=created)
+        second = self._order(key=key, fbc=fbc, created=created + timedelta(hours=1))
+
+        report = self._apply(groups=0, orders=0, conflicting=2)
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIn('conflicting=2', report)
+        self.assertIsNone(first.utm_session_id)
+        self.assertIsNone(second.utm_session_id)
+        self.assertFalse(UTMSession.objects.exists())
+
+    def test_user_action_durable_first_touch_conflict_skips_whole_group(self):
+        key = 'h' * 32
+        created = timezone.now()
+        fbc = self._fbc(created - timedelta(days=1), 'meta-action-click')
+        first = self._order(key=key, fbc=fbc, created=created)
+        second = self._order(key=key, fbc=fbc, created=created + timedelta(hours=1))
+        action = UserAction.objects.create(
+            action_type='purchase',
+            order_id=first.pk,
+            metadata={
+                'first_touch': {
+                    'utm_source': 'newsletter',
+                    'utm_medium': 'email',
+                    'utm_campaign': 'durable-campaign',
+                },
+            },
+        )
+
+        report = self._apply(groups=0, orders=0, conflicting=2)
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        action.refresh_from_db()
+        self.assertIn('conflicting=2', report)
+        self.assertIsNone(first.utm_session_id)
+        self.assertIsNone(second.utm_session_id)
+        self.assertEqual(action.metadata['first_touch']['utm_source'], 'newsletter')
+        self.assertFalse(UTMSession.objects.exists())
+
+    def test_matching_meta_durable_first_touch_remains_compatible(self):
+        key = 'i' * 32
+        created = timezone.now()
+        fbc = self._fbc(created - timedelta(days=1), 'matching-meta-click')
+        site = SiteSession.objects.create(
+            session_key=key,
+            first_touch_data={
+                'utm_source': 'facebook',
+                'utm_medium': 'paid_social',
+                'fbc': fbc,
+                'fbclid': 'matching-meta-click',
+            },
+        )
+        order = self._order(key=key, fbc=fbc, created=created)
+        UserAction.objects.create(
+            action_type='purchase',
+            order_id=order.pk,
+            site_session=site,
+            metadata={
+                'first_touch': {
+                    'utm_source': 'facebook',
+                    'utm_medium': 'paid_social',
+                    'fbc': fbc,
+                    'fbclid': 'matching-meta-click',
+                },
+            },
+        )
+
+        report = self._apply(groups=1, orders=1)
+
+        order.refresh_from_db()
+        self.assertIn('linkable_groups=1', report)
+        self.assertIsNotNone(order.utm_session_id)
+
     def test_site_session_utm_with_different_key_is_conflicting(self):
         key = '5' * 32
         order = self._fresh_order(key=key, click_id='same-evidence')

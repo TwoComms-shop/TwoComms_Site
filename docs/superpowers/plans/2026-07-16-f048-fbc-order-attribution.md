@@ -88,6 +88,8 @@ GREEN evidence (2026-07-16): the focused command suite passed 13/13 after an add
 
 Reviewer hardening evidence (2026-07-16): four Important follow-up regressions first failed against `d368825d`. Invalid/stale/future/mismatched evidence did not poison otherwise-valid peers sharing its key, an out-of-scope Order did not block reuse of its UTMSession, and reuse overwrote `first_seen/last_seen`; the new create/reuse CLI guards were initially absent. After the fail-closed changes, the focused command suite passed 17/17 and the combined attribution suite passed 64/64. Create-to-reuse drift now aborts before mutation, any existing Order link blocks UTM reuse, reused timestamps remain unchanged, and residual rows poison every valid key they expose without losing their residual bucket counts.
 
+Quality-review evidence (2026-07-16): two new whole-group regressions first failed because durable attribution in `SiteSession.first_touch_data` and `UserAction.metadata['first_touch']` was ignored, leaving both conflicting two-Order groups linkable. The command now reads (but never logs or writes) those snapshots and permits only empty evidence or canonical `facebook/paid_social` with the same FBC/fbclid. Any explicit campaign/content/term, alternate source/medium, Google/TikTok click ID, or mismatched Meta evidence makes the entire key group conflicting. The focused suite passed 20/20 and the combined attribution suite passed 67/67 after the change.
+
 ### Task 4: Ship, back up, apply, and reconcile docs
 
 **Files:**
