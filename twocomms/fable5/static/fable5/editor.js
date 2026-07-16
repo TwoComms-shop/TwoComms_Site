@@ -155,7 +155,9 @@
 
 	const state = {
 		product: boot.product || null,
-		variants: (boot.product && boot.product.variants) || [],
+		variants: ((boot.product && boot.product.variants) || []).map((variant) => Object.assign(
+			{}, variant, { _dirty: false, _sizesDirty: false }
+		)),
 		faqs: ((boot.product && boot.product.faqs) || []).map((f) => Object.assign({}, f)),
 		fits: null,
 		files: { main_image: null, home_card_image: null },
@@ -190,6 +192,28 @@
 		if (mobile) mobile.textContent = value ? "Є незбережені зміни" : "Зміни збережено";
 		$$('.f5-rail-save').forEach((dot) => dot.classList.toggle("is-dirty", value));
 		updateReadiness();
+	}
+
+	function markVariantDirty(card, variant, sizesDirty) {
+		if (!variant) return;
+		variant._dirty = true;
+		if (card) card.dataset.dirty = "true";
+		if (sizesDirty) {
+			variant._sizesDirty = true;
+			if (card) card.dataset.sizesDirty = "true";
+		}
+		setDirty(true);
+	}
+
+	function clearVariantDirty(card, variant) {
+		if (variant) {
+			variant._dirty = false;
+			variant._sizesDirty = false;
+		}
+		if (card) {
+			card.dataset.dirty = "false";
+			card.dataset.sizesDirty = "false";
+		}
 	}
 
 	function setSaveVisual(mode) {
@@ -420,10 +444,14 @@
 	async function saveAll(silent) {
 		if (state.saving) return state.product;
 		const payload = collectPayload();
-		const pendingVariantDrafts = $$(".f5-variant").map((card, index) => {
-			const variant = state.variants[index];
-			return variant ? { index, data: collectVariantData(card, variant) } : null;
-		}).filter(Boolean);
+		const pendingVariantDrafts = $$(".f5-variant")
+			.map((card, index) => ({ card, index, variant: state.variants[index] }))
+			.filter(({ card, variant }) => (
+				variant && (!variant.id || variant._dirty || card.dataset.dirty === "true")
+			))
+			.map(({ card, index, variant }) => ({
+				card, index, data: collectVariantData(card, variant),
+			}));
 		$$("#f-stock [data-variant-index][data-dirty=\"true\"]").forEach((block) => {
 			const index = parseInt(block.dataset.variantIndex, 10);
 			const draft = pendingVariantDrafts.find((item) => item.index === index);
@@ -448,27 +476,32 @@
 			if (state.files.home_card_image) fd.append("home_card_image", state.files.home_card_image);
 			const resp = await postForm(urls.product_save, fd);
 			const wasNew = !state.product;
-			const savedVariants = [];
 			for (const draft of pendingVariantDrafts) {
 				draft.data.product_id = resp.product.id;
 				const variantResp = await postJSON(urls.variant_save, draft.data);
 				// Persist the returned ID immediately. If a later variant request fails,
 				// retrying the global save updates this variant instead of duplicating it.
+				clearVariantDirty(draft.card, variantResp.variant);
 				state.variants[draft.index] = variantResp.variant;
 				draft.data.id = variantResp.variant.id;
 				if (variantResp.variant.is_default) {
-					savedVariants.forEach((variant) => { variant.is_default = false; });
+					state.variants.forEach((variant, index) => {
+						if (index !== draft.index) variant.is_default = false;
+					});
 				}
-				savedVariants.push(variantResp.variant);
+				const stockBlock = $(`#f-stock [data-variant-index="${draft.index}"]`);
+				if (stockBlock) stockBlock.dataset.dirty = "false";
 			}
 			for (const draft of pendingFeedDrafts) {
 				draft.payload.product_id = resp.product.id;
 				await persistFeedPayload(draft.payload);
 				draft.card.dataset.dirty = "false";
 			}
-			if (pendingVariantDrafts.length) resp.product.variants = savedVariants;
+			if (pendingVariantDrafts.length) resp.product.variants = state.variants;
 			state.product = resp.product;
-			state.variants = resp.product.variants || [];
+			state.variants = (resp.product.variants || []).map((variant) => Object.assign(
+				{}, variant, { _dirty: false, _sizesDirty: false }
+			));
 			state.faqs = (resp.product.faqs || []).map((f) => Object.assign({}, f));
 			state.fits = fitDefaults();
 			state.selectedPrintIds = new Set((resp.product.print_ids || []).map(String));
@@ -831,7 +864,7 @@
 			details: { display_name: "", price_delta: 0, price_delta_reason: "", marketing_html: "", youtube_url: "", seo_title: "", seo_description: "", seo_keywords: "" },
 			fits: state.fits.map((f) => ({ fit_code: f.code, is_enabled: true, reason: "" })),
 			sizes: [], size_grids: [], blank_links: [], combinations: [], faqs: [],
-			_open: true,
+			_open: true, _dirty: true, _sizesDirty: true,
 		};
 	}
 
@@ -1013,7 +1046,7 @@
 			? `<div class="f5-dropzone" data-role="variant-drop"><svg class="f5-icon"><use href="#f5-i-upload"/></svg><span><strong>Додайте фото цього кольору</strong><small>Drag & drop · нові кадри додаються в кінець</small></span><button type="button" class="f5-btn f5-btn--ghost" data-act="variant-upload-btn">Обрати файли</button><input type="file" accept="image/*" multiple hidden data-role="variant-upload"></div><div class="f5-gallery" data-role="variant-gallery">${(variant.images || []).map((img, i) => thumbHtml(img, "variant", variant.id, i)).join("") || '<p class="f5-hint">Фото цього кольору ще немає.</p>'}</div>`
 			: '<div class="f5-fallback-preview"><svg class="f5-icon"><use href="#f5-i-warning"/></svg><span>Збережіть колір один раз — після цього відкриється завантаження та оптимізація фото.</span></div>';
 		const variantFaqs = (variant.faqs || []).map(faqHtml).join("");
-		return `<article id="f5-variant-panel-${index}" class="f5-variant${selected ? " is-selected" : ""}" data-index="${index}" role="tabpanel" aria-labelledby="f5-variant-tab-${index}"${selected ? "" : " hidden"}${variant.id ? ` data-id="${variant.id}"` : ""}>
+		return `<article id="f5-variant-panel-${index}" class="f5-variant${selected ? " is-selected" : ""}" data-index="${index}" data-dirty="${variant._dirty ? "true" : "false"}" data-sizes-dirty="${variant._sizesDirty ? "true" : "false"}" role="tabpanel" aria-labelledby="f5-variant-tab-${index}"${selected ? "" : " hidden"}${variant.id ? ` data-id="${variant.id}"` : ""}>
 			<header class="f5-variant__head">
 				${dotHtml(variant.color, 42)}
 				<span class="f5-variant__identity"><span class="f5-variant__name">${esc(d.display_name || variant.color.name || "Новий колір")}</span><span class="f5-variant__meta">${chips}</span></span>
@@ -1109,7 +1142,7 @@
 		});
 		const thermoEnabled = checked("[data-f=is_thermo]");
 		const priceDelta = intOrNull(val("[data-f=price_delta]")) || 0;
-		return {
+		const data = {
 			id: variant.id,
 			product_id: state.product.id,
 			color: {
@@ -1135,12 +1168,14 @@
 				seo_keywords: val("[data-f=seo_keywords]"),
 			},
 			fits: fits,
-			sizes: sizes,
 			size_grids: sizeGrids,
 			blank_links: blankLinks,
 			combinations: combinations,
 			faqs: faqs,
 		};
+		const includeSizes = !variant.id || card.dataset.sizesDirty === "true" || variant._sizesDirty;
+		if (includeSizes) data.sizes = sizes;
+		return data;
 	}
 	async function saveVariant(card, index) {
 		await ensureProduct();
@@ -1153,6 +1188,7 @@
 		try {
 			const resp = await postJSON(urls.variant_save, data);
 			resp.variant._open = true;
+			clearVariantDirty(card, resp.variant);
 			state.variants[index] = resp.variant;
 			if (resp.variant.is_default) {
 				state.variants.forEach((v, i) => { if (i !== index) v.is_default = false; });
@@ -1344,7 +1380,7 @@
 			$$(".f5-color-option", card).forEach((el) => el.classList.toggle("is-selected", el === actEl));
 			updateDotPreview(card, variant);
 			variant.color.id = picked.id;
-			setDirty(true);
+			markVariantDirty(card, variant, false);
 			return;
 		}
 		if (act === "variant-up") { moveVariant(index, -1); return; }
@@ -1358,7 +1394,7 @@
 		}
 		if (act === "variant-faq-add") {
 			$("[data-role=variant-faqs]", card).insertAdjacentHTML("beforeend", faqHtml({ is_active: true }));
-			setDirty(true);
+			markVariantDirty(card, variant, false);
 			return;
 		}
 	});
@@ -1381,8 +1417,10 @@
 
 	$("#f-variants").addEventListener("input", (e) => {
 		const card = e.target.closest(".f5-variant");
-		if (!card || !e.target.dataset.f) return;
+		if (!card || (!e.target.dataset.f && !e.target.dataset.c)) return;
 		const variant = state.variants[parseInt(card.dataset.index, 10)];
+		const sizesDirty = e.target.dataset.f === "stock" || e.target.dataset.f === "fit_enabled";
+		markVariantDirty(card, variant, sizesDirty);
 		refreshVariantPreview(card, variant);
 	});
 
@@ -1397,6 +1435,7 @@
 		}
 		const f = e.target.dataset.f;
 		if (!f) return;
+		markVariantDirty(card, variant, f === "stock" || f === "fit_enabled");
 		if (f === "color_pick") {
 			$("[data-f=color_hex]", card).value = e.target.value;
 			if (variant) variant.color.id = null; // зміна HEX = інший/новий колір
@@ -1471,14 +1510,29 @@
 			handleThumbAction(btn);
 		} else if (act === "faq-del") {
 			const node = btn.closest(".f5-faq");
-			if (node && confirm("Видалити це питання FAQ?")) { node.remove(); setDirty(true); }
+			if (node && confirm("Видалити це питання FAQ?")) {
+				const card = node.closest(".f5-variant");
+				const variant = card && state.variants[parseInt(card.dataset.index, 10)];
+				node.remove();
+				if (card) markVariantDirty(card, variant, false);
+				else setDirty(true);
+			}
 		} else if (act === "size-toggle") {
 			const cell = btn.closest(".f5-size-cell");
 			cell.classList.toggle("is-off");
 			btn.setAttribute("aria-pressed", cell.classList.contains("is-off") ? "false" : "true");
+			const variantCard = btn.closest(".f5-variant");
+			if (variantCard) {
+				const index = parseInt(variantCard.dataset.index, 10);
+				markVariantDirty(variantCard, state.variants[index], true);
+			}
 			const stockBlock = btn.closest("#f-stock [data-variant-index]");
-			if (stockBlock) stockBlock.dataset.dirty = "true";
-			setDirty(true);
+			if (stockBlock) {
+				stockBlock.dataset.dirty = "true";
+				const index = parseInt(stockBlock.dataset.variantIndex, 10);
+				const card = $(`.f5-variant[data-index="${index}"]`);
+				markVariantDirty(card, state.variants[index], true);
+			}
 		}
 	});
 
@@ -1530,7 +1584,12 @@
 
 	$("#f-stock").addEventListener("input", (e) => {
 		const block = e.target.closest("[data-variant-index]");
-		if (block) block.dataset.dirty = "true";
+		if (block) {
+			block.dataset.dirty = "true";
+			const index = parseInt(block.dataset.variantIndex, 10);
+			const card = $(`.f5-variant[data-index="${index}"]`);
+			markVariantDirty(card, state.variants[index], true);
+		}
 	});
 
 	$("#f-stock").addEventListener("click", async (e) => {
@@ -1547,6 +1606,9 @@
 				color: { id: variant.color.id }, sizes: sizes,
 			});
 			resp.variant._open = variant._open;
+			const card = $(`.f5-variant[data-index="${index}"]`);
+			clearVariantDirty(card, resp.variant);
+			block.dataset.dirty = "false";
 			state.variants[index] = resp.variant;
 			renderVariants();
 			toast("Склад збережено");
@@ -1875,6 +1937,7 @@
 		state.variants.push(emptyVariant());
 		state.selectedVariantIndex = state.variants.length - 1;
 		renderVariants();
+		setDirty(true);
 		const cards = $$(".f5-variant");
 		if (cards.length) cards[cards.length - 1].scrollIntoView({ behavior: "smooth", block: "start" });
 	});

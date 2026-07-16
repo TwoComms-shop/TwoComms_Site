@@ -47,6 +47,15 @@ class Fable5EditorAccessTests(TestCase):
         self.assertNotIn('<script id="injected">', content)
         self.assertIn(r"\u003C/script\u003E", content)
 
+    def test_editor_uses_fresh_dirty_tracking_javascript_asset(self):
+        self.client.force_login(self.staff)
+
+        content = self.client.get(
+            reverse("fable5_product_edit", args=[self.product.pk])
+        ).content.decode()
+
+        self.assertIn("fable5/editor.js?v=20260716-dirty-v1", content)
+
     def test_staff_can_create_product_with_unified_save_endpoint(self):
         self.client.force_login(self.staff)
 
@@ -171,7 +180,7 @@ class Fable5EditorAccessTests(TestCase):
 
         self.assertIn('"ё": "yo"', javascript)
 
-    def test_global_save_persists_variant_drafts_before_refreshing_state(self):
+    def test_global_save_persists_only_dirty_or_unsaved_variant_drafts(self):
         javascript = (
             Path(__file__).resolve().parents[1]
             / "static"
@@ -181,11 +190,26 @@ class Fable5EditorAccessTests(TestCase):
 
         self.assertIn("pendingVariantDrafts", javascript)
         self.assertIn("for (const draft of pendingVariantDrafts)", javascript)
-        self.assertIn("index, data: collectVariantData", javascript)
+        self.assertIn("!variant.id || variant._dirty || card.dataset.dirty", javascript)
+        self.assertIn('data-dirty="${variant._dirty ? "true" : "false"}"', javascript)
         self.assertIn(
             "state.variants[draft.index] = variantResp.variant",
             javascript,
         )
+
+    def test_variant_payload_only_includes_sizes_after_inventory_changes(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('card.dataset.sizesDirty === "true"', javascript)
+        self.assertIn("variant._sizesDirty", javascript)
+        self.assertIn("if (includeSizes) data.sizes = sizes", javascript)
+        self.assertIn('card.dataset.sizesDirty = "true"', javascript)
+        self.assertIn("variant._sizesDirty = true", javascript)
 
     def test_global_save_includes_dirty_stock_and_feed_drafts(self):
         javascript = (

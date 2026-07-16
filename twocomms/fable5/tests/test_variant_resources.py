@@ -14,6 +14,7 @@ from fable5.models import (
     VariantCombinationProfile,
     VariantCombinationProfileI18n,
     VariantOptionSizeGrid,
+    VariantSizeRule,
 )
 
 
@@ -191,6 +192,54 @@ class VariantResourceEditorApiTests(VariantResourceResolutionTests):
         self.assertEqual(profile.i18n.get(lang="uk").seo_title, "Thermo oversize SEO")
         payload = response.json()["variant"]["combinations"][0]
         self.assertEqual(payload["content"]["display_name"], "Thermo oversize")
+
+    def test_variant_save_without_sizes_preserves_existing_inventory_rules(self):
+        VariantSizeRule.objects.bulk_create([
+            VariantSizeRule(
+                variant=self.variant,
+                fit_code="",
+                size="M",
+                is_enabled=True,
+                stock=7,
+                note="shared stock",
+            ),
+            VariantSizeRule(
+                variant=self.variant,
+                fit_code="",
+                size="XXL",
+                is_enabled=False,
+                stock=0,
+                note="disabled",
+            ),
+        ])
+        before = list(
+            VariantSizeRule.objects.filter(variant=self.variant)
+            .order_by("fit_code", "size")
+            .values("fit_code", "size", "is_enabled", "stock", "note")
+        )
+
+        response = self.client.post(
+            reverse("fable5_api_variant_save"),
+            data=json.dumps({
+                "product_id": self.product.pk,
+                "id": self.variant.pk,
+                "color": {"id": self.variant.color_id},
+                "price_override": 1350,
+                "details": {
+                    "display_name": "Thermo green updated",
+                    "seo_title": "Thermo green SEO",
+                },
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        after = list(
+            VariantSizeRule.objects.filter(variant=self.variant)
+            .order_by("fit_code", "size")
+            .values("fit_code", "size", "is_enabled", "stock", "note")
+        )
+        self.assertEqual(after, before)
 
     def test_variant_save_preserves_unsubmitted_combination_translations(self):
         profile = VariantCombinationProfile.objects.create(
