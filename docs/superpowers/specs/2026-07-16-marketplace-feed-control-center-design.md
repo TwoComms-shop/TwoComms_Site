@@ -147,4 +147,3 @@ Controls use native selects, toggles, numeric inputs, checkboxes, and image swat
 3. Run `manage.py check`, rebuild compressed assets, and restart Passenger.
 4. Verify all dynamic feeds and snapshots, including legacy Google v2/v3 hash parity.
 5. Verify `/admin-panel/` redirects anonymous users and renders orders first for authenticated staff.
-

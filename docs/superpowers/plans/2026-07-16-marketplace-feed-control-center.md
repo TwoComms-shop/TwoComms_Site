@@ -385,4 +385,3 @@ Run: `git diff --check && git status --short && git diff --stat`
 - [ ] **Step 5: Push `main`, deploy through the provided SSH host, migrate, force-regenerate, check, compress, and restart Passenger**
 
 - [ ] **Step 6: Verify live canonical endpoints, custom feed endpoint, snapshot timestamps/counts, Google v2/v3 hash equality, home page, health endpoint, and admin auth behavior**
-
