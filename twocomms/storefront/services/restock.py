@@ -443,7 +443,9 @@ def recover_stale_sending(
     )
     if not candidate_ids:
         return 0
-    bounded = RestockSubscription.objects.filter(pk__in=candidate_ids)
+    # Reapply the stale-claim predicate at update time. A sender may have
+    # finalized or refreshed a claim after the bounded ID selection.
+    bounded = queryset.filter(pk__in=candidate_ids)
     terminal = bounded.filter(
         notification_attempts__gte=MAX_NOTIFICATION_ATTEMPTS
     ).update(

@@ -7,7 +7,9 @@ from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import connection
 from django.test import RequestFactory, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from fable5.models import (
@@ -513,6 +515,31 @@ class RestockDeliveryTests(TestCase):
             statuses.append(row.status)
         self.assertEqual(statuses.count(RestockSubscription.Status.NOTIFIED), 1)
         self.assertEqual(statuses.count(RestockSubscription.Status.SENDING), 2)
+
+    def test_stale_recovery_update_rechecks_status_and_cutoff(self):
+        from storefront.services.restock import recover_stale_sending
+
+        self.subscription(
+            status=RestockSubscription.Status.SENDING,
+            delivery_token="44444444-4444-4444-4444-444444444444",
+            notification_attempts=1,
+            last_attempt_at=timezone.now() - timedelta(minutes=16),
+            next_attempt_at=None,
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(recover_stale_sending(limit=1), 1)
+
+        updates = [
+            query["sql"].lower()
+            for query in queries.captured_queries
+            if query["sql"].lstrip().upper().startswith("UPDATE")
+        ]
+        self.assertGreaterEqual(len(updates), 1)
+        for sql in updates:
+            self.assertIn("status", sql)
+            self.assertIn("sending", sql)
+            self.assertIn("last_attempt_at", sql)
 
     def test_sending_status_participates_in_subscription_deduplication(self):
         from storefront.services.restock import create_subscription
