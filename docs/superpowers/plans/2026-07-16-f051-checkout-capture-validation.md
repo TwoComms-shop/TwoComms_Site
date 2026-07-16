@@ -4,7 +4,7 @@
 
 **Goal:** Make `/checkout/capture/` reject empty or unusable abandoned-checkout data with a truthful HTTP 400 response and no database/session mutation.
 
-**Architecture:** Keep the existing same-origin guard, 30/min rate limit and debounced JSON/form clients. Parse JSON fail-closed as an object, retain form-encoded compatibility, and require at least one actionable recovery channel (a normalized Ukrainian phone or valid email); a cart or name alone is not recoverable. For authenticated name-bearing captures, a validated account email may supply the recovery channel, but an empty payload may not. Treat `converted=True` as a terminal state: lock the row, leave it unchanged and never reopen it from a late autosave. Return stable machine-readable error codes while active-capture upserts remain compatible.
+**Architecture:** Keep the existing same-origin guard, 30/min rate limit and debounced JSON/form clients. Parse JSON fail-closed as an object, retain form-encoded compatibility, and require at least one actionable recovery channel (a normalized Ukrainian phone or valid email); a cart or name alone is not recoverable. For authenticated name-bearing captures, a validated account email may supply the recovery channel, but an empty payload may not. Treat `converted=True` and a real COD/Monobank order tied to the current session as terminal states: lock the capture row, leave an existing terminal row unchanged, convert only an active row, and never create a recovery row from a late autosave. Return stable machine-readable error codes while active-capture upserts remain compatible.
 
 **Tech Stack:** Django 5.2, `JsonResponse`, Django validators/TestCase, MariaDB production verification.
 
@@ -84,6 +84,28 @@ are now terminal and byte-for-byte unchanged by accepted late autosaves.
 Final follow-up verification passed all 105 focused-plus-neighbor tests and the
 4 existing checkout phone-normalizer tests; Django check, scoped compileall,
 `git diff --check` and the scoped secret/SSH fingerprint scan were clean.
+
+**F-075 conversion-race dependency (2026-07-16):** Quality re-review found that
+COD conversion was update-only and Monobank invoice creation had no capture
+conversion write, so a first late beacon could create a new active capture after
+the order. The new focused RED ran 31 tests with 4 expected failures: COD and
+Monobank completed-order sessions without captures, converted-only handling of
+an active completed-order capture, and Monobank invoice-success conversion. The
+Monobank API-failure control already passed and kept its capture active while
+the orphan order was deleted. Focused GREEN is 31/31.
+
+The endpoint does not scan the unindexed `Order.session_key`. It reads the
+indexed order PK from server-written session evidence (`last_order_submit` for
+COD or `monobank_pending_order_id` after a valid invoice), then verifies that
+the selected order has the current session key. Under the existing capture row
+lock, completed-order requests either make a narrow `converted=True` update or
+return without creating a row. COD keeps its existing success-boundary update;
+Monobank now performs the same narrow transition only after invoice ID/payment
+fields are saved. Invoice API failure leaves the capture active for retry.
+Final dependency verification passed the expanded prior combined suite at
+108/108, the full Monobank/Nova checkout module at 23/23 (including the same
+4 phone-normalizer cases), and the view-export regression at 1/1. Django check,
+scoped compileall, `git diff --check` and the scoped secret scan were clean.
 
 ### Task 3: Review, ship and reconcile audit docs
 

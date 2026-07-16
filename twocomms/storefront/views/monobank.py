@@ -38,6 +38,7 @@ from orders.models import Order as OrderModel, OrderItem
 from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_delivery_selection
 from orders.facebook_conversions_service import get_facebook_conversions_service
 from accounts.payment import normalize_pay_type
+from storefront.services.checkout_capture import mark_checkout_capture_converted
 from ..utm_tracking import (
     ensure_order_purchase_action,
     ensure_request_session_key,
@@ -1086,6 +1087,14 @@ def monobank_create_invoice(request):
         order.payment_payload = payment_payload
         order.payment_status = 'checking'
         order.save(update_fields=['payment_invoice_id', 'payment_payload', 'payment_status'])
+        try:
+            mark_checkout_capture_converted(order.session_key)
+        except Exception:
+            monobank_logger.warning(
+                'Failed to mark checkout capture converted for order %s',
+                order.pk,
+                exc_info=True,
+            )
         record_lead(request, order.id, order.order_number, float(payment_amount))
 
         monobank_logger.info(f'Order {order.order_number}: Saved tracking context: external_id={external_source}, fbp={bool(fbp_cookie)}, fbc={bool(fbc_cookie)}')

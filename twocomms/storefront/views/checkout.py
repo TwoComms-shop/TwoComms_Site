@@ -18,6 +18,7 @@ from productcolors.models import ProductColorVariant
 from accounts.models import UserProfile
 from accounts.payment import normalize_pay_type
 from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
+from storefront.services.checkout_capture import mark_checkout_capture_converted
 from .utils import (
     get_validated_cart_from_session,
     clear_cart,
@@ -312,11 +313,7 @@ def create_order(request):
 
             # Брошенная корзина «спасена» — больше не дёргаем покупателя.
             try:
-                from orders.models import CheckoutCapture
-                if request.session.session_key:
-                    CheckoutCapture.objects.filter(
-                        session_key=request.session.session_key
-                    ).update(converted=True)
+                mark_checkout_capture_converted(request.session.session_key)
             except Exception:
                 pass
 

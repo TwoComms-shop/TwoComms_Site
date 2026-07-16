@@ -15,9 +15,10 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django_ratelimit.decorators import ratelimit
 
-from orders.models import CheckoutCapture
+from orders.models import CheckoutCapture, Order
 from orders.nova_poshta_documents import normalize_checkout_phone
 
+from ..services.checkout_capture import mark_checkout_capture_converted
 from .utils import calculate_cart_total, get_validated_cart_from_session
 
 _MAX_LEN = {'full_name': 255, 'phone': 32, 'email': 254}
@@ -39,6 +40,34 @@ def _validated_email(value):
     except ValidationError:
         return ''
     return email
+
+
+def _completed_order_ids_from_session(session):
+    order_ids = []
+    last_submit = session.get('last_order_submit')
+    candidates = [
+        last_submit.get('order_id') if isinstance(last_submit, dict) else None,
+        session.get('monobank_pending_order_id'),
+    ]
+    for candidate in candidates:
+        try:
+            order_id = int(candidate)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if order_id > 0 and order_id not in order_ids:
+            order_ids.append(order_id)
+    return order_ids
+
+
+def _session_has_completed_order(request, session_key):
+    order_ids = _completed_order_ids_from_session(request.session)
+    if not order_ids:
+        return False
+    # Order.session_key is not indexed; constrain by indexed primary keys first.
+    return Order.objects.filter(
+        pk__in=order_ids,
+        session_key=session_key,
+    ).exists()
 
 
 # W3-11 (NEW-510): публичный PII-приёмник — точечный rate-limit.
@@ -99,6 +128,10 @@ def capture_checkout(request):
         locked = CheckoutCapture.objects.select_for_update()
         capture = locked.filter(session_key=session_key).first()
         if capture and capture.converted:
+            return JsonResponse({'ok': True})
+        if _session_has_completed_order(request, session_key):
+            if capture:
+                mark_checkout_capture_converted(session_key)
             return JsonResponse({'ok': True})
 
         cart = get_validated_cart_from_session(request)

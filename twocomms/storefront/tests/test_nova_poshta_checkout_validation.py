@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from accounts.models import UserProfile
-from orders.models import Order
+from orders.models import CheckoutCapture, Order
 from orders.nova_poshta_documents import normalize_checkout_phone, normalize_phone, normalize_phone_for_np
 from orders.nova_poshta_checkout import build_city_choice_token, build_warehouse_choice_token
 from fable5.models import ProductOptionProfile, VariantDetails
@@ -481,6 +481,97 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
                 'error': 'Вкажіть коректний український номер телефону. Можна без +380.',
             },
         )
+
+    def test_monobank_invoice_success_marks_existing_capture_converted(self):
+        self._set_cart()
+        delivery = self._delivery_payload()
+        capture = CheckoutCapture.objects.create(
+            session_key=self.client.session.session_key,
+            full_name="Captured Buyer",
+            phone="+380991234567",
+        )
+        facebook_service = Mock()
+
+        with (
+            patch(
+                "storefront.views.monobank._monobank_api_request",
+                return_value={
+                    "invoiceId": "mono-capture-success",
+                    "pageUrl": "https://pay.monobank.test/capture-success",
+                },
+            ),
+            patch("storefront.views.monobank.record_initiate_checkout"),
+            patch("storefront.views.monobank.record_lead"),
+            patch("storefront.views.monobank.link_order_to_utm"),
+            patch(
+                "storefront.views.monobank.get_facebook_conversions_service",
+                return_value=facebook_service,
+            ),
+            patch(
+                "orders.telegram_notifications.TelegramNotifier.send_new_order_notification"
+            ),
+        ):
+            response = self.client.post(
+                self.monobank_create_invoice_url,
+                data=json.dumps(
+                    {
+                        "full_name": "Guest User",
+                        "phone": "+380991234567",
+                        "np_city_token": delivery["np_city_token"],
+                        "np_warehouse_token": delivery["np_warehouse_token"],
+                        "pay_type": "online_full",
+                    }
+                ),
+                content_type="application/json",
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+                secure=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        capture.refresh_from_db()
+        self.assertTrue(capture.converted)
+
+    def test_monobank_invoice_api_failure_keeps_existing_capture_active(self):
+        from storefront.views.monobank import MonobankAPIError
+
+        self._set_cart()
+        delivery = self._delivery_payload()
+        capture = CheckoutCapture.objects.create(
+            session_key=self.client.session.session_key,
+            full_name="Captured Buyer",
+            phone="+380991234567",
+        )
+
+        with (
+            patch(
+                "storefront.views.monobank._monobank_api_request",
+                side_effect=MonobankAPIError("invoice failed"),
+            ),
+            patch("storefront.views.monobank.record_initiate_checkout"),
+            patch("storefront.views.monobank.link_order_to_utm"),
+        ):
+            response = self.client.post(
+                self.monobank_create_invoice_url,
+                data=json.dumps(
+                    {
+                        "full_name": "Guest User",
+                        "phone": "+380991234567",
+                        "np_city_token": delivery["np_city_token"],
+                        "np_warehouse_token": delivery["np_warehouse_token"],
+                        "pay_type": "online_full",
+                    }
+                ),
+                content_type="application/json",
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+                secure=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["success"])
+        self.assertFalse(Order.objects.exists())
+        capture.refresh_from_db()
+        self.assertFalse(capture.converted)
 
     def test_guest_prepay_persists_new_session_key_and_tracking(self):
         """F-068/F-073: characterize the current prepay writer with a truly

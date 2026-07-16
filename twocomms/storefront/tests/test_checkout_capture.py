@@ -9,7 +9,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from orders.models import CheckoutCapture
+from orders.models import CheckoutCapture, Order
 from storefront.models import Category, Product
 
 
@@ -276,6 +276,95 @@ class CheckoutCaptureTests(TestCase):
         self.assertEqual(response.json(), {"ok": True})
         after = CheckoutCapture.objects.filter(pk=capture.pk).values().get()
         self.assertEqual(after, before)
+
+    def test_completed_cod_order_without_capture_blocks_late_beacon(self):
+        session = self.client.session
+        session["marker"] = "keep"
+        session.save()
+        order = Order.objects.create(
+            session_key=session.session_key,
+            full_name="Completed COD Buyer",
+            phone="+380501112233",
+            city="Kyiv",
+            np_office="Branch 1",
+            pay_type="cod",
+            total_sum=Decimal("250"),
+        )
+        session["last_order_submit"] = {
+            "fingerprint": "completed-cod",
+            "ts": 1,
+            "order_id": order.pk,
+        }
+        session.save()
+
+        response = self.post_json({"phone": "+380672222222"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        self.assertEqual(CheckoutCapture.objects.count(), 0)
+
+    def test_completed_monobank_order_without_capture_blocks_late_beacon(self):
+        session = self.client.session
+        session["marker"] = "keep"
+        session.save()
+        order = Order.objects.create(
+            session_key=session.session_key,
+            full_name="Completed Mono Buyer",
+            phone="+380501112233",
+            city="Kyiv",
+            np_office="Branch 1",
+            pay_type="online_full",
+            payment_provider="monobank_pay",
+            payment_invoice_id="invoice-completed",
+            total_sum=Decimal("250"),
+        )
+        session["monobank_pending_order_id"] = order.pk
+        session.save()
+
+        response = self.post_json({"phone": "+380672222222"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        self.assertEqual(CheckoutCapture.objects.count(), 0)
+
+    def test_completed_order_marks_active_capture_converted_only(self):
+        session = self.client.session
+        session["marker"] = "keep"
+        session.save()
+        order = Order.objects.create(
+            session_key=session.session_key,
+            full_name="Completed Buyer",
+            phone="+380501112233",
+            city="Kyiv",
+            np_office="Branch 1",
+            pay_type="cod",
+            total_sum=Decimal("250"),
+        )
+        session["last_order_submit"] = {"order_id": order.pk}
+        session.save()
+        capture = CheckoutCapture.objects.create(
+            session_key=session.session_key,
+            full_name="Original Capture",
+            phone="+380501111111",
+            email="original@example.com",
+            cart_snapshot={"original": {"product_id": 987, "qty": 3}},
+            cart_total=Decimal("456.78"),
+            converted=False,
+        )
+        before = CheckoutCapture.objects.filter(pk=capture.pk).values().get()
+
+        response = self.post_json(
+            {
+                "full_name": "Late Beacon",
+                "phone": "+380672222222",
+                "email": "late@example.com",
+            }
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        after = CheckoutCapture.objects.filter(pk=capture.pk).values().get()
+        self.assertEqual(after, {**before, "converted": True})
 
     def test_valid_capture_attaches_validated_cart_and_total(self):
         product = self.create_product()
