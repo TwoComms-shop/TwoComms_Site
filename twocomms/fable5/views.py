@@ -54,6 +54,7 @@ from .models import (
     FeedProfile,
     GarmentFlow,
     ProductFitNote,
+    ProductOptionAxisPresentation,
     ProductOptionProfile,
     VariantBlankLink,
     VariantCombinationProfile,
@@ -396,6 +397,10 @@ def _product_payload(product):
             }
             for profile in product.fable5_option_profiles.all().order_by("option_key")
         ],
+        "option_presentations": {
+            row.axis_code: row.presentation
+            for row in product.fable5_axis_presentations.all()
+        },
         "print_ids": list(
             product.warehouse_default_prints.order_by("id").values_list("id", flat=True)
         ),
@@ -651,6 +656,23 @@ def api_product_save(request):
                         item.get("price_delta_reason") or ""
                     )[:255],
                 },
+            )
+
+    if "option_presentations" in payload:
+        valid_presentations = {
+            value for value, _label in ProductOptionAxisPresentation.Presentation.choices
+        }
+        for raw_axis, raw_presentation in (payload.get("option_presentations") or {}).items():
+            axis_code = str(raw_axis or "").strip().lower()
+            presentation = str(raw_presentation or "auto").strip().lower()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,49}", axis_code):
+                continue
+            if presentation not in valid_presentations:
+                presentation = ProductOptionAxisPresentation.Presentation.AUTO
+            ProductOptionAxisPresentation.objects.update_or_create(
+                product=product,
+                axis_code=axis_code,
+                defaults={"presentation": presentation},
             )
 
     if "print_ids" in payload:

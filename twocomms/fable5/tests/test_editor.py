@@ -55,7 +55,7 @@ class Fable5EditorAccessTests(TestCase):
         ).content.decode()
 
         self.assertIn("fable5/editor-inventory.js?v=20260716-inventory-v3", content)
-        self.assertIn("fable5/editor.js?v=20260716-print-preview-v8", content)
+        self.assertIn("fable5/editor.js?v=20260716-presentation-v9", content)
 
     def test_staff_can_create_product_with_unified_save_endpoint(self):
         self.client.force_login(self.staff)
@@ -186,7 +186,7 @@ class Fable5EditorAccessTests(TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(".f5-price-fields .f5-field { min-width: 0; }", css)
-        self.assertIn("fable5/editor.css' %}?v=20260716-print-preview-v2", template)
+        self.assertIn("fable5/editor.css' %}?v=20260716-presentation-v3", template)
 
     def test_javascript_transliteration_matches_server_for_russian_yo(self):
         javascript = (

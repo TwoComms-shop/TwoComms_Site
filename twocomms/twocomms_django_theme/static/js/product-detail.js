@@ -24,6 +24,25 @@ function resolveMaterialStory(variant) {
   return normalized.kind && normalized.title && normalized.copy ? normalized : null;
 }
 
+function resolvePriceBreakdown(raw) {
+  const value = raw && typeof raw === 'object' ? raw : {};
+  const number = (input, fallback = 0) => {
+    const parsed = Number.parseFloat(String(input == null ? '' : input).replace(',', '.'));
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  const materialDelta = number(value.material_delta);
+  const optionDelta = number(value.option_delta);
+  const hasOverride = value.combination_override !== null && value.combination_override !== undefined && value.combination_override !== '';
+  const combinationOverride = hasOverride ? number(value.combination_override) : null;
+  const fallbackTotal = combinationOverride == null ? materialDelta + optionDelta : combinationOverride;
+  return {
+    materialDelta,
+    optionDelta,
+    combinationOverride,
+    totalDelta: number(value.total_delta, fallbackTotal),
+  };
+}
+
 function resolveRestockSummary({
   baseProductTitle = '',
   fallbackProductTitle = '',
@@ -169,6 +188,7 @@ if (typeof module !== 'undefined' && module.exports) {
     resolveGalleryStep,
     resolveMaterialStory,
     resolveOptionSelection,
+    resolvePriceBreakdown,
     resolveRestockSummary,
     resolveSwipe,
   };
@@ -681,6 +701,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
   function applyVariantOptionRules(state, optionContext, configurations, configuratorError) {
     const axes = (optionContext && optionContext.axes) || [];
+    const syncCard = (card, choice, enabled) => {
+      if (!card) return;
+      card.classList.toggle('is-disabled', !enabled);
+      card.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+      const reason = String(choice && choice.reason || '').trim();
+      if (reason) card.setAttribute('title', reason);
+      else card.removeAttribute('title');
+      const price = card.querySelector('[data-option-price]');
+      if (price) {
+        const delta = Number(choice && choice.option_price_delta || 0);
+        price.textContent = delta ? `${delta > 0 ? '+' : ''}${formatVariantPrice(delta)} грн` : '';
+        price.hidden = !enabled || !delta;
+      }
+      const status = card.querySelector('[data-option-status]');
+      if (status) {
+        status.textContent = reason || 'Недоступно для вибраної комбінації';
+        status.hidden = enabled;
+      }
+      const check = card.querySelector('[data-option-check]');
+      if (check) check.hidden = !enabled;
+    };
     axes.forEach((axis) => {
       const choices = axis.choices || [];
       const inputs = Array.from(state.root.querySelectorAll(`[data-product-option-axis="${axis.code}"]`));
@@ -689,18 +730,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const enabled = Boolean(choice && choice.is_enabled !== false);
         const card = state.root.querySelector(`label[for="${input.id}"]`);
         input.disabled = !enabled;
-        if (card) {
-          card.classList.toggle('is-disabled', !enabled);
-          card.setAttribute('aria-disabled', enabled ? 'false' : 'true');
-          if (choice && choice.reason) card.setAttribute('title', choice.reason);
-          else card.removeAttribute('title');
-          const price = card.querySelector('[data-option-price]');
-          if (price && choice) {
-            const delta = Number(choice.price_delta || 0);
-            price.textContent = delta ? `+${formatVariantPrice(delta)} грн` : '';
-            price.hidden = !delta;
-          }
-        }
+        syncCard(card, choice, enabled);
       });
     });
     const requestedValues = selectedOptionValues(state);
@@ -728,9 +758,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         input.checked = enabled && resolution.selectedValues[axis.code] === input.value;
         const card = state.root.querySelector(`label[for="${input.id}"]`);
         if (card) {
-          card.classList.toggle('is-disabled', !enabled);
           card.classList.toggle('active', input.checked);
-          card.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+          syncCard(card, choice, enabled);
         }
       });
     });
@@ -775,6 +804,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const activeFit = optionValues.fit || String(state.container.dataset.currentFit || '').toLowerCase();
     const fitOverrides = baseVariant.merchandising_by_fit || {};
     const variant = Object.assign({}, baseVariant, fitOverrides[activeFit] || {}, configuration || {});
+    const breakdown = resolvePriceBreakdown(variant.price_breakdown);
 
     if (variant.seo_title) document.title = String(variant.seo_title);
     const metaDescription = document.querySelector('meta[name="description"]');
@@ -836,6 +866,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           spark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
         };
         storyIcon.innerHTML = icons[icon] || icons.spark;
+      }
+      const materialPrice = story.querySelector('[data-pdp-material-price]');
+      if (materialPrice) {
+        const materialDelta = breakdown.materialDelta;
+        materialPrice.hidden = !materialDelta;
+        const materialLabel = materialPrice.querySelector('[data-pdp-material-price-label]');
+        const materialValue = materialPrice.querySelector('[data-pdp-material-price-value]');
+        if (materialLabel) {
+          materialLabel.textContent = materialStory && materialStory.kind === 'thermo'
+            ? 'Термотканина'
+            : 'Матеріал';
+        }
+        if (materialValue) {
+          materialValue.textContent = materialDelta
+            ? `${materialDelta > 0 ? '+' : ''}${formatVariantPrice(materialDelta)} грн`
+            : '';
+        }
       }
     }
 

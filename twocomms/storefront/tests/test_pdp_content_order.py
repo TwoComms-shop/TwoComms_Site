@@ -153,3 +153,21 @@ class ProductDetailContentOrderTests(TestCase):
         self.assertIn("border-radius: 50%;", badge)
         self.assertIn("width: 18px;", badge)
         self.assertIn("height: 18px;", badge)
+
+    def test_configurator_uses_compact_columns_and_normal_flow_status(self):
+        css = Path(
+            settings.BASE_DIR,
+            "twocomms_django_theme/static/css/product-detail.css",
+        ).read_text(encoding="utf-8")
+
+        configurator = css.split(".tc-configurator-grid {", 1)[1].split("}", 1)[0]
+        fit_grid = css.split(".tc-option-grid--fit {", 1)[1].split("}", 1)[0]
+        status = css.split(".tc-option-card__status {", 1)[1].split("}", 1)[0]
+        fixed_switch = css.split(".tc-fixed-lining {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("minmax(145px, 0.6fr)", configurator)
+        self.assertIn("minmax(0, 1.4fr)", configurator)
+        self.assertIn("repeat(2, minmax(0, 1fr))", fit_grid)
+        self.assertIn("position: static;", status)
+        self.assertIn("white-space: normal;", status)
+        self.assertIn("min-height: 44px;", fixed_switch)

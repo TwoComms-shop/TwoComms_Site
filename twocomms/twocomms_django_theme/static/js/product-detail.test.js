@@ -7,6 +7,7 @@ const {
   galleryStatus,
   MODAL_FOCUSABLE_SELECTOR,
   resolveOptionSelection,
+  resolvePriceBreakdown,
   resolveGalleryStep,
   resolveMaterialStory,
   resolveRestockSummary,
@@ -144,5 +145,29 @@ test('restock summary keeps immutable product title separate from current varian
   }), {
     productTitle: 'Худі Tokyo Drift',
     colorName: 'Чорний',
+  });
+});
+
+test('price breakdown normalizes additive components and exact override', () => {
+  assert.deepEqual(resolvePriceBreakdown?.({
+    material_delta: '400',
+    option_delta: 200,
+    total_delta: '600',
+  }), {
+    materialDelta: 400,
+    optionDelta: 200,
+    combinationOverride: null,
+    totalDelta: 600,
+  });
+  assert.deepEqual(resolvePriceBreakdown?.({
+    material_delta: 400,
+    option_delta: 200,
+    combination_override: '290',
+    total_delta: '290',
+  }), {
+    materialDelta: 400,
+    optionDelta: 200,
+    combinationOverride: 290,
+    totalDelta: 290,
   });
 });

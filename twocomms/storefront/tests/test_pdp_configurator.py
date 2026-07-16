@@ -3,6 +3,7 @@ from unittest.mock import patch
 from django.core.cache import cache, caches
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.apps import apps
 from django.test import TestCase
 from django.urls import reverse
 
@@ -12,6 +13,7 @@ from fable5.models import (
     GarmentFlowCategory,
     ProductOptionProfile,
     VariantCombinationProfile,
+    VariantDetails,
     VariantFitRule,
     VariantSizeRule,
 )
@@ -172,12 +174,74 @@ class ProductConfiguratorRenderTests(TestCase):
         self.assertNotEqual(story["copy"], self.product.description)
         self.assertIn('data-material-story-kind="fleece"', html)
 
+    def test_payload_separates_material_and_option_price_ownership(self):
+        VariantDetails.objects.create(
+            variant=self.variant,
+            price_delta=400,
+            price_delta_reason="Термохромна тканина",
+        )
+
+        response = self.client.get(self.url)
+        axes = {
+            axis["code"]: axis
+            for axis in response.context["product_option_context"]["axes"]
+        }
+        configurations = response.context["color_variants"][0]["configurations"]
+        selected = configurations["fit=oversize;lining=fleece"]
+
+        self.assertTrue(axes["lining"]["is_fixed"])
+        self.assertEqual(axes["lining"]["fixed_choice"]["code"], "fleece")
+        self.assertEqual(axes["lining"]["fixed_choice"]["option_price_delta"], 150)
+        self.assertTrue(all(choice["option_price_delta"] == 0 for choice in axes["fit"]["choices"]))
+        self.assertEqual(selected["price_breakdown"]["material_delta"], 400)
+        self.assertEqual(selected["price_breakdown"]["option_delta"], 150)
+        self.assertEqual(selected["price_breakdown"]["total_delta"], 550)
+        self.assertEqual(response.context["color_variants"][0]["price_breakdown"]["material_delta"], 400)
+
+    def test_material_delta_renders_once_and_not_as_fit_price(self):
+        VariantDetails.objects.create(
+            variant=self.variant,
+            price_delta=400,
+            price_delta_reason="Термохромна тканина",
+        )
+
+        html = self.client.get(self.url).content.decode()
+
+        self.assertIn("data-pdp-material-price", html)
+        self.assertEqual(html.count("+400 грн"), 1)
+        self.assertIn("Термотканина", html)
+
+    def test_fixed_fleece_renders_as_one_locked_story_switch(self):
+        html = self.client.get(self.url).content.decode()
+
+        self.assertEqual(html.count('data-fixed-option="lining"'), 1)
+        self.assertIn('role="switch"', html)
+        self.assertIn('aria-checked="true"', html)
+        self.assertIn('aria-disabled="true"', html)
+        self.assertIn("Ця модель доступна тільки з флісом", html)
+        self.assertEqual(html.count('data-product-option-axis="lining"'), 2)
+
+    def test_cards_presentation_retains_both_lining_cards(self):
+        presentation_model = apps.get_model("fable5", "ProductOptionAxisPresentation")
+        presentation_model.objects.create(
+            product=self.product,
+            axis_code="lining",
+            presentation="cards",
+        )
+
+        html = self.client.get(self.url).content.decode()
+
+        self.assertNotIn('data-fixed-option="lining"', html)
+        self.assertIn('data-option-axis-block="lining"', html)
+        self.assertIn('data-product-option-choice="fleece"', html)
+        self.assertIn('data-product-option-choice="no_fleece"', html)
+
     def test_versioned_pdp_assets_use_one_fresh_release_key(self):
         html = self.client.get(self.url).content.decode()
 
-        self.assertIn("css/product-detail.css?v=20260716-pdp-v2", html)
+        self.assertIn("css/product-detail.css?v=20260716-compact-v3", html)
         self.assertIn("css/product-seo-landing.css?v=20260716-pdp-v2", html)
-        self.assertIn("js/product-detail.js?v=20260716-pdp-v4", html)
+        self.assertIn("js/product-detail.js?v=20260716-compact-v5", html)
         self.assertIn("js/telegram-verify.js?v=20260716-pdp-v2", html)
         self.assertNotIn("20260715-fable5-v1", html)
         self.assertNotIn("20260716-configurator-v1", html)

@@ -60,6 +60,16 @@ When a `lining` axis has exactly one enabled choice:
 
 If a second lining choice becomes enabled later, the fixed state automatically disappears and the normal option selector returns.
 
+### Administrator-selectable presentation
+
+Fable5 stores a per-product presentation preference for the `lining` axis:
+
+- `auto`: use the compact locked switch when exactly one choice is enabled; otherwise use cards.
+- `switch`: prefer the compact switch, but safely fall back to cards if more than one choice is enabled.
+- `cards`: always retain the full existing card presentation, including unavailable choices.
+
+The Fable5 `Посадки й розміри` workspace exposes `Компактний switch / Картки` as a segmented control. This setting changes presentation only; it never changes price, availability, stock, or the selected option value.
+
 ## Material story price
 
 The story receives a compact price badge only when the material/color delta is non-zero. For the production thermochromic variant it reads `Термотканина +400 грн`. Changing fit does not change this badge. The badge is visually secondary to the final product price and does not duplicate a fit surcharge.

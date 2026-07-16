@@ -99,6 +99,33 @@ Render `data-pdp-material-price` inside the existing material story. For fixed a
 
 Run the configurator test module and expect all tests to pass.
 
+### Task 3A: Per-product fleece presentation setting
+
+**Files:**
+- Modify: `twocomms/fable5/models.py`
+- Create: `twocomms/fable5/migrations/0007_product_option_axis_presentation.py`
+- Modify: `twocomms/fable5/views.py`
+- Modify: `twocomms/fable5/static/fable5/editor.js`
+- Modify: `twocomms/fable5/static/fable5/editor.css`
+- Test: `twocomms/fable5/tests/test_editor_generic_options.py`
+- Test: `twocomms/fable5/tests/test_generic_options.py`
+
+- [ ] **Step 1: Write failing model, save, and context tests**
+
+Assert that the default `auto` presentation fixes a single enabled lining choice, `cards` retains the card layout, editor bootstrap exposes the selected mode, and save persists a changed mode without altering option profiles.
+
+- [ ] **Step 2: Run RED**
+
+Run the generic option and editor option test modules and expect missing model/payload assertions to fail.
+
+- [ ] **Step 3: Implement setting and editor control**
+
+Add an internal Fable5 model keyed by `(product, axis_code)` with `db_constraint=False` on Product and modes `auto`, `switch`, and `cards`. Add a segmented `Компактний switch / Картки` control for the lining axis, serialize it in bootstrap/save payloads, and resolve public fixed state from this preference with safe multi-choice fallback.
+
+- [ ] **Step 4: Run GREEN**
+
+Run both modules plus `makemigrations --check --dry-run`; expect all tests to pass and no pending migrations.
+
 ### Task 4: Dynamic updates and compact layout
 
 **Files:**

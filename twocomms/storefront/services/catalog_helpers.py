@@ -245,6 +245,7 @@ def _load_product_color_variant_queryset(product_ids: Iterable[int]):
                 'product__fable5_fit_notes',
                 'product__fable5_option_profiles',
                 'product__fable5_option_profiles__i18n',
+                'product__fable5_axis_presentations',
             )
             .filter(product_id__in=product_ids)
             .order_by('product_id', 'order', 'id')
@@ -323,6 +324,7 @@ def build_color_preview_map(products: Iterable[Any]) -> Dict[int, List[Dict[str,
                 'thermo_note': merchandising['thermo_note'],
                 'final_price': merchandising['final_price'],
                 'price_difference': merchandising['price_difference'],
+                'price_breakdown': merchandising['price_breakdown'],
                 'price_reason': merchandising['price_delta_reason'],
                 'has_price_adjustment': merchandising['has_price_adjustment'],
                 'fit_rules': merchandising['fit_rules'],

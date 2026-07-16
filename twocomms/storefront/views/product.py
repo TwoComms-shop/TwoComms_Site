@@ -323,6 +323,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                 'product__fable5_fit_notes',
                 'product__fable5_option_profiles',
                 'product__fable5_option_profiles__i18n',
+                'product__fable5_axis_presentations',
             )
             .order_by('order', 'id')
         )
@@ -677,6 +678,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                     by_fit[option.code] = {
                         'final_price': resolved['final_price'],
                         'price_difference': resolved['price_difference'],
+                        'price_breakdown': resolved['price_breakdown'],
                         'price_reason': resolved['price_delta_reason'],
                         'has_price_adjustment': resolved['has_price_adjustment'],
                         'display_name': resolved['display_name'],
@@ -769,6 +771,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                             "is_available": True,
                             "final_price": resolved["final_price"],
                             "price_difference": resolved["price_difference"],
+                            "price_breakdown": resolved["price_breakdown"],
                             "price_reason": resolved["price_delta_reason"],
                             "has_price_adjustment": resolved["has_price_adjustment"],
                             "display_name": resolved["display_name"],

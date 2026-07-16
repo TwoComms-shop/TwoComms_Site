@@ -403,6 +403,39 @@ class ProductOptionProfile(models.Model):
         return f"p{self.product_id}:{self.option_key}"
 
 
+class ProductOptionAxisPresentation(models.Model):
+    class Presentation(models.TextChoices):
+        AUTO = "auto", "Автоматично"
+        SWITCH = "switch", "Компактний switch"
+        CARDS = "cards", "Картки"
+
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="fable5_axis_presentations",
+        db_constraint=False,
+    )
+    axis_code = models.SlugField(max_length=50)
+    presentation = models.CharField(
+        max_length=12,
+        choices=Presentation.choices,
+        default=Presentation.AUTO,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("product_id", "axis_code")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("product", "axis_code"),
+                name="f5_unique_product_axis_presentation",
+            )
+        ]
+
+    def __str__(self):
+        return f"p{self.product_id}:{self.axis_code}:{self.presentation}"
+
+
 class ProductOptionProfileI18n(LocalizedMerchandisingContent):
     profile = models.ForeignKey(
         ProductOptionProfile,

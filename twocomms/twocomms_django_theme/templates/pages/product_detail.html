@@ -125,7 +125,7 @@ namespace + the legacy og:price aliases for the older social parsers.
 {% block extra_css %}
 {% comment %}Above-fold (hero/gallery/buybox/fit-selector) — render-blocking is OK,
    нужен сразу для корректного LCP/CLS.{% endcomment %}
-<link rel="stylesheet" href="{% static 'css/product-detail.css' %}?v=20260716-pdp-v2">
+<link rel="stylesheet" href="{% static 'css/product-detail.css' %}?v=20260716-compact-v3">
 <link rel="stylesheet" href="{% static 'css/product-media-fit.css' %}?v=20260428-media-fit-v1">
 {% comment %}
 Phase 19c (2026-05-10) — below-fold CSS lazy-load.
@@ -331,6 +331,25 @@ CSS rules на mobile FCP/LCP window.
           <strong data-pdp-variant-story-title>{{ story.title|default:"" }}</strong>
           <span data-pdp-variant-story-text>{{ story.copy|default:"" }}</span>
         </span>
+        <span class="tc-variant-story__meta">
+          {% with material_delta=selected_variant_merchandising.price_breakdown.material_delta %}
+          <span class="tc-material-price" data-pdp-material-price{% if not material_delta %} hidden{% endif %}>
+            <small data-pdp-material-price-label>{% if story.kind == 'thermo' %}{% trans 'Термотканина' %}{% else %}{% trans 'Матеріал' %}{% endif %}</small>
+            <strong data-pdp-material-price-value>{% if material_delta %}{% if material_delta > 0 %}+{% endif %}{{ material_delta }} {% trans 'грн' %}{% endif %}</strong>
+          </span>
+          {% endwith %}
+          {% with fixed_lining=product_option_context.fixed_axes.lining %}
+          {% if fixed_lining %}
+          <span class="tc-fixed-lining" data-fixed-option="lining" role="switch" aria-checked="true" aria-disabled="true" title="{% trans 'Для цієї моделі утеплення вже включено' %}">
+            <span class="tc-fixed-lining__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M7 5.5 12 3l5 2.5v13L12 21l-5-2.5v-13Zm5-2.5v18M7 7.5l5 2.5 5-2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+            </span>
+            <span class="tc-fixed-lining__copy"><strong>{{ fixed_lining.label }}</strong><small>{% trans 'Ця модель доступна тільки з флісом' %}</small></span>
+            <span class="tc-fixed-lining__switch" aria-hidden="true"><i></i></span>
+          </span>
+          {% endif %}
+          {% endwith %}
+        </span>
       </aside>
       {% endwith %}
 
@@ -385,7 +404,7 @@ CSS rules на mobile FCP/LCP window.
       </div>
 
       <div class="tc-configurator-grid">
-        <div class="tc-selector-block">
+        <div class="tc-selector-block tc-selector-block--color">
           <div class="tc-selector-head"><span>{% trans 'Колір' %}</span></div>
           {% if color_variants %}
             <div class="tc-color-row" id="color-picker" aria-label="{% trans 'Колір' %}">
@@ -415,7 +434,14 @@ CSS rules на mobile FCP/LCP window.
           {% endif %}
         </div>
         {% for axis in product_option_context.axes %}
-          <div class="tc-selector-block tc-option-axis" data-option-axis-block="{{ axis.code }}"{% if axis.code == 'fit' %} data-fit-selector{% endif %}>
+          {% if axis.is_fixed %}
+          <div class="tc-fixed-option-values" hidden aria-hidden="true">
+            {% for option in axis.choices %}
+            <input type="radio" class="btn-check" name="product_option_{{ axis.code }}" id="option-{{ axis.code }}-{{ option.code }}" value="{{ option.code }}" data-product-option-axis="{{ axis.code }}" data-product-option-choice="{{ option.code }}" autocomplete="off" {% if axis.selected_value == option.code and option.is_enabled %}checked{% endif %} {% if not option.is_enabled %}disabled{% endif %}>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="tc-selector-block tc-option-axis tc-option-axis--{{ axis.code }}" data-option-axis-block="{{ axis.code }}"{% if axis.code == 'fit' %} data-fit-selector{% endif %}>
             <div class="tc-selector-head"><span>{{ axis.label }}</span></div>
             <div class="tc-option-grid{% if axis.code == 'fit' %} tc-option-grid--fit{% endif %}" role="radiogroup" aria-label="{{ axis.label }}">
               {% for option in axis.choices %}
@@ -431,8 +457,11 @@ CSS rules на mobile FCP/LCP window.
                     {% endif %}
                   </span>
                   <span class="tc-option-card__copy"><strong>{{ option.label }}</strong>{% if option.description %}<small>{{ option.description }}</small>{% endif %}</span>
-                  <span class="tc-option-card__price" data-option-price{% if not option.price_delta %} hidden{% endif %}>{% if option.price_delta %}+{{ option.price_delta }} грн{% endif %}</span>
-                  {% if not option.is_enabled %}<span class="tc-option-card__status">{{ option.reason|default:_('Незабаром') }}</span>{% else %}<span class="tc-option-card__check" aria-hidden="true"></span>{% endif %}
+                  <span class="tc-option-card__meta">
+                    <span class="tc-option-card__price" data-option-price{% if not option.option_price_delta or not option.is_enabled %} hidden{% endif %}>{% if option.option_price_delta and option.is_enabled %}{% if option.option_price_delta > 0 %}+{% endif %}{{ option.option_price_delta }} грн{% endif %}</span>
+                    <span class="tc-option-card__check" data-option-check aria-hidden="true"{% if not option.is_enabled %} hidden{% endif %}></span>
+                  </span>
+                  <span class="tc-option-card__status" data-option-status{% if option.is_enabled %} hidden{% endif %}>{{ option.reason|default:_('Незабаром') }}</span>
                 </label>
               {% endfor %}
             </div>
@@ -443,6 +472,7 @@ CSS rules на mobile FCP/LCP window.
               </button>
             {% endif %}
           </div>
+          {% endif %}
         {% endfor %}
       </div>
 
@@ -809,7 +839,7 @@ CSS rules на mobile FCP/LCP window.
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/product-detail.js' %}?v=20260716-pdp-v4" defer></script>
+<script src="{% static 'js/product-detail.js' %}?v=20260716-compact-v5" defer></script>
 <script src="{% static 'js/product-media-fit.js' %}?v=20260428-media-fit-v1" defer></script>
 <script src="{% static 'js/product-variant-history.js' %}?v=20260509-phase8-v1" defer></script>
 {% endblock %}

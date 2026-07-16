@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.apps import apps
 from django.test import TestCase
 
 from productcolors.models import Color, ProductColorVariant
@@ -10,6 +11,7 @@ from fable5.models import (
     GarmentFlowCategory,
     ProductOptionProfile,
     VariantCombinationProfile,
+    VariantDetails,
 )
 
 
@@ -67,6 +69,26 @@ class GenericProductOptionTests(TestCase):
         self.assertTrue(lining["choices"][0]["is_enabled"])
         self.assertFalse(lining["choices"][1]["is_enabled"])
         self.assertEqual(lining["choices"][1]["reason"], "Тимчасово недоступно")
+        self.assertTrue(lining["is_fixed"])
+        self.assertEqual(lining["presentation"], "auto")
+
+    def test_cards_presentation_keeps_single_enabled_lining_as_cards(self):
+        from fable5.services import product_option_context
+
+        presentation_model = apps.get_model("fable5", "ProductOptionAxisPresentation")
+        presentation_model.objects.create(
+            product=self.product,
+            axis_code="lining",
+            presentation="cards",
+        )
+
+        lining = product_option_context(
+            self.product,
+            variant=self.variant,
+        )["axes"][0]
+
+        self.assertFalse(lining["is_fixed"])
+        self.assertEqual(lining["presentation"], "cards")
 
     def test_product_profile_can_disable_an_axis_choice(self):
         from fable5.services import product_option_context
@@ -89,6 +111,11 @@ class GenericProductOptionTests(TestCase):
     def test_option_price_uses_exact_combination_before_product_option(self):
         from fable5.services import variant_public_context
 
+        VariantDetails.objects.create(
+            variant=self.variant,
+            price_delta=400,
+            price_delta_reason="Thermo fabric",
+        )
         ProductOptionProfile.objects.create(
             product=self.product,
             option_key="lining=fleece",
@@ -113,6 +140,43 @@ class GenericProductOptionTests(TestCase):
         self.assertEqual(context["price_delta"], Decimal("290"))
         self.assertEqual(context["price_delta_reason"], "Black fleece blank")
         self.assertEqual(context["option_values"], {"lining": "fleece"})
+        self.assertEqual(context["price_breakdown"]["material_delta"], Decimal("400"))
+        self.assertEqual(context["price_breakdown"]["option_delta"], Decimal("100"))
+        self.assertEqual(context["price_breakdown"]["combination_override"], Decimal("290"))
+
+    def test_material_and_independent_option_deltas_are_additive(self):
+        from fable5.services import variant_public_context
+
+        VariantDetails.objects.create(
+            variant=self.variant,
+            price_delta=400,
+            price_delta_reason="Thermo fabric",
+        )
+        ProductOptionProfile.objects.create(
+            product=self.product,
+            option_key="fit=oversize",
+            option_values={"fit": "oversize"},
+            price_delta=200,
+            price_delta_reason="Oversize blank",
+        )
+
+        context = variant_public_context(
+            self.variant,
+            option_values={"fit": "oversize"},
+        )
+
+        self.assertEqual(context["price_delta"], Decimal("600"))
+        self.assertEqual(context["final_price"], Decimal("1600"))
+        self.assertEqual(
+            context["price_breakdown"],
+            {
+                "material_delta": Decimal("400"),
+                "option_delta": Decimal("200"),
+                "combination_override": None,
+                "total_delta": Decimal("600"),
+                "option_components": {"fit=oversize": Decimal("200")},
+            },
+        )
 
     def test_disabled_option_selection_is_rejected(self):
         from fable5.services import variant_allows_options

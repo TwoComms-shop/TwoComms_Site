@@ -15,6 +15,7 @@ from .models import (
     FeedProfile,
     GarmentFlow,
     ProductFitNote,
+    ProductOptionAxisPresentation,
     ProductOptionProfile,
     VariantCombinationProfile,
     VariantDetails,
@@ -172,12 +173,89 @@ def _product_option_profiles(product) -> dict:
     return {row.option_key: row for row in rows}
 
 
+def _product_axis_presentations(product) -> dict:
+    prefetched = getattr(product, "_prefetched_objects_cache", {}).get(
+        "fable5_axis_presentations"
+    )
+    rows = (
+        prefetched
+        if prefetched is not None
+        else ProductOptionAxisPresentation.objects.filter(product=product)
+    )
+    return {row.axis_code: row.presentation for row in rows}
+
+
 def _variant_combination_profiles(variant) -> dict:
     prefetched = getattr(variant, "_prefetched_objects_cache", {}).get(
         "fable5_combinations"
     )
     rows = prefetched if prefetched is not None else variant.fable5_combinations.all()
     return {row.combination_key: row for row in rows}
+
+
+def _variant_details(variant):
+    if variant is None:
+        return None
+    fields_cache = getattr(getattr(variant, "_state", None), "fields_cache", {})
+    if "fable5_details" in fields_cache:
+        return fields_cache.get("fable5_details")
+    return VariantDetails.objects.filter(variant=variant).first()
+
+
+def _price_breakdown(
+    *,
+    product,
+    variant,
+    details,
+    option_values,
+    profiles=None,
+    combinations=None,
+) -> dict:
+    values = normalize_option_values(option_values or {})
+    material_delta = _decimal(getattr(details, "price_delta", 0) if details else 0)
+    profiles = profiles if profiles is not None else _product_option_profiles(product)
+    option_components = {}
+
+    for axis_code, choice_code in values.items():
+        key = build_combination_key({axis_code: choice_code})
+        profile = profiles.get(key)
+        if profile is None or not profile.is_active or profile.price_delta is None:
+            continue
+        option_components[key] = _decimal(profile.price_delta)
+
+    full_key = build_combination_key(values)
+    full_profile = profiles.get(full_key)
+    if (
+        len(values) > 1
+        and full_profile is not None
+        and full_profile.is_active
+        and full_profile.price_delta is not None
+    ):
+        option_components = {full_key: _decimal(full_profile.price_delta)}
+
+    option_delta = sum(option_components.values(), Decimal("0"))
+    combinations = (
+        combinations
+        if combinations is not None
+        else _variant_combination_profiles(variant)
+    )
+    exact = combinations.get(full_key) if full_key else None
+    combination_override = None
+    if exact is not None and exact.is_active and exact.price_delta is not None:
+        combination_override = _decimal(exact.price_delta)
+
+    total_delta = (
+        combination_override
+        if combination_override is not None
+        else material_delta + option_delta
+    )
+    return {
+        "material_delta": material_delta,
+        "option_delta": option_delta,
+        "combination_override": combination_override,
+        "total_delta": total_delta,
+        "option_components": option_components,
+    }
 
 
 def product_option_context(
@@ -192,7 +270,9 @@ def product_option_context(
     flow = _garment_flow_for_product(product)
     selected = normalize_option_values(option_values or {})
     profiles = _product_option_profiles(product)
+    presentations = _product_axis_presentations(product)
     combinations = _variant_combination_profiles(variant) if variant is not None else {}
+    variant_details = _variant_details(variant)
     fit_rules = _effective_fit_rules(variant) if variant is not None else {}
     axes = []
     raw_axes = list(getattr(flow, "axes", None) or [])
@@ -260,6 +340,30 @@ def product_option_context(
                 option_values=values,
                 lang=lang,
             )
+            breakdown = _price_breakdown(
+                product=product,
+                variant=variant,
+                details=variant_details,
+                option_values=values,
+                profiles=profiles,
+                combinations=combinations,
+            ) if variant is not None else {
+                "material_delta": Decimal("0"),
+                "option_delta": _decimal(
+                    profile.price_delta
+                    if profile is not None and profile.is_active and profile.price_delta is not None
+                    else 0
+                ),
+                "combination_override": None,
+                "total_delta": Decimal("0"),
+                "option_components": {},
+            }
+            option_price_delta = breakdown["option_delta"]
+            if breakdown["combination_override"] is not None:
+                option_price_delta = (
+                    breakdown["combination_override"]
+                    - breakdown["material_delta"]
+                )
             choices.append({
                 "code": choice_code,
                 "label": str(raw_choice.get("label") or choice_code),
@@ -269,6 +373,7 @@ def product_option_context(
                 "is_default": is_default,
                 "reason": reason,
                 "price_delta": int(merchandising.get("price_delta") or 0),
+                "option_price_delta": int(option_price_delta),
                 "price_delta_reason": str(
                     merchandising.get("price_delta_reason") or ""
                 ),
@@ -292,11 +397,25 @@ def product_option_context(
                 (item["code"] for item in choices if item["is_enabled"]),
                 "",
             )
+        enabled_choices = [item for item in choices if item["is_enabled"]]
+        presentation = presentations.get(axis_code, "auto")
+        fixed_choice = (
+            enabled_choices[0]
+            if (
+                axis_code == "lining"
+                and len(enabled_choices) == 1
+                and presentation in {"auto", "switch"}
+            )
+            else None
+        )
         axes.append({
             "code": axis_code,
             "label": str(raw_axis.get("label") or axis_code),
             "choices": choices,
             "selected_value": requested,
+            "is_fixed": fixed_choice is not None,
+            "fixed_choice": fixed_choice,
+            "presentation": presentation,
         })
 
     resolved_values = {
@@ -309,6 +428,11 @@ def product_option_context(
         "flow_name": getattr(flow, "name", "") if flow is not None else "",
         "axes": axes,
         "selected_values": resolved_values,
+        "fixed_axes": {
+            axis["code"]: axis["fixed_choice"]
+            for axis in axes
+            if axis["fixed_choice"] is not None
+        },
     }
 
 
@@ -360,11 +484,7 @@ def variant_public_context(
     - per-color SEO (title/description/keywords), відео, FAQ
     - доступність посадок і розмірів з причинами
     """
-    fields_cache = getattr(getattr(variant, "_state", None), "fields_cache", {})
-    if "fable5_details" in fields_cache:
-        details = fields_cache.get("fable5_details")
-    else:
-        details = VariantDetails.objects.filter(variant=variant).first()
+    details = _variant_details(variant)
     color_cache = getattr(getattr(variant.color, "_state", None), "fields_cache", {})
     if "fable5_profile" in color_cache:
         profile = color_cache.get("fable5_profile")
@@ -386,7 +506,13 @@ def variant_public_context(
         if variant.price_override is not None
         else product_price
     )
-    price_delta = _decimal(merchandising.get("price_delta", 0))
+    price_breakdown = _price_breakdown(
+        product=product,
+        variant=variant,
+        details=details,
+        option_values=options,
+    )
+    price_delta = price_breakdown["total_delta"]
     final_price = base_price + price_delta
     is_thermo = bool(profile and profile.is_thermo)
     price_reason = (merchandising.get("price_delta_reason") or "").strip()
@@ -417,6 +543,7 @@ def variant_public_context(
         "base_product_price": product_price,
         "base_variant_price": base_price,
         "price_delta": price_delta,
+        "price_breakdown": price_breakdown,
         "price_difference": final_price - product_price,
         "price_delta_reason": price_reason,
         "final_price": final_price,

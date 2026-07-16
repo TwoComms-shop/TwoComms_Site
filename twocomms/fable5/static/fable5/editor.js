@@ -175,6 +175,7 @@
 		feedOnly: [],
 		feeds: (dict.feeds || []).slice(),
 		selectedPrintIds: new Set(((boot.product && boot.product.print_ids) || []).map(String)),
+		optionPresentations: Object.assign({}, (boot.product && boot.product.option_presentations) || {}),
 		dirty: false,
 		revision: 0,
 		slugTouched: !!(boot.product && boot.product.slug),
@@ -424,6 +425,14 @@
 		}));
 	}
 
+	function collectOptionPresentations() {
+		const presentations = Object.assign({}, state.optionPresentations);
+		$$('#f-option-profiles [data-axis-presentation]:checked').forEach((input) => {
+			presentations[input.dataset.axisPresentation] = input.value;
+		});
+		return presentations;
+	}
+
 	function collectPrintIds() {
 		return $$("#f-product-prints [data-print-id]:checked").map((input) => parseInt(input.dataset.printId, 10));
 	}
@@ -456,6 +465,7 @@
 			faqs: collectProductFaqs(),
 			fits: collectFits(),
 			option_profiles: collectOptionProfiles(),
+			option_presentations: collectOptionPresentations(),
 			print_ids: collectPrintIds(),
 		};
 	}
@@ -547,6 +557,7 @@
 			state.faqs = (resp.product.faqs || []).map((f) => Object.assign({}, f));
 			state.fits = fitDefaults();
 			state.selectedPrintIds = new Set((resp.product.print_ids || []).map(String));
+			state.optionPresentations = Object.assign({}, resp.product.option_presentations || {});
 			state.files.main_image = null;
 			state.files.home_card_image = null;
 			if (resp.created && resp.edit_url) {
@@ -754,8 +765,18 @@
 			box.innerHTML = '<p class="f5-hint f5-option-empty">Оберіть категорію з налаштованим типом одягу — тут з\u2019являться посадка, утеплення та їхні націнки.</p>';
 			return;
 		}
-		box.innerHTML = axes.map((axis) => `<section class="f5-option-axis" data-option-axis="${esc(axis.code)}">
-			<header class="f5-option-axis__head"><div><strong>${esc(axis.label)}</strong><small>${esc(axis.code)}</small></div><span>${(axis.choices || []).length} варіанти</span></header>
+		box.innerHTML = axes.map((axis) => {
+			const presentation = state.optionPresentations[axis.code] || "auto";
+			const presentationControl = axis.code === "lining" ? `<fieldset class="f5-presentation" aria-label="Вигляд утеплення на сторінці товару">
+				<legend>Вигляд на PDP</legend>
+				<div class="f5-segmented">
+					<label><input type="radio" name="presentation-${esc(axis.code)}" value="auto" data-axis-presentation="${esc(axis.code)}" ${presentation === "auto" ? "checked" : ""}><span>Авто</span></label>
+					<label><input type="radio" name="presentation-${esc(axis.code)}" value="switch" data-axis-presentation="${esc(axis.code)}" ${presentation === "switch" ? "checked" : ""}><span>Switch</span></label>
+					<label><input type="radio" name="presentation-${esc(axis.code)}" value="cards" data-axis-presentation="${esc(axis.code)}" ${presentation === "cards" ? "checked" : ""}><span>Картки</span></label>
+				</div>
+			</fieldset>` : `<span>${(axis.choices || []).length} варіанти</span>`;
+			return `<section class="f5-option-axis" data-option-axis="${esc(axis.code)}">
+			<header class="f5-option-axis__head"><div><strong>${esc(axis.label)}</strong><small>${esc(axis.code)}</small></div>${presentationControl}</header>
 			<div class="f5-option-table">${(axis.choices || []).map((choice) => {
 				const values = choice.option_values || { [axis.code]: choice.code };
 				const unavailableReason = choice.reason || (choice.is_enabled ? "" : "Тимчасово недоступно");
@@ -766,7 +787,8 @@
 					<label class="f5-field"><span>Пояснення або причина</span><input class="f5-input" data-f="option-price-reason" value="${esc(choice.price_delta_reason || unavailableReason)}" placeholder="Напр.: додатковий матеріал"></label>
 				</div>`;
 			}).join("")}</div>
-		</section>`).join("");
+		</section>`;
+		}).join("");
 	}
 
 	function updatePrintCount() {
@@ -853,6 +875,11 @@
 	});
 
 	$("#f-option-profiles").addEventListener("change", (e) => {
+		if (e.target.matches("[data-axis-presentation]")) {
+			state.optionPresentations[e.target.dataset.axisPresentation] = e.target.value;
+			setDirty(true);
+			return;
+		}
 		const row = e.target.closest("[data-option-profile]");
 		if (!row) return;
 		if (e.target.matches("[data-f=option-active]")) row.classList.toggle("is-disabled", !e.target.checked);

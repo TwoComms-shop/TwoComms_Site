@@ -155,6 +155,48 @@ class GenericOptionEditorTests(TestCase):
         self.assertIn('id="f-product-prints"', html)
         self.assertIn('id="f-print-search"', html)
 
+    def test_editor_bootstrap_and_save_persist_lining_presentation(self):
+        presentation_model = apps.get_model("fable5", "ProductOptionAxisPresentation")
+        presentation_model.objects.create(
+            product=self.product,
+            axis_code="lining",
+            presentation="cards",
+        )
+
+        bootstrap = self.client.get(
+            reverse("fable5_product_edit", args=[self.product.pk])
+        ).context["bootstrap"]
+        self.assertEqual(
+            bootstrap["product"]["option_presentations"],
+            {"lining": "cards"},
+        )
+
+        response = self.client.post(
+            reverse("fable5_api_product_save"),
+            data={
+                "payload": json.dumps({
+                    "id": self.product.id,
+                    "title": self.product.title,
+                    "category_id": self.category.id,
+                    "price": self.product.price,
+                    "option_presentations": {"lining": "switch"},
+                })
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            presentation_model.objects.get(
+                product=self.product,
+                axis_code="lining",
+            ).presentation,
+            "switch",
+        )
+        self.assertEqual(
+            ProductOptionProfile.objects.filter(product=self.product).count(),
+            0,
+        )
+
     def test_editor_javascript_collects_options_and_multiple_print_ids(self):
         javascript = (
             Path(__file__).resolve().parents[1]
