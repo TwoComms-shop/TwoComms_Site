@@ -113,7 +113,7 @@
 | [x] | **F-050** | P1 | NP Kyiv Latin 502 | **FIXED `75b1f6fb`**; production Kyiv/Kiev/Київ 200; §F-050 |
 | [ ] | **F-059** | P1 | ProductImage alt empty | §F-059 |
 | [x] | **F-087** | P1 | ubd_docs public 200 | **FIXED `ead5fd70` + `e89fd17d`**; direct live URL 200->403, owner/staff route verified; §F-087 |
-| [ ] | **F-088** | P1 | TG webhook secret empty | §F-088; PLAN_VS W3-9 |
+| [x] | **F-088** | P1 | TG webhook secret empty | **FIXED `d7c6812a` + server config**; fail-closed code, secret_token registered, live probes passed; §F-088 |
 | [x] | **F-093** | P1 | deploy_paramiko password in git | Fixed `c5b651cf`; production verified; §F-093 |
 | [x] | **F-095** | P1 | IG Hide list not refreshed | Fixed `ad2883f0`; production verified: UA actions refresh lists, hidden queue excluded, `hidden_pending=0`; **IG_BOT** IG-001 |
 | [x] | **F-096** | P1 | IG stats English / thin | Fixed `15c3bf30` + `337710ce` + `3d4e5d40`; production verified; **IG_BOT** IG-004 |
@@ -277,7 +277,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-085** | P3 | PASS | no | Home hreflang×4 + canonical + OG + healthz OK |
 | [x] **F-086** | P3 | PASS | no | Mild burst 20× catalog → 0×429 (F-007 is high-load only) |
 | [x] **F-087** | P1 | FIXED | DONE | `ead5fd70` + `e89fd17d`: private route, UUID names and filesystem deny; live 403 |
-| [ ] **F-088** | P1 | OPEN | YES | TELEGRAM_BOT_WEBHOOK_SECRET empty on prod (W3-9) |
+| [x] **F-088** | P1 | FIXED | DONE | `d7c6812a`: fail-closed webhook + mode-600 production secret + Telegram registration |
 | [ ] **F-089** | P2 | OPEN | YES | FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only) |
 | [ ] **F-090** | P2 | OPEN | YES | No MySQL backup cron (script present; W0-3) |
 | [x] **F-091** | P3 | INFO | no | Full plan re-verify matrix: PLAN_VS_FINDINGS_2026-07-09.md |
@@ -300,7 +300,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 ### P1 OPEN — 3
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
 - [x] **F-087** — direct UBD media denied; authenticated owner/staff delivery deployed
-- [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
+- [x] **F-088** — production secret configured and webhook header enforcement verified
 
 ### P1 OPEN (continued) — 7
 - [o] **F-007** — HTTP 429 under burst crawl; Retry-After exists, atomic route-aware policy remains
@@ -2532,10 +2532,25 @@ was used because the edge retained one stale pre-restart 404.
 
 ### F-088 — `TELEGRAM_BOT_WEBHOOK_SECRET` empty on production
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] FIXED (`d7c6812a` + server config) · **Severity:** P1 · **Fix required:** DONE
 **Plan:** W3-9 / S-13
 
 Django settings report EMPTY. Webhook signature check is optional when empty → accepts unauthenticated POSTs (code logs SECURITY warning only).
+
+**Fixed and verified 2026-07-16:** the webhook now fails closed before JSON or
+bot processing when the server secret is absent, silently rejects a mismatched
+header without logging secret material, and processes only a constant-time
+header match. Passenger loads the same private `.env.production` source as
+management commands without overriding cPanel variables. The local auth suite
+passed 28/28 and the isolated server webhook suite passed 3/3.
+
+A 64-character secret was generated directly on production, stored only in
+the mode-0600 environment file, and registered with Telegram `setWebhook` as
+`secret_token`; the value was never printed or committed. Telegram reported
+the expected URL, zero pending updates and the configured message/callback
+update types. After Passenger restart, a live request without the header
+returned `200 rejected=true`, while the same payload with the configured
+header returned `200 rejected=false`; site health remained 200.
 
 ---
 

@@ -110,7 +110,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 | ADS-2 | **RESOLVED `d773bee6` (2026-07-13):** missing RU/EN home/catalog translations added; server 2/2 + live H1 4/4 |
 | ADS-3 | **RESOLVED `e2558396` (2026-07-12):** guarded DB repair + connector-aware trim |
 | W7-1 | views.py.backup still lazy-loaded |
-| W3-9 | TG webhook secret empty on prod (was) |
+| W3-9 | **DONE `d7c6812a` + server config**: fail-closed webhook, secret_token registered, live header probes passed |
 | W3-11 | CheckoutCapture.converted never on mono |
 | W0-5 | OPS done; stash OWNER not done |
 

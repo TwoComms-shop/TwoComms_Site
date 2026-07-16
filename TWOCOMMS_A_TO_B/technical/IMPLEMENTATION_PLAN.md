@@ -291,7 +291,7 @@
   `apply_promo_code` без rate-limit — перебор кодов скриптом. Фикс: точечный ratelimit (10/min/session) — включить в W3-5.
   ✅ **DONE:** `@ratelimit(key='user_or_ip', rate='10/m', block=False)` на apply_promo_code + JSON 429 «Забагато спроб» при превышении (block=False, чтобы отдавать управляемый JSON вместо голого 403).
 
-- [ ] **W3-9. [NEW-504] Telegram-вебхук без секрета при пустом env (P2)** `[REPO]`/`[SERVER]`
+- [x] **W3-9. [NEW-504] Telegram-вебхук без секрета при пустом env (P2)** `[REPO]`/`[SERVER]` — fixed `d7c6812a`; mode-600 secret registered with Telegram and live header probes passed.
   > **RE-VERIFY W3-9:** PARTIAL 2026-07-09: REPO warning OK; prod TELEGRAM_BOT_WEBHOOK_SECRET was EMPTY — accept not met.
   `accounts/telegram_views.py:20-29`: проверка `X-Telegram-Bot-Api-Secret-Token` ОПЦИОНАЛЬНА — если `TELEGRAM_BOT_WEBHOOK_SECRET` не задан в env, вебхук принимает любые POST.
   Фикс: проверить env на сервере (S-13); если пуст — задать секрет + перерегистрировать webhook у Telegram; в коде — предупреждающий лог при пустом секрете.
@@ -572,7 +572,7 @@
 - [ ] **S-10.** `compilemessages` после мерджа переводов (= W5-9).
 - [ ] **S-11.** Крон НП-трекинга: подтвердить расписание update_tracking_statuses (AN-014).
 - [ ] **S-12.** PageView.count() (TD-007 хвост) — дубль-слой PageView vs UserAction page_view.
-- [ ] **S-13.** [NEW-504] env `TELEGRAM_BOT_WEBHOOK_SECRET` задан? (= W3-9).
+- [x] **S-13.** [NEW-504] env `TELEGRAM_BOT_WEBHOOK_SECRET` задан (= W3-9); value kept private, `setWebhook(secret_token=...)` confirmed.
 - [x] **S-14.** [NEW-503] live-проверка отдачи `media/ubd_docs/<имя>` (= W1-11): pre-fix 200, post-fix 403; normal public product media remains 200.
 
 ---
