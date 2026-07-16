@@ -152,6 +152,8 @@
 	const boot = JSON.parse($("#f5-bootstrap").textContent || "null") || {};
 	const dict = boot.dictionaries || {};
 	const urls = boot.urls || {};
+	const resolveInventoryRule = window.f5Inventory.resolveInventoryRule;
+	const canonicalizeInventoryRows = window.f5Inventory.canonicalizeInventoryRows;
 
 	const state = {
 		product: boot.product || null,
@@ -911,7 +913,7 @@
 	}
 
 	function sizeRule(variant, fitCode, size) {
-		return (variant.sizes || []).find((s) => s.fit_code === fitCode && s.size === size);
+		return resolveInventoryRule(variant.sizes || [], fitCode, size);
 	}
 
 	function sizeGridHtml(variant, onlyFit) {
@@ -931,6 +933,27 @@
 			}).join("");
 			return `<div class="f5-size-grid" data-role="fit-sizes" data-fit="${esc(fit.code)}">${cells}</div>`;
 		}).join("");
+	}
+
+	function syncVariantSizeControls(card, sizes) {
+		if (!card) return;
+		$$("[data-role=size-grid] .f5-size-cell", card).forEach((cell) => {
+			const rule = resolveInventoryRule(
+				sizes || [], cell.dataset.fit || "", cell.dataset.size || ""
+			);
+			if (!rule) return;
+			const enabled = rule.is_enabled !== false;
+			const button = $("[data-act=size-toggle]", cell);
+			const stock = $("[data-f=stock]", cell);
+			cell.classList.toggle("is-off", !enabled);
+			cell.classList.toggle("f5-stock-zero", rule.stock === 0);
+			cell.classList.toggle(
+				"f5-stock-low",
+				rule.stock != null && rule.stock > 0 && rule.stock <= 3
+			);
+			if (button) button.setAttribute("aria-pressed", enabled ? "true" : "false");
+			if (stock) stock.value = rule.stock == null ? "" : String(rule.stock);
+		});
 	}
 
 	function colorPickerHtml(variant) {
@@ -1124,16 +1147,15 @@
 	function collectVariantData(card, variant) {
 		const val = (sel) => { const el = $(sel, card); return el ? el.value : ""; };
 		const checked = (sel) => { const el = $(sel, card); return el ? el.checked : false; };
-		const sizes = [];
-		$$("[data-role=size-grid] .f5-size-cell", card).forEach((cell) => {
-			sizes.push({
+		const sizes = canonicalizeInventoryRows(
+			$$("[data-role=size-grid] .f5-size-cell", card).map((cell) => ({
 				fit_code: cell.dataset.fit || "",
 				size: cell.dataset.size,
 				is_enabled: !cell.classList.contains("is-off"),
 				stock: intOrNull($("[data-f=stock]", cell).value),
 				note: "",
-			});
-		});
+			}))
+		);
 		const fits = $$(".f5-fit-row[data-fit]", card).map((row) => {
 			const enabled = $("[data-f=fit_enabled]", row).checked;
 			return {
@@ -1619,13 +1641,13 @@
 	}
 
 	function collectStockSizes(block) {
-		return $$(".f5-size-cell", block).map((cell) => ({
+		return canonicalizeInventoryRows($$(".f5-size-cell", block).map((cell) => ({
 			fit_code: cell.dataset.fit || "",
 			size: cell.dataset.size,
 			is_enabled: !cell.classList.contains("is-off"),
 			stock: intOrNull($("[data-f=stock]", cell).value),
 			note: "",
-		}));
+		})));
 	}
 
 	$("#f-stock").addEventListener("input", (e) => {
@@ -1650,13 +1672,16 @@
 		try {
 			const resp = await postJSON(urls.variant_save, {
 				id: variant.id, product_id: state.product.id,
-				color: { id: variant.color.id }, sizes: sizes,
+				color: { id: variant.color.id },
+				is_default: variant.is_default,
+				sizes: sizes,
 			});
 			if ((variant._sizesRevision || 0) !== sizesRevision) {
 				toast("Збережено попередній стан складу. Нові зміни ще не збережені.");
 				return;
 			}
 			const card = $(`.f5-variant[data-index="${index}"]`);
+			syncVariantSizeControls(card, resp.variant.sizes || []);
 			variant.sizes = resp.variant.sizes || [];
 			variant._sizesDirty = false;
 			variant._dirty = Boolean(variant._contentDirty);

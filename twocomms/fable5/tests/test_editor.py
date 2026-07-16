@@ -54,7 +54,8 @@ class Fable5EditorAccessTests(TestCase):
             reverse("fable5_product_edit", args=[self.product.pk])
         ).content.decode()
 
-        self.assertIn("fable5/editor.js?v=20260716-dirty-v2", content)
+        self.assertIn("fable5/editor-inventory.js?v=20260716-inventory-v1", content)
+        self.assertIn("fable5/editor.js?v=20260716-dirty-v4", content)
 
     def test_staff_can_create_product_with_unified_save_endpoint(self):
         self.client.force_login(self.staff)
@@ -244,11 +245,43 @@ class Fable5EditorAccessTests(TestCase):
         stock_save = javascript[start:end]
 
         self.assertIn("variant.sizes = resp.variant.sizes || []", stock_save)
+        self.assertIn("is_default: variant.is_default", stock_save)
+        self.assertIn(
+            "syncVariantSizeControls(card, resp.variant.sizes || [])",
+            stock_save,
+        )
         self.assertIn("variant._sizesDirty = false", stock_save)
         self.assertIn("variant._dirty = Boolean(variant._contentDirty)", stock_save)
         self.assertNotIn("clearVariantDirty", stock_save)
         self.assertNotIn("state.variants[index] = resp.variant", stock_save)
         self.assertNotIn("renderVariants()", stock_save)
+
+    def test_variant_size_surface_sync_is_targeted_and_preserves_newer_edits(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("function syncVariantSizeControls(card, sizes)", javascript)
+        self.assertIn("cell.classList.toggle(\"is-off\", !enabled)", javascript)
+        self.assertIn("stock.value = rule.stock == null ? \"\"", javascript)
+        self.assertIn(
+            "if ((variant._sizesRevision || 0) !== sizesRevision)",
+            javascript,
+        )
+
+    def test_editor_uses_shared_general_inventory_resolution_and_canonicalization(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("window.f5Inventory.resolveInventoryRule", javascript)
+        self.assertIn("window.f5Inventory.canonicalizeInventoryRows", javascript)
 
     def test_global_save_includes_dirty_stock_and_feed_drafts(self):
         javascript = (

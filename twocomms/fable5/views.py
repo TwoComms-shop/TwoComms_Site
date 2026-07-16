@@ -891,7 +891,12 @@ def api_variant_save(request):
         variant.sku = (data.get("sku") or "")[:64]
     if "price_override" in data:
         variant.price_override = _int_or_none(data.get("price_override"))
-    make_default = bool(data.get("is_default")) or not product.color_variants.exclude(pk=variant.pk).exists()
+    requested_default = (
+        bool(data.get("is_default"))
+        if "is_default" in data
+        else bool(variant.is_default)
+    )
+    make_default = requested_default or not product.color_variants.exclude(pk=variant.pk).exists()
     variant.is_default = make_default
     variant.save()
     if make_default:

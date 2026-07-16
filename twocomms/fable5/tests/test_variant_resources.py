@@ -241,6 +241,37 @@ class VariantResourceEditorApiTests(VariantResourceResolutionTests):
         )
         self.assertEqual(after, before)
 
+    def test_stock_only_variant_save_preserves_default_ownership(self):
+        self.variant.is_default = True
+        self.variant.save(update_fields=["is_default"])
+        other = ProductColorVariant.objects.create(
+            product=self.product,
+            color=Color.objects.create(name="Black", primary_hex="#111111"),
+            is_default=False,
+        )
+
+        response = self.client.post(
+            reverse("fable5_api_variant_save"),
+            data=json.dumps({
+                "product_id": self.product.pk,
+                "id": self.variant.pk,
+                "color": {"id": self.variant.color_id},
+                "sizes": [{
+                    "fit_code": "",
+                    "size": "M",
+                    "is_enabled": True,
+                    "stock": 4,
+                }],
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.variant.refresh_from_db()
+        other.refresh_from_db()
+        self.assertTrue(self.variant.is_default)
+        self.assertFalse(other.is_default)
+
     def test_variant_save_preserves_unsubmitted_combination_translations(self):
         profile = VariantCombinationProfile.objects.create(
             variant=self.variant,
