@@ -21,7 +21,7 @@ If accept criteria fail or only half the production path was fixed → **`[x]` r
 W2-1, W2-2, W2-3, ADS-1, ADS-2, ADS-3, W7-1, W3-9, W3-11, W0-5 (+ partials documented earlier).
 
 ### Still `[x]` after strict pass (~33)
-W0-4 · W1-1…W1-14 (except already open W1-11) · W2-4, W2-5, W2-6, W2-8, W2-9 · W3-1…W3-5, W3-7, W3-10, W3-12 · W5-2 · W6-1, W6-2, W6-3 · W7-6, W7-24  
+W0-4 · W1-1…W1-14 (W1-11 closed by `ead5fd70` + `e89fd17d`) · W2-4, W2-5, W2-6, W2-8, W2-9 · W3-1…W3-5, W3-7, W3-10, W3-12 · W5-2 · W6-1, W6-2, W6-3 · W7-6, W7-24
 
 Each KEEP has a **STRICT RE-VERIFY** note in the plan where non-obvious.
 

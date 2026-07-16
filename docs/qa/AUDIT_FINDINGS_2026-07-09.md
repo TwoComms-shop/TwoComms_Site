@@ -112,7 +112,7 @@
 | [x] | **F-043** | P1 | /help-center/ 404 | **FIXED `169e6032`**; production 301 to `/dopomoga/`; §F-043 |
 | [x] | **F-050** | P1 | NP Kyiv Latin 502 | **FIXED `75b1f6fb`**; production Kyiv/Kiev/Київ 200; §F-050 |
 | [ ] | **F-059** | P1 | ProductImage alt empty | §F-059 |
-| [ ] | **F-087** | P1 | ubd_docs public 200 | §F-087; PLAN_VS W1-11 |
+| [x] | **F-087** | P1 | ubd_docs public 200 | **FIXED `ead5fd70` + `e89fd17d`**; direct live URL 200->403, owner/staff route verified; §F-087 |
 | [ ] | **F-088** | P1 | TG webhook secret empty | §F-088; PLAN_VS W3-9 |
 | [x] | **F-093** | P1 | deploy_paramiko password in git | Fixed `c5b651cf`; production verified; §F-093 |
 | [x] | **F-095** | P1 | IG Hide list not refreshed | Fixed `ad2883f0`; production verified: UA actions refresh lists, hidden queue excluded, `hidden_pending=0`; **IG_BOT** IG-001 |
@@ -276,7 +276,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-084** | P1 | FIXED | DONE | `069f4efa`: shared writer normalization + guarded backfill; production aliases 0, `chatgpt/ai` 161, Dispatcher one cohort |
 | [x] **F-085** | P3 | PASS | no | Home hreflang×4 + canonical + OG + healthz OK |
 | [x] **F-086** | P3 | PASS | no | Mild burst 20× catalog → 0×429 (F-007 is high-load only) |
-| [ ] **F-087** | P1 | OPEN | YES | ubd_docs publicly HTTP 200 (W1-11 CONFIRMED) |
+| [x] **F-087** | P1 | FIXED | DONE | `ead5fd70` + `e89fd17d`: private route, UUID names and filesystem deny; live 403 |
 | [ ] **F-088** | P1 | OPEN | YES | TELEGRAM_BOT_WEBHOOK_SECRET empty on prod (W3-9) |
 | [ ] **F-089** | P2 | OPEN | YES | FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only) |
 | [ ] **F-090** | P2 | OPEN | YES | No MySQL backup cron (script present; W0-3) |
@@ -299,7 +299,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 ### P1 OPEN — 3
 - [ ] **F-059** — All ProductImage.alt_text empty (36/36)
-- [ ] **F-087** — ubd_docs publicly HTTP 200
+- [x] **F-087** — direct UBD media denied; authenticated owner/staff delivery deployed
 - [ ] **F-088** — TELEGRAM_BOT_WEBHOOK_SECRET empty on production
 
 ### P1 OPEN (continued) — 7
@@ -2509,10 +2509,24 @@ Landing (+UTM)
 
 ### F-087 — `media/ubd_docs/` publicly downloadable (HTTP 200)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES  
+**Status:** [x] FIXED (`ead5fd70` + `e89fd17d`) · **Severity:** P1 · **Fix required:** DONE
 **Plan:** W1-11 / S-14 · **Source:** PLAN_VS_FINDINGS recheck 2026-07-09
 
 Live: file exists under media; `curl` to `/media/ubd_docs/<name>` → **200** (with and without Referer). UBD ID photo = PII. Fix: auth-only view, random upload names, deny static listing.
+
+**Fixed and verified 2026-07-16:** new uploads use UUID-based names and
+documents are streamed only by an authenticated Django view after an explicit
+owner-or-staff check. The profile preview and Django admin use that protected
+route; responses are `private, no-store`, `nosniff` and sandboxed. Both the
+root rewrite and a force-tracked `media/ubd_docs/.htaccess` fail closed for
+static serving. Migration `accounts.0029` was applied on production.
+
+The focused auth suite passed 25/25 locally and 5/5 on the server. The original
+anonymous live PoC returned 200 before deploy and 403 afterwards. A
+cache-busted protected URL returns 302 to login; owner/staff access passed the
+same response-boundary tests, cross-user access returns 404, and ordinary
+public product media remained 200. The first uncached route probe after restart
+was used because the edge retained one stale pre-restart 404.
 
 ---
 

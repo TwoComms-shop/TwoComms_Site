@@ -137,7 +137,7 @@
   `storefront/views/profile.py:150-156` (`edit_profile`): `request.FILES['avatar']`/`ubd_doc` присваиваются НАПРЯМУЮ без формы → валидация ImageField обходится (любой файл/размер на диск shared-хостинга); email/first_name тоже без валидации. Рядом `profile_setup` (тот же файл, :196) делает это правильно через `ProfileSetupForm`.
   Фикс: edit_profile → та же ProfileSetupForm (или отдельная форма с FileExtension/size-валидаторами); задать `FILE_UPLOAD_MAX_MEMORY_SIZE`/лимит размера.
 
-- [ ] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]`
+- [x] **W1-11. [NEW-503] ubd_doc (PII-документ) в публичном media (P1-check)** `[SERVER]` + `[REPO]` — fixed `ead5fd70` + `e89fd17d`; live direct URL 403, owner/staff route covered.
   Фото посвідчення УБД хранится в `media/ubd_docs/` с оригинальным именем файла — если media отдаё������ся статикой LiteSpeed, документ доступен по угадываемому URL без auth (curl-пробы дают 403 — возможно hotlink-защита по Referer, проверить с Referer-заголовком и из браузера, S-14).
   Фикс если ��одтвердится: отдавать ubd_docs через auth-view (owner/staff) + ��ан��ом��зи��оват�� имена (`upload_to` callable с uuid); закрыть каталог в .htaccess.
 
@@ -573,7 +573,7 @@
 - [ ] **S-11.** Крон НП-трекинга: подтвердить расписание update_tracking_statuses (AN-014).
 - [ ] **S-12.** PageView.count() (TD-007 хвост) — дубль-слой PageView vs UserAction page_view.
 - [ ] **S-13.** [NEW-504] env `TELEGRAM_BOT_WEBHOOK_SECRET` задан? (= W3-9).
-- [ ] **S-14.** [NEW-503] live-проверка отдачи `media/ubd_docs/<имя>` с Referer-заголовком / из браузера (= W1-11).
+- [x] **S-14.** [NEW-503] live-проверка отдачи `media/ubd_docs/<имя>` (= W1-11): pre-fix 200, post-fix 403; normal public product media remains 200.
 
 ---
 
