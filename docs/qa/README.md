@@ -45,7 +45,7 @@
 |-------|-----|--------|------|
 | BFCache pixel crash | F-030, F-079 | PLAN_VS **ADS-1** | `analytics-loader.js` `initializePixelsImmediately` |
 | Early PageView OK but incomplete ADS-1 | F-042 PASS; ADS-1 partial | PLAN_VS ADS-1 | `base.html` + loader |
-| FACEBOOK_PIXEL_ID empty settings | F-089 | PLAN_VS | env + settings |
+| Meta Pixel source of truth | F-089 **FIXED `550979f9`** | PLAN_VS | one env-backed setting for browser + storefront/IG CAPI; live 4/4 parity |
 
 ### C. Storefront — SEO
 

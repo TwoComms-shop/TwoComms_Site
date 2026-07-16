@@ -135,7 +135,7 @@
 | [x] | **F-051** | P2 | checkout/capture empty 200 | **FIXED `a90191ea..1962b488`**; server 137/137, live negative 6/6, count 10→10; §F-051 |
 | [x] | **F-075** | P2 | CheckoutCapture.converted 0/4 | **FIXED `de7f7efc` + `1962b488`**; COD/Mono terminal marker and 4/4 historical matches reconciled; §F-075 |
 | [x] | **F-078** | P2 | /kontakty/ 404 | **FIXED `169e6032`**; production 301 to `/contacts/`; §F-078 |
-| [ ] | **F-089** | P2 | FACEBOOK_PIXEL_ID empty settings | §F-089 |
+| [x] | **F-089** | P2 | FACEBOOK_PIXEL_ID empty settings | **FIXED `550979f9`**; canonical env/settings/CAPI/browser parity production-verified; §F-089 |
 | [ ] | **F-090** | P2 | No MySQL backup cron | §F-090; PLAN_VS W0-3 |
 
 ### Priority D — P3 open
@@ -278,7 +278,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-086** | P3 | PASS | no | Historical pre-fix check: mild burst 20× catalog → 0×429; F-007 was then high-load only |
 | [x] **F-087** | P1 | FIXED | DONE | `ead5fd70` + `e89fd17d`: private route, UUID names and filesystem deny; live 403 |
 | [x] **F-088** | P1 | FIXED | DONE | `d7c6812a`: fail-closed webhook + mode-600 production secret + Telegram registration |
-| [ ] **F-089** | P2 | OPEN | YES | FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only) |
+| [x] **F-089** | P2 | FIXED | DONE | `550979f9`: one env-backed Meta Pixel setting for browser + storefront/IG CAPI; live 4/4 placements agree |
 | [ ] **F-090** | P2 | OPEN | YES | No MySQL backup cron (script present; W0-3) |
 | [x] **F-091** | P3 | INFO | no | Full plan re-verify matrix: PLAN_VS_FINDINGS_2026-07-09.md |
 | [x] **F-092** | P2 | DONE_OWNER | no | SSH password rotated by owner (W0-1 OWNER complete) |
@@ -313,7 +313,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 STATUS — 4 PARTIAL / 3 OPEN
+### P2 STATUS — 4 PARTIAL / 2 OPEN
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
@@ -326,7 +326,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-051** — fixed `a90191ea..1962b488`; live 6/6 invalid payloads return 400 and CheckoutCapture count stayed 10→10
 - [x] **F-075** — fixed `de7f7efc` + `1962b488`; terminal markers close late-beacon races and 4/4 historical order matches were reconciled
 - [x] **F-078** — fixed `169e6032`; production 301 to `/contacts/`
-- [ ] **F-089** — FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only)
+- [x] **F-089** — fixed `550979f9`; production env/settings/CAPI equality and 4/4 live browser placements verified
 - [ ] **F-090** — No MySQL backup cron (script present; W0-3)
 - [ ] **F-100** — views.py.backup still lazy-loaded (plan W7-1)
 
@@ -2849,10 +2849,19 @@ header returned `200 rejected=false`; site health remained 200.
 
 ### F-089 — `FACEBOOK_PIXEL_ID` empty in settings (hardcoded HTML fallback)
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES (config)  
+**Status:** [x] FIXED · **Severity:** P2 · **Fix required:** DONE
 **Plan:** ADS-1 residual
 
-HTML still boots pixel via template fallback; env/settings empty. Prefer single source of truth from env.
+`550979f9` makes `META_PIXEL_ID` the canonical setting for the browser,
+storefront CAPI and management IG CAPI; `FACEBOOK_PIXEL_ID` remains only a
+backward-compatible Django alias. The context processor no longer has its own
+hardcoded fallback. Production `.env.production` now provides the canonical
+value with mode `0600`; after Passenger restart, the focused server suite
+passed 43/43 and `manage.py check` passed. Read-only production evidence showed
+the env value is set/numeric, both Django setting names are equal, the CAPI
+token and IG gate are active, and the two live data attributes, inline init and
+noscript URL resolve to one ID matching settings (4/4); home returned 200. No
+ID or token value was printed or committed.
 
 ---
 

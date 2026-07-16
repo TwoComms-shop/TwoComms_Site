@@ -94,15 +94,15 @@ Expected: all tests pass with zero failures.
 - Modify: `docs/qa/README.md`
 - Modify: `docs/superpowers/plans/2026-07-16-f089-meta-pixel-source-of-truth.md`
 
-- [ ] **Step 1: Verify, commit, and push the runtime slice**
+- [x] **Step 1: Verify, commit, and push the runtime slice**
 
 Run the focused tests, Django system check, secret scan, and inspect the exact diff. Commit only F-089 files, fetch/rebase if `origin/main` advanced, then push `main`.
 
-- [ ] **Step 2: Deploy and restart Passenger**
+- [x] **Step 2: Deploy and restart Passenger**
 
 Pull `main` on the server, run the focused server tests and `manage.py check`, then touch `tmp/restart.txt`.
 
-- [ ] **Step 3: Prove production equality without printing secrets or IDs**
+- [x] **Step 3: Prove production equality without printing secrets or IDs**
 
 Verify booleans for `META_PIXEL_ID` set/numeric, `FACEBOOK_PIXEL_ID` set/numeric, equality, CAPI token presence, and confirm live HTML contains the canonical ID consistently.
 
