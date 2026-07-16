@@ -222,10 +222,10 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | PG-031 | `/about/` | legacy → 301 pro-brand | | [x] PASS 301 |
 | PG-032 | `/contacts/` | contacts (**historical 500 risk**) | | [x] PASS 200 all locales sample |
 | PG-033 | `/delivery/` | delivery | | [x] PASS |
-| PG-034 | `/cooperation/` | cooperation | | [x] PASS (desc long F-008) |
-| PG-035 | `/custom-print/` | custom print funnel | | [x] PASS (desc long F-008) |
+| PG-034 | `/cooperation/` | cooperation | | [x] PASS; F-008 fixed `7fa568b1`, live UK/RU/EN lengths valid |
+| PG-035 | `/custom-print/` | custom print funnel | | [x] PASS; F-008 fixed `7fa568b1`, live UK/RU/EN lengths valid |
 | PG-036 | `/add-print/` | add print (if still public) | | [x] PASS 200 |
-| PG-037 | wholesale / B2B hub | `wholesale.html` route | | [x] PASS (desc long F-008) |
+| PG-037 | wholesale / B2B hub | `wholesale.html` route | | [x] PASS; F-008 fixed `7fa568b1`, live UK/RU/EN lengths valid |
 | PG-038 | `/dopomoga/` | help center | | [x] PASS |
 | PG-039 | `/help-center/` if alias | 301? | | [x] **FAIL 404 F-043** |
 | PG-040 | `/faq/` | FAQ | | [x] PASS HTTP |
@@ -315,7 +315,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | SEO-020 | Descriptions present home/catalog/category/product | P0 | [x] PASS sample pages have descriptions|
-| SEO-021 | Length 70–160 report | P1 | [x] PASS products OK; some static long F-008|
+| SEO-021 | Length 70–160 report | P1 | [x] F-008 commercial outliers fixed; 12/12 localized pages live-verified |
 | SEO-022 | Product descriptions unique enough | P1 | [x] PASS sample products unique enough|
 | SEO-023 | No raw HTML/entities in meta | P1 | [x] PASS no raw HTML in meta sample|
 | SEO-024 | og:* + twitter:* parity | P1 | [x] PASS og present sample|

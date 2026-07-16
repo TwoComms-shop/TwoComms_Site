@@ -124,7 +124,7 @@
 | ☐ | ID | Sev | One-line | Detail |
 |---|-----|-----|----------|--------|
 | [x] | **F-006** | P2 | Color sitemap ×3 | **FIXED `a6c3c39b`**; live 12/12 unique, locale alternates valid; §F-006 |
-| [ ] | **F-008** | P2 | Meta description too long | §F-008 |
+| [x] | **F-008** | P2 | Meta description too long | **FIXED `7fa568b1`**; 12 localized live pages 120–160 chars; §F-008 |
 | [ ] | **F-010** | P2 | debug endpoints login not 404 | §F-010 |
 | [ ] | **F-011** | P2 | TikTok ttq.load not in HTML | §F-011 |
 | [ ] | **F-013** | P2 | Category title vs H1 strategy | §F-013 |
@@ -196,7 +196,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-005** | P1 | FIXED | DONE | `d773bee6`: RU/EN home+catalog H1 localized; server tests 2/2 and live 4/4 |
 | [x] **F-006** | P2 | FIXED | DONE | `a6c3c39b`: reverse-based locale URLs; server 26/26, live 12/12 unique |
 | [x] **F-007** | P1 | FIXED | DONE | `3d217ebb`: atomic route/host buckets; 600 catalog requests allowed, 601st returns 429 |
-| [ ] **F-008** | P2 | OPEN | YES | Meta description too long on some static pages |
+| [x] **F-008** | P2 | FIXED | DONE | `7fa568b1`: localized commercial copy; server 4/4, live 12/12 within 120–160 |
 | [x] **F-009** | P3 | FIXED | DONE | `169e6032`: favicon.ico direct 200; production verified |
 | [ ] **F-010** | P2 | OPEN | YES | debug/dev endpoints login-gated not 404 |
 | [ ] **F-011** | P2 | OPEN | YES | TikTok data-attr present; ttq.load not in initial HTML |
@@ -313,9 +313,9 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 OPEN — 10
+### P2 OPEN — 9
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
-- [ ] **F-008** — Meta description too long on some static pages
+- [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [ ] **F-010** — debug/dev endpoints login-gated not 404
 - [ ] **F-011** — TikTok data-attr present; ttq.load not in initial HTML
 - [ ] **F-013** — Category title vs H1 length strategy inconsistent
@@ -809,14 +809,14 @@ proxy CIDRs, and unknown Host values collapse to one finite bucket.
 
 ### F-008 — Meta description length outliers (static commercial pages)
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [x] FIXED (`7fa568b1`) · **Severity:** P2 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P2** · Area: **SEO** · Checklist: SEO-021
+- [x] **Fixed** · Severity: **P2** · Area: **SEO** · Checklist: SEO-021
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED |
-| Status (C) | |
+| Status (C) | FIXED 2026-07-16 |
 
 | URL | desc_len |
 |-----|--------:|
@@ -826,6 +826,20 @@ proxy CIDRs, and unknown Host values collapse to one finite bucket.
 | `/en/catalog/` | 166 |
 
 **Impact:** SERP truncation; minor.
+
+**Fix verification 2026-07-16:** dedicated localized descriptions preserve the
+commercial intent for cooperation, DTF custom print, wholesale and catalog
+while fitting the SERP audit range. Templates, RU/EN PO catalogs, tracked MO
+catalogs and `fill_translations.py` use the same source strings.
+
+- Focused local and server suite: **4/4 PASS**, including a render-level matrix
+  for all 12 locale routes and the existing cooperation/custom/wholesale SEO
+  regressions.
+- Live lengths: UK **142/139/138/151**, RU **148/136/134/151**, EN
+  **153/144/147/155** for cooperation/custom-print/wholesale/catalog.
+- Every live page returned 200 with exactly one description in the correct
+  language and retained the required dropshipping/wholesale, DTF/garment,
+  MOQ/manager and military/DTF intent.
 
 ---
 

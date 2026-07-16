@@ -174,6 +174,12 @@
 1. Поджать шаблон product title ≤ 60 и description ≤ 160 (обрезка/приоритизация атрибутов вариантов).
 2. Уникализировать title/description трёх товаров Reality Bends (ru + en).
 3. Заполнить description категорий блога (/blog/category/news/ и локали).
+
+**Post-fix 16.07.2026 (F-008):** четыре статических commercial outlier-группы
+из таблицы закрыты в `7fa568b1`. Live UK/RU/EN descriptions для
+`/cooperation/`, `/custom-print/`, `/wholesale/` и `/catalog/` дают 12/12
+значений длиной 120–160. Остальные исторические product/blog outliers из
+краула 489 страниц этим исправлением не закрываются.
 4. Перевести title 11 en-блог-постов.
 
 **Связки:** SEO-005 (hreflang), TECH-030 (шаблоны мета), RISK-13 (батчи при массовой правке мета).
