@@ -1329,6 +1329,7 @@ class RestockSubscription(models.Model):
     class Status(models.TextChoices):
         DRAFT = 'draft', _('Очікує підтвердження')
         ACTIVE = 'active', _('Очікує наявності')
+        SENDING = 'sending', _('Повідомлення надсилається')
         NOTIFIED = 'notified', _('Клієнта повідомлено')
         CLOSED = 'closed', _('Закрито')
         FAILED = 'failed', _('Помилка повідомлення')
@@ -1377,6 +1378,10 @@ class RestockSubscription(models.Model):
     user_agent = models.CharField(max_length=255, blank=True, default='')
     admin_notified_at = models.DateTimeField(null=True, blank=True)
     customer_notified_at = models.DateTimeField(null=True, blank=True)
+    notification_attempts = models.PositiveIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    delivery_token = models.UUIDField(null=True, blank=True)
     last_error = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)

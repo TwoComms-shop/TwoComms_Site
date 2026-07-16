@@ -3,14 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
+from datetime import timedelta
 from html import escape
 
 from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import transaction
+from django.template.loader import render_to_string
+from django.urls import reverse
 from django.utils import timezone
 
+from accounts.telegram_bot import TelegramBot
 from fable5.content_resolution import normalize_option_values
 from fable5.services import (
     product_option_context,
@@ -18,14 +24,26 @@ from fable5.services import (
     variant_allows_purchase,
 )
 from orders.telegram_notifications import TelegramNotifier
-from storefront.models import RestockSubscription
+from storefront.models import Product, ProductStatus, RestockSubscription
 
 
 ACTIVE_STATUSES = (
     RestockSubscription.Status.DRAFT,
     RestockSubscription.Status.ACTIVE,
+    RestockSubscription.Status.SENDING,
     RestockSubscription.Status.FAILED,
 )
+
+AUTOMATIC_CHANNELS = (
+    RestockSubscription.Channel.TELEGRAM,
+    RestockSubscription.Channel.EMAIL,
+)
+DELIVERY_STATUSES = (
+    RestockSubscription.Status.ACTIVE,
+    RestockSubscription.Status.FAILED,
+)
+STALE_SENDING_AFTER = timedelta(minutes=15)
+MAX_RETRY_DELAY = timedelta(hours=24)
 
 
 def normalize_phone(value: str) -> str:
@@ -120,6 +138,228 @@ def mark_admin_notification(subscription) -> bool:
         subscription.last_error = ""
         subscription.save(update_fields=["admin_notified_at", "last_error", "updated_at"])
     return sent
+
+
+def subscription_is_available(subscription) -> bool:
+    """Recheck the exact persisted selection against live purchase rules."""
+
+    product = Product.objects.filter(
+        pk=subscription.product_id,
+        status=ProductStatus.PUBLISHED,
+    ).first()
+    if product is None or not subscription.color_variant_id:
+        return False
+    variant = product.color_variants.filter(pk=subscription.color_variant_id).first()
+    if variant is None:
+        return False
+    try:
+        options = normalize_option_values(subscription.option_values or {})
+    except (TypeError, ValueError):
+        return False
+    return variant_allows_purchase(
+        product,
+        variant,
+        fit_code=options.get("fit", ""),
+        size=subscription.size,
+        option_values=options,
+    )
+
+
+def schedule_restock_scan(product_id, variant_id):
+    """Wake matching automatic subscriptions without doing network I/O."""
+
+    if not product_id or not variant_id:
+        return 0
+    return RestockSubscription.objects.filter(
+        product_id=product_id,
+        color_variant_id=variant_id,
+        channel__in=AUTOMATIC_CHANNELS,
+        status__in=DELIVERY_STATUSES,
+    ).update(next_attempt_at=timezone.now())
+
+
+def due_subscriptions_queryset(
+    *, product_id=None, variant_id=None, subscription_id=None, now=None
+):
+    now = now or timezone.now()
+    queryset = RestockSubscription.objects.filter(
+        channel__in=AUTOMATIC_CHANNELS,
+        status__in=DELIVERY_STATUSES,
+        next_attempt_at__lte=now,
+    )
+    if product_id:
+        queryset = queryset.filter(product_id=product_id)
+    if variant_id:
+        queryset = queryset.filter(color_variant_id=variant_id)
+    if subscription_id:
+        queryset = queryset.filter(pk=subscription_id)
+    return queryset.order_by("next_attempt_at", "created_at", "pk")
+
+
+@transaction.atomic
+def claim_due_subscription(
+    *, product_id=None, variant_id=None, subscription_id=None, now=None
+):
+    """Claim one due, currently available delivery before any network call.
+
+    Delivery is intentionally at-least-once: if the process dies after the
+    provider accepts a message but before finalize_delivery commits, stale
+    recovery makes the delivery eligible again.
+    """
+
+    now = now or timezone.now()
+    while True:
+        subscription = (
+            due_subscriptions_queryset(
+                product_id=product_id,
+                variant_id=variant_id,
+                subscription_id=subscription_id,
+                now=now,
+            )
+            .select_for_update()
+            .select_related("product", "color_variant")
+            .first()
+        )
+        if subscription is None:
+            return None
+        if not subscription_is_available(subscription):
+            subscription.next_attempt_at = None
+            subscription.save(update_fields=["next_attempt_at", "updated_at"])
+            if subscription_id:
+                return None
+            continue
+        subscription.status = RestockSubscription.Status.SENDING
+        subscription.delivery_token = uuid.uuid4()
+        subscription.notification_attempts += 1
+        subscription.last_attempt_at = now
+        subscription.next_attempt_at = None
+        subscription.last_error = ""
+        subscription.save(update_fields=[
+            "status", "delivery_token", "notification_attempts",
+            "last_attempt_at", "next_attempt_at", "last_error", "updated_at",
+        ])
+        return subscription
+
+
+def _product_url(subscription) -> str:
+    base = (getattr(settings, "SITE_BASE_URL", "") or "https://twocomms.shop").rstrip("/")
+    return f"{base}{reverse('product', kwargs={'slug': subscription.product.slug})}"
+
+
+def _option_summary(subscription) -> str:
+    return " · ".join(
+        f"{label}: {value}"
+        for label, value in (subscription.option_labels or {}).items()
+    ) or "—"
+
+
+def _customer_message_context(subscription) -> dict:
+    return {
+        "subscription": subscription,
+        "product": subscription.product,
+        "product_url": _product_url(subscription),
+        "option_summary": _option_summary(subscription),
+    }
+
+
+def _send_telegram(subscription) -> bool:
+    if not subscription.telegram_chat_id:
+        raise ValueError("Telegram chat is not bound")
+    context = _customer_message_context(subscription)
+    message = render_to_string("email/restock_available.txt", context).strip()
+    if not TelegramBot().send_message(
+        subscription.telegram_chat_id,
+        message,
+        parse_mode=None,
+    ):
+        raise RuntimeError("Telegram provider rejected the message")
+    return True
+
+
+def _send_email(subscription) -> bool:
+    recipient = subscription.normalized_contact
+    if not recipient:
+        raise ValueError("Email recipient is missing")
+    context = _customer_message_context(subscription)
+    text_body = render_to_string("email/restock_available.txt", context).strip()
+    html_body = render_to_string("email/restock_available.html", context)
+    message = EmailMultiAlternatives(
+        subject=f"{subscription.size} знову в наявності — {subscription.product.title}",
+        body=text_body,
+        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+        to=[recipient],
+    )
+    message.attach_alternative(html_body, "text/html")
+    if message.send() != 1:
+        raise RuntimeError("Email provider did not accept the message")
+    return True
+
+
+def send_claimed_subscription(subscription) -> bool:
+    """Send an already claimed subscription; never call inside DB atomic."""
+
+    if subscription.status != RestockSubscription.Status.SENDING:
+        raise ValueError("Subscription is not claimed")
+    if subscription.channel == RestockSubscription.Channel.TELEGRAM:
+        return _send_telegram(subscription)
+    if subscription.channel == RestockSubscription.Channel.EMAIL:
+        return _send_email(subscription)
+    raise ValueError("Channel is not eligible for automatic delivery")
+
+
+def _retry_delay(attempts: int) -> timedelta:
+    exponent = min(max(int(attempts or 1) - 1, 0), 9)
+    minutes = 5 * (2 ** exponent)
+    return min(timedelta(minutes=minutes), MAX_RETRY_DELAY)
+
+
+@transaction.atomic
+def finalize_delivery(subscription_id, delivery_token, *, success, error="") -> bool:
+    subscription = RestockSubscription.objects.select_for_update().filter(
+        pk=subscription_id,
+        delivery_token=delivery_token,
+        status=RestockSubscription.Status.SENDING,
+    ).first()
+    if subscription is None:
+        return False
+    now = timezone.now()
+    subscription.delivery_token = None
+    if success:
+        subscription.status = RestockSubscription.Status.NOTIFIED
+        subscription.customer_notified_at = now
+        subscription.next_attempt_at = None
+        subscription.last_error = ""
+    else:
+        subscription.status = RestockSubscription.Status.FAILED
+        subscription.next_attempt_at = now + _retry_delay(subscription.notification_attempts)
+        subscription.last_error = str(error or "Delivery failed")[:2000]
+    subscription.save(update_fields=[
+        "status", "delivery_token", "customer_notified_at",
+        "next_attempt_at", "last_error", "updated_at",
+    ])
+    return True
+
+
+def recover_stale_sending(
+    *, product_id=None, variant_id=None, subscription_id=None, now=None
+) -> int:
+    now = now or timezone.now()
+    queryset = RestockSubscription.objects.filter(
+        status=RestockSubscription.Status.SENDING,
+        last_attempt_at__lte=now - STALE_SENDING_AFTER,
+    )
+    if product_id:
+        queryset = queryset.filter(product_id=product_id)
+    if variant_id:
+        queryset = queryset.filter(color_variant_id=variant_id)
+    if subscription_id:
+        queryset = queryset.filter(pk=subscription_id)
+    return queryset.update(
+        status=RestockSubscription.Status.FAILED,
+        delivery_token=None,
+        next_attempt_at=now,
+        last_error="Delivery claim expired before finalization",
+    )
 
 
 @transaction.atomic

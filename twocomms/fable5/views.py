@@ -942,6 +942,13 @@ def api_variant_save(request):
                 note=(s.get("note") or "")[:255],
             ))
         VariantSizeRule.objects.bulk_create(rules)
+        from storefront.services.restock import schedule_restock_scan
+
+        transaction.on_commit(
+            lambda product_id=product.pk, variant_id=variant.pk: schedule_restock_scan(
+                product_id, variant_id
+            )
+        )
 
     # A colour may inherit the shared product/fit grid or override it.
     if "size_grids" in data:

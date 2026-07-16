@@ -33,7 +33,8 @@ from .models import (
 class RestockSubscriptionAdmin(admin.ModelAdmin):
     list_display = (
         'product', 'size', 'channel', 'status', 'name',
-        'normalized_contact', 'created_at', 'admin_notified_at',
+        'normalized_contact', 'notification_attempts', 'next_attempt_at',
+        'created_at', 'admin_notified_at', 'customer_notified_at',
     )
     list_filter = ('channel', 'status', 'created_at')
     search_fields = (
@@ -43,7 +44,66 @@ class RestockSubscriptionAdmin(admin.ModelAdmin):
     readonly_fields = (
         'fingerprint', 'browser_session_key', 'request_ip_hash', 'user_agent',
         'created_at', 'updated_at', 'admin_notified_at', 'customer_notified_at',
+        'notification_attempts', 'last_attempt_at', 'delivery_token',
     )
+    actions = ('retry_notifications', 'close_subscriptions', 'reopen_subscriptions')
+
+    def _action_message(self, request, text, level=messages.SUCCESS):
+        if hasattr(request, '_messages'):
+            self.message_user(request, text, level=level)
+
+    @admin.action(description='Поставити автоматичне повідомлення в чергу')
+    def retry_notifications(self, request, queryset):
+        from django.utils import timezone
+
+        queued = queryset.filter(
+            channel__in=(
+                RestockSubscription.Channel.TELEGRAM,
+                RestockSubscription.Channel.EMAIL,
+            ),
+        ).exclude(status=RestockSubscription.Status.SENDING).update(
+            status=RestockSubscription.Status.ACTIVE,
+            next_attempt_at=timezone.now(),
+            delivery_token=None,
+            last_error='',
+        )
+        self._action_message(request, f'Поставлено в чергу: {queued}.')
+
+    @admin.action(description='Закрити вибрані заявки')
+    def close_subscriptions(self, request, queryset):
+        closed = queryset.exclude(
+            status=RestockSubscription.Status.SENDING,
+        ).update(
+            status=RestockSubscription.Status.CLOSED,
+            next_attempt_at=None,
+            delivery_token=None,
+        )
+        self._action_message(request, f'Закрито заявок: {closed}.')
+
+    @admin.action(description='Повторно відкрити вибрані заявки')
+    def reopen_subscriptions(self, request, queryset):
+        from django.utils import timezone
+
+        eligible = queryset.exclude(status=RestockSubscription.Status.SENDING)
+        automatic = eligible.filter(channel__in=(
+            RestockSubscription.Channel.TELEGRAM,
+            RestockSubscription.Channel.EMAIL,
+        )).update(
+            status=RestockSubscription.Status.ACTIVE,
+            next_attempt_at=timezone.now(),
+            delivery_token=None,
+            last_error='',
+        )
+        manual = eligible.filter(channel__in=(
+            RestockSubscription.Channel.PHONE,
+            RestockSubscription.Channel.WHATSAPP,
+        )).update(
+            status=RestockSubscription.Status.ACTIVE,
+            next_attempt_at=None,
+            delivery_token=None,
+            last_error='',
+        )
+        self._action_message(request, f'Повторно відкрито заявок: {automatic + manual}.')
 from .services.indexnow import (
     get_category_public_url,
     get_product_public_url,

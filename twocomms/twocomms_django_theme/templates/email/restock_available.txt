@@ -1,0 +1,8 @@
+{% autoescape off %}{{ product.title }} знову в наявності
+
+Розмір: {{ subscription.size }}
+Опції: {{ option_summary }}
+
+Переглянути товар: {{ product_url }}
+
+Ви отримали це повідомлення, тому що просили сповістити про наявність.{% endautoescape %}
