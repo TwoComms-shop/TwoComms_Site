@@ -15,10 +15,34 @@ base.html/контекст-процессор, наследование заци
 import logging
 import uuid
 
-from django.http import HttpResponseServerError
+from django.http import HttpResponseNotFound, HttpResponseServerError
 from django.template import loader
 
 logger = logging.getLogger('django.request')
+
+
+def subdomain_not_found(request, exception=None):
+    """Minimal error response for DB-dependent subdomains."""
+    response = HttpResponseNotFound(
+        '<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<title>Page not found</title><h1>Page not found</h1>'
+        '<p>The requested page does not exist.</p></html>',
+        content_type='text/html; charset=utf-8',
+    )
+    response['Cache-Control'] = 'no-store'
+    return response
+
+
+def subdomain_server_error(request):
+    """Minimal DB-free 500 response for management/finance hosts."""
+    response = HttpResponseServerError(
+        '<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<title>Server error</title><h1>Server error</h1>'
+        '<p>Please try again later.</p></html>',
+        content_type='text/html; charset=utf-8',
+    )
+    response['Cache-Control'] = 'no-store'
+    return response
 
 
 def server_error(request):

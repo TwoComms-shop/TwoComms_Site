@@ -4,6 +4,9 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
+handler404 = 'twocomms.error_views.subdomain_not_found'
+handler500 = 'twocomms.error_views.subdomain_server_error'
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('oauth/', include('social_django.urls', namespace='social')),
