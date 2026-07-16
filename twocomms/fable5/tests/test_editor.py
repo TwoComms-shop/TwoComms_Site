@@ -171,6 +171,23 @@ class Fable5EditorAccessTests(TestCase):
         self.assertIn(".f5-btn[hidden]", css)
         self.assertIn(".f5-topbar__actions { width: 100%; flex-wrap: wrap; }", css)
 
+    def test_editor_price_fields_can_shrink_inside_desktop_card(self):
+        css = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.css"
+        ).read_text(encoding="utf-8")
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "fable5"
+            / "editor.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(".f5-price-fields .f5-field { min-width: 0; }", css)
+        self.assertIn("fable5/editor.css' %}?v=20260716-responsive-v1", template)
+
     def test_javascript_transliteration_matches_server_for_russian_yo(self):
         javascript = (
             Path(__file__).resolve().parents[1]

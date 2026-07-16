@@ -232,6 +232,7 @@ textarea.f5-input { min-height: 72px; resize: vertical; }
 .f5-input--price { font-size: 22px; font-weight: 760; letter-spacing: -.02em; }
 .f5-row, .f5-price-fields { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .f5-price-fields { display: grid; grid-template-columns: 1.3fr 1fr 1fr; }
+.f5-price-fields .f5-field { min-width: 0; }
 .f5-slug-row { display: flex; gap: 8px; }
 .f5-check { display: inline-flex; align-items: center; gap: 9px; color: var(--f5-text); cursor: pointer; }
 .f5-check input { accent-color: var(--f5-violet); }
