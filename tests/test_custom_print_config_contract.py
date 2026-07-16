@@ -1,6 +1,7 @@
 import unittest
 
 from storefront.custom_print_config import (
+    ISO_SIZES,
     build_custom_print_config,
     build_placement_specs,
     normalize_custom_print_snapshot,
@@ -89,7 +90,7 @@ class CustomPrintConfigContractTests(unittest.TestCase):
 
         self.assertEqual(
             [item["value"] for item in config["progress_steps"]],
-            ["mode", "product", "config", "zones", "artwork", "quantity", "gift", "contact"],
+            ["format", "garment", "placement", "artwork", "quantity", "contact"],
         )
         self.assertEqual(
             [item["value"] for item in config["front_size_presets"]],
@@ -106,7 +107,7 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         self.assertEqual(config["front_size_default"], "A4")
         self.assertEqual(config["back_size_default"], "A4")
         self.assertEqual(config["artwork_services"][1]["price_delta"], 100)
-        self.assertIn("до 15 хв", config["artwork_services"][1]["hint"])
+        self.assertIn("почистити чи адаптувати", config["artwork_services"][1]["hint"])
         self.assertEqual(config["artwork_services"][2]["price_delta"], 300)
         self.assertEqual(config["products"]["hoodie"]["add_ons"][0]["price_delta"], 150)
         self.assertEqual(
@@ -126,6 +127,44 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         self.assertIn("hoodie", config["stage_profiles"])
         self.assertIn("regular", config["stage_profiles"]["hoodie"])
         self.assertIn("oversize", config["stage_profiles"]["hoodie"])
+
+    def test_config_exposes_guided_studio_preview_contract(self):
+        config = build_custom_print_config(
+            submit_url="https://twocomms.shop/custom-print/lead/",
+            safe_exit_url="https://twocomms.shop/custom-print/safe-exit/",
+            add_to_cart_url="https://twocomms.shop/custom-print/add-to-cart/",
+        )
+
+        self.assertEqual(
+            config["format_dimensions"],
+            {
+                "A6": {"width_mm": 105, "height_mm": 148},
+                "A5": {"width_mm": 148, "height_mm": 210},
+                "A4": {"width_mm": 210, "height_mm": 297},
+                "A3": {"width_mm": 297, "height_mm": 420},
+                "A2": {"width_mm": 420, "height_mm": 594},
+            },
+        )
+        self.assertEqual(ISO_SIZES["A4"], (210, 297))
+        self.assertIn("preview_assets", config)
+        self.assertIn("preview_calibration", config)
+        self.assertIn("ui_strings", config)
+        self.assertIn("artwork_file_required", config["ui_strings"])
+
+        expected_profiles = {
+            "hoodie:regular",
+            "hoodie:oversize",
+            "tshirt:regular",
+            "tshirt:oversize",
+            "longsleeve:regular",
+        }
+        self.assertEqual(set(config["preview_assets"]), expected_profiles)
+        for key, profile in config["preview_assets"].items():
+            self.assertTrue(profile["front"].endswith(".png"), key)
+            self.assertTrue(profile["back"].endswith(".png"), key)
+            self.assertGreater(config["preview_calibration"][key]["garment_width_mm"], 0)
+            self.assertIn("body", config["preview_calibration"][key]["zones"])
+            self.assertTrue(config["preview_calibration"][key]["allowed_zones"])
 
     def test_config_exposes_clean_hoodie_fabric_labels_and_premium_info(self):
         config = build_custom_print_config(

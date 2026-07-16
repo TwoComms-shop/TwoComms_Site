@@ -42,7 +42,7 @@
 
 {% block extra_css %}
   {{ block.super }}
-  <link rel="stylesheet" href="{% static 'css/custom-print-configurator.css' %}?v=20260628-manager-shortcut">
+  <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260716-guided-studio">
   <style>
     .cp-breadcrumbs {
       display: flex;
@@ -186,7 +186,7 @@
       <a class="cp-context-banner-link" href="{% url 'product' prefill_product.slug %}">{% trans 'Повернутись до товару' %}</a>
     </div>
     {% endif %}
-    <header class="cp-hero cp-hero--premium cp-hero--reference" data-hero>
+    <header class="cp-hero cp-hero--premium cp-hero--reference" data-hero data-custom-print-hero>
       <div class="cp-hero-copy">
         <div class="cp-animate-in cp-delay-1">
           <div class="cp-hero-brand">
@@ -200,10 +200,6 @@
           </div>
         </div>
 
-        <div class="cp-animate-in cp-delay-2">
-          <span class="cp-hero-badge">{% trans 'Кастомний одяг TwoComms' %}</span>
-        </div>
-        
         {% comment %}
         SEO v1.0 Phase 2 (2026-05-12) — finding (B2). Add a space
         before the line break so the plaintext extraction
@@ -217,26 +213,15 @@
         </p>
 
         <div class="cp-hero-actions cp-animate-in cp-delay-5">
-          <button class="cp-btn cp-btn--primary cp-btn--glow" type="button" data-start-flow>
+          <button class="cp-btn cp-btn--primary cp-btn--glow" type="button" data-start-flow data-action-start>
             <span class="cp-btn-shimmer"></span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v4"/><path d="M12 18v4"/><path d="m4.93 4.93 2.83 2.83"/><path d="m16.24 16.24 2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="m4.93 19.07 2.83-2.83"/><path d="m16.24 7.76 2.83-2.83"/></svg>
             {% trans 'Почати створення' %}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
           </button>
 
-          <a class="cp-btn cp-btn--telegram cp-btn--glass" href="https://t.me/twocomms" target="_blank" rel="noopener">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-            {% trans 'Написати нам у Telegram' %}
-          </a>
         </div>
 
-        <div class="cp-hero-proof-row cp-animate-in cp-delay-6" aria-label="{% trans 'Переваги кастомного друку' %}">
-          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8Z"/><path d="m9 12 2 2 4-5"/></svg>{% trans 'Преміум якість друку' %}</span>
-          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7h-5l-2-3h-2L9 7H4l2 13h12l2-13Z"/><path d="M9 7c0 1.5 1.2 3 3 3s3-1.5 3-3"/></svg>{% trans 'Будь-який тип одягу' %}</span>
-          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="12" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><circle cx="10.5" cy="17.5" r="2.5"/></svg>{% trans 'Будь-який колір та дизайн' %}</span>
-        </div>
-
-        <div class="cp-hero-signature cp-animate-in cp-delay-6" data-text="{% trans 'твій стиль, твої правила.' %}" aria-hidden="true">{% trans 'твій стиль, твої правила.' %}</div>
       </div>
 
       <div class="cp-hero-theatre cp-animate-in cp-delay-3" aria-label="{% trans 'Приклад кастомного одягу TwoComms' %}">
@@ -284,68 +269,36 @@
           </span>
         </figure>
 
-        <div class="cp-hero-palette" aria-label="{% trans 'Приклади кольорів' %}">
-          <span>{% trans 'Будь-який колір з палітри' %}</span>
-          <i style="--swatch:#090909"></i>
-          <i style="--swatch:#f3f4f6"></i>
-          <i style="--swatch:#d9bd93"></i>
-          <i style="--swatch:#8f7549"></i>
-          <i style="--swatch:#315eea"></i>
-          <i style="--swatch:#5a2bbf"></i>
-          <i style="--swatch:#c92516"></i>
-          <i class="cp-hero-swatch-rainbow"></i>
-          <b>{% trans '20+ кольорів' %}</b>
-          <button type="button" data-start-flow aria-label="{% trans 'Перейти до вибору кольору' %}">+</button>
-        </div>
       </div>
 
-      <aside class="cp-hero-options cp-animate-in cp-delay-4" aria-label="{% trans 'Можливості конфігуратора' %}">
-        <div class="cp-hero-option">
-          <span class="cp-hero-option-icon cp-hero-option-icon--violet" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20.4 3.7 16.2 2a4.6 4.6 0 0 1-8.4 0L3.6 3.7A2.2 2.2 0 0 0 2.3 6l.6 3.7a2.2 2.2 0 0 0 2.2 1.85H6V22h12V11.55h.9a2.2 2.2 0 0 0 2.2-1.85L21.7 6a2.2 2.2 0 0 0-1.3-2.3Z"/><path d="M8 2c.65 2 1.98 3 4 3s3.35-1 4-3"/></svg>
-          </span>
-          <div>
-            <strong>{% trans 'Тип одягу' %}</strong>
-            <p>{% trans 'Худі, футболки, лонгсліви та інший одяг на вибір' %}</p>
-          </div>
-        </div>
+    </header>
 
-        <div class="cp-hero-option">
-          <span class="cp-hero-option-icon cp-hero-option-icon--gold" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="12" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><circle cx="10.5" cy="17.5" r="2.5"/></svg>
-          </span>
-          <div>
-            <strong>{% trans 'Колір' %}</strong>
-            <p>{% trans 'Обери свій колір або будь-який з палітри' %}</p>
-            <span class="cp-hero-mini-swatches" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-          </div>
-        </div>
+    <section class="cp-draft-resume" data-draft-resume-card hidden aria-live="polite">
+      <div>
+        <small>{% trans 'Збережена конфігурація' %}</small>
+        <strong data-draft-resume-title data-title-pattern="{% trans 'Продовжити з кроку {step}' %}">{% trans 'Продовжити з кроку 1' %}</strong>
+        <span>{% trans 'Ваш попередній вибір залишився на цьому пристрої.' %}</span>
+      </div>
+      <div class="cp-draft-resume-actions">
+        <button type="button" class="cp-btn cp-btn--primary" data-draft-resume>{% trans 'Продовжити' %}</button>
+        <button type="button" class="cp-btn cp-btn--quiet" data-draft-restart>{% trans 'Почати заново' %}</button>
+      </div>
+    </section>
 
-        <div class="cp-hero-option">
-          <span class="cp-hero-option-icon cp-hero-option-icon--violet" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2" stroke-dasharray="4 3"/><path d="M3 9V5a2 2 0 0 1 2-2h4"/><path d="M15 3h4a2 2 0 0 1 2 2v4"/><path d="M21 15v4a2 2 0 0 1-2 2h-4"/><path d="M9 21H5a2 2 0 0 1-2-2v-4"/></svg>
-          </span>
-          <div>
-            <strong>{% trans 'Зона друку' %}</strong>
-            <p>{% trans 'Перед, спинка, рукави або будь-яка інша зона' %}</p>
-          </div>
-        </div>
-
-        <div class="cp-hero-option">
-          <span class="cp-hero-option-icon cp-hero-option-icon--gold" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.4"/><circle cx="5.4" cy="7.2" r="2.1"/><circle cx="18.6" cy="7.2" r="2.1"/><circle cx="5.8" cy="17.4" r="2.1"/><circle cx="18.2" cy="17.4" r="2.1"/><path d="m7.1 8.45 3 2.15"/><path d="m16.9 8.45-3 2.15"/><path d="m7.55 16.15 2.65-2.35"/><path d="m16.45 16.15-2.65-2.35"/></svg>
-          </span>
-          <div>
-            <strong>{% trans 'Матеріал' %}</strong>
-            <p>{% trans 'Преміальні тканини та унікальна термотканина, що змінює відтінок від температури.' %}</p>
-          </div>
-        </div>
-      </aside>
-
-      <a class="cp-btn cp-btn--telegram cp-btn--glass cp-hero-telegram-mobile" href="https://t.me/twocomms" target="_blank" rel="noopener">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        {% trans 'Написати нам у Telegram' %}
-      </a>
+    <header class="cp-studio-appbar" data-studio-appbar hidden>
+      <button type="button" class="cp-icon-button" data-studio-exit aria-label="{% trans 'Вийти з конструктора' %}">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m15 18-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="cp-studio-appbar-progress">
+        <span data-appbar-step data-step-pattern="{% trans 'Крок {current} з {total}' %}">{% trans 'Крок 1 з 6' %}</span>
+        <div class="cp-studio-progress-track" aria-hidden="true"><i data-appbar-progress></i></div>
+      </div>
+      <button type="button" class="cp-icon-button" data-preview-open aria-label="{% trans 'Перегляд принта' %}">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.8"/></svg>
+      </button>
+      <button type="button" class="cp-icon-button" data-manager-open aria-label="{% trans 'Звʼязатися з менеджером' %}">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
     </header>
 
     <form id="customPrintConfiguratorForm" class="cp-configurator" novalidate>
@@ -372,30 +325,17 @@
                 <span>{% trans 'Зі спини' %}</span>
               </button>
             </div>
+            <button type="button" class="cp-preview-open" data-preview-open>{% trans 'Перегляд принта' %}</button>
           </div>
 
           <div class="cp-stage-frame">
-            <div class="cp-stage-aura"></div>
-            <div class="cp-stage-orbit"></div>
-            <div class="cp-stage-placeholder" data-stage-placeholder>
-              <strong>{{ custom_print_config.stage_meta.placeholder_title }}</strong>
-              <span>{{ custom_print_config.stage_meta.placeholder_note }}</span>
-            </div>
-            <div class="cp-garment-shell">
-              <div class="cp-stage-ground"></div>
-              <div class="cp-stage-rotor" data-stage-rotor>
-                <div class="cp-stage-overlay" data-stage-overlay aria-hidden="true"></div>
-                <div class="cp-garment cp-garment--hoodie cp-garment--front" data-garment aria-hidden="true"></div>
-                <div class="cp-zone-layer" data-zone-layer aria-label="{% trans 'Доступні зони друку' %}"></div>
-              </div>
+            <div class="cp-png-preview" data-png-preview aria-live="polite">
+              <div class="cp-png-preview-color" data-preview-color></div>
+              <img data-preview-garment alt="" width="1200" height="1400">
+              <img data-preview-lacing alt="" width="1200" height="1400" hidden>
+              <div class="cp-png-preview-zones" data-preview-zones></div>
             </div>
           </div>
-
-          <div class="cp-stage-guide" data-stage-guide>
-            {% trans 'Торкніться мітки, щоб подивитися placement на виробі.' %}
-          </div>
-
-          <div class="cp-stage-legend" data-stage-legend aria-label="{% trans 'Зони друку на сцені' %}"></div>
 
           <div class="cp-stage-meta">
             <div class="cp-stage-copy">
@@ -448,6 +388,7 @@
               </div>
             </div>
 
+          <div class="cp-studio-step" data-studio-step="format">
           <!-- STEP 1: Mode (B2C / B2B) -->
           <section class="cp-step cp-step--mode" data-step="mode" id="cp-step-mode">
             <div class="cp-step-summary" data-step-summary-row>
@@ -475,7 +416,9 @@
               </div>
             </div>
           </section>
+          </div>
 
+          <div class="cp-studio-step" data-studio-step="garment">
           <!-- STEP 2: Product -->
           <section class="cp-step is-pending" data-step="product" id="cp-step-product">
             <div class="cp-step-summary" data-step-summary-row>
@@ -562,7 +505,9 @@
               </div>
             </div>
           </section>
+          </div>
 
+          <div class="cp-studio-step" data-studio-step="placement">
           <!-- STEP 4: Zones + premium addons -->
           <section class="cp-step is-pending" data-step="zones" id="cp-step-zones">
             <div class="cp-step-summary" data-step-summary-row>
@@ -658,7 +603,9 @@
               </div>
             </div>
           </section>
+          </div>
 
+          <div class="cp-studio-step" data-studio-step="artwork">
           <!-- STEP 5: Artwork (per-zone uploads) -->
           <section class="cp-step is-pending" data-step="artwork" id="cp-step-artwork">
             <div class="cp-step-summary" data-step-summary-row>
@@ -704,7 +651,9 @@
               </div>
             </div>
           </section>
+          </div>
 
+          <div class="cp-studio-step" data-studio-step="quantity">
           <!-- STEP 6: Quantity + Smart sizing -->
           <section class="cp-step is-pending" data-step="quantity" id="cp-step-quantity">
             <div class="cp-step-summary" data-step-summary-row>
@@ -749,9 +698,9 @@
                 </label>
               </div>
 
-              <label class="cp-field" for="cp-garment-note" data-garment-note-wrap hidden>
+              <label class="cp-field" for="cp-garment-note" data-own-item-note-wrap hidden>
                 <span>{% trans 'Опис свого виробу' %}</span>
-                <textarea id="cp-garment-note" name="garment_note" rows="3" data-garment-note-input placeholder="{% trans 'Матеріал, колір, крій, стан виробу та все, що важливо для прорахунку' %}"></textarea>
+                <textarea id="cp-garment-note" name="garment_note" rows="3" data-own-item-note-input placeholder="{% trans 'Матеріал, колір, крій, стан виробу та все, що важливо для прорахунку' %}"></textarea>
               </label>
 
               <div class="cp-step-actions">
@@ -810,7 +759,9 @@
               </div>
             </div>
           </section>
+          </div>
 
+          <div class="cp-studio-step" data-studio-step="contact">
           <!-- STEP 8: Contact + dual final -->
           <section class="cp-step is-pending" data-step="contact" id="cp-step-contact">
             <div class="cp-step-summary" data-step-summary-row>
@@ -910,12 +861,13 @@
             </div>
           </section>
           </div>
+          </div>
         </div>
       </div>
     </form>
 
     {# Mobile sticky bar — видимий тільки на мобільних, показує ціну та основну дію поточного шага. #}
-    <div class="cp-mobile-bottom-bar" data-mobile-bottom-bar hidden role="region" aria-label="{% trans 'Підсумок та основна дія' %}">
+    <div class="cp-mobile-action-bar cp-mobile-bottom-bar" data-mobile-action-bar data-mobile-bottom-bar hidden role="region" aria-label="{% trans 'Підсумок та основна дія' %}">
       <div class="cp-mobile-bottom-bar-info">
         <small data-mobile-bar-label>{% trans 'Поточна ціна' %}</small>
         <strong data-mobile-bar-total>{% trans '—' %}</strong>
@@ -928,6 +880,62 @@
         </svg>
       </button>
     </div>
+
+    <dialog class="cp-dialog cp-preview-dialog" data-preview-dialog aria-labelledby="cp-preview-dialog-title">
+      <div class="cp-dialog-shell cp-preview-dialog-shell">
+        <header class="cp-dialog-head">
+          <div>
+            <small>{% trans 'Пропорційний перегляд' %}</small>
+            <h2 id="cp-preview-dialog-title">{% trans 'Розташування принта' %}</h2>
+          </div>
+          <button type="button" class="cp-icon-button" data-dialog-close aria-label="{% trans 'Закрити' %}">×</button>
+        </header>
+        <div class="cp-stage-view-switch" role="group" aria-label="{% trans 'Сторона виробу' %}">
+          <button type="button" class="is-active" data-stage-view="front">{% trans 'Спереду' %}</button>
+          <button type="button" data-stage-view="back">{% trans 'Зі спини' %}</button>
+        </div>
+        <div class="cp-preview-dialog-canvas">
+          <div class="cp-png-preview" data-png-preview>
+            <div class="cp-png-preview-color" data-preview-color></div>
+            <img data-preview-garment alt="" width="1200" height="1400">
+            <img data-preview-lacing alt="" width="1200" height="1400" hidden>
+            <div class="cp-png-preview-zones" data-preview-zones></div>
+          </div>
+        </div>
+        <p class="cp-preview-info">{% trans 'Перегляд пропорційний контрольному виробу. Фінальні відступи та технологічні допуски перевірить менеджер.' %}</p>
+      </div>
+    </dialog>
+
+    <dialog class="cp-dialog cp-manager-dialog" data-manager-dialog aria-labelledby="cp-manager-dialog-title">
+      <div class="cp-dialog-shell">
+        <header class="cp-dialog-head">
+          <div>
+            <small>TwoComms</small>
+            <h2 id="cp-manager-dialog-title" data-manager-title data-title-default="{% trans 'Звʼязатися з менеджером' %}" data-title-b2b="{% trans 'Обговорити партію з менеджером TwoComms' %}">{% trans 'Звʼязатися з менеджером' %}</h2>
+          </div>
+          <button type="button" class="cp-icon-button" data-dialog-close aria-label="{% trans 'Закрити' %}">×</button>
+        </header>
+        <p data-manager-copy>{% trans 'Чернетку буде збережено. Надішліть макет, референс або коротко опишіть ідею — менеджер продовжить з поточного кроку.' %}</p>
+        <a class="cp-dialog-primary" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener" data-manager-telegram>{% trans 'Написати в Telegram' %}</a>
+        <button type="button" class="cp-dialog-secondary" data-dialog-close>{% trans 'Залишитися в конструкторі' %}</button>
+      </div>
+    </dialog>
+
+    <dialog class="cp-dialog cp-cart-review-dialog" data-cart-review-dialog aria-labelledby="cp-cart-review-title">
+      <div class="cp-dialog-shell">
+        <header class="cp-dialog-head">
+          <div>
+            <small>{% trans 'Заявку додано' %}</small>
+            <h2 id="cp-cart-review-title">{% trans 'Менеджер перевірить конфігурацію' %}</h2>
+          </div>
+          <button type="button" class="cp-icon-button" data-dialog-close aria-label="{% trans 'Закрити' %}">×</button>
+        </header>
+        <div class="cp-cart-review-number" data-cart-review-number></div>
+        <p>{% trans 'Перед запуском у виробництво ми перевіримо файл, розташування та доступність основи. Після перевірки ціна може бути уточнена, а оплату узгодимо окремо.' %}</p>
+        <a class="cp-dialog-primary" href="#" data-cart-review-go>{% trans 'Зрозуміло, перейти до кошика' %}</a>
+        <a class="cp-dialog-secondary" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener" data-cart-review-telegram>{% trans 'Написати в Telegram' %}</a>
+      </div>
+    </dialog>
 
     <div class="cp-support-stack">
       {% comment %}
@@ -1141,6 +1149,10 @@
 {% block extra_js %}
   {{ block.super }}
   <script src="{% static 'js/custom-print-submission-policy.js' %}" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260611-stage3d" defer></script>
+  <script src="{% static 'js/custom-print-state.js' %}?v=20260716-guided-studio" defer></script>
+  <script src="{% static 'js/custom-print-preview.js' %}?v=20260716-guided-studio" defer></script>
+  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260716-guided-studio" defer></script>
+  <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260716-guided-studio" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260716-guided-studio" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

@@ -29,15 +29,28 @@ B2B_TIER = {
 SIZE_GRID = ["XS", "S", "M", "L", "XL", "2XL"]
 
 PROGRESS_STEPS = [
-    {"value": "mode", "label": _("Формат")},
-    {"value": "product", "label": _("Виріб")},
-    {"value": "config", "label": _("Налаштування")},
-    {"value": "zones", "label": _("Зони")},
+    {"value": "format", "label": _("Формат")},
+    {"value": "garment", "label": _("Виріб")},
+    {"value": "placement", "label": _("Розташування")},
     {"value": "artwork", "label": _("Макет")},
     {"value": "quantity", "label": _("Кількість")},
-    {"value": "gift", "label": _("Подарунок")},
-    {"value": "contact", "label": _("Контакт")},
+    {"value": "contact", "label": _("Контакт і перевірка")},
 ]
+
+# Runtime validation copy belongs in the server configuration so the browser
+# does not become a second, untranslatable source of customer-facing text.
+UI_STRINGS = {
+    "mode_required": _("Оберіть формат замовлення."),
+    "product_required": _("Оберіть виріб."),
+    "product_config_required": _("Завершіть налаштування виробу."),
+    "placement_required": _("Оберіть і налаштуйте зони друку."),
+    "artwork_service_required": _("Оберіть сценарій роботи з макетом."),
+    "artwork_brief_design_required": _("Опишіть бриф / завдання для дизайну."),
+    "artwork_brief_adjust_required": _("Опишіть, що саме потрібно змінити у файлі."),
+    "artwork_file_required": _("Додайте макет для кожної вибраної зони."),
+    "quantity_required": _("Заповніть кількість і розміри."),
+    "contact_required": _("Заповніть ім'я, канал зв'язку і контакт."),
+}
 
 FRONT_SIZE_PRESETS = [
     {"value": "A6", "label": "A6", "stage_scale": 0.44},
@@ -256,6 +269,60 @@ ISO_SIZES = {
     "A4": (210, 297),
     "A3": (297, 420),
     "A2": (420, 594),
+}
+
+FORMAT_DIMENSIONS = {
+    key: {"width_mm": width_mm, "height_mm": height_mm}
+    for key, (width_mm, height_mm) in ISO_SIZES.items()
+}
+
+PREVIEW_ASSETS = {
+    "hoodie:regular": {
+        "front": "/static/img/configurator/studio/hoodie-regular-front.png",
+        "back": "/static/img/configurator/studio/hoodie-regular-back.png",
+        "lacing": "/static/img/configurator/studio/hoodie-lacing.png",
+    },
+    "hoodie:oversize": {
+        "front": "/static/img/configurator/studio/hoodie-oversize-front.png",
+        "back": "/static/img/configurator/studio/hoodie-oversize-back.png",
+        "lacing": "/static/img/configurator/studio/hoodie-lacing.png",
+    },
+    "tshirt:regular": {
+        "front": "/static/img/configurator/studio/tshirt-regular-front.png",
+        "back": "/static/img/configurator/studio/tshirt-regular-back.png",
+    },
+    "tshirt:oversize": {
+        "front": "/static/img/configurator/studio/tshirt-oversize-front.png",
+        "back": "/static/img/configurator/studio/tshirt-oversize-back.png",
+    },
+    "longsleeve:regular": {
+        "front": "/static/img/configurator/studio/longsleeve-front.png",
+        "back": "/static/img/configurator/studio/longsleeve-back.png",
+    },
+}
+
+
+def _preview_calibration(garment_width_mm: int, allowed_zones: list[str]) -> dict:
+    return {
+        "canvas": {"width": 1200, "height": 1400},
+        "garment_width_mm": garment_width_mm,
+        "allowed_zones": allowed_zones,
+        "zones": {
+            "body": {"x": 25.0, "y": 16.0, "width": 50.0, "height": 72.0},
+            "front": {"x": 50.0, "y": 43.0},
+            "back": {"x": 50.0, "y": 44.0},
+            "sleeve_left": {"x": 17.0, "y": 48.0, "rotate": 12},
+            "sleeve_right": {"x": 83.0, "y": 48.0, "rotate": -12},
+        },
+    }
+
+
+PREVIEW_CALIBRATION = {
+    "hoodie:regular": _preview_calibration(600, ["front", "back", "sleeve"]),
+    "hoodie:oversize": _preview_calibration(650, ["front", "back", "sleeve"]),
+    "tshirt:regular": _preview_calibration(520, ["front", "back"]),
+    "tshirt:oversize": _preview_calibration(600, ["front", "back"]),
+    "longsleeve:regular": _preview_calibration(540, ["front", "back", "sleeve"]),
 }
 
 def calc_iso_box(format_key: str, body_width_mm: float, svg_body_width: float, svg_collar_y: float, top_offset_mm: float = 50, x_center: float = 50, radius: float = 24, shape: str = "panel", padding_mm: float = 0) -> dict:
@@ -1263,6 +1330,10 @@ def build_custom_print_config(
         "b2b_tier": deepcopy(B2B_TIER),
         "size_grid": list(SIZE_GRID),
         "progress_steps": deepcopy(PROGRESS_STEPS),
+        "ui_strings": deepcopy(UI_STRINGS),
+        "preview_assets": deepcopy(PREVIEW_ASSETS),
+        "preview_calibration": deepcopy(PREVIEW_CALIBRATION),
+        "format_dimensions": deepcopy(FORMAT_DIMENSIONS),
         "front_size_presets": deepcopy(FRONT_SIZE_PRESETS),
         "front_size_default": FRONT_SIZE_DEFAULT,
         "back_size_presets": deepcopy(BACK_SIZE_PRESETS),

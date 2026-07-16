@@ -10174,3 +10174,72 @@ msgstr "built to carry the story forward"
 #: twocomms_django_theme/templates/pages/catalog.html:211
 msgid "Каталог одягу TwoComms"
 msgstr "TwoComms clothing catalog"
+
+# Custom Print Guided Product Studio (2026-07-16)
+msgid "Збережена конфігурація"
+msgstr "Saved configuration"
+
+#, python-brace-format
+msgid "Продовжити з кроку {step}"
+msgstr "Continue from step {step}"
+
+msgid "Продовжити з кроку 1"
+msgstr "Continue from step 1"
+
+msgid "Ваш попередній вибір залишився на цьому пристрої."
+msgstr "Your previous choices are saved on this device."
+
+msgid "Почати заново"
+msgstr "Start over"
+
+msgid "Вийти з конструктора"
+msgstr "Exit the builder"
+
+#, python-brace-format
+msgid "Крок {current} з {total}"
+msgstr "Step {current} of {total}"
+
+msgid "Крок 1 з 6"
+msgstr "Step 1 of 6"
+
+msgid "Звʼязатися з менеджером"
+msgstr "Contact a manager"
+
+msgid "Перегляд принта"
+msgstr "Print preview"
+
+msgid "Пропорційний перегляд"
+msgstr "Scaled preview"
+
+msgid "Розташування принта"
+msgstr "Print placement"
+
+msgid "Перегляд пропорційний контрольному виробу. Фінальні відступи та технологічні допуски перевірить менеджер."
+msgstr "The preview is proportional to the reference garment. A manager will verify final offsets and production tolerances."
+
+msgid "Обговорити партію з менеджером TwoComms"
+msgstr "Discuss the batch with a TwoComms manager"
+
+msgid "Чернетку буде збережено. Надішліть макет, референс або коротко опишіть ідею — менеджер продовжить з поточного кроку."
+msgstr "Your draft will be saved. Send the artwork, a reference, or a short description and the manager will continue from the current step."
+
+msgid "Залишитися в конструкторі"
+msgstr "Stay in the builder"
+
+msgid "Заявку додано"
+msgstr "Request added"
+
+msgid "Менеджер перевірить конфігурацію"
+msgstr "A manager will review the configuration"
+
+msgid "Перед запуском у виробництво ми перевіримо файл, розташування та доступність основи. Після перевірки ціна може бути уточнена, а оплату узгодимо окремо."
+msgstr "Before production, we will verify the file, placement, and garment availability. The price may be adjusted after review, and payment will be agreed separately."
+
+msgid "Зрозуміло, перейти до кошика"
+msgstr "Got it, go to cart"
+
+msgid "Розташування"
+msgstr "Placement"
+
+msgid "Контакт і перевірка"
+msgstr "Contact and review"

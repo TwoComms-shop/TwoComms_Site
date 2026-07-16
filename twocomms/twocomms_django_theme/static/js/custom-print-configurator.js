@@ -24,6 +24,8 @@
   const STORAGE_KEY = CONFIG.storage_key || "twocomms.custom_print.v2.draft";
   const TRACK_EVENT_URL = CONFIG.track_event_url || "/api/track-event/";
   const STEPS = ["mode", "product", "config", "zones", "artwork", "quantity", "gift", "contact"];
+  const STUDIO_STEPS = CONFIG.progress_steps || [];
+  const stateTools = globalThis.CustomPrintStateTools;
   const STAGE_VISIBLE_AFTER = new Set(STEPS.filter((step) => step !== "mode"));
   const FRONT_SIZE_DEFAULT = CONFIG.front_size_default || "A4";
   const BACK_SIZE_DEFAULT = CONFIG.back_size_default || "A4";
@@ -41,6 +43,7 @@
     return acc;
   }, {});
   const STAGE_PROFILES = CONFIG.stage_profiles || {};
+  const UI_STRINGS = CONFIG.ui_strings || {};
   const submissionPolicy = globalThis.CustomPrintSubmissionPolicy || null;
   const mobileProgressQuery = globalThis.matchMedia ? globalThis.matchMedia("(max-width: 720px)") : null;
 
@@ -51,9 +54,14 @@
     enteredSteps: new Set(),
     completedSteps: new Set(),
   };
+  let leadSubmitInFlight = false;
+  let cartSubmitInFlight = false;
+
+  function ui(key, fallback) {
+    return UI_STRINGS[key] || fallback;
+  }
 
   // ── DOM refs ────────────────────────────────────────────────
-  const STAGE_ROTOR = { angle: 0, raf: 0, dragging: false, lastSig: null };
   const plateArtCache = new Map();
 
   const dom = {
@@ -71,15 +79,7 @@
     stageZones: root.querySelector("[data-stage-zones]"),
     stageAddons: root.querySelector("[data-stage-addons]"),
     stageLabel: root.querySelector("[data-stage-label]"),
-    stagePlaceholder: root.querySelector("[data-stage-placeholder]"),
     stageViewSwitch: root.querySelectorAll("[data-stage-view]"),
-    stageGuide: root.querySelector("[data-stage-guide]"),
-    stageLegend: root.querySelector("[data-stage-legend]"),
-    garment: root.querySelector("[data-garment]"),
-    stageRotor: root.querySelector("[data-stage-rotor]"),
-    stageFrame: root.querySelector(".cp-stage-frame"),
-    stageOverlay: root.querySelector("[data-stage-overlay]"),
-    zoneLayer: root.querySelector("[data-zone-layer]"),
     receiptTotal: root.querySelector("[data-receipt-total]"),
     receiptList: root.querySelector("[data-receipt-list]"),
     receiptMode: root.querySelector("[data-receipt-mode]"),
@@ -121,8 +121,8 @@
     sizeManagerBtn: root.querySelector("[data-size-manager]"),
     sizesNoteWrap: root.querySelector("[data-sizes-note-wrap]"),
     sizesNoteInput: root.querySelector("[data-sizes-note-input]"),
-    garmentNoteWrap: root.querySelector("[data-garment-note-wrap]"),
-    garmentNoteInput: root.querySelector("[data-garment-note-input]"),
+    garmentNoteWrap: root.querySelector("[data-own-item-note-wrap]"),
+    garmentNoteInput: root.querySelector("[data-own-item-note-input]"),
     b2bMeta: root.querySelector("[data-b2b-meta]"),
     b2bDiscount: root.querySelector("[data-b2b-discount]"),
     giftToggle: root.querySelector("[data-gift-toggle]"),
@@ -150,11 +150,25 @@
     mobileBarMeta: root.querySelector("[data-mobile-bar-meta]") || document.querySelector("[data-mobile-bar-meta]"),
     mobileBarAction: root.querySelector("[data-mobile-bar-action]") || document.querySelector("[data-mobile-bar-action]"),
     mobileBarActionLabel: root.querySelector("[data-mobile-bar-action-label]") || document.querySelector("[data-mobile-bar-action-label]"),
+    draftResumeCard: root.querySelector("[data-draft-resume-card]"),
+    draftResumeTitle: root.querySelector("[data-draft-resume-title]"),
+    draftResumeButton: root.querySelector("[data-draft-resume]"),
+    draftRestartButton: root.querySelector("[data-draft-restart]"),
+    managerButton: root.querySelector("[data-manager-open]"),
   };
   const progressHome = dom.progressShell ? document.createComment("cp-progress-home") : null;
   if (progressHome && dom.progressShell?.parentNode) {
     dom.progressShell.parentNode.insertBefore(progressHome, dom.progressShell);
   }
+  const dialogFlow = globalThis.CustomPrintSubmitFlow?.create(root) || null;
+  const previewController = globalThis.CustomPrintPreview?.create({ root, config: CONFIG, getState: () => STATE }) || null;
+  const mobileShell = globalThis.CustomPrintMobileShell?.create({
+    root,
+    mobileBar: dom.mobileBar,
+    onExit: exitStudio,
+    onManager: openManagerDialog,
+    onPreview: openPreviewDialog,
+  }) || null;
 
   init();
   mobileProgressQuery?.addEventListener?.("change", () => {
@@ -266,6 +280,7 @@
     if (!stepKey || analyticsState.completedSteps.has(stepKey)) return;
     analyticsState.completedSteps.add(stepKey);
     sendAnalyticsEvent("custom_print_step_complete", buildAnalyticsMetadata({ step_key: stepKey, ...extra }));
+    sendAnalyticsEvent("step_complete", buildAnalyticsMetadata({ step_key: stepKey, ...extra }));
   }
 
   function init() {
@@ -289,9 +304,37 @@
     bindGenericInputs();
     bindHeroMotion();
     bindMobileBottomBar();
-    loadDraft();
+    setupDraftResume();
     setActiveStep(STATE.ui.current_step || "mode", { silent: true });
     refreshAll();
+  }
+
+  function enterStudio(trigger = "start_button") {
+    ensureFlowStarted(trigger);
+    mobileShell?.setActive(true);
+    setActiveStep(STATE.ui.current_step || "mode", { silent: true });
+    root.querySelector("[data-studio-appbar]")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function exitStudio() {
+    persistDraft();
+    mobileShell?.setActive(false);
+    dom.hero?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function openPreviewDialog(event) {
+    previewController?.render();
+    sendAnalyticsEvent("preview_open", buildAnalyticsMetadata({ studio_step: stateTools?.fromInternal(STATE.ui.current_step) }));
+    dialogFlow?.openPreviewDialog(event?.currentTarget || event?.target);
+  }
+
+  function openManagerDialog(event) {
+    persistDraft();
+    sendAnalyticsEvent("manager_open", buildAnalyticsMetadata({ studio_step: stateTools?.fromInternal(STATE.ui.current_step) }));
+    dialogFlow?.openManagerDialog({
+      trigger: event?.currentTarget || event?.target,
+      isB2b: STATE.mode === "brand",
+    });
   }
 
   function bindHeroMotion() {
@@ -698,20 +741,20 @@
     const issues = [];
     const serviceKind = STATE.artwork.service_kind;
     if (!serviceKind) {
-      issues.push("Оберіть послугу для макета.");
+      issues.push(ui("artwork_service_required", "Оберіть сценарій роботи з макетом."));
     }
     if (serviceKind === "design" && !STATE.notes.brief.trim()) {
-      issues.push("Опишіть бриф / завдання для дизайну.");
+      issues.push(ui("artwork_brief_design_required", "Опишіть бриф / завдання для дизайну."));
     }
     if (serviceKind === "adjust") {
       if (!STATE.notes.brief.trim()) {
-        issues.push("Опишіть, що саме потрібно змінити у макеті.");
+        issues.push(ui("artwork_brief_adjust_required", "Опишіть, що саме потрібно змінити у файлі."));
       }
       const missingPlacements = getRequiredArtworkPlacements()
         .filter((placement) => !(filesByPlacement.get(placement.placement_key) || []).length)
         .map((placement) => placement.label);
       if (missingPlacements.length) {
-        issues.push(`Додайте макети для: ${missingPlacements.join(", ")}.`);
+        issues.push(`${ui("artwork_file_required", "Додайте макет для кожної вибраної зони.")} ${missingPlacements.join(", ")}.`);
       }
     }
     if (serviceKind === "ready") {
@@ -719,7 +762,7 @@
         .filter((placement) => !(filesByPlacement.get(placement.placement_key) || []).length)
         .map((placement) => placement.label);
       if (missingPlacements.length) {
-        issues.push(`Додайте готові макети для: ${missingPlacements.join(", ")}.`);
+        issues.push(`${ui("artwork_file_required", "Додайте макет для кожної вибраної зони.")} ${missingPlacements.join(", ")}.`);
       }
     }
     return issues;
@@ -1040,7 +1083,6 @@
     // Force color update if current isn't in scope
     if (colors.length > 0 && !colors.some(c => c.value === STATE.product.color)) {
       STATE.product.color = colors[0].value;
-      applyGarmentColor();
     }
 
     colors.forEach((c) => {
@@ -1053,7 +1095,6 @@
       btn.innerHTML = `<span class="cp-swatch-dot" style="background:${c.hex}"></span><span>${c.label}</span>`;
       btn.addEventListener("click", () => {
         STATE.product.color = c.value;
-        applyGarmentColor();
         renderColorChips();
         refreshAll();
         persistDraft();
@@ -1103,7 +1144,6 @@
     renderFrontSizeOptions();
     renderBackSizeOptions();
     renderSleeveControls();
-    renderZoneOverlay();
   }
 
   function getZoneCardMeta(zone) {
@@ -1656,80 +1696,6 @@
     });
   }
 
-  // ── Stage rendering ─────────────────────────────────────────
-  function applyGarmentColor() {
-    if (!dom.garment) return;
-    const cfg = getProductConfig();
-    const color = (cfg?.colors || []).find((c) => c.value === STATE.product.color);
-    const base = color?.hex || "#4a454e";
-    dom.garment.style.setProperty("--cp-stage-base-fill", mixHex(base, "#1f1916", 0.08));
-    dom.garment.style.setProperty("--cp-stage-top-fill", mixHex(base, "#ffffff", 0.16));
-    dom.garment.style.setProperty("--cp-stage-shade-fill", mixHex(base, "#000000", 0.32));
-    dom.garment.style.setProperty("--cp-stage-stroke", mixHex(base, "#ffffff", 0.42));
-    dom.garment.style.setProperty("--cp-stage-shadow", mixHex(base, "#000000", 0.58));
-    // Реалістична палітра тканини для нових SVG-виробів
-    const lum = hexLuminance(base);
-    dom.garment.style.setProperty("--cp-g-hi", mixHex(base, "#ffffff", 0.16));
-    dom.garment.style.setProperty("--cp-g-base", base);
-    dom.garment.style.setProperty("--cp-g-lo", mixHex(base, "#000000", 0.2));
-    dom.garment.style.setProperty("--cp-g-deep", mixHex(base, "#000000", 0.38));
-    dom.garment.style.setProperty("--cp-g-line", lum > 0.45 ? mixHex(base, "#000000", 0.42) : mixHex(base, "#ffffff", 0.36));
-    dom.garment.style.setProperty("--cp-g-inner-hi", mixHex(base, "#000000", 0.55));
-    dom.garment.style.setProperty("--cp-g-inner-lo", mixHex(base, "#000000", 0.75));
-    dom.garment.style.setProperty("--cp-g-cord", lum > 0.45 ? mixHex(base, "#000000", 0.32) : mixHex(base, "#ffffff", 0.14));
-    dom.garment.style.setProperty("--cp-g-cord-lace", lum > 0.45 ? "#16151a" : "#e8e2d4");
-  }
-
-  function hexLuminance(hex) {
-    const normalized = String(hex || "").replace("#", "").padEnd(6, "0").slice(0, 6);
-    const r = parseInt(normalized.slice(0, 2), 16);
-    const g = parseInt(normalized.slice(2, 4), 16);
-    const b = parseInt(normalized.slice(4, 6), 16);
-    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  }
-
-  function applyGarmentAddons() {
-    if (!dom.garment) return;
-    const lacing = (STATE.print.add_ons || []).includes("lacing");
-    dom.garment.classList.toggle("cp-garment--lacing", lacing);
-  }
-
-  function applyGarmentType() {
-    if (!dom.garment) return;
-    const type = getStageType();
-    dom.garment.classList.remove("cp-garment--hoodie", "cp-garment--tshirt", "cp-garment--longsleeve", "cp-garment--customer_garment", "cp-garment-fit--regular", "cp-garment-fit--oversize", "is-placeholder");
-    dom.garment.classList.add(
-      type === "tshirt" ? "cp-garment--tshirt" :
-      type === "longsleeve" ? "cp-garment--longsleeve" :
-      type === "customer_garment" ? "cp-garment--customer_garment" :
-      "cp-garment--hoodie"
-    );
-    if (STATE.product.fit) {
-      dom.garment.classList.add(`cp-garment-fit--${STATE.product.fit}`);
-    }
-    dom.garment.classList.toggle("is-placeholder", !STATE.product.type);
-  }
-
-  function renderStageSvg() {
-    if (!dom.garment) return;
-    if (!STATE.product.type) {
-      dom.garment.innerHTML = "";
-      return;
-    }
-    const stageProfile = getStageProfile();
-    if (!stageProfile) {
-      dom.garment.innerHTML = "";
-      return;
-    }
-    dom.garment.innerHTML = `
-      <svg class="cp-stage-svg" viewBox="${escapeHtml(stageProfile.view_box || "0 0 420 520")}" aria-hidden="true" focusable="false">
-        <g class="cp-stage-svg__scene">
-          ${stageProfile.svg_markup || ""}
-        </g>
-      </svg>
-    `;
-  }
-
   // ── 3D-ротор сцени: плавне обертання перед/зад + drag ─────────
   function stageMotionReduced() {
     return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1838,28 +1804,11 @@
     renderZoneOverlay();
   }
 
-  function applyStageView(view, opts) {
-    const animate = !!(opts && opts.animate);
-    const targetBase = view === "back" ? 180 : 0;
-    if (animate && dom.stageRotor) {
-      const norm = rotorNorm(STAGE_ROTOR.angle);
-      let delta = targetBase - norm;
-      if (delta > 180) delta -= 360;
-      if (delta < -180) delta += 360;
-      if (Math.abs(delta) < 1) {
-        STATE.ui.stage_view = view;
-        renderStageSideEffects();
-        return;
-      }
-      rotorAnimateTo(STAGE_ROTOR.angle + delta);
-      return;
-    }
-    if (!STAGE_ROTOR.raf && !STAGE_ROTOR.dragging) {
-      STAGE_ROTOR.angle = targetBase;
-      rotorApplyTransform();
-    }
+  function applyStageView(view) {
     STATE.ui.stage_view = view;
-    renderStageSideEffects();
+    dom.stageViewSwitch?.forEach((btn) => {
+      btn.classList.toggle("is-active", btn.dataset.stageView === view);
+    });
   }
 
   function bindStageRotorDrag() {
@@ -2165,9 +2114,8 @@
 
   function bindStageView() {
     dom.stageViewSwitch?.forEach((btn) => {
-      btn.addEventListener("click", () => applyStageView(btn.dataset.stageView, { animate: true }));
+      btn.addEventListener("click", () => applyStageView(btn.dataset.stageView));
     });
-    bindStageRotorDrag();
   }
 
   // ── Quantity + Smart sizing ─────────────────────────────────
@@ -2367,15 +2315,7 @@
       persistDraft();
     });
     dom.startFlow?.addEventListener("click", () => {
-      // Clear storage and hard reload to ensure absolutely pristine state
-      if (STATE.product.type) {
-        localStorage.removeItem(STORAGE_KEY);
-        location.reload();
-        return;
-      }
-      ensureFlowStarted("start_button");
-      const target = document.getElementById("cp-step-mode");
-      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      enterStudio("start_button");
     });
   }
 
@@ -2396,7 +2336,7 @@
           markStepDone(STATE.ui.current_step);
           setActiveStep(target, { fromStep: STATE.ui.current_step });
         } else {
-          showStatus("Заповніть поточний крок, щоб рухатись далі.", "warning");
+          showStepProblem(STATE.ui.current_step);
         }
       });
     });
@@ -2431,6 +2371,10 @@
       section.classList.toggle("is-done", !isCurrent && isDone);
       section.classList.toggle("is-pending", !isCurrent && !isDone && stepIndex > currentIndex);
     });
+    const studioKey = stateTools?.fromInternal(key) || "format";
+    root.querySelectorAll("[data-studio-step]").forEach((group) => {
+      group.classList.toggle("is-studio-active", group.dataset.studioStep === studioKey);
+    });
     refreshAll();
     if (!opts.silent) {
       ensureFlowStarted(`step_enter_${key}`);
@@ -2441,7 +2385,7 @@
         : target;
       if (scrollTarget) scrollTarget.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-    persistDraft();
+    if (analyticsState.flowStarted) persistDraft();
   }
 
   function markStepDone(key) {
@@ -2494,7 +2438,7 @@
           if (leftNeedsText || rightNeedsText) return false;
         }
         return true;
-      case "artwork": return !!STATE.artwork.service_kind;
+      case "artwork": return getArtworkValidationIssues().length === 0;
       case "quantity":
         if (STATE.order.quantity <= 0) return false;
         if (STATE.product.type === "customer_garment") return true;
@@ -2511,6 +2455,47 @@
     }
   }
 
+  function getStepProblem(stepKey) {
+    const problems = {
+      mode: ["Оберіть: для себе чи для команди / бренду.", "[data-mode-list] button"],
+      product: ["Оберіть виріб для друку.", "[data-product-list] button"],
+      config: ["Завершіть вибір посадки, тканини та кольору.", "[data-fit-list] button, [data-fabric-list] button, [data-color-list] button"],
+      zones: ["Оберіть хоча б одну зону та формат принта.", "[data-zone-list] button"],
+      artwork: ["Оберіть, чи макет готовий, чи потрібна допомога.", "[data-artwork-service-list] button"],
+      quantity: ["Вкажіть кількість і розподіліть усі речі за розмірами.", "[data-quantity-input]"],
+      contact: ["Заповніть імʼя, канал звʼязку та контакт.", "[data-name-input]"],
+    };
+    if (stepKey === "zones" && STATE.print.zones.includes("sleeve")) {
+      const missing = Array.from(dom.sleeveTextInputs || []).find((input) => !input.closest("[hidden]") && !input.value.trim());
+      if (missing) return ["Додайте текст для вибраного рукава.", `[data-sleeve-text-input="${missing.dataset.sleeveTextInput}"]`];
+    }
+    if (stepKey === "artwork") {
+      const missingFile = getRequiredArtworkPlacements().some(
+        (placement) => !(filesByPlacement.get(placement.placement_key) || []).length
+      );
+      if ((STATE.artwork.service_kind === "ready" || STATE.artwork.service_kind === "adjust") && missingFile) {
+        return [ui("artwork_file_required", "Додайте макет для кожної вибраної зони."), "[data-dropzone-input]"];
+      }
+      if ((STATE.artwork.service_kind === "design" || STATE.artwork.service_kind === "adjust") && !STATE.notes.brief.trim()) {
+        return [
+          STATE.artwork.service_kind === "design"
+            ? ui("artwork_brief_design_required", "Опишіть бриф / завдання для дизайну.")
+            : ui("artwork_brief_adjust_required", "Опишіть, що саме потрібно змінити у файлі."),
+          "[data-brief-input]",
+        ];
+      }
+    }
+    return problems[stepKey] || ["Перевірте поточний крок.", `[data-step="${stepKey}"] button, [data-step="${stepKey}"] input`];
+  }
+
+  function showStepProblem(stepKey) {
+    const [message, selector] = getStepProblem(stepKey);
+    showStatus(message, "warning");
+    const field = root.querySelector(selector);
+    field?.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => field?.focus?.({ preventScroll: true }), 180);
+  }
+
   // ── Refresh: stage card + receipt + summaries + side states ─
   function refreshAll() {
     normalizeClientState();
@@ -2518,20 +2503,19 @@
     syncProgressShellPlacement();
     updateStageVisibility();
     updateStageMeta();
-    applyGarmentType();
-    applyGarmentColor();
-    stageReactToState();
     applyStageView(STATE.ui.stage_view || "front");
     renderModeChipsActive();
     renderProductCardsActive();
     updateBrandFieldsVisibility();
     updateSummaries();
     renderProgressStrip();
-    renderStageLegend();
     updateB2bMeta();
     renderReceipt();
     updateFinalActionsAvailability();
     renderMobileBottomBar();
+    previewController?.render();
+    const studioIndex = stateTools?.progressIndex(STATE.ui.current_step) || 0;
+    mobileShell?.update(studioIndex, STUDIO_STEPS.length || 6);
   }
 
   function updateFlowPhase() {
@@ -2556,14 +2540,15 @@
 
   function renderProgressStrip() {
     if (!dom.progressStrip) return;
-    const steps = CONFIG.progress_steps || STEPS.map((value) => ({ value, label: value }));
+    const steps = STUDIO_STEPS;
+    const currentStudioStep = stateTools?.fromInternal(STATE.ui.current_step) || "format";
     dom.progressStrip.innerHTML = "";
-    steps.forEach((step) => {
+    steps.forEach((step, index) => {
       const btn = document.createElement("button");
       const stepKey = step.value;
-      const stepIndex = getStepIndex(stepKey) + 1;
-      const isActive = STATE.ui.current_step === stepKey;
-      const isDone = STATE.ui.done_steps.has(stepKey);
+      const stepIndex = index + 1;
+      const isActive = currentStudioStep === stepKey;
+      const isDone = stateTools?.isComplete(stepKey, STATE.ui.done_steps) || false;
       btn.type = "button";
       btn.className = "cp-build-chip";
       btn.dataset.stepIndex = String(stepIndex);
@@ -2577,14 +2562,22 @@
       `;
       btn.disabled = !isActive && !isDone;
       btn.addEventListener("click", () => {
-        if (!btn.disabled) setActiveStep(stepKey);
+        if (!btn.disabled) setActiveStep(stateTools?.firstInternal(stepKey) || "mode");
       });
       dom.progressStrip.appendChild(btn);
     });
   }
 
   function getProgressStepValue(stepKey) {
-    const value = root.querySelector(`[data-step-summary-value="${stepKey}"]`)?.textContent?.trim();
+    const summaryKey = {
+      format: "mode",
+      garment: STATE.ui.current_step === "product" ? "product" : "config",
+      placement: "zones",
+      artwork: "artwork",
+      quantity: "quantity",
+      contact: "contact",
+    }[stepKey] || stepKey;
+    const value = root.querySelector(`[data-step-summary-value="${summaryKey}"]`)?.textContent?.trim();
     return value && value !== "—" ? value : "Ще не вибрано";
   }
 
@@ -2625,24 +2618,23 @@
       const all = [...labels, giftLabel].filter(Boolean);
       dom.stageAddons.textContent = all.length ? all.join(" · ") : (cfg ? "Без додаткових деталей." : "Поки що без активних деталей.");
     }
-    if (dom.stageGuide) dom.stageGuide.textContent = getStageGuideText();
   }
 
   function getSharedSubmissionIssues() {
     const issues = [];
-    if (!STATE.mode) issues.push("Оберіть формат замовлення.");
-    if (!STATE.product.type) issues.push("Оберіть виріб.");
-    if (!canAdvance("config")) issues.push("Завершіть налаштування виробу.");
-    if (!canAdvance("zones")) issues.push("Оберіть і налаштуйте зони друку.");
+    if (!STATE.mode) issues.push(ui("mode_required", "Оберіть формат замовлення."));
+    if (!STATE.product.type) issues.push(ui("product_required", "Оберіть виріб."));
+    if (!canAdvance("config")) issues.push(ui("product_config_required", "Завершіть налаштування виробу."));
+    if (!canAdvance("zones")) issues.push(ui("placement_required", "Оберіть і налаштуйте зони друку."));
     if (!STATE.artwork.service_kind) {
-      issues.push("Оберіть сценарій роботи з макетом.");
+      issues.push(ui("artwork_service_required", "Оберіть сценарій роботи з макетом."));
     } else if (STATE.artwork.service_kind === "design" && !(STATE.notes.brief || "").trim()) {
-      issues.push("Опишіть бриф / завдання для дизайну.");
+      issues.push(ui("artwork_brief_design_required", "Опишіть бриф / завдання для дизайну."));
     } else if (STATE.artwork.service_kind === "adjust" && !(STATE.notes.brief || "").trim()) {
-      issues.push("Опишіть, що саме потрібно змінити у файлі.");
+      issues.push(ui("artwork_brief_adjust_required", "Опишіть, що саме потрібно змінити у файлі."));
     }
-    if (!canAdvance("quantity")) issues.push("Заповніть кількість і розміри.");
-    if (!canAdvance("contact")) issues.push("Заповніть імʼя, канал звʼязку і контакт.");
+    if (!canAdvance("quantity")) issues.push(ui("quantity_required", "Заповніть кількість і розміри."));
+    if (!canAdvance("contact")) issues.push(ui("contact_required", "Заповніть ім'я, канал зв'язку і контакт."));
     return issues;
   }
 
@@ -2984,9 +2976,23 @@
         return;
       }
       if (target) {
-        navigateToStep(target);
+        if (!canAdvance(STATE.ui.current_step)) {
+          showStepProblem(STATE.ui.current_step);
+          return;
+        }
+        trackStepComplete(STATE.ui.current_step, { transition_to: target, source: "mobile_action" });
+        markStepDone(STATE.ui.current_step);
+        setActiveStep(target, { fromStep: STATE.ui.current_step });
       }
     });
+  }
+
+  function focusFirstIncomplete() {
+    const incomplete = STEPS.find((step) => step !== "gift" && !canAdvance(step));
+    if (!incomplete) return false;
+    setActiveStep(incomplete, { fromStep: STATE.ui.current_step });
+    showStepProblem(incomplete);
+    return true;
   }
 
   function navigateToStep(stepKey) {
@@ -3177,13 +3183,16 @@
   }
 
   async function handleSubmitLead() {
+    if (leadSubmitInFlight) return;
     const actionPolicy = buildActionPolicy();
     if (!actionPolicy.leadReady) {
       showStatus(actionPolicy.leadHint || "Перевірте форму перед відправкою.", "error");
+      focusFirstIncomplete();
       return;
     }
     const url = CONFIG.submit_url;
     if (!url) return;
+    leadSubmitInFlight = true;
     setBusy(true);
     try {
       const response = await fetch(url, {
@@ -3228,14 +3237,17 @@
       console.error("[custom-print v2] submit lead failed", error);
       showStatus("Сервер тимчасово недоступний. Спробуйте через кілька хвилин.", "error");
     } finally {
+      leadSubmitInFlight = false;
       setBusy(false);
     }
   }
 
   async function handleAddToCart() {
+    if (cartSubmitInFlight) return;
     const actionPolicy = buildActionPolicy();
     if (!actionPolicy.cartReady) {
       showStatus(actionPolicy.cartHint || "Перевірте форму перед додаванням у кошик.", actionPolicy.leadReady ? "warning" : "error");
+      focusFirstIncomplete();
       return;
     }
     const pricing = computePricing();
@@ -3244,6 +3256,7 @@
       showStatus("Кошик тимчасово недоступний. Скористайтесь Telegram-кнопкою.", "error");
       return;
     }
+    cartSubmitInFlight = true;
     setBusy(true);
     try {
       const response = await fetch(url, {
@@ -3288,13 +3301,16 @@
           window.trackEvent("AddToCart", cartPayload);
         }
       } catch (_) { }
-      if (data.cart_url) {
-        setTimeout(() => { window.location.href = data.cart_url; }, 1200);
-      }
+      dialogFlow?.openCartReviewDialog({
+        trigger: dom.addToCartBtn,
+        leadNumber: data.lead_number,
+        cartUrl: data.cart_url,
+      });
     } catch (error) {
       console.error("[custom-print v2] add to cart failed", error);
       showStatus("Не вдалося додати в кошик. Спробуйте ще раз.", "error");
     } finally {
+      cartSubmitInFlight = false;
       setBusy(false);
     }
   }
@@ -3406,6 +3422,7 @@
 
   // ── Draft ───────────────────────────────────────────────────
   function persistDraft() {
+    if (!analyticsState.flowStarted && !STATE.mode && !STATE.product.type) return;
     try {
       const draft = {
         v: 2,
@@ -3429,12 +3446,45 @@
     }
   }
 
-  function loadDraft() {
+  function readDraft() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
+      if (!raw) return null;
       const draft = JSON.parse(raw);
-      if (!draft || draft.v !== 2) return;
+      return draft && draft.v === 2 ? draft : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function setupDraftResume() {
+    const draft = readDraft();
+    if (!draft || (!draft.mode && !draft.product?.type)) return;
+    if (dom.draftResumeCard) dom.draftResumeCard.hidden = false;
+    const internalStep = draft.ui?.current_step || "mode";
+    const stepIndex = (stateTools?.progressIndex(internalStep) || 0) + 1;
+    if (dom.draftResumeTitle) {
+      const pattern = dom.draftResumeTitle.dataset.titlePattern || "Продовжити з кроку {step}";
+      dom.draftResumeTitle.textContent = pattern.replace("{step}", String(stepIndex));
+    }
+    dom.draftResumeButton?.addEventListener("click", () => {
+      loadDraft(draft);
+      analyticsState.flowStarted = true;
+      sendAnalyticsEvent("draft_resume", buildAnalyticsMetadata({ resumed_step: internalStep }));
+      if (dom.draftResumeCard) dom.draftResumeCard.hidden = true;
+      enterStudio("draft_resume");
+    }, { once: true });
+    dom.draftRestartButton?.addEventListener("click", () => {
+      clearDraft();
+      if (dom.draftResumeCard) dom.draftResumeCard.hidden = true;
+      enterStudio("draft_restart");
+    }, { once: true });
+  }
+
+  function loadDraft(draftOverride = null) {
+    try {
+      const draft = draftOverride || readDraft();
+      if (!draft) return;
       if (draft.mode) STATE.mode = draft.mode;
       if (draft.product) Object.assign(STATE.product, draft.product);
       if (draft.print) Object.assign(STATE.print, draft.print);
@@ -3473,6 +3523,8 @@
       renderContactChannelChipsActive();
       renderSizing();
       renderDropzones();
+      setActiveStep(STATE.ui.current_step || "mode", { silent: true });
+      refreshAll();
     } catch (err) {
       console.warn("[custom-print v2] draft load failed", err);
     }
