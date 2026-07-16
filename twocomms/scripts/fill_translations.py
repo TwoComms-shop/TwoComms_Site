@@ -1705,7 +1705,7 @@ TRANSLATIONS_PHASE_17P: dict[str, dict[str, str]] = {
     },
     "Каталог стріт-мілітарі одягу TwoComms: футболки, худі, лонгсліви з авторськими принтами, DTF-друк, бавовна. Доставка Новою Поштою від 1 дня по Україні.": {
         "ru": "Каталог стрит-милитари одежды TwoComms: футболки, худи, лонгсливы с авторскими принтами, DTF-печать, хлопок. Доставка Новой Почтой от 1 дня по Украине.",
-        "en": "TwoComms street & military apparel catalogue: t-shirts, hoodies and longsleeves with original prints, DTF print, cotton. Nova Poshta delivery in 1 day across Ukraine.",
+        "en": "TwoComms streetwear and military-inspired apparel: cotton T-shirts, hoodies and long sleeves with original DTF prints. Nova Poshta delivery across Ukraine.",
     },
 
     # ===== index.html — expanded OG/Twitter description (SEO Phase 12 finding T) =====
@@ -3351,9 +3351,9 @@ TRANSLATIONS_PHASE_17Z2: dict[str, dict[str, str]] = {
     },
 
     # ----- wholesale long copy -----
-    "Оптовий одяг TwoComms: футболки та худі з фірмовим дизайном, старт від 8 одиниць, персональні прайси, швидке відвантаження та підтримка менеджера. Дропшипінг і класичний опт для магазинів та мереж.": {
-        "ru": "Оптовая одежда TwoComms: футболки и худи с фирменным дизайном, старт от 8 единиц, персональные прайсы, быстрая отгрузка и поддержка менеджера. Дропшиппинг и классический опт для магазинов и сетей.",
-        "en": "TwoComms wholesale apparel: t-shirts and hoodies with branded design, start from 8 units, personal price lists, fast shipping and manager support. Dropshipping and classic wholesale for stores and chains.",
+    "Оптовий одяг TwoComms для магазинів і мереж: футболки та худі від 8 одиниць, персональні ціни, швидке відвантаження й підтримка менеджера.": {
+        "ru": "Оптовая одежда TwoComms для магазинов и сетей: футболки и худи от 8 единиц, персональные цены, быстрая отгрузка и поддержка менеджера.",
+        "en": "TwoComms wholesale apparel for stores and chains: T-shirts and hoodies from 8 units, tailored pricing, fast dispatch and dedicated manager support.",
     },
     "оптові закупівлі одягу, футболки оптом, худі оптом, оптовий одяг TwoComms, дропшипінг одягу, оптовий прайс, український бренд одягу, партнерська програма TwoComms": {
         "ru": "оптовые закупки одежды, футболки оптом, худи оптом, оптовая одежда TwoComms, дропшиппинг одежды, оптовый прайс, украинский бренд одежды, партнёрская программа TwoComms",
@@ -3412,6 +3412,10 @@ TRANSLATIONS_PHASE_17Z2: dict[str, dict[str, str]] = {
     },
 
     # ----- cooperation long copy -----
+    "Співпраця з TwoComms: дропшипінг, оптові закупівлі, бренд-колаборації та проєкти з дизайнерами, блогерами й медіа. Оберіть формат партнерства.": {
+        "ru": "Сотрудничество с TwoComms: дропшиппинг, оптовые закупки, бренд-коллаборации и проекты с дизайнерами, блогерами и медиа. Выберите формат партнёрства.",
+        "en": "Partner with TwoComms through dropshipping, wholesale, brand collaborations, and projects with designers, bloggers or media. Choose a partnership format.",
+    },
     "TwoComms відкриває партнерські маршрути для магазинів, брендів, дизайнерів, блогерів та медіа.": {
         "ru": "TwoComms открывает партнёрские маршруты для магазинов, брендов, дизайнеров, блогеров и медиа.",
         "en": "TwoComms opens partnership routes for stores, brands, designers, bloggers and media.",
@@ -3471,9 +3475,9 @@ TRANSLATIONS_PHASE_17Z2: dict[str, dict[str, str]] = {
     },
 
     # ----- custom_print copy -----
-    "Кастомний DTF-конфігуратор для худі, футболок, лонгслівів і свого одягу. Зберіть виріб, зони друку, файл або ідею і передайте весь контекст менеджеру або одразу в кошик.": {
-        "ru": "Кастомный DTF-конфигуратор для худи, футболок, лонгсливов и своей одежды. Соберите изделие, зоны печати, файл или идею и передайте весь контекст менеджеру или сразу в корзину.",
-        "en": "Custom DTF configurator for hoodies, t-shirts, longsleeves and your own apparel. Assemble the item, print zones, file or idea and pass the full context to the manager or drop it straight into the cart.",
+    "Кастомний DTF-друк на футболках, худі та лонгслівах. Оберіть основу й зони друку, додайте макет, дізнайтеся вартість і оформіть замовлення.": {
+        "ru": "Кастомная DTF-печать на футболках, худи и лонгсливах. Выберите основу и зоны печати, добавьте макет, узнайте стоимость и оформите заказ.",
+        "en": "Custom DTF printing on T-shirts, hoodies and long sleeves. Choose a garment and print zones, upload artwork, see the price and place your order.",
     },
     "dtf друк, кастомний принт, друк на худі, друк на футболках, кастомний одяг, twocomms, dtf конфігуратор": {
         "ru": "dtf печать, кастомный принт, печать на худи, печать на футболках, кастомная одежда, twocomms, dtf конфигуратор",
