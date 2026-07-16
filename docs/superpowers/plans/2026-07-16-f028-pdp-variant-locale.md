@@ -115,6 +115,12 @@ Document the code commit, server test counts, server HEAD, live crawl count, and
 
 Mark the locale-propagation defect fixed. Keep F-028 as `[o] PARTIAL` while the separate commercial naming-policy decision is unapproved; use `[x] FIXED/DONE` only if the audit evidence proves no owner decision remains.
 
-- [ ] **Step 3: Commit, push, deploy, and verify documentation**
+- [x] **Step 3: Commit, push, deploy, and verify documentation**
 
 Commit only the audit-plan/document changes, push `main`, deploy with `git pull --ff-only`, and verify all current F-028 rows on the server agree on the same status and evidence.
+
+Documentation evidence (2026-07-16): `ab583207` was pushed to `origin/main`
+and fast-forwarded on production. Server HEAD
+`ab58320714bf11544ab9d436d90aad280b7556fc` shows all four canonical F-028
+rows as `[o] PARTIAL`, the P2 summary as `1 PARTIAL / 8 OPEN`, and the PRE_ADS
+SEO-049/GEO-006 rows linked to the section 4 evidence report.
