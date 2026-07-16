@@ -49,6 +49,40 @@
 - НИКОГДА не добавляйте cron-задачу без записи в эту таблицу.
 - Новые задачи логируйте в `logs/`; `reconcile_purchase_actions` пишет одну короткую итоговую строку в сутки.
 
+### MySQL backup runbook (F-090)
+
+Repository entry point:
+`/home/qlknpodo/TWC/TwoComms_Site/scripts/backup_mysql.sh`.
+
+- The script requires every database name explicitly as positional arguments;
+  it has no implicit production database fallback.
+- Credentials are read only from
+  `TWC_MYSQL_DEFAULTS_FILE` (default `$HOME/.my.cnf`, mode `0600` or `0400`).
+- `$HOME/db_backups`, `daily/` and `weekly/` are outside the project/web root and
+  remain mode `0700`; archives and `last_success` remain mode `0600`.
+- A non-blocking `flock` prevents cron/manual overlap. Exit 75 means another
+  backup already owns the lock.
+- Every configured database is first dumped to a process-scoped temporary
+  archive. Size and `gzip -t` must pass for the complete batch before any final
+  archive is replaced.
+- Daily retention is 14 days; Sunday copies remain 35 days. Successful runs
+  atomically update `$HOME/db_backups/last_success` with timestamp and database
+  count only.
+
+Target cron (replace the placeholders with the two names read from production
+settings; database names are not credentials):
+
+```cron
+# TWOCOMMS_DB_BACKUP
+45 3 * * * /bin/bash /home/qlknpodo/TWC/TwoComms_Site/scripts/backup_mysql.sh <MAIN_DB> <DTF_DB> >> /home/qlknpodo/db_backups/backup.log 2>&1
+```
+
+Before installing cron, run the exact command manually, validate every archive
+with `gzip -t`, then restore each archive into a uniquely named temporary
+database. Compare table counts and key-table row counts, run Django checks, and
+drop only the temporary restore databases in guaranteed cleanup. Install the
+marked cron block idempotently without rewriting unrelated jobs.
+
 ### Log rotation / PII (W3-6)
 
 REPO-часть:
