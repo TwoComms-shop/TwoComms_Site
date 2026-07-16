@@ -38,11 +38,20 @@ function focusTrapIndex({ currentIndex = -1, total = 0, shiftKey = false } = {})
   return current < 0 || current >= count - 1 ? 0 : current + 1;
 }
 
+const MODAL_FOCUSABLE_SELECTOR = [
+  'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+  'a[href]:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+  'input:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+  'select:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+  '[tabindex]:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+].join(', ');
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     buildOptionKey,
     focusTrapIndex,
     galleryStatus,
+    MODAL_FOCUSABLE_SELECTOR,
     resolveMaterialStory,
     resolveSwipe,
   };
@@ -1623,9 +1632,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       size = requestedSize || (items[0] && items[0].value) || '';
       sizeSelect.value = size;
     };
-    const focusableElements = () => Array.from(dialog.querySelectorAll(
-      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )).filter((element) => !element.hidden && !element.closest('[hidden]'));
+    const focusableElements = () => Array.from(
+      dialog.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)
+    ).filter((element) => (
+      element.tabIndex !== -1 &&
+      !element.hidden &&
+      !element.closest('[hidden], [aria-hidden="true"], [inert]')
+    ));
     const open = (button) => {
       opener = button;
       const requestedSize = String(button.dataset.restockSize || '').toUpperCase();

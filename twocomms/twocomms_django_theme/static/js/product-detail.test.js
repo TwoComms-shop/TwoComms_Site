@@ -5,6 +5,7 @@ const {
   buildOptionKey,
   focusTrapIndex,
   galleryStatus,
+  MODAL_FOCUSABLE_SELECTOR,
   resolveMaterialStory,
   resolveSwipe,
 } = require('./product-detail.js');
@@ -51,4 +52,14 @@ test('gallery status and modal focus trap wrap in both directions', () => {
   assert.equal(focusTrapIndex?.({ currentIndex: 3, total: 4, shiftKey: false }), 0);
   assert.equal(focusTrapIndex?.({ currentIndex: 0, total: 4, shiftKey: true }), 3);
   assert.equal(focusTrapIndex?.({ currentIndex: 1, total: 4, shiftKey: false }), 2);
+});
+
+test('every modal focusable selector branch excludes inert and aria-hidden controls', () => {
+  assert.equal(typeof MODAL_FOCUSABLE_SELECTOR, 'string');
+  const branches = MODAL_FOCUSABLE_SELECTOR.split(',').map((branch) => branch.trim());
+  assert.ok(branches.length >= 5);
+  branches.forEach((branch) => {
+    assert.match(branch, /:not\(\[tabindex="-1"\]\)/);
+    assert.match(branch, /:not\(\[aria-hidden="true"\]\)/);
+  });
 });
