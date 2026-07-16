@@ -85,6 +85,7 @@ class RestockTelegramVerificationTests(TestCase):
             telegram_first_name="Test",
             phone="+380991234567",
             chat_id=123456,
+            session_key=subscription.browser_session_key,
             metadata={"restock_id": subscription.id},
         )
 
@@ -123,6 +124,7 @@ class RestockTelegramVerificationTests(TestCase):
             completed_at=timezone.now(),
             telegram_user_id=654321,
             chat_id=654321,
+            session_key=subscription.browser_session_key,
             metadata={"restock_id": subscription.id},
         )
         rule.is_enabled = True
@@ -140,6 +142,54 @@ class RestockTelegramVerificationTests(TestCase):
         subscription.refresh_from_db()
         self.assertEqual(subscription.status, RestockSubscription.Status.NOTIFIED)
         delivery_bot.return_value.send_message.assert_called_once()
+
+    @patch("storefront.services.restock.notify_restock_admin", return_value=True)
+    def test_late_completion_does_not_reopen_closed_subscription(self, notify):
+        from storefront.models import RestockSubscription
+        from storefront.services.restock import activate_telegram_subscription
+
+        subscription = self.make_subscription()
+        subscription.status = RestockSubscription.Status.CLOSED
+        subscription.save(update_fields=["status"])
+        session = TelegramVerificationSession.objects.create(
+            token="restock-late-closed",
+            purpose="restock",
+            status=TelegramVerificationSession.STATUS_VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=5),
+            telegram_user_id=999,
+            chat_id=999,
+            session_key=subscription.browser_session_key,
+            metadata={"restock_id": subscription.pk},
+        )
+
+        self.assertIsNone(activate_telegram_subscription(session))
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, RestockSubscription.Status.CLOSED)
+        self.assertIsNone(subscription.telegram_chat_id)
+        notify.assert_not_called()
+
+    @patch("storefront.services.restock.notify_restock_admin", return_value=True)
+    def test_wrong_browser_session_does_not_activate_subscription(self, notify):
+        from storefront.models import RestockSubscription
+        from storefront.services.restock import activate_telegram_subscription
+
+        subscription = self.make_subscription()
+        session = TelegramVerificationSession.objects.create(
+            token="restock-wrong-browser",
+            purpose="restock",
+            status=TelegramVerificationSession.STATUS_VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=5),
+            telegram_user_id=998,
+            chat_id=998,
+            session_key="another-browser-session",
+            metadata={"restock_id": subscription.pk},
+        )
+
+        self.assertIsNone(activate_telegram_subscription(session))
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, RestockSubscription.Status.DRAFT)
+        self.assertIsNone(subscription.telegram_chat_id)
+        notify.assert_not_called()
 
     @patch.object(TelegramBot, "send_message", return_value=True)
     def test_contact_completes_only_the_session_opened_by_same_chat(self, _send):

@@ -52,22 +52,38 @@ class RestockSubscriptionAdmin(admin.ModelAdmin):
         if hasattr(request, '_messages'):
             self.message_user(request, text, level=level)
 
+    def _eligible_automatic_notifications(self, queryset):
+        from django.db.models import Q
+
+        return queryset.exclude(
+            status__in=(
+                RestockSubscription.Status.DRAFT,
+                RestockSubscription.Status.SENDING,
+            )
+        ).filter(
+            Q(channel=RestockSubscription.Channel.EMAIL)
+            | Q(
+                channel=RestockSubscription.Channel.TELEGRAM,
+                telegram_chat_id__isnull=False,
+            )
+        )
+
     @admin.action(description='Поставити автоматичне повідомлення в чергу')
     def retry_notifications(self, request, queryset):
         from django.utils import timezone
 
-        queued = queryset.filter(
-            channel__in=(
-                RestockSubscription.Channel.TELEGRAM,
-                RestockSubscription.Channel.EMAIL,
-            ),
-        ).exclude(status=RestockSubscription.Status.SENDING).update(
+        selected = queryset.count()
+        queued = self._eligible_automatic_notifications(queryset).update(
             status=RestockSubscription.Status.ACTIVE,
             next_attempt_at=timezone.now(),
             delivery_token=None,
             last_error='',
+            notification_attempts=0,
         )
-        self._action_message(request, f'Поставлено в чергу: {queued}.')
+        self._action_message(
+            request,
+            f'Поставлено в чергу: {queued}; пропущено: {selected - queued}.',
+        )
 
     @admin.action(description='Закрити вибрані заявки')
     def close_subscriptions(self, request, queryset):
@@ -84,15 +100,17 @@ class RestockSubscriptionAdmin(admin.ModelAdmin):
     def reopen_subscriptions(self, request, queryset):
         from django.utils import timezone
 
-        eligible = queryset.exclude(status=RestockSubscription.Status.SENDING)
-        automatic = eligible.filter(channel__in=(
-            RestockSubscription.Channel.TELEGRAM,
-            RestockSubscription.Channel.EMAIL,
-        )).update(
+        selected = queryset.count()
+        eligible = queryset.exclude(status__in=(
+            RestockSubscription.Status.DRAFT,
+            RestockSubscription.Status.SENDING,
+        ))
+        automatic = self._eligible_automatic_notifications(queryset).update(
             status=RestockSubscription.Status.ACTIVE,
             next_attempt_at=timezone.now(),
             delivery_token=None,
             last_error='',
+            notification_attempts=0,
         )
         manual = eligible.filter(channel__in=(
             RestockSubscription.Channel.PHONE,
@@ -102,8 +120,13 @@ class RestockSubscriptionAdmin(admin.ModelAdmin):
             next_attempt_at=None,
             delivery_token=None,
             last_error='',
+            notification_attempts=0,
         )
-        self._action_message(request, f'Повторно відкрито заявок: {automatic + manual}.')
+        reopened = automatic + manual
+        self._action_message(
+            request,
+            f'Повторно відкрито: {reopened}; пропущено: {selected - reopened}.',
+        )
 from .services.indexnow import (
     get_category_public_url,
     get_product_public_url,

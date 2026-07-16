@@ -1,6 +1,8 @@
 from django.core.management.base import BaseCommand, CommandError
 
 from storefront.services.restock import (
+    CLAIM_SKIPPED,
+    PermanentDeliveryError,
     claim_due_subscription,
     finalize_delivery,
     recover_stale_sending,
@@ -22,12 +24,16 @@ class Command(BaseCommand):
         parser.add_argument("--variant-id", type=int)
         parser.add_argument("--subscription-id", type=int)
         parser.add_argument("--limit", type=int, default=100)
+        parser.add_argument("--scan-limit", type=int, default=1000)
         parser.add_argument("--dry-run", action="store_true")
 
     def handle(self, *args, **options):
         limit = options["limit"]
         if limit < 1:
             raise CommandError("--limit must be greater than zero")
+        scan_limit = options["scan_limit"]
+        if scan_limit < 1:
+            raise CommandError("--scan-limit must be greater than zero")
         for option_name in ("product_id", "variant_id", "subscription_id"):
             value = options.get(option_name)
             if value is not None and value <= 0:
@@ -43,7 +49,9 @@ class Command(BaseCommand):
                 "product", "color_variant"
             )
             available = 0
-            for row in candidates.iterator():
+            scanned = 0
+            for row in candidates[:scan_limit].iterator():
+                scanned += 1
                 if subscription_is_available(row):
                     available += 1
                     if available >= limit:
@@ -53,15 +61,22 @@ class Command(BaseCommand):
             )
             return
 
-        recovered = recover_stale_sending(**filters)
-        woken = wake_unscheduled_active_subscriptions(**filters)
+        recovered = recover_stale_sending(**filters, limit=scan_limit)
+        woken = wake_unscheduled_active_subscriptions(
+            **filters,
+            limit=scan_limit,
+        )
         processed = 0
+        scanned = 0
         delivered = 0
         failed = 0
-        while processed < limit:
+        while processed < limit and scanned < scan_limit:
             subscription = claim_due_subscription(**filters)
             if subscription is None:
                 break
+            scanned += 1
+            if subscription is CLAIM_SKIPPED:
+                continue
             processed += 1
             token = subscription.delivery_token
             try:
@@ -70,11 +85,15 @@ class Command(BaseCommand):
             except Exception as exc:
                 success = False
                 error = str(exc)
+                permanent = isinstance(exc, PermanentDeliveryError)
+            else:
+                permanent = False
             if finalize_delivery(
                 subscription.pk,
                 token,
                 success=success,
                 error=error,
+                permanent=permanent,
             ):
                 if success:
                     delivered += 1
@@ -82,6 +101,7 @@ class Command(BaseCommand):
                     failed += 1
 
         self.stdout.write(self.style.SUCCESS(
-            f"restock: recovered={recovered} woken={woken} processed={processed} "
+            f"restock: recovered={recovered} woken={woken} scanned={scanned} "
+            f"processed={processed} "
             f"delivered={delivered} failed={failed}"
         ))

@@ -226,7 +226,7 @@ class RestockDeliveryTests(TestCase):
         subscription.refresh_from_db()
         self.assertEqual(subscription.status, RestockSubscription.Status.FAILED)
         self.assertIn("chat", subscription.last_error.lower())
-        self.assertIsNotNone(subscription.next_attempt_at)
+        self.assertIsNone(subscription.next_attempt_at)
         bot_class.return_value.send_message.assert_not_called()
 
     def test_email_is_multipart_and_escapes_customer_content(self):
@@ -274,6 +274,35 @@ class RestockDeliveryTests(TestCase):
         self.assertEqual(subscription.status, RestockSubscription.Status.NOTIFIED)
         self.assertEqual(subscription.notification_attempts, 2)
         self.assertEqual(bot_class.return_value.send_message.call_count, 2)
+
+    @patch("storefront.services.restock.TelegramBot")
+    def test_repeated_failures_stop_at_max_attempts(self, bot_class):
+        from storefront.services.restock import MAX_NOTIFICATION_ATTEMPTS
+
+        bot_class.return_value.send_message.return_value = False
+        subscription = self.subscription(
+            channel=RestockSubscription.Channel.TELEGRAM,
+            normalized_contact="889",
+            telegram_chat_id=889,
+        )
+
+        for attempt in range(MAX_NOTIFICATION_ATTEMPTS):
+            call_command("process_restock_notifications", subscription_id=subscription.pk)
+            subscription.refresh_from_db()
+            self.assertEqual(subscription.notification_attempts, attempt + 1)
+            if attempt + 1 < MAX_NOTIFICATION_ATTEMPTS:
+                subscription.next_attempt_at = timezone.now()
+                subscription.save(update_fields=["next_attempt_at"])
+
+        self.assertEqual(subscription.status, RestockSubscription.Status.FAILED)
+        self.assertIsNone(subscription.next_attempt_at)
+        call_command("process_restock_notifications", subscription_id=subscription.pk)
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.notification_attempts, MAX_NOTIFICATION_ATTEMPTS)
+        self.assertEqual(
+            bot_class.return_value.send_message.call_count,
+            MAX_NOTIFICATION_ATTEMPTS,
+        )
 
     def test_claim_is_exclusive_and_wrong_token_cannot_finalize(self):
         from storefront.services.restock import claim_due_subscription, finalize_delivery
@@ -423,6 +452,68 @@ class RestockDeliveryTests(TestCase):
         self.assertEqual(subscription.notification_attempts, 2)
         self.assertEqual(len(mail.outbox), 1)
 
+    def test_scan_limit_bounds_unavailable_work_and_rotates_next_run(self):
+        subscriptions = []
+        for index, size in enumerate(("S", "L", "XL")):
+            VariantSizeRule.objects.create(
+                variant=self.variant,
+                size=size,
+                is_enabled=index == 2,
+                stock=2 if index == 2 else 0,
+            )
+            subscriptions.append(self.subscription(size=size, next_attempt_at=None))
+
+        call_command(
+            "process_restock_notifications",
+            limit=1,
+            scan_limit=2,
+        )
+
+        for row in subscriptions:
+            row.refresh_from_db()
+            self.assertEqual(row.notification_attempts, 0)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertGreater(subscriptions[0].updated_at, subscriptions[2].updated_at)
+        self.assertGreater(subscriptions[1].updated_at, subscriptions[2].updated_at)
+
+        call_command(
+            "process_restock_notifications",
+            limit=1,
+            scan_limit=2,
+        )
+        subscriptions[2].refresh_from_db()
+        self.assertEqual(subscriptions[2].status, RestockSubscription.Status.NOTIFIED)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_non_positive_scan_limit_is_rejected(self):
+        with self.assertRaises(CommandError):
+            call_command("process_restock_notifications", scan_limit=0)
+
+    def test_scan_limit_also_bounds_stale_recovery(self):
+        subscriptions = [
+            self.subscription(
+                status=RestockSubscription.Status.SENDING,
+                delivery_token=f"33333333-3333-3333-3333-{index:012d}",
+                notification_attempts=1,
+                last_attempt_at=timezone.now() - timedelta(minutes=16 + index),
+                next_attempt_at=None,
+            )
+            for index in range(3)
+        ]
+
+        call_command(
+            "process_restock_notifications",
+            limit=1,
+            scan_limit=1,
+        )
+
+        statuses = []
+        for row in subscriptions:
+            row.refresh_from_db()
+            statuses.append(row.status)
+        self.assertEqual(statuses.count(RestockSubscription.Status.NOTIFIED), 1)
+        self.assertEqual(statuses.count(RestockSubscription.Status.SENDING), 2)
+
     def test_sending_status_participates_in_subscription_deduplication(self):
         from storefront.services.restock import create_subscription
 
@@ -561,6 +652,7 @@ class RestockVariantSaveAndAdminTests(TestCase):
             normalized_contact="buyer@example.com",
             fingerprint="admin-retry",
             last_error="SMTP unavailable",
+            notification_attempts=8,
         )
         model_admin = RestockSubscriptionAdmin(RestockSubscription, admin.site)
         request = RequestFactory().post("/admin/storefront/restocksubscription/")
@@ -572,4 +664,54 @@ class RestockVariantSaveAndAdminTests(TestCase):
         subscription.refresh_from_db()
         self.assertEqual(subscription.status, RestockSubscription.Status.ACTIVE)
         self.assertIsNotNone(subscription.next_attempt_at)
+        self.assertEqual(subscription.notification_attempts, 0)
         send.assert_not_called()
+
+    def test_admin_retry_skips_draft_and_unbound_telegram(self):
+        draft = RestockSubscription.objects.create(
+            product=self.product,
+            color_variant=self.variant,
+            size="M",
+            channel=RestockSubscription.Channel.TELEGRAM,
+            status=RestockSubscription.Status.DRAFT,
+            fingerprint="admin-draft",
+        )
+        unbound = RestockSubscription.objects.create(
+            product=self.product,
+            color_variant=self.variant,
+            size="L",
+            channel=RestockSubscription.Channel.TELEGRAM,
+            status=RestockSubscription.Status.FAILED,
+            fingerprint="admin-unbound",
+            notification_attempts=8,
+        )
+        email = RestockSubscription.objects.create(
+            product=self.product,
+            color_variant=self.variant,
+            size="XL",
+            channel=RestockSubscription.Channel.EMAIL,
+            status=RestockSubscription.Status.FAILED,
+            normalized_contact="buyer@example.com",
+            fingerprint="admin-email",
+            notification_attempts=8,
+        )
+        model_admin = RestockSubscriptionAdmin(RestockSubscription, admin.site)
+        request = RequestFactory().post("/admin/storefront/restocksubscription/")
+        request.user = self.staff
+
+        with patch.object(model_admin, "_action_message") as action_message:
+            model_admin.retry_notifications(
+                request,
+                RestockSubscription.objects.filter(pk__in=[draft.pk, unbound.pk, email.pk]),
+            )
+
+        draft.refresh_from_db()
+        unbound.refresh_from_db()
+        email.refresh_from_db()
+        self.assertEqual(draft.status, RestockSubscription.Status.DRAFT)
+        self.assertEqual(unbound.status, RestockSubscription.Status.FAILED)
+        self.assertIsNone(unbound.next_attempt_at)
+        self.assertEqual(email.status, RestockSubscription.Status.ACTIVE)
+        self.assertEqual(email.notification_attempts, 0)
+        self.assertIn("1", action_message.call_args.args[1])
+        self.assertIn("2", action_message.call_args.args[1])
