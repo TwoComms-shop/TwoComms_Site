@@ -136,6 +136,6 @@ Also verify `window.ttq.load` exists for both paid cases and no duplicate SDK re
 
 Record that missing inline `ttq.load` was a false-positive assumption because the external deferred loader owns bootstrap. Close the actual paid low-device residual only after server tests and the intercepted browser matrix pass. Use `[x]/FIXED/DONE`; preserve the dated raw-HTML observation as historical evidence.
 
-- [ ] **Step 3: Commit, push, deploy, and verify documentation**
+- [x] **Step 3: Commit, push, deploy, and verify documentation**
 
 Commit only the audit-document changes, push `main`, deploy with `git pull --ff-only`, and verify server HEAD plus all current F-011 status entries.
