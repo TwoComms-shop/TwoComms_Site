@@ -37,7 +37,7 @@
 | session_key gaps / historical UTM recovery | F-044/F-074 **FIXED `394a247c`**; F-068/F-073 **FIXED `7936ab6e` + regression `30808819`**; F-072 **FIXED `bdd04e4c`** | Findings + PLAN_VS | new guest COD/prepay use durable keys; 2/2 provable historical UTM links restored, 34 unverifiable rows and every historical access-bearing `Order.session_key` left untouched |
 | product_view noise / missing SiteSession | F-076 **FIXED `fdf6563a`** | Findings §F-076 + PLAN_VS **W2-4** | committed-PageView writer gate; admin/product/UTM metrics quarantine historical null/bot/zero-pageview rows without deleting them |
 | Dirty utm_source live | F-084 **FIXED `069f4efa`**; F-020/F-057 **FIXED `f42b537a`** | PLAN_VS **W2-8** | shared future writers plus guarded AI and all-source historical normalization; production cross-model diff empty |
-| CheckoutCapture.converted | F-075 | PLAN_VS W3-11 / mono | mono missing capture update |
+| Checkout capture validation/conversion | F-051/F-075 **FIXED `a90191ea..1962b488`** | PLAN_VS W3-11 / mono | actionable contacts, terminal COD/Mono marker, late-beacon race closure; 4/4 historical Order matches reconciled |
 
 ### B. Storefront — pixel / ads chrome
 

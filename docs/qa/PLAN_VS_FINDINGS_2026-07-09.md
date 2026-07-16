@@ -18,10 +18,12 @@ If accept criteria fail or only half the production path was fixed → **`[x]` r
 | **W7-23** | Historical strict-pass finding; **resolved `3df4c2fc`** with one Kyiv-local reporting date and boundary regression. |
 
 ### Unchecked in previous re-verify (still `[ ]`)
-W2-1, W2-2, W2-3, ADS-1, ADS-2, ADS-3, W7-1, W3-9, W3-11, W0-5 (+ partials documented earlier).
+W2-2, ADS-1, W7-1, W0-5 (+ partials documented earlier). W2-1, W2-3,
+ADS-2, ADS-3, W3-9 and W3-11 were subsequently resolved with production
+evidence recorded below.
 
-### Still `[x]` after strict pass (~33)
-W0-4 · W1-1…W1-14 (W1-11 closed by `ead5fd70` + `e89fd17d`) · W2-4, W2-5, W2-6, W2-8, W2-9 · W3-1…W3-5, W3-7, W3-10, W3-12 · W5-2 · W6-1, W6-2, W6-3 · W7-6, W7-24
+### Still `[x]` after later production closures
+W0-4 · W1-1…W1-14 (W1-11 closed by `ead5fd70` + `e89fd17d`) · W2-1, W2-3, W2-4, W2-5, W2-6, W2-8, W2-9 · W3-1…W3-5, W3-7, W3-9, W3-10, W3-11, W3-12 · W5-2 · W6-1, W6-2, W6-3 · W7-6, W7-24
 
 Each KEEP has a **STRICT RE-VERIFY** note in the plan where non-obvious.
 
@@ -103,7 +105,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 
 | ID | One-line |
 |----|----------|
-| W2-1 | new COD and prepay session/UTM/tracking linkage verified in production; CheckoutCapture conversion residual remains (F-075/W3-11) |
+| W2-1 | **RESOLVED 2026-07-16:** COD/prepay session/UTM/tracking acceptance plus the final CheckoutCapture conversion residual all passed production verification |
 | W2-2 | is_converted 0 on prod |
 | W2-3 | **RESOLVED `fba4dc85` + `d561c11d` (2026-07-14):** DB-backed purchase idempotency, all confirmed writers, safe historical reconciliation; production trusted parity 31/31, 0 missing/duplicates |
 | ADS-1 | early PV OK; BFCache `initializePixelsImmediately` undefined |
@@ -111,7 +113,7 @@ zero duplicate dispatches, one purchase action, and clean canary removal.
 | ADS-3 | **RESOLVED `e2558396` (2026-07-12):** guarded DB repair + connector-aware trim |
 | W7-1 | views.py.backup still lazy-loaded |
 | W3-9 | **DONE `d7c6812a` + server config**: fail-closed webhook, secret_token registered, live header probes passed |
-| W3-11 | CheckoutCapture.converted never on mono |
+| W3-11 | **RESOLVED `a90191ea..1962b488`:** strict capture validation, terminal COD/Mono transition, MariaDB canary, live 6/6 negative matrix and 4/4 historical match reconciliation |
 | W0-5 | OPS done; stash OWNER not done |
 
 **W2-3 resolution evidence (2026-07-14):** migration 0083 created the real
@@ -129,7 +131,8 @@ with Monobank/UTM code. At production HEAD `bb217bd9`, the rollback canary
 matched the response cookie, Order and UTMSession key, preserved first-touch
 `utm_source`, created the order-linked action, and left zero rows after cleanup.
 This closes the COD-session residual. The prepay acceptance is documented
-below; W2-1 remains open only for the separate CheckoutCapture conversion gap.
+below; the final CheckoutCapture conversion gap was closed on 2026-07-16 by
+`de7f7efc` + `1962b488`, completing W2-1.
 
 **F-068/F-073 prepay evidence (2026-07-14):** Git history proves that the old
 writer created the Order before the later tracking block established a session
@@ -183,7 +186,7 @@ non-candidate digests remained identical.
 |----|----------------|
 | W2-7 | Retail webhook success uses on_commit dispatcher; no long HTTP under row-lock; CAPI still fires once |
 | W7-23 | **PASS `3df4c2fc`:** one Kyiv-local date, boundary regression and AST guard; local/server 2/2 |
-| W2-1 | Monobank path marks the matching CheckoutCapture converted; COD and prepay session/UTM/tracking acceptance already passed |
+| W2-1 | **PASS 2026-07-16:** Monobank and COD persist terminal CheckoutCapture markers; server 137/137, MariaDB rollback canary and historical 4/4 reconciliation passed |
 | ADS-1 | No client_error for initializePixelsImmediately; BFCache restore works |
 | ADS-3 | Live category titles do not end with від/та/на |
 

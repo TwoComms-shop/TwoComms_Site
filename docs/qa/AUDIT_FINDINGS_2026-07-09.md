@@ -132,8 +132,8 @@
 | [o] | **F-035** | P2 | CSP violations | **PARTIAL `341d42a9`**; telemetry fixed and production-verified; whether any current allowlist residual exists awaits >=24h observation from 2026-07-16 16:07:50 UTC; §F-035 |
 | [o] | **F-036** | P2 | Telegram RemoteDisconnected | **PARTIAL `48d1c9fe`**; bounded transient retry and truthful caller state deployed; natural delivery observation remains; §F-036 |
 | [o] | **F-048** | P2 | fbp without internal UTM | **PARTIAL `7ff879bf` + `d368825d..c8b8abec`**; fresh FBC writer fixed, 5/5 safe historical orders linked; stale/no-key/conflicting evidence remains; §F-048 |
-| [ ] | **F-051** | P2 | checkout/capture empty 200 | §F-051; PLAN_VS W3-11 |
-| [ ] | **F-075** | P2 | CheckoutCapture.converted 0/4 | §F-075; mono path |
+| [x] | **F-051** | P2 | checkout/capture empty 200 | **FIXED `a90191ea..1962b488`**; server 137/137, live negative 6/6, count 10→10; §F-051 |
+| [x] | **F-075** | P2 | CheckoutCapture.converted 0/4 | **FIXED `de7f7efc` + `1962b488`**; COD/Mono terminal marker and 4/4 historical matches reconciled; §F-075 |
 | [x] | **F-078** | P2 | /kontakty/ 404 | **FIXED `169e6032`**; production 301 to `/contacts/`; §F-078 |
 | [ ] | **F-089** | P2 | FACEBOOK_PIXEL_ID empty settings | §F-089 |
 | [ ] | **F-090** | P2 | No MySQL backup cron | §F-090; PLAN_VS W0-3 |
@@ -239,7 +239,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [o] **F-048** | P2 | PARTIAL | YES | Fresh FBC order fallback deployed; guarded production reconciliation linked 5 orders/5 sessions, residuals intentionally untouched |
 | [x] **F-049** | P3 | PASS | no | Home unexclude canary PASS |
 | [x] **F-050** | P1 | FIXED | DONE | `75b1f6fb`: Latin aliases share canonical NP query/cache; live 3/3 200 |
-| [ ] **F-051** | P2 | OPEN | YES | checkout/capture empty returns 200 ok |
+| [x] **F-051** | P2 | FIXED | DONE | strict actionable-contact validation; live negative matrix 6/6 HTTP 400 with zero DB delta |
 | [x] **F-052** | P3 | PASS | no | Mono validates missing city |
 | [x] **F-053** | P3 | PASS | no | Home links 42/42 200 |
 | [x] **F-054** | P3 | PASS | no | Blog+color HTTP OK; F-002 grammar fixed in `0b9ecc1c` |
@@ -264,7 +264,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-072** | P1 | FIXED | DONE | `bdd04e4c`: guarded recovery applied to 2/2 provable links; no guessed session keys or synthetic actions |
 | [x] **F-073** | P1 | FIXED | DONE | Current prepay writer stores one key in Order, UTMSession and `tracking.external_id`; production canary and cache cleanup passed |
 | [x] **F-074** | P1 | FIXED | DONE | `394a247c`: guest COD ensures the session before Order persistence; production cookie/order/UTM join canary passed |
-| [ ] **F-075** | P2 | OPEN | YES | CheckoutCapture.converted never true (0/4) |
+| [x] **F-075** | P2 | FIXED | DONE | terminal upsert for COD/Mono plus production reconciliation of all 4 order-matched captures |
 | [x] **F-076** | P1 | FIXED | DONE | `fdf6563a`: writer fails closed without committed PageView/SiteSession; dashboards use trusted PV cohort; production 1713/1713 parity |
 | [x] **F-077** | P2 | REVISED | no | Product feed g:link OK when unescaped (narrows F-027) |
 | [x] **F-078** | P2 | FIXED | DONE | `169e6032`: /kontakty/ permanently redirects to /contacts/ |
@@ -313,7 +313,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 STATUS — 4 PARTIAL / 5 OPEN
+### P2 STATUS — 4 PARTIAL / 3 OPEN
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
@@ -323,8 +323,8 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [o] **F-035** — `341d42a9` fixed and production-verified telemetry; observe real reports for >=24h from 2026-07-16 16:07:50 UTC before any policy change
 - [o] **F-036** — `48d1c9fe` retries transient Telegram text failures and removes false success state; natural delivery observation remains
 - [o] **F-048** — fresh validated FBC now links orders; 5/5 safe historical rows reconciled, stale/no-key/conflicting evidence remains untouched
-- [ ] **F-051** — checkout/capture empty returns 200 ok
-- [ ] **F-075** — CheckoutCapture.converted stuck false
+- [x] **F-051** — fixed `a90191ea..1962b488`; live 6/6 invalid payloads return 400 and CheckoutCapture count stayed 10→10
+- [x] **F-075** — fixed `de7f7efc` + `1962b488`; terminal markers close late-beacon races and 4/4 historical order matches were reconciled
 - [x] **F-078** — fixed `169e6032`; production 301 to `/contacts/`
 - [ ] **F-089** — FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only)
 - [ ] **F-090** — No MySQL backup cron (script present; W0-3)
@@ -2179,11 +2179,21 @@ all returned 200 with `ok:true` and settlement items.
 
 ### F-051 — Checkout capture empty payload returns 200 ok (soft)
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [x] FIXED `a90191ea..1962b488` · **Severity:** P2 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P2** · Area: **CART** · Checklist: CART-054
+- [x] **Fixed** · Severity: **P2** · Area: **CART** · Checklist: CART-054
 
-`POST /checkout/capture/` with empty phone/name → **200** `{"ok": true}` (no validation error). May intentionally save abandoned-cart lead; confirm it does not create bogus orders (did not create order in smoke).
+**Historical snapshot:** `POST /checkout/capture/` with empty phone/name returned
+**200** `{"ok": true}` without an actionable recovery channel.
+
+**Resolution (2026-07-16):** JSON parsing now fails closed, phones use the same
+Ukrainian checkout validator, email/account fallback is validated, and empty,
+name-only, invalid-email, invalid-phone and non-object payloads return stable
+HTTP 400 errors before session/cart/database mutation. Converted captures are
+terminal and active updates use a row lock plus narrow `update_fields`.
+Local and production checkout suites passed 137/137. The live negative matrix
+passed 6/6 and production `CheckoutCapture` count remained 10→10. Production
+HEAD `c2945228`; implementation commits `a90191ea..1962b488`.
 
 ---
 
@@ -2565,9 +2575,9 @@ baseline evidence and was not rewritten.
 
 ---
 
-### F-075 — CheckoutCapture.converted never true (0/4)
+### F-075 — CheckoutCapture.converted never true (historical 0/4)
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES
+**Status:** [x] FIXED `de7f7efc` + `1962b488` · **Severity:** P2 · **Fix required:** DONE
 
 | id | session_key prefix | phone | converted |
 |----|--------------------|-------|-----------|
@@ -2578,6 +2588,20 @@ baseline evidence and was not rewritten.
 
 Order **271** and **276** share session keys with captures 2 and 4 but `converted` stayed **False**.  
 `create_order` marks converted; **monobank path** may not call the same CheckoutCapture update → abandoned-cart recovery can spam paid buyers.
+
+**Resolution (2026-07-16):** COD and successful Monobank invoice creation now
+use one race-safe terminal transition. It converts an active row, leaves an
+existing terminal row byte-for-byte unchanged, or creates a PII-free terminal
+marker when no capture exists. The inner savepoint handles a concurrent unique
+insert without poisoning the outer COD transaction; a late beacon cannot reopen
+the row. Failed Monobank invoice creation creates no marker.
+
+Production verified `orders_checkoutcapture` is InnoDB. Server tests passed
+56/56 + 81/81, the MariaDB rollback canary passed, and Passenger was restarted
+at `c2945228`. Live inventory found four unconverted captures with exact Order
+session matches: 2→271, 4→276, 7→278 and 8→281. All four were atomically updated
+using only `converted`; final state is 4 converted and 6 active captures, with
+all six active rows having no matching Order.
 
 ---
 

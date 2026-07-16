@@ -569,7 +569,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | CART-051 | Failed payment UX | P1 | [x] WARN failed pay UX not live|
 | CART-052 | Telegram admin order notification fires | P1 | [x] WARN TG notify logs show attempts|
 | CART-053 | Receipt send if feature used | P2 | [x] N/A receipt not tested|
-| CART-054 | Checkout capture endpoint if used | P2 | [x] accepts empty 200 F-051 |
+| CART-054 | Checkout capture endpoint if used | P2 | [x] FIXED F-051: unusable payloads return 400 before mutation; live 6/6 |
 
 ## 5.4 Alternative purchase paths
 
@@ -984,7 +984,7 @@ Mark each: loads 200 / no throw on page.
 - Attribution root-cause: **F-071** `link_order_to_utm` ignores first_touch → Order.utm always empty even when UserAction has UTM.
 - Session_key: guest COD **FIXED `394a247c`** (F-044/F-074); current prepay writer **FIXED since `7936ab6e` + regression `30808819`** (F-068/F-073); both production rollback canaries passed. F-072 **FIXED `bdd04e4c`**: 2/2 provable historical UTM joins restored by guarded reconciliation, one existing action linked, 34 unverifiable historical rows and all historical `Order.session_key` values untouched.
 - Feed product g:link recheck **PASS** (F-077); color landings grammar still F-002.
-- CheckoutCapture.converted 0/4 (F-075).
+- **Historical snapshot:** CheckoutCapture.converted was 0/4 (F-075); fixed 2026-07-16 with terminal COD/Mono markers and all 4 current order-matched captures reconciled.
 - Pixel BFCache + MySQL gone away reconfirmed live (F-079/F-080).
 - Ads gate remains **BLOCKED**. Findings F-001…F-082 in `AUDIT_FINDINGS_2026-07-09.md`.
 - **No code fixes in Pass A/B.**

@@ -137,18 +137,29 @@ scan were clean.
 - Modify: `TWOCOMMS_A_TO_B/technical/twocomms_global_audit.md`
 - Modify: this plan
 
-- [ ] **Step 1: Complete spec and quality reviews**
+- [x] **Step 1: Complete spec and quality reviews**
 
 Confirm the browser autosave remains silent/compatible, no valid normalized-phone/email capture is lost, invalid requests cannot update existing rows, converted rows cannot be reopened, and errors expose no submitted PII.
 
-- [ ] **Step 2: Commit, push, deploy and restart Passenger**
+- [x] **Step 2: Commit, push, deploy and restart Passenger**
 
 Push only the view/tests/plan, pull `main`, run focused server tests/check/compile, restart Passenger and verify storefront HTTP 200. No migration or static build is required.
 
-- [ ] **Step 3: Run live negative acceptance**
+- [x] **Step 3: Run live negative acceptance**
 
 POST `{}`, name-only, invalid-email-only, invalid-phone-only and non-object JSON without a cart; assert HTTP 400 with stable error codes and production CheckoutCapture count delta 0. Do not create a synthetic valid capture.
 
 - [ ] **Step 4: Mark F-051 fixed and deploy docs**
 
 Use `[x] FIXED` only after local/server tests and live negative acceptance pass. Preserve the historical one cart-only row under retention rather than deleting it in this slice. Commit/push/deploy docs and add a final plan checkpoint.
+
+**Production checkpoint (2026-07-16):** Runtime commits were rebased over the
+merged PDP/Fable5 bundle and pushed through `c2945228`. Server tests passed
+56/56 + 81/81, production check/compile passed, and
+`orders_checkoutcapture` was confirmed InnoDB. The rollback canary covered
+PII-free marker creation, terminal no-op and active-to-converted-only behavior.
+After Passenger restart, six invalid JSON/form probes returned the expected
+HTTP 400 errors and the production row count stayed 10→10. Historical
+reconciliation updated exactly captures 2, 4, 7 and 8, each with a matching
+Order session; final production state is 4 converted and 6 active no-order
+captures. Root/product returned 200 and anonymous admin returned 302.
