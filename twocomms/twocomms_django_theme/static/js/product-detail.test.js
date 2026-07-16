@@ -8,6 +8,7 @@ const {
   MODAL_FOCUSABLE_SELECTOR,
   resolveOptionSelection,
   resolveMaterialStory,
+  resolveRestockSummary,
   resolveSwipe,
 } = require('./product-detail.js');
 
@@ -125,4 +126,14 @@ test('configurator errors fail closed while a normal empty legacy matrix stays a
   assert.equal(legacy.isAvailable, true);
   assert.equal(legacy.hasMatrix, false);
   assert.equal(legacy.choiceAvailability.fit.classic, true);
+});
+
+test('restock summary keeps immutable product title separate from current variant color', () => {
+  assert.deepEqual(resolveRestockSummary?.({
+    baseProductTitle: 'Худі Tokyo Drift',
+    currentVariantName: 'Чорний',
+  }), {
+    productTitle: 'Худі Tokyo Drift',
+    colorName: 'Чорний',
+  });
 });

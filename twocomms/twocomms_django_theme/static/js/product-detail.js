@@ -24,6 +24,17 @@ function resolveMaterialStory(variant) {
   return normalized.kind && normalized.title && normalized.copy ? normalized : null;
 }
 
+function resolveRestockSummary({
+  baseProductTitle = '',
+  fallbackProductTitle = '',
+  currentVariantName = '',
+} = {}) {
+  return {
+    productTitle: String(baseProductTitle || fallbackProductTitle).trim(),
+    colorName: String(currentVariantName || '').trim() || '—',
+  };
+}
+
 function galleryStatus(index, total) {
   const count = Math.max(1, Number(total) || 1);
   const position = Math.max(0, Math.min(count - 1, Number(index) || 0));
@@ -149,6 +160,7 @@ if (typeof module !== 'undefined' && module.exports) {
     MODAL_FOCUSABLE_SELECTOR,
     resolveMaterialStory,
     resolveOptionSelection,
+    resolveRestockSummary,
     resolveSwipe,
   };
 }
@@ -1801,13 +1813,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       const requestedSize = String(button.dataset.restockSize || '').toUpperCase();
       renderSizeOptions(requestedSize);
       const activeColor = currentVariantData(state);
-      const visibleTitle = state.root.querySelector('[data-pdp-product-title]');
-      modal.querySelector('[data-restock-selected-product]').textContent = visibleTitle
-        ? visibleTitle.textContent.trim()
-        : state.container.dataset.productTitle || '';
-      modal.querySelector('[data-restock-selected-color]').textContent = activeColor
-        ? String(activeColor.name || '').trim()
-        : '—';
+      const summary = resolveRestockSummary({
+        baseProductTitle: state.container.dataset.productTitleBase,
+        fallbackProductTitle: state.container.dataset.productTitle,
+        currentVariantName: activeColor && activeColor.name,
+      });
+      modal.querySelector('[data-restock-selected-product]').textContent = summary.productTitle;
+      modal.querySelector('[data-restock-selected-color]').textContent = summary.colorName;
       modal.querySelector('[data-restock-selected-options]').textContent = optionSummary() || '—';
       status.textContent = '';
       submit.disabled = false;
