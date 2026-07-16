@@ -484,6 +484,11 @@ SOCIAL_AUTH_LOGIN_ERROR_URL = '/login/'
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'formatters': {
+        'message_only': {
+            'format': '%(message)s',
+        },
+    },
     'filters': {
         'pii_redaction': {
             '()': 'twocomms.log_handlers.PIIRedactionFilter',
@@ -514,6 +519,17 @@ LOGGING = {
             'encoding': 'utf-8',
             'delay': True,
             'filters': ['pii_redaction'],
+        },
+        'csp_file': {
+            'level': 'WARNING',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(BASE_DIR / 'csp.log'),
+            'maxBytes': 5 * 1024 * 1024,
+            'backupCount': 5,
+            'encoding': 'utf-8',
+            'delay': True,
+            'filters': ['pii_redaction'],
+            'formatter': 'message_only',
         },
         # RUM beacon log — отдельный файл, чтобы не забивать django.log
         'rum_file': {
@@ -561,6 +577,11 @@ LOGGING = {
         'storefront.client_errors': {
             'handlers': ['client_error_file'],
             'level': 'INFO',
+            'propagate': False,
+        },
+        'csp': {
+            'handlers': ['csp_file'],
+            'level': 'WARNING',
             'propagate': False,
         },
         'storefront.social_pipeline': {

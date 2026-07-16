@@ -12,15 +12,18 @@ Static Pages views - Статические страницы и служебны
 """
 
 from copy import deepcopy
+from datetime import datetime, timezone as datetime_timezone
 import json
 import logging
+import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
 from django.contrib.admin.views.decorators import staff_member_required
+from django.core.exceptions import RequestDataTooBig
 from django.core.paginator import EmptyPage, PageNotAnInteger
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.conf import settings
@@ -67,6 +70,7 @@ from storefront.support_content import (
     PRO_BRAND_FAQ_ITEMS,
     SUPPORT_PAGE_DEFINITIONS,
 )
+from twocomms.log_handlers import redact_pii
 
 SITEMAP_STATIC_ROUTE_NAMES = (
     "home",
@@ -261,6 +265,116 @@ CUSTOM_PRINT_FAQ_ITEMS = [
 # ==================== STATIC PAGES ====================
 
 
+_CSP_ALLOWED_CONTENT_TYPES = {
+    "application/csp-report",
+    "application/json",
+    "application/reports+json",
+}
+_CSP_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_CSP_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_CSP_EXTENSION_SCHEMES = (
+    "chrome-extension://",
+    "moz-extension://",
+    "safari-extension://",
+)
+_CSP_NOISE_VALUES = {
+    "self",
+    "inline",
+    "eval",
+    "unsafe-inline",
+    "unsafe-eval",
+    "data",
+}
+_CSP_MAX_BODY_BYTES = 64 * 1024
+_CSP_MAX_REPORTS = 20
+_CSP_MAX_URL_LENGTH = 2048
+_CSP_MAX_DIRECTIVE_LENGTH = 256
+_CSP_MAX_USER_AGENT_LENGTH = 200
+
+
+def _normalize_csp_reports(payload):
+    """Return valid pairs found within the first 20 array entries."""
+    if isinstance(payload, list):
+        normalized = []
+        for envelope in payload[:_CSP_MAX_REPORTS]:
+            if not isinstance(envelope, dict):
+                continue
+            if envelope.get("type") != "csp-violation":
+                continue
+            body = envelope.get("body")
+            if not isinstance(body, dict):
+                continue
+            normalized.append((body, envelope))
+        return normalized
+
+    if not isinstance(payload, dict):
+        return []
+
+    if "csp-report" in payload:
+        report = payload.get("csp-report")
+        return [(report, {})] if isinstance(report, dict) else []
+
+    if "type" in payload or "body" in payload:
+        body = payload.get("body")
+        if payload.get("type") == "csp-violation" and isinstance(body, dict):
+            return [(body, payload)]
+        return []
+
+    return [(payload, {})]
+
+
+def _clean_bounded_csp_string(value, max_length):
+    if not isinstance(value, str):
+        return ""
+    bounded = value[:max_length]
+    unicode_safe = _CSP_SURROGATE_RE.sub("\ufffd", bounded)
+    return _CSP_CONTROL_CHARS_RE.sub("", unicode_safe).strip()
+
+
+def _sanitize_csp_text(value, max_length):
+    cleaned = _clean_bounded_csp_string(value, max_length)
+    return redact_pii(cleaned)
+
+
+def _sanitize_csp_url(value):
+    cleaned = _clean_bounded_csp_string(value, _CSP_MAX_URL_LENGTH)
+    if not cleaned:
+        return ""
+    try:
+        parsed = urlsplit(cleaned)
+        hostname = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        return ""
+
+    if ":" in hostname:
+        netloc = f"[{hostname}]"
+    else:
+        netloc = quote(redact_pii(hostname), safe=".-_~")
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+
+    decoded_path = unquote(parsed.path, errors="replace")
+    redacted_path = redact_pii(decoded_path)
+    encoded_path = quote(
+        redacted_path,
+        safe="/:@!$&'()*+,;=-._~[]",
+    )
+    query_free = urlunsplit((parsed.scheme, netloc, encoded_path, "", ""))
+    return query_free[:_CSP_MAX_URL_LENGTH]
+
+
+def _is_actionable_csp_blocked_uri(blocked_uri):
+    lowered = blocked_uri.casefold()
+    unquoted = lowered.strip("'\"")
+    return not (
+        not blocked_uri
+        or lowered.startswith(_CSP_EXTENSION_SCHEMES)
+        or unquoted in _CSP_NOISE_VALUES
+        or unquoted.startswith("data:")
+    )
+
+
 @csrf_exempt
 @require_POST
 def csp_report(request):
@@ -283,33 +397,59 @@ def csp_report(request):
         (``chrome-extension://``, ``moz-extension://``) — those are not
         actionable from our side.
     """
+    if request.content_type not in _CSP_ALLOWED_CONTENT_TYPES:
+        return HttpResponse(status=204)
+
     try:
-        if request.content_type in ("application/csp-report", "application/json", "application/reports+json"):
-            payload = json.loads(request.body.decode("utf-8") or "{}")
-        else:
-            return HttpResponse(status=204)
+        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        return HttpResponse(status=204)
+    if content_length < 0 or content_length > _CSP_MAX_BODY_BYTES:
+        return HttpResponse(status=204)
+
+    try:
+        raw_body = request.body
+    except RequestDataTooBig:
+        return HttpResponse(status=204)
+    if len(raw_body) > _CSP_MAX_BODY_BYTES:
+        return HttpResponse(status=204)
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8") or "{}")
     except (ValueError, UnicodeDecodeError):
         return HttpResponse(status=204)
 
-    report = payload.get("csp-report") or payload
-    blocked = (report.get("blocked-uri") or report.get("blockedURL") or "").strip()
-    if blocked.startswith(("chrome-extension://", "moz-extension://", "safari-extension://")):
-        return HttpResponse(status=204)
-    if not blocked or blocked in ("self", "inline", "eval", "data"):
-        return HttpResponse(status=204)
-
     logger = logging.getLogger("csp")
-    logger.warning(
-        "csp_violation",
-        extra={
-            "csp_event": "csp_violation",
-            "blocked_uri": blocked,
-            "document_uri": report.get("document-uri") or report.get("documentURL"),
-            "violated_directive": report.get("violated-directive") or report.get("effectiveDirective"),
-            "referrer": report.get("referrer"),
-            "user_agent": request.META.get("HTTP_USER_AGENT", "")[:200],
-        },
+    user_agent = _sanitize_csp_text(
+        request.META.get("HTTP_USER_AGENT", ""),
+        _CSP_MAX_USER_AGENT_LENGTH,
     )
+    reported_at = datetime.now(datetime_timezone.utc).isoformat()
+    for report, envelope in _normalize_csp_reports(payload):
+        blocked_uri = _sanitize_csp_url(
+            report.get("blocked-uri") or report.get("blockedURL")
+        )
+        if not _is_actionable_csp_blocked_uri(blocked_uri):
+            continue
+
+        record = {
+            "event": "csp_violation",
+            "reported_at": reported_at,
+            "blocked_uri": blocked_uri,
+            "document_uri": _sanitize_csp_url(
+                report.get("document-uri")
+                or report.get("documentURL")
+                or envelope.get("url")
+            ),
+            "violated_directive": _sanitize_csp_text(
+                report.get("violated-directive") or report.get("effectiveDirective"),
+                _CSP_MAX_DIRECTIVE_LENGTH,
+            ),
+            "referrer": _sanitize_csp_url(report.get("referrer")),
+            "user_agent": user_agent,
+        }
+        logger.warning(json.dumps(record, sort_keys=True, ensure_ascii=False))
+
     return HttpResponse(status=204)
 
 
