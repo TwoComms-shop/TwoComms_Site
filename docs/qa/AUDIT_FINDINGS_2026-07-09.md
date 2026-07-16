@@ -107,7 +107,7 @@
 | [x] | **F-022** | P1 | PV→ATC cliff | **FIXED `fdf6563a`**; trusted production baseline 389 PV / 20 ATC (7d), 140 / 9 post-fix; §F-022 |
 | [x] | **F-032** | P1 | UserAction rarely linked UTMSession | **FIXED `9854c18b` + `b33b8ce4`**; future writer repaired, guarded production backfill linked 116/116 deterministic actions; §F-032 |
 | [o] | **F-031** | P1 | MySQL has gone away | **PARTIAL:** no DB errors after request fallback disable marker; 7-day recurrence window and hosting 1040 remain; §F-031; F-080 |
-| [o] | **F-007** | P1 | HTTP 429 burst crawl | **PARTIAL:** static/media exempt + Retry-After present; generic counter remains non-atomic/not route-aware; §F-007 |
+| [x] | **F-007** | P1 | HTTP 429 burst crawl | **FIXED `3d217ebb`**; atomic route/host buckets, server 23/23 + production thresholds/live crawl verified; §F-007 |
 | [x] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | **FIXED `3a458b51`**; 74/74 production products + live cart/feed parity verified; §F-018 |
 | [x] | **F-043** | P1 | /help-center/ 404 | **FIXED `169e6032`**; production 301 to `/dopomoga/`; §F-043 |
 | [x] | **F-050** | P1 | NP Kyiv Latin 502 | **FIXED `75b1f6fb`**; production Kyiv/Kiev/Київ 200; §F-050 |
@@ -195,7 +195,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-004** | P1 | FIXED | DONE | `81da8e22`: 13 SKU × 3 locales DB/live title-H1 names aligned |
 | [x] **F-005** | P1 | FIXED | DONE | `d773bee6`: RU/EN home+catalog H1 localized; server tests 2/2 and live 4/4 |
 | [ ] **F-006** | P2 | OPEN | YES | Color sitemap same URL ×3 |
-| [o] **F-007** | P1 | PARTIAL | YES | Retry-After/static exemptions exist; non-atomic generic 100/min policy remains |
+| [x] **F-007** | P1 | FIXED | DONE | `3d217ebb`: atomic route/host buckets; 600 catalog requests allowed, 601st returns 429 |
 | [ ] **F-008** | P2 | OPEN | YES | Meta description too long on some static pages |
 | [x] **F-009** | P3 | FIXED | DONE | `169e6032`: favicon.ico direct 200; production verified |
 | [ ] **F-010** | P2 | OPEN | YES | debug/dev endpoints login-gated not 404 |
@@ -275,7 +275,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-083** | P1 | FIXED | DONE | `fba4dc85` + `d561c11d`: DB idempotency, all confirmed writers + safe backfill; production trusted parity 31/31, 0 missing/duplicates |
 | [x] **F-084** | P1 | FIXED | DONE | `069f4efa`: shared writer normalization + guarded backfill; production aliases 0, `chatgpt/ai` 161, Dispatcher one cohort |
 | [x] **F-085** | P3 | PASS | no | Home hreflang×4 + canonical + OG + healthz OK |
-| [x] **F-086** | P3 | PASS | no | Mild burst 20× catalog → 0×429 (F-007 is high-load only) |
+| [x] **F-086** | P3 | PASS | no | Historical pre-fix check: mild burst 20× catalog → 0×429; F-007 was then high-load only |
 | [x] **F-087** | P1 | FIXED | DONE | `ead5fd70` + `e89fd17d`: private route, UUID names and filesystem deny; live 403 |
 | [x] **F-088** | P1 | FIXED | DONE | `d7c6812a`: fail-closed webhook + mode-600 production secret + Telegram registration |
 | [ ] **F-089** | P2 | OPEN | YES | FACEBOOK_PIXEL_ID settings EMPTY (HTML fallback only) |
@@ -297,13 +297,13 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 
 Все подтверждённые P0 из master index закрыты. Внешний Meta Advanced Access для F-097 остаётся действием владельца приложения, но приложение уже корректно классифицирует и показывает этот запрет.
 
-### P1 OPEN — 3
+### P1 REMEDIATION BATCH — 3/3 CLOSED
 - [x] **F-059** — guarded production backfill completed; 36/36 non-empty
 - [x] **F-087** — direct UBD media denied; authenticated owner/staff delivery deployed
 - [x] **F-088** — production secret configured and webhook header enforcement verified
 
-### P1 OPEN (continued) — 7
-- [o] **F-007** — HTTP 429 under burst crawl; Retry-After exists, atomic route-aware policy remains
+### P1 STATUS — 1 PARTIAL
+- [x] **F-007** — fixed `3d217ebb`; atomic route/host policy and production thresholds verified
 - [x] **F-018** — default/explicit variant offer_id parity verified in production
 - [x] **F-020** — guarded historical source normalization and audit-test cleanup completed
 - [x] **F-022** — trusted PV→ATC baseline restored by `fdf6563a`; production recheck passed
@@ -746,14 +746,14 @@ restart.
 
 ### F-007 — Aggressive HTTP 429 under moderate crawl
 
-**Status:** [o] PARTIAL · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`3d217ebb`) · **Severity:** P1 · **Fix required:** DONE
 
-- [o] **Partial** · Severity: **P1** · Area: **TECH / ADS** · Checklist: TECH-060 family, SEO-062
+- [x] **Fixed** · Severity: **P1** · Area: **TECH / ADS** · Checklist: TECH-060 family, SEO-062
 
 | Field | Value |
 |-------|--------|
 | Status (B) | REPRODUCED |
-| Status (C) | |
+| Status (C) | FIXED 2026-07-16 |
 
 **Evidence:** After ~100–150 requests from one IP, many URLs returned **429** (home, catalog, products, static). Slow re-crawl later succeeded (22/22 products 200).
 
@@ -769,11 +769,30 @@ restart.
 
 **Risk of fix:** high if loosening security carelessly.
 
-**Recheck 2026-07-16:** static/media requests are exempt and 429 responses
+**Superseded recheck 2026-07-16 (historical snapshot):** static/media requests are exempt and 429 responses
 carry `Retry-After: 60`. The generic fixed-window implementation still uses a
 non-atomic cache `get`/`set`, applies one 100/minute threshold to unrelated
-dynamic routes, and has no verified crawler/monitoring policy. Keep `[o]` until
-an atomic route-aware policy is tested without an aggressive production burst.
+dynamic routes, and has no verified crawler/monitoring policy. This was the
+reason the item remained `[o]` before `3d217ebb`.
+
+**Final verification 2026-07-16:** `3d217ebb` replaces the generic counter with
+finite host/route buckets (`auth`, integrations, telemetry, staff/commerce
+writes, expensive reads, catalog and general reads). FileBasedCache increments
+are serialized across Passenger processes with 64 deterministic `flock`
+stripes; Redis has a dedicated `DefaultClient` alias with bounded fail-open
+timeouts. User-Agent is not trusted, XFF is accepted only through configured
+proxy CIDRs, and unknown Host values collapse to one finite bucket.
+
+- Local and server middleware suites: **23/23 PASS**; multiprocessing assertion:
+  **8 processes / 200 increments / exact 1..200**, no lost updates.
+- Production FileBasedCache canaries: catalog **600 allowed, 601st 429**; auth
+  **20 allowed, 21st 429**; dynamic `/media/prom-feed.xml` **120 allowed, 121st
+  429**; each response carried a window-accurate `Retry-After`; canary keys
+  were removed.
+- Live verification: `/healthz/` OK, `/catalog/tshirts/` **20/20 HTTP 200**,
+  `/media/prom-feed.xml` HTTP 200 (2,374,460 bytes). The live cache key matched
+  external client IP `188.163.51.125`, confirming direct `REMOTE_ADDR` on the
+  current LiteSpeed path.
 
 ---
 
@@ -1005,7 +1024,7 @@ Only an issue if some code references the wrong path. `site.webmanifest` OK.
 - [x] Align product title/H1 (F-004) — `81da8e22`, DB/live 39/39 verified
 - [x] Translate RU/EN H1 (F-005) — `d773bee6`, server 2/2 + live 4/4 verified
 - [ ] Dedupe color sitemap (F-006)  
-- [o] Review 429 policy (F-007): atomic route-aware residual
+- [x] Review 429 policy (F-007) — fixed `3d217ebb`; server and production verified
 
 ---
 
@@ -2519,7 +2538,10 @@ AI-scoped.
 
 **Status:** [x] PASS note · **Severity:** P3 · **Fix required:** no for mild load
 
-20 sequential requests to `/catalog/tshirts/` → **0×429**. F-007 remains valid for **burst/crawl** (previously observed under full sitemap speed run), not for light traffic.
+Historical pre-fix result: 20 sequential requests to `/catalog/tshirts/` →
+**0×429**. At that recheck F-007 still remained valid for **burst/crawl**
+(previously observed under full sitemap speed run), not for light traffic. It
+was later closed by `3d217ebb`.
 
 ---
 
