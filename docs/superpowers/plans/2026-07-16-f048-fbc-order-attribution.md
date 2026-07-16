@@ -66,21 +66,25 @@ GREEN evidence (2026-07-16): the focused normalization/order-attribution suite p
 - Create: `twocomms/storefront/management/commands/backfill_fbc_order_attribution.py`
 - Create: `twocomms/storefront/tests/test_backfill_fbc_order_attribution.py`
 
-- [ ] **Step 1: Write command RED tests**
+- [x] **Step 1: Write command RED tests**
 
 Cover dry-run/no writes, exact apply guards, valid seven-day candidates, stale/future/malformed FBC, `_fbp`-only, missing/invalid/mismatched session keys, same-key duplicate orders, conflicting FBC evidence inside one key group, existing attribution/UTMSession conflicts, rollback on write failure, and idempotent second apply.
 
-- [ ] **Step 2: Build a fail-closed plan**
+RED evidence (2026-07-16): the new 12-test command suite was run before the command existed. Eleven scenarios errored at command discovery with `Unknown command: 'backfill_fbc_order_attribution'`; the guard scenario intercepted the same missing-command `CommandError`. After correcting a test-only timezone import, the repeated RED had no unrelated setup failure.
+
+- [x] **Step 2: Build a fail-closed plan**
 
 Scan only web Orders with no UTM FK and no raw UTM fields. Require valid fresh FBC and no conflicting raw click IDs. Resolve a 32-character Django key from `Order.session_key` or `tracking.external_id=session:<key>` without writing the key. Group by key and abort ambiguous groups. Report eligible, linkable, stale, no-key, invalid, conflicting, create-session, reuse-session, and order counts without printing IDs or cookie values.
 
-- [ ] **Step 3: Apply atomically with exact guards**
+- [x] **Step 3: Apply atomically with exact guards**
 
 Require `--expect-groups`, `--expect-orders`, and all residual-category counts before `--apply`. Lock candidate Orders and matching UTMSessions, rescan, create at most one UTMSession per safe key, set `facebook/paid_social`, validated FBC/fbclid, evidence-based `first_seen/last_seen`, and link every safe Order while copying five raw UTM fields. Never mutate `Order.session_key`, `payment_payload`, SiteSession, UserAction, or create events. Any drift/conflict rolls back the entire apply.
 
-- [ ] **Step 4: Run command tests and full attribution suite**
+- [x] **Step 4: Run command tests and full attribution suite**
 
 Run the new command tests plus normalization, order attribution, existing click-ID backfill, and existing Order reconciliation tests.
+
+GREEN evidence (2026-07-16): the focused command suite passed 13/13 after an additional RED regression caught and fixed reuse of a SiteSession-linked UTM with a different session key. The combined command, normalization, order-attribution, click-ID backfill, and Order reconciliation suite passed 60/60. Django check reported no issues; scoped compileall, `git diff --check`, and the scoped secret scan exited clean. This task did not run or apply the command against production.
 
 ### Task 4: Ship, back up, apply, and reconcile docs
 
