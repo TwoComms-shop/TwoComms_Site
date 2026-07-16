@@ -22,7 +22,9 @@ _MAX_LEN = {'full_name': 255, 'phone': 32, 'email': 254}
 
 
 def _clean(value, field):
-    value = (value or '').strip()
+    if not isinstance(value, str):
+        return ''
+    value = value.strip()
     return value[: _MAX_LEN[field]]
 
 
@@ -40,9 +42,20 @@ def capture_checkout(request):
     if sfs and sfs not in ('same-origin', 'same-site', 'none'):
         return JsonResponse({'ok': False}, status=403)
 
-    try:
-        data = json.loads(request.body.decode('utf-8'))
-    except Exception:
+    if request.content_type == 'application/json':
+        try:
+            data = json.loads(request.body.decode('utf-8'))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_payload'},
+                status=400,
+            )
+        if not isinstance(data, dict):
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_payload'},
+                status=400,
+            )
+    else:
         data = request.POST
 
     full_name = _clean(data.get('full_name'), 'full_name')
@@ -54,9 +67,13 @@ def capture_checkout(request):
         except ValidationError:
             email = ''
 
+    if not (phone or email):
+        return JsonResponse(
+            {'ok': False, 'error': 'contact_required'},
+            status=400,
+        )
+
     cart = get_validated_cart_from_session(request)
-    if not (full_name or phone or email) and not cart:
-        return JsonResponse({'ok': False})
 
     if not request.session.session_key:
         request.session.save()
