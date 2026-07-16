@@ -51,11 +51,11 @@
   Фикс: ротация SECRET_KEY + Redis-кредов на сервере (env-файлы, НЕ репо). History-rewrite — только при отдельном согласовании (RISK-06).
   Приёмка: старые значения невалидны.
 
-- [ ] **W0-3. 🔴 Регулярные бэкапы MySQL (TD-020 / TECH-042)** `[SERVER]` + `[REPO]`(скрипт)
-  Бэкапов НЕТ; последний ручной дамп >8 мес. Блокирует ВСЕ миграции (RISK-07).
-  Фикс: `[REPO]` — написать `scripts/backup_mysql.sh` (mysqldump, ротация 7/30 дней, каталог вне web-root, права 700); `[SERVER]` — поставить в crontab, тест восстановления на копии.
-  Приёмка: дамп по расписанию; восстановление проверено; каталог не доступен по HTTP.
-  ✅ **REPO-часть DONE:** `scripts/backup_mysql.sh` создан — mysqldump `--single-transaction --routines --triggers`, атомарная запись через .tmp + sanity-check размера (>10KB) + `gzip -t`, ротация daily 7 дней / weekly 35 дней, chmod 600/700, инструкция установки в шапке скрипта. Осталось `[SERVER]`: mkdir ~/db_backups (вне webroot), ~/.my.cnf, crontab `45 3 * * *`, тест восстановления.
+- [x] **W0-3. 🔴 Регулярные бэкапы MySQL (TD-020 / TECH-042)** `[SERVER]` + `[REPO]`(скрипт)
+  Регулярный guarded backup и restore drill приняты в production 17.07.2026 на runtime commit `5ee9a974`; RISK-07 больше не блокирует аддитивные миграции.
+  Фикс: `scripts/backup_mysql.sh` выполняет `mysqldump --single-transaction --routines --triggers`, process-scoped temporary archives, `gzip -t`, batch-atomic publication и non-blocking `flock`. Daily retention 14 дней, Sunday weekly retention 35 дней; корневой backup-каталог вне web-root с правами 0700, архивы 0600.
+  Приёмка: private defaults/list files mode 0600; manual run создал ровно два валидных архива без temp leftovers. Оба архива восстановлены в изолированные temporary DB с точным all-table row-count parity (265 и 21 таблица), trigger/routine parity и зелёным Django check; temporary DB удалены. Cron сохранил все посторонние строки, содержит ровно один backup entry; one-minute scheduled canary прошёл и убран.
+  Отчёт: `twocomms/docs/OPS.md` (F-090 live acceptance).
 
 - [x] **W0-4. 🔴 Смок-тесты на деньги (CB-024)** `[REPO]`
   > **STRICT RE-VERIFY W0-4:** STRICT 2026-07-09: KEEP files present. Full pytest not re-run here (SECRET_KEY/prod settings).
@@ -67,10 +67,10 @@
 
 - [ ] **W0-5. Зафиксировать crontab/инварианты (CB-043/CB-044/CB-012)** `[REPO]`(docs) + `[OWNER]`
   > **RE-VERIFY W0-5:** PARTIAL 2026-07-09: REPO OPS.md done; OWNER stash review NOT done — uncheck full item.
-  crontab: 7 задач, НЕТ бэкап-cron, НЕТ feed-cron; на сервере **10 git-stash** (возможна потерянная работа) + untracked диаг-скрипты.
+  Historical snapshot (05.07.2026): 7 задач, не было backup/feed-cron; на сервере **10 git-stash** (возможна потерянная работа) + untracked диаг-скрипты. Live snapshot 17.07.2026: 15 непустых строк, шесть scheduled commands, включая ровно один guarded MySQL backup entry.
   Фикс: `[REPO]` — задокументировать crontab и боевой settings-модуль в `docs/OPS.md`; `[OWNER]` — разобрать stash с владельцем (что выбросить, что закоммитить).
   Приёмка: docs/OPS.md существует; судьба каждого stash решена.
-  ✅ **REPO-часть DONE:** `twocomms/docs/OPS.md` создан — полная таблица 7 cron-задач (из CB-044), известные дыры (нет бэкап/feed-cron/logrotate), инварианты («не добавлять cron без записи в таблицу»), git-состояние сервера (10 stash — не дропать без владельца), смок-набор W0-4 и деплой-чеклист. Остаётся `[OWNER]`: разбор 10 git-stash.
+  ✅ **REPO-часть DONE:** `twocomms/docs/OPS.md` содержит live-таблицу шести scheduled commands, единственный guarded MySQL backup entry, инварианты («не добавлять cron без записи в таблицу»), git-состояние сервера (10 stash — не дропать без владельца), смок-набор W0-4 и деплой-чеклист. Остаётся `[OWNER]`: разбор 10 git-stash.
 
 - [ ] **W0-6. [GAP] 🔴 NEW-405: сервис-аккаунт JSON в webroot?** `[SERVER]`
   `external_analytics.py` авто-дискаверит `*service*account*.json` в каталоге проекта. Если файл лежит в webroot — ключ Google потенциально доступен по HTTP.
@@ -467,7 +467,7 @@
 
 ## ВОЛНА 7 — ГИГИЕНА РЕПОЗИТОРИЯ И КОДА (P2, строго после Волн 0-2)
 
-⚠️ Перед ЛЮБЫМ удалением: crontab инвентаризирован (CB-044: 7 задач, все скрипты в репо), но перепроверить непосредственно перед удалением (RISK-01).
+⚠️ Перед ЛЮБЫМ удалением: crontab инвентаризирован; historical CB-044 фиксировал 7 задач, live snapshot 17.07.2026 содержит шесть scheduled commands. Перепроверить непосредственно перед удалением (RISK-01).
 
 - [ ] **W7-1. ⚠️ views.py.backup — ЖИВОЙ рантайм (CB-004/TD-001)** `[REPO]`
   > **RE-VERIFY W7-1:** REOPEN 2026-07-09: views.py.backup still exists + lazy-load in views/__init__.py. Was false [x].

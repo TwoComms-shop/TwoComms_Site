@@ -9,30 +9,25 @@
 - Тесты в песочнице/CI: `test_settings` (sqlite in-memory) / `preview_settings`.
 - Ключевые env-инварианты: `MONOBANK_TOKEN`, `MONOBANK_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `FACEBOOK_CAPI_TOKEN`, `TIKTOK_EVENTS_TOKEN` — все берутся из env, НЕ из кода (после W0-2-ротации).
 
-## Crontab (live snapshot 14.07.2026: 2 задачи)
+## Crontab (live snapshot 17.07.2026: 6 задач)
 
-> Важно: инвентаризация 05.07.2026 содержала 7 задач, но повторный production
-> `crontab -l` 13–14.07.2026 показал только ротацию логов. F-083 добавил вторую
-> задачу ниже. Старые записи нельзя считать действующими и нельзя массово
-> восстанавливать без отдельной проверки их команд, логов и альтернативных
-> scheduler-процессов.
+> Production acceptance на HEAD `5ee9a974` подтвердила шесть scheduled jobs,
+> ровно одну строку запуска `scripts/backup_mysql.sh` и сохранность всех
+> посторонних строк. Таблица ниже документирует три известные записи; остальные
+> три F-090 не инвентаризировал, поэтому их команды здесь намеренно не придуманы.
 
 | # | Расписание | Команда | Лог | Назначение / риск |
 |---|---|---|---|---|
-| 1 | `10 4 * * *` | `scripts/rotate_twocomms_logs.sh` | `$HOME/log_archives/twocomms/rotate_twocomms_logs.log` | ротация/retention persistent logs |
-| 2 | `17 4 * * *` | `manage.py reconcile_purchase_actions --apply` | `logs/reconcile_purchase_actions.log` | F-083: идемпотентно лечит доказуемые пропуски внутренних purchase |
+| 1 | `45 3 * * *` | `TWC_DB_NAMES="$(/usr/bin/paste -sd, "$HOME/.twocomms_backup_dbs")" /bin/bash /home/qlknpodo/TWC/TwoComms_Site/scripts/backup_mysql.sh` | `/home/qlknpodo/db_backups/backup.log` | F-090: приватный список БД, полный валидируемый batch и один guarded daily run |
+| 2 | `10 4 * * *` | `scripts/rotate_twocomms_logs.sh` | `$HOME/log_archives/twocomms/rotate_twocomms_logs.log` | ротация/retention persistent logs |
+| 3 | `17 4 * * *` | `manage.py reconcile_purchase_actions --apply` | `logs/reconcile_purchase_actions.log` | F-083: идемпотентно лечит доказуемые пропуски внутренних purchase |
 
-### Чего в cron НЕТ (известные дыры)
+### Другие scheduler-задачи
 
-1. **Бэкапа MySQL** — P0, см. W0-3 (скрипт `scripts/backup_mysql.sh` в репо; добавить cron `[SERVER]`).
-2. Генерации Google Merchant feed (SEO-008) — фид статикой, устаревает.
-3. IndexNow/sitemap-пингов.
-4. Задач из старого snapshot: `trim_analytics`, `recover_checkouts`,
-   `run_instagram_bot --ensure`, `checker_tick`, `poll_ig_deal_payments`,
-   `purge_ig_clients`, `generate_bot_fingerprints`. Их отсутствие подтверждено,
-   но способ восстановления требует отдельного production-аудита.
-5. **`manage.py check_survey_inactivity`** (W3-1/TD-015) — survey-репорты о брошенных опросах. Раньше висела в `CELERY_BEAT_SCHEDULE` (каждые 2 мин), но beat не запущен → не выполнялась никогда. Добавить cron `*/5 * * * *` `[SERVER]`.
-6. **`manage.py cleanup_analytics_data`** (W2-10/AN-051) — retention аналитики (UserAction >180д, неконверсионные UTMSession >90д, orphan-события). Добавить cron `20 4 * * 0` (раз в неделю) `[SERVER]`.
+F-090 проверял только backup entry и сохранность остальных строк. Наличие или
+отсутствие Merchant feed, IndexNow/sitemap ping, survey inactivity, analytics
+retention и задач из snapshot 05.07.2026 этим прогоном не переоценивалось;
+они остаются отдельными audit scopes.
 
 ### Решение: Celery НЕ возвращаем (W3-1 / TD-015)
 
@@ -40,14 +35,14 @@
 с сервера не резолвится. Все `@shared_task` работают через синхронный шим
 (`storefront/tasks.py`), фоновость для Telegram-уведомлений — daemon-поток
 (`orders/tasks.py`). `CELERY_BEAT_SCHEDULE` в settings.py — мёртвый конфиг,
-периодика выполняется ТОЛЬКО через crontab (см. дыры 5-6 выше). Новую
+периодика выполняется ТОЛЬКО через crontab (см. отдельные scopes выше). Новую
 фоновую работу оформлять как management-команду + cron, НЕ как Celery-таск.
 
 ### Инварианты
 
-- Обе текущие cron-команды находятся в репо; loose-скрипты корня кроном не вызываются.
+- Все три документированные cron-команды имеют entry points в репо; итоговый crontab содержит шесть scheduled jobs.
 - НИКОГДА не добавляйте cron-задачу без записи в эту таблицу.
-- Новые задачи логируйте в `logs/`; `reconcile_purchase_actions` пишет одну короткую итоговую строку в сутки.
+- Новые задачи логируйте в закрытый служебный каталог; backup log находится вне web-root, а `reconcile_purchase_actions` пишет одну короткую итоговую строку в сутки.
 
 ### MySQL backup runbook (F-090)
 
@@ -69,19 +64,26 @@ Repository entry point:
   atomically update `$HOME/db_backups/last_success` with timestamp and database
   count only.
 
-Target cron (replace the placeholders with the two names read from production
-settings; database names are not credentials):
+Live cron reads the database names from a private mode-`0600` configuration file;
+the names and credentials are not stored in crontab or this document:
 
 ```cron
 # TWOCOMMS_DB_BACKUP
-45 3 * * * /bin/bash /home/qlknpodo/TWC/TwoComms_Site/scripts/backup_mysql.sh <MAIN_DB> <DTF_DB> >> /home/qlknpodo/db_backups/backup.log 2>&1
+45 3 * * * TWC_DB_NAMES="$(/usr/bin/paste -sd, "$HOME/.twocomms_backup_dbs")" /bin/bash /home/qlknpodo/TWC/TwoComms_Site/scripts/backup_mysql.sh >> /home/qlknpodo/db_backups/backup.log 2>&1
 ```
 
-Before installing cron, run the exact command manually, validate every archive
-with `gzip -t`, then restore each archive into a uniquely named temporary
-database. Compare table counts and key-table row counts, run Django checks, and
-drop only the temporary restore databases in guaranteed cleanup. Install the
-marked cron block idempotently without rewriting unrelated jobs.
+**Live acceptance (17.07.2026, runtime commit `5ee9a974`):** local behavioral
+tests passed 11 with one Linux-only skip; server tests passed 11/11. Private
+defaults/list files are mode `0600`. The manual production run published exactly
+two valid archives; backup root and daily directories are mode `0700`, archive
+files are mode `0600`, and temporary leftovers are zero.
+
+Both archives restored into isolated temporary databases with exact all-table
+row-count parity (265 and 21 tables); trigger/routine inventories matched and
+the Django check passed. The temporary restore databases were deleted. The final
+crontab retained all unrelated lines (six scheduled jobs total, exactly one backup
+script line). A temporary one-minute scheduled canary ran successfully and was
+removed; its temporary baseline file was also removed.
 
 ### Log rotation / PII (W3-6)
 

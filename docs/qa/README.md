@@ -66,7 +66,7 @@
 | NP Latin Kyiv 502 | F-050 | Findings | NP city API |
 | ubd_docs public | F-087 **FIXED `ead5fd70` + `e89fd17d`** | PLAN_VS W1-11 / S-14 | owner/staff route + UUID names + direct filesystem deny; live 403 |
 | TG webhook secret empty | F-088 **FIXED `d7c6812a` + server config** | PLAN_VS W3-9 / S-13 | fail-closed code, private env secret and Telegram registration verified live |
-| MySQL backup cron | F-090 | PLAN_VS W0-3 | `scripts/backup_mysql.sh` + crontab |
+| MySQL backup cron | F-090 **FIXED `5ee9a974`** | PLAN_VS W0-3 | two valid archives; exact two-database restore parity; guarded daily cron verified |
 | deploy_paramiko password in git | F-093 | PLAN_VS W0-1 REPO | **delete/sanitize file** (owner SSH password already rotated F-092) |
 | Capacity / MySQL gone away | F-029, F-031, F-080 | Findings | ops |
 
@@ -98,7 +98,7 @@
 6. F-087 ubd_docs — **FIXED**
 7. F-093 deploy_paramiko  
 8. F-088 TG secret — **FIXED**
-9. F-090 backup cron (SERVER)  
+9. F-090 backup cron (SERVER) — **FIXED `5ee9a974`**; production dump, isolated restore and preserved-crontab canary passed
 
 ### Wave Fix-C — SEO / cart polish
 10. F-002 **FIXED `0b9ecc1c`**, F-004/F-094 **FIXED `81da8e22`**, F-005 **FIXED `d773bee6`**; F-043/F-078, F-050 and F-059 are also closed.

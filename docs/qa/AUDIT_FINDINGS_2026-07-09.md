@@ -28,7 +28,7 @@
 |----------|-----:|---------------------:|
 | P0 | 0 | 12 |
 | P1 | 10 | 22 |
-| P2 | 14 | 9 |
+| P2 | 13 | 10 |
 | P3 | 1 | 34 |
 
 ### Pass A coverage (honest)
@@ -136,7 +136,7 @@
 | [x] | **F-075** | P2 | CheckoutCapture.converted 0/4 | **FIXED `de7f7efc` + `1962b488`**; COD/Mono terminal marker and 4/4 historical matches reconciled; §F-075 |
 | [x] | **F-078** | P2 | /kontakty/ 404 | **FIXED `169e6032`**; production 301 to `/contacts/`; §F-078 |
 | [x] | **F-089** | P2 | FACEBOOK_PIXEL_ID empty settings | **FIXED `550979f9`**; canonical env/settings/CAPI/browser parity production-verified; §F-089 |
-| [ ] | **F-090** | P2 | No MySQL backup cron | §F-090; PLAN_VS W0-3 |
+| [x] | **F-090** | P2 | No MySQL backup cron | **FIXED `5ee9a974`**; two valid production archives, isolated two-database restore parity and guarded daily cron verified; §F-090; PLAN_VS W0-3 |
 
 ### Priority D — P3 open
 
@@ -279,7 +279,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-087** | P1 | FIXED | DONE | `ead5fd70` + `e89fd17d`: private route, UUID names and filesystem deny; live 403 |
 | [x] **F-088** | P1 | FIXED | DONE | `d7c6812a`: fail-closed webhook + mode-600 production secret + Telegram registration |
 | [x] **F-089** | P2 | FIXED | DONE | `550979f9`: one env-backed Meta Pixel setting for browser + storefront/IG CAPI; live 4/4 placements agree |
-| [ ] **F-090** | P2 | OPEN | YES | No MySQL backup cron (script present; W0-3) |
+| [x] **F-090** | P2 | FIXED | DONE | `5ee9a974`: two valid archives, exact all-table restore parity for both databases, daily cron and one-minute canary verified |
 | [x] **F-091** | P3 | INFO | no | Full plan re-verify matrix: PLAN_VS_FINDINGS_2026-07-09.md |
 | [x] **F-092** | P2 | DONE_OWNER | no | SSH password rotated by owner (W0-1 OWNER complete) |
 | [x] **F-093** | P1 | FIXED | YES | `deploy_paramiko.py` removed in `c5b651cf`; production verified |
@@ -313,7 +313,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
-### P2 STATUS — 4 PARTIAL / 2 OPEN
+### P2 STATUS — 4 PARTIAL / 1 OPEN
 - [x] **F-006** — fixed `a6c3c39b`; UK/RU/EN locs and reciprocal alternates verified live
 - [x] **F-008** — fixed `7fa568b1`; all 12 UK/RU/EN descriptions verified live
 - [x] **F-010** — fixed `efd7f192`; server 7/7 and live UK/RU/EN 21/21 hard 404
@@ -327,7 +327,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-075** — fixed `de7f7efc` + `1962b488`; terminal markers close late-beacon races and 4/4 historical order matches were reconciled
 - [x] **F-078** — fixed `169e6032`; production 301 to `/contacts/`
 - [x] **F-089** — fixed `550979f9`; production env/settings/CAPI equality and 4/4 live browser placements verified
-- [ ] **F-090** — No MySQL backup cron (script present; W0-3)
+- [x] **F-090** — **FIXED `5ee9a974`**; two archives restored with exact row-count parity and the preserved six-job crontab contains one guarded daily backup entry
 - [ ] **F-100** — views.py.backup still lazy-loaded (plan W7-1)
 
 ### P3 OPEN — 1
@@ -2865,12 +2865,23 @@ ID or token value was printed or committed.
 
 ---
 
-### F-090 — MySQL backup script present, no backup cron
+### F-090 — Daily MySQL backups and restore drill — FIXED
 
-**Status:** [ ] OPEN · **Severity:** P2 · **Fix required:** YES  
+**Status:** [x] FIXED · **Severity:** P2 · **Fix required:** DONE
 **Plan:** W0-3
 
-`scripts/backup_mysql.sh` on server; crontab only has log rotate. No scheduled dump / restore drill.
+**Fixed in runtime commit `5ee9a974`.** Local behavioral tests passed 11 with one
+Linux-only skip; the server suite passed 11/11. Private defaults and database-list
+configuration are mode `0600`; a manual production run published exactly two valid
+archives under mode-`0700` backup directories with mode-`0600` files and left zero
+temporary files.
+
+Both archives were restored into isolated temporary databases. All-table row counts
+matched their sources exactly (265 and 21 tables), trigger/routine inventories matched,
+and the Django check passed; the restore databases were then deleted. Production cron
+acceptance at HEAD `5ee9a974` preserved all unrelated lines: six scheduled jobs remain,
+with exactly one `# TWOCOMMS_DB_BACKUP` entry at `45 3 * * *`. A temporary one-minute
+canary succeeded and was removed, together with its temporary baseline file.
 
 ---
 
