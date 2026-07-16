@@ -462,7 +462,7 @@ step drop-off % = 1 - (next / prev)
 | ID | Check | P | ☐ |
 |----|-------|---|---|
 | CRO-020 | Pull `get_funnel_stats('week')` and `('month')` from Dispatcher or shell | P0 | [x] via DB UserAction (Dispatcher UI later) |
-| CRO-021 | Compare funnel rates organic vs `utm_source=instagram/facebook` | P0 | [x] WARN dirty hist F-057; canary IG OK |
+| CRO-021 | Compare funnel rates organic vs `utm_source=instagram/facebook` | P0 | [x] historical aliases normalized by F-020/F-057; canary IG OK |
 | CRO-022 | Identify worst drop-off step for paid traffic | P0 | [x] **PV→ATC cliff F-022** |
 | CRO-023 | ATC without subsequent IC (cart abandon) volume | P0 | [x] 25 ATC vs 2 IC (30d) |
 | CRO-024 | IC without lead/purchase (checkout abandon) | P0 | [x] tiny volume 2 IC / 1 purchase |
@@ -588,10 +588,10 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 
 | ID | Check | P | ☐ |
 |----|-------|---|---|
-| UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [x] governance exists; new OK; hist dirt F-057 |
+| UTM-001 | Canonical sources per `UTM_GOVERNANCE.md` | P0 | [x] governance exists; future and historical normalization verified |
 | UTM-002 | Instagram ads template documented & used | P0 | [x] governance docs; ads template owner|
 | UTM-003 | Middleware captures utm_source/medium/campaign/content/term | P0 | [x] **PASS server canary** UTMSession+normalize F-046 |
-| UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] F-084 AI writers/backfill verified (`chatgpt.com` 0, `chatgpt` 161); broader historical dirt F-020 remains |
+| UTM-004 | normalize_utm_source collapses ig/Instagram/… | P1 | [x] F-084 + F-020/F-057 production backfills verified; cross-model diff empty |
 | UTM-005 | fbclid / gclid / ttclid stored | P0 | [x] fbclid in UTMSession canary |
 | UTM-006 | _fbp/_fbc captured when present | P0 | [x] fbp in order payload hist F-048|
 | UTM-007 | session['utm_data'] fallback works | P0 | [x] **RISK F-038** session late; twc_ft not full order fallback |
@@ -613,7 +613,7 @@ Code map: `views/cart.py`, `modules/cart.js`, `ui-fallback.js`, `cart.html`, Mon
 | UTM-023 | is_converted True on lead/purchase | P0 | [x] CHECKED — **FAIL F-019** always 0 |
 | UTM-024 | % orders 30d with empty utm_source measured | P0 | [x] **100% empty F-021** |
 | UTM-025 | Orphan utm_session_id check | P1 | [x] PASS no orphan check needed (0 links)|
-| UTM-026 | Historical dirty sources list (for reporting) | P2 | [x] F-057 all-time table |
+| UTM-026 | Historical dirty sources list (for reporting) | P2 | [x] F-057 inventory normalized with guarded rollback snapshot |
 
 ## 6.3 Admin panel — section Dispatcher
 
@@ -854,7 +854,7 @@ Mark each: loads 200 / no throw on page.
 | DB-005 | Categories missing SEO | P1 | [x] filled but **truncated F-001** |
 | DB-006 | Translation null rates ru/en | P1 | [x] WARN translation rates partial|
 | DB-007 | UTMSession last 24h after canary | P0 | [x] 30d=140 sessions (first_seen) |
-| DB-008 | Distinct utm_source dirty list | P1 | [x] **F-057** historical dirt |
+| DB-008 | Distinct utm_source dirty list | P1 | [x] **F-057** final production normalization diff empty |
 | DB-009 | Orders 30d % null utm_source | P0 | [x] **100% F-021** |
 | DB-010 | is_converted vs paid orders | P0 | [x] **is_converted all-time 0 F-019** |
 | DB-011 | UserAction counts by type 7d/30d | P0 | [x] filled |

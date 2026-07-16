@@ -102,8 +102,8 @@
 | [x] | **F-072** | P1 | Only 2/36 recoverable via external_id | **FIXED `bdd04e4c`**; 2/2 provable links restored, 34 unverifiable historical rows untouched; §F-072 |
 | [x] | **F-076** | P1 | PV noise / site_session gap | **FIXED `fdf6563a`**; committed-PageView gate + trusted dashboard quarantine; server 46/46 and production canary/metrics verified; §F-076; PLAN_VS W2-4 |
 | [x] | **F-084** | P1 | chatgpt vs chatgpt.com dual | **FIXED `069f4efa`**; all writers canonical, guarded historical normalization reconciled 122 UTM + 158 first-touch rows; §F-084; PLAN_VS W2-8 |
-| [ ] | **F-020** | P1 | Historical dirty utm_source | §F-020 |
-| [ ] | **F-057** | P1 | All-time dirty utm inventory | §F-057 |
+| [x] | **F-020** | P1 | Historical dirty utm_source | **FIXED `f42b537a`**; guarded cross-model normalization + test cleanup; §F-020 |
+| [x] | **F-057** | P1 | All-time dirty utm inventory | **FIXED `f42b537a`**; production governance diff is empty across UTM/first-touch/orders; §F-057 |
 | [x] | **F-022** | P1 | PV→ATC cliff | **FIXED `fdf6563a`**; trusted production baseline 389 PV / 20 ATC (7d), 140 / 9 post-fix; §F-022 |
 | [x] | **F-032** | P1 | UserAction rarely linked UTMSession | **FIXED `9854c18b` + `b33b8ce4`**; future writer repaired, guarded production backfill linked 116/116 deterministic actions; §F-032 |
 | [o] | **F-031** | P1 | MySQL has gone away | **PARTIAL:** no DB errors after request fallback disable marker; 7-day recurrence window and hosting 1040 remain; §F-031; F-080 |
@@ -208,7 +208,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-017** | P3 | PASS | no | mapa-saytu links all 200 |
 | [ ] **F-018** | P1 | OPEN | YES | offer_id ЧОРНИЙ vs ЧЕРНЫЙ split |
 | [x] **F-019** | P0 | FIXED | DONE | `34275e28`: new conversion canary sets is_converted; cleanup verified |
-| [ ] **F-020** | P1 | OPEN | YES | Historical dirty utm_source (new canaries normalize OK) |
+| [x] **F-020** | P1 | FIXED | DONE | `f42b537a`: guarded historical source normalization and audit-test cleanup |
 | [x] **F-021** | P0 | FIXED | DONE | `34275e28`: first-touch order attribution production canary verified |
 | [x] **F-022** | P1 | FIXED | DONE | `fdf6563a`: trusted PV writer/dashboard; live 7d PV→ATC = 389→20 (~5.1%) |
 | [x] **F-023** | P1 | FIXED | DONE | `e2558396`: exact-value production migration repaired base/UK DB columns |
@@ -245,7 +245,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-054** | P3 | PASS | no | Blog+color HTTP OK; F-002 grammar fixed in `0b9ecc1c` |
 | [x] **F-055** | P3 | PASS | no | RU/EN product sample title/H1 aligned |
 | [x] **F-056** | P3 | PASS | no | IGShopping multi-hop canary PASS |
-| [ ] **F-057** | P1 | OPEN | YES | All-time dirty utm_source inventory |
+| [x] **F-057** | P1 | FIXED | DONE | `f42b537a`: all-time UTM/first-touch/order alias inventory reconciled |
 | [x] **F-058** | P3 | PASS | no | Scripts matrix key pages PASS |
 
 | [ ] **F-059** | P1 | OPEN | YES | All ProductImage.alt_text empty (36/36) |
@@ -305,13 +305,13 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 ### P1 OPEN (continued) — 7
 - [o] **F-007** — HTTP 429 under burst crawl; Retry-After exists, atomic route-aware policy remains
 - [ ] **F-018** — offer_id ЧОРНИЙ vs ЧЕРНЫЙ split
-- [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
+- [x] **F-020** — guarded historical source normalization and audit-test cleanup completed
 - [x] **F-022** — trusted PV→ATC baseline restored by `fdf6563a`; production recheck passed
 - [o] **F-031** — no recurrence after fallback-disable marker, but observation/hosting residual remains
 - [x] **F-032** — click-ID writer fixed and 116/116 deterministic historical actions linked; organic nulls intentionally retained
 - [x] **F-043** — fixed `169e6032`; production 301 to `/dopomoga/`
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
-- [ ] **F-057** — All-time dirty utm_source inventory
+- [x] **F-057** — production governance diff is empty across UTM/first-touch/orders
 
 ### P2 OPEN — 11
 - [ ] **F-006** — Color sitemap same URL ×3
@@ -401,7 +401,8 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | threads | 2 |
 | IGShopping | 1 |
 
-→ normalization **not fully applied** on stored rows (see F-020).
+This is the historical 2026-07-09 snapshot; stored aliases were later closed by
+F-084 and F-020/F-057.
 
 **Note:** Pass A machine IP is AnalyticsExclusion `дом` (F-037) — synthetic UTMSession canaries from this IP are invalid.
 
@@ -1221,9 +1222,9 @@ deleted and verified absent. Historical sessions are intentionally not rewritten
 
 ### F-020 — UTM source normalization incomplete in stored sessions
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`f42b537a`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **UTM** · Checklist: UTM-001, UTM-004
+- [x] **Fixed** · Severity: **P1** · Area: **UTM** · Checklist: UTM-001, UTM-004
 
 | Field | Value |
 |-------|--------|
@@ -1243,6 +1244,25 @@ In the 2026-07-09 audit snapshot, despite `UTM_GOVERNANCE.md` +
 **Why problem:** Dispatcher fragments channels; CBO/creative reports unreliable; IG ads under `ig` not rolled into `instagram`.
 
 **Risk of fix:** medium (middleware + optional backfill after backup).
+
+**Fixed and verified 2026-07-16:** `normalize_utm_sources` is dry-run by
+default, requires exact UTM/first-touch/order guards, locks candidates inside
+one atomic transaction, preserves medium/campaign/content, and aborts on a
+linked-order source conflict. Local regression coverage passed 31/31 and the
+isolated server command suite passed 5/5. A mode-0600 rollback snapshot at
+`tmp/audit_backups/f020_f057_utm_sources_20260716T112656Z.json` preceded the
+guarded production apply, which updated 364 `UTMSession`, 35 first-touch and 1
+Order row with zero conflicts. MySQL's case-insensitive grouping had combined
+128 legacy `Instagram` with 16 already-canonical `instagram` rows; the guarded
+plan correctly excluded those 16.
+
+The three known `audit/test/funnel_check` sessions had zero orders and zero
+conversions. After a separate mode-0600 snapshot at
+`tmp/audit_backups/f020_audit_test_cleanup_20260716T112732Z.json`, exactly 3
+test UTM rows and 4 child actions were removed transactionally. Final inventory
+found no value where `normalize_utm_source(value) != value` in UTMSession,
+SiteSession first-touch, or Order, and zero `audit` sessions. Unknown but
+non-ambiguous sources were retained rather than reassigned.
 
 ---
 
@@ -1963,14 +1983,19 @@ all returned 200 with `ok:true` and settlement items.
 
 ### F-057 — Historical utm_source still heavily dirty (all-time)
 
-**Status:** [ ] OPEN · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`f42b537a`) · **Severity:** P1 · **Fix required:** DONE
 
-- [ ] **Open** · Severity: **P1** · Area: **UTM** · Checklist: UTM-004, UTM-026, DB-008
+- [x] **Fixed** · Severity: **P1** · Area: **UTM** · Checklist: UTM-004, UTM-026, DB-008
 
 The original all-time snapshot included unnormalized: `ig` (200), `Instagram` (135), `chatgpt.com` (122), `fb` (19), `Inst_Vid` (10), `IGShopping` (6). F-084 has since reduced the ChatGPT alias count to **0**, but the Instagram/Facebook inventory and policy remain open here.
 **New** canaries normalize correctly → dirt is **historical + possible old code paths**, not current normalize function (which works).
 
-Backfill optional after backup (UTM_GOVERNANCE).
+The guarded all-source backfill and exact production verification are recorded
+under F-020. Final canonical counts were `instagram=360`, `facebook=91`,
+`google=544`, and `chatgpt=172`; the normalization diff across all three stored
+layers was empty. `threads`, the numeric ad-id source, and lowercase
+`fb-sitelink` were retained because governance does not map them to a different
+canonical channel.
 
 ---
 
@@ -2208,8 +2233,8 @@ key from `Order.session_key` or
 sources disagree, requires an existing `UTMSession` with a real source inside
 the configured session lifetime, and never infers attribution from phone,
 IP, user agent, `fbp` or time proximity. It copies the existing UTM FK and five
-raw UTM fields byte-for-byte; `ig` is intentionally not normalized here
-(F-020/F-057 own that policy).
+raw UTM fields byte-for-byte. Historical aliases such as `ig` were normalized
+later by the separately guarded F-020/F-057 command.
 
 The recovery never writes `Order.session_key` (it is also a guest access
 credential), never changes `payment_payload`, never creates a session or
@@ -2438,7 +2463,9 @@ This was a deployment-window plus residual-storage defect, not evidence that the
 
 **Production proof:** local and isolated server Python 3.14 suites passed **75/75**. A real WSGI request with `utm_source=chatgpt.com` wrote exactly one `chatgpt/ai` `UTMSession` and canonical first-touch row; cleanup left **0** canary rows/sessions/actions. Dry-run returned **122 UTMSession / 158 SiteSession / 0 Order / 0 conflicts**. After a private mode-600 rollback dump, guarded apply updated exactly those rows; dry-run and a second apply both returned **0/0/0/0**. Alias UTM, first-touch and order counts are now **0**; `chatgpt/ai` is **161**, and Dispatcher returns one `chatgpt` row for **161** sessions. Pre/post totals stayed identical (`UTMSession` 1088, `SiteSession` 5862, orders 46 / 70,457.00, actions 42,765), while a field-by-field snapshot comparison of all **280** touched objects found **0** unintended differences.
 
-**Scope kept open:** F-020 and F-057 still own non-AI historical aliases (`ig`, `Instagram`, `fb`, `Inst_Vid`, `IGShopping`) and test-source policy; F-084 did not rename or delete them.
+**Follow-up:** F-020 and F-057 closed the separate non-AI historical aliases
+and test-source policy on 2026-07-16; F-084 itself remained intentionally
+AI-scoped.
 
 ---
 
