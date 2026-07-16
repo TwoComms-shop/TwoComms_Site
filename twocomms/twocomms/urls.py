@@ -3,7 +3,6 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.conf.urls.i18n import i18n_patterns
 from django.contrib import admin
-from django.contrib.staticfiles.storage import staticfiles_storage
 from django.views.generic.base import RedirectView
 from storefront import views as storefront_views
 from storefront.feeds import BlogRssFeed
@@ -54,6 +53,8 @@ urlpatterns = [
     # PWA sw.js served directly to keep scope stable across browsers.
     path("sw.js", storefront_views.service_worker_script, name="service_worker_js"),
     path("site.webmanifest", storefront_views.web_manifest, name="site_webmanifest"),
+    # Compatibility alias used by older crawlers and install prompts.
+    path("manifest.webmanifest", storefront_views.web_manifest, name="legacy_webmanifest"),
 
     # Phase 22d (2026-05-13) — CSP violation report endpoint. Browsers
     # POST here when a script/img/frame violates the policy. Used as a
@@ -73,9 +74,7 @@ urlpatterns = [
     path('sitemap-color-categories.xml', storefront_views.sitemap_section_color_categories, name='sitemap_color_categories'),
     path('sitemap-thematic.xml', storefront_views.sitemap_section_thematic, name='sitemap_thematic'),
     path('sitemap-images.xml', storefront_views.sitemap_images, name='sitemap_images'),
-    path("favicon.ico", RedirectView.as_view(
-        url=staticfiles_storage.url("img/favicon.ico"), permanent=False
-    )),
+    path("favicon.ico", storefront_views.favicon_ico, name="favicon_ico"),
     path("robots.txt", storefront_views.robots_txt, name="robots_txt"),
     # Fallback на случай, если где-то закешировался старый редирект на /static/robots.txt.
     path("static/robots.txt", storefront_views.robots_txt),

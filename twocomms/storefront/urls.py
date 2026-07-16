@@ -71,6 +71,9 @@ def admin_panel_view(request, *args, **kwargs):
 
 
 urlpatterns = [
+    # Legacy support URLs kept as permanent aliases to the canonical localized pages.
+    path('help-center/', RedirectView.as_view(pattern_name='help_center', permanent=True), name='legacy_help_center'),
+    path('kontakty/', RedirectView.as_view(pattern_name='contacts', permanent=True), name='legacy_contacts'),
     path('', views.home, name='home'),
     # SEO 2026-05-16 — legacy paginator URL pattern (existed on a previous
     # deploy, still receives external links). 301 to /?page=N consolidates

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from django.contrib.staticfiles import finders
-from django.http import Http404, HttpResponse
+from django.http import FileResponse, Http404, HttpResponse
 
 from twocomms.cache_headers import add_cache_headers
 
@@ -39,3 +39,11 @@ def web_manifest(request):
         "site.webmanifest",
         "application/manifest+json; charset=utf-8",
     )
+
+
+def favicon_ico(request):
+    """Serve the root favicon directly so crawlers do not pay a redirect hop."""
+    file_path = _resolve_static_asset("img/favicon.ico")
+    response = FileResponse(file_path.open("rb"), content_type="image/x-icon")
+    add_cache_headers(response, str(file_path), request.path)
+    return response

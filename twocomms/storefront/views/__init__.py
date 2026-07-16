@@ -146,6 +146,7 @@ from .blog import (
 from .platform import (
     service_worker_script,
     web_manifest,
+    favicon_ico,
 )
 
 # Профиль
