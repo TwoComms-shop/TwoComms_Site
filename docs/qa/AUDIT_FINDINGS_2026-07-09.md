@@ -105,7 +105,7 @@
 | [ ] | **F-020** | P1 | Historical dirty utm_source | §F-020 |
 | [ ] | **F-057** | P1 | All-time dirty utm inventory | §F-057 |
 | [x] | **F-022** | P1 | PV→ATC cliff | **FIXED `fdf6563a`**; trusted production baseline 389 PV / 20 ATC (7d), 140 / 9 post-fix; §F-022 |
-| [o] | **F-032** | P1 | UserAction rarely linked UTMSession | **PARTIAL:** organic nulls are expected, but 16 fresh click-attributed actions lack UTMSession; §F-032 |
+| [x] | **F-032** | P1 | UserAction rarely linked UTMSession | **FIXED `9854c18b` + `b33b8ce4`**; future writer repaired, guarded production backfill linked 116/116 deterministic actions; §F-032 |
 | [o] | **F-031** | P1 | MySQL has gone away | **PARTIAL:** no DB errors after request fallback disable marker; 7-day recurrence window and hosting 1040 remain; §F-031; F-080 |
 | [o] | **F-007** | P1 | HTTP 429 burst crawl | **PARTIAL:** static/media exempt + Retry-After present; generic counter remains non-atomic/not route-aware; §F-007 |
 | [ ] | **F-018** | P1 | offer_id ЧОРНИЙ/ЧЕРНЫЙ | §F-018 |
@@ -220,7 +220,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-029** | P0 | FIXED_OPS | DONE | LSAPI_CHILDREN 6→10; 30/30 concurrent health checks, zero new limit errors |
 | [x] **F-030** | P0 | FIXED | DONE | `3291ac82`: BFCache pixel restore; live hashed asset verified |
 | [o] **F-031** | P1 | PARTIAL | YES | Stale/request-path connection source contained; observe 7 days and track shared-host 1040 separately |
-| [o] **F-032** | P1 | PARTIAL | YES | Fresh organic nulls valid; 16 click-attributed actions still missing UTMSession |
+| [x] **F-032** | P1 | FIXED | DONE | `9854c18b` + `b33b8ce4`: click-ID writer + guarded 72-session/116-action production backfill |
 | [x] **F-033** | P0 | FIXED | DONE | `34275e28`: production order/session attribution canary verified |
 | [x] **F-034** | P3 | PASS | no | Variants sample + recs links OK |
 | [ ] **F-035** | P2 | OPEN | YES | CSP violations in stderr |
@@ -308,7 +308,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [ ] **F-020** — Historical dirty utm_source (new canaries normalize OK)
 - [x] **F-022** — trusted PV→ATC baseline restored by `fdf6563a`; production recheck passed
 - [o] **F-031** — no recurrence after fallback-disable marker, but observation/hosting residual remains
-- [o] **F-032** — organic nulls expected; click-attributed linkage residual confirmed
+- [x] **F-032** — click-ID writer fixed and 116/116 deterministic historical actions linked; organic nulls intentionally retained
 - [x] **F-043** — fixed `169e6032`; production 301 to `/dopomoga/`
 - [x] **F-050** — fixed `75b1f6fb`; production Kyiv/Kiev/Київ 3/3 200
 - [ ] **F-057** — All-time dirty utm_source inventory
@@ -1500,9 +1500,9 @@ window passes; shared-host global exhaustion remains tracked by PROD-001.
 
 ### F-032 — UserAction almost never linked to UTMSession (99.8% product_view)
 
-**Status:** [o] PARTIAL · **Severity:** P1 · **Fix required:** YES
+**Status:** [x] FIXED (`9854c18b` + `b33b8ce4`) · **Severity:** P1 · **Fix required:** DONE
 
-- [o] **Partial** · Severity: **P1** · Area: **UTM / CRO** · Checklist: UTM-003, CRO-020, DB-011
+- [x] **Fixed** · Severity: **P1** · Area: **UTM / CRO** · Checklist: UTM-003, CRO-020, DB-011
 
 | Field | Value |
 |-------|--------|
@@ -1529,7 +1529,25 @@ product views and 8/20 add-to-cart actions have a UTMSession; most remaining
 nulls are legitimate organic traffic. A post-14-July read-only join still found
 16 null-UTM actions whose linked SiteSession first-touch contains `fbclid`
 (7 product views and 9 custom-print actions), and no UTMSession exists for the
-same session key. That click-attributed residual keeps this finding `[o]`.
+same session key. This was the pre-fix residual used to scope the repair below.
+
+**Fixed and verified 2026-07-16:** commit `9854c18b` makes future visits with
+only one supported advertising click ID create durable canonical attribution
+(`fbclid` -> `facebook/paid_social`, `gclid` -> `google/cpc`, `ttclid` ->
+`tiktok/paid_social`) while explicit UTM values remain authoritative. Commit
+`b33b8ce4` adds a dry-run-first, expectation-guarded and atomic historical
+backfill. Its server SQLite suite passed 5/5 and the production dry-run found
+72 deterministic sessions with 116 null-UTM actions, broader than the 16-action
+fresh observation window above; all 72 were `facebook/paid_social`, with zero
+ambiguous sessions and no existing UTM rows to overwrite.
+
+Before apply, a mode-0600 rollback snapshot was stored outside tracked files at
+`tmp/audit_backups/f032_click_id_backfill_20260716T111455Z.json`. Apply was
+guarded by `--expect-sessions 72 --expect-actions 116`. Post-apply verification
+reconciled 72/72 UTM rows and 116/116 action links against that snapshot, with
+zero null links, cross-session links, or source/medium mismatches. A fresh
+dry-run and an idempotent guarded apply both returned 0 sessions / 0 actions.
+Organic actions were not candidates and remain intentionally unmodified.
 
 ---
 
@@ -2303,9 +2321,9 @@ The historical raw rows are retained unchanged for auditability. Root-cause revi
 **Verification:** local and server Python 3.14 suites passed **46/46**; production normal navigation repeated three times created exactly **1** linked `product_view` and **3** `PageView` rows, while HEAD/no-cors/non-HTML/bot each created **0**. Live `/api/track-event/` returned `stored:false` for POST `product_view`; both canaries were cleaned to **0** residual rows. Production raw/current-product history was **41 626**, while the direct trusted cohort, admin product metrics and dashboard queryset reconciled **1 713 / 1 713 / 1 713**. UTM product-view sessions reconciled **33 / 33** between the direct query and funnel.
 
 **Follow-up 2026-07-16:** F-022 is closed by the new trusted production
-baseline. F-032 remains `[o]`: organic product views legitimately have no
-UTMSession, but fresh `fbclid` first-touch actions without a matching UTM row
-still require a writer fix.
+baseline. F-032 is also `[x]`: the future click-ID writer and guarded historical
+backfill are deployed and verified; legitimate organic product views remain
+without UTMSession by design.
 
 ---
 
