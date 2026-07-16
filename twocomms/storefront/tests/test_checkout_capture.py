@@ -301,7 +301,12 @@ class CheckoutCaptureTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"ok": True})
-        self.assertEqual(CheckoutCapture.objects.count(), 0)
+        capture = CheckoutCapture.objects.get()
+        self.assertTrue(capture.converted)
+        self.assertEqual(capture.full_name, "")
+        self.assertEqual(capture.phone, "")
+        self.assertEqual(capture.email, "")
+        self.assertEqual(capture.cart_snapshot, {})
 
     def test_completed_monobank_order_without_capture_blocks_late_beacon(self):
         session = self.client.session
@@ -325,7 +330,12 @@ class CheckoutCaptureTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"ok": True})
-        self.assertEqual(CheckoutCapture.objects.count(), 0)
+        capture = CheckoutCapture.objects.get()
+        self.assertTrue(capture.converted)
+        self.assertEqual(capture.full_name, "")
+        self.assertEqual(capture.phone, "")
+        self.assertEqual(capture.email, "")
+        self.assertEqual(capture.cart_snapshot, {})
 
     def test_completed_order_marks_active_capture_converted_only(self):
         session = self.client.session

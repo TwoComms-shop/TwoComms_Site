@@ -130,8 +130,7 @@ def capture_checkout(request):
         if capture and capture.converted:
             return JsonResponse({'ok': True})
         if _session_has_completed_order(request, session_key):
-            if capture:
-                mark_checkout_capture_converted(session_key)
+            mark_checkout_capture_converted(session_key)
             return JsonResponse({'ok': True})
 
         cart = get_validated_cart_from_session(request)

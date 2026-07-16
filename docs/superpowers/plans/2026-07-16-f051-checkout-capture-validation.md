@@ -4,7 +4,7 @@
 
 **Goal:** Make `/checkout/capture/` reject empty or unusable abandoned-checkout data with a truthful HTTP 400 response and no database/session mutation.
 
-**Architecture:** Keep the existing same-origin guard, 30/min rate limit and debounced JSON/form clients. Parse JSON fail-closed as an object, retain form-encoded compatibility, and require at least one actionable recovery channel (a normalized Ukrainian phone or valid email); a cart or name alone is not recoverable. For authenticated name-bearing captures, a validated account email may supply the recovery channel, but an empty payload may not. Treat `converted=True` and a real COD/Monobank order tied to the current session as terminal states: lock the capture row, leave an existing terminal row unchanged, convert only an active row, and never create a recovery row from a late autosave. Return stable machine-readable error codes while active-capture upserts remain compatible.
+**Architecture:** Keep the existing same-origin guard, 30/min rate limit and debounced JSON/form clients. Parse JSON fail-closed as an object, retain form-encoded compatibility, and require at least one actionable recovery channel (a normalized Ukrainian phone or valid email); a cart or name alone is not recoverable. For authenticated name-bearing captures, a validated account email may supply the recovery channel, but an empty payload may not. Treat `converted=True` and a real COD/Monobank order tied to the current session as terminal states: preserve an existing terminal row, convert only an active row, or create a minimal PII-free terminal marker when no capture exists. Return stable machine-readable error codes while active-capture upserts remain compatible.
 
 **Tech Stack:** Django 5.2, `JsonResponse`, Django validators/TestCase, MariaDB production verification.
 
@@ -98,14 +98,37 @@ The endpoint does not scan the unindexed `Order.session_key`. It reads the
 indexed order PK from server-written session evidence (`last_order_submit` for
 COD or `monobank_pending_order_id` after a valid invoice), then verifies that
 the selected order has the current session key. Under the existing capture row
-lock, completed-order requests either make a narrow `converted=True` update or
-return without creating a row. COD keeps its existing success-boundary update;
-Monobank now performs the same narrow transition only after invoice ID/payment
-fields are saved. Invoice API failure leaves the capture active for retry.
+lock, completed-order requests make the shared terminal transition. COD keeps
+its success-boundary transition inside the order transaction; Monobank performs
+the same transition only after invoice ID/payment fields are saved. Invoice API
+failure leaves the capture active for retry.
 Final dependency verification passed the expanded prior combined suite at
 108/108, the full Monobank/Nova checkout module at 23/23 (including the same
 4 phone-normalizer cases), and the view-export regression at 1/1. Django check,
 scoped compileall, `git diff --check` and the scoped secret scan were clean.
+
+**Final concurrency review (2026-07-16):** The PK/session-evidence guard alone
+failed review because cached DB session evidence is persisted by response
+middleware, leaving a window after an update-only conversion miss. Strict
+closure now uses a terminal upsert: conditional active-row update, exact no-op
+for an existing terminal row, or a minimal PII-free `converted=True` marker.
+Creation runs in an inner `transaction.atomic()` savepoint; `IntegrityError` is
+caught outside that savepoint and followed by a conditional update/terminal
+check, so a unique-key race does not poison the surrounding COD transaction.
+
+The final focused RED ran 35 tests with 5 expected contract breaks (2 failures
+and 3 missing-marker errors). Focused GREEN is 35/35. SQLite's in-memory test
+database cannot reliably exercise a two-connection barrier without lock-flaky
+threads, so the concurrency regression deterministically forces the initial
+update miss while a competing active unique row is present. The create then
+raises the real database `IntegrityError` inside the inner savepoint; the retry
+converts that row and a query inside the outer atomic proves the transaction
+remains usable.
+
+Final terminal-upsert verification passed the expanded prior suite at 112/112,
+the full Monobank/Nova checkout module at 23/23, and the view-export regression
+at 1/1. Django check, scoped compileall, `git diff --check` and the scoped secret
+scan were clean.
 
 ### Task 3: Review, ship and reconcile audit docs
 

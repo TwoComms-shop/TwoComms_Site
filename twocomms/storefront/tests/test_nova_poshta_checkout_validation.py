@@ -482,14 +482,10 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
             },
         )
 
-    def test_monobank_invoice_success_marks_existing_capture_converted(self):
+    def test_monobank_invoice_success_creates_terminal_capture_marker(self):
         self._set_cart()
         delivery = self._delivery_payload()
-        capture = CheckoutCapture.objects.create(
-            session_key=self.client.session.session_key,
-            full_name="Captured Buyer",
-            phone="+380991234567",
-        )
+        session_key = self.client.session.session_key
         facebook_service = Mock()
 
         with (
@@ -529,19 +525,18 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
-        capture.refresh_from_db()
+        capture = CheckoutCapture.objects.get(session_key=session_key)
         self.assertTrue(capture.converted)
+        self.assertEqual(capture.full_name, "")
+        self.assertEqual(capture.phone, "")
+        self.assertEqual(capture.email, "")
+        self.assertEqual(capture.cart_snapshot, {})
 
-    def test_monobank_invoice_api_failure_keeps_existing_capture_active(self):
+    def test_monobank_invoice_api_failure_does_not_create_terminal_marker(self):
         from storefront.views.monobank import MonobankAPIError
 
         self._set_cart()
         delivery = self._delivery_payload()
-        capture = CheckoutCapture.objects.create(
-            session_key=self.client.session.session_key,
-            full_name="Captured Buyer",
-            phone="+380991234567",
-        )
 
         with (
             patch(
@@ -570,8 +565,7 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["success"])
         self.assertFalse(Order.objects.exists())
-        capture.refresh_from_db()
-        self.assertFalse(capture.converted)
+        self.assertFalse(CheckoutCapture.objects.exists())
 
     def test_guest_prepay_persists_new_session_key_and_tracking(self):
         """F-068/F-073: characterize the current prepay writer with a truly
