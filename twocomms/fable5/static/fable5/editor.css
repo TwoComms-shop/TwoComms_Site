@@ -448,6 +448,35 @@ textarea.f5-input { min-height: 72px; resize: vertical; }
 .f5-switch input:focus-visible + i { outline: 2px solid #a78bfa; outline-offset: 3px; }
 .f5-fit-row.is-disabled { opacity: .62; }
 .f5-fit-row.is-disabled [data-role="fit-sizes"] { pointer-events: none; filter: grayscale(.8); }
+.f5-option-empty { margin: 0; padding: 24px; border: 1px dashed var(--f5-line); text-align: center; }
+.f5-option-axis + .f5-option-axis { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--f5-line); }
+.f5-option-axis__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.f5-option-axis__head div { display: grid; gap: 2px; }
+.f5-option-axis__head strong { color: var(--f5-text); font-size: 15px; }
+.f5-option-axis__head small, .f5-option-axis__head > span { color: var(--f5-muted); font-size: 11px; }
+.f5-option-table { overflow: hidden; border: 1px solid var(--f5-line); }
+.f5-option-row { display: grid; grid-template-columns: 44px minmax(150px, .7fr) minmax(130px, .45fr) minmax(220px, 1fr); align-items: center; gap: 12px; min-height: 76px; padding: 10px 12px; background: rgba(255,255,255,.018); }
+.f5-option-row + .f5-option-row { border-top: 1px solid var(--f5-line); }
+.f5-option-row.is-disabled { background: rgba(0,0,0,.12); }
+.f5-option-row.is-disabled .f5-option-row__identity { opacity: .62; }
+.f5-option-row .f5-field { margin: 0; }
+.f5-option-row__identity { min-width: 0; display: grid; gap: 3px; }
+.f5-option-row__identity strong, .f5-option-row__identity small { overflow-wrap: anywhere; }
+.f5-option-row__identity small { color: var(--f5-muted); font-size: 11px; }
+.f5-print-toolbar { max-width: 440px; }
+.f5-print-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.f5-print-card { position: relative; min-width: 0; min-height: 76px; display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--f5-line); background: rgba(255,255,255,.018); cursor: pointer; transition: border-color 160ms var(--f5-ease), background 160ms var(--f5-ease); }
+.f5-print-card:hover { border-color: rgba(167,139,250,.42); }
+.f5-print-card.is-selected { border-color: var(--f5-violet); background: rgba(139,92,246,.11); box-shadow: inset 0 0 0 1px rgba(139,92,246,.14); }
+.f5-print-card.is-inactive:not(.is-selected) { opacity: .62; }
+.f5-print-card > input { position: absolute; opacity: 0; pointer-events: none; }
+.f5-print-card__media { width: 52px; aspect-ratio: 1; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--f5-line); background: #0b0c10; color: var(--f5-muted); font-size: 11px; font-weight: 800; }
+.f5-print-card__media img { width: 100%; height: 100%; object-fit: cover; }
+.f5-print-card__copy { min-width: 0; display: grid; gap: 4px; }
+.f5-print-card__copy strong, .f5-print-card__copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.f5-print-card__copy small { color: var(--f5-muted); font-size: 11px; }
+.f5-print-card__state { padding: 4px 7px; border: 1px solid var(--f5-line); color: var(--f5-muted); font-size: 10px; }
+.f5-print-card.is-selected .f5-print-card__state { border-color: rgba(52,211,153,.38); color: var(--f5-green); }
 .f5-size-grid { display: flex; gap: 7px; flex-wrap: wrap; }
 .f5-size-cell { position: relative; min-width: 72px; display: grid; grid-template-rows: 40px 32px; overflow: hidden; border: 1px solid rgba(139,92,246,.36); border-radius: 9px; background: rgba(139,92,246,.1); }
 .f5-size-cell button { min-height: 40px; border: 0; border-radius: 0; background: transparent; color: #eee9ff; font-weight: 780; cursor: pointer; }
@@ -615,6 +644,9 @@ textarea.f5-input { min-height: 72px; resize: vertical; }
   .f5-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .f5-fit-row { grid-template-columns: auto 1fr; }
   .f5-fit-row > .f5-check, .f5-fit-row > .f5-input, .f5-fit-row > .f5-fit-reason { grid-column: 1 / -1; }
+  .f5-option-row { grid-template-columns: 44px minmax(0, 1fr); align-items: start; padding: 14px 12px; }
+  .f5-option-row .f5-field { grid-column: 1 / -1; }
+  .f5-print-grid { grid-template-columns: 1fr; }
   .f5-combination__head { align-items: stretch; flex-direction: column; }
   .f5-inherit-toggle { width: 100%; justify-content: space-between; }
   .f5-inherit-toggle > span { flex: 1; }

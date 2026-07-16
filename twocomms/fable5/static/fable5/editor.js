@@ -162,6 +162,7 @@
 		feedRules: {},
 		feedOnly: [],
 		feeds: (dict.feeds || []).slice(),
+		selectedPrintIds: new Set(((boot.product && boot.product.print_ids) || []).map(String)),
 		dirty: false,
 		slugTouched: !!(boot.product && boot.product.slug),
 		saving: false,
@@ -371,6 +372,19 @@
 		});
 	}
 
+	function collectOptionProfiles() {
+		return $$("#f-option-profiles [data-option-profile]").map((row) => ({
+			option_values: JSON.parse(row.dataset.optionValues || "{}"),
+			is_active: $("[data-f=option-active]", row).checked,
+			price_delta: intOrNull($("[data-f=option-price-delta]", row).value) || 0,
+			price_delta_reason: $("[data-f=option-price-reason]", row).value.trim(),
+		}));
+	}
+
+	function collectPrintIds() {
+		return $$("#f-product-prints [data-print-id]:checked").map((input) => parseInt(input.dataset.printId, 10));
+	}
+
 	function collectPayload() {
 		return {
 			id: state.product ? state.product.id : null,
@@ -398,6 +412,8 @@
 			main_image_alt: $("#f-main-alt").value,
 			faqs: collectProductFaqs(),
 			fits: collectFits(),
+			option_profiles: collectOptionProfiles(),
+			print_ids: collectPrintIds(),
 		};
 	}
 
@@ -455,6 +471,7 @@
 			state.variants = resp.product.variants || [];
 			state.faqs = (resp.product.faqs || []).map((f) => Object.assign({}, f));
 			state.fits = fitDefaults();
+			state.selectedPrintIds = new Set((resp.product.print_ids || []).map(String));
 			state.files.main_image = null;
 			state.files.home_card_image = null;
 			if (resp.created && resp.edit_url) {
@@ -463,6 +480,8 @@
 			renderHeader();
 			fillForm();
 			renderFits();
+			renderOptionProfiles();
+			renderProductPrints();
 			renderFaqs();
 			renderGalleries();
 			renderVariants();
@@ -629,6 +648,79 @@
 		}
 	});
 
+	/* ---------------- опції товару та принти ---------------- */
+	function activeOptionAxes() {
+		const categoryId = intOrNull($("#f-category").value);
+		if (state.product && Number(state.product.category_id) === categoryId && state.product.option_axes) {
+			return state.product.option_axes;
+		}
+		const flow = (dict.garment_flows || []).find((item) => (item.category_ids || []).map(Number).includes(categoryId));
+		return ((flow && flow.axes) || []).map((axis) => ({
+			code: axis.code,
+			label: axis.label || axis.code,
+			choices: (axis.options || []).map((choice) => ({
+				code: choice.code,
+				label: choice.label || choice.code,
+				description: choice.description || "",
+				is_enabled: !choice.disabled,
+				is_default: !!choice.default,
+				reason: choice.disabled_reason || "",
+				price_delta: 0,
+				price_delta_reason: "",
+				option_values: { [axis.code]: choice.code },
+			})),
+		}));
+	}
+
+	function renderOptionProfiles() {
+		const box = $("#f-option-profiles");
+		const axes = activeOptionAxes();
+		if (!axes.length) {
+			box.innerHTML = '<p class="f5-hint f5-option-empty">Оберіть категорію з налаштованим типом одягу — тут з\u2019являться посадка, утеплення та їхні націнки.</p>';
+			return;
+		}
+		box.innerHTML = axes.map((axis) => `<section class="f5-option-axis" data-option-axis="${esc(axis.code)}">
+			<header class="f5-option-axis__head"><div><strong>${esc(axis.label)}</strong><small>${esc(axis.code)}</small></div><span>${(axis.choices || []).length} варіанти</span></header>
+			<div class="f5-option-table">${(axis.choices || []).map((choice) => {
+				const values = choice.option_values || { [axis.code]: choice.code };
+				const unavailableReason = choice.reason || (choice.is_enabled ? "" : "Тимчасово недоступно");
+				return `<div class="f5-option-row${choice.is_enabled ? "" : " is-disabled"}" data-option-profile data-option-values="${esc(JSON.stringify(values))}">
+					<label class="f5-switch" title="Доступність варіанта"><input type="checkbox" data-f="option-active" ${choice.is_enabled ? "checked" : ""}><i></i></label>
+					<div class="f5-option-row__identity"><strong>${esc(choice.label)}</strong><small>${esc(choice.description || choice.code)}${choice.is_default ? " · за замовчуванням" : ""}</small></div>
+					<label class="f5-field"><span>Націнка, грн</span><input class="f5-input" type="number" data-f="option-price-delta" value="${Number(choice.price_delta || 0)}"></label>
+					<label class="f5-field"><span>Пояснення або причина</span><input class="f5-input" data-f="option-price-reason" value="${esc(choice.price_delta_reason || unavailableReason)}" placeholder="Напр.: додатковий матеріал"></label>
+				</div>`;
+			}).join("")}</div>
+		</section>`).join("");
+	}
+
+	function updatePrintCount() {
+		state.selectedPrintIds = new Set(collectPrintIds().map(String));
+		const count = $("#f-print-count");
+		if (count) count.textContent = `${state.selectedPrintIds.size} вибрано`;
+	}
+
+	function renderProductPrints() {
+		const box = $("#f-product-prints");
+		const prints = dict.prints || [];
+		if (!prints.length) {
+			box.innerHTML = '<p class="f5-hint f5-option-empty">У storage ще немає принтів.</p>';
+			updatePrintCount();
+			return;
+		}
+		box.innerHTML = prints.map((item) => {
+			const selected = state.selectedPrintIds.has(String(item.id));
+			const search = `${item.name || ""} ${item.category || ""}`.toLocaleLowerCase("uk");
+			return `<label class="f5-print-card${selected ? " is-selected" : ""}${item.is_active ? "" : " is-inactive"}" data-print-card data-print-search="${esc(search)}">
+				<input type="checkbox" data-print-id="${item.id}" ${selected ? "checked" : ""}>
+				<span class="f5-print-card__media">${item.image_url ? `<img src="${esc(item.image_url)}" alt="">` : '<span aria-hidden="true">PR</span>'}</span>
+				<span class="f5-print-card__copy"><strong>${esc(item.name)}</strong><small>${esc(item.category || "Без категорії")}</small></span>
+				<span class="f5-print-card__state">${item.is_active ? "Обрати" : "Архів"}</span>
+			</label>`;
+		}).join("");
+		updatePrintCount();
+	}
+
 	/* ---------------- посадки товару ---------------- */
 	function renderFits() {
 		$("#f-fits").innerHTML = state.fits.map((fit) => `
@@ -680,6 +772,27 @@
 			if (button) { button.disabled = !enabled; button.setAttribute("aria-pressed", enabled && !cell.classList.contains("is-off") ? "true" : "false"); }
 		});
 		setDirty(true);
+	});
+
+	$("#f-option-profiles").addEventListener("change", (e) => {
+		const row = e.target.closest("[data-option-profile]");
+		if (!row) return;
+		if (e.target.matches("[data-f=option-active]")) row.classList.toggle("is-disabled", !e.target.checked);
+		setDirty(true);
+	});
+
+	$("#f-product-prints").addEventListener("change", (e) => {
+		if (!e.target.matches("[data-print-id]")) return;
+		e.target.closest(".f5-print-card").classList.toggle("is-selected", e.target.checked);
+		updatePrintCount();
+		setDirty(true);
+	});
+
+	$("#f-print-search").addEventListener("input", (e) => {
+		const query = e.target.value.trim().toLocaleLowerCase("uk");
+		$$("#f-product-prints [data-print-card]").forEach((card) => {
+			card.hidden = !!query && !card.dataset.printSearch.includes(query);
+		});
 	});
 
 	/* ---------------- FAQ ---------------- */
@@ -1743,6 +1856,7 @@
 		updateBaseSeoPreview();
 	});
 	$("#f-slug").addEventListener("input", () => { state.slugTouched = true; updateSlugHint(); });
+	$("#f-category").addEventListener("change", renderOptionProfiles);
 	$("#f-slug-auto").addEventListener("click", () => {
 		state.slugTouched = false;
 		$("#f-slug").value = f5Translit.slugify($("#f-title").value);
@@ -1788,6 +1902,8 @@
 		renderHeader();
 		fillForm();
 		renderFits();
+		renderOptionProfiles();
+		renderProductPrints();
 		renderFaqs();
 		renderGalleries();
 		renderVariants();
