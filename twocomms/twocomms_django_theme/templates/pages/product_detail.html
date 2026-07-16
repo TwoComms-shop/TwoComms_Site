@@ -374,6 +374,16 @@ CSS rules на mobile FCP/LCP window.
         {% endif %}
       </div>
 
+      <div class="tc-configurator-error" role="status" data-configurator-error-state{% if not color_variants.0.configurator_error %} hidden{% endif %}>
+        <span class="tc-configurator-error__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 8v5m0 3.5v.01M10.3 4.7 3.4 17a2 2 0 0 0 1.75 3h13.7a2 2 0 0 0 1.75-3L13.7 4.7a2 2 0 0 0-3.4 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="tc-configurator-error__copy">
+          <strong>{% trans 'Варіанти тимчасово недоступні' %}</strong>
+          <small>{% trans 'Оновіть сторінку трохи пізніше або напишіть нам для підбору.' %}</small>
+        </span>
+      </div>
+
       <div class="tc-configurator-grid">
         <div class="tc-selector-block">
           <div class="tc-selector-head"><span>{% trans 'Колір' %}</span></div>

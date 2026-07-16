@@ -260,11 +260,20 @@ class ProductConfiguratorRenderTests(TestCase):
             response.context["color_variants"][0]["configurator_error"],
             "combination_limit",
         )
+        self.assertIn(
+            "data-configurator-error-state>",
+            response.content.decode(),
+        )
         sizes = {
             item["value"]: item["is_available"]
             for item in response.context["product_size_options"]
         }
         self.assertFalse(sizes["XXL"])
+
+    def test_normal_legacy_empty_error_state_stays_hidden(self):
+        html = self.client.get(self.url).content.decode()
+
+        self.assertIn("data-configurator-error-state hidden", html)
 
     def test_restock_modal_exposes_all_contact_channels(self):
         html = self.client.get(self.url).content.decode()

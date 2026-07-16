@@ -102,3 +102,27 @@ test('invalid exact option selection repairs deterministically and disables impo
   assert.equal(resolved.choiceAvailability.fit.classic, true);
   assert.equal(resolved.choiceAvailability.lining.no_fleece, true);
 });
+
+test('configurator errors fail closed while a normal empty legacy matrix stays available', () => {
+  const axes = [
+    { code: 'fit', choices: [{ code: 'classic', is_enabled: true }] },
+  ];
+  const failed = resolveOptionSelection({
+    axes,
+    configurations: {},
+    selectedValues: { fit: 'classic' },
+    configuratorError: 'combination_limit',
+  });
+  const legacy = resolveOptionSelection({
+    axes,
+    configurations: {},
+    selectedValues: { fit: 'classic' },
+  });
+
+  assert.equal(failed.isAvailable, false);
+  assert.equal(failed.hasMatrix, true);
+  assert.equal(failed.choiceAvailability.fit.classic, false);
+  assert.equal(legacy.isAvailable, true);
+  assert.equal(legacy.hasMatrix, false);
+  assert.equal(legacy.choiceAvailability.fit.classic, true);
+});

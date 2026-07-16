@@ -38,7 +38,12 @@ function focusTrapIndex({ currentIndex = -1, total = 0, shiftKey = false } = {})
   return current < 0 || current >= count - 1 ? 0 : current + 1;
 }
 
-function resolveOptionSelection({ axes = [], configurations = {}, selectedValues = {} } = {}) {
+function resolveOptionSelection({
+  axes = [],
+  configurations = {},
+  selectedValues = {},
+  configuratorError = '',
+} = {}) {
   const normalizedSelection = {};
   axes.forEach((axis) => {
     const code = String(axis && axis.code || '').trim();
@@ -48,6 +53,21 @@ function resolveOptionSelection({ axes = [], configurations = {}, selectedValues
   const matrixEntries = Object.values(configurations || {}).filter((configuration) => (
     configuration && typeof configuration.option_values === 'object'
   ));
+  if (configuratorError) {
+    const choiceAvailability = {};
+    axes.forEach((axis) => {
+      choiceAvailability[axis.code] = {};
+      (axis.choices || []).forEach((choice) => {
+        choiceAvailability[axis.code][choice.code] = false;
+      });
+    });
+    return {
+      selectedValues: {},
+      choiceAvailability,
+      isAvailable: false,
+      hasMatrix: true,
+    };
+  }
   if (!matrixEntries.length) {
     const choiceAvailability = {};
     axes.forEach((axis) => {
@@ -635,7 +655,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     return values;
   }
 
-  function applyVariantOptionRules(state, optionContext, configurations) {
+  function applyVariantOptionRules(state, optionContext, configurations, configuratorError) {
     const axes = (optionContext && optionContext.axes) || [];
     axes.forEach((axis) => {
       const choices = axis.choices || [];
@@ -669,6 +689,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       axes,
       configurations,
       selectedValues: requestedValues,
+      configuratorError,
     });
     axes.forEach((axis) => {
       const choices = axis.choices || [];
@@ -699,10 +720,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     if (!baseVariant) return;
 
     const configurations = baseVariant.configurations || {};
+    const configuratorError = baseVariant.configurator_error || '';
+    const errorState = state.root.querySelector('[data-configurator-error-state]');
+    if (errorState) errorState.hidden = !configuratorError;
     const optionResolution = applyVariantOptionRules(
       state,
       baseVariant.option_context || {},
-      configurations
+      configurations,
+      configuratorError
     );
     const optionValues = selectedOptionValues(state);
     const configuration = configurations[buildOptionKey(optionValues)] || null;
