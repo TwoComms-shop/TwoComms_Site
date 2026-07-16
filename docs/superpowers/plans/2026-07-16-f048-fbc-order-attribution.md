@@ -113,6 +113,6 @@ Apply only if dry-run counts equal the reviewed baseline. Re-run dry-run expecti
 
 Apply evidence (2026-07-16): a first outer-transaction attempt intentionally rolled back after a live global SiteSession count changed concurrently; exact rollback verification restored all five candidates and reported zero candidate sessions. The second outer-transaction apply used targeted SiteSession/UserAction hashes and committed `updated_orders=5`, `created_sessions=5`. In-transaction verification proved five exact Order/session links, `facebook/paid_social`, no campaign fabrication, unchanged payment payloads/session keys and unchanged four targeted UserActions. Post dry-run returned linkable groups/orders 0/0 with 4 stale, 1 no-key and 3 conflicting residuals; storefront returned HTTP 200.
 
-- [ ] **Step 4: Mark F-048 partial, not fixed**
+- [x] **Step 4: Mark F-048 partial, not fixed**
 
 Use `[o] PARTIAL`: future fresh FBC order attribution is fixed and the safely linkable historical cohort is reconciled, but stale FBC rows and the order without a deterministic key remain intentionally untouched. Record that `_fbp`-only is not a defect. Commit/push/deploy docs and add a final plan checkpoint.
