@@ -4,6 +4,7 @@ Regression tests for the current storefront cart contract.
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 from django.conf import settings
@@ -43,6 +44,8 @@ class CartSessionNormalizationTests(SimpleTestCase):
                     "color_variant_id": 34,
                     "qty": SESSION_MAX_CART_ITEM_QTY,
                     "size": "M",
+                    "option_values": {},
+                    "option_labels": {},
                 }
             },
         )
@@ -265,10 +268,28 @@ class AddToCartTests(CartViewTestCase):
         self.assertEqual(response_classic.status_code, 200)
         self.assertEqual(response_oversize.status_code, 200)
         cart = self.client.session["cart"]
-        self.assertIn(f"{self.product.id}:M:default:classic", cart)
-        self.assertIn(f"{self.product.id}:M:default:oversize", cart)
-        self.assertEqual(cart[f"{self.product.id}:M:default:classic"]["fit_option_label"], "Класичний")
-        self.assertEqual(cart[f"{self.product.id}:M:default:oversize"]["fit_option_label"], "Оверсайз")
+
+        def cart_key(fit_code):
+            options = json.dumps(
+                {"fit": fit_code},
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return f"{self.product.id}:M:default:{fit_code}:{options}"
+
+        classic_key = cart_key("classic")
+        oversize_key = cart_key("oversize")
+        self.assertEqual(set(cart), {classic_key, oversize_key})
+        for key, code, label in (
+            (classic_key, "classic", "Класичний"),
+            (oversize_key, "oversize", "Оверсайз"),
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(cart[key]["fit_option_code"], code)
+                self.assertEqual(cart[key]["fit_option_label"], label)
+                self.assertEqual(cart[key]["option_values"], {"fit": code})
+                self.assertEqual(cart[key]["option_labels"], {"Посадка": label})
         self.assertEqual(response_oversize.json()["item"]["fit_option_label"], "Оверсайз")
 
     def test_add_nonexistent_product_returns_404(self):

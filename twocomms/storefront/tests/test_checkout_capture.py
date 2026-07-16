@@ -379,12 +379,20 @@ class CheckoutCaptureTests(TestCase):
     def test_valid_capture_attaches_validated_cart_and_total(self):
         product = self.create_product()
         cart = self.set_cart(product, qty=2)
+        canonical_cart = {
+            key: {
+                **item,
+                "option_values": {},
+                "option_labels": {},
+            }
+            for key, item in cart.items()
+        }
 
         response = self.post_json({"phone": "+380501112233"})
 
         self.assertEqual(response.status_code, 200)
         capture = CheckoutCapture.objects.get()
-        self.assertEqual(capture.cart_snapshot, cart)
+        self.assertEqual(capture.cart_snapshot, canonical_cart)
         self.assertEqual(capture.cart_total, Decimal("250"))
 
     def test_authenticated_phone_capture_binds_user_and_fills_user_email(self):
