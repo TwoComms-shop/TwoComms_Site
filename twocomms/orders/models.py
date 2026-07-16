@@ -343,6 +343,8 @@ class OrderItem(models.Model):
     size = models.CharField(max_length=16, blank=True)
     fit_option_code = models.CharField(max_length=50, blank=True, default='')
     fit_option_label = models.CharField(max_length=100, blank=True, default='')
+    option_values = models.JSONField(blank=True, default=dict)
+    option_labels = models.JSONField(blank=True, default=dict)
     qty = models.PositiveIntegerField(default=1)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     line_total = models.DecimalField(max_digits=12, decimal_places=2)
@@ -372,6 +374,16 @@ class OrderItem(models.Model):
     def fit_label(self):
         """Snapshot of selected product fit/cut for order displays."""
         return (self.fit_option_label or self.fit_option_code or '').strip()
+
+    @property
+    def generic_option_labels(self):
+        fit_label = self.fit_label.casefold()
+        return [
+            f"{label}: {value}"
+            for label, value in (self.option_labels or {}).items()
+            if str(value or '').strip()
+            and str(value or '').strip().casefold() != fit_label
+        ]
 
     @property
     def color_name(self):
@@ -790,6 +802,8 @@ class DropshipperOrderItem(models.Model):
     size = models.CharField(max_length=16, verbose_name="Розмір")
     fit_option_code = models.CharField(max_length=50, blank=True, default='', verbose_name="Код посадки")
     fit_option_label = models.CharField(max_length=100, blank=True, default='', verbose_name="Посадка")
+    option_values = models.JSONField(blank=True, default=dict, verbose_name="Опції товару")
+    option_labels = models.JSONField(blank=True, default=dict, verbose_name="Назви опцій")
     quantity = models.PositiveIntegerField(default=1, verbose_name="Кількість")
 
     # Цены
@@ -814,6 +828,16 @@ class DropshipperOrderItem(models.Model):
     def fit_label(self):
         """Snapshot of selected product fit/cut for dropship order displays."""
         return (self.fit_option_label or self.fit_option_code or '').strip()
+
+    @property
+    def generic_option_labels(self):
+        fit_label = self.fit_label.casefold()
+        return [
+            f"{label}: {value}"
+            for label, value in (self.option_labels or {}).items()
+            if str(value or '').strip()
+            and str(value or '').strip().casefold() != fit_label
+        ]
 
     def save(self, *args, **kwargs):
         # Рассчитываем итоговые суммы

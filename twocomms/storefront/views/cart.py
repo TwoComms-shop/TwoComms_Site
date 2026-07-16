@@ -153,7 +153,53 @@ def _effective_item_price(product, item_data, color_variant=None):
         or (item_data or {}).get('fit')
         or ''
     ).strip().lower()
-    return effective_cart_unit_price(product, color_variant, fit_code=fit_code)
+    return effective_cart_unit_price(
+        product,
+        color_variant,
+        fit_code=fit_code,
+        option_values=(item_data or {}).get('option_values') or {},
+    )
+
+
+def _parse_product_option_values(raw_value):
+    from fable5.content_resolution import normalize_option_values
+
+    if raw_value in (None, '', {}):
+        return {}
+    if isinstance(raw_value, str):
+        if len(raw_value) > 1000:
+            raise ValueError('option payload too large')
+        raw_value = json.loads(raw_value)
+    return normalize_option_values(raw_value)
+
+
+def _resolve_option_selection(product, color_variant, requested):
+    from fable5.services import product_option_context, variant_allows_options
+
+    if color_variant is not None and requested:
+        if not variant_allows_options(color_variant, requested):
+            raise ValueError('unavailable option selection')
+    context = product_option_context(
+        product,
+        variant=color_variant,
+        option_values=requested,
+    )
+    selected = context.get('selected_values') or requested
+    labels = {}
+    for axis in context.get('axes') or []:
+        choice_code = selected.get(axis.get('code'))
+        choice = next(
+            (
+                item for item in axis.get('choices') or []
+                if item.get('code') == choice_code
+            ),
+            None,
+        )
+        if choice is not None:
+            labels[str(axis.get('label') or axis.get('code'))] = str(
+                choice.get('label') or choice_code
+            )
+    return selected, labels
 
 
 def _fit_display_from_cart_item(item_data):
@@ -837,6 +883,27 @@ def add_to_cart(request):
             }, status=400)
 
     requested_fit = str(request.POST.get('fit_option') or '').strip().lower()
+    try:
+        option_values = _parse_product_option_values(request.POST.get('option_values'))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({
+            'ok': False,
+            'error': _('Некоректні параметри товару'),
+        }, status=400)
+    if requested_fit and 'fit' not in option_values:
+        option_values['fit'] = requested_fit
+    try:
+        option_values, option_labels = _resolve_option_selection(
+            product,
+            color_variant,
+            option_values,
+        )
+    except ValueError:
+        return JsonResponse({
+            'ok': False,
+            'error': _('Обрана конфігурація товару недоступна'),
+        }, status=400)
+    requested_fit = option_values.get('fit', requested_fit)
     if color_variant and requested_fit:
         from fable5.services import variant_allows_fit
         if not variant_allows_fit(color_variant, requested_fit):
@@ -892,6 +959,7 @@ def add_to_cart(request):
         {
             'color_variant_id': color_variant_int,
             'fit_option_code': fit_option_code,
+            'option_values': option_values,
         },
         color_variant,
     )
@@ -900,6 +968,14 @@ def add_to_cart(request):
     key = f"{product.id}:{size}:{color_variant_int or 'default'}"
     if fit_option_code:
         key = f"{key}:{fit_option_code}"
+    generic_option_key = json.dumps(
+        option_values,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    if generic_option_key != '{}':
+        key = f"{key}:{generic_option_key}"
     if key not in cart and len(cart) >= MAX_CART_ITEMS:
         return JsonResponse({
             'ok': False,
@@ -911,10 +987,14 @@ def add_to_cart(request):
         'color_variant_id': color_variant_int,
         'fit_option_code': fit_option_code,
         'fit_option_label': fit_option_label,
+        'option_values': option_values,
+        'option_labels': option_labels,
         'qty': 0
     })
     item['fit_option_code'] = fit_option_code
     item['fit_option_label'] = fit_option_label
+    item['option_values'] = option_values
+    item['option_labels'] = option_labels
     # W1-13: cap применяется и к накопленному количеству позиции
     item['qty'] = min(item['qty'] + qty, MAX_CART_ITEM_QTY)
     cart[key] = item
@@ -975,6 +1055,8 @@ def add_to_cart(request):
             'fit_option_code': fit_option_code,
             'fit_option_label': fit_option_label,
             'fit_label': fit_option_label,
+            'option_values': option_values,
+            'option_labels': option_labels,
             'product_title': product.title,
             'product_category': product.category.name if getattr(product, 'category', None) else ''
         }

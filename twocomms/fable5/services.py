@@ -144,8 +144,29 @@ def product_option_context(
     combinations = _variant_combination_profiles(variant) if variant is not None else {}
     fit_rules = _effective_fit_rules(variant) if variant is not None else {}
     axes = []
+    raw_axes = list(getattr(flow, "axes", None) or [])
+    if not any(
+        isinstance(axis, dict) and str(axis.get("code") or "").lower() == "fit"
+        for axis in raw_axes
+    ):
+        fit_options = list(product.fit_options.all().order_by("order", "id"))
+        if fit_options:
+            raw_axes.append({
+                "code": "fit",
+                "label": "Посадка",
+                "options": [
+                    {
+                        "code": option.code,
+                        "label": option.label,
+                        "description": option.description,
+                        "icon": option.icon or "fit",
+                        "default": option.is_default,
+                    }
+                    for option in fit_options
+                ],
+            })
 
-    for raw_axis in (getattr(flow, "axes", None) or []):
+    for raw_axis in raw_axes:
         if not isinstance(raw_axis, dict):
             continue
         axis_code = str(raw_axis.get("code") or "").strip().lower()
@@ -376,7 +397,12 @@ def variant_allows_fit(variant, fit_code: str) -> bool:
     return bool(rule and rule["is_enabled"])
 
 
-def effective_cart_unit_price(product, color_variant=None, fit_code: str = "") -> Decimal:
+def effective_cart_unit_price(
+    product,
+    color_variant=None,
+    fit_code: str = "",
+    option_values=None,
+) -> Decimal:
     """Authoritative server-side unit price for a cart/order line.
 
     The colour variant is accepted only when it belongs to ``product``.  This
@@ -388,11 +414,22 @@ def effective_cart_unit_price(product, color_variant=None, fit_code: str = "") -
     if getattr(color_variant, "product_id", None) != getattr(product, "id", None):
         return _decimal(getattr(product, "final_price", product.price))
     return _decimal(
-        variant_public_context(color_variant, fit_code=fit_code)["final_price"]
+        variant_public_context(
+            color_variant,
+            fit_code=fit_code,
+            option_values=option_values,
+        )["final_price"]
     )
 
 
-def variant_allows_purchase(product, color_variant, *, fit_code: str = "", size: str = "") -> bool:
+def variant_allows_purchase(
+    product,
+    color_variant,
+    *,
+    fit_code: str = "",
+    size: str = "",
+    option_values=None,
+) -> bool:
     """Validate a persisted cart selection against current variant rules."""
 
     if color_variant is None:
@@ -400,6 +437,11 @@ def variant_allows_purchase(product, color_variant, *, fit_code: str = "", size:
     if getattr(color_variant, "product_id", None) != getattr(product, "id", None):
         return False
     fit = str(fit_code or "").strip().lower()
+    options = normalize_option_values(option_values or {})
+    if fit and "fit" not in options:
+        options["fit"] = fit
+    if options and not variant_allows_options(color_variant, options):
+        return False
     if fit and not variant_allows_fit(color_variant, fit):
         return False
 

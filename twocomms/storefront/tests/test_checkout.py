@@ -374,6 +374,40 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(bulk_items[0].raw_kwargs['fit_option_code'], 'classic')
         self.assertEqual(bulk_items[0].raw_kwargs['fit_option_label'], 'Класичний')
 
+    def test_create_order_snapshots_generic_options_on_order_item(self):
+        self.set_cart()
+        session = self.client.session
+        item = next(iter(session['cart'].values()))
+        item['option_values'] = {'lining': 'fleece'}
+        item['option_labels'] = {'Утеплення': 'Фліс'}
+        session['cart'] = session['cart']
+        session.save()
+        delivery = self.delivery_payload()
+        fake_order_item_class, fake_manager = self.make_fake_order_item_class()
+
+        with patch('storefront.views.checkout.OrderItem', fake_order_item_class):
+            response = self.client.post(
+                self.order_create_url,
+                {
+                    'full_name': 'Generic Option Buyer',
+                    'phone': '+380501112233',
+                    'city': delivery['city'],
+                    'np_office': delivery['np_office'],
+                    'np_settlement_ref': delivery['np_settlement_ref'],
+                    'np_city_ref': delivery['np_city_ref'],
+                    'np_city_token': delivery['np_city_token'],
+                    'np_warehouse_ref': delivery['np_warehouse_ref'],
+                    'np_warehouse_token': delivery['np_warehouse_token'],
+                    'pay_type': 'cod',
+                },
+                secure=True,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        item = fake_manager.bulk_create.call_args.args[0][0]
+        self.assertEqual(item.raw_kwargs['option_values'], {'lining': 'fleece'})
+        self.assertEqual(item.raw_kwargs['option_labels'], {'Утеплення': 'Фліс'})
+
     def _cod_post_payload(self, delivery, full_name='Promo Buyer', phone='+380631112233'):
         return {
             'full_name': full_name,
