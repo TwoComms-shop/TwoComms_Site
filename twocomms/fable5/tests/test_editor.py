@@ -55,7 +55,7 @@ class Fable5EditorAccessTests(TestCase):
         ).content.decode()
 
         self.assertIn("fable5/editor-inventory.js?v=20260716-inventory-v3", content)
-        self.assertIn("fable5/editor.js?v=20260716-dirty-v6", content)
+        self.assertIn("fable5/editor.js?v=20260716-dirty-v7", content)
 
     def test_staff_can_create_product_with_unified_save_endpoint(self):
         self.client.force_login(self.staff)
@@ -258,6 +258,30 @@ class Fable5EditorAccessTests(TestCase):
         render = variant_save.index("renderVariants()")
         self.assertLess(late_branch, render)
         self.assertNotIn("clearVariantDirty(card, resp.variant);\n\t\t\tstate.variants[index]", variant_save)
+
+    def test_individual_variant_save_does_not_render_over_other_variant_late_edits(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+        start = javascript.index("async function saveVariant(card, index)")
+        end = javascript.index("function refreshColorLibrary", start)
+        variant_save = javascript[start:end]
+
+        self.assertIn("const editorRevision = state.revision", variant_save)
+        self.assertIn(
+            "const editorChanged = state.revision !== editorRevision",
+            variant_save,
+        )
+        changed_start = variant_save.index("if (editorChanged)")
+        changed_end = variant_save.index("return;", changed_start)
+        changed_branch = variant_save[changed_start:changed_end]
+        self.assertIn('syncInventorySurfaces(currentIndex, "server")', changed_branch)
+        self.assertNotIn("renderVariants()", changed_branch)
+        self.assertNotIn("setDirty(false)", changed_branch)
+        self.assertLess(changed_end, variant_save.index("renderVariants()"))
 
     def test_new_variant_initializes_inventory_draft_before_first_render(self):
         javascript = (

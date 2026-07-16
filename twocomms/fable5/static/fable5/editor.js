@@ -1281,6 +1281,7 @@
 			toast("Вкажіть коректний HEX кольору (#RRGGBB) або оберіть з бібліотеки", true);
 			return;
 		}
+		const editorRevision = state.revision;
 		try {
 			const resp = await postJSON(urls.variant_save, data);
 			const currentIndex = state.variants.indexOf(variant);
@@ -1302,6 +1303,19 @@
 				state.variants.forEach((v, i) => { if (i !== currentIndex) v.is_default = false; });
 			}
 			refreshColorLibrary(resp.variant.color);
+			const editorChanged = state.revision !== editorRevision;
+			if (editorChanged) {
+				if (card && card.isConnected) card.dataset.id = String(resp.variant.id);
+				const stockBlock = $(`#f-stock [data-variant-index="${currentIndex}"]`);
+				if (stockBlock) {
+					stockBlock.dataset.dirty = "false";
+					const stockSave = $("[data-act=stock-save]", stockBlock);
+					if (stockSave) stockSave.disabled = false;
+				}
+				syncInventorySurfaces(currentIndex, "server");
+				toast("Колір збережено. Інші нові зміни залишилися незбереженими.");
+				return;
+			}
 			renderVariants();
 			toast("Колір збережено");
 		} catch (err) {
