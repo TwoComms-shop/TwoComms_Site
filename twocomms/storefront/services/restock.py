@@ -169,7 +169,7 @@ def subscription_is_available(subscription) -> bool:
 def schedule_restock_scan(product_id, variant_id):
     """Wake matching automatic subscriptions without doing network I/O."""
 
-    if not product_id or not variant_id:
+    if product_id is None or variant_id is None:
         return 0
     return RestockSubscription.objects.filter(
         product_id=product_id,
@@ -182,11 +182,11 @@ def schedule_restock_scan(product_id, variant_id):
 def _filter_delivery_scope(
     queryset, *, product_id=None, variant_id=None, subscription_id=None
 ):
-    if product_id:
+    if product_id is not None:
         queryset = queryset.filter(product_id=product_id)
-    if variant_id:
+    if variant_id is not None:
         queryset = queryset.filter(color_variant_id=variant_id)
-    if subscription_id:
+    if subscription_id is not None:
         queryset = queryset.filter(pk=subscription_id)
     return queryset
 
@@ -220,6 +220,10 @@ def scan_candidate_queryset(
     ).filter(
         Q(status=RestockSubscription.Status.ACTIVE, next_attempt_at__isnull=True)
         | Q(status__in=DELIVERY_STATUSES, next_attempt_at__lte=now)
+        | Q(
+            status=RestockSubscription.Status.SENDING,
+            last_attempt_at__lte=now - STALE_SENDING_AFTER,
+        )
     )
     return _filter_delivery_scope(
         queryset,
@@ -278,7 +282,7 @@ def claim_due_subscription(
         if not subscription_is_available(subscription):
             subscription.next_attempt_at = None
             subscription.save(update_fields=["next_attempt_at", "updated_at"])
-            if subscription_id:
+            if subscription_id is not None:
                 return None
             continue
         subscription.status = RestockSubscription.Status.SENDING

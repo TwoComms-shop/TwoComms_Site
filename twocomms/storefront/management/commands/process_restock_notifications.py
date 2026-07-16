@@ -28,6 +28,11 @@ class Command(BaseCommand):
         limit = options["limit"]
         if limit < 1:
             raise CommandError("--limit must be greater than zero")
+        for option_name in ("product_id", "variant_id", "subscription_id"):
+            value = options.get(option_name)
+            if value is not None and value <= 0:
+                cli_name = option_name.replace("_", "-")
+                raise CommandError(f"--{cli_name} must be greater than zero")
         filters = {
             "product_id": options.get("product_id"),
             "variant_id": options.get("variant_id"),

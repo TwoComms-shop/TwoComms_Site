@@ -6,6 +6,7 @@ from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 
@@ -372,6 +373,55 @@ class RestockDeliveryTests(TestCase):
             self.assertEqual(row.status, RestockSubscription.Status.ACTIVE)
             self.assertIsNone(row.next_attempt_at)
             self.assertEqual(row.notification_attempts, 0)
+
+    def test_non_positive_command_filters_are_rejected_without_processing(self):
+        subscription = self.subscription(next_attempt_at=None)
+
+        for option in ("product_id", "variant_id", "subscription_id"):
+            with self.subTest(option=option):
+                with self.assertRaises(CommandError):
+                    call_command("process_restock_notifications", **{option: 0})
+
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, RestockSubscription.Status.ACTIVE)
+        self.assertIsNone(subscription.next_attempt_at)
+        self.assertEqual(subscription.notification_attempts, 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_dry_run_models_stale_recovery_without_mutating_then_real_run_delivers(self):
+        token = "22222222-2222-2222-2222-222222222222"
+        subscription = self.subscription(
+            status=RestockSubscription.Status.SENDING,
+            delivery_token=token,
+            notification_attempts=1,
+            last_attempt_at=timezone.now() - timedelta(minutes=16),
+            next_attempt_at=None,
+        )
+        output = io.StringIO()
+
+        call_command(
+            "process_restock_notifications",
+            dry_run=True,
+            limit=1,
+            subscription_id=subscription.pk,
+            stdout=output,
+        )
+
+        subscription.refresh_from_db()
+        self.assertIn("dry-run: 1 available", output.getvalue().lower())
+        self.assertEqual(subscription.status, RestockSubscription.Status.SENDING)
+        self.assertEqual(str(subscription.delivery_token), token)
+        self.assertEqual(subscription.notification_attempts, 1)
+        self.assertIsNone(subscription.next_attempt_at)
+
+        call_command(
+            "process_restock_notifications",
+            subscription_id=subscription.pk,
+        )
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, RestockSubscription.Status.NOTIFIED)
+        self.assertEqual(subscription.notification_attempts, 2)
+        self.assertEqual(len(mail.outbox), 1)
 
     def test_sending_status_participates_in_subscription_deduplication(self):
         from storefront.services.restock import create_subscription
