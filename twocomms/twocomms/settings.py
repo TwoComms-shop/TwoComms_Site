@@ -371,6 +371,10 @@ META_PIXEL_ID = (
     or os.environ.get('FACEBOOK_PIXEL_ID')
     or '823958313630148'
 ).strip()
+META_FBC_ATTRIBUTION_WINDOW_DAYS = max(
+    1,
+    min(90, _env_int('META_FBC_ATTRIBUTION_WINDOW_DAYS', 7)),
+)
 
 # Monobank acquiring
 MONOBANK_TOKEN = os.environ.get('MONOBANK_TOKEN', '')

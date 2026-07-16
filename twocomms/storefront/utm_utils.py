@@ -6,9 +6,39 @@
 
 import logging
 import re
-from typing import Dict, Optional
+from typing import Dict, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class ParsedFbc(NamedTuple):
+    created_at_ms: int
+    click_id: str
+
+
+def parse_fbc(value: object) -> Optional[ParsedFbc]:
+    """Validate a Meta click cookie without logging its identifiers."""
+    if not isinstance(value, str) or not value or len(value) > 255:
+        return None
+    try:
+        value.encode('ascii')
+    except UnicodeEncodeError:
+        return None
+
+    parts = value.split('.', 3)
+    if len(parts) != 4:
+        return None
+    prefix, domain_index, created_at_ms, click_id = parts
+    if prefix != 'fb' or not domain_index.isdigit():
+        return None
+    if len(created_at_ms) != 13 or not created_at_ms.isdigit():
+        return None
+    timestamp = int(created_at_ms)
+    if timestamp < 1_000_000_000_000:
+        return None
+    if not click_id or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in click_id):
+        return None
+    return ParsedFbc(created_at_ms=timestamp, click_id=click_id)
 
 
 def get_client_ip(request) -> Optional[str]:

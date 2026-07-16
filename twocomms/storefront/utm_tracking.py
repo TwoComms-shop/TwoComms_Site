@@ -10,13 +10,20 @@
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from django.conf import settings
 from django.db import models, transaction
 
 from .analytics_exclusions import is_request_excluded
 from .models import UTMSession, SiteSession, UserAction
-from .utm_utils import calculate_action_points, normalize_utm_attribution, sanitize_utm_param
+from .utm_utils import (
+    calculate_action_points,
+    normalize_utm_attribution,
+    parse_fbc,
+    sanitize_utm_param,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -789,6 +796,50 @@ def link_order_to_utm(request, order):
                 _apply_utm_session_to_order(order, utm_session)
                 logger.info(f"Rebuilt and linked UTM session for order {order.order_number} from first-touch data")
                 return
+
+        # F-048: a validated Meta click cookie is acquisition evidence only at
+        # order time. Generic page views and the _fbp browser ID stay neutral.
+        has_order_attribution = any(
+            getattr(order, field, None)
+            for field in (
+                'utm_source', 'utm_medium', 'utm_campaign',
+                'utm_content', 'utm_term',
+            )
+        )
+        fbc = (getattr(request, 'COOKIES', {}) or {}).get('_fbc')
+        parsed_fbc = None if has_order_attribution else parse_fbc(fbc)
+        order_created = getattr(order, 'created', None)
+        if parsed_fbc is not None and order_created is not None:
+            click_time = datetime.fromtimestamp(
+                parsed_fbc.created_at_ms / 1000,
+                tz=timezone.utc,
+            )
+            if order_created.tzinfo is None:
+                click_time = click_time.replace(tzinfo=None)
+            age = order_created - click_time
+            attribution_window = timedelta(
+                days=settings.META_FBC_ATTRIBUTION_WINDOW_DAYS,
+            )
+            if -timedelta(minutes=5) <= age <= attribution_window:
+                utm_session = _rebuild_utm_session_from_attribution(
+                    request,
+                    order,
+                    {
+                        'utm_source': 'facebook',
+                        'utm_medium': 'paid_social',
+                    },
+                    {
+                        'fbc': fbc,
+                        'fbclid': parsed_fbc.click_id,
+                    },
+                )
+                if utm_session is not None:
+                    _apply_utm_session_to_order(order, utm_session)
+                    logger.info(
+                        "Rebuilt and linked Meta attribution for order %s from FBC",
+                        order.order_number,
+                    )
+                    return
 
         logger.debug("No UTM attribution found for order %s", getattr(order, 'order_number', order.pk))
 

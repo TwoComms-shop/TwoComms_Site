@@ -1,9 +1,10 @@
 """
 W2-8 (AN-032/AN-033): нормализация utm_source + детект AI-трафика.
 """
-from django.test import TestCase, Client
+from django.test import Client, SimpleTestCase, TestCase
 
 from storefront.models import SiteSession, UTMSession
+from storefront import utm_utils
 from storefront.utm_utils import (
     normalize_utm_source,
     normalize_utm_attribution,
@@ -11,6 +12,38 @@ from storefront.utm_utils import (
     detect_ai_source,
     AI_SOURCES,
 )
+
+
+class ParseFbcTests(SimpleTestCase):
+    def test_valid_fbc_returns_click_timestamp_and_id(self):
+        parse_fbc = getattr(utm_utils, 'parse_fbc', lambda value: None)
+
+        parsed = parse_fbc('fb.1.1700000000000.click-id')
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.created_at_ms, 1700000000000)
+        self.assertEqual(parsed.click_id, 'click-id')
+
+    def test_invalid_fbc_values_are_rejected(self):
+        parse_fbc = getattr(utm_utils, 'parse_fbc', lambda value: None)
+        invalid_values = (
+            None,
+            '',
+            'xx.1.1700000000000.click-id',
+            'fb.-1.1700000000000.click-id',
+            'fb.domain.1700000000000.click-id',
+            'fb.1.170000000000.click-id',
+            'fb.1.not-a-timestamp.click-id',
+            'fb.1.1700000000000.',
+            'fb.1.1700000000000.click id',
+            'fb.1.1700000000000.click\n-id',
+            'fb.1.1700000000000.cl\N{LATIN SMALL LETTER I WITH ACUTE}ck-id',
+            f"fb.1.1700000000000.{'x' * 240}",
+        )
+
+        for value in invalid_values:
+            with self.subTest(value=repr(value)):
+                self.assertIsNone(parse_fbc(value))
 
 
 class NormalizeUtmSourceTests(TestCase):

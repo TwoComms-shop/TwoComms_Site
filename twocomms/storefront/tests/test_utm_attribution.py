@@ -6,13 +6,166 @@ utm_source='audit', utm_session FK, session_key, UserAction с order_id,
 UTMSession.is_converted=True.
 """
 
+from datetime import timedelta
+
+from django.contrib.auth.models import AnonymousUser
+from django.contrib.sessions.middleware import SessionMiddleware
+from django.test import RequestFactory, override_settings
+from django.utils import timezone
+
 from orders.models import Order
 from storefront.models import UserAction, UTMSession
+from storefront.utm_tracking import link_order_to_utm
 
 from .test_checkout import CheckoutTestSupport
 
 
+@override_settings(META_FBC_ATTRIBUTION_WINDOW_DAYS=7)
 class UTMOrderAttributionTests(CheckoutTestSupport):
+    def _unattributed_order(self, *, created=None):
+        order = Order.objects.create(
+            full_name='FBC Attribution Buyer',
+            phone='+380501112233',
+            city='Kyiv',
+            np_office='Branch 1',
+            pay_type='cod',
+            payment_status='unpaid',
+            total_sum=130,
+            source='web',
+        )
+        if created is not None:
+            Order.objects.filter(pk=order.pk).update(created=created)
+            order.refresh_from_db()
+        return order
+
+    def _order_link_request(self, *, fbc=None, fbp=None):
+        request = RequestFactory().get('/', secure=True)
+        SessionMiddleware(lambda req: None).process_request(request)
+        request.session.create()
+        request.user = AnonymousUser()
+        request.analytics_first_touch_data = {}
+        if fbc is not None:
+            request.COOKIES['_fbc'] = fbc
+        if fbp is not None:
+            request.COOKIES['_fbp'] = fbp
+        return request
+
+    @staticmethod
+    def _fbc(created_at, click_id='fresh-click'):
+        return f'fb.1.{int(created_at.timestamp() * 1000)}.{click_id}'
+
+    def test_fresh_fbc_rebuilds_meta_attribution_at_order_link_time(self):
+        order_created = timezone.now()
+        order = self._unattributed_order(created=order_created)
+        fbc = self._fbc(order_created - timedelta(days=6))
+        request = self._order_link_request(fbc=fbc)
+
+        link_order_to_utm(request, order)
+
+        order.refresh_from_db()
+        self.assertEqual(order.utm_source, 'facebook')
+        self.assertEqual(order.utm_medium, 'paid_social')
+        self.assertIsNotNone(order.utm_session_id)
+        utm_session = order.utm_session
+        self.assertEqual(utm_session.fbc, fbc)
+        self.assertEqual(utm_session.fbclid, 'fresh-click')
+        self.assertIsNone(utm_session.fbp)
+        self.assertIsNone(utm_session.gclid)
+        self.assertIsNone(utm_session.ttclid)
+        self.assertIsNone(utm_session.utm_campaign)
+        self.assertIsNone(utm_session.utm_content)
+        self.assertIsNone(utm_session.utm_term)
+
+    def test_fbp_alone_does_not_synthesize_attribution(self):
+        order = self._unattributed_order()
+        request = self._order_link_request(fbp='fb.1.1700000000000.browser-id')
+
+        link_order_to_utm(request, order)
+
+        order.refresh_from_db()
+        self.assertIsNone(order.utm_session_id)
+        self.assertIsNone(order.utm_source)
+        self.assertFalse(UTMSession.objects.exists())
+
+    def test_malformed_fbc_does_not_synthesize_attribution(self):
+        order = self._unattributed_order()
+        request = self._order_link_request(fbc='fb.1.bad-timestamp.click-id')
+
+        link_order_to_utm(request, order)
+
+        order.refresh_from_db()
+        self.assertIsNone(order.utm_session_id)
+        self.assertFalse(UTMSession.objects.exists())
+
+    def test_future_fbc_does_not_synthesize_attribution(self):
+        order_created = timezone.now()
+        order = self._unattributed_order(created=order_created)
+        request = self._order_link_request(
+            fbc=self._fbc(order_created + timedelta(minutes=10)),
+        )
+
+        link_order_to_utm(request, order)
+
+        order.refresh_from_db()
+        self.assertIsNone(order.utm_session_id)
+        self.assertFalse(UTMSession.objects.exists())
+
+    def test_stale_fbc_does_not_synthesize_attribution(self):
+        order_created = timezone.now()
+        order = self._unattributed_order(created=order_created)
+        request = self._order_link_request(
+            fbc=self._fbc(order_created - timedelta(days=8)),
+        )
+
+        link_order_to_utm(request, order)
+
+        order.refresh_from_db()
+        self.assertIsNone(order.utm_session_id)
+        self.assertFalse(UTMSession.objects.exists())
+
+    def test_existing_attribution_wins_over_fbc_fallback(self):
+        order_created = timezone.now()
+        order = self._unattributed_order(created=order_created)
+        request = self._order_link_request(
+            fbc=self._fbc(order_created - timedelta(days=1), 'fallback-click'),
+        )
+        existing = UTMSession.objects.create(
+            session_key=request.session.session_key,
+            utm_source='newsletter',
+            utm_medium='email',
+            fbclid='current-click',
+        )
+
+        link_order_to_utm(request, order)
+
+        order.refresh_from_db()
+        self.assertEqual(order.utm_session_id, existing.pk)
+        self.assertEqual(order.utm_source, 'newsletter')
+        self.assertEqual(order.utm_medium, 'email')
+        existing.refresh_from_db()
+        self.assertEqual(existing.fbclid, 'current-click')
+        self.assertIsNone(existing.fbc)
+
+    def test_existing_raw_order_attribution_is_not_replaced_by_fbc(self):
+        order_created = timezone.now()
+        order = self._unattributed_order(created=order_created)
+        order.utm_source = 'partner'
+        order.utm_medium = 'referral'
+        order.utm_campaign = 'existing-campaign'
+        order.save(update_fields=['utm_source', 'utm_medium', 'utm_campaign'])
+        request = self._order_link_request(
+            fbc=self._fbc(order_created - timedelta(days=1), 'fallback-click'),
+        )
+
+        link_order_to_utm(request, order)
+
+        order.refresh_from_db()
+        self.assertIsNone(order.utm_session_id)
+        self.assertEqual(order.utm_source, 'partner')
+        self.assertEqual(order.utm_medium, 'referral')
+        self.assertEqual(order.utm_campaign, 'existing-campaign')
+        self.assertFalse(UTMSession.objects.exists())
+
     def _cod_post_payload(self, delivery, full_name='UTM Buyer', phone='+380631112233'):
         return {
             'full_name': full_name,
