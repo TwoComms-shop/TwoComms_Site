@@ -106,6 +106,6 @@ Pull `main` on the server, run the focused server tests and `manage.py check`, t
 
 Verify booleans for `META_PIXEL_ID` set/numeric, `FACEBOOK_PIXEL_ID` set/numeric, equality, CAPI token presence, and confirm live HTML contains the canonical ID consistently.
 
-- [ ] **Step 4: Mark F-089 `[x]` and deploy the documentation checkpoint**
+- [x] **Step 4: Mark F-089 `[x]` and deploy the documentation checkpoint**
 
 Record the runtime commit and fresh production evidence in every F-089 summary/detail location. Commit, push, pull on the server, and verify the production HEAD.
