@@ -52,5 +52,26 @@
     return result;
   }
 
-  return { canonicalizeInventoryRows, resolveInventoryRule };
+  function snapshotInventoryDraft(variant) {
+    return canonicalizeInventoryRows((variant && variant.sizes) || [])
+      .map((row) => Object.assign({}, row));
+  }
+
+  function replaceInventoryDraft(variant, rows) {
+    if (!variant) return [];
+    variant.sizes = canonicalizeInventoryRows(rows)
+      .map((row) => Object.assign({}, row));
+    variant._sizesRevision = (variant._sizesRevision || 0) + 1;
+    variant._revision = (variant._revision || 0) + 1;
+    variant._sizesDirty = true;
+    variant._dirty = true;
+    return snapshotInventoryDraft(variant);
+  }
+
+  return {
+    canonicalizeInventoryRows,
+    replaceInventoryDraft,
+    resolveInventoryRule,
+    snapshotInventoryDraft,
+  };
 }));

@@ -154,6 +154,8 @@
 	const urls = boot.urls || {};
 	const resolveInventoryRule = window.f5Inventory.resolveInventoryRule;
 	const canonicalizeInventoryRows = window.f5Inventory.canonicalizeInventoryRows;
+	const replaceInventoryDraft = window.f5Inventory.replaceInventoryDraft;
+	const snapshotInventoryDraft = window.f5Inventory.snapshotInventoryDraft;
 
 	const state = {
 		product: boot.product || null,
@@ -470,11 +472,6 @@
 				card, index, data: collectVariantData(card, variant),
 				revision: variant._revision || 0,
 			}));
-		$$("#f-stock [data-variant-index][data-dirty=\"true\"]").forEach((block) => {
-			const index = parseInt(block.dataset.variantIndex, 10);
-			const draft = pendingVariantDrafts.find((item) => item.index === index);
-			if (draft) draft.data.sizes = collectStockSizes(block);
-		});
 		const pendingFeedDrafts = $$("#f-feeds .f5-feed[data-dirty=\"true\"]").map((card) => ({
 			card: card,
 			payload: collectFeedPayload(card),
@@ -935,16 +932,26 @@
 		}).join("");
 	}
 
-	function syncVariantSizeControls(card, sizes) {
-		if (!card) return;
-		$$("[data-role=size-grid] .f5-size-cell", card).forEach((cell) => {
-			const rule = resolveInventoryRule(
-				sizes || [], cell.dataset.fit || "", cell.dataset.size || ""
-			);
-			if (!rule) return;
-			const enabled = rule.is_enabled !== false;
+	function collectInventoryRows(surface) {
+		return canonicalizeInventoryRows($$(".f5-size-cell", surface).map((cell) => ({
+			fit_code: cell.dataset.fit || "",
+			size: cell.dataset.size,
+			is_enabled: !cell.classList.contains("is-off"),
+			stock: intOrNull($("[data-f=stock]", cell).value),
+			note: "",
+		})));
+	}
+
+	function syncInventorySurface(surface, sizes) {
+		if (!surface) return;
+		$$(".f5-size-cell", surface).forEach((cell) => {
 			const button = $("[data-act=size-toggle]", cell);
 			const stock = $("[data-f=stock]", cell);
+			const rule = resolveInventoryRule(
+				sizes || [], cell.dataset.fit || "", cell.dataset.size || ""
+			) || { is_enabled: true, stock: null };
+			const controlsEnabled = !(button && button.disabled) && !(stock && stock.disabled);
+			const enabled = controlsEnabled && rule.is_enabled !== false;
 			cell.classList.toggle("is-off", !enabled);
 			cell.classList.toggle("f5-stock-zero", rule.stock === 0);
 			cell.classList.toggle(
@@ -954,6 +961,32 @@
 			if (button) button.setAttribute("aria-pressed", enabled ? "true" : "false");
 			if (stock) stock.value = rule.stock == null ? "" : String(rule.stock);
 		});
+	}
+
+	function syncInventorySurfaces(index, source) {
+		const variant = state.variants[index];
+		if (!variant) return;
+		const card = $(`.f5-variant[data-index="${index}"]`);
+		const stockBlock = $(`#f-stock [data-variant-index="${index}"]`);
+		if (source !== "card") syncInventorySurface(card, variant.sizes);
+		if (source !== "stock") syncInventorySurface(stockBlock && $("[data-role=stock-grid]", stockBlock), variant.sizes);
+	}
+
+	function updateInventoryDraftFromSurface(index, surface, source, contentDirty) {
+		const variant = state.variants[index];
+		if (!variant || !surface) return [];
+		const sizes = replaceInventoryDraft(variant, collectInventoryRows(surface));
+		if (contentDirty) variant._contentDirty = true;
+		const card = $(`.f5-variant[data-index="${index}"]`);
+		const stockBlock = $(`#f-stock [data-variant-index="${index}"]`);
+		if (card) {
+			card.dataset.dirty = "true";
+			card.dataset.sizesDirty = "true";
+		}
+		if (stockBlock) stockBlock.dataset.dirty = "true";
+		setDirty(true);
+		syncInventorySurfaces(index, source);
+		return sizes;
 	}
 
 	function colorPickerHtml(variant) {
@@ -1147,15 +1180,6 @@
 	function collectVariantData(card, variant) {
 		const val = (sel) => { const el = $(sel, card); return el ? el.value : ""; };
 		const checked = (sel) => { const el = $(sel, card); return el ? el.checked : false; };
-		const sizes = canonicalizeInventoryRows(
-			$$("[data-role=size-grid] .f5-size-cell", card).map((cell) => ({
-				fit_code: cell.dataset.fit || "",
-				size: cell.dataset.size,
-				is_enabled: !cell.classList.contains("is-off"),
-				stock: intOrNull($("[data-f=stock]", cell).value),
-				note: "",
-			}))
-		);
 		const fits = $$(".f5-fit-row[data-fit]", card).map((row) => {
 			const enabled = $("[data-f=fit_enabled]", row).checked;
 			return {
@@ -1238,7 +1262,7 @@
 			faqs: faqs,
 		};
 		const includeSizes = !variant.id || card.dataset.sizesDirty === "true" || variant._sizesDirty;
-		if (includeSizes) data.sizes = sizes;
+		if (includeSizes) data.sizes = snapshotInventoryDraft(variant);
 		return data;
 	}
 	async function saveVariant(card, index) {
@@ -1482,16 +1506,24 @@
 	$("#f-variants").addEventListener("input", (e) => {
 		const card = e.target.closest(".f5-variant");
 		if (!card || (!e.target.dataset.f && !e.target.dataset.c)) return;
-		const variant = state.variants[parseInt(card.dataset.index, 10)];
+		const index = parseInt(card.dataset.index, 10);
+		const variant = state.variants[index];
 		const sizesDirty = e.target.dataset.f === "stock" || e.target.dataset.f === "fit_enabled";
-		markVariantDirty(card, variant, sizesDirty, e.target.dataset.f === "fit_enabled");
+		if (sizesDirty) {
+			updateInventoryDraftFromSurface(
+				index, card, "card", e.target.dataset.f === "fit_enabled"
+			);
+		} else {
+			markVariantDirty(card, variant, false);
+		}
 		refreshVariantPreview(card, variant);
 	});
 
 	$("#f-variants").addEventListener("change", (e) => {
 		const card = e.target.closest(".f5-variant");
 		if (!card) return;
-		const variant = state.variants[parseInt(card.dataset.index, 10)];
+		const index = parseInt(card.dataset.index, 10);
+		const variant = state.variants[index];
 		if (e.target.matches("[data-role=variant-upload]")) {
 			if (variant && variant.id) uploadImages("variant", variant.id, e.target.files);
 			e.target.value = "";
@@ -1499,11 +1531,8 @@
 		}
 		const f = e.target.dataset.f;
 		if (!f) return;
-		markVariantDirty(
-			card, variant,
-			f === "stock" || f === "fit_enabled",
-			f === "fit_enabled"
-		);
+		const inventoryChanged = f === "stock" || f === "fit_enabled";
+		if (!inventoryChanged) markVariantDirty(card, variant, false);
 		if (f === "color_pick") {
 			$("[data-f=color_hex]", card).value = e.target.value;
 			if (variant) variant.color.id = null; // зміна HEX = інший/новий колір
@@ -1547,6 +1576,9 @@
 				});
 				syncCombinationAvailability($(`[data-combination-fit="${row.dataset.fit}"]`, card), enabled);
 			}
+		}
+		if (inventoryChanged) {
+			updateInventoryDraftFromSurface(index, card, "card", f === "fit_enabled");
 		}
 		refreshVariantPreview(card, variant);
 	});
@@ -1592,14 +1624,12 @@
 			const variantCard = btn.closest(".f5-variant");
 			if (variantCard) {
 				const index = parseInt(variantCard.dataset.index, 10);
-				markVariantDirty(variantCard, state.variants[index], true);
+				updateInventoryDraftFromSurface(index, variantCard, "card", false);
 			}
 			const stockBlock = btn.closest("#f-stock [data-variant-index]");
 			if (stockBlock) {
-				stockBlock.dataset.dirty = "true";
 				const index = parseInt(stockBlock.dataset.variantIndex, 10);
-				const card = $(`.f5-variant[data-index="${index}"]`);
-				markVariantDirty(card, state.variants[index], true);
+				updateInventoryDraftFromSurface(index, stockBlock, "stock", false);
 			}
 		}
 	});
@@ -1640,25 +1670,15 @@
 			</div>`).join("");
 	}
 
-	function collectStockSizes(block) {
-		return canonicalizeInventoryRows($$(".f5-size-cell", block).map((cell) => ({
-			fit_code: cell.dataset.fit || "",
-			size: cell.dataset.size,
-			is_enabled: !cell.classList.contains("is-off"),
-			stock: intOrNull($("[data-f=stock]", cell).value),
-			note: "",
-		})));
+	function handleStockInventoryChange(e) {
+		const block = e.target.closest("[data-variant-index]");
+		if (!block || e.target.dataset.f !== "stock") return;
+		const index = parseInt(block.dataset.variantIndex, 10);
+		updateInventoryDraftFromSurface(index, block, "stock", false);
 	}
 
-	$("#f-stock").addEventListener("input", (e) => {
-		const block = e.target.closest("[data-variant-index]");
-		if (block) {
-			block.dataset.dirty = "true";
-			const index = parseInt(block.dataset.variantIndex, 10);
-			const card = $(`.f5-variant[data-index="${index}"]`);
-			markVariantDirty(card, state.variants[index], true);
-		}
-	});
+	$("#f-stock").addEventListener("input", handleStockInventoryChange);
+	$("#f-stock").addEventListener("change", handleStockInventoryChange);
 
 	$("#f-stock").addEventListener("click", async (e) => {
 		const btn = e.target.closest("[data-act=stock-save]");
@@ -1667,24 +1687,23 @@
 		const index = parseInt(block.dataset.variantIndex, 10);
 		const variant = state.variants[index];
 		if (!variant || !variant.id) return;
-		const sizes = collectStockSizes(block);
+		const sizes = snapshotInventoryDraft(variant);
 		const sizesRevision = variant._sizesRevision || 0;
 		try {
 			const resp = await postJSON(urls.variant_save, {
 				id: variant.id, product_id: state.product.id,
 				color: { id: variant.color.id },
-				is_default: variant.is_default,
 				sizes: sizes,
 			});
 			if ((variant._sizesRevision || 0) !== sizesRevision) {
 				toast("Збережено попередній стан складу. Нові зміни ще не збережені.");
 				return;
 			}
-			const card = $(`.f5-variant[data-index="${index}"]`);
-			syncVariantSizeControls(card, resp.variant.sizes || []);
-			variant.sizes = resp.variant.sizes || [];
+			variant.sizes = canonicalizeInventoryRows(resp.variant.sizes || []);
+			syncInventorySurfaces(index, "server");
 			variant._sizesDirty = false;
 			variant._dirty = Boolean(variant._contentDirty);
+			const card = $(`.f5-variant[data-index="${index}"]`);
 			if (card) {
 				card.dataset.sizesDirty = "false";
 				card.dataset.dirty = variant._dirty ? "true" : "false";

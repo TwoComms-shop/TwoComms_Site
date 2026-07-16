@@ -54,8 +54,8 @@ class Fable5EditorAccessTests(TestCase):
             reverse("fable5_product_edit", args=[self.product.pk])
         ).content.decode()
 
-        self.assertIn("fable5/editor-inventory.js?v=20260716-inventory-v1", content)
-        self.assertIn("fable5/editor.js?v=20260716-dirty-v4", content)
+        self.assertIn("fable5/editor-inventory.js?v=20260716-inventory-v2", content)
+        self.assertIn("fable5/editor.js?v=20260716-dirty-v5", content)
 
     def test_staff_can_create_product_with_unified_save_endpoint(self):
         self.client.force_login(self.staff)
@@ -208,7 +208,10 @@ class Fable5EditorAccessTests(TestCase):
 
         self.assertIn('card.dataset.sizesDirty === "true"', javascript)
         self.assertIn("variant._sizesDirty", javascript)
-        self.assertIn("if (includeSizes) data.sizes = sizes", javascript)
+        self.assertIn(
+            "if (includeSizes) data.sizes = snapshotInventoryDraft(variant)",
+            javascript,
+        )
         self.assertIn('card.dataset.sizesDirty = "true"', javascript)
         self.assertIn("variant._sizesDirty = true", javascript)
 
@@ -244,10 +247,10 @@ class Fable5EditorAccessTests(TestCase):
         end = javascript.index("/* ---------------- фіди", start)
         stock_save = javascript[start:end]
 
-        self.assertIn("variant.sizes = resp.variant.sizes || []", stock_save)
-        self.assertIn("is_default: variant.is_default", stock_save)
+        self.assertIn("const sizes = snapshotInventoryDraft(variant)", stock_save)
+        self.assertNotIn("is_default: variant.is_default", stock_save)
         self.assertIn(
-            "syncVariantSizeControls(card, resp.variant.sizes || [])",
+            'syncInventorySurfaces(index, "server")',
             stock_save,
         )
         self.assertIn("variant._sizesDirty = false", stock_save)
@@ -256,7 +259,7 @@ class Fable5EditorAccessTests(TestCase):
         self.assertNotIn("state.variants[index] = resp.variant", stock_save)
         self.assertNotIn("renderVariants()", stock_save)
 
-    def test_variant_size_surface_sync_is_targeted_and_preserves_newer_edits(self):
+    def test_variant_size_surfaces_share_one_revisioned_inventory_draft(self):
         javascript = (
             Path(__file__).resolve().parents[1]
             / "static"
@@ -264,7 +267,10 @@ class Fable5EditorAccessTests(TestCase):
             / "editor.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("function syncVariantSizeControls(card, sizes)", javascript)
+        self.assertIn("function syncInventorySurface(surface, sizes)", javascript)
+        self.assertIn("function updateInventoryDraftFromSurface(", javascript)
+        self.assertIn("replaceInventoryDraft(variant, collectInventoryRows(surface))", javascript)
+        self.assertIn('syncInventorySurfaces(index, source)', javascript)
         self.assertIn("cell.classList.toggle(\"is-off\", !enabled)", javascript)
         self.assertIn("stock.value = rule.stock == null ? \"\"", javascript)
         self.assertIn(
@@ -282,8 +288,10 @@ class Fable5EditorAccessTests(TestCase):
 
         self.assertIn("window.f5Inventory.resolveInventoryRule", javascript)
         self.assertIn("window.f5Inventory.canonicalizeInventoryRows", javascript)
+        self.assertIn("window.f5Inventory.replaceInventoryDraft", javascript)
+        self.assertIn("window.f5Inventory.snapshotInventoryDraft", javascript)
 
-    def test_global_save_includes_dirty_stock_and_feed_drafts(self):
+    def test_global_save_uses_shared_inventory_snapshot_without_stock_overlay(self):
         javascript = (
             Path(__file__).resolve().parents[1]
             / "static"
@@ -291,8 +299,8 @@ class Fable5EditorAccessTests(TestCase):
             / "editor.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("collectStockSizes", javascript)
-        self.assertIn("#f-stock [data-variant-index][data-dirty=", javascript)
+        self.assertIn("data.sizes = snapshotInventoryDraft(variant)", javascript)
+        self.assertNotIn("draft.data.sizes = collectStockSizes(block)", javascript)
         self.assertIn("pendingFeedDrafts", javascript)
         self.assertIn("for (const draft of pendingFeedDrafts)", javascript)
 
