@@ -480,6 +480,8 @@ class TelegramBot:
                 return False
 
             session.mark_bot_opened()
+            session.chat_id = int(user_id)
+            session.save(update_fields=["chat_id"])
 
             instruction = (
                 "👋 <b>Підтвердження Telegram для TwoComms</b>\n\n"
@@ -533,18 +535,33 @@ class TelegramBot:
             first_name = (contact.get("first_name") or "").strip()
             last_name = (contact.get("last_name") or "").strip()
             shared_user_id = contact.get("user_id")
+            if shared_user_id and int(shared_user_id) != int(user_id):
+                self.send_message(
+                    user_id,
+                    "⚠️ <b>Надішліть власний контакт.</b>\n\n"
+                    "Для безпечної привʼязки натисніть кнопку «Поділитися номером»."
+                )
+                return False
 
             now = _tz.now()
             session = (
                 TelegramVerificationSession.objects
-                .filter(status=TelegramVerificationSession.STATUS_BOT_OPENED, expires_at__gt=now)
+                .filter(
+                    status=TelegramVerificationSession.STATUS_BOT_OPENED,
+                    expires_at__gt=now,
+                    chat_id=int(user_id),
+                )
                 .order_by("-created_at")
                 .first()
             )
             if not session:
                 session = (
                     TelegramVerificationSession.objects
-                    .filter(status=TelegramVerificationSession.STATUS_PENDING, expires_at__gt=now)
+                    .filter(
+                        status=TelegramVerificationSession.STATUS_PENDING,
+                        expires_at__gt=now,
+                        chat_id=int(user_id),
+                    )
                     .order_by("-created_at")
                     .first()
                 )
@@ -600,6 +617,10 @@ class TelegramBot:
             elif purpose == "login":
                 # login — нічого тут не робимо. Сайт сам викличе complete.
                 pass
+            elif purpose == "restock":
+                from storefront.services.restock import activate_telegram_subscription
+
+                activate_telegram_subscription(session)
         except Exception as exc:
             print(f"❌ post-verify purpose action failed: {exc}")
             import traceback

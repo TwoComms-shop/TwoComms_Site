@@ -609,6 +609,7 @@ def monobank_create_invoice(request):
                         variant,
                         fit_code=item.get('fit_option_code') or item.get('fit') or '',
                         size=item.get('size') or '',
+                        option_values=item.get('option_values') or {},
                     )
                 ):
                     return JsonResponse({
@@ -626,6 +627,7 @@ def monobank_create_invoice(request):
                     p,
                     _line_variant(it, p),
                     fit_code=it.get('fit_option_code') or it.get('fit') or '',
+                    option_values=it.get('option_values') or {},
                 )
                 line = unit * it['qty']
                 total_sum += line
@@ -678,6 +680,7 @@ def monobank_create_invoice(request):
                     p,
                     color_variant,
                     fit_code=it.get('fit_option_code') or it.get('fit') or '',
+                    option_values=it.get('option_values') or {},
                 )
                 line = unit * it['qty']
 
@@ -689,6 +692,8 @@ def monobank_create_invoice(request):
                     size=it.get('size', ''),
                     fit_option_code=(it.get('fit_option_code') or it.get('fit') or ''),
                     fit_option_label=(it.get('fit_option_label') or it.get('fit_label') or ''),
+                    option_values=it.get('option_values') or {},
+                    option_labels=it.get('option_labels') or {},
                     qty=it['qty'],
                     unit_price=unit,
                     line_total=line

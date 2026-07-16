@@ -619,6 +619,8 @@ class TelegramNotifier:
                 full_block += f"│        └ Размер: {item.size}\n"
             if item.fit_label:
                 full_block += f"│        └ Посадка: {item.fit_label}\n"
+            for option_label in getattr(item, "generic_option_labels", []) or []:
+                full_block += f"│        └ {option_label}\n"
             if item.qty:
                 full_block += f"│        └ Количество: {item.qty}\n"
             if item.color_variant:
@@ -1324,6 +1326,8 @@ class TelegramNotifier:
                 full_block += f"│        └ Розмір: {item.size}\n"
             if item.fit_label:
                 full_block += f"│        └ Посадка: {item.fit_label}\n"
+            for option_label in getattr(item, "generic_option_labels", []) or []:
+                full_block += f"│        └ {option_label}\n"
             if item.quantity:
                 full_block += f"│        └ Кількість: {item.quantity}\n"
             if item.color_variant:

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>{% if product %}Редагування: {{ product.title }}{% else %}Новий товар{% endif %} · Fable 5</title>
-<link rel="stylesheet" href="{% static 'fable5/editor.css' %}?v=20260715-2">
+<link rel="stylesheet" href="{% static 'fable5/editor.css' %}?v=20260716-responsive-v1">
 <link rel="stylesheet" href="{% static 'fable5/thermo-dot.css' %}">
 </head>
 <body>
@@ -91,6 +91,11 @@
           <label class="f5-field"><span>Спільне YouTube-відео</span><input id="f-video" class="f5-input" placeholder="Порожньо — без відео; колір може мати власне"></label>
         </section>
       </div>
+      <section class="f5-card f5-card--wide">
+        <div class="f5-card-head"><div><h2 class="f5-card__title">Принти зі storage</h2><p>Оберіть один або кілька принтів. Зв'язок одразу буде видимий і в редакторі принта на storage.</p></div><span class="f5-source-badge" id="f-print-count">0 вибрано</span></div>
+        <div class="f5-print-toolbar"><label class="f5-field"><span>Пошук принта</span><input id="f-print-search" class="f5-input" type="search" placeholder="Назва або категорія" autocomplete="off"></label></div>
+        <div id="f-product-prints" class="f5-print-grid"></div>
+      </section>
     </section>
 
     <section class="f5-panel{% if product %} is-active{% endif %}" data-panel="colors" id="f5-panel-colors" role="tabpanel">
@@ -123,6 +128,7 @@
 
     <section class="f5-panel" data-panel="fits" id="f5-panel-fits" role="tabpanel">
       <header class="f5-section-head"><div><span class="f5-section-kicker">Спільні правила</span><h1>Посадки й розміри</h1><p>Налаштуйте defaults товару. Відмінності конкретного кольору змінюються в його workspace.</p></div></header>
+      <section class="f5-card f5-card--wide"><div class="f5-card-head"><div><h2 class="f5-card__title">Опції та націнки</h2><p>Посадка, утеплення та майбутні параметри беруться з типу одягу. Недоступні варіанти залишаються видимими покупцю.</p></div><span class="f5-source-badge">Товар → колір × опція</span></div><div id="f-option-profiles"></div></section>
       <section class="f5-card f5-card--wide"><div class="f5-card-head"><div><h2 class="f5-card__title">Посадки моделі</h2><p>Вимкнена посадка автоматично стає недоступною для вибору; причина пояснює це покупцю.</p></div><label class="f5-check f5-check--tile"><input type="checkbox" id="f-fit-selector"><span><strong>Перемикач на PDP</strong><small>Показувати, коли доступно кілька посадок</small></span></label></div><div id="f-fits"></div></section>
       <section class="f5-card f5-card--wide"><div class="f5-card-head"><div><h2 class="f5-card__title">Доступність за кольорами</h2><p>Тактильні чипи: яскравий — доступний, сірий із рискою — вимкнений. Порожній залишок означає необмежений облік.</p></div></div><div id="f-stock"></div></section>
     </section>
@@ -143,6 +149,7 @@
 <div class="f5-toast" id="f5-toast" role="status" aria-live="polite" hidden></div>
 
 {{ bootstrap|json_script:"f5-bootstrap" }}
-<script src="{% static 'fable5/editor.js' %}?v=20260715-2"></script>
+<script src="{% static 'fable5/editor-inventory.js' %}?v=20260716-inventory-v3"></script>
+<script src="{% static 'fable5/editor.js' %}?v=20260716-dirty-v7"></script>
 </body>
 </html>

@@ -109,6 +109,11 @@ urlpatterns = [
         views.category_color_landing,
         name='catalog_by_cat_color',
     ),
+    path(
+        'product/restock/subscribe/',
+        _module_view('storefront.views.restock', 'restock_subscribe'),
+        name='restock_subscribe',
+    ),
     path('product/<slug:slug>/', views.product_detail, name='product'),
     path('product/<int:product_id>/images/', views.get_product_images, name='get_product_images'),
     path('product/<int:product_id>/variants/', views.get_product_variants, name='get_product_variants'),

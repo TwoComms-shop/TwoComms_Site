@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ product.title }}</title>
+</head>
+<body style="margin:0;background:#f5f5f3;color:#171717;font-family:Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f5f3;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #deded9;">
+          <tr>
+            <td style="padding:32px;">
+              <p style="margin:0 0 10px;color:#666;font-size:13px;text-transform:uppercase;">TwoComms</p>
+              <h1 style="margin:0 0 18px;font-size:26px;line-height:1.25;">{{ product.title }} знову в наявності</h1>
+              <p style="margin:0 0 8px;"><strong>Розмір:</strong> {{ subscription.size }}</p>
+              <p style="margin:0 0 24px;"><strong>Опції:</strong> {{ option_summary }}</p>
+              <a href="{{ product_url }}" style="display:inline-block;background:#171717;color:#fff;text-decoration:none;padding:13px 20px;">Переглянути товар</a>
+              <p style="margin:28px 0 0;color:#666;font-size:12px;line-height:1.5;">Ви отримали це повідомлення, тому що просили сповістити про наявність.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

@@ -8,8 +8,13 @@ Product views - Детальная информация о товарах.
 - Отзывов (в будущем)
 """
 
+import json
+import logging
 import re
+from itertools import product as option_product
 
+from django.core.exceptions import ValidationError
+from django.db import DatabaseError
 from django.shortcuts import render, get_object_or_404
 from django.http import Http404, HttpResponsePermanentRedirect, JsonResponse
 from django.urls import reverse
@@ -27,6 +32,16 @@ from ..services.size_guides import resolve_product_size_context
 from ..services.variant_meta import VariantMetaInputs, build_variant_meta
 from ..recommendations import ProductRecommendationEngine
 from ..utm_tracking import record_product_view
+
+
+logger = logging.getLogger(__name__)
+MAX_PRODUCT_OPTION_COMBINATIONS = 128
+CONFIGURATOR_EXPECTED_EXCEPTIONS = (
+    ValidationError,
+    DatabaseError,
+    TypeError,
+    ValueError,
+)
 
 
 def _resolve_og_availability_flag(product) -> bool:
@@ -70,21 +85,38 @@ def _resolve_fit_options(product):
     # Per-product opt-out: admins can hide the fit selector entirely.
     if not getattr(product, 'fit_selector_enabled', True):
         return []
-    if not _is_tshirt_product(product):
-        return []
+
+    is_tshirt = _is_tshirt_product(product)
+    if not is_tshirt:
+        # Generic Fable5 garment flows explicitly opt a category into the
+        # configurator. ProductFitOption rows then extend that flow with the
+        # fit axis, including for garments such as hoodies. Legacy rows on
+        # unrelated categories remain hidden until an active flow is linked.
+        try:
+            from fable5.models import GarmentFlow
+
+            has_configurable_flow = GarmentFlow.objects.filter(
+                categories__id=getattr(product, 'category_id', None),
+                is_active=True,
+            ).exists()
+        except Exception:
+            has_configurable_flow = False
+        if not has_configurable_flow:
+            return []
 
     # Phase 17 — heal legacy tshirts created before the fit-toggle UI:
     # if no fit_options rows exist yet, lazily create classic+oversize
     # so the storefront selector stops being silently empty.
-    try:
-        from ..forms import ensure_default_fit_options_for_tshirt
-        ensure_default_fit_options_for_tshirt(product)
-        # Healing may have just created rows — drop the per-request memo
-        # so get_active_fit_options re-reads them.
-        if getattr(product, '_active_fit_options_cache', None) == []:
-            del product._active_fit_options_cache
-    except Exception:
-        pass
+    if is_tshirt:
+        try:
+            from ..forms import ensure_default_fit_options_for_tshirt
+            ensure_default_fit_options_for_tshirt(product)
+            # Healing may have just created rows — drop the per-request memo
+            # so get_active_fit_options re-reads them.
+            if getattr(product, '_active_fit_options_cache', None) == []:
+                del product._active_fit_options_cache
+        except Exception:
+            pass
 
     options = get_active_fit_options(product)
     if not options:
@@ -478,7 +510,6 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
 
     # Генерируем offer_id mapping для всех комбинаций (цвет × размер)
     # Формат: { "variant_id:size": "offer_id" } или { "default:size": "offer_id" }
-    import json
     offer_id_map = {}
     default_offer_id = None
 
@@ -592,17 +623,8 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
     selected_variant_price = selected_variant_merchandising.get('final_price') or product.final_price
     selected_variant_original_price = product.price
 
-    # Do not render a fit that cannot be purchased for any visible colour.
-    # When several colours differ, JS keeps the union in the DOM and toggles
-    # each option for the currently selected colour without a page reload.
-    if fit_options and color_variants:
-        fit_options = [
-            option for option in fit_options
-            if any(
-                variant.get('fit_rules', {}).get(option.code, {}).get('is_enabled', True)
-                for variant in color_variants
-            )
-        ]
+    # Keep every active product-level fit visible. Colour-specific rules mark
+    # choices as unavailable instead of removing them and shifting the layout.
     # Phase 7.2 — path fit wins over query fit; fallback chain is
     # path → ``?fit=`` query → default option.
     requested_fit_code = path_fit_code or preselected_fit_from_query
@@ -659,6 +681,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                         'has_price_adjustment': resolved['has_price_adjustment'],
                         'display_name': resolved['display_name'],
                         'marketing_html': resolved['marketing_html'],
+                        'material_story': resolved['material_story'],
                         'seo_title': resolved['seo_title'],
                         'seo_description': resolved['seo_description'],
                         'seo_keywords': resolved['seo_keywords'],
@@ -676,6 +699,213 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
 
     selected_variant_merchandising = color_variants[0] if color_variants else {}
     selected_variant_price = selected_variant_merchandising.get('final_price') or product.final_price
+
+    # Generic Fable5 configurator snapshot. Every public surface and the cart
+    # resolve the same normalized option dictionary, price, and availability.
+    product_option_payload = {"axes": [], "selected_values": {}}
+    product_size_options = []
+    configurator_failed = False
+    failed_option_context = None
+    variants_by_id = {variant.id: variant for variant in grid_variants}
+    if color_variants and grid_variants:
+        try:
+            from fable5.content_resolution import build_combination_key
+            from fable5.services import (
+                product_option_context,
+                variant_allows_options,
+                variant_allows_purchase,
+                variant_allows_size,
+                variant_public_context,
+            )
+
+            language = getattr(request, 'LANGUAGE_CODE', 'uk')[:2]
+            for entry in color_variants:
+                db_variant = variants_by_id.get(entry.get('id'))
+                if db_variant is None:
+                    continue
+                seed_values = {"fit": preselected_fit_code} if preselected_fit_code else {}
+                option_context = product_option_context(
+                    product,
+                    variant=db_variant,
+                    option_values=seed_values,
+                    lang=language,
+                )
+                failed_option_context = option_context
+                axes = option_context.get("axes") or []
+                choice_groups = [axis.get("choices") or [] for axis in axes]
+                configurations = {}
+                if choice_groups and all(choice_groups):
+                    combination_count = 1
+                    for choices in choice_groups:
+                        combination_count *= len(choices)
+                        if combination_count > MAX_PRODUCT_OPTION_COMBINATIONS:
+                            raise ValidationError(
+                                "Product option matrix exceeds the public PDP limit",
+                                code="combination_limit",
+                            )
+                    for choices in option_product(*choice_groups):
+                        values = {
+                            axis["code"]: choice["code"]
+                            for axis, choice in zip(axes, choices)
+                        }
+                        key = build_combination_key(values)
+                        is_available = variant_allows_options(db_variant, values)
+                        if not is_available:
+                            configurations[key] = {
+                                "option_values": values,
+                                "is_available": False,
+                                "size_availability": {
+                                    str(size): False for size in available_sizes
+                                },
+                            }
+                            continue
+                        resolved = variant_public_context(
+                            db_variant,
+                            option_values=values,
+                            lang=language,
+                        )
+                        configurations[key] = {
+                            "option_values": values,
+                            "is_available": True,
+                            "final_price": resolved["final_price"],
+                            "price_difference": resolved["price_difference"],
+                            "price_reason": resolved["price_delta_reason"],
+                            "has_price_adjustment": resolved["has_price_adjustment"],
+                            "display_name": resolved["display_name"],
+                            "marketing_html": resolved["marketing_html"],
+                            "material_story": resolved["material_story"],
+                            "is_thermo": resolved["is_thermo"],
+                            "thermo_description": resolved["thermo_description"],
+                            "size_availability": {
+                                str(size): variant_allows_purchase(
+                                    product,
+                                    db_variant,
+                                    fit_code=values.get("fit", ""),
+                                    size=str(size),
+                                    option_values=values,
+                                )
+                                for size in available_sizes
+                            },
+                        }
+                entry["option_context"] = option_context
+                entry["configurations"] = configurations
+
+            product_option_payload = color_variants[0].get("option_context") or product_option_payload
+            selected_values = product_option_payload.get("selected_values") or {}
+            selected_key = build_combination_key(selected_values)
+            selected_configuration = (
+                color_variants[0].get("configurations", {}).get(selected_key) or {}
+            )
+            if selected_configuration.get("is_available") is False:
+                available_configurations = [
+                    configuration
+                    for configuration in color_variants[0].get("configurations", {}).values()
+                    if configuration.get("is_available") is not False
+                ]
+                if available_configurations:
+                    selected_configuration = max(
+                        available_configurations,
+                        key=lambda configuration: sum(
+                            configuration.get("option_values", {}).get(axis.get("code"))
+                            == selected_values.get(axis.get("code"))
+                            for axis in product_option_payload.get("axes", [])
+                        ),
+                    )
+                    selected_values = dict(selected_configuration["option_values"])
+                    product_option_payload["selected_values"] = selected_values
+                    for axis in product_option_payload.get("axes", []):
+                        axis["selected_value"] = selected_values.get(axis.get("code"), "")
+            if selected_configuration.get("is_available") is not False and selected_configuration:
+                selected_variant_merchandising.update(selected_configuration)
+                selected_variant_merchandising["price_reason"] = selected_configuration.get("price_reason", "")
+                selected_variant_price = selected_configuration["final_price"]
+            size_availability = selected_configuration.get("size_availability", {})
+            default_size_availability = not bool(selected_configuration)
+            product_size_options = [
+                {
+                    "value": size,
+                    "label": size_context["display_labels"].get(size, size),
+                    "is_available": bool(
+                        size_availability.get(str(size), default_size_availability)
+                    ),
+                }
+                for size in available_sizes
+            ]
+        except CONFIGURATOR_EXPECTED_EXCEPTIONS as exc:
+            configurator_failed = True
+            logger.exception(
+                "PDP configurator generation failed for product_id=%s",
+                product.pk,
+            )
+            error_code = (
+                "combination_limit"
+                if getattr(exc, "code", "") == "combination_limit"
+                else "resolver_error"
+            )
+            product_option_payload = failed_option_context or product_option_payload
+            for entry in color_variants:
+                entry.setdefault("option_context", product_option_payload)
+                entry["configurations"] = {}
+                entry["configurator_error"] = error_code
+            active_variant_id = color_variants[0].get("id") if color_variants else None
+            active_variant = variants_by_id.get(active_variant_id)
+            product_size_options = []
+            for size in available_sizes:
+                try:
+                    is_available = (
+                        variant_allows_size(active_variant, str(size), preselected_fit_code)
+                        if active_variant is not None
+                        else True
+                    )
+                except CONFIGURATOR_EXPECTED_EXCEPTIONS:
+                    logger.exception(
+                        "Legacy PDP size fallback failed for product_id=%s size=%s",
+                        product.pk,
+                        size,
+                    )
+                    is_available = False
+                product_size_options.append({
+                    "value": size,
+                    "label": size_context["display_labels"].get(size, size),
+                    "is_available": bool(is_available),
+                })
+
+    if not product_size_options:
+        product_size_options = [
+            {
+                "value": size,
+                "label": size_context["display_labels"].get(size, size),
+                "is_available": True,
+            }
+            for size in available_sizes
+        ]
+
+    all_product_sizes_unavailable = bool(product_size_options) and not any(
+        option["is_available"] for option in product_size_options
+    )
+
+    if not product_option_payload.get("axes") and not configurator_failed:
+        try:
+            from fable5.services import product_option_context
+
+            product_option_payload = product_option_context(
+                product,
+                option_values={"fit": preselected_fit_code} if preselected_fit_code else {},
+                lang=getattr(request, 'LANGUAGE_CODE', 'uk')[:2],
+            )
+        except CONFIGURATOR_EXPECTED_EXCEPTIONS:
+            logger.exception(
+                "PDP option context fallback failed for product_id=%s",
+                product.pk,
+            )
+            product_option_payload = {"axes": [], "selected_values": {}}
+
+    if not fit_options and product_option_payload.get("axes"):
+        product_option_payload["axes"] = [
+            axis for axis in product_option_payload["axes"]
+            if axis.get("code") != "fit"
+        ]
+        product_option_payload["selected_values"].pop("fit", None)
 
     # Select the currently active colour's override for the visible comparison
     # tables; both fit cards remain visible side-by-side.
@@ -824,6 +1054,9 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             'product_video': product_video,
             'product_faq_items': product_faq_items,
             'available_sizes': available_sizes,
+            'product_size_options': product_size_options,
+            'all_product_sizes_unavailable': all_product_sizes_unavailable,
+            'product_option_context': product_option_payload,
             'size_display_labels': size_context["display_labels"],
             'resolved_size_guide': size_context["guide"],
             'resolved_size_profile': size_context["profile"],

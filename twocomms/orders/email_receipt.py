@@ -156,6 +156,7 @@ def build_order_receipt_context(order) -> dict:
         fit = getattr(it, "fit_label", "") or ""
         if fit:
             meta_parts.append(f"Посадка: {fit}")
+        meta_parts.extend(getattr(it, "generic_option_labels", []) or [])
         color = getattr(it, "color_name", None)
         if color:
             meta_parts.append(f"Колір: {color}")

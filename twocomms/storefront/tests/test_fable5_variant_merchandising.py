@@ -347,7 +347,8 @@ class Fable5VariantMerchandisingTests(TestCase):
         self.assertContains(response, 'data-thermo-flame', html=False)
         self.assertContains(response, "1450 грн")
         self.assertContains(response, "Оверсайз")
-        self.assertNotContains(response, 'value="classic"', html=False)
+        self.assertContains(response, 'data-product-option-choice="classic"', html=False)
+        self.assertContains(response, 'aria-disabled="true"', html=False)
         self.assertContains(response, "Термохромна тканина")
 
     def test_cart_uses_variant_price_and_rejects_disabled_fit(self):

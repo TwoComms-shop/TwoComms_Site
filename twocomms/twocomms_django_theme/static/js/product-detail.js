@@ -1,3 +1,180 @@
+function buildOptionKey(values) {
+  return Object.entries(values || {})
+    .map(([key, value]) => [String(key).trim().toLowerCase(), String(value).trim().toLowerCase()])
+    .filter(([key, value]) => key && value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join(';');
+}
+
+function resolveSwipe({ dx = 0, dy = 0 } = {}) {
+  if (Math.abs(dx) < 42 || Math.abs(dx) <= Math.abs(dy) * 1.25) return 0;
+  return dx < 0 ? 1 : -1;
+}
+
+function resolveMaterialStory(variant) {
+  const story = variant && variant.material_story;
+  if (!story || typeof story !== 'object') return null;
+  const normalized = {
+    kind: String(story.kind || '').trim(),
+    title: String(story.title || '').trim(),
+    copy: String(story.copy || '').trim(),
+    icon: String(story.icon || '').trim(),
+  };
+  return normalized.kind && normalized.title && normalized.copy ? normalized : null;
+}
+
+function resolveRestockSummary({
+  baseProductTitle = '',
+  fallbackProductTitle = '',
+  currentVariantName = '',
+} = {}) {
+  return {
+    productTitle: String(baseProductTitle || fallbackProductTitle).trim(),
+    colorName: String(currentVariantName || '').trim() || '—',
+  };
+}
+
+function resolveGalleryStep({ currentIndex = 0, total = 0, direction = 0 } = {}) {
+  const count = Math.max(0, Number(total) || 0);
+  if (!count) return 0;
+  const current = Math.max(0, Math.min(count - 1, Number(currentIndex) || 0));
+  const step = Number(direction) < 0 ? -1 : (Number(direction) > 0 ? 1 : 0);
+  return Math.max(0, Math.min(count - 1, current + step));
+}
+
+function galleryStatus(index, total) {
+  const count = Math.max(1, Number(total) || 1);
+  const position = Math.max(0, Math.min(count - 1, Number(index) || 0));
+  return `Фото ${position + 1} з ${count}`;
+}
+
+function focusTrapIndex({ currentIndex = -1, total = 0, shiftKey = false } = {}) {
+  const count = Math.max(0, Number(total) || 0);
+  if (!count) return -1;
+  const current = Number(currentIndex);
+  if (shiftKey) return current <= 0 ? count - 1 : current - 1;
+  return current < 0 || current >= count - 1 ? 0 : current + 1;
+}
+
+function resolveOptionSelection({
+  axes = [],
+  configurations = {},
+  selectedValues = {},
+  configuratorError = '',
+} = {}) {
+  const normalizedSelection = {};
+  axes.forEach((axis) => {
+    const code = String(axis && axis.code || '').trim();
+    const value = String(selectedValues[code] || '').trim();
+    if (code && value) normalizedSelection[code] = value;
+  });
+  const matrixEntries = Object.values(configurations || {}).filter((configuration) => (
+    configuration && typeof configuration.option_values === 'object'
+  ));
+  if (configuratorError) {
+    const choiceAvailability = {};
+    axes.forEach((axis) => {
+      choiceAvailability[axis.code] = {};
+      (axis.choices || []).forEach((choice) => {
+        choiceAvailability[axis.code][choice.code] = false;
+      });
+    });
+    return {
+      selectedValues: {},
+      choiceAvailability,
+      isAvailable: false,
+      hasMatrix: true,
+    };
+  }
+  if (!matrixEntries.length) {
+    const choiceAvailability = {};
+    axes.forEach((axis) => {
+      choiceAvailability[axis.code] = {};
+      (axis.choices || []).forEach((choice) => {
+        choiceAvailability[axis.code][choice.code] = choice.is_enabled !== false;
+      });
+    });
+    return {
+      selectedValues: normalizedSelection,
+      choiceAvailability,
+      isAvailable: true,
+      hasMatrix: false,
+    };
+  }
+
+  const available = matrixEntries.filter((configuration) => configuration.is_available !== false);
+  let selected = normalizedSelection;
+  const exact = configurations[buildOptionKey(selected)];
+  if ((!exact || exact.is_available === false) && available.length) {
+    let best = available[0];
+    let bestScore = -1;
+    available.forEach((configuration) => {
+      const values = configuration.option_values || {};
+      const score = axes.reduce(
+        (total, axis) => total + (values[axis.code] === selected[axis.code] ? 1 : 0),
+        0
+      );
+      if (score > bestScore) {
+        best = configuration;
+        bestScore = score;
+      }
+    });
+    selected = {};
+    axes.forEach((axis) => {
+      const value = best.option_values && best.option_values[axis.code];
+      if (value) selected[axis.code] = value;
+    });
+  }
+
+  const selectedConfiguration = configurations[buildOptionKey(selected)];
+  const isAvailable = Boolean(
+    selectedConfiguration && selectedConfiguration.is_available !== false
+  );
+  const choiceAvailability = {};
+  axes.forEach((axis) => {
+    choiceAvailability[axis.code] = {};
+    (axis.choices || []).forEach((choice) => {
+      choiceAvailability[axis.code][choice.code] = available.some((configuration) => {
+        const values = configuration.option_values || {};
+        if (values[axis.code] !== choice.code) return false;
+        return axes.every((otherAxis) => (
+          otherAxis.code === axis.code || values[otherAxis.code] === selected[otherAxis.code]
+        ));
+      });
+    });
+  });
+  return {
+    selectedValues: selected,
+    choiceAvailability,
+    isAvailable,
+    hasMatrix: true,
+  };
+}
+
+const MODAL_FOCUSABLE_SELECTOR = [
+  'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+  'a[href]:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+  'input:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+  'select:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+  '[tabindex]:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])',
+].join(', ');
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    buildOptionKey,
+    focusTrapIndex,
+    galleryStatus,
+    MODAL_FOCUSABLE_SELECTOR,
+    resolveGalleryStep,
+    resolveMaterialStory,
+    resolveOptionSelection,
+    resolveRestockSummary,
+    resolveSwipe,
+  };
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function () {
   'use strict';
 
@@ -19,16 +196,21 @@
       offerIdMap: readOfferMap(container),
       mainImage: document.getElementById('mainProductImage'),
       thumbs: document.getElementById('productThumbnails'),
+      galleryDots: root.querySelector('[data-gallery-dots]'),
+      galleryStatus: root.querySelector('[data-gallery-status]'),
       video: readJsonScript('product-video', null),
       videoStage: document.getElementById('productVideoStage'),
       videoActive: false,
       viewContentTracked: false,
+      galleryIndex: 0,
+      suppressZoomUntil: 0,
     };
 
     initGallery(state);
+    initGallerySwipe(state);
     initColorSelection(state);
     initSizeSelection(state);
-    initFitSelection(root);
+    initProductOptionSelection(state);
     initVariantPriceNote(root);
     applyCurrentVariantMerchandising(state);
     initTabs(root);
@@ -40,6 +222,7 @@
     updateCurrentOfferId(state);
     trackViewContent(state);
     initRecentViewed(state);
+    initRestockModal(state);
   }
 
   function readJsonScript(id, fallback) {
@@ -161,6 +344,7 @@
     renderThumbnails(state, images);
     initThumbnailNav(state);
     if (images[0]) {
+      state.galleryIndex = 0;
       setMainImage(state, images[0], { immediate: true });
     }
   }
@@ -175,6 +359,7 @@
       button.className = `tc-thumbnail${index === 0 ? ' active' : ''}`;
       button.setAttribute('aria-label', `Фото товару ${index + 1}`);
       button.dataset.image = image.url;
+      button.dataset.galleryIndex = String(index);
 
       const img = document.createElement('img');
       img.src = image.thumbnailUrl || image.url;
@@ -184,15 +369,51 @@
 
       button.appendChild(img);
       button.addEventListener('click', () => {
-        state.thumbs.querySelectorAll('.tc-thumbnail').forEach((item) => item.classList.remove('active'));
-        button.classList.add('active');
-        hideVideo(state);
-        setMainImage(state, image);
+        showGalleryIndex(state, index);
       });
       state.thumbs.appendChild(button);
     });
 
     appendVideoThumbnail(state);
+    renderGalleryDots(state, images);
+    syncGalleryPosition(state, images);
+  }
+
+  function renderGalleryDots(state, images) {
+    if (!state.galleryDots) return;
+    state.galleryDots.replaceChildren(...images.map((_, index) => {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'tc-gallery-dot';
+      dot.dataset.galleryDot = String(index);
+      dot.setAttribute('aria-label', galleryStatus(index, images.length));
+      dot.addEventListener('click', () => showGalleryIndex(state, index));
+      return dot;
+    }));
+    state.galleryDots.hidden = images.length <= 1;
+  }
+
+  function syncGalleryPosition(state, images) {
+    const currentImages = images || imagesForCurrentSelection(state);
+    const index = Math.max(0, Math.min(currentImages.length - 1, state.galleryIndex));
+    state.galleryIndex = Number.isFinite(index) ? index : 0;
+    if (state.thumbs) {
+      state.thumbs.querySelectorAll('[data-gallery-index]').forEach((thumb) => {
+        const active = Number(thumb.dataset.galleryIndex) === state.galleryIndex;
+        thumb.classList.toggle('active', active);
+        thumb.setAttribute('aria-current', active ? 'true' : 'false');
+      });
+    }
+    if (state.galleryDots) {
+      state.galleryDots.querySelectorAll('[data-gallery-dot]').forEach((dot) => {
+        const active = Number(dot.dataset.galleryDot) === state.galleryIndex;
+        dot.classList.toggle('is-active', active);
+        dot.setAttribute('aria-current', active ? 'true' : 'false');
+      });
+    }
+    if (state.galleryStatus) {
+      state.galleryStatus.textContent = galleryStatus(state.galleryIndex, currentImages.length);
+    }
   }
 
   function appendVideoThumbnail(state) {
@@ -234,6 +455,84 @@
     state.thumbs.appendChild(button);
   }
 
+  function showGalleryIndex(state, index) {
+    const images = imagesForCurrentSelection(state);
+    if (!images.length) return;
+    const nextIndex = Math.max(0, Math.min(images.length - 1, index));
+    if (nextIndex === state.galleryIndex && !state.videoActive) return;
+    state.galleryIndex = nextIndex;
+    hideVideo(state);
+    setMainImage(state, images[nextIndex]);
+    syncGalleryPosition(state, images);
+    if (state.thumbs) {
+      const active = state.thumbs.querySelector(`[data-gallery-index="${nextIndex}"]`);
+      if (active) active.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }
+
+  function initGallerySwipe(state) {
+    const stage = state.root.querySelector('.tc-media-stage');
+    if (!stage || !state.mainImage) return;
+    let pointerId = null;
+    let startX = 0;
+    let startY = 0;
+    let currentX = 0;
+    let currentY = 0;
+    let horizontalIntent = false;
+
+    const reset = () => {
+      const capturedPointer = pointerId;
+      if (
+        capturedPointer != null &&
+        typeof stage.hasPointerCapture === 'function' &&
+        stage.hasPointerCapture(capturedPointer) &&
+        typeof stage.releasePointerCapture === 'function'
+      ) {
+        stage.releasePointerCapture(capturedPointer);
+      }
+      pointerId = null;
+      horizontalIntent = false;
+      stage.style.removeProperty('--tc-gallery-drag-x');
+      stage.classList.remove('is-dragging');
+    };
+    stage.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse' || event.button !== 0 || event.target.closest('button, a, iframe')) return;
+      pointerId = event.pointerId;
+      if (typeof stage.setPointerCapture === 'function') {
+        stage.setPointerCapture(pointerId);
+      }
+      startX = currentX = event.clientX;
+      startY = currentY = event.clientY;
+    }, { passive: true });
+    stage.addEventListener('pointermove', (event) => {
+      if (event.pointerId !== pointerId) return;
+      currentX = event.clientX;
+      currentY = event.clientY;
+      const dx = currentX - startX;
+      const dy = currentY - startY;
+      if (!horizontalIntent && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+        horizontalIntent = true;
+        stage.classList.add('is-dragging');
+      }
+      if (horizontalIntent) {
+        const images = imagesForCurrentSelection(state);
+        const atEdge = (state.galleryIndex === 0 && dx > 0) || (state.galleryIndex === images.length - 1 && dx < 0);
+        stage.style.setProperty('--tc-gallery-drag-x', `${dx * (atEdge ? 0.16 : 0.34)}px`);
+      }
+    }, { passive: true });
+    const finish = (event) => {
+      if (event.pointerId !== pointerId) return;
+      const direction = resolveSwipe({ dx: currentX - startX, dy: currentY - startY });
+      if (direction) {
+        showGalleryIndex(state, state.galleryIndex + direction);
+        state.suppressZoomUntil = Date.now() + 450;
+      }
+      reset();
+    };
+    stage.addEventListener('pointerup', finish, { passive: true });
+    stage.addEventListener('pointercancel', reset, { passive: true });
+  }
+
   function initThumbnailNav(state) {
     const prev = state.root.querySelector('[data-thumb-prev]');
     const next = state.root.querySelector('[data-thumb-next]');
@@ -241,15 +540,18 @@
     prev.dataset.bound = '1';
     next.dataset.bound = '1';
 
-    const scrollByThumb = (direction) => {
-      if (!state.thumbs) return;
-      const firstThumb = state.thumbs.querySelector('.tc-thumbnail');
-      const amount = firstThumb ? firstThumb.getBoundingClientRect().width + 12 : 124;
-      state.thumbs.scrollBy({ left: direction * amount, behavior: prefersReducedMotion ? 'auto' : 'smooth' });
+    const navigate = (direction) => {
+      const images = imagesForCurrentSelection(state);
+      const nextIndex = resolveGalleryStep({
+        currentIndex: state.galleryIndex,
+        total: images.length,
+        direction,
+      });
+      showGalleryIndex(state, nextIndex);
     };
 
-    prev.addEventListener('click', () => scrollByThumb(-1));
-    next.addEventListener('click', () => scrollByThumb(1));
+    prev.addEventListener('click', () => navigate(-1));
+    next.addEventListener('click', () => navigate(1));
   }
 
   function setMainImage(state, image, options) {
@@ -343,6 +645,7 @@
         state.container.dataset.currentVariant = button.getAttribute('data-variant') || 'default';
         applyCurrentVariantMerchandising(state);
         const images = imagesForCurrentSelection(state);
+        state.galleryIndex = 0;
         renderThumbnails(state, images);
         hideVideo(state);
         if (images[0]) setMainImage(state, images[0]);
@@ -366,17 +669,112 @@
     return state.variants.find((variant) => String(variant && variant.id) === id) || null;
   }
 
+  function selectedOptionValues(state) {
+    const values = {};
+    state.root.querySelectorAll('[data-product-option-axis]:checked').forEach((input) => {
+      const axis = String(input.dataset.productOptionAxis || '').trim().toLowerCase();
+      const value = String(input.value || '').trim().toLowerCase();
+      if (axis && value) values[axis] = value;
+    });
+    return values;
+  }
+
+  function applyVariantOptionRules(state, optionContext, configurations, configuratorError) {
+    const axes = (optionContext && optionContext.axes) || [];
+    axes.forEach((axis) => {
+      const choices = axis.choices || [];
+      const inputs = Array.from(state.root.querySelectorAll(`[data-product-option-axis="${axis.code}"]`));
+      inputs.forEach((input) => {
+        const choice = choices.find((item) => String(item.code) === String(input.value));
+        const enabled = Boolean(choice && choice.is_enabled !== false);
+        const card = state.root.querySelector(`label[for="${input.id}"]`);
+        input.disabled = !enabled;
+        if (card) {
+          card.classList.toggle('is-disabled', !enabled);
+          card.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+          if (choice && choice.reason) card.setAttribute('title', choice.reason);
+          else card.removeAttribute('title');
+          const price = card.querySelector('[data-option-price]');
+          if (price && choice) {
+            const delta = Number(choice.price_delta || 0);
+            price.textContent = delta ? `+${formatVariantPrice(delta)} грн` : '';
+            price.hidden = !delta;
+          }
+        }
+      });
+    });
+    const requestedValues = selectedOptionValues(state);
+    axes.forEach((axis) => {
+      if (!requestedValues[axis.code] && axis.selected_value) {
+        requestedValues[axis.code] = axis.selected_value;
+      }
+    });
+    const resolution = resolveOptionSelection({
+      axes,
+      configurations,
+      selectedValues: requestedValues,
+      configuratorError,
+    });
+    axes.forEach((axis) => {
+      const choices = axis.choices || [];
+      state.root.querySelectorAll(`[data-product-option-axis="${axis.code}"]`).forEach((input) => {
+        const choice = choices.find((item) => String(item.code) === String(input.value));
+        const baseEnabled = Boolean(choice && choice.is_enabled !== false);
+        const completionEnabled = resolution.choiceAvailability[axis.code]
+          ? resolution.choiceAvailability[axis.code][input.value] !== false
+          : true;
+        const enabled = baseEnabled && completionEnabled;
+        input.disabled = !enabled;
+        input.checked = enabled && resolution.selectedValues[axis.code] === input.value;
+        const card = state.root.querySelector(`label[for="${input.id}"]`);
+        if (card) {
+          card.classList.toggle('is-disabled', !enabled);
+          card.classList.toggle('active', input.checked);
+          card.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+        }
+      });
+    });
+    const fit = state.root.querySelector('[data-product-option-axis="fit"]:checked');
+    state.container.dataset.currentFit = fit ? fit.value : '';
+    return resolution;
+  }
+
   function applyCurrentVariantMerchandising(state) {
     const baseVariant = currentVariantData(state);
     if (!baseVariant) return;
 
-    // Selecting a colour may disable the previously active fit. Resolve the
-    // fallback fit first, then use that exact colour × fit merchandising row
-    // for title, price and SEO-adjacent buyer copy.
-    applyVariantFitRules(state, baseVariant.fit_rules || {});
-    const activeFit = String(state.container.dataset.currentFit || '').toLowerCase();
+    const configurations = baseVariant.configurations || {};
+    const configuratorError = baseVariant.configurator_error || '';
+    const errorState = state.root.querySelector('[data-configurator-error-state]');
+    if (errorState) errorState.hidden = !configuratorError;
+    const optionResolution = applyVariantOptionRules(
+      state,
+      baseVariant.option_context || {},
+      configurations,
+      configuratorError
+    );
+    const optionValues = selectedOptionValues(state);
+    const configuration = configurations[buildOptionKey(optionValues)] || null;
+    const configurationAvailable = !optionResolution.hasMatrix || Boolean(
+      configuration && configuration.is_available !== false
+    );
+    setConfiguratorPurchaseAvailability(state, configurationAvailable);
+    if (!configurationAvailable) {
+      state.root.querySelectorAll('[data-pdp-current-price], [data-pdp-sticky-price]').forEach((node) => {
+        node.textContent = 'Недоступно';
+      });
+      applyConfigurationSizeAvailability(
+        state,
+        Object.fromEntries(Array.from(state.root.querySelectorAll('input[name="size"]')).map(
+          (input) => [String(input.value || '').toUpperCase(), false]
+        ))
+      );
+      applyVariantSizeGuides(state, baseVariant);
+      return;
+    }
+    const activeFit = optionValues.fit || String(state.container.dataset.currentFit || '').toLowerCase();
     const fitOverrides = baseVariant.merchandising_by_fit || {};
-    const variant = Object.assign({}, baseVariant, fitOverrides[activeFit] || {});
+    const variant = Object.assign({}, baseVariant, fitOverrides[activeFit] || {}, configuration || {});
 
     if (variant.seo_title) document.title = String(variant.seo_title);
     const metaDescription = document.querySelector('meta[name="description"]');
@@ -418,23 +816,83 @@
 
     const story = state.root.querySelector('[data-pdp-variant-story]');
     if (story) {
-      const storyText = String(variant.thermo_description || variant.marketing_html || '').trim();
-      story.classList.toggle('is-hidden', !storyText);
-      story.classList.toggle('is-thermo', Boolean(variant.is_thermo));
+      const materialStory = resolveMaterialStory(variant);
+      story.classList.toggle('is-hidden', !materialStory);
+      story.classList.toggle('is-thermo', Boolean(materialStory && materialStory.kind === 'thermo'));
+      story.dataset.materialStoryKind = materialStory ? materialStory.kind : '';
       const storyTitle = story.querySelector('[data-pdp-variant-story-title]');
       const storyCopy = story.querySelector('[data-pdp-variant-story-text]');
       const storyIcon = story.querySelector('[data-pdp-variant-story-icon]');
-      if (storyTitle) storyTitle.textContent = variant.is_thermo ? 'Термохромна тканина' : 'Особливість кольору';
-      if (storyCopy) storyCopy.textContent = storyText;
-      if (storyIcon) storyIcon.hidden = !variant.is_thermo;
+      if (storyTitle) storyTitle.textContent = materialStory ? materialStory.title : '';
+      if (storyCopy) storyCopy.textContent = materialStory ? materialStory.copy : '';
+      if (storyIcon) {
+        const icon = materialStory ? materialStory.icon : '';
+        storyIcon.dataset.storyIcon = icon;
+        storyIcon.hidden = !materialStory;
+        const icons = {
+          thermo: '<svg class="tc-thermo-flame tc-thermo-flame--story" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.14 2.25c.31 2.96-1.47 4.45-2.9 6.02-1.11 1.21-1.98 2.48-1.23 4.54.72-1.25 1.72-2.07 2.86-2.88-.27 2.09.59 3.21 1.66 4.16.78-1.04 1.18-2.23.81-3.91 2.3 1.66 3.66 3.76 3.66 6.07 0 3.06-2.55 5.5-6 5.5s-6-2.44-6-5.5c0-2.7 1.64-4.63 3.47-6.61 2.08-2.25 4.33-4.68 3.67-7.39Z" fill="currentColor"/></svg>',
+          fleece: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5.5 12 3l5 2.5v13L12 21l-5-2.5v-13Zm5-2.5v18M7 7.5l5 2.5 5-2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+          cotton: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v-7m0 2c-4.8 0-7-2.6-7-6.5 3.8-.4 6.2 1.2 7 4.5m0 2c4.8 0 7-2.6 7-6.5-3.8-.4-6.2 1.2-7 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+          spark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+        };
+        storyIcon.innerHTML = icons[icon] || icons.spark;
+      }
     }
 
-    applyVariantSizeRules(
-      state,
-      baseVariant.size_rules || [],
-      baseVariant.available_sizes_by_fit || {}
-    );
+    if (configuration && configuration.size_availability) {
+      applyConfigurationSizeAvailability(state, configuration.size_availability);
+    } else {
+      applyVariantSizeRules(
+        state,
+        baseVariant.size_rules || [],
+        baseVariant.available_sizes_by_fit || {}
+      );
+    }
     applyVariantSizeGuides(state, baseVariant);
+  }
+
+  function setConfiguratorPurchaseAvailability(state, available) {
+    state.root.querySelectorAll('.tc-add-btn[data-add-to-cart], [data-pdp-sticky-add]').forEach((button) => {
+      if (!available) {
+        button.disabled = true;
+        button.dataset.configuratorDisabled = '1';
+      } else if (button.dataset.configuratorDisabled === '1') {
+        button.disabled = false;
+        delete button.dataset.configuratorDisabled;
+      }
+    });
+  }
+
+  function applyConfigurationSizeAvailability(state, availability) {
+    const enabledInputs = [];
+    state.root.querySelectorAll('input[name="size"]').forEach((input) => {
+      const enabled = availability[String(input.value || '').toUpperCase()] !== false;
+      const choice = input.closest('[data-size-choice]');
+      const label = state.root.querySelector(`label[for="${input.id}"]`);
+      const restock = choice && choice.querySelector('[data-restock-trigger]');
+      input.disabled = !enabled;
+      if (!enabled) input.checked = false;
+      if (choice) choice.classList.toggle('is-unavailable', !enabled);
+      if (label) {
+        label.classList.toggle('is-unavailable', !enabled);
+        label.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+      }
+      if (restock) restock.hidden = enabled;
+      if (enabled) enabledInputs.push(input);
+    });
+    let selected = state.root.querySelector('input[name="size"]:checked:not(:disabled)');
+    if (!selected && enabledInputs.length) {
+      selected = enabledInputs[0];
+      selected.checked = true;
+    }
+    updateSizeEmptyState(state, enabledInputs);
+    updateCurrentOfferId(state);
+  }
+
+  function updateSizeEmptyState(state, enabledInputs) {
+    const emptyState = state.root.querySelector('[data-restock-empty-state]');
+    if (!emptyState) return;
+    emptyState.hidden = enabledInputs.length > 0;
   }
 
   function applyVariantSizeGuides(state, variant) {
@@ -532,14 +990,19 @@
       const enabledByGrid = !hasFitGrid || fitGridSizes.has(size);
       const enabledByRule = !rule || (rule.is_enabled !== false && (rule.stock == null || Number(rule.stock) > 0));
       const enabled = enabledByGrid && enabledByRule;
+      const choice = input.closest('[data-size-choice]');
       const label = state.root.querySelector(`label[for="${input.id}"]`);
+      const restock = choice && choice.querySelector('[data-restock-trigger]');
       input.disabled = !enabled;
+      if (!enabled) input.checked = false;
+      if (choice) choice.classList.toggle('is-unavailable', !enabled);
       if (label) {
         label.classList.toggle('is-unavailable', !enabled);
         label.setAttribute('aria-disabled', enabled ? 'false' : 'true');
         if (rule && rule.note) label.setAttribute('title', rule.note);
         else label.removeAttribute('title');
       }
+      if (restock) restock.hidden = enabled;
       if (enabled) enabledInputs.push(input);
     });
 
@@ -548,6 +1011,7 @@
       selected = enabledInputs[0];
       selected.checked = true;
     }
+    updateSizeEmptyState(state, enabledInputs);
     updateCurrentOfferId(state);
   }
 
@@ -629,36 +1093,23 @@
     return selection.offerId;
   }
 
-  function initFitSelection(root) {
-    const selector = root.querySelector('[data-fit-selector]');
-    if (!selector) return;
-
-    const options = Array.from(selector.querySelectorAll('[data-fit-option]'));
-    const container = document.getElementById('product-detail-container');
-    const checked = selector.querySelector('input[name="fit_option"]:checked');
-    if (checked && container) {
-      container.dataset.currentFit = checked.value || '';
-      const label = selector.querySelector(`label[for="${checked.id}"]`);
-      if (label) label.classList.add('active');
-    }
-    selector.querySelectorAll('input[name="fit_option"]').forEach((input) => {
+  function initProductOptionSelection(state) {
+    const inputs = Array.from(state.root.querySelectorAll('[data-product-option-axis]'));
+    if (!inputs.length) return;
+    inputs.forEach((input) => {
       input.addEventListener('change', () => {
-        options.forEach((option) => option.classList.remove('active'));
-        const label = selector.querySelector(`label[for="${input.id}"]`);
-        if (label) label.classList.add('active');
-        if (container) container.dataset.currentFit = input.value || '';
-
-        // Phase 19h (2026-05-10): fit toggle was JS-only — page kept
-        // serving the previous fit's bottom SEO copy (Phase 16). Now
-        // navigate with ``?fit=<code>`` so the server re-renders with
-        // the correct ``fit_code`` (Phase 7.5 then 301-redirects to
-        // canonical ``/<color>/<size>/<fit>/``).
-        const fitValue = (input.value || '').trim();
-        if (!fitValue) return;
+        applyCurrentVariantMerchandising(state);
+        const values = selectedOptionValues(state);
         const currentUrl = new URL(window.location.href);
-        if (currentUrl.searchParams.get('fit') === fitValue) return;
-        currentUrl.searchParams.set('fit', fitValue);
-        window.location.assign(currentUrl.toString());
+        Object.entries(values).forEach(([axis, value]) => currentUrl.searchParams.set(axis, value));
+        window.history.replaceState({}, '', currentUrl.toString());
+        const offerId = updateCurrentOfferId(state);
+        trackCustomizeProduct(
+          state,
+          state.container.dataset.currentVariant || null,
+          offerId,
+          { option: input.dataset.productOptionAxis }
+        );
       });
     });
   }
@@ -1010,6 +1461,7 @@
       button.addEventListener('click', () => openLightbox(state.mainImage.getAttribute('data-zoom') || state.mainImage.src, state.mainImage.alt));
     });
     state.mainImage.addEventListener('click', () => {
+      if (Date.now() < state.suppressZoomUntil) return;
       openLightbox(state.mainImage.getAttribute('data-zoom') || state.mainImage.currentSrc || state.mainImage.src, state.mainImage.alt);
     });
     state.mainImage.setAttribute('tabindex', '0');
@@ -1288,6 +1740,197 @@
     panel.hidden = false;
   }
 
+  function initRestockModal(state) {
+    const modal = document.querySelector('[data-restock-modal]');
+    const form = modal && modal.querySelector('[data-restock-form]');
+    if (!modal || !form) return;
+    const dialog = modal.querySelector('.tc-restock-dialog');
+    const contactField = modal.querySelector('[data-restock-contact-field]');
+    const contactLabel = modal.querySelector('[data-restock-contact-label]');
+    const contactInput = form.elements.contact;
+    const telegramNote = modal.querySelector('[data-restock-telegram-note]');
+    const status = modal.querySelector('[data-restock-status]');
+    const submit = modal.querySelector('.tc-restock-submit');
+    const sizeSelect = modal.querySelector('[data-restock-size-select]');
+    const closeButton = modal.querySelector('.tc-restock-close');
+    let channel = 'telegram';
+    let size = '';
+    let opener = null;
+
+    const csrf = () => {
+      const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+      return match ? decodeURIComponent(match[1]) : '';
+    };
+    const setChannel = (next) => {
+      channel = next;
+      modal.querySelectorAll('[data-restock-channel]').forEach((button) => {
+        const active = button.dataset.restockChannel === channel;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      const configs = {
+        phone: ['Номер телефону', 'tel', '+380 00 000 00 00', 'tel'],
+        email: ['Email', 'email', 'name@example.com', 'email'],
+        whatsapp: ['Номер WhatsApp', 'tel', '+380 00 000 00 00', 'tel'],
+      };
+      const config = configs[channel];
+      contactField.hidden = !config;
+      telegramNote.hidden = Boolean(config);
+      contactInput.required = Boolean(config);
+      contactInput.value = '';
+      if (config) {
+        contactLabel.textContent = config[0];
+        contactInput.type = config[1];
+        contactInput.placeholder = config[2];
+        contactInput.autocomplete = config[3];
+      }
+      status.textContent = '';
+    };
+    const optionSummary = () => Array.from(state.root.querySelectorAll('[data-product-option-axis]:checked'))
+      .map((input) => {
+        const card = state.root.querySelector(`label[for="${input.id}"]`);
+        const label = card && card.querySelector('strong');
+        return label ? label.textContent.trim() : input.value;
+      }).filter(Boolean).join(' · ');
+    const restockSizes = () => Array.from(state.root.querySelectorAll('input[name="size"]'))
+      .filter((input) => input.disabled)
+      .map((input) => ({
+        value: String(input.value || '').toUpperCase(),
+        label: (state.root.querySelector(`label[for="${input.id}"]`) || {}).textContent || input.value,
+      }))
+      .filter((item) => item.value);
+    const renderSizeOptions = (requestedSize) => {
+      const items = restockSizes();
+      if (requestedSize && !items.some((item) => item.value === requestedSize)) {
+        items.unshift({ value: requestedSize, label: requestedSize });
+      }
+      sizeSelect.replaceChildren(...items.map((item) => {
+        const option = document.createElement('option');
+        option.value = item.value;
+        option.textContent = String(item.label || item.value).trim();
+        return option;
+      }));
+      size = requestedSize || (items[0] && items[0].value) || '';
+      sizeSelect.value = size;
+    };
+    const focusableElements = () => Array.from(
+      dialog.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)
+    ).filter((element) => (
+      element.tabIndex !== -1 &&
+      !element.hidden &&
+      !element.closest('[hidden], [aria-hidden="true"], [inert]')
+    ));
+    const open = (button) => {
+      opener = button;
+      const requestedSize = String(button.dataset.restockSize || '').toUpperCase();
+      renderSizeOptions(requestedSize);
+      const activeColor = currentVariantData(state);
+      const summary = resolveRestockSummary({
+        baseProductTitle: state.container.dataset.productTitleBase,
+        fallbackProductTitle: state.container.dataset.productTitle,
+        currentVariantName: activeColor && activeColor.name,
+      });
+      modal.querySelector('[data-restock-selected-product]').textContent = summary.productTitle;
+      modal.querySelector('[data-restock-selected-color]').textContent = summary.colorName;
+      modal.querySelector('[data-restock-selected-options]').textContent = optionSummary() || '—';
+      status.textContent = '';
+      submit.disabled = false;
+      modal.hidden = false;
+      document.body.classList.add('tc-modal-open');
+      window.requestAnimationFrame(() => {
+        modal.classList.add('is-open');
+        if (closeButton) closeButton.focus({ preventScroll: true });
+        else if (dialog) dialog.focus({ preventScroll: true });
+      });
+    };
+    const close = () => {
+      modal.classList.remove('is-open');
+      document.body.classList.remove('tc-modal-open');
+      window.setTimeout(() => { modal.hidden = true; }, prefersReducedMotion ? 0 : 160);
+      if (opener) opener.focus({ preventScroll: true });
+    };
+
+    state.root.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-restock-trigger]');
+      if (button) open(button);
+    });
+    modal.querySelectorAll('[data-restock-close]').forEach((button) => button.addEventListener('click', close));
+    modal.querySelectorAll('[data-restock-channel]').forEach((button) => {
+      button.addEventListener('click', () => setChannel(button.dataset.restockChannel));
+    });
+    sizeSelect.addEventListener('change', () => {
+      size = String(sizeSelect.value || '').toUpperCase();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (modal.hidden) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = focusableElements();
+      if (!focusable.length) return;
+      event.preventDefault();
+      const targetIndex = focusTrapIndex({
+        currentIndex: focusable.indexOf(document.activeElement),
+        total: focusable.length,
+        shiftKey: event.shiftKey,
+      });
+      focusable[targetIndex].focus();
+    });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      submit.disabled = true;
+      status.textContent = 'Зберігаємо заявку…';
+      const activeColor = state.root.querySelector('#color-picker .color-swatch.active');
+      const payload = {
+        product_id: Number(state.container.dataset.productId),
+        color_variant_id: activeColor ? Number(activeColor.dataset.variant) : null,
+        size,
+        option_values: selectedOptionValues(state),
+        channel,
+        name: String(form.elements.name.value || '').trim(),
+        contact: channel === 'telegram' ? '' : String(contactInput.value || '').trim(),
+        website: String(form.elements.website.value || ''),
+      };
+      try {
+        const response = await fetch(modal.dataset.restockEndpoint, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+          if (result.error === 'SIZE_ALREADY_AVAILABLE') throw new Error('Цей розмір уже доступний. Оновіть сторінку та додайте його в кошик.');
+          throw new Error(result.error || 'Не вдалося зберегти заявку.');
+        }
+        if (channel === 'telegram') {
+          if (!window.TelegramVerify || typeof window.TelegramVerify.start !== 'function') {
+            throw new Error('Telegram-верифікація ще завантажується. Спробуйте ще раз.');
+          }
+          close();
+          window.TelegramVerify.start({
+            purpose: 'restock',
+            restockId: result.subscription_id,
+            onSuccess: () => { form.reset(); setChannel('telegram'); },
+          });
+          return;
+        }
+        status.textContent = result.created
+          ? 'Готово. Ми повідомимо, щойно розмір з\u2019явиться.'
+          : 'Заявка вже активна. Ми не дублювали її.';
+        form.reset();
+      } catch (error) {
+        status.textContent = error.message || 'Сталася помилка. Спробуйте ще раз.';
+        submit.disabled = false;
+      }
+    });
+    setChannel('telegram');
+  }
+
   function escapeHtml(value) {
     return String(value || '')
       .replace(/&/g, '&amp;')
@@ -1460,3 +2103,4 @@
     return `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
   }
 })();
+}

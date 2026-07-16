@@ -253,12 +253,14 @@ class TelegramVerificationSession(models.Model):
     PURPOSE_LOGIN = "login"
     PURPOSE_MANAGEMENT_BIND = "management_bind"
     PURPOSE_DROPSHIPPER_LINK = "dropshipper_link"
+    PURPOSE_RESTOCK = "restock"
     PURPOSE_CHOICES = [
         (PURPOSE_CUSTOM_PRINT, "Контакт у формі кастомного принта"),
         (PURPOSE_PROFILE_LINK, "Привʼязка профілю"),
         (PURPOSE_LOGIN, "Вхід через Telegram"),
         (PURPOSE_MANAGEMENT_BIND, "Привʼязка менеджмент-бота"),
         (PURPOSE_DROPSHIPPER_LINK, "Привʼязка дропшипера"),
+        (PURPOSE_RESTOCK, "Очікування наявності товару"),
     ]
 
     token = models.CharField(

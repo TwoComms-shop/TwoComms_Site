@@ -144,6 +144,7 @@ _ALLOWED_PURPOSES = {
     "login",
     "dropshipper_link",
     "management_bind",
+    "restock",
 }
 
 
@@ -216,6 +217,22 @@ def telegram_verify_start(request):
     bind_code = (payload.get("bind_code") or "").strip()
     if bind_code:
         metadata["bind_code"] = bind_code[:64]
+    if purpose == "restock":
+        try:
+            restock_id = int(payload.get("restock_id"))
+        except (TypeError, ValueError):
+            return JsonResponse({"ok": False, "error": "Невідома заявка."}, status=400)
+        from storefront.models import RestockSubscription
+
+        subscription = RestockSubscription.objects.filter(
+            pk=restock_id,
+            channel=RestockSubscription.Channel.TELEGRAM,
+            status=RestockSubscription.Status.DRAFT,
+            browser_session_key=session_key,
+        ).first()
+        if subscription is None:
+            return JsonResponse({"ok": False, "error": "Невідома заявка."}, status=404)
+        metadata["restock_id"] = subscription.pk
 
     token = secrets.token_urlsafe(24)
     now = timezone.now()

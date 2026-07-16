@@ -22,10 +22,111 @@ from .models import (
     ProductImage,
     PushNotificationCampaign,
     PushNotificationDelivery,
+    RestockSubscription,
     SurveySession,
     UserPromoCode,
     WebPushDeviceSubscription,
 )
+
+
+@admin.register(RestockSubscription)
+class RestockSubscriptionAdmin(admin.ModelAdmin):
+    list_display = (
+        'product', 'size', 'channel', 'status', 'name',
+        'normalized_contact', 'notification_attempts', 'next_attempt_at',
+        'created_at', 'admin_notified_at', 'customer_notified_at',
+    )
+    list_filter = ('channel', 'status', 'created_at')
+    search_fields = (
+        'product__title', 'name', 'contact', 'normalized_contact',
+        'telegram_username', 'size',
+    )
+    readonly_fields = (
+        'fingerprint', 'browser_session_key', 'request_ip_hash', 'user_agent',
+        'created_at', 'updated_at', 'admin_notified_at', 'customer_notified_at',
+        'notification_attempts', 'last_attempt_at', 'delivery_token',
+    )
+    actions = ('retry_notifications', 'close_subscriptions', 'reopen_subscriptions')
+
+    def _action_message(self, request, text, level=messages.SUCCESS):
+        if hasattr(request, '_messages'):
+            self.message_user(request, text, level=level)
+
+    def _eligible_automatic_notifications(self, queryset):
+        from django.db.models import Q
+
+        return queryset.exclude(
+            status__in=(
+                RestockSubscription.Status.DRAFT,
+                RestockSubscription.Status.SENDING,
+            )
+        ).filter(
+            Q(channel=RestockSubscription.Channel.EMAIL)
+            | Q(
+                channel=RestockSubscription.Channel.TELEGRAM,
+                telegram_chat_id__isnull=False,
+            )
+        )
+
+    @admin.action(description='Поставити автоматичне повідомлення в чергу')
+    def retry_notifications(self, request, queryset):
+        from django.utils import timezone
+
+        selected = queryset.count()
+        queued = self._eligible_automatic_notifications(queryset).update(
+            status=RestockSubscription.Status.ACTIVE,
+            next_attempt_at=timezone.now(),
+            delivery_token=None,
+            last_error='',
+            notification_attempts=0,
+        )
+        self._action_message(
+            request,
+            f'Поставлено в чергу: {queued}; пропущено: {selected - queued}.',
+        )
+
+    @admin.action(description='Закрити вибрані заявки')
+    def close_subscriptions(self, request, queryset):
+        closed = queryset.exclude(
+            status=RestockSubscription.Status.SENDING,
+        ).update(
+            status=RestockSubscription.Status.CLOSED,
+            next_attempt_at=None,
+            delivery_token=None,
+        )
+        self._action_message(request, f'Закрито заявок: {closed}.')
+
+    @admin.action(description='Повторно відкрити вибрані заявки')
+    def reopen_subscriptions(self, request, queryset):
+        from django.utils import timezone
+
+        selected = queryset.count()
+        eligible = queryset.exclude(status__in=(
+            RestockSubscription.Status.DRAFT,
+            RestockSubscription.Status.SENDING,
+        ))
+        automatic = self._eligible_automatic_notifications(queryset).update(
+            status=RestockSubscription.Status.ACTIVE,
+            next_attempt_at=timezone.now(),
+            delivery_token=None,
+            last_error='',
+            notification_attempts=0,
+        )
+        manual = eligible.filter(channel__in=(
+            RestockSubscription.Channel.PHONE,
+            RestockSubscription.Channel.WHATSAPP,
+        )).update(
+            status=RestockSubscription.Status.ACTIVE,
+            next_attempt_at=None,
+            delivery_token=None,
+            last_error='',
+            notification_attempts=0,
+        )
+        reopened = automatic + manual
+        self._action_message(
+            request,
+            f'Повторно відкрито: {reopened}; пропущено: {selected - reopened}.',
+        )
 from .services.indexnow import (
     get_category_public_url,
     get_product_public_url,

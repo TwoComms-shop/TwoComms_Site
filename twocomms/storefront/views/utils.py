@@ -217,6 +217,24 @@ def normalize_cart_session(
             if field in item and item[field] is not None:
                 value = str(item[field]).strip()
                 item[field] = value[:100]
+        for field in ('option_values', 'option_labels'):
+            raw_options = item.get(field)
+            if raw_options is None:
+                item[field] = {}
+                continue
+            if not isinstance(raw_options, dict) or len(raw_options) > 12:
+                item[field] = {}
+                changed = True
+                continue
+            normalized_options = {}
+            for option_key, option_value in raw_options.items():
+                key_text = str(option_key or '').strip()[:100]
+                value_text = str(option_value or '').strip()[:100]
+                if key_text and value_text:
+                    normalized_options[key_text] = value_text
+            if normalized_options != raw_options:
+                changed = True
+            item[field] = normalized_options
         normalized_key = str(key)
         if normalized_key in cleaned:
             # Preserve one bounded row when a malformed session has duplicate keys.
@@ -341,6 +359,7 @@ def calculate_cart_total(cart):
                 product,
                 variant,
                 fit_code=fit_code,
+                option_values=item.get('option_values') or {},
             ) * qty
 
     return total

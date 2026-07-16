@@ -214,6 +214,7 @@
         };
         if (currentRequest.next) reqPayload.next = currentRequest.next;
         if (currentRequest.bindCode) reqPayload.bind_code = currentRequest.bindCode;
+        if (currentRequest.restockId) reqPayload.restock_id = currentRequest.restockId;
 
         const { ok, data } = await postJSON(ENDPOINTS.start, reqPayload);
         if (!ok || !data || !data.ok) {
@@ -372,6 +373,7 @@
         purpose,
         next: opts && opts.next ? String(opts.next) : "",
         bindCode: opts && opts.bindCode ? String(opts.bindCode) : "",
+        restockId: opts && opts.restockId ? Number(opts.restockId) : null,
         callbacks: {
           onSuccess: opts && typeof opts.onSuccess === "function" ? opts.onSuccess : null,
           onError: opts && typeof opts.onError === "function" ? opts.onError : null,
@@ -461,6 +463,11 @@
       title: "Прив’язка менеджмент-бота",
       subtitle:
         "Підтвердьте номер у боті TwoComms — далі завершимо привʼязку у боті менеджера.",
+    },
+    restock: {
+      title: "Telegram для сповіщення",
+      subtitle:
+        "Підтвердьте номер у боті TwoComms. Ми напишемо лише тоді, коли вибраний розмір зʼявиться в наявності.",
     },
   };
 

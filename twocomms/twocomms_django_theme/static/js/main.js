@@ -1699,6 +1699,15 @@ document.addEventListener('click', (e) => {
   if (fitInput && fitInput.value) {
     body.append('fit_option', fitInput.value);
   }
+  const optionValues = {};
+  document.querySelectorAll('[data-product-option-axis]:checked').forEach(input => {
+    const axis = String(input.getAttribute('data-product-option-axis') || '').trim().toLowerCase();
+    const value = String(input.value || '').trim().toLowerCase();
+    if (axis && value) optionValues[axis] = value;
+  });
+  if (Object.keys(optionValues).length) {
+    body.append('option_values', JSON.stringify(optionValues));
+  }
 
   // Открываем мини-корзину сразу, чтобы пользователь видел текущее состояние
   try { openMiniCart({ skipRefresh: true }); } catch (_) { }

@@ -1319,6 +1319,92 @@ class ProductFAQ(models.Model):
         return f'{self.product_id}: {self.question}'
 
 
+class RestockSubscription(models.Model):
+    class Channel(models.TextChoices):
+        TELEGRAM = 'telegram', _('Telegram')
+        PHONE = 'phone', _('Телефонний дзвінок')
+        EMAIL = 'email', _('Email')
+        WHATSAPP = 'whatsapp', _('WhatsApp')
+
+    class Status(models.TextChoices):
+        DRAFT = 'draft', _('Очікує підтвердження')
+        ACTIVE = 'active', _('Очікує наявності')
+        SENDING = 'sending', _('Повідомлення надсилається')
+        NOTIFIED = 'notified', _('Клієнта повідомлено')
+        CLOSED = 'closed', _('Закрито')
+        FAILED = 'failed', _('Помилка повідомлення')
+
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name='restock_subscriptions',
+        db_constraint=False,
+    )
+    color_variant = models.ForeignKey(
+        'productcolors.ProductColorVariant',
+        on_delete=models.SET_NULL,
+        related_name='restock_subscriptions',
+        null=True,
+        blank=True,
+        db_constraint=False,
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name='restock_subscriptions',
+        null=True,
+        blank=True,
+    )
+    size = models.CharField(max_length=20)
+    option_values = models.JSONField(blank=True, default=dict)
+    option_labels = models.JSONField(blank=True, default=dict)
+    channel = models.CharField(max_length=16, choices=Channel.choices)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
+    )
+    name = models.CharField(max_length=160, blank=True, default='')
+    contact = models.CharField(max_length=254, blank=True, default='')
+    normalized_contact = models.CharField(max_length=254, blank=True, default='', db_index=True)
+    telegram_user_id = models.BigIntegerField(null=True, blank=True, db_index=True)
+    telegram_chat_id = models.BigIntegerField(null=True, blank=True)
+    telegram_username = models.CharField(max_length=100, blank=True, default='')
+    verified_phone = models.CharField(max_length=32, blank=True, default='')
+    fingerprint = models.CharField(max_length=64, db_index=True)
+    browser_session_key = models.CharField(max_length=64, blank=True, default='')
+    request_ip_hash = models.CharField(max_length=64, blank=True, default='')
+    user_agent = models.CharField(max_length=255, blank=True, default='')
+    admin_notified_at = models.DateTimeField(null=True, blank=True)
+    customer_notified_at = models.DateTimeField(null=True, blank=True)
+    notification_attempts = models.PositiveIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    delivery_token = models.UUIDField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        indexes = [
+            models.Index(
+                fields=('product', 'size', 'status'),
+                name='idx_restock_product_size',
+            ),
+            models.Index(
+                fields=('channel', 'status', '-created_at'),
+                name='idx_restock_channel_state',
+            ),
+        ]
+        verbose_name = _('Очікування наявності')
+        verbose_name_plural = _('Очікування наявності')
+
+    def __str__(self):
+        return f'{self.product_id}:{self.size}:{self.channel}'
+
+
 class PromoCodeGroup(models.Model):
     """Группа промокодов с ограничением 'один на аккаунт'"""
     name = models.CharField(max_length=100, verbose_name=_('Назва групи'))

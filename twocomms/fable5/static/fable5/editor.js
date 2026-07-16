@@ -152,17 +152,31 @@
 	const boot = JSON.parse($("#f5-bootstrap").textContent || "null") || {};
 	const dict = boot.dictionaries || {};
 	const urls = boot.urls || {};
+	const buildDefaultInventoryRows = window.f5Inventory.buildDefaultInventoryRows;
+	const resolveInventoryRule = window.f5Inventory.resolveInventoryRule;
+	const canonicalizeInventoryRows = window.f5Inventory.canonicalizeInventoryRows;
+	const isVariantDraftRevisionCurrent = window.f5Inventory.isVariantDraftRevisionCurrent;
+	const replaceInventoryDraft = window.f5Inventory.replaceInventoryDraft;
+	const snapshotInventoryDraft = window.f5Inventory.snapshotInventoryDraft;
+	const snapshotVariantDraftRevision = window.f5Inventory.snapshotVariantDraftRevision;
 
 	const state = {
 		product: boot.product || null,
-		variants: (boot.product && boot.product.variants) || [],
+		variants: ((boot.product && boot.product.variants) || []).map((variant) => Object.assign(
+			{}, variant, {
+				_dirty: false, _contentDirty: false, _sizesDirty: false,
+				_revision: 0, _sizesRevision: 0,
+			}
+		)),
 		faqs: ((boot.product && boot.product.faqs) || []).map((f) => Object.assign({}, f)),
 		fits: null,
 		files: { main_image: null, home_card_image: null },
 		feedRules: {},
 		feedOnly: [],
 		feeds: (dict.feeds || []).slice(),
+		selectedPrintIds: new Set(((boot.product && boot.product.print_ids) || []).map(String)),
 		dirty: false,
+		revision: 0,
 		slugTouched: !!(boot.product && boot.product.slug),
 		saving: false,
 		selectedVariantIndex: 0,
@@ -183,12 +197,42 @@
 		: (dict.default_sizes || ["S", "M", "L", "XL", "XXL"]));
 
 	function setDirty(value) {
+		if (value) state.revision += 1;
 		state.dirty = value;
 		$("#f5-dirty").hidden = !value;
 		const mobile = $("#f5-mobile-state");
 		if (mobile) mobile.textContent = value ? "Є незбережені зміни" : "Зміни збережено";
 		$$('.f5-rail-save').forEach((dot) => dot.classList.toggle("is-dirty", value));
 		updateReadiness();
+	}
+
+	function markVariantDirty(card, variant, sizesDirty, contentDirty) {
+		if (!variant) return;
+		const marksContent = contentDirty === undefined ? !sizesDirty : contentDirty;
+		variant._dirty = true;
+		variant._revision = (variant._revision || 0) + 1;
+		if (marksContent) variant._contentDirty = true;
+		if (card) card.dataset.dirty = "true";
+		if (sizesDirty) {
+			variant._sizesDirty = true;
+			variant._sizesRevision = (variant._sizesRevision || 0) + 1;
+			if (card) card.dataset.sizesDirty = "true";
+		}
+		setDirty(true);
+	}
+
+	function clearVariantDirty(card, variant, revision) {
+		if (variant) {
+			variant._dirty = false;
+			variant._contentDirty = false;
+			variant._sizesDirty = false;
+			variant._revision = revision === undefined ? (variant._revision || 0) : revision;
+			variant._sizesRevision = variant._sizesRevision || 0;
+		}
+		if (card) {
+			card.dataset.dirty = "false";
+			card.dataset.sizesDirty = "false";
+		}
 	}
 
 	function setSaveVisual(mode) {
@@ -371,6 +415,19 @@
 		});
 	}
 
+	function collectOptionProfiles() {
+		return $$("#f-option-profiles [data-option-profile]").map((row) => ({
+			option_values: JSON.parse(row.dataset.optionValues || "{}"),
+			is_active: $("[data-f=option-active]", row).checked,
+			price_delta: intOrNull($("[data-f=option-price-delta]", row).value) || 0,
+			price_delta_reason: $("[data-f=option-price-reason]", row).value.trim(),
+		}));
+	}
+
+	function collectPrintIds() {
+		return $$("#f-product-prints [data-print-id]:checked").map((input) => parseInt(input.dataset.printId, 10));
+	}
+
 	function collectPayload() {
 		return {
 			id: state.product ? state.product.id : null,
@@ -398,21 +455,26 @@
 			main_image_alt: $("#f-main-alt").value,
 			faqs: collectProductFaqs(),
 			fits: collectFits(),
+			option_profiles: collectOptionProfiles(),
+			print_ids: collectPrintIds(),
 		};
 	}
 
 	async function saveAll(silent) {
 		if (state.saving) return state.product;
+		const saveRevision = state.revision;
+		const mainImageFile = state.files.main_image;
+		const homeCardImageFile = state.files.home_card_image;
 		const payload = collectPayload();
-		const pendingVariantDrafts = $$(".f5-variant").map((card, index) => {
-			const variant = state.variants[index];
-			return variant ? { index, data: collectVariantData(card, variant) } : null;
-		}).filter(Boolean);
-		$$("#f-stock [data-variant-index][data-dirty=\"true\"]").forEach((block) => {
-			const index = parseInt(block.dataset.variantIndex, 10);
-			const draft = pendingVariantDrafts.find((item) => item.index === index);
-			if (draft) draft.data.sizes = collectStockSizes(block);
-		});
+		const pendingVariantDrafts = $$(".f5-variant")
+			.map((card, index) => ({ card, index, variant: state.variants[index] }))
+			.filter(({ card, variant }) => (
+				variant && (!variant.id || variant._dirty || card.dataset.dirty === "true")
+			))
+			.map(({ card, index, variant }) => ({
+				card, index, data: collectVariantData(card, variant),
+				revision: variant._revision || 0,
+			}));
 		const pendingFeedDrafts = $$("#f-feeds .f5-feed[data-dirty=\"true\"]").map((card) => ({
 			card: card,
 			payload: collectFeedPayload(card),
@@ -428,33 +490,63 @@
 		try {
 			const fd = new FormData();
 			fd.append("payload", JSON.stringify(payload));
-			if (state.files.main_image) fd.append("main_image", state.files.main_image);
-			if (state.files.home_card_image) fd.append("home_card_image", state.files.home_card_image);
+			if (mainImageFile) fd.append("main_image", mainImageFile);
+			if (homeCardImageFile) fd.append("home_card_image", homeCardImageFile);
 			const resp = await postForm(urls.product_save, fd);
 			const wasNew = !state.product;
-			const savedVariants = [];
 			for (const draft of pendingVariantDrafts) {
 				draft.data.product_id = resp.product.id;
 				const variantResp = await postJSON(urls.variant_save, draft.data);
 				// Persist the returned ID immediately. If a later variant request fails,
 				// retrying the global save updates this variant instead of duplicating it.
-				state.variants[draft.index] = variantResp.variant;
-				draft.data.id = variantResp.variant.id;
-				if (variantResp.variant.is_default) {
-					savedVariants.forEach((variant) => { variant.is_default = false; });
+				const currentVariant = state.variants[draft.index];
+				const variantUnchanged = Boolean(
+					currentVariant && currentVariant._revision === draft.revision
+				);
+				if (variantUnchanged) {
+					clearVariantDirty(draft.card, variantResp.variant, draft.revision);
+					state.variants[draft.index] = variantResp.variant;
+				} else if (currentVariant) {
+					currentVariant.id = variantResp.variant.id;
+					currentVariant._dirty = true;
+					draft.card.dataset.dirty = "true";
 				}
-				savedVariants.push(variantResp.variant);
+				draft.data.id = variantResp.variant.id;
+				if (variantUnchanged && variantResp.variant.is_default) {
+					state.variants.forEach((variant, index) => {
+						if (index !== draft.index) variant.is_default = false;
+					});
+				}
+				const stockBlock = $(`#f-stock [data-variant-index="${draft.index}"]`);
+				if (stockBlock && variantUnchanged) stockBlock.dataset.dirty = "false";
 			}
 			for (const draft of pendingFeedDrafts) {
 				draft.payload.product_id = resp.product.id;
 				await persistFeedPayload(draft.payload);
-				draft.card.dataset.dirty = "false";
 			}
-			if (pendingVariantDrafts.length) resp.product.variants = savedVariants;
+			const changedDuringSave = state.revision !== saveRevision;
+			if (changedDuringSave) {
+				state.product = Object.assign({}, resp.product, { variants: state.variants });
+				if (state.files.main_image === mainImageFile) state.files.main_image = null;
+				if (state.files.home_card_image === homeCardImageFile) state.files.home_card_image = null;
+				if (resp.created && resp.edit_url) history.replaceState(null, "", resp.edit_url);
+				setDirty(true);
+				setSaveVisual("idle");
+				if (!silent) toast("Попередні зміни збережено. Нові залишилися незбереженими.");
+				return state.product;
+			}
+			pendingFeedDrafts.forEach((draft) => { draft.card.dataset.dirty = "false"; });
+			if (pendingVariantDrafts.length) resp.product.variants = state.variants;
 			state.product = resp.product;
-			state.variants = resp.product.variants || [];
+			state.variants = (resp.product.variants || []).map((variant) => Object.assign(
+				{}, variant, {
+					_dirty: false, _contentDirty: false, _sizesDirty: false,
+					_revision: 0, _sizesRevision: 0,
+				}
+			));
 			state.faqs = (resp.product.faqs || []).map((f) => Object.assign({}, f));
 			state.fits = fitDefaults();
+			state.selectedPrintIds = new Set((resp.product.print_ids || []).map(String));
 			state.files.main_image = null;
 			state.files.home_card_image = null;
 			if (resp.created && resp.edit_url) {
@@ -463,6 +555,8 @@
 			renderHeader();
 			fillForm();
 			renderFits();
+			renderOptionProfiles();
+			renderProductPrints();
 			renderFaqs();
 			renderGalleries();
 			renderVariants();
@@ -629,6 +723,79 @@
 		}
 	});
 
+	/* ---------------- опції товару та принти ---------------- */
+	function activeOptionAxes() {
+		const categoryId = intOrNull($("#f-category").value);
+		if (state.product && Number(state.product.category_id) === categoryId && state.product.option_axes) {
+			return state.product.option_axes;
+		}
+		const flow = (dict.garment_flows || []).find((item) => (item.category_ids || []).map(Number).includes(categoryId));
+		return ((flow && flow.axes) || []).map((axis) => ({
+			code: axis.code,
+			label: axis.label || axis.code,
+			choices: (axis.options || []).map((choice) => ({
+				code: choice.code,
+				label: choice.label || choice.code,
+				description: choice.description || "",
+				is_enabled: !choice.disabled,
+				is_default: !!choice.default,
+				reason: choice.disabled_reason || "",
+				price_delta: 0,
+				price_delta_reason: "",
+				option_values: { [axis.code]: choice.code },
+			})),
+		}));
+	}
+
+	function renderOptionProfiles() {
+		const box = $("#f-option-profiles");
+		const axes = activeOptionAxes();
+		if (!axes.length) {
+			box.innerHTML = '<p class="f5-hint f5-option-empty">Оберіть категорію з налаштованим типом одягу — тут з\u2019являться посадка, утеплення та їхні націнки.</p>';
+			return;
+		}
+		box.innerHTML = axes.map((axis) => `<section class="f5-option-axis" data-option-axis="${esc(axis.code)}">
+			<header class="f5-option-axis__head"><div><strong>${esc(axis.label)}</strong><small>${esc(axis.code)}</small></div><span>${(axis.choices || []).length} варіанти</span></header>
+			<div class="f5-option-table">${(axis.choices || []).map((choice) => {
+				const values = choice.option_values || { [axis.code]: choice.code };
+				const unavailableReason = choice.reason || (choice.is_enabled ? "" : "Тимчасово недоступно");
+				return `<div class="f5-option-row${choice.is_enabled ? "" : " is-disabled"}" data-option-profile data-option-values="${esc(JSON.stringify(values))}">
+					<label class="f5-switch" title="Доступність варіанта"><input type="checkbox" data-f="option-active" ${choice.is_enabled ? "checked" : ""}><i></i></label>
+					<div class="f5-option-row__identity"><strong>${esc(choice.label)}</strong><small>${esc(choice.description || choice.code)}${choice.is_default ? " · за замовчуванням" : ""}</small></div>
+					<label class="f5-field"><span>Націнка, грн</span><input class="f5-input" type="number" data-f="option-price-delta" value="${Number(choice.price_delta || 0)}"></label>
+					<label class="f5-field"><span>Пояснення або причина</span><input class="f5-input" data-f="option-price-reason" value="${esc(choice.price_delta_reason || unavailableReason)}" placeholder="Напр.: додатковий матеріал"></label>
+				</div>`;
+			}).join("")}</div>
+		</section>`).join("");
+	}
+
+	function updatePrintCount() {
+		state.selectedPrintIds = new Set(collectPrintIds().map(String));
+		const count = $("#f-print-count");
+		if (count) count.textContent = `${state.selectedPrintIds.size} вибрано`;
+	}
+
+	function renderProductPrints() {
+		const box = $("#f-product-prints");
+		const prints = dict.prints || [];
+		if (!prints.length) {
+			box.innerHTML = '<p class="f5-hint f5-option-empty">У storage ще немає принтів.</p>';
+			updatePrintCount();
+			return;
+		}
+		box.innerHTML = prints.map((item) => {
+			const selected = state.selectedPrintIds.has(String(item.id));
+			const search = `${item.name || ""} ${item.category || ""}`.toLocaleLowerCase("uk");
+			return `<label class="f5-print-card${selected ? " is-selected" : ""}${item.is_active ? "" : " is-inactive"}" data-print-card data-print-search="${esc(search)}">
+				<input type="checkbox" data-print-id="${item.id}" ${selected ? "checked" : ""}>
+				<span class="f5-print-card__media">${item.image_url ? `<img src="${esc(item.image_url)}" alt="">` : '<span aria-hidden="true">PR</span>'}</span>
+				<span class="f5-print-card__copy"><strong>${esc(item.name)}</strong><small>${esc(item.category || "Без категорії")}</small></span>
+				<span class="f5-print-card__state">${item.is_active ? "Обрати" : "Архів"}</span>
+			</label>`;
+		}).join("");
+		updatePrintCount();
+	}
+
 	/* ---------------- посадки товару ---------------- */
 	function renderFits() {
 		$("#f-fits").innerHTML = state.fits.map((fit) => `
@@ -682,6 +849,27 @@
 		setDirty(true);
 	});
 
+	$("#f-option-profiles").addEventListener("change", (e) => {
+		const row = e.target.closest("[data-option-profile]");
+		if (!row) return;
+		if (e.target.matches("[data-f=option-active]")) row.classList.toggle("is-disabled", !e.target.checked);
+		setDirty(true);
+	});
+
+	$("#f-product-prints").addEventListener("change", (e) => {
+		if (!e.target.matches("[data-print-id]")) return;
+		e.target.closest(".f5-print-card").classList.toggle("is-selected", e.target.checked);
+		updatePrintCount();
+		setDirty(true);
+	});
+
+	$("#f-print-search").addEventListener("input", (e) => {
+		const query = e.target.value.trim().toLocaleLowerCase("uk");
+		$$("#f-product-prints [data-print-card]").forEach((card) => {
+			card.hidden = !!query && !card.dataset.printSearch.includes(query);
+		});
+	});
+
 	/* ---------------- FAQ ---------------- */
 	function faqHtml(faq) {
 		faq = faq || {};
@@ -710,6 +898,10 @@
 
 	/* ---------------- кольори (inline-редагування) ---------------- */
 	function emptyVariant() {
+		const defaultSizes = buildDefaultInventoryRows(
+			state.fits.filter((fit) => fit.is_enabled).map((fit) => fit.code),
+			sizesList()
+		);
 		return {
 			id: null, order: state.variants.length, is_default: state.variants.length === 0,
 			sku: "", price_override: null,
@@ -717,13 +909,15 @@
 			images: [],
 			details: { display_name: "", price_delta: 0, price_delta_reason: "", marketing_html: "", youtube_url: "", seo_title: "", seo_description: "", seo_keywords: "" },
 			fits: state.fits.map((f) => ({ fit_code: f.code, is_enabled: true, reason: "" })),
-			sizes: [], size_grids: [], blank_links: [], combinations: [], faqs: [],
+			sizes: defaultSizes, size_grids: [], blank_links: [], combinations: [], faqs: [],
 			_open: true,
+			_dirty: true, _contentDirty: true, _sizesDirty: true,
+			_revision: 0, _sizesRevision: 1,
 		};
 	}
 
 	function sizeRule(variant, fitCode, size) {
-		return (variant.sizes || []).find((s) => s.fit_code === fitCode && s.size === size);
+		return resolveInventoryRule(variant.sizes || [], fitCode, size);
 	}
 
 	function sizeGridHtml(variant, onlyFit) {
@@ -743,6 +937,63 @@
 			}).join("");
 			return `<div class="f5-size-grid" data-role="fit-sizes" data-fit="${esc(fit.code)}">${cells}</div>`;
 		}).join("");
+	}
+
+	function collectInventoryRows(surface) {
+		return canonicalizeInventoryRows($$(".f5-size-cell", surface).map((cell) => ({
+			fit_code: cell.dataset.fit || "",
+			size: cell.dataset.size,
+			is_enabled: !cell.classList.contains("is-off"),
+			stock: intOrNull($("[data-f=stock]", cell).value),
+			note: "",
+		})));
+	}
+
+	function syncInventorySurface(surface, sizes) {
+		if (!surface) return;
+		$$(".f5-size-cell", surface).forEach((cell) => {
+			const button = $("[data-act=size-toggle]", cell);
+			const stock = $("[data-f=stock]", cell);
+			const rule = resolveInventoryRule(
+				sizes || [], cell.dataset.fit || "", cell.dataset.size || ""
+			) || { is_enabled: true, stock: null };
+			const controlsEnabled = !(button && button.disabled) && !(stock && stock.disabled);
+			const enabled = controlsEnabled && rule.is_enabled !== false;
+			cell.classList.toggle("is-off", !enabled);
+			cell.classList.toggle("f5-stock-zero", rule.stock === 0);
+			cell.classList.toggle(
+				"f5-stock-low",
+				rule.stock != null && rule.stock > 0 && rule.stock <= 3
+			);
+			if (button) button.setAttribute("aria-pressed", enabled ? "true" : "false");
+			if (stock) stock.value = rule.stock == null ? "" : String(rule.stock);
+		});
+	}
+
+	function syncInventorySurfaces(index, source) {
+		const variant = state.variants[index];
+		if (!variant) return;
+		const card = $(`.f5-variant[data-index="${index}"]`);
+		const stockBlock = $(`#f-stock [data-variant-index="${index}"]`);
+		if (source !== "card") syncInventorySurface(card, variant.sizes);
+		if (source !== "stock") syncInventorySurface(stockBlock && $("[data-role=stock-grid]", stockBlock), variant.sizes);
+	}
+
+	function updateInventoryDraftFromSurface(index, surface, source, contentDirty) {
+		const variant = state.variants[index];
+		if (!variant || !surface) return [];
+		const sizes = replaceInventoryDraft(variant, collectInventoryRows(surface));
+		if (contentDirty) variant._contentDirty = true;
+		const card = $(`.f5-variant[data-index="${index}"]`);
+		const stockBlock = $(`#f-stock [data-variant-index="${index}"]`);
+		if (card) {
+			card.dataset.dirty = "true";
+			card.dataset.sizesDirty = "true";
+		}
+		if (stockBlock) stockBlock.dataset.dirty = "true";
+		setDirty(true);
+		syncInventorySurfaces(index, source);
+		return sizes;
 	}
 
 	function colorPickerHtml(variant) {
@@ -900,7 +1151,7 @@
 			? `<div class="f5-dropzone" data-role="variant-drop"><svg class="f5-icon"><use href="#f5-i-upload"/></svg><span><strong>Додайте фото цього кольору</strong><small>Drag & drop · нові кадри додаються в кінець</small></span><button type="button" class="f5-btn f5-btn--ghost" data-act="variant-upload-btn">Обрати файли</button><input type="file" accept="image/*" multiple hidden data-role="variant-upload"></div><div class="f5-gallery" data-role="variant-gallery">${(variant.images || []).map((img, i) => thumbHtml(img, "variant", variant.id, i)).join("") || '<p class="f5-hint">Фото цього кольору ще немає.</p>'}</div>`
 			: '<div class="f5-fallback-preview"><svg class="f5-icon"><use href="#f5-i-warning"/></svg><span>Збережіть колір один раз — після цього відкриється завантаження та оптимізація фото.</span></div>';
 		const variantFaqs = (variant.faqs || []).map(faqHtml).join("");
-		return `<article id="f5-variant-panel-${index}" class="f5-variant${selected ? " is-selected" : ""}" data-index="${index}" role="tabpanel" aria-labelledby="f5-variant-tab-${index}"${selected ? "" : " hidden"}${variant.id ? ` data-id="${variant.id}"` : ""}>
+		return `<article id="f5-variant-panel-${index}" class="f5-variant${selected ? " is-selected" : ""}" data-index="${index}" data-dirty="${variant._dirty ? "true" : "false"}" data-sizes-dirty="${variant._sizesDirty ? "true" : "false"}" role="tabpanel" aria-labelledby="f5-variant-tab-${index}"${selected ? "" : " hidden"}${variant.id ? ` data-id="${variant.id}"` : ""}>
 			<header class="f5-variant__head">
 				${dotHtml(variant.color, 42)}
 				<span class="f5-variant__identity"><span class="f5-variant__name">${esc(d.display_name || variant.color.name || "Новий колір")}</span><span class="f5-variant__meta">${chips}</span></span>
@@ -936,16 +1187,6 @@
 	function collectVariantData(card, variant) {
 		const val = (sel) => { const el = $(sel, card); return el ? el.value : ""; };
 		const checked = (sel) => { const el = $(sel, card); return el ? el.checked : false; };
-		const sizes = [];
-		$$("[data-role=size-grid] .f5-size-cell", card).forEach((cell) => {
-			sizes.push({
-				fit_code: cell.dataset.fit || "",
-				size: cell.dataset.size,
-				is_enabled: !cell.classList.contains("is-off"),
-				stock: intOrNull($("[data-f=stock]", cell).value),
-				note: "",
-			});
-		});
 		const fits = $$(".f5-fit-row[data-fit]", card).map((row) => {
 			const enabled = $("[data-f=fit_enabled]", row).checked;
 			return {
@@ -996,7 +1237,7 @@
 		});
 		const thermoEnabled = checked("[data-f=is_thermo]");
 		const priceDelta = intOrNull(val("[data-f=price_delta]")) || 0;
-		return {
+		const data = {
 			id: variant.id,
 			product_id: state.product.id,
 			color: {
@@ -1022,29 +1263,59 @@
 				seo_keywords: val("[data-f=seo_keywords]"),
 			},
 			fits: fits,
-			sizes: sizes,
 			size_grids: sizeGrids,
 			blank_links: blankLinks,
 			combinations: combinations,
 			faqs: faqs,
 		};
+		const includeSizes = !variant.id || card.dataset.sizesDirty === "true" || variant._sizesDirty;
+		if (includeSizes) data.sizes = snapshotInventoryDraft(variant);
+		return data;
 	}
 	async function saveVariant(card, index) {
 		await ensureProduct();
 		const variant = state.variants[index];
+		const draftRevision = snapshotVariantDraftRevision(variant);
 		const data = collectVariantData(card, variant);
 		if (!data.color.id && !/^#?[0-9a-fA-F]{6}$/.test(data.color.primary_hex)) {
 			toast("Вкажіть коректний HEX кольору (#RRGGBB) або оберіть з бібліотеки", true);
 			return;
 		}
+		const editorRevision = state.revision;
 		try {
 			const resp = await postJSON(urls.variant_save, data);
+			const currentIndex = state.variants.indexOf(variant);
+			const currentVariant = currentIndex >= 0 ? state.variants[currentIndex] : null;
+			const variantUnchanged = currentVariant === variant
+				&& isVariantDraftRevisionCurrent(currentVariant, draftRevision);
+			if (!variantUnchanged) {
+				if (!data.id && currentVariant && !currentVariant.id) {
+					currentVariant.id = resp.variant.id;
+					if (card && card.isConnected) card.dataset.id = String(resp.variant.id);
+				}
+				toast("Збережено попередній стан кольору. Нові зміни ще не збережені.");
+				return;
+			}
 			resp.variant._open = true;
-			state.variants[index] = resp.variant;
+			clearVariantDirty(card, resp.variant);
+			state.variants[currentIndex] = resp.variant;
 			if (resp.variant.is_default) {
-				state.variants.forEach((v, i) => { if (i !== index) v.is_default = false; });
+				state.variants.forEach((v, i) => { if (i !== currentIndex) v.is_default = false; });
 			}
 			refreshColorLibrary(resp.variant.color);
+			const editorChanged = state.revision !== editorRevision;
+			if (editorChanged) {
+				if (card && card.isConnected) card.dataset.id = String(resp.variant.id);
+				const stockBlock = $(`#f-stock [data-variant-index="${currentIndex}"]`);
+				if (stockBlock) {
+					stockBlock.dataset.dirty = "false";
+					const stockSave = $("[data-act=stock-save]", stockBlock);
+					if (stockSave) stockSave.disabled = false;
+				}
+				syncInventorySurfaces(currentIndex, "server");
+				toast("Колір збережено. Інші нові зміни залишилися незбереженими.");
+				return;
+			}
 			renderVariants();
 			toast("Колір збережено");
 		} catch (err) {
@@ -1231,7 +1502,7 @@
 			$$(".f5-color-option", card).forEach((el) => el.classList.toggle("is-selected", el === actEl));
 			updateDotPreview(card, variant);
 			variant.color.id = picked.id;
-			setDirty(true);
+			markVariantDirty(card, variant, false);
 			return;
 		}
 		if (act === "variant-up") { moveVariant(index, -1); return; }
@@ -1245,7 +1516,7 @@
 		}
 		if (act === "variant-faq-add") {
 			$("[data-role=variant-faqs]", card).insertAdjacentHTML("beforeend", faqHtml({ is_active: true }));
-			setDirty(true);
+			markVariantDirty(card, variant, false);
 			return;
 		}
 	});
@@ -1268,15 +1539,25 @@
 
 	$("#f-variants").addEventListener("input", (e) => {
 		const card = e.target.closest(".f5-variant");
-		if (!card || !e.target.dataset.f) return;
-		const variant = state.variants[parseInt(card.dataset.index, 10)];
+		if (!card || (!e.target.dataset.f && !e.target.dataset.c)) return;
+		const index = parseInt(card.dataset.index, 10);
+		const variant = state.variants[index];
+		const sizesDirty = e.target.dataset.f === "stock" || e.target.dataset.f === "fit_enabled";
+		if (sizesDirty) {
+			updateInventoryDraftFromSurface(
+				index, card, "card", e.target.dataset.f === "fit_enabled"
+			);
+		} else {
+			markVariantDirty(card, variant, false);
+		}
 		refreshVariantPreview(card, variant);
 	});
 
 	$("#f-variants").addEventListener("change", (e) => {
 		const card = e.target.closest(".f5-variant");
 		if (!card) return;
-		const variant = state.variants[parseInt(card.dataset.index, 10)];
+		const index = parseInt(card.dataset.index, 10);
+		const variant = state.variants[index];
 		if (e.target.matches("[data-role=variant-upload]")) {
 			if (variant && variant.id) uploadImages("variant", variant.id, e.target.files);
 			e.target.value = "";
@@ -1284,6 +1565,8 @@
 		}
 		const f = e.target.dataset.f;
 		if (!f) return;
+		const inventoryChanged = f === "stock" || f === "fit_enabled";
+		if (!inventoryChanged) markVariantDirty(card, variant, false);
 		if (f === "color_pick") {
 			$("[data-f=color_hex]", card).value = e.target.value;
 			if (variant) variant.color.id = null; // зміна HEX = інший/новий колір
@@ -1328,6 +1611,9 @@
 				syncCombinationAvailability($(`[data-combination-fit="${row.dataset.fit}"]`, card), enabled);
 			}
 		}
+		if (inventoryChanged) {
+			updateInventoryDraftFromSurface(index, card, "card", f === "fit_enabled");
+		}
 		refreshVariantPreview(card, variant);
 	});
 
@@ -1358,14 +1644,27 @@
 			handleThumbAction(btn);
 		} else if (act === "faq-del") {
 			const node = btn.closest(".f5-faq");
-			if (node && confirm("Видалити це питання FAQ?")) { node.remove(); setDirty(true); }
+			if (node && confirm("Видалити це питання FAQ?")) {
+				const card = node.closest(".f5-variant");
+				const variant = card && state.variants[parseInt(card.dataset.index, 10)];
+				node.remove();
+				if (card) markVariantDirty(card, variant, false);
+				else setDirty(true);
+			}
 		} else if (act === "size-toggle") {
 			const cell = btn.closest(".f5-size-cell");
 			cell.classList.toggle("is-off");
 			btn.setAttribute("aria-pressed", cell.classList.contains("is-off") ? "false" : "true");
+			const variantCard = btn.closest(".f5-variant");
+			if (variantCard) {
+				const index = parseInt(variantCard.dataset.index, 10);
+				updateInventoryDraftFromSurface(index, variantCard, "card", false);
+			}
 			const stockBlock = btn.closest("#f-stock [data-variant-index]");
-			if (stockBlock) stockBlock.dataset.dirty = "true";
-			setDirty(true);
+			if (stockBlock) {
+				const index = parseInt(stockBlock.dataset.variantIndex, 10);
+				updateInventoryDraftFromSurface(index, stockBlock, "stock", false);
+			}
 		}
 	});
 
@@ -1405,20 +1704,15 @@
 			</div>`).join("");
 	}
 
-	function collectStockSizes(block) {
-		return $$(".f5-size-cell", block).map((cell) => ({
-			fit_code: cell.dataset.fit || "",
-			size: cell.dataset.size,
-			is_enabled: !cell.classList.contains("is-off"),
-			stock: intOrNull($("[data-f=stock]", cell).value),
-			note: "",
-		}));
+	function handleStockInventoryChange(e) {
+		const block = e.target.closest("[data-variant-index]");
+		if (!block || e.target.dataset.f !== "stock") return;
+		const index = parseInt(block.dataset.variantIndex, 10);
+		updateInventoryDraftFromSurface(index, block, "stock", false);
 	}
 
-	$("#f-stock").addEventListener("input", (e) => {
-		const block = e.target.closest("[data-variant-index]");
-		if (block) block.dataset.dirty = "true";
-	});
+	$("#f-stock").addEventListener("input", handleStockInventoryChange);
+	$("#f-stock").addEventListener("change", handleStockInventoryChange);
 
 	$("#f-stock").addEventListener("click", async (e) => {
 		const btn = e.target.closest("[data-act=stock-save]");
@@ -1427,15 +1721,28 @@
 		const index = parseInt(block.dataset.variantIndex, 10);
 		const variant = state.variants[index];
 		if (!variant || !variant.id) return;
-		const sizes = collectStockSizes(block);
+		const sizes = snapshotInventoryDraft(variant);
+		const sizesRevision = variant._sizesRevision || 0;
 		try {
 			const resp = await postJSON(urls.variant_save, {
 				id: variant.id, product_id: state.product.id,
-				color: { id: variant.color.id }, sizes: sizes,
+				color: { id: variant.color.id },
+				sizes: sizes,
 			});
-			resp.variant._open = variant._open;
-			state.variants[index] = resp.variant;
-			renderVariants();
+			if ((variant._sizesRevision || 0) !== sizesRevision) {
+				toast("Збережено попередній стан складу. Нові зміни ще не збережені.");
+				return;
+			}
+			variant.sizes = canonicalizeInventoryRows(resp.variant.sizes || []);
+			syncInventorySurfaces(index, "server");
+			variant._sizesDirty = false;
+			variant._dirty = Boolean(variant._contentDirty);
+			const card = $(`.f5-variant[data-index="${index}"]`);
+			if (card) {
+				card.dataset.sizesDirty = "false";
+				card.dataset.dirty = variant._dirty ? "true" : "false";
+			}
+			block.dataset.dirty = "false";
 			toast("Склад збережено");
 		} catch (err) {
 			toast("Помилка складу: " + err.message, true);
@@ -1743,6 +2050,7 @@
 		updateBaseSeoPreview();
 	});
 	$("#f-slug").addEventListener("input", () => { state.slugTouched = true; updateSlugHint(); });
+	$("#f-category").addEventListener("change", renderOptionProfiles);
 	$("#f-slug-auto").addEventListener("click", () => {
 		state.slugTouched = false;
 		$("#f-slug").value = f5Translit.slugify($("#f-title").value);
@@ -1761,6 +2069,7 @@
 		state.variants.push(emptyVariant());
 		state.selectedVariantIndex = state.variants.length - 1;
 		renderVariants();
+		setDirty(true);
 		const cards = $$(".f5-variant");
 		if (cards.length) cards[cards.length - 1].scrollIntoView({ behavior: "smooth", block: "start" });
 	});
@@ -1788,6 +2097,8 @@
 		renderHeader();
 		fillForm();
 		renderFits();
+		renderOptionProfiles();
+		renderProductPrints();
 		renderFaqs();
 		renderGalleries();
 		renderVariants();

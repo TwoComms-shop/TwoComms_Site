@@ -260,6 +260,7 @@ def create_order(request):
                 variant,
                 fit_code=item.get('fit_option_code') or item.get('fit') or '',
                 size=item.get('size') or '',
+                option_values=item.get('option_values') or {},
             )
         ):
             messages.error(
@@ -337,6 +338,7 @@ def create_order(request):
                     product,
                     variant,
                     fit_code=fit_code,
+                    option_values=item.get('option_values') or {},
                 )
 
                 order_items.append(OrderItem(
@@ -347,6 +349,8 @@ def create_order(request):
                     size=item.get('size', 'S'),
                     fit_option_code=fit_code,
                     fit_option_label=(item.get('fit_option_label') or item.get('fit_label') or ''),
+                    option_values=item.get('option_values') or {},
+                    option_labels=item.get('option_labels') or {},
                     qty=qty,
                     unit_price=price,
                     line_total=price * qty,

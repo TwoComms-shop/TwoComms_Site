@@ -13,7 +13,10 @@ from .models import (
     FeedOnlyImage,
     FeedProductRule,
     FeedProfile,
+    GarmentFlow,
     ProductFitNote,
+    ProductOptionProfile,
+    VariantCombinationProfile,
     VariantDetails,
     VariantFAQ,
     VariantFitRule,
@@ -40,6 +43,57 @@ DEFAULT_THERMO_DESCRIPTION = (
     "виглядає по-різному залежно від температури."
 )
 DEFAULT_THERMO_PRICE_REASON = "Термохромна тканина"
+
+
+def _material_story(*, profile, is_thermo, merchandising, options):
+    """Return only contextual material copy, never canonical product prose."""
+
+    if is_thermo:
+        return {
+            "kind": "thermo",
+            "title": "Термохромна тканина",
+            "copy": (
+                ((profile.description if profile else "") or "").strip()
+                or DEFAULT_THERMO_DESCRIPTION
+            ),
+            "icon": "thermo",
+        }
+
+    marketing_source = str(
+        (merchandising.get("sources") or {}).get("marketing_text") or ""
+    )
+    manual_copy = str(merchandising.get("marketing_text") or "").strip()
+    if manual_copy and not marketing_source.startswith("product:"):
+        return {
+            "kind": "manual",
+            "title": "Особливість матеріалу",
+            "copy": manual_copy,
+            "icon": "spark",
+        }
+
+    lining = str(options.get("lining") or "").lower()
+    if lining in {"fleece", "with_fleece", "flis"}:
+        return {
+            "kind": "fleece",
+            "title": "Флісова основа",
+            "copy": "М'який утеплений внутрішній шар краще зберігає тепло.",
+            "icon": "fleece",
+        }
+
+    material = str(
+        options.get("material")
+        or options.get("fabric")
+        or options.get("base")
+        or ""
+    ).lower()
+    if material in {"cotton", "bavovna", "бавовна"}:
+        return {
+            "kind": "cotton",
+            "title": "Бавовняна основа",
+            "copy": "Дихаюча бавовняна тканина приємна до тіла та підходить на щодень.",
+            "icon": "cotton",
+        }
+    return None
 
 
 def _decimal(value, default="0") -> Decimal:
@@ -95,7 +149,209 @@ def _effective_fit_rules(variant) -> dict:
     return result
 
 
-def variant_public_context(variant, *, fit_code="", lang="uk") -> dict:
+def _garment_flow_for_product(product):
+    category_id = getattr(product, "category_id", None)
+    if not category_id:
+        return None
+    prefetched = getattr(getattr(product, "category", None), "_prefetched_objects_cache", {})
+    cached_flows = prefetched.get("fable5_flows")
+    if cached_flows is not None:
+        return next((flow for flow in cached_flows if flow.is_active), None)
+    return (
+        GarmentFlow.objects.filter(categories__id=category_id, is_active=True)
+        .order_by("id")
+        .first()
+    )
+
+
+def _product_option_profiles(product) -> dict:
+    prefetched = getattr(product, "_prefetched_objects_cache", {}).get(
+        "fable5_option_profiles"
+    )
+    rows = prefetched if prefetched is not None else product.fable5_option_profiles.all()
+    return {row.option_key: row for row in rows}
+
+
+def _variant_combination_profiles(variant) -> dict:
+    prefetched = getattr(variant, "_prefetched_objects_cache", {}).get(
+        "fable5_combinations"
+    )
+    rows = prefetched if prefetched is not None else variant.fable5_combinations.all()
+    return {row.combination_key: row for row in rows}
+
+
+def product_option_context(
+    product,
+    *,
+    variant=None,
+    option_values=None,
+    lang="uk",
+) -> dict:
+    """Build the public, category-driven option axes for one product selection."""
+
+    flow = _garment_flow_for_product(product)
+    selected = normalize_option_values(option_values or {})
+    profiles = _product_option_profiles(product)
+    combinations = _variant_combination_profiles(variant) if variant is not None else {}
+    fit_rules = _effective_fit_rules(variant) if variant is not None else {}
+    axes = []
+    raw_axes = list(getattr(flow, "axes", None) or [])
+    if not any(
+        isinstance(axis, dict) and str(axis.get("code") or "").lower() == "fit"
+        for axis in raw_axes
+    ):
+        fit_options = list(product.fit_options.all().order_by("order", "id"))
+        if fit_options:
+            raw_axes.append({
+                "code": "fit",
+                "label": "Посадка",
+                "options": [
+                    {
+                        "code": option.code,
+                        "label": option.label,
+                        "description": option.description,
+                        "icon": option.icon or "fit",
+                        "default": option.is_default,
+                    }
+                    for option in fit_options
+                ],
+            })
+
+    for raw_axis in raw_axes:
+        if not isinstance(raw_axis, dict):
+            continue
+        axis_code = str(raw_axis.get("code") or "").strip().lower()
+        if not axis_code:
+            continue
+        choices = []
+        for raw_choice in raw_axis.get("options") or []:
+            if not isinstance(raw_choice, dict):
+                continue
+            choice_code = str(raw_choice.get("code") or "").strip().lower()
+            if not choice_code:
+                continue
+            values = {axis_code: choice_code}
+            option_key = build_combination_key(values)
+            profile = profiles.get(option_key)
+            combination = combinations.get(option_key)
+            enabled = not bool(raw_choice.get("disabled"))
+            reason = str(raw_choice.get("disabled_reason") or "").strip()
+            is_default = bool(raw_choice.get("default"))
+
+            if profile is not None:
+                enabled = enabled and bool(profile.is_active)
+                if not enabled and profile.price_delta_reason:
+                    reason = profile.price_delta_reason.strip()
+            if combination is not None:
+                enabled = enabled and bool(combination.is_active)
+                if not enabled and combination.price_delta_reason:
+                    reason = combination.price_delta_reason.strip()
+
+            if axis_code == "fit" and choice_code in fit_rules:
+                fit_rule = fit_rules[choice_code]
+                enabled = enabled and bool(fit_rule["is_enabled"])
+                is_default = is_default or bool(fit_rule["is_default"])
+                if not enabled and fit_rule["reason"]:
+                    reason = fit_rule["reason"]
+
+            merchandising = resolve_merchandising_context(
+                product,
+                variant=variant,
+                option_values=values,
+                lang=lang,
+            )
+            choices.append({
+                "code": choice_code,
+                "label": str(raw_choice.get("label") or choice_code),
+                "description": str(raw_choice.get("description") or ""),
+                "icon": str(raw_choice.get("icon") or axis_code),
+                "is_enabled": enabled,
+                "is_default": is_default,
+                "reason": reason,
+                "price_delta": int(merchandising.get("price_delta") or 0),
+                "price_delta_reason": str(
+                    merchandising.get("price_delta_reason") or ""
+                ),
+                "option_values": values,
+                "option_key": option_key,
+            })
+
+        requested = selected.get(axis_code, "")
+        enabled_codes = {item["code"] for item in choices if item["is_enabled"]}
+        if requested not in enabled_codes:
+            requested = next(
+                (
+                    item["code"]
+                    for item in choices
+                    if item["is_enabled"] and item["is_default"]
+                ),
+                "",
+            )
+        if not requested:
+            requested = next(
+                (item["code"] for item in choices if item["is_enabled"]),
+                "",
+            )
+        axes.append({
+            "code": axis_code,
+            "label": str(raw_axis.get("label") or axis_code),
+            "choices": choices,
+            "selected_value": requested,
+        })
+
+    resolved_values = {
+        axis["code"]: axis["selected_value"]
+        for axis in axes
+        if axis["selected_value"]
+    }
+    return {
+        "flow_code": getattr(flow, "code", "") if flow is not None else "",
+        "flow_name": getattr(flow, "name", "") if flow is not None else "",
+        "axes": axes,
+        "selected_values": resolved_values,
+    }
+
+
+def variant_allows_options(variant, option_values) -> bool:
+    try:
+        normalized = normalize_option_values(option_values or {})
+    except (TypeError, ValueError):
+        return False
+    context = product_option_context(
+        variant.product,
+        variant=variant,
+        option_values=normalized,
+    )
+    known_axes = {axis["code"]: axis for axis in context["axes"]}
+    for axis_code, choice_code in normalized.items():
+        axis = known_axes.get(axis_code)
+        if axis is None:
+            return False
+        choice = next(
+            (item for item in axis["choices"] if item["code"] == choice_code),
+            None,
+        )
+        if choice is None or not choice["is_enabled"]:
+            return False
+
+    combination_key = build_combination_key(normalized)
+    if combination_key:
+        combination = VariantCombinationProfile.objects.filter(
+            variant=variant,
+            combination_key=combination_key,
+        ).only("is_active").first()
+        if combination is not None and not combination.is_active:
+            return False
+    return True
+
+
+def variant_public_context(
+    variant,
+    *,
+    fit_code="",
+    option_values=None,
+    lang="uk",
+) -> dict:
     """Все потрібне для картки товару про конкретний колір:
 
     - is_thermo + опис термохромної тканини
@@ -115,11 +371,13 @@ def variant_public_context(variant, *, fit_code="", lang="uk") -> dict:
     else:
         profile = ColorProfile.objects.filter(color=variant.color).first()
     product = variant.product
-    options = {"fit": fit_code} if fit_code else None
+    options = normalize_option_values(option_values or {})
+    if fit_code and "fit" not in options:
+        options["fit"] = str(fit_code).strip().lower()
     merchandising = resolve_merchandising_context(
         product,
         variant=variant,
-        option_values=options,
+        option_values=options or None,
         lang=lang,
     )
     product_price = _decimal(getattr(product, "final_price", product.price))
@@ -135,9 +393,17 @@ def variant_public_context(variant, *, fit_code="", lang="uk") -> dict:
     if not price_reason and is_thermo and final_price != product_price:
         price_reason = DEFAULT_THERMO_PRICE_REASON
     fit_rules = _effective_fit_rules(variant)
+    material_story = _material_story(
+        profile=profile,
+        is_thermo=is_thermo,
+        merchandising=merchandising,
+        options=options,
+    )
 
     return {
         "variant_id": variant.id,
+        "option_values": options,
+        "option_key": build_combination_key(options),
         "is_thermo": is_thermo,
         "thermo_note": (
             ((profile.thermo_note if profile else "") or "").strip()
@@ -156,6 +422,7 @@ def variant_public_context(variant, *, fit_code="", lang="uk") -> dict:
         "final_price": final_price,
         "has_price_adjustment": final_price != product_price,
         "marketing_html": merchandising["marketing_text"],
+        "material_story": material_story,
         "youtube_url": merchandising["youtube_url"],
         "seo_title": merchandising["seo_title"],
         "seo_description": merchandising["seo_description"],
@@ -188,7 +455,12 @@ def variant_allows_fit(variant, fit_code: str) -> bool:
     return bool(rule and rule["is_enabled"])
 
 
-def effective_cart_unit_price(product, color_variant=None, fit_code: str = "") -> Decimal:
+def effective_cart_unit_price(
+    product,
+    color_variant=None,
+    fit_code: str = "",
+    option_values=None,
+) -> Decimal:
     """Authoritative server-side unit price for a cart/order line.
 
     The colour variant is accepted only when it belongs to ``product``.  This
@@ -200,11 +472,22 @@ def effective_cart_unit_price(product, color_variant=None, fit_code: str = "") -
     if getattr(color_variant, "product_id", None) != getattr(product, "id", None):
         return _decimal(getattr(product, "final_price", product.price))
     return _decimal(
-        variant_public_context(color_variant, fit_code=fit_code)["final_price"]
+        variant_public_context(
+            color_variant,
+            fit_code=fit_code,
+            option_values=option_values,
+        )["final_price"]
     )
 
 
-def variant_allows_purchase(product, color_variant, *, fit_code: str = "", size: str = "") -> bool:
+def variant_allows_purchase(
+    product,
+    color_variant,
+    *,
+    fit_code: str = "",
+    size: str = "",
+    option_values=None,
+) -> bool:
     """Validate a persisted cart selection against current variant rules."""
 
     if color_variant is None:
@@ -212,6 +495,11 @@ def variant_allows_purchase(product, color_variant, *, fit_code: str = "", size:
     if getattr(color_variant, "product_id", None) != getattr(product, "id", None):
         return False
     fit = str(fit_code or "").strip().lower()
+    options = normalize_option_values(option_values or {})
+    if fit and "fit" not in options:
+        options["fit"] = fit
+    if options and not variant_allows_options(color_variant, options):
+        return False
     if fit and not variant_allows_fit(color_variant, fit):
         return False
 

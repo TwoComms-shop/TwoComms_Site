@@ -52,7 +52,9 @@ from .models import (
     FeedOnlyImage,
     FeedProductRule,
     FeedProfile,
+    GarmentFlow,
     ProductFitNote,
+    ProductOptionProfile,
     VariantBlankLink,
     VariantCombinationProfile,
     VariantCombinationProfileI18n,
@@ -324,6 +326,8 @@ def _product_fits_payload(product):
 
 
 def _product_payload(product):
+    from .services import product_option_context
+
     cover_source = CoverSource.objects.filter(product=product).first()
     data = {
         "id": product.id,
@@ -363,6 +367,20 @@ def _product_payload(product):
         ],
         "faqs": [_faq_payload(f) for f in product.faqs.all().order_by("order", "id")],
         "fits": _product_fits_payload(product),
+        "option_axes": product_option_context(product).get("axes", []),
+        "option_profiles": [
+            {
+                "option_key": profile.option_key,
+                "option_values": profile.option_values,
+                "is_active": profile.is_active,
+                "price_delta": profile.price_delta,
+                "price_delta_reason": profile.price_delta_reason,
+            }
+            for profile in product.fable5_option_profiles.all().order_by("option_key")
+        ],
+        "print_ids": list(
+            product.warehouse_default_prints.order_by("id").values_list("id", flat=True)
+        ),
         "variants": [
             _variant_payload(v)
             for v in product.color_variants.select_related("color").all().order_by("order", "id")
@@ -378,7 +396,7 @@ def _product_payload(product):
 
 
 def _bootstrap_payload(product=None):
-    from warehouse.models import StorageSubcategory
+    from warehouse.models import Print, StorageSubcategory
 
     return {
         "dictionaries": {
@@ -401,6 +419,18 @@ def _bootstrap_payload(product=None):
                 .filter(is_active=True)
                 .order_by("category__order", "category__name", "order", "name")
             ],
+            "prints": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "category": item.category.name if item.category_id else "",
+                    "image_url": _img_url(item.main_image),
+                    "is_active": item.is_active,
+                }
+                for item in Print.objects.select_related("category").order_by(
+                    "category__order", "category__name", "name", "id"
+                )
+            ],
             "colors": [
                 _color_payload(c)
                 for c in Color.objects.all().prefetch_related("fable5_profile").order_by("name")
@@ -412,6 +442,19 @@ def _bootstrap_payload(product=None):
             ],
             "statuses": [{"value": v, "label": l} for v, l in STATUS_CHOICES],
             "fit_presets": FIT_PRESETS,
+            "garment_flows": [
+                {
+                    "code": flow.code,
+                    "name": flow.name,
+                    "axes": flow.axes,
+                    "category_ids": list(
+                        flow.categories.order_by("id").values_list("id", flat=True)
+                    ),
+                }
+                for flow in GarmentFlow.objects.filter(is_active=True)
+                .prefetch_related("categories")
+                .order_by("name", "code")
+            ],
             "default_sizes": _default_sizes(product),
         },
         "product": _product_payload(product) if product else None,
@@ -547,6 +590,37 @@ def api_product_save(request):
         _optimize_async(product, "main_image")
     if request.FILES.get("home_card_image"):
         _optimize_async(product, "home_card_image")
+
+    if "option_profiles" in payload:
+        from .content_resolution import build_combination_key, normalize_option_values
+
+        for item in payload.get("option_profiles") or []:
+            values = normalize_option_values(item.get("option_values") or {})
+            option_key = build_combination_key(values)
+            if not option_key:
+                continue
+            ProductOptionProfile.objects.update_or_create(
+                product=product,
+                option_key=option_key,
+                defaults={
+                    "option_values": values,
+                    "is_active": bool(item.get("is_active", True)),
+                    "price_delta": _int_or_none(item.get("price_delta")),
+                    "price_delta_reason": (
+                        item.get("price_delta_reason") or ""
+                    )[:255],
+                },
+            )
+
+    if "print_ids" in payload:
+        from warehouse.models import Print
+
+        print_ids = {
+            value
+            for raw in payload.get("print_ids") or []
+            if (value := _int_or_none(raw)) is not None
+        }
+        product.warehouse_default_prints.set(Print.objects.filter(pk__in=print_ids))
 
     # --- FAQ товару (доступні вже ПРИ ДОДАВАННІ, а не лише при редагуванні) ---
     if "faqs" in payload:
@@ -817,7 +891,12 @@ def api_variant_save(request):
         variant.sku = (data.get("sku") or "")[:64]
     if "price_override" in data:
         variant.price_override = _int_or_none(data.get("price_override"))
-    make_default = bool(data.get("is_default")) or not product.color_variants.exclude(pk=variant.pk).exists()
+    requested_default = (
+        bool(data.get("is_default"))
+        if "is_default" in data
+        else bool(variant.is_default)
+    )
+    make_default = requested_default or not product.color_variants.exclude(pk=variant.pk).exists()
     variant.is_default = make_default
     variant.save()
     if make_default:
@@ -868,6 +947,13 @@ def api_variant_save(request):
                 note=(s.get("note") or "")[:255],
             ))
         VariantSizeRule.objects.bulk_create(rules)
+        from storefront.services.restock import schedule_restock_scan
+
+        transaction.on_commit(
+            lambda product_id=product.pk, variant_id=variant.pk: schedule_restock_scan(
+                product_id, variant_id
+            )
+        )
 
     # A colour may inherit the shared product/fit grid or override it.
     if "size_grids" in data:

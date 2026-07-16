@@ -47,6 +47,16 @@ class Fable5EditorAccessTests(TestCase):
         self.assertNotIn('<script id="injected">', content)
         self.assertIn(r"\u003C/script\u003E", content)
 
+    def test_editor_uses_fresh_dirty_tracking_javascript_asset(self):
+        self.client.force_login(self.staff)
+
+        content = self.client.get(
+            reverse("fable5_product_edit", args=[self.product.pk])
+        ).content.decode()
+
+        self.assertIn("fable5/editor-inventory.js?v=20260716-inventory-v3", content)
+        self.assertIn("fable5/editor.js?v=20260716-dirty-v7", content)
+
     def test_staff_can_create_product_with_unified_save_endpoint(self):
         self.client.force_login(self.staff)
 
@@ -161,6 +171,23 @@ class Fable5EditorAccessTests(TestCase):
         self.assertIn(".f5-btn[hidden]", css)
         self.assertIn(".f5-topbar__actions { width: 100%; flex-wrap: wrap; }", css)
 
+    def test_editor_price_fields_can_shrink_inside_desktop_card(self):
+        css = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.css"
+        ).read_text(encoding="utf-8")
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "fable5"
+            / "editor.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(".f5-price-fields .f5-field { min-width: 0; }", css)
+        self.assertIn("fable5/editor.css' %}?v=20260716-responsive-v1", template)
+
     def test_javascript_transliteration_matches_server_for_russian_yo(self):
         javascript = (
             Path(__file__).resolve().parents[1]
@@ -171,7 +198,7 @@ class Fable5EditorAccessTests(TestCase):
 
         self.assertIn('"ё": "yo"', javascript)
 
-    def test_global_save_persists_variant_drafts_before_refreshing_state(self):
+    def test_global_save_persists_only_dirty_or_unsaved_variant_drafts(self):
         javascript = (
             Path(__file__).resolve().parents[1]
             / "static"
@@ -181,13 +208,14 @@ class Fable5EditorAccessTests(TestCase):
 
         self.assertIn("pendingVariantDrafts", javascript)
         self.assertIn("for (const draft of pendingVariantDrafts)", javascript)
-        self.assertIn("index, data: collectVariantData", javascript)
+        self.assertIn("!variant.id || variant._dirty || card.dataset.dirty", javascript)
+        self.assertIn('data-dirty="${variant._dirty ? "true" : "false"}"', javascript)
         self.assertIn(
             "state.variants[draft.index] = variantResp.variant",
             javascript,
         )
 
-    def test_global_save_includes_dirty_stock_and_feed_drafts(self):
+    def test_variant_payload_only_includes_sizes_after_inventory_changes(self):
         javascript = (
             Path(__file__).resolve().parents[1]
             / "static"
@@ -195,8 +223,163 @@ class Fable5EditorAccessTests(TestCase):
             / "editor.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("collectStockSizes", javascript)
-        self.assertIn("#f-stock [data-variant-index][data-dirty=", javascript)
+        self.assertIn('card.dataset.sizesDirty === "true"', javascript)
+        self.assertIn("variant._sizesDirty", javascript)
+        self.assertIn(
+            "if (includeSizes) data.sizes = snapshotInventoryDraft(variant)",
+            javascript,
+        )
+        self.assertIn('card.dataset.sizesDirty = "true"', javascript)
+        self.assertIn("variant._sizesDirty = true", javascript)
+
+    def test_global_save_keeps_changes_made_after_revision_snapshot_dirty(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("revision: 0", javascript)
+        self.assertIn("state.revision += 1", javascript)
+        self.assertIn("const saveRevision = state.revision", javascript)
+        self.assertIn("revision: variant._revision || 0", javascript)
+        self.assertIn("currentVariant._revision === draft.revision", javascript)
+        self.assertIn(
+            "const changedDuringSave = state.revision !== saveRevision",
+            javascript,
+        )
+        changed_branch = javascript.index("if (changedDuringSave)")
+        full_render = javascript.index("renderHeader()", changed_branch)
+        self.assertLess(changed_branch, full_render)
+
+    def test_individual_variant_save_preserves_late_draft_and_only_merges_new_id(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+        start = javascript.index("async function saveVariant(card, index)")
+        end = javascript.index("function refreshColorLibrary", start)
+        variant_save = javascript[start:end]
+
+        self.assertIn("snapshotVariantDraftRevision(variant)", variant_save)
+        self.assertIn(
+            "isVariantDraftRevisionCurrent(currentVariant, draftRevision)",
+            variant_save,
+        )
+        self.assertIn("if (!variantUnchanged)", variant_save)
+        self.assertIn("currentVariant.id = resp.variant.id", variant_save)
+        late_branch = variant_save.index("if (!variantUnchanged)")
+        render = variant_save.index("renderVariants()")
+        self.assertLess(late_branch, render)
+        self.assertNotIn("clearVariantDirty(card, resp.variant);\n\t\t\tstate.variants[index]", variant_save)
+
+    def test_individual_variant_save_does_not_render_over_other_variant_late_edits(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+        start = javascript.index("async function saveVariant(card, index)")
+        end = javascript.index("function refreshColorLibrary", start)
+        variant_save = javascript[start:end]
+
+        self.assertIn("const editorRevision = state.revision", variant_save)
+        self.assertIn(
+            "const editorChanged = state.revision !== editorRevision",
+            variant_save,
+        )
+        changed_start = variant_save.index("if (editorChanged)")
+        changed_end = variant_save.index("return;", changed_start)
+        changed_branch = variant_save[changed_start:changed_end]
+        self.assertIn('syncInventorySurfaces(currentIndex, "server")', changed_branch)
+        self.assertNotIn("renderVariants()", changed_branch)
+        self.assertNotIn("setDirty(false)", changed_branch)
+        self.assertLess(changed_end, variant_save.index("renderVariants()"))
+
+    def test_new_variant_initializes_inventory_draft_before_first_render(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+        start = javascript.index("function emptyVariant()")
+        end = javascript.index("function sizeRule", start)
+        empty_variant = javascript[start:end]
+
+        self.assertIn("buildDefaultInventoryRows(", empty_variant)
+        self.assertIn("state.fits.filter((fit) => fit.is_enabled)", empty_variant)
+        self.assertIn("sizesList()", empty_variant)
+
+    def test_stock_only_save_merges_inventory_without_clearing_content_draft(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+        start = javascript.index('$("#f-stock").addEventListener("click"')
+        end = javascript.index("/* ---------------- фіди", start)
+        stock_save = javascript[start:end]
+
+        self.assertIn("const sizes = snapshotInventoryDraft(variant)", stock_save)
+        self.assertNotIn("is_default: variant.is_default", stock_save)
+        self.assertIn(
+            'syncInventorySurfaces(index, "server")',
+            stock_save,
+        )
+        self.assertIn("variant._sizesDirty = false", stock_save)
+        self.assertIn("variant._dirty = Boolean(variant._contentDirty)", stock_save)
+        self.assertNotIn("clearVariantDirty", stock_save)
+        self.assertNotIn("state.variants[index] = resp.variant", stock_save)
+        self.assertNotIn("renderVariants()", stock_save)
+
+    def test_variant_size_surfaces_share_one_revisioned_inventory_draft(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("function syncInventorySurface(surface, sizes)", javascript)
+        self.assertIn("function updateInventoryDraftFromSurface(", javascript)
+        self.assertIn("replaceInventoryDraft(variant, collectInventoryRows(surface))", javascript)
+        self.assertIn('syncInventorySurfaces(index, source)', javascript)
+        self.assertIn("cell.classList.toggle(\"is-off\", !enabled)", javascript)
+        self.assertIn("stock.value = rule.stock == null ? \"\"", javascript)
+        self.assertIn(
+            "if ((variant._sizesRevision || 0) !== sizesRevision)",
+            javascript,
+        )
+
+    def test_editor_uses_shared_general_inventory_resolution_and_canonicalization(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("window.f5Inventory.resolveInventoryRule", javascript)
+        self.assertIn("window.f5Inventory.canonicalizeInventoryRows", javascript)
+        self.assertIn("window.f5Inventory.replaceInventoryDraft", javascript)
+        self.assertIn("window.f5Inventory.snapshotInventoryDraft", javascript)
+
+    def test_global_save_uses_shared_inventory_snapshot_without_stock_overlay(self):
+        javascript = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "fable5"
+            / "editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("data.sizes = snapshotInventoryDraft(variant)", javascript)
+        self.assertNotIn("draft.data.sizes = collectStockSizes(block)", javascript)
         self.assertIn("pendingFeedDrafts", javascript)
         self.assertIn("for (const draft of pendingFeedDrafts)", javascript)
 

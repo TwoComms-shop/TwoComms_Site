@@ -18,7 +18,7 @@
 {% if product_seo_landing %}
 {% with psl=product_seo_landing %}
 {% if psl.override_html or psl.landing_html or psl.top_queries_items or psl.category_layout.has_any %}
-<section class="product-seo-landing" aria-label="{% trans 'Деталі та підбір моделі' %}">
+<section class="product-seo-landing" data-product-seo-landing aria-label="{% trans 'Деталі та підбір моделі' %}">
   <div class="product-seo-landing__container">
 
     {# 1. Long SEO copy: admin override has priority. #}
