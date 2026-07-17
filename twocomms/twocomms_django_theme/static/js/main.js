@@ -1548,8 +1548,12 @@ function trackAddToCartAnalytics(serverData, triggerButton, fallbackQty) {
     if (!offerId && productContainer) {
       offerId = productContainer.getAttribute('data-current-offer-id');
     }
+    if (!offerId && productContainer) {
+      offerId = productContainer.getAttribute('data-default-offer-id');
+    }
     if (!offerId) {
-      offerId = 'TC-' + String(productId) + '-default-S';
+      // Do not invent an ID that cannot match the catalog feed.
+      return;
     }
 
     let quantity = Number(analyticsItem && analyticsItem.quantity);
@@ -1860,28 +1864,35 @@ document.addEventListener('DOMContentLoaded', function () {
 document.addEventListener('DOMContentLoaded', function () {
   const headerSearch = document.querySelector('form[role="search"] input[name="q"]');
   if (headerSearch) {
-    headerSearch.addEventListener('search', function () {
+    let lastSearchTerm = '';
+    let lastSearchAt = 0;
+    const trackSearch = function () {
       const term = (headerSearch.value || '').trim();
-      if (term) { try { if (window.trackEvent) { window.trackEvent('Search', { search_string: term }); } } catch (_) { } }
-    });
-    headerSearch.form && headerSearch.form.addEventListener('submit', function () {
-      const term = (headerSearch.value || '').trim();
-      if (term) { try { if (window.trackEvent) { window.trackEvent('Search', { search_string: term }); } } catch (_) { } }
-    });
+      const now = Date.now();
+      if (!term || (term === lastSearchTerm && now - lastSearchAt < 1000)) return;
+      lastSearchTerm = term;
+      lastSearchAt = now;
+      try { if (window.trackEvent) { window.trackEvent('Search', { search_string: term }); } } catch (_) { }
+    };
+    headerSearch.addEventListener('search', trackSearch);
+    headerSearch.form && headerSearch.form.addEventListener('submit', trackSearch);
   }
 });
 
 // Трекинг выбора отделения НП (поле np_office в корзине/чекауте)
-document.addEventListener('input', function (e) {
+document.addEventListener('change', function (e) {
   const el = e.target;
   if (!el || el.name !== 'np_office') return;
   const val = (el.value || '').trim();
-  if (val && val.length >= 3) {
+  const form = el.form || el.closest('form');
+  const ref = form && form.querySelector('[name="np_warehouse_ref"]');
+  if (val && val.length >= 3 && ref && ref.value) {
     try { if (window.trackEvent) { window.trackEvent('FindLocation', { query: val }); } } catch (_) { }
   }
 });
 
-// ViewContent на листингах — по клику на любую область карточки
+// GA4 select_item на листингах. ViewContent отправляется один раз на PDP,
+// где выбранный вариант известен точно; карточка не создает второй Meta view.
 document.addEventListener('click', function (e) {
   try {
     const card = e.target.closest && e.target.closest('.card.product');
@@ -1891,34 +1902,13 @@ document.addEventListener('click', function (e) {
     const price = card.getAttribute('data-product-price');
     const category = card.getAttribute('data-product-category');
 
-    if (pid && window.trackEvent) {
-      // Для карточек в каталоге используем базовый offer_id (default color, size S)
-      const offerId = 'TC-' + pid + '-default-S';
+    if (pid) {
+      const offerId = card.getAttribute('data-default-offer-id');
+      if (!offerId) return;
       const priceNum = price ? parseFloat(price) : undefined;
 
       const eventId = safeGenerateAnalyticsEventId();
-      const meta = buildMetaWithUserData(eventId);
-      window.trackEvent('ViewContent', {
-        content_ids: [offerId],
-        content_type: 'product',
-        content_name: title,
-        content_category: category,
-        value: priceNum,
-        currency: 'UAH',
-        contents: [{
-          id: offerId,
-          item_name: title,
-          item_category: category,
-          brand: ANALYTICS_BRAND_NAME,
-          quantity: 1,
-          item_price: priceNum
-        }],
-        event_id: eventId,
-        __meta: meta
-      });
-
-      // GA4 select_item — дополняет ViewContent данными о позиции в списке
-      // (для воронки каталог → товар). Только в dataLayer (Meta-аналога нет).
+      // GA4 select_item — дополняет выбор в списке данными о позиции.
       try {
         const cards = Array.prototype.slice.call(document.querySelectorAll('.card.product'));
         const position = cards.indexOf(card);
@@ -1961,7 +1951,8 @@ document.addEventListener('click', function (e) {
       const items = cards.slice(0, 50).map(function (card, idx) {
         const pid = card.getAttribute('data-product-id');
         if (!pid) return null;
-        const offerId = 'TC-' + pid + '-default-S';
+        const offerId = card.getAttribute('data-default-offer-id');
+        if (!offerId) return null;
         const price = parseFloat(card.getAttribute('data-product-price') || '0') || 0;
         return {
           item_id: offerId,

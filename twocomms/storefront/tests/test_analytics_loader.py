@@ -44,4 +44,27 @@ class AnalyticsLoaderRegressionTests(SimpleTestCase):
         )
         source = template_path.read_text(encoding="utf-8")
 
-        self.assertIn("analytics-loader.js' %}?v=10", source)
+        self.assertIn("analytics-loader.js' %}?v=11", source)
+
+    def test_non_standard_meta_events_use_track_custom_and_keep_buffer_type(self):
+        source = self._loader_source()
+
+        self.assertIn("var metaTrackMethod = standardMetaEvents[eventName] ? 'track' : 'trackCustom';", source)
+        self.assertIn("custom: metaTrackMethod === 'trackCustom'", source)
+        self.assertIn("var method = buffered.custom ? 'trackCustom' : 'track';", source)
+
+    def test_catalog_does_not_send_duplicate_meta_view_content(self):
+        main_path = Path(__file__).resolve().parents[2] / "twocomms_django_theme" / "static" / "js" / "main.js"
+        source = main_path.read_text(encoding="utf-8")
+
+        catalog_block = source.split("// GA4 select_item на листингах.", 1)[1].split("// GA4 view_item_list", 1)[0]
+        self.assertNotIn("trackEvent('ViewContent'", catalog_block)
+        self.assertIn("data-default-offer-id", source)
+
+    def test_analytics_test_page_has_no_automatic_funnel(self):
+        page_path = Path(__file__).resolve().parents[2] / "twocomms_django_theme" / "templates" / "pages" / "test_analytics.html"
+        source = page_path.read_text(encoding="utf-8")
+
+        self.assertIn("allowPurchaseTest", source)
+        self.assertIn("meta_test=1", source)
+        self.assertNotIn("АВТОМАТИЧЕСКАЯ ОТПРАВКА ВСЕХ СОБЫТИЙ", source)

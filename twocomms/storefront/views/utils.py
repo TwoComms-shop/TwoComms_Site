@@ -861,6 +861,8 @@ def _send_post_payment_events(order_pk, previous_status, pay_type):
         if fb_service.enabled:
             # Any verified money movement is a Purchase, including the 200
             # UAH prepayment. Do not emit a second Lead for the same payment.
+            # COD remains only as a historical compatibility path; current
+            # checkout rejects it and it is excluded from active KPI planning.
             if order.payment_status in ('paid', 'prepaid', 'partial'):
                 event_key = 'purchase_sent'
                 send_event = fb_service.send_purchase_event

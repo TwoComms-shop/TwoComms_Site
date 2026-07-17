@@ -533,7 +533,11 @@ def order_success_preview(request):
     except Exception:
         last_order = None
 
-    return render(request, 'pages/order_success.html', {'order': last_order})
+    return render(
+        request,
+        'pages/order_success.html',
+        {'order': last_order, 'tracking_disabled': True},
+    )
 
 
 def order_failed(request):

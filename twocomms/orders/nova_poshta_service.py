@@ -507,6 +507,8 @@ class NovaPoshtaService:
     def _send_facebook_purchase_event(self, order):
         """
         Отправляет Purchase событие в Facebook Conversions API.
+        Legacy-only: текущий storefront COD не продаёт, но этот путь остаётся
+        для старых заказов и не должен использоваться для новых кампаний.
 
         Вызывается автоматически когда:
         - Посылка получена через Новую Почту

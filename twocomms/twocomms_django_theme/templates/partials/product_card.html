@@ -12,7 +12,7 @@
 {% endif %}
 <article
   class="home-product-card card product h-100 {% if animate %}{% if stagger %}reveal-stagger stagger-item{% else %}reveal-fast{% endif %}{% else %}no-reveal{% endif %}"
-  data-product-id="{{ p.id }}" data-product-title="{{ p.title|escapejs }}" data-product-price="{{ p.final_price }}"
+  data-product-id="{{ p.id }}" data-default-offer-id="{{ p.get_offer_id }}" data-product-title="{{ p.title|escapejs }}" data-product-price="{{ p.final_price }}"
   data-product-category="{{ p.category.name|default_if_none:''|escapejs }}" data-product-url="{{ product_url }}">
   <a href="{{ product_url }}" class="home-product-media home-product-media-link" data-product-card-link
     data-twc-image-protected="true" aria-label="{% blocktrans with title=p.title %}Переглянути {{ title }}{% endblocktrans %}">
@@ -152,7 +152,7 @@
 {% else %}
 <div
   class="card product h-100 hover-raise glass {% if animate %}{% if stagger %}reveal-stagger stagger-item{% else %}reveal-fast{% endif %}{% else %}no-reveal{% endif %}"
-  data-product-id="{{ p.id }}" data-product-title="{{ p.title|escapejs }}" data-product-price="{{ p.final_price }}"
+  data-product-id="{{ p.id }}" data-default-offer-id="{{ p.get_offer_id }}" data-product-title="{{ p.title|escapejs }}" data-product-price="{{ p.final_price }}"
   data-product-category="{{ p.category.name|default_if_none:''|escapejs }}">
   <div class="ratio ratio-product rounded-top-4 overflow-hidden bg-elevate position-relative">
 

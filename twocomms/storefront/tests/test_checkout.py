@@ -953,6 +953,18 @@ class OrderSuccessTests(CheckoutTestSupport):
         self.assertEqual(response.status_code, 302)
         self.assertIn('login', response['Location'])
 
+    def test_order_success_preview_disables_conversion_tracking(self):
+        staff = self.make_user(username='preview-staff')
+        staff.is_staff = True
+        staff.save(update_fields=['is_staff'])
+        self.client.force_login(staff)
+
+        response = self.client.get(reverse('order_success_preview'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-tracking-disabled="true"')
+        self.assertContains(response, 'Conversion tracking disabled for preview')
+
 
 class ConfirmPaymentTests(CheckoutTestSupport):
     # W1-6: confirm_payment — больше не заглушка-redirect, а AJAX-эндпоинт

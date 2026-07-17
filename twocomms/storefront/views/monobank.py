@@ -17,6 +17,7 @@ import logging
 import json
 import base64
 import hashlib
+from urllib.parse import urlparse
 from decimal import Decimal
 from datetime import timedelta
 
@@ -61,6 +62,19 @@ from .utils import (
 # Loggers
 monobank_logger = logging.getLogger('storefront.monobank')
 cart_logger = logging.getLogger('storefront.cart')
+
+
+def _capi_checkout_source_url(request):
+    """Return the checkout page URL, never the invoice API endpoint."""
+    referer = (request.META.get('HTTP_REFERER') or '').strip()
+    if referer:
+        try:
+            parsed = urlparse(referer)
+            if parsed.scheme in {'http', 'https'} and parsed.netloc == request.get_host():
+                return referer
+        except ValueError:
+            pass
+    return request.build_absolute_uri('/cart/')
 
 # Константы статусов Monobank
 MONOBANK_SUCCESS_STATUSES = {'success', 'hold'}
@@ -778,7 +792,7 @@ def _create_payment_attempt_invoice(request):
     try:
         get_facebook_conversions_service().send_add_payment_info_event(
             order=attempt, payment_amount=float(payment_amount), event_id=attempt.add_payment_event_id,
-            source_url=request.build_absolute_uri(request.path),
+            source_url=_capi_checkout_source_url(request),
         )
     except Exception:
         monobank_logger.warning('Failed to send AddPaymentInfo for attempt %s', attempt.pk, exc_info=True)
@@ -1592,7 +1606,7 @@ def monobank_create_invoice(request):
                 order=order,
                 payment_amount=float(payment_amount),
                 event_id=add_payment_event_id,
-                source_url=request.build_absolute_uri(request.path),
+                source_url=_capi_checkout_source_url(request),
             )
         except Exception as capi_err:
             monobank_logger.warning(f'⚠️ Failed to send AddPaymentInfo to Facebook CAPI: {capi_err}')

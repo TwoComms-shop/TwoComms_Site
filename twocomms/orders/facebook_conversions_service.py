@@ -172,7 +172,9 @@ class FacebookConversionsService:
         """Удаляет пробелы и спецсимволы перед хешированием."""
         if not city:
             return None
-        normalized = self.CITY_SANITIZE_RE.sub('', city.lower().strip())
+        # Meta keeps letters/numbers but removes punctuation; Python's ``\w``
+        # also keeps underscore, so remove it explicitly.
+        normalized = self.CITY_SANITIZE_RE.sub('', city.lower().strip()).replace('_', '')
         return normalized or None
 
     def _ensure_positive_value(
@@ -318,6 +320,25 @@ class FacebookConversionsService:
                 warnings,
             )
 
+        messages = self._get_response_attr(response, 'messages')
+        if messages:
+            logger.info(
+                "Facebook API messages for %s event (order %s, event_id %s): %s",
+                event_name,
+                order.order_number,
+                event_id,
+                messages,
+            )
+
+        fbtrace_id = self._get_response_attr(response, 'fbtrace_id')
+        if fbtrace_id:
+            logger.debug(
+                "Facebook API trace for %s event (order %s): %s",
+                event_name,
+                order.order_number,
+                fbtrace_id,
+            )
+
         events_received = self._get_response_attr(response, 'events_received')
         try:
             events_received_value = int(events_received)
@@ -398,9 +419,8 @@ class FacebookConversionsService:
                 user_data.email = self._hash_data(email)
             else:
                 logger.warning(
-                    "⚠️ Invalid email for order %s skipped from Advanced Matching: %s",
+                    "⚠️ Invalid email for order %s skipped from Advanced Matching",
                     getattr(order, 'order_number', getattr(order, 'reference', order.pk)),
-                    email,
                 )
 
         # Phone (хешированный, только цифры)
@@ -410,9 +430,8 @@ class FacebookConversionsService:
                 user_data.phone = self._hash_data(phone_digits)
             else:
                 logger.warning(
-                    "⚠️ Invalid phone for order %s skipped from Advanced Matching: %s",
+                    "⚠️ Invalid phone for order %s skipped from Advanced Matching",
                     getattr(order, 'order_number', getattr(order, 'reference', order.pk)),
-                    order.phone,
                 )
 
         # Full Name (хешированный)
@@ -505,7 +524,7 @@ class FacebookConversionsService:
         - currency: валюта (UAH)
         - content_ids: список offer_ids (TC-{id}-{variant}-{SIZE})
         - content_name: название товаров
-        - content_type: тип контента (product)
+        - content_type: product для одного SKU, product_group для нескольких SKU
         - num_items: количество товаров
         """
         from facebook_business.adobjects.serverside.content import Content
@@ -557,8 +576,8 @@ class FacebookConversionsService:
             content_names = [item.title for item in order_items]
             custom_data.content_name = ', '.join(content_names[:3])  # Первые 3 товара
 
-            # Content Type
-            custom_data.content_type = 'product'
+            # Meta distinguishes a single product from a multi-item group.
+            custom_data.content_type = 'product_group' if len(set(content_ids)) > 1 else 'product'
 
             # Num Items (общее количество)
             custom_data.num_items = sum(item.qty for item in order_items)
@@ -590,9 +609,41 @@ class FacebookConversionsService:
             snapshot = getattr(order, 'cart_snapshot', {}) or {}
             snapshot_items = snapshot.get('cart') if isinstance(snapshot, dict) else []
             if snapshot_items:
-                custom_data.content_ids = [str(item.get('product_id')) for item in snapshot_items]
+                content_ids = []
+                contents = []
+                try:
+                    from storefront.models import Product
+                    product_ids = {
+                        int(item.get('product_id'))
+                        for item in snapshot_items
+                        if item.get('product_id') is not None
+                    }
+                    products = Product.objects.in_bulk(product_ids)
+                except Exception:
+                    products = {}
+                for item in snapshot_items:
+                    product_id = item.get('product_id')
+                    product = products.get(int(product_id)) if product_id is not None and str(product_id).isdigit() else None
+                    variant_id = item.get('color_variant_id')
+                    size = (item.get('size') or 'S').upper()
+                    if product is not None:
+                        offer_id = product.get_offer_id(variant_id, size)
+                    else:
+                        offer_id = str(product_id or '')
+                    if not offer_id:
+                        continue
+                    qty = int(item.get('qty') or 1)
+                    content_ids.append(offer_id)
+                    contents.append(Content(
+                        product_id=offer_id,
+                        quantity=qty,
+                        item_price=float(item.get('unit_price') or 0),
+                        title=str(item.get('title') or ''),
+                    ))
+                custom_data.content_ids = content_ids
+                custom_data.contents = contents
                 custom_data.content_name = ', '.join(str(item.get('title') or '') for item in snapshot_items[:3])
-                custom_data.content_type = 'product'
+                custom_data.content_type = 'product_group' if len(set(content_ids)) > 1 else 'product'
                 custom_data.num_items = sum(int(item.get('qty') or 1) for item in snapshot_items)
 
         # Order/attempt reference
@@ -750,7 +801,8 @@ class FacebookConversionsService:
         Используется когда подтверждено движение денег:
         - Заказ полностью оплачен (payment_status = 'paid')
         - Внесена успешная предоплата (payment_status = 'prepaid')
-        - Товар получен через Новую Почту и автоматически оплачен (COD)
+        - Товар получен через Новую Почту и автоматически оплачен (COD,
+          исторический legacy-путь; COD не продаётся в текущем checkout)
 
         Args:
             order: Объект заказа (Order model)

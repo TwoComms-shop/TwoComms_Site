@@ -1848,6 +1848,7 @@ document.addEventListener('DOMContentLoaded', function() {
      {% if order %}data-value="{{ order.final_total|floatformat:'2u' }}"{% else %}data-value="0"{% endif %}
      {% if order %}data-prepaid-value="{{ order.get_prepayment_amount|floatformat:'2u' }}"{% else %}data-prepaid-value="0"{% endif %}
      data-currency="UAH"
+     data-tracking-disabled="{{ tracking_disabled|yesno:'true,false' }}"
      {% if order %}data-payment-status="{{ order.payment_status }}"{% else %}data-payment-status="paid"{% endif %}
      {% if order %}data-order-status="{{ order.status }}"{% else %}data-order-status="done"{% endif %}
      data-facebook-lead-sent="{% if order and order.payment_payload.facebook_events.lead_sent %}true{% else %}false{% endif %}"
@@ -1883,6 +1884,13 @@ document.addEventListener('DOMContentLoaded', function() {
     var paymentStatus = el.dataset.paymentStatus || 'unpaid';
     var orderStatus = el.dataset.orderStatus || 'new';
     var orderId = el.dataset.orderId;
+
+    // Staff previews render a real order for layout checks but must never
+    // emit a browser conversion for that order.
+    if (el.dataset.trackingDisabled === 'true') {
+      console.log('Conversion tracking disabled for preview');
+      return;
+    }
     
     // Любая подтверждённая оплата, включая 200 грн предоплаты, считается
     // одной Purchase-конверсией. Lead для этой же транзакции не отправляем.
@@ -2203,7 +2211,7 @@ document.addEventListener('DOMContentLoaded', function() {
             event_id: eventId,
             value: purchaseValue,
             currency: currency,
-            content_type: 'product',
+            content_type: contentIdList.length > 1 ? 'product_group' : 'product',
             content_ids: contentIdList,
             contents: pixelContents,
             content_name: 'Order ' + orderNumber,

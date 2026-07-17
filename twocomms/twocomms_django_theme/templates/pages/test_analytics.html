@@ -147,6 +147,10 @@
 <script>
 (function() {
   'use strict';
+
+  // This staff page is intentionally opt-in. A real Purchase is allowed only
+  // with an explicit query flag while testing a dedicated Meta test session.
+  const allowPurchaseTest = new URLSearchParams(window.location.search).get('meta_test') === '1';
   
   // Тестовые данные
   const testProduct = {
@@ -323,6 +327,10 @@
           break;
           
         case 'Purchase':
+          if (!allowPurchaseTest) {
+            logEvent(eventName, 'error', 'Заблокировано: добавьте ?meta_test=1 для явного теста Meta');
+            return;
+          }
           if (window.trackEvent) {
             window.trackEvent('Purchase', {
               content_ids: [testProduct.id],
@@ -370,7 +378,7 @@
       { name: 'AddToWishlist', delay: 1500 },
       { name: 'InitiateCheckout', delay: 2000 },
       { name: 'AddPaymentInfo', delay: 2500 },
-      { name: 'Purchase', delay: 3000 },
+      ...(allowPurchaseTest ? [{ name: 'Purchase', delay: 3000 }] : []),
       { name: 'Search', delay: 3500 }
     ];
     
@@ -390,34 +398,6 @@
   // Проверяем статус пикселей сразу и периодически
   setTimeout(checkPixelStatus, 1000);
   setTimeout(checkPixelStatus, 3000);
-  
-  // АВТОМАТИЧЕСКАЯ ОТПРАВКА ВСЕХ СОБЫТИЙ ПРИ ЗАГРУЗКЕ
-  // Это гарантирует что вы увидите события в TikTok Events Manager сразу
-  setTimeout(function() {
-    logEvent('AUTO_SEND', 'pending', 'Начинаем автоматическую отправку всех событий...');
-    
-    // Отправляем все события с небольшими задержками
-    const autoEvents = [
-      { name: 'PageView', delay: 500 },
-      { name: 'ViewContent', delay: 1000 },
-      { name: 'AddToCart', delay: 1500 },
-      { name: 'AddToWishlist', delay: 2000 },
-      { name: 'InitiateCheckout', delay: 2500 },
-      { name: 'AddPaymentInfo', delay: 3000 },
-      { name: 'Purchase', delay: 3500 },
-      { name: 'Search', delay: 4000 }
-    ];
-    
-    autoEvents.forEach(function(event) {
-      setTimeout(function() {
-        sendEvent(event.name);
-      }, event.delay);
-    });
-    
-    setTimeout(function() {
-      logEvent('AUTO_SEND', 'success', 'Все события автоматически отправлены! Проверьте TikTok Events Manager.');
-    }, 4500);
-  }, 3000); // Ждем 3 секунды чтобы пиксели точно загрузились
   
 })();
 </script>

@@ -58,7 +58,8 @@ function collectWishlistProductData(productId, button) {
     if (currentOffer) offerId = currentOffer;
   }
 
-  if (!offerId) offerId = 'TC-' + productId + '-default-S';
+  if (!offerId && card) offerId = card.getAttribute('data-default-offer-id') || '';
+  if (!offerId) return null;
   if (!Number.isFinite(price) || price <= 0) price = 0.01;
 
   return { offerId, price, title, category };
@@ -83,6 +84,7 @@ export function toggleFavorite(productId, button) {
           try {
             if (window.trackEvent) {
               const info = collectWishlistProductData(productId, button);
+              if (!info) return;
               const meta = (typeof window.buildMetaWithUserData === 'function')
                 ? window.buildMetaWithUserData(undefined)
                 : undefined;
@@ -105,6 +107,7 @@ export function toggleFavorite(productId, button) {
           try {
             if (window.trackEvent) {
               const info = collectWishlistProductData(productId, button);
+              if (!info) return;
               const meta = (typeof window.buildMetaWithUserData === 'function')
                 ? window.buildMetaWithUserData(undefined)
                 : undefined;

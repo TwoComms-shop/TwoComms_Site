@@ -99,3 +99,71 @@ class MetaPixelConfigurationTests(SimpleTestCase):
         )
 
         self.assertEqual(service._calculate_event_time(order), transition_time)
+
+    def test_city_normalization_matches_browser_punctuation_rules(self):
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+
+        self.assertEqual(service._normalize_city_value("Київ_центр"), "київцентр")
+
+    def test_multi_item_custom_data_uses_product_group(self):
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+
+        class FakeManager:
+            def __init__(self, items):
+                self.items = items
+
+            def select_related(self, *args):
+                return self
+
+            def all(self):
+                return self.items
+
+        def item(product_id, title):
+            product = SimpleNamespace(
+                id=product_id,
+                get_offer_id=lambda variant_id=None, size='S': f'TC-{product_id:04d}-BLACK-{size}',
+            )
+            return SimpleNamespace(
+                pk=product_id,
+                product=product,
+                product_id=product_id,
+                color_variant=None,
+                size='S',
+                title=title,
+                qty=1,
+                unit_price=Decimal('100.00'),
+            )
+
+        order = SimpleNamespace(
+            order_number='TWC-TEST',
+            final_total=Decimal('200.00'),
+            total_sum=Decimal('200.00'),
+            discount_amount=Decimal('0.00'),
+            items=FakeManager([item(1, 'One'), item(2, 'Two')]),
+        )
+
+        custom_data = service._prepare_custom_data(order)
+
+        self.assertEqual(custom_data.content_type, 'product_group')
+        self.assertEqual(custom_data.content_ids, ['TC-0001-BLACK-S', 'TC-0002-BLACK-S'])
+
+    def test_invalid_contact_logs_do_not_include_raw_values(self):
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+        order = SimpleNamespace(
+            pk=1,
+            order_number='TWC-TEST',
+            user=None,
+            email='not-an-email',
+            phone='not-a-phone',
+            full_name='',
+            city='',
+            payment_payload={},
+        )
+
+        with patch("orders.facebook_conversions_service.logger.warning") as warning:
+            service._prepare_user_data(order)
+
+        messages = [call.args[0] for call in warning.call_args_list]
+        self.assertTrue(any('Invalid email' in message for message in messages))
+        self.assertTrue(any('Invalid phone' in message for message in messages))
+        self.assertTrue(all('not-an-email' not in message and 'not-a-phone' not in message for message in messages))

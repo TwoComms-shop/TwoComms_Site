@@ -1,4 +1,6 @@
 {% extends "base.html" %}{% load static %}{% load cache %}{% load seo_tags %}{% load responsive_images %}{% load i18n %}
+{# LEGACY/UNROUTED TEMPLATE: production uses product_detail.html. Keep for
+   historical experiments; do not treat its analytics as the live contract. #}
 
 {% block title %}{% seo_title product=product %}{% endblock %}
 {% block description %}{% seo_description product=product %}{% endblock %}

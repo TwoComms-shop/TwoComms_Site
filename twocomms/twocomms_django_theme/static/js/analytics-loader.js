@@ -230,6 +230,27 @@
         'CompleteRegistration', 'Subscribe', 'StartTrial', 'Search', 'CustomizeProduct'
       ];
       var isEcommerceEvent = ecommerceEvents.indexOf(eventName) !== -1;
+      var standardMetaEvents = {
+        PageView: true,
+        AddPaymentInfo: true,
+        AddToCart: true,
+        AddToWishlist: true,
+        CompleteRegistration: true,
+        Contact: true,
+        CustomizeProduct: true,
+        Donate: true,
+        FindLocation: true,
+        InitiateCheckout: true,
+        Lead: true,
+        Purchase: true,
+        Schedule: true,
+        Search: true,
+        StartTrial: true,
+        SubmitApplication: true,
+        Subscribe: true,
+        ViewContent: true
+      };
+      var metaTrackMethod = standardMetaEvents[eventName] ? 'track' : 'trackCustom';
       
       // Validate and sanitize payload for Meta Pixel
       var fbPayload = {};
@@ -303,9 +324,9 @@
               }
               var hasOptions = Object.keys(metaOptions).length > 0;
               if (hasOptions) {
-                win.fbq('track', eventName, fbPayload, metaOptions);
+                win.fbq(metaTrackMethod, eventName, fbPayload, metaOptions);
               } else {
-                win.fbq('track', eventName, fbPayload);
+                win.fbq(metaTrackMethod, eventName, fbPayload);
               }
             } catch (fbErr) {
               if (console && console.debug) {
@@ -313,7 +334,7 @@
               }
               // Fallback: буферизуем событие на случай если это временная ошибка
               if (win._fbqBuffer) {
-                win._fbqBuffer.push({ event: eventName, data: fbPayload, options: metaOptions });
+                win._fbqBuffer.push({ event: eventName, data: fbPayload, options: metaOptions, custom: metaTrackMethod === 'trackCustom' });
               }
             }
         } else if (PIXEL_ID) {
@@ -321,7 +342,7 @@
             if (!win._fbqBuffer) {
               win._fbqBuffer = [];
             }
-          win._fbqBuffer.push({ event: eventName, data: fbPayload, options: {
+          win._fbqBuffer.push({ event: eventName, data: fbPayload, custom: metaTrackMethod === 'trackCustom', options: {
             eventID: eventId ? String(eventId) : undefined,
             external_id: externalId ? String(externalId) : undefined,
             fbp: fbpValue ? String(fbpValue) : undefined,
@@ -1160,10 +1181,14 @@
       }
       win._fbqBuffer.forEach(function(buffered) {
         try {
+          if (!buffered) {
+            return;
+          }
+          var method = buffered.custom ? 'trackCustom' : 'track';
           if (buffered && buffered.options) {
-            win.fbq('track', buffered.event, buffered.data, buffered.options);
+            win.fbq(method, buffered.event, buffered.data, buffered.options);
           } else {
-            win.fbq('track', buffered.event, buffered.data);
+            win.fbq(method, buffered.event, buffered.data);
           }
         } catch (err) {
           if (console && console.debug) {
