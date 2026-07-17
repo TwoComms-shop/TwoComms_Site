@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_HALF_UP
 import re
 import xml.etree.ElementTree as ET
@@ -20,7 +20,9 @@ from storefront.utils.analytics_helpers import FEED_DEFAULT_COLOR, get_item_grou
 
 GOOGLE_NS = "http://base.google.com/ns/1.0"
 G = f"{{{GOOGLE_NS}}}"
+ATOM_NS = "http://www.w3.org/2005/Atom"
 ET.register_namespace("g", GOOGLE_NS)
+ET.register_namespace("atom", ATOM_NS)
 
 CDATA_START = "___TWC_CDATA_START___"
 CDATA_END = "___TWC_CDATA_END___"
@@ -240,11 +242,30 @@ class FeedOffer:
     description_ru: str
     google_description: str
     video_link: str
+    availability_override: bool | None = None
+    quantity_override: int | None = None
+
+    @property
+    def product_id(self) -> int:
+        return self.product.pk
 
     @property
     def available(self) -> bool:
-        # Всі товари у фідах позначаємо як «в наявності» незалежно від поточних залишків.
-        return True
+        return True if self.availability_override is None else self.availability_override
+
+    @property
+    def export_quantity(self) -> int:
+        if self.quantity_override is not None:
+            return max(0, int(self.quantity_override))
+        return _feed_stock_quantity(self)
+
+
+@dataclass(frozen=True)
+class EffectiveProductRule:
+    inclusion: str = "inherit"
+    availability: str = "inherit"
+    quantity: int | None = None
+    image_tokens: tuple[str, ...] = ()
 
 
 def resolve_base_url(base_url: str | None = None) -> str:
@@ -371,6 +392,14 @@ def _uk_text_to_ru(value: object) -> str:
     return result
 
 
+def _localized_product_text(product: Product, field_name: str, language: str) -> str:
+    source = _clean_xml_text(getattr(product, field_name, ""))
+    if language != "ru":
+        return source
+    translated = _clean_xml_text(getattr(product, f"{field_name}_ru", ""))
+    return translated or _uk_text_to_ru(source)
+
+
 def _contains_buyme_forbidden_brand(value: object) -> bool:
     return bool(BUYME_BRAND_RE.search(_clean_xml_text(value)))
 
@@ -441,10 +470,14 @@ def _buyme_drop_price(product: Product, retail_price: int) -> Decimal:
 
 
 def _buyme_quantity(offer: FeedOffer) -> int:
+    if offer.quantity_override is not None:
+        return max(0, int(offer.quantity_override))
     return max(int(offer.stock or 0), BUYME_MIN_QUANTITY)
 
 
 def _bezzet_quantity(offer: FeedOffer) -> int:
+    if offer.quantity_override is not None:
+        return max(0, int(offer.quantity_override))
     return max(int(offer.stock or 0), BEZZET_MIN_QUANTITY)
 
 
@@ -841,6 +874,178 @@ def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOff
     return offers
 
 
+def _feed_profile_chain(feed) -> list[object]:
+    chain = []
+    current = feed
+    while current is not None:
+        chain.append(current)
+        current = current.parent
+    return list(reversed(chain))
+
+
+def _selected_image_urls(offer: FeedOffer, tokens: list[str], base_url: str) -> list[str]:
+    """Resolve stable staff image tokens without accepting filesystem paths."""
+    if not tokens:
+        return offer.image_urls
+
+    product_images = {
+        f"product:{image.pk}": _absolute_url(base_url, _field_url(image.image))
+        for image in offer.product.images.all()
+    }
+    main_url = _absolute_url(base_url, _field_url(getattr(offer.product, "main_image", None)))
+    variant_images = {}
+    if offer.variant_id:
+        variant = next(
+            (item for item in offer.product.color_variants.all() if item.pk == offer.variant_id),
+            None,
+        )
+        if variant:
+            variant_images = {
+                f"variant:{image.pk}": _absolute_url(base_url, _field_url(image.image))
+                for image in variant.images.all()
+            }
+
+    selected = []
+    for token in tokens:
+        image_url = main_url if token == "main" else product_images.get(token) or variant_images.get(token)
+        if not image_url:
+            image_url = next((url for url in offer.image_urls if token == url or token in url), "")
+        if image_url:
+            selected.append(image_url)
+    return _dedupe(selected)
+
+
+def _matches_feed_filters(offer: FeedOffer, filters: dict[str, object]) -> bool:
+    product = offer.product
+    product_id = product.pk
+    included_ids = set(filters.get("include_product_ids", []))
+    excluded_ids = set(filters.get("exclude_product_ids", []))
+    if product_id in excluded_ids:
+        return False
+    if filters.get("dropship_only") and not getattr(product, "is_dropship_available", False):
+        return False
+    if included_ids and product_id not in included_ids:
+        return False
+    category_ids = set(filters.get("category_ids", []))
+    if category_ids and product.category_id not in category_ids:
+        return False
+    if len(offer.image_urls) < int(filters.get("min_image_count", 0) or 0):
+        return False
+    if "price_min" in filters and offer.price < filters["price_min"]:
+        return False
+    if "price_max" in filters and offer.price > filters["price_max"]:
+        return False
+    keywords = [str(value).strip().lower() for value in filters.get("search_keywords", [])]
+    if keywords:
+        haystack = " ".join(
+            [
+                str(getattr(product, "title", "")),
+                str(getattr(product, "slug", "")),
+                str(getattr(getattr(product, "category", None), "name", "")),
+            ]
+        ).lower()
+        if not any(keyword in haystack for keyword in keywords):
+            return False
+    return True
+
+
+def build_profile_offers(feed, base_url: str | None = None) -> list[FeedOffer]:
+    """Build offers once, then apply the bounded profile and per-product rules."""
+    from storefront.models import MarketplaceFeedProductRule
+    from storefront.services.feed_profiles import resolve_feed_rules
+
+    base_url = resolve_base_url(base_url)
+    rules = resolve_feed_rules(feed)
+    filters = rules.get("filters", {})
+    image_rules = rules.get("images", {})
+    availability_rules = rules.get("availability", {})
+    chain = _feed_profile_chain(feed)
+    rule_by_product: dict[int, EffectiveProductRule] = {}
+    for profile in chain:
+        for product_rule in MarketplaceFeedProductRule.objects.filter(feed=profile).select_related("product"):
+            current = rule_by_product.get(product_rule.product_id, EffectiveProductRule())
+            rule_by_product[product_rule.product_id] = EffectiveProductRule(
+                inclusion=(
+                    product_rule.inclusion
+                    if product_rule.inclusion != "inherit"
+                    else current.inclusion
+                ),
+                availability=(
+                    product_rule.availability
+                    if product_rule.availability != "inherit"
+                    else current.availability
+                ),
+                quantity=(
+                    product_rule.quantity
+                    if product_rule.quantity is not None
+                    else current.quantity
+                ),
+                image_tokens=(
+                    tuple(product_rule.image_tokens)
+                    if product_rule.image_tokens
+                    else current.image_tokens
+                ),
+            )
+
+    result = []
+    for offer in iter_feed_offers(base_url):
+        product_rule = rule_by_product.get(offer.product.pk)
+        if product_rule and product_rule.inclusion == "exclude":
+            continue
+        if not _matches_feed_filters(offer, filters):
+            # An explicit product inclusion is a staff override of profile filters.
+            if not product_rule or product_rule.inclusion != "include":
+                continue
+
+        image_urls = list(offer.image_urls)
+        mode = image_rules.get("mode", "main_first")
+        if mode == "main_first":
+            base_images = _collect_base_images(offer.product, base_url)
+            image_urls = _dedupe(base_images + image_urls)
+        elif mode == "newest_first":
+            image_urls = list(reversed(image_urls))
+        elif mode == "variant_first" and offer.variant_id:
+            variant = next(
+                (item for item in offer.product.color_variants.all() if item.pk == offer.variant_id),
+                None,
+            )
+            if variant is not None:
+                image_urls = _dedupe(_collect_variant_images(variant, base_url) + image_urls)
+        if product_rule and product_rule.image_tokens:
+            image_urls = _selected_image_urls(offer, list(product_rule.image_tokens), base_url) or image_urls
+        max_count = int(image_rules.get("max_count", len(image_urls)) or len(image_urls))
+        image_urls = image_urls[:max_count]
+        if not image_urls:
+            continue
+
+        availability_override = None
+        quantity_override = None
+        if availability_rules.get("mode") == "force_in_stock":
+            availability_override = True
+        elif availability_rules.get("mode") == "force_out_of_stock":
+            availability_override = False
+        if "quantity" in availability_rules:
+            quantity_override = int(availability_rules["quantity"])
+        if product_rule:
+            if product_rule.availability == "in_stock":
+                availability_override = True
+            elif product_rule.availability == "out_of_stock":
+                availability_override = False
+            if product_rule.quantity is not None:
+                quantity_override = product_rule.quantity
+        if availability_override is False and quantity_override is None:
+            quantity_override = 0
+        result.append(
+            replace(
+                offer,
+                image_urls=image_urls,
+                availability_override=availability_override,
+                quantity_override=quantity_override,
+            )
+        )
+    return result
+
+
 def _category_rz_id(category: Category) -> str:
     configured = getattr(settings, "ROZETKA_CATEGORY_RZ_ID_MAP", {}) or {}
     mapping = {**DEFAULT_ROZETKA_CATEGORY_RZ_ID_MAP, **{str(k).lower(): str(v) for k, v in configured.items()}}
@@ -884,9 +1089,9 @@ def _finalize_xml(root: ET.Element) -> bytes:
     return CDATA_RE.sub(replace_cdata, payload)
 
 
-def build_rozetka_feed_xml(base_url: str | None = None) -> bytes:
+def build_rozetka_feed_xml(base_url: str | None = None, feed=None) -> bytes:
     base_url = resolve_base_url(base_url)
-    offers = iter_feed_offers(base_url)
+    offers = build_profile_offers(feed, base_url) if feed is not None else iter_feed_offers(base_url)
 
     catalog = ET.Element("yml_catalog", {"date": timezone.now().strftime("%Y-%m-%d %H:%M")})
     shop = ET.SubElement(catalog, "shop")
@@ -923,7 +1128,7 @@ def build_rozetka_feed_xml(base_url: str | None = None) -> bytes:
             ET.SubElement(offer_el, "picture").text = _truncate(image_url, 1999)
         ET.SubElement(offer_el, "vendor").text = SHOP_NAME
         ET.SubElement(offer_el, "article").text = offer.article
-        ET.SubElement(offer_el, "stock_quantity").text = str(_feed_stock_quantity(offer))
+        ET.SubElement(offer_el, "stock_quantity").text = str(offer.export_quantity)
 
         name_ru = _truncate(f"{_uk_text_to_ru(product.title)} {offer.color_ru} {offer.size}", 255)
         name_ua = _truncate(f"{product.title} {offer.color_ua} {offer.size}", 255)
@@ -952,9 +1157,9 @@ def build_rozetka_feed_xml(base_url: str | None = None) -> bytes:
     return _finalize_xml(catalog)
 
 
-def build_kasta_feed_xml(base_url: str | None = None) -> bytes:
+def build_kasta_feed_xml(base_url: str | None = None, feed=None) -> bytes:
     base_url = resolve_base_url(base_url)
-    offers = iter_feed_offers(base_url)
+    offers = build_profile_offers(feed, base_url) if feed is not None else iter_feed_offers(base_url)
 
     catalog = ET.Element("yml_catalog", {"date": timezone.now().strftime("%Y-%m-%d %H:%M")})
     shop = ET.SubElement(catalog, "shop")
@@ -991,7 +1196,7 @@ def build_kasta_feed_xml(base_url: str | None = None) -> bytes:
             ET.SubElement(offer_el, "picture").text = _truncate(image_url, 1999)
         ET.SubElement(offer_el, "vendor").text = SHOP_NAME
         ET.SubElement(offer_el, "article").text = _kasta_article_for_product(product)
-        ET.SubElement(offer_el, "stock_quantity").text = str(_feed_stock_quantity(offer))
+        ET.SubElement(offer_el, "stock_quantity").text = str(offer.export_quantity)
 
         base_title = _truncate(_clean_xml_text(product.title) or f"{SHOP_NAME} одяг", 255)
         name_ru = _truncate(_kasta_name_ru(base_title) or base_title, 255)
@@ -1022,9 +1227,9 @@ def build_kasta_feed_xml(base_url: str | None = None) -> bytes:
     return _finalize_xml(catalog)
 
 
-def build_buyme_feed_xml(base_url: str | None = None) -> bytes:
+def build_buyme_feed_xml(base_url: str | None = None, feed=None) -> bytes:
     base_url = resolve_base_url(base_url)
-    offers = iter_feed_offers(base_url)
+    offers = build_profile_offers(feed, base_url) if feed is not None else iter_feed_offers(base_url)
 
     catalog = ET.Element("yml_catalog", {"date": timezone.now().strftime("%Y-%m-%d %H:%M")})
     shop = ET.SubElement(catalog, "shop")
@@ -1051,7 +1256,7 @@ def build_buyme_feed_xml(base_url: str | None = None) -> bytes:
             "offer",
             {
                 "id": offer_id,
-                "available": "true",
+                "available": "true" if offer.available else "false",
                 "group_id": _buyme_group_id(offer),
             },
         )
@@ -1150,26 +1355,43 @@ def _build_merchant_custom_labels(product, offer) -> list[str]:
     return [theme_key, category_slug, price_tier, discount_flag, age_cohort]
 
 
-def build_google_merchant_feed_xml(base_url: str | None = None) -> bytes:
+def build_google_merchant_feed_xml(base_url: str | None = None, feed=None) -> bytes:
     base_url = resolve_base_url(base_url)
-    offers = iter_feed_offers(base_url)
+    offers = build_profile_offers(feed, base_url) if feed is not None else iter_feed_offers(base_url)
+    language = getattr(feed, "language", "uk") if feed is not None else "uk"
+    is_russian = language == "ru"
 
     rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
-    ET.SubElement(channel, "title").text = "TwoComms - Стріт & Мілітарі Одяг"
+    ET.SubElement(channel, "title").text = (
+        "TwoComms - Стрит и милитари одежда" if is_russian else "TwoComms - Стріт & Мілітарі Одяг"
+    )
     ET.SubElement(channel, "link").text = base_url
-    ET.SubElement(channel, "description").text = "Магазин стріт та мілітарі одягу з ексклюзивним дизайном"
+    ET.SubElement(channel, "description").text = (
+        "Магазин стрит- и милитари-одежды с эксклюзивным дизайном"
+        if is_russian
+        else "Магазин стріт та мілітарі одягу з ексклюзивним дизайном"
+    )
 
     for offer in offers:
         product = offer.product
+        title = _localized_product_text(product, "title", language)
+        category = _localized_product_text(product.category, "name", language) or ("Одежда" if is_russian else "Одяг")
+        color = offer.color_ru if is_russian else offer.color_ua
+        material = offer.material_ru if is_russian else offer.material_ua
+        description = (
+            _truncate(_collapse_plain_text(offer.description_ru), 5000)
+            if is_russian
+            else offer.google_description
+        )
         item = ET.SubElement(channel, "item")
         ET.SubElement(item, f"{G}id").text = _truncate(offer.google_offer_id, 50)
         ET.SubElement(item, f"{G}item_group_id").text = _truncate(offer.group_id, 50)
         ET.SubElement(item, f"{G}title").text = _truncate(
-            f"{product.title} - {offer.color_ua} - {offer.size}",
+            f"{title} - {color} - {offer.size}",
             150,
         )
-        ET.SubElement(item, f"{G}description").text = offer.google_description
+        ET.SubElement(item, f"{G}description").text = description
         ET.SubElement(item, f"{G}link").text = offer.product_url
         ET.SubElement(item, f"{G}image_link").text = offer.image_urls[0]
         for image_url in offer.image_urls[1:11]:
@@ -1187,14 +1409,14 @@ def build_google_merchant_feed_xml(base_url: str | None = None) -> bytes:
         ET.SubElement(item, f"{G}mpn").text = _truncate(f"{offer.article}-{product.id}", 70)
         if is_valid_gtin(offer.barcode):
             ET.SubElement(item, f"{G}gtin").text = offer.barcode
-        ET.SubElement(item, f"{G}product_type").text = _truncate(getattr(product.category, "name", "Одяг"), 750)
+        ET.SubElement(item, f"{G}product_type").text = _truncate(category, 750)
         ET.SubElement(item, f"{G}google_product_category").text = DEFAULT_GOOGLE_PRODUCT_CATEGORY
         ET.SubElement(item, f"{G}age_group").text = "adult"
         ET.SubElement(item, f"{G}gender").text = "unisex"
         ET.SubElement(item, f"{G}size").text = _truncate(offer.size, 100)
         ET.SubElement(item, f"{G}size_system").text = "EU"
-        ET.SubElement(item, f"{G}color").text = _truncate(offer.color_ua, 100)
-        ET.SubElement(item, f"{G}material").text = _truncate(offer.material_ua, 200)
+        ET.SubElement(item, f"{G}color").text = _truncate(color, 100)
+        ET.SubElement(item, f"{G}material").text = _truncate(material, 200)
 
         if offer.video_link:
             ET.SubElement(item, f"{G}video_link").text = offer.video_link
@@ -1214,23 +1436,46 @@ def build_google_merchant_feed_xml(base_url: str | None = None) -> bytes:
                 continue
             ET.SubElement(item, f"{G}custom_label_{idx}").text = _truncate(label, 100)
 
-        for highlight in [
-            "Ексклюзивний дизайн TwoComms",
-            f"Матеріал: {offer.material_ua}",
-            "Виробництво: Україна",
-            "Підходить для щоденного носіння",
-            f"Колір: {offer.color_ua}; розмір: {offer.size}",
-        ]:
+        highlights = (
+            [
+                "Эксклюзивный дизайн TwoComms",
+                f"Материал: {material}",
+                "Производство: Украина",
+                "Подходит для повседневной носки",
+                f"Цвет: {color}; размер: {offer.size}",
+            ]
+            if is_russian
+            else [
+                "Ексклюзивний дизайн TwoComms",
+                f"Матеріал: {material}",
+                "Виробництво: Україна",
+                "Підходить для щоденного носіння",
+                f"Колір: {color}; розмір: {offer.size}",
+            ]
+        )
+        for highlight in highlights:
             ET.SubElement(item, f"{G}product_highlight").text = _truncate(highlight, 150)
 
-        for section, name, value in [
-            ("Характеристики", "Бренд", SHOP_NAME),
-            ("Характеристики", "Матеріал", offer.material_ua),
-            ("Характеристики", "Колір", offer.color_ua),
-            ("Характеристики", "Розмір", offer.size),
-            ("Характеристики", "Країна виробництва", "Україна"),
-            ("Характеристики", "Сезон", "Демісезон"),
-        ]:
+        details = (
+            [
+                ("Характеристики", "Бренд", SHOP_NAME),
+                ("Характеристики", "Материал", material),
+                ("Характеристики", "Цвет", color),
+                ("Характеристики", "Размер", offer.size),
+                ("Характеристики", "Страна производства", "Украина"),
+                ("Характеристики", "Сезон", "Демисезон"),
+            ]
+            if is_russian
+            else [
+                ("Характеристики", "Бренд", SHOP_NAME),
+                ("Характеристики", "Матеріал", material),
+                ("Характеристики", "Колір", color),
+                ("Характеристики", "Розмір", offer.size),
+                ("Характеристики", "Країна виробництва", "Україна"),
+                ("Характеристики", "Сезон", "Демісезон"),
+            ]
+        )
+        for section, name, value in details:
             detail = ET.SubElement(item, f"{G}product_detail")
             ET.SubElement(detail, f"{G}section_name").text = _truncate(section, 140)
             ET.SubElement(detail, f"{G}attribute_name").text = _truncate(name, 140)
@@ -1240,9 +1485,76 @@ def build_google_merchant_feed_xml(base_url: str | None = None) -> bytes:
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
 
 
-def _build_yml_feed_xml(*, base_url: str | None, bezzet_mode: bool = False) -> bytes:
+def build_meta_catalog_feed_xml(base_url: str | None = None, feed=None) -> bytes:
+    """Serialize normalized offers for Meta Commerce / Instagram Shopping."""
     base_url = resolve_base_url(base_url)
-    offers = iter_feed_offers(base_url)
+    offers = build_profile_offers(feed, base_url) if feed is not None else iter_feed_offers(base_url)
+    language = getattr(feed, "language", "uk") if feed is not None else "uk"
+    is_russian = language == "ru"
+
+    rss = ET.Element("rss", {"version": "2.0"})
+    channel = ET.SubElement(rss, "channel")
+    ET.SubElement(channel, "title").text = "TwoComms - Instagram Shop"
+    ET.SubElement(channel, "link").text = base_url
+    ET.SubElement(channel, "description").text = "Product Feed for Instagram Shopping"
+    atom_link = ET.SubElement(channel, f"{{{ATOM_NS}}}link")
+    atom_link.set("href", f"{base_url}/media/instagram-feed.xml")
+    atom_link.set("rel", "self")
+    atom_link.set("type", "application/rss+xml")
+
+    for offer in offers:
+        product = offer.product
+        title = _localized_product_text(product, "title", language)
+        category = _localized_product_text(product.category, "name", language) or ("Одежда" if is_russian else "Одяг")
+        color = offer.color_ru if is_russian else offer.color_ua
+        material = offer.material_ru if is_russian else offer.material_ua
+        rich_description = offer.description_ru if is_russian else offer.description_ua
+        description = (
+            _truncate(_collapse_plain_text(rich_description), 5000)
+            if is_russian
+            else offer.google_description
+        )
+        item = ET.SubElement(channel, "item")
+        ET.SubElement(item, f"{G}id").text = _truncate(offer.google_offer_id, 100)
+        ET.SubElement(item, f"{G}item_group_id").text = _truncate(offer.group_id, 100)
+        ET.SubElement(item, f"{G}title").text = _truncate(
+            f"{title} - {color} - {offer.size}",
+            200,
+        )
+        ET.SubElement(item, f"{G}description").text = description
+        if rich_description:
+            ET.SubElement(item, f"{G}rich_text_description").text = rich_description
+        ET.SubElement(item, f"{G}link").text = offer.product_url
+        ET.SubElement(item, f"{G}image_link").text = offer.image_urls[0]
+        for image_url in offer.image_urls[1:11]:
+            ET.SubElement(item, "additional_image_link").text = image_url
+        ET.SubElement(item, f"{G}availability").text = "in stock" if offer.available else "out of stock"
+        ET.SubElement(item, "quantity_to_sell_on_facebook").text = str(offer.export_quantity)
+        ET.SubElement(item, f"{G}condition").text = "new"
+        if getattr(product, "has_discount", False) and offer.base_price > offer.price:
+            ET.SubElement(item, f"{G}price").text = _format_google_price(offer.base_price)
+            ET.SubElement(item, f"{G}sale_price").text = _format_google_price(offer.price)
+        else:
+            ET.SubElement(item, f"{G}price").text = _format_google_price(offer.price)
+        ET.SubElement(item, f"{G}brand").text = SHOP_NAME
+        ET.SubElement(item, f"{G}mpn").text = _truncate(f"{offer.article}-{product.pk}", 100)
+        ET.SubElement(item, f"{G}size").text = _truncate(offer.size, 100)
+        ET.SubElement(item, "color").text = _truncate(color, 100)
+        ET.SubElement(item, f"{G}product_type").text = _truncate(category, 750)
+        ET.SubElement(item, f"{G}google_product_category").text = DEFAULT_GOOGLE_PRODUCT_CATEGORY
+        ET.SubElement(item, f"{G}age_group").text = "adult"
+        ET.SubElement(item, f"{G}gender").text = "unisex"
+        ET.SubElement(item, f"{G}material").text = _truncate(material, 200)
+        if _product_kind(product) == "hoodie":
+            ET.SubElement(item, "internal_label").text = "['hoodie']"
+
+    ET.indent(rss, space="  ", level=0)
+    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
+
+
+def _build_yml_feed_xml(*, base_url: str | None, bezzet_mode: bool = False, feed=None) -> bytes:
+    base_url = resolve_base_url(base_url)
+    offers = build_profile_offers(feed, base_url) if feed is not None else iter_feed_offers(base_url)
 
     catalog = ET.Element("yml_catalog", {"date": timezone.now().strftime("%Y-%m-%d %H:%M")})
     shop = ET.SubElement(catalog, "shop")
@@ -1258,15 +1570,14 @@ def _build_yml_feed_xml(*, base_url: str | None, bezzet_mode: bool = False) -> b
     offers_el = ET.SubElement(shop, "offers")
     for offer in offers:
         product = offer.product
-        stock_quantity = _bezzet_quantity(offer) if bezzet_mode else _feed_stock_quantity(offer)
-        available = True
+        stock_quantity = _bezzet_quantity(offer) if bezzet_mode else offer.export_quantity
         group_id = _bezzet_group_id(offer) if bezzet_mode else str(product.id)
         offer_el = ET.SubElement(
             offers_el,
             "offer",
             {
                 "id": offer.yml_offer_id,
-                "available": "true" if available else "false",
+                "available": "true" if offer.available else "false",
                 "group_id": group_id,
             },
         )
@@ -1300,9 +1611,9 @@ def _build_yml_feed_xml(*, base_url: str | None, bezzet_mode: bool = False) -> b
     return _finalize_xml(catalog)
 
 
-def build_uaprom_products_feed_xml(base_url: str | None = None) -> bytes:
-    return _build_yml_feed_xml(base_url=base_url, bezzet_mode=True)
+def build_uaprom_products_feed_xml(base_url: str | None = None, feed=None) -> bytes:
+    return _build_yml_feed_xml(base_url=base_url, bezzet_mode=True, feed=feed)
 
 
-def build_prom_feed_xml(base_url: str | None = None) -> bytes:
-    return _build_yml_feed_xml(base_url=base_url, bezzet_mode=False)
+def build_prom_feed_xml(base_url: str | None = None, feed=None) -> bytes:
+    return _build_yml_feed_xml(base_url=base_url, bezzet_mode=False, feed=feed)

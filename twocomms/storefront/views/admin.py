@@ -17,6 +17,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.conf import settings
+from django.core.paginator import Paginator
 from django.db import models, transaction
 from django.db.models import (
     Avg,
@@ -404,6 +405,7 @@ def _build_push_notifications_context(request, form=None):
 
 def _build_orders_context(request):
     """Формирует данные для секции заказов."""
+    orders_per_page = 50
     status_filter = request.GET.get('status', 'all')
     payment_filter_raw = request.GET.get('payment', 'all')
     payment_filter = (
@@ -413,14 +415,7 @@ def _build_orders_context(request):
     )
     user_id_filter = request.GET.get('user_id')
 
-    orders_qs = (
-        Order.objects.select_related('user')
-        .prefetch_related(
-            Prefetch('items', queryset=OrderItem.objects.select_related('product')),
-            'custom_print_leads',
-        )
-        .order_by('-created')
-    )
+    orders_qs = Order.objects.select_related('user').order_by('-created', '-pk')
 
     if status_filter != 'all':
         orders_qs = orders_qs.filter(status=status_filter)
@@ -455,7 +450,29 @@ def _build_orders_context(request):
         'paid': Order.objects.filter(payment_status='paid').count(),
     }
 
-    orders = list(orders_qs)
+    page_number = request.GET.get('page')
+    if 'page' not in request.GET:
+        try:
+            edit_order_id = int(request.GET.get('edit_order', ''))
+        except (TypeError, ValueError):
+            edit_order_id = None
+
+        if edit_order_id and edit_order_id > 0:
+            target_order = orders_qs.filter(pk=edit_order_id).values('pk', 'created').first()
+            if target_order:
+                newer_orders = orders_qs.filter(
+                    Q(created__gt=target_order['created'])
+                    | Q(created=target_order['created'], pk__gt=target_order['pk'])
+                ).count()
+                page_number = (newer_orders // orders_per_page) + 1
+
+    orders_page = Paginator(orders_qs, orders_per_page).get_page(page_number)
+    selected_page_qs = orders_page.object_list.prefetch_related(
+        Prefetch('items', queryset=OrderItem.objects.select_related('product')),
+        'custom_print_leads',
+    )
+    orders = list(selected_page_qs)
+    orders_page.object_list = orders
     for order in orders:
         snapshot = build_order_payment_snapshot(order)
         payload = order.payment_payload or {}
@@ -470,11 +487,13 @@ def _build_orders_context(request):
 
     return {
         'orders': orders,
+        'orders_page': orders_page,
         'status_counts': status_counts,
         'payment_status_counts': payment_status_counts,
         'total_orders': Order.objects.count(),
         'status_filter': status_filter,
         'payment_filter': payment_filter,
+        'user_id_filter': user_id_filter,
         'user_filter_info': user_filter_info,
     }
 
@@ -1126,14 +1145,12 @@ def admin_panel(request):
     if not request.user.is_staff:
         return redirect('home')
 
-    section = request.GET.get('section', 'stats')
+    section = request.GET.get('section', 'orders')
     period_param = request.GET.get('period', 'today')
 
-    context = {
-        'section': section,
-        'stats': _build_stats(period_param),
-    }
+    context = {'section': section}
     if section == 'stats':
+        context['stats'] = _build_stats(period_param)
         context.update(build_admin_analytics_context(request))
 
     if section == 'users':
@@ -1153,6 +1170,10 @@ def admin_panel(request):
         context.update(_build_custom_print_orders_context(request))
     elif section == 'orders':
         context.update(_build_orders_context(request))
+    elif section in {'marketplace_feeds', 'feeds'}:
+        from storefront.views.feeds_admin import build_feed_admin_context
+        context['section'] = 'marketplace_feeds'
+        context.update(build_feed_admin_context(request))
     elif section == 'collaboration':
         context.update(_build_collaboration_context())
     elif section == 'dispatcher':

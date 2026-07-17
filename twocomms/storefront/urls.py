@@ -164,6 +164,41 @@ urlpatterns = [
     # admin panel
     path('admin-panel/', admin_panel_view, name='admin_panel'),
     path(
+        'admin-panel/feeds/create/',
+        _module_view('storefront.views.feeds_admin', 'admin_marketplace_feed_create'),
+        name='admin_marketplace_feed_create',
+    ),
+    path(
+        'admin-panel/feeds/<int:feed_id>/update/',
+        _module_view('storefront.views.feeds_admin', 'admin_marketplace_feed_update'),
+        name='admin_marketplace_feed_update',
+    ),
+    path(
+        'admin-panel/feeds/<int:feed_id>/duplicate/',
+        _module_view('storefront.views.feeds_admin', 'admin_marketplace_feed_duplicate'),
+        name='admin_marketplace_feed_duplicate',
+    ),
+    path(
+        'admin-panel/feeds/<int:feed_id>/delete/',
+        _module_view('storefront.views.feeds_admin', 'admin_marketplace_feed_delete'),
+        name='admin_marketplace_feed_delete',
+    ),
+    path(
+        'admin-panel/feeds/<int:feed_id>/product-rule/',
+        _module_view('storefront.views.feeds_admin', 'admin_marketplace_feed_product_rule'),
+        name='admin_marketplace_feed_product_rule',
+    ),
+    path(
+        'admin-panel/feeds/<int:feed_id>/validate/',
+        _module_view('storefront.views.feeds_admin', 'admin_marketplace_feed_validate'),
+        name='admin_marketplace_feed_validate',
+    ),
+    path(
+        'admin-panel/feeds/<int:feed_id>/regenerate/',
+        _module_view('storefront.views.feeds_admin', 'admin_marketplace_feed_regenerate'),
+        name='admin_marketplace_feed_regenerate',
+    ),
+    path(
         'admin-panel/blog/category/create/',
         _module_view('storefront.views.blog', 'admin_blog_category_create'),
         name='admin_blog_category_create',
@@ -555,6 +590,11 @@ urlpatterns = [
     path('products_feed.xml', views.uaprom_products_feed, name='uaprom_products_feed'),
     # New Dynamic Prom.ua feed
     path('prom-feed.xml', views.prom_feed_xml, name='prom_feed_xml'),
+    path(
+        'feeds/<slug:slug>.xml',
+        _module_view('storefront.views.feeds_admin', 'custom_marketplace_feed'),
+        name='custom_marketplace_feed',
+    ),
     # Try to intercept media path (might be blocked by Nginx, but worth adding for user request)
     path('media/prom-feed.xml', views.prom_feed_xml, name='prom_feed_xml_legacy_path'),
 

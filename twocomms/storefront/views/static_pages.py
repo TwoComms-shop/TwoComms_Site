@@ -64,6 +64,7 @@ from storefront.services.marketplace_feeds import (
     build_rozetka_feed_xml,
     build_uaprom_products_feed_xml,
 )
+from storefront.services.feed_registry import get_system_feed
 from storefront.services.size_guides import build_public_size_guide_blocks
 from storefront.support_content import (
     FOOTER_CONTENT,
@@ -1326,7 +1327,8 @@ def google_merchant_feed(request):
     Генерирует XML feed для Google Shopping.
     """
     xml_payload = build_google_merchant_feed_xml(
-        base_url=_feed_base_url()
+        base_url=_feed_base_url(),
+        feed=get_system_feed("google"),
     )
     response = HttpResponse(xml_payload, content_type="application/xml; charset=utf-8")
     response["Content-Disposition"] = 'inline; filename="google_merchant_feed.xml"'
@@ -1336,7 +1338,8 @@ def google_merchant_feed(request):
 def rozetka_feed_xml(request):
     """Dynamic Rozetka XML/YML feed."""
     xml_payload = build_rozetka_feed_xml(
-        base_url=_feed_base_url()
+        base_url=_feed_base_url(),
+        feed=get_system_feed("rozetka"),
     )
     response = HttpResponse(xml_payload, content_type="application/xml; charset=utf-8")
     response["Content-Disposition"] = 'inline; filename="rozetka-feed.xml"'
@@ -1346,7 +1349,8 @@ def rozetka_feed_xml(request):
 def kasta_feed_xml(request):
     """Dynamic Kasta XML/YML feed."""
     xml_payload = build_kasta_feed_xml(
-        base_url=_feed_base_url()
+        base_url=_feed_base_url(),
+        feed=get_system_feed("kasta"),
     )
     response = HttpResponse(xml_payload, content_type="application/xml; charset=utf-8")
     response["Content-Disposition"] = 'inline; filename="kasta-feed.xml"'
@@ -1356,7 +1360,8 @@ def kasta_feed_xml(request):
 def buyme_feed_xml(request):
     """Dynamic BuyMe XML/YML feed."""
     xml_payload = build_buyme_feed_xml(
-        base_url=_feed_base_url()
+        base_url=_feed_base_url(),
+        feed=get_system_feed("buyme"),
     )
     response = HttpResponse(xml_payload, content_type="application/xml; charset=utf-8")
     response["Content-Disposition"] = 'inline; filename="buyme-feed.xml"'
@@ -1375,7 +1380,8 @@ def uaprom_products_feed(request):
     - Использует full_description если доступно
     """
     xml_payload = build_uaprom_products_feed_xml(
-        base_url=_feed_base_url()
+        base_url=_feed_base_url(),
+        feed=get_system_feed("bezzet"),
     )
     response = HttpResponse(xml_payload, content_type="application/xml; charset=utf-8")
     response["Content-Disposition"] = 'inline; filename="products_feed.xml"'
@@ -2101,7 +2107,8 @@ def prom_feed_xml(request):
     URL: /prom-feed.xml
     """
     xml_payload = build_prom_feed_xml(
-        base_url=_feed_base_url()
+        base_url=_feed_base_url(),
+        feed=get_system_feed("prom"),
     )
     response = HttpResponse(xml_payload, content_type="application/xml; charset=utf-8")
     response["Content-Disposition"] = 'inline; filename="prom-feed.xml"'

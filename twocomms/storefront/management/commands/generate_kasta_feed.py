@@ -2,7 +2,8 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand
 
-from storefront.services.marketplace_feeds import build_kasta_feed_xml, iter_feed_offers, resolve_base_url
+from storefront.services.marketplace_feeds import build_kasta_feed_xml, build_profile_offers, iter_feed_offers, resolve_base_url
+from storefront.services.feed_registry import get_system_feed
 
 
 class Command(BaseCommand):
@@ -29,7 +30,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         base_url = resolve_base_url(options["base_url"])
-        offers = iter_feed_offers(base_url)
+        feed = get_system_feed("kasta")
+        offers = iter_feed_offers(base_url) if feed is None else build_profile_offers(feed, base_url)
 
         if options["dry_run"]:
             self.stdout.write(
@@ -39,6 +41,6 @@ class Command(BaseCommand):
 
         output_path = Path(options["output"])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(build_kasta_feed_xml(base_url=base_url))
+        output_path.write_bytes(build_kasta_feed_xml(base_url=base_url, feed=feed))
 
         self.stdout.write(self.style.SUCCESS(f"Kasta фид создан: {output_path} ({len(offers)} офферов)"))

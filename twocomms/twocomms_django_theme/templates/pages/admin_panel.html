@@ -876,17 +876,21 @@
             Адмін-панель
           </h1>
       <div class="admin-nav">
+        <a href="?section=orders" class="admin-nav-item {% if section == 'orders' %}active{% endif %}">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+          </svg>
+          Замовлення
+        </a>
         <a href="?section=stats" class="admin-nav-item {% if section == 'stats' %}active{% endif %}">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/>
           </svg>
           Статистика
         </a>
-        <a href="?section=orders" class="admin-nav-item {% if section == 'orders' %}active{% endif %}">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
-          </svg>
-          Замовлення
+        <a href="?section=marketplace_feeds" class="admin-nav-item {% if section == 'marketplace_feeds' %}active{% endif %}">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="8" cy="5" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="19" r="2"/></svg>
+          Фіди
         </a>
         <a href="?section=users" class="admin-nav-item {% if section == 'users' %}active{% endif %}">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -978,6 +982,9 @@
 
     {% elif section == 'orders' %}
       {% include "partials/admin_orders_section.html" %}
+
+    {% elif section == 'marketplace_feeds' %}
+      {% include "partials/admin_feeds_section.html" %}
 
     {% elif section == 'users' %}
       <!-- Управление пользователями -->
@@ -3086,6 +3093,7 @@ function filterOrders(status, payment) {
   
   const currentUrl = new URL(window.location);
   currentUrl.searchParams.set('section', 'orders');
+  currentUrl.searchParams.delete('page');
   
   /* Устанавливаем фильтры только если они не 'all' */
   if (status !== 'all') {

@@ -1297,6 +1297,184 @@ class ProductImage(models.Model):
         return f'Image for {self.product_id}'
 
 
+class MarketplaceFeedAdapter(models.TextChoices):
+    GOOGLE = "google", "Google Merchant"
+    META = "meta", "Instagram / Meta"
+    ROZETKA = "rozetka", "Rozetka"
+    KASTA = "kasta", "Kasta"
+    BUYME = "buyme", "BuyMe"
+    PROM = "prom", "Prom.ua"
+    BEZZET = "bezzet", "Bezzet"
+
+
+class MarketplaceFeedLanguage(models.TextChoices):
+    UK = "uk", "Українська"
+    RU = "ru", "Російська"
+    UK_RU = "uk_ru", "Українська та російська"
+
+
+class FeedRuleInclusion(models.TextChoices):
+    INHERIT = "inherit", "Успадкувати"
+    INCLUDE = "include", "Включити"
+    EXCLUDE = "exclude", "Виключити"
+
+
+class FeedRuleAvailability(models.TextChoices):
+    INHERIT = "inherit", "Успадкувати"
+    IN_STOCK = "in_stock", "В наявності"
+    OUT_OF_STOCK = "out_of_stock", "Немає в наявності"
+
+
+class MarketplaceFeed(models.Model):
+    name = models.CharField(max_length=120, verbose_name="Назва")
+    slug = models.SlugField(max_length=80, unique=True, verbose_name="Slug")
+    system_key = models.CharField(max_length=40, unique=True, null=True, blank=True, verbose_name="Системний ключ")
+    adapter = models.CharField(max_length=24, choices=MarketplaceFeedAdapter.choices, verbose_name="Адаптер")
+    language = models.CharField(
+        max_length=8,
+        choices=MarketplaceFeedLanguage.choices,
+        default=MarketplaceFeedLanguage.UK,
+        verbose_name="Мова",
+    )
+    is_active = models.BooleanField(default=True, verbose_name="Активний")
+    is_system = models.BooleanField(default=False, verbose_name="Системний")
+    parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="children",
+        verbose_name="Батьківський профіль",
+    )
+    description = models.CharField(max_length=240, blank=True, verbose_name="Опис")
+    rules = models.JSONField(default=dict, blank=True, verbose_name="Правила")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_marketplace_feeds",
+        verbose_name="Створив",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Створено")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Оновлено")
+
+    class Meta:
+        verbose_name = "Marketplace фід"
+        verbose_name_plural = "Marketplace фіди"
+        ordering = ("name", "pk")
+        indexes = [
+            models.Index(fields=("adapter", "is_active"), name="idx_feed_adapter_active"),
+            models.Index(fields=("parent", "is_active"), name="idx_feed_parent_active"),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+    def clean(self):
+        from storefront.services.feed_profiles import (
+            RESERVED_FEED_SLUGS,
+            SYSTEM_FEED_ADAPTERS,
+            validate_feed_rules,
+        )
+
+        super().clean()
+        validate_feed_rules(self.rules)
+
+        if self.slug in RESERVED_FEED_SLUGS and not self.is_system:
+            raise ValidationError({"slug": "Цей slug зарезервований для системного фіда."})
+        if self.is_system:
+            expected_adapter = SYSTEM_FEED_ADAPTERS.get(self.system_key)
+            if expected_adapter != self.adapter:
+                raise ValidationError({"system_key": "Некоректна системна ідентичність фіда."})
+            if self.slug != self.system_key:
+                raise ValidationError({"slug": "Slug системного фіда має відповідати системному ключу."})
+
+        if self.parent is self or (self.parent_id and self.parent_id == self.pk):
+            raise ValidationError({"parent": "Фід не може бути власним батьком."})
+        if self.parent_id:
+            if self.parent.adapter != self.adapter:
+                raise ValidationError({"parent": "Батьківський фід має використовувати той самий адаптер."})
+            ancestor = self.parent
+            visited = {self.pk} if self.pk else set()
+            while ancestor is not None:
+                if ancestor.pk in visited:
+                    raise ValidationError({"parent": "Виявлено цикл успадкування фідів."})
+                visited.add(ancestor.pk)
+                ancestor = ancestor.parent
+
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(
+                "adapter", "is_system", "system_key", "slug"
+            ).first()
+            if original and original["is_system"] and (
+                self.adapter != original["adapter"]
+                or not self.is_system
+                or self.system_key != original["system_key"]
+                or self.slug != original["slug"]
+            ):
+                raise ValidationError("Системний фід не можна перемістити або змінити його ідентичність.")
+            if original and not original["is_system"] and self.is_system:
+                raise ValidationError({"is_system": "Лише міграція може створювати системний фід."})
+
+
+class MarketplaceFeedProductRule(models.Model):
+    feed = models.ForeignKey(
+        MarketplaceFeed,
+        on_delete=models.CASCADE,
+        related_name="product_rules",
+        verbose_name="Фід",
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="marketplace_feed_rules",
+        verbose_name="Товар",
+    )
+    inclusion = models.CharField(
+        max_length=12,
+        choices=FeedRuleInclusion.choices,
+        default=FeedRuleInclusion.INHERIT,
+        verbose_name="Включення",
+    )
+    availability = models.CharField(
+        max_length=12,
+        choices=FeedRuleAvailability.choices,
+        default=FeedRuleAvailability.INHERIT,
+        verbose_name="Наявність",
+    )
+    quantity = models.PositiveIntegerField(null=True, blank=True, verbose_name="Кількість")
+    image_tokens = models.JSONField(default=list, blank=True, verbose_name="Вибрані зображення")
+
+    class Meta:
+        verbose_name = "Правило товару для marketplace фіда"
+        verbose_name_plural = "Правила товарів для marketplace фідів"
+        constraints = [
+            models.UniqueConstraint(fields=("feed", "product"), name="uniq_feed_product_rule"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.feed}: {self.product}"
+
+    def clean(self):
+        super().clean()
+        if not isinstance(self.image_tokens, list) or any(not isinstance(token, str) for token in self.image_tokens):
+            raise ValidationError({"image_tokens": "Має бути списком рядкових токенів зображень."})
+        if not self.product_id:
+            return
+
+        valid_tokens = {"main"} if self.product.main_image else set()
+        valid_tokens.update(f"product:{image.pk}" for image in self.product.images.all())
+        valid_tokens.update(
+            f"variant:{image.pk}"
+            for variant in self.product.color_variants.all()
+            for image in variant.images.all()
+        )
+        unknown_tokens = set(self.image_tokens) - valid_tokens
+        if unknown_tokens:
+            raise ValidationError({"image_tokens": "Вибрані зображення не належать цьому товару."})
+
+
 class ProductFAQ(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='faqs')
     question = models.CharField(max_length=255, verbose_name=_('Питання'))
