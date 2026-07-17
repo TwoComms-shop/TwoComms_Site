@@ -52,7 +52,7 @@ class Migration(migrations.Migration):
                 ('last_status_at', models.DateTimeField(blank=True, null=True)),
                 ('order', models.OneToOneField(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='payment_attempt', to='orders.order')),
                 ('promo_code', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='payment_attempts', to='storefront.promocode')),
-                ('user', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='payment_attempts', to=settings.AUTH_USER_MODEL)),
+                ('user', models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='payment_attempts', to=settings.AUTH_USER_MODEL)),
             ],
             options={
                 'ordering': ['-created', '-pk'],

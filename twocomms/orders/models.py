@@ -380,6 +380,10 @@ class PaymentAttempt(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name='payment_attempts',
+        # Production keeps auth_user on legacy MyISAM; an enforced FK would
+        # make MariaDB reject the entire attempt table. Application-level
+        # identity remains intact and the user row is nullable on deletion.
+        db_constraint=False,
     )
     session_key = models.CharField(max_length=40, blank=True, null=True, db_index=True)
     full_name = models.CharField(max_length=200)
