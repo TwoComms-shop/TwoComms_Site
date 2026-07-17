@@ -133,6 +133,8 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
             "body.cp-studio-active > .bottom-nav",
             "body.cp-studio-active { overflow: visible !important; }",
             "body.cp-studio-active .cp-workbench { grid-template-columns: minmax(0, 1fr); }",
+            "@media (max-width: 1100px)",
+            ".cp-stage-card { display: none !important; }",
             ".cp-page.is-studio-active { overflow: visible; }",
             "prefers-reduced-motion: reduce",
         ):

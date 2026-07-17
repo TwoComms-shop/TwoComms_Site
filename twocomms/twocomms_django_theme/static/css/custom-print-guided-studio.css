@@ -1672,6 +1672,7 @@ body.cp-studio-active { overflow: visible !important; }
   .cp-hero { grid-template-columns: minmax(290px, .8fr) minmax(390px, 1.2fr); }
   .cp-hero-copy { padding-left: 2.75rem; }
   .cp-workbench { grid-template-columns: minmax(0, 1fr); }
+  .cp-stage-card { display: none !important; }
 }
 
 @media (max-width: 760px) {
