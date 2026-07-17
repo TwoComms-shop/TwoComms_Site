@@ -3,7 +3,7 @@ from decimal import Decimal
 from unittest.mock import Mock, patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.urls import reverse
 
 from accounts.models import UserProfile
@@ -121,6 +121,210 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
             'canonical_city': city_label,
             'canonical_np_office': warehouse_label,
         }
+
+    def _monobank_payload(self, **overrides):
+        delivery = self._delivery_payload()
+        payload = {
+            'full_name': 'Guest Buyer',
+            'phone': '0991112233',
+            'np_city_token': delivery['np_city_token'],
+            'np_warehouse_token': delivery['np_warehouse_token'],
+            'pay_type': 'online_full',
+        }
+        payload.update(overrides)
+        return payload
+
+    @patch('storefront.views.monobank.get_facebook_conversions_service')
+    @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification', return_value=True)
+    @patch('storefront.views.monobank.record_lead')
+    @patch('storefront.views.monobank.record_initiate_checkout')
+    @patch('storefront.views.monobank.link_order_to_utm')
+    @patch('storefront.views.monobank._monobank_api_request')
+    def test_monobank_duplicate_submit_reuses_one_order_and_invoice(
+        self,
+        monobank_request_mock,
+        _link_order_mock,
+        _checkout_mock,
+        _record_lead_mock,
+        notification_mock,
+        facebook_service_mock,
+    ):
+        self._set_cart()
+        monobank_request_mock.return_value = {
+            'invoiceId': 'mono-idempotent-1',
+            'pageUrl': 'https://pay.monobank.test/idempotent-1',
+        }
+        facebook_service_mock.return_value = Mock()
+        body = json.dumps(self._monobank_payload())
+
+        first = self.client.post(
+            self.monobank_create_invoice_url,
+            data=body,
+            content_type='application/json',
+            secure=True,
+        )
+        second = self.client.post(
+            self.monobank_create_invoice_url,
+            data=body,
+            content_type='application/json',
+            secure=True,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(second.json()['invoice_id'], 'mono-idempotent-1')
+        self.assertTrue(second.json()['reused'])
+        monobank_request_mock.assert_called_once()
+        notification_mock.assert_called_once()
+        facebook_service_mock.return_value.send_add_payment_info_event.assert_called_once()
+
+    @patch('storefront.views.monobank.get_facebook_conversions_service')
+    @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification', return_value=True)
+    @patch('storefront.views.monobank.record_lead')
+    @patch('storefront.views.monobank.record_initiate_checkout')
+    @patch('storefront.views.monobank.link_order_to_utm')
+    @patch('storefront.views.monobank._monobank_api_request')
+    def test_monobank_changed_delivery_creates_a_distinct_checkout(
+        self,
+        monobank_request_mock,
+        _link_order_mock,
+        _checkout_mock,
+        _record_lead_mock,
+        _notification_mock,
+        facebook_service_mock,
+    ):
+        self._set_cart()
+        monobank_request_mock.side_effect = [
+            {'invoiceId': 'mono-first', 'pageUrl': 'https://pay.monobank.test/first'},
+            {'invoiceId': 'mono-second', 'pageUrl': 'https://pay.monobank.test/second'},
+        ]
+        facebook_service_mock.return_value = Mock()
+
+        first_payload = self._monobank_payload()
+        second_delivery = self._delivery_payload()
+        second_delivery['np_warehouse_token'] = build_warehouse_choice_token({
+            'label': 'Відділення №23, Київ',
+            'ref': 'warehouse-ref-23',
+            'kind': 'branch',
+            'city_ref': 'delivery-city-ref',
+        })
+        second_payload = self._monobank_payload(
+            np_warehouse_token=second_delivery['np_warehouse_token'],
+        )
+
+        self.client.post(
+            self.monobank_create_invoice_url,
+            data=json.dumps(first_payload),
+            content_type='application/json',
+            secure=True,
+        )
+        self.client.post(
+            self.monobank_create_invoice_url,
+            data=json.dumps(second_payload),
+            content_type='application/json',
+            secure=True,
+        )
+
+        self.assertEqual(Order.objects.count(), 2)
+        self.assertEqual(monobank_request_mock.call_count, 2)
+
+    @patch('storefront.views.monobank.get_facebook_conversions_service')
+    @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification', return_value=True)
+    @patch('storefront.views.monobank.record_lead')
+    @patch('storefront.views.monobank.record_initiate_checkout')
+    @patch('storefront.views.monobank.link_order_to_utm')
+    @patch('storefront.views.monobank._monobank_api_request')
+    def test_authenticated_duplicate_across_sessions_reuses_invoice(
+        self,
+        monobank_request_mock,
+        _link_order_mock,
+        _checkout_mock,
+        _record_lead_mock,
+        notification_mock,
+        facebook_service_mock,
+    ):
+        second_client = Client()
+        self.client.force_login(self.user)
+        second_client.force_login(self.user)
+        for client in (self.client, second_client):
+            session = client.session
+            session['cart'] = {
+                'line-1': {'product_id': self.product.id, 'qty': 2, 'size': 'M'}
+            }
+            session.save()
+
+        monobank_request_mock.return_value = {
+            'invoiceId': 'mono-auth-idempotent',
+            'pageUrl': 'https://pay.monobank.test/auth-idempotent',
+        }
+        facebook_service_mock.return_value = Mock()
+        body = json.dumps(self._monobank_payload())
+
+        first = self.client.post(
+            self.monobank_create_invoice_url,
+            data=body,
+            content_type='application/json',
+            secure=True,
+        )
+        second = second_client.post(
+            self.monobank_create_invoice_url,
+            data=body,
+            content_type='application/json',
+            secure=True,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertTrue(second.json()['reused'])
+        monobank_request_mock.assert_called_once()
+        notification_mock.assert_called_once()
+
+    @patch('storefront.views.monobank.get_facebook_conversions_service')
+    @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification', return_value=True)
+    @patch('storefront.views.monobank.record_lead')
+    @patch('storefront.views.monobank.record_initiate_checkout')
+    @patch('storefront.views.monobank.link_order_to_utm')
+    @patch('storefront.views.monobank._monobank_api_request')
+    def test_monobank_api_failure_releases_checkout_for_retry(
+        self,
+        monobank_request_mock,
+        _link_order_mock,
+        _checkout_mock,
+        _record_lead_mock,
+        notification_mock,
+        facebook_service_mock,
+    ):
+        from storefront.views.monobank import MonobankAPIError
+
+        self._set_cart()
+        monobank_request_mock.side_effect = [
+            MonobankAPIError('temporary failure'),
+            {'invoiceId': 'mono-retry', 'pageUrl': 'https://pay.monobank.test/retry'},
+        ]
+        facebook_service_mock.return_value = Mock()
+        body = json.dumps(self._monobank_payload())
+
+        failed = self.client.post(
+            self.monobank_create_invoice_url,
+            data=body,
+            content_type='application/json',
+            secure=True,
+        )
+        retried = self.client.post(
+            self.monobank_create_invoice_url,
+            data=body,
+            content_type='application/json',
+            secure=True,
+        )
+
+        self.assertFalse(failed.json()['success'])
+        self.assertTrue(retried.json()['success'])
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(Order.objects.get().payment_invoice_id, 'mono-retry')
+        self.assertEqual(monobank_request_mock.call_count, 2)
+        notification_mock.assert_called_once()
 
     def test_profile_update_requires_signed_nova_poshta_selection(self):
         self.client.login(username='np-user', password='testpass123')
@@ -736,11 +940,11 @@ class NovaPoshtaCheckoutValidationTests(TestCase):
         self.assertTrue(response.json()['success'])
         order = Order.objects.get()
         item = order.items.get()
-        self.assertEqual(order.total_sum, Decimal('340'))
-        self.assertEqual(item.unit_price, Decimal('170'))
+        self.assertEqual(order.total_sum, Decimal('370'))
+        self.assertEqual(item.unit_price, Decimal('185'))
         self.assertEqual(item.color_variant_id, variant.pk)
         invoice_payload = monobank_request_mock.call_args.kwargs['json_payload']
-        self.assertEqual(invoice_payload['amount'], 34_000)
+        self.assertEqual(invoice_payload['amount'], 37_000)
 
     @patch('storefront.views.monobank.get_facebook_conversions_service')
     @patch('orders.telegram_notifications.TelegramNotifier.send_new_order_notification')

@@ -197,7 +197,9 @@ def get_payment_status_label(value: Any) -> str:
 
 
 def build_order_payment_snapshot(order) -> dict[str, Any]:
-    total_sum = NovaPoshtaDocumentService._as_money(getattr(order, "total_sum", 0))
+    gross_total = NovaPoshtaDocumentService._as_money(getattr(order, "total_sum", 0))
+    discount_amount = NovaPoshtaDocumentService._as_money(getattr(order, "discount_amount", 0))
+    payable_total = max(gross_total - discount_amount, Decimal("0.00"))
     pay_type = canonicalize_order_pay_type(getattr(order, "pay_type", ""))
     payment_status = canonicalize_payment_status(getattr(order, "payment_status", ""))
 
@@ -211,20 +213,37 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
     if payment_status == "paid":
         cod_amount = Decimal("0.00")
     elif pay_type == "prepay_200":
-        cod_amount = max(total_sum - prepayment_amount, Decimal("0.00"))
+        cod_amount = max(payable_total - prepayment_amount, Decimal("0.00"))
     elif pay_type == "cod":
-        cod_amount = max(total_sum, Decimal("0.00"))
+        cod_amount = payable_total
     else:
         cod_amount = Decimal("0.00")
+
+    if payment_status == "paid":
+        paid_amount = payable_total
+    elif payment_status == "prepaid":
+        paid_amount = prepayment_amount
+    else:
+        paid_amount = Decimal("0.00")
 
     return {
         "payment_status": payment_status,
         "payment_status_label": get_payment_status_label(payment_status),
         "pay_type": pay_type,
-        "total_sum": f"{total_sum:.2f}",
-        "total_sum_value": total_sum,
-        "declared_cost": f"{total_sum:.2f}",
-        "declared_cost_value": total_sum,
+        # total_sum remains a compatibility alias, now with the unambiguous
+        # meaning expected by payment and delivery consumers: amount due.
+        "total_sum": f"{payable_total:.2f}",
+        "total_sum_value": payable_total,
+        "gross_total": f"{gross_total:.2f}",
+        "gross_total_value": gross_total,
+        "discount_amount": f"{discount_amount:.2f}",
+        "discount_amount_value": discount_amount,
+        "payable_total": f"{payable_total:.2f}",
+        "payable_total_value": payable_total,
+        "paid_amount": f"{paid_amount:.2f}",
+        "paid_amount_value": paid_amount,
+        "declared_cost": f"{payable_total:.2f}",
+        "declared_cost_value": payable_total,
         "prepayment_amount": f"{prepayment_amount:.2f}",
         "prepayment_amount_value": prepayment_amount,
         "cod_amount": f"{cod_amount:.2f}",

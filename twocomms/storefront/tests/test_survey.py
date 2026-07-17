@@ -18,7 +18,7 @@ from storefront.services.survey_engine import (
     clear_survey_definition_cache,
     load_survey_definition,
 )
-from storefront.services.survey_reports import build_survey_report
+from storefront.services.survey_reports import AnonymousSurveySession, build_survey_report, resolve_report_path
 from storefront.tasks import queue_survey_report
 
 
@@ -262,8 +262,18 @@ class SurveyReportTests(TestCase):
             self.assertEqual(signals["B1"].value, "Значення")
             self.assertIn("Відповідей", [signals.cell(row=row, column=1).value for row in range(2, 12)])
 
+    def test_anonymous_report_paths_do_not_overwrite_each_other(self):
+        first = AnonymousSurveySession({"report_id": "visitor-one"})
+        second = AnonymousSurveySession({"report_id": "visitor-two"})
+
+        self.assertNotEqual(
+            resolve_report_path(first, TEST_DEFINITION),
+            resolve_report_path(second, TEST_DEFINITION),
+        )
+
 
 class SurveyTaskQueueTests(TestCase):
+    @override_settings(DEBUG=True)
     def test_background_survey_report_queue_returns_without_inline_report_generation(self):
         with patch("storefront.tasks.send_survey_report_task") as report_task, patch("storefront.tasks.Thread") as thread_cls:
             queued = queue_survey_report(123, "FINAL", background=True)

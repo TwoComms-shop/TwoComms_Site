@@ -10,9 +10,14 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import requests
+from django.db import transaction
 from django.utils import timezone
 
-from orders.nova_poshta_documents import TELEGRAM_CREATE_NP_WAYBILL_ACTION, TELEGRAM_DELETE_NP_WAYBILL_ACTION
+from orders.nova_poshta_documents import (
+    TELEGRAM_CREATE_NP_WAYBILL_ACTION,
+    TELEGRAM_DELETE_NP_WAYBILL_ACTION,
+    build_order_payment_snapshot,
+)
 from orders.status_management import get_telegram_status_action
 from orders.telegram_status_links import build_order_action_url, build_order_status_action_url
 # W3-1 (TD-015/TD-003): битый импорт удалён. Раньше здесь пытались
@@ -28,6 +33,9 @@ logger = logging.getLogger(__name__)
 _SEND_MESSAGE_MAX_ATTEMPTS = 3
 _SEND_MESSAGE_RETRY_BASE_SECONDS = 0.1
 _SEND_MESSAGE_RETRY_MAX_SECONDS = 0.25
+_SEND_DOCUMENT_MAX_ATTEMPTS = 3
+_SEND_DOCUMENT_RETRY_BASE_SECONDS = 0.2
+_SEND_DOCUMENT_RETRY_MAX_SECONDS = 0.6
 
 
 def _parse_chat_ids(raw_value):
@@ -266,6 +274,109 @@ class TelegramNotifier:
         )
         time.sleep(delay)
 
+    def _post_send_document(self, *, file_path, filename, data, parse_mode, target_index, target_count):
+        """Send one document with bounded retries for transient Telegram failures."""
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendDocument"
+        request_data = dict(data)
+        request_data["parse_mode"] = parse_mode
+        for attempt in range(1, _SEND_DOCUMENT_MAX_ATTEMPTS + 1):
+            status_code = None
+            try:
+                with open(file_path, "rb") as file_obj:
+                    files = {"document": (filename or Path(file_path).name, file_obj)}
+                    response = requests.post(url, data=request_data, files=files, timeout=30)
+                status_code = response.status_code
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                if attempt == _SEND_DOCUMENT_MAX_ATTEMPTS:
+                    logger.warning(
+                        "telegram_send_document retry_exhausted attempt=%s target_index=%s "
+                        "target_count=%s reason=exception exception_class=%s",
+                        attempt,
+                        target_index,
+                        target_count,
+                        type(exc).__name__,
+                    )
+                    return None
+                logger.warning(
+                    "telegram_send_document retry_scheduled attempt=%s target_index=%s "
+                    "target_count=%s reason=exception exception_class=%s",
+                    attempt,
+                    target_index,
+                    target_count,
+                    type(exc).__name__,
+                )
+                delay = min(_SEND_DOCUMENT_RETRY_BASE_SECONDS * attempt, _SEND_DOCUMENT_RETRY_MAX_SECONDS)
+                time.sleep(delay)
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "telegram_send_document delivery_failed attempt=%s target_index=%s "
+                    "target_count=%s exception_class=%s",
+                    attempt,
+                    target_index,
+                    target_count,
+                    type(exc).__name__,
+                )
+                return None
+
+            if status_code == 429 or status_code >= 500:
+                if attempt == _SEND_DOCUMENT_MAX_ATTEMPTS:
+                    logger.warning(
+                        "telegram_send_document retry_exhausted attempt=%s target_index=%s "
+                        "target_count=%s reason=http_status status=%s",
+                        attempt,
+                        target_index,
+                        target_count,
+                        status_code,
+                    )
+                    return None
+                logger.warning(
+                    "telegram_send_document retry_scheduled attempt=%s target_index=%s "
+                    "target_count=%s reason=http_status status=%s",
+                    attempt,
+                    target_index,
+                    target_count,
+                    status_code,
+                )
+                delay = min(_SEND_DOCUMENT_RETRY_BASE_SECONDS * attempt, _SEND_DOCUMENT_RETRY_MAX_SECONDS)
+                time.sleep(delay)
+                continue
+
+            try:
+                payload = response.json()
+            except ValueError:
+                logger.warning(
+                    "telegram_send_document api_rejected attempt=%s target_index=%s "
+                    "target_count=%s status=%s reason=invalid_json",
+                    attempt,
+                    target_index,
+                    target_count,
+                    status_code,
+                )
+                return None
+
+            if payload and payload.get("ok"):
+                if attempt > 1:
+                    logger.info(
+                        "telegram_send_document retry_recovered attempt=%s target_index=%s "
+                        "target_count=%s",
+                        attempt,
+                        target_index,
+                        target_count,
+                    )
+                return payload
+
+            logger.warning(
+                "telegram_send_document api_rejected attempt=%s target_index=%s "
+                "target_count=%s status=%s",
+                attempt,
+                target_index,
+                target_count,
+                status_code,
+            )
+            return None
+        return None
+
     def send_message(self, message, parse_mode='HTML', reply_markup=None, return_results=False):
         """Отправляет сообщение в Telegram админу"""
         if not self.is_configured():
@@ -337,26 +448,33 @@ class TelegramNotifier:
     def send_admin_document(self, file_path, caption, filename=None, parse_mode='HTML'):
         """Отправляет документ админу в Telegram."""
         if not self.is_configured():
+            logger.warning("telegram_send_document not_configured")
             return False
 
         target_ids = self._resolve_targets(admin=True)
         if not target_ids:
+            logger.warning("telegram_send_document no_targets")
             return False
-        try:
-            success = False
-            for target_id in target_ids:
-                with open(file_path, 'rb') as file_obj:
-                    files = {'document': (filename or Path(file_path).name, file_obj)}
-                    data = {
-                        'chat_id': target_id,
-                        'caption': caption,
-                        'parse_mode': parse_mode
-                    }
-                    success = self._post("sendDocument", data=data, files=files, timeout=30) or success
-            return success
-        except Exception as e:
-            print(f"Ошибка при отправке документа в Telegram: {e}")
-            return False
+        delivered_count = 0
+        target_count = len(target_ids)
+        for target_index, target_id in enumerate(target_ids, start=1):
+            payload = self._post_send_document(
+                file_path=file_path,
+                filename=filename,
+                data={"chat_id": target_id, "caption": caption},
+                parse_mode=parse_mode,
+                target_index=target_index,
+                target_count=target_count,
+            )
+            if payload and payload.get("ok"):
+                delivered_count += 1
+        if 0 < delivered_count < target_count:
+            logger.warning(
+                "telegram_send_document partial_delivery delivered_count=%s target_count=%s",
+                delivered_count,
+                target_count,
+            )
+        return delivered_count > 0
 
     def send_admin_photo(self, file_path, caption="", parse_mode='HTML'):
         """Отправляет фото админу."""
@@ -512,10 +630,14 @@ class TelegramNotifier:
             str: Отформатированная информация об оплате
         """
         payment_info = "│  💳 ОПЛАТА:\n"
-
-        # Полу��аем pay_type и payment_status
-        pay_type = getattr(order, 'pay_type', 'online_full')
-        payment_status = getattr(order, 'payment_status', 'unpaid')
+        snapshot = build_order_payment_snapshot(order)
+        pay_type = snapshot['pay_type']
+        payment_status = snapshot['payment_status']
+        gross = self._fmt_amount(snapshot['gross_total_value'])
+        discount = self._fmt_amount(snapshot['discount_amount_value'])
+        payable = self._fmt_amount(snapshot['payable_total_value'])
+        prepayment = self._fmt_amount(snapshot['prepayment_amount_value'])
+        remaining = self._fmt_amount(snapshot['remaining_amount_value'])
 
         # Определяем тип оплаты
         if pay_type == 'online_full' or pay_type == 'full':
@@ -523,46 +645,46 @@ class TelegramNotifier:
 
             if payment_status == 'paid':
                 payment_info += "│     ✅ ОПЛАЧЕНО ПОВНІСТЮ\n"
-                payment_info += f"│     💰 Сума: {order.total_sum} грн\n"
+                payment_info += f"│     💰 Сплачено: {payable} грн\n"
             elif payment_status == 'checking':
-                payment_info += "│     ⏳ НА ПЕРЕВІРЦІ\n"
-                payment_info += f"│     💰 Сума: {order.total_sum} грн\n"
+                payment_info += "│     ⏳ РАХУНОК СТВОРЕНО, ОЧІКУЄМО ОПЛАТУ\n"
+                payment_info += f"│     💰 До сплати: {payable} грн\n"
             else:
                 payment_info += "│     ⏳ Очікується оплата\n"
-                payment_info += f"│     💰 До сплати: {order.total_sum} грн\n"
+                payment_info += f"│     💰 До сплати: {payable} грн\n"
 
         elif pay_type == 'prepay_200' or pay_type == 'partial':
             payment_info += "│     Тип: Передплата 200 грн\n"
 
-            prepay_amount = order.get_prepayment_amount() if hasattr(order, 'get_prepayment_amount') else 200
-            remaining = order.get_remaining_amount() if hasattr(order, 'get_remaining_amount') else (order.total_sum - prepay_amount)
-
             if payment_status == 'prepaid' or payment_status == 'partial':
-                payment_info += f"│     ✅ ПЕРЕДПЛАТА ВНЕСЕНА: {prepay_amount} грн\n"
+                payment_info += f"│     ✅ ПЕРЕДПЛАТА ВНЕСЕНА: {prepayment} грн\n"
                 payment_info += f"│     📦 Залишок (при отриманні): {remaining} грн\n"
-                payment_info += f"│     💰 Всього: {order.total_sum} грн\n"
+                payment_info += f"│     💰 До сплати за замовлення: {payable} грн\n"
             elif payment_status == 'paid':
-                payment_info += f"│     ✅ ОПЛАЧЕНО ПОВНІСТЮ: {order.total_sum} грн\n"
+                payment_info += f"│     ✅ ОПЛАЧЕНО ПОВНІСТЮ: {payable} грн\n"
                 payment_info += "│     (Передплата + залишок при отриманні)\n"
             else:
-                payment_info += f"│     ⏳ Очікується передплата: {prepay_amount} грн\n"
+                payment_info += f"│     ⏳ Очікується передплата: {prepayment} грн\n"
                 payment_info += f"│     📦 Залишок (при отриманні): {remaining} грн\n"
-                payment_info += f"│     💰 Всього: {order.total_sum} грн\n"
+                payment_info += f"│     💰 До сплати за замовлення: {payable} грн\n"
 
         elif pay_type == 'cod':
             payment_info += "│     Тип: Оплата при отриманні\n"
 
             if payment_status == 'paid':
                 payment_info += "│     ✅ ОПЛАЧЕНО\n"
-                payment_info += f"│     💰 Сума: {order.total_sum} грн\n"
+                payment_info += f"│     💰 Сплачено: {payable} грн\n"
             else:
                 payment_info += "│     📦 Накладений платіж\n"
-                payment_info += f"│     💰 До сплати: {order.total_sum} грн\n"
+                payment_info += f"│     💰 До сплати: {payable} грн\n"
         else:
             # Fallback для неизвестных типов
             payment_info += f"│     Тип: {pay_type}\n"
             payment_info += f"│     Статус: {order.get_payment_status_display()}\n"
-            payment_info += f"│     💰 Сума: {order.total_sum} грн\n"
+            payment_info += f"│     💰 До сплати: {payable} грн\n"
+
+        if snapshot['discount_amount_value'] > 0:
+            payment_info += f"│     🧾 Товари: {gross} грн · знижка: -{discount} грн\n"
 
         return payment_info
 
@@ -573,7 +695,7 @@ class TelegramNotifier:
 
         # Подсчитываем товары
         total_items = 0
-        subtotal = 0
+        subtotal = Decimal('0.00')
 
         for item in order.items.all():
             total_items += item.qty
@@ -637,12 +759,19 @@ class TelegramNotifier:
         full_block += f"│     Всего товаров: {total_items} шт.\n"
         full_block += f"│     Сумма товаров: {subtotal} грн\n"
 
-        if order.promo_code:
-            full_block += f"│     Промокод: {order.promo_code.code}\n"
-            full_block += f"│     Скидка: -{order.discount_amount} грн\n"
+        snapshot = build_order_payment_snapshot(order)
+        gross = self._fmt_amount(snapshot['gross_total_value'])
+        discount = self._fmt_amount(snapshot['discount_amount_value'])
+        payable = self._fmt_amount(snapshot['payable_total_value'])
+
+        if snapshot['discount_amount_value'] > 0:
+            if order.promo_code:
+                full_block += f"│     Промокод: {order.promo_code.code}\n"
+            full_block += f"│     Знижка: -{discount} грн\n"
 
         full_block += f"├─────────────────────────────────────────┤\n"
-        full_block += f"│  💳 ИТОГО К ОПЛАТЕ: {order.total_sum} грн\n"
+        full_block += f"│  💰 Сума товарів: {gross} грн\n"
+        full_block += f"│  💳 ДО СПЛАТИ: {payable} грн\n"
         full_block += f"└─────────────────────────────────────────┘"
         full_block += "</pre>"
 
@@ -862,6 +991,21 @@ class TelegramNotifier:
                 chat = result.get("chat") or {}
                 refs.append((chat.get("id"), result.get("message_id")))
             _save_order_admin_message_refs(order, refs)
+            try:
+                from orders.models import Order
+
+                with transaction.atomic():
+                    current = Order.objects.select_for_update().get(pk=order.pk)
+                    payload = current.payment_payload if isinstance(current.payment_payload, dict) else {}
+                    notifications = payload.setdefault('telegram_notifications', {})
+                    notifications['order_notification_sent'] = True
+                    notifications['order_notification_sent_at'] = timezone.now().isoformat()
+                    notifications['order_notification_status'] = current.payment_status
+                    current.payment_payload = payload
+                    current.save(update_fields=['payment_payload'])
+                    order.payment_payload = payload
+            except Exception:
+                logger.exception('Failed to persist Telegram delivery marker for order %s', order.pk)
         return bool(sent_results)
 
     def update_order_notification_message(self, order, *, clear_actions=False):
@@ -976,6 +1120,16 @@ class TelegramNotifier:
         if not self.is_configured():
             return False
 
+        return self.send_message(self.format_admin_payment_status_update(
+            order,
+            old_status=old_status,
+            new_status=new_status,
+            pay_type=pay_type,
+        ))
+
+    def format_admin_payment_status_update(self, order, old_status, new_status, pay_type=None):
+        """Build a clear payment event message with gross, discount and paid values."""
+
         status_map = {
             'paid': 'Оплачено повністю',
             'prepaid': 'Внесена передплата',
@@ -995,7 +1149,17 @@ class TelegramNotifier:
         old_display = status_map.get(old_status, old_status or '—')
         new_display = status_map.get(new_status, new_status or '—')
 
-        message = f"""💳 <b>ОПЛАТА ОНОВЛЕНА #{order.order_number}</b>
+        snapshot = build_order_payment_snapshot(order)
+        gross = self._fmt_amount(snapshot['gross_total_value'])
+        discount = self._fmt_amount(snapshot['discount_amount_value'])
+        payable = self._fmt_amount(snapshot['payable_total_value'])
+        prepayment = self._fmt_amount(snapshot['prepayment_amount_value'])
+        remaining = self._fmt_amount(snapshot['remaining_amount_value'])
+        successful = new_status in ('paid', 'prepaid', 'partial')
+        heading = 'ОПЛАТУ ОТРИМАНО' if successful else 'ОПЛАТА ОНОВЛЕНА'
+        paid_now = prepayment if new_status in ('prepaid', 'partial') else payable
+
+        message = f"""💳 <b>{heading} #{order.order_number}</b>
 
 👤 {order.full_name}
 📞 {order.phone}
@@ -1003,9 +1167,18 @@ class TelegramNotifier:
 
 Тип оплати: {pay_type_label}
 Статус: {old_display} → <b>{new_display}</b>
-Сума замовлення: {order.total_sum} грн"""
+Сума товарів: {gross} грн"""
 
-        return self.send_message(message)
+        if snapshot['discount_amount_value'] > 0:
+            promo = f" ({order.promo_code.code})" if getattr(order, 'promo_code_id', None) else ''
+            message += f"\nЗнижка: -{discount} грн{promo}"
+        message += f"\nДо сплати: {payable} грн"
+        if successful:
+            message += f"\n✅ Сплачено: {paid_now} грн"
+        if new_status in ('prepaid', 'partial'):
+            message += f"\n📦 Залишок при отриманні: {remaining} грн"
+
+        return message
 
     def send_admin_ttn_added_notification(self, order):
         """

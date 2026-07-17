@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.db import models, IntegrityError, transaction
 from django.db.models import Max
@@ -77,6 +79,13 @@ class Order(models.Model):
     payment_provider = models.CharField(max_length=50, blank=True, default='')
     payment_invoice_id = models.CharField(max_length=128, blank=True, default='')
     payment_payload = models.JSONField(blank=True, null=True)
+    checkout_idempotency_key = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        editable=False,
+    )
     nova_poshta_recipient_ref = models.CharField(max_length=36, blank=True, null=True)
     nova_poshta_recipient_contact_ref = models.CharField(max_length=36, blank=True, null=True)
     nova_poshta_document_ref = models.CharField(max_length=36, blank=True, null=True)
@@ -281,14 +290,14 @@ class Order(models.Model):
         """Возвращает сумму предоплаты для pay_type=prepay_200"""
         from decimal import Decimal
         if self.pay_type == 'prepay_200':
-            return Decimal('200.00')
+            return min(Decimal('200.00'), self.final_total)
         return Decimal('0.00')
 
     def get_remaining_amount(self):
         """Возвращает остаток к оплате после предоплаты"""
         if self.pay_type == 'prepay_200':
-            return self.total_sum - self.get_prepayment_amount()
-        return self.total_sum
+            return max(self.final_total - self.get_prepayment_amount(), Decimal('0.00'))
+        return self.final_total
 
     @classmethod
     def get_processing_count(cls):
@@ -303,7 +312,10 @@ class Order(models.Model):
     @property
     def final_total(self):
         """Итоговая сумма с учетом скидки"""
-        return self.total_sum
+        return max(
+            Decimal(self.total_sum or 0) - Decimal(self.discount_amount or 0),
+            Decimal('0.00'),
+        )
 
     @property
     def total_points(self):
@@ -328,7 +340,7 @@ class Order(models.Model):
             # Преобразуем discount в Decimal для совместимости
             discount_decimal = Decimal(str(discount))
             self.discount_amount = discount_decimal
-            self.total_sum = subtotal - discount_decimal
+            self.total_sum = subtotal
             self.promo_code = promo_code
             return True
 

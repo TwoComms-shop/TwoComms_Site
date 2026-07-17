@@ -1,4 +1,6 @@
 from http.client import RemoteDisconnected
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 import requests
@@ -167,6 +169,68 @@ class TelegramSendMessageRetryTests(SimpleTestCase):
                 self.make_notifier()._post_json("sendDocument", data={})
 
         post.assert_called_once()
+
+    def test_document_tls_disconnect_then_success_retries(self):
+        post = Mock(
+            side_effect=[
+                requests.exceptions.SSLError("document tls details stay private"),
+                TelegramResponse(200, {"ok": True, "result": {"message_id": 24}}),
+            ]
+        )
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "report.xlsx"
+            path.write_bytes(b"xlsx")
+            with patch("orders.telegram_notifications.requests.post", post), patch(
+                "time.sleep"
+            ) as sleep, self.assertLogs("orders.telegram_notifications", level="INFO") as logs:
+                delivered = self.make_notifier().send_admin_document(str(path), "report")
+
+        self.assertTrue(delivered)
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once()
+        self.assertIn("telegram_send_document retry_recovered", "\n".join(logs.output))
+
+    def test_document_http_rejection_is_not_retried(self):
+        post = Mock(return_value=TelegramResponse(400, {"ok": False, "description": "private"}))
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "report.xlsx"
+            path.write_bytes(b"xlsx")
+            with patch("orders.telegram_notifications.requests.post", post), patch(
+                "time.sleep"
+            ) as sleep, self.assertLogs("orders.telegram_notifications", level="WARNING"):
+                delivered = self.make_notifier().send_admin_document(str(path), "report")
+
+        self.assertFalse(delivered)
+        post.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_document_timeout_exhaustion_is_bounded_and_sanitized(self):
+        post = Mock(side_effect=requests.Timeout("document timeout secret"))
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "private-report-name.xlsx"
+            path.write_bytes(b"xlsx")
+            with patch("orders.telegram_notifications.requests.post", post), patch(
+                "time.sleep"
+            ) as sleep, patch("builtins.print") as print_mock, self.assertLogs(
+                "orders.telegram_notifications", level="WARNING"
+            ) as logs:
+                delivered = self.make_notifier().send_admin_document(
+                    str(path), "private report caption"
+                )
+
+        output = "\n".join(logs.output)
+        self.assertFalse(delivered)
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        print_mock.assert_not_called()
+        self.assertIn("telegram_send_document retry_exhausted", output)
+        for secret in (
+            "document timeout secret",
+            "private-report-name.xlsx",
+            "private report caption",
+            "bot-token-secret",
+        ):
+            self.assertNotIn(secret, output)
 
     def test_personal_remote_disconnect_then_success_uses_shared_retry(self):
         post = Mock(

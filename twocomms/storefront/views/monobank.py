@@ -16,6 +16,7 @@ API финализации: https://monobank.ua/api-docs/acquiring/methods/ia/po
 import logging
 import json
 import base64
+import hashlib
 from decimal import Decimal
 from datetime import timedelta
 
@@ -27,6 +28,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.core.cache import cache
 from django.db import transaction
+from django.urls import reverse
 from django.contrib import messages
 
 import requests
@@ -141,6 +143,111 @@ def _split_custom_cart_entries(custom_cart):
     return approved_leads, approved_keys, pending_keys, missing_price_leads
 
 
+def _build_checkout_idempotency_key(
+    request,
+    *,
+    cart,
+    approved_custom_leads,
+    full_name,
+    phone,
+    email,
+    delivery_refs,
+    city,
+    np_office,
+    pay_type,
+):
+    """Stable identity for one logical Monobank checkout attempt."""
+    if request.user.is_authenticated:
+        buyer_identity = f"user:{request.user.pk}"
+    else:
+        buyer_identity = f"session:{request.session.session_key}"
+
+    state = {
+        'version': 1,
+        'buyer': buyer_identity,
+        'cart': cart or {},
+        'custom': [
+            {'id': lead.pk, 'price': str(lead.final_price_value)}
+            for lead in sorted(approved_custom_leads, key=lambda item: item.pk)
+        ],
+        'customer': {
+            'full_name': (full_name or '').strip(),
+            'phone': phone or '',
+            'email': (email or '').strip().lower(),
+        },
+        'delivery': {
+            'city': city or '',
+            'np_office': np_office or '',
+            **delivery_refs,
+        },
+        'pay_type': pay_type,
+        'promo_code_id': request.session.get('promo_code_id'),
+    }
+    serialized = json.dumps(state, sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+
+def _lock_checkout_identity(request):
+    """Serialize matching checkout writers before the unique-key check."""
+    if request.user.is_authenticated:
+        request.user.__class__.objects.select_for_update().only('pk').get(pk=request.user.pk)
+        return
+
+    from django.contrib.sessions.models import Session
+
+    Session.objects.select_for_update().only('session_key').get(
+        session_key=request.session.session_key,
+    )
+
+
+def _invoice_url_from_order(order):
+    payload = order.payment_payload if isinstance(order.payment_payload, dict) else {}
+    if payload.get('invoice_url'):
+        return payload['invoice_url']
+    creation = payload.get('create') if isinstance(payload.get('create'), dict) else {}
+    result = creation.get('result') if isinstance(creation.get('result'), dict) else creation
+    return result.get('pageUrl') or ''
+
+
+def _existing_checkout_response(request, order, approved_custom_keys, pending_custom_keys):
+    invoice_url = _invoice_url_from_order(order)
+    payment_complete = order.payment_status in ('paid', 'prepaid')
+    if not invoice_url and not payment_complete:
+        return JsonResponse({
+            'success': False,
+            'in_progress': True,
+            'retry_after_ms': 500,
+            'error': 'Платіж уже створюється. Зачекайте кілька секунд.',
+        }, status=409)
+
+    request.session['monobank_invoice_id'] = order.payment_invoice_id
+    request.session['monobank_pending_order_id'] = order.pk
+    request.session['monobank_approved_custom_keys'] = approved_custom_keys
+    request.session['monobank_pending_custom_keys'] = pending_custom_keys
+    request.session.modified = True
+
+    if payment_complete:
+        from storefront.views.checkout import remember_order_in_session
+        remember_order_in_session(request, order)
+
+    tracking = (
+        order.payment_payload.get('tracking', {})
+        if isinstance(order.payment_payload, dict)
+        else {}
+    )
+    return JsonResponse({
+        'success': True,
+        'reused': True,
+        'payment_complete': payment_complete,
+        'redirect_url': reverse('order_success', kwargs={'order_id': order.pk}) if payment_complete else '',
+        'invoice_url': invoice_url,
+        'invoice_id': order.payment_invoice_id,
+        'order_id': order.pk,
+        'order_ref': order.order_number,
+        'add_payment_event_id': tracking.get('add_payment_event_id') or order.get_add_payment_event_id(),
+    })
+
+
 def _cleanup_expired_monobank_orders():
     """
     Очищает истекшие Monobank заказы (старше 24 часов).
@@ -149,10 +256,15 @@ def _cleanup_expired_monobank_orders():
         cutoff = timezone.now() - timedelta(hours=24)
         expired = OrderModel.objects.filter(
             payment_provider__in=('monobank', 'monobank_checkout', 'monobank_pay'),
-            status='pending',
-            created_at__lt=cutoff
+            status='new',
+            payment_status__in=('unpaid', 'checking'),
+            created__lt=cutoff,
         )
-        count = expired.update(status='cancelled', payment_status='expired')
+        count = expired.update(
+            status='cancelled',
+            payment_status='unpaid',
+            checkout_idempotency_key=None,
+        )
         if count > 0:
             monobank_logger.info(f'Cleaned up {count} expired Monobank orders')
     except Exception as e:
@@ -562,9 +674,59 @@ def monobank_create_invoice(request):
         except Exception:
             normalized_email = ''
 
+    checkout_idempotency_key = _build_checkout_idempotency_key(
+        request,
+        cart=cart,
+        approved_custom_leads=approved_custom_leads,
+        full_name=full_name,
+        phone=phone,
+        email=normalized_email,
+        delivery_refs=delivery_refs,
+        city=city,
+        np_office=np_office,
+        pay_type=pay_type,
+    )
+
     # Создаем заказ в транзакции
     try:
         with transaction.atomic():
+            _lock_checkout_identity(request)
+            existing_order = (
+                OrderModel.objects.select_related('user')
+                .filter(checkout_idempotency_key=checkout_idempotency_key)
+                .first()
+            )
+            if existing_order:
+                invoice_cutoff = timezone.now() - timedelta(hours=24)
+                if (
+                    existing_order.payment_status not in ('paid', 'prepaid')
+                    and existing_order.created < invoice_cutoff
+                ):
+                    existing_order.status = 'cancelled'
+                    existing_order.payment_status = 'unpaid'
+                    existing_order.checkout_idempotency_key = None
+                    existing_order.save(update_fields=[
+                        'status',
+                        'payment_status',
+                        'checkout_idempotency_key',
+                        'updated',
+                    ])
+                    existing_order = None
+
+            if existing_order:
+                # A worker that died before attaching an invoice must not block
+                # checkout forever. Normal API calls finish well inside 2 min.
+                orphan_cutoff = timezone.now() - timedelta(minutes=2)
+                if not existing_order.payment_invoice_id and existing_order.created < orphan_cutoff:
+                    existing_order.delete()
+                else:
+                    return _existing_checkout_response(
+                        request,
+                        existing_order,
+                        approved_custom_keys,
+                        pending_custom_keys,
+                    )
+
             # Получаем товары из БД
             ids = [item['product_id'] for item in cart.values()]
             prods = Product.objects.in_bulk(ids)
@@ -659,7 +821,8 @@ def monobank_create_invoice(request):
                 total_sum=total_sum,
                 status='new',
                 payment_status='unpaid',
-                payment_provider='monobank_pay'
+                payment_provider='monobank_pay',
+                checkout_idempotency_key=checkout_idempotency_key,
             )
             apply_nova_poshta_refs(order, delivery_refs)
             order.save(update_fields=['np_settlement_ref', 'np_city_ref', 'np_warehouse_ref'])
@@ -1075,6 +1238,7 @@ def monobank_create_invoice(request):
             'history': [],
             'tracking': tracking_context,
             'custom_print_lead_ids': [lead.pk for lead in approved_custom_leads],
+            'invoice_url': invoice_url,
         }
 
         # Добавляем client_ip_address и client_user_agent на верхний уровень для совместимости
@@ -1135,6 +1299,8 @@ def monobank_create_invoice(request):
 
         return JsonResponse({
             'success': True,
+            'reused': False,
+            'payment_complete': False,
             'invoice_url': invoice_url,
             'invoice_id': invoice_id,
             'order_id': order.id,
@@ -1320,6 +1486,10 @@ def _cleanup_after_success(request):
         except Exception:
             monobank_logger.warning('Failed to cleanup approved custom cart entries after successful payment')
 
+    pending_order_id = request.session.get('monobank_pending_order_id')
+    if pending_order_id:
+        OrderModel.objects.filter(pk=pending_order_id).update(checkout_idempotency_key=None)
+
     request.session.pop('cart', None)
     request.session.pop('promo_code', None)
     request.session.pop('promo_code_id', None)
@@ -1383,7 +1553,8 @@ def _apply_monobank_status(order, status_value, payload=None, source='webhook'):
             updated_fields.append('payment_status')
         elif status_lower in MONOBANK_FAILURE_STATUSES:
             order.payment_status = 'unpaid'
-            updated_fields.append('payment_status')
+            order.checkout_idempotency_key = None
+            updated_fields.extend(['payment_status', 'checkout_idempotency_key'])
         else:
             # Unknown status, keep history only.
             order.save(update_fields=['payment_payload'])

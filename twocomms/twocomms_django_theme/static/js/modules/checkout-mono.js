@@ -396,7 +396,7 @@ export function bindMonoCheckout(scope) {
   });
 }
 
-function requestMonobankPay() {
+function requestMonobankPay(retryAttempt = 0) {
   const csrfToken = collectMonoCsrf();
   const guestForm = document.getElementById('guest-form');
   let payload = {};
@@ -465,7 +465,16 @@ function requestMonobankPay() {
     },
     credentials: 'same-origin',
     body: JSON.stringify(payload)
-  }).then(response => response.json().then(data => ({ data, status: response.status, ok: response.ok })).catch(() => ({ data: null, status: response.status, ok: false })));
+  }).then(response => response.json().then(data => ({ data, status: response.status, ok: response.ok })).catch(() => ({ data: null, status: response.status, ok: false })))
+    .then(result => {
+      const data = result.data || {};
+      if (result.status === 409 && data.in_progress && retryAttempt < 20) {
+        const delay = Math.max(250, Math.min(Number(data.retry_after_ms) || 500, 1500));
+        return new Promise(resolve => window.setTimeout(resolve, delay))
+          .then(() => requestMonobankPay(retryAttempt + 1));
+      }
+      return result;
+    });
 }
 
 function startMonobankPay(button, statusEl) {
@@ -493,6 +502,10 @@ function startMonobankPay(button, statusEl) {
     .then(() => requestMonobankPay())
     .then(result => {
       const data = result.data || {};
+      if (result.ok && data.success && data.payment_complete && data.redirect_url) {
+        window.location.href = data.redirect_url;
+        return;
+      }
       if (result.ok && data.success && data.invoice_url) {
         setMonoCheckoutStatus(statusEl, 'success', 'Відкриваємо платіжну сторінку…');
         const analytics = getCheckoutAnalyticsPayload();

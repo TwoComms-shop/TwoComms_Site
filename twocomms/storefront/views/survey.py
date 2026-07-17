@@ -1,6 +1,7 @@
 """Survey views - data-driven survey API endpoints."""
 import json
 import logging
+import uuid
 from typing import Any, Dict
 
 from django.db import IntegrityError, transaction
@@ -91,6 +92,7 @@ def _get_anonymous_survey_state(
         "device_type": (device_data or {}).get("device_type"),
         "user_agent": request.META.get("HTTP_USER_AGENT", "")[:500],
         "awarded_promocode_id": None,
+        "report_id": uuid.uuid4().hex[:16],
         "started_at": timezone.now().isoformat(),
         "last_activity_at": timezone.now().isoformat(),
     }
@@ -201,6 +203,7 @@ def _reset_anonymous_state(request, survey_key: str, device_data: Dict[str, Any]
         "device_type": (device_data or {}).get("device_type"),
         "user_agent": request.META.get("HTTP_USER_AGENT", "")[:500],
         "awarded_promocode_id": None,
+        "report_id": uuid.uuid4().hex[:16],
         "started_at": timezone.now().isoformat(),
         "last_activity_at": timezone.now().isoformat(),
     }
@@ -300,7 +303,13 @@ def _complete_anonymous_session(
     # 2026-05-30: Generate and send survey report for anonymous users synchronously
     try:
         from ..services.survey_reports import send_anonymous_survey_report
-        send_anonymous_survey_report(state, definition, "FINAL")
+        sent = send_anonymous_survey_report(state, definition, "FINAL")
+        if not sent:
+            logger.error(
+                "Anonymous survey report delivery failed survey_key=%s promo_id=%s",
+                state.get("survey_key"),
+                state.get("awarded_promocode_id"),
+            )
     except Exception as e:
         logger.error("Failed to send anonymous survey report: %s", e, exc_info=True)
 

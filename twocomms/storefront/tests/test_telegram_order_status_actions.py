@@ -71,6 +71,8 @@ class TelegramOrderStatusActionTests(TestCase):
         ) as send_message_mock:
             notifier.send_new_order_notification(order)
 
+        order.refresh_from_db()
+
         _, kwargs = send_message_mock.call_args
         self.assertIn("reply_markup", kwargs)
         markup = kwargs["reply_markup"]
@@ -78,6 +80,7 @@ class TelegramOrderStatusActionTests(TestCase):
         button = markup["inline_keyboard"][1][0]
         self.assertEqual(button["text"], "🚚 Відправлено + ТТН")
         self.assertEqual(button["url"], build_order_status_action_url(order, "ship"))
+        self.assertTrue(order.payment_payload["telegram_notifications"]["order_notification_sent"])
 
     @patch("orders.signals._safe_queue_notification")
     def test_signed_ship_action_updates_status_and_tracking_number(self, _queue_mock):
@@ -163,6 +166,65 @@ class TelegramOrderStatusActionTests(TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["orders"][str(order.pk)]["payment_status"], "prepaid")
         self.assertEqual(payload["orders"][str(order.pk)]["cod_amount"], "1099.00")
+
+    def test_payment_snapshot_uses_discounted_payable_and_remaining_amounts(self):
+        order = self._create_order(
+            pay_type="prepay_200",
+            payment_status="prepaid",
+            total_sum="1299.00",
+            discount_amount="199.00",
+        )
+        staff = User.objects.create_user(username="staff-discount", password="pass12345", is_staff=True)
+        self.client.force_login(staff)
+
+        response = self.client.get(
+            reverse("admin_order_payment_snapshots"),
+            {"ids": str(order.pk)},
+            secure=True,
+        )
+
+        snapshot = response.json()["orders"][str(order.pk)]
+        self.assertEqual(snapshot["gross_total"], "1299.00")
+        self.assertEqual(snapshot["discount_amount"], "199.00")
+        self.assertEqual(snapshot["payable_total"], "1100.00")
+        self.assertEqual(snapshot["prepayment_amount"], "200.00")
+        self.assertEqual(snapshot["remaining_amount"], "900.00")
+        self.assertEqual(snapshot["declared_cost"], "1100.00")
+
+    def test_telegram_order_and_payment_update_show_discounted_amounts(self):
+        order = self._create_order(
+            pay_type="online_full",
+            payment_status="checking",
+            total_sum="1299.00",
+            discount_amount="199.00",
+        )
+        notifier = TelegramNotifier(bot_token="token", admin_id="1", async_enabled=False)
+
+        new_order_message = notifier.format_order_message(order)
+        payment_message = notifier.format_admin_payment_status_update(
+            order,
+            old_status="checking",
+            new_status="paid",
+            pay_type="online_full",
+        )
+
+        self.assertIn("Сума товарів: 1299", new_order_message)
+        self.assertIn("Знижка: -199", new_order_message)
+        self.assertIn("ДО СПЛАТИ: 1100", new_order_message)
+        self.assertIn("ОПЛАТУ ОТРИМАНО", payment_message)
+        self.assertIn("Сплачено: 1100", payment_message)
+        self.assertNotIn("Сплачено: 1299", payment_message)
+
+    def test_prepayment_never_exceeds_discounted_order_total(self):
+        order = self._create_order(
+            pay_type="prepay_200",
+            payment_status="checking",
+            total_sum="250.00",
+            discount_amount="100.00",
+        )
+
+        self.assertEqual(order.get_prepayment_amount(), 150)
+        self.assertEqual(order.get_remaining_amount(), 0)
 
     @patch("orders.signals._safe_queue_notification")
     def test_staff_admin_order_update_uses_shared_helper(self, _queue_mock):

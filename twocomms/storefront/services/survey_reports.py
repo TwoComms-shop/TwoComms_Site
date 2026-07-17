@@ -320,7 +320,7 @@ class AnonymousSurveySession:
     Allows using the same Excel builder and path resolution logic without DB persistence.
     """
     def __init__(self, state: Dict[str, Any], awarded_promocode=None):
-        self.id = "anon"
+        self.id = state.get("report_id") or "anon"
         self.survey_key = state.get("survey_key", "print_feedback_v1")
         self.status = state.get("status", "completed")
         self.answers = state.get("answers", {})
@@ -415,4 +415,3 @@ def send_anonymous_survey_report(state: Dict[str, Any], definition: Dict[str, An
 
     # 5. Send report
     return telegram_notifier.send_admin_document(str(report_path), caption, filename=Path(report_path).name)
-
