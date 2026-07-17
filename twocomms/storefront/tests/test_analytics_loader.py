@@ -44,4 +44,4 @@ class AnalyticsLoaderRegressionTests(SimpleTestCase):
         )
         source = template_path.read_text(encoding="utf-8")
 
-        self.assertIn("analytics-loader.js' %}?v=9", source)
+        self.assertIn("analytics-loader.js' %}?v=10", source)
