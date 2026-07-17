@@ -1,6 +1,8 @@
 {% load i18n %}
 {% if paginator.num_pages > 1 and homepage_pagination_items %}
 <nav
+  id="home-pagination-nav"
+  data-home-pagination
   aria-label="{% trans 'Навігація по новинках' %}"
   class="pagination-rail"
   data-total-pages="{{ paginator.num_pages }}"
@@ -16,6 +18,8 @@
             data-page-nav="prev"
             href="{{ item.url }}"
             rel="prev"
+            aria-label="{% trans 'Попередня' %}"
+            {% if item.is_disabled %}aria-disabled="true"{% endif %}
           >
             <span class="page-link-icon" aria-hidden="true">←</span>
             <span class="page-link-label">{% trans 'Попередня' %}</span>
@@ -28,6 +32,8 @@
             data-page-nav="next"
             href="{{ item.url }}"
             rel="next"
+            aria-label="{% trans 'Наступна' %}"
+            {% if item.is_disabled %}aria-disabled="true"{% endif %}
           >
             <span class="page-link-label">{% trans 'Наступна' %}</span>
             <span class="page-link-icon" aria-hidden="true">→</span>

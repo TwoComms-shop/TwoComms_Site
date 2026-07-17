@@ -1,5 +1,4 @@
 import { prefersReducedMotion, debounce } from './shared.js';
-import { forceShowAllImages } from './product-media.js';
 
 function parseNumber(value, fallback = 1) {
   const parsed = parseInt(value, 10);
@@ -52,11 +51,12 @@ function syncPaginationLayout(navElement) {
   if (showcase && paginationList) {
     resetPaginationMobileScale(showcase, scrollContainer);
 
-    if (isMobilePaginationViewport()) {
+    const isMobileViewport = isMobilePaginationViewport();
+    if (isMobileViewport) {
       const railStyles = window.getComputedStyle(scrollContainer);
       const railPaddingX = parseFloat(railStyles.paddingLeft || '0') + parseFloat(railStyles.paddingRight || '0');
       const railPaddingY = parseFloat(railStyles.paddingTop || '0') + parseFloat(railStyles.paddingBottom || '0');
-      const mobileVisualInset = isMobilePaginationViewport() ? 16 : 0;
+      const mobileVisualInset = 16;
       const availableWidth = Math.max(0, scrollContainer.clientWidth - railPaddingX - mobileVisualInset);
       const naturalWidth = Math.ceil(paginationList.scrollWidth);
       const naturalHeight = Math.ceil(paginationList.offsetHeight);
@@ -152,12 +152,14 @@ function updatePaginationNav(navElement, currentPage) {
     const disabled = currentPage <= 1;
     prevItem.classList.toggle('disabled', disabled);
     prevLink.setAttribute('href', disabled ? '#' : buildPageHref(basePath, currentPage - 1));
+    prevLink.setAttribute('aria-disabled', String(disabled));
   }
 
   if (nextItem && nextLink) {
     const disabled = currentPage >= totalPages;
     nextItem.classList.toggle('disabled', disabled);
     nextLink.setAttribute('href', disabled ? '#' : buildPageHref(basePath, currentPage + 1));
+    nextLink.setAttribute('aria-disabled', String(disabled));
   }
 
   syncPaginationViewport(navElement, currentPage);
@@ -306,7 +308,7 @@ export function initHomepagePagination() {
     const loadMoreBtn = document.getElementById('load-more-btn');
     const loadMoreContainer = document.getElementById('load-more-container');
     const getPaginationShell = () => document.getElementById('home-pagination-shell');
-    const getPaginationNav = () => document.querySelector('nav[aria-label="Навігація по новинках"]');
+    const getPaginationNav = () => document.getElementById('home-pagination-nav');
 
     if (!productsContainer) {
       return;
@@ -421,9 +423,6 @@ export function initHomepagePagination() {
           }
         } catch (_) {}
       }, 200);
-      setTimeout(() => {
-        forceShowAllImages();
-      }, 100);
     };
 
     const loadPage = (pageNumber, options = {}) => {

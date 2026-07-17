@@ -877,6 +877,12 @@ class StructuredDataPhase5Tests(TestCase):
         self.assertTrue(schema["logo"].startswith("https://"))
         self.assertEqual(schema["contactPoint"]["@type"], "ContactPoint")
         self.assertIn("telephone", schema["contactPoint"])
+        self.assertEqual(schema["address"]["postalCode"], "61061")
+        self.assertEqual(
+            schema["hasMerchantReturnPolicy"]["refundType"],
+            "https://schema.org/FullRefund",
+        )
+        self.assertTrue(schema["hasMemberProgram"]["hasTiers"])
 
     def test_product_schema_uses_policy_module_constants(self):
         """Phase 5 contract: SHIPPING_OPTIONS / RETURN_POLICY come from
@@ -1116,6 +1122,8 @@ class RobotsTxtAiSearchRegressionTests(TestCase):
         for path in ("/admin/", "/admin-panel/", "/orders/", "/checkout/", "/api/"):
             with self.subTest(path=path):
                 self.assertIn(f"Disallow: {path}", ai_group)
+        self.assertIn("Disallow: /*?utm_*", ai_group)
+        self.assertIn("Disallow: /*?gclid=", ai_group)
 
     def test_robots_txt_blocks_utm_and_ad_click_query_noise(self):
         """Phase 6: UTM / gclid / fbclid query variants waste crawl

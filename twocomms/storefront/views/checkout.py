@@ -614,7 +614,7 @@ def confirm_payment(request):
         return JsonResponse({'success': False, 'error': _('Відсутній ID замовлення')}, status=400)
 
     if not payment_screenshot:
-        return JsonResponse({'success': False, 'error': _('Будь ласка, заван��ажте скріншот оплати')}, status=400)
+        return JsonResponse({'success': False, 'error': _('Будь ласка, завантажте скріншот оплати')}, status=400)
 
     try:
         order = Order.objects.get(id=order_id, user=request.user)

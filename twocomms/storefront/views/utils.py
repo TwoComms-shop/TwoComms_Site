@@ -601,7 +601,7 @@ def _record_monobank_status(order, payload, source='api'):
     Args:
         order: Объект заказа
         payload: Данные от Monobank API
-        source: Источник данных ('api' и������и 'webhook')
+        source: Источник данных ('api' или 'webhook')
     """
     if not payload or not order or not getattr(order, 'pk', None):
         return

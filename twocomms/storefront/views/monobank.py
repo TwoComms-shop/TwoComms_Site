@@ -1393,7 +1393,7 @@ def monobank_create_invoice(request):
                 basket_entries.append({
                     'name': f'Часткова оплата (замовлення {order.order_number}). Залишок {remaining_amount:.2f} грн при отриманні через Нову Пошту',
                     'qty': 1,
-                    'sum': balance_kopecks,  # отрицательная сумма для ����аланса
+                    'sum': balance_kopecks,  # отрицательная сумма для баланса
                     'icon': '',
                     'unit': 'шт'
                 })

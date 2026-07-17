@@ -215,7 +215,7 @@ class NovaPoshtaService:
                     )
                     return None
 
-                # Логируем получен��ую информацию
+                # Логируем полученную информацию
                 status = tracking_data.get('Status', 'Unknown')
                 status_code = tracking_data.get('StatusCode')
                 status_description = tracking_data.get('StatusDescription', '')
@@ -899,7 +899,7 @@ class NovaPoshtaService:
         Returns:
             str: Отформатированное сообщение
         """
-        message = f"""📦 <b>��НОВЛЕННЯ СТАТУСУ ПОСИЛКИ</b>
+        message = f"""📦 <b>ОНОВЛЕННЯ СТАТУСУ ПОСИЛКИ</b>
 
 🆔 <b>Замовлення:</b> #{order.order_number}
 📋 <b>ТТН:</b> {order.tracking_number}

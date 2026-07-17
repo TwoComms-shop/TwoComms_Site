@@ -469,7 +469,7 @@
         var storedMode = null;
         try { storedMode = window.localStorage ? localStorage.getItem('twc-effects-mode') : null; } catch (_) {}
 
-        // Классификаци��: low — явные ограничения; mid — узкий/средний девайс; high — остальное.
+        // Классификация: low — явные ограничения; mid — узкий/средний девайс; high — остальное.
         var deviceClass = 'high';
         if (saveData || slowNet || lowRam || lowCPU) deviceClass = 'low';
         else if (midRam || midCPU || isNarrow) deviceClass = 'mid';
@@ -1122,7 +1122,7 @@
   
   Phase 22e gating: реальные пользователи делают первый interaction
   в первые 1-3 с (scroll/click) — для них tracking подключается
-  моментально, разница незаметна. Lighthouse и SEO боты НЕ делаю��
+  моментально, разница незаметна. Lighthouse и SEO боты НЕ делают
   interaction — для них analytics просто не подключается в окне
   замера, что даёт «честный» CPU/TBT профиль страницы.
   
@@ -1131,7 +1131,7 @@
   такие сессии редки и не критичны для маркетинга.
   
   Phase 19b preload удалён (не нужен — мы больше не догружаем файл
-  во время крит��ческого окна, поэтому удержание в HTTP-кэше через
+  во время критического окна, поэтому удержание в HTTP-кэше через
   preload только тратит bandwidth на Lighthouse-like ботах).
   {% endcomment %}
   <script>
@@ -1309,7 +1309,7 @@
       </div>
     </div>
 
-    <!-- ��еню действий корзины -->
+    <!-- Меню действий корзины -->
     <div class="cart-menu">
       <a href="{% url 'delivery' %}" class="cart-menu-item">
         <div class="cart-menu-icon">
@@ -1372,7 +1372,7 @@
   <link rel="modulepreload" href="{% static 'js/modules/optimizers.js' %}" crossorigin="anonymous">
   {% if request.resolver_match.url_name == 'home' %}
   <link rel="modulepreload" href="{% static 'js/modules/product-media.js' %}?v=20260715-fable5-v1" crossorigin="anonymous">
-  <link rel="modulepreload" href="{% static 'js/modules/homepage.js' %}?v=20260515-i18n-loadmore" crossorigin="anonymous">
+  <link rel="modulepreload" href="{% static 'js/modules/homepage.js' %}?v=20260718-home-a11y" crossorigin="anonymous">
   {% elif request.resolver_match.url_name == 'product_detail' %}
   <link rel="modulepreload" href="{% static 'js/modules/product-media.js' %}?v=20260715-fable5-v1" crossorigin="anonymous">
   {% endif %}
@@ -1445,7 +1445,7 @@
                   </svg>
                 </div>
                 <div class="explanation-text">
-                  <strong>{% trans 'Використання балів:' %}</strong> {% trans 'Зареєстровані користува��і можуть витратити бали у кабінеті' %}
+                  <strong>{% trans 'Використання балів:' %}</strong> {% trans 'Зареєстровані користувачі можуть витратити бали у кабінеті' %}
                 </div>
               </div>
 
@@ -1457,7 +1457,7 @@
                   </svg>
                 </div>
                 <div class="explanation-text">
-                  <strong>{% trans 'Можливості:' %}</strong> {% trans 'Об��ін на промокоди або пожертвування на ЗСУ' %}
+                  <strong>{% trans 'Можливості:' %}</strong> {% trans 'Обмін на промокоди або пожертвування на ЗСУ' %}
                 </div>
               </div>
             </div>

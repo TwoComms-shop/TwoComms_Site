@@ -158,7 +158,7 @@ class BlogCategory(models.Model):
     def clean(self):
         super().clean()
         if self.parent_id and self.pk and self.parent_id == self.pk:
-            raise ValidationError({"parent": "Категорія ����е може бути власним батьком."})
+            raise ValidationError({"parent": "Категорія не може бути власним батьком."})
         parent = self.parent
         while parent is not None:
             if self.pk and parent.pk == self.pk:
@@ -992,7 +992,7 @@ class Product(models.Model):
     # Fit selector visibility (classic / oversize)
     fit_selector_enabled = models.BooleanField(
         default=True,
-        verbose_name='Показувати селектор крою (класика / оверсай��)',
+        verbose_name='Показувати селектор крою (класика / оверсайз)',
         help_text='Якщо вимкнено — блок з вибором крою не відображається на сторінці товару.'
     )
     # SEO timestamps for sitemap lastmod

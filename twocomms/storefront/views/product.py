@@ -484,7 +484,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
         for idx, variant in enumerate(color_variants):
             variant['is_default'] = (idx == 0)
 
-        # Если н��т главного изображения, автоматически выбираем первый цвет
+        # Если нет главного изображения, автоматически выбираем первый цвет
         if not product.main_image:
             auto_select_first_color = True
 

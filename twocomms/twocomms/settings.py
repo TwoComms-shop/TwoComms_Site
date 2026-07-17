@@ -1414,7 +1414,7 @@ FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')
 # Токен доступа для Events API (получается в TikTok Ads Manager)
 TIKTOK_EVENTS_ACCESS_TOKEN = os.environ.get('TIKTOK_EVENTS_ACCESS_TOKEN', '')
 
-# Pixel Code (тот же что и для ��раузерного пикселя)
+# Pixel Code (тот же что и для браузерного пикселя)
 TIKTOK_EVENTS_PIXEL_CODE = os.environ.get('TIKTOK_EVENTS_PIXEL_CODE', '')
 
 # Опциональный тестовый код события (для тестов через браузер)

@@ -15,7 +15,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='product',
             name='fit_selector_enabled',
-            field=models.BooleanField(default=True, help_text='Якщо вимкнено — блок з вибором крою не відображається на сторінці товару.', verbose_name='Показувати селектор крою (класика / оверсай��)'),
+            field=models.BooleanField(default=True, help_text='Якщо вимкнено — блок з вибором крою не відображається на сторінці товару.', verbose_name='Показувати селектор крою (класика / оверсайз)'),
         ),
         migrations.AddIndex(
             model_name='useraction',

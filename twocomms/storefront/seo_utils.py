@@ -953,6 +953,7 @@ class StructuredDataGenerator:
                     "merchantReturnDays": RETURN_POLICY["days"],
                     "returnMethod": RETURN_POLICY["method"],
                     "returnFees": RETURN_POLICY["fees_type"],
+                    "refundType": RETURN_POLICY["refund_type"],
                     "returnShippingFeesAmount": StructuredDataGenerator._get_return_shipping_amount(),
                     "applicableCountry": APPLICABLE_COUNTRY,
                 },
@@ -1585,6 +1586,7 @@ class StructuredDataGenerator:
                     "addressCountry": "UA",
                     "addressRegion": "UA-63",
                     "addressLocality": _("Харків"),
+                    "postalCode": "61061",
                 },
             },
             "address": {
@@ -1592,6 +1594,7 @@ class StructuredDataGenerator:
                 "addressCountry": "UA",
                 "addressRegion": "UA-63",
                 "addressLocality": _("Харків"),
+                "postalCode": "61061",
             },
             "areaServed": {
                 "@type": "Country",
@@ -1646,6 +1649,7 @@ class StructuredDataGenerator:
                 "merchantReturnDays": RETURN_POLICY["days"],
                 "returnMethod": RETURN_POLICY["method"],
                 "returnFees": RETURN_POLICY["fees_type"],
+                "refundType": RETURN_POLICY["refund_type"],
                 "returnShippingFeesAmount": (
                     StructuredDataGenerator._get_return_shipping_amount()
                 ),
@@ -1664,6 +1668,18 @@ class StructuredDataGenerator:
                 ),
                 "url": f"{base_url}faq/",
                 "hostingOrganization": {"@id": f"{base_url}#organization"},
+                "hasTiers": [
+                    {
+                        "@type": "MemberProgramTier",
+                        "name": _("Базовий рівень"),
+                        "hasTierBenefit": [
+                            {
+                                "@type": "MemberProgramTierBenefit",
+                                "name": _("Бали за покупки та промокоди"),
+                            }
+                        ],
+                    }
+                ],
             },
         }
 
@@ -1689,7 +1705,7 @@ class StructuredDataGenerator:
             "name": "Артем Синіло",
             "jobTitle": _("Засновник TwoComms"),
             "description": _(
-                "Засновник укр��їнського streetwear-бренду TwoComms із Харкова, "
+                "Засновник українського streetwear-бренду TwoComms із Харкова, "
                 "бойовий ветеран."
             ),
             "worksFor": {"@id": f"{base_url}#organization"},

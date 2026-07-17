@@ -753,7 +753,7 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(order.pay_type, 'cod')
 
     def test_create_order_guest_online_full_redirects_to_cart(self):
-        """Онлайн-опла��а стартует ТОЛЬКО через кнопку Monobank в корзине —
+        """Онлайн-оплата стартует ТОЛЬКО через кнопку Monobank в корзине —
         прямой POST с online-типом не должен создавать неоплаченный заказ."""
         self.set_cart()
         delivery = self.delivery_payload(

@@ -2,7 +2,7 @@
 {% load i18n_links %}
 {% language_switch_links as footer_langs %}
 <div class="footer-langs-wrap container-xxl">
-  <div class="footer-langs" aria-label="{% trans 'Мова сайту' %}">
+  <nav class="footer-langs" aria-label="{% trans 'Мова сайту' %}">
     <span class="footer-langs__label">{% trans 'Мова' %}</span>
     <div class="footer-langs__group" role="group">
       {% for item in footer_langs %}
@@ -22,6 +22,7 @@
              lang="{{ item.code }}"
              rel="alternate"
              data-lang-code="{{ item.code }}"
+             aria-label="{{ item.label }} {{ item.short }}"
              {% if item.is_current %}aria-current="true"{% endif %}>
             <span class="footer-langs__flag" aria-hidden="true">
               {% if item.flag_image_url %}
@@ -42,7 +43,7 @@
         </form>
       {% endfor %}
     </div>
-  </div>
+  </nav>
 </div>
 
 <script>

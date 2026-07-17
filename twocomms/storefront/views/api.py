@@ -342,7 +342,7 @@ def rum_beacon(request):
         metrics = data.get('metrics') or {}
         if not isinstance(metrics, dict):
             metrics = {}
-        # Огрубляем и не ��огируем ничего, кроме ожидаемых полей — защита от мусора
+        # Огрубляем и не логируем ничего, кроме ожидаемых полей — защита от мусора
         allowed = {'LCP', 'CLS', 'INP', 'FCP', 'TTFB', 'FID'}
         safe_metrics = {k: metrics[k] for k in allowed if k in metrics}
 

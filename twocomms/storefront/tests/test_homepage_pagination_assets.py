@@ -135,8 +135,10 @@ class HomepagePaginationCssTests(SimpleTestCase):
 
         self.assertIn("pagination_html", js)
         self.assertIn("home-pagination-shell", js)
+        self.assertIn("home-pagination-nav", js)
         self.assertRegex(js, r"getPaginationNav\s*=\s*\(\)\s*=>")
-        self.assertIn("const mobileVisualInset = isMobilePaginationViewport() ? 16 : 0;", js)
+        self.assertIn("const isMobileViewport = isMobilePaginationViewport();", js)
+        self.assertIn("const mobileVisualInset = 16;", js)
         self.assertIn("scrollContainer.clientWidth - railPaddingX - mobileVisualInset", js)
         self.assertIn("const scaledWidth = naturalWidth * scale;", js)
         self.assertIn(
@@ -271,7 +273,13 @@ class HomepagePaginationCssTests(SimpleTestCase):
             css,
             r"@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.pagination-showcase\s*\{[\s\S]*?padding-inline:\s*clamp\(0\.55rem,\s*3vw,\s*0\.85rem\);",
         )
-        self.assertNotRegex(
+        # The base rail rule owns the width constraint. Mobile overrides may
+        # only change scrolling/transform behavior, so a broad cross-media
+        # regex must not be used here (it can consume unrelated selectors).
+        mobile_scale = re.search(
+            r"@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.pagination-rail\.is-scaled\s*\{([^}]*)\}",
             css,
-            r"@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.pagination-rail\s*\{[\s\S]*?max-width:",
         )
+        self.assertIsNotNone(mobile_scale)
+        self.assertIn("overflow-x: hidden;", mobile_scale.group(1))
+        self.assertNotIn("max-width:", mobile_scale.group(1))

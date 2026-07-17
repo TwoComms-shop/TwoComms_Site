@@ -588,7 +588,7 @@ def view_cart(request):
                     cart_logger.error('Error saving profile: %s', e, exc_info=True)
                     if is_autosave:
                         return JsonResponse({'ok': False, 'reason': 'error'}, status=200)
-                    messages.error(request, _('П��милка при ��береженні даних. Спробуйте ще раз.'))
+                    messages.error(request, _('Помилка при збереженні даних. Спробуйте ще раз.'))
             else:
                 if is_autosave:
                     return JsonResponse({'ok': False, 'reason': 'auth'}, status=200)
@@ -1066,7 +1066,7 @@ def add_to_cart(request):
 @require_POST
 def update_cart(request):
     """
-    Обнов��ение количества товара в корзине (AJAX).
+    Обновление количества товара в корзине (AJAX).
 
     POST params:
         cart_key: Ключ товара в корзине
@@ -1263,7 +1263,7 @@ def remove_from_cart(request):
 @require_POST
 def clear_cart(request):
     """
-    Полна���� очистка корзины и промокода.
+    Полная очистка корзины и промокода.
 
     Для обычного запроса выполняет redirect в корзину, для AJAX возвращает JSON.
     """
@@ -1731,7 +1731,7 @@ def contact_manager(request):
         if whatsapp:
             message += f"\n📲 <b>WhatsApp:</b> {whatsapp}"
 
-        message += "\n\n🛒 <b>КОШИ��:</b>\n"
+        message += "\n\n🛒 <b>КОШИК:</b>\n"
 
         total_sum = Decimal('0')
 
@@ -1754,7 +1754,7 @@ def contact_manager(request):
             message += f"• {product.title}{size_info}{fit_info} x {qty} шт = {line_total} грн\n"
 
         message += f"\n💰 <b>Всього:</b> {total_sum} грн"
-        message += "\n\n<i>��лієнт очікує на зв'язок менеджера!</i>"
+        message += "\n\n<i>Клієнт очікує на зв'язок менеджера!</i>"
 
         # Отправляем в Telegram
         try:

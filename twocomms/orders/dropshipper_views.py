@@ -1138,7 +1138,7 @@ def create_dropshipper_monobank_payment(request):
                 'icon': icon_url
             })
 
-            # Для п��едоплаты достаточно одного товара
+            # Для предоплаты достаточно одного товара
             if order.payment_method == 'cod':
                 break
 

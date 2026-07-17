@@ -469,10 +469,13 @@ def robots_txt(request):
         * Sitemap index (``/sitemap.xml``) at the end.
     """
 
-    def append_public_rules(payload):
+    def append_public_rules(payload, *, include_query_noise=False):
         payload.append("Allow: /")
         for path in ROBOTS_INTERNAL_DISALLOW_PATHS:
             payload.append(f"Disallow: {path}")
+        if include_query_noise:
+            for pattern in ROBOTS_QUERY_NOISE_PATTERNS:
+                payload.append(f"Disallow: {pattern}")
 
     lines = [
         "# TwoComms robots.txt — canonical source.",
@@ -502,7 +505,10 @@ def robots_txt(request):
     )
     for user_agent in AI_ROBOTS_USER_AGENTS:
         lines.append(f"User-agent: {user_agent}")
-        append_public_rules(lines)
+        # AI crawlers should see canonical public pages, not endless UTM,
+        # ad-click, sort, and referral variants. AdsBot groups intentionally
+        # keep these URLs crawlable for ad landing-page diagnostics.
+        append_public_rules(lines, include_query_noise=True)
         if user_agent == "GPTBot":
             for pattern in GPTBOT_COLOR_FILTER_DISALLOW_PATTERNS:
                 lines.append(f"Disallow: {pattern}")

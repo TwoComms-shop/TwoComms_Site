@@ -49,6 +49,9 @@ RETURN_POLICY = {
     "method": "https://schema.org/ReturnByMail",
     # Buyer pays return shipping (Nova Poshta cash-on-delivery is common).
     "fees_type": "https://schema.org/ReturnShippingFees",
+    # Returned goods are refunded to the original payment method after
+    # inspection; exchanges remain available through the support workflow.
+    "refund_type": "https://schema.org/FullRefund",
 }
 
 
