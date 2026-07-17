@@ -1737,6 +1737,7 @@ body.cp-studio-active { overflow: visible !important; }
   body.cp-studio-active > .bottom-nav,
   body.cp-studio-active > .footer-langs-wrap { display: none !important; }
   body.cp-studio-active #main-content { padding: 0 10px calc(108px + env(safe-area-inset-bottom)) !important; }
+  body.cp-studio-active #main-content { min-height: 100svh; }
   body.cp-studio-active .cp-workbench { grid-template-columns: minmax(0, 1fr); }
   .cp-page.is-studio-active .cp-studio-appbar { top: 6px; margin-inline: -2px; border-radius: 17px; }
   .cp-studio-appbar .cp-icon-button { width: 42px; height: 42px; }
