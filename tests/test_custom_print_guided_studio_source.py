@@ -100,6 +100,11 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
             self.assertIn(event_name, self.js)
         self.assertRegex(self.js, r"document\.body\.append(?:Child)?\(.*mobile")
 
+    def test_preview_and_handoff_dialogs_escape_containing_layout(self):
+        submit_flow = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-submit-flow.js").read_text(encoding="utf-8")
+        self.assertRegex(submit_flow, r"document\.body\.append(?:Child)?\(dialog\)")
+        self.assertIn("is-refreshing", (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-preview.js").read_text(encoding="utf-8"))
+
     def test_css_defines_desktop_studio_mobile_shell_and_reduced_motion(self):
         for contract in (
             "grid-template-columns: minmax(0, 42fr) minmax(0, 58fr)",

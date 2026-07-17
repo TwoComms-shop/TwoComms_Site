@@ -80,6 +80,8 @@
       const placements = expandedPlacements(state);
 
       previewNodes.forEach((preview) => {
+        preview.classList.remove("is-refreshing");
+        requestAnimationFrame(() => preview.classList.add("is-refreshing"));
         const garment = preview.querySelector("[data-preview-garment]");
         const tint = preview.querySelector("[data-preview-color]");
         const lacing = preview.querySelector("[data-preview-lacing]");
@@ -103,6 +105,24 @@
         }
       });
     }
+
+    function bindPreviewMotion(preview) {
+      const motionQuery = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
+      if (motionQuery?.matches) return;
+      preview.addEventListener("pointermove", (event) => {
+        const rect = preview.getBoundingClientRect();
+        const x = ((event.clientX - rect.left) / Math.max(rect.width, 1) - 0.5) * 2;
+        const y = ((event.clientY - rect.top) / Math.max(rect.height, 1) - 0.5) * 2;
+        preview.style.setProperty("--cp-preview-tilt-x", `${(y * -1.8).toFixed(2)}deg`);
+        preview.style.setProperty("--cp-preview-tilt-y", `${(x * 2.4).toFixed(2)}deg`);
+      });
+      preview.addEventListener("pointerleave", () => {
+        preview.style.removeProperty("--cp-preview-tilt-x");
+        preview.style.removeProperty("--cp-preview-tilt-y");
+      });
+    }
+
+    previewNodes.forEach(bindPreviewMotion);
 
     return { render };
   }

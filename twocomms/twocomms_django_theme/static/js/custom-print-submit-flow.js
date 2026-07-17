@@ -37,9 +37,14 @@
   }
 
   function create(root) {
-    const previewDialog = root.querySelector("[data-preview-dialog]");
-    const managerDialog = root.querySelector("[data-manager-dialog]");
-    const cartDialog = root.querySelector("[data-cart-review-dialog]");
+    function portal(dialog) {
+      if (dialog && dialog.parentNode !== document.body) document.body.append(dialog);
+      return dialog;
+    }
+
+    const previewDialog = portal(root.querySelector("[data-preview-dialog]"));
+    const managerDialog = portal(root.querySelector("[data-manager-dialog]"));
+    const cartDialog = portal(root.querySelector("[data-cart-review-dialog]"));
     const preview = wireDialog(previewDialog);
     const manager = wireDialog(managerDialog);
     const cart = wireDialog(cartDialog);
