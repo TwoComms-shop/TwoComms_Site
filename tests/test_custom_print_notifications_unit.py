@@ -185,13 +185,15 @@ class CustomPrintNotificationUnitTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(notifier.calls[0][0], "message")
-        self.assertEqual(notifier.calls[1][0], "photo")
+        # Print assets are intentionally sent as documents to preserve the
+        # original file bytes instead of Telegram photo recompression.
+        self.assertEqual(notifier.calls[1][0], "document")
         self.assertIn("1/2", notifier.calls[1][2])
-        self.assertIn("На спині", notifier.calls[1][2])
+        self.assertIn("НА СПИНІ", notifier.calls[1][2])
         self.assertIn("A2", notifier.calls[1][2])
         self.assertEqual(notifier.calls[2][0], "document")
         self.assertIn("2/2", notifier.calls[2][2])
-        self.assertIn("Правий рукав", notifier.calls[2][2])
+        self.assertIn("ПРАВИЙ РУКАВ", notifier.calls[2][2])
         self.assertIn("A6", notifier.calls[2][2])
 
 

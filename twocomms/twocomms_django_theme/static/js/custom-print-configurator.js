@@ -126,6 +126,7 @@
     b2bMeta: root.querySelector("[data-b2b-meta]"),
     b2bDiscount: root.querySelector("[data-b2b-discount]"),
     giftToggle: root.querySelector("[data-gift-toggle]"),
+    giftToggleState: root.querySelector("[data-gift-toggle-state]"),
     giftTextWrap: root.querySelector("[data-gift-text-wrap]"),
     giftTextInput: root.querySelector("[data-gift-text-input]"),
     contactChannelList: root.querySelector("[data-contact-channel-list]"),
@@ -134,6 +135,7 @@
     brandFields: root.querySelector("[data-brand-fields]"),
     brandNameInput: root.querySelector("[data-brand-name-input]"),
     statusBox: root.querySelector("[data-status-box]"),
+    finalChecklist: root.querySelector("[data-final-checklist]"),
     addToCartBtn: root.querySelector("[data-action-add-to-cart]"),
     submitLeadBtn: root.querySelector("[data-action-submit-lead]"),
     safeExitButtons: root.querySelectorAll("[data-safe-exit-trigger]"),
@@ -304,6 +306,7 @@
     bindGenericInputs();
     bindHeroMotion();
     bindMobileBottomBar();
+    bindStudioBoundary();
     setupDraftResume();
     setActiveStep(STATE.ui.current_step || "mode", { silent: true });
     refreshAll();
@@ -313,13 +316,13 @@
     ensureFlowStarted(trigger);
     mobileShell?.setActive(true);
     setActiveStep(STATE.ui.current_step || "mode", { silent: true });
-    root.querySelector("[data-studio-appbar]")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToStudioTarget(root.querySelector("[data-studio-appbar]"));
   }
 
   function exitStudio() {
     persistDraft();
     mobileShell?.setActive(false);
-    dom.hero?.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToStudioTarget(dom.hero);
   }
 
   function openPreviewDialog(event) {
@@ -334,7 +337,28 @@
     dialogFlow?.openManagerDialog({
       trigger: event?.currentTarget || event?.target,
       isB2b: STATE.mode === "brand",
+      summary: buildManagerSummary(),
     });
+  }
+
+  function buildManagerSummary() {
+    const cfg = getProductConfig() || {};
+    const colors = getAllowedColorOptions(cfg);
+    const color = colors.find((item) => item.value === STATE.product.color)?.label || STATE.product.color || "не обрано";
+    const fabric = getSelectedFabricConfig()?.label || STATE.product.fabric || "не обрано";
+    const zones = getExpandedPlacements().map((placement) => {
+      const size = placement.size_preset ? ` · ${placement.size_preset}` : "";
+      return `${placement.label}${size}`;
+    }).join(", ") || "не обрано";
+    const quantity = STATE.order.quantity ? `${STATE.order.quantity} шт` : "не обрано";
+    return [
+      "Привіт! Хочу обговорити кастомний принт TwoComms.",
+      `Формат: ${STATE.mode === "brand" ? "команда / бренд" : "для себе"}`,
+      `Виріб: ${cfg.label || "не обрано"}`,
+      `Посадка: ${STATE.product.fit || "не обрано"} · Тканина: ${fabric} · Колір: ${color}`,
+      `Зони: ${zones} · Кількість: ${quantity}`,
+      `Крок: ${STATE.ui.current_step}`,
+    ].join("\n");
   }
 
   function bindHeroMotion() {
@@ -376,6 +400,37 @@
       motionQuery.addEventListener("change", handleMotionPreferenceChange);
     } else if (typeof motionQuery?.addListener === "function") {
       motionQuery.addListener(handleMotionPreferenceChange);
+    }
+  }
+
+  function bindStudioBoundary() {
+    const boundary = root.querySelector("[data-studio-boundary]");
+    if (!boundary) return;
+    const checkBoundary = () => {
+      if (!document.body.classList.contains("cp-studio-active")) return;
+      const rect = boundary.getBoundingClientRect();
+      // The sentinel follows the studio form. Release the app shell as soon
+      // as the sentinel enters the viewport, then restore it when scrolling
+      // back above the SEO boundary.
+      const shouldRelease = rect.top <= window.innerHeight - 12;
+      mobileShell?.setActive(!shouldRelease);
+    };
+    window.addEventListener("scroll", checkBoundary, { passive: true });
+    checkBoundary();
+  }
+
+  function scrollToStudioTarget(target, { focus = false } = {}) {
+    if (!target || !target.getBoundingClientRect) return;
+    const appbar = root.querySelector("[data-studio-appbar]");
+    const appbarHeight = appbar ? Math.max(66, appbar.getBoundingClientRect().height) : 66;
+    const topOffset = appbarHeight + 22;
+    const rect = target.getBoundingClientRect();
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const nextTop = Math.max(0, Math.min(maxScroll, rect.top + window.scrollY - topOffset));
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    window.scrollTo({ top: nextTop, behavior: reducedMotion ? "auto" : "smooth" });
+    if (focus) {
+      window.setTimeout(() => target.focus?.({ preventScroll: true }), reducedMotion ? 0 : 180);
     }
   }
 
@@ -621,9 +676,9 @@
       if (!isSleeveSideEnabled("right")) deletePlacementFiles("sleeve_right");
     }
 
-    const colorValues = new Set((cfg?.colors || []).map((item) => item.value));
+    const colorValues = new Set(getAllowedColorOptions(cfg).map((item) => item.value));
     if (cfg && (!STATE.product.color || !colorValues.has(STATE.product.color))) {
-      STATE.product.color = cfg.default_color || (cfg.colors || [])[0]?.value || null;
+      STATE.product.color = cfg.default_color || getAllowedColorOptions(cfg)[0]?.value || null;
     }
 
     const currentIndex = Math.max(0, getStepIndex(STATE.ui.current_step));
@@ -883,6 +938,14 @@
     return ((cfg.fabrics[STATE.product.fit] || []).find((item) => item.value === STATE.product.fabric)) || null;
   }
 
+  function getAllowedColorOptions(cfg = getProductConfig()) {
+    if (!cfg) return [];
+    let colors = cfg.fit_colors?.[STATE.product.fit] || cfg.colors || [];
+    const fabric = (cfg.fabrics?.[STATE.product.fit] || []).find((item) => item.value === STATE.product.fabric);
+    if (fabric?.colors?.length) colors = fabric.colors;
+    return colors;
+  }
+
   function renderFitChips() {
     if (!dom.fitList) return;
     dom.fitList.innerHTML = "";
@@ -907,9 +970,12 @@
         : fabricOptions.length > 1
           ? "Нижче зʼявляться доступні тканини і ціни"
           : "Тканина фіксується автоматично";
+      const fitAsset = STATE.product.type === "longsleeve"
+        ? "longsleeve-front.png"
+        : `${STATE.product.type}-${f.value}-front.png`;
       btn.innerHTML = `
         <div class="cp-fit-card-figure" style="display: ${'block'}">
-          <img src="/static/img/configurator/ui/${STATE.product.type}-${f.value}.png" alt="${f.label}" onerror="this.parentElement.style.display='none'">
+          <img src="/static/img/configurator/studio/${fitAsset}" alt="${f.label}" onerror="this.parentElement.style.display='none'">
         </div>
         <div class="cp-fit-card-info">
           <small>Посадка</small>
@@ -922,6 +988,7 @@
         STATE.product.fit = f.value;
         STATE.product.fabric = STATE.product.type === "hoodie" && f.value === "oversize" ? "premium" : null;
         renderFabricChips();
+        renderColorChips();
         renderFitChips();
         refreshAll();
         persistDraft();
@@ -948,6 +1015,8 @@
     }
     const isLocked = fabrics.length === 1;
     fabrics.forEach((fab) => {
+      const option = document.createElement("div");
+      option.className = "cp-fabric-option";
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "cp-mini-chip cp-mini-chip--fabric";
@@ -955,6 +1024,10 @@
       if (isLocked) btn.classList.add("is-locked", "is-single");
       if (fab.value === "premium") btn.classList.add("is-premium");
       if (fab.included_in_base) btn.classList.add("is-included");
+      if (isLocked) {
+        btn.disabled = true;
+        btn.setAttribute("aria-disabled", "true");
+      }
       btn.dataset.choiceValue = fab.value;
       const priceDelta = Number(fab.price_delta || 0);
       const priceLabel = fab.included_in_base
@@ -976,17 +1049,7 @@
         <span class="cp-fabric-chip-meta">${escapeHtml(priceLabel)}</span>
       `;
       
-      if (fab.info_title) {
-        btn.classList.add("has-info");
-        btn.innerHTML = `
-          <div class="cp-fabric-chip-content">
-            ${btnContent}
-          </div>
-          <span role="button" class="cp-fabric-info-trigger" aria-label="Відкрити опис" data-info-title="${escapeHtml(fab.info_title)}" data-info-desc="${escapeHtml(fab.info_desc)}">?</span>
-        `;
-      } else {
-        btn.innerHTML = btnContent;
-      }
+      btn.innerHTML = `<span class="cp-fabric-chip-content">${btnContent}</span>`;
       
       btn.addEventListener("click", () => {
         if (isLocked) return;
@@ -996,49 +1059,80 @@
         refreshAll();
         persistDraft();
       });
-      dom.fabricList.appendChild(btn);
-      
-      // Bind info trigger if exists
-      const trigger = btn.querySelector('.cp-fabric-info-trigger');
-      if (trigger) {
+      option.appendChild(btn);
+
+      if (fab.info_title) {
+        const trigger = document.createElement("button");
+        trigger.type = "button";
+        trigger.className = "cp-fabric-info-trigger";
+        trigger.setAttribute("aria-label", `Відкрити опис матеріалу: ${fab.label || "матеріал"}`);
+        trigger.innerHTML = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 10.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="7.5" r="1" fill="currentColor"/></svg>`;
         trigger.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
           showFabricInfoModal(fab);
         });
+        option.appendChild(trigger);
       }
+      dom.fabricList.appendChild(option);
     });
   }
 
   function showFabricInfoModal(fab) {
     let modal = document.getElementById("cp-fabric-info-modal");
+    const previousFocus = document.activeElement;
     if (!modal) {
       modal = document.createElement("div");
       modal.id = "cp-fabric-info-modal";
       modal.className = "cp-fabric-modal-overlay";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
       modal.innerHTML = `
         <div class="cp-fabric-modal-box">
-          <button class="cp-fabric-modal-close">&times;</button>
+          <button type="button" class="cp-fabric-modal-close" aria-label="Закрити опис матеріалу">&times;</button>
           <div class="cp-fabric-modal-media">
              <!-- Placeholder for reference image -->
              <img src="/static/img/configurator/ui/thermo-preview.png" alt="Thermo Effect" onerror="this.style.display='none'">
           </div>
-          <h3 class="cp-fabric-modal-title"></h3>
+          <h3 class="cp-fabric-modal-title" id="cp-fabric-info-title"></h3>
           <p class="cp-fabric-modal-desc"></p>
         </div>
       `;
+      modal.setAttribute("aria-labelledby", "cp-fabric-info-title");
       document.body.appendChild(modal);
-      
+      modal._previousFocus = previousFocus;
       modal.querySelector(".cp-fabric-modal-close").addEventListener("click", () => {
         modal.classList.remove("is-visible");
+        modal._previousFocus?.focus?.({ preventScroll: true });
       });
       modal.addEventListener("click", (e) => {
-        if (e.target === modal) modal.classList.remove("is-visible");
+        if (e.target === modal) {
+          modal.classList.remove("is-visible");
+          modal._previousFocus?.focus?.({ preventScroll: true });
+        }
       });
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") modal.classList.remove("is-visible");
+        if (event.key === "Tab" && modal.classList.contains("is-visible")) {
+          const focusable = Array.from(modal.querySelectorAll("button, a, input, textarea, select, [tabindex]:not([tabindex='-1'])")).filter((el) => !el.disabled && el.offsetParent !== null);
+          if (focusable.length) {
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first.focus();
+            }
+          }
+        }
+        if (event.key === "Escape" && modal.classList.contains("is-visible")) {
+          modal.classList.remove("is-visible");
+          modal._previousFocus?.focus?.({ preventScroll: true });
+        }
       });
     }
+    modal._previousFocus = previousFocus;
     
     const media = modal.querySelector(".cp-fabric-modal-media");
     const mediaImage = media?.querySelector("img");
@@ -1055,7 +1149,7 @@
     }
 
     modal.querySelector(".cp-fabric-modal-title").textContent = fab.info_title;
-    modal.querySelector(".cp-fabric-modal-desc").innerHTML = (fab.info_desc || "").replace(/\\n/g, "<br>");
+    modal.querySelector(".cp-fabric-modal-desc").innerHTML = String(fab.info_desc || "").replace(/\r?\n|\\n/g, "<br>");
     
     modal.className = "cp-fabric-modal-overlay is-visible";
     if (fab.info_theme) {
@@ -1063,22 +1157,14 @@
     } else if (fab.value === "thermo") {
       modal.classList.add("is-thermo-theme");
     }
+    modal.querySelector(".cp-fabric-modal-close")?.focus({ preventScroll: true });
   }
 
   function renderColorChips() {
     if (!dom.colorList) return;
     dom.colorList.innerHTML = "";
     const cfg = getProductConfig();
-    let colors = cfg && cfg.colors ? cfg.colors : [];
-
-    // Override colors if the selected fabric specifies its own palette (e.g. thermo)
-    if (cfg && cfg.fabrics && STATE.product.fit) {
-      const activeFitFabrics = cfg.fabrics[STATE.product.fit] || [];
-      const activeFabric = activeFitFabrics.find(f => f.value === STATE.product.fabric);
-      if (activeFabric && activeFabric.colors && activeFabric.colors.length > 0) {
-        colors = activeFabric.colors;
-      }
-    }
+    const colors = getAllowedColorOptions(cfg);
 
     // Force color update if current isn't in scope
     if (colors.length > 0 && !colors.some(c => c.value === STATE.product.color)) {
@@ -1362,6 +1448,11 @@
     dom.addonsList.innerHTML = "";
     const cfg = getProductConfig();
     const addons = cfg && cfg.add_ons ? cfg.add_ons : [];
+    const fleeceOptions = addons.filter((addon) => addon.group === "fleece");
+    if (fleeceOptions.length && !fleeceOptions.some((addon) => STATE.print.add_ons.includes(addon.value))) {
+      const defaultFleece = fleeceOptions.find((addon) => addon.value === "no_fleece") || fleeceOptions[0];
+      STATE.print.add_ons.push(defaultFleece.value);
+    }
     
     // Filter addons: if auto-include condition exists, only show them if condition is met
     const visibleAddons = addons.filter(a => {
@@ -1392,6 +1483,8 @@
          btn.type = "button";
          btn.className = `cp-fleece-btn cp-fleece-btn--${a.value}`;
          if (isActive) btn.classList.add("is-active");
+         btn.setAttribute("aria-pressed", String(isActive));
+         btn.setAttribute("aria-label", `${a.label}: ${isActive ? "обрано" : "обрати"}`);
          btn.innerHTML = `<span class="cp-addon-card-icon">${addonSvg(a.icon || "fleece")}</span> <span class="cp-fleece-btn-label">${escapeHtml(a.label)}</span>`;
          btn.addEventListener("click", () => {
              // Exclusive toggle logic
@@ -1491,6 +1584,7 @@
     if (!dom.dropzoneGrid) return;
     dom.dropzoneGrid.querySelectorAll(".cp-dropzone").forEach((el) => el.remove());
     dom.dropzoneGrid.querySelectorAll(".cp-dropzone-progress").forEach((el) => el.remove());
+    dom.dropzoneGrid.parentNode?.querySelectorAll(":scope > .cp-dropzone-progress").forEach((el) => el.remove());
     const placements = getRequiredArtworkPlacements();
     const serviceKind = STATE.artwork.service_kind || "";
     const isUploadRequired = serviceKind === "ready" || serviceKind === "adjust";
@@ -2114,7 +2208,11 @@
 
   function bindStageView() {
     dom.stageViewSwitch?.forEach((btn) => {
-      btn.addEventListener("click", () => applyStageView(btn.dataset.stageView));
+      btn.addEventListener("click", () => {
+        applyStageView(btn.dataset.stageView);
+        refreshAll();
+        persistDraft();
+      });
     });
   }
 
@@ -2280,6 +2378,7 @@
     dom.giftToggle?.addEventListener("click", () => {
       STATE.order.gift_enabled = !STATE.order.gift_enabled;
       dom.giftToggle.classList.toggle("is-active", STATE.order.gift_enabled);
+      if (dom.giftToggleState) dom.giftToggleState.textContent = STATE.order.gift_enabled ? "Увімкнено" : "Вимкнено";
       if (dom.giftTextWrap) dom.giftTextWrap.hidden = !STATE.order.gift_enabled;
       refreshAll();
       persistDraft();
@@ -2380,10 +2479,7 @@
       ensureFlowStarted(`step_enter_${key}`);
       trackStepEnter(key, { from_step: opts.fromStep || null });
       const target = document.getElementById(`cp-step-${key}`);
-      const scrollTarget = mobileProgressQuery?.matches && dom.progressShell && !dom.progressShell.hidden
-        ? dom.progressShell
-        : target;
-      if (scrollTarget) scrollTarget.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollToStudioTarget(target);
     }
     if (analyticsState.flowStarted) persistDraft();
   }
@@ -2492,8 +2588,7 @@
     const [message, selector] = getStepProblem(stepKey);
     showStatus(message, "warning");
     const field = root.querySelector(selector);
-    field?.scrollIntoView({ behavior: "smooth", block: "center" });
-    window.setTimeout(() => field?.focus?.({ preventScroll: true }), 180);
+    scrollToStudioTarget(field, { focus: true });
   }
 
   // ── Refresh: stage card + receipt + summaries + side states ─
@@ -2529,13 +2624,11 @@
 
   function syncProgressShellPlacement() {
     if (!dom.progressShell || !progressHome?.parentNode) return;
-    const shouldInline = !isLobbyPhase() && !!mobileProgressQuery?.matches;
-    const activeStep = root.querySelector(`[data-step="${STATE.ui.current_step}"]`);
-    if (shouldInline && activeStep?.parentNode) {
-      activeStep.parentNode.insertBefore(dom.progressShell, activeStep);
-      return;
+    // Keep one stable progress owner. Re-parenting this node into each active
+    // step caused mobile scroll jumps and made the eye action disappear.
+    if (dom.progressShell.parentNode !== progressHome.parentNode) {
+      progressHome.parentNode.insertBefore(dom.progressShell, progressHome.nextSibling);
     }
-    progressHome.parentNode.insertBefore(dom.progressShell, progressHome.nextSibling);
   }
 
   function renderProgressStrip() {
@@ -2670,6 +2763,32 @@
     dom.brandFields.hidden = STATE.mode !== "brand";
   }
 
+  function renderFinalChecklist(actionPolicy) {
+    if (!dom.finalChecklist) return;
+    const items = [
+      { step: "mode", label: "Формат", ready: !!STATE.mode, detail: "Для себе або для команди" },
+      { step: "product", label: "Виріб", ready: !!STATE.product.type, detail: "Основа і посадка" },
+      { step: "config", label: "Налаштування", ready: canAdvance("config"), detail: "Посадка, тканина і колір" },
+      { step: "zones", label: "Зони", ready: canAdvance("zones"), detail: "Розташування та формат" },
+      { step: "artwork", label: "Макет", ready: getArtworkValidationIssues().length === 0 && !!STATE.artwork.service_kind, detail: "Файл, бриф або дизайн" },
+      { step: "quantity", label: "Кількість", ready: canAdvance("quantity"), detail: "Кількість і розміри" },
+      { step: "gift", label: "Подарунок", ready: true, detail: STATE.order.gift_enabled ? "Упаковка додана" : "Без упаковки" },
+      { step: "contact", label: "Контакт", ready: canAdvance("contact"), detail: "Імʼя і канал звʼязку" },
+    ];
+    dom.finalChecklist.innerHTML = items.map((item) => {
+      const stateLabel = item.ready ? "Готово" : "Потрібно заповнити";
+      return `<li class="cp-checklist-item ${item.ready ? "is-ready" : "is-missing"}">
+        <span class="cp-checklist-mark" aria-hidden="true">${item.ready ? "✓" : "!"}</span>
+        <span class="cp-checklist-copy"><strong>${item.label}</strong><small>${item.detail}</small></span>
+        <span class="cp-checklist-state">${item.ready ? stateLabel : `<button type="button" data-checklist-step="${item.step}">${stateLabel}</button>`}</span>
+      </li>`;
+    }).join("");
+    dom.finalChecklist.querySelectorAll("[data-checklist-step]").forEach((button) => {
+      button.addEventListener("click", () => setActiveStep(button.dataset.checklistStep, { fromStep: "contact" }));
+    });
+    dom.finalChecklist.dataset.ready = actionPolicy.leadReady ? "true" : "false";
+  }
+
   function updateSummaries() {
     setStepSummary("mode", STATE.mode === "brand" ? "Для команди / бренду" : STATE.mode === "personal" ? "Для себе" : "—");
 
@@ -2678,16 +2797,18 @@
 
     if (STATE.product.type === "hoodie") {
       const parts = [];
+      const colorPalette = cfg?.fit_colors?.[STATE.product.fit] || cfg?.colors || [];
       if (STATE.product.fit) parts.push(STATE.product.fit === "oversize" ? "Оверсайз" : "Класичний");
       if (STATE.product.fabric) parts.push(STATE.product.fabric === "premium" ? "Преміум" : "База");
       if (STATE.product.color) {
-        const c = (cfg.colors || []).find((x) => x.value === STATE.product.color);
+        const c = colorPalette.find((x) => x.value === STATE.product.color);
         if (c) parts.push(c.label);
       }
       if (STATE.print.add_ons.includes("lacing")) parts.push("Люверси");
       setStepSummary("config", parts.length ? parts.join(" · ") : "—");
     } else {
-      const c = cfg ? (cfg.colors || []).find((x) => x.value === STATE.product.color) : null;
+      const colorPalette = cfg?.fit_colors?.[STATE.product.fit] || cfg?.colors || [];
+      const c = colorPalette.find((x) => x.value === STATE.product.color) || null;
       const parts = [];
       const selectedFabric = getSelectedFabricConfig();
       if (STATE.product.fit) parts.push(STATE.product.fit === "oversize" ? "Оверсайз" : "Класична");
@@ -2885,12 +3006,15 @@
   function updateFinalActionsAvailability() {
     const actionPolicy = buildActionPolicy();
     const pricing = computePricing();
+    renderFinalChecklist(actionPolicy);
     if (dom.addToCartBtn) {
-      dom.addToCartBtn.disabled = !actionPolicy.cartReady;
+      dom.addToCartBtn.disabled = false;
+      dom.addToCartBtn.setAttribute("aria-disabled", String(!actionPolicy.cartReady));
       dom.addToCartBtn.classList.toggle("is-disabled", !actionPolicy.cartReady);
     }
     if (dom.submitLeadBtn) {
-      dom.submitLeadBtn.disabled = !actionPolicy.leadReady;
+      dom.submitLeadBtn.disabled = false;
+      dom.submitLeadBtn.setAttribute("aria-disabled", String(!actionPolicy.leadReady));
       dom.submitLeadBtn.classList.toggle("is-disabled", !actionPolicy.leadReady);
     }
     if (dom.cartActionHint) {
@@ -3010,9 +3134,7 @@
     persistDraft();
     // Скролимо до секції плавно.
     const sectionEl = root.querySelector(`[data-step="${stepKey}"]`);
-    if (sectionEl) {
-      sectionEl.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    scrollToStudioTarget(sectionEl);
   }
 
   // ── Final actions ───────────────────────────────────────────
@@ -3509,6 +3631,7 @@
       if (dom.brandNameInput) dom.brandNameInput.value = STATE.notes.brand_name || "";
       if (dom.giftTextInput) dom.giftTextInput.value = STATE.order.gift_text || "";
       if (dom.giftToggle) dom.giftToggle.classList.toggle("is-active", !!STATE.order.gift_enabled);
+      if (dom.giftToggleState) dom.giftToggleState.textContent = STATE.order.gift_enabled ? "Увімкнено" : "Вимкнено";
       if (dom.giftTextWrap) dom.giftTextWrap.hidden = !STATE.order.gift_enabled;
       if (dom.garmentNoteInput) dom.garmentNoteInput.value = STATE.notes.garment_note || "";
       if (dom.sizesNoteInput) dom.sizesNoteInput.value = STATE.order.sizes_note || "";

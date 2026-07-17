@@ -42,7 +42,7 @@
 
 {% block extra_css %}
   {{ block.super }}
-  <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260717-modern-atelier-3">
+  <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260717-modern-atelier-6">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -181,7 +181,7 @@
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.8"/></svg>
       </button>
       <button type="button" class="cp-icon-button" data-manager-open aria-label="{% trans 'Звʼязатися з менеджером' %}">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="3.2" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 20c.8-3.6 3-5.4 6.5-5.4s5.7 1.8 6.5 5.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="19" cy="5" r="2.2" fill="var(--cp-gold)" stroke="currentColor" stroke-width="1.2"/><path d="M19 3.9v2.2M17.9 5h2.2" stroke="#15120c" stroke-width="1" stroke-linecap="round"/></svg>
       </button>
     </header>
 
@@ -610,6 +610,7 @@
                 <span class="cp-addon-card-body">
                   <strong>{% trans 'Подарункова упаковка' %}</strong>
                   <span class="cp-addon-card-badge">+{{ custom_print_config.gift_service.price }} {% trans 'грн' %}</span>
+                  <span class="cp-addon-card-toggle" data-gift-toggle-state>{% trans 'Вимкнено' %}</span>
                   <span class="cp-addon-card-hint">{{ custom_print_config.gift_service.note }}</span>
                   <span class="cp-addon-card-bonus">{{ custom_print_config.gift_service.bonus_note }}</span>
                 </span>
@@ -698,6 +699,14 @@
                 {% trans 'Контакт + кнопка нижче. Чорнетка відразу зберігається локально.' %}
               </div>
 
+              <div class="cp-final-checklist-shell">
+                <div class="cp-subhead">
+                  <strong>{% trans 'Перед відправкою' %}</strong>
+                  <span>{% trans 'Кожен пункт можна відкрити й виправити.' %}</span>
+                </div>
+                <ul class="cp-final-checklist" data-final-checklist aria-live="polite"></ul>
+              </div>
+
               <div class="cp-final-actions" data-final-actions>
                 <button type="button" class="cp-final-button cp-final-button--primary" data-action-add-to-cart>
                   <span class="cp-final-button-icon" aria-hidden="true">
@@ -732,6 +741,8 @@
         </div>
       </div>
     </form>
+
+    <div class="cp-studio-boundary" data-studio-boundary aria-hidden="true"></div>
 
     {# Mobile sticky bar — видимий тільки на мобільних, показує ціну та основну дію поточного шага. #}
     <div class="cp-mobile-action-bar cp-mobile-bottom-bar" data-mobile-action-bar data-mobile-bottom-bar hidden role="region" aria-label="{% trans 'Підсумок та основна дія' %}">
@@ -783,6 +794,7 @@
           <button type="button" class="cp-icon-button" data-dialog-close aria-label="{% trans 'Закрити' %}">×</button>
         </header>
         <p data-manager-copy>{% trans 'Чернетку буде збережено. Надішліть макет, референс або коротко опишіть ідею — менеджер продовжить з поточного кроку.' %}</p>
+        <div class="cp-manager-summary" data-manager-summary aria-live="polite"></div>
         <a class="cp-dialog-primary" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener" data-manager-telegram>{% trans 'Написати в Telegram' %}</a>
         <button type="button" class="cp-dialog-secondary" data-dialog-close>{% trans 'Залишитися в конструкторі' %}</button>
       </div>
@@ -1019,10 +1031,10 @@
 {% block extra_js %}
   {{ block.super }}
   <script src="{% static 'js/custom-print-submission-policy.js' %}" defer></script>
-  <script src="{% static 'js/custom-print-state.js' %}?v=20260716-guided-studio" defer></script>
-  <script src="{% static 'js/custom-print-preview.js' %}?v=20260716-guided-studio" defer></script>
-  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260716-guided-studio" defer></script>
-  <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260716-guided-studio" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260716-guided-studio" defer></script>
+  <script src="{% static 'js/custom-print-state.js' %}?v=20260717-modern-atelier-6" defer></script>
+  <script src="{% static 'js/custom-print-preview.js' %}?v=20260717-modern-atelier-6" defer></script>
+  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260717-modern-atelier-6" defer></script>
+  <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260717-modern-atelier-6" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260717-modern-atelier-6" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

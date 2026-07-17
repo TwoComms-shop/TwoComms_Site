@@ -425,6 +425,18 @@ PRODUCT_MATRIX = {
             {"value": "sand", "label": "Пісочний", "hex": "#c8b28d"},
             {"value": "bone", "label": "Світлий", "hex": "#ebe3d6"},
         ],
+        "fit_colors": {
+            "regular": [
+                {"value": "black", "label": "Чорний", "hex": "#151515"},
+                {"value": "graphite", "label": "Графіт", "hex": "#3b3b3f"},
+                {"value": "sand", "label": "Пісочний", "hex": "#c8b28d"},
+                {"value": "bone", "label": "Світлий", "hex": "#ebe3d6"},
+            ],
+            "oversize": [
+                {"value": "black", "label": "Чорний", "hex": "#151515"},
+                {"value": "pink", "label": "Рожевий", "hex": "#d98fa8"},
+            ],
+        },
         "default_color": "black",
         "zones": ["front", "back", "sleeve"],
         "default_zones": [],
@@ -493,7 +505,7 @@ PRODUCT_MATRIX = {
         "colors": [
             {"value": "black", "label": "Чорний", "hex": "#151515"},
             {"value": "white", "label": "Білий", "hex": "#f1ede6"},
-            {"value": "graphite", "label": "Графіт", "hex": "#4a4a52"},
+            {"value": "coyote", "label": "Койот", "hex": "#8B6B45"},
         ],
         "default_color": "black",
         "zones": ["front", "back"],
@@ -650,8 +662,11 @@ def resolve_color_label(product_type: str, color_value: str, fabric_value: str =
                             "hex": c.get("hex") or "",
                         }
 
-    # 2) Звичайні кольори продукту.
-    for c in matrix.get("colors") or []:
+    # 2) Fit-specific colors take precedence over the broad product palette.
+    fit_colors = matrix.get("fit_colors") or {}
+    candidates = [color for palette in fit_colors.values() for color in palette or []]
+    candidates.extend(matrix.get("colors") or [])
+    for c in candidates:
         if c.get("value") == color_value:
             return {
                 "label": str(c.get("label") or color_value),
@@ -1303,6 +1318,16 @@ def _allowed_values(items):
     return {item["value"] for item in items}
 
 
+def _allowed_color_options(product_config: dict, fit: str = "", fabric: str = "") -> list[dict]:
+    """Return the palette for the selected fit/material combination."""
+    fabrics = (product_config.get("fabrics") or {}).get(fit or product_config.get("default_fit") or "", [])
+    selected_fabric = next((item for item in fabrics if item.get("value") == fabric), None)
+    if selected_fabric and selected_fabric.get("colors"):
+        return list(selected_fabric["colors"])
+    fit_palette = (product_config.get("fit_colors") or {}).get(fit or "")
+    return list(fit_palette or product_config.get("colors") or [])
+
+
 def build_custom_print_config(
     *,
     submit_url: str,
@@ -1481,10 +1506,12 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
     if not fabric_choices:
         fabric = product_config.get("default_fabric", "")
 
-    color_choices = {item["value"] for item in product_config.get("colors") or []}
+    color_options = _allowed_color_options(product_config, fit, fabric)
+    color_choices = {item["value"] for item in color_options}
     color = (product_payload.get("color") or product_config.get("default_color") or "").strip()
     if color_choices and color not in color_choices:
-        color = product_config.get("default_color") or next(iter(color_choices))
+        default_color = product_config.get("default_color")
+        color = default_color if default_color in color_choices else next(iter(color_choices))
 
     print_payload = raw_snapshot.get("print") or {}
     available_zones = set(product_config.get("zones") or [])

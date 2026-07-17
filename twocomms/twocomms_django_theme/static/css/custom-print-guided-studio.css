@@ -1623,6 +1623,9 @@ body.cp-studio-active { overflow: visible !important; }
 .cp-final-button:hover { transform: translateY(-2px); border-color: rgba(246, 220, 164, .4); }
 .cp-final-button--primary { border-color: rgba(246, 220, 164, .7); background: linear-gradient(145deg, rgba(232, 191, 108, .22), rgba(111, 75, 168, .1)); }
 .cp-final-button-text small { color: rgba(247, 245, 239, .54); }
+.cp-final-button.is-disabled,
+.cp-mobile-bottom-bar-action.is-disabled { opacity: 1; filter: none; }
+.cp-final-button.is-disabled { border-color: rgba(246, 220, 164, .32); background: rgba(255,255,255,.045); }
 
 .cp-mobile-action-bar {
   min-height: 84px;
@@ -1646,6 +1649,35 @@ body.cp-studio-active { overflow: visible !important; }
 .cp-dialog-secondary { background: rgba(255, 255, 255, .045); }
 .cp-preview-dialog { width: min(800px, calc(100% - 2rem)); }
 .cp-preview-dialog-canvas { width: min(100%, 560px); }
+
+.cp-fabric-modal-overlay {
+  position: fixed;
+  z-index: 2200;
+  inset: 0;
+  display: none;
+  place-items: center;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  background: rgba(3, 3, 5, .78);
+  backdrop-filter: blur(12px);
+}
+.cp-fabric-modal-overlay.is-visible { display: grid; }
+.cp-fabric-modal-box {
+  position: relative;
+  width: min(440px, 100%);
+  max-height: min(680px, calc(100svh - 2rem));
+  overflow: auto;
+  padding: 1.4rem;
+  border: 1px solid rgba(232,191,108,.32);
+  border-radius: 22px;
+  background: linear-gradient(160deg, rgba(28,25,34,.98), rgba(11,10,14,.98));
+  box-shadow: 0 28px 90px rgba(0,0,0,.55);
+}
+.cp-fabric-modal-close { position: absolute; top: .75rem; right: .75rem; display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid rgba(255,255,255,.14); border-radius: 50%; background: rgba(255,255,255,.05); color: var(--cp-text); font-size: 1.35rem; line-height: 1; cursor: pointer; }
+.cp-fabric-modal-close:focus-visible { outline: 2px solid var(--cp-gold-soft); outline-offset: 2px; }
+.cp-fabric-modal-media { margin: 0 2rem 1rem; overflow: hidden; border-radius: 16px; background: rgba(255,255,255,.04); }
+.cp-fabric-modal-media img { display: block; width: 100%; max-height: 220px; object-fit: contain; }
+.cp-fabric-modal-title { margin: 0 2.4rem .55rem 0; color: var(--cp-gold-soft); font-size: 1.2rem; }
+.cp-fabric-modal-desc { margin: 0; color: rgba(247,245,239,.7); font-size: .86rem; line-height: 1.65; }
 
 .cp-support-stack { margin-top: 2.8rem; border-top-color: rgba(255, 255, 255, .1); }
 .cp-support-section { padding-block: 2.4rem; border-bottom-color: rgba(255, 255, 255, .1); }
@@ -1762,4 +1794,175 @@ body.cp-studio-active { overflow: visible !important; }
   .cp-front-size-card:hover,
   .cp-link-card:hover,
   .cp-final-button:hover { transform: none; }
+}
+
+/* Audit pass: equal selector geometry, explicit states and safe mobile offsets. */
+.cp-scroll-anchor,
+.cp-step,
+.cp-field,
+.cp-final-checklist-shell { scroll-margin-top: 96px; }
+
+.cp-fit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cp-fit-card {
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  padding: .8rem;
+}
+.cp-fit-card-figure {
+  display: grid !important;
+  width: 100%;
+  height: 118px;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 13px;
+  background: linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.02));
+}
+.cp-fit-card-figure img { width: auto; max-width: 100%; height: 100%; min-width: 0; min-height: 0; max-height: 100%; object-fit: contain; object-position: center; border-radius: inherit; filter: drop-shadow(0 10px 18px rgba(0,0,0,.22)); }
+.cp-fit-card-info { display: grid; gap: .24rem; min-width: 0; }
+.cp-fit-card-info small { color: var(--cp-gold-soft); font-size: .62rem; letter-spacing: .1em; text-transform: uppercase; }
+.cp-fit-card-info strong { font-size: .95rem; }
+.cp-fit-card-info span { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.cp-fit-card-info em { color: rgba(247,245,239,.48); font-size: .66rem; font-style: normal; line-height: 1.3; }
+
+.cp-fabric-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; }
+.cp-fabric-row[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
+.cp-fabric-row[data-count="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cp-fabric-option { position: relative; display: grid; min-width: 0; }
+.cp-mini-chip--fabric {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 82px;
+  padding: .72rem .58rem;
+  text-align: left;
+}
+.cp-fabric-option > .cp-mini-chip--fabric { width: 100%; padding-right: 2.1rem; }
+.cp-fabric-chip-content { display: grid; min-width: 0; }
+.cp-fabric-chip-title { display: flex; align-items: flex-start; justify-content: space-between; gap: .3rem; min-width: 0; }
+.cp-fabric-chip-title strong { overflow: hidden; font-size: .76rem; text-overflow: ellipsis; }
+.cp-fabric-chip-meta { overflow: hidden; color: rgba(247,245,239,.56); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+.cp-fabric-info-trigger {
+  position: absolute;
+  top: .62rem;
+  right: .58rem;
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid rgba(246,220,164,.42);
+  border-radius: 50%;
+  color: var(--cp-gold-soft);
+  cursor: help;
+  font: inherit;
+}
+.cp-fabric-info-trigger:hover { background: rgba(232,191,108,.14); }
+.cp-mini-chip--fabric:disabled { opacity: 1; cursor: default; }
+.cp-fabric-info-trigger svg { width: 15px; height: 15px; }
+.cp-fabric-info-trigger:focus-visible { outline: 2px solid var(--cp-gold-soft); outline-offset: 2px; }
+.cp-mini-chip--fabric.is-locked { cursor: default; }
+.cp-mini-chip--fabric.is-locked::after { content: "Входить у базу"; color: var(--cp-success); font-size: .61rem; }
+
+.cp-fleece-toggle { display: grid; gap: .55rem; grid-column: 1 / -1; }
+.cp-fleece-title { color: var(--cp-gold-soft); font-size: .7rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.cp-fleece-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.cp-fleece-btn {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  min-height: 64px;
+  padding: .7rem;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 14px;
+  background: rgba(255,255,255,.035);
+  color: var(--cp-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cp-fleece-btn.is-active { border-color: var(--cp-gold); background: rgba(232,191,108,.16); box-shadow: 0 0 0 1px rgba(232,191,108,.25); }
+.cp-fleece-btn .cp-addon-card-icon svg { width: 27px; height: 27px; }
+.cp-fleece-btn-label { font-size: .78rem; font-weight: 750; }
+
+.cp-zone-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cp-zone-card {
+  min-height: 124px;
+  align-content: center;
+  justify-items: start;
+  padding: .9rem;
+}
+.cp-zone-card-icon { display: grid; width: 40px; height: 40px; place-items: center; border: 1px solid rgba(246,220,164,.2); border-radius: 12px; background: rgba(232,191,108,.08); }
+.cp-zone-card-title { font-size: .86rem; }
+.cp-zone-card-hint { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.cp-zone-card-badge { color: var(--cp-gold-soft); font-size: .62rem; }
+.cp-zone-card-check { opacity: .38; }
+.cp-zone-card.is-active .cp-zone-card-check { opacity: 1; }
+
+.cp-front-size-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cp-size-preset {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: .55rem;
+  min-width: 0;
+  min-height: 66px;
+  padding: .62rem;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 14px;
+  background: rgba(255,255,255,.035);
+  color: var(--cp-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cp-size-preset:hover { border-color: rgba(246,220,164,.46); }
+.cp-size-preset.is-active { border-color: var(--cp-gold); background: rgba(232,191,108,.16); box-shadow: 0 0 0 1px rgba(232,191,108,.24); }
+.cp-size-icon { display: grid; width: 38px; height: 46px; place-items: center; border: 1px solid rgba(246,220,164,.28); border-radius: 8px; background: rgba(232,191,108,.08); }
+.cp-size-icon img { width: 28px; height: 34px; }
+.cp-size-details { display: grid; gap: .15rem; min-width: 0; }
+.cp-size-details strong { font-size: .82rem; }
+.cp-size-details span { overflow: hidden; color: rgba(247,245,239,.5); font-size: .6rem; text-overflow: ellipsis; white-space: nowrap; }
+
+.cp-addon-card-toggle { display: inline-flex; width: fit-content; padding: .2rem .48rem; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; color: rgba(247,245,239,.64); font-size: .64rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.cp-addon-card--gift.is-active .cp-addon-card-toggle { border-color: rgba(155,210,149,.45); color: var(--cp-success); background: rgba(155,210,149,.08); }
+.cp-addon-card--gift:not(.is-active) .cp-addon-card-toggle { color: rgba(247,245,239,.46); }
+
+.cp-final-checklist-shell { display: grid; gap: .7rem; padding: 1rem; border: 1px solid rgba(144,119,236,.25); border-radius: 16px; background: rgba(111,75,168,.08); }
+.cp-final-checklist { display: grid; gap: .45rem; margin: 0; padding: 0; list-style: none; }
+.cp-checklist-item { display: grid; grid-template-columns: 24px minmax(0,1fr) auto; align-items: center; gap: .65rem; min-height: 44px; padding: .45rem .55rem; border: 1px solid rgba(255,255,255,.08); border-radius: 11px; background: rgba(255,255,255,.03); }
+.cp-checklist-mark { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: rgba(255,255,255,.1); color: var(--cp-danger); font-size: .75rem; font-weight: 900; }
+.cp-checklist-item.is-ready .cp-checklist-mark { background: rgba(155,210,149,.16); color: var(--cp-success); }
+.cp-checklist-copy { display: grid; gap: .12rem; min-width: 0; }
+.cp-checklist-copy strong { font-size: .76rem; }
+.cp-checklist-copy small { overflow: hidden; color: rgba(247,245,239,.52); font-size: .65rem; text-overflow: ellipsis; white-space: nowrap; }
+.cp-checklist-state { color: var(--cp-success); font-size: .64rem; font-weight: 800; white-space: nowrap; }
+.cp-checklist-item.is-missing .cp-checklist-state { color: var(--cp-gold-soft); }
+.cp-checklist-state button { padding: .25rem .45rem; border: 1px solid rgba(246,220,164,.32); border-radius: 999px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.cp-manager-summary { margin: .1rem 0 .35rem; padding: .75rem; white-space: pre-line; border: 1px solid rgba(232,191,108,.2); border-radius: 12px; background: rgba(232,191,108,.06); color: rgba(247,245,239,.72); font-size: .73rem; line-height: 1.55; }
+.cp-studio-boundary { height: 1px; width: 100%; pointer-events: none; }
+
+@media (max-width: 760px) {
+  .cp-fit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cp-fit-card { padding: .58rem; }
+  .cp-fit-card-figure { height: 82px; border-radius: 11px; }
+  .cp-fit-card-info strong { font-size: .82rem; }
+  .cp-fit-card-info span { font-size: .68rem; }
+  .cp-fit-card-info em { font-size: .58rem; }
+  .cp-zone-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cp-zone-card { min-height: 112px; padding: .72rem; }
+  .cp-front-size-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cp-size-preset { grid-template-columns: 1fr; justify-items: center; min-height: 86px; padding: .5rem .35rem; text-align: center; }
+  .cp-size-details { justify-items: center; }
+  .cp-size-details span { max-width: 100%; }
+  .cp-final-actions { grid-template-columns: minmax(0, 1fr); }
+  .cp-final-button { min-height: 68px; }
+  .cp-field input, .cp-field textarea, .cp-qty-bar input { font-size: 16px; }
+}
+
+@media (max-width: 340px) {
+  .cp-fit-card-figure { height: 70px; }
+  .cp-fit-card-info span { -webkit-line-clamp: 1; }
+  .cp-fabric-chip-title strong { font-size: .68rem; }
+  .cp-fabric-chip-meta { font-size: .55rem; }
 }

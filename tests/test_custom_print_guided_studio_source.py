@@ -97,6 +97,9 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
             "data-cart-review-dialog",
         ):
             self.assertIn(contract, self.template)
+        self.assertIn("data-final-checklist", self.template)
+        self.assertIn("data-manager-summary", self.template)
+        self.assertIn("data-studio-boundary", self.template)
 
     def test_seo_support_stack_sits_outside_the_studio_shell(self):
         shell_end = self.template.index("    <div class=\"cp-support-stack\">")
@@ -136,9 +139,33 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
             "@media (max-width: 1100px)",
             ".cp-stage-card { display: none !important; }",
             ".cp-page.is-studio-active { overflow: visible; }",
+            "grid-template-columns: repeat(2, minmax(0, 1fr));",
+            ".cp-fabric-row { display: grid;",
+            ".cp-scroll-anchor",
             "prefers-reduced-motion: reduce",
         ):
             self.assertIn(contract, self.css)
+
+    def test_mobile_navigation_uses_one_offset_aware_scroll_helper(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertIn("function scrollToStudioTarget", configurator)
+        self.assertNotIn("activeStep.parentNode.insertBefore(dom.progressShell", configurator)
+        self.assertNotIn("field?.scrollIntoView({ behavior: \"smooth\", block: \"center\" })", configurator)
+
+    def test_fabric_info_is_a_keyboard_safe_control(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertIn("cp-fabric-info-trigger", configurator)
+        self.assertIn("keydown", configurator)
+        self.assertNotIn('<span role="button" class="cp-fabric-info-trigger"', configurator)
+        self.assertIn('modal.setAttribute("aria-modal", "true")', configurator)
+        self.assertIn(".cp-fabric-modal-overlay.is-visible", self.css)
+
+    def test_fit_and_fabric_palette_resolvers_feed_preview_and_refresh(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        preview = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-preview.js").read_text(encoding="utf-8")
+        self.assertIn("function getAllowedColorOptions", configurator)
+        self.assertIn("renderColorChips();", configurator)
+        self.assertIn("productConfig.fit_colors?.[state.product.fit]", preview)
 
     def test_custom_print_source_has_no_replacement_character_mojibake(self):
         source = STATIC_PAGES.read_text(encoding="utf-8")

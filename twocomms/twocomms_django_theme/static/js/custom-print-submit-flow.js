@@ -53,9 +53,19 @@
       preview?.open(trigger);
     }
 
-    function openManagerDialog({ trigger, isB2b = false } = {}) {
+    function openManagerDialog({ trigger, isB2b = false, summary = "" } = {}) {
       const title = managerDialog?.querySelector("[data-manager-title]");
       if (title) title.textContent = isB2b ? title.dataset.titleB2b : title.dataset.titleDefault;
+      const summaryNode = managerDialog?.querySelector("[data-manager-summary]");
+      if (summaryNode) summaryNode.textContent = summary;
+      const telegram = managerDialog?.querySelector("[data-manager-telegram]");
+      if (telegram) {
+        const baseHref = telegram.dataset.baseHref || telegram.href;
+        telegram.dataset.baseHref = baseHref;
+        telegram.href = summary
+          ? `${baseHref}${baseHref.includes("?") ? "&" : "?"}text=${encodeURIComponent(summary)}`
+          : baseHref;
+      }
       manager?.open(trigger);
     }
 

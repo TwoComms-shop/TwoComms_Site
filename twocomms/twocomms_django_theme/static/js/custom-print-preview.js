@@ -75,7 +75,7 @@
       const view = state.ui.stage_view === "back" ? "back" : "front";
       const productConfig = config.products?.[state.product.type] || {};
       const selectedFabric = (productConfig.fabrics?.[state.product.fit] || []).find((item) => item.value === state.product.fabric);
-      const palette = selectedFabric?.colors || productConfig.colors || [];
+      const palette = selectedFabric?.colors || productConfig.fit_colors?.[state.product.fit] || productConfig.colors || [];
       const color = palette.find((item) => item.value === state.product.color)?.hex || "#303036";
       const placements = expandedPlacements(state);
 

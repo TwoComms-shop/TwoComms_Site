@@ -189,6 +189,22 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         self.assertEqual(oversize_fabrics[0]["info_theme"], "premium")
         self.assertIn("вищу щільність", oversize_fabrics[0]["info_desc"])
 
+    def test_config_exposes_product_specific_color_matrices(self):
+        config = build_custom_print_config(
+            submit_url="/lead/",
+            safe_exit_url="/safe-exit/",
+            add_to_cart_url="/cart/",
+        )
+        tshirt_colors = config["products"]["tshirt"]["colors"]
+        self.assertEqual([color["value"] for color in tshirt_colors], ["black", "white", "coyote"])
+        self.assertEqual(next(color["hex"] for color in tshirt_colors if color["value"] == "coyote"), "#8B6B45")
+        self.assertNotIn("graphite", {color["value"] for color in tshirt_colors})
+        hoodie_fit_colors = config["products"]["hoodie"]["fit_colors"]
+        self.assertEqual([color["value"] for color in hoodie_fit_colors["oversize"]], ["black", "pink"])
+        self.assertEqual([color["value"] for color in hoodie_fit_colors["regular"]], ["black", "graphite", "sand", "bone"])
+        thermo = config["products"]["tshirt"]["fabrics"]["oversize"][-1]
+        self.assertEqual([color["value"] for color in thermo["colors"]], ["thermo_green", "thermo_pink"])
+
     def test_stage_profiles_expose_distinct_back_presets_for_a4_a3_a2(self):
         config = build_custom_print_config(
             submit_url="https://twocomms.shop/custom-print/lead/",
@@ -264,6 +280,27 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         )
 
         self.assertEqual(normalized["print"]["zone_options"]["front"]["size_preset"], "A4")
+
+    def test_normalize_snapshot_preserves_fit_specific_hoodie_color(self):
+        normalized = normalize_custom_print_snapshot(
+            {"product": {"type": "hoodie", "fit": "oversize", "fabric": "premium", "color": "pink"}}
+        )
+
+        self.assertEqual(normalized["product"]["color"], "pink")
+
+    def test_normalize_snapshot_preserves_fabric_specific_thermo_color(self):
+        normalized = normalize_custom_print_snapshot(
+            {
+                "product": {
+                    "type": "tshirt",
+                    "fit": "oversize",
+                    "fabric": "thermo",
+                    "color": "thermo_pink",
+                }
+            }
+        )
+
+        self.assertEqual(normalized["product"]["color"], "thermo_pink")
 
     def test_build_placement_specs_expand_back_and_both_sleeves(self):
         specs = build_placement_specs(
