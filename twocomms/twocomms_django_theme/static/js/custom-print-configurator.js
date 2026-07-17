@@ -160,8 +160,8 @@
   if (progressHome && dom.progressShell?.parentNode) {
     dom.progressShell.parentNode.insertBefore(progressHome, dom.progressShell);
   }
-  const dialogFlow = globalThis.CustomPrintSubmitFlow?.create(root) || null;
   const previewController = globalThis.CustomPrintPreview?.create({ root, config: CONFIG, getState: () => STATE }) || null;
+  const dialogFlow = globalThis.CustomPrintSubmitFlow?.create(root) || null;
   const mobileShell = globalThis.CustomPrintMobileShell?.create({
     root,
     mobileBar: dom.mobileBar,

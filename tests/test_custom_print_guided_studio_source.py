@@ -53,6 +53,10 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertNotIn("cp-manager-inline-link", self.template)
         self.assertNotIn("cp-manager-shortcut-link", self.template)
         self.assertNotIn("cp-manager-shortcut-draft", self.template)
+        self.assertNotIn("data-safe-exit-trigger", self.template)
+
+    def test_hero_heading_has_a_non_concatenated_accessible_name(self):
+        self.assertIn("aria-label=\"{% trans 'Створи річ, що говорить за тебе' %}\"", self.template)
 
     def test_preview_uses_png_scene_without_legacy_garment_rotor(self):
         for legacy_contract in (
@@ -104,21 +108,27 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         submit_flow = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-submit-flow.js").read_text(encoding="utf-8")
         self.assertRegex(submit_flow, r"document\.body\.append(?:Child)?\(dialog\)")
         self.assertIn("is-refreshing", (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-preview.js").read_text(encoding="utf-8"))
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertLess(configurator.index("CustomPrintPreview?.create"), configurator.index("CustomPrintSubmitFlow?.create"))
 
     def test_css_defines_desktop_studio_mobile_shell_and_reduced_motion(self):
         for contract in (
             "grid-template-columns: minmax(0, 42fr) minmax(0, 58fr)",
             ".cp-studio-appbar",
             ".cp-mobile-action-bar",
+            "body.cp-studio-active > .navbar",
+            "body.cp-studio-active > .bottom-nav",
+            "body.cp-studio-active { overflow: visible !important; }",
+            "body.cp-studio-active .cp-workbench { grid-template-columns: minmax(0, 1fr); }",
+            ".cp-page.is-studio-active { overflow: visible; }",
             "prefers-reduced-motion: reduce",
         ):
             self.assertIn(contract, self.css)
 
     def test_custom_print_source_has_no_replacement_character_mojibake(self):
         source = STATIC_PAGES.read_text(encoding="utf-8")
-        relevant = source.split("CUSTOM_PRINT_FAQ =", 1)[-1].split("def ", 1)[0]
-        self.assertNotIn("�", relevant)
-        self.assertNotIn("��", relevant)
+        self.assertNotIn("�", source)
+        self.assertNotIn("��", source)
 
     def test_preview_png_assets_share_a_transparent_1200_by_1400_canvas(self):
         names = (

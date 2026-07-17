@@ -733,7 +733,7 @@ def llms_full_txt(request):
         "- Country: Ukraine",
         "- City: Харків",
         "- Segment: streetwear / military-adjacent apparel + custom DTF print",
-        "- Founder: Артем Синіло (Artem Synilo) — ветеран, засновник бренду з Харк��ва.",
+        "- Founder: Артем Синіло (Artem Synilo) — ветеран, засновник бренду з Харкова.",
         "- Founder story (external source): пресреліз Міністерства у справах ветеранів "
         "України «Це не крапка, це продовження» — "
         "https://mva.gov.ua/prescenter/category/86-novini/tse-ne-krapka-tse-prodovzhennya-istoriya-artema-sinila-ta-harkivskogo-brendu-twocomms",
@@ -1296,7 +1296,7 @@ def _build_page_context(request, page_key):
                 "items": categories,
             },
             {
-                "title": _("Актуальні товарні сторін��и"),
+                "title": _("Актуальні товарні сторінки"),
                 "eyebrow": "Fresh product links",
                 "items": latest_products,
             },

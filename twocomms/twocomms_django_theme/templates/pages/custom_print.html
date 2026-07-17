@@ -42,123 +42,7 @@
 
 {% block extra_css %}
   {{ block.super }}
-  <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260716-guided-studio">
-  <style>
-    .cp-breadcrumbs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      align-items: center;
-      margin: 0 0 1.25rem;
-      color: rgba(255, 255, 255, 0.72);
-      font-size: 0.95rem;
-    }
-
-    .cp-breadcrumbs a {
-      color: rgba(255, 255, 255, 0.84);
-      text-decoration: none;
-    }
-
-    .cp-breadcrumbs a:hover {
-      color: #fff;
-      text-decoration: underline;
-    }
-
-    .cp-support-stack {
-      margin-top: 2rem;
-      display: grid;
-      gap: 1.5rem;
-    }
-
-    .cp-support-section {
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 24px;
-      background: linear-gradient(180deg, rgba(17, 17, 24, 0.72), rgba(10, 10, 16, 0.82));
-      padding: clamp(1.25rem, 2vw, 2rem);
-      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.22);
-    }
-
-    .cp-support-section h2 {
-      margin: 0 0 0.5rem;
-      font-size: clamp(1.45rem, 2vw, 2rem);
-    }
-
-    .cp-support-section > p {
-      margin: 0 0 1.25rem;
-      color: rgba(255, 255, 255, 0.72);
-      max-width: 70ch;
-    }
-
-    .cp-faq-list {
-      display: grid;
-      gap: 0.85rem;
-    }
-
-    .cp-faq-item {
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 18px;
-      background: rgba(255, 255, 255, 0.03);
-      padding: 1rem 1.1rem;
-    }
-
-    .cp-faq-item summary {
-      cursor: pointer;
-      list-style: none;
-      font-weight: 700;
-    }
-
-    .cp-faq-item summary::-webkit-details-marker {
-      display: none;
-    }
-
-    .cp-faq-item p {
-      margin: 0.85rem 0 0;
-      color: rgba(255, 255, 255, 0.75);
-      line-height: 1.65;
-    }
-
-    .cp-link-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1rem;
-    }
-
-    .cp-link-card {
-      display: block;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 18px;
-      padding: 1rem 1.1rem;
-      text-decoration: none;
-      color: #fff;
-      background: rgba(255, 255, 255, 0.03);
-      transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
-    }
-
-    .cp-link-card:hover {
-      transform: translateY(-2px);
-      border-color: rgba(168, 85, 247, 0.48);
-      background: rgba(168, 85, 247, 0.08);
-    }
-
-    .cp-link-card small {
-      display: block;
-      margin-bottom: 0.45rem;
-      color: rgba(255, 255, 255, 0.56);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-
-    .cp-link-card strong {
-      display: block;
-      margin-bottom: 0.45rem;
-      font-size: 1.05rem;
-    }
-
-    .cp-link-card span {
-      color: rgba(255, 255, 255, 0.72);
-      line-height: 1.55;
-    }
-  </style>
+  <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260717-modern-atelier-2">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -207,7 +91,7 @@
         «Створи річ, що говорить за тебе» instead of the run-on
         «Створи річ,що говорить за тебе». WCAG 1.3.1 fix.
         {% endcomment %}
-        <h1 class="cp-hero-title cp-animate-in cp-delay-3">{% blocktrans %}Створи річ, <br>що&nbsp;говорить <span>за тебе</span>{% endblocktrans %}</h1>
+        <h1 class="cp-hero-title cp-animate-in cp-delay-3" aria-label="{% trans 'Створи річ, що говорить за тебе' %}">{% blocktrans %}Створи річ, <br> що&nbsp;говорить <span>за тебе</span>{% endblocktrans %}</h1>
         <p class="cp-hero-desc cp-animate-in cp-delay-4">
           {% trans 'Кастомний одяг та аксесуари під ваші ідеї. Будь-який дизайн, будь-який колір, преміальна якість без компромісів.' %}
         </p>
@@ -841,7 +725,6 @@
                 </button>
               </div>
 
-              <button type="button" class="cp-tertiary-button cp-tertiary-button--center" data-safe-exit-trigger>{% trans 'Зберегти чернетку і відкрити Telegram' %}</button>
             </div>
           </section>
           </div>
