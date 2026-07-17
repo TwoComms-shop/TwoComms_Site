@@ -943,10 +943,13 @@
   {% endcomment %}
   <link rel="stylesheet" href="{% static 'css/support-hub.css' %}"
         media="print" onload="this.media='all'">
+  <link rel="stylesheet" href="{% static 'css/language-suggestion.css' %}"
+        media="print" onload="this.media='all'">
   <noscript>
     <link rel="stylesheet" href="{% static 'css/styles.purged.css' %}">
     <link rel="stylesheet" href="{% static 'css/cls-ultimate.css' %}">
     <link rel="stylesheet" href="{% static 'css/support-hub.css' %}">
+    <link rel="stylesheet" href="{% static 'css/language-suggestion.css' %}">
   </noscript>
   {% comment %}
   perf-lite правила вынесены в static/css/perf-lite.css (бандлится через compress выше).
@@ -1247,6 +1250,28 @@
   {% endcache %}
   {% include 'partials/language_switcher.html' %}
 
+  <div id="language-suggestion" class="language-suggestion" hidden aria-hidden="true" data-nosnippet
+       data-set-language-url="{% url 'set_language' %}">
+    <div class="language-suggestion__backdrop" data-language-suggestion-backdrop></div>
+    <section class="language-suggestion__dialog" role="dialog" aria-modal="true"
+             aria-labelledby="language-suggestion-title" aria-describedby="language-suggestion-copy">
+      <button type="button" class="language-suggestion__close" data-language-suggestion-close
+              aria-label="{% trans 'Закрити' %}">×</button>
+      <div class="language-suggestion__eyebrow">TwoComms</div>
+      <h2 id="language-suggestion-title" class="language-suggestion__title" data-language-suggestion-title></h2>
+      <p id="language-suggestion-copy" class="language-suggestion__copy" data-language-suggestion-copy></p>
+      <div class="language-suggestion__actions">
+        <button type="button" class="language-suggestion__button" data-language-suggestion-stay></button>
+        <form method="post" action="{% url 'set_language' %}" data-language-suggestion-form>
+          <input type="hidden" name="csrfmiddlewaretoken" value="">
+          <input type="hidden" name="language" value="uk">
+          <input type="hidden" name="next" value="" aria-label="{% trans 'Поточна сторінка' %}">
+          <button type="submit" class="language-suggestion__button language-suggestion__button--primary">Перейти українською</button>
+        </form>
+      </div>
+    </section>
+  </div>
+
   <!-- Мобильные мини-панели (только для мобильной версии) -->
   <div id="mini-cart-panel-mobile" class="cart-panel d-none d-md-none">
     <!-- Анимация искр для корзины -->
@@ -1507,6 +1532,7 @@
   <!-- Service Worker cleanup: extracted to /static/js/sw-cleanup.js (2026-04-20),
        defer + static caching — не нагружает HTML-ответ. -->
   <script defer src="{% static 'js/sw-cleanup.js' %}"></script>
+  <script defer src="{% static 'js/language-suggestion.js' %}?v=20260718-language-prompt"></script>
 
 </body>
 
