@@ -1,0 +1,177 @@
+{% load admin_filters %}
+<section class="feed-center" aria-labelledby="feed-center-title">
+  <style>
+    .feed-center { color:#f7f7fb; display:grid; gap:18px; }
+    .bottom-nav { display:none !important; }
+    .feed-center * { box-sizing:border-box; }
+    .feed-hero,.feed-pane,.feed-stat { border:1px solid rgba(255,255,255,.09); background:rgba(16,18,25,.88); border-radius:18px; }
+    .feed-hero { padding:20px; display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }
+    .feed-eyebrow { color:#ff9b54; font-size:12px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+    .feed-hero h2 { margin:4px 0 6px; font-size:clamp(24px,3vw,36px); }
+    .feed-hero p { margin:0; color:#aeb5c5; max-width:760px; line-height:1.5; }
+    .feed-btn { min-height:40px; border:1px solid rgba(255,255,255,.14); border-radius:11px; padding:0 14px; background:#252936; color:#fff; display:inline-flex; align-items:center; justify-content:center; gap:7px; font-weight:750; text-decoration:none; cursor:pointer; }
+    .feed-btn:hover { border-color:#ff914d; color:#fff; }
+    .feed-btn--primary { background:linear-gradient(135deg,#ff7d32,#ffad62); color:#15100c; border:0; }
+    .feed-btn--danger { color:#ffb0b0; border-color:rgba(255,97,97,.38); background:rgba(180,35,35,.1); }
+    .feed-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+    .feed-stat { padding:15px 17px; }
+    .feed-stat strong { display:block; font-size:25px; }
+    .feed-stat span { color:#9fa7b8; font-size:12px; }
+    .feed-layout { display:grid; grid-template-columns:minmax(290px,.82fr) minmax(0,1.8fr); gap:16px; align-items:start; }
+    .feed-pane { padding:15px; }
+    .feed-pane-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
+    .feed-pane-head h3 { margin:0; font-size:16px; }
+    .feed-list { display:grid; gap:8px; max-height:75vh; overflow:auto; padding-right:3px; }
+    .feed-row { color:inherit; text-decoration:none; border:1px solid rgba(255,255,255,.07); border-radius:13px; padding:12px; background:rgba(255,255,255,.025); display:grid; gap:8px; }
+    .feed-row:hover,.feed-row.is-active { border-color:rgba(255,145,77,.6); background:rgba(255,145,77,.07); }
+    .feed-row-top,.feed-inline,.feed-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+    .feed-row-top { justify-content:space-between; }
+    .feed-row small { color:#949daf; }
+    .feed-badge { padding:4px 7px; border-radius:999px; background:rgba(255,255,255,.08); color:#cfd4df; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; }
+    .feed-badge--on { background:rgba(52,211,153,.13); color:#78e5bb; }
+    .feed-badge--off { background:rgba(248,113,113,.12); color:#ff9d9d; }
+    .feed-detail { display:grid; gap:14px; }
+    .feed-detail-title { display:flex; justify-content:space-between; gap:14px; align-items:flex-start; }
+    .feed-detail-title h3 { margin:0 0 5px; font-size:24px; }
+    .feed-detail-title p { margin:0; color:#9ca5b7; }
+    .feed-url-list { display:grid; gap:8px; }
+    .feed-url { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:7px; align-items:center; padding:9px; border:1px solid rgba(255,255,255,.08); border-radius:11px; background:#10121a; }
+    .feed-url code { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#cfd4df; }
+    .feed-icon-btn { width:34px; height:34px; border:1px solid rgba(255,255,255,.1); border-radius:9px; background:#252936; color:#fff; cursor:pointer; display:grid; place-items:center; text-decoration:none; }
+    .feed-form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .feed-field { display:grid; gap:5px; }
+    .feed-field--wide { grid-column:1/-1; }
+    .feed-field label { color:#aeb5c5; font-size:12px; font-weight:700; }
+    .feed-field input,.feed-field select,.feed-field textarea { width:100%; min-height:42px; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,.12); background:#10121a; color:#fff; }
+    .feed-field textarea { min-height:80px; resize:vertical; }
+    .feed-subsection { border-top:1px solid rgba(255,255,255,.08); padding-top:14px; }
+    .feed-subsection h4 { margin:0 0 11px; }
+    .feed-products { display:grid; gap:8px; }
+    .feed-product { border:1px solid rgba(255,255,255,.08); border-radius:12px; background:rgba(255,255,255,.025); }
+    .feed-product summary { cursor:pointer; padding:11px 13px; display:flex; justify-content:space-between; gap:10px; }
+    .feed-product-form { padding:0 13px 13px; }
+    .feed-image-picks { display:flex; gap:8px; overflow:auto; padding:4px 0; }
+    .feed-image-pick { width:70px; flex:0 0 70px; display:grid; gap:4px; font-size:10px; color:#aab1bf; }
+    .feed-image-pick img { width:70px; height:70px; object-fit:cover; border-radius:8px; border:1px solid rgba(255,255,255,.12); }
+    .feed-empty { padding:30px 12px; text-align:center; color:#9da5b5; }
+    .feed-create summary { cursor:pointer; list-style:none; }
+    .feed-create summary::-webkit-details-marker { display:none; }
+    .feed-create[open] summary { margin-bottom:12px; }
+    @media(max-width:980px){ .navbar.sticky-top{display:none!important}.feed-layout{grid-template-columns:1fr}.feed-list{max-height:44vh}.feed-stats{grid-template-columns:repeat(2,1fr)} }
+    @media(max-width:620px){ .feed-hero{display:grid}.feed-form-grid{grid-template-columns:1fr}.feed-stats{grid-template-columns:1fr 1fr}.feed-url{grid-template-columns:minmax(0,1fr) auto}.feed-url a{display:none}.feed-detail-title{display:grid} }
+  </style>
+
+  <header class="feed-hero">
+    <div>
+      <div class="feed-eyebrow">Marketplace operations</div>
+      <h2 id="feed-center-title">Фіди</h2>
+      <p>Єдине місце для канонічних вигрузок, рекламних кампаній, sold out-правил, кількості та точного вибору фотографій.</p>
+    </div>
+    <details class="feed-create">
+      <summary class="feed-btn feed-btn--primary">＋ Створити фід</summary>
+      <form method="post" action="{% url 'admin_marketplace_feed_create' %}" class="feed-pane feed-form-grid">
+        {% csrf_token %}
+        <div class="feed-field"><label for="new-feed-name">Назва</label><input id="new-feed-name" name="name" required maxlength="120"></div>
+        <div class="feed-field"><label for="new-feed-slug">Slug</label><input id="new-feed-slug" name="slug" required maxlength="80" pattern="[-a-zA-Z0-9_]+"></div>
+        <div class="feed-field"><label for="new-feed-adapter">Джерело / формат</label><select id="new-feed-adapter" name="adapter" required>{% for value,label in new_feed_form.fields.adapter.choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div>
+        <div class="feed-field"><label for="new-feed-language">Мова</label><select id="new-feed-language" name="language">{% for value,label in new_feed_form.fields.language.choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div>
+        <div class="feed-field feed-field--wide"><label for="new-feed-description">Для чого цей фід</label><textarea id="new-feed-description" name="description" placeholder="Наприклад: Instagram кампанія лише з lifestyle-фото"></textarea></div>
+        <input type="hidden" name="is_active" value="1">
+        <div class="feed-actions feed-field--wide"><button class="feed-btn feed-btn--primary" type="submit">Створити та налаштувати</button></div>
+      </form>
+    </details>
+  </header>
+
+  <div class="feed-stats" aria-label="Стан фідів">
+    <div class="feed-stat"><strong>{{ feed_counts.total }}</strong><span>Усього фідів</span></div>
+    <div class="feed-stat"><strong>{{ feed_counts.active }}</strong><span>Активних</span></div>
+    <div class="feed-stat"><strong>{{ feed_counts.custom }}</strong><span>Кастомних</span></div>
+    <div class="feed-stat"><strong>{{ feed_counts.warnings }}</strong><span>Потребують уваги</span></div>
+  </div>
+
+  <div class="feed-layout">
+    <aside class="feed-pane">
+      <div class="feed-pane-head"><h3>Вигрузки</h3><span class="feed-badge">{{ feed_counts.total }}</span></div>
+      <div class="feed-list">
+        {% for row in feed_rows %}
+          <a class="feed-row {% if selected_feed.pk == row.feed.pk %}is-active{% endif %}" href="?section=marketplace_feeds&amp;feed={{ row.feed.pk }}">
+            <span class="feed-row-top"><strong>{{ row.feed.name }}</strong><span class="feed-badge {% if row.feed.is_active %}feed-badge--on{% else %}feed-badge--off{% endif %}">{% if row.feed.is_active %}live{% else %}off{% endif %}</span></span>
+            <span class="feed-inline"><span class="feed-badge">{{ row.definition.format_label }}</span><span class="feed-badge">{{ row.feed.get_language_display }}</span>{% if row.feed.is_system %}<span class="feed-badge">system</span>{% else %}<span class="feed-badge">custom</span>{% endif %}</span>
+            {% for feed_url in row.urls %}{% if forloop.first %}<small>{{ feed_url }}</small>{% endif %}{% endfor %}
+            <small>{{ row.override_count }} правил товарів{% if row.snapshot_exists %} · snapshot готовий{% endif %}</small>
+          </a>
+        {% empty %}<div class="feed-empty">Профілі ще не створені. Застосуйте міграції.</div>{% endfor %}
+      </div>
+    </aside>
+
+    <div class="feed-pane feed-detail">
+      {% if selected_feed %}
+        <div class="feed-detail-title">
+          <div><h3>{{ selected_feed.name }}</h3><p>{{ selected_feed.description|default:"Операційний marketplace-фід" }}</p></div>
+          <div class="feed-inline"><span class="feed-badge">{{ selected_definition.label }}</span><span class="feed-badge">{{ selected_definition.format_label }}</span></div>
+        </div>
+
+        <div class="feed-url-list">
+          {% for row in feed_rows %}{% if row.feed.pk == selected_feed.pk %}{% for feed_url in row.urls %}
+            <div class="feed-url"><code>{{ feed_url }}</code><button type="button" class="feed-icon-btn" data-copy-feed="{{ feed_url }}" title="Копіювати URL">⧉</button><a class="feed-icon-btn" href="{{ feed_url }}" target="_blank" rel="noopener" title="Відкрити">↗</a></div>
+          {% endfor %}{% endif %}{% endfor %}
+        </div>
+
+        <form method="post" action="{% url 'admin_marketplace_feed_update' selected_feed.pk %}" class="feed-form-grid feed-subsection">
+          {% csrf_token %}
+          <div class="feed-field"><label>Назва</label><input name="name" value="{{ selected_feed.name }}" required></div>
+          <div class="feed-field"><label>Slug</label><input name="slug" value="{{ selected_feed.slug }}" {% if selected_feed.is_system %}readonly{% endif %} required></div>
+          <div class="feed-field"><label>Адаптер</label><select name="adapter" {% if selected_feed.is_system %}disabled{% endif %}>{% for value,label in feed_form.fields.adapter.choices %}<option value="{{ value }}" {% if value == selected_feed.adapter %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>{% if selected_feed.is_system %}<input type="hidden" name="adapter" value="{{ selected_feed.adapter }}">{% endif %}</div>
+          <div class="feed-field"><label>Мова</label><select name="language">{% for value,label in feed_form.fields.language.choices %}<option value="{{ value }}" {% if value == selected_feed.language %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+          <div class="feed-field"><label>Батьківський профіль</label><select name="parent"><option value="">Без успадкування</option>{% for parent in feed_form.fields.parent.queryset %}<option value="{{ parent.pk }}" {% if selected_feed.parent_id == parent.pk %}selected{% endif %}>{{ parent.name }}</option>{% endfor %}</select></div>
+          <div class="feed-field"><label>Категорії</label><select name="categories" multiple size="4">{% for category in feed_form.fields.categories.queryset %}<option value="{{ category.pk }}" {% if category.pk in selected_rules.filters.category_ids %}selected{% endif %}>{{ category.name }}</option>{% endfor %}</select></div>
+          <div class="feed-field feed-field--wide"><label>Опис / призначення</label><textarea name="description">{{ selected_feed.description }}</textarea></div>
+          <div class="feed-field"><label>Наявність</label><select name="availability_mode"><option value="">За замовчуванням</option><option value="force_in_stock" {% if selected_rules.availability.mode == 'force_in_stock' %}selected{% endif %}>Завжди in stock</option><option value="force_out_of_stock" {% if selected_rules.availability.mode == 'force_out_of_stock' %}selected{% endif %}>Завжди sold out</option></select></div>
+          <div class="feed-field"><label>Кількість у вигрузці</label><input type="number" name="availability_quantity" min="0" max="1000000" value="{% if selected_feed.rules.availability.quantity != None %}{{ selected_feed.rules.availability.quantity }}{% endif %}" placeholder="Автоматично"></div>
+          <div class="feed-field"><label>Порядок фото</label><select name="image_mode"><option value="">За форматом</option><option value="main_first" {% if selected_rules.images.mode == 'main_first' %}selected{% endif %}>Головне першим</option><option value="variant_first" {% if selected_rules.images.mode == 'variant_first' %}selected{% endif %}>Колір першим</option><option value="newest_first" {% if selected_rules.images.mode == 'newest_first' %}selected{% endif %}>Найновіше першим</option><option value="selected" {% if selected_rules.images.mode == 'selected' %}selected{% endif %}>Вибрані вручну</option></select></div>
+          <div class="feed-field"><label>Максимум фото</label><input type="number" name="image_max_count" min="1" max="50" value="{% if selected_feed.rules.images.max_count %}{{ selected_feed.rules.images.max_count }}{% endif %}" placeholder="Ліміт формату"></div>
+          <div class="feed-field"><label>Мінімум фото у товару</label><input type="number" name="min_image_count" min="0" max="100" value="{{ selected_feed.rules.filters.min_image_count|default_if_none:'' }}" placeholder="Без обмеження"></div>
+          <div class="feed-field"><label>Ціна від</label><input type="number" step="0.01" min="0" name="price_min" value="{{ selected_feed.rules.filters.price_min|default_if_none:'' }}"></div>
+          <div class="feed-field"><label>Ціна до</label><input type="number" step="0.01" min="0" name="price_max" value="{{ selected_feed.rules.filters.price_max|default_if_none:'' }}"></div>
+          <div class="feed-field feed-field--wide"><label>Ключові слова через кому</label><input name="search_keywords" value="{{ selected_feed.rules.filters.search_keywords|join:', ' }}" placeholder="худі, lifestyle, new drop"></div>
+          <input type="hidden" name="is_active" value="0"><label class="feed-inline"><input type="checkbox" name="is_active" value="1" {% if selected_feed.is_active %}checked{% endif %}> Фід активний</label>
+          <div class="feed-actions feed-field--wide"><button class="feed-btn feed-btn--primary" type="submit">Зберегти правила</button></div>
+        </form>
+
+        <div class="feed-actions feed-subsection">
+          <form method="post" action="{% url 'admin_marketplace_feed_validate' selected_feed.pk %}">{% csrf_token %}<button class="feed-btn" type="submit">✓ Перевірити</button></form>
+          <form method="post" action="{% url 'admin_marketplace_feed_regenerate' selected_feed.pk %}">{% csrf_token %}<button class="feed-btn" type="submit">↻ Оновити snapshot</button></form>
+          <form method="post" action="{% url 'admin_marketplace_feed_duplicate' selected_feed.pk %}">{% csrf_token %}<button class="feed-btn" type="submit">⧉ Дублювати</button></form>
+          {% if not selected_feed.is_system %}<form method="post" action="{% url 'admin_marketplace_feed_delete' selected_feed.pk %}" onsubmit="return confirm('Видалити цей фід?');">{% csrf_token %}<button class="feed-btn feed-btn--danger" type="submit">Видалити</button></form>{% endif %}
+        </div>
+
+        <div class="feed-subsection">
+          <div class="feed-pane-head"><h4>Товари, sold out та фотографії</h4><form method="get"><input type="hidden" name="section" value="marketplace_feeds"><input type="hidden" name="feed" value="{{ selected_feed.pk }}"><input name="product_q" value="{{ request.GET.product_q }}" placeholder="Знайти товар…"></form></div>
+          <div class="feed-products">
+            {% for product in product_page %}{% with existing=product_rules|get_item:product.pk %}
+              <details class="feed-product">
+                <summary><strong>{{ product.title }}</strong><span class="feed-badge">{% if existing %}налаштовано{% else %}успадковує{% endif %}</span></summary>
+                <form method="post" action="{% url 'admin_marketplace_feed_product_rule' selected_feed.pk %}" class="feed-product-form feed-form-grid">
+                  {% csrf_token %}<input type="hidden" name="product_id" value="{{ product.pk }}">
+                  <div class="feed-field"><label>Включення</label><select name="inclusion"><option value="inherit" {% if not existing or existing.inclusion == 'inherit' %}selected{% endif %}>Успадкувати</option><option value="include" {% if existing.inclusion == 'include' %}selected{% endif %}>Точно включити</option><option value="exclude" {% if existing.inclusion == 'exclude' %}selected{% endif %}>Виключити</option></select></div>
+                  <div class="feed-field"><label>Наявність</label><select name="availability"><option value="inherit" {% if not existing or existing.availability == 'inherit' %}selected{% endif %}>Успадкувати</option><option value="in_stock" {% if existing.availability == 'in_stock' %}selected{% endif %}>In stock</option><option value="out_of_stock" {% if existing.availability == 'out_of_stock' %}selected{% endif %}>Sold out</option></select></div>
+                  <div class="feed-field"><label>Кількість</label><input type="number" min="0" name="quantity" value="{{ existing.quantity|default_if_none:'' }}" placeholder="Автоматично"></div>
+                  <div class="feed-field feed-field--wide"><label>Точні фото (порожньо = політика фіда)</label><div class="feed-image-picks">
+                    {% if product.main_image %}<label class="feed-image-pick"><img src="{{ product.main_image.url }}" alt=""><span><input type="checkbox" name="image_tokens" value="main" {% if existing.image_tokens|contains:'main' %}checked{% endif %}> Головне</span></label>{% endif %}
+                    {% for image in product.images.all %}{% with token=image.pk|product_image_token %}<label class="feed-image-pick"><img src="{{ image.image.url }}" alt=""><span><input type="checkbox" name="image_tokens" value="{{ token }}" {% if existing.image_tokens|contains:token %}checked{% endif %}> Фото {{ image.pk }}</span></label>{% endwith %}{% endfor %}
+                    {% for variant in product.color_variants.all %}{% for image in variant.images.all %}{% with token=image.pk|variant_image_token %}<label class="feed-image-pick"><img src="{{ image.image.url }}" alt=""><span><input type="checkbox" name="image_tokens" value="{{ token }}" {% if existing.image_tokens|contains:token %}checked{% endif %}> {{ variant.color.name }}</span></label>{% endwith %}{% endfor %}{% endfor %}
+                  </div></div>
+                  <div class="feed-actions feed-field--wide"><button class="feed-btn" type="submit">Зберегти товар</button></div>
+                </form>
+              </details>
+            {% endwith %}{% empty %}<div class="feed-empty">Товари не знайдено.</div>{% endfor %}
+          </div>
+          {% if product_page.paginator.num_pages > 1 %}<div class="feed-actions" style="margin-top:10px">{% if product_page.has_previous %}<a class="feed-btn" href="?section=marketplace_feeds&amp;feed={{ selected_feed.pk }}&amp;product_page={{ product_page.previous_page_number }}">Назад</a>{% endif %}<span>{{ product_page.number }} / {{ product_page.paginator.num_pages }}</span>{% if product_page.has_next %}<a class="feed-btn" href="?section=marketplace_feeds&amp;feed={{ selected_feed.pk }}&amp;product_page={{ product_page.next_page_number }}">Далі</a>{% endif %}</div>{% endif %}
+        </div>
+      {% else %}<div class="feed-empty">Немає доступних фідів.</div>{% endif %}
+    </div>
+  </div>
+  <script>
+    document.querySelectorAll('[data-copy-feed]').forEach(function(button){button.addEventListener('click',function(){var path=button.dataset.copyFeed;var url=new URL(path,window.location.origin).href;navigator.clipboard.writeText(url).then(function(){button.textContent='✓';setTimeout(function(){button.textContent='⧉';},1200);});});});
+  </script>
+</section>

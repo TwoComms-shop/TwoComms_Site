@@ -1170,6 +1170,10 @@ def admin_panel(request):
         context.update(_build_custom_print_orders_context(request))
     elif section == 'orders':
         context.update(_build_orders_context(request))
+    elif section in {'marketplace_feeds', 'feeds'}:
+        from storefront.views.feeds_admin import build_feed_admin_context
+        context['section'] = 'marketplace_feeds'
+        context.update(build_feed_admin_context(request))
     elif section == 'collaboration':
         context.update(_build_collaboration_context())
     elif section == 'dispatcher':
