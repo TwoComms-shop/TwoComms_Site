@@ -1353,6 +1353,7 @@ class MarketplaceFeed(models.Model):
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
+        db_constraint=False,
         related_name="created_marketplace_feeds",
         verbose_name="Створив",
     )
@@ -1428,6 +1429,7 @@ class MarketplaceFeedProductRule(models.Model):
     product = models.ForeignKey(
         Product,
         on_delete=models.CASCADE,
+        db_constraint=False,
         related_name="marketplace_feed_rules",
         verbose_name="Товар",
     )
