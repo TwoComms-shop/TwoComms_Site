@@ -1,6 +1,7 @@
 .language-suggestion[hidden] { display: none !important; }
 
 .language-suggestion {
+  box-sizing: border-box;
   --ls-ink: #f7f4ed;
   --ls-muted: #c9c6bd;
   --ls-panel: #171a1d;
@@ -18,6 +19,10 @@
   color: var(--ls-ink);
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
+
+.language-suggestion *,
+.language-suggestion *::before,
+.language-suggestion *::after { box-sizing: border-box; }
 
 .language-suggestion__backdrop {
   position: absolute;
