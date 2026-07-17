@@ -125,7 +125,7 @@ class ProductDetailTests(ProductViewTestCase):
         self.assertContains(response, 'data-pdp-tab="delivery"', html=False)
         self.assertContains(response, 'id="panel-delivery"', html=False)
         self.assertContains(response, 'data-add-to-cart=', html=False)
-        self.assertContains(response, 'product-detail.css?v=20260510-pdp-reviews-v1', html=False)
+        self.assertContains(response, 'product-detail.css?v=20260717-breadcrumb-layer-v1', html=False)
         self.assertContains(response, 'product-media-fit.css?v=20260428-media-fit-v1', html=False)
         self.assertContains(response, 'product-reviews.css?v=20260510-pdp-reviews-v2', html=False)
         self.assertContains(response, 'product-detail.js?v=20260428-image-alt-faq-v1', html=False)
@@ -175,6 +175,35 @@ class ProductDetailTests(ProductViewTestCase):
         self.assertIn("max-height: 68px", css)
         self.assertIn(".tc-purchase-side .tc-purchase-trust-link span", css)
         self.assertIn('body:has(#product-reviews .tc-reviews__form-wrap[open]) .tc-sticky-mobile', css)
+
+    def test_product_detail_discount_price_stays_on_one_line(self):
+        css_path = Path(__file__).resolve().parents[2] / "twocomms_django_theme/static/css/product-detail.css"
+        css = css_path.read_text(encoding="utf-8")
+
+        price_value_rules = [
+            rule.split("}", 1)[0]
+            for rule in css.split(".tc-price-values {")[1:]
+        ]
+
+        self.assertGreaterEqual(len(price_value_rules), 1)
+        self.assertTrue(
+            all("flex-wrap: nowrap;" in rule for rule in price_value_rules),
+            "The current, original, and discount prices must remain in one row at every breakpoint.",
+        )
+        self.assertIn("white-space: nowrap;", price_value_rules[0])
+
+    def test_product_detail_breadcrumbs_have_a_readable_route_specific_surface(self):
+        css_path = Path(__file__).resolve().parents[2] / "twocomms_django_theme/static/css/product-detail.css"
+        css = css_path.read_text(encoding="utf-8")
+
+        self.assertIn('html[data-route-name="product"] .breadcrumb-nav {', css)
+        self.assertIn("position: relative;", css)
+        self.assertIn("z-index: 3;", css)
+        self.assertIn("background: var(--pdp-surface-strong);", css)
+        self.assertIn('html[data-route-name="product"] .breadcrumb-item.active {', css)
+        self.assertIn("color: var(--pdp-text);", css)
+        self.assertIn("overflow-wrap: anywhere;", css)
+        self.assertIn("padding: 8px 10px !important;", css)
 
     def test_product_detail_reviews_prefill_registered_buyer_identity(self):
         User = get_user_model()
