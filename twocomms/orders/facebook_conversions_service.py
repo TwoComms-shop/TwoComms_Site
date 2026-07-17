@@ -24,7 +24,8 @@ from decimal import Decimal
 from typing import Optional, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from facebook_business.adobjects.serverside import UserData, CustomData
+    from facebook_business.adobjects.serverside.custom_data import CustomData
+    from facebook_business.adobjects.serverside.user_data import UserData
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -39,8 +40,10 @@ class FacebookConversionsService:
     Сервис для работы с Facebook Conversions API.
 
     Основные возможности:
-    - Отправка Purchase событий при полной оплате
-    - Отправка Lead событий при предоплате
+    - Отправка одного Purchase события на подтверждённое движение денег
+      (полная оплата или предоплата; один детерминированный event_id на заказ)
+    - Lead не используется для оплаты: внутренний lead фиксируется при старте
+      checkout, а Meta Purchase остаётся основной рекламной конверсией
     - Advanced Matching (email, phone, user_data)
     - Дедупликация с клиентскими событиями через event_id
     """
@@ -79,13 +82,14 @@ class FacebookConversionsService:
         # Импортируем Facebook SDK только если настройки есть
         if self.enabled:
             try:
-                from facebook_business.adobjects.serverside import (
-                    Event,
-                    UserData,
-                    CustomData,
-                    EventRequest,
-                    ActionSource
-                )
+                # facebook-business 22+ stopped re-exporting these classes
+                # from serverside.__init__; import the stable submodules so
+                # both the pinned and newer production SDKs initialize.
+                from facebook_business.adobjects.serverside.action_source import ActionSource
+                from facebook_business.adobjects.serverside.custom_data import CustomData
+                from facebook_business.adobjects.serverside.event import Event
+                from facebook_business.adobjects.serverside.event_request import EventRequest
+                from facebook_business.adobjects.serverside.user_data import UserData
                 from facebook_business.api import FacebookAdsApi
 
                 self.Event = Event
@@ -321,7 +325,7 @@ class FacebookConversionsService:
         Advanced Matching повышает качество атрибуции событий,
         связывая серверные события с пользователями Facebook.
         """
-        from facebook_business.adobjects.serverside import UserData
+        from facebook_business.adobjects.serverside.user_data import UserData
 
         user_data = UserData()
 
@@ -446,7 +450,8 @@ class FacebookConversionsService:
         - content_type: тип контента (product)
         - num_items: количество товаров
         """
-        from facebook_business.adobjects.serverside import CustomData, Content
+        from facebook_business.adobjects.serverside.content import Content
+        from facebook_business.adobjects.serverside.custom_data import CustomData
 
         custom_data = CustomData()
 
@@ -684,10 +689,10 @@ class FacebookConversionsService:
         """
         Отправляет Purchase событие в Facebook Conversions API.
 
-        Используется когда:
+        Используется когда подтверждено движение денег:
         - Заказ полностью оплачен (payment_status = 'paid')
         - Внесена успешная предоплата (payment_status = 'prepaid')
-        - Товар получен через Новую Почту и автоматически оплачен
+        - Товар получен через Новую Почту и автоматически оплачен (COD)
 
         Args:
             order: Объект заказа (Order model)
@@ -801,8 +806,9 @@ class FacebookConversionsService:
         """
         Отправляет Lead событие в Facebook Conversions API.
 
-        Используется когда:
-        - Заявка без оплаты (payment_status = 'unpaid', но заказ создан)
+        Исторический вспомогательный API для необязательного Lead. Розничный
+        payment-flow намеренно не вызывает его: предоплата считается Purchase,
+        чтобы не обучать Meta на двух конверсиях одного заказа.
 
         Args:
             order: Объект заказа (Order model)
