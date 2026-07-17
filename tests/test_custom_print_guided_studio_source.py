@@ -98,6 +98,11 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         ):
             self.assertIn(contract, self.template)
 
+    def test_seo_support_stack_sits_outside_the_studio_shell(self):
+        shell_end = self.template.index("    <div class=\"cp-support-stack\">")
+        configurator_end = self.template.rfind("    </div>\n\n    <div class=\"container-xxl\">", 0, shell_end)
+        self.assertGreater(configurator_end, -1)
+
     def test_submit_flow_does_not_auto_redirect_to_cart(self):
         self.assertNotRegex(
             self.js,
