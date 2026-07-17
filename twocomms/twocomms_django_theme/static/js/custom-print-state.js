@@ -1,10 +1,12 @@
 (function (global) {
   const groups = [
     { key: "format", internal: ["mode"] },
-    { key: "garment", internal: ["product", "config"] },
+    { key: "garment", internal: ["product"] },
+    { key: "config", internal: ["config"] },
     { key: "placement", internal: ["zones"] },
     { key: "artwork", internal: ["artwork"] },
-    { key: "quantity", internal: ["quantity", "gift"] },
+    { key: "quantity", internal: ["quantity"] },
+    { key: "gift", internal: ["gift"] },
     { key: "contact", internal: ["contact"] },
   ];
 

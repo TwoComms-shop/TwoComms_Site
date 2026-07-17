@@ -90,7 +90,7 @@ class CustomPrintConfigContractTests(unittest.TestCase):
 
         self.assertEqual(
             [item["value"] for item in config["progress_steps"]],
-            ["format", "garment", "placement", "artwork", "quantity", "contact"],
+            ["format", "garment", "config", "placement", "artwork", "quantity", "gift", "contact"],
         )
         self.assertEqual(
             [item["value"] for item in config["front_size_presets"]],

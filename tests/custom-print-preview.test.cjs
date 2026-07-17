@@ -2,8 +2,10 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 require("../twocomms/twocomms_django_theme/static/js/custom-print-preview.js");
+require("../twocomms/twocomms_django_theme/static/js/custom-print-state.js");
 
 const { computeZoneBox } = globalThis.CustomPrintPreview;
+const { groups, fromInternal, firstInternal, progressIndex } = globalThis.CustomPrintStateTools;
 
 const formats = {
   A6: { width_mm: 105, height_mm: 148 },
@@ -26,4 +28,15 @@ test("ISO preview zones preserve physical aspect ratio within 0.5 percent", () =
     const error = Math.abs(renderedRatio - physicalRatio) / physicalRatio;
     assert.ok(error <= 0.005, `${name} ratio error was ${(error * 100).toFixed(4)}%`);
   }
+});
+
+test("state tools expose the established eight-stage journey", () => {
+  assert.deepEqual(
+    groups.map((group) => group.key),
+    ["format", "garment", "config", "placement", "artwork", "quantity", "gift", "contact"],
+  );
+  assert.equal(fromInternal("config"), "config");
+  assert.equal(fromInternal("gift"), "gift");
+  assert.equal(firstInternal("config"), "config");
+  assert.equal(progressIndex("gift"), 6);
 });

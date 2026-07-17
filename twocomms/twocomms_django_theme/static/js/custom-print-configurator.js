@@ -2515,7 +2515,7 @@
     renderMobileBottomBar();
     previewController?.render();
     const studioIndex = stateTools?.progressIndex(STATE.ui.current_step) || 0;
-    mobileShell?.update(studioIndex, STUDIO_STEPS.length || 6);
+    mobileShell?.update(studioIndex, STUDIO_STEPS.length || 8);
   }
 
   function updateFlowPhase() {
@@ -2571,10 +2571,12 @@
   function getProgressStepValue(stepKey) {
     const summaryKey = {
       format: "mode",
-      garment: STATE.ui.current_step === "product" ? "product" : "config",
+      garment: "product",
+      config: "config",
       placement: "zones",
       artwork: "artwork",
       quantity: "quantity",
+      gift: "gift",
       contact: "contact",
     }[stepKey] || stepKey;
     const value = root.querySelector(`[data-step-summary-value="${summaryKey}"]`)?.textContent?.trim();

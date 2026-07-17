@@ -19,7 +19,7 @@
       if (!active && mobileBar) mobileBar.hidden = true;
     }
 
-    function update(index, total = 6) {
+    function update(index, total = 8) {
       if (stepLabel) {
         const pattern = stepLabel.dataset.stepPattern || "Крок {current} з {total}";
         stepLabel.textContent = pattern.replace("{current}", String(index + 1)).replace("{total}", String(total));

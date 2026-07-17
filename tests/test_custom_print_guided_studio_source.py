@@ -25,11 +25,13 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         js_dir = REPO_ROOT / "twocomms/twocomms_django_theme/static/js"
         self.js = "\n".join((js_dir / name).read_text(encoding="utf-8") for name in JS_FILES)
 
-    def test_template_exposes_six_guided_studio_steps(self):
+    def test_template_exposes_established_eight_stage_journey(self):
         self.assertEqual(
             re.findall(r'data-studio-step="([^"]+)"', self.template),
-            ["format", "garment", "placement", "artwork", "quantity", "contact"],
+            ["format", "garment", "config", "placement", "artwork", "quantity", "gift", "contact"],
         )
+        self.assertIn("{% trans 'Крок 1 з 8' %}", self.template)
+        self.assertIn("data-step-pattern=\"{% trans 'Крок {current} з {total}' %}\"", self.template)
 
     def test_hero_has_one_primary_start_action_and_no_telegram(self):
         hero = self.template.split('data-custom-print-hero', 1)[1].split('</header>', 1)[0]
@@ -45,6 +47,12 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
             "cp-hero-signature",
         ):
             self.assertNotIn(legacy_contract, hero)
+
+    def test_manager_contact_is_one_app_action_not_repeated_telegram_links(self):
+        self.assertEqual(self.template.count("data-manager-open"), 1)
+        self.assertNotIn("cp-manager-inline-link", self.template)
+        self.assertNotIn("cp-manager-shortcut-link", self.template)
+        self.assertNotIn("cp-manager-shortcut-draft", self.template)
 
     def test_preview_uses_png_scene_without_legacy_garment_rotor(self):
         for legacy_contract in (

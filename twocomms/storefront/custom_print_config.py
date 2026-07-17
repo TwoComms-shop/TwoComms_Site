@@ -31,9 +31,11 @@ SIZE_GRID = ["XS", "S", "M", "L", "XL", "2XL"]
 PROGRESS_STEPS = [
     {"value": "format", "label": _("Формат")},
     {"value": "garment", "label": _("Виріб")},
+    {"value": "config", "label": _("Налаштування")},
     {"value": "placement", "label": _("Розташування")},
     {"value": "artwork", "label": _("Макет")},
     {"value": "quantity", "label": _("Кількість")},
+    {"value": "gift", "label": _("Подарунок")},
     {"value": "contact", "label": _("Контакт і перевірка")},
 ]
 
