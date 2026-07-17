@@ -1403,6 +1403,8 @@ SPECTACULAR_SETTINGS = {
 # Facebook Conversions API Access Token
 # Получается в Events Manager → Settings → Conversions API → Generate Access Token
 FACEBOOK_CONVERSIONS_API_TOKEN = os.environ.get('FACEBOOK_CONVERSIONS_API_TOKEN', '')
+# Pin the Graph API contract independently from the SDK's internal default.
+FACEBOOK_CAPI_API_VERSION = os.environ.get('FACEBOOK_CAPI_API_VERSION', 'v25.0')
 
 # Facebook App ID (опционально, для дополнительной аналитики)
 FACEBOOK_APP_ID = os.environ.get('FACEBOOK_APP_ID', '')

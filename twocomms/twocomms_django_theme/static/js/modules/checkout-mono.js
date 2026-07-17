@@ -315,7 +315,7 @@ function startMonoCheckout(button, statusEl, options) {
               currency: analytics.currency,
               num_items: analytics.num_items,
               payment_method: 'monobank',
-              content_type: analytics.content_ids && analytics.content_ids.length > 1 ? 'product_group' : 'product',
+              content_type: 'product',
               content_ids: analytics.content_ids,
               contents: analytics.contents,
               event_id: eventId,
@@ -378,7 +378,7 @@ export function bindMonoCheckout(scope) {
               console.debug('begin_checkout dataLayer error:', helperErr);
             }
           }
-          if (window.trackEvent) {
+          if (window.trackEvent && !window.__twcInitiateCheckoutMetaSent) {
             const meta = buildMeta ? buildMeta(eventId) : {};
             window.trackEvent('InitiateCheckout', {
               value: analytics.value,
@@ -390,6 +390,7 @@ export function bindMonoCheckout(scope) {
               event_id: eventId,
               __meta: meta
             });
+            window.__twcInitiateCheckoutMetaSent = true;
           }
         } catch (_) { }
       }
@@ -521,7 +522,7 @@ function startMonobankPay(button, statusEl) {
               currency: analytics.currency,
               num_items: analytics.num_items,
               payment_method: 'monobank_pay',
-              content_type: analytics.content_ids && analytics.content_ids.length > 1 ? 'product_group' : 'product',
+              content_type: 'product',
               content_ids: analytics.content_ids,
               contents: analytics.contents,
               event_id: eventId,
@@ -580,7 +581,7 @@ export function bindMonobankPay(scope) {
               console.debug('begin_checkout dataLayer error:', helperErr);
             }
           }
-          if (window.trackEvent) {
+          if (window.trackEvent && !window.__twcInitiateCheckoutMetaSent) {
             const meta = buildMeta ? buildMeta(eventId) : {};
             window.trackEvent('InitiateCheckout', {
               value: analytics.value,
@@ -592,6 +593,7 @@ export function bindMonobankPay(scope) {
               event_id: eventId,
               __meta: meta
             });
+            window.__twcInitiateCheckoutMetaSent = true;
           }
         } catch (_) { }
       }

@@ -1870,7 +1870,7 @@ document.addEventListener('DOMContentLoaded', function() {
        data-email="{{ user.userprofile.email|lower|escapejs }}"
      {% endif %}
      {% if order %}data-external-id="{{ order.payment_payload.tracking.external_id|default:'' }}"{% endif %}
-     {% if order %}data-contents='[{% for item in order.items.all %}{"id":"{{ item.get_offer_id }}","quantity":{{ item.qty }},"price":{{ item.unit_price|floatformat:'2u' }},"name":"{{ item.title|escapejs }}","category":"{{ item.product.category.name|default_if_none:''|escapejs }}","variant":"{{ item.size|default:"S"|upper }}","brand":"TwoComms","currency":"UAH"}{% if not forloop.last %},{% endif %}{% endfor %}]'{% else %}data-contents='[]'{% endif %}>
+     {% if order %}data-contents='[{% for item in order.items.all %}{"id":"{% if item.product_id %}{{ item.get_offer_id }}{% else %}manual-{{ item.pk }}{% endif %}","quantity":{{ item.qty }},"price":{{ item.unit_price|floatformat:'2u' }},"name":"{{ item.title|escapejs }}","category":"{{ item.product.category.name|default_if_none:''|escapejs }}","variant":"{{ item.size|default:"S"|upper }}","brand":"TwoComms","currency":"UAH"}{% if not forloop.last %},{% endif %}{% endfor %}]'{% else %}data-contents='[]'{% endif %}>
 </div>
 
 <script>
@@ -2211,7 +2211,7 @@ document.addEventListener('DOMContentLoaded', function() {
             event_id: eventId,
             value: purchaseValue,
             currency: currency,
-            content_type: contentIdList.length > 1 ? 'product_group' : 'product',
+            content_type: 'product',
             content_ids: contentIdList,
             contents: pixelContents,
             content_name: 'Order ' + orderNumber,

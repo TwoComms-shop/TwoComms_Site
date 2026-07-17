@@ -325,15 +325,13 @@
 document.addEventListener('DOMContentLoaded', function() {
   // SEO 2026-05-16 (P0-4) — phone number now rendered inline (visible to
   // AI crawlers without JS). The reveal-on-click pattern was removed,
-  // but we still emit the page_view + form_submit analytics events.
+  // but we emit only the initiated form_submit analytics event.
   // Contact is reserved for an initiated contact action, not a page view.
   const form = document.querySelector('.contact-form');
   if(form){
     form.addEventListener('submit', function(){
       try{ if(window.trackEvent){
-        const name = (form.querySelector('#name')||{}).value||'';
-        const subject = (form.querySelector('#subject')||{}).value||'';
-        window.trackEvent('Contact', {method:'form_submit', name:name, subject:subject});
+        window.trackEvent('Contact', {method:'form_submit'});
       } }catch(_){ }
     });
   }

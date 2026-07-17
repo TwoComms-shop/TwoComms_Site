@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 
 from django.conf import settings
+from django.utils import timezone
 
 from management.models import IgMetaEventLog, InstagramBotSettings
 
@@ -64,9 +65,30 @@ def log_or_send(event_name: str, *, client=None, deal=None, order=None, reason: 
             service = FacebookConversionsService()
             if not service.enabled:
                 raise RuntimeError("facebook_capi_service_disabled")
-            if event_name.lower() == "purchase":
+            normalized_event = event_name.lower()
+            if normalized_event == "purchase":
+                event_id = order.get_purchase_event_id()
+                payment_payload = getattr(order, "payment_payload", None) or {}
+                facebook_events = payment_payload.get("facebook_events", {})
+                if facebook_events.get("purchase_sent"):
+                    return IgMetaEventLog.objects.create(
+                        event_name=event_name,
+                        event_id=event_id,
+                        client=client,
+                        deal=deal,
+                        order=order,
+                        status=IgMetaEventLog.Status.SENT,
+                        reason="already_sent_by_retail_payment_flow",
+                    )
                 ok = service.send_purchase_event(order)
-            elif event_name.lower() == "lead":
+                if ok:
+                    facebook_events["purchase_sent"] = True
+                    facebook_events["purchase_sent_at"] = timezone.now().isoformat()
+                    payment_payload["facebook_events"] = facebook_events
+                    order.payment_payload = payment_payload
+                    order.save(update_fields=["payment_payload"])
+            elif normalized_event == "lead":
+                event_id = order.get_lead_event_id()
                 ok = service.send_lead_event(order)
             else:
                 ok = False

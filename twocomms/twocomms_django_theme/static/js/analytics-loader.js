@@ -774,7 +774,7 @@
     if (!raw) {
       return '';
     }
-    return String(raw).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    return String(raw).trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
   }
 
   function getFallbackSessionId() {

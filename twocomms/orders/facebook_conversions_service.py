@@ -54,6 +54,7 @@ class FacebookConversionsService:
     DEFAULT_PREPAYMENT_VALUE = 200.0
     PHONE_MIN_LENGTH = 10
     PHONE_MAX_LENGTH = 15
+    API_VERSION_RE = re.compile(r'^v\d+\.\d+$')
     CITY_SANITIZE_RE = re.compile(r'[^\w]', re.UNICODE)
     META_COOKIE_RE = re.compile(r'^fb\.1\.\d{10,16}\.[^\s]{1,500}$')
 
@@ -61,6 +62,16 @@ class FacebookConversionsService:
         """Инициализация сервиса с настройками из ENV"""
         self.access_token = getattr(settings, 'FACEBOOK_CONVERSIONS_API_TOKEN', None)
         self.pixel_id = getattr(settings, 'META_PIXEL_ID', None)
+        configured_api_version = str(getattr(settings, 'FACEBOOK_CAPI_API_VERSION', 'v25.0') or '').strip()
+        if self.API_VERSION_RE.fullmatch(configured_api_version):
+            self.api_version = configured_api_version
+        else:
+            self.api_version = 'v25.0'
+            logger.warning(
+                "Invalid FACEBOOK_CAPI_API_VERSION=%r; using %s",
+                configured_api_version,
+                self.api_version,
+            )
         self.test_event_code = getattr(settings, 'FACEBOOK_CAPI_TEST_EVENT_CODE', None)
         self.retry_max_attempts = getattr(settings, 'FACEBOOK_CAPI_MAX_RETRIES', 3)
         self.retry_initial_delay = getattr(settings, 'FACEBOOK_CAPI_RETRY_DELAY', 1)
@@ -101,7 +112,10 @@ class FacebookConversionsService:
                 self.ActionSource = ActionSource
 
                 # Инициализируем Facebook API
-                FacebookAdsApi.init(access_token=self.access_token)
+                FacebookAdsApi.init(
+                    access_token=self.access_token,
+                    api_version=self.api_version,
+                )
 
                 logger.info("✅ Facebook Conversions API initialized successfully")
             except ImportError:
@@ -524,7 +538,8 @@ class FacebookConversionsService:
         - currency: валюта (UAH)
         - content_ids: список offer_ids (TC-{id}-{variant}-{SIZE})
         - content_name: название товаров
-        - content_type: product для одного SKU, product_group для нескольких SKU
+        - content_type: product для offer/SKU IDs; product_group только для
+          явных group IDs
         - num_items: количество товаров
         """
         from facebook_business.adobjects.serverside.content import Content
@@ -553,22 +568,26 @@ class FacebookConversionsService:
             order_items = []
 
         if order_items:
-            # Content IDs (offer_ids в формате фида)
-            content_ids = []
-            for item in order_items:
-                # Генерируем offer_id для каждого товара
-                color_variant_id = item.color_variant.id if item.color_variant else None
-                size = (item.size or 'S').upper()  # Размер из OrderItem или S по умолчанию
-
-                # Используем метод из Product модели для генерации offer_id
-                getter = getattr(item.product, "get_offer_id", None)
+            def item_offer_id(item):
+                try:
+                    product = item.product
+                except Exception:
+                    product = None
+                try:
+                    color_variant = item.color_variant
+                except Exception:
+                    color_variant = None
+                color_variant_id = color_variant.id if color_variant else None
+                size = (item.size or 'S').upper()
+                getter = getattr(product, 'get_offer_id', None)
                 if callable(getter):
-                    offer_id = getter(color_variant_id, size)
-                elif item.product_id:
-                    offer_id = build_offer_id(item.product.id, color_variant_id, size)
-                else:
-                    offer_id = f"manual-{item.pk}"
-                content_ids.append(offer_id)
+                    return getter(color_variant_id, size)
+                if getattr(item, 'product_id', None):
+                    return build_offer_id(item.product_id, color_variant_id, size)
+                return f'manual-{item.pk}'
+
+            # Content IDs (offer_ids в формате фида)
+            content_ids = [item_offer_id(item) for item in order_items]
 
             custom_data.content_ids = content_ids
 
@@ -576,8 +595,10 @@ class FacebookConversionsService:
             content_names = [item.title for item in order_items]
             custom_data.content_name = ', '.join(content_names[:3])  # Первые 3 товара
 
-            # Meta distinguishes a single product from a multi-item group.
-            custom_data.content_type = 'product_group' if len(set(content_ids)) > 1 else 'product'
+            # These IDs are individual catalog offer/SKU IDs. Meta's
+            # product_group value is reserved for group IDs (TC-GROUP-*), not
+            # for a cart containing several product IDs.
+            custom_data.content_type = 'product'
 
             # Num Items (общее количество)
             custom_data.num_items = sum(item.qty for item in order_items)
@@ -585,16 +606,7 @@ class FacebookConversionsService:
             # Contents (детальная информация о товарах)
             contents = []
             for item in order_items:
-                # Генерируем offer_id для каждого товара
-                color_variant_id = item.color_variant.id if item.color_variant else None
-                size = (item.size or 'S').upper()
-                getter = getattr(item.product, "get_offer_id", None)
-                if callable(getter):
-                    offer_id = getter(color_variant_id, size)
-                elif item.product_id:
-                    offer_id = build_offer_id(item.product.id, color_variant_id, size)
-                else:
-                    offer_id = f"manual-{item.pk}"
+                offer_id = item_offer_id(item)
 
                 content = Content(
                     product_id=offer_id,  # Используем offer_id вместо product.id
@@ -643,7 +655,7 @@ class FacebookConversionsService:
                 custom_data.content_ids = content_ids
                 custom_data.contents = contents
                 custom_data.content_name = ', '.join(str(item.get('title') or '') for item in snapshot_items[:3])
-                custom_data.content_type = 'product_group' if len(set(content_ids)) > 1 else 'product'
+                custom_data.content_type = 'product'
                 custom_data.num_items = sum(int(item.get('qty') or 1) for item in snapshot_items)
 
         # Order/attempt reference
@@ -781,6 +793,20 @@ class FacebookConversionsService:
                     return round(float(raw), 2)
                 except (TypeError, ValueError):
                     pass
+        # Legacy Order rows keep the raw Monobank transition under history;
+        # recover the verified amount so paid_value remains truthful there too.
+        history = payload.get('history') if isinstance(payload, dict) else None
+        if isinstance(history, list):
+            for entry in reversed(history):
+                raw_entry = entry.get('payload') if isinstance(entry, dict) else None
+                if not isinstance(raw_entry, dict):
+                    continue
+                raw = raw_entry.get('paidAmount')
+                if raw:
+                    try:
+                        return round(float(raw) / 100.0, 2)
+                    except (TypeError, ValueError):
+                        continue
         # COD: посылка получена → оплачена полностью
         if getattr(order, 'payment_status', None) == 'paid':
             try:

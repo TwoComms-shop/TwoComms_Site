@@ -17,6 +17,7 @@ import logging
 import json
 import base64
 import hashlib
+import threading
 from urllib.parse import urlparse
 from decimal import Decimal
 from datetime import timedelta
@@ -62,6 +63,7 @@ from .utils import (
 # Loggers
 monobank_logger = logging.getLogger('storefront.monobank')
 cart_logger = logging.getLogger('storefront.cart')
+CLIENT_TRACKING_ALLOWED_KEYS = frozenset({'fbp', 'fbc'})
 
 
 def _capi_checkout_source_url(request):
@@ -75,6 +77,51 @@ def _capi_checkout_source_url(request):
         except ValueError:
             pass
     return request.build_absolute_uri('/cart/')
+
+
+def _schedule_missing_add_payment_info(order, request=None):
+    """Retry AddPaymentInfo after an invoice is reused if the first send failed."""
+    payload = getattr(order, 'payment_payload', None)
+    if payload is None:
+        payload = getattr(order, 'event_state', None)
+    if not isinstance(payload, dict) or payload.get('fb_capi_add_payment_info'):
+        return
+
+    event_id = getattr(order, 'get_add_payment_event_id', lambda: None)()
+    payment_amount = getattr(order, 'payment_amount', None)
+    if not payment_amount:
+        if getattr(order, 'payment_status', None) == 'prepaid':
+            payment_amount = getattr(order, 'get_prepayment_amount', lambda: 0)()
+        else:
+            payment_amount = getattr(order, 'final_total', None) or getattr(order, 'total_sum', 0)
+    source_url = _capi_checkout_source_url(request) if request is not None else None
+
+    def runner():
+        from django.db import close_old_connections
+        try:
+            close_old_connections()
+            get_facebook_conversions_service().send_add_payment_info_event(
+                order=order,
+                payment_amount=float(payment_amount or 0),
+                event_id=event_id,
+                source_url=source_url,
+            )
+        except Exception:
+            monobank_logger.warning(
+                'Failed retrying AddPaymentInfo for %s',
+                getattr(order, 'order_number', getattr(order, 'reference', getattr(order, 'pk', '?'))),
+                exc_info=True,
+            )
+        finally:
+            close_old_connections()
+
+    transaction.on_commit(
+        lambda: threading.Thread(
+            target=runner,
+            daemon=True,
+            name=f'add-payment-info-retry-{getattr(order, "pk", "unknown")}',
+        ).start()
+    )
 
 # Константы статусов Monobank
 MONOBANK_SUCCESS_STATUSES = {'success', 'hold'}
@@ -245,6 +292,8 @@ def _existing_checkout_response(request, order, approved_custom_keys, pending_cu
         from storefront.views.checkout import remember_order_in_session
         remember_order_in_session(request, order)
 
+    _schedule_missing_add_payment_info(order, request)
+
     tracking = (
         order.payment_payload.get('tracking', {})
         if isinstance(order.payment_payload, dict)
@@ -263,7 +312,7 @@ def _existing_checkout_response(request, order, approved_custom_keys, pending_cu
     })
 
 
-def _existing_payment_attempt_response(attempt, approved_custom_keys, pending_custom_keys):
+def _existing_payment_attempt_response(attempt, approved_custom_keys, pending_custom_keys, request=None):
     """Return the existing invoice without creating a second checkout record."""
     if not attempt.invoice_url:
         return JsonResponse({
@@ -272,6 +321,7 @@ def _existing_payment_attempt_response(attempt, approved_custom_keys, pending_cu
             'retry_after_ms': 500,
             'error': 'Платіж уже створюється. Зачекайте кілька секунд.',
         }, status=409)
+    _schedule_missing_add_payment_info(attempt, request)
     return JsonResponse({
         'success': True,
         'reused': True,
@@ -681,9 +731,9 @@ def _create_payment_attempt_invoice(request):
         _lock_checkout_identity(request)
         attempt = PaymentAttempt.objects.select_for_update().filter(fingerprint=fingerprint).first()
         if attempt and attempt.order_id:
-            return _existing_payment_attempt_response(attempt, approved_keys, pending_keys)
+            return _existing_payment_attempt_response(attempt, approved_keys, pending_keys, request)
         if attempt and attempt.status in {PaymentAttempt.Status.INITIATED, PaymentAttempt.Status.PROCESSING} and attempt.invoice_url:
-            return _existing_payment_attempt_response(attempt, approved_keys, pending_keys)
+            return _existing_payment_attempt_response(attempt, approved_keys, pending_keys, request)
         if attempt:
             fingerprint = hashlib.sha256(f'{fingerprint}:{timezone.now().timestamp()}'.encode()).hexdigest()
         attempt = PaymentAttempt.objects.create(
@@ -763,6 +813,8 @@ def _create_payment_attempt_invoice(request):
         # may contribute non-sensitive attribution fields, but must not be
         # able to replace trusted fbp/fbc or identity data in CAPI payloads.
         for key, value in body['tracking'].items():
+            if key not in CLIENT_TRACKING_ALLOWED_KEYS:
+                continue
             if key in {'event_id', 'lead_event_id'} or value is None:
                 continue
             if key in tracking:
@@ -846,13 +898,21 @@ def monobank_create_invoice(request):
     except Exception:
         body = {}
 
-    monobank_logger.info(f'Request body: {body}')
-    monobank_logger.info(f'pay_type from body: {body.get("pay_type")}')
+    monobank_logger.info(
+        'Monobank request received: keys=%s pay_type=%s',
+        sorted(body.keys()) if isinstance(body, dict) else [],
+        body.get('pay_type') if isinstance(body, dict) else None,
+    )
 
     # Извлекаем tracking данные из body (отправляет клиент для дедупликации)
     client_tracking = body.get('tracking', {})
     if client_tracking:
-        monobank_logger.info(f'📊 Client tracking data received: {client_tracking}')
+        monobank_logger.info(
+            'Client tracking received: allowed_keys=%s fbp=%s fbc=%s',
+            sorted(set(client_tracking).intersection(CLIENT_TRACKING_ALLOWED_KEYS)) if isinstance(client_tracking, dict) else [],
+            bool(client_tracking.get('fbp')) if isinstance(client_tracking, dict) else False,
+            bool(client_tracking.get('fbc')) if isinstance(client_tracking, dict) else False,
+        )
 
     # Получаем cart
     cart = get_validated_cart_from_session(request)
@@ -1491,6 +1551,8 @@ def monobank_create_invoice(request):
         # Дополняем tracking_context данными от клиента (если есть)
         if isinstance(client_tracking, dict) and client_tracking:
             for key, value in client_tracking.items():
+                if key not in CLIENT_TRACKING_ALLOWED_KEYS:
+                    continue
                 if value is None:
                     continue
                 # Игнорируем event_id и lead_event_id - они генерируются при отправке событий

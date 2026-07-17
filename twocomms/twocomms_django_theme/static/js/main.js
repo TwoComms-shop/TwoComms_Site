@@ -226,6 +226,7 @@ function attachBeginCheckoutOnFormStart() {
           event_id: eventId,
           __meta: buildMetaWithUserData(eventId),
         });
+        window.__twcInitiateCheckoutMetaSent = true;
       }
     } catch (_) { }
   };
@@ -1879,7 +1880,8 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 });
 
-// Трекинг выбора отделения НП (поле np_office в корзине/чекауте)
+// Трекинг выбора пункта доставки НП. Meta FindLocation означает физический
+// магазин, поэтому для склада доставки используем собственное событие.
 document.addEventListener('change', function (e) {
   const el = e.target;
   if (!el || el.name !== 'np_office') return;
@@ -1887,7 +1889,7 @@ document.addEventListener('change', function (e) {
   const form = el.form || el.closest('form');
   const ref = form && form.querySelector('[name="np_warehouse_ref"]');
   if (val && val.length >= 3 && ref && ref.value) {
-    try { if (window.trackEvent) { window.trackEvent('FindLocation', { query: val }); } } catch (_) { }
+    try { if (window.trackEvent) { window.trackEvent('SelectShippingPoint', { query: val }); } } catch (_) { }
   }
 });
 
