@@ -6932,8 +6932,11 @@ msgstr "Hoodies, tees, longsleeves and your own items for DTF print."
 msgid "Кастомний одяг TwoComms"
 msgstr "TwoComms custom apparel"
 
-msgid "Створи річ, <br>що&nbsp;говорить <span>за тебе</span>"
+msgid "Створи річ, <br> що&nbsp;говорить <span>за тебе</span>"
 msgstr "Create a piece <br>that&nbsp;speaks <span>for you</span>"
+
+msgid "Створи річ, що говорить за тебе"
+msgstr "Create a piece that speaks for you"
 
 msgid ""
 "Кастомний одяг та аксесуари під ваші ідеї. Будь-який дизайн, будь-який "

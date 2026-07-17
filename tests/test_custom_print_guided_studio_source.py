@@ -57,6 +57,14 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
 
     def test_hero_heading_has_a_non_concatenated_accessible_name(self):
         self.assertIn("aria-label=\"{% trans 'Створи річ, що говорить за тебе' %}\"", self.template)
+        translations = {
+            "en": "Create a piece that speaks for you",
+            "ru": "Создай вещь, которая говорит за тебя",
+        }
+        for language, expected in translations.items():
+            catalog = (REPO_ROOT / f"twocomms/locale/{language}/LC_MESSAGES/django.po").read_text(encoding="utf-8")
+            self.assertIn('msgid "Створи річ, що говорить за тебе"', catalog)
+            self.assertIn(f'msgstr "{expected}"', catalog)
 
     def test_preview_uses_png_scene_without_legacy_garment_rotor(self):
         for legacy_contract in (
