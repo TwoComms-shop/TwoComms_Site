@@ -745,7 +745,15 @@ def _create_payment_attempt_invoice(request):
     except Exception:
         tracking = {}
     if isinstance(body.get('tracking'), dict):
-        tracking.update({k: v for k, v in body['tracking'].items() if k not in {'event_id', 'lead_event_id'} and v is not None})
+        # Keep server-observed cookies, IP and UA authoritative. The browser
+        # may contribute non-sensitive attribution fields, but must not be
+        # able to replace trusted fbp/fbc or identity data in CAPI payloads.
+        for key, value in body['tracking'].items():
+            if key in {'event_id', 'lead_event_id'} or value is None:
+                continue
+            if key in tracking:
+                continue
+            tracking[key] = value
     tracking['external_id'] = tracking.get('external_id') or (
         f'user:{request.user.pk}' if request.user.is_authenticated else f'session:{request.session.session_key}'
     )

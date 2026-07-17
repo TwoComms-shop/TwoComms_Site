@@ -530,6 +530,10 @@ class NovaPoshtaService:
                     )
                     return
 
+                facebook_events.setdefault(
+                    'purchase_event_time',
+                    int(timezone.now().timestamp()),
+                )
                 success = fb_service.send_purchase_event(order)
                 if success:
                     facebook_events['purchase_sent'] = True

@@ -871,6 +871,12 @@ def _send_post_payment_events(order_pk, previous_status, pay_type):
                 event_label = None
 
             if event_key and not facebook_events.get(event_key, False):
+                # Stamp the actual verified payment transition; the service
+                # uses this for Meta event_time instead of order.created.
+                facebook_events.setdefault(
+                    'purchase_event_time',
+                    int(timezone.now().timestamp()),
+                )
                 event_success = send_event(order)
                 if event_success:
                     payment_payload['facebook_events'] = facebook_events

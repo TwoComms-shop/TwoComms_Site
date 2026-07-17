@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
+from decimal import Decimal
+import time
 
 from django.conf import settings
 from django.test import SimpleTestCase, override_settings
@@ -54,3 +56,46 @@ class MetaPixelConfigurationTests(SimpleTestCase):
             service.EventRequest.__module__,
             "facebook_business.adobjects.serverside.event_request",
         )
+
+    def test_meta_cookie_validation_rejects_untrusted_shapes(self):
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+
+        self.assertEqual(service._clean_meta_cookie("fb.1.1710000000000.click_123"), "fb.1.1710000000000.click_123")
+        self.assertIsNone(service._clean_meta_cookie("not-a-meta-cookie"))
+        self.assertIsNone(service._clean_meta_cookie("fb.1.1710000000000.bad value"))
+
+    def test_local_ukrainian_phone_is_normalized_to_international_digits(self):
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+
+        self.assertEqual(service._clean_phone_digits("050 123 45 67"), "380501234567")
+
+    @override_settings(SITE_BASE_URL="https://example.test")
+    def test_default_event_source_url_is_success_route(self):
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+
+        self.assertEqual(
+            service._default_event_source_url(SimpleNamespace(pk=42)),
+            "https://example.test/orders/success/42/",
+        )
+
+    def test_cod_paid_value_uses_discounted_final_total(self):
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+        order = SimpleNamespace(
+            payment_payload={},
+            payment_status="paid",
+            final_total=Decimal("900.00"),
+            total_sum=Decimal("1000.00"),
+        )
+
+        self.assertEqual(service._extract_paid_amount(order), 900.0)
+
+    def test_purchase_event_time_prefers_verified_transition_timestamp(self):
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+        transition_time = int(time.time()) - 30
+        order = SimpleNamespace(
+            order_number="TWC-TEST",
+            payment_payload={"facebook_events": {"purchase_event_time": transition_time}},
+            created=None,
+        )
+
+        self.assertEqual(service._calculate_event_time(order), transition_time)

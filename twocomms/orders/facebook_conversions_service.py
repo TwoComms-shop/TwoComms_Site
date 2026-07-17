@@ -20,6 +20,7 @@ import hashlib
 import time
 import re
 import ipaddress
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional, Any, TYPE_CHECKING
 
@@ -54,6 +55,7 @@ class FacebookConversionsService:
     PHONE_MIN_LENGTH = 10
     PHONE_MAX_LENGTH = 15
     CITY_SANITIZE_RE = re.compile(r'[^\w]', re.UNICODE)
+    META_COOKIE_RE = re.compile(r'^fb\.1\.\d{10,16}\.[^\s]{1,500}$')
 
     def __init__(self):
         """Инициализация сервиса с настройками из ENV"""
@@ -143,9 +145,28 @@ class FacebookConversionsService:
         if not phone:
             return None
         digits = ''.join(filter(str.isdigit, str(phone)))
+        # Meta matching requires an international country code. Checkout
+        # accepts the common Ukrainian local form 0XXXXXXXXX.
+        if len(digits) == 10 and digits.startswith('0'):
+            digits = '380' + digits[1:]
         if self.PHONE_MIN_LENGTH <= len(digits) <= self.PHONE_MAX_LENGTH:
             return digits
         return None
+
+    def _clean_meta_cookie(self, value: Optional[str]) -> Optional[str]:
+        """Accept only Meta's fb.1 cookie shape and bounded input length."""
+        if not value:
+            return None
+        candidate = str(value).strip()
+        return candidate if self.META_COOKIE_RE.fullmatch(candidate) else None
+
+    def _default_event_source_url(self, order) -> str:
+        """Return the real storefront success URL used for order conversions."""
+        base_url = (getattr(settings, 'SITE_BASE_URL', None) or 'https://twocomms.shop').rstrip('/')
+        order_id = getattr(order, 'pk', None)
+        if order_id:
+            return f'{base_url}/orders/success/{order_id}/'
+        return base_url + '/'
 
     def _normalize_city_value(self, city: Optional[str]) -> Optional[str]:
         """Удаляет пробелы и спецсимволы перед хешированием."""
@@ -190,24 +211,61 @@ class FacebookConversionsService:
         return value
 
     def _calculate_event_time(self, order) -> int:
-        """Возвращает event_time, ограничивая возраст события 7 днями."""
+        """Return the conversion timestamp, bounded to Meta's 7-day window."""
         current_time = int(time.time())
+        payload = getattr(order, 'payment_payload', None)
+        payload = payload if isinstance(payload, dict) else {}
+
+        # Payment/delivery dispatchers stamp the actual conversion moment.
+        # This avoids dating COD purchases at order creation several days
+        # earlier, which would weaken Meta attribution and optimization.
+        candidates = [
+            (payload.get('facebook_events') or {}).get('purchase_event_time'),
+            payload.get('purchase_event_time'),
+        ]
+        np_tracking = payload.get('np_tracking') or {}
+        if np_tracking.get('last_status_code') in (9, '9'):
+            candidates.append(np_tracking.get('last_notified_at'))
+        for history_item in reversed(payload.get('history') or []):
+            if not isinstance(history_item, dict):
+                continue
+            status = str(history_item.get('status') or '').lower()
+            if status in {'success', 'hold', 'paid', 'received', 'done'}:
+                candidates.extend((history_item.get('received_at'), history_item.get('ts')))
+
+        for raw_candidate in candidates:
+            try:
+                if isinstance(raw_candidate, (int, float)):
+                    candidate = int(raw_candidate)
+                    if candidate > 10**12:
+                        candidate //= 1000
+                else:
+                    candidate = int(datetime.fromisoformat(str(raw_candidate).replace('Z', '+00:00')).timestamp())
+                if 0 < candidate <= current_time + 300:
+                    event_time = candidate
+                    break
+            except (TypeError, ValueError, OverflowError):
+                continue
+        else:
+            event_time = None
+
         order_created = getattr(order, 'created', None)
-        if not order_created:
+        if event_time is None and not order_created:
             logger.warning(
                 "⚠️ Order %s has no creation timestamp, using current time for event_time",
                 order.order_number,
             )
             return current_time
 
-        try:
-            event_time = int(order_created.timestamp())
-        except Exception:
-            logger.warning(
-                "⚠️ Failed to read created timestamp for order %s, using current time",
-                order.order_number,
-            )
-            return current_time
+        if event_time is None:
+            try:
+                event_time = int(order_created.timestamp())
+            except Exception:
+                logger.warning(
+                    "⚠️ Failed to read created timestamp for order %s, using current time",
+                    order.order_number,
+                )
+                return current_time
 
         if current_time - event_time > self.MAX_EVENT_AGE_SECONDS:
             logger.warning(
@@ -381,11 +439,11 @@ class FacebookConversionsService:
         if raw_tracking and isinstance(raw_tracking, dict):
             tracking_data = raw_tracking.get('tracking') or raw_tracking
 
-        fbp_value = tracking_data.get('fbp')
+        fbp_value = self._clean_meta_cookie(tracking_data.get('fbp'))
         if fbp_value:
             user_data.fbp = fbp_value
 
-        fbc_value = tracking_data.get('fbc')
+        fbc_value = self._clean_meta_cookie(tracking_data.get('fbc'))
         if fbc_value:
             user_data.fbc = fbc_value
 
@@ -595,7 +653,7 @@ class FacebookConversionsService:
                 user_data=user_data,
                 custom_data=custom_data,
                 action_source=self.ActionSource.WEBSITE,
-                event_source_url=source_url or f"https://twocomms.shop/orders/{order.order_number}/"
+                event_source_url=source_url or self._default_event_source_url(order)
             )
 
             event_request = self.EventRequest(
@@ -675,7 +733,7 @@ class FacebookConversionsService:
         # COD: посылка получена → оплачена полностью
         if getattr(order, 'payment_status', None) == 'paid':
             try:
-                return float(order.total_sum or 0) or None
+                return float(getattr(order, 'final_total', None) or order.total_sum or 0) or None
             except (TypeError, ValueError):
                 return None
         return None
@@ -745,7 +803,7 @@ class FacebookConversionsService:
                 user_data=user_data,
                 custom_data=custom_data,
                 action_source=self.ActionSource.WEBSITE,
-                event_source_url=source_url or f"https://twocomms.shop/orders/{order.order_number}/"
+                event_source_url=source_url or self._default_event_source_url(order)
             )
 
             # Создаем запрос
@@ -863,7 +921,7 @@ class FacebookConversionsService:
                 user_data=user_data,
                 custom_data=custom_data,
                 action_source=self.ActionSource.WEBSITE,
-                event_source_url=source_url or f"https://twocomms.shop/orders/{order.order_number}/"
+                event_source_url=source_url or self._default_event_source_url(order)
             )
 
             # Создаем запрос

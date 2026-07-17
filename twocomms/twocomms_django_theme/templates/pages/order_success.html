@@ -2065,6 +2065,9 @@ document.addEventListener('DOMContentLoaded', function() {
       }
       if (phoneValue) {
         var phoneDigits = String(phoneValue).replace(/\D/g, '');
+        if (phoneDigits.length === 10 && phoneDigits.charAt(0) === '0') {
+          phoneDigits = '380' + phoneDigits.substring(1);
+        }
         if (phoneDigits.length >= 7) {
           var hashedPhone = hashFn(phoneDigits);
           if (hashedPhone) {

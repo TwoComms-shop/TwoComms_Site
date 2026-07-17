@@ -601,7 +601,7 @@
       if (amEl.dataset.ph) {
         var phoneRaw = String(amEl.dataset.ph);
         // Только цифры
-        var phoneDigits = phoneRaw.replace(/\D/g, '');
+        var phoneDigits = normalizePhoneDigits(phoneRaw);
         if (isValidPhone(phoneDigits)) {
           var hashedPhone = hashSHA256(phoneDigits);
           if (hashedPhone) {
@@ -797,7 +797,7 @@
 
     var phoneValue = attrs.ph || guestData.phone || '';
     if (phoneValue) {
-      var phoneDigits = String(phoneValue).replace(/\D/g, '');
+      var phoneDigits = normalizePhoneDigits(phoneValue);
       if (phoneDigits && phoneDigits.length >= 7) {
         var hashedPhone = hashFn(phoneDigits);
         if (hashedPhone) {
@@ -883,6 +883,14 @@
     var digits = phone.replace(/\D/g, '');
     // Проверяем длин��: минимум 10 цифр, максимум 15 (стандарт E.164)
     return digits.length >= 10 && digits.length <= 15;
+  }
+
+  function normalizePhoneDigits(phone) {
+    var digits = String(phone || '').replace(/\D/g, '');
+    if (digits.length === 10 && digits.charAt(0) === '0') {
+      return '380' + digits.substring(1);
+    }
+    return digits;
   }
 
   function loadGoogleAnalytics() {
@@ -1036,7 +1044,7 @@
     // Phone - только если валидный (только цифры для Meta)
     if (attrs.ph) {
       var phoneRaw = String(attrs.ph);
-      var phoneDigits = phoneRaw.replace(/\D/g, '');
+      var phoneDigits = normalizePhoneDigits(phoneRaw);
       if (isValidPhone(phoneDigits)) {
         match.ph = phoneDigits;
       } else {
