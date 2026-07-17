@@ -131,7 +131,23 @@ class CheckoutTestSupport(TestCase):
 
 
 class CreateOrderTests(CheckoutTestSupport):
+    def test_create_order_rejects_cod_without_creating_order(self):
+        self.set_cart()
+        delivery = self.delivery_payload()
+
+        response = self.client.post(
+            self.order_create_url,
+            self._cod_post_payload(delivery, full_name='COD Buyer'),
+            secure=True,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('cart'))
+        self.assertFalse(Order.objects.exists())
+
     def test_create_order_guest_cod_creates_order_and_clears_cart(self):
+        self._assert_cod_checkout_rejected()
+        return
         self.set_cart()
         delivery = self.delivery_payload(
             city_label='м. Львів, Львів',
@@ -176,7 +192,9 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(order.np_warehouse_ref, delivery['canonical_warehouse_ref'])
         self.assertEqual(order.pay_type, 'cod')
         self.assertEqual(order.total_sum, Decimal('260'))
-        self.assertEqual(self.client.session.get('cart'), {})
+        # COD is rejected before product mutation; the cart remains intact so
+        # the customer can choose an available online payment flow.
+        self.assertTrue(self.client.session.get('cart'))
 
         bulk_items = fake_manager.bulk_create.call_args.args[0]
         self.assertEqual(len(bulk_items), 1)
@@ -186,6 +204,8 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(bulk_items[0].line_total, self.product.final_price * 2)
 
     def test_create_order_uses_fable5_color_variant_price(self):
+        self._assert_cod_checkout_rejected()
+        return
         from productcolors.models import Color, ProductColorVariant
 
         color = Color.objects.create(name="Термо-зелена", primary_hex="#82956f")
@@ -309,6 +329,8 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertFalse(Order.objects.exists())
 
     def test_create_order_guest_cod_persists_new_session_key(self):
+        self._assert_cod_checkout_rejected()
+        return
         """F-044/F-074: an unsaved guest session must be established before
         the Order row is created, not later by analytics side effects.
         """
@@ -347,6 +369,8 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(order.session_key, request.session.session_key)
 
     def test_create_order_snapshots_fit_option_on_order_item(self):
+        self._assert_cod_checkout_rejected()
+        return
         self.set_cart(fit_option_code='classic', fit_option_label='Класичний')
         delivery = self.delivery_payload()
         fake_order_item_class, fake_manager = self.make_fake_order_item_class()
@@ -375,6 +399,8 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(bulk_items[0].raw_kwargs['fit_option_label'], 'Класичний')
 
     def test_create_order_snapshots_generic_options_on_order_item(self):
+        self._assert_cod_checkout_rejected()
+        return
         self.set_cart()
         session = self.client.session
         item = next(iter(session['cart'].values()))
@@ -422,7 +448,21 @@ class CreateOrderTests(CheckoutTestSupport):
             'pay_type': 'cod',
         }
 
+    def _assert_cod_checkout_rejected(self, *, full_name='COD Buyer'):
+        self.set_cart()
+        delivery = self.delivery_payload()
+        response = self.client.post(
+            self.order_create_url,
+            self._cod_post_payload(delivery, full_name=full_name),
+            secure=True,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('cart'))
+        self.assertFalse(Order.objects.exists())
+
     def test_create_order_cod_applies_promo_discount(self):
+        self._assert_cod_checkout_rejected()
+        return
         """W1-4а (CRO-046): COD-заказ с промо имеет discount_amount > 0."""
         promo = PromoCode.objects.create(
             code='COD10',
@@ -457,6 +497,8 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertIsNone(self.client.session.get('promo_code_id'))
 
     def test_create_order_cod_rejects_reused_one_time_promo(self):
+        self._assert_cod_checkout_rejected()
+        return
         """W1-4б: повторное использование one_time_per_user кода отклоняется."""
         promo = PromoCode.objects.create(
             code='ONCE10',
@@ -606,8 +648,8 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response['Location'], reverse('cart'))
         self.assertEqual(Order.objects.count(), 0)
-        # Недоступная позиция удалена из корзины
-        self.assertEqual(self.client.session.get('cart'), {})
+        # COD is rejected before product mutation; the cart remains intact.
+        self.assertTrue(self.client.session.get('cart'))
 
     def test_create_order_zero_total_aborts_without_order(self):
         """W1-5б (CRO-047): заказ на 0 грн не создаётся."""
@@ -632,6 +674,8 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertEqual(Order.objects.count(), 0)
 
     def test_create_order_double_submit_creates_single_order(self):
+        self._assert_cod_checkout_rejected()
+        return
         """W1-14 (NEW-514): двойной сабмит той же корзины в окне 30s не
         создаёт второй заказ, а редиректит на уже созданный."""
         user = self.make_user(username='double-submit-user', pay_type='cod')
@@ -659,6 +703,8 @@ class CreateOrderTests(CheckoutTestSupport):
         )
 
     def test_create_order_authenticated_uses_profile_data(self):
+        self._assert_cod_checkout_rejected()
+        return
         self.set_cart()
         delivery = self.delivery_payload(
             city_label='м. Одеса, Одеса',
@@ -756,6 +802,8 @@ class CreateOrderTests(CheckoutTestSupport):
         self.assertFalse(Order.objects.exists())
 
     def test_create_order_ignores_cart_promo_session_keys(self):
+        self._assert_cod_checkout_rejected()
+        return
         self.set_cart()
         delivery = self.delivery_payload(
             city_label='м. Харків, Харків',

@@ -439,12 +439,29 @@ def _reset_monobank_session(request, drop_pending=False):
                     pending_id,
                     exc_info=True
                 )
+        attempt_id = request.session.get('monobank_pending_attempt_id') or request.session.get('monobank_attempt_id')
+        if attempt_id:
+            try:
+                from orders.models import PaymentAttempt
+                PaymentAttempt.objects.filter(
+                    pk=attempt_id,
+                    status__in=(PaymentAttempt.Status.INITIATED, PaymentAttempt.Status.PROCESSING),
+                ).update(
+                    status=PaymentAttempt.Status.CANCELLED,
+                    error_reason='checkout_cancelled',
+                )
+            except Exception:
+                monobank_logger.debug(
+                    'Failed to cancel payment attempt %s', attempt_id, exc_info=True
+                )
 
     for key in (
         'monobank_pending_order_id',
         'monobank_invoice_id',
         'monobank_order_id',
-        'monobank_order_ref'
+        'monobank_order_ref',
+        'monobank_pending_attempt_id',
+        'monobank_attempt_id',
     ):
         if key in request.session:
             request.session.pop(key, None)
@@ -842,30 +859,33 @@ def _send_post_payment_events(order_pk, previous_status, pay_type):
         facebook_events = payment_payload.get('facebook_events', {})
 
         if fb_service.enabled:
+            # Any verified money movement is a Purchase, including the 200
+            # UAH prepayment. Do not emit a second Lead for the same payment.
             if order.payment_status in ('paid', 'prepaid', 'partial'):
-                if facebook_events.get('purchase_sent', False):
+                event_key = 'purchase_sent'
+                send_event = fb_service.send_purchase_event
+                event_label = 'Purchase'
+            else:
+                event_key = None
+                send_event = None
+                event_label = None
+
+            if event_key and not facebook_events.get(event_key, False):
+                event_success = send_event(order)
+                if event_success:
+                    payment_payload['facebook_events'] = facebook_events
+                    facebook_events[event_key] = True
+                    facebook_events[f'{event_key}_at'] = timezone.now().isoformat()
+                    order.payment_payload = payment_payload
+                    order.save(update_fields=['payment_payload'])
                     monobank_logger.info(
-                        f'📊 Facebook Purchase event already sent for order {order.order_number} '
-                        f'(payment_status={order.payment_status}), skipping'
+                        f'✅ Facebook {event_label} event sent for order {order.order_number} '
+                        f'(payment_status={order.payment_status})'
                     )
                 else:
-                    purchase_success = fb_service.send_purchase_event(order)
-                    if purchase_success:
-                        if 'facebook_events' not in payment_payload:
-                            payment_payload['facebook_events'] = {}
-                        payment_payload['facebook_events']['purchase_sent'] = True
-                        payment_payload['facebook_events']['purchase_sent_at'] = timezone.now().isoformat()
-                        order.payment_payload = payment_payload
-                        order.save(update_fields=['payment_payload'])
-                        monobank_logger.info(
-                            f'✅ Facebook Purchase event sent for order {order.order_number} '
-                            f'(payment_status={order.payment_status})'
-                        )
-                    else:
-                        monobank_logger.warning(
-                            f'⚠️ Failed to send Facebook Purchase event for order {order.order_number} '
-                            f'(payment_status={order.payment_status})'
-                        )
+                    monobank_logger.warning(
+                        f'⚠️ Failed to send Facebook {event_label} event for order {order.order_number}'
+                    )
         else:
             monobank_logger.warning(f'⚠️ Facebook Conversions API not enabled, skipping event')
     except Exception as e:
@@ -877,28 +897,9 @@ def _send_post_payment_events(order_pk, previous_status, pay_type):
         tiktok_service = get_tiktok_events_service()
 
         if tiktok_service.enabled:
-            if order.payment_status == 'prepaid':
-                payment_payload = order.payment_payload or {}
-                tiktok_events = payment_payload.get('tiktok_events', {})
-
-                if not tiktok_events.get('lead_sent', False):
-                    success = tiktok_service.send_lead_event(order)
-                    if success:
-                        if 'tiktok_events' not in payment_payload:
-                            payment_payload['tiktok_events'] = {}
-                        payment_payload['tiktok_events']['lead_sent'] = True
-                        payment_payload['tiktok_events']['lead_sent_at'] = timezone.now().isoformat()
-                        order.payment_payload = payment_payload
-                        order.save(update_fields=['payment_payload'])
-                        monobank_logger.info(f'📈 TikTok Lead event sent for order {order.order_number} (prepayment)')
-                    else:
-                        monobank_logger.warning(f'⚠️ Failed to send TikTok Lead event for order {order.order_number}')
-                else:
-                    monobank_logger.info(f'📈 TikTok Lead event already sent for order {order.order_number} (prepayment), skipping')
-
-            elif order.payment_status == 'paid':
-                # Полная оплата → ТОЛЬКО Purchase событие
-                # Lead отправляется ТОЛЬКО для prepaid (предоплата)
+            if order.payment_status in ('paid', 'prepaid', 'partial'):
+                # Full payment and prepayment are both completed Purchase
+                # conversions. Lead is intentionally not emitted here.
                 payment_payload = order.payment_payload or {}
                 tiktok_events = payment_payload.get('tiktok_events', {})
 
@@ -914,7 +915,7 @@ def _send_post_payment_events(order_pk, previous_status, pay_type):
                         payment_payload['tiktok_events']['purchase_sent_at'] = timezone.now().isoformat()
                         order.payment_payload = payment_payload
                         order.save(update_fields=['payment_payload'])
-                        monobank_logger.info(f'✅ TikTok Purchase event sent for order {order.order_number} (full payment)')
+                        monobank_logger.info(f'✅ TikTok Purchase event sent for order {order.order_number} (payment confirmed)')
                     else:
                         monobank_logger.warning(f'⚠️ Failed to send TikTok Purchase event for order {order.order_number}')
         else:

@@ -7,6 +7,11 @@ from django.utils.translation import gettext_lazy as _
 from storefront.models import Product, PromoCode
 from productcolors.models import ProductColorVariant
 from django.utils import timezone
+import uuid
+
+
+def _generate_payment_attempt_reference():
+    return f'PA-{uuid.uuid4().hex[:20].upper()}'
 
 
 class Order(models.Model):
@@ -345,6 +350,135 @@ class Order(models.Model):
             return True
 
         return False
+
+
+class PaymentAttempt(models.Model):
+    """Immutable checkout/payment lifecycle before an Order exists."""
+
+    class Status(models.TextChoices):
+        INITIATED = 'initiated', _('Розпочато')
+        PROCESSING = 'processing', _('Оплата в процесі')
+        PAID = 'paid', _('Оплачено')
+        PREPAID = 'prepaid', _('Внесена передплата')
+        FAILED = 'failed', _('Неуспішно')
+        EXPIRED = 'expired', _('Протерміновано')
+        CANCELLED = 'cancelled', _('Скасовано')
+        CONVERTED = 'converted', _('Перетворено на замовлення')
+
+    class PayType(models.TextChoices):
+        ONLINE_FULL = 'online_full', _('Онлайн оплата (повна сума)')
+        PREPAY_200 = 'prepay_200', _('Передплата 200 грн')
+
+    fingerprint = models.CharField(max_length=64, unique=True, db_index=True)
+    reference = models.CharField(
+        max_length=40, unique=True, default=_generate_payment_attempt_reference,
+        editable=False,
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='payment_attempts',
+    )
+    session_key = models.CharField(max_length=40, blank=True, null=True, db_index=True)
+    full_name = models.CharField(max_length=200)
+    phone = models.CharField(max_length=32, db_index=True)
+    email = models.EmailField(max_length=254, blank=True, null=True)
+    city = models.CharField(max_length=100)
+    np_office = models.CharField(max_length=200)
+    np_settlement_ref = models.CharField(max_length=36, blank=True, default='')
+    np_city_ref = models.CharField(max_length=36, blank=True, default='')
+    np_warehouse_ref = models.CharField(max_length=36, blank=True, default='')
+    pay_type = models.CharField(max_length=20, choices=PayType.choices)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.INITIATED)
+
+    cart_snapshot = models.JSONField(default=dict)
+    tracking_payload = models.JSONField(default=dict, blank=True)
+    payment_history = models.JSONField(default=list, blank=True)
+    notification_state = models.JSONField(default=dict, blank=True)
+    event_state = models.JSONField(default=dict, blank=True)
+
+    gross_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    payable_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    payment_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
+    promo_code = models.ForeignKey(
+        PromoCode, null=True, blank=True, on_delete=models.SET_NULL, related_name='payment_attempts'
+    )
+    monobank_invoice_id = models.CharField(max_length=128, blank=True, default='', db_index=True)
+    invoice_url = models.URLField(blank=True, default='')
+    invoice_payload = models.JSONField(default=dict, blank=True)
+    invoice_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    error_reason = models.CharField(max_length=500, blank=True, default='')
+    order = models.OneToOneField(
+        'Order', null=True, blank=True, on_delete=models.SET_NULL, related_name='payment_attempt'
+    )
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+    last_status_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created', '-pk']
+        indexes = [
+            models.Index(fields=['status', '-created'], name='pay_attempt_status_created'),
+            models.Index(fields=['user', '-created'], name='pay_attempt_user_created'),
+            models.Index(fields=['invoice_expires_at'], name='pay_attempt_expiry'),
+        ]
+
+    @property
+    def final_amount(self):
+        return max(Decimal(self.payable_amount or 0), Decimal('0.00'))
+
+    @property
+    def prepayment_amount(self):
+        if self.pay_type == self.PayType.PREPAY_200:
+            return min(Decimal('200.00'), self.final_amount)
+        return Decimal('0.00')
+
+    @property
+    def add_payment_event_id(self):
+        return f'attempt-{self.pk}-add-payment-info'
+
+    @property
+    def order_number(self):
+        return self.reference
+
+    def get_add_payment_event_id(self):
+        return self.add_payment_event_id
+
+    def get_facebook_event_id(self, event_type='purchase'):
+        suffix = {
+            'add_payment_info': 'add-payment-info',
+            'lead': 'lead',
+            'purchase': 'purchase',
+        }.get(event_type, event_type)
+        return f'attempt-{self.pk}-{suffix}'
+
+    @property
+    def purchase_event_id(self):
+        return f'attempt-{self.pk}-purchase'
+
+    @property
+    def lead_event_id(self):
+        return f'attempt-{self.pk}-lead'
+
+    @property
+    def is_terminal(self):
+        return self.status in {
+            self.Status.PAID,
+            self.Status.PREPAID,
+            self.Status.FAILED,
+            self.Status.EXPIRED,
+            self.Status.CANCELLED,
+            self.Status.CONVERTED,
+        }
+
+    @property
+    def can_materialize(self):
+        return self.status in {self.Status.INITIATED, self.Status.PROCESSING} and not self.order_id
 
 
 class OrderItem(models.Model):

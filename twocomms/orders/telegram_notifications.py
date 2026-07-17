@@ -1008,6 +1008,39 @@ class TelegramNotifier:
                 logger.exception('Failed to persist Telegram delivery marker for order %s', order.pk)
         return bool(sent_results)
 
+    def send_payment_attempt_notification(self, attempt):
+        """Notify staff that a checkout invoice was opened, before an order exists."""
+        if not self.is_configured():
+            return False
+        gross = self._fmt_amount(getattr(attempt, 'gross_amount', 0))
+        discount = self._fmt_amount(getattr(attempt, 'discount_amount', 0))
+        amount = self._fmt_amount(getattr(attempt, 'payable_amount', 0))
+        payment_amount = self._fmt_amount(getattr(attempt, 'payment_amount', 0))
+        pay_label = 'Передплата 200 грн' if getattr(attempt, 'pay_type', '') == 'prepay_200' else 'Повна онлайн-оплата'
+        snapshot = getattr(attempt, 'cart_snapshot', None) or {}
+        item_lines = []
+        for item in (snapshot.get('cart') or [])[:5] if isinstance(snapshot, dict) else []:
+            title = str(item.get('title') or 'Товар').strip()
+            qty = int(item.get('qty') or 1)
+            line_total = self._fmt_amount(item.get('line_total', 0))
+            item_lines.append(f"• {title} × {qty} · {line_total} грн")
+        if item_lines:
+            item_block = "\n" + "\n".join(item_lines)
+        else:
+            item_block = "\n• Позиції уточнюються"
+        message = (
+            f"💳 <b>Спроба оплати #{attempt.reference}</b>\n"
+            f"👤 {attempt.full_name} · {attempt.phone}\n"
+            f"📦 {attempt.city}, {attempt.np_office}\n"
+            f"🛍 <b>Товар:</b>{item_block}\n"
+            f"💰 Товари: {gross} грн · знижка: -{discount} грн\n"
+            f"💰 До сплати: <b>{amount} грн</b> · зараз: <b>{payment_amount} грн</b>\n"
+            f"🔐 {pay_label}\n"
+            f"⏳ Статус: очікуємо підтвердження Monobank\n"
+            f"🧾 Invoice: <code>{attempt.monobank_invoice_id or 'створюється'}</code>"
+        )
+        return bool(self.send_message(message, return_results=True))
+
     def update_order_notification_message(self, order, *, clear_actions=False):
         refs = _get_order_admin_message_refs(order)
         if not refs or not self.bot_token:

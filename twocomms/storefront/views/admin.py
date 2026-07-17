@@ -92,6 +92,7 @@ from orders.models import (
     DropshipperStats,
     Order,
     OrderItem,
+    PaymentAttempt,
     WholesaleInvoice,
 )
 from .promo import get_promo_admin_context
@@ -405,6 +406,8 @@ def _build_push_notifications_context(request, form=None):
 
 def _build_orders_context(request):
     """Формирует данные для секции заказов."""
+    if request.GET.get('view') == 'payment_attempts':
+        return _build_payment_attempts_context(request)
     orders_per_page = 50
     status_filter = request.GET.get('status', 'all')
     payment_filter_raw = request.GET.get('payment', 'all')
@@ -495,6 +498,56 @@ def _build_orders_context(request):
         'payment_filter': payment_filter,
         'user_id_filter': user_id_filter,
         'user_filter_info': user_filter_info,
+        'orders_view': 'orders',
+        'payment_attempt_active_count': PaymentAttempt.objects.filter(
+            status__in=[PaymentAttempt.Status.INITIATED, PaymentAttempt.Status.PROCESSING]
+        ).count(),
+    }
+
+
+def _build_payment_attempts_context(request):
+    """Compact, opt-in staff view for checkout attempts that are not orders."""
+    status_filter = (request.GET.get('attempt_status') or 'active').strip().lower()
+    query = (request.GET.get('attempt_q') or '').strip()
+    qs = PaymentAttempt.objects.select_related('user', 'order').order_by('-created', '-pk')
+    active_statuses = [PaymentAttempt.Status.INITIATED, PaymentAttempt.Status.PROCESSING]
+    if status_filter == 'active':
+        qs = qs.filter(status__in=active_statuses)
+    elif status_filter != 'all':
+        qs = qs.filter(status=status_filter)
+    if query:
+        qs = qs.filter(
+            Q(reference__icontains=query)
+            | Q(monobank_invoice_id__icontains=query)
+            | Q(full_name__icontains=query)
+            | Q(phone__icontains=query)
+        )
+    attempts_page = Paginator(qs, 40).get_page(request.GET.get('page'))
+    now = timezone.now()
+    attempts = list(attempts_page.object_list)
+    for attempt in attempts:
+        attempt.age_seconds = max(0, int((now - attempt.created).total_seconds()))
+        attempt.expiry_seconds = (
+            int((attempt.invoice_expires_at - now).total_seconds())
+            if attempt.invoice_expires_at else None
+        )
+        attempt.status_label = attempt.get_status_display()
+        attempt.snapshot_items = (attempt.cart_snapshot or {}).get('cart', []) if isinstance(attempt.cart_snapshot, dict) else []
+    attempts_page.object_list = attempts
+    status_counts = {
+        code: PaymentAttempt.objects.filter(status=code).count()
+        for code, _ in PaymentAttempt.Status.choices
+    }
+    return {
+        'orders_view': 'payment_attempts',
+        'payment_attempts': attempts_page,
+        'payment_attempt_status_filter': status_filter,
+        'payment_attempt_query': query,
+        'payment_attempt_status_counts': status_counts,
+        'payment_attempt_active_count': sum(status_counts.get(code, 0) for code in active_statuses),
+        'payment_attempts_empty': not bool(attempts),
+        'orders': [],
+        'total_orders': Order.objects.count(),
     }
 
 

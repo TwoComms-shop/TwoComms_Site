@@ -981,7 +981,11 @@
       {% include "partials/admin_stats_dashboard.html" %}
 
     {% elif section == 'orders' %}
-      {% include "partials/admin_orders_section.html" %}
+      {% if orders_view == 'payment_attempts' %}
+        {% include "partials/admin_payment_attempts_section.html" %}
+      {% else %}
+        {% include "partials/admin_orders_section.html" %}
+      {% endif %}
 
     {% elif section == 'marketplace_feeds' %}
       {% include "partials/admin_feeds_section.html" %}

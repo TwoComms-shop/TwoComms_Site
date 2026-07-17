@@ -189,6 +189,13 @@ def create_order(request):
         messages.error(request, _("Оберіть коректний тип оплати."))
         return redirect('cart')
 
+    if pay_type == 'cod':
+        messages.error(
+            request,
+            _("Оплата при отриманні недоступна. Оберіть повну онлайн-оплату або передплату."),
+        )
+        return redirect('cart')
+
     if raw_phone and not phone:
         messages.error(request, _("Вкажіть коректний український номер телефону. Можна без +380."))
         return redirect('cart')

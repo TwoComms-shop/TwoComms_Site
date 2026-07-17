@@ -407,6 +407,10 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
       Створити вручну
     </a>
+    <a href="?section=orders&view=payment_attempts" class="oadm-create-btn" style="background:rgba(59,130,246,.16);color:#dbeafe;border:1px solid rgba(96,165,250,.34);box-shadow:none;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 8v4l2.5 2.5"/><circle cx="12" cy="12" r="9"/></svg>
+      Очікування оплати{% if payment_attempt_active_count %} · {{ payment_attempt_active_count }}{% endif %}
+    </a>
   </div>
 
   {% if user_id_filter %}

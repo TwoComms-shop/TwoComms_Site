@@ -36,7 +36,8 @@ import requests
 from ..models import Product, PromoCode
 from orders.nova_poshta_data import apply_nova_poshta_refs
 from orders.nova_poshta_documents import normalize_checkout_phone
-from orders.models import Order as OrderModel, OrderItem
+from orders.models import Order as OrderModel, OrderItem, PaymentAttempt
+from orders.payment_attempts import materialize_payment_attempt, PaymentAttemptConversionError
 from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_delivery_selection
 from orders.facebook_conversions_service import get_facebook_conversions_service
 from accounts.payment import normalize_pay_type
@@ -245,6 +246,29 @@ def _existing_checkout_response(request, order, approved_custom_keys, pending_cu
         'order_id': order.pk,
         'order_ref': order.order_number,
         'add_payment_event_id': tracking.get('add_payment_event_id') or order.get_add_payment_event_id(),
+    })
+
+
+def _existing_payment_attempt_response(attempt, approved_custom_keys, pending_custom_keys):
+    """Return the existing invoice without creating a second checkout record."""
+    if not attempt.invoice_url:
+        return JsonResponse({
+            'success': False,
+            'in_progress': True,
+            'retry_after_ms': 500,
+            'error': 'Платіж уже створюється. Зачекайте кілька секунд.',
+        }, status=409)
+    return JsonResponse({
+        'success': True,
+        'reused': True,
+        'payment_complete': bool(attempt.order_id),
+        'invoice_url': attempt.invoice_url,
+        'invoice_id': attempt.monobank_invoice_id,
+        'attempt_id': attempt.pk,
+        'attempt_ref': attempt.reference,
+        'order_id': attempt.order_id,
+        'order_ref': attempt.order.order_number if attempt.order_id else '',
+        'add_payment_event_id': attempt.add_payment_event_id,
     })
 
 
@@ -489,6 +513,286 @@ def _monobank_api_request(method, endpoint, json_payload=None, params=None, toke
 
 # ==================== MONOBANK CREATE INVOICE ====================
 
+def _create_payment_attempt_invoice(request):
+    """Create/reuse a PaymentAttempt and its Monobank invoice."""
+    try:
+        body = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except Exception:
+        body = {}
+
+    cart = get_validated_cart_from_session(request)
+    ensure_request_session_key(request)
+    from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
+
+    custom_cart = request.session.get(SESSION_CUSTOM_CART_KEY) or {}
+    approved_leads, approved_keys, pending_keys, missing_price_leads = _split_custom_cart_entries(custom_cart)
+    if missing_price_leads:
+        return JsonResponse({
+            'success': False,
+            'error': 'Для погодженого кастомного виробу ще не зафіксована фінальна ціна.',
+        }, status=400)
+    if not cart and not approved_leads:
+        return JsonResponse({'success': False, 'error': 'Кошик порожній. Додайте товари перед оплатою.'}, status=400)
+
+    try:
+        delivery = resolve_delivery_selection(body)
+    except NovaPoshtaSelectionError as exc:
+        return JsonResponse({'success': False, 'field': exc.field, 'error': exc.message}, status=400)
+
+    if request.user.is_authenticated:
+        try:
+            profile = request.user.userprofile
+        except Exception:
+            return JsonResponse({'success': False, 'error': 'Будь ласка, заповніть профіль доставки.'}, status=400)
+
+        def value_or_profile(name, fallback=''):
+            value = body.get(name)
+            if value is None:
+                value = fallback
+            return value.strip() if isinstance(value, str) else value
+
+        full_name = value_or_profile('full_name', profile.full_name or request.user.username)
+        raw_phone = value_or_profile('phone', profile.phone)
+        email = value_or_profile('email', getattr(profile, 'email', '') or request.user.email or '')
+        pay_type_raw = body.get('pay_type') or profile.pay_type or 'online_full'
+    else:
+        full_name = (body.get('full_name') or '').strip()
+        raw_phone = body.get('phone') or ''
+        email = (body.get('email') or '').strip()
+        pay_type_raw = body.get('pay_type') or 'online_full'
+
+    phone = normalize_checkout_phone(raw_phone)
+    try:
+        pay_type = normalize_pay_type(pay_type_raw, default=None)
+    except ValueError:
+        return JsonResponse({'success': False, 'field': 'pay_type', 'error': 'Оберіть коректний тип оплати.'}, status=400)
+    if pay_type == 'cod':
+        return JsonResponse({
+            'success': False,
+            'field': 'pay_type',
+            'error': 'Оплата при отриманні недоступна. Оберіть повну онлайн-оплату або передплату.',
+        }, status=400)
+    if pay_type not in {'online_full', 'prepay_200'}:
+        return JsonResponse({'success': False, 'field': 'pay_type', 'error': 'Оберіть доступний спосіб оплати.'}, status=400)
+    if approved_leads and pay_type == 'prepay_200':
+        return JsonResponse({'success': False, 'error': 'Передплата 200 грн недоступна для кастомного принта.'}, status=400)
+    if raw_phone and not phone:
+        return JsonResponse({'success': False, 'field': 'phone', 'error': 'Вкажіть коректний український номер телефону.'}, status=400)
+    if not all([full_name, phone, delivery.city, delivery.np_office]):
+        return JsonResponse({'success': False, 'error': 'Будь ласка, заповніть всі обовʼязкові поля.'}, status=400)
+
+    normalized_email = ''
+    if email:
+        from django.core.validators import validate_email
+        from django.core.exceptions import ValidationError
+        try:
+            validate_email(email)
+            normalized_email = email
+        except ValidationError:
+            normalized_email = ''
+
+    ids = [int(item['product_id']) for item in cart.values()]
+    products = Product.objects.in_bulk(ids)
+    if any(not products.get(item['product_id']) for item in cart.values()):
+        return JsonResponse({'success': False, 'error': 'Деякі товари більше недоступні. Оновіть кошик.'}, status=400)
+
+    from productcolors.models import ProductColorVariant
+    from fable5.services import effective_cart_unit_price, variant_allows_purchase
+    variant_ids = [item.get('color_variant_id') for item in cart.values() if item.get('color_variant_id')]
+    variants = ProductColorVariant.objects.in_bulk(variant_ids)
+    snapshot_items = []
+    gross = Decimal('0.00')
+    for item in cart.values():
+        product = products[int(item['product_id'])]
+        variant = variants.get(int(item['color_variant_id'])) if item.get('color_variant_id') else None
+        if item.get('color_variant_id') and (
+            variant is None or variant.product_id != product.pk or not variant_allows_purchase(
+                product, variant, fit_code=item.get('fit_option_code') or item.get('fit') or '',
+                size=item.get('size') or '', option_values=item.get('option_values') or {},
+            )
+        ):
+            return JsonResponse({'success': False, 'error': 'Обраний варіант товару більше недоступний.'}, status=400)
+        qty = int(item.get('qty') or 1)
+        unit = effective_cart_unit_price(
+            product, variant, fit_code=item.get('fit_option_code') or item.get('fit') or '',
+            option_values=item.get('option_values') or {},
+        )
+        line_total = unit * qty
+        gross += line_total
+        snapshot_items.append({
+            'product_id': product.pk,
+            'title': product.title,
+            'qty': qty,
+            'size': item.get('size', ''),
+            'fit_option_code': item.get('fit_option_code') or item.get('fit') or '',
+            'fit_option_label': item.get('fit_option_label') or item.get('fit_label') or '',
+            'color_variant_id': variant.pk if variant else None,
+            'option_values': item.get('option_values') or {},
+            'option_labels': item.get('option_labels') or {},
+            'unit_price': str(unit),
+            'line_total': str(line_total),
+        })
+    gross += sum((Decimal(str(lead.final_price_value)) for lead in approved_leads), Decimal('0.00'))
+    if gross <= 0:
+        return JsonResponse({'success': False, 'error': 'Сума замовлення повинна бути більше 0.'}, status=400)
+
+    promo = None
+    discount = Decimal('0.00')
+    promo_id = request.session.get('promo_code_id')
+    if promo_id:
+        try:
+            promo = PromoCode.objects.get(pk=promo_id)
+            can_use = promo.can_be_used()
+            if can_use and request.user.is_authenticated:
+                can_use, _ = promo.can_be_used_by_user(request.user)
+            if can_use:
+                discount = min(Decimal(str(promo.calculate_discount(gross))), gross)
+        except Exception:
+            promo = None
+            discount = Decimal('0.00')
+
+    payable = max(gross - discount, Decimal('0.00'))
+    payment_amount = min(Decimal('200.00'), payable) if pay_type == 'prepay_200' else payable
+    delivery_refs = {
+        'np_settlement_ref': delivery.settlement_ref,
+        'np_city_ref': delivery.city_ref,
+        'np_warehouse_ref': delivery.warehouse_ref,
+    }
+    fingerprint = _build_checkout_idempotency_key(
+        request, cart=cart, approved_custom_leads=approved_leads, full_name=full_name,
+        phone=phone, email=normalized_email, delivery_refs=delivery_refs,
+        city=delivery.city, np_office=delivery.np_office, pay_type=pay_type,
+    )
+    with transaction.atomic():
+        _lock_checkout_identity(request)
+        attempt = PaymentAttempt.objects.select_for_update().filter(fingerprint=fingerprint).first()
+        if attempt and attempt.order_id:
+            return _existing_payment_attempt_response(attempt, approved_keys, pending_keys)
+        if attempt and attempt.status in {PaymentAttempt.Status.INITIATED, PaymentAttempt.Status.PROCESSING} and attempt.invoice_url:
+            return _existing_payment_attempt_response(attempt, approved_keys, pending_keys)
+        if attempt:
+            fingerprint = hashlib.sha256(f'{fingerprint}:{timezone.now().timestamp()}'.encode()).hexdigest()
+        attempt = PaymentAttempt.objects.create(
+            fingerprint=fingerprint,
+            user=request.user if request.user.is_authenticated else None,
+            session_key=request.session.session_key,
+            full_name=full_name,
+            phone=phone,
+            email=normalized_email or None,
+            city=delivery.city,
+            np_office=delivery.np_office,
+            np_settlement_ref=delivery_refs['np_settlement_ref'],
+            np_city_ref=delivery_refs['np_city_ref'],
+            np_warehouse_ref=delivery_refs['np_warehouse_ref'],
+            pay_type=pay_type,
+            cart_snapshot={
+                'cart': snapshot_items,
+                'custom_print_lead_ids': [lead.pk for lead in approved_leads],
+                'custom_print_leads': [
+                    {'lead_number': lead.lead_number, 'price': str(lead.final_price_value), 'qty': int(getattr(lead, 'quantity', 0) or 1)}
+                    for lead in approved_leads
+                ],
+            },
+            gross_amount=gross,
+            discount_amount=discount,
+            payable_amount=payable,
+            payment_amount=payment_amount,
+            promo_code=promo,
+        )
+
+    record_initiate_checkout(request, float(payable))
+    description = (
+        f'Передплата 200 грн для {attempt.reference}. Повна сума: {payable:.2f} грн.'
+        if pay_type == 'prepay_200'
+        else f'Оплата замовлення {attempt.reference} на суму {payable:.2f} грн.'
+    )
+    basket = [
+        {'name': item['title'], 'qty': item['qty'], 'sum': int(Decimal(item['line_total']) * 100), 'unit': 'шт'}
+        for item in snapshot_items[:10]
+    ]
+    for lead in approved_leads:
+        basket.append({'name': f'Кастомний виріб {lead.lead_number}', 'qty': int(getattr(lead, 'quantity', 0) or 1), 'sum': int(Decimal(str(lead.final_price_value)) * 100), 'unit': 'шт'})
+    if discount > 0:
+        basket.append({'name': f'Знижка по промокоду {promo.code}', 'qty': 1, 'sum': -int(discount * 100), 'unit': 'шт'})
+    if pay_type == 'prepay_200':
+        basket = [{'name': description, 'qty': 1, 'sum': int(payment_amount * 100), 'unit': 'шт'}]
+    payload = {
+        'amount': int(payment_amount * 100), 'ccy': 980,
+        'merchantPaymInfo': {'reference': attempt.reference, 'destination': description, 'basketOrder': basket},
+        'redirectUrl': request.build_absolute_uri('/payments/monobank/return/'),
+        'webHookUrl': request.build_absolute_uri('/payments/monobank/webhook/'),
+    }
+    try:
+        creation = _monobank_api_request('POST', '/api/merchant/invoice/create', json_payload=payload)
+        result = creation.get('result') or creation
+        invoice_id, invoice_url = result.get('invoiceId'), result.get('pageUrl')
+        if not invoice_id or not invoice_url:
+            raise MonobankAPIError('Monobank returned an invalid invoice')
+    except Exception as exc:
+        PaymentAttempt.objects.filter(pk=attempt.pk).update(
+            status=PaymentAttempt.Status.FAILED,
+            error_reason=str(exc)[:500],
+            last_status_at=timezone.now(),
+        )
+        return JsonResponse({'success': False, 'error': f'Помилка створення платежу: {exc}'}, status=502)
+
+    # Capture the same first-party attribution context used by paid orders:
+    # fbp/fbc, click ids, stable external id, client IP and user agent. The
+    # attempt is the durable source of truth until it becomes an Order.
+    try:
+        from storefront.utm_tracking import build_order_tracking_context
+        tracking = build_order_tracking_context(request, attempt)
+    except Exception:
+        tracking = {}
+    if isinstance(body.get('tracking'), dict):
+        tracking.update({k: v for k, v in body['tracking'].items() if k not in {'event_id', 'lead_event_id'} and v is not None})
+    tracking['external_id'] = tracking.get('external_id') or (
+        f'user:{request.user.pk}' if request.user.is_authenticated else f'session:{request.session.session_key}'
+    )
+    tracking['add_payment_event_id'] = attempt.add_payment_event_id
+    PaymentAttempt.objects.filter(pk=attempt.pk).update(
+        monobank_invoice_id=invoice_id,
+        invoice_url=invoice_url,
+        invoice_payload={'request': payload, 'create': creation},
+        tracking_payload=tracking,
+        invoice_expires_at=timezone.now() + timedelta(hours=24),
+        status=PaymentAttempt.Status.PROCESSING,
+        last_status_at=timezone.now(),
+    )
+    attempt.refresh_from_db()
+    request.session['monobank_invoice_id'] = invoice_id
+    request.session['monobank_pending_attempt_id'] = attempt.pk
+    request.session['monobank_attempt_id'] = attempt.pk
+    request.session['monobank_approved_custom_keys'] = approved_keys
+    request.session['monobank_pending_custom_keys'] = pending_keys
+    request.session.modified = True
+
+    try:
+        get_facebook_conversions_service().send_add_payment_info_event(
+            order=attempt, payment_amount=float(payment_amount), event_id=attempt.add_payment_event_id,
+            source_url=request.build_absolute_uri(request.path),
+        )
+    except Exception:
+        monobank_logger.warning('Failed to send AddPaymentInfo for attempt %s', attempt.pk, exc_info=True)
+    try:
+        from orders.telegram_notifications import TelegramNotifier
+        notifier = TelegramNotifier()
+        if not (attempt.notification_state or {}).get('started_sent'):
+            delivered = notifier.send_payment_attempt_notification(attempt)
+            if delivered:
+                state = dict(attempt.notification_state or {})
+                state['started_sent'] = True
+                state['started_sent_at'] = timezone.now().isoformat()
+                PaymentAttempt.objects.filter(pk=attempt.pk).update(notification_state=state)
+    except Exception:
+        monobank_logger.warning('Failed to send Telegram attempt notification %s', attempt.pk, exc_info=True)
+    return JsonResponse({
+        'success': True, 'reused': False, 'payment_complete': False,
+        'invoice_url': invoice_url, 'invoice_id': invoice_id,
+        'attempt_id': attempt.pk, 'attempt_ref': attempt.reference,
+        'add_payment_event_id': attempt.add_payment_event_id,
+    })
+
 @require_POST
 def monobank_create_invoice(request):
     """
@@ -510,6 +814,7 @@ def monobank_create_invoice(request):
             success=True: {invoice_url, invoice_id, order_id, order_ref}
             success=False: {error: 'message'}
     """
+    return _create_payment_attempt_invoice(request)
     monobank_logger.info(f'=== monobank_create_invoice called ===')
     monobank_logger.info(f'User authenticated: {request.user.is_authenticated}')
 
@@ -1496,6 +1801,8 @@ def _cleanup_after_success(request):
     request.session.pop('promo_code_data', None)
     request.session.pop('monobank_invoice_id', None)
     request.session.pop('monobank_pending_order_id', None)
+    request.session.pop('monobank_pending_attempt_id', None)
+    request.session.pop('monobank_attempt_id', None)
     request.session.pop('monobank_pending_custom_keys', None)
     request.session.modified = True
 
@@ -1611,11 +1918,132 @@ def _get_order_by_payment_refs(invoice_id=None, order_ref=None, order_id=None):
     return None
 
 
+def _get_payment_attempt_by_refs(invoice_id=None, attempt_ref=None, attempt_id=None):
+    qs = PaymentAttempt.objects.select_related('user', 'order')
+    if invoice_id:
+        attempt = qs.filter(monobank_invoice_id=invoice_id).order_by('-created').first()
+        if attempt:
+            return attempt
+    if attempt_ref:
+        attempt = qs.filter(reference=attempt_ref).first()
+        if attempt:
+            return attempt
+    if attempt_id:
+        try:
+            return qs.get(pk=attempt_id)
+        except (PaymentAttempt.DoesNotExist, ValueError, TypeError):
+            return None
+    return None
+
+
+def _resolve_attempt_invoice_status(attempt, invoice_id, fallback_status=None):
+    status_payload = None
+    status_value = None
+    if invoice_id:
+        try:
+            status_payload = _monobank_api_request(
+                'GET', '/api/merchant/invoice/status', params={'invoiceId': invoice_id}
+            )
+            if isinstance(status_payload.get('result'), dict):
+                status_payload = status_payload['result']
+            status_value = status_payload.get('status') or status_payload.get('statusCode')
+        except MonobankAPIError as exc:
+            monobank_logger.warning('Failed to pull attempt status for %s: %s', invoice_id, exc)
+    if status_value is None:
+        fallback = (fallback_status or '').lower()
+        return (fallback if fallback in MONOBANK_PENDING_STATUSES | MONOBANK_FAILURE_STATUSES else None), status_payload
+    status_lower = str(status_value).lower()
+    if status_lower in MONOBANK_SUCCESS_STATUSES:
+        expected = attempt.payment_amount
+        paid = None
+        if isinstance(status_payload, dict):
+            paid = status_payload.get('paidAmount')
+            if paid is None:
+                paid = status_payload.get('finalAmount')
+            if paid is None:
+                paid = status_payload.get('amount')
+        if paid is not None:
+            try:
+                if int(paid) < int(Decimal(str(expected)) * 100):
+                    return 'processing', status_payload
+            except (TypeError, ValueError, ArithmeticError):
+                return 'processing', status_payload
+    return status_lower, status_payload
+
+
+def _apply_payment_attempt_status(attempt, status, payload=None, source='webhook'):
+    status = (status or '').lower()
+    if status in MONOBANK_SUCCESS_STATUSES:
+        try:
+            order, created = materialize_payment_attempt(
+                attempt.pk, status=status, payload=payload, source=source,
+            )
+        except PaymentAttemptConversionError as exc:
+            PaymentAttempt.objects.filter(pk=attempt.pk).update(
+                status=PaymentAttempt.Status.FAILED,
+                error_reason=str(exc)[:500],
+                last_status_at=timezone.now(),
+            )
+            monobank_logger.error('Payment attempt %s conversion failed: %s', attempt.pk, exc)
+            return None, False
+        if created:
+            try:
+                mark_checkout_capture_converted(order.session_key)
+            except Exception:
+                monobank_logger.debug('Failed to mark checkout capture converted for attempt %s', attempt.pk, exc_info=True)
+            transaction.on_commit(
+                lambda order_pk=order.pk, pay_type=order.pay_type: _dispatch_post_payment_events(
+                    order_pk, 'unpaid', _normalize_order_pay_type(pay_type)
+                )
+            )
+        return order, created
+
+    terminal_status = {
+        'failure': PaymentAttempt.Status.FAILED,
+        'rejected': PaymentAttempt.Status.FAILED,
+        'canceled': PaymentAttempt.Status.CANCELLED,
+        'cancelled': PaymentAttempt.Status.CANCELLED,
+        'reversed': PaymentAttempt.Status.FAILED,
+        'expired': PaymentAttempt.Status.EXPIRED,
+    }.get(status)
+    if terminal_status:
+        PaymentAttempt.objects.filter(pk=attempt.pk).update(
+            status=terminal_status,
+            error_reason=(status or 'failed')[:500],
+            last_status_at=timezone.now(),
+        )
+    elif status in MONOBANK_PENDING_STATUSES:
+        PaymentAttempt.objects.filter(pk=attempt.pk).update(
+            status=PaymentAttempt.Status.PROCESSING,
+            last_status_at=timezone.now(),
+        )
+    return None, False
+
+
 def monobank_return(request):
     """
     Handle user return from Monobank payment page: fetch status, update order, redirect to thank you.
     """
     invoice_id = request.GET.get('invoiceId') or request.session.get('monobank_invoice_id')
+    attempt_ref = request.GET.get('reference') or request.GET.get('attemptRef')
+    attempt_id = request.GET.get('attemptId') or request.session.get('monobank_pending_attempt_id')
+    attempt = _get_payment_attempt_by_refs(invoice_id=invoice_id, attempt_ref=attempt_ref, attempt_id=attempt_id)
+    if attempt:
+        status_value, status_payload = _resolve_attempt_invoice_status(
+            attempt, invoice_id or attempt.monobank_invoice_id,
+        )
+        if status_value:
+            order, _ = _apply_payment_attempt_status(
+                attempt, status_value, payload=status_payload, source='return'
+            )
+            if order:
+                from storefront.views.checkout import remember_order_in_session
+                remember_order_in_session(request, order)
+                _cleanup_after_success(request)
+                return redirect('order_success', order_id=order.pk)
+        messages.info(request, 'Оплату ще не підтверджено. Спробуйте ще раз після завершення платежу.')
+        return redirect('cart')
+
     order_ref = request.GET.get('orderRef')
     order_id = request.GET.get('orderId') or request.session.get('monobank_pending_order_id')
 
@@ -1781,6 +2209,29 @@ def monobank_webhook(request):
     result = payload.get('result') or payload
     order_ref = result.get('orderRef') or result.get('order_ref')
     order_id = result.get('orderId') or result.get('order_id')
+    attempt_ref = (
+        result.get('reference')
+        or result.get('attemptRef')
+        or result.get('attempt_ref')
+        or payload.get('reference')
+    )
+
+    attempt = _get_payment_attempt_by_refs(invoice_id=invoice_id, attempt_ref=attempt_ref)
+    if attempt:
+        body_status = result.get('status') or payload.get('status')
+        verified_status, verified_payload = _resolve_attempt_invoice_status(
+            attempt,
+            invoice_id or attempt.monobank_invoice_id,
+            fallback_status=body_status,
+        )
+        if verified_status:
+            _apply_payment_attempt_status(
+                attempt,
+                verified_status,
+                payload=verified_payload or payload,
+                source='webhook',
+            )
+        return JsonResponse({'ok': True})
 
     order = _get_order_by_payment_refs(invoice_id=invoice_id, order_ref=order_ref, order_id=order_id)
     if not order:

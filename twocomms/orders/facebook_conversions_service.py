@@ -19,6 +19,8 @@ import logging
 import hashlib
 import time
 import re
+import ipaddress
+from decimal import Decimal
 from typing import Optional, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -48,7 +50,7 @@ class FacebookConversionsService:
     DEFAULT_PREPAYMENT_VALUE = 200.0
     PHONE_MIN_LENGTH = 10
     PHONE_MAX_LENGTH = 15
-    CITY_SANITIZE_RE = re.compile(r'[^a-z0-9]')
+    CITY_SANITIZE_RE = re.compile(r'[^\w]', re.UNICODE)
 
     def __init__(self):
         """Инициализация сервиса с настройками из ENV"""
@@ -325,7 +327,7 @@ class FacebookConversionsService:
 
         # Email (хешированный, только валидный)
         email = None
-        if order.user and order.user.email:
+        if getattr(order, 'user', None) and order.user.email:
             email = order.user.email
         elif getattr(order, 'email', None):
             email = order.email
@@ -335,7 +337,7 @@ class FacebookConversionsService:
             else:
                 logger.warning(
                     "⚠️ Invalid email for order %s skipped from Advanced Matching: %s",
-                    order.order_number,
+                    getattr(order, 'order_number', getattr(order, 'reference', order.pk)),
                     email,
                 )
 
@@ -347,7 +349,7 @@ class FacebookConversionsService:
             else:
                 logger.warning(
                     "⚠️ Invalid phone for order %s skipped from Advanced Matching: %s",
-                    order.order_number,
+                    getattr(order, 'order_number', getattr(order, 'reference', order.pk)),
                     order.phone,
                 )
 
@@ -369,8 +371,11 @@ class FacebookConversionsService:
         user_data.country_code = self._hash_data('ua')
 
         tracking_data = {}
-        if order.payment_payload and isinstance(order.payment_payload, dict):
-            tracking_data = order.payment_payload.get('tracking') or {}
+        raw_tracking = getattr(order, 'payment_payload', None)
+        if not raw_tracking:
+            raw_tracking = getattr(order, 'tracking_payload', None)
+        if raw_tracking and isinstance(raw_tracking, dict):
+            tracking_data = raw_tracking.get('tracking') or raw_tracking
 
         fbp_value = tracking_data.get('fbp')
         if fbp_value:
@@ -383,20 +388,20 @@ class FacebookConversionsService:
         external_source = tracking_data.get('external_id')
         if not external_source:
             # Fallback: генерируем external_id если не передан из checkout
-            if order.user_id:
+            if getattr(order, 'user_id', None):
                 external_source = f"user:{order.user_id}"
-            elif order.session_key:
+            elif getattr(order, 'session_key', None):
                 external_source = f"session:{order.session_key}"
-            elif order.order_number:
+            elif getattr(order, 'order_number', None):
                 external_source = f"order:{order.order_number}"
 
             if external_source:
                 logger.info(
-                    f"📊 External ID generated as fallback for order {order.order_number}: {external_source}"
+                    f"📊 External ID generated as fallback for order {getattr(order, 'order_number', getattr(order, 'reference', order.pk))}: {external_source}"
                 )
         else:
             logger.debug(
-                f"📊 External ID from tracking_data for order {order.order_number}: {external_source}"
+                f"📊 External ID from tracking_data for order {getattr(order, 'order_number', getattr(order, 'reference', order.pk))}: {external_source}"
             )
 
         if external_source:
@@ -404,21 +409,26 @@ class FacebookConversionsService:
             if hashed_external:
                 user_data.external_id = hashed_external
                 logger.debug(
-                    f"📊 External ID hashed for order {order.order_number}: {hashed_external[:16]}..."
+                    f"📊 External ID hashed for order {getattr(order, 'order_number', getattr(order, 'reference', order.pk))}: {hashed_external[:16]}..."
                 )
         else:
             logger.warning(
-                f"⚠️ External ID not available for order {order.order_number} - this may reduce match quality!"
+            f"⚠️ External ID not available for order {getattr(order, 'order_number', getattr(order, 'reference', order.pk))} - this may reduce match quality!"
             )
 
         # Client IP address (если есть в payload)
-        if order.payment_payload and isinstance(order.payment_payload, dict):
-            client_ip = order.payment_payload.get('client_ip_address')
+        if raw_tracking and isinstance(raw_tracking, dict):
+            client_ip = raw_tracking.get('client_ip_address')
             if client_ip:
-                user_data.client_ip_address = client_ip
+                try:
+                    parsed_ip = ipaddress.ip_address(str(client_ip).strip())
+                    if parsed_ip.is_global:
+                        user_data.client_ip_address = str(parsed_ip)
+                except ValueError:
+                    logger.debug("Ignoring invalid client IP for %s", getattr(order, 'order_number', getattr(order, 'reference', order.pk)))
 
             # User Agent
-            user_agent = order.payment_payload.get('client_user_agent')
+            user_agent = raw_tracking.get('client_user_agent')
             if user_agent:
                 user_data.client_user_agent = user_agent
 
@@ -441,15 +451,24 @@ class FacebookConversionsService:
         custom_data = CustomData()
 
         # Основные данные
+        payable = getattr(order, 'final_total', None)
+        if payable is None:
+            payable = getattr(order, 'payable_amount', None)
+        if payable is None:
+            payable = Decimal(str(getattr(order, 'total_sum', 0) or 0)) - Decimal(str(getattr(order, 'discount_amount', 0) or 0))
         custom_data.value = self._ensure_positive_value(
-            order.total_sum,
+            payable,
             order,
             'Purchase value',
         )
         custom_data.currency = 'UAH'
 
         # Получаем товары заказа
-        order_items = order.items.select_related('product', 'color_variant').all()
+        order_items = []
+        try:
+            order_items = list(order.items.select_related('product', 'color_variant').all())
+        except Exception:
+            order_items = []
 
         if order_items:
             # Content IDs (offer_ids в формате фида)
@@ -504,8 +523,17 @@ class FacebookConversionsService:
                 contents.append(content)
             custom_data.contents = contents
 
-        # Order ID
-        custom_data.order_id = order.order_number
+        else:
+            snapshot = getattr(order, 'cart_snapshot', {}) or {}
+            snapshot_items = snapshot.get('cart') if isinstance(snapshot, dict) else []
+            if snapshot_items:
+                custom_data.content_ids = [str(item.get('product_id')) for item in snapshot_items]
+                custom_data.content_name = ', '.join(str(item.get('title') or '') for item in snapshot_items[:3])
+                custom_data.content_type = 'product'
+                custom_data.num_items = sum(int(item.get('qty') or 1) for item in snapshot_items)
+
+        # Order/attempt reference
+        custom_data.order_id = getattr(order, 'order_number', None) or getattr(order, 'reference', None)
 
         return custom_data
 
@@ -542,7 +570,11 @@ class FacebookConversionsService:
             custom_data = self._prepare_custom_data(order)
 
             # Используем сумму платежа (предоплата или полная)
-            value_to_send = payment_amount if payment_amount is not None else order.total_sum
+            value_to_send = payment_amount if payment_amount is not None else (
+                getattr(order, 'payment_amount', None)
+                or getattr(order, 'total_sum', None)
+                or getattr(order, 'payable_amount', None)
+            )
             custom_data.value = self._ensure_positive_value(
                 value_to_send,
                 order,
@@ -583,16 +615,22 @@ class FacebookConversionsService:
 
             # Сохраняем маркер отправки (не критично для основного потока)
             try:
-                if not order.payment_payload:
-                    order.payment_payload = {}
-                order.payment_payload['fb_capi_add_payment_info'] = {
+                payload = getattr(order, 'payment_payload', None)
+                if payload is None:
+                    payload = getattr(order, 'event_state', {}) or {}
+                payload['fb_capi_add_payment_info'] = {
                     'event_name': 'AddPaymentInfo',
                     'event_id': resolved_event_id,
                     'sent_at': int(time.time()),
                     'value': custom_data.value,
                     'currency': 'UAH'
                 }
-                order.save(update_fields=['payment_payload'])
+                if hasattr(order, 'payment_payload') and order.__class__.__name__ == 'Order':
+                    order.payment_payload = payload
+                    order.save(update_fields=['payment_payload'])
+                elif hasattr(order, 'event_state'):
+                    order.event_state = payload
+                    order.save(update_fields=['event_state'])
             except Exception as payload_err:
                 logger.warning(
                     "⚠️ Failed to persist AddPaymentInfo payload for order %s: %s",
@@ -617,16 +655,20 @@ class FacebookConversionsService:
         payment_payload; для COD-выкупа (NP received) paid = total_sum.
         Возвращает float или None, если определить нельзя.
         """
-        payload = order.payment_payload or {}
+        payload = getattr(order, 'payment_payload', None) or getattr(order, 'tracking_payload', None) or {}
         for key in ('paidAmount', 'paid_amount'):
             raw = payload.get(key)
             if raw:
                 try:
-                    return round(float(raw) / 100.0, 2)  # копейки → грн
+                    # Monobank status payload uses minor units; our
+                    # materialized Order snapshot stores paid_amount in UAH.
+                    if key == 'paidAmount':
+                        return round(float(raw) / 100.0, 2)
+                    return round(float(raw), 2)
                 except (TypeError, ValueError):
                     pass
         # COD: посылка получена → оплачена полностью
-        if order.payment_status == 'paid':
+        if getattr(order, 'payment_status', None) == 'paid':
             try:
                 return float(order.total_sum or 0) or None
             except (TypeError, ValueError):
@@ -663,7 +705,7 @@ class FacebookConversionsService:
             # НЕ используем event_id из tracking_data, так как он не сохраняется при создании заказа
             event_id = order.get_purchase_event_id()
             logger.info(
-                f"📊 Generated Purchase event_id for order {order.order_number}: {event_id}"
+                f"📊 Generated Purchase event_id for order {getattr(order, 'order_number', getattr(order, 'reference', order.pk))}: {event_id}"
             )
 
             # Event Time (timestamp заказа с ограничением по возрасту)

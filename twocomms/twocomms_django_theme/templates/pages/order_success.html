@@ -1845,7 +1845,7 @@ document.addEventListener('DOMContentLoaded', function() {
 <div id="purchase-payload"
      data-order-id="{{ order.id }}"
      {% if order %}data-order-number="{{ order.order_number }}"{% else %}data-order-number="TEST-PREVIEW"{% endif %}
-     {% if order %}data-value="{{ order.total_sum|floatformat:'2u' }}"{% else %}data-value="0"{% endif %}
+     {% if order %}data-value="{{ order.final_total|floatformat:'2u' }}"{% else %}data-value="0"{% endif %}
      {% if order %}data-prepaid-value="{{ order.get_prepayment_amount|floatformat:'2u' }}"{% else %}data-prepaid-value="0"{% endif %}
      data-currency="UAH"
      {% if order %}data-payment-status="{{ order.payment_status }}"{% else %}data-payment-status="paid"{% endif %}
@@ -1884,15 +1884,12 @@ document.addEventListener('DOMContentLoaded', function() {
     var orderStatus = el.dataset.orderStatus || 'new';
     var orderId = el.dataset.orderId;
     
-    // Новая логика: предоплата и полная оплата считаются покупкой (purchase) в GTM/Meta
-    // Legacy partial оставляем как purchase для совместимости
-    var shouldSendPurchase = (
-      paymentStatus === 'paid' ||
-      paymentStatus === 'prepaid' ||
-      paymentStatus === 'partial'
-    );
+    // Любая подтверждённая оплата, включая 200 грн предоплаты, считается
+    // одной Purchase-конверсией. Lead для этой же транзакции не отправляем.
+    var shouldSendPurchase = paymentStatus === 'paid' || paymentStatus === 'prepaid' || paymentStatus === 'partial';
+    var shouldSendLead = false;
     
-    if (!shouldSendPurchase) {
+    if (!shouldSendPurchase && !shouldSendLead) {
       console.log('No pixel events to send: payment_status=' + paymentStatus + ', order_status=' + orderStatus);
       return;
     }
@@ -1904,7 +1901,6 @@ document.addEventListener('DOMContentLoaded', function() {
     if (serverPurchaseSent) {
       sessionStorage.setItem(purchaseStorageKey, 'true');
     }
-    
     var purchaseAlreadySent = serverPurchaseSent || sessionStorage.getItem(purchaseStorageKey);
     
     if (purchaseAlreadySent) {
@@ -2093,7 +2089,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
       }
       if (cityValue) {
-        var normalizedCity = String(cityValue).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+          var normalizedCity = String(cityValue).trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
         if (normalizedCity) {
           var hashedCity = hashFn(normalizedCity);
           if (hashedCity) {

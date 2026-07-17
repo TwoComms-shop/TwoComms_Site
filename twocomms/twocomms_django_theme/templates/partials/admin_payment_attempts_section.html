@@ -1,0 +1,53 @@
+<style>
+.pat-wrap{--p-bg:#0c131f;--p-surface:#111a28;--p-line:rgba(148,163,184,.16);--p-text:#f1f5f9;--p-muted:#94a3b8;--p-blue:#60a5fa;--p-amber:#fbbf24;--p-red:#fb7185;--p-green:#4ade80;color:var(--p-text);display:flex;flex-direction:column;gap:18px}
+.pat-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.pat-head h1{margin:0;font-size:1.45rem;font-weight:850}.pat-head p{margin:5px 0 0;color:var(--p-muted);font-size:.86rem}.pat-head a{display:inline-flex;align-items:center;gap:7px;color:var(--p-text);border:1px solid var(--p-line);background:rgba(15,23,42,.72);padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;font-size:.82rem}.pat-head a:hover{border-color:var(--p-blue);color:#fff}
+.pat-toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:12px;border:1px solid var(--p-line);background:rgba(17,26,40,.76);border-radius:12px}.pat-toolbar a,.pat-toolbar button{border:1px solid var(--p-line);background:rgba(8,14,23,.7);color:var(--p-muted);padding:7px 10px;border-radius:8px;text-decoration:none;font-size:.78rem;font-weight:700}.pat-toolbar a.is-active{color:#fff;border-color:var(--p-blue);background:rgba(59,130,246,.18)}.pat-toolbar input{min-width:210px;flex:1;padding:8px 10px;border:1px solid var(--p-line);border-radius:8px;background:rgba(8,14,23,.8);color:#fff}
+.pat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px}.pat-card{border:1px solid var(--p-line);border-left:3px solid var(--p-blue);background:linear-gradient(180deg,rgba(17,26,40,.92),rgba(10,16,26,.92));border-radius:12px;padding:14px;box-shadow:0 10px 28px rgba(2,8,23,.2)}.pat-card[data-status="failed"],.pat-card[data-status="expired"],.pat-card[data-status="cancelled"]{border-left-color:var(--p-red)}.pat-card[data-status="paid"],.pat-card[data-status="prepaid"],.pat-card[data-status="converted"]{border-left-color:var(--p-green)}.pat-top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.pat-ref{font:800 .82rem ui-monospace,SFMono-Regular,Menlo,monospace}.pat-status{font-size:.7rem;font-weight:800;padding:4px 8px;border-radius:999px;background:rgba(96,165,250,.14);color:var(--p-blue)}.pat-card[data-status="failed"] .pat-status,.pat-card[data-status="expired"] .pat-status,.pat-card[data-status="cancelled"] .pat-status{color:var(--p-red);background:rgba(251,113,133,.12)}.pat-card[data-status="paid"] .pat-status,.pat-card[data-status="prepaid"] .pat-status,.pat-card[data-status="converted"] .pat-status{color:var(--p-green);background:rgba(74,222,128,.12)}.pat-person{margin:10px 0 0;font-weight:750}.pat-muted{color:var(--p-muted);font-size:.78rem}.pat-amounts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:13px 0}.pat-amount{padding:8px;border:1px solid var(--p-line);border-radius:8px;background:rgba(8,14,23,.5)}.pat-amount span{display:block;color:var(--p-muted);font-size:.68rem}.pat-amount strong{display:block;margin-top:2px;font-size:.95rem}.pat-meta{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;padding-top:9px;border-top:1px solid var(--p-line);font-size:.74rem;color:var(--p-muted)}.pat-items{margin:10px 0 0;padding-left:17px;color:#dbeafe;font-size:.78rem}.pat-warning{color:var(--p-amber)}.pat-empty{padding:34px 16px;border:1px dashed var(--p-line);border-radius:12px;color:var(--p-muted);text-align:center}.pat-page{display:flex;justify-content:center;gap:12px;align-items:center;color:var(--p-muted);font-size:.8rem}.pat-page a{color:var(--p-text);text-decoration:none}
+@media(max-width:640px){.pat-amounts{grid-template-columns:1fr 1fr}.pat-toolbar input{min-width:100%}}
+</style>
+
+<section class="pat-wrap" aria-labelledby="payment-attempts-title">
+  <div class="pat-head">
+    <div><h1 id="payment-attempts-title">Очікування оплати</h1><p>{{ payment_attempt_active_count|default:0 }} активних спроб · окремо від замовлень</p></div>
+    <a href="?section=orders"><span aria-hidden="true">←</span> До замовлень</a>
+  </div>
+  <form class="pat-toolbar" method="get">
+    <input type="hidden" name="section" value="orders"><input type="hidden" name="view" value="payment_attempts">
+    <input name="attempt_q" value="{{ payment_attempt_query }}" placeholder="Пошук: клієнт, телефон, invoice, ref">
+    <button type="submit">Знайти</button>
+    <a href="?section=orders&view=payment_attempts&attempt_status=active" class="{% if payment_attempt_status_filter == 'active' %}is-active{% endif %}">Активні {{ payment_attempt_active_count|default:0 }}</a>
+    <a href="?section=orders&view=payment_attempts&attempt_status=failed" class="{% if payment_attempt_status_filter == 'failed' %}is-active{% endif %}">Помилки {{ payment_attempt_status_counts.failed|default:0 }}</a>
+    <a href="?section=orders&view=payment_attempts&attempt_status=expired" class="{% if payment_attempt_status_filter == 'expired' %}is-active{% endif %}">Протерміновані {{ payment_attempt_status_counts.expired|default:0 }}</a>
+    <a href="?section=orders&view=payment_attempts&attempt_status=all" class="{% if payment_attempt_status_filter == 'all' %}is-active{% endif %}">Всі</a>
+  </form>
+  {% if not payment_attempts_empty %}
+    <div class="pat-grid">
+      {% for attempt in payment_attempts %}
+        <article class="pat-card" data-status="{{ attempt.status }}">
+          <div class="pat-top"><div class="pat-ref">{{ attempt.reference }}</div><span class="pat-status">{{ attempt.status_label }}</span></div>
+          <div class="pat-person">{{ attempt.full_name }} <span class="pat-muted">· {{ attempt.phone }}</span></div>
+          <div class="pat-muted">{{ attempt.city }} · {{ attempt.np_office }} · {{ attempt.created|date:'d.m.Y H:i:s' }} · в чекауті {{ attempt.age_seconds }} с</div>
+          <div class="pat-amounts"><div class="pat-amount"><span>Товари</span><strong>{{ attempt.gross_amount }} грн</strong></div><div class="pat-amount"><span>Знижка</span><strong>-{{ attempt.discount_amount }} грн</strong></div><div class="pat-amount"><span>До сплати</span><strong>{{ attempt.payable_amount }} грн</strong></div></div>
+          {% if attempt.snapshot_items %}<ul class="pat-items">{% for item in attempt.snapshot_items|slice:':3' %}<li>{{ item.title }} × {{ item.qty }} · {{ item.line_total }} грн</li>{% endfor %}</ul>{% endif %}
+          <div class="pat-meta"><span>{{ attempt.pay_type }}</span><span>{% if attempt.monobank_invoice_id %}Invoice {{ attempt.monobank_invoice_id }}{% else %}Invoice ще не створено{% endif %}</span>{% if attempt.expiry_seconds is not None %}<span class="pat-expiry {% if attempt.expiry_seconds < 0 %}pat-warning{% endif %}" data-expiry-seconds="{{ attempt.expiry_seconds }}">{% if attempt.expiry_seconds < 0 %}прострочено{% else %}ще {{ attempt.expiry_seconds }} с{% endif %}</span>{% endif %}</div>
+          {% if attempt.order_id %}<div class="pat-meta"><span>Перетворено в замовлення</span><a href="?section=orders&edit_order={{ attempt.order_id }}">#{{ attempt.order.order_number }}</a></div>{% endif %}
+        </article>
+      {% endfor %}
+    </div>
+    <div class="pat-page">{% if payment_attempts.has_previous %}<a href="?section=orders&view=payment_attempts&attempt_status={{ payment_attempt_status_filter }}&attempt_q={{ payment_attempt_query|urlencode }}&page={{ payment_attempts.previous_page_number }}">← Назад</a>{% endif %}<span>Сторінка {{ payment_attempts.number }} з {{ payment_attempts.paginator.num_pages }}</span>{% if payment_attempts.has_next %}<a href="?section=orders&view=payment_attempts&attempt_status={{ payment_attempt_status_filter }}&attempt_q={{ payment_attempt_query|urlencode }}&page={{ payment_attempts.next_page_number }}">Далі →</a>{% endif %}</div>
+  {% else %}<div class="pat-empty">За цим фільтром спроб оплат не знайдено.</div>{% endif %}
+</section>
+<script>
+(function () {
+  var nodes = document.querySelectorAll('[data-expiry-seconds]');
+  if (!nodes.length) return;
+  window.setInterval(function () {
+    nodes.forEach(function (node) {
+      var seconds = Number(node.dataset.expirySeconds || 0) - 1;
+      node.dataset.expirySeconds = String(seconds);
+      node.classList.toggle('pat-warning', seconds < 0);
+      node.textContent = seconds < 0 ? 'прострочено' : 'ще ' + seconds + ' с';
+    });
+  }, 1000);
+}());
+</script>

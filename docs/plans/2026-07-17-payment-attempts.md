@@ -65,7 +65,7 @@
 2. Lock the attempt; return existing linked order for duplicate success callbacks.
 3. On success, create one `Order` and `OrderItem` set from the frozen snapshot, link approved custom leads, apply the frozen discount, and record promo usage once.
 4. Mark attempt converted/paid or prepaid and save actual paid amount/history.
-5. Schedule one post-commit Telegram payment notification and one `Purchase` or `Lead` event according to payment method.
+5. Schedule one post-commit Telegram payment notification and one `Purchase` event for either full payment or prepayment.
 6. Persist and reuse attempt/order event ids for browser/CAPI deduplication; use discounted payable value and separate `paid_value`.
 7. Keep failed, cancelled, expired, unknown, and mismatched attempts out of orders.
 

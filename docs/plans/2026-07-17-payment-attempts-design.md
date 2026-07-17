@@ -33,9 +33,11 @@ checkout.
 - Browser `InitiateCheckout` is emitted when checkout starts.
 - Browser/CAPI `AddPaymentInfo` is emitted once when an invoice is created;
   both use the attempt's stable event id.
-- `Purchase` is emitted only for `online_full` after verified full payment.
-- `Lead` is emitted only for verified `prepay_200`, with the paid prepayment
-  value; it is never emitted for a merely opened or failed invoice.
+- `Purchase` is emitted for every verified money movement: full payment and
+  `prepay_200`. The final discounted order value is sent as `value`, while
+  the amount actually paid is retained as `paid_value`.
+- `Lead` is not emitted for a payment attempt, so a prepayment cannot be
+  counted as a second conversion.
 - Browser and CAPI use the same `eventID/event_id`; final payable value after
   discount is used everywhere, while `paid_value` records the actual payment.
 - Telegram has one attempt-start notification and one converted-order payment
