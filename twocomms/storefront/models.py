@@ -1343,6 +1343,7 @@ class MarketplaceFeed(models.Model):
         null=True,
         blank=True,
         on_delete=models.PROTECT,
+        db_constraint=False,
         related_name="children",
         verbose_name="Батьківський профіль",
     )
@@ -1423,6 +1424,7 @@ class MarketplaceFeedProductRule(models.Model):
     feed = models.ForeignKey(
         MarketplaceFeed,
         on_delete=models.CASCADE,
+        db_constraint=False,
         related_name="product_rules",
         verbose_name="Фід",
     )
