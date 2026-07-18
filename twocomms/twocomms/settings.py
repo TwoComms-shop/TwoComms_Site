@@ -1259,7 +1259,7 @@ _CSP_DEFAULT = (
     "https://fonts.googleapis.com https://fonts.gstatic.com "
     "https://cdnjs.cloudflare.com https://cdn.jsdelivr.net "
     "https://*.run.app https://*.datah04.com "
-    "https://*.tiktokw.us; "
+    "https://*.tiktokw.us https://*.google.com.ua; "
     # Frames/iframes: GTM preview, Facebook, TikTok Pixel, Server-Side Tagging, YouTube (product video)
     "frame-src 'self' https://www.googletagmanager.com https://googletagmanager.com "
     "https://td.doubleclick.net https://bid.g.doubleclick.net "

@@ -23,6 +23,13 @@ class DeploymentChecksTests(SimpleTestCase):
         headers = add_cache_headers({}, "/assets/app.js", "/assets/app.js")
         self.assertEqual(headers["X-Frame-Options"], "DENY")
 
+    def test_google_ads_regional_conversion_endpoint_is_allowed(self):
+        connect_sources = settings.CONTENT_SECURITY_POLICY.split(
+            "connect-src ", 1
+        )[1].split(";", 1)[0]
+
+        self.assertIn("https://*.google.com.ua", connect_sources)
+
 
 class ProductApiRoutingTests(TestCase):
     @classmethod
