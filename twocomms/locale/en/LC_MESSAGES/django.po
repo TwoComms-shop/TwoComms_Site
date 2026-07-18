@@ -10246,3 +10246,129 @@ msgstr "Placement"
 
 msgid "Контакт і перевірка"
 msgstr "Contact and review"
+
+msgid "Закрити конструктор"
+msgstr "Close the studio"
+
+msgid "Обговорити в Telegram"
+msgstr "Discuss in Telegram"
+
+msgid "Менеджер підкаже формат, тканину та ціну"
+msgstr "A manager can advise on format, fabric and price"
+
+msgid "Одним повідомленням — що має вийти"
+msgstr "One message about what you want to make"
+
+msgid "Класичний"
+msgstr "Classic"
+
+msgid "Класична"
+msgstr "Classic"
+
+msgid "Оверсайз"
+msgstr "Oversize"
+
+msgid "Базова посадка для щоденного мерчу."
+msgstr "A regular fit for everyday merch."
+
+msgid "Більш масивний силует з відчуттям преміум-речі."
+msgstr "A roomier silhouette with a premium feel."
+
+msgid "Рівна класична посадка для базового принта."
+msgstr "A clean classic fit for a core print."
+
+msgid "Більш вільний силует без додаткової анкети."
+msgstr "A relaxed silhouette without extra questions."
+
+msgid "Класика"
+msgstr "Classic"
+
+msgid "Преміум"
+msgstr "Premium"
+
+msgid "Базова тканина без пеньє-обробки."
+msgstr "Base fabric without penye finishing."
+
+msgid "Пеньє-обробка та щільніші шви."
+msgstr "Penye finishing and denser seams."
+
+msgid "Преміальна тканина з пеньє-обробкою."
+msgstr "Premium fabric with penye finishing."
+
+msgid "Базовий кулір без пеньє-обробки."
+msgstr "Base kulir without penye finishing."
+
+msgid "Турецький кулір, пеньє, покращені шви та ребана."
+msgstr "Turkish kulir, penye finishing, improved seams and ribana."
+
+msgid "Що таке преміум для худі?"
+msgstr "What makes the hoodie premium?"
+
+msgid "Термо"
+msgstr "Thermo"
+
+msgid "Змінює відтінок від тепла."
+msgstr "Changes shade with heat."
+
+msgid "Футболка з WOW-ефектом❤️"
+msgstr "A WOW-effect T-shirt❤️"
+
+msgid "Зелений (Термо)"
+msgstr "Green (Thermo)"
+
+msgid "Рожевий (Термо)"
+msgstr "Pink (Thermo)"
+
+msgid "Графіт"
+msgstr "Graphite"
+
+msgid "Пісочний"
+msgstr "Sand"
+
+msgid "Світлий"
+msgstr "Light"
+
+msgid "Білий"
+msgstr "White"
+
+msgid "Койот"
+msgstr "Coyote"
+
+msgid "Рожевий"
+msgstr "Pink"
+
+msgid "Стандарт"
+msgstr "Standard"
+
+msgid "Люверси зі шнурками"
+msgstr "Eyelets with laces"
+
+msgid "Преміум-апгрейд: металеві люверси й унікальні шнурки замість стандартних."
+msgstr "Premium upgrade: metal eyelets and unique laces instead of the standard finish."
+
+msgid "З флісом"
+msgstr "Fleece"
+
+msgid "Без флісу"
+msgstr "No fleece"
+
+msgid "Щільна горловина (Рібана)"
+msgstr "Structured ribbed neck"
+
+msgid "Кіперна стрічка"
+msgstr "Twill neck tape"
+
+msgid "Включено"
+msgstr "Included"
+
+msgid "Еластична горловина, що довго не втрачає форму."
+msgstr "An elastic neck that keeps its shape for longer."
+
+msgid "Укріплення задньої частини шиї, підвищений комфорт."
+msgstr "Reinforced back neck for extra comfort."
+
+msgid "Ваш колір"
+msgstr "Your colour"
+
+msgid "Оливковий"
+msgstr "Olive"

@@ -16,7 +16,7 @@
       root.classList.toggle("is-studio-active", active);
       document.body.classList.toggle("cp-studio-active", active);
       if (appbar) appbar.hidden = !active;
-      if (!active && mobileBar) mobileBar.hidden = true;
+      if (mobileBar) mobileBar.hidden = !active;
     }
 
     function update(index, total = 8) {

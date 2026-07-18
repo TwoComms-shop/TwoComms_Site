@@ -1897,7 +1897,7 @@ body.cp-studio-active { overflow: visible !important; }
 .cp-zone-card-title { font-size: .86rem; }
 .cp-zone-card-hint { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .cp-zone-card-badge { color: var(--cp-gold-soft); font-size: .62rem; }
-.cp-zone-card-check { opacity: .38; }
+.cp-zone-card-check { opacity: 0; }
 .cp-zone-card.is-active .cp-zone-card-check { opacity: 1; }
 
 .cp-front-size-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1943,7 +1943,89 @@ body.cp-studio-active { overflow: visible !important; }
 .cp-manager-summary { margin: .1rem 0 .35rem; padding: .75rem; white-space: pre-line; border: 1px solid rgba(232,191,108,.2); border-radius: 12px; background: rgba(232,191,108,.06); color: rgba(247,245,239,.72); font-size: .73rem; line-height: 1.55; }
 .cp-studio-boundary { height: 1px; width: 100%; pointer-events: none; }
 
+/* Second audit pass: direct support handoff, clearer material hierarchy and
+   compact artwork controls. */
+.cp-manager-quick-link {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: .75rem;
+  width: 100%;
+  min-width: 0;
+  min-height: 64px;
+  margin-top: .15rem;
+  padding: .72rem .85rem;
+  border: 1px solid rgba(42,171,238,.3);
+  border-radius: 16px;
+  background: linear-gradient(120deg, rgba(42,171,238,.13), rgba(111,75,168,.08));
+  color: #e9f8ff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 180ms var(--cp-ease), border-color 180ms var(--cp-ease), background 180ms var(--cp-ease);
+}
+.cp-manager-quick-link:hover { transform: translateY(-2px); border-color: rgba(42,171,238,.58); background: linear-gradient(120deg, rgba(42,171,238,.19), rgba(111,75,168,.12)); }
+.cp-manager-quick-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: #2aabee; color: #fff; box-shadow: 0 8px 18px rgba(42,171,238,.22); }
+.cp-manager-quick-icon svg { width: 21px; height: 21px; }
+.cp-manager-quick-link strong { display: block; font-size: .82rem; }
+.cp-manager-quick-link small { display: block; margin-top: .12rem; color: rgba(233,248,255,.62); font-size: .67rem; line-height: 1.3; }
+.cp-manager-quick-arrow { width: 18px; height: 18px; color: #8edcff; }
+
+.cp-fabric-chip-title { align-items: center; }
+.cp-fabric-chip-hint { display: -webkit-box; overflow: hidden; color: rgba(247,245,239,.5); font-size: .61rem; line-height: 1.3; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.cp-thermo-badge { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .18rem; padding: .16rem .3rem; border: 1px solid rgba(255,143,76,.5); border-radius: 999px; background: rgba(255,92,84,.13); color: #ffb16a; font-size: .54rem; font-weight: 900; letter-spacing: .06em; line-height: 1; text-transform: uppercase; box-shadow: 0 0 0 2px rgba(255,92,84,.06); }
+.cp-thermo-badge svg { width: 12px; height: 12px; }
+.cp-mini-chip--fabric[data-choice-value="thermo"],
+.cp-fabric-option:has(.cp-mini-chip--fabric[data-choice-value="thermo"]) { border-color: rgba(255,126,79,.36); }
+.cp-mini-chip--fabric[data-choice-value="thermo"].is-active { border-color: rgba(255,159,91,.86); background: linear-gradient(145deg, rgba(255,103,87,.19), rgba(255,173,78,.1)); box-shadow: 0 0 0 1px rgba(255,144,83,.38), 0 14px 30px rgba(255,95,72,.14); }
+
+.cp-artwork-services { align-items: stretch; }
+.cp-artwork-service { grid-template-columns: 38px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; column-gap: .72rem; min-height: 112px; }
+.cp-artwork-service-icon { display: grid; width: 38px; height: 38px; grid-row: 1 / -1; place-items: center; border: 1px solid rgba(232,191,108,.24); border-radius: 12px; background: rgba(232,191,108,.09); color: var(--cp-gold-soft); }
+.cp-artwork-service-icon svg { width: 21px; height: 21px; }
+.cp-artwork-service-head { min-width: 0; }
+.cp-artwork-service-head strong { font-size: .84rem; }
+.cp-artwork-service-badge { white-space: nowrap; }
+.cp-artwork-service-hint { grid-column: 2; }
+.cp-field-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.cp-field-label-row small { color: rgba(247,245,239,.46); font-size: .66rem; font-weight: 500; }
+
+.cp-dropzone-grid { position: relative; }
+.cp-dropzone { position: relative; min-height: 126px; align-content: center; overflow: hidden; }
+.cp-dropzone input[type="file"] { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; cursor: pointer; opacity: 0; }
+.cp-dropzone::before { position: absolute; top: 1rem; right: 1rem; display: grid; width: 32px; height: 32px; place-items: center; content: "↑"; border: 1px solid rgba(246,220,164,.28); border-radius: 10px; color: var(--cp-gold-soft); font-size: 1.1rem; font-weight: 800; pointer-events: none; }
+.cp-dropzone-head { position: relative; z-index: 1; display: grid; gap: .18rem; padding-right: 2.5rem; }
+.cp-dropzone-head small { color: var(--cp-gold-soft); font-size: .61rem; letter-spacing: .1em; text-transform: uppercase; }
+.cp-dropzone-head strong { font-size: .84rem; }
+.cp-dropzone-body { position: relative; z-index: 1; display: grid; gap: .25rem; }
+.cp-dropzone-cta { color: var(--cp-gold-soft); font-size: .76rem; font-weight: 800; }
+.cp-dropzone-meta { color: rgba(247,245,239,.5); font-size: .65rem; line-height: 1.35; }
+.cp-dropzone-status-badge { position: relative; z-index: 3; display: inline-flex; align-items: center; gap: .35rem; width: fit-content; padding: .18rem .42rem; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(255,255,255,.04); color: rgba(247,245,239,.62); font-size: .59rem; font-weight: 800; pointer-events: none; }
+.cp-dropzone-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cp-gold); }
+.cp-dropzone[data-status="ok"] .cp-dropzone-status-badge { border-color: rgba(155,210,149,.35); color: var(--cp-success); }
+.cp-dropzone[data-status="ok"] .cp-dropzone-status-dot { background: var(--cp-success); }
+.cp-dropzone[data-status="missing"] .cp-dropzone-status-badge { border-color: rgba(255,149,140,.3); color: #ffb0a6; }
+.cp-dropzone[data-status="missing"] .cp-dropzone-status-dot { background: var(--cp-danger); }
+.cp-dropzone-list { position: relative; z-index: 3; display: grid; gap: .2rem; margin: .3rem 0 0; padding: 0; color: rgba(247,245,239,.7); font-size: .67rem; list-style: none; pointer-events: none; }
+.cp-dropzone-progress { display: grid; gap: .45rem; margin-bottom: .7rem; padding: .72rem .8rem; border: 1px solid rgba(144,119,236,.25); border-radius: 14px; background: rgba(111,75,168,.08); }
+.cp-dropzone-progress-text { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+.cp-dropzone-progress-text strong { font-size: .75rem; }
+.cp-dropzone-progress-text small { color: rgba(247,245,239,.5); font-size: .63rem; }
+.cp-dropzone-progress-bar { height: 5px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.1); }
+.cp-dropzone-progress-bar span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--cp-violet), var(--cp-gold)); transition: width 220ms var(--cp-ease); }
+
+@media (max-width: 480px) {
+  .cp-artwork-service { min-height: 100px; padding: .78rem; }
+  .cp-manager-quick-link { grid-template-columns: 34px minmax(0, 1fr) 18px; gap: .6rem; }
+  .cp-manager-quick-icon { width: 34px; height: 34px; }
+  .cp-manager-quick-link small { font-size: .62rem; }
+  .cp-dropzone-progress-text { display: grid; gap: .2rem; }
+}
+
 @media (max-width: 760px) {
+  .cp-studio-appbar {
+    background: rgba(14, 13, 18, .96);
+  }
   .cp-fit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cp-fit-card { padding: .58rem; }
   .cp-fit-card-figure { height: 82px; border-radius: 11px; }
@@ -1966,4 +2048,40 @@ body.cp-studio-active { overflow: visible !important; }
   .cp-fit-card-info span { -webkit-line-clamp: 1; }
   .cp-fabric-chip-title strong { font-size: .68rem; }
   .cp-fabric-chip-meta { font-size: .55rem; }
+}
+
+/* Final calibration pass: keep the hero annotations on the garments instead
+   of the cropped image's empty space, and give narrow screens a stable stage. */
+.cp-hero-garment-label--hoodie { left: 33%; }
+.cp-hero-garment-label--tee { left: 51%; }
+.cp-hero-garment-label--longsleeve { left: 71%; }
+.cp-hero-print-zone--hoodie { left: 28%; }
+.cp-hero-print-zone--longsleeve { left: 68%; }
+
+.cp-artwork-services > *,
+.cp-artwork-service-head,
+.cp-artwork-service-hint,
+.cp-dropzone-grid,
+.cp-dropzone { min-width: 0; }
+
+@media (max-width: 760px) {
+  .cp-hero-theatre { inset: 48% 0 0; }
+  .cp-hero-stage { overflow: hidden; }
+  .cp-hero-garment-label { top: 35%; }
+  .cp-hero-garment-label--hoodie { left: 18%; }
+  .cp-hero-garment-label--tee { left: 47%; }
+  .cp-hero-garment-label--longsleeve { left: 76%; }
+  .cp-hero-print-zone--hoodie { left: 12%; }
+  .cp-hero-print-zone--longsleeve { left: 78%; }
+  body.cp-studio-active .cp-step-viewport,
+  body.cp-studio-active .cp-waterfall { padding-bottom: max(1rem, calc(108px + env(safe-area-inset-bottom))); }
+  .cp-artwork-services { grid-template-columns: minmax(0, 1fr); }
+  .cp-artwork-service { width: 100%; max-width: 100%; }
+}
+
+@media (max-width: 380px) {
+  .cp-hero-garment-label { display: inline-flex; top: 34%; font-size: .5rem; }
+  .cp-hero-garment-label--hoodie { left: 14%; }
+  .cp-hero-garment-label--tee { left: 45%; }
+  .cp-hero-garment-label--longsleeve { left: 73%; }
 }

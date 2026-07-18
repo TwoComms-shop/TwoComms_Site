@@ -1,5 +1,18 @@
 import unittest
 
+import django
+from django.apps import apps
+from django.test import override_settings
+from django.utils import translation
+
+if not apps.ready:
+    try:
+        django.setup()
+    except Exception:
+        # The standalone source-contract invocation may not configure Django;
+        # the project test runner does so before these tests execute.
+        pass
+
 from storefront.custom_print_config import (
     ISO_SIZES,
     build_custom_print_config,
@@ -81,6 +94,23 @@ class CustomPrintLabelResolverTests(unittest.TestCase):
 
 
 class CustomPrintConfigContractTests(unittest.TestCase):
+    @override_settings(LANGUAGE_CODE="ru")
+    def test_product_ui_copy_is_localized_for_russian_runtime(self):
+        with translation.override("ru"):
+            config = build_custom_print_config(submit_url="x", safe_exit_url="x")
+        tshirt = config["products"]["tshirt"]
+        self.assertEqual(tshirt["fits"][0]["label"], "Классическая")
+        self.assertEqual(tshirt["colors"][2]["label"], "Койот")
+        self.assertEqual(tshirt["fabrics"]["oversize"][2]["label"], "Термо")
+
+    @override_settings(LANGUAGE_CODE="en")
+    def test_product_ui_copy_is_localized_for_english_runtime(self):
+        with translation.override("en"):
+            config = build_custom_print_config(submit_url="x", safe_exit_url="x")
+        hoodie = config["products"]["hoodie"]
+        self.assertEqual(hoodie["fits"][0]["label"], "Classic")
+        self.assertEqual(hoodie["fit_colors"]["oversize"][1]["label"], "Pink")
+
     def test_config_exposes_progress_steps_tshirt_rules_and_zone_presets(self):
         config = build_custom_print_config(
             submit_url="https://twocomms.shop/custom-print/lead/",
@@ -204,6 +234,14 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         self.assertEqual([color["value"] for color in hoodie_fit_colors["regular"]], ["black", "graphite", "sand", "bone"])
         thermo = config["products"]["tshirt"]["fabrics"]["oversize"][-1]
         self.assertEqual([color["value"] for color in thermo["colors"]], ["thermo_green", "thermo_pink"])
+
+    def test_config_exposes_clear_classic_premium_and_thermo_descriptions(self):
+        config = build_custom_print_config(submit_url="/lead/", safe_exit_url="/safe-exit/", add_to_cart_url="/cart/")
+        tshirt = config["products"]["tshirt"]["fabrics"]
+        self.assertIn("без пеньє-обробки", tshirt["regular"][0]["short_desc"])
+        self.assertIn("турецький кулір", tshirt["regular"][1]["short_desc"].lower())
+        self.assertIn("ребана", tshirt["oversize"][1]["short_desc"])
+        self.assertIn("від тепла", tshirt["oversize"][2]["short_desc"])
 
     def test_stage_profiles_expose_distinct_back_presets_for_a4_a3_a2(self):
         config = build_custom_print_config(

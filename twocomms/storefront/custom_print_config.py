@@ -368,21 +368,22 @@ PRODUCT_MATRIX = {
         "summary": _("Максимум налаштувань: тканина, посадка, колір, зони й деталі."),
         "hero_note": _("Найзручніший старт, якщо хочете точно зібрати худі під свій принт."),
         "fits": [
-            {"value": "regular", "label": "Класичний", "description": "Базова посадка для щоденного мерчу."},
-            {"value": "oversize", "label": "Оверсайз", "description": "Більш масивний силует з відчуттям преміум-речі."},
+            {"value": "regular", "label": _("Класичний"), "description": _("Базова посадка для щоденного мерчу.")},
+            {"value": "oversize", "label": _("Оверсайз"), "description": _("Більш масивний силует з відчуттям преміум-речі.")},
         ],
         "fabrics": {
             "regular": [
-                {"value": "standard", "label": "Стандарт", "price_delta": 0, "included_in_base": True},
+                {"value": "standard", "label": _("Класика"), "short_desc": _("Базова тканина без пеньє-обробки."), "price_delta": 0, "included_in_base": True},
                 {
                     "value": "premium",
-                    "label": "Преміум",
+                    "label": _("Преміум"),
+                    "short_desc": _("Пеньє-обробка та щільніші шви."),
                     "price_delta": 250,
                     "included_in_base": False,
-                    "info_title": "Що таке преміум для худі?",
+                    "info_title": _("Що таке преміум для худі?"),
                     "info_desc": (
-                        "Преміум-варіант має вищу щільність, акуратнішу обробку пеньє та краще тримає форму навіть після активного носіння.\n"
-                        "Полотно більш стійке до навантаження, зберігає гладку поверхню навіть після тривалого носіння та постійного тертя об сумку чи рюкзак, виглядає структурніше й дає відчутно чистішу основу під кастомний принт."
+                        _("Преміум-варіант має вищу щільність, акуратнішу обробку пеньє та краще тримає форму навіть після активного носіння.\n"
+                          "Полотно більш стійке до навантаження, зберігає гладку поверхню навіть після тривалого носіння та постійного тертя об сумку чи рюкзак, виглядає структурніше й дає відчутно чистішу основу під кастомний принт.")
                     ),
                     "info_theme": "premium",
                 },
@@ -390,28 +391,29 @@ PRODUCT_MATRIX = {
             "oversize": [
                 {
                     "value": "premium",
-                    "label": "Преміум",
+                    "label": _("Преміум"),
+                    "short_desc": _("Преміальна тканина з пеньє-обробкою."),
                     "price_delta": 0,
                     "included_in_base": True,
-                    "info_title": "Що таке преміум для худі?",
+                    "info_title": _("Що таке преміум для худі?"),
                     "info_desc": (
-                        "Преміум-варіант має вищу щільність, акуратнішу обробку пеньє та краще тримає форму навіть після активного носіння.\n"
-                        "Полотно більш стійке до навантаження, зберігає гладку поверхню навіть після тривалого носіння та постійного тертя об сумку чи рюкзак, виглядає структурніше й дає відчутно чистішу основу під кастомний принт."
+                        _("Преміум-варіант має вищу щільність, акуратнішу обробку пеньє та краще тримає форму навіть після активного носіння.\n"
+                          "Полотно більш стійке до навантаження, зберігає гладку поверхню навіть після тривалого носіння та постійного тертя об сумку чи рюкзак, виглядає структурніше й дає відчутно чистішу основу під кастомний принт.")
                     ),
                     "info_theme": "premium",
                 },
             ],
             "zip_hoodie": [
-                {"value": "standard", "label": "Стандарт", "price_delta": 0, "included_in_base": True},
+                {"value": "standard", "label": _("Стандарт"), "price_delta": 0, "included_in_base": True},
                 {
                     "value": "premium",
-                    "label": "Преміум",
+                    "label": _("Преміум"),
                     "price_delta": 250,
                     "included_in_base": False,
-                    "info_title": "Що таке преміум для худі?",
+                    "info_title": _("Що таке преміум для худі?"),
                     "info_desc": (
-                        "Преміум-варіант має вищу щільність, акуратнішу обробку пеньє та краще тримає форму навіть після активного носіння.\n"
-                        "Полотно більш стійке до навантаження, зберігає гладку поверхню навіть після тривалого носіння та постійного тертя об сумку чи рюкзак, виглядає структурніше й дає відчутно чистішу основу під кастомний принт."
+                        _("Преміум-варіант має вищу щільність, акуратнішу обробку пеньє та краще тримає форму навіть після активного носіння.\n"
+                          "Полотно більш стійке до навантаження, зберігає гладку поверхню навіть після тривалого носіння та постійного тертя об сумку чи рюкзак, виглядає структурніше й дає відчутно чистішу основу під кастомний принт.")
                     ),
                     "info_theme": "premium",
                 },
@@ -420,21 +422,21 @@ PRODUCT_MATRIX = {
         "default_fit": "regular",
         "default_fabric": "standard",
         "colors": [
-            {"value": "black", "label": "Чорний", "hex": "#151515"},
-            {"value": "graphite", "label": "Графіт", "hex": "#3b3b3f"},
-            {"value": "sand", "label": "Пісочний", "hex": "#c8b28d"},
-            {"value": "bone", "label": "Світлий", "hex": "#ebe3d6"},
+            {"value": "black", "label": _("Чорний"), "hex": "#151515"},
+            {"value": "graphite", "label": _("Графіт"), "hex": "#3b3b3f"},
+            {"value": "sand", "label": _("Пісочний"), "hex": "#c8b28d"},
+            {"value": "bone", "label": _("Світлий"), "hex": "#ebe3d6"},
         ],
         "fit_colors": {
             "regular": [
-                {"value": "black", "label": "Чорний", "hex": "#151515"},
-                {"value": "graphite", "label": "Графіт", "hex": "#3b3b3f"},
-                {"value": "sand", "label": "Пісочний", "hex": "#c8b28d"},
-                {"value": "bone", "label": "Світлий", "hex": "#ebe3d6"},
+                {"value": "black", "label": _("Чорний"), "hex": "#151515"},
+                {"value": "graphite", "label": _("Графіт"), "hex": "#3b3b3f"},
+                {"value": "sand", "label": _("Пісочний"), "hex": "#c8b28d"},
+                {"value": "bone", "label": _("Світлий"), "hex": "#ebe3d6"},
             ],
             "oversize": [
-                {"value": "black", "label": "Чорний", "hex": "#151515"},
-                {"value": "pink", "label": "Рожевий", "hex": "#d98fa8"},
+                {"value": "black", "label": _("Чорний"), "hex": "#151515"},
+                {"value": "pink", "label": _("Рожевий"), "hex": "#d98fa8"},
             ],
         },
         "default_color": "black",
@@ -443,22 +445,22 @@ PRODUCT_MATRIX = {
         "add_ons": [
             {
                 "value": "lacing",
-                "label": "Люверси зі шнурками",
+                "label": _("Люверси зі шнурками"),
                 "price_delta": 150,
                 "icon": "lacing",
-                "badge": "+150 грн",
-                "hint": "Преміум-апгрейд: металеві люверси й унікальні шнурки замість стандартних.",
+                "badge": _("+150 грн"),
+                "hint": _("Преміум-апгрейд: металеві люверси й унікальні шнурки замість стандартних."),
             },
             {
                 "value": "fleece",
-                "label": "З флісом",
+                "label": _("З флісом"),
                 "price_delta": 0,
                 "icon": "fleece",
                 "group": "fleece"
             },
             {
                 "value": "no_fleece",
-                "label": "Без флісу",
+                "label": _("Без флісу"),
                 "price_delta": 0,
                 "icon": "no_fleece",
                 "group": "fleece"
@@ -478,24 +480,25 @@ PRODUCT_MATRIX = {
         "summary": _("Швидкий старт для принта, дропа або подарунка."),
         "hero_note": _("Швидкий варіант, якщо потрібна футболка з фронтом, спиною або принтом на рукаві."),
         "fits": [
-            {"value": "regular", "label": "Класична", "description": "Рівна класична посадка для базового принта."},
-            {"value": "oversize", "label": "Оверсайз", "description": "Більш вільний силует без додаткової анкети."},
+            {"value": "regular", "label": _("Класична"), "description": _("Рівна класична посадка для базового принта.")},
+            {"value": "oversize", "label": _("Оверсайз"), "description": _("Більш вільний силует без додаткової анкети.")},
         ],
         "fabrics": {
             "regular": [
-                {"value": "standard", "label": "Стандарт", "price_delta": 0, "included_in_base": True},
-                {"value": "premium", "label": "Преміум", "price_delta": 150, "included_in_base": False},
+                {"value": "standard", "label": _("Класика"), "short_desc": _("Базовий кулір без пеньє-обробки."), "price_delta": 0, "included_in_base": True},
+                {"value": "premium", "label": _("Преміум"), "short_desc": _("Турецький кулір, пеньє, покращені шви та ребана."), "price_delta": 150, "included_in_base": False},
             ],
             "oversize": [
-                {"value": "standard", "label": "Стандарт", "price_delta": 0, "included_in_base": True},
-                {"value": "premium", "label": "Преміум", "price_delta": 150, "included_in_base": False},
+                {"value": "standard", "label": _("Класика"), "short_desc": _("Базовий кулір без пеньє-обробки."), "price_delta": 0, "included_in_base": True},
+                {"value": "premium", "label": _("Преміум"), "short_desc": _("Турецький кулір, пеньє, покращені шви та ребана."), "price_delta": 150, "included_in_base": False},
                 {
-                    "value": "thermo", "label": "Термо", "price_delta": 500, "included_in_base": False,
-                    "info_title": "Футболка з WOW-ефектом❤️",
-                    "info_desc": "Реагує на тепло тіла та змінює колір.\nІдеальна для образів, які привертають увагу.",
+                    "value": "thermo", "label": _("Термо"), "price_delta": 500, "included_in_base": False,
+                    "short_desc": _("Змінює відтінок від тепла."),
+                    "info_title": _("Футболка з WOW-ефектом❤️"),
+                    "info_desc": _("Реагує на тепло тіла та змінює колір.\nІдеальна для образів, які привертають увагу."),
                     "colors": [
-                        {"value": "thermo_green", "label": "Зелений (Термо)", "hex": "#8ba38d"},
-                        {"value": "thermo_pink", "label": "Рожевий (Термо)", "hex": "#e78ba7"}
+                        {"value": "thermo_green", "label": _("Зелений (Термо)"), "hex": "#8ba38d"},
+                        {"value": "thermo_pink", "label": _("Рожевий (Термо)"), "hex": "#e78ba7"}
                     ]
                 },
             ],
@@ -503,9 +506,9 @@ PRODUCT_MATRIX = {
         "default_fit": "regular",
         "default_fabric": "premium",
         "colors": [
-            {"value": "black", "label": "Чорний", "hex": "#151515"},
-            {"value": "white", "label": "Білий", "hex": "#f1ede6"},
-            {"value": "coyote", "label": "Койот", "hex": "#8B6B45"},
+            {"value": "black", "label": _("Чорний"), "hex": "#151515"},
+            {"value": "white", "label": _("Білий"), "hex": "#f1ede6"},
+            {"value": "coyote", "label": _("Койот"), "hex": "#8B6B45"},
         ],
         "default_color": "black",
         "zones": ["front", "back"],
@@ -513,20 +516,20 @@ PRODUCT_MATRIX = {
                 "add_ons": [
             {
                 "value": "ribbed_neck",
-                "label": "Щільна горловина (Рібана)",
+                "label": _("Щільна горловина (Рібана)"),
                 "price_delta": 0,
                 "icon": "ribbed_neck",
-                "badge": "Включено",
-                "hint": "Еластична горловина, що довго не втрачає форму.",
+                "badge": _("Включено"),
+                "hint": _("Еластична горловина, що довго не втрачає форму."),
                 "auto_include_condition": "premium_or_oversize"
             },
             {
                 "value": "twill_tape",
-                "label": "Кіперна стрічка",
+                "label": _("Кіперна стрічка"),
                 "price_delta": 0,
                 "icon": "twill_tape",
-                "badge": "Включено",
-                "hint": "Укріплення задньої частини шиї, підвищений комфорт.",
+                "badge": _("Включено"),
+                "hint": _("Укріплення задньої частини шиї, підвищений комфорт."),
                 "auto_include_condition": "premium_or_oversize"
             }
         ],
@@ -549,9 +552,9 @@ PRODUCT_MATRIX = {
         "default_fit": "",
         "default_fabric": "",
         "colors": [
-            {"value": "black", "label": "Чорний", "hex": "#151515"},
-            {"value": "bone", "label": "Світлий", "hex": "#e7ddcf"},
-            {"value": "olive", "label": "Оливковий", "hex": "#59604a"},
+            {"value": "black", "label": _("Чорний"), "hex": "#151515"},
+            {"value": "bone", "label": _("Світлий"), "hex": "#e7ddcf"},
+            {"value": "olive", "label": _("Оливковий"), "hex": "#59604a"},
         ],
         "default_color": "black",
         "zones": ["front", "back", "sleeve"],
@@ -559,20 +562,20 @@ PRODUCT_MATRIX = {
                 "add_ons": [
             {
                 "value": "ribbed_neck",
-                "label": "Щільна горловина (Рібана)",
+                "label": _("Щільна горловина (Рібана)"),
                 "price_delta": 0,
                 "icon": "ribbed_neck",
-                "badge": "Включено",
-                "hint": "Еластична горловина, що довго не втрачає форму.",
+                "badge": _("Включено"),
+                "hint": _("Еластична горловина, що довго не втрачає форму."),
                 "auto_include_condition": "premium_or_oversize"
             },
             {
                 "value": "twill_tape",
-                "label": "Кіперна стрічка",
+                "label": _("Кіперна стрічка"),
                 "price_delta": 0,
                 "icon": "twill_tape",
-                "badge": "Включено",
-                "hint": "Укріплення задньої частини шиї, підвищений комфорт.",
+                "badge": _("Включено"),
+                "hint": _("Укріплення задньої частини шиї, підвищений комфорт."),
                 "auto_include_condition": "premium_or_oversize"
             }
         ],
@@ -594,7 +597,7 @@ PRODUCT_MATRIX = {
         "default_fit": "",
         "default_fabric": "",
         "colors": [
-            {"value": "own", "label": "Ваш колір", "hex": "#6d6d6d"},
+            {"value": "own", "label": _("Ваш колір"), "hex": "#6d6d6d"},
         ],
         "default_color": "own",
         "zones": ["front", "back", "custom"],
@@ -602,20 +605,20 @@ PRODUCT_MATRIX = {
                 "add_ons": [
             {
                 "value": "ribbed_neck",
-                "label": "Щільна горловина (Рібана)",
+                "label": _("Щільна горловина (Рібана)"),
                 "price_delta": 0,
                 "icon": "ribbed_neck",
-                "badge": "Включено",
-                "hint": "Еластична горловина, що довго не втрачає форму.",
+                "badge": _("Включено"),
+                "hint": _("Еластична горловина, що довго не втрачає форму."),
                 "auto_include_condition": "premium_or_oversize"
             },
             {
                 "value": "twill_tape",
-                "label": "Кіперна стрічка",
+                "label": _("Кіперна стрічка"),
                 "price_delta": 0,
                 "icon": "twill_tape",
-                "badge": "Включено",
-                "hint": "Укріплення задньої частини шиї, підвищений комфорт.",
+                "badge": _("Включено"),
+                "hint": _("Укріплення задньої частини шиї, підвищений комфорт."),
                 "auto_include_condition": "premium_or_oversize"
             }
         ],

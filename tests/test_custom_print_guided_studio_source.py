@@ -50,10 +50,15 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
 
     def test_manager_contact_is_one_app_action_not_repeated_telegram_links(self):
         self.assertEqual(self.template.count("data-manager-open"), 1)
+        self.assertIn("data-manager-quick-contact", self.template)
+        self.assertIn("Обговорити в Telegram", self.template)
         self.assertNotIn("cp-manager-inline-link", self.template)
         self.assertNotIn("cp-manager-shortcut-link", self.template)
         self.assertNotIn("cp-manager-shortcut-draft", self.template)
         self.assertNotIn("data-safe-exit-trigger", self.template)
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertIn("addEventListener(\"click\", openManagerDialog)", configurator)
+        self.assertNotIn("window.open(buildManagerTelegramUrl", configurator)
 
     def test_hero_heading_has_a_non_concatenated_accessible_name(self):
         self.assertIn("aria-label=\"{% trans 'Створи річ, що говорить за тебе' %}\"", self.template)
@@ -151,6 +156,9 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertIn("function scrollToStudioTarget", configurator)
         self.assertNotIn("activeStep.parentNode.insertBefore(dom.progressShell", configurator)
         self.assertNotIn("field?.scrollIntoView({ behavior: \"smooth\", block: \"center\" })", configurator)
+        self.assertIn("studioManuallyExited", configurator)
+        self.assertNotIn("const shouldRelease = rect.top", configurator)
+        self.assertIn('window.scrollTo({ top: 0, behavior:', configurator)
 
     def test_fabric_info_is_a_keyboard_safe_control(self):
         configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
@@ -166,6 +174,25 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertIn("function getAllowedColorOptions", configurator)
         self.assertIn("renderColorChips();", configurator)
         self.assertIn("productConfig.fit_colors?.[state.product.fit]", preview)
+
+    def test_mobile_shell_reactivation_keeps_bar_visible_after_scroll(self):
+        mobile_shell = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-mobile-shell.js").read_text(encoding="utf-8")
+        self.assertIn("mobileBar.hidden = !active", mobile_shell)
+        self.assertIn('data-studio-exit', self.template)
+        self.assertIn('aria-pressed="false"', self.template)
+
+    def test_artwork_controls_have_icon_and_stable_upload_contract(self):
+        self.assertIn("cp-artwork-service-icon", self.template)
+        self.assertIn("cp-field-label-row", self.template)
+        self.assertIn("cp-dropzone input[type=\"file\"]", self.css)
+        self.assertIn("cp-dropzone-progress", self.css)
+        self.assertIn(".cp-artwork-services > *", self.css)
+        self.assertIn("min-width: 0", self.css)
+
+    def test_hero_calibration_keeps_print_frames_on_garments_on_mobile(self):
+        self.assertIn(".cp-hero-print-zone--hoodie { left: 12%; }", self.css)
+        self.assertIn(".cp-hero-print-zone--longsleeve { left: 78%; }", self.css)
+        self.assertIn(".cp-hero-theatre { inset: 48% 0 0; }", self.css)
 
     def test_custom_print_source_has_no_replacement_character_mojibake(self):
         source = STATIC_PAGES.read_text(encoding="utf-8")

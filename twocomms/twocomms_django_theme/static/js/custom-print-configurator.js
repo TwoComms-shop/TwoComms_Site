@@ -56,6 +56,7 @@
   };
   let leadSubmitInFlight = false;
   let cartSubmitInFlight = false;
+  let studioManuallyExited = false;
 
   function ui(key, fallback) {
     return UI_STRINGS[key] || fallback;
@@ -157,6 +158,7 @@
     draftResumeButton: root.querySelector("[data-draft-resume]"),
     draftRestartButton: root.querySelector("[data-draft-restart]"),
     managerButton: root.querySelector("[data-manager-open]"),
+    managerQuickButtons: root.querySelectorAll("[data-manager-quick-contact]"),
   };
   const progressHome = dom.progressShell ? document.createComment("cp-progress-home") : null;
   if (progressHome && dom.progressShell?.parentNode) {
@@ -306,6 +308,7 @@
     bindGenericInputs();
     bindHeroMotion();
     bindMobileBottomBar();
+    bindManagerQuickContact();
     bindStudioBoundary();
     setupDraftResume();
     setActiveStep(STATE.ui.current_step || "mode", { silent: true });
@@ -313,6 +316,7 @@
   }
 
   function enterStudio(trigger = "start_button") {
+    studioManuallyExited = false;
     ensureFlowStarted(trigger);
     mobileShell?.setActive(true);
     setActiveStep(STATE.ui.current_step || "mode", { silent: true });
@@ -320,9 +324,16 @@
   }
 
   function exitStudio() {
+    studioManuallyExited = true;
     persistDraft();
     mobileShell?.setActive(false);
-    scrollToStudioTarget(dom.hero);
+    // Removing app mode restores the global nav and changes the page height.
+    // Wait for that reflow before returning to the page entry point; otherwise
+    // iOS-sized viewports can stop halfway through the hero.
+    globalThis.requestAnimationFrame(() => {
+      const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      window.scrollTo({ top: 0, behavior: reducedMotion ? "auto" : "smooth" });
+    });
   }
 
   function openPreviewDialog(event) {
@@ -341,23 +352,33 @@
     });
   }
 
+  function bindManagerQuickContact() {
+    // Keep the contextual CTA inside the same accessible contact sheet as the
+    // app-bar action. The sheet confirms that the draft is saved and lets the
+    // user review the compact configuration summary before opening Telegram.
+    dom.managerQuickButtons?.forEach((button) => button.addEventListener("click", openManagerDialog));
+  }
+
   function buildManagerSummary() {
     const cfg = getProductConfig() || {};
     const colors = getAllowedColorOptions(cfg);
-    const color = colors.find((item) => item.value === STATE.product.color)?.label || STATE.product.color || "не обрано";
-    const fabric = getSelectedFabricConfig()?.label || STATE.product.fabric || "не обрано";
+    const fit = (cfg.fits || []).find((item) => item.value === STATE.product.fit)?.label || STATE.product.fit || "—";
+    const color = colors.find((item) => item.value === STATE.product.color)?.label || STATE.product.color || "—";
+    const fabric = getSelectedFabricConfig()?.label || STATE.product.fabric || "—";
     const zones = getExpandedPlacements().map((placement) => {
       const size = placement.size_preset ? ` · ${placement.size_preset}` : "";
       return `${placement.label}${size}`;
-    }).join(", ") || "не обрано";
-    const quantity = STATE.order.quantity ? `${STATE.order.quantity} шт` : "не обрано";
+    }).join(", ") || "—";
+    const quantity = STATE.order.quantity ? `${STATE.order.quantity} шт` : "—";
+    const stepLabels = { mode: "Формат", product: "Виріб", config: "Налаштування", zones: "Зони друку", artwork: "Макет", quantity: "Кількість", gift: "Подарунок", contact: "Контакт" };
+    const step = stepLabels[STATE.ui.current_step] || "—";
     return [
       "Привіт! Хочу обговорити кастомний принт TwoComms.",
       `Формат: ${STATE.mode === "brand" ? "команда / бренд" : "для себе"}`,
-      `Виріб: ${cfg.label || "не обрано"}`,
-      `Посадка: ${STATE.product.fit || "не обрано"} · Тканина: ${fabric} · Колір: ${color}`,
+      `Виріб: ${cfg.label || "—"}`,
+      `Посадка: ${fit} · Тканина: ${fabric} · Колір: ${color}`,
       `Зони: ${zones} · Кількість: ${quantity}`,
-      `Крок: ${STATE.ui.current_step}`,
+      `Крок: ${step}`,
     ].join("\n");
   }
 
@@ -407,13 +428,14 @@
     const boundary = root.querySelector("[data-studio-boundary]");
     if (!boundary) return;
     const checkBoundary = () => {
-      if (!document.body.classList.contains("cp-studio-active")) return;
-      const rect = boundary.getBoundingClientRect();
-      // The sentinel follows the studio form. Release the app shell as soon
-      // as the sentinel enters the viewport, then restore it when scrolling
-      // back above the SEO boundary.
-      const shouldRelease = rect.top <= window.innerHeight - 12;
-      mobileShell?.setActive(!shouldRelease);
+      if (studioManuallyExited || !analyticsState.flowStarted) return;
+      // The app shell must remain stable during validation scrolls. The SEO
+      // stack is already hidden in app mode, and leaving the studio is an
+      // explicit X action, so a sentinel must never tear down the shell.
+      if (!document.body.classList.contains("cp-studio-active")) {
+        mobileShell?.setActive(true);
+      }
+      renderMobileBottomBar();
     };
     window.addEventListener("scroll", checkBoundary, { passive: true });
     checkBoundary();
@@ -424,9 +446,20 @@
     const appbar = root.querySelector("[data-studio-appbar]");
     const appbarHeight = appbar ? Math.max(66, appbar.getBoundingClientRect().height) : 66;
     const topOffset = appbarHeight + 22;
+    const bottomBar = document.querySelector("[data-mobile-action-bar]");
+    const bottomClearance = bottomBar && !bottomBar.hidden
+      ? Math.max(96, bottomBar.getBoundingClientRect().height + 18)
+      : 24;
     const rect = target.getBoundingClientRect();
     const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-    const nextTop = Math.max(0, Math.min(maxScroll, rect.top + window.scrollY - topOffset));
+    const targetBottom = rect.bottom + window.scrollY;
+    const viewportBottom = window.scrollY + window.innerHeight - bottomClearance;
+    const preferredTop = rect.top + window.scrollY - topOffset;
+    const nextTop = Math.max(0, Math.min(maxScroll,
+      targetBottom > viewportBottom && rect.height < window.innerHeight - topOffset - bottomClearance
+        ? targetBottom - window.innerHeight + bottomClearance
+        : preferredTop
+    ));
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
     window.scrollTo({ top: nextTop, behavior: reducedMotion ? "auto" : "smooth" });
     if (focus) {
@@ -1036,17 +1069,14 @@
           ? `+${priceDelta} грн`
           : "без доплати";
 
-      const tierLabel = fab.value === "premium" ? "Преміум" : fab.value === "thermo" ? "Термо" : "База";
-      const fireSvg = `<svg class="cp-fire-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z"></path></svg>`;
-      const displayLabel = fab.value === "thermo" ? `${escapeHtml(fab.label)} ${fireSvg}` : escapeHtml(fab.label);
-      
       let btnContent = `
         <span class="cp-fabric-chip-title">
-          <strong>${displayLabel}</strong>
+          <strong>${escapeHtml(fab.label)}</strong>
+          ${fab.value === "thermo" ? `<span class="cp-thermo-badge" aria-label="Термо: змінює колір від тепла"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13.5 3.5c.2 3.4-2.8 4.4-2.8 7.1 0 1.2.8 2.2 1.8 2.7-.1-1.5.7-2.5 2-3.3 1.3 1.4 2.1 2.7 2.1 4.4a4.8 4.8 0 1 1-9.6 0c0-2.4 1.2-4.1 2.8-5.8-.1 2.1.5 3.3 1.5 4.2-.2-3.3 1.2-6.3 2.2-9.3Z" fill="currentColor"/></svg><span>WOW</span></span>` : ""}
         </span>
 
-
         <span class="cp-fabric-chip-meta">${escapeHtml(priceLabel)}</span>
+        ${fab.short_desc ? `<span class="cp-fabric-chip-hint">${escapeHtml(fab.short_desc)}</span>` : ""}
       `;
       
       btn.innerHTML = `<span class="cp-fabric-chip-content">${btnContent}</span>`;
@@ -2378,6 +2408,7 @@
     dom.giftToggle?.addEventListener("click", () => {
       STATE.order.gift_enabled = !STATE.order.gift_enabled;
       dom.giftToggle.classList.toggle("is-active", STATE.order.gift_enabled);
+      dom.giftToggle.setAttribute("aria-pressed", String(STATE.order.gift_enabled));
       if (dom.giftToggleState) dom.giftToggleState.textContent = STATE.order.gift_enabled ? "Увімкнено" : "Вимкнено";
       if (dom.giftTextWrap) dom.giftTextWrap.hidden = !STATE.order.gift_enabled;
       refreshAll();
@@ -2444,6 +2475,7 @@
         // Skip current step (e.g. gift)
         STATE.order.gift_enabled = false;
         if (dom.giftToggle) dom.giftToggle.classList.remove("is-active");
+        if (dom.giftToggle) dom.giftToggle.setAttribute("aria-pressed", "false");
         if (dom.giftTextWrap) dom.giftTextWrap.hidden = true;
         ensureFlowStarted(`step_skip_${STATE.ui.current_step}`);
         trackStepComplete(STATE.ui.current_step, { transition_to: btn.dataset.stepSkip, skipped: true });
@@ -2588,7 +2620,11 @@
     const [message, selector] = getStepProblem(stepKey);
     showStatus(message, "warning");
     const field = root.querySelector(selector);
-    scrollToStudioTarget(field, { focus: true });
+    const step = root.querySelector(`[data-step="${stepKey}"]`);
+    scrollToStudioTarget(step || field);
+    if (field) {
+      window.setTimeout(() => field.focus?.({ preventScroll: true }), 180);
+    }
   }
 
   // ── Refresh: stage card + receipt + summaries + side states ─
@@ -3631,6 +3667,7 @@
       if (dom.brandNameInput) dom.brandNameInput.value = STATE.notes.brand_name || "";
       if (dom.giftTextInput) dom.giftTextInput.value = STATE.order.gift_text || "";
       if (dom.giftToggle) dom.giftToggle.classList.toggle("is-active", !!STATE.order.gift_enabled);
+      if (dom.giftToggle) dom.giftToggle.setAttribute("aria-pressed", String(!!STATE.order.gift_enabled));
       if (dom.giftToggleState) dom.giftToggleState.textContent = STATE.order.gift_enabled ? "Увімкнено" : "Вимкнено";
       if (dom.giftTextWrap) dom.giftTextWrap.hidden = !STATE.order.gift_enabled;
       if (dom.garmentNoteInput) dom.garmentNoteInput.value = STATE.notes.garment_note || "";
