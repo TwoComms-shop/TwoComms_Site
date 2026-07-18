@@ -46,6 +46,7 @@
   const UI_STRINGS = CONFIG.ui_strings || {};
   const submissionPolicy = globalThis.CustomPrintSubmissionPolicy || null;
   const mobileProgressQuery = globalThis.matchMedia ? globalThis.matchMedia("(max-width: 720px)") : null;
+  const studioShellQuery = globalThis.matchMedia ? globalThis.matchMedia("(max-width: 1100px)") : null;
 
   const STATE = createState();
   const filesByPlacement = new Map(); // placement_key -> File[]
@@ -130,6 +131,7 @@
     giftToggleState: root.querySelector("[data-gift-toggle-state]"),
     giftTextWrap: root.querySelector("[data-gift-text-wrap]"),
     giftTextInput: root.querySelector("[data-gift-text-input]"),
+    giftContinue: root.querySelector("[data-gift-continue]"),
     contactChannelList: root.querySelector("[data-contact-channel-list]"),
     nameInput: root.querySelector("[data-name-input]"),
     contactValueInput: root.querySelector("[data-contact-value-input]"),
@@ -288,6 +290,9 @@
   }
 
   function init() {
+    if (dom.statusBox && !dom.statusBox.dataset.defaultStatus) {
+      dom.statusBox.dataset.defaultStatus = dom.statusBox.textContent.trim();
+    }
     renderModeChips();
     renderProductCards();
     renderArtworkCardModifiers();
@@ -320,7 +325,7 @@
     ensureFlowStarted(trigger);
     mobileShell?.setActive(true);
     setActiveStep(STATE.ui.current_step || "mode", { silent: true });
-    scrollToStudioTarget(root.querySelector("[data-studio-appbar]"));
+    scrollToStudioTarget(document.getElementById(`cp-step-${STATE.ui.current_step || "mode"}`));
   }
 
   function exitStudio() {
@@ -443,6 +448,25 @@
 
   function scrollToStudioTarget(target, { focus = false } = {}) {
     if (!target || !target.getBoundingClientRect) return;
+    const stepViewport = root.querySelector(".cp-step-viewport");
+    const usesInternalScroller = !!(
+      studioShellQuery?.matches
+      && document.body.classList.contains("cp-studio-active")
+      && stepViewport
+      && stepViewport.contains(target)
+    );
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (usesInternalScroller) {
+      const viewportRect = stepViewport.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const maxScroll = Math.max(0, stepViewport.scrollHeight - stepViewport.clientHeight);
+      const nextTop = Math.max(0, Math.min(maxScroll, stepViewport.scrollTop + targetRect.top - viewportRect.top - 12));
+      stepViewport.scrollTo({ top: nextTop, behavior: reducedMotion ? "auto" : "smooth" });
+      if (focus) {
+        window.setTimeout(() => target.focus?.({ preventScroll: true }), reducedMotion ? 0 : 180);
+      }
+      return;
+    }
     const appbar = root.querySelector("[data-studio-appbar]");
     const appbarHeight = appbar ? Math.max(66, appbar.getBoundingClientRect().height) : 66;
     const topOffset = appbarHeight + 22;
@@ -460,7 +484,6 @@
         ? targetBottom - window.innerHeight + bottomClearance
         : preferredTop
     ));
-    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
     window.scrollTo({ top: nextTop, behavior: reducedMotion ? "auto" : "smooth" });
     if (focus) {
       window.setTimeout(() => target.focus?.({ preventScroll: true }), reducedMotion ? 0 : 180);
@@ -1003,12 +1026,17 @@
         : fabricOptions.length > 1
           ? "Нижче зʼявляться доступні тканини і ціни"
           : "Тканина фіксується автоматично";
-      const fitAsset = STATE.product.type === "longsleeve"
-        ? "longsleeve-front.png"
-        : `${STATE.product.type}-${f.value}-front.png`;
+      const selectorAssets = {
+        "tshirt:regular": "ui/tshirt-regular.png",
+        "tshirt:oversize": "ui/tshirt-oversize.png",
+        "hoodie:regular": "ui/hoodie-regular.png",
+        "hoodie:oversize": "ui/hoodie-oversize.png",
+      };
+      const fitAsset = selectorAssets[`${STATE.product.type}:${f.value}`]
+        || "studio/longsleeve-front.png";
       btn.innerHTML = `
         <div class="cp-fit-card-figure" style="display: ${'block'}">
-          <img src="/static/img/configurator/studio/${fitAsset}" alt="${f.label}" onerror="this.parentElement.style.display='none'">
+          <img src="/static/img/configurator/${fitAsset}" alt="${f.label}" onerror="this.parentElement.style.display='none'">
         </div>
         <div class="cp-fit-card-info">
           <small>Посадка</small>
@@ -1202,13 +1230,16 @@
     }
 
     colors.forEach((c) => {
+      const isThermo = STATE.product.fabric === "thermo";
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "cp-swatch";
+      if (isThermo) btn.classList.add("cp-swatch--thermo");
       btn.dataset.choiceValue = c.value;
       btn.style.setProperty("--swatch", c.hex);
+      btn.setAttribute("aria-label", isThermo ? `${ui("thermo_fabric", "Термохромна тканина")}: ${c.label}` : c.label);
       if (STATE.product.color === c.value) btn.classList.add("is-active");
-      btn.innerHTML = `<span class="cp-swatch-dot" style="background:${c.hex}"></span><span>${c.label}</span>`;
+      btn.innerHTML = `${isThermo ? `<svg class="cp-swatch-thermo-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13.5 3.5c.2 3.4-2.8 4.4-2.8 7.1 0 1.2.8 2.2 1.8 2.7-.1-1.5.7-2.5 2-3.3 1.3 1.4 2.1 2.7 2.1 4.4a4.8 4.8 0 1 1-9.6 0c0-2.4 1.2-4.1 2.8-5.8-.1 2.1.5 3.3 1.5 4.2-.2-3.3 1.2-6.3 2.2-9.3Z" fill="currentColor"/></svg>` : ""}<span>${c.label}</span>`;
       btn.addEventListener("click", () => {
         STATE.product.color = c.value;
         renderColorChips();
@@ -2411,6 +2442,7 @@
       dom.giftToggle.setAttribute("aria-pressed", String(STATE.order.gift_enabled));
       if (dom.giftToggleState) dom.giftToggleState.textContent = STATE.order.gift_enabled ? "Увімкнено" : "Вимкнено";
       if (dom.giftTextWrap) dom.giftTextWrap.hidden = !STATE.order.gift_enabled;
+      updateGiftContinueLabel();
       refreshAll();
       persistDraft();
     });
@@ -2418,6 +2450,17 @@
       STATE.order.gift_text = dom.giftTextInput.value;
       persistDraft();
     });
+    updateGiftContinueLabel();
+  }
+
+  function getGiftContinueLabel() {
+    return STATE.order.gift_enabled
+      ? ui("gift_continue_on", "Продовжити з подарунковою упаковкою")
+      : ui("gift_continue_off", "Продовжити без подарункової упаковки");
+  }
+
+  function updateGiftContinueLabel() {
+    if (dom.giftContinue) dom.giftContinue.textContent = getGiftContinueLabel();
   }
 
   // ── Generic inputs ──────────────────────────────────────────
@@ -2489,6 +2532,7 @@
 
   function setActiveStep(key, opts = {}) {
     if (!STEPS.includes(key)) return;
+    if (!opts.silent) resetStatus();
     STATE.ui.current_step = key;
     const currentIndex = getStepIndex(key);
     document.querySelectorAll("[data-step]").forEach((section) => {
@@ -2630,6 +2674,9 @@
   // ── Refresh: stage card + receipt + summaries + side states ─
   function refreshAll() {
     normalizeClientState();
+    if (dom.statusBox?.classList.contains("is-warning") && canAdvance(STATE.ui.current_step)) {
+      resetStatus();
+    }
     updateFlowPhase();
     syncProgressShellPlacement();
     updateStageVisibility();
@@ -2643,6 +2690,7 @@
     updateB2bMeta();
     renderReceipt();
     updateFinalActionsAvailability();
+    updateGiftContinueLabel();
     renderMobileBottomBar();
     previewController?.render();
     const studioIndex = stateTools?.progressIndex(STATE.ui.current_step) || 0;
@@ -3118,6 +3166,8 @@
     if (dom.mobileBarActionLabel) {
       if (isLastStep) {
         dom.mobileBarActionLabel.textContent = "Надіслати";
+      } else if (stepKey === "gift") {
+        dom.mobileBarActionLabel.textContent = getGiftContinueLabel();
       } else {
         const nextLabel = stepLabels[nextStepKey]?.label || "Далі";
         dom.mobileBarActionLabel.textContent = nextLabel;
@@ -3519,6 +3569,12 @@
     if (kind === "success") dom.statusBox.classList.add("is-success");
     if (kind === "error") dom.statusBox.classList.add("is-error");
     if (kind === "warning") dom.statusBox.classList.add("is-warning");
+  }
+
+  function resetStatus() {
+    if (!dom.statusBox) return;
+    dom.statusBox.textContent = dom.statusBox.dataset.defaultStatus || "";
+    dom.statusBox.classList.remove("is-success", "is-error", "is-warning");
   }
 
   // ── Helpers ─────────────────────────────────────────────────

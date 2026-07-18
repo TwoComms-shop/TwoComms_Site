@@ -125,6 +125,60 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
             self.assertIn(event_name, self.js)
         self.assertRegex(self.js, r"document\.body\.append(?:Child)?\(.*mobile")
 
+    def test_mobile_app_shell_owns_scroll_and_has_one_bottom_clearance(self):
+        self.assertIn("--cp-mobile-bar-clearance", self.css)
+        self.assertIn(
+            "body.cp-studio-active > header:not(.cp-studio-appbar)",
+            self.css,
+        )
+        self.assertRegex(
+            self.css,
+            r"@media \(min-width: 1101px\)[\s\S]*?body\s*>\s*\.cp-studio-appbar\s*\{[^}]*display:\s*none",
+        )
+        self.assertRegex(
+            self.css,
+            r"@media \(min-width: 1101px\)[\s\S]*?\.cp-page\.is-studio-active\s*\{[^}]*overflow:\s*visible",
+        )
+        self.assertRegex(
+            self.css,
+            r"@media \(min-width: 1101px\)[\s\S]*?body\.cp-studio-active\s*\{[^}]*overflow:\s*visible\s*!important",
+        )
+        self.assertRegex(
+            self.css,
+            r"@media \(min-width: 1101px\)[\s\S]*?\.cp-stage-card\s*\{[^}]*top:\s*84px;[^}]*max-height:\s*calc\(100svh - 104px\)",
+        )
+        self.assertRegex(
+            self.css,
+            r"body\.cp-studio-active\s*\{[^}]*overflow:\s*hidden\s*!important",
+        )
+        self.assertRegex(
+            self.css,
+            r"\.cp-page\.is-studio-active\s+\.cp-studio-appbar,\s*body\.cp-studio-active\s*>\s*\.cp-studio-appbar\s*\{[^}]*position:\s*fixed",
+        )
+        self.assertRegex(
+            self.css,
+            r"body\.cp-studio-active\s+\.cp-step-viewport\s*\{[^}]*overflow-y:\s*auto",
+        )
+        self.assertRegex(
+            self.css,
+            r"body\.cp-studio-active\s*>\s*\.cp-mobile-action-bar\s*\{[^}]*display:\s*grid",
+        )
+        self.assertIn(
+            "body.cp-studio-active .cp-build-strip-shell { display: none !important; }",
+            self.css,
+        )
+        self.assertNotRegex(
+            self.css,
+            r"body\.cp-studio-active\s+\.cp-waterfall\s*\{[^}]*padding-bottom",
+        )
+
+    def test_mobile_preview_dialog_prevents_background_scroll_chaining(self):
+        submit_flow = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-submit-flow.js").read_text(encoding="utf-8")
+        self.assertIn("cp-dialog-open", submit_flow)
+        self.assertIn("lockDocumentScroll", submit_flow)
+        self.assertIn("unlockDocumentScroll", submit_flow)
+        self.assertIn("overscroll-behavior: contain", self.css)
+
     def test_preview_and_handoff_dialogs_escape_containing_layout(self):
         submit_flow = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-submit-flow.js").read_text(encoding="utf-8")
         self.assertRegex(submit_flow, r"document\.body\.append(?:Child)?\(dialog\)")
@@ -139,11 +193,11 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
             ".cp-mobile-action-bar",
             "body.cp-studio-active > .navbar",
             "body.cp-studio-active > .bottom-nav",
-            "body.cp-studio-active { overflow: visible !important; }",
+            "body.cp-studio-active { overflow: hidden !important; }",
             "body.cp-studio-active .cp-workbench { grid-template-columns: minmax(0, 1fr); }",
             "@media (max-width: 1100px)",
             ".cp-stage-card { display: none !important; }",
-            ".cp-page.is-studio-active { overflow: visible; }",
+            ".cp-page.is-studio-active .cp-studio-appbar",
             "grid-template-columns: repeat(2, minmax(0, 1fr));",
             ".cp-fabric-row { display: grid;",
             ".cp-scroll-anchor",
@@ -160,6 +214,12 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertNotIn("const shouldRelease = rect.top", configurator)
         self.assertIn('window.scrollTo({ top: 0, behavior:', configurator)
 
+    def test_resolved_step_warnings_do_not_leak_into_the_final_step(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertIn("dom.statusBox.dataset.defaultStatus", configurator)
+        self.assertIn("function resetStatus()", configurator)
+        self.assertIn('dom.statusBox?.classList.contains("is-warning") && canAdvance(STATE.ui.current_step)', configurator)
+
     def test_fabric_info_is_a_keyboard_safe_control(self):
         configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
         self.assertIn("cp-fabric-info-trigger", configurator)
@@ -167,6 +227,12 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertNotIn('<span role="button" class="cp-fabric-info-trigger"', configurator)
         self.assertIn('modal.setAttribute("aria-modal", "true")', configurator)
         self.assertIn(".cp-fabric-modal-overlay.is-visible", self.css)
+
+    def test_mobile_fabric_descriptions_are_not_line_clamped(self):
+        self.assertRegex(
+            self.css,
+            r"@media \(max-width: 760px\)[\s\S]*?\.cp-fabric-chip-hint\s*\{[^}]*overflow:\s*visible;[^}]*-webkit-line-clamp:\s*unset",
+        )
 
     def test_fit_and_fabric_palette_resolvers_feed_preview_and_refresh(self):
         configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
@@ -178,6 +244,7 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
     def test_mobile_shell_reactivation_keeps_bar_visible_after_scroll(self):
         mobile_shell = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-mobile-shell.js").read_text(encoding="utf-8")
         self.assertIn("mobileBar.hidden = !active", mobile_shell)
+        self.assertIn("document.body.append(appbar)", mobile_shell)
         self.assertIn('data-studio-exit', self.template)
         self.assertIn('aria-pressed="false"', self.template)
 
@@ -188,6 +255,40 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertIn("cp-dropzone-progress", self.css)
         self.assertIn(".cp-artwork-services > *", self.css)
         self.assertIn("min-width: 0", self.css)
+
+    def test_mobile_placement_has_an_eye_preview_hint(self):
+        self.assertIn("cp-mobile-preview-hint", self.template)
+        self.assertIn("data-preview-open", self.template)
+        self.assertIn("кнопку з оком угорі", self.template)
+        self.assertRegex(
+            self.css,
+            r"@media \(min-width: 1101px\)[^{]*\{[^}]*\.cp-mobile-preview-hint\s*\{[^}]*display:\s*none",
+        )
+
+    def test_fit_cards_use_historical_selector_art_not_stage_silhouettes(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        for asset in (
+            "ui/tshirt-regular.png",
+            "ui/tshirt-oversize.png",
+            "ui/hoodie-regular.png",
+            "ui/hoodie-oversize.png",
+        ):
+            self.assertIn(asset, configurator)
+
+    def test_thermo_cards_and_swatches_expose_clear_mobile_identity(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertIn("cp-swatch--thermo", configurator)
+        self.assertIn("cp-swatch-thermo-icon", configurator)
+        self.assertIn("Термохромна тканина", configurator)
+        self.assertIn("min-width: 44px", self.css)
+
+    def test_gift_step_has_one_dynamic_continue_action(self):
+        gift_step = self.template.split('data-step="gift"', 1)[1].split('</section>', 1)[0]
+        self.assertNotIn("data-step-skip", gift_step)
+        self.assertIn("data-gift-continue", gift_step)
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertIn("Продовжити без подарункової упаковки", configurator)
+        self.assertIn("Продовжити з подарунковою упаковкою", configurator)
 
     def test_hero_calibration_keeps_print_frames_on_garments_on_mobile(self):
         self.assertIn(".cp-hero-print-zone--hoodie { left: 12%; }", self.css)

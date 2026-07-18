@@ -470,6 +470,17 @@
                 </div>
               </div>
 
+              <button type="button" class="cp-mobile-preview-hint" data-preview-open>
+                <span class="cp-mobile-preview-hint-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M2.8 12s3.4-6 9.2-6 9.2 6 9.2 6-3.4 6-9.2 6-9.2-6-9.2-6Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                    <circle cx="12" cy="12" r="2.8" stroke="currentColor" stroke-width="1.7"/>
+                  </svg>
+                </span>
+                <span>{% trans 'Переглянути розташування на виробі можна через кнопку з оком угорі.' %}</span>
+                <svg class="cp-mobile-preview-hint-arrow" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m7.5 4.5 5 5-5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="config">{% trans 'Назад' %}</button>
                 <button type="button" class="cp-link cp-link--primary" data-step-next="artwork">{% trans 'Далі до макета' %}</button>
@@ -633,8 +644,7 @@
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="quantity">{% trans 'Назад' %}</button>
-                <button type="button" class="cp-tertiary-button" data-step-skip="contact">{% trans 'Пропустити' %}</button>
-                <button type="button" class="cp-link cp-link--primary" data-step-next="contact">{% trans 'Додати упаковку' %}</button>
+                <button type="button" class="cp-link cp-link--primary" data-step-next="contact" data-gift-continue>{% trans 'Продовжити без подарункової упаковки' %}</button>
               </div>
             </div>
           </section>
@@ -1041,10 +1051,10 @@
 {% block extra_js %}
   {{ block.super }}
   <script src="{% static 'js/custom-print-submission-policy.js' %}" defer></script>
-  <script src="{% static 'js/custom-print-state.js' %}?v=20260718-modern-atelier-7" defer></script>
-  <script src="{% static 'js/custom-print-preview.js' %}?v=20260718-modern-atelier-7" defer></script>
-  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260718-modern-atelier-7" defer></script>
-  <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260718-modern-atelier-7" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260718-modern-atelier-7" defer></script>
+  <script src="{% static 'js/custom-print-state.js' %}?v=20260718-modern-atelier-8" defer></script>
+  <script src="{% static 'js/custom-print-preview.js' %}?v=20260718-modern-atelier-8" defer></script>
+  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260718-modern-atelier-8" defer></script>
+  <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260718-modern-atelier-8" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260718-modern-atelier-8" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

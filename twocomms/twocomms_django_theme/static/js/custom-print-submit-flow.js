@@ -1,5 +1,34 @@
 (function (global) {
   const focusableSelector = "a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
+  let openDialogCount = 0;
+  let lockedScrollY = 0;
+  let documentWasStudioLocked = false;
+
+  function lockDocumentScroll() {
+    if (openDialogCount > 0) {
+      openDialogCount += 1;
+      return;
+    }
+    openDialogCount = 1;
+    lockedScrollY = global.scrollY || document.documentElement.scrollTop || 0;
+    documentWasStudioLocked = document.body.classList.contains("cp-studio-active");
+    document.documentElement.classList.add("cp-dialog-open");
+    document.body.classList.add("cp-dialog-open");
+    if (!documentWasStudioLocked) {
+      document.body.style.top = `${-lockedScrollY}px`;
+    }
+  }
+
+  function unlockDocumentScroll() {
+    if (!openDialogCount) return;
+    openDialogCount -= 1;
+    if (openDialogCount > 0) return;
+    document.documentElement.classList.remove("cp-dialog-open");
+    document.body.classList.remove("cp-dialog-open");
+    document.body.style.removeProperty("top");
+    if (!documentWasStudioLocked) global.scrollTo(0, lockedScrollY);
+    documentWasStudioLocked = false;
+  }
 
   function wireDialog(dialog) {
     if (!dialog) return null;
@@ -11,7 +40,10 @@
       event.preventDefault();
       dialog.close();
     });
-    dialog.addEventListener("close", () => returnFocus?.focus?.());
+    dialog.addEventListener("close", () => {
+      unlockDocumentScroll();
+      returnFocus?.focus?.({ preventScroll: true });
+    });
     dialog.addEventListener("keydown", (event) => {
       if (event.key !== "Tab") return;
       const items = Array.from(dialog.querySelectorAll(focusableSelector));
@@ -30,7 +62,13 @@
       open(trigger) {
         if (dialog.open) return;
         returnFocus = trigger || document.activeElement;
-        dialog.showModal();
+        lockDocumentScroll();
+        try {
+          dialog.showModal();
+        } catch (error) {
+          unlockDocumentScroll();
+          throw error;
+        }
         dialog.querySelector(focusableSelector)?.focus();
       },
     };

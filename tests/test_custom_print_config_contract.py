@@ -242,6 +242,22 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         self.assertIn("турецький кулір", tshirt["regular"][1]["short_desc"].lower())
         self.assertIn("ребана", tshirt["oversize"][1]["short_desc"])
         self.assertIn("від тепла", tshirt["oversize"][2]["short_desc"])
+        self.assertEqual(
+            tshirt["oversize"][2]["preview_image"],
+            "/static/img/configurator/ui/thermo-preview.png",
+        )
+
+    def test_artwork_services_separate_ready_adjustment_and_new_design(self):
+        config = build_custom_print_config(submit_url="/lead/", safe_exit_url="/safe-exit/", add_to_cart_url="/cart/")
+        ready, adjust, design = config["artwork_services"]
+        self.assertIn("PNG", ready["hint"])
+        self.assertIn("прозор", ready["hint"].lower())
+        self.assertIn("менеджер", ready["hint"].lower())
+        self.assertIn("чорне або біле тло", adjust["hint"].lower())
+        self.assertIn("напівпрозорі пікселі", adjust["hint"].lower())
+        self.assertNotIn("референс", adjust["hint"].lower())
+        self.assertIn("референс", design["hint"].lower())
+        self.assertIn("з нуля", design["hint"].lower())
 
     def test_stage_profiles_expose_distinct_back_presets_for_a4_a3_a2(self):
         config = build_custom_print_config(

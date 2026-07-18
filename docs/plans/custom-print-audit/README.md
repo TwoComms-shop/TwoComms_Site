@@ -26,6 +26,7 @@ This folder is the living record for the second Custom Print quality pass. It de
 
 - `findings-2026-07-17.md` — reproduced defects, root causes, evidence and severity.
 - `implementation-plan.md` — ordered implementation batches, tests and acceptance criteria.
+- `png-garment-asset-spec-2026-07-18.md` — current 1200x1400 production contract for replacement garment renders.
 
 ## Status Legend
 

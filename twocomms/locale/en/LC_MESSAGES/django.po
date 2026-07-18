@@ -10381,3 +10381,24 @@ msgstr "It reacts to body heat and changes colour.\nIdeal for looks that get not
 
 msgid "Преміум-варіант має вищу щільність, акуратнішу обробку пеньє та краще тримає форму навіть після активного носіння.\nПолотно більш стійке до навантаження, зберігає гладку поверхню навіть після тривалого носіння та постійного тертя об сумку чи рюкзак, виглядає структурніше й дає відчутно чистішу основу під кастомний принт."
 msgstr "The premium option uses a denser fabric with careful penye finishing and keeps its shape through active wear.\nThe surface is more resilient and gives the custom print a cleaner, more structured base."
+
+msgid "Прозорий PNG або чистий вектор, уже готовий до друку. Менеджер однаково перевірить файл."
+msgstr "A transparent PNG or clean vector ready for print. A manager will still inspect the file."
+
+msgid "Можемо почистити чи адаптувати файл: приберемо просте чорне або біле тло, очистимо напівпрозорі пікселі чи внесемо невелику технічну зміну."
+msgstr "We can clean or adapt the file: remove a plain black or white background, clean semi-transparent pixels, or make a small technical adjustment."
+
+msgid "Відтворимо референс або створимо дизайн з нуля за вашою ідеєю та побажаннями."
+msgstr "We will recreate a reference or design from scratch based on your idea and preferences."
+
+msgid "Переглянути розташування на виробі можна через кнопку з оком угорі."
+msgstr "View print placement on the garment using the eye button above."
+
+msgid "Продовжити без подарункової упаковки"
+msgstr "Continue without gift packaging"
+
+msgid "Продовжити з подарунковою упаковкою"
+msgstr "Continue with gift packaging"
+
+msgid "Термохромна тканина"
+msgstr "Thermochromic fabric"

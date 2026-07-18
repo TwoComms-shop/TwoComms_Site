@@ -1,5 +1,11 @@
 # Custom Print Stage Asset Contract
 
+> **Obsolete for new artwork.** This document describes the retired SVG-era
+> stage. Use
+> [`docs/plans/custom-print-audit/png-garment-asset-spec-2026-07-18.md`](plans/custom-print-audit/png-garment-asset-spec-2026-07-18.md)
+> for all new garment renders. The current production canvas is `1200 x 1400`
+> RGBA PNG; do not export new assets from the dimensions below.
+
 Этот документ нужен, если силуэты для блока `custom-print` будет рисовать дизайнер, а не генерировать кодом.
 
 ## Что уже работает сейчас

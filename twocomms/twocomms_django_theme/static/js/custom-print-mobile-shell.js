@@ -7,6 +7,7 @@
     const stepLabel = root.querySelector("[data-appbar-step]");
     const progress = root.querySelector("[data-appbar-progress]");
 
+    if (appbar && appbar.parentNode !== document.body) document.body.append(appbar);
     if (mobileBar && mobileBar.parentNode !== document.body) document.body.append(mobileBar);
     exitButton?.addEventListener("click", onExit);
     managerButton?.addEventListener("click", onManager);
