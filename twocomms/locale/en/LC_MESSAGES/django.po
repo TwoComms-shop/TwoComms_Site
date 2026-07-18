@@ -10372,3 +10372,12 @@ msgstr "Your colour"
 
 msgid "Оливковий"
 msgstr "Olive"
+
+msgid "Від 5 штук — знижка рахується автоматично. Велику партію менеджер прорахує індивідуально."
+msgstr "From 5 pieces, the discount is calculated automatically. A manager will quote larger batches individually."
+
+msgid "Реагує на тепло тіла та змінює колір.\nІдеальна для образів, які привертають увагу."
+msgstr "It reacts to body heat and changes colour.\nIdeal for looks that get noticed."
+
+msgid "Преміум-варіант має вищу щільність, акуратнішу обробку пеньє та краще тримає форму навіть після активного носіння.\nПолотно більш стійке до навантаження, зберігає гладку поверхню навіть після тривалого носіння та постійного тертя об сумку чи рюкзак, виглядає структурніше й дає відчутно чистішу основу під кастомний принт."
+msgstr "The premium option uses a denser fabric with careful penye finishing and keeps its shape through active wear.\nThe surface is more resilient and gives the custom print a cleaner, more structured base."
