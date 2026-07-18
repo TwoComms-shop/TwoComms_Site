@@ -21,6 +21,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAdminUser
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 
 from .models import UTMSession, UserAction
 from .utm_analytics import (
@@ -47,6 +49,7 @@ from .utm_cohort_analysis import (
 logger = logging.getLogger(__name__)
 
 
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class UTMAnalyticsViewSet(viewsets.ViewSet):
     """
     ViewSet для UTM аналитики.
@@ -267,6 +270,9 @@ class UTMAnalyticsViewSet(viewsets.ViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @extend_schema(
+        parameters=[OpenApiParameter("id", OpenApiTypes.INT, OpenApiParameter.PATH)],
+    )
     @action(detail=True, methods=['get'])
     def session_detail(self, request, pk=None):
         """Получить детальную информацию о сессии"""

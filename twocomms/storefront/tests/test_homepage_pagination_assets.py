@@ -200,9 +200,52 @@ class HomepagePaginationCssTests(SimpleTestCase):
         self.assertIn("const runAfterProductsRender = (mode = 'append') =>", js)
         self.assertRegex(js, r"if \(mode === 'append'\)\s*\{\s*animateNewCards\(productsContainer\);")
         self.assertIn("revealColorDots(container, { animate: false });", js)
-        self.assertIn("void container.offsetHeight;", js)
+        self.assertNotIn("void container.offsetHeight;", js)
+        self.assertRegex(
+            js,
+            r"container\.classList\.add\('is-page-entering'\);\s*//[\s\S]*?await nextAnimationFrame\(\);\s*await nextAnimationFrame\(\);\s*container\.classList\.add\('is-page-entered'\);",
+        )
         self.assertNotIn("productsContainer.classList.toggle('is-page-replacing'", js)
         self.assertNotIn("#products-container.is-page-replacing", css)
+
+    def test_home_cards_do_not_run_redundant_layout_equalization(self):
+        js_path = (
+            Path(__file__).resolve().parents[2]
+            / "twocomms_django_theme"
+            / "static"
+            / "js"
+            / "modules"
+            / "homepage.js"
+        )
+        home_css_path = (
+            Path(__file__).resolve().parents[2]
+            / "twocomms_django_theme"
+            / "static"
+            / "css"
+            / "home.css"
+        )
+        js = js_path.read_text(encoding="utf-8")
+        home_css = home_css_path.read_text(encoding="utf-8")
+
+        self.assertIn("aspect-ratio: 9 / 13.6;", home_css)
+        self.assertNotIn("initCardEqualization", js)
+        self.assertNotIn("equalizeCardHeights", js)
+        self.assertNotIn("equalizeProductTitles", js)
+        self.assertNotIn("querySelectorAll('.card.product')", js)
+        self.assertNotIn("row.dataset.eqHeight", js)
+
+    def test_homepage_module_cache_versions_match(self):
+        theme_root = Path(__file__).resolve().parents[2] / "twocomms_django_theme"
+        main_js = (theme_root / "static" / "js" / "main.js").read_text(encoding="utf-8")
+        base_template = (theme_root / "templates" / "base.html").read_text(encoding="utf-8")
+
+        dynamic_version = re.search(r"homepage\.js\?v=([\w-]+)", main_js)
+        preload_version = re.search(r"homepage\.js' %\}\?v=([\w-]+)", base_template)
+
+        self.assertIsNotNone(dynamic_version)
+        self.assertIsNotNone(preload_version)
+        self.assertEqual(dynamic_version.group(1), preload_version.group(1))
+        self.assertEqual(dynamic_version.group(1), "20260718-home-perf")
 
     def test_home_pagination_has_ellipsis_style(self):
         css_path = (

@@ -373,7 +373,7 @@ For **each row**, verify on production for locales **uk (default)**, **ru** (`/r
 | SEO-064 | Draft/archived absent | P0 | [x] PASS only published in public sitemap sample|
 | SEO-065 | Variant locs resolve | P1 | [x] PASS sample 60/178 (F-034) |
 | SEO-066 | Empty sections removed or filled | P1 | [x] color sitemap live 12/12 unique; F-006 fixed `a6c3c39b` |
-| SEO-067 | lastmod honest | P2 | [x] WARN lastmod clustered Jun 2026 F-014|
+| SEO-067 | lastmod honest | P2 | [x] PASS per-product production timestamps verified; F-014 false positive |
 | SEO-068 | i18n alternates consistent | P1 | [x] color sitemap UK/RU/EN reciprocal alternates live-verified; F-006 fixed |
 | SEO-069 | robots.txt host + allows/disallows | P0 | [x] PASS robots host+disallows|
 | SEO-070 | search not in sitemap | P1 | [x] PASS search noindex / not in sitemap|

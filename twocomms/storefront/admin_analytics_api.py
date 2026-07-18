@@ -6,10 +6,13 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 
 from .services.admin_analytics import build_widget_by_name, parse_analytics_filters
 
 
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class AdminAnalyticsViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated, IsAdminUser]
 

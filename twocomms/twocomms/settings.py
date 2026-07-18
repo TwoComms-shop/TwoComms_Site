@@ -144,7 +144,7 @@ ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',') if os.environ.get
 if not DEBUG:
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
-    X_FRAME_OPTIONS = 'SAMEORIGIN'
+    X_FRAME_OPTIONS = 'DENY'
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
@@ -156,7 +156,7 @@ else:
     # Для разработки - менее строгие настройки
     SECURE_BROWSER_XSS_FILTER = False
     SECURE_CONTENT_TYPE_NOSNIFF = False
-    X_FRAME_OPTIONS = 'SAMEORIGIN'
+    X_FRAME_OPTIONS = 'DENY'
     SECURE_HSTS_SECONDS = 0
 
 
@@ -1210,7 +1210,7 @@ COMPRESS_OFFLINE = ensure_compress_offline(COMPRESS_OFFLINE)
 # Базовые настройки безопасности
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
-X_FRAME_OPTIONS = 'SAMEORIGIN'
+X_FRAME_OPTIONS = 'DENY'
 SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 
 _CSP_DEFAULT = (
@@ -1271,7 +1271,7 @@ _CSP_DEFAULT = (
     "object-src 'none'; "
     "base-uri 'self'; "
     "form-action 'self'; "
-    "frame-ancestors 'self'; "
+    "frame-ancestors 'none'; "
     "upgrade-insecure-requests; "
     # Phase 22d (2026-05-13) — report-to endpoint so we can monitor
     # unauthorised 3rd-party injections (e.g. malicious GTM tags or

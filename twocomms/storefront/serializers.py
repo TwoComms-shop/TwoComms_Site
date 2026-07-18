@@ -28,9 +28,9 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'slug', 'products_count']
         read_only_fields = ['id', 'slug']
 
-    def get_products_count(self, obj):
+    def get_products_count(self, obj) -> int:
         """Возвращает количество товаров в категории."""
-        return obj.products.count()
+        return obj.products.filter(status='published').count()
 
 
 class ProductColorSerializer(serializers.ModelSerializer):
@@ -75,7 +75,7 @@ class ProductListSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'slug']
 
-    def get_image(self, obj):
+    def get_image(self, obj) -> str | None:
         """Возвращает URL главного изображения."""
         if obj.main_image:
             request = self.context.get('request')
@@ -119,7 +119,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'slug']
 
-    def get_image(self, obj):
+    def get_image(self, obj) -> str | None:
         """Возвращает URL главного изображения."""
         if obj.main_image:
             request = self.context.get('request')

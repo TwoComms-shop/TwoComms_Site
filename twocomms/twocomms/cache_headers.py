@@ -53,7 +53,7 @@ def add_cache_headers(headers, path, url):
         headers['Service-Worker-Allowed'] = '/'
         headers['Vary'] = 'Accept-Encoding'
         headers['X-Content-Type-Options'] = 'nosniff'
-        headers['X-Frame-Options'] = 'SAMEORIGIN'
+        headers['X-Frame-Options'] = 'DENY'
         return headers
 
     # Определяем тип файла по расширению
@@ -107,7 +107,7 @@ def add_cache_headers(headers, path, url):
     # Добавляем заголовки для оптимизации
     headers['Vary'] = 'Accept-Encoding'
     headers['X-Content-Type-Options'] = 'nosniff'
-    headers['X-Frame-Options'] = 'SAMEORIGIN'
+    headers['X-Frame-Options'] = 'DENY'
 
     return headers
 

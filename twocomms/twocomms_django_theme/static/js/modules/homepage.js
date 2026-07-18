@@ -1,4 +1,4 @@
-import { prefersReducedMotion, debounce } from './shared.js';
+import { prefersReducedMotion } from './shared.js';
 
 function parseNumber(value, fallback = 1) {
   const parsed = parseInt(value, 10);
@@ -295,7 +295,9 @@ async function renderProductsHtml(container, html, mode) {
   revealColorDots(container, { animate: false });
   container.classList.remove('is-page-exiting');
   container.classList.add('is-page-entering');
-  void container.offsetHeight;
+  // Give the browser a paint boundary for the enter state without forcing a
+  // synchronous layout read. The second frame reliably starts the transition.
+  await nextAnimationFrame();
   await nextAnimationFrame();
   container.classList.add('is-page-entered');
   await delay(430);
@@ -413,16 +415,6 @@ export function initHomepagePagination() {
         animateNewCards(productsContainer);
       }
       revealColorDots(productsContainer, { animate: mode === 'append' });
-      setTimeout(() => {
-        try {
-          if (window.equalizeCardHeights) {
-            window.equalizeCardHeights();
-          }
-          if (window.equalizeProductTitles) {
-            setTimeout(() => window.equalizeProductTitles(), 50);
-          }
-        } catch (_) {}
-      }, 200);
     };
 
     const loadPage = (pageNumber, options = {}) => {
@@ -666,131 +658,10 @@ export function initCategoriesToggle() {
 }
 
 /**
- * Desktop-only card height + title equalization.
- * На mobile/low — early return (CSS grid + line-clamp делают работу).
- * Публикует window.equalizeCardHeights / equalizeProductTitles для совместимости
- * с pagination-додатковим load, который вызывает их после подгрузки страницы.
- */
-export function initCardEqualization() {
-  const rows = document.querySelectorAll('.row[data-stagger-grid]');
-  if (!rows.length) return;
-  const deviceClass = (document.documentElement.dataset.deviceClass || '').toLowerCase();
-  const isMobileViewport = window.matchMedia('(max-width: 899px)').matches;
-  if (deviceClass === 'low' || isMobileViewport) return;
-
-  const equalizeMq = window.matchMedia('(min-width: 900px)');
-  let eqScheduled = false;
-  function equalizeCardHeights() {
-    if (eqScheduled) return;
-    eqScheduled = true;
-    const run = () => {
-      rows.forEach(row => {
-        const cards = row.querySelectorAll('.card.product');
-        if (!cards.length) return;
-        if (!equalizeMq.matches) {
-          if (row.dataset.eqHeight) { delete row.dataset.eqHeight; }
-          cards.forEach(card => {
-            card.style.height = '';
-            card.style.minHeight = '';
-            card.style.maxHeight = '';
-          });
-          return;
-        }
-        const rowDisplay = window.getComputedStyle(row).display;
-        if (rowDisplay === 'grid') {
-          if (row.dataset.eqHeight) { delete row.dataset.eqHeight; }
-          cards.forEach(card => {
-            card.style.height = '';
-            card.style.minHeight = '';
-            card.style.maxHeight = '';
-          });
-          return;
-        }
-        let maxHeight = 0;
-        cards.forEach(card => {
-          const h = card.getBoundingClientRect().height;
-          if (h > maxHeight) maxHeight = h;
-        });
-        const target = String(Math.ceil(maxHeight));
-        if (row.dataset.eqHeight === target) return;
-        row.dataset.eqHeight = target;
-        const px = target + 'px';
-        cards.forEach(card => {
-          card.style.minHeight = px;
-          card.style.maxHeight = '';
-          card.style.height = '';
-        });
-      });
-      eqScheduled = false;
-    };
-    if ('requestAnimationFrame' in window) { requestAnimationFrame(run); }
-    else { setTimeout(run, 0); }
-  }
-  window.equalizeCardHeights = equalizeCardHeights;
-
-  let titleEqScheduled = false;
-  function equalizeProductTitles() {
-    if (titleEqScheduled) return;
-    titleEqScheduled = true;
-    const run = () => {
-      rows.forEach(row => {
-        const cards = row.querySelectorAll('.card.product');
-        if (!cards.length) return;
-        const titles = [];
-        cards.forEach(card => {
-          const title = card.querySelector('.product-title');
-          if (title) {
-            title.style.height = '';
-            title.style.minHeight = '';
-            title.style.maxHeight = '';
-            titles.push(title);
-          }
-        });
-        if (!titles.length) return;
-        requestAnimationFrame(() => {
-          const rowGroups = new Map();
-          titles.forEach(title => {
-            const top = title.getBoundingClientRect().top;
-            const roundedTop = Math.round(top / 10) * 10;
-            if (!rowGroups.has(roundedTop)) rowGroups.set(roundedTop, []);
-            rowGroups.get(roundedTop).push(title);
-          });
-          rowGroups.forEach(groupTitles => {
-            let maxHeight = 0;
-            groupTitles.forEach(title => {
-              const h = title.getBoundingClientRect().height;
-              if (h > maxHeight) maxHeight = h;
-            });
-            const targetHeight = Math.ceil(maxHeight);
-            groupTitles.forEach(title => {
-              title.style.height = targetHeight + 'px';
-            });
-          });
-        });
-      });
-      titleEqScheduled = false;
-    };
-    if ('requestAnimationFrame' in window) { requestAnimationFrame(run); }
-    else { setTimeout(run, 0); }
-  }
-  window.equalizeProductTitles = equalizeProductTitles;
-
-  const equalizeAll = () => {
-    equalizeCardHeights();
-    setTimeout(equalizeProductTitles, 50);
-  };
-  equalizeAll();
-  window.addEventListener('load', equalizeAll);
-  const debouncedEqualizeAll = debounce(equalizeAll, 160);
-  window.addEventListener('resize', debouncedEqualizeAll);
-}
-
-/**
  * Unified entrypoint: вызывается lazy-loader'ом в main.js на home page.
  */
 export function initHomepage() {
   initFeaturedToggle();
   initCategoriesToggle();
-  initCardEqualization();
   initHomepagePagination();
 }

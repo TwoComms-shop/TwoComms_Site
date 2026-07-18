@@ -2008,7 +2008,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('featured-toggle') ||
     document.getElementById('categoriesToggle')
   ) {
-    import('./modules/homepage.js?v=20260718-home-a11y')
+    import('./modules/homepage.js?v=20260718-home-perf')
       .then(({ initHomepage }) => initHomepage())
       .catch(() => { });
   }

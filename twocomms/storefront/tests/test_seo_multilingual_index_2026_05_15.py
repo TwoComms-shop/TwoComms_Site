@@ -13,6 +13,7 @@ Verifies that:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from django.core.cache import cache, caches
@@ -206,7 +207,7 @@ class SitemapXmlAlternatesTests(TestCase):
         cls.category = Category.objects.create(
             name="Футболки", slug="tshirts", order=10, is_active=True,
         )
-        Product.objects.create(
+        cls.product = Product.objects.create(
             title="Black tee",
             slug="black-tee",
             category=cls.category,
@@ -249,6 +250,30 @@ class SitemapXmlAlternatesTests(TestCase):
         self.assertIn("/ru/product/black-tee/", body)
         self.assertIn("/en/product/black-tee/", body)
         self.assertIn('xhtml:link', body)
+
+    def test_products_sitemap_uses_each_products_own_updated_at(self):
+        second = Product.objects.create(
+            title="White tee",
+            slug="white-tee",
+            category=self.category,
+            price=700,
+            status="published",
+        )
+        Product.objects.filter(pk=self.product.pk).update(
+            updated_at=datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+        )
+        Product.objects.filter(pk=second.pk).update(
+            updated_at=datetime(2026, 3, 4, 12, 0, tzinfo=timezone.utc)
+        )
+
+        response = self.client.get("/sitemap-products.xml")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode("utf-8")
+        # Django emits one URL row per locale. Each product's date must be
+        # repeated only for its UK/RU/EN rows, not copied from another item.
+        self.assertEqual(body.count("<lastmod>2026-01-02</lastmod>"), 3)
+        self.assertEqual(body.count("<lastmod>2026-03-04</lastmod>"), 3)
 
     def test_static_sitemap_lists_locale_urls(self):
         response = self.client.get("/sitemap-static.xml")

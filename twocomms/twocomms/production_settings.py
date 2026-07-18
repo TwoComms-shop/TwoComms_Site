@@ -662,7 +662,7 @@ STATICFILES_DIRS = [
 # Настройки безопасности
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
-X_FRAME_OPTIONS = 'SAMEORIGIN'
+X_FRAME_OPTIONS = 'DENY'
 SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 
 # Отключаем COOP/COEP в продакшене, чтобы не блокировать сторонние виджеты/пиксели

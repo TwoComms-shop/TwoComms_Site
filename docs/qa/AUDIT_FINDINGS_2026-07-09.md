@@ -143,7 +143,7 @@
 | ☐ | ID | Sev | One-line | Detail |
 |---|-----|-----|----------|--------|
 | [x] | **F-009** | P3 | favicon 302 | **FIXED `169e6032`**; production direct 200 `image/x-icon`; §F-009 |
-| [ ] | **F-014** | P3 | sitemap lastmod cluster | §F-014 |
+| [x] | **F-014** | P3 | sitemap lastmod cluster | §F-014 |
 | [x] | **F-015** | P3 | manifest.webmanifest 404 | **FIXED `169e6032`**; production 200 manifest alias; §F-015 |
 
 ### Plan-only reopen (not always separate F-*) — still fix
@@ -202,7 +202,7 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 | [x] **F-011** | P2 | FIXED | DONE | `c0b324c3`: immediate paid init; server 3/3, intercepted live asset matrix 3/3 |
 | [x] **F-012** | P2 | INFO | no | ViewContent JS-only (expected architecture) |
 | [x] **F-013** | P2 | FIXED | DONE | resolved by F-001 `e2558396`; distinct title/H1 fields are intentional, live 9/9 valid |
-| [ ] **F-014** | P3 | OPEN | YES | Sitemap lastmod clustered 2026-06-11 |
+| [x] **F-014** | P3 | FALSE POSITIVE | NO | Per-product timestamps verified against production DB |
 | [x] **F-015** | P3 | FIXED | DONE | `169e6032`: manifest.webmanifest aliases the canonical manifest; production 200 |
 | [x] **F-016** | P3 | PASS | no | Variant URL titles work |
 | [x] **F-017** | P3 | PASS | no | mapa-saytu links all 200 |
@@ -330,9 +330,9 @@ See master index tables below for `[x]` rows (F-012, F-016, F-024, F-046, F-047,
 - [x] **F-090** — **FIXED `5ee9a974`**; two archives restored with exact row-count parity and the preserved six-job crontab contains one guarded daily backup entry
 - [ ] **F-100** — views.py.backup still lazy-loaded (plan W7-1)
 
-### P3 OPEN — 1
+### P3 OPEN — 0
 - [x] **F-009** — fixed `169e6032`; production direct 200
-- [ ] **F-014** — Sitemap lastmod clustered 2026-06-11
+- [x] **F-014** — Sitemap `lastmod` is per-product and production-backed
 - [x] **F-015** — fixed `169e6032`; production 200
 
 ### PASS / INFO / REVISED (не чинить как баг) — 26
@@ -987,11 +987,30 @@ exactly. F-013 therefore closes without new code or DB mutation.
 
 ### F-014 — Sitemap product `lastmod` clustered 2026-06-11
 
-**Status:** [ ] OPEN · **Severity:** P3 · **Fix required:** YES
+**Status:** [x] FALSE POSITIVE · **Severity:** P3 · **Fix required:** NO
 
-- [ ] **Open** · Severity: **P3** · Area: **SEO** · Checklist: SEO-067
+- [x] **Verified false positive (18.07.2026)** · Severity: **P3** · Area: **SEO** · Checklist: SEO-067
 
-Products/variants/categories lastmod in index point to **2026-06-11** while blog newer (2026-06-29). Possible stale lastmod pipeline — Google may under-crawl updates.
+`ProductSitemap.lastmod()` returns each published product's real
+`Product.updated_at` value. The production sitemap contained **213 URL rows**
+(**71 products x 3 locales**), not 213 independent products. The apparent
+cluster of **186 rows** dated `2026-05-15` is exactly **62 products x 3
+locales**. Production DB values for those 62 products are distinct timestamps
+between `12:54:40.893190` and `12:54:41.323351` UTC; Django's sitemap format
+correctly serializes them at day precision.
+
+The timestamps trace to the hand-crafted RU/EN product-content import run on
+2026-05-15. They do not come from the timestamp migration: migration `0043`
+was applied earlier, on `2026-04-19 19:24:35` UTC. Nine other published
+products currently carry later real dates (May 23, June 4, June 11, July 11,
+and July 16), and the live sitemap exposes those dates independently. The
+sitemap index reports the true maximum product timestamp,
+`2026-07-16T12:14:44+00:00`.
+
+No DB backfill or artificial date spreading is appropriate: doing so would
+make `lastmod` less honest. A focused regression test now proves that products
+with different `updated_at` values retain their own dates across the three
+localized sitemap rows.
 
 ---
 

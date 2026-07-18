@@ -14,6 +14,8 @@ from rest_framework.permissions import (
     IsAuthenticated,
     IsAdminUser,
 )
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 
@@ -49,7 +51,7 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
 
     Permissions: Read-only для всех пользователей
     """
-    queryset = Category.objects.all().order_by('name')
+    queryset = Category.objects.filter(is_active=True).order_by('name')
     serializer_class = CategorySerializer
     permission_classes = [AllowAny]
     lookup_field = 'slug'
@@ -77,7 +79,10 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
 
         Использует select_related для минимизации запросов к БД.
         """
-        return Product.objects.all().select_related('category').order_by('-id')
+        return Product.objects.filter(
+            status='published',
+            category__is_active=True,
+        ).select_related('category').order_by('-id')
 
     def get_serializer_class(self):
         """
@@ -161,67 +166,11 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         )
         return Response(serializer.data)
 
-
-class AdminProductBuilderViewSet(viewsets.ViewSet):
-    """
-    Admin endpoints that power the product builder UI.
-
-    Provides read-only payloads for now; write operations
-    are handled via the HTML form and will be exposed in later phases.
-    """
-
-    permission_classes = [IsAuthenticated, IsAdminUser]
-
-    def list(self, request):
-        """Return base payload with active catalogs and their options."""
-        payload = {"catalogs": list_catalog_payloads(active_only=True)}
-        return Response(payload)
-
-    def retrieve(self, request, pk=None):
-        """Return product-centric payload for the builder."""
-        product = get_object_or_404(
-            Product.objects.select_related("catalog", "size_grid", "category"),
-            pk=pk,
-        )
-        payload = get_product_builder_payload(product=product)
-        return Response(payload)
-
-    @action(detail=False, methods=['get'], url_path='catalogs')
-    def catalogs(self, request):
-        """Explicit endpoint for fetching catalogs (supports ?active=false)."""
-        active = request.query_params.get("active")
-        active_only = True if active is None else active.lower() != "false"
-        return Response({"catalogs": list_catalog_payloads(active_only=active_only)})
-
-    @action(detail=False, methods=['get'], url_path='catalogs/(?P<catalog_id>\\d+)')
-    def catalog_detail(self, request, catalog_id=None):
-        """Fetch a single catalog with its options and size grids."""
-        catalog = get_object_or_404(
-            Catalog.objects.prefetch_related(
-                "options__values",
-                "size_grids",
-            ),
-            pk=catalog_id,
-        )
-        return Response({"catalog": serialize_catalog(catalog)})
-
-    @action(detail=False, methods=['get'], url_path='product/new')
-    def new_product(self, request):
-        """
-        Provide initial payload for a new product.
-
-        Supports ?catalog=<id> to pre-select catalog options.
-        """
-        catalog_id = request.query_params.get("catalog")
-        catalog = None
-        if catalog_id:
-            catalog = get_object_or_404(
-                Catalog.objects.prefetch_related("options__values", "size_grids"),
-                pk=catalog_id,
-            )
-        payload = get_product_builder_payload(catalog=catalog)
-        return Response(payload)
-
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("category_slug", OpenApiTypes.STR, OpenApiParameter.PATH),
+        ],
+    )
     @action(detail=False, methods=['get'], url_path='by-category/(?P<category_slug>[^/.]+)')
     def by_category(self, request, category_slug=None):
         """
@@ -238,7 +187,7 @@ class AdminProductBuilderViewSet(viewsets.ViewSet):
             GET /api/products/by-category/odezhda/
         """
         try:
-            category = Category.objects.get(slug=category_slug)
+            category = Category.objects.get(slug=category_slug, is_active=True)
         except Category.DoesNotExist:
             return Response(
                 {'error': 'Категория не найдена'},
@@ -284,7 +233,7 @@ class AdminProductBuilderViewSet(viewsets.ViewSet):
         product = self.get_object()
 
         # Ищем товары из той же категории
-        related_products = Product.objects.filter(
+        related_products = self.get_queryset().filter(
             category=product.category
         ).exclude(
             id=product.id
@@ -351,11 +300,11 @@ class AdminProductBuilderViewSet(viewsets.ViewSet):
             GET /api/products/suggestions/?q=футб&limit=5
         """
         query = request.query_params.get('q', '').strip()
-        limit = int(request.query_params.get('limit', 5))
-
-        # Ограничение лимита
-        if limit > 10:
-            limit = 10
+        try:
+            requested_limit = int(request.query_params.get('limit', 5))
+        except (TypeError, ValueError):
+            requested_limit = 5
+        limit = max(1, min(requested_limit, 10))
 
         if not query or len(query) < 2:
             return Response({
@@ -365,7 +314,7 @@ class AdminProductBuilderViewSet(viewsets.ViewSet):
             })
 
         # Ищем по началу названия (быстрее чем contains)
-        products = Product.objects.filter(
+        products = self.get_queryset().filter(
             title__istartswith=query
         ).values('id', 'title', 'slug')[:limit]
 
@@ -378,6 +327,80 @@ class AdminProductBuilderViewSet(viewsets.ViewSet):
         })
 
 
+@extend_schema(responses=OpenApiTypes.OBJECT)
+class AdminProductBuilderViewSet(viewsets.ViewSet):
+    """
+    Admin endpoints that power the product builder UI.
+
+    Provides read-only payloads for now; write operations
+    are handled via the HTML form and will be exposed in later phases.
+    """
+
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    @extend_schema(operation_id="admin_product_builder_list")
+    def list(self, request):
+        """Return base payload with active catalogs and their options."""
+        payload = {"catalogs": list_catalog_payloads(active_only=True)}
+        return Response(payload)
+
+    @extend_schema(
+        operation_id="admin_product_builder_retrieve",
+        parameters=[OpenApiParameter("id", OpenApiTypes.INT, OpenApiParameter.PATH)],
+    )
+    def retrieve(self, request, pk=None):
+        """Return product-centric payload for the builder."""
+        product = get_object_or_404(
+            Product.objects.select_related("catalog", "size_grid", "category"),
+            pk=pk,
+        )
+        payload = get_product_builder_payload(product=product)
+        return Response(payload)
+
+    @extend_schema(operation_id="admin_product_builder_catalogs")
+    @action(detail=False, methods=['get'], url_path='catalogs')
+    def catalogs(self, request):
+        """Explicit endpoint for fetching catalogs (supports ?active=false)."""
+        active = request.query_params.get("active")
+        active_only = True if active is None else active.lower() != "false"
+        return Response({"catalogs": list_catalog_payloads(active_only=active_only)})
+
+    @extend_schema(
+        operation_id="admin_product_builder_catalog_detail",
+        parameters=[OpenApiParameter("catalog_id", OpenApiTypes.INT, OpenApiParameter.PATH)],
+    )
+    @action(detail=False, methods=['get'], url_path='catalogs/(?P<catalog_id>\\d+)')
+    def catalog_detail(self, request, catalog_id=None):
+        """Fetch a single catalog with its options and size grids."""
+        catalog = get_object_or_404(
+            Catalog.objects.prefetch_related(
+                "options__values",
+                "size_grids",
+            ),
+            pk=catalog_id,
+        )
+        return Response({"catalog": serialize_catalog(catalog)})
+
+    @extend_schema(operation_id="admin_product_builder_new_product")
+    @action(detail=False, methods=['get'], url_path='product/new')
+    def new_product(self, request):
+        """
+        Provide initial payload for a new product.
+
+        Supports ?catalog=<id> to pre-select catalog options.
+        """
+        catalog_id = request.query_params.get("catalog")
+        catalog = None
+        if catalog_id:
+            catalog = get_object_or_404(
+                Catalog.objects.prefetch_related("options__values", "size_grids"),
+                pk=catalog_id,
+            )
+        payload = get_product_builder_payload(catalog=catalog)
+        return Response(payload)
+
+
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class CartViewSet(viewsets.ViewSet):
     """
     ViewSet для операций с корзиной.
@@ -392,6 +415,7 @@ class CartViewSet(viewsets.ViewSet):
     """
     permission_classes = [IsAuthenticatedOrReadOnly]
 
+    @extend_schema(request=CartItemSerializer)
     @action(detail=False, methods=['post'])
     def add(self, request):
         """
@@ -463,6 +487,7 @@ class CartViewSet(viewsets.ViewSet):
             'cart_count': sum(item['quantity'] for item in cart.values())
         })
 
+    @extend_schema(request=OpenApiTypes.OBJECT)
     @action(detail=False, methods=['post'])
     def remove(self, request):
         """
@@ -501,6 +526,7 @@ class CartViewSet(viewsets.ViewSet):
             status=status.HTTP_404_NOT_FOUND
         )
 
+    @extend_schema(request=None)
     @action(detail=False, methods=['post'])
     def clear(self, request):
         """
@@ -603,6 +629,7 @@ class AnalyticsViewSet(viewsets.ViewSet):
         })
 
 
+@extend_schema(responses=OpenApiTypes.OBJECT)
 class CommunicationViewSet(viewsets.ViewSet):
     """
     ViewSet для коммуникации с клиентами.
@@ -615,6 +642,7 @@ class CommunicationViewSet(viewsets.ViewSet):
     """
     permission_classes = [AllowAny]
 
+    @extend_schema(request=NewsletterSubscribeSerializer)
     @action(detail=False, methods=['post'], url_path='newsletter')
     def newsletter(self, request):
         """
@@ -654,6 +682,7 @@ class CommunicationViewSet(viewsets.ViewSet):
             'message': 'Дякуємо за підписку! Ви будете отримувати наші новини.'
         })
 
+    @extend_schema(request=ContactFormSerializer)
     @action(detail=False, methods=['post'], url_path='contact')
     def contact(self, request):
         """
