@@ -11,6 +11,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from django.utils.translation import override
 
 from storefront.custom_print_config import SESSION_CUSTOM_CART_KEY
 from storefront.models import Category, Product, ProductFitOption, PromoCode
@@ -537,6 +538,19 @@ class CartUtilityEndpointTests(CartViewTestCase):
         self.assertEqual(self.client.session["cart"], {})
         self.assertNotIn("promo_code_id", self.client.session)
         self.assertNotIn("promo_code_data", self.client.session)
+
+    def test_cart_page_exposes_localized_clear_endpoint(self):
+        self.set_cart()
+
+        for locale in ("uk", "ru", "en"):
+            with self.subTest(locale=locale), override(locale):
+                response = self.client.get(reverse("cart"))
+
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(
+                    response,
+                    f'data-cart-clear-url="{reverse("clean_cart")}"',
+                )
 
     def test_get_cart_count_sums_current_qty_values(self):
         self.set_cart(qty=3)

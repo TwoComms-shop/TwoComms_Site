@@ -313,7 +313,10 @@
           document.querySelector('input[name="csrfmiddlewaretoken"]')?.value ||
           getCookie('csrftoken');
 
-        fetch('/cart/clear/', {
+        var cartContainer = document.querySelector('.cart-page-container');
+        var clearUrl = cartContainer?.dataset.cartClearUrl || '/cart/clean/';
+
+        fetch(clearUrl, {
           method: 'POST',
           headers: {
             'X-CSRFToken': csrfToken,
