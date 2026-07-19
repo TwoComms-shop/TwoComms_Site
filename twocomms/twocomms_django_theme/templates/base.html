@@ -1250,6 +1250,7 @@
   {% endcache %}
   {% include 'partials/language_switcher.html' %}
 
+  {% language_switch_links as language_suggestion_links %}
   <div id="language-suggestion" class="language-suggestion" hidden aria-hidden="true" data-nosnippet
        data-set-language-url="{% url 'set_language' %}">
     <div class="language-suggestion__backdrop" data-language-suggestion-backdrop></div>
@@ -1265,7 +1266,11 @@
         <form method="post" action="{% url 'set_language' %}" data-language-suggestion-form>
           <input type="hidden" name="csrfmiddlewaretoken" value="">
           <input type="hidden" name="language" value="uk">
-          <input type="hidden" name="next" value="" aria-label="{% trans 'Поточна сторінка' %}">
+          {% for item in language_suggestion_links %}
+            {% if item.code == 'uk' %}
+              <input type="hidden" name="next" value="{{ item.url }}" aria-label="{% trans 'Поточна сторінка' %}">
+            {% endif %}
+          {% endfor %}
           <button type="submit" class="language-suggestion__button language-suggestion__button--primary" data-language-suggestion-switch></button>
         </form>
       </div>

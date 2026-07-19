@@ -64,7 +64,6 @@
   var stay = root.querySelector('[data-language-suggestion-stay]');
   var switchButton = root.querySelector('[data-language-suggestion-switch]');
   var form = root.querySelector('[data-language-suggestion-form]');
-  var next = root.querySelector('input[name="next"]');
   var close = root.querySelector('[data-language-suggestion-close]');
   var backdrop = root.querySelector('[data-language-suggestion-backdrop]');
 
@@ -130,7 +129,6 @@
     form.addEventListener('submit', function (event) {
       event.preventDefault();
       remember('switched');
-      if (next) next.value = window.location.href;
       var tokenInput = form.querySelector('input[name="csrfmiddlewaretoken"]');
       var cookieMatch = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
       var token = cookieMatch ? decodeURIComponent(cookieMatch[1]) : '';

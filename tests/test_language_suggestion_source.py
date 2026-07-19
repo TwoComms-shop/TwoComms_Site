@@ -35,6 +35,8 @@ class LanguageSuggestionSourceTests(unittest.TestCase):
     def test_switch_button_has_no_hardcoded_ukrainian_copy(self):
         template = BASE.read_text(encoding="utf-8")
         self.assertIn("data-language-suggestion-switch", template)
+        self.assertIn("language_switch_links as language_suggestion_links", template)
+        self.assertNotIn("next.value = window.location.href", SOURCE.read_text(encoding="utf-8"))
         self.assertNotIn(
             'class="language-suggestion__button language-suggestion__button--primary">Перейти українською',
             template,
