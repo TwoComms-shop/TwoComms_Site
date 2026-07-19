@@ -101,7 +101,7 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         tshirt = config["products"]["tshirt"]
         self.assertEqual(tshirt["fits"][0]["label"], "Классическая")
         self.assertEqual(tshirt["colors"][2]["label"], "Койот")
-        self.assertEqual(tshirt["fabrics"]["oversize"][1]["label"], "Термохромная ткань")
+        self.assertEqual(tshirt["fabrics"]["oversize"][2]["label"], "Термохромная ткань")
 
     @override_settings(LANGUAGE_CODE="en")
     def test_product_ui_copy_is_localized_for_english_runtime(self):
@@ -146,13 +146,17 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["value"] for item in config["products"]["tshirt"]["fabrics"]["regular"]],
-            ["standard", "premium"],
+            ["standard", "premium", "thermo"],
         )
         self.assertEqual(
             [item["value"] for item in config["products"]["tshirt"]["fabrics"]["oversize"]],
-            ["premium", "thermo"],
+            ["standard", "premium", "thermo"],
         )
-        self.assertEqual(config["products"]["tshirt"]["fabrics"]["oversize"][1]["price_delta"], 500)
+        self.assertEqual(config["products"]["tshirt"]["fabrics"]["oversize"][2]["price_delta"], 500)
+        standard = config["products"]["tshirt"]["fabrics"]["regular"][0]
+        self.assertFalse(standard["available"])
+        self.assertTrue(standard["disabled"])
+        self.assertEqual(config["products"]["hoodie"]["zones"], ["front", "back", "kangaroo", "sleeve"])
         self.assertIn("stage_profiles", config)
         self.assertIn("hoodie", config["stage_profiles"])
         self.assertIn("regular", config["stage_profiles"]["hoodie"])
@@ -238,12 +242,13 @@ class CustomPrintConfigContractTests(unittest.TestCase):
     def test_config_exposes_clear_classic_premium_and_thermo_descriptions(self):
         config = build_custom_print_config(submit_url="/lead/", safe_exit_url="/safe-exit/", add_to_cart_url="/cart/")
         tshirt = config["products"]["tshirt"]["fabrics"]
-        self.assertIn("без пеньє-обробки", tshirt["regular"][0]["short_desc"])
+        self.assertIn("недоступна", tshirt["regular"][0]["short_desc"])
         self.assertIn("турецький кулір", tshirt["regular"][1]["short_desc"].lower())
-        self.assertIn("ребана", tshirt["oversize"][0]["short_desc"])
-        self.assertIn("від тепла", tshirt["oversize"][1]["short_desc"])
+        self.assertIn("недоступна", tshirt["oversize"][0]["short_desc"])
+        self.assertIn("ребана", tshirt["oversize"][1]["short_desc"])
+        self.assertIn("від тепла", tshirt["oversize"][2]["short_desc"])
         self.assertEqual(
-            tshirt["oversize"][1]["preview_image"],
+            tshirt["oversize"][2]["preview_image"],
             "/static/img/configurator/ui/thermo-preview.png",
         )
 
@@ -334,6 +339,12 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         )
 
         self.assertEqual(normalized["print"]["zone_options"]["front"]["size_preset"], "A4")
+
+    def test_normalize_snapshot_rejects_unavailable_tshirt_standard_fabric(self):
+        normalized = normalize_custom_print_snapshot(
+            {"product": {"type": "tshirt", "fit": "regular", "fabric": "standard", "color": "black"}}
+        )
+        self.assertEqual(normalized["product"]["fabric"], "premium")
 
     def test_normalize_snapshot_preserves_fit_specific_hoodie_color(self):
         normalized = normalize_custom_print_snapshot(

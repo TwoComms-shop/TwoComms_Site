@@ -12,7 +12,12 @@ import django
 
 django.setup()
 
-from storefront.custom_print_notifications import _build_message, notify_new_custom_print_lead
+from storefront.custom_print_notifications import (
+    _build_message,
+    _info_reply_markup_full,
+    _moderation_reply_markup,
+    notify_new_custom_print_lead,
+)
 
 
 class AttachmentList(list):
@@ -78,6 +83,14 @@ class FakeLead:
             },
         ]
         self.attachments = AttachmentList(attachments or [])
+        self.telegram_verified_user_id = None
+        self.telegram_verified_username = ""
+        self.telegram_verified_phone = ""
+        self.telegram_verified_at = None
+        self.moderation_token = "test-token"
+
+    def ensure_moderation_token(self):
+        return self.moderation_token
 
     def get_client_kind_display(self):
         return "Для команди / бренду"
@@ -99,15 +112,16 @@ class FakeLead:
 
 
 class FakeNotifier:
-    def __init__(self):
+    def __init__(self, message_result=True):
         self.calls = []
+        self.message_result = message_result
 
     def is_configured(self):
         return True
 
     def send_admin_message(self, message, parse_mode="HTML", reply_markup=None):
         self.calls.append(("message", message, parse_mode, reply_markup))
-        return True
+        return self.message_result
 
     def send_admin_media_group(self, file_paths, captions=None, parse_mode="HTML"):
         self.calls.append(("media_group", list(file_paths), list(captions or []), parse_mode))
@@ -123,6 +137,24 @@ class FakeNotifier:
 
 
 class CustomPrintNotificationUnitTests(unittest.TestCase):
+    def test_telegram_keyboards_only_use_http_urls(self):
+        lead = FakeLead()
+        lead.contact_channel = "phone"
+        lead.contact_value = "+380661815408"
+        lead.telegram_verified_phone = "+380661815408"
+        lead.telegram_verified_user_id = 123456
+
+        for markup in (_info_reply_markup_full(lead), _moderation_reply_markup(lead)):
+            urls = [
+                button["url"]
+                for row in markup["inline_keyboard"]
+                for button in row
+                if "url" in button
+            ]
+            self.assertTrue(urls)
+            self.assertTrue(all(url.startswith(("http://", "https://")) for url in urls))
+            self.assertFalse(any(url.startswith(("tel:", "tg:")) for url in urls))
+
     def test_build_message_includes_text_only_sleeve_in_structured_placements(self):
         lead = FakeLead()
 
@@ -195,6 +227,26 @@ class CustomPrintNotificationUnitTests(unittest.TestCase):
         self.assertIn("2/2", notifier.calls[2][2])
         self.assertIn("ПРАВИЙ РУКАВ", notifier.calls[2][2])
         self.assertIn("A6", notifier.calls[2][2])
+
+    def test_failed_summary_does_not_send_attachments(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "back.png"
+            image_path.write_bytes(b"fake-image")
+            lead = FakeLead(
+                attachments=[
+                    SimpleNamespace(
+                        placement_zone="back",
+                        file=SimpleNamespace(path=str(image_path), name=str(image_path.name)),
+                    )
+                ]
+            )
+            notifier = FakeNotifier(message_result=False)
+
+            with patch("storefront.custom_print_notifications._build_notifier", return_value=notifier):
+                result = notify_new_custom_print_lead(lead)
+
+        self.assertFalse(result)
+        self.assertEqual([call[0] for call in notifier.calls], ["message"])
 
 
 if __name__ == "__main__":

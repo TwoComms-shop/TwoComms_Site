@@ -45,6 +45,9 @@ UI_STRINGS = {
     "mode_required": _("Оберіть формат замовлення."),
     "product_required": _("Оберіть виріб."),
     "product_config_required": _("Завершіть налаштування виробу."),
+    "config_fit_required": _("Оберіть посадку."),
+    "config_fabric_required": _("Оберіть тканину."),
+    "config_color_required": _("Оберіть колір."),
     "placement_required": _("Оберіть і налаштуйте зони друку."),
     "artwork_service_required": _("Оберіть сценарій роботи з макетом."),
     "artwork_brief_design_required": _("Опишіть бриф / завдання для дизайну."),
@@ -89,36 +92,37 @@ STAGE_META = {
 
 # ── Display labels (legacy + V2) ─────────────────────────────────────
 ZONE_LABELS = {
-    "front": "Спереду",
-    "back": "На спині",
-    "sleeve": "На рукавах",
-    "sleeve_left": "Лівий рукав",
-    "sleeve_right": "Правий рукав",
-    "custom": "Інша зона",
+    "front": _("Спереду"),
+    "back": _("На спині"),
+    "kangaroo": _("Кенгуряча кишеня"),
+    "sleeve": _("На рукавах"),
+    "sleeve_left": _("Лівий рукав"),
+    "sleeve_right": _("Правий рукав"),
+    "custom": _("Інша зона"),
 }
 
 PRODUCT_LABELS = {
-    "hoodie": "Худі",
-    "tshirt": "Футболка",
-    "longsleeve": "Лонгслів",
-    "customer_garment": "Свій одяг",
+    "hoodie": _("Худі"),
+    "tshirt": _("Футболка"),
+    "longsleeve": _("Лонгслів"),
+    "customer_garment": _("Свій одяг"),
 }
 
 FIT_LABELS = {
-    "regular": "Класичний",
-    "oversize": "Оверсайз",
+    "regular": _("Класичний"),
+    "oversize": _("Оверсайз"),
 }
 
 FABRIC_LABELS = {
-    "standard": "База",
-    "premium": "Преміум",
-    "thermo": "Термо",
+    "standard": _("База"),
+    "premium": _("Преміум"),
+    "thermo": _("Термо"),
 }
 
 SERVICE_LABELS = {
-    "ready": "Готовий файл",
-    "adjust": "Потрібно допрацювати",
-    "design": "Потрібен дизайн",
+    "ready": _("Готовий файл"),
+    "adjust": _("Потрібно допрацювати"),
+    "design": _("Потрібен дизайн"),
 }
 
 TRIAGE_LABELS = {
@@ -328,8 +332,8 @@ def _preview_calibration(garment_width_mm: int, allowed_zones: list[str]) -> dic
 
 
 PREVIEW_CALIBRATION = {
-    "hoodie:regular": _preview_calibration(600, ["front", "back", "sleeve"]),
-    "hoodie:oversize": _preview_calibration(650, ["front", "back", "sleeve"]),
+    "hoodie:regular": _preview_calibration(600, ["front", "back", "kangaroo", "sleeve"]),
+    "hoodie:oversize": _preview_calibration(650, ["front", "back", "kangaroo", "sleeve"]),
     "tshirt:regular": _preview_calibration(520, ["front", "back"]),
     "tshirt:oversize": _preview_calibration(600, ["front", "back"]),
     "longsleeve:regular": _preview_calibration(540, ["front", "back", "sleeve"]),
@@ -448,7 +452,7 @@ PRODUCT_MATRIX = {
             ],
         },
         "default_color": "black",
-        "zones": ["front", "back", "sleeve"],
+        "zones": ["front", "back", "kangaroo", "sleeve"],
         "default_zones": [],
         "add_ons": [
             {
@@ -493,10 +497,12 @@ PRODUCT_MATRIX = {
         ],
         "fabrics": {
             "regular": [
-                {"value": "standard", "label": _("Класика"), "short_desc": _("Базовий кулір без пеньє-обробки."), "price_delta": 0, "included_in_base": True},
-                {"value": "premium", "label": _("Преміум"), "short_desc": _("Турецький кулір, пеньє, покращені шви та ребана."), "price_delta": 150, "included_in_base": False},
+                {"value": "standard", "label": _("Класика"), "short_desc": _("Поки недоступна для цього сценарію."), "price_delta": 0, "included_in_base": False, "available": False, "disabled": True},
+                {"value": "premium", "label": _("Преміум"), "short_desc": _("Турецький кулір, пеньє, покращені шви та ребана."), "price_delta": 0, "included_in_base": True},
+                {"value": "thermo", "label": _("Термохромна тканина"), "short_desc": _("Змінює відтінок від тепла тіла."), "price_delta": 500, "included_in_base": False, "info_title": _("Термохромна тканина"), "info_desc": _("Дуже хороша якість, щільні шви та ребана. Від тепла тканина змінює відтінок."), "preview_image": "/static/img/configurator/ui/thermo-preview.png", "colors": [{"value": "thermo_green", "label": _("Зелений (Термо)"), "hex": "#8ba38d"}, {"value": "thermo_pink", "label": _("Рожевий (Термо)"), "hex": "#e78ba7"}]},
             ],
             "oversize": [
+                {"value": "standard", "label": _("Класика"), "short_desc": _("Поки недоступна для цієї посадки."), "price_delta": 0, "included_in_base": False, "available": False, "disabled": True},
                 {
                     "value": "premium",
                     "label": _("Преміум"),
@@ -791,6 +797,11 @@ STAGE_PROFILES = {
                             "A4": calc_iso_box("A4", body_width_mm=600, svg_body_width=204, svg_collar_y=138, top_offset_mm=280, radius=20),
                         },
                     ),
+                    "kangaroo": _stage_anchor(
+                        50,
+                        68.5,
+                        default=_stage_box(50, 68.5, 27.0, 13.5, 0, 18, "pocket"),
+                    ),
                     "sleeve_left": _stage_anchor(
                         27.5,
                         45.5,
@@ -871,6 +882,11 @@ STAGE_PROFILES = {
                             "A5": calc_iso_box("A5", body_width_mm=650, svg_body_width=220, svg_collar_y=154, top_offset_mm=280, radius=19),
                             "A4": calc_iso_box("A4", body_width_mm=650, svg_body_width=220, svg_collar_y=154, top_offset_mm=280, radius=21),
                         },
+                    ),
+                    "kangaroo": _stage_anchor(
+                        50,
+                        69.5,
+                        default=_stage_box(50, 69.5, 29.0, 14.0, 0, 18, "pocket"),
                     ),
                     "sleeve_left": _stage_anchor(
                         24.5,
@@ -1518,10 +1534,18 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
     fabric_choices = {
         item["value"]
         for item in (product_config.get("fabrics") or {}).get(fit or product_config.get("default_fit") or "", [])
+        if item.get("available", True) is not False
     }
     fabric = (product_payload.get("fabric") or product_config.get("default_fabric") or "").strip()
     if fabric_choices and fabric not in fabric_choices:
-        fabric = next(iter(fabric_choices))
+        available_fabrics = [
+            item for item in (product_config.get("fabrics") or {}).get(fit or product_config.get("default_fit") or "", [])
+            if item.get("available", True) is not False
+        ]
+        fabric = (
+            next((item["value"] for item in available_fabrics if item.get("included_in_base")), None)
+            or (available_fabrics[0]["value"] if available_fabrics else next(iter(fabric_choices)))
+        )
     if not fabric_choices:
         fabric = product_config.get("default_fabric", "")
 

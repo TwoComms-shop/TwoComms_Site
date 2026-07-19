@@ -65,10 +65,11 @@ class CustomPrintPricingSourceTests(unittest.TestCase):
     def test_tshirt_oversize_uses_premium_base_and_plus_200_fit(self):
         tshirt = self.config.PRODUCT_MATRIX["tshirt"]
         self.assertEqual(tshirt["pricing"]["oversize_delta"], 200)
-        self.assertEqual([item["value"] for item in tshirt["fabrics"]["oversize"]], ["premium", "thermo"])
-        self.assertTrue(tshirt["fabrics"]["oversize"][0]["included_in_base"])
-        self.assertEqual(tshirt["fabrics"]["oversize"][0]["price_delta"], 0)
-        self.assertEqual(tshirt["fabrics"]["oversize"][1]["label"], "Термохромна тканина")
+        self.assertEqual([item["value"] for item in tshirt["fabrics"]["oversize"]], ["standard", "premium", "thermo"])
+        self.assertFalse(tshirt["fabrics"]["oversize"][0]["available"])
+        self.assertTrue(tshirt["fabrics"]["oversize"][1]["included_in_base"])
+        self.assertEqual(tshirt["fabrics"]["oversize"][1]["price_delta"], 0)
+        self.assertEqual(tshirt["fabrics"]["oversize"][2]["label"], "Термохромна тканина")
 
     def test_print_format_price_is_included_in_unit_total(self):
         source = CONFIGURATOR_PATH.read_text(encoding="utf-8")

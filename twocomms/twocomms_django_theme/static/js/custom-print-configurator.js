@@ -741,12 +741,13 @@
 
     const fitKey = STATE.product.fit || cfg?.default_fit || "";
     const fabricOptions = fitKey ? (cfg?.fabrics?.[fitKey] || []) : [];
-    const includedFabric = fabricOptions.find((item) => item.included_in_base) || fabricOptions[0] || null;
-    if (fabricOptions.length === 1 && includedFabric) {
+    const availableFabricOptions = fabricOptions.filter((item) => item.available !== false);
+    const includedFabric = availableFabricOptions.find((item) => item.included_in_base) || availableFabricOptions[0] || null;
+    if (availableFabricOptions.length === 1 && includedFabric) {
       STATE.product.fabric = includedFabric.value;
-    } else if (fabricOptions.length > 1 && !fabricOptions.some((item) => item.value === STATE.product.fabric)) {
+    } else if (availableFabricOptions.length > 1 && !availableFabricOptions.some((item) => item.value === STATE.product.fabric)) {
       STATE.product.fabric = includedFabric?.value || null;
-    } else if (!fabricOptions.length) {
+    } else if (!availableFabricOptions.length) {
       STATE.product.fabric = "";
     }
 
@@ -1102,11 +1103,12 @@
       return;
     }
     if (dom.fabricBlock) dom.fabricBlock.hidden = false;
-    const baseFabric = fabrics.find((item) => item.included_in_base) || fabrics[0];
-    if (!STATE.product.fabric || !fabrics.some((item) => item.value === STATE.product.fabric)) {
+    const availableFabrics = fabrics.filter((item) => item.available !== false);
+    const baseFabric = availableFabrics.find((item) => item.included_in_base) || availableFabrics[0];
+    if (!STATE.product.fabric || !availableFabrics.some((item) => item.value === STATE.product.fabric)) {
       STATE.product.fabric = baseFabric?.value || null;
     }
-    const isLocked = fabrics.length === 1;
+    const isLocked = availableFabrics.length === 1;
     fabrics.forEach((fab) => {
       const option = document.createElement("div");
       option.className = "cp-fabric-option";
@@ -1117,13 +1119,16 @@
       if (isLocked) btn.classList.add("is-locked", "is-single");
       if (fab.value === "premium") btn.classList.add("is-premium");
       if (fab.included_in_base) btn.classList.add("is-included");
-      if (isLocked) {
+      const isUnavailable = fab.available === false;
+      if (isLocked || isUnavailable) {
         btn.disabled = true;
         btn.setAttribute("aria-disabled", "true");
       }
       btn.dataset.choiceValue = fab.value;
       const priceDelta = Number(fab.price_delta || 0);
-      const priceLabel = fab.included_in_base
+      const priceLabel = isUnavailable
+        ? "тимчасово недоступна"
+        : fab.included_in_base
         ? "входить у базу"
         : priceDelta > 0
           ? `+${priceDelta} грн`
@@ -1142,7 +1147,7 @@
       btn.innerHTML = `<span class="cp-fabric-chip-content">${btnContent}</span>`;
       
       btn.addEventListener("click", () => {
-        if (isLocked) return;
+        if (isLocked || isUnavailable) return;
         STATE.product.fabric = fab.value;
         renderFabricChips();
         renderColorChips();
@@ -1339,6 +1344,11 @@
         hint: "Більший формат для сильного візуалу",
         icon: '<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" width="22" height="22" aria-hidden="true"><path d="M9 7l3-2h8l3 2 3 2v6l-3-1v14H9V14l-3 1V9l3-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><rect x="11.5" y="11" width="9" height="13" rx="1.6" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>',
       },
+      kangaroo: {
+        title: labels.kangaroo || "Кенгуряча кишеня",
+        hint: "Центральний карман худі — симетричне розміщення принта",
+        icon: '<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" width="22" height="22" aria-hidden="true"><path d="M9 7l3-2h8l3 2 3 2v6l-3-1v14H9V14l-3 1V9l3-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 20c2-2 6-2 8 0v5h-8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+      },
       sleeve: {
         title: labels.sleeve || "Рукави",
         hint: "Текст або символи на рукаві (можна обидва рукави)",
@@ -1397,8 +1407,9 @@
           <img src="/static/img/configurator/ui/size-${String(preset.value || "").toLowerCase()}.svg" alt="${preset.label}" onerror="this.src='/static/img/configurator/ui/size-a4.svg'">
         </div>
         <div class="cp-size-details">
-          <strong>${preset.label}</strong>
-          <span>${escapeHtml(preset.range_label || "До формату ISO")} · +${price} грн</span>
+          <strong class="cp-size-format">${preset.label}</strong>
+          <span class="cp-size-range">${escapeHtml(preset.range_label || "До формату ISO")}</span>
+          <em class="cp-size-price">+${price} грн за зону</em>
         </div>
       `;
       btn.addEventListener("click", () => {
@@ -1432,8 +1443,9 @@
           <img src="/static/img/configurator/ui/size-${String(preset.value || "").toLowerCase()}.svg" alt="${preset.label}" onerror="this.src='/static/img/configurator/ui/size-a4.svg'">
         </div>
         <div class="cp-size-details">
-          <strong>${preset.label}</strong>
-          <span>${escapeHtml(preset.range_label || "До формату ISO")} · +${price} грн</span>
+          <strong class="cp-size-format">${preset.label}</strong>
+          <span class="cp-size-range">${escapeHtml(preset.range_label || "До формату ISO")}</span>
+          <em class="cp-size-price">+${price} грн за зону</em>
         </div>
       `;
       btn.addEventListener("click", () => {
@@ -2060,6 +2072,14 @@
         isActive: STATE.print.zones.includes("back"),
       });
     }
+    if ((cfg.zones || []).includes("kangaroo")) {
+      targets.push({
+        key: "kangaroo",
+        zone: "kangaroo",
+        label: (CONFIG.zone_labels && CONFIG.zone_labels.kangaroo) || "Кенгуряча кишеня",
+        isActive: STATE.print.zones.includes("kangaroo"),
+      });
+    }
     if ((cfg.zones || []).includes("sleeve")) {
       const sleeve = STATE.print.zone_options?.sleeve || {};
       targets.push(
@@ -2091,7 +2111,7 @@
   }
 
   function toggleStageTarget(targetKey) {
-    if (targetKey === "front" || targetKey === "back" || targetKey === "custom") {
+    if (targetKey === "front" || targetKey === "back" || targetKey === "kangaroo" || targetKey === "custom") {
       toggleZone(targetKey);
       return;
     }
@@ -2190,7 +2210,7 @@
   }
 
   function getStageTargetView(targetKey) {
-    if (targetKey === "front" || targetKey === "custom") return "front";
+    if (targetKey === "front" || targetKey === "kangaroo" || targetKey === "custom") return "front";
     if (targetKey === "sleeve_left" || targetKey === "sleeve_right") return STATE.ui.stage_view || "front";
     return "back";
   }
@@ -2212,6 +2232,7 @@
   function getStagePinCode(target) {
     if (target.key === "front") return "FR";
     if (target.key === "back") return "BK";
+    if (target.key === "kangaroo") return "KP";
     if (target.key === "sleeve_left") return "SL";
     if (target.key === "sleeve_right") return "SR";
     return "C";
@@ -2428,22 +2449,34 @@
       grid.forEach((s) => {
         const wrap = document.createElement("label");
         wrap.className = "cp-size-matrix-cell";
-        wrap.innerHTML = `<span>${s}</span><input type="number" min="0" inputmode="numeric" value="${(STATE.order.size_breakdown || {})[s] || ""}" placeholder="0" data-size-input="${s}">`;
-        const input = wrap.querySelector("input");
-        input.max = String(qty);
-        input.addEventListener("input", () => {
-          const otherTotal = Object.entries(STATE.order.size_breakdown || {})
+        const count = Number(STATE.order.size_breakdown?.[s] || 0);
+        wrap.innerHTML = `
+          <span class="cp-size-matrix-label">${s}</span>
+          <span class="cp-size-stepper" data-size-stepper="${s}">
+            <button type="button" class="cp-size-step" data-size-step="-1" data-size-value="${s}" aria-label="Зменшити ${s}">−</button>
+            <strong data-size-count="${s}">${count}</strong>
+            <button type="button" class="cp-size-step" data-size-step="1" data-size-value="${s}" aria-label="Збільшити ${s}">+</button>
+          </span>`;
+        const updateSize = (delta) => {
+          const current = Number(STATE.order.size_breakdown?.[s] || 0);
+          const assignedElsewhere = Object.entries(STATE.order.size_breakdown || {})
             .filter(([size]) => size !== s)
             .reduce((total, [, value]) => total + (parseInt(value, 10) || 0), 0);
-          const remaining = Math.max(0, qty - otherTotal);
-          const raw = parseInt(input.value, 10);
-          const n = isFinite(raw) ? Math.min(Math.max(0, raw), remaining) : 0;
-          input.value = n || "";
+          const next = Math.min(Math.max(0, current + delta), Math.max(0, qty - assignedElsewhere));
           if (!STATE.order.size_breakdown) STATE.order.size_breakdown = {};
-          STATE.order.size_breakdown[s] = n;
+          STATE.order.size_breakdown[s] = next;
           validateSizeMatrix();
+          renderSizing();
           refreshAll();
           persistDraft();
+        };
+        wrap.querySelectorAll("[data-size-step]").forEach((button) => {
+          const delta = parseInt(button.dataset.sizeStep, 10) || 0;
+          const assignedElsewhere = Object.entries(STATE.order.size_breakdown || {})
+            .filter(([size]) => size !== s)
+            .reduce((total, [, value]) => total + (parseInt(value, 10) || 0), 0);
+          button.disabled = delta < 0 ? count <= 0 : assignedElsewhere + count >= qty;
+          button.addEventListener("click", () => updateSize(parseInt(button.dataset.sizeStep, 10) || 0));
         });
         dom.sizeMatrix.appendChild(wrap);
       });
@@ -2580,7 +2613,10 @@
 
   function setActiveStep(key, opts = {}) {
     if (!STEPS.includes(key)) return;
-    if (!opts.silent) resetStatus();
+    if (!opts.silent) {
+      resetStatus();
+      clearValidationTargets();
+    }
     STATE.ui.current_step = key;
     const currentIndex = getStepIndex(key);
     document.querySelectorAll("[data-step]").forEach((section) => {
@@ -2689,16 +2725,31 @@
       quantity: ["Вкажіть кількість і розподіліть усі речі за розмірами.", "[data-quantity-input]"],
       contact: ["Заповніть імʼя, канал звʼязку та контакт.", "[data-name-input]"],
     };
+    if (stepKey === "config") {
+      const productConfig = getProductConfig();
+      if (productConfig?.fits?.length && !STATE.product.fit) {
+        return [ui("config_fit_required", "Оберіть посадку."), "[data-fit-list] button"];
+      }
+      if (productConfig?.fits?.length && !STATE.product.fabric) {
+        return [ui("config_fabric_required", "Оберіть тканину."), "[data-fabric-list] button:not([disabled])"];
+      }
+      if (!STATE.product.color) {
+        return [ui("config_color_required", "Оберіть колір."), "[data-color-list] button"];
+      }
+    }
     if (stepKey === "zones" && STATE.print.zones.includes("sleeve")) {
       const missing = Array.from(dom.sleeveTextInputs || []).find((input) => !input.closest("[hidden]") && !input.value.trim());
       if (missing) return ["Додайте текст для вибраного рукава.", `[data-sleeve-text-input="${missing.dataset.sleeveTextInput}"]`];
     }
     if (stepKey === "artwork") {
-      const missingFile = getRequiredArtworkPlacements().some(
+      const missingPlacement = getRequiredArtworkPlacements().find(
         (placement) => !(filesByPlacement.get(placement.placement_key) || []).length
       );
-      if ((STATE.artwork.service_kind === "ready" || STATE.artwork.service_kind === "adjust") && missingFile) {
-        return [ui("artwork_file_required", "Додайте макет для кожної вибраної зони."), "[data-dropzone-input]"];
+      if ((STATE.artwork.service_kind === "ready" || STATE.artwork.service_kind === "adjust") && missingPlacement) {
+        return [
+          `${ui("artwork_file_required", "Додайте макет для кожної вибраної зони.")} ${missingPlacement.label}.`,
+          `[data-placement-key="${missingPlacement.placement_key}"] [data-dropzone-input]`,
+        ];
       }
       if ((STATE.artwork.service_kind === "design" || STATE.artwork.service_kind === "adjust") && !STATE.notes.brief.trim()) {
         return [
@@ -2709,17 +2760,47 @@
         ];
       }
     }
+    if (stepKey === "quantity") {
+      if (STATE.order.quantity <= 0) return ["Вкажіть кількість виробів.", "[data-quantity-input]"];
+      if (STATE.product.type !== "customer_garment" && STATE.order.size_mode !== "manager") {
+        const sum = Object.values(STATE.order.size_breakdown || {}).reduce((total, value) => total + (parseInt(value, 10) || 0), 0);
+        if (STATE.order.quantity === 1 && sum === 0) return ["Оберіть розмір виробу.", "[data-size-grid] button"];
+        if (STATE.order.quantity > 1 && sum !== STATE.order.quantity) {
+          return [
+            sum < STATE.order.quantity ? `Розподіліть ще ${STATE.order.quantity - sum} шт. за розмірами.` : "Зменште кількість одного з розмірів.",
+            '[data-size-step="1"]',
+          ];
+        }
+      }
+    }
     return problems[stepKey] || ["Перевірте поточний крок.", `[data-step="${stepKey}"] button, [data-step="${stepKey}"] input`];
   }
 
+  function clearValidationTargets() {
+    root.querySelectorAll(".is-validation-target").forEach((node) => {
+      node.classList.remove("is-validation-target");
+      node.removeAttribute("aria-invalid");
+    });
+    root.querySelectorAll("[data-inline-validation]").forEach((node) => node.remove());
+  }
+
   function showStepProblem(stepKey) {
+    clearValidationTargets();
     const [message, selector] = getStepProblem(stepKey);
     showStatus(message, "warning");
     const field = root.querySelector(selector);
     const step = root.querySelector(`[data-step="${stepKey}"]`);
-    step?.classList.add("has-validation-error");
-    step?.setAttribute("aria-invalid", "true");
-    scrollToStudioTarget(step || field);
+    const target = field?.closest(".cp-dropzone, .cp-size-matrix-cell") || field;
+    target?.classList.add("is-validation-target");
+    target?.setAttribute("aria-invalid", "true");
+    if (target && !target.querySelector("[data-inline-validation]")) {
+      const note = document.createElement("small");
+      note.className = "cp-inline-validation";
+      note.dataset.inlineValidation = "true";
+      note.textContent = message;
+      target.appendChild(note);
+    }
+    scrollToStudioTarget(field || step);
     if (field) {
       window.setTimeout(() => field.focus?.({ preventScroll: true }), 180);
     }

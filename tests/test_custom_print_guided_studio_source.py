@@ -88,10 +88,8 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
 
     def test_artwork_file_validation_focuses_upload_control(self):
         self.assertIn("artwork_file_required", self.js)
-        self.assertRegex(
-            self.js,
-            r"artwork_file_required[^\n]+\[data-dropzone-input\]",
-        )
+        self.assertIn("[data-dropzone-input]", self.js)
+        self.assertIn("missingPlacement.placement_key", self.js)
 
     def test_template_has_app_shell_preview_manager_and_cart_review_dialogs(self):
         for contract in (
@@ -289,6 +287,20 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
         self.assertIn("Продовжити без подарункової упаковки", configurator)
         self.assertIn("Продовжити з подарунковою упаковкою", configurator)
+
+    def test_new_huddi_pocket_zone_and_precise_mobile_controls(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertIn('"kangaroo"', configurator)
+        self.assertIn("data-size-step", configurator)
+        self.assertNotIn('data-size-input="${s}"', configurator)
+        self.assertIn("is-validation-target", configurator)
+        self.assertIn("[data-placement-key=\"${missingPlacement.placement_key}\"]", configurator)
+
+    def test_fleece_switch_and_size_cards_have_wrapping_mobile_geometry(self):
+        self.assertIn("grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr)", self.css)
+        self.assertIn(".cp-size-format", self.css)
+        self.assertIn(".cp-size-price", self.css)
+        self.assertIn("white-space: normal", self.css)
 
     def test_hero_calibration_keeps_print_frames_on_garments_on_mobile(self):
         self.assertIn(".cp-hero-print-zone--hoodie { left: 12%; }", self.css)

@@ -4,6 +4,7 @@ import os
 from datetime import timedelta
 from html import escape
 from pathlib import Path
+from urllib.parse import urlparse
 
 from django.utils import timezone
 
@@ -283,6 +284,29 @@ def _primary_contact_link(lead) -> str:
     return links.get(channel) or next(iter(links.values()), TELEGRAM_MANAGER_URL)
 
 
+def _is_telegram_button_url(value: str) -> bool:
+    """Telegram inline URL buttons accept web URLs, not tel:/tg:// links."""
+    if not value:
+        return False
+    parsed = urlparse(str(value))
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _contact_button_items(lead) -> list[dict[str, str]]:
+    """Build contact buttons using only URL schemes accepted by Telegram."""
+    links = _build_contact_links(lead)
+    labels = (
+        ("phone", "📞 Зателефонувати"),
+        ("telegram", "✈️ Telegram"),
+        ("whatsapp", "💬 WhatsApp"),
+    )
+    return [
+        {"text": label, "url": links[key]}
+        for key, label in labels
+        if _is_telegram_button_url(links.get(key, ""))
+    ]
+
+
 def _channel_display(lead) -> str:
     channel = (getattr(lead, "contact_channel", "") or "").strip().lower()
     return {"telegram": "Telegram", "whatsapp": "WhatsApp", "phone": "Телефон"}.get(
@@ -342,7 +366,7 @@ def _info_reply_markup(lead):
     ]]
 
     contact_url = _primary_contact_link(lead)
-    if contact_url and contact_url != TELEGRAM_MANAGER_URL:
+    if _is_telegram_button_url(contact_url) and contact_url != TELEGRAM_MANAGER_URL:
         emoji = _channel_emoji(lead)
         rows.append([
             {"text": f"{emoji} Звʼязатися з клієнтом", "url": contact_url},
@@ -357,21 +381,13 @@ def _moderation_reply_markup(lead):
         return None
     approve_url = _build_moderation_action_url(lead, "approve")
     reject_url = _build_moderation_action_url(lead, "reject")
-    links = _build_contact_links(lead)
-
     rows = [
         [
             {"text": "✅ Погодити", "url": approve_url},
             {"text": "❌ Відхилити", "url": reject_url},
         ]
     ]
-    contact_row = []
-    if links.get("phone"):
-        contact_row.append({"text": "📞 Зателефонувати", "url": links["phone"]})
-    if links.get("telegram"):
-        contact_row.append({"text": "✈️ Telegram", "url": links["telegram"]})
-    if links.get("whatsapp"):
-        contact_row.append({"text": "💬 WhatsApp", "url": links["whatsapp"]})
+    contact_row = _contact_button_items(lead)
     if contact_row:
         # По 2 кнопки в строку максимум
         for i in range(0, len(contact_row), 2):
@@ -384,15 +400,8 @@ def _info_reply_markup_full(lead):
     """Inline keyboard for «новая заявка» (без approve/reject) с быстрыми контактами."""
     if lead is None:
         return None
-    links = _build_contact_links(lead)
     rows = []
-    contact_row = []
-    if links.get("phone"):
-        contact_row.append({"text": "📞 Зателефонувати", "url": links["phone"]})
-    if links.get("telegram"):
-        contact_row.append({"text": "✈️ Telegram", "url": links["telegram"]})
-    if links.get("whatsapp"):
-        contact_row.append({"text": "💬 WhatsApp", "url": links["whatsapp"]})
+    contact_row = _contact_button_items(lead)
     if contact_row:
         for i in range(0, len(contact_row), 2):
             rows.append(contact_row[i : i + 2])
@@ -988,8 +997,14 @@ def notify_new_custom_print_lead(lead) -> bool:
             parse_mode="HTML",
             reply_markup=_info_reply_markup_full(lead),
         )
-        success = _send_attachments(notifier, lead) or success
-        return success
+        if not success:
+            logger.error(
+                "Custom print Telegram summary delivery failed for lead %s; attachments skipped",
+                lead.pk,
+            )
+            return False
+        _send_attachments(notifier, lead)
+        return True
     except Exception as exc:
         logger.warning("Custom print Telegram notify failed: %s", exc, exc_info=True)
         return False
@@ -1032,8 +1047,14 @@ def notify_custom_print_moderation_request(lead) -> bool:
             parse_mode="HTML",
             reply_markup=_moderation_reply_markup(lead),
         )
-        success = _send_attachments(notifier, lead) or success
-        return success
+        if not success:
+            logger.error(
+                "Custom print Telegram moderation delivery failed for lead %s; attachments skipped",
+                lead.pk,
+            )
+            return False
+        _send_attachments(notifier, lead)
+        return True
     except Exception as exc:
         logger.warning("Custom print moderation notify failed: %s", exc, exc_info=True)
         return False

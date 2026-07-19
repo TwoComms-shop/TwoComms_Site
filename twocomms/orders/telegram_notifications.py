@@ -38,6 +38,32 @@ _SEND_DOCUMENT_RETRY_BASE_SECONDS = 0.2
 _SEND_DOCUMENT_RETRY_MAX_SECONDS = 0.6
 
 
+def _telegram_error_hint(payload):
+    """Return a bounded, non-sensitive classification of a Bot API error."""
+    if not isinstance(payload, dict):
+        return "unknown"
+    description = str(payload.get("description") or "").lower()
+    if "inline keyboard" in description and "url" in description:
+        return "invalid_inline_keyboard_url"
+    if "chat not found" in description:
+        return "chat_not_found"
+    if "message is too long" in description:
+        return "message_too_long"
+    if "can't parse entities" in description or "parse entities" in description:
+        return "invalid_parse_entities"
+    if "bad request" in description:
+        return "bad_request"
+    try:
+        error_code = int(payload.get("error_code") or 0)
+    except (TypeError, ValueError):
+        error_code = 0
+    if error_code == 429:
+        return "rate_limited"
+    if error_code >= 500:
+        return "telegram_server_error"
+    return "redacted"
+
+
 def _parse_chat_ids(raw_value):
     if not raw_value:
         return []
@@ -257,11 +283,13 @@ class TelegramNotifier:
 
             logger.warning(
                 "telegram_send_message api_rejected attempt=%s target_index=%s "
-                "target_count=%s status=%s",
+                "target_count=%s status=%s error_code=%s description_hint=%s",
                 attempt,
                 target_index,
                 target_count,
                 status_code,
+                payload.get("error_code") if isinstance(payload, dict) else None,
+                _telegram_error_hint(payload),
             )
             return None
         return None
