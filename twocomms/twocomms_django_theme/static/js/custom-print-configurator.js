@@ -172,6 +172,7 @@
     root,
     mobileBar: dom.mobileBar,
     onExit: exitStudio,
+    onBack: navigateBack,
     onManager: openManagerDialog,
     onPreview: openPreviewDialog,
   }) || null;
@@ -357,6 +358,17 @@
     });
   }
 
+  function navigateBack() {
+    const index = getStepIndex(STATE.ui.current_step);
+    if (index <= 0) {
+      exitStudio();
+      return;
+    }
+    const previous = STEPS[index - 1];
+    STATE.ui.done_steps.delete(STATE.ui.current_step);
+    setActiveStep(previous, { fromStep: STATE.ui.current_step });
+  }
+
   function bindManagerQuickContact() {
     // Keep the contextual CTA inside the same accessible contact sheet as the
     // app-bar action. The sheet confirms that the draft is saved and lets the
@@ -377,13 +389,26 @@
     const quantity = STATE.order.quantity ? `${STATE.order.quantity} шт` : "—";
     const stepLabels = { mode: "Формат", product: "Виріб", config: "Налаштування", zones: "Зони друку", artwork: "Макет", quantity: "Кількість", gift: "Подарунок", contact: "Контакт" };
     const step = stepLabels[STATE.ui.current_step] || "—";
+    const pricing = computePricing();
+    const contact = STATE.contact.channel && STATE.contact.value
+      ? `${STATE.contact.channel}: ${STATE.contact.value}`
+      : "ще не вказано";
+    const files = collectOrderedFiles().map(({ file, label }) => `${label}: ${file.name}`).join(", ") || "ще не додано";
     return [
-      "Привіт! Хочу обговорити кастомний принт TwoComms.",
-      `Формат: ${STATE.mode === "brand" ? "команда / бренд" : "для себе"}`,
-      `Виріб: ${cfg.label || "—"}`,
-      `Посадка: ${fit} · Тканина: ${fabric} · Колір: ${color}`,
-      `Зони: ${zones} · Кількість: ${quantity}`,
-      `Крок: ${step}`,
+      ui("manager_greeting", "Привіт! Хочу обговорити кастомний принт TwoComms."),
+      "",
+      "КОНФІГУРАЦІЯ",
+      `• Формат: ${STATE.mode === "brand" ? "команда / бренд" : "для себе"}`,
+      `• Виріб: ${cfg.label || "—"}`,
+      `• Посадка: ${fit} · тканина: ${fabric} · колір: ${color}`,
+      `• Зони: ${zones}`,
+      `• Кількість: ${quantity}`,
+      `• Подарунок: ${STATE.order.gift_enabled ? "так" : "ні"}`,
+      `• Орієнтир: ${pricing.final_total ? formatPrice(pricing.final_total) : "уточнити"}`,
+      "",
+      `КОНТАКТ: ${contact}`,
+      `ФАЙЛИ: ${files}`,
+      `Поточний крок: ${step}`,
     ].join("\n");
   }
 
@@ -962,9 +987,10 @@
     (CONFIG.contact_channels || []).forEach((ch) => {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "cp-mini-chip";
+      btn.className = "cp-contact-channel";
       btn.dataset.choiceValue = ch.value;
-      btn.textContent = ch.label;
+      btn.innerHTML = `${contactChannelIcon(ch.value)}<span>${escapeHtml(ch.label)}</span>`;
+      btn.setAttribute("aria-label", ch.label);
       btn.addEventListener("click", () => {
         STATE.contact.channel = ch.value;
         if (dom.contactValueInput) dom.contactValueInput.placeholder = ch.placeholder || "@username або +380...";
@@ -974,6 +1000,12 @@
       });
       dom.contactChannelList.appendChild(btn);
     });
+  }
+
+  function contactChannelIcon(value) {
+    if (value === "telegram") return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 4-3.2 15.1c-.2 1.1-.8 1.4-1.6.9l-4.4-3.3-2.1 2c-.2.2-.4.4-.8.4l.3-4.5 8.2-7.4c.4-.4-.1-.6-.6-.2L6.3 13 2 11.6c-.9-.3-.9-.9.2-1.3L19.4 3.8c.8-.3 1.8-.1 1.6.2Z" fill="currentColor"/></svg>';
+    if (value === "whatsapp") return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.6a8 8 0 0 1-11.7 7.1L4 20l1.4-4.1A8 8 0 1 1 20 11.6Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M9 8.2c.2-.4.4-.4.7-.4h.5c.2 0 .4.1.5.4l.7 1.6c.1.2 0 .4-.1.6l-.5.6c.5 1 1.3 1.8 2.4 2.3l.7-.5c.2-.1.4-.1.6 0l1.5.7c.2.1.3.3.2.6-.2.8-.8 1.3-1.6 1.4-2.1.1-5.1-2.4-5.9-4.3-.3-.8-.2-2 .3-3Z" fill="currentColor"/></svg>';
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 4.5h2l1 4-1.5 1.5a12 12 0 0 0 5 5l1.5-1.5 4 1v2c0 1.1-.9 2-2 2C11.1 18.5 5.5 12.9 5.5 6.5c0-1.1.9-2 2-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
   }
 
   function renderContactChannelChipsActive() {
@@ -1359,13 +1391,14 @@
       btn.className = "cp-size-preset";
       btn.dataset.choiceValue = preset.value;
       if (getFrontSizePreset() === preset.value) btn.classList.add("is-active");
+      const price = Number(preset.price_delta || 0);
       btn.innerHTML = `
         <div class="cp-size-icon">
           <img src="/static/img/configurator/ui/size-${String(preset.value || "").toLowerCase()}.svg" alt="${preset.label}" onerror="this.src='/static/img/configurator/ui/size-a4.svg'">
         </div>
         <div class="cp-size-details">
           <strong>${preset.label}</strong>
-          <span>Масштаб на сцені</span>
+          <span>${escapeHtml(preset.range_label || "До формату ISO")} · +${price} грн</span>
         </div>
       `;
       btn.addEventListener("click", () => {
@@ -1393,13 +1426,14 @@
       btn.className = "cp-size-preset";
       btn.dataset.choiceValue = preset.value;
       if (getBackSizePreset() === preset.value) btn.classList.add("is-active");
+      const price = Number(preset.price_delta || 0);
       btn.innerHTML = `
         <div class="cp-size-icon">
           <img src="/static/img/configurator/ui/size-${String(preset.value || "").toLowerCase()}.svg" alt="${preset.label}" onerror="this.src='/static/img/configurator/ui/size-a4.svg'">
         </div>
         <div class="cp-size-details">
           <strong>${preset.label}</strong>
-          <span>Вертикально на сцені</span>
+          <span>${escapeHtml(preset.range_label || "До формату ISO")} · +${price} грн</span>
         </div>
       `;
       btn.addEventListener("click", () => {
@@ -1528,39 +1562,30 @@
       return;
     }
     if (dom.addonsWrap) dom.addonsWrap.hidden = false;
+    if (fleeceOptions.length) {
+      const activeFleece = fleeceOptions.find((addon) => STATE.print.add_ons.includes(addon.value)) || fleeceOptions[0];
+      const fleeceWrap = document.createElement("div");
+      fleeceWrap.className = "cp-fleece-toggle";
+      fleeceWrap.innerHTML = `
+        <span class="cp-fleece-title">${escapeHtml(ui("fleece_title", "Утеплення"))}</span>
+        <button type="button" class="cp-fleece-switch" role="switch" aria-checked="${activeFleece.value === "fleece"}">
+          <span class="cp-fleece-switch-label">${escapeHtml(ui("fleece_off", "Без флісу"))}</span>
+          <span class="cp-fleece-switch-track"><span class="cp-fleece-switch-thumb"></span></span>
+          <span class="cp-fleece-switch-label">${escapeHtml(ui("fleece_on", "З флісом"))}</span>
+        </button>`;
+      fleeceWrap.querySelector(".cp-fleece-switch")?.addEventListener("click", () => {
+        const next = activeFleece.value === "fleece" ? "no_fleece" : "fleece";
+        STATE.print.add_ons = STATE.print.add_ons.filter((item) => !fleeceOptions.some((addon) => addon.value === item));
+        STATE.print.add_ons.push(next);
+        renderAddons();
+        refreshAll();
+        persistDraft();
+      });
+      dom.addonsList.appendChild(fleeceWrap);
+    }
+
     visibleAddons.forEach((a) => {
-      // Special rendering if it's the Fleece group
-      if (a.group === "fleece") {
-         let fleeceWrap = dom.addonsList.querySelector(".cp-fleece-toggle");
-         if (!fleeceWrap) {
-             fleeceWrap = document.createElement("div");
-             fleeceWrap.className = "cp-fleece-toggle";
-             fleeceWrap.innerHTML = `<span class="cp-fleece-title">Утеплення (Фліс)</span><div class="cp-fleece-options"></div>`;
-             dom.addonsList.appendChild(fleeceWrap);
-         }
-         
-         const isActive = STATE.print.add_ons.includes(a.value);
-         const btn = document.createElement("button");
-         btn.type = "button";
-         btn.className = `cp-fleece-btn cp-fleece-btn--${a.value}`;
-         if (isActive) btn.classList.add("is-active");
-         btn.setAttribute("aria-pressed", String(isActive));
-         btn.setAttribute("aria-label", `${a.label}: ${isActive ? "обрано" : "обрати"}`);
-         btn.innerHTML = `<span class="cp-addon-card-icon">${addonSvg(a.icon || "fleece")}</span> <span class="cp-fleece-btn-label">${escapeHtml(a.label)}</span>`;
-         btn.addEventListener("click", () => {
-             // Exclusive toggle logic
-             STATE.print.add_ons = STATE.print.add_ons.filter(item => {
-                 const currentAddon = addons.find(x => x.value === item);
-                 return !(currentAddon && currentAddon.group === "fleece");
-             });
-             STATE.print.add_ons.push(a.value);
-             renderAddons();
-             refreshAll();
-             persistDraft();
-         });
-         fleeceWrap.querySelector(".cp-fleece-options").appendChild(btn);
-         return; // skip standard rendering
-      }
+      if (a.group === "fleece") return;
 
       const isAutoIncluded = a.auto_include_condition === "premium_or_oversize";
       const isActive = isAutoIncluded ? true : STATE.print.add_ons.includes(a.value);
@@ -2283,6 +2308,7 @@
       dom.qtyInput.addEventListener("input", () => {
         const v = parseInt(dom.qtyInput.value, 10);
         STATE.order.quantity = isFinite(v) && v > 0 ? v : 0;
+        clampSizeBreakdownToQuantity();
         renderSizing();
         refreshAll();
         persistDraft();
@@ -2293,6 +2319,7 @@
         const delta = parseInt(btn.dataset.qtyStep, 10) || 0;
         const next = Math.max(0, (STATE.order.quantity || 0) + delta);
         STATE.order.quantity = next;
+        clampSizeBreakdownToQuantity();
         if (dom.qtyInput) dom.qtyInput.value = next || "";
         renderSizing();
         refreshAll();
@@ -2313,6 +2340,20 @@
       STATE.notes.garment_note = dom.garmentNoteInput.value;
       persistDraft();
     });
+  }
+
+  function clampSizeBreakdownToQuantity() {
+    const limit = Math.max(0, STATE.order.quantity || 0);
+    const grid = CONFIG.size_grid || ["XS", "S", "M", "L", "XL", "2XL"];
+    const next = {};
+    let remaining = limit;
+    grid.forEach((size) => {
+      const requested = Math.max(0, parseInt(STATE.order.size_breakdown?.[size], 10) || 0);
+      const accepted = Math.min(requested, remaining);
+      if (accepted) next[size] = accepted;
+      remaining -= accepted;
+    });
+    STATE.order.size_breakdown = next;
   }
 
   function renderSizing() {
@@ -2389,10 +2430,17 @@
         wrap.className = "cp-size-matrix-cell";
         wrap.innerHTML = `<span>${s}</span><input type="number" min="0" inputmode="numeric" value="${(STATE.order.size_breakdown || {})[s] || ""}" placeholder="0" data-size-input="${s}">`;
         const input = wrap.querySelector("input");
+        input.max = String(qty);
         input.addEventListener("input", () => {
-          const n = parseInt(input.value, 10);
+          const otherTotal = Object.entries(STATE.order.size_breakdown || {})
+            .filter(([size]) => size !== s)
+            .reduce((total, [, value]) => total + (parseInt(value, 10) || 0), 0);
+          const remaining = Math.max(0, qty - otherTotal);
+          const raw = parseInt(input.value, 10);
+          const n = isFinite(raw) ? Math.min(Math.max(0, raw), remaining) : 0;
+          input.value = n || "";
           if (!STATE.order.size_breakdown) STATE.order.size_breakdown = {};
-          STATE.order.size_breakdown[s] = isFinite(n) && n > 0 ? n : 0;
+          STATE.order.size_breakdown[s] = n;
           validateSizeMatrix();
           refreshAll();
           persistDraft();
@@ -2545,6 +2593,10 @@
       section.classList.toggle("is-active", isCurrent);
       section.classList.toggle("is-done", !isCurrent && isDone);
       section.classList.toggle("is-pending", !isCurrent && !isDone && stepIndex > currentIndex);
+      if (isCurrent) {
+        section.classList.remove("has-validation-error");
+        section.removeAttribute("aria-invalid");
+      }
     });
     const studioKey = stateTools?.fromInternal(key) || "format";
     root.querySelectorAll("[data-studio-step]").forEach((group) => {
@@ -2665,6 +2717,8 @@
     showStatus(message, "warning");
     const field = root.querySelector(selector);
     const step = root.querySelector(`[data-step="${stepKey}"]`);
+    step?.classList.add("has-validation-error");
+    step?.setAttribute("aria-invalid", "true");
     scrollToStudioTarget(step || field);
     if (field) {
       window.setTimeout(() => field.focus?.({ preventScroll: true }), 180);
@@ -2993,9 +3047,23 @@
     if (fabricConfig?.label) baseLabelParts.push(fabricConfig.label);
     breakdown.push({ label: baseLabelParts.join(" · "), value: base });
 
-    const extraZones = Math.max(0, getExpandedPlacements().length - 1);
+    const placements = getExpandedPlacements();
+    const printPrice = placements.reduce((total, placement) => {
+      const preset = placement.zone === "front"
+        ? FRONT_SIZE_PRESETS[placement.size_preset]
+        : placement.zone === "back"
+          ? BACK_SIZE_PRESETS[placement.size_preset]
+          : null;
+      const sleevePreset = placement.zone === "sleeve"
+        ? SLEEVE_MODE_OPTIONS[placement.mode || SLEEVE_MODE_DEFAULT]
+        : null;
+      return total + Number(preset?.price_delta || sleevePreset?.price_delta || 0);
+    }, 0);
+    if (printPrice > 0) breakdown.push({ label: `Друк · ${placements.length} ${placements.length === 1 ? "зона" : "зони"}`, value: printPrice });
+
+    const extraZones = Math.max(0, placements.length - 1);
     const zonesPrice = extraZones * (pricing.extra_zone_delta || 0);
-    if (extraZones > 0) breakdown.push({ label: `+${extraZones} зон`, value: zonesPrice });
+    if (extraZones > 0) breakdown.push({ label: `Додаткові зони · ${extraZones}`, value: zonesPrice });
 
     let designPrice = 0;
     const services = CONFIG.artwork_services || [];
@@ -3021,7 +3089,7 @@
       if (giftPrice) breakdown.push({ label: "Подарункова упаковка", value: giftPrice });
     }
 
-    let unitTotal = base + zonesPrice + designPrice + addonsPrice;
+    let unitTotal = base + printPrice + zonesPrice + designPrice + addonsPrice;
     let b2bDiscountPerUnit = 0;
     const qty = STATE.order.quantity || 0;
     if (STATE.mode === "brand" && qty >= 5) {
@@ -3042,6 +3110,7 @@
       addons_price: addonsPrice,
       gift_price: giftPrice,
       zones_price: zonesPrice,
+      print_price: printPrice,
       unit_total: unitAfterDiscount,
       b2b_discount_per_unit: b2bDiscountPerUnit,
       final_total: finalTotal,
@@ -3404,6 +3473,7 @@
     if (!url) return;
     leadSubmitInFlight = true;
     setBusy(true);
+    showStatus("Заявку відправляємо менеджеру…", "warning");
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -3468,6 +3538,7 @@
     }
     cartSubmitInFlight = true;
     setBusy(true);
+    showStatus("Додаємо конфігурацію в кошик і передаємо її менеджеру…", "warning");
     try {
       const response = await fetch(url, {
         method: "POST",

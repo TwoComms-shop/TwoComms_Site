@@ -143,7 +143,7 @@ def _image_transparency_warning(file_path: str) -> str:
 
 
 def _build_attachment_caption(
-    lead, placement_key: str, index: int, total: int, *, transparency_note: str = ""
+    lead, placement_key: str, index: int, total: int, *, transparency_note: str = "", file_name: str = ""
 ) -> str:
     """HTML-підпис до файла: одразу видно, на яку зону цей макет."""
     descriptor = _placement_descriptor_by_key(lead).get(placement_key) or ZONE_LABELS.get(
@@ -156,6 +156,8 @@ def _build_attachment_caption(
         f"{emoji} <b>{escape(descriptor.upper())}</b> — файл {index}/{total}",
         f"<code>{escape(lead_number)}</code>",
     ]
+    if file_name:
+        lines.append(f"📎 <code>{escape(file_name)}</code>")
     if transparency_note:
         lines.append(f"⚠️ <i>{escape(transparency_note)}</i>")
     return "\n".join(lines)
@@ -204,6 +206,7 @@ def _collect_attachment_payloads(lead) -> list[dict]:
                     index,
                     total,
                     transparency_note=transparency_note,
+                    file_name=Path(file_path).name,
                 ),
             }
         )
@@ -300,6 +303,9 @@ def _pricing_text(lead) -> str:
     final_total = snapshot.get("final_total")
     estimate_required = snapshot.get("estimate_required")
     design_price = snapshot.get("design_price")
+    print_price = snapshot.get("print_price")
+    zones_price = snapshot.get("zones_price")
+    gift_price = snapshot.get("gift_price")
     discount_percent = snapshot.get("discount_percent")
 
     parts = []
@@ -307,6 +313,12 @@ def _pricing_text(lead) -> str:
         parts.append(f"база {snapshot['base_price']} грн")
     if design_price:
         parts.append(f"дизайнер +{design_price} грн")
+    if print_price:
+        parts.append(f"формати друку +{print_price} грн")
+    if zones_price:
+        parts.append(f"додаткові зони +{zones_price} грн")
+    if gift_price:
+        parts.append(f"подарунок +{gift_price} грн")
     if discount_percent:
         parts.append(f"знижка {discount_percent}%")
     if estimate_required:

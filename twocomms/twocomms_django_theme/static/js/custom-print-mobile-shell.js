@@ -1,7 +1,8 @@
 (function (global) {
-  function create({ root, mobileBar, onExit, onManager, onPreview }) {
+  function create({ root, mobileBar, onExit, onBack, onManager, onPreview }) {
     const appbar = root.querySelector("[data-studio-appbar]");
     const exitButton = root.querySelector("[data-studio-exit]");
+    const backButton = root.querySelector("[data-studio-back]");
     const managerButton = root.querySelector("[data-manager-open]");
     const previewButtons = root.querySelectorAll("[data-preview-open]");
     const stepLabel = root.querySelector("[data-appbar-step]");
@@ -10,6 +11,7 @@
     if (appbar && appbar.parentNode !== document.body) document.body.append(appbar);
     if (mobileBar && mobileBar.parentNode !== document.body) document.body.append(mobileBar);
     exitButton?.addEventListener("click", onExit);
+    backButton?.addEventListener("click", onBack);
     managerButton?.addEventListener("click", onManager);
     previewButtons.forEach((button) => button.addEventListener("click", onPreview));
 

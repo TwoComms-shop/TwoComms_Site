@@ -1,6 +1,8 @@
 {% load static %}
 {% load cache %}
 {% load i18n %}
+{% load i18n_links %}
+{% language_switch_links as header_langs %}
 <nav class='navbar navbar-expand-lg border-bottom sticky-top bg-body backdrop-blur'>
   <div class='container-xxl'>
     <a class='navbar-brand fw-bold d-flex align-items-center gap-2' href='{% url 'home' %}'>
@@ -19,6 +21,17 @@
         <li class='nav-item'><a class='nav-link' href='{% url 'contacts' %}'>{% trans 'Контакти' %}</a></li>
       </ul>
       {% endcache %}
+      <nav class="mobile-nav-language d-lg-none" aria-label="{% trans 'Мова сайту' %}">
+        <span class="mobile-nav-language__label">{% trans 'Мова' %}</span>
+        <div class="mobile-nav-language__links">
+          {% for item in header_langs %}
+            <a href="{{ item.url }}" lang="{{ item.code }}" hreflang="{{ item.code }}" class="mobile-nav-language__link{% if item.is_current %} is-active{% endif %}"{% if item.is_current %} aria-current="page"{% endif %}>
+              <span aria-hidden="true">{{ item.flag }}</span>
+              <span>{{ item.short }}</span>
+            </a>
+          {% endfor %}
+        </div>
+      </nav>
       <form class='d-none d-lg-flex me-3' role='search' action='{% url 'search' %}'>
         <input class='form-control form-control-sm bg-elevate' type='search' name='q' placeholder="{% trans 'Пошук…' %}" aria-label="{% trans 'Пошук' %}">
       </form>

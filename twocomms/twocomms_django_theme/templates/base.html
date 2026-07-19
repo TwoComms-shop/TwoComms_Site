@@ -1266,7 +1266,7 @@
           <input type="hidden" name="csrfmiddlewaretoken" value="">
           <input type="hidden" name="language" value="uk">
           <input type="hidden" name="next" value="" aria-label="{% trans 'Поточна сторінка' %}">
-          <button type="submit" class="language-suggestion__button language-suggestion__button--primary">Перейти українською</button>
+          <button type="submit" class="language-suggestion__button language-suggestion__button--primary" data-language-suggestion-switch></button>
         </form>
       </div>
     </section>
@@ -1532,7 +1532,7 @@
   <!-- Service Worker cleanup: extracted to /static/js/sw-cleanup.js (2026-04-20),
        defer + static caching — не нагружает HTML-ответ. -->
   <script defer src="{% static 'js/sw-cleanup.js' %}"></script>
-  <script defer src="{% static 'js/language-suggestion.js' %}?v=20260718-language-prompt"></script>
+  <script defer src="{% static 'js/language-suggestion.js' %}?v=20260719-language-prompt"></script>
 
 </body>
 

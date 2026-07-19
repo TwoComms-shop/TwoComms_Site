@@ -42,7 +42,7 @@
 
 {% block extra_css %}
   {{ block.super }}
-  <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260718-modern-atelier-8">
+  <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260719-responsive-v2">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -172,6 +172,9 @@
     <header class="cp-studio-appbar" data-studio-appbar hidden>
       <button type="button" class="cp-icon-button" data-studio-exit aria-label="{% trans 'Закрити конструктор' %}" title="{% trans 'Закрити конструктор' %}">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <button type="button" class="cp-icon-button" data-studio-back aria-label="{% trans 'Назад на попередній крок' %}" title="{% trans 'Назад' %}">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <div class="cp-studio-appbar-progress">
         <span data-appbar-step data-step-pattern="{% trans 'Крок {current} з {total}' %}">{% trans 'Крок 1 з 8' %}</span>
@@ -682,9 +685,9 @@
               <div class="cp-config-block">
                 <div class="cp-subhead">
                   <strong>{% trans 'Канал звʼязку' %}</strong>
-                  <span>{% trans 'Telegram / WhatsApp / телефон.' %}</span>
+                  <span>{% trans 'Оберіть один зручний канал — менеджер відповість саме туди.' %}</span>
                 </div>
-                <div class="cp-mini-chip-row" data-contact-channel-list></div>
+                <div class="cp-mini-chip-row cp-contact-channel-list" data-contact-channel-list></div>
               </div>
 
               <label class="cp-field" for="cp-contact-value">
@@ -830,7 +833,7 @@
           <button type="button" class="cp-icon-button" data-dialog-close aria-label="{% trans 'Закрити' %}">×</button>
         </header>
         <div class="cp-cart-review-number" data-cart-review-number></div>
-        <p>{% trans 'Перед запуском у виробництво ми перевіримо файл, розташування та доступність основи. Після перевірки ціна може бути уточнена, а оплату узгодимо окремо.' %}</p>
+        <p>{% trans 'Заявку вже передано менеджеру. Поки менеджер не підтвердить конфігурацію, оплатити кастомну позицію через кошик не можна. Ми уточнимо файл, розташування, основу та фінальну ціну.' %}</p>
         <a class="cp-dialog-primary" href="#" data-cart-review-go>{% trans 'Зрозуміло, перейти до кошика' %}</a>
         <a class="cp-dialog-secondary" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener" data-cart-review-telegram>{% trans 'Написати в Telegram' %}</a>
       </div>
@@ -1051,10 +1054,10 @@
 {% block extra_js %}
   {{ block.super }}
   <script src="{% static 'js/custom-print-submission-policy.js' %}" defer></script>
-  <script src="{% static 'js/custom-print-state.js' %}?v=20260718-modern-atelier-8" defer></script>
-  <script src="{% static 'js/custom-print-preview.js' %}?v=20260718-modern-atelier-8" defer></script>
-  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260718-modern-atelier-8" defer></script>
-  <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260718-modern-atelier-8" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260718-modern-atelier-8" defer></script>
+  <script src="{% static 'js/custom-print-state.js' %}?v=20260719-responsive-v2" defer></script>
+  <script src="{% static 'js/custom-print-preview.js' %}?v=20260719-responsive-v2" defer></script>
+  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260719-responsive-v2" defer></script>
+  <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260719-responsive-v2" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260719-responsive-v2" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

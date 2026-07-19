@@ -15,8 +15,8 @@ class LanguageSuggestionStaticTests(SimpleTestCase):
         source = LANGUAGE_JS.read_text(encoding="utf-8")
         self.assertIn("navigator.webdriver", source)
         self.assertIn("setTimeout(scheduleVisible, 7000)", source)
-        self.assertIn("twocomms_language_suggestion_v1", source)
-        self.assertIn("cooldownMs = 180 * 24 * 60 * 60 * 1000", source)
+        self.assertIn("twocomms_language_suggestion_v3", source)
+        self.assertIn("value.version === 3 && value.decision", source)
 
     def test_controller_localizes_stay_action_and_preserves_current_url(self):
         source = LANGUAGE_JS.read_text(encoding="utf-8")

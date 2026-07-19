@@ -55,25 +55,30 @@ UI_STRINGS = {
     "thermo_fabric": _("Термохромна тканина"),
     "gift_continue_off": _("Продовжити без подарункової упаковки"),
     "gift_continue_on": _("Продовжити з подарунковою упаковкою"),
+    "contact_channel_hint": _("Оберіть один зручний канал — менеджер відповість саме туди."),
+    "manager_greeting": _("Привіт! Хочу обговорити кастомний принт TwoComms."),
+    "fleece_title": _("Утеплення"),
+    "fleece_on": _("З флісом"),
+    "fleece_off": _("Без флісу"),
 }
 
 FRONT_SIZE_PRESETS = [
-    {"value": "A6", "label": "A6", "stage_scale": 0.44},
-    {"value": "A5", "label": "A5", "stage_scale": 0.58},
-    {"value": "A4", "label": "A4", "stage_scale": 0.74},
+    {"value": "A6", "label": "A6", "stage_scale": 0.44, "price_delta": 40, "range_label": _("до 10,5 × 14,8 см")},
+    {"value": "A5", "label": "A5", "stage_scale": 0.58, "price_delta": 50, "range_label": _("до 14,8 × 21 см")},
+    {"value": "A4", "label": "A4", "stage_scale": 0.74, "price_delta": 60, "range_label": _("до 21 × 29,7 см")},
 ]
 FRONT_SIZE_DEFAULT = "A4"
 
 BACK_SIZE_PRESETS = [
-    {"value": "A4", "label": "A4", "stage_scale": 0.62},
-    {"value": "A3", "label": "A3", "stage_scale": 0.78},
-    {"value": "A2", "label": "A2", "stage_scale": 0.92},
+    {"value": "A4", "label": "A4", "stage_scale": 0.62, "price_delta": 60, "range_label": _("до 21 × 29,7 см")},
+    {"value": "A3", "label": "A3", "stage_scale": 0.78, "price_delta": 80, "range_label": _("до 29,7 × 42 см")},
+    {"value": "A2", "label": "A2", "stage_scale": 0.92, "price_delta": 110, "range_label": _("до 42 × 59,4 см")},
 ]
 BACK_SIZE_DEFAULT = "A4"
 
 SLEEVE_MODE_OPTIONS = [
-    {"value": "a6", "label": "A6", "badge": "A6", "stage_scale": 0.42},
-    {"value": "full_text", "label": _("На весь рукав текстом"), "badge": _("Текст"), "stage_scale": 0.94},
+    {"value": "a6", "label": "A6", "badge": "A6 · +40 грн", "price_delta": 40, "stage_scale": 0.42},
+    {"value": "full_text", "label": _("На весь рукав текстом"), "badge": _("Текст · +60 грн"), "price_delta": 60, "stage_scale": 0.94},
 ]
 SLEEVE_MODE_DEFAULT = "a6"
 
@@ -492,13 +497,20 @@ PRODUCT_MATRIX = {
                 {"value": "premium", "label": _("Преміум"), "short_desc": _("Турецький кулір, пеньє, покращені шви та ребана."), "price_delta": 150, "included_in_base": False},
             ],
             "oversize": [
-                {"value": "standard", "label": _("Класика"), "short_desc": _("Базовий кулір без пеньє-обробки."), "price_delta": 0, "included_in_base": True},
-                {"value": "premium", "label": _("Преміум"), "short_desc": _("Турецький кулір, пеньє, покращені шви та ребана."), "price_delta": 150, "included_in_base": False},
                 {
-                    "value": "thermo", "label": _("Термо"), "price_delta": 500, "included_in_base": False,
-                    "short_desc": _("Змінює відтінок від тепла."),
-                    "info_title": _("Футболка з WOW-ефектом❤️"),
-                    "info_desc": _("Реагує на тепло тіла та змінює колір.\nІдеальна для образів, які привертають увагу."),
+                    "value": "premium",
+                    "label": _("Преміум"),
+                    "short_desc": _("Входить у базу оверсайзу: щільніша тканина, пеньє, покращені шви та ребана."),
+                    "price_delta": 0,
+                    "included_in_base": True,
+                    "info_title": _("Преміум у базі оверсайзу"),
+                    "info_desc": _("Оверсайз одразу шиється з преміум-тканини. Класична тканина для цієї посадки недоступна, щоб зберегти потрібну форму та щільність."),
+                },
+                {
+                    "value": "thermo", "label": _("Термохромна тканина"), "price_delta": 500, "included_in_base": False,
+                    "short_desc": _("Змінює відтінок від тепла тіла."),
+                    "info_title": _("Термохромна тканина"),
+                    "info_desc": _("Дуже хороша якість, щільні шви та ребана. Від тепла тканина змінює відтінок — це помітний, але стриманий ефект."),
                     "preview_image": "/static/img/configurator/ui/thermo-preview.png",
                     "colors": [
                         {"value": "thermo_green", "label": _("Зелений (Термо)"), "hex": "#8ba38d"},
@@ -541,7 +553,7 @@ PRODUCT_MATRIX = {
             "base": 700,
             "premium_delta": 0,
             "thermo_delta": 500,
-            "oversize_delta": 0,
+            "oversize_delta": 200,
             "extra_zone_delta": 150,
             "add_on_delta": 0,
         },
@@ -1713,6 +1725,8 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             "base_price": _coerce_price(pricing_payload.get("base_price")),
             "design_price": _coerce_price(pricing_payload.get("design_price")),
             "addons_price": _coerce_price(pricing_payload.get("addons_price")),
+            "print_price": _coerce_price(pricing_payload.get("print_price")),
+            "zones_price": _coerce_price(pricing_payload.get("zones_price")),
             "gift_price": _coerce_price(pricing_payload.get("gift_price")),
             "discount_percent": _coerce_price(pricing_payload.get("discount_percent")),
             "discount_amount": _coerce_price(pricing_payload.get("discount_amount")),

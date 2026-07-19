@@ -5567,3 +5567,15 @@ body::after {
   left: 0;
   transform: translate3d(100%, 0, 0);
 }
+/* Mobile drawer language rail: keep locale switching discoverable inside the
+   hamburger panel instead of forcing users to scroll to the footer. */
+.mobile-nav-language {
+  width: 100%;
+  margin: .35rem 0 1rem;
+  padding: .85rem 0 .2rem;
+  border-top: 1px solid rgba(255,255,255,.12);
+}
+.mobile-nav-language__label { display: block; margin-bottom: .5rem; color: rgba(255,255,255,.58); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
+.mobile-nav-language__links { display: flex; flex-wrap: wrap; gap: .45rem; }
+.mobile-nav-language__link { display: inline-flex; align-items: center; gap: .35rem; min-height: 36px; padding: .4rem .65rem; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; color: inherit; font-size: .78rem; text-decoration: none; }
+.mobile-nav-language__link.is-active { border-color: rgba(144,119,236,.8); background: rgba(144,119,236,.15); color: #fff; }

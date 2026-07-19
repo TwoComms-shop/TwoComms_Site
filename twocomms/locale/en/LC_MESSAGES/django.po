@@ -10402,3 +10402,48 @@ msgstr "Continue with gift packaging"
 
 msgid "Термохромна тканина"
 msgstr "Thermochromic fabric"
+
+msgid "Утеплення"
+msgstr "Insulation"
+
+msgid "Входить у базу оверсайзу: щільніша тканина, пеньє, покращені шви та ребана."
+msgstr "Included in the oversize base: denser fabric, penye finish, improved seams and ribbing."
+
+msgid "Оверсайз одразу шиється з преміум-тканини. Класична тканина для цієї посадки недоступна, щоб зберегти потрібну форму та щільність."
+msgstr "Oversize is made with premium fabric by default. Classic fabric is unavailable for this fit so it keeps the intended shape and density."
+
+msgid "Дуже хороша якість, щільні шви та ребана. Від тепла тканина змінює відтінок — це помітний, але стриманий ефект."
+msgstr "Very good quality, dense seams and ribbing. The fabric changes shade with heat for a visible but restrained effect."
+
+msgid "до 10,5 × 14,8 см"
+msgstr "up to 10.5 × 14.8 cm"
+
+msgid "до 14,8 × 21 см"
+msgstr "up to 14.8 × 21 cm"
+
+msgid "до 21 × 29,7 см"
+msgstr "up to 21 × 29.7 cm"
+
+msgid "до 29,7 × 42 см"
+msgstr "up to 29.7 × 42 cm"
+
+msgid "до 42 × 59,4 см"
+msgstr "up to 42 × 59.4 cm"
+
+msgid "Текст · +60 грн"
+msgstr "Text · +60 UAH"
+
+msgid "Оберіть один зручний канал — менеджер відповість саме туди."
+msgstr "Choose one convenient channel and the manager will reply there."
+
+msgid "Привіт! Хочу обговорити кастомний принт TwoComms."
+msgstr "Hi! I would like to discuss a custom TwoComms print."
+
+msgid "Назад на попередній крок"
+msgstr "Back to the previous step"
+
+msgid "Без подарунка"
+msgstr "No gift"
+
+msgid "Заявку вже передано менеджеру. Поки менеджер не підтвердить конфігурацію, оплатити кастомну позицію через кошик не можна. Ми уточнимо файл, розташування, основу та фінальну ціну."
+msgstr "The request has already been sent to the manager. Until the configuration is confirmed, the custom item cannot be paid for through the cart. We will confirm the artwork, placement, base garment and final price."

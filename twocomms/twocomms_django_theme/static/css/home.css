@@ -12,6 +12,46 @@
    route can keep Bootstrap-consistent rendering without the external CDN
    stylesheet or a hand-maintained compatibility block in this file. */
 
+/* Homepage hero calibration: reserve enough height for the complete CTA row
+   while keeping the next section visible below the first viewport. */
+.hero-section {
+  height: auto;
+  max-height: none;
+  min-height: clamp(540px, calc(100svh - 150px), 620px);
+  contain: layout;
+  overflow: hidden;
+}
+.hero-section .hero-container {
+  --bs-gutter-y: 0;
+  --hero-gutter-y: 0;
+  min-height: inherit;
+  height: auto;
+  margin-top: 0;
+  padding: clamp(1.75rem, 2.5vw, 2.25rem) 2rem;
+}
+.hero-section .hero-text-section { min-height: 0; gap: 1.05rem; }
+.hero-section .hero-title-main { font-size: clamp(2.65rem, 4.2vw, 3.8rem); line-height: 1.04; }
+.hero-section .hero-title-accent { font-size: clamp(1.8rem, 2.8vw, 2.5rem); line-height: 1.08; }
+.hero-section .hero-subtitle { max-width: 40rem; line-height: 1.45; }
+.hero-section .hero-actions { display: grid; gap: .75rem; justify-items: center; width: 100%; }
+.hero-section .hero-cta-row { width: 100%; }
+
+@media (max-width: 768px) {
+  .hero-section { min-height: min(700px, calc(100svh - 100px)); }
+  .hero-section .hero-container { padding: 2rem 1rem 1.5rem; }
+  .hero-section .hero-text-section { min-height: 0; gap: .9rem; }
+  .hero-section .hero-title-main { font-size: clamp(2.2rem, 9vw, 3.1rem); }
+  .hero-section .hero-title-accent { font-size: clamp(1.55rem, 6.5vw, 2rem); }
+  .hero-section .hero-subtitle { max-width: 32rem; font-size: .96rem; }
+}
+
+@media (max-width: 380px) {
+  .hero-section .hero-actions { gap: .55rem; }
+  .hero-section .hero-microlink { margin-top: 0; }
+  .hero-section .hero-badge-row { gap: .3rem; margin-top: .25rem; }
+  .hero-section .hero-badge-row .hero-badge { padding: 4px 9px; font-size: .7rem; }
+}
+
 /* ==== Survey V3 styles migrated from inline <style> in pages/index.html ==== */
     /* NEW SURVEY CSS V3 */
 .survey-container-v3 {

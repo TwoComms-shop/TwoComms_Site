@@ -10,20 +10,22 @@
   var userAgent = navigator.userAgent || '';
   if (navigator.webdriver || /bot|crawler|spider|slurp|bingpreview|headless/i.test(userAgent)) return;
 
-  var storageKey = 'twocomms_language_suggestion_v1';
-  var cooldownMs = 180 * 24 * 60 * 60 * 1000;
+  // Store one decision for this browser. Ukrainian is the canonical language
+  // and exits above, so it never gets a prompt or a stored decision.
+  var storageKey = 'twocomms_language_suggestion_v3';
+  var legacyStorageKeys = ['twocomms_language_suggestion_v1', 'twocomms_language_suggestion_v2'];
   var storageEnabled = true;
   var previousFocus = null;
   var bodyOverflow = '';
   var open = false;
   var raf = window.requestAnimationFrame || function (callback) { window.setTimeout(callback, 0); };
 
-  function readDecision() {
+  function readStore() {
     try {
       var raw = window.localStorage.getItem(storageKey);
       if (!raw) return null;
       var value = JSON.parse(raw);
-      return value && value.ts && (Date.now() - Number(value.ts) < cooldownMs) ? value : null;
+      return value && value.version === 3 && value.decision ? value : null;
     } catch (error) {
       storageEnabled = false;
       return null;
@@ -32,29 +34,51 @@
 
   function remember(state) {
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify({ state: state, language: htmlLanguage, ts: Date.now() }));
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        version: 3,
+        decision: { state: state, language: htmlLanguage, ts: Date.now() }
+      }));
     } catch (error) { /* private mode or blocked storage: fail closed */ }
   }
 
-  if (readDecision() || !storageEnabled) return;
+  function hasLegacyDecision() {
+    try {
+      for (var index = 0; index < legacyStorageKeys.length; index += 1) {
+        var raw = window.localStorage.getItem(legacyStorageKeys[index]);
+        if (!raw) continue;
+        var value = JSON.parse(raw);
+        if ((value && value.state) || (value && value.decisions && Object.keys(value.decisions).length)) return true;
+      }
+      return false;
+    } catch (error) {
+      storageEnabled = false;
+      return false;
+    }
+  }
+
+  var store = readStore();
+  if ((store && store.decision) || hasLegacyDecision() || !storageEnabled) return;
 
   var title = root.querySelector('[data-language-suggestion-title]');
   var copy = root.querySelector('[data-language-suggestion-copy]');
   var stay = root.querySelector('[data-language-suggestion-stay]');
+  var switchButton = root.querySelector('[data-language-suggestion-switch]');
   var form = root.querySelector('[data-language-suggestion-form]');
   var next = root.querySelector('input[name="next"]');
   var close = root.querySelector('[data-language-suggestion-close]');
   var backdrop = root.querySelector('[data-language-suggestion-backdrop]');
 
   var labels = {
-    ru: 'Остаться на русском',
-    en: 'Stay in English'
+    ru: { stay: 'Остаться на русском', title: 'Перейти на украинский?', copy: 'Украинский интерфейс уже готов. Вы можете остаться на русском или перейти на украинский.', switch: 'Перейти на украинский' },
+    en: { stay: 'Stay in English', title: 'Switch to Ukrainian?', copy: 'The Ukrainian interface is ready. You can stay in English or switch to Ukrainian.', switch: 'Switch to Ukrainian' }
   };
 
   function setCopy() {
-    if (title) title.textContent = 'Обрати українську мову';
-    if (copy) copy.textContent = 'Так буде простіше орієнтуватися в каталозі, оплаті та доставці. Ви можете залишитися на поточній мові або перейти на українську.';
-    if (stay) stay.textContent = labels[htmlLanguage];
+    var locale = labels[htmlLanguage] || labels.en;
+    if (title) title.textContent = locale.title;
+    if (copy) copy.textContent = locale.copy;
+    if (stay) stay.textContent = locale.stay;
+    if (switchButton) switchButton.textContent = locale.switch;
   }
 
   function focusables() {

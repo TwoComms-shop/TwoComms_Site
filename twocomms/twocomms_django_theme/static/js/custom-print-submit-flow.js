@@ -98,7 +98,7 @@
       if (summaryNode) summaryNode.textContent = summary;
       const telegram = managerDialog?.querySelector("[data-manager-telegram]");
       if (telegram) {
-        const baseHref = telegram.dataset.baseHref || telegram.href;
+        const baseHref = (telegram.dataset.baseHref || telegram.getAttribute("href") || "https://t.me/twocomms").split("?")[0];
         telegram.dataset.baseHref = baseHref;
         telegram.href = summary
           ? `${baseHref}${baseHref.includes("?") ? "&" : "?"}text=${encodeURIComponent(summary)}`
