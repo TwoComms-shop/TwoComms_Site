@@ -481,6 +481,14 @@ def _sizes_display(lead) -> str:
 
 def _format_quantity_sizes_block(lead) -> list[str]:
     rows = [_bold("Кількість", f"{lead.quantity} шт")]
+    if getattr(lead, "product_type", "") == "customer_garment":
+        rows.append("• <b>Розміри:</b> не потрібні — кількість без розмірної сітки")
+        draft = getattr(lead, "config_draft_json", None) or {}
+        method = ((draft.get("order") or {}).get("delivery_method") if isinstance(draft, dict) else "") or ""
+        method_label = {"nova_poshta": "Нова пошта", "ukrposhta": "Укрпошта"}.get(method, "уточнити")
+        rows.append(f"• <b>Передача виробу:</b> {escape(method_label)}")
+        rows.append("• <i>Доставку туди й назад оплачує покупець; адресу повідомить менеджер.</i>")
+        return rows
     sizes_text = _sizes_display(lead)
     if sizes_text:
         size_mode_suffix = (
@@ -726,6 +734,15 @@ def _build_lead_message(lead, *, header_emoji: str, header_title: str, intro_lin
         parts.append(_bold("Сценарій", lead.get_client_kind_display()))
         if getattr(lead, "business_kind", ""):
             parts.append(_bold("B2B", lead.get_business_kind_display()))
+        draft = getattr(lead, "config_draft_json", None) or {}
+        notes = draft.get("notes") if isinstance(draft, dict) else {}
+        if isinstance(notes, dict):
+            if notes.get("brand_resource"):
+                parts.append(_bold("Ресурс", notes["brand_resource"]))
+            if notes.get("brand_phone"):
+                parts.append(_bold("Додатковий контакт", notes["brand_phone"]))
+            if notes.get("brand_wish"):
+                parts.append(_bold("Побажання", notes["brand_wish"]))
 
     parts.append("")
     parts.append(f'🔗 <a href="{_build_admin_panel_link(lead)}">Відкрити заявку в панелі</a>')

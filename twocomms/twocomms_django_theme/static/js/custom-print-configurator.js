@@ -5,7 +5,7 @@
  * - Per-zone uploads: окрема dropzone для кожної обраної зони.
  * - Smart sizing: qty=1 → chip-row, qty>1 → matrix з валідацією суми.
  * - Gift як платний сервіс +100 грн з полем побажання та промокодом.
- * - B2B живий калькулятор: кожні 5 шт = -10 грн/шт.
+ * - B2B живий калькулятор: кожні 8 шт відкривають наступний рівень ціни.
  * - Dual final: «Додати в кошик» (сесійний кошик) і «Надіслати менеджеру» (Telegram).
  */
 (function () {
@@ -50,6 +50,7 @@
 
   const STATE = createState();
   const filesByPlacement = new Map(); // placement_key -> File[]
+  let garmentPhotoFile = null;
   const analyticsState = {
     flowStarted: false,
     enteredSteps: new Set(),
@@ -108,6 +109,15 @@
     sleeveTextInputs: root.querySelectorAll("[data-sleeve-text-input]"),
     addonsList: root.querySelector("[data-addons-list]"),
     addonsWrap: root.querySelector("[data-addons-wrap]"),
+    addonsTitle: root.querySelector("[data-addons-title]"),
+    addonsNote: root.querySelector("[data-addons-note]"),
+    productDetailNote: root.querySelector("[data-product-detail-note]"),
+    productDetailTitle: root.querySelector("[data-product-detail-title]"),
+    productDetailCopy: root.querySelector("[data-product-detail-copy]"),
+    ownGarmentOptions: root.querySelector("[data-own-garment-options]"),
+    ownShippingList: root.querySelector("[data-own-shipping-list]"),
+    ownPhotoWrap: root.querySelector("[data-own-photo-wrap]"),
+    ownPhotoInput: root.querySelector("[data-own-photo-input]"),
     artworkList: root.querySelector("[data-artwork-service-list]"),
     dropzoneGrid: root.querySelector("[data-dropzone-grid]"),
     dropzoneEmpty: root.querySelector("[data-dropzone-empty]"),
@@ -137,6 +147,15 @@
     contactValueInput: root.querySelector("[data-contact-value-input]"),
     brandFields: root.querySelector("[data-brand-fields]"),
     brandNameInput: root.querySelector("[data-brand-name-input]"),
+    brandBrief: root.querySelector("[data-brand-brief]"),
+    brandIntroName: root.querySelector("[data-brand-intro-name]"),
+    brandResource: root.querySelector("[data-brand-resource]"),
+    brandPhone: root.querySelector("[data-brand-phone]"),
+    brandQuantity: root.querySelector("[data-brand-quantity]"),
+    brandWish: root.querySelector("[data-brand-wish]"),
+    brandTierRail: root.querySelector("[data-brand-tier-rail]"),
+    brandTierNote: root.querySelector("[data-brand-tier-note]"),
+    brandContinue: root.querySelector("[data-brand-continue]"),
     statusBox: root.querySelector("[data-status-box]"),
     finalChecklist: root.querySelector("[data-final-checklist]"),
     addToCartBtn: root.querySelector("[data-action-add-to-cart]"),
@@ -207,6 +226,7 @@
         size_mode: "single",
         sizes_note: "",
         size_breakdown: {},
+        delivery_method: "",
         gift_enabled: false,
         gift_text: "",
       },
@@ -214,6 +234,10 @@
         brand_name: "",
         brief: "",
         garment_note: "",
+        brand_resource: "",
+        brand_phone: "",
+        brand_wish: "",
+        garment_photo_name: "",
       },
       contact: {
         channel: null,
@@ -277,6 +301,17 @@
     sendAnalyticsEvent("custom_print_start", buildAnalyticsMetadata({ trigger }));
   }
 
+  function bindFirstInteraction() {
+    root.addEventListener("click", (event) => {
+      if (analyticsState.flowStarted || studioManuallyExited) return;
+      const target = event.target?.closest?.("button, input, textarea, select, label");
+      if (!target || target.closest("[data-studio-exit]")) return;
+      if (target.closest("[data-mode-list], [data-product-list], [data-fit-list], [data-fabric-list], [data-color-list], [data-zone-list], [data-artwork-service-list], [data-own-garment-options], [data-size-block], [data-step-next], [data-gift-toggle]")) {
+        enterStudio("first_choice");
+      }
+    }, { capture: true });
+  }
+
   function trackStepEnter(stepKey, extra = {}) {
     if (!stepKey || analyticsState.enteredSteps.has(stepKey)) return;
     analyticsState.enteredSteps.add(stepKey);
@@ -312,6 +347,8 @@
     bindGiftToggle();
     bindFinalActions();
     bindGenericInputs();
+    bindBrandBriefNavigation();
+    bindFirstInteraction();
     bindHeroMotion();
     bindMobileBottomBar();
     bindManagerQuickContact();
@@ -403,6 +440,10 @@
       `• Посадка: ${fit} · тканина: ${fabric} · колір: ${color}`,
       `• Зони: ${zones}`,
       `• Кількість: ${quantity}`,
+      STATE.product.type === "customer_garment" ? `• Передача: ${STATE.order.delivery_method || "уточнити"} (доставку туди й назад оплачує покупець)` : "",
+      STATE.mode === "brand" && STATE.notes.brand_resource ? `• Ресурс: ${STATE.notes.brand_resource}` : "",
+      STATE.mode === "brand" && STATE.notes.brand_phone ? `• Додатковий контакт: ${STATE.notes.brand_phone}` : "",
+      STATE.mode === "brand" && STATE.notes.brand_wish ? `• Побажання: ${STATE.notes.brand_wish}` : "",
       `• Подарунок: ${STATE.order.gift_enabled ? "так" : "ні"}`,
       `• Орієнтир: ${pricing.final_total ? formatPrice(pricing.final_total) : "уточнити"}`,
       "",
@@ -913,8 +954,31 @@
       btn.addEventListener("click", () => {
         STATE.mode = btn.dataset.choiceValue;
         normalizeClientState();
+        updateBrandFieldsVisibility();
+        if (STATE.mode === "brand") {
+          setActiveStep("mode", { silent: true });
+          refreshAll();
+          persistDraft();
+          return;
+        }
         afterChoice("mode");
       });
+    });
+  }
+
+  function bindBrandBriefNavigation() {
+    dom.brandContinue?.addEventListener("click", () => {
+      const name = (STATE.notes.brand_name || dom.brandIntroName?.value || "").trim();
+      const wish = (STATE.notes.brand_wish || dom.brandWish?.value || "").trim();
+      if (!name || !wish) {
+        showStatus("Заповніть назву та коротко опишіть, що хотіли б бачити.", "warning");
+        const target = !name ? dom.brandIntroName : dom.brandWish;
+        target?.focus?.({ preventScroll: true });
+        scrollToStudioTarget(target || dom.brandBrief, { focus: false });
+        return;
+      }
+      if (!STATE.notes.brief) STATE.notes.brief = wish;
+      afterChoice("mode");
     });
   }
 
@@ -945,6 +1009,10 @@
         if (previousType !== value) {
           STATE.order.size_breakdown = {};
           STATE.order.sizes_note = "";
+          STATE.order.delivery_method = "";
+          STATE.notes.garment_note = "";
+          STATE.notes.garment_photo_name = "";
+          garmentPhotoFile = null;
         }
         normalizeClientState();
         renderFitChips();
@@ -1021,6 +1089,32 @@
     return (CONFIG.products || {})[STATE.product.type] || null;
   }
 
+  function renderProductDetailNote() {
+    const cfg = getProductConfig();
+    if (dom.productDetailTitle) dom.productDetailTitle.textContent = cfg?.detail_title || "Деталі виробу";
+    if (dom.productDetailCopy) dom.productDetailCopy.textContent = cfg?.detail_note || "Опис оновиться після вибору виробу.";
+    if (dom.ownGarmentOptions) dom.ownGarmentOptions.hidden = STATE.product.type !== "customer_garment";
+    if (STATE.product.type !== "customer_garment") return;
+    if (!dom.ownShippingList) return;
+    dom.ownShippingList.innerHTML = "";
+    (cfg.shipping_methods || []).forEach((method) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "cp-shipping-choice";
+      button.classList.toggle("is-active", STATE.order.delivery_method === method.value);
+      button.dataset.choiceValue = method.value;
+      button.setAttribute("aria-pressed", String(STATE.order.delivery_method === method.value));
+      button.innerHTML = `<strong>${escapeHtml(method.label)}</strong><small>${escapeHtml(method.hint || "")}</small>`;
+      button.addEventListener("click", () => {
+        STATE.order.delivery_method = method.value;
+        renderProductDetailNote();
+        refreshAll();
+        persistDraft();
+      });
+      dom.ownShippingList.appendChild(button);
+    });
+  }
+
   function getSelectedFabricConfig() {
     const cfg = getProductConfig();
     if (!cfg || !cfg.fabrics || !STATE.product.fit) return null;
@@ -1079,8 +1173,19 @@
         </div>
       `;
       btn.addEventListener("click", () => {
+        const previousFit = STATE.product.fit;
         STATE.product.fit = f.value;
         STATE.product.fabric = STATE.product.type === "hoodie" && f.value === "oversize" ? "premium" : null;
+        if (previousFit !== f.value) {
+          STATE.print.zones = [];
+          STATE.print.zone_options = {};
+          STATE.artwork.service_kind = null;
+          STATE.artwork.triage_status = null;
+          STATE.notes.brief = "";
+          filesByPlacement.clear();
+          STATE.order.size_breakdown = {};
+          invalidateAfter("config");
+        }
         renderFabricChips();
         renderColorChips();
         renderFitChips();
@@ -1148,7 +1253,15 @@
       
       btn.addEventListener("click", () => {
         if (isLocked || isUnavailable) return;
+        const previousFabric = STATE.product.fabric;
         STATE.product.fabric = fab.value;
+        if (previousFabric !== fab.value) {
+          STATE.artwork.service_kind = null;
+          STATE.artwork.triage_status = null;
+          STATE.notes.brief = "";
+          filesByPlacement.clear();
+          invalidateAfter("config");
+        }
         renderFabricChips();
         renderColorChips();
         refreshAll();
@@ -1555,6 +1668,8 @@
     dom.addonsList.innerHTML = "";
     const cfg = getProductConfig();
     const addons = cfg && cfg.add_ons ? cfg.add_ons : [];
+    if (dom.addonsTitle) dom.addonsTitle.textContent = cfg?.detail_title || "Додаткові деталі";
+    if (dom.addonsNote) dom.addonsNote.textContent = cfg?.detail_note || "Опційні зміни моделі.";
     const fleeceOptions = addons.filter((addon) => addon.group === "fleece");
     if (fleeceOptions.length && !fleeceOptions.some((addon) => STATE.print.add_ons.includes(addon.value))) {
       const defaultFleece = fleeceOptions.find((addon) => addon.value === "no_fleece") || fleeceOptions[0];
@@ -2361,6 +2476,36 @@
       STATE.notes.garment_note = dom.garmentNoteInput.value;
       persistDraft();
     });
+    const bindNote = (input, key, onInput = null) => {
+      input?.addEventListener("input", () => {
+        STATE.notes[key] = input.value;
+        onInput?.(input.value);
+        persistDraft();
+      });
+    };
+    bindNote(dom.brandIntroName, "brand_name", (value) => {
+      if (dom.brandNameInput) dom.brandNameInput.value = value;
+    });
+    bindNote(dom.brandResource, "brand_resource");
+    bindNote(dom.brandPhone, "brand_phone");
+    dom.brandQuantity?.addEventListener("input", () => {
+      const value = Math.max(0, parseInt(dom.brandQuantity.value, 10) || 0);
+      if (value > 0) {
+        STATE.order.quantity = value;
+        if (dom.qtyInput) dom.qtyInput.value = String(value);
+      }
+      updateBrandTierNote();
+      refreshAll();
+      persistDraft();
+    });
+    bindNote(dom.brandWish, "brand_wish", (value) => {
+      if (value && !STATE.notes.brief) STATE.notes.brief = value;
+    });
+    dom.ownPhotoInput?.addEventListener("change", () => {
+      garmentPhotoFile = dom.ownPhotoInput.files?.[0] || null;
+      STATE.notes.garment_photo_name = garmentPhotoFile?.name || "";
+      persistDraft();
+    });
   }
 
   function clampSizeBreakdownToQuantity() {
@@ -2393,10 +2538,11 @@
       dom.sizeGrid.hidden = true;
       dom.sizeMatrix.hidden = true;
       if (dom.sizeManagerBtn) dom.sizeManagerBtn.hidden = true;
-      if (dom.sizesNoteWrap) dom.sizesNoteWrap.hidden = false;
+      if (dom.sizesNoteWrap) dom.sizesNoteWrap.hidden = true;
+      if (dom.ownPhotoWrap) dom.ownPhotoWrap.hidden = false;
       if (dom.garmentNoteWrap) dom.garmentNoteWrap.hidden = false;
       if (dom.sizeWarning) dom.sizeWarning.hidden = true;
-      if (dom.qtyHint) dom.qtyHint.textContent = "Опишіть розміри і характеристики свого виробу нижче.";
+      if (dom.qtyHint) dom.qtyHint.textContent = "Вкажіть кількість і коротко опишіть матеріал та стан виробу.";
     } else if (qty === 1) {
       // Single-size chip row
       STATE.order.size_mode = "single";
@@ -2404,6 +2550,7 @@
       dom.sizeMatrix.hidden = true;
       if (dom.sizeManagerBtn) dom.sizeManagerBtn.hidden = false;
       if (dom.garmentNoteWrap) dom.garmentNoteWrap.hidden = true;
+      if (dom.ownPhotoWrap) dom.ownPhotoWrap.hidden = true;
       if (dom.sizesNoteWrap) dom.sizesNoteWrap.hidden = true;
       if (dom.qtyHint) dom.qtyHint.textContent = "Один виріб — один розмір. Натисніть, щоб обрати.";
       // Reset size_breakdown to single
@@ -2433,6 +2580,7 @@
         if (dom.sizeManagerBtn) dom.sizeManagerBtn.hidden = false;
         if (dom.sizesNoteWrap) dom.sizesNoteWrap.hidden = false;
         if (dom.garmentNoteWrap) dom.garmentNoteWrap.hidden = true;
+        if (dom.ownPhotoWrap) dom.ownPhotoWrap.hidden = true;
         if (dom.qtyHint) dom.qtyHint.textContent = "Розміри уточнимо разом з менеджером — заповніть примітку.";
         if (dom.sizeWarning) dom.sizeWarning.hidden = true;
         return;
@@ -2443,6 +2591,7 @@
       if (dom.sizeManagerBtn) dom.sizeManagerBtn.hidden = false;
       if (dom.sizesNoteWrap) dom.sizesNoteWrap.hidden = false;
       if (dom.garmentNoteWrap) dom.garmentNoteWrap.hidden = true;
+      if (dom.ownPhotoWrap) dom.ownPhotoWrap.hidden = true;
       if (dom.qtyHint) dom.qtyHint.textContent = `Розподіліть ${qty} шт. по розмірах. Сума має дорівнювати ${qty}.`;
 
       dom.sizeMatrix.innerHTML = "";
@@ -2504,11 +2653,11 @@
   function updateB2bMeta() {
     const qty = STATE.order.quantity || 0;
     const isB2b = STATE.mode === "brand";
-    if (!isB2b || qty < 5) {
+    if (!isB2b || qty < 8) {
       if (dom.b2bMeta) dom.b2bMeta.hidden = true;
       return;
     }
-    const tier = CONFIG.b2b_tier || { unit_step: 5, discount_per_unit: 10 };
+    const tier = CONFIG.b2b_tier || { unit_step: 8, discount_per_unit: 10 };
     const steps = Math.floor(qty / tier.unit_step);
     const discount = steps * tier.discount_per_unit;
     if (dom.b2bMeta) dom.b2bMeta.hidden = false;
@@ -2535,9 +2684,7 @@
   }
 
   function getGiftContinueLabel() {
-    return STATE.order.gift_enabled
-      ? ui("gift_continue_on", "Продовжити з подарунковою упаковкою")
-      : ui("gift_continue_off", "Продовжити без подарункової упаковки");
+    return ui(STATE.order.gift_enabled ? "gift_continue_on" : "gift_continue_off", "Далі");
   }
 
   function updateGiftContinueLabel() {
@@ -2687,6 +2834,7 @@
       case "product": return !!STATE.product.type;
       case "config":
         if (!STATE.product.type) return false;
+        if (STATE.product.type === "customer_garment") return !!STATE.product.color && !!STATE.order.delivery_method;
         if (getProductConfig()?.fits?.length) return !!STATE.product.fit && !!STATE.product.fabric && !!STATE.product.color;
         return !!STATE.product.color;
       case "zones":
@@ -2701,7 +2849,7 @@
       case "artwork": return getArtworkValidationIssues().length === 0;
       case "quantity":
         if (STATE.order.quantity <= 0) return false;
-        if (STATE.product.type === "customer_garment") return true;
+        if (STATE.product.type === "customer_garment") return !!STATE.notes.garment_note.trim();
         if (STATE.order.size_mode === "manager") return true;
         if (STATE.order.quantity === 1) return Object.values(STATE.order.size_breakdown || {}).some((v) => v > 0);
         const sum = Object.values(STATE.order.size_breakdown || {}).reduce((a, b) => a + (parseInt(b, 10) || 0), 0);
@@ -2727,6 +2875,9 @@
     };
     if (stepKey === "config") {
       const productConfig = getProductConfig();
+      if (STATE.product.type === "customer_garment" && !STATE.order.delivery_method) {
+        return ["Оберіть спосіб передачі виробу.", "[data-own-shipping-list] button"];
+      }
       if (productConfig?.fits?.length && !STATE.product.fit) {
         return [ui("config_fit_required", "Оберіть посадку."), "[data-fit-list] button"];
       }
@@ -2762,13 +2913,16 @@
     }
     if (stepKey === "quantity") {
       if (STATE.order.quantity <= 0) return ["Вкажіть кількість виробів.", "[data-quantity-input]"];
+      if (STATE.product.type === "customer_garment" && !STATE.notes.garment_note.trim()) {
+        return ["Опишіть свій виріб для попереднього прорахунку.", "[data-own-item-note-wrap]"];
+      }
       if (STATE.product.type !== "customer_garment" && STATE.order.size_mode !== "manager") {
         const sum = Object.values(STATE.order.size_breakdown || {}).reduce((total, value) => total + (parseInt(value, 10) || 0), 0);
-        if (STATE.order.quantity === 1 && sum === 0) return ["Оберіть розмір виробу.", "[data-size-grid] button"];
+        if (STATE.order.quantity === 1 && sum === 0) return ["Оберіть розмір виробу.", "[data-size-block]"];
         if (STATE.order.quantity > 1 && sum !== STATE.order.quantity) {
           return [
             sum < STATE.order.quantity ? `Розподіліть ще ${STATE.order.quantity - sum} шт. за розмірами.` : "Зменште кількість одного з розмірів.",
-            '[data-size-step="1"]',
+            "[data-size-block]",
           ];
         }
       }
@@ -2816,6 +2970,7 @@
     syncProgressShellPlacement();
     updateStageVisibility();
     updateStageMeta();
+    renderProductDetailNote();
     applyStageView(STATE.ui.stage_view || "front");
     renderModeChipsActive();
     renderProductCardsActive();
@@ -2978,8 +3133,43 @@
   }
 
   function updateBrandFieldsVisibility() {
-    if (!dom.brandFields) return;
-    dom.brandFields.hidden = STATE.mode !== "brand";
+    if (dom.brandFields) dom.brandFields.hidden = STATE.mode !== "brand";
+    if (dom.brandBrief) dom.brandBrief.hidden = STATE.mode !== "brand";
+    if (STATE.mode === "brand" && dom.brandIntroName && !dom.brandIntroName.value && STATE.notes.brand_name) {
+      dom.brandIntroName.value = STATE.notes.brand_name;
+    }
+    updateBrandTierNote();
+  }
+
+  function updateBrandTierNote() {
+    const tier = CONFIG.b2b_tier || { unit_step: 8, tiers: [] };
+    const qty = Number(STATE.order.quantity || 0);
+    renderBrandTierRail(tier, qty);
+    if (!dom.brandTierNote) return;
+    if (STATE.mode !== "brand") {
+      dom.brandTierNote.textContent = "";
+      return;
+    }
+    const next = (tier.tiers || []).find((item) => qty < Number(item.minimum || 0));
+    dom.brandTierNote.textContent = next
+      ? `Наступний рівень: ${next.label} — ${next.note}, від ${next.minimum} шт.`
+      : (qty >= (tier.unit_step || 8) ? "Ви на найвигіднішому доступному рівні — фінальну ціну узгодить менеджер." : `Партійна ціна стартує від ${tier.unit_step || 8} шт.`);
+  }
+
+  function renderBrandTierRail(tier, qty) {
+    if (!dom.brandTierRail) return;
+    const tiers = tier.tiers || [];
+    dom.brandTierRail.innerHTML = tiers.map((item, index) => {
+      const minimum = Number(item.minimum || 0);
+      const active = STATE.mode === "brand" && qty >= minimum;
+      const current = active && (!tiers[index + 1] || qty < Number(tiers[index + 1].minimum || 0));
+      return `<span class="cp-brand-tier ${active ? "is-active" : ""} ${current ? "is-current" : ""}">
+        <span class="cp-brand-tier-marker">${minimum}+</span>
+        <strong>${escapeHtml(item.label || "")}</strong>
+        <small>${escapeHtml(item.note || "")}</small>
+      </span>`;
+    }).join("");
+    dom.brandTierRail.classList.toggle("is-visible", STATE.mode === "brand");
   }
 
   function renderFinalChecklist(actionPolicy) {
@@ -2990,7 +3180,7 @@
       { step: "config", label: "Налаштування", ready: canAdvance("config"), detail: "Посадка, тканина і колір" },
       { step: "zones", label: "Зони", ready: canAdvance("zones"), detail: "Розташування та формат" },
       { step: "artwork", label: "Макет", ready: getArtworkValidationIssues().length === 0 && !!STATE.artwork.service_kind, detail: "Файл, бриф або дизайн" },
-      { step: "quantity", label: "Кількість", ready: canAdvance("quantity"), detail: "Кількість і розміри" },
+      { step: "quantity", label: "Кількість", ready: canAdvance("quantity"), detail: STATE.product.type === "customer_garment" ? "Кількість без розмірів" : "Кількість і розміри" },
       { step: "gift", label: "Подарунок", ready: true, detail: STATE.order.gift_enabled ? "Упаковка додана" : "Без упаковки" },
       { step: "contact", label: "Контакт", ready: canAdvance("contact"), detail: "Імʼя і канал звʼязку" },
     ];
@@ -3173,8 +3363,8 @@
     let unitTotal = base + printPrice + zonesPrice + designPrice + addonsPrice;
     let b2bDiscountPerUnit = 0;
     const qty = STATE.order.quantity || 0;
-    if (STATE.mode === "brand" && qty >= 5) {
-      const tier = CONFIG.b2b_tier || { unit_step: 5, discount_per_unit: 10 };
+    if (STATE.mode === "brand" && qty >= 8) {
+      const tier = CONFIG.b2b_tier || { unit_step: 8, discount_per_unit: 10 };
       const steps = Math.floor(qty / tier.unit_step);
       b2bDiscountPerUnit = steps * tier.discount_per_unit;
     }
@@ -3305,7 +3495,7 @@
       zones: { label: "До зон", target: "zones" },
       artwork: { label: "До макета", target: "artwork" },
       quantity: { label: "До кількості", target: "quantity" },
-      gift: { label: "До подарунку", target: "gift" },
+      gift: { label: "Далі", target: "gift" },
       contact: { label: "Надіслати менеджеру", target: "submit" },
     };
     const policy = buildActionPolicy();
@@ -3409,6 +3599,7 @@
         size_mode: STATE.order.size_mode || "single",
         sizes_note: STATE.order.sizes_note || "",
         size_breakdown: { ...STATE.order.size_breakdown },
+        delivery_method: STATE.order.delivery_method || "",
         gift: { enabled: !!STATE.order.gift_enabled, text: STATE.order.gift_text || "" },
       },
       contact: { ...STATE.contact },
@@ -3431,6 +3622,17 @@
         file_index: index,
       });
     });
+    if (garmentPhotoFile) {
+      out.push({
+        name: garmentPhotoFile.name,
+        zone: "garment_reference",
+        placement_key: "garment_reference",
+        label: "Фото виробу",
+        status: "reference-only",
+        role: "garment_reference",
+        file_index: out.length,
+      });
+    }
     return out;
   }
 
@@ -3539,6 +3741,7 @@
     collectOrderedFiles().forEach(({ file }) => {
       fd.append("files", file);
     });
+    if (garmentPhotoFile) fd.append("files", garmentPhotoFile);
     return fd;
   }
 
@@ -3873,6 +4076,11 @@
       if (dom.nameInput) dom.nameInput.value = STATE.contact.name || "";
       if (dom.contactValueInput) dom.contactValueInput.value = STATE.contact.value || "";
       if (dom.brandNameInput) dom.brandNameInput.value = STATE.notes.brand_name || "";
+      if (dom.brandIntroName) dom.brandIntroName.value = STATE.notes.brand_name || "";
+      if (dom.brandResource) dom.brandResource.value = STATE.notes.brand_resource || "";
+      if (dom.brandPhone) dom.brandPhone.value = STATE.notes.brand_phone || "";
+      if (dom.brandQuantity) dom.brandQuantity.value = STATE.order.quantity || "";
+      if (dom.brandWish) dom.brandWish.value = STATE.notes.brand_wish || "";
       if (dom.giftTextInput) dom.giftTextInput.value = STATE.order.gift_text || "";
       if (dom.giftToggle) dom.giftToggle.classList.toggle("is-active", !!STATE.order.gift_enabled);
       if (dom.giftToggle) dom.giftToggle.setAttribute("aria-pressed", String(!!STATE.order.gift_enabled));

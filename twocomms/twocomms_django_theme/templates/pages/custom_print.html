@@ -284,6 +284,28 @@
                   </button>
                 {% endfor %}
               </div>
+              <div class="cp-brand-brief" data-brand-brief hidden>
+                <div class="cp-brand-brief-head">
+                  <strong>{% trans 'Короткий бриф для команди' %}</strong>
+                  <span>{% trans 'Менеджери вже отримали цей бриф і в будь-якому разі звʼяжуться з вами.' %}</span>
+                </div>
+                <div class="cp-inline-fields">
+                  <label class="cp-field"><span>{% trans 'Бренд / компанія / магазин' %}</span><input type="text" data-brand-intro-name placeholder="{% trans 'Назва проєкту' %}"></label>
+                  <label class="cp-field"><span>{% trans 'Посилання на ресурс (необовʼязково)' %}</span><input type="url" data-brand-resource placeholder="https://... або @instagram"></label>
+                </div>
+                <div class="cp-inline-fields">
+                  <label class="cp-field"><span>{% trans 'Телефон або інший контакт' %}</span><input type="text" data-brand-phone placeholder="{% trans '+380... або @username' %}"></label>
+                  <label class="cp-field"><span>{% trans 'Орієнтовна кількість' %}</span><input type="number" min="1" inputmode="numeric" data-brand-quantity placeholder="{% trans 'Від 8 шт' %}"></label>
+                </div>
+                <label class="cp-field"><span>{% trans 'Що хотіли б бачити' %}</span><textarea rows="3" data-brand-wish placeholder="{% trans 'Тип виробів, стиль, терміни та інші побажання' %}"></textarea></label>
+                <div class="cp-brand-tier-rail" data-brand-tier-rail aria-label="{% trans 'Рівні партійної ціни' %}"></div>
+                <div class="cp-brand-tier-note" data-brand-tier-note></div>
+                <button type="button" class="cp-manager-quick-link cp-brand-manager-link" data-manager-quick-contact>
+                  <span><strong>{% trans 'Написати менеджеру в Telegram' %}</strong><small>{% trans 'Обговоримо типи виробів, ціну та кількість індивідуально.' %}</small></span>
+                  <span aria-hidden="true">→</span>
+                </button>
+                <button type="button" class="cp-link cp-link--primary" data-brand-continue>{% trans 'Далі' %}</button>
+              </div>
               <button type="button" class="cp-manager-quick-link" data-manager-quick-contact>
                 <span class="cp-manager-quick-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m20.6 4.2-3.2 15.1c-.2 1.1-.8 1.4-1.6.9l-4.4-3.3-2.1 2c-.2.2-.4.4-.8.4l.3-4.5 8.2-7.4c.4-.4-.1-.6-.6-.2L6.3 13 2 11.6c-.9-.3-.9-.9.2-1.3L19 3.8c.8-.3 1.8.2 1.6.4Z" fill="currentColor"/></svg></span>
                 <span><strong>{% trans 'Обговорити в Telegram' %}</strong><small>{% trans 'Менеджер підкаже формат, тканину та ціну' %}</small></span>
@@ -360,6 +382,20 @@
                 </div>
               </div>
 
+              <div class="cp-product-detail-note" data-product-detail-note>
+                <strong data-product-detail-title>{% trans 'Деталі виробу' %}</strong>
+                <span data-product-detail-copy>{% trans 'Опис оновиться після вибору виробу.' %}</span>
+              </div>
+
+              <div class="cp-own-garment-options" data-own-garment-options hidden>
+                <div class="cp-subhead">
+                  <strong>{% trans 'Як передати ваш виріб' %}</strong>
+                  <span>{% trans 'Адресу для відправлення повідомить менеджер після заявки.' %}</span>
+                </div>
+                <div class="cp-shipping-choice-list" data-own-shipping-list></div>
+                <p class="cp-own-delivery-note">{% trans 'Доставку виробу до нас і назад оплачує покупець.' %}</p>
+              </div>
+
               <div class="cp-config-block">
                 <div class="cp-subhead">
                   <strong>{% trans 'Колір виробу' %}</strong>
@@ -370,8 +406,8 @@
 
               <div class="cp-config-block" data-addons-wrap hidden>
                 <div class="cp-subhead">
-                  <strong>{% trans 'Деталі худі' %}</strong>
-                  <span>{% trans 'Апгрейди, які роблять річ більш зібраною.' %}</span>
+                  <strong data-addons-title>{% trans 'Додаткові деталі' %}</strong>
+                  <span data-addons-note>{% trans 'Опційні зміни моделі.' %}</span>
                 </div>
                 <div class="cp-addon-grid" data-addons-list></div>
               </div>
@@ -593,10 +629,15 @@
                 <span>{% trans 'Опис свого виробу' %}</span>
                 <textarea id="cp-garment-note" name="garment_note" rows="3" data-own-item-note-input placeholder="{% trans 'Матеріал, колір, крій, стан виробу та все, що важливо для прорахунку' %}"></textarea>
               </label>
+              <label class="cp-field cp-garment-photo-field" data-own-photo-wrap hidden>
+                <span>{% trans 'Фото виробу (необовʼязково)' %}</span>
+                <input type="file" accept="image/*" data-own-photo-input>
+                <small>{% trans 'Допоможе менеджеру швидше зорієнтуватися в матеріалі та крої.' %}</small>
+              </label>
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="artwork">{% trans 'Назад' %}</button>
-                <button type="button" class="cp-link cp-link--primary" data-step-next="gift">{% trans 'Далі до подарунку' %}</button>
+                <button type="button" class="cp-link cp-link--primary" data-step-next="gift">{% trans 'Далі' %}</button>
               </div>
             </div>
           </section>
@@ -647,7 +688,7 @@
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="quantity">{% trans 'Назад' %}</button>
-                <button type="button" class="cp-link cp-link--primary" data-step-next="contact" data-gift-continue>{% trans 'Продовжити без подарункової упаковки' %}</button>
+                <button type="button" class="cp-link cp-link--primary" data-step-next="contact" data-gift-continue>{% trans 'Далі' %}</button>
               </div>
             </div>
           </section>

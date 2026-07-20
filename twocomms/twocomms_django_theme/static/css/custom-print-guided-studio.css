@@ -1214,6 +1214,66 @@ summary:focus-visible {
   }
 }
 
+/* Contextual product details stay informative without behaving like a choice. */
+.cp-product-detail-note {
+  display: grid;
+  gap: 4px;
+  margin: 14px 0 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-left: 3px solid var(--cp-gold-soft, #d4b483);
+  border-radius: 10px;
+  background: rgba(255,255,255,.035);
+}
+.cp-product-detail-note strong { font-size: 13px; color: var(--cp-text, #f5f0e8); }
+.cp-product-detail-note span { font-size: 12px; line-height: 1.5; color: var(--cp-muted, #a9a19a); }
+.cp-own-garment-options { display: grid; gap: 10px; margin: 14px 0 18px; padding: 14px; border-radius: 10px; background: rgba(190,157,104,.08); border: 1px solid rgba(190,157,104,.24); }
+.cp-shipping-choice-list { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+.cp-shipping-choice { display: grid; gap: 3px; text-align: left; padding: 11px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 9px; color: inherit; background: rgba(255,255,255,.03); cursor: pointer; }
+.cp-shipping-choice.is-active { border-color: var(--cp-gold-soft, #d4b483); background: rgba(212,180,131,.14); }
+.cp-shipping-choice strong { font-size: 13px; }
+.cp-shipping-choice small, .cp-own-delivery-note { color: var(--cp-muted, #a9a19a); font-size: 11px; line-height: 1.4; }
+.cp-own-delivery-note { margin: 0; }
+.cp-brand-brief { display: grid; gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid rgba(212,180,131,.28); border-radius: 12px; background: linear-gradient(145deg, rgba(212,180,131,.13), rgba(255,255,255,.035)); }
+.cp-brand-brief-head { display: grid; gap: 3px; }
+.cp-brand-brief-head strong { font-size: 15px; }
+.cp-brand-brief-head span { color: var(--cp-muted, #a9a19a); font-size: 12px; line-height: 1.45; }
+.cp-brand-tier-note { min-height: 18px; color: var(--cp-gold-soft, #d4b483); font-size: 12px; font-weight: 600; }
+.cp-brand-tier-rail { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; position: relative; margin-top: 2px; }
+.cp-brand-tier-rail::before { content: ""; position: absolute; top: 16px; right: 10%; left: 10%; height: 2px; background: rgba(212,180,131,.16); }
+.cp-brand-tier { position: relative; z-index: 1; display: grid; gap: 3px; min-width: 0; padding: 9px 8px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(10,10,13,.72); color: var(--cp-muted); transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
+.cp-brand-tier-marker { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid rgba(212,180,131,.34); border-radius: 50%; background: #15131a; color: var(--cp-gold-soft); font-size: 10px; font-weight: 850; }
+.cp-brand-tier strong { overflow: hidden; color: var(--cp-text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.cp-brand-tier small { overflow: hidden; color: inherit; font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.cp-brand-tier.is-active { border-color: rgba(212,180,131,.48); background: rgba(212,180,131,.1); color: var(--cp-gold-soft); }
+.cp-brand-tier.is-current { transform: translateY(-2px); border-color: var(--cp-gold); box-shadow: 0 0 0 1px rgba(232,191,108,.22), 0 9px 18px rgba(0,0,0,.18); }
+.cp-brand-tier.is-current .cp-brand-tier-marker { background: var(--cp-gold); color: #1a140d; }
+.cp-addon-card-topline { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.cp-addon-card-topline strong { min-width: 0; font-size: .88rem; }
+.cp-addon-card-control { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 7px; color: var(--cp-muted); }
+.cp-addon-card-control-text { font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
+.cp-addon-card-switch { display: inline-flex; align-items: center; width: 42px; height: 24px; padding: 3px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: rgba(255,255,255,.08); transition: background 180ms ease, border-color 180ms ease; }
+.cp-addon-card-switch-thumb { width: 16px; height: 16px; border-radius: 50%; background: rgba(247,245,239,.7); box-shadow: 0 2px 5px rgba(0,0,0,.25); transition: transform 180ms ease, background 180ms ease; }
+.cp-addon-card.is-active .cp-addon-card-switch { border-color: rgba(232,191,108,.68); background: rgba(232,191,108,.28); }
+.cp-addon-card.is-active .cp-addon-card-switch-thumb { transform: translateX(18px); background: var(--cp-gold-soft); }
+.cp-addon-card.is-auto-included .cp-addon-card-control { opacity: .75; }
+.cp-brand-manager-link { margin-top: 0; }
+.cp-garment-photo-field input[type="file"] { width: 100%; }
+.cp-addon-toggle-state { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--cp-muted, #a9a19a); font-size: 11px; }
+.cp-addon-card.is-active .cp-addon-toggle-state { color: var(--cp-gold-soft, #d4b483); }
+
+@media (max-width: 640px) {
+  .cp-shipping-choice-list { grid-template-columns: 1fr; }
+  .cp-brand-brief { padding: 13px; }
+  .cp-brand-tier-rail { gap: 5px; }
+  .cp-brand-tier { padding-inline: 6px; }
+  .cp-brand-tier strong { font-size: 10px; }
+  .cp-brand-tier small { font-size: 9px; }
+  .cp-addon-card-topline { align-items: flex-start; }
+  .cp-addon-card-control { gap: 5px; }
+  .cp-addon-card-control-text { font-size: .56rem; }
+}
+
 /* -------------------------------------------------------------------------
    Cinematic studio layer
    The eight-stage flow remains the interaction contract. This layer gives

@@ -70,6 +70,10 @@ class CustomPrintPricingSourceTests(unittest.TestCase):
         self.assertTrue(tshirt["fabrics"]["oversize"][1]["included_in_base"])
         self.assertEqual(tshirt["fabrics"]["oversize"][1]["price_delta"], 0)
         self.assertEqual(tshirt["fabrics"]["oversize"][2]["label"], "Термохромна тканина")
+        self.assertEqual([item["value"] for item in tshirt["fabrics"]["regular"]], ["standard", "premium"])
+        self.assertEqual(tshirt["fabrics"]["regular"][0]["label"], "Звичайна тканина")
+        self.assertEqual(tshirt["fabrics"]["regular"][1]["price_delta"], 150)
+        self.assertEqual(tshirt["default_fabric"], "standard")
 
     def test_print_format_price_is_included_in_unit_total(self):
         source = CONFIGURATOR_PATH.read_text(encoding="utf-8")

@@ -285,8 +285,23 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertNotIn("data-step-skip", gift_step)
         self.assertIn("data-gift-continue", gift_step)
         configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
-        self.assertIn("Продовжити без подарункової упаковки", configurator)
-        self.assertIn("Продовжити з подарунковою упаковкою", configurator)
+        self.assertIn('ui(STATE.order.gift_enabled ? "gift_continue_on" : "gift_continue_off", "Далі")', configurator)
+        self.assertIn("{% trans 'Далі' %}", self.template)
+
+    def test_current_flow_has_product_details_own_garment_and_b2b_brief_contracts(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        for contract in (
+            "data-product-detail-note",
+            "data-own-garment-options",
+            "data-own-shipping-list",
+            "data-own-photo-input",
+            "data-brand-brief",
+            "data-brand-continue",
+            "bindFirstInteraction",
+            'enterStudio("first_choice")',
+            "[data-size-block]",
+        ):
+            self.assertIn(contract, self.template + configurator)
 
     def test_new_huddi_pocket_zone_and_precise_mobile_controls(self):
         configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
@@ -311,6 +326,12 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         source = STATIC_PAGES.read_text(encoding="utf-8")
         self.assertNotIn("�", source)
         self.assertNotIn("��", source)
+
+    def test_addon_switch_and_brand_tier_rail_have_compact_visual_contract(self):
+        self.assertIn("data-brand-tier-rail", self.template)
+        self.assertIn("cp-addon-card-switch-thumb", self.js)
+        self.assertIn(".cp-addon-card-switch", self.css)
+        self.assertIn(".cp-brand-tier-rail", self.css)
 
     def test_preview_png_assets_share_a_transparent_1200_by_1400_canvas(self):
         names = (

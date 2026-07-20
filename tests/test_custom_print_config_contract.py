@@ -146,7 +146,7 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["value"] for item in config["products"]["tshirt"]["fabrics"]["regular"]],
-            ["standard", "premium", "thermo"],
+            ["standard", "premium"],
         )
         self.assertEqual(
             [item["value"] for item in config["products"]["tshirt"]["fabrics"]["oversize"]],
@@ -154,8 +154,12 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         )
         self.assertEqual(config["products"]["tshirt"]["fabrics"]["oversize"][2]["price_delta"], 500)
         standard = config["products"]["tshirt"]["fabrics"]["regular"][0]
-        self.assertFalse(standard["available"])
-        self.assertTrue(standard["disabled"])
+        self.assertEqual(standard["label"], "Звичайна тканина")
+        self.assertTrue(standard["available"] if "available" in standard else True)
+        self.assertEqual(config["products"]["tshirt"]["fabrics"]["regular"][1]["price_delta"], 150)
+        self.assertEqual(config["b2b_tier"]["unit_step"], 8)
+        self.assertEqual(config["products"]["customer_garment"]["pricing"]["base"], 150)
+        self.assertEqual(len(config["products"]["customer_garment"]["shipping_methods"]), 2)
         self.assertEqual(config["products"]["hoodie"]["zones"], ["front", "back", "kangaroo", "sleeve"])
         self.assertIn("stage_profiles", config)
         self.assertIn("hoodie", config["stage_profiles"])
@@ -242,9 +246,9 @@ class CustomPrintConfigContractTests(unittest.TestCase):
     def test_config_exposes_clear_classic_premium_and_thermo_descriptions(self):
         config = build_custom_print_config(submit_url="/lead/", safe_exit_url="/safe-exit/", add_to_cart_url="/cart/")
         tshirt = config["products"]["tshirt"]["fabrics"]
-        self.assertIn("недоступна", tshirt["regular"][0]["short_desc"])
+        self.assertIn("Базова тканина", tshirt["regular"][0]["short_desc"])
         self.assertIn("турецький кулір", tshirt["regular"][1]["short_desc"].lower())
-        self.assertIn("недоступна", tshirt["oversize"][0]["short_desc"])
+        self.assertIn("недоступна", tshirt["oversize"][0]["short_desc"].lower())
         self.assertIn("ребана", tshirt["oversize"][1]["short_desc"])
         self.assertIn("від тепла", tshirt["oversize"][2]["short_desc"])
         self.assertEqual(
@@ -258,7 +262,7 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         self.assertIn("PNG", ready["hint"])
         self.assertIn("прозор", ready["hint"].lower())
         self.assertIn("менеджер", ready["hint"].lower())
-        self.assertIn("чорне або біле тло", adjust["hint"].lower())
+        self.assertIn("приберемо фон", adjust["hint"].lower())
         self.assertIn("напівпрозорі пікселі", adjust["hint"].lower())
         self.assertNotIn("референс", adjust["hint"].lower())
         self.assertIn("референс", design["hint"].lower())
@@ -340,11 +344,23 @@ class CustomPrintConfigContractTests(unittest.TestCase):
 
         self.assertEqual(normalized["print"]["zone_options"]["front"]["size_preset"], "A4")
 
-    def test_normalize_snapshot_rejects_unavailable_tshirt_standard_fabric(self):
+    def test_normalize_snapshot_preserves_available_tshirt_standard_fabric(self):
         normalized = normalize_custom_print_snapshot(
             {"product": {"type": "tshirt", "fit": "regular", "fabric": "standard", "color": "black"}}
         )
-        self.assertEqual(normalized["product"]["fabric"], "premium")
+        self.assertEqual(normalized["product"]["fabric"], "standard")
+
+    def test_normalize_snapshot_preserves_own_garment_delivery_without_sizes(self):
+        normalized = normalize_custom_print_snapshot(
+            {
+                "product": {"type": "customer_garment", "color": "red"},
+                "order": {"quantity": 3, "delivery_method": "ukrposhta"},
+                "notes": {"garment_note": "Куртка без розмірної сітки"},
+            }
+        )
+        self.assertEqual(normalized["product"]["color"], "red")
+        self.assertEqual(normalized["order"]["delivery_method"], "ukrposhta")
+        self.assertEqual(normalized["notes"]["garment_note"], "Куртка без розмірної сітки")
 
     def test_normalize_snapshot_preserves_fit_specific_hoodie_color(self):
         normalized = normalize_custom_print_snapshot(

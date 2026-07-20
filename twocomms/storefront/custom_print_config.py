@@ -21,9 +21,14 @@ GIFT_SERVICE = {
 }
 
 B2B_TIER = {
-    "unit_step": 5,
+    "unit_step": 8,
     "discount_per_unit": 10,
-    "hint": _("Кожні 5 одиниць — -10 грн/шт. Калькулятор оновлюється миттєво."),
+    "hint": _("Кожні 8 виробів відкривають наступний рівень ціни — що більша партія, то вигідніше."),
+    "tiers": [
+        {"minimum": 8, "label": _("Старт партії"), "note": _("Перша гуртова ціна")},
+        {"minimum": 16, "label": _("Вигідніше"), "note": _("Ще нижча ціна за виріб")},
+        {"minimum": 24, "label": _("Велика партія"), "note": _("Максимальна економія на серії")},
+    ],
 }
 
 SIZE_GRID = ["XS", "S", "M", "L", "XL", "2XL"]
@@ -53,11 +58,11 @@ UI_STRINGS = {
     "artwork_brief_design_required": _("Опишіть бриф / завдання для дизайну."),
     "artwork_brief_adjust_required": _("Опишіть, що саме потрібно змінити у файлі."),
     "artwork_file_required": _("Додайте макет для кожної вибраної зони."),
-    "quantity_required": _("Заповніть кількість і розміри."),
+    "quantity_required": _("Вкажіть кількість виробів."),
     "contact_required": _("Заповніть ім'я, канал зв'язку і контакт."),
     "thermo_fabric": _("Термохромна тканина"),
-    "gift_continue_off": _("Продовжити без подарункової упаковки"),
-    "gift_continue_on": _("Продовжити з подарунковою упаковкою"),
+    "gift_continue_off": _("Далі"),
+    "gift_continue_on": _("Далі"),
     "contact_channel_hint": _("Оберіть один зручний канал — менеджер відповість саме туди."),
     "manager_greeting": _("Привіт! Хочу обговорити кастомний принт TwoComms."),
     "fleece_title": _("Утеплення"),
@@ -114,7 +119,7 @@ FIT_LABELS = {
 }
 
 FABRIC_LABELS = {
-    "standard": _("База"),
+    "standard": _("Звичайна тканина"),
     "premium": _("Преміум"),
     "thermo": _("Термо"),
 }
@@ -172,7 +177,7 @@ CLIENT_MODES = [
     {
         "value": "brand",
         "label": _("Для команди / бренду"),
-        "hint": _("Від 5 штук — знижка рахується автоматично. Велику партію менеджер прорахує індивідуально."),
+        "hint": _("Від 8 штук — кожен наступний рівень вигідніший. Фінальні умови менеджер прорахує індивідуально."),
         "icon": "brand",
     },
 ]
@@ -207,7 +212,7 @@ ARTWORK_SERVICES = [
         "value": "adjust",
         "label": _("Потрібно допрацювати"),
         "price_delta": 100,
-        "hint": _("Можемо почистити чи адаптувати файл: приберемо просте чорне або біле тло, очистимо напівпрозорі пікселі чи внесемо невелику технічну зміну."),
+        "hint": _("Можемо почистити чи адаптувати файл: приберемо фон, очистимо напівпрозорі пікселі чи внесемо невелику технічну зміну."),
         "badge": "+100 грн",
     },
     {
@@ -379,6 +384,8 @@ PRODUCT_MATRIX = {
         "eyebrow": _("Головний сценарій"),
         "summary": _("Максимум налаштувань: тканина, посадка, колір, зони й деталі."),
         "hero_note": _("Найзручніший старт, якщо хочете точно зібрати худі під свій принт."),
+        "detail_title": _("Деталі худі"),
+        "detail_note": _("Фліс і люверси можна змінити окремо; решта характеристик уже врахована у вибраній тканині."),
         "fits": [
             {"value": "regular", "label": _("Класичний"), "description": _("Базова посадка для щоденного мерчу.")},
             {"value": "oversize", "label": _("Оверсайз"), "description": _("Більш масивний силует з відчуттям преміум-речі.")},
@@ -491,18 +498,19 @@ PRODUCT_MATRIX = {
         "eyebrow": _("Швидкий старт"),
         "summary": _("Швидкий старт для принта, дропа або подарунка."),
         "hero_note": _("Швидкий варіант, якщо потрібна футболка з фронтом, спиною або принтом на рукаві."),
+        "detail_title": _("Деталі футболки"),
+        "detail_note": _("У regular доступні звичайна або преміум тканина. Термохромна тканина доступна лише для оверсайзу."),
         "fits": [
             {"value": "regular", "label": _("Класична"), "description": _("Рівна класична посадка для базового принта.")},
             {"value": "oversize", "label": _("Оверсайз"), "description": _("Більш вільний силует без додаткової анкети.")},
         ],
         "fabrics": {
             "regular": [
-                {"value": "standard", "label": _("Класика"), "short_desc": _("Поки недоступна для цього сценарію."), "price_delta": 0, "included_in_base": False, "available": False, "disabled": True},
-                {"value": "premium", "label": _("Преміум"), "short_desc": _("Турецький кулір, пеньє, покращені шви та ребана."), "price_delta": 0, "included_in_base": True},
-                {"value": "thermo", "label": _("Термохромна тканина"), "short_desc": _("Змінює відтінок від тепла тіла."), "price_delta": 500, "included_in_base": False, "info_title": _("Термохромна тканина"), "info_desc": _("Дуже хороша якість, щільні шви та ребана. Від тепла тканина змінює відтінок."), "preview_image": "/static/img/configurator/ui/thermo-preview.png", "colors": [{"value": "thermo_green", "label": _("Зелений (Термо)"), "hex": "#8ba38d"}, {"value": "thermo_pink", "label": _("Рожевий (Термо)"), "hex": "#e78ba7"}]},
+                {"value": "standard", "label": _("Звичайна тканина"), "short_desc": _("Базова тканина для regular-фіту."), "price_delta": 0, "included_in_base": True},
+                {"value": "premium", "label": _("Преміум"), "short_desc": _("Турецький кулір, пеньє, покращені шви та ребана."), "price_delta": 150, "included_in_base": False, "info_title": _("Преміум для regular-фіту"), "info_desc": _("Преміум-тканина має щільнішу основу та акуратнішу обробку. Для класичної футболки це доплата +150 грн."), "info_theme": "premium"},
             ],
             "oversize": [
-                {"value": "standard", "label": _("Класика"), "short_desc": _("Поки недоступна для цієї посадки."), "price_delta": 0, "included_in_base": False, "available": False, "disabled": True},
+                {"value": "standard", "label": _("Звичайна тканина"), "short_desc": _("Недоступна для оверсайзу."), "price_delta": 0, "included_in_base": False, "available": False, "disabled": True},
                 {
                     "value": "premium",
                     "label": _("Преміум"),
@@ -510,7 +518,7 @@ PRODUCT_MATRIX = {
                     "price_delta": 0,
                     "included_in_base": True,
                     "info_title": _("Преміум у базі оверсайзу"),
-                    "info_desc": _("Оверсайз одразу шиється з преміум-тканини. Класична тканина для цієї посадки недоступна, щоб зберегти потрібну форму та щільність."),
+                    "info_desc": _("Оверсайз одразу шиється з преміум-тканини. Звичайна тканина для цієї посадки недоступна, щоб зберегти потрібну форму та щільність."),
                 },
                 {
                     "value": "thermo", "label": _("Термохромна тканина"), "price_delta": 500, "included_in_base": False,
@@ -526,7 +534,7 @@ PRODUCT_MATRIX = {
             ],
         },
         "default_fit": "regular",
-        "default_fabric": "premium",
+        "default_fabric": "standard",
         "colors": [
             {"value": "black", "label": _("Чорний"), "hex": "#151515"},
             {"value": "white", "label": _("Білий"), "hex": "#f1ede6"},
@@ -557,7 +565,7 @@ PRODUCT_MATRIX = {
         ],
         "pricing": {
             "base": 700,
-            "premium_delta": 0,
+            "premium_delta": 150,
             "thermo_delta": 500,
             "oversize_delta": 200,
             "extra_zone_delta": 150,
@@ -569,6 +577,8 @@ PRODUCT_MATRIX = {
         "eyebrow": _("Швидкий старт"),
         "summary": _("База між футболкою й худі — легше, але з характером."),
         "hero_note": _("Підійде, якщо потрібен чистий фронт, спина або акцент на рукаві."),
+        "detail_title": _("Деталі лонгсліва"),
+        "detail_note": _("Базова модель із можливістю друку спереду, на спині або рукавах."),
         "fits": [],
         "fabrics": {},
         "default_fit": "",
@@ -614,42 +624,35 @@ PRODUCT_MATRIX = {
         "eyebrow": _("Через менеджера"),
         "summary": _("Надішли фото або опис — менеджер порахує вручну."),
         "hero_note": _("Головне тут: опис виробу, зони і чітке формулювання задачі."),
+        "detail_title": _("Свій одяг: короткий бриф"),
+        "detail_note": _("Стартова ціна від 150 грн за виріб. Менеджер повідомить адресу для відправлення після заявки; доставку в обидві сторони оплачує покупець."),
         "fits": [],
         "fabrics": {},
         "default_fit": "",
         "default_fabric": "",
         "colors": [
-            {"value": "own", "label": _("Ваш колір"), "hex": "#6d6d6d"},
+            {"value": "black", "label": _("Чорний"), "hex": "#151515"},
+            {"value": "white", "label": _("Білий"), "hex": "#f1ede6"},
+            {"value": "graphite", "label": _("Графіт"), "hex": "#3b3b3f"},
+            {"value": "red", "label": _("Червоний"), "hex": "#b94343"},
+            {"value": "blue", "label": _("Синій"), "hex": "#3f6fa7"},
+            {"value": "green", "label": _("Зелений"), "hex": "#63775e"},
         ],
-        "default_color": "own",
+        "default_color": "black",
+        "shipping_methods": [
+            {"value": "nova_poshta", "label": _("Нова пошта"), "hint": _("Туди й назад — за рахунок покупця.")},
+            {"value": "ukrposhta", "label": _("Укрпошта"), "hint": _("Туди й назад — за рахунок покупця.")},
+        ],
         "zones": ["front", "back", "custom"],
         "default_zones": [],
-                "add_ons": [
-            {
-                "value": "ribbed_neck",
-                "label": _("Щільна горловина (Рібана)"),
-                "price_delta": 0,
-                "icon": "ribbed_neck",
-                "badge": _("Включено"),
-                "hint": _("Еластична горловина, що довго не втрачає форму."),
-                "auto_include_condition": "premium_or_oversize"
-            },
-            {
-                "value": "twill_tape",
-                "label": _("Кіперна стрічка"),
-                "price_delta": 0,
-                "icon": "twill_tape",
-                "badge": _("Включено"),
-                "hint": _("Укріплення задньої частини шиї, підвищений комфорт."),
-                "auto_include_condition": "premium_or_oversize"
-            }
-        ],
+        "add_ons": [],
         "pricing": {
-            "base": None,
+            "base": 150,
             "premium_delta": 0,
             "oversize_delta": 0,
             "extra_zone_delta": 0,
             "add_on_delta": 0,
+            "estimate_from_base": True,
         },
     },
 }
@@ -1737,6 +1740,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             "size_mode": size_mode,
             "sizes_note": str(order_payload.get("sizes_note") or "").strip(),
             "size_breakdown": size_breakdown,
+            "delivery_method": str(order_payload.get("delivery_method") or "").strip(),
             "gift": gift_enabled,
             "gift_text": gift_text,
         },
@@ -1764,6 +1768,10 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             "brand_name": str(notes_payload.get("brand_name") or "").strip(),
             "brief": str(notes_payload.get("brief") or "").strip(),
             "garment_note": str(notes_payload.get("garment_note") or "").strip(),
+            "brand_resource": str(notes_payload.get("brand_resource") or "").strip(),
+            "brand_phone": str(notes_payload.get("brand_phone") or "").strip(),
+            "brand_wish": str(notes_payload.get("brand_wish") or "").strip(),
+            "garment_photo_name": str(notes_payload.get("garment_photo_name") or "").strip(),
         },
         "ui": {
             "current_step": current_step,
