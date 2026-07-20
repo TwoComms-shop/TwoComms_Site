@@ -191,6 +191,18 @@ class CustomPrintNotificationUnitTests(unittest.TestCase):
         self.assertIn("Преміум", message)
         self.assertIn("💎", message)
 
+    def test_build_message_includes_gift_text_as_quoted_block(self):
+        lead = FakeLead()
+        lead.config_draft_json = {
+            "order": {"quantity": 1, "gift": {"enabled": True, "text": "З днем народження!"}},
+        }
+
+        message = _build_message(lead)
+
+        self.assertIn("🎁", message)
+        self.assertIn("Текст для подарунка", message)
+        self.assertIn("<blockquote>З днем народження!</blockquote>", message)
+
     def test_notify_new_custom_print_lead_sends_summary_then_captioned_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "back.png"

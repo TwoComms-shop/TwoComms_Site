@@ -163,6 +163,8 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         self.assertEqual(len(config["products"]["customer_garment"]["shipping_methods"]), 2)
         self.assertEqual(config["products"]["hoodie"]["zones"], ["front", "back", "kangaroo", "sleeve", "custom"])
         self.assertEqual([item["value"] for item in config["custom_zone_size_presets"]], ["A6", "A5", "A4", "A3", "A2"])
+        self.assertEqual(config["size_grid"], ["S", "M", "L", "XL", "2XL"])
+        self.assertGreater(config["stage_profiles"]["hoodie"]["oversize"]["back"]["anchors"]["back"]["presets"]["A4"]["y"], 50)
         self.assertIn("stage_profiles", config)
         self.assertIn("hoodie", config["stage_profiles"])
         self.assertIn("regular", config["stage_profiles"]["hoodie"])

@@ -488,17 +488,34 @@ def _format_quantity_sizes_block(lead) -> list[str]:
         method_label = {"nova_poshta": "Нова пошта", "ukrposhta": "Укрпошта"}.get(method, "уточнити")
         rows.append(f"• <b>Передача виробу:</b> {escape(method_label)}")
         rows.append("• <i>Доставку туди й назад оплачує покупець; адресу повідомить менеджер.</i>")
-        return rows
-    sizes_text = _sizes_display(lead)
-    if sizes_text:
-        size_mode_suffix = (
-            f" ({lead.get_size_mode_display()})" if getattr(lead, "size_mode", "") else ""
-        )
-        rows.append(
-            f"• <b>Розміри:</b> <b>{escape(sizes_text)}</b>{escape(size_mode_suffix)}"
-        )
     else:
-        rows.append("• ❗️ <b>Розміри не вказано — обовʼязково уточніть у клієнта!</b>")
+        sizes_text = _sizes_display(lead)
+        if sizes_text:
+            size_mode_suffix = (
+                f" ({lead.get_size_mode_display()})" if getattr(lead, "size_mode", "") else ""
+            )
+            rows.append(
+                f"• <b>Розміри:</b> <b>{escape(sizes_text)}</b>{escape(size_mode_suffix)}"
+            )
+        else:
+            rows.append("• ❗️ <b>Розміри не вказано — обовʼязково уточніть у клієнта!</b>")
+
+    draft = getattr(lead, "config_draft_json", None) or {}
+    order = draft.get("order") if isinstance(draft, dict) else {}
+    order = order if isinstance(order, dict) else {}
+    gift_payload = order.get("gift")
+    if isinstance(gift_payload, dict):
+        gift_enabled = bool(gift_payload.get("enabled"))
+        gift_text = str(gift_payload.get("text") or "").strip()
+    else:
+        gift_enabled = bool(gift_payload)
+        gift_text = str(order.get("gift_text") or "").strip()
+    if gift_enabled:
+        rows.append("• 🎁 <b>Подарунок:</b> так")
+        if gift_text:
+            rows.append(f"• <b>Текст для подарунка:</b>\n<blockquote>{escape(gift_text[:1000])}</blockquote>")
+        else:
+            rows.append("• <b>Текст для подарунка:</b> не вказано")
     return rows
 
 

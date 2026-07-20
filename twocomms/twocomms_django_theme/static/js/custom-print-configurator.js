@@ -44,8 +44,6 @@
   }, {});
   const CUSTOM_ZONE_LOCATIONS = [
     { value: "shoulder", label: "Плече", hint: "Шеврон або невеликий знак" },
-    { value: "sleeve_outer", label: "Зовнішня частина рукава", hint: "Акцент уздовж рукава" },
-    { value: "chest_side", label: "Бік грудей", hint: "Невеликий знак ближче до шва" },
     { value: "hem", label: "Низ виробу", hint: "Біля нижнього краю" },
     { value: "other", label: "Інше місце", hint: "Опишіть вручну нижче" },
   ];
@@ -1867,8 +1865,7 @@
           if (getSleeveMode(side) === option.value) btn.classList.add("is-active");
           btn.innerHTML = `
             <div class="cp-size-icon">
-              <!-- Using A6 scale for sleeve presets, assuming it scales or we provide another icon -->
-              <img src="/static/img/configurator/ui/size-a6.svg" alt="${escapeHtml(option.label)}">
+              ${sleeveModeSvg(option.value)}
             </div>
             <div class="cp-size-details">
               <strong>${escapeHtml(option.label)}</strong>
@@ -1903,6 +1900,19 @@
         };
       }
     });
+  }
+
+  function sleeveModeSvg(mode) {
+    if (mode === "full_text") {
+      return `<svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+        <path d="M17 8h14l7 7-4 5v20H14V20l-4-5 7-7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M22 14v19M27 14v19M32 14v19" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="2 3"/>
+      </svg>`;
+    }
+    return `<svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <path d="M17 8h14l7 7-4 5v20H14V20l-4-5 7-7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+      <rect x="20" y="18" width="8" height="10" rx="1.5" stroke="currentColor" stroke-width="2"/>
+    </svg>`;
   }
 
   function renderAddons() {
@@ -2766,7 +2776,7 @@
 
   function clampSizeBreakdownToQuantity() {
     const limit = Math.max(0, STATE.order.quantity || 0);
-    const grid = CONFIG.size_grid || ["XS", "S", "M", "L", "XL", "2XL"];
+    const grid = CONFIG.size_grid || ["S", "M", "L", "XL", "2XL"];
     const next = {};
     let remaining = limit;
     grid.forEach((size) => {
@@ -2788,7 +2798,7 @@
       return;
     }
     if (dom.qtyBar) dom.qtyBar.hidden = false;
-    const grid = CONFIG.size_grid || ["XS", "S", "M", "L", "XL", "2XL"];
+    const grid = CONFIG.size_grid || ["S", "M", "L", "XL", "2XL"];
     if (qty <= 0) {
       dom.sizeBlock.hidden = true;
       if (dom.qtyHint) dom.qtyHint.textContent = "Введіть кількість — ми покажемо адаптивний вибір розмірів.";
@@ -4014,7 +4024,7 @@
     if (STATE.order.size_mode === "manager") {
       return note ? `Уточнити з менеджером. ${note}` : "Уточнити з менеджером";
     }
-    const grid = CONFIG.size_grid || ["XS", "S", "M", "L", "XL", "2XL"];
+    const grid = CONFIG.size_grid || ["S", "M", "L", "XL", "2XL"];
     const summary = Object.entries(STATE.order.size_breakdown || {})
       .map(([size, count]) => [size, parseInt(count, 10) || 0])
       .filter(([, count]) => count > 0)

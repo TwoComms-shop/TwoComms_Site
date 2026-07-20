@@ -36,7 +36,7 @@ B2B_TIER = {
     ],
 }
 
-SIZE_GRID = ["XS", "S", "M", "L", "XL", "2XL"]
+SIZE_GRID = ["S", "M", "L", "XL", "2XL"]
 
 PROGRESS_STEPS = [
     {"value": "format", "label": _("Формат")},
@@ -96,6 +96,7 @@ CUSTOM_ZONE_SIZE_PRESETS = [
     {"value": "A3", "label": "A3", "stage_scale": 0.78, "price_delta": 80, "range_label": _("до 29,7 × 42 см"), "hint": _("Помітна додаткова композиція")},
     {"value": "A2", "label": "A2", "stage_scale": 0.92, "price_delta": 110, "range_label": _("до 42 × 59,4 см"), "hint": _("Велика зона — прорахує менеджер")},
 ]
+CUSTOM_ZONE_LOCATIONS = {"shoulder", "hem", "other"}
 
 SLEEVE_MODE_OPTIONS = [
     {"value": "a6", "label": "A6", "badge": "A6 · +40 грн", "price_delta": 40, "stage_scale": 0.42},
@@ -852,9 +853,9 @@ STAGE_PROFILES = {
                         50,
                         44.5,
                         presets={
-                            "A4": calc_iso_box("A4", body_width_mm=600, svg_body_width=204, svg_collar_y=140, top_offset_mm=380, radius=22),
-                            "A3": calc_iso_box("A3", body_width_mm=600, svg_body_width=204, svg_collar_y=140, top_offset_mm=380, radius=22),
-                            "A2": calc_iso_box("A2", body_width_mm=600, svg_body_width=204, svg_collar_y=140, top_offset_mm=380, radius=24),
+                            "A4": calc_iso_box("A4", body_width_mm=600, svg_body_width=204, svg_collar_y=140, top_offset_mm=450, radius=22),
+                            "A3": calc_iso_box("A3", body_width_mm=600, svg_body_width=204, svg_collar_y=140, top_offset_mm=450, radius=22),
+                            "A2": calc_iso_box("A2", body_width_mm=600, svg_body_width=204, svg_collar_y=140, top_offset_mm=450, radius=24),
                         },
                     ),
                     "sleeve_left": _stage_anchor(
@@ -938,9 +939,9 @@ STAGE_PROFILES = {
                         50,
                         45.8,
                         presets={
-                            "A4": calc_iso_box("A4", body_width_mm=650, svg_body_width=220, svg_collar_y=140, top_offset_mm=380, radius=20),
-                            "A3": calc_iso_box("A3", body_width_mm=650, svg_body_width=220, svg_collar_y=140, top_offset_mm=380, radius=21),
-                            "A2": calc_iso_box("A2", body_width_mm=650, svg_body_width=220, svg_collar_y=140, top_offset_mm=380, radius=22),
+                            "A4": calc_iso_box("A4", body_width_mm=650, svg_body_width=220, svg_collar_y=140, top_offset_mm=450, radius=20),
+                            "A3": calc_iso_box("A3", body_width_mm=650, svg_body_width=220, svg_collar_y=140, top_offset_mm=450, radius=21),
+                            "A2": calc_iso_box("A2", body_width_mm=650, svg_body_width=220, svg_collar_y=140, top_offset_mm=450, radius=22),
                         },
                     ),
                     "sleeve_left": _stage_anchor(
@@ -1479,7 +1480,8 @@ def _expand_print_placements(snapshot: dict) -> list[dict]:
             entry["size_preset"] = size_preset
         elif zone == "custom" and size_preset in {item["value"] for item in CUSTOM_ZONE_SIZE_PRESETS}:
             entry["size_preset"] = size_preset
-            entry["location"] = str(options.get("location") or "shoulder").strip()[:40]
+            location = str(options.get("location") or "shoulder").strip()[:40]
+            entry["location"] = location if location in CUSTOM_ZONE_LOCATIONS else "shoulder"
         scene_preview = options.get("scene_preview")
         if isinstance(scene_preview, dict) and scene_preview:
             entry["scene_preview"] = deepcopy(scene_preview)
@@ -1610,7 +1612,8 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             elif zone == "custom":
                 size_preset = str(raw_options.get("size_preset") or "A6").upper()
                 normalized_options["size_preset"] = size_preset if size_preset in allowed_custom_sizes else "A6"
-                normalized_options["location"] = str(raw_options.get("location") or "shoulder").strip()[:40]
+                location = str(raw_options.get("location") or "shoulder").strip()[:40]
+                normalized_options["location"] = location if location in CUSTOM_ZONE_LOCATIONS else "shoulder"
             elif zone == "sleeve":
                 left_enabled = bool(raw_options.get("left_enabled"))
                 right_enabled = bool(raw_options.get("right_enabled"))
