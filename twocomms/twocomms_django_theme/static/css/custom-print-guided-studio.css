@@ -1214,6 +1214,77 @@ summary:focus-visible {
   }
 }
 
+/* B2B brief, own garment handoff and focused placement controls. */
+.cp-brand-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.cp-brand-field-grid--contact { align-items: end; }
+.cp-brand-field-grid .cp-field b,
+.cp-brand-brief .cp-field > span b { color: var(--cp-gold-soft); font-weight: 800; }
+.cp-brand-channel-list,
+.cp-brand-product-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.cp-brand-channel,
+.cp-brand-product { min-height: 40px; padding: 8px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: rgba(255,255,255,.035); color: var(--cp-text); font: inherit; font-size: .72rem; cursor: pointer; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
+.cp-brand-channel:hover,
+.cp-brand-product:hover { transform: translateY(-1px); border-color: rgba(246,220,164,.52); }
+.cp-brand-channel.is-active,
+.cp-brand-product.is-active { border-color: var(--cp-gold); background: rgba(232,191,108,.16); color: var(--cp-gold-soft); box-shadow: 0 0 0 1px rgba(232,191,108,.2); }
+.cp-brand-brief select { width: 100%; min-height: 50px; padding: 0 13px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(7,7,10,.7); color: var(--cp-text); font: inherit; }
+.cp-brand-brief select:focus { border-color: var(--cp-gold); outline: none; }
+.cp-brand-brief .cp-manager-quick-link { grid-template-columns: minmax(0, 1fr) 20px; }
+.cp-brand-brief .cp-manager-quick-link > span:first-child { min-width: 0; }
+.cp-brand-brief .cp-manager-quick-link strong,
+.cp-brand-brief .cp-manager-quick-link small { overflow-wrap: anywhere; }
+.cp-brand-tier-rail { display: flex; gap: 9px; margin-top: 2px; padding: 3px 2px 9px; overflow-x: auto; overscroll-behavior-inline: contain; scroll-snap-type: x proximity; scrollbar-width: thin; }
+.cp-brand-tier-rail::before { display: none; }
+.cp-brand-tier { flex: 0 0 min(210px, 24%); scroll-snap-align: start; }
+.cp-brand-tier small { white-space: normal; }
+.cp-custom-zone-panel { display: grid; gap: 12px; padding: 16px; border: 1px solid rgba(246,220,164,.28); border-radius: 16px; background: linear-gradient(145deg, rgba(232,191,108,.1), rgba(111,75,168,.06)); }
+.cp-custom-location-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
+.cp-custom-location { display: grid; gap: 3px; min-width: 0; min-height: 64px; padding: 9px; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; background: rgba(255,255,255,.035); color: var(--cp-text); font: inherit; text-align: left; cursor: pointer; }
+.cp-custom-location strong { font-size: .72rem; }
+.cp-custom-location small { color: var(--cp-muted); font-size: .6rem; line-height: 1.3; }
+.cp-custom-location.is-active { border-color: var(--cp-gold); background: rgba(232,191,108,.16); }
+.cp-custom-size-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.cp-custom-size-preset { min-width: 0; }
+.cp-custom-size-preset .cp-size-details span { white-space: normal; }
+.cp-custom-size-preset .cp-size-details em { color: var(--cp-gold-soft); font-size: .62rem; font-style: normal; }
+.cp-own-garment-color { display: grid; gap: 8px; padding: 12px; border: 1px solid rgba(255,255,255,.12); border-radius: 13px; background: rgba(255,255,255,.035); }
+.cp-own-color-picker { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 12px; }
+.cp-own-color-picker input[type="color"] { width: 58px; height: 42px; padding: 3px; border: 1px solid rgba(255,255,255,.18); border-radius: 10px; background: transparent; cursor: pointer; }
+.cp-own-color-picker input[type="range"] { width: 100%; height: 12px; appearance: none; border-radius: 999px; background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+.cp-own-color-picker input[type="range"]::-webkit-slider-thumb { width: 22px; height: 22px; appearance: none; border: 2px solid #fff; border-radius: 50%; background: #17151a; box-shadow: 0 2px 7px rgba(0,0,0,.35); cursor: pointer; }
+.cp-own-garment-color > small { color: var(--cp-muted); font-size: .68rem; line-height: 1.4; }
+.cp-validation-group { display: grid; gap: 8px; }
+.is-validation-group { padding: 9px; border: 1px solid rgba(255,176,166,.68); border-radius: 15px; background: rgba(255,114,100,.05); animation: cp-validation-pulse 900ms ease-out 1; }
+.is-validation-group > .cp-inline-validation--group { grid-column: 1 / -1; order: -1; margin: 0 2px .25rem; }
+.is-validation-group > .cp-zone-card,
+.is-validation-group > .cp-artwork-service,
+.is-validation-group > .cp-fit-card,
+.is-validation-group > .cp-mini-chip { border-color: rgba(255,176,166,.58); }
+.cp-inline-validation--group { padding: 8px 10px; border-left: 3px solid var(--cp-danger); border-radius: 8px; background: rgba(255,114,100,.1); color: #ffc0b8; font-size: .74rem; font-weight: 700; }
+@keyframes cp-validation-pulse { 0% { box-shadow: 0 0 0 0 rgba(255,158,145,.4); } 100% { box-shadow: 0 0 0 9px rgba(255,158,145,0); } }
+.cp-sleeve-side-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.cp-sleeve-side-card { min-width: 0; }
+.cp-sleeve-editor-grid { align-items: start; }
+.cp-sleeve-editor { min-width: 0; padding: 14px; border: 1px solid rgba(255,255,255,.1); border-radius: 14px; background: rgba(255,255,255,.025); }
+.cp-sleeve-editor .cp-front-size-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cp-sleeve-editor .cp-size-preset { min-width: 0; }
+.cp-sleeve-editor .cp-size-details span { white-space: normal; }
+
+@media (max-width: 900px) {
+  .cp-brand-tier { flex-basis: 190px; }
+  .cp-custom-location-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cp-custom-size-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .cp-brand-field-grid { grid-template-columns: minmax(0, 1fr); }
+  .cp-brand-tier { flex-basis: 78vw; }
+  .cp-custom-location-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cp-custom-size-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cp-sleeve-side-row { grid-template-columns: minmax(0, 1fr); }
+  .cp-sleeve-editor .cp-front-size-row { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* Contextual product details stay informative without behaving like a choice. */
 .cp-product-detail-note {
   display: grid;
@@ -2226,6 +2297,27 @@ body.cp-studio-active { overflow: hidden !important; }
 .cp-artwork-service-hint,
 .cp-dropzone-grid,
 .cp-dropzone { min-width: 0; }
+
+/* Final responsive overrides for the refreshed brief and placement controls. */
+.cp-brand-brief .cp-manager-quick-link { grid-template-columns: minmax(0, 1fr) 20px; }
+.cp-brand-tier-rail { display: flex; gap: 9px; padding: 3px 2px 9px; overflow-x: auto; scroll-snap-type: x proximity; }
+.cp-brand-tier-rail::before { display: none; }
+.cp-brand-tier { flex: 0 0 min(210px, 24%); scroll-snap-align: start; }
+.cp-brand-tier small { white-space: normal; }
+.cp-sleeve-side-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.cp-sleeve-editor { min-width: 0; }
+.cp-sleeve-editor .cp-front-size-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cp-sleeve-editor .cp-size-details span { white-space: normal; }
+
+@media (max-width: 900px) {
+  .cp-brand-tier { flex-basis: 190px; }
+}
+
+@media (max-width: 640px) {
+  .cp-brand-tier { flex-basis: 78vw; }
+  .cp-sleeve-side-row,
+  .cp-sleeve-editor .cp-front-size-row { grid-template-columns: minmax(0, 1fr); }
+}
 
 @media (max-width: 760px) {
   .cp-hero-theatre { inset: 48% 0 0; }

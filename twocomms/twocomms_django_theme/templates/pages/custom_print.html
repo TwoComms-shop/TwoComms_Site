@@ -286,27 +286,52 @@
               </div>
               <div class="cp-brand-brief" data-brand-brief hidden>
                 <div class="cp-brand-brief-head">
-                  <strong>{% trans 'Короткий бриф для команди' %}</strong>
-                  <span>{% trans 'Менеджери вже отримали цей бриф і в будь-якому разі звʼяжуться з вами.' %}</span>
+                  <strong>{% trans 'Один бриф — і менеджер підхопить далі' %}</strong>
+                  <span>{% trans 'Ціни, типи виробів і кількість для брендів узгоджуються індивідуально. Заповніть головне — решту менеджер уточнить у розмові.' %}</span>
                 </div>
-                <div class="cp-inline-fields">
-                  <label class="cp-field"><span>{% trans 'Бренд / компанія / магазин' %}</span><input type="text" data-brand-intro-name placeholder="{% trans 'Назва проєкту' %}"></label>
-                  <label class="cp-field"><span>{% trans 'Посилання на ресурс (необовʼязково)' %}</span><input type="url" data-brand-resource placeholder="https://... або @instagram"></label>
+                <div class="cp-brand-field-grid">
+                  <label class="cp-field"><span>{% trans 'Бренд / компанія / магазин' %} <b aria-hidden="true">*</b></span><input type="text" data-brand-intro-name placeholder="{% trans 'Например, Northline Studio' %}"></label>
+                  <label class="cp-field"><span>{% trans 'Хто буде на звʼязку' %} <b aria-hidden="true">*</b></span><input type="text" data-brand-contact-person placeholder="{% trans 'Імʼя та прізвище' %}"></label>
                 </div>
-                <div class="cp-inline-fields">
-                  <label class="cp-field"><span>{% trans 'Телефон або інший контакт' %}</span><input type="text" data-brand-phone placeholder="{% trans '+380... або @username' %}"></label>
-                  <label class="cp-field"><span>{% trans 'Орієнтовна кількість' %}</span><input type="number" min="1" inputmode="numeric" data-brand-quantity placeholder="{% trans 'Від 8 шт' %}"></label>
+                <div class="cp-brand-field-grid cp-brand-field-grid--contact">
+                  <div class="cp-field">
+                    <span>{% trans 'Зручний канал' %} <b aria-hidden="true">*</b></span>
+                    <div class="cp-brand-channel-list" data-brand-contact-channel-list>
+                      <button type="button" class="cp-brand-channel" data-brand-contact-channel="telegram">Telegram</button>
+                      <button type="button" class="cp-brand-channel" data-brand-contact-channel="phone">Телефон</button>
+                      <button type="button" class="cp-brand-channel" data-brand-contact-channel="whatsapp">WhatsApp</button>
+                    </div>
+                  </div>
+                  <label class="cp-field"><span>{% trans 'Контакт' %} <b aria-hidden="true">*</b></span><input type="text" data-brand-contact-value placeholder="{% trans '@username або +380...' %}"></label>
                 </div>
-                <label class="cp-field"><span>{% trans 'Що хотіли б бачити' %}</span><textarea rows="3" data-brand-wish placeholder="{% trans 'Тип виробів, стиль, терміни та інші побажання' %}"></textarea></label>
+                <div class="cp-brand-field-grid">
+                  <label class="cp-field"><span>{% trans 'Сфера / формат' %}</span><select data-brand-business-type><option value="brand">Бренд одягу</option><option value="team">Команда або подія</option><option value="store">Магазин</option><option value="drop_shipper">Дропшипінг</option><option value="other">Інше</option></select></label>
+                  <label class="cp-field"><span>{% trans 'Орієнтовний тираж' %}</span><input type="number" min="1" inputmode="numeric" data-brand-quantity placeholder="{% trans 'Наприклад, 32' %}"></label>
+                </div>
+                <div class="cp-field">
+                  <span>{% trans 'Які вироби розглядаєте?' %}</span>
+                  <div class="cp-brand-product-list" data-brand-product-list>
+                    <button type="button" class="cp-brand-product" data-brand-product="tshirt">Футболки</button>
+                    <button type="button" class="cp-brand-product" data-brand-product="hoodie">Худі</button>
+                    <button type="button" class="cp-brand-product" data-brand-product="longsleeve">Лонгсліви</button>
+                    <button type="button" class="cp-brand-product" data-brand-product="customer_garment">Свій одяг</button>
+                    <button type="button" class="cp-brand-product" data-brand-product="all">Ще не визначились</button>
+                  </div>
+                </div>
+                <div class="cp-brand-field-grid">
+                  <label class="cp-field"><span>{% trans 'Instagram / сайт (необовʼязково)' %}</span><input type="url" data-brand-resource placeholder="https://... або @instagram"></label>
+                  <label class="cp-field"><span>{% trans 'Бажаний дедлайн (необовʼязково)' %}</span><input type="text" data-brand-deadline placeholder="{% trans 'Наприклад, до 15 вересня' %}"></label>
+                </div>
+                <label class="cp-field"><span>{% trans 'Що хотіли б бачити (необовʼязково)' %}</span><textarea rows="3" data-brand-wish placeholder="{% trans 'Стиль, колекція, подія, кольори або інші побажання' %}"></textarea></label>
                 <div class="cp-brand-tier-rail" data-brand-tier-rail aria-label="{% trans 'Рівні партійної ціни' %}"></div>
                 <div class="cp-brand-tier-note" data-brand-tier-note></div>
                 <button type="button" class="cp-manager-quick-link cp-brand-manager-link" data-manager-quick-contact>
                   <span><strong>{% trans 'Написати менеджеру в Telegram' %}</strong><small>{% trans 'Обговоримо типи виробів, ціну та кількість індивідуально.' %}</small></span>
                   <span aria-hidden="true">→</span>
                 </button>
-                <button type="button" class="cp-link cp-link--primary" data-brand-continue>{% trans 'Далі' %}</button>
+                <button type="button" class="cp-link cp-link--primary" data-brand-continue>{% trans 'Зберегти бриф' %}</button>
               </div>
-              <button type="button" class="cp-manager-quick-link" data-manager-quick-contact>
+              <button type="button" class="cp-manager-quick-link" data-manager-quick-contact data-personal-manager-cta>
                 <span class="cp-manager-quick-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m20.6 4.2-3.2 15.1c-.2 1.1-.8 1.4-1.6.9l-4.4-3.3-2.1 2c-.2.2-.4.4-.8.4l.3-4.5 8.2-7.4c.4-.4-.1-.6-.6-.2L6.3 13 2 11.6c-.9-.3-.9-.9.2-1.3L19 3.8c.8-.3 1.8.2 1.6.4Z" fill="currentColor"/></svg></span>
                 <span><strong>{% trans 'Обговорити в Telegram' %}</strong><small>{% trans 'Менеджер підкаже формат, тканину та ціну' %}</small></span>
                 <svg class="cp-manager-quick-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -389,14 +414,31 @@
 
               <div class="cp-own-garment-options" data-own-garment-options hidden>
                 <div class="cp-subhead">
-                  <strong>{% trans 'Як передати ваш виріб' %}</strong>
-                  <span>{% trans 'Адресу для відправлення повідомить менеджер після заявки.' %}</span>
+                  <strong>{% trans 'Свій одяг — короткий бриф' %}</strong>
+                  <span>{% trans 'Опишіть річ і бажаний колір одразу. Розміри та точну кількість узгодимо з менеджером.' %}</span>
+                </div>
+                <label class="cp-field" data-own-item-note-wrap>
+                  <span>{% trans 'Що це за річ?' %} <b aria-hidden="true">*</b></span>
+                  <textarea id="cp-garment-note" name="garment_note" rows="3" data-own-item-note-input placeholder="{% trans 'Наприклад: чорна куртка-бомбер, щільна тканина, принт на лівому плечі' %}"></textarea>
+                </label>
+                <div class="cp-own-garment-color">
+                  <div class="cp-subhead"><strong>{% trans 'Бажаний колір' %}</strong><span data-own-color-value>#151515</span></div>
+                  <div class="cp-own-color-picker">
+                    <input type="color" value="#151515" data-own-color-input aria-label="{% trans 'Обрати колір власної речі' %}">
+                    <input type="range" min="0" max="360" value="0" data-own-color-hue aria-label="{% trans 'Відтінок кольору' %}">
+                  </div>
+                  <small>{% trans 'Можна вибрати точний відтінок у палітрі — менеджер підтвердить його після фото.' %}</small>
                 </div>
                 <div class="cp-shipping-choice-list" data-own-shipping-list></div>
                 <p class="cp-own-delivery-note">{% trans 'Доставку виробу до нас і назад оплачує покупець.' %}</p>
+                <label class="cp-field cp-garment-photo-field" data-own-photo-wrap>
+                  <span>{% trans 'Фото виробу (необовʼязково)' %}</span>
+                  <input type="file" accept="image/*" data-own-photo-input>
+                  <small>{% trans 'Допоможе менеджеру зрозуміти крій, матеріал і місце нанесення.' %}</small>
+                </label>
               </div>
 
-              <div class="cp-config-block">
+              <div class="cp-config-block" data-standard-color-block>
                 <div class="cp-subhead">
                   <strong>{% trans 'Колір виробу' %}</strong>
                   <span>{% trans 'Сцена показує відтінок максимально близько до реального.' %}</span>
@@ -452,10 +494,15 @@
                   <span>{% trans 'Можна обрати' %} <strong>{% trans 'кілька зон' %}</strong> {% trans '— перший друк уже включено в базову ціну, кожна додаткова рахується окремо.' %}</span>
                 </div>
                 <div class="cp-zone-card-grid" data-zone-list></div>
-                <label class="cp-field" for="cp-placement-note" data-placement-note-wrap hidden>
-                  <span>{% trans 'Нестандартна зона' %}</span>
-                  <textarea id="cp-placement-note" name="placement_note" rows="3" data-placement-note-input placeholder="{% trans 'Опиши ідею — менеджер перевірить, чи можемо зробити.' %}"></textarea>
-                </label>
+                <div class="cp-custom-zone-panel" data-custom-zone-wrap hidden>
+                  <div class="cp-subhead"><strong>{% trans 'Нестандартна зона' %}</strong><span>{% trans 'Покажіть менеджеру, де саме має бути принт — наприклад, шеврон на плечі.' %}</span></div>
+                  <div class="cp-custom-location-list" data-custom-location-list></div>
+                  <div class="cp-front-size-row cp-custom-size-list" data-custom-size-list></div>
+                  <label class="cp-field" for="cp-placement-note" data-placement-note-wrap>
+                    <span>{% trans 'Опишіть точне місце' %} <b aria-hidden="true">*</b></span>
+                    <textarea id="cp-placement-note" name="placement_note" rows="3" data-placement-note-input placeholder="{% trans 'Наприклад: зліва на плечі, 8 × 10 см, вертикально' %}"></textarea>
+                  </label>
+                </div>
               </div>
 
               <div class="cp-config-block" data-front-size-wrap hidden>
@@ -598,7 +645,7 @@
                 <p data-quantity-hint>{% trans 'Вкажи кількість і розміри. Якщо ще не знаєш точні розміри — можна уточнити з менеджером.' %}</p>
               </div>
 
-              <div class="cp-qty-bar">
+              <div class="cp-qty-bar" data-quantity-bar>
                 <div class="cp-qty-bar-counter">
                   <button type="button" class="cp-qty-step" data-qty-step="-1" aria-label="{% trans 'Зменшити' %}">−</button>
                   <input id="cp-quantity" name="quantity" type="number" min="1" inputmode="numeric" placeholder="0" data-quantity-input>
@@ -624,16 +671,6 @@
                   <textarea name="sizes_note" rows="2" data-sizes-note-input placeholder="{% trans 'Якщо потрібні особливі розміри або примітки' %}"></textarea>
                 </label>
               </div>
-
-              <label class="cp-field" for="cp-garment-note" data-own-item-note-wrap hidden>
-                <span>{% trans 'Опис свого виробу' %}</span>
-                <textarea id="cp-garment-note" name="garment_note" rows="3" data-own-item-note-input placeholder="{% trans 'Матеріал, колір, крій, стан виробу та все, що важливо для прорахунку' %}"></textarea>
-              </label>
-              <label class="cp-field cp-garment-photo-field" data-own-photo-wrap hidden>
-                <span>{% trans 'Фото виробу (необовʼязково)' %}</span>
-                <input type="file" accept="image/*" data-own-photo-input>
-                <small>{% trans 'Допоможе менеджеру швидше зорієнтуватися в матеріалі та крої.' %}</small>
-              </label>
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="artwork">{% trans 'Назад' %}</button>

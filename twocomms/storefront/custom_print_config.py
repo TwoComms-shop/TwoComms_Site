@@ -28,6 +28,11 @@ B2B_TIER = {
         {"minimum": 8, "label": _("Старт партії"), "note": _("Перша гуртова ціна")},
         {"minimum": 16, "label": _("Вигідніше"), "note": _("Ще нижча ціна за виріб")},
         {"minimum": 24, "label": _("Велика партія"), "note": _("Максимальна економія на серії")},
+        {"minimum": 32, "label": _("Оптова серія"), "note": _("Ще більше вигоди на одиницю")},
+        {"minimum": 40, "label": _("Сильний тираж"), "note": _("Вигідний формат для стабільного мерчу")},
+        {"minimum": 48, "label": _("Партія бренду"), "note": _("Менеджер підготує персональні умови")},
+        {"minimum": 64, "label": _("Великий запуск"), "note": _("Найкраща база для колекції або події")},
+        {"minimum": 80, "label": _("Максимальний рівень"), "note": _("Фінальна ціна узгоджується індивідуально")},
     ],
 }
 
@@ -83,6 +88,14 @@ BACK_SIZE_PRESETS = [
     {"value": "A2", "label": "A2", "stage_scale": 0.92, "price_delta": 110, "range_label": _("до 42 × 59,4 см")},
 ]
 BACK_SIZE_DEFAULT = "A4"
+
+CUSTOM_ZONE_SIZE_PRESETS = [
+    {"value": "A6", "label": "A6", "stage_scale": 0.38, "price_delta": 40, "range_label": _("до 10,5 × 14,8 см"), "hint": _("Шеврон, плече або невеликий знак")},
+    {"value": "A5", "label": "A5", "stage_scale": 0.5, "price_delta": 50, "range_label": _("до 14,8 × 21 см"), "hint": _("Компактна нестандартна зона")},
+    {"value": "A4", "label": "A4", "stage_scale": 0.64, "price_delta": 60, "range_label": _("до 21 × 29,7 см"), "hint": _("Середній формат для акценту")},
+    {"value": "A3", "label": "A3", "stage_scale": 0.78, "price_delta": 80, "range_label": _("до 29,7 × 42 см"), "hint": _("Помітна додаткова композиція")},
+    {"value": "A2", "label": "A2", "stage_scale": 0.92, "price_delta": 110, "range_label": _("до 42 × 59,4 см"), "hint": _("Велика зона — прорахує менеджер")},
+]
 
 SLEEVE_MODE_OPTIONS = [
     {"value": "a6", "label": "A6", "badge": "A6 · +40 грн", "price_delta": 40, "stage_scale": 0.42},
@@ -459,7 +472,7 @@ PRODUCT_MATRIX = {
             ],
         },
         "default_color": "black",
-        "zones": ["front", "back", "kangaroo", "sleeve"],
+        "zones": ["front", "back", "kangaroo", "sleeve", "custom"],
         "default_zones": [],
         "add_ons": [
             {
@@ -541,7 +554,7 @@ PRODUCT_MATRIX = {
             {"value": "coyote", "label": _("Койот"), "hex": "#8B6B45"},
         ],
         "default_color": "black",
-        "zones": ["front", "back"],
+        "zones": ["front", "back", "custom"],
         "default_zones": [],
                 "add_ons": [
             {
@@ -589,7 +602,7 @@ PRODUCT_MATRIX = {
             {"value": "olive", "label": _("Оливковий"), "hex": "#59604a"},
         ],
         "default_color": "black",
-        "zones": ["front", "back", "sleeve"],
+        "zones": ["front", "back", "sleeve", "custom"],
         "default_zones": [],
                 "add_ons": [
             {
@@ -1403,6 +1416,7 @@ def build_custom_print_config(
         "front_size_default": FRONT_SIZE_DEFAULT,
         "back_size_presets": deepcopy(BACK_SIZE_PRESETS),
         "back_size_default": BACK_SIZE_DEFAULT,
+        "custom_zone_size_presets": deepcopy(CUSTOM_ZONE_SIZE_PRESETS),
         "sleeve_mode_options": deepcopy(SLEEVE_MODE_OPTIONS),
         "sleeve_mode_default": SLEEVE_MODE_DEFAULT,
         "stage_meta": deepcopy(STAGE_META),
@@ -1463,6 +1477,9 @@ def _expand_print_placements(snapshot: dict) -> list[dict]:
             entry["size_preset"] = size_preset
         elif zone == "back" and size_preset in back_sizes:
             entry["size_preset"] = size_preset
+        elif zone == "custom" and size_preset in {item["value"] for item in CUSTOM_ZONE_SIZE_PRESETS}:
+            entry["size_preset"] = size_preset
+            entry["location"] = str(options.get("location") or "shoulder").strip()[:40]
         scene_preview = options.get("scene_preview")
         if isinstance(scene_preview, dict) and scene_preview:
             entry["scene_preview"] = deepcopy(scene_preview)
@@ -1494,6 +1511,9 @@ def build_placement_specs(snapshot: dict) -> list[dict]:
         if "size_preset" in entry:
             spec["size_preset"] = entry["size_preset"]
             spec["size"] = entry["size_preset"]
+        if zone == "custom":
+            spec["location"] = entry.get("location") or "shoulder"
+            spec["placement_note"] = str((snapshot.get("print") or {}).get("placement_note") or "").strip()
         if zone == "sleeve":
             spec["side"] = entry.get("side")
             spec["mode"] = entry.get("mode") or SLEEVE_MODE_DEFAULT
@@ -1570,6 +1590,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
     raw_zone_options = print_payload.get("zone_options") or {}
     allowed_front_sizes = {item["value"] for item in FRONT_SIZE_PRESETS}
     allowed_back_sizes = {item["value"] for item in BACK_SIZE_PRESETS}
+    allowed_custom_sizes = {item["value"] for item in CUSTOM_ZONE_SIZE_PRESETS}
     allowed_sleeve_modes = {item["value"] for item in SLEEVE_MODE_OPTIONS}
     if isinstance(raw_zone_options, dict):
         for zone, raw_options in raw_zone_options.items():
@@ -1586,6 +1607,10 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
                 if size_preset not in allowed_back_sizes:
                     size_preset = BACK_SIZE_DEFAULT
                 normalized_options["size_preset"] = size_preset
+            elif zone == "custom":
+                size_preset = str(raw_options.get("size_preset") or "A6").upper()
+                normalized_options["size_preset"] = size_preset if size_preset in allowed_custom_sizes else "A6"
+                normalized_options["location"] = str(raw_options.get("location") or "shoulder").strip()[:40]
             elif zone == "sleeve":
                 left_enabled = bool(raw_options.get("left_enabled"))
                 right_enabled = bool(raw_options.get("right_enabled"))
@@ -1610,7 +1635,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
                     if isinstance(scene_preview, dict) and scene_preview:
                         normalized_options[f"{side}_scene_preview"] = deepcopy(scene_preview)
             scene_preview = raw_options.get("scene_preview")
-            if zone in {"front", "back"} and isinstance(scene_preview, dict) and scene_preview:
+            if zone in {"front", "back", "custom"} and isinstance(scene_preview, dict) and scene_preview:
                 normalized_options["scene_preview"] = deepcopy(scene_preview)
             if normalized_options:
                 zone_options[zone] = normalized_options
@@ -1618,6 +1643,8 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
         zone_options["front"] = {"size_preset": FRONT_SIZE_DEFAULT}
     if "back" in zones and "back" not in zone_options:
         zone_options["back"] = {"size_preset": BACK_SIZE_DEFAULT}
+    if "custom" in zones and "custom" not in zone_options:
+        zone_options["custom"] = {"size_preset": "A6", "location": "shoulder"}
     if "sleeve" in zones and "sleeve" not in zone_options:
         zone_options["sleeve"] = {
             "left_enabled": True,
@@ -1766,10 +1793,17 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
         },
         "notes": {
             "brand_name": str(notes_payload.get("brand_name") or "").strip(),
+            "brand_contact_person": str(notes_payload.get("brand_contact_person") or "").strip(),
+            "brand_contact_channel": str(notes_payload.get("brand_contact_channel") or "").strip(),
+            "brand_contact_value": str(notes_payload.get("brand_contact_value") or "").strip(),
+            "brand_business_type": str(notes_payload.get("brand_business_type") or "brand").strip(),
+            "brand_product_types": [str(item).strip() for item in (notes_payload.get("brand_product_types") or []) if str(item).strip()][:8],
             "brief": str(notes_payload.get("brief") or "").strip(),
             "garment_note": str(notes_payload.get("garment_note") or "").strip(),
+            "garment_color_hex": str(notes_payload.get("garment_color_hex") or "#151515").strip()[:7],
             "brand_resource": str(notes_payload.get("brand_resource") or "").strip(),
             "brand_phone": str(notes_payload.get("brand_phone") or "").strip(),
+            "brand_deadline": str(notes_payload.get("brand_deadline") or "").strip(),
             "brand_wish": str(notes_payload.get("brand_wish") or "").strip(),
             "garment_photo_name": str(notes_payload.get("garment_photo_name") or "").strip(),
         },

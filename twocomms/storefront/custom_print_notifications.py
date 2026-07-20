@@ -737,10 +737,20 @@ def _build_lead_message(lead, *, header_emoji: str, header_title: str, intro_lin
         draft = getattr(lead, "config_draft_json", None) or {}
         notes = draft.get("notes") if isinstance(draft, dict) else {}
         if isinstance(notes, dict):
+            if notes.get("brand_contact_person"):
+                parts.append(_bold("Контактна особа", notes["brand_contact_person"]))
+            if notes.get("brand_contact_channel") or notes.get("brand_contact_value"):
+                parts.append(_bold("Канал B2B", f"{notes.get('brand_contact_channel') or '—'} · {notes.get('brand_contact_value') or '—'}"))
+            if notes.get("brand_business_type"):
+                parts.append(_bold("Формат бізнесу", notes["brand_business_type"]))
+            if notes.get("brand_product_types"):
+                parts.append(_bold("Типи виробів", ", ".join(str(item) for item in notes["brand_product_types"])))
             if notes.get("brand_resource"):
                 parts.append(_bold("Ресурс", notes["brand_resource"]))
             if notes.get("brand_phone"):
                 parts.append(_bold("Додатковий контакт", notes["brand_phone"]))
+            if notes.get("brand_deadline"):
+                parts.append(_bold("Дедлайн", notes["brand_deadline"]))
             if notes.get("brand_wish"):
                 parts.append(_bold("Побажання", notes["brand_wish"]))
 
