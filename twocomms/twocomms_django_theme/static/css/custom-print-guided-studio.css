@@ -1349,6 +1349,14 @@ summary:focus-visible {
 .cp-garment-photo-field input[type="file"] { width: 100%; }
 .cp-addon-toggle-state { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--cp-muted, #a9a19a); font-size: 11px; }
 .cp-addon-card.is-active .cp-addon-toggle-state { color: var(--cp-gold-soft, #d4b483); }
+.cp-post-submit-shell { max-width: 520px; text-align: center; }
+.cp-post-submit-mark { display: grid; width: 58px; height: 58px; margin: 0 auto 14px; place-items: center; border: 1px solid rgba(155,210,149,.55); border-radius: 50%; background: rgba(155,210,149,.14); color: var(--cp-success); font-size: 2rem; font-weight: 850; box-shadow: 0 0 0 7px rgba(155,210,149,.06); }
+.cp-post-submit-eyebrow { color: var(--cp-gold-soft); font-size: .68rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.cp-post-submit-copy { margin: .7rem auto 0; max-width: 38rem; color: var(--cp-muted); line-height: 1.55; }
+.cp-post-submit-number { margin: .8rem auto 0; color: var(--cp-gold-soft); font-size: .78rem; font-weight: 800; }
+.cp-post-submit-actions { display: grid; gap: .6rem; margin-top: 1.2rem; }
+.cp-post-submit-actions > a { width: 100%; justify-content: center; text-align: center; }
+.cp-post-submit-close { width: 100%; margin-top: .65rem; }
 
 @media (max-width: 640px) {
   .cp-shipping-choice-list { grid-template-columns: 1fr; }

@@ -467,6 +467,59 @@ class CustomPrintPageTests(TestCase):
         self.assertEqual(attachment.sort_order, 0)
         notify_mock.assert_called_once_with(lead)
 
+    @patch("storefront.views.static_pages._send_custom_print_lead_capi")
+    @patch("storefront.views.static_pages.notify_new_custom_print_lead")
+    def test_custom_print_submission_keeps_browser_event_id_for_server_capi(self, notify_mock, capi_mock):
+        from storefront.models import CustomPrintLead
+
+        event_id = "cp-browser-event-123"
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            response = self._post(
+                reverse("custom_print_lead"),
+                {
+                    "service_kind": "design",
+                    "product_type": "tshirt",
+                    "placements": ["front"],
+                    "placement_specs_json": json.dumps([{
+                        "zone": "front",
+                        "label": "Спереду",
+                        "variant": "standard",
+                        "is_free": True,
+                        "format": "standard",
+                        "size": "standard",
+                        "file_index": 0,
+                    }]),
+                    "pricing_snapshot_json": json.dumps({"base_price": 700, "final_total": 700}),
+                    "config_draft_json": json.dumps({"pricing": {"base_price": 700, "final_total": 700}}),
+                    "quantity": "1",
+                    "size_mode": "single",
+                    "sizes_note": "M",
+                    "client_kind": "personal",
+                    "name": "Олена",
+                    "contact_channel": "telegram",
+                    "contact_value": "@olena_print",
+                    "fit": "regular",
+                    "fabric": "standard",
+                    "brief": "Потрібен чистий друк.",
+                    "color_choice": "black",
+                    "file_triage_status": "needs-review",
+                    "analytics_event_id": event_id,
+                    "analytics_fbp": "fb.1.1710000000000.click_123",
+                    "analytics_fbc": "fb.1.1710000000000.click_456",
+                },
+                HTTP_X_REQUESTED_WITH="fetch",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(callbacks), 2)
+        self.assertEqual(response.json()["analytics_event_id"], event_id)
+        lead = CustomPrintLead.objects.get()
+        self.assertEqual(lead.config_draft_json["analytics"]["lead_event_id"], event_id)
+        notify_mock.assert_called_once_with(lead)
+        capi_mock.assert_called_once()
+        self.assertEqual(capi_mock.call_args.args[0].pk, lead.pk)
+        self.assertEqual(capi_mock.call_args.args[2], event_id)
+
     @override_settings(MEDIA_ROOT=Path(tempfile.gettempdir()) / "twocomms-custom-print-tests")
     @patch("storefront.views.static_pages.notify_new_custom_print_lead")
     def test_custom_print_adjust_submission_creates_lead(self, notify_mock):

@@ -297,3 +297,55 @@ class MetaPixelConfigurationTests(SimpleTestCase):
         self.assertEqual(custom_value('value'), 200.0)
         self.assertEqual(custom_value('content_type'), 'product')
         self.assertEqual(custom_value('content_ids'), ['TC-0001-BLACK-S', 'TC-0002-BLACK-S'])
+
+    def test_custom_print_lead_serializes_shared_browser_event_id(self):
+        from facebook_business.adobjects.serverside.action_source import ActionSource
+        from facebook_business.adobjects.serverside.custom_data import CustomData
+        from facebook_business.adobjects.serverside.event import Event
+        from facebook_business.adobjects.serverside.event_request import EventRequest
+        from facebook_business.adobjects.serverside.user_data import UserData
+
+        lead = SimpleNamespace(
+            pk=9,
+            lead_number='CP21072026L001',
+            name='Олена Коваль',
+            contact_channel='phone',
+            contact_value='+380501234567',
+            quantity=2,
+            config_draft_json={'pricing': {'final_total': 1400}},
+        )
+        service = FacebookConversionsService.__new__(FacebookConversionsService)
+        service.enabled = True
+        service.pixel_id = 'pixel-id'
+        service.test_event_code = None
+        service.Event = Event
+        service.UserData = UserData
+        service.CustomData = CustomData
+        service.EventRequest = EventRequest
+        service.ActionSource = ActionSource
+        service._send_request_with_retry = lambda request, current_order, event_name: SimpleNamespace(events_received=1)
+        service._validate_response = lambda response, current_order, event_name, event_id: True
+
+        captured = {}
+        original_request = service.EventRequest
+
+        def capture_request(**kwargs):
+            request = original_request(**kwargs)
+            captured['request'] = request
+            return request
+
+        service.EventRequest = capture_request
+        self.assertTrue(service.send_custom_print_lead_event(
+            lead,
+            event_id='cp-browser-event-123',
+            source_url='https://example.test/custom-print/',
+            fbp='fb.1.1710000000000.click_123',
+            fbc='fb.1.1710000000000.click_456',
+            client_ip='8.8.8.8',
+        ))
+
+        event_obj = captured['request']._events[0]
+        event_id = event_obj['event_id'] if isinstance(event_obj, dict) else event_obj._event_id
+        event_name = event_obj['event_name'] if isinstance(event_obj, dict) else event_obj._event_name
+        self.assertEqual(event_name, 'Lead')
+        self.assertEqual(event_id, 'cp-browser-event-123')

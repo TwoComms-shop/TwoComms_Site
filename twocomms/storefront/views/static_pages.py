@@ -1606,10 +1606,25 @@ def custom_print_lead(request):
 
     with transaction.atomic():
         lead = form.save()
+        analytics_event_id = (request.POST.get("analytics_event_id") or "").strip()[:120]
+        if analytics_event_id:
+            draft = lead.config_draft_json if isinstance(lead.config_draft_json, dict) else {}
+            draft["analytics"] = {
+                "lead_event_id": analytics_event_id,
+                "fbp": (request.POST.get("analytics_fbp") or "").strip()[:200],
+                "fbc": (request.POST.get("analytics_fbc") or "").strip()[:200],
+            }
+            lead.config_draft_json = draft
+            lead.save(update_fields=["config_draft_json"])
         transaction.on_commit(
             lambda: notify_new_custom_print_lead(lead),
             robust=True,
         )
+        if analytics_event_id:
+            transaction.on_commit(
+                lambda: _send_custom_print_lead_capi(lead, request, analytics_event_id),
+                robust=True,
+            )
     record_custom_print_event(
         request,
         "custom_print_send_to_manager",
@@ -1617,13 +1632,32 @@ def custom_print_lead(request):
         step_key=(lead.exit_step or "contact"),
         metadata={"submission_type": "lead"},
     )
-    return JsonResponse(
-        {
-            "ok": True,
-            "lead_number": lead.lead_number,
-            "message": "Дякуємо! Менеджер зв’яжеться з вами найближчим часом.",
-        }
-    )
+    payload = {
+        "ok": True,
+        "lead_number": lead.lead_number,
+        "message": "Дякуємо! Менеджер зв’яжеться з вами найближчим часом.",
+    }
+    if analytics_event_id:
+        payload["analytics_event_id"] = analytics_event_id
+    return JsonResponse(payload)
+
+
+def _send_custom_print_lead_capi(lead, request, event_id: str) -> None:
+    try:
+        from orders.facebook_conversions_service import get_facebook_conversions_service
+
+        service = get_facebook_conversions_service()
+        analytics = lead.config_draft_json.get("analytics", {}) if isinstance(lead.config_draft_json, dict) else {}
+        service.send_custom_print_lead_event(
+            lead,
+            event_id=event_id,
+            source_url=request.build_absolute_uri(reverse("custom_print")),
+            fbp=request.COOKIES.get("_fbp") or analytics.get("fbp"),
+            fbc=request.COOKIES.get("_fbc") or analytics.get("fbc"),
+            client_ip=request.META.get("REMOTE_ADDR"),
+        )
+    except Exception:
+        logger.exception("Custom-print CAPI Lead delivery failed for %s", getattr(lead, "lead_number", lead.pk))
 
 
 def _safe_decimal_or_zero(value) -> Decimal:
@@ -1728,12 +1762,29 @@ def custom_print_add_to_cart(request):
             errors[field] = [error["message"] for error in field_errors]
         return JsonResponse({"ok": False, "errors": errors}, status=400)
 
+    analytics_event_id = (request.POST.get("analytics_event_id") or "").strip()[:120]
+    analytics_fbp = (request.POST.get("analytics_fbp") or "").strip()[:200]
+    analytics_fbc = (request.POST.get("analytics_fbc") or "").strip()[:200]
     with transaction.atomic():
         lead = form.save(
             source="custom_print_cart",
             moderation_status=CustomPrintModerationStatus.AWAITING_REVIEW,
         )
+        if analytics_event_id:
+            draft = lead.config_draft_json if isinstance(lead.config_draft_json, dict) else {}
+            draft["analytics"] = {
+                "lead_event_id": analytics_event_id,
+                "fbp": analytics_fbp,
+                "fbc": analytics_fbc,
+            }
+            lead.config_draft_json = draft
+            lead.save(update_fields=["config_draft_json"])
         lead.ensure_moderation_token()
+        if analytics_event_id:
+            transaction.on_commit(
+                lambda: _send_custom_print_lead_capi(lead, request, analytics_event_id),
+                robust=True,
+            )
 
     custom_cart = request.session.get(SESSION_CUSTOM_CART_KEY) or {}
     if not isinstance(custom_cart, dict):

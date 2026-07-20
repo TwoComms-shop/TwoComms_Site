@@ -1032,6 +1032,91 @@ class FacebookConversionsService:
             )
             return False
 
+    def send_custom_print_lead_event(
+        self,
+        lead,
+        *,
+        event_id: str,
+        source_url: Optional[str] = None,
+        fbp: Optional[str] = None,
+        fbc: Optional[str] = None,
+        client_ip: Optional[str] = None,
+    ) -> bool:
+        """Send a custom-print Lead with the same ID used by the browser Pixel event."""
+        if not self.enabled or not event_id:
+            return False
+
+        reference = getattr(lead, "lead_number", None) or f"CP-{getattr(lead, 'pk', '')}"
+        context = type("CustomPrintLeadContext", (), {"order_number": reference})()
+        try:
+            user_data = self.UserData()
+            name_parts = str(getattr(lead, "name", "") or "").strip().split()
+            if name_parts:
+                user_data.first_name = self._hash_data(name_parts[0])
+            if len(name_parts) > 1:
+                user_data.last_name = self._hash_data(name_parts[-1])
+
+            contact = str(getattr(lead, "contact_value", "") or "").strip()
+            channel = str(getattr(lead, "contact_channel", "") or "").strip().lower()
+            if channel == "phone":
+                phone = self._clean_phone_digits(contact)
+                if phone:
+                    user_data.phone = self._hash_data(phone)
+            elif self._is_valid_email(contact):
+                user_data.email = self._hash_data(contact)
+
+            user_data.country_code = self._hash_data("ua")
+            external_id = self._hash_data(f"custom-print:{reference}")
+            if external_id:
+                user_data.external_id = external_id
+            for attr, raw_value in (("fbp", fbp), ("fbc", fbc)):
+                clean_value = self._clean_meta_cookie(raw_value)
+                if clean_value:
+                    setattr(user_data, attr, clean_value)
+            if client_ip:
+                try:
+                    parsed_ip = ipaddress.ip_address(str(client_ip).strip())
+                    if parsed_ip.is_global:
+                        user_data.client_ip_address = str(parsed_ip)
+                except ValueError:
+                    pass
+
+            draft = getattr(lead, "config_draft_json", None) or {}
+            pricing = draft.get("pricing") if isinstance(draft, dict) else {}
+            pricing = pricing if isinstance(pricing, dict) else {}
+            custom_data = self.CustomData()
+            final_value = pricing.get("final_total") or pricing.get("base_price")
+            try:
+                final_value = float(final_value or 0)
+            except (TypeError, ValueError):
+                final_value = 0.0
+            if final_value > 0:
+                custom_data.value = final_value
+                custom_data.currency = "UAH"
+            custom_data.content_name = "Custom print lead"
+            custom_data.content_category = "custom-print"
+            custom_data.content_type = "product"
+            custom_data.order_id = reference
+            custom_data.num_items = int(getattr(lead, "quantity", 1) or 1)
+
+            event = self.Event(
+                event_name="Lead",
+                event_time=int(time.time()),
+                event_id=str(event_id),
+                user_data=user_data,
+                custom_data=custom_data,
+                action_source=self.ActionSource.WEBSITE,
+                event_source_url=source_url or (getattr(settings, "SITE_BASE_URL", "https://twocomms.shop").rstrip("/") + "/custom-print/"),
+            )
+            event_request = self.EventRequest(pixel_id=self.pixel_id, events=[event])
+            if self.test_event_code:
+                event_request.test_event_code = self.test_event_code
+            response = self._send_request_with_retry(event_request, context, "Lead")
+            return self._validate_response(response, context, "Lead", str(event_id))
+        except Exception:
+            logger.exception("Failed to send custom-print Lead event for %s", reference)
+            return False
+
     # W2-9: send_event_for_order_status удалён — мёртвый API без единого
     # вызова; вся маршрутизация Purchase/Lead живёт в
     # storefront/views/utils.py::_send_post_payment_events с дедуп-флагами

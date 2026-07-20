@@ -4035,7 +4035,7 @@
     return summary || note;
   }
 
-  function buildFormData(submissionType) {
+  function buildFormData(submissionType, analytics = {}) {
     const fd = new FormData();
     const snap = buildSnapshot(submissionType);
     const pricing = snap.pricing || computePricing();
@@ -4063,6 +4063,9 @@
     fd.append("contact_channel", STATE.contact.channel || "");
     fd.append("contact_value", STATE.contact.value || "");
     fd.append("brief", STATE.notes.brief || "");
+    if (analytics.event_id) fd.append("analytics_event_id", analytics.event_id);
+    if (analytics.fbp) fd.append("analytics_fbp", analytics.fbp);
+    if (analytics.fbc) fd.append("analytics_fbc", analytics.fbc);
 
     collectOrderedFiles().forEach(({ file }) => {
       fd.append("files", file);
@@ -4084,14 +4087,20 @@
     leadSubmitInFlight = true;
     setBusy(true);
     showStatus("Заявку відправляємо менеджеру…", "warning");
+    const eventId = (typeof window.safeGenerateAnalyticsEventId === "function")
+      ? window.safeGenerateAnalyticsEventId()
+      : String(Date.now());
+    const meta = (typeof window.buildMetaWithUserData === "function")
+      ? window.buildMetaWithUserData(eventId)
+      : { event_id: eventId };
     try {
       const response = await fetch(url, {
         method: "POST",
         headers: { "X-CSRFToken": getCsrfToken(), "X-Requested-With": "XMLHttpRequest" },
-        body: buildFormData("lead"),
+        body: buildFormData("lead", { event_id: eventId, fbp: meta.fbp, fbc: meta.fbc }),
       });
       const data = await safeJson(response);
-      if (!response.ok) {
+      if (!response.ok || data?.ok === false) {
         const msg = data?.errors ? formatErrors(data.errors) : "Не вдалося надіслати заявку. Спробуйте ще раз.";
         showStatus(msg, "error");
         return;
@@ -4099,18 +4108,13 @@
       clearDraft();
       const number = data?.lead_number ? ` №${data.lead_number}` : "";
       showStatus(`Дякуємо! Заявка${number} вже у менеджера.`, "success");
+      dialogFlow?.openSuccessDialog({ trigger: dom.submitLeadBtn, kind: "lead", leadNumber: data?.lead_number || "" });
       try {
         if (window.trackEvent) {
           const pricing = computePricing();
           const leadValue = (pricing && Number.isFinite(pricing.final_total) && pricing.final_total > 0)
             ? pricing.final_total
             : 0;
-          const eventId = (typeof window.safeGenerateAnalyticsEventId === "function")
-            ? window.safeGenerateAnalyticsEventId()
-            : String(Date.now());
-          const meta = (typeof window.buildMetaWithUserData === "function")
-            ? window.buildMetaWithUserData(eventId)
-            : { event_id: eventId };
           const leadPayload = {
             content_name: "Custom print lead",
             content_category: "custom-print",
@@ -4120,6 +4124,7 @@
           };
           if (leadValue > 0) leadPayload.value = leadValue;
           if (data?.lead_number) leadPayload.lead_number = String(data.lead_number);
+          if (data?.analytics_event_id) leadPayload.event_id = String(data.analytics_event_id);
           window.trackEvent("Lead", leadPayload);
         }
       } catch (_) { }
@@ -4149,11 +4154,17 @@
     cartSubmitInFlight = true;
     setBusy(true);
     showStatus("Додаємо конфігурацію в кошик і передаємо її менеджеру…", "warning");
+    const leadEventId = (typeof window.safeGenerateAnalyticsEventId === "function")
+      ? window.safeGenerateAnalyticsEventId()
+      : String(Date.now());
+    const leadMeta = (typeof window.buildMetaWithUserData === "function")
+      ? window.buildMetaWithUserData(leadEventId)
+      : { event_id: leadEventId };
     try {
       const response = await fetch(url, {
         method: "POST",
         headers: { "X-CSRFToken": getCsrfToken(), "X-Requested-With": "XMLHttpRequest" },
-        body: buildFormData("cart"),
+        body: buildFormData("cart", { event_id: leadEventId, fbp: leadMeta.fbp, fbc: leadMeta.fbc }),
       });
       const data = await safeJson(response);
       if (!response.ok || !data?.ok) {
@@ -4165,6 +4176,17 @@
       showStatus(`Додано в кошик · ${formatPrice(pricing.final_total)}. Перейти до оформлення?`, "success");
       try {
         if (window.trackEvent) {
+          const leadPayload = {
+            content_name: "Custom print lead",
+            content_category: "custom-print",
+            currency: "UAH",
+            event_id: leadEventId,
+            __meta: leadMeta,
+          };
+          if (pricing.final_total > 0) leadPayload.value = pricing.final_total;
+          if (data?.lead_number) leadPayload.lead_number = String(data.lead_number);
+          window.trackEvent("Lead", leadPayload);
+
           const cartValue = (pricing && Number.isFinite(pricing.final_total) && pricing.final_total > 0)
             ? pricing.final_total
             : 0;
@@ -4192,8 +4214,9 @@
           window.trackEvent("AddToCart", cartPayload);
         }
       } catch (_) { }
-      dialogFlow?.openCartReviewDialog({
+      dialogFlow?.openSuccessDialog({
         trigger: dom.addToCartBtn,
+        kind: "cart",
         leadNumber: data.lead_number,
         cartUrl: data.cart_url,
       });

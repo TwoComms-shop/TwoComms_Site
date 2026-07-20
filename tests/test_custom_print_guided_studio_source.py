@@ -104,6 +104,26 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertIn("data-manager-summary", self.template)
         self.assertIn("data-studio-boundary", self.template)
 
+    def test_template_has_visible_post_submit_success_dialog(self):
+        for contract in (
+            "data-post-submit-dialog",
+            "data-post-submit-title",
+            "data-post-submit-number",
+            "data-post-submit-home",
+            "data-post-submit-instagram",
+        ):
+            self.assertIn(contract, self.template)
+        self.assertIn("openSuccessDialog", self.js)
+        self.assertIn('kind: "lead"', self.js)
+        self.assertIn('kind: "cart"', self.js)
+
+    def test_zone_step_uses_one_compact_pricing_explanation(self):
+        zones_step = self.template.split('data-step="zones"', 1)[1].split('data-step="artwork"', 1)[0]
+        self.assertIn("Обери місце для принта", zones_step)
+        self.assertIn("Першу зону включено у базову ціну", zones_step)
+        self.assertIn("Додаткові зони рахуються окремо", zones_step)
+        self.assertNotIn("Перший друк входить у базову ціну. Додаткові зони", zones_step)
+
     def test_seo_support_stack_sits_outside_the_studio_shell(self):
         shell_end = self.template.index("    <div class=\"cp-support-stack\">")
         configurator_end = self.template.rfind("    </div>\n\n    <div class=\"container-xxl\">", 0, shell_end)
@@ -117,6 +137,14 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertIn("openCartReviewDialog", self.js)
         self.assertIn("lead_number", self.js)
         self.assertIn("cart_url", self.js)
+
+    def test_both_final_actions_share_lead_event_id_with_server_submission(self):
+        configurator = (REPO_ROOT / "twocomms/twocomms_django_theme/static/js/custom-print-configurator.js").read_text(encoding="utf-8")
+        self.assertIn('buildFormData("lead", { event_id: eventId', configurator)
+        self.assertIn('buildFormData("cart", { event_id: leadEventId', configurator)
+        self.assertIn('window.trackEvent("Lead", leadPayload)', configurator)
+        self.assertIn('transaction.on_commit', STATIC_PAGES.read_text(encoding="utf-8"))
+        self.assertIn('send_custom_print_lead_event', (REPO_ROOT / "twocomms/orders/facebook_conversions_service.py").read_text(encoding="utf-8"))
 
     def test_guided_studio_tracks_new_interactions_and_portals_mobile_bar(self):
         for event_name in ("preview_open", "step_complete", "manager_open", "draft_resume"):

@@ -477,13 +477,13 @@
               <div class="cp-step-head">
                 <span class="cp-card-eyebrow">{% trans '4. Зони друку' %}</span>
                 <h2>{% trans 'Де буде принт?' %}</h2>
-                <p>{% trans 'Обери одну або кілька зон. Перший друк входить у базову ціну, додаткові зони додаються окремо.' %}</p>
+                <p>{% trans 'Обери місце для принта. Можна додати кілька зон — ціна оновиться одразу.' %}</p>
               </div>
 
               <div class="cp-config-block">
                 <div class="cp-subhead">
                   <strong>{% trans 'Активні зони' %}</strong>
-                  <span>{% trans 'Перший друк входить у базову ціну. Додаткові зони можна вмикати і вимикати прямо на сцені.' %}</span>
+                  <span>{% trans 'Першу зону включено у базову ціну' %}</span>
                 </div>
                 <div class="cp-zone-hint" data-zone-multi-hint>
                   <span class="cp-zone-hint-icon" aria-hidden="true">
@@ -491,7 +491,7 @@
                       <path d="M3 8.5l3 3 7-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
                   </span>
-                  <span>{% trans 'Можна обрати' %} <strong>{% trans 'кілька зон' %}</strong> {% trans '— перший друк уже включено в базову ціну, кожна додаткова рахується окремо.' %}</span>
+                  <span>{% trans 'Додаткові зони рахуються окремо' %}</span>
                 </div>
                 <div class="cp-zone-card-grid" data-zone-list></div>
                 <div class="cp-custom-zone-panel" data-custom-zone-wrap hidden>
@@ -914,6 +914,23 @@
         <p>{% trans 'Заявку вже передано менеджеру. Поки менеджер не підтвердить конфігурацію, оплатити кастомну позицію через кошик не можна. Ми уточнимо файл, розташування, основу та фінальну ціну.' %}</p>
         <a class="cp-dialog-primary" href="#" data-cart-review-go>{% trans 'Зрозуміло, перейти до кошика' %}</a>
         <a class="cp-dialog-secondary" href="{{ custom_print_config.telegram_manager_url }}" target="_blank" rel="noopener" data-cart-review-telegram>{% trans 'Написати в Telegram' %}</a>
+      </div>
+    </dialog>
+
+    <dialog class="cp-dialog cp-post-submit-dialog" data-post-submit-dialog aria-labelledby="cp-post-submit-title">
+      <div class="cp-dialog-shell cp-post-submit-shell">
+        <div class="cp-post-submit-mark" aria-hidden="true">✓</div>
+        <small class="cp-post-submit-eyebrow">TwoComms · кастомний принт</small>
+        <h2 id="cp-post-submit-title" data-post-submit-title>Заявка вже у менеджера</h2>
+        <p class="cp-post-submit-copy" data-post-submit-copy>Ми отримали конфігурацію. Менеджер звʼяжеться з вами у вибраному каналі.</p>
+        <div class="cp-post-submit-number" data-post-submit-number></div>
+        <div class="cp-post-submit-actions">
+          <a class="cp-dialog-primary" href="/" data-post-submit-home>На головну</a>
+          <a class="cp-dialog-primary cp-post-submit-cart-link" href="/cart/" data-post-submit-cart hidden>Перейти до кошика</a>
+          <a class="cp-dialog-secondary" href="https://www.instagram.com/twocomms/" target="_blank" rel="noopener noreferrer" data-post-submit-instagram>Підписатися в Instagram</a>
+          <a class="cp-dialog-secondary" href="https://t.me/twocomms" target="_blank" rel="noopener noreferrer" data-post-submit-telegram>Відкрити Telegram</a>
+        </div>
+        <button type="button" class="cp-dialog-secondary cp-post-submit-close" data-dialog-close>Залишитися на сторінці</button>
       </div>
     </dialog>
 

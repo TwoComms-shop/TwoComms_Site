@@ -83,9 +83,11 @@
     const previewDialog = portal(root.querySelector("[data-preview-dialog]"));
     const managerDialog = portal(root.querySelector("[data-manager-dialog]"));
     const cartDialog = portal(root.querySelector("[data-cart-review-dialog]"));
+    const postSubmitDialog = portal(root.querySelector("[data-post-submit-dialog]"));
     const preview = wireDialog(previewDialog);
     const manager = wireDialog(managerDialog);
     const cart = wireDialog(cartDialog);
+    const postSubmit = wireDialog(postSubmitDialog);
 
     function openPreviewDialog(trigger) {
       preview?.open(trigger);
@@ -115,7 +117,32 @@
       cart?.open(trigger);
     }
 
-    return { openPreviewDialog, openManagerDialog, openCartReviewDialog };
+    function openSuccessDialog({ trigger, kind = "lead", leadNumber = "", cartUrl = "" } = {}) {
+      if (!postSubmitDialog || !postSubmit) return;
+      const title = postSubmitDialog.querySelector("[data-post-submit-title]");
+      const copy = postSubmitDialog.querySelector("[data-post-submit-copy]");
+      const number = postSubmitDialog.querySelector("[data-post-submit-number]");
+      const cartLink = postSubmitDialog.querySelector("[data-post-submit-cart]");
+      const homeLink = postSubmitDialog.querySelector("[data-post-submit-home]");
+      const instagramLink = postSubmitDialog.querySelector("[data-post-submit-instagram]");
+      const telegramLink = postSubmitDialog.querySelector("[data-post-submit-telegram]");
+      const isCart = kind === "cart";
+      if (title) title.textContent = isCart ? "Заявку додано до кошика" : "Заявка вже у менеджера";
+      if (copy) copy.textContent = isCart
+        ? "Менеджер перевірить конфігурацію та уточнить файл, основу і фінальну ціну."
+        : "Ми отримали конфігурацію. Менеджер звʼяжеться з вами у вибраному каналі.";
+      if (number) number.textContent = leadNumber ? `Номер заявки · ${leadNumber}` : "Конфігурацію збережено";
+      if (cartLink) {
+        cartLink.hidden = !isCart;
+        cartLink.href = cartUrl || "/cart/";
+      }
+      if (homeLink) homeLink.href = "/";
+      if (instagramLink) instagramLink.href = "https://www.instagram.com/twocomms/";
+      if (telegramLink) telegramLink.href = "https://t.me/twocomms";
+      postSubmit?.open(trigger);
+    }
+
+    return { openPreviewDialog, openManagerDialog, openCartReviewDialog, openSuccessDialog };
   }
 
   global.CustomPrintSubmitFlow = { create };
