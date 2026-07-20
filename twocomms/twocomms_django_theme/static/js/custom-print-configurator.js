@@ -322,7 +322,6 @@
     if (!stepKey || analyticsState.completedSteps.has(stepKey)) return;
     analyticsState.completedSteps.add(stepKey);
     sendAnalyticsEvent("custom_print_step_complete", buildAnalyticsMetadata({ step_key: stepKey, ...extra }));
-    sendAnalyticsEvent("step_complete", buildAnalyticsMetadata({ step_key: stepKey, ...extra }));
   }
 
   function init() {

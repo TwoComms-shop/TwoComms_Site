@@ -121,6 +121,7 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
     def test_guided_studio_tracks_new_interactions_and_portals_mobile_bar(self):
         for event_name in ("preview_open", "step_complete", "manager_open", "draft_resume"):
             self.assertIn(event_name, self.js)
+        self.assertNotIn('sendAnalyticsEvent("step_complete"', self.js)
         self.assertRegex(self.js, r"document\.body\.append(?:Child)?\(.*mobile")
 
     def test_mobile_app_shell_owns_scroll_and_has_one_bottom_clearance(self):
