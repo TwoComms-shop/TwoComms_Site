@@ -361,6 +361,17 @@ The order is intentional. P0 blocks safe operation; P1 improves conversion and o
 - [ ] **P0.9 Fix secret presentation and access boundaries.** Mask/write-only custom tokens, audit reviewer/admin permissions, and test that secrets never appear in HTML, JSON, logs, or errors. Commit/push/deploy.
 - [ ] **P0.10 Production recovery verification.** Confirm daemon heartbeat, webhook health, queue drain, no new duplicate alerts, and a clean rollback point. Mark only after server evidence. Commit/push/deploy.
 
+### Additional findings from the second audit (2026-07-22)
+
+These findings were discovered while tracing the full queue/worker/provider path after the initial plan was written. They are now explicit delivery items rather than informal follow-up notes:
+
+- [ ] **P0.A1 Follow-up retry backoff.** A transiently failed due follow-up currently remains immediately eligible, which can create a hot retry loop and duplicate provider calls. Persist `next_attempt_at`, bounded exponential backoff, and a terminal failure transition; test repeated provider failures and recovery.
+- [ ] **P0.A2 Polling cursor/batch correctness.** `poll_ingest()` currently inspects only the first message returned for each conversation and has no durable per-conversation cursor. Process all new messages in provider order, deduplicate against webhook mids, and test bursts between polls.
+- [ ] **P0.A3 Model allowlist and authority.** Settings accept arbitrary model strings while the UI omits `gemini-3.6-flash`; enforce a provider allowlist, make the selected model effective, and expose configured versus actually used model.
+- [ ] **P0.A4 Fail-closed webhook verification.** Missing `IG_APP_SECRET` currently permits unsigned events. Require a production secret or an explicit development-only override, with one configuration warning and coverage for all signature branches.
+- [ ] **P0.A5 Durable Telegram notification delivery.** Manager/AI/delivery alerts have no persisted idempotency record or Telegram success check. Add an outbox keyed by client/event epoch and make delivery/retry state observable.
+- [ ] **P1.A6 Gemini probe generation budget.** Tiny probes can return `MAX_TOKENS` with empty content because thinking consumes the output budget. Use model-aware thinking/output settings and classify finish reasons correctly in health checks.
+
 ### P1 — CRM truth and conversion behavior
 
 - [ ] **P1.1 Versioned conversation analysis.** Add analysis snapshot/evidence/confidence model and deterministic fact extraction contract. Backfill only where evidence is available; label historical data as legacy. Commit/push/deploy.

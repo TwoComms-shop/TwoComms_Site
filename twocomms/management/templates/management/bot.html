@@ -471,11 +471,13 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   }
   function setBadge(el, n){ if(!el) return; if(n>0){ el.textContent=n; el.style.display=''; } else { el.style.display='none'; } }
   function render(st){
-    const online = st.daemon_online || st.alive;
+    const online = !!st.daemon_online;
     const pill=document.getElementById('bot-pill'), pillT=document.getElementById('bot-pill-text');
     const dot=document.getElementById('bot-dot');
     let txt, sub, cls;
-    if(!online){ txt='Офлайн'; sub='Демон не запущено (watchdog підніме за ~1 хв)'; cls='off'; }
+    if(st.state==='enabled_but_worker_missing'){ txt='Worker не запущено'; sub='Бот увімкнено, watchdog відновлює демон (до 1 хв)'; cls='off'; }
+    else if(st.state==='worker_error'){ txt='Помилка worker'; sub='DB heartbeat є, але daemon heartbeat відсутній'; cls='off'; }
+    else if(!online){ txt='Офлайн'; sub='Демон не запущено'; cls='off'; }
     else if(st.is_enabled){ txt='Працює'; sub='Агент онлайн і відповідає'; cls='on'; }
     else { txt='Зупинено'; sub='Агент онлайн, але не відповідає'; cls='idle'; }
     pill.className='bot-pill '+cls; pillT.textContent=txt;
@@ -496,7 +498,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   function poll(){
     if(polling) return Promise.resolve(); polling=true;
     return fetch('{% url "management_bot_status_api" %}?after_id='+lastId, {headers:{'X-Requested-With':'XMLHttpRequest'}})
-      .then(r=>r.json()).then(d=>{ if(d.success){ lastStatusOnline=!!(d.status.daemon_online||d.status.alive); render(d.status); appendLog(d.log); } })
+      .then(r=>r.json()).then(d=>{ if(d.success){ lastStatusOnline=!!d.status.daemon_online; render(d.status); appendLog(d.log); } })
       .catch(()=>{}).finally(()=>{ polling=false; });
   }
   function action(url){

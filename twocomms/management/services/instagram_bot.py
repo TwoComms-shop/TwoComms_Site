@@ -2180,14 +2180,34 @@ def status_snapshot() -> dict:
     s = InstagramBotSettings.load()
     now = timezone.now()
     hb = s.heartbeat_at
-    alive = bool(hb and (now - hb).total_seconds() < 90)
+    db_heartbeat_age = (now - hb).total_seconds() if hb else None
+    db_heartbeat_fresh = bool(db_heartbeat_age is not None and db_heartbeat_age < 90)
     dhb = cache.get("ig_bot_daemon_hb")
-    daemon_online = bool(dhb and (time.time() - float(dhb)) < 45)
+    try:
+        daemon_heartbeat_age = time.time() - float(dhb) if dhb else None
+    except (TypeError, ValueError):
+        daemon_heartbeat_age = None
+    daemon_online = bool(daemon_heartbeat_age is not None and daemon_heartbeat_age < 45)
+    if not s.is_enabled:
+        state = "disabled"
+    elif daemon_online:
+        state = "running"
+    elif db_heartbeat_fresh:
+        state = "worker_error"
+    else:
+        state = "enabled_but_worker_missing"
     return {
         "is_enabled": s.is_enabled,
-        "alive": alive,
+        # Backwards-compatible alias: only the daemon heartbeat proves a
+        # worker is alive. A fresh DB timestamp alone is not liveness proof.
+        "alive": daemon_online,
         "daemon_online": daemon_online,
-        "running": s.is_enabled and (daemon_online or alive),
+        "running": s.is_enabled and daemon_online,
+        "state": state,
+        "recovery_expected": bool(s.is_enabled and not daemon_online),
+        "db_heartbeat_fresh": db_heartbeat_fresh,
+        "db_heartbeat_age_seconds": round(db_heartbeat_age, 1) if db_heartbeat_age is not None else None,
+        "daemon_heartbeat_age_seconds": round(daemon_heartbeat_age, 1) if daemon_heartbeat_age is not None else None,
         "heartbeat_at": hb.isoformat() if hb else "",
         "last_inbound_at": s.last_inbound_at.isoformat() if s.last_inbound_at else "",
         "last_reply_at": s.last_reply_at.isoformat() if s.last_reply_at else "",

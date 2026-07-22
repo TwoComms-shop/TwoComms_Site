@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from django.core.cache import cache
 from django.core.management.base import BaseCommand
@@ -31,8 +32,14 @@ from management.services import instagram_bot as bot
 HB_KEY = "ig_bot_daemon_hb"            # heartbeat демона (epoch seconds)
 HB_ALIVE_WINDOW = 45                   # демон вважається живим, якщо hb свіжіший
 SPAWN_LOCK_KEY = "ig_bot_spawn_lock"
-PID_FILE = "tmp/ig_bot.pid"
+DAEMON_LOCK_KEY = "ig_bot_daemon_lock"
 CONV_REFRESH_EVERY = 120               # фонове оновлення списку тредів, c
+
+# Cron may invoke manage.py from an arbitrary working directory. Resolve the
+# entry point from this command module and keep the child in the Django root.
+MANAGE_PY_PATH = str(Path(__file__).resolve().parents[3] / "manage.py")
+PROJECT_ROOT = str(Path(MANAGE_PY_PATH).parent)
+PID_FILE = os.path.join(PROJECT_ROOT, "tmp", "ig_bot.pid")
 
 
 def _daemon_alive() -> bool:
@@ -44,7 +51,7 @@ def _restart_sentinel_mtime() -> float:
     """mtime файлу tmp/restart.txt — маркер деплою (його torkає кожен git pull).
     Демон стежить за ним і перезавантажується, коли код оновлено."""
     try:
-        return os.path.getmtime(os.path.join("tmp", "restart.txt"))
+        return os.path.getmtime(os.path.join(PROJECT_ROOT, "tmp", "restart.txt"))
     except OSError:
         return 0.0
 
@@ -99,16 +106,18 @@ class Command(BaseCommand):
         if not cache.add(SPAWN_LOCK_KEY, "1", 30):
             self.stdout.write("spawn in progress — skip")
             return
-        manage_py = sys.argv[0]
-        log_path = os.path.join(os.getcwd(), "tmp", "ig_bot_daemon.log")
+        log_dir = os.path.join(PROJECT_ROOT, "tmp")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "ig_bot_daemon.log")
         try:
             with open(log_path, "a") as logf:
                 subprocess.Popen(
-                    [sys.executable, manage_py, "run_instagram_bot", "--forever"],
+                    [sys.executable, MANAGE_PY_PATH, "run_instagram_bot", "--forever"],
                     stdout=logf,
                     stderr=logf,
                     stdin=subprocess.DEVNULL,
                     start_new_session=True,  # відв'язуємо (setsid) — переживе cron
+                    cwd=PROJECT_ROOT,
                     env=os.environ.copy(),
                 )
             bot.log("info", "daemon_spawn", "watchdog підняв демона")
@@ -122,8 +131,13 @@ class Command(BaseCommand):
         if _daemon_alive():
             self.stdout.write("daemon already alive — exit")
             return
+        owner = f"{os.getpid()}:{time.time_ns()}"
+        if not cache.add(DAEMON_LOCK_KEY, owner, HB_ALIVE_WINDOW * 3):
+            self.stdout.write("daemon start lock held — exit")
+            return
         cache.set(HB_KEY, time.time(), HB_ALIVE_WINDOW * 3)
         try:
+            os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
             with open(PID_FILE, "w") as f:
                 f.write(str(os.getpid()))
         except Exception:
@@ -173,6 +187,7 @@ class Command(BaseCommand):
                     bot.log("error", "daemon_loop", repr(exc))
                 finally:
                     cache.set(HB_KEY, time.time(), HB_ALIVE_WINDOW * 3)
+                    cache.set(DAEMON_LOCK_KEY, owner, HB_ALIVE_WINDOW * 3)
                 # працює — кожні ~1.5 c (низька латентність черги); зупинено — рідше
                 time.sleep(1.5 if enabled else 5)
         finally:
@@ -181,5 +196,10 @@ class Command(BaseCommand):
             # очікування TTL (інакше до 45 c простою після деплою).
             try:
                 cache.delete(HB_KEY)
+            except Exception:
+                pass
+            try:
+                if cache.get(DAEMON_LOCK_KEY) == owner:
+                    cache.delete(DAEMON_LOCK_KEY)
             except Exception:
                 pass
