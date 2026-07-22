@@ -22,6 +22,15 @@ from .models import (
     ROOT_URLCONF="twocomms.urls_management",
 )
 class InstagramBotPrivacyPolicyTests(TestCase):
+    def _login_staff(self):
+        user = get_user_model().objects.create_user(
+            username="direct_bot_staff",
+            password="test-staff-password",
+            is_staff=True,
+        )
+        self.client.force_login(user)
+        return user
+
     def _login_meta_reviewer(self):
         user = get_user_model().objects.create_user(
             username="meta_reviewer_direct_bot",
@@ -206,6 +215,47 @@ class InstagramBotPrivacyPolicyTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response["Location"], reverse("management_bot"))
+
+    def test_admin_dashboard_is_write_only_for_custom_secrets(self):
+        self._login_staff()
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.custom_direct_token = "direct-secret-value"
+        settings_obj.custom_gemini_key = "gemini-secret-value"
+        settings_obj.save()
+
+        response = self.client.get(
+            "/bot/", HTTP_HOST="management.twocomms.shop", secure=True
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "direct-secret-value")
+        self.assertNotContains(response, "gemini-secret-value")
+        self.assertContains(response, "Свій Direct токен уже збережено")
+        self.assertContains(response, "Свій Gemini ключ уже збережено")
+
+    def test_blank_secret_fields_preserve_existing_values(self):
+        self._login_staff()
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.custom_direct_token = "keep-direct-secret"
+        settings_obj.custom_gemini_key = "keep-gemini-secret"
+        settings_obj.save()
+
+        response = self.client.post(
+            "/bot/api/settings/",
+            {
+                "ai_enabled": "on",
+                "custom_direct_token": "",
+                "custom_gemini_key": "",
+            },
+            HTTP_HOST="management.twocomms.shop",
+            secure=True,
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        settings_obj.refresh_from_db()
+        self.assertEqual(settings_obj.custom_direct_token, "keep-direct-secret")
+        self.assertEqual(settings_obj.custom_gemini_key, "keep-gemini-secret")
 
     def test_meta_reviewer_gets_working_bot_only_page_without_secrets(self):
         self._login_meta_reviewer()

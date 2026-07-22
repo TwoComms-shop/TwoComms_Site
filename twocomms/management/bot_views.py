@@ -291,6 +291,8 @@ def bot_dashboard(request):
             "log_items": _log_items(),
             "cred_env": InstagramBotSettings.CredSource.ENV,
             "cred_custom": InstagramBotSettings.CredSource.CUSTOM,
+            "has_custom_direct_token": bool(settings_obj.custom_direct_token),
+            "has_custom_gemini_key": bool(settings_obj.custom_gemini_key),
             "meta_bot_reviewer_mode": reviewer_mode,
         },
     )
@@ -363,9 +365,17 @@ def bot_settings_save_api(request):
             s.gemini_source = gemini_source
 
         if "custom_direct_token" in request.POST:
-            s.custom_direct_token = (request.POST.get("custom_direct_token") or "").strip()
+            value = (request.POST.get("custom_direct_token") or "").strip()
+            if value:
+                s.custom_direct_token = value
+        if _truthy(request.POST.get("clear_custom_direct_token")):
+            s.custom_direct_token = ""
         if "custom_gemini_key" in request.POST:
-            s.custom_gemini_key = (request.POST.get("custom_gemini_key") or "").strip()
+            value = (request.POST.get("custom_gemini_key") or "").strip()
+            if value:
+                s.custom_gemini_key = value
+        if _truthy(request.POST.get("clear_custom_gemini_key")):
+            s.custom_gemini_key = ""
 
         trigger = (request.POST.get("trigger_text") or "").strip()
         if trigger:

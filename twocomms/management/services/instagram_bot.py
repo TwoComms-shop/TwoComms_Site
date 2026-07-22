@@ -59,6 +59,15 @@ AUTOMATION_LEASE_TTL = timedelta(minutes=3)
 # відправкою клієнту). [STAGE:x] просуває воронку, [MANAGER] кличе людину.
 STAGE_VALUES = {s.value for s in IgClient.Stage}
 _CONTROL_TAG_RE = re.compile(r"\[([A-Z]+)(?::([^\]]+))?\]")
+_SECRET_PARAM_RE = re.compile(
+    r"((?:access_token|client_secret|api[_-]?key|password|token)=)[^&\s]+",
+    re.IGNORECASE,
+)
+
+
+def _redact_secret_text(value: str) -> str:
+    """Remove credential-like query parameters before writing diagnostics."""
+    return _SECRET_PARAM_RE.sub(r"\1[REDACTED]", str(value or ""))
 
 
 def _extract_control(reply: str) -> tuple[str, dict]:
@@ -566,7 +575,7 @@ def _log_token_error(s: InstagramBotSettings, code, body: str) -> None:
         sig = f"{code}:{(body or '')[:40]}"
     if cache.get("ig_bot_pt_errsig") != sig:
         cache.set("ig_bot_pt_errsig", sig, 3600)
-        log("error", "page_token", f"HTTP {code}: {body[:160]}")
+        log("error", "page_token", f"HTTP {code}: {_redact_secret_text(body)[:160]}")
     try:
         s.last_error = (
             f"Direct токен недійсний (HTTP {code}). Онови DIRECT_API в ENV "

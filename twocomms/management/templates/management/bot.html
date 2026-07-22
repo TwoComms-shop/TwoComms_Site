@@ -266,13 +266,15 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             <label>Direct API (Facebook токен)</label>
             <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_env }}" {% if settings.direct_source == cred_env %}checked{% endif %}> ENV сервера</label>
             <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_custom }}" {% if settings.direct_source == cred_custom %}checked{% endif %}> Свій</label>
-            <input type="text" name="custom_direct_token" placeholder="Свій Direct токен (необов'язково)" value="{{ settings.custom_direct_token }}" style="margin-top:8px;">
+            <input type="password" name="custom_direct_token" placeholder="Введіть новий Direct токен (необов'язково)" value="" autocomplete="new-password" style="margin-top:8px;">
+            {% if has_custom_direct_token %}<small class="bot-hint">Свій Direct токен уже збережено; значення приховано.</small>{% endif %}
           </div>
           <div class="bot-field">
             <label>Gemini API (Google ключ)</label>
             <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_env }}" {% if settings.gemini_source == cred_env %}checked{% endif %}> ENV сервера</label>
             <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_custom }}" {% if settings.gemini_source == cred_custom %}checked{% endif %}> Свій</label>
-            <input type="text" name="custom_gemini_key" placeholder="Свій Gemini ключ (необов'язково)" value="{{ settings.custom_gemini_key }}" style="margin-top:8px;">
+            <input type="password" name="custom_gemini_key" placeholder="Введіть новий Gemini ключ (необов'язково)" value="" autocomplete="new-password" style="margin-top:8px;">
+            {% if has_custom_gemini_key %}<small class="bot-hint">Свій Gemini ключ уже збережено; значення приховано.</small>{% endif %}
           </div>
         </div>
         {% endif %}
