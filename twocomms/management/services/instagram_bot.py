@@ -965,10 +965,19 @@ def send_text(s: InstagramBotSettings, recipient_id: str, text: str) -> tuple[bo
             continue
         kind, hint = _classify_send_error(code, resp)
         if kind == "permanent":
-            _remember_send_error(s, hint, code=code)
-            _remember_client_delivery_error(recipient_id, hint, code=code, body=resp)
+            if ok_any:
+                kind = "unknown"
+                hint = f"часткова доставка; результат останніх чанків не підтверджено: {hint}"
+            else:
+                _remember_send_error(s, hint, code=code)
+                _remember_client_delivery_error(recipient_id, hint, code=code, body=resp)
+        elif kind == "transient":
+            # A timeout/5xx can happen after Meta accepted the request. There
+            # is no provider idempotency key, so retrying would risk a duplicate.
+            kind = "unknown"
+            hint = f"результат доставки не підтверджено: {hint}"
         log("error", "send", f"HTTP {code} [{kind}] {hint}")
-        return ok_any, kind, hint
+        return False, kind, hint
     return True, "", ""
 
 
@@ -1002,10 +1011,17 @@ def send_text_tagged(s: InstagramBotSettings, recipient_id: str, text: str, tag:
             continue
         kind, hint = _classify_send_error(code, resp)
         if kind == "permanent":
-            _remember_send_error(s, hint, code=code)
-            _remember_client_delivery_error(recipient_id, hint, code=code, body=resp)
+            if ok_any:
+                kind = "unknown"
+                hint = f"часткова доставка; результат останніх чанків не підтверджено: {hint}"
+            else:
+                _remember_send_error(s, hint, code=code)
+                _remember_client_delivery_error(recipient_id, hint, code=code, body=resp)
+        elif kind == "transient":
+            kind = "unknown"
+            hint = f"результат доставки не підтверджено: {hint}"
         log("error", "send_tag", f"HTTP {code} [{kind}] {hint}")
-        return ok_any, kind, hint
+        return False, kind, hint
     return True, "", ""
 
 
@@ -1526,6 +1542,17 @@ def reclaim_stale_processing(max_age_seconds: int = STALE_PROCESSING_SECONDS) ->
             ).first()
             if not locked:
                 continue
+            if locked.send_state in {"sending", "sent", "unknown"}:
+                locked.status = InstagramBotMessage.Status.FAILED
+                locked.send_state = "unknown"
+                locked.processed_at = timezone.now()
+                locked.save(update_fields=["status", "send_state", "processed_at"])
+                log(
+                    "error",
+                    "send_unknown",
+                    f"{locked.sender_id}: stale row crossed Meta send boundary; automatic retry disabled",
+                )
+                continue
             if locked.attempts >= MAX_ATTEMPTS:
                 locked.status = InstagramBotMessage.Status.FAILED
                 locked.processed_at = timezone.now()
@@ -1841,13 +1868,24 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
     # hide не поверне помилковий success: UI отримає чесний retryable-конфлікт.
     if not _renew_client_automation_lease(row, lease_token):
         return False
+    send_started_at = timezone.now()
+    if not _own_processing_claim(row).update(
+        send_state="sending", send_started_at=send_started_at, send_completed_at=None,
+    ):
+        log("warning", "claim_lost", f"{row.sender_id}: send claim lost before Meta request")
+        return False
+    row.send_state = "sending"
+    row.send_started_at = send_started_at
+    row.send_completed_at = None
     ok, kind, hint = send_text(s, row.sender_id, reply)
     if not ok:
         if kind == "permanent":
             # Перманентна помилка (напр. #200 немає Advanced Access) — ретраї
             # безглузді. Падаємо одразу з чіткою причиною.
             row.status = InstagramBotMessage.Status.FAILED
-            row.save(update_fields=["status"])
+            row.send_state = "failed"
+            row.processed_at = timezone.now()
+            row.save(update_fields=["status", "send_state", "processed_at"])
             log("error", "send_blocked", f"{row.sender_id}: {hint}")
             # Системну причину (одна на всіх) не спамимо — алерт раз на годину.
             if not cache.get("ig_bot_perm_alert"):
@@ -1859,9 +1897,22 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
                     f"App Review (Advanced Access). Для тесту — додай користувача "
                     f"в тестувальники. (Це системне; алерт раз на годину.)"
                 )
+        elif kind == "unknown":
+            # Never replay a request whose provider result is ambiguous.
+            row.status = InstagramBotMessage.Status.FAILED
+            row.send_state = "unknown"
+            row.processed_at = timezone.now()
+            row.save(update_fields=["status", "send_state", "processed_at"])
+            log("error", "send_unknown", f"{row.sender_id}: {hint}; automatic retry disabled")
+            notify_manager(
+                f"⚠️ IG бот: результат доставки клієнту {row.sender_id} не підтверджено. "
+                "Автоматичний повтор вимкнено, перевірте Meta Inbox."
+            )
         elif row.attempts >= MAX_ATTEMPTS:
             row.status = InstagramBotMessage.Status.FAILED
-            row.save(update_fields=["status"])
+            row.send_state = "failed"
+            row.processed_at = timezone.now()
+            row.save(update_fields=["status", "send_state", "processed_at"])
             log("error", "give_up", f"{row.sender_id}: не вдалося відправити після {row.attempts} спроб ({hint})")
             notify_manager(
                 f"⚠️ IG бот не зміг відповісти клієнту {row.sender_id} після {row.attempts} спроб. "
@@ -1874,9 +1925,21 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
         return False
 
     # успіх: фіксуємо відповідь у локальній історії
+    processed_at = timezone.now()
+    claimed = _own_processing_claim(row).update(
+        status=InstagramBotMessage.Status.DONE,
+        send_state="sent",
+        send_completed_at=processed_at,
+        processed_at=processed_at,
+    )
+    if not claimed:
+        # The provider already received the message; never run the row again.
+        log("warning", "claim_lost_after_send", f"{row.sender_id}: Meta send succeeded")
+        return True
     row.status = InstagramBotMessage.Status.DONE
-    row.processed_at = timezone.now()
-    row.save(update_fields=["status", "processed_at"])
+    row.send_state = "sent"
+    row.send_completed_at = processed_at
+    row.processed_at = processed_at
     InstagramBotMessage.objects.create(
         sender_id=row.sender_id,
         client=row.client,
@@ -1963,10 +2026,17 @@ def process_pending(s: InstagramBotSettings | None = None, max_items: int = 15) 
             # Після успішного Meta Send рядок уже позначено done. Не можна
             # повертати його в pending через пізній збій CRM/телеметрії — це
             # призведе до дубльованої відповіді клієнту.
-            _own_processing_claim(row).update(
-                status=InstagramBotMessage.Status.PENDING,
-                processing_started_at=None,
-            )
+            if row.send_state == "sending":
+                _own_processing_claim(row).update(
+                    status=InstagramBotMessage.Status.FAILED,
+                    send_state="unknown",
+                    processed_at=timezone.now(),
+                )
+            else:
+                _own_processing_claim(row).update(
+                    status=InstagramBotMessage.Status.PENDING,
+                    processing_started_at=None,
+                )
             break
     return handled
 

@@ -114,6 +114,15 @@ class SendApiErrorClassificationTests(TestCase):
         self.assertIn("Advanced Access", s.last_error)
 
     @patch("management.services.instagram_bot.get_page_token", return_value="PT")
+    @patch("management.services.instagram_bot._http", return_value=(503, "provider overloaded"))
+    def test_transient_provider_result_is_unknown_not_retryable(self, _mock_http, _mock_pt):
+        ok, kind, hint = bot.send_text(InstagramBotSettings.load(), "uncertain-recipient", "Привіт")
+
+        self.assertFalse(ok)
+        self.assertEqual(kind, "unknown")
+        self.assertIn("не підтверджено", hint)
+
+    @patch("management.services.instagram_bot.get_page_token", return_value="PT")
     @patch("management.services.instagram_bot._http")
     def test_permanent_send_block_is_persisted_on_the_affected_client(self, mock_http, _mock_pt):
         client = IgClient.get_or_create_for_sender("delivery-blocked-client")

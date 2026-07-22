@@ -3732,6 +3732,12 @@ class InstagramBotMessage(models.Model):
     # JSON-список URL зображень-вкладень (для мультимодального аналізу Gemini).
     attachments = models.TextField(blank=True, default="")
     attempts = models.PositiveIntegerField(default=0)
+    # Delivery boundary state. Once a provider request has started, an
+    # ambiguous result must never be retried automatically (Meta has no
+    # idempotency key and may have accepted the request before the timeout).
+    send_state = models.CharField(max_length=16, blank=True, default="")
+    send_started_at = models.DateTimeField(null=True, blank=True)
+    send_completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     # Час саме захоплення воркером, а не надходження webhook. Потрібен для
     # безпечного reclaim: старе повідомлення могло довго чекати в pending,

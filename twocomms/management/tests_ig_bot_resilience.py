@@ -27,6 +27,20 @@ def _msg(status, attempts, age_seconds, *, processing_age_seconds=None, client=N
 
 
 class ReclaimStaleProcessingTests(TestCase):
+    def test_stale_row_after_send_boundary_is_never_requeued(self):
+        m = _msg(
+            InstagramBotMessage.Status.PROCESSING,
+            attempts=1,
+            age_seconds=10,
+            processing_age_seconds=600,
+        )
+        InstagramBotMessage.objects.filter(pk=m.pk).update(send_state="sending")
+
+        self.assertEqual(bot.reclaim_stale_processing(), 0)
+        m.refresh_from_db()
+        self.assertEqual(m.status, InstagramBotMessage.Status.FAILED)
+        self.assertEqual(m.send_state, "unknown")
+
     def test_requeues_stale_processing(self):
         m = _msg(
             InstagramBotMessage.Status.PROCESSING,
