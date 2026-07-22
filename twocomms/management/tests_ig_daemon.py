@@ -82,6 +82,19 @@ class DaemonStatusTests(TestCase):
         self.assertFalse(snapshot["running"])
         self.assertEqual(snapshot["state"], "worker_error")
 
+    @patch("management.services.instagram_bot.cache.get", return_value={"at": 100.0})
+    @patch("management.services.instagram_bot.time.time", return_value=110.0)
+    def test_status_snapshot_accepts_structured_daemon_heartbeat(self, _time, _get):
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.heartbeat_at = timezone.now()
+        settings.save(update_fields=["is_enabled", "heartbeat_at"])
+
+        snapshot = bot.status_snapshot()
+
+        self.assertTrue(snapshot["daemon_online"])
+        self.assertEqual(snapshot["state"], "running")
+
     def test_disabled_bot_is_not_reported_as_recovery_required(self):
         settings = InstagramBotSettings.load()
         settings.is_enabled = False

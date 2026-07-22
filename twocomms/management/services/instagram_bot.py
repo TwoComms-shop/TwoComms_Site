@@ -2396,6 +2396,8 @@ def status_snapshot() -> dict:
     db_heartbeat_fresh = bool(db_heartbeat_age is not None and db_heartbeat_age < 90)
     dhb = cache.get("ig_bot_daemon_hb")
     try:
+        if isinstance(dhb, dict):
+            dhb = dhb.get("at")
         daemon_heartbeat_age = time.time() - float(dhb) if dhb else None
     except (TypeError, ValueError):
         daemon_heartbeat_age = None
