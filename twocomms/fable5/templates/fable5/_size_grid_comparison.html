@@ -1,5 +1,5 @@
 {% load admin_filters %}{% load i18n %}{% load static %}
-<section class="tc-size-comparison" data-size-grid-comparison aria-labelledby="size-guide-title-{{ product.id }}">
+<section class="tc-size-comparison" data-size-grid-comparison data-size-guide-initial-fit="{{ preselected_fit_code|default:'' }}" aria-labelledby="size-guide-title-{{ product.id }}">
   <div class="tc-size-comparison__intro">
     <div>
       <span class="tc-guide-eyebrow">{% trans "Посадка та розміри" %}</span>
@@ -14,11 +14,11 @@
     {% for item in size_grid_comparison %}
       <button
         type="button"
-        class="tc-size-guide-switch__button{% if forloop.first %} is-active{% endif %}"
+        class="tc-size-guide-switch__button{% if item.fit_code == preselected_fit_code or not preselected_fit_code and forloop.first %} is-active{% endif %}"
         role="tab"
         id="size-guide-tab-{{ product.id }}-{{ item.fit_code }}"
         aria-controls="size-guide-panel-{{ product.id }}-{{ item.fit_code }}"
-        aria-selected="{% if forloop.first %}true{% else %}false{% endif %}"
+        aria-selected="{% if item.fit_code == preselected_fit_code or not preselected_fit_code and forloop.first %}true{% else %}false{% endif %}"
         data-size-guide-fit="{{ item.fit_code }}">
         <span>{{ item.label }}</span>
         <small>{% if item.fit_code == 'oversize' %}{% trans 'XS–2XL' %}{% else %}{% trans 'S–2XL' %}{% endif %}</small>
@@ -30,12 +30,12 @@
   <div class="tc-size-comparison__panels">
     {% for item in size_grid_comparison %}
       <article
-        class="tc-size-comparison__card{% if forloop.first %} is-active{% endif %}"
+        class="tc-size-comparison__card{% if item.fit_code == preselected_fit_code or not preselected_fit_code and forloop.first %} is-active{% endif %}"
         id="size-guide-panel-{{ product.id }}-{{ item.fit_code }}"
         role="tabpanel"
         aria-labelledby="size-guide-tab-{{ product.id }}-{{ item.fit_code }}"
         data-size-grid-fit="{{ item.fit_code }}"
-        {% if not forloop.first %}hidden{% endif %}>
+        {% if item.fit_code == preselected_fit_code %}{% elif not preselected_fit_code and forloop.first %}{% else %}hidden{% endif %}>
         <header class="tc-size-comparison__head">
           <div>
             <span>{% trans "Розмірна сітка" %}</span>

@@ -1101,7 +1101,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     });
     tabs.forEach((tab) => { tab.tabIndex = tab.classList.contains('is-active') ? 0 : -1; });
-    activate(comparison.dataset.selectedGuideFit || tabs[0].dataset.sizeGuideFit);
+    activate(
+      comparison.dataset.selectedGuideFit
+      || comparison.dataset.sizeGuideInitialFit
+      || tabs[0].dataset.sizeGuideFit
+    );
   }
 
   function updateSizeGuideAvailability(root, rules) {
