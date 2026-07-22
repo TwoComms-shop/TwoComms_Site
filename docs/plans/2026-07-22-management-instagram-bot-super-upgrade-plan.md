@@ -370,7 +370,7 @@ These findings were discovered while tracing the full queue/worker/provider path
 - [x] **P0.A2 Polling cursor/batch correctness.** Added durable `IgPollCursor` (migration `0083`), chronological batch processing, bounded paging, per-conversation cursor gating, webhook-mid dedup through the existing unique constraint, and attachment propagation. Production migration is applied on SHA `9b7610c3`; daemon status remains `running` after deploy.
 - [x] **P0.A3 Model allowlist and authority.** Settings accept arbitrary model strings while the UI omits `gemini-3.6-flash`; enforce a provider allowlist, make the selected model effective, and expose configured versus actually used model.
 - [x] **P0.A4 Fail-closed webhook verification.** Covered by P0.7: HMAC success/failure, missing-secret rejection, explicit development override, endpoint status, and configuration health tests are in `tests_ig_webhook_security.py`.
-- [ ] **P0.A5 Durable Telegram notification delivery.** Manager/AI/delivery alerts have no persisted idempotency record or Telegram success check. Add an outbox keyed by client/event epoch and make delivery/retry state observable.
+- [x] **P0.A5 Durable Telegram notification delivery.** Covered by P0.4: `IgBotNotification` persists a unique dedupe key, attempt/error/status, payload hash, and confirmed Telegram message ID; repeated state transitions retry safely without duplicate sends.
 - [ ] **P1.A6 Gemini probe generation budget.** Tiny probes can return `MAX_TOKENS` with empty content because thinking consumes the output budget. Use model-aware thinking/output settings and classify finish reasons correctly in health checks.
 
 ### P1 — CRM truth and conversion behavior
