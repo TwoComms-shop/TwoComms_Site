@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 
+from django.core.cache import cache
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 
@@ -22,6 +23,8 @@ from management.models import InstagramBotSettings
 from management.services import instagram_bot as bot
 
 logger = logging.getLogger("ig_bot")
+_CONFIG_WARNING_LOCK = threading.Lock()
+_CONFIG_WARNING_EMITTED = False
 
 
 def _verify_token() -> str:
@@ -46,6 +49,24 @@ def _process_async():
             pass
 
 
+def _warn_signature_configuration_once():
+    """Record one bounded warning when production cannot verify signatures."""
+    global _CONFIG_WARNING_EMITTED
+    if bot.webhook_signature_status()["healthy"]:
+        return
+    with _CONFIG_WARNING_LOCK:
+        if _CONFIG_WARNING_EMITTED:
+            return
+        try:
+            if not cache.add("ig_bot_webhook_signature_warning", 1, 3600):
+                _CONFIG_WARNING_EMITTED = True
+                return
+        except Exception:
+            pass
+        _CONFIG_WARNING_EMITTED = True
+    bot.log("warning", "no_app_secret", "IG_APP_SECRET не заданий — підпис webhook відхиляється")
+
+
 @csrf_exempt
 def ig_webhook(request):
     if request.method == "GET":
@@ -61,6 +82,7 @@ def ig_webhook(request):
         raw = request.body  # bytes — потрібні для перевірки підпису
         sig = request.headers.get("X-Hub-Signature-256", "")
         if not bot.verify_signature(raw, sig):
+            _warn_signature_configuration_once()
             logger.warning("ig_bot: bad signature")
             bot.log("warning", "bad_signature", "Невірний підпис webhook — відхилено")
             return HttpResponse("forbidden", status=403)
@@ -77,8 +99,6 @@ def ig_webhook(request):
                 bot.record_raw_event(payload)
             except Exception:
                 logger.exception("ig_bot: record_raw_event error")
-            if not bot.app_secret():
-                bot.log("warning", "no_app_secret", "IG_APP_SECRET не заданий — підпис не перевіряється")
             enq = bot.handle_webhook_payload(settings_obj, payload)
             if enq:
                 # миттєва обробка у фоні, не блокуючи відповідь 200

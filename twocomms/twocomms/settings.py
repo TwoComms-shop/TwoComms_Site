@@ -398,6 +398,9 @@ MONOBANK_ACQUIRING_TOKEN = (
 MANAGEMENT_BASE_URL = os.environ.get(
     'MANAGEMENT_BASE_URL', 'https://management.twocomms.shop'
 ).rstrip('/')
+# Accepting unsigned Instagram webhooks is a local-development escape hatch
+# only. Production must provide IG_APP_SECRET instead of relying on this flag.
+IG_BOT_ALLOW_UNSIGNED_WEBHOOKS = _env_bool('IG_BOT_ALLOW_UNSIGNED_WEBHOOKS', default=False)
 # Public base domain that hosts the shared Monobank webhook endpoint.
 MONOBANK_PUBLIC_BASE_URL = os.environ.get(
     'MONOBANK_PUBLIC_BASE_URL', 'https://twocomms.shop'

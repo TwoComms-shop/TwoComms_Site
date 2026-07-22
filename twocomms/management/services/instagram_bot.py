@@ -461,15 +461,42 @@ def app_secret() -> str:
     return os.environ.get("IG_APP_SECRET", "").strip()
 
 
+def allow_unsigned_webhooks() -> bool:
+    """Return the explicit development-only bypass for signature checks."""
+    raw = os.environ.get("IG_BOT_ALLOW_UNSIGNED_WEBHOOKS")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from django.conf import settings
+
+        return bool(getattr(settings, "IG_BOT_ALLOW_UNSIGNED_WEBHOOKS", False))
+    except Exception:
+        return False
+
+
+def webhook_signature_status() -> dict[str, object]:
+    configured = bool(app_secret())
+    override = allow_unsigned_webhooks()
+    return {
+        "configured": configured,
+        "unsigned_override": override,
+        "healthy": configured or override,
+        "state": "configured" if configured else ("development_override" if override else "missing_secret"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Webhook signature (X-Hub-Signature-256)
 # ---------------------------------------------------------------------------
 def verify_signature(raw_body: bytes, header: str) -> bool:
-    """HMAC-SHA256 від тіла з APP_SECRET. Якщо секрет не заданий — пропускаємо
-    (із warning), щоб не блокувати до налаштування ENV."""
+    """Verify Meta's X-Hub-Signature-256 header.
+
+    Missing credentials fail closed. The unsigned bypass is intentionally
+    explicit and exists only for local development/test environments.
+    """
     secret = app_secret()
     if not secret:
-        return True  # не налаштовано — не блокуємо (див. лог у webhook)
+        return allow_unsigned_webhooks()
     if not header or not header.startswith("sha256="):
         return False
     expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
@@ -2359,6 +2386,7 @@ def status_snapshot() -> dict:
         "last_gemini_at": s.last_gemini_at.isoformat() if s.last_gemini_at else "",
         "receive_via_poll": s.receive_via_poll,
         "app_secret_set": bool(app_secret()),
+        "webhook_signature": webhook_signature_status(),
         "trigger_text": s.trigger_text,
         "reply_text": s.reply_text,
         "poll_interval_seconds": s.poll_interval_seconds,
