@@ -35,6 +35,7 @@ from django.utils import timezone
 
 from management.models import (
     IgClient,
+    IgBotNotification,
     InstagramBotLog,
     InstagramBotMessage,
     InstagramBotSettings,
@@ -397,7 +398,10 @@ def _handle_echo(recipient_igsid: str, text: str) -> None:
     if takeover_started:
         notify_manager(
             f"👤 IG: менеджер підключився до {client.username or client.igsid} — "
-            f"бот на паузі для цього клієнта."
+            f"бот на паузі для цього клієнта.",
+            dedupe_key=f"takeover:{client.pk}:{client.paused_at.isoformat() if client.paused_at else 'unknown'}",
+            event_type="takeover",
+            client=client,
         )
         log("warning", "takeover", f"{recipient_igsid}: менеджер підключився")
     else:
@@ -545,19 +549,97 @@ def _log_token_error(s: InstagramBotSettings, code, body: str) -> None:
         pass
 
 
-def notify_manager(text: str) -> None:
-    """Сповіщення менеджеру в Telegram (best-effort)."""
+def notify_manager(
+    text: str,
+    *,
+    dedupe_key: str | None = None,
+    event_type: str = "generic",
+    client: IgClient | None = None,
+) -> bool:
+    """Deliver one durable, idempotent Telegram notification.
+
+    ``dedupe_key`` identifies a state epoch (for example a manager takeover).
+    Legacy callers omit it and receive a stable content key, which still
+    prevents provider retries from producing an identical alert storm.
+    """
     token = os.environ.get("MANAGEMENT_TG_BOT_TOKEN", "").strip()
     chat = os.environ.get("MANAGEMENT_TG_ADMIN_CHAT_ID", "").strip()
+    text = (text or "").strip()[:3500]
+    if not text:
+        return False
+    if not dedupe_key:
+        dedupe_key = "generic:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+    now = timezone.now()
+    try:
+        with transaction.atomic():
+            row, created = IgBotNotification.objects.select_for_update().get_or_create(
+                dedupe_key=dedupe_key,
+                defaults={
+                    "client": client,
+                    "event_type": (event_type or "generic")[:64],
+                    "payload": {"text": text, "chat_id": chat},
+                },
+            )
+            if not created:
+                if row.status == IgBotNotification.Status.SENT:
+                    return True
+                if (
+                    row.status == IgBotNotification.Status.SENDING
+                    and row.last_attempt_at
+                    and (now - row.last_attempt_at).total_seconds() < 300
+                ):
+                    return False
+                row.client = client or row.client
+                row.event_type = (event_type or row.event_type or "generic")[:64]
+                row.payload = {"text": text, "chat_id": chat}
+            row.status = IgBotNotification.Status.SENDING
+            row.attempts += 1
+            row.last_attempt_at = now
+            row.last_error = ""
+            row.save(update_fields=[
+                "client", "event_type", "payload", "status", "attempts",
+                "last_attempt_at", "last_error", "updated_at",
+            ])
+    except Exception:
+        # A notification must never break customer message processing while a
+        # migration is being rolled out or the outbox database is unavailable.
+        return False
     if not token or not chat:
-        return
+        try:
+            with transaction.atomic():
+                row = IgBotNotification.objects.select_for_update().get(dedupe_key=dedupe_key)
+                row.status = IgBotNotification.Status.FAILED
+                row.last_error = "telegram_not_configured"
+                row.save(update_fields=["status", "last_error", "updated_at"])
+        except Exception:
+            pass
+        return False
     try:
         body = json.dumps(
             {"chat_id": chat, "text": text[:3500], "disable_web_page_preview": True}
         ).encode("utf-8")
-        _http(f"https://api.telegram.org/bot{token}/sendMessage", data=body, timeout=HTTP_TIMEOUT)
+        code, response_body = _http(
+            f"https://api.telegram.org/bot{token}/sendMessage", data=body, timeout=HTTP_TIMEOUT
+        )
+        response = json.loads(response_body or "{}")
+        ok = code == 200 and bool(response.get("ok"))
+        message_id = str((response.get("result") or {}).get("message_id") or "")
+        error = "" if ok else (str(response.get("description") or f"HTTP {code}")[:500])
+    except Exception as exc:
+        ok = False
+        message_id = ""
+        error = repr(exc)[:500]
+    try:
+        with transaction.atomic():
+            row = IgBotNotification.objects.select_for_update().get(dedupe_key=dedupe_key)
+            row.status = IgBotNotification.Status.SENT if ok else IgBotNotification.Status.FAILED
+            row.telegram_message_id = message_id
+            row.last_error = error
+            row.sent_at = now if ok else None
+            row.save(update_fields=["status", "telegram_message_id", "last_error", "sent_at", "updated_at"])
     except Exception:
         pass
+    return ok
 
 
 def _rate_exceeded(s: InstagramBotSettings, sender_id: str, limit: int = 25, window: int = 3600) -> bool:
@@ -2212,6 +2294,16 @@ def status_snapshot() -> dict:
         state = "worker_error"
     else:
         state = "enabled_but_worker_missing"
+    try:
+        notification_pending = IgBotNotification.objects.filter(
+            status__in=[IgBotNotification.Status.PENDING, IgBotNotification.Status.SENDING]
+        ).count()
+        notification_failed = IgBotNotification.objects.filter(
+            status=IgBotNotification.Status.FAILED
+        ).count()
+    except Exception:
+        notification_pending = None
+        notification_failed = None
     return {
         "is_enabled": s.is_enabled,
         # Backwards-compatible alias: only the daemon heartbeat proves a
@@ -2229,6 +2321,8 @@ def status_snapshot() -> dict:
         "last_reply_at": s.last_reply_at.isoformat() if s.last_reply_at else "",
         "replies_count": s.replies_count,
         "pending": pending_count(),
+        "notification_pending": notification_pending,
+        "notification_failed": notification_failed,
         "unique_senders": unique_senders_count(),
         "allow_all": not bool(allowed_sender_ids(s)),
         "last_error": s.last_error,

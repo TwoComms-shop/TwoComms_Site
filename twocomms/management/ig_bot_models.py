@@ -27,6 +27,7 @@ __all__ = [
     "IgConversationSignal",
     "IgMetaEventLog",
     "BotDataDeletionRequest",
+    "IgBotNotification",
 ]
 
 
@@ -106,6 +107,45 @@ class BotDataDeletionRequest(models.Model):
             "detail",
             "completed_at",
         ])
+
+
+class IgBotNotification(models.Model):
+    """Durable, idempotent Telegram notification attempt for the IG bot."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SENDING = "sending", "Sending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+
+    client = models.ForeignKey(
+        "management.IgClient",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="bot_notifications",
+    )
+    event_type = models.CharField(max_length=64, default="generic", db_index=True)
+    dedupe_key = models.CharField(max_length=255, unique=True)
+    payload = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    telegram_message_id = models.CharField(max_length=64, blank=True, default="")
+    last_error = models.CharField(max_length=500, blank=True, default="")
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["status", "-created_at"], name="ig_notif_status_dt"),
+            models.Index(fields=["client", "event_type", "-created_at"], name="ig_notif_client_event"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial representation
+        return f"IgBotNotification#{self.pk} {self.event_type}/{self.status}"
 
 
 class IgClient(models.Model):
