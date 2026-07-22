@@ -132,7 +132,7 @@ class Command(BaseCommand):
             fable5_size_grid_assignments__option_key=OPTION_KEY,
         )
         if uncategorized.exists():
-            global_profile = (
+            global_profiles = (
                 SizeGridProfile.objects
                 .filter(
                     option_key=OPTION_KEY,
@@ -142,7 +142,16 @@ class Command(BaseCommand):
                 )
                 .select_related("size_grid")
                 .order_by("size_grid__order", "size_grid_id")
+            )
+            global_profile = (
+                global_profiles
+                .filter(
+                    Q(size_grid__catalog__name__icontains="футбол")
+                    | Q(size_grid__catalog__slug__icontains="shirt")
+                    | Q(size_grid__catalog__slug__icontains="tshirt")
+                )
                 .first()
+                or global_profiles.first()
             )
             if global_profile is None:
                 self.stderr.write(self.style.ERROR("No canonical oversize grid exists for uncategorized T-shirts."))

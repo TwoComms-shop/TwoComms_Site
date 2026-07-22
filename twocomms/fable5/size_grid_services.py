@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.templatetags.static import static
 from django.utils.html import strip_tags
 
@@ -219,7 +220,14 @@ def resolve_option_size_grid(product, option_key: str | dict, variant=None):
         )
         if catalog_id:
             profiles = profiles.filter(size_grid__catalog_id=catalog_id)
-        profile = profiles.first()
+        profile = (
+            profiles.filter(
+                Q(size_grid__catalog__name__icontains="футбол")
+                | Q(size_grid__catalog__slug__icontains="shirt")
+                | Q(size_grid__catalog__slug__icontains="tshirt")
+            ).first()
+            or profiles.first()
+        )
         return profile.size_grid if profile is not None else None
     profile = getattr(assignment.size_grid, "fable5_profile", None)
     if profile is not None and not profile.is_active:
