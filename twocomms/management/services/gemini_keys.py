@@ -42,11 +42,11 @@ DEFAULT_ROLE_KEY_POOLS = {
 # Платні моделі (pro-preview тощо) свідомо НЕ включаємо: на free-tier ключах вони
 # завжди дають 429-платно → марна трата запиту й часу (вимога продукту: біллінгові
 # моделі одразу пропускати). Якщо пріоритетна модель недоступна — плавно
-# спускаємось до меншої безкоштовної (3.5-flash → 3.1-flash-lite → 2.5-flash →
+# спускаємось до меншої безкоштовної (3.6-flash → 3.5-flash → 3.1-flash-lite →
 # 2.5-flash-lite). Ротація КЛЮЧІВ (API3→API4→…) — через model-major перебір в
 # iter_attempts: пріоритетна модель пробується на ВСІХ ключах перш ніж спуститись.
 DEFAULT_ROLE_MODEL_CHAINS = {
-    "chat": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    "chat": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
     "management": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
     # Grounding (Google Search) безкоштовний ЛИШЕ на 2.5-flash / 2.5-flash-lite.
     "checker": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
@@ -72,12 +72,23 @@ def max_rounds(role: str) -> int:
 # проекту → кулдаун усього КЛЮЧА. 429 на інших (pro-preview тощо) = модель платна
 # → це model-level skip, ключ НЕ чіпаємо.
 FREE_QUOTA_MODELS = {
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
     "gemini-3.1-flash-lite-preview",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 }
+
+CHAT_MODEL_ALLOWLIST = frozenset({
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+})
+DEFAULT_CHAT_MODEL = "gemini-3.6-flash"
 
 # Безкоштовний Google Search grounding доступний лише на цих моделях.
 FREE_GROUNDING_MODELS = {"gemini-2.5-flash", "gemini-2.5-flash-lite"}
@@ -120,6 +131,24 @@ def role_key_pools() -> dict:
 
 def role_model_chains() -> dict:
     return getattr(settings, "GEMINI_ROLE_MODEL_CHAINS", None) or DEFAULT_ROLE_MODEL_CHAINS
+
+
+def is_allowed_chat_model(model: str) -> bool:
+    return (model or "").strip() in CHAT_MODEL_ALLOWLIST
+
+
+def normalize_chat_model(model: str | None) -> str:
+    candidate = (model or "").strip()
+    return candidate if is_allowed_chat_model(candidate) else DEFAULT_CHAT_MODEL
+
+
+def model_chain(role: str, primary_model: str | None = None) -> list[str]:
+    """Return a validated chain with an optional authoritative chat primary."""
+    base = list(role_model_chains().get(role, ["gemini-2.5-flash"]))
+    if role != "chat" or primary_model is None:
+        return base
+    primary = normalize_chat_model(primary_model)
+    return [primary] + [model for model in base if model != primary]
 
 
 # ---------------------------------------------------------------------------
@@ -293,9 +322,9 @@ def iter_attempts(role: str):
     """Генерує (key_name, key_value, model) у порядку пріоритету.
 
     MODEL-MAJOR: зовнішній цикл — МОДЕЛІ цепочки, внутрішній — КЛЮЧІ. Тобто
-    пріоритетну модель (gemini-3.5-flash) пробуємо на ВСІХ ключах (own→borrow,
+    пріоритетну модель (gemini-3.6-flash) пробуємо на ВСІХ ключах (own→borrow,
     sticky-впорядкованих) перш ніж спуститися на нижчу модель. Вимога продукту:
-    «усе, що нижче 3.5 — лише крайній випадок», тож 3.5 має вичерпатись на всьому
+    «усе, що нижче 3.6 — лише крайній випадок», тож 3.6 має вичерпатись на всьому
     пулі ключів до того, як ми торкнемось 3.1-pro/3.1-flash-lite.
 
     Усередині кожного тиру (own / borrow) — sticky-сортування (останній успішний
@@ -308,7 +337,7 @@ def iter_attempts(role: str):
     Per-key cooldown (429) перевіряється ліниво — вичерпаний ключ пропускаємо.
     """
     pool = role_key_pools().get(role, {"own": [], "borrow": []})
-    models = role_model_chains().get(role, ["gemini-2.5-flash"])
+    models = model_chain(role)
     ordered_keys = _sticky_order(list(pool.get("own", []))) + _sticky_order(list(pool.get("borrow", [])))
     present = [(kn, _key_value(kn)) for kn in ordered_keys]
     present = [(kn, kv) for kn, kv in present if kv]

@@ -22,8 +22,11 @@ class RoleSeparationTests(TestCase):
     @patch("management.services.call_ai_analysis.gemini_generate_text")
     def test_chat_uses_chat_role(self, mock_gen):
         mock_gen.return_value = {"parsed": "ок", "model": "x", "meta": {}}
-        bot.gemini_generate(InstagramBotSettings.load(), [{"role": "user", "text": "привіт"}])
+        settings = InstagramBotSettings.load()
+        settings.gemini_model = "gemini-3.6-flash"
+        bot.gemini_generate(settings, [{"role": "user", "text": "привіт"}])
         self.assertEqual(mock_gen.call_args.kwargs.get("role"), "chat")
+        self.assertEqual(mock_gen.call_args.kwargs.get("model_override"), "gemini-3.6-flash")
 
 
 class MatchRateGuardTests(TestCase):

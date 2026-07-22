@@ -1062,7 +1062,8 @@ def gemini_generate(
 
     payload = {
         "contents": contents,
-        # 3.5-flash — thinking-модель: без обмеження вона зʼїдає весь бюджет на
+        # Flash-моделі можуть витрачати бюджет на thinking: без обмеження вони
+        # зʼїдають весь бюджет на
         # внутрішнє мислення й повертає finishReason=MAX_TOKENS з порожнім текстом
         # (тоді чат завжди падав на молодші моделі). thinkingBudget=0 вимикає
         # мислення (чату потрібна пряма швидка відповідь), а 1536 токенів — запас
@@ -1086,7 +1087,8 @@ def gemini_generate(
         payload["system_instruction"] = {"parts": [{"text": sys_text}]}
 
     # Діалог із клієнтом — найвищий пріоритет (роль 'chat'): пул ключів
-    # GEMINI_API/2 → позичання GEMINI_API5/6, цепочка gen-3 (3.5-flash → 3.1).
+    # GEMINI_API/2 → позичання GEMINI_API5/6; selected chat model is primary,
+    # then the validated fallback chain.
     # Якщо адмін обрав CUSTOM-ключ — він пробується першим (manual_key).
     manual_key = None
     if s.gemini_source == InstagramBotSettings.CredSource.CUSTOM:
@@ -1094,17 +1096,25 @@ def gemini_generate(
     from management.services.call_ai_analysis import (
         gemini_generate_text, CallAIAnalysisError,
     )
+    from management.services.gemini_keys import normalize_chat_model
     import time as _time
 
     def _cb(msg):
         # Реальний час перебору ключів/моделей у консолі бота.
         log("info", "gemini_try", msg)
 
+    effective_model = normalize_chat_model(s.gemini_model)
     log("info", "gemini_start",
-        f"генерую відповідь (пул chat; кастом-ключ: {'так' if manual_key else 'ні'})")
+        f"генерую відповідь (chat/{effective_model}; кастом-ключ: {'так' if manual_key else 'ні'})")
     _t0 = _time.monotonic()
     try:
-        out = gemini_generate_text(payload, role="chat", manual_key=manual_key, log_cb=_cb)
+        out = gemini_generate_text(
+            payload,
+            role="chat",
+            manual_key=manual_key,
+            log_cb=_cb,
+            model_override=effective_model,
+        )
     except CallAIAnalysisError as exc:
         log("error", "gemini", f"({_time.monotonic() - _t0:.1f}с) {str(exc)[:300]}")
         return None
@@ -1115,6 +1125,13 @@ def gemini_generate(
     if not text:
         log("warning", "gemini_empty", f"порожня відповідь ({_time.monotonic() - _t0:.1f}с)")
         return None
+    try:
+        s.last_gemini_model = str(out.get("model") or effective_model)[:80]
+        s.last_gemini_key = str((out.get("meta") or {}).get("key") or "")[:80]
+        s.last_gemini_at = timezone.now()
+        s.save(update_fields=["last_gemini_model", "last_gemini_key", "last_gemini_at", "updated_at"])
+    except Exception:
+        pass
     log("info", "gemini_ok",
         f"{out.get('model')} / {(out.get('meta') or {}).get('key')} за {_time.monotonic() - _t0:.1f}с")
     return text
@@ -2304,6 +2321,12 @@ def status_snapshot() -> dict:
     except Exception:
         notification_pending = None
         notification_failed = None
+    try:
+        from management.services.gemini_keys import normalize_chat_model
+
+        effective_model = normalize_chat_model(s.gemini_model)
+    except Exception:
+        effective_model = s.gemini_model
     return {
         "is_enabled": s.is_enabled,
         # Backwards-compatible alias: only the daemon heartbeat proves a
@@ -2330,6 +2353,10 @@ def status_snapshot() -> dict:
         "gemini_source": s.gemini_source,
         "ai_enabled": s.ai_enabled,
         "gemini_model": s.gemini_model,
+        "gemini_effective_model": effective_model,
+        "last_gemini_model": s.last_gemini_model,
+        "last_gemini_key": s.last_gemini_key,
+        "last_gemini_at": s.last_gemini_at.isoformat() if s.last_gemini_at else "",
         "receive_via_poll": s.receive_via_poll,
         "app_secret_set": bool(app_secret()),
         "trigger_text": s.trigger_text,

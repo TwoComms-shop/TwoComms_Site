@@ -130,7 +130,7 @@ class IterAttemptsTests(TestCase):
         with patch.dict("os.environ", ENV6, clear=False):
             first = next(gk.iter_attempts("chat"))
         self.assertEqual(first[0], "GEMINI_API")
-        self.assertEqual(first[2], "gemini-3.5-flash")
+        self.assertEqual(first[2], "gemini-3.6-flash")
 
     def test_chat_falls_to_borrow_when_own_in_cooldown(self):
         from management.services import gemini_keys as gk
@@ -160,33 +160,33 @@ class IterAttemptsTests(TestCase):
         self.assertIn("gemini-2.5-flash", [m for _, _, m in combos])
 
     def test_primary_model_tried_on_all_keys_before_lower(self):
-        """Model-major: gemini-3.5-flash перебирається на ВСІХ ключах раніше за
-        будь-яку нижчу модель. «Нижче 3.5 — лише крайній випадок»."""
+        """Model-major: gemini-3.6-flash перебирається на ВСІХ ключах раніше за
+        будь-яку нижчу модель. «Нижче 3.6 — лише крайній випадок»."""
         from management.services import gemini_keys as gk
         with patch.dict("os.environ", ENV6, clear=False):
             combos = list(gk.iter_attempts("chat"))
         models_seq = [m for _, _, m in combos]
-        last_primary = max(i for i, m in enumerate(models_seq) if m == "gemini-3.5-flash")
-        first_lower = min(i for i, m in enumerate(models_seq) if m != "gemini-3.5-flash")
+        last_primary = max(i for i, m in enumerate(models_seq) if m == "gemini-3.6-flash")
+        first_lower = min(i for i, m in enumerate(models_seq) if m != "gemini-3.6-flash")
         self.assertLess(last_primary, first_lower)
-        keys_with_primary = {k for k, _, m in combos if m == "gemini-3.5-flash"}
+        keys_with_primary = {k for k, _, m in combos if m == "gemini-3.6-flash"}
         self.assertEqual(
             keys_with_primary,
             {"GEMINI_API", "GEMINI_API2", "GEMINI_API5", "GEMINI_API6"},
         )
 
     def test_primary_kept_for_other_keys_after_midpass_overload(self):
-        """Frozen snapshot: 503 на 3.5 під час проходу не виключає 3.5 з решти
+        """Frozen snapshot: 503 на 3.6 під час проходу не виключає 3.6 з решти
         ключів — спершу вичерпуємо пріоритетну модель на всіх ключах."""
         from management.services import gemini_keys as gk
         gk.clear_model_overload()
         with patch.dict("os.environ", ENV6, clear=False):
             gen = gk.iter_attempts("chat")
             first = next(gen)
-            gk.mark_model_overloaded("gemini-3.5-flash", seconds=300)
+            gk.mark_model_overloaded("gemini-3.6-flash", seconds=300)
             rest = list(gen)
         combos = [first] + rest
-        keys_with_primary = {k for k, _, m in combos if m == "gemini-3.5-flash"}
+        keys_with_primary = {k for k, _, m in combos if m == "gemini-3.6-flash"}
         self.assertEqual(
             keys_with_primary,
             {"GEMINI_API", "GEMINI_API2", "GEMINI_API5", "GEMINI_API6"},
@@ -244,10 +244,21 @@ class ModelChainDegradationTests(SimpleTestCase):
     def test_chat_chain_is_free_and_degrading(self):
         from management.services import gemini_keys as gk
         chain = gk.role_model_chains()["chat"]
-        self.assertEqual(chain[0], "gemini-3.5-flash")
+        self.assertEqual(chain[0], "gemini-3.6-flash")
         self.assertIn("gemini-2.5-flash-lite", chain)
         for m in chain:
             self.assertIn(m, gk.FREE_QUOTA_MODELS)
+
+    def test_chat_model_allowlist_normalizes_legacy_or_arbitrary_values(self):
+        from management.services import gemini_keys as gk
+
+        self.assertTrue(gk.is_allowed_chat_model("gemini-3.6-flash"))
+        self.assertFalse(gk.is_allowed_chat_model("https://attacker.invalid/model"))
+        self.assertEqual(gk.normalize_chat_model("gemini-3-flash-preview"), "gemini-3.6-flash")
+        self.assertEqual(
+            gk.model_chain("chat", "gemini-2.5-flash")[0],
+            "gemini-2.5-flash",
+        )
 
     def test_checker_chain_uses_only_free_grounding_models(self):
         from management.services import gemini_keys as gk
@@ -294,9 +305,9 @@ class ModelUnavailableSkipTests(TestCase):
         with patch.dict("os.environ", ENV6, clear=False):
             gen = gk.iter_attempts("chat")
             first = next(gen)
-            self.assertEqual(first[2], "gemini-3.5-flash")
+            self.assertEqual(first[2], "gemini-3.6-flash")
             # імітуємо: на 1-му ключі модель виявилась платною → позначили
-            gk.mark_model_unavailable("gemini-3.5-flash", seconds=600)
+            gk.mark_model_unavailable("gemini-3.6-flash", seconds=600)
             rest = list(gen)
         # після позначення 3.5-flash більше не пробується на інших ключах
-        self.assertEqual([(k, m) for k, _, m in rest if m == "gemini-3.5-flash"], [])
+        self.assertEqual([(k, m) for k, _, m in rest if m == "gemini-3.6-flash"], [])

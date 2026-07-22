@@ -383,6 +383,10 @@ def bot_settings_save_api(request):
             s.meta_feedback_test_event_code = (request.POST.get("meta_feedback_test_event_code") or "")[:120]
     model = (request.POST.get("gemini_model") or "").strip()
     if model:
+        from management.services.gemini_keys import is_allowed_chat_model
+
+        if not is_allowed_chat_model(model):
+            return JsonResponse({"success": False, "error": "Недозволена модель Gemini."}, status=400)
         s.gemini_model = model[:80]
     if "system_prompt" in request.POST:
         if not reviewer_mode:

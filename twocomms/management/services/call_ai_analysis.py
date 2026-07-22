@@ -352,7 +352,7 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
 def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
                    grounded: bool = False, parse: bool = True,
                    timeout: tuple | None = None, deadline_seconds: float | None = None,
-                   log_cb=None) -> dict:
+                   log_cb=None, model_override: str | None = None) -> dict:
     """Прогоняє payload через пул ключів ролі та цепочку моделей.
 
     Кругова стратегія: у кожному КРУЗІ — ручний ключ (якщо є) першим, далі весь
@@ -368,7 +368,7 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
     log: list[str] = []
     n_attempts = gemini_keys.attempts_per_model(role)
     rounds = gemini_keys.max_rounds(role)
-    models = gemini_keys.role_model_chains().get(role, ["gemini-2.5-flash"])
+    models = gemini_keys.model_chain(role, model_override)
     call_timeout = timeout or (CHAT_TIMEOUT if role == "chat" else GEMINI_TIMEOUT)
     if deadline_seconds is None:
         deadline_seconds = CHAT_DEADLINE_SECONDS if role == "chat" else None
@@ -484,7 +484,8 @@ def gemini_generate_grounded(
 
 
 def gemini_generate_text(payload: dict, *, role: str = "chat",
-                         manual_key: str | None = None, log_cb=None) -> dict:
+                         manual_key: str | None = None, log_cb=None,
+                         model_override: str | None = None) -> dict:
     """Текстовий (не-JSON) запит для діалогового бота. Пул ключів ролі + цепочка
     моделей. У result['parsed'] — сирий текст відповіді моделі.
     log_cb (опц.) отримує короткі рядки про кожну спробу (для консолі бота)."""
@@ -499,6 +500,7 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
             MANAGEMENT_TEXT_DEADLINE_SECONDS if bounded_management else None
         ),
         log_cb=log_cb,
+        model_override=model_override,
     )
 
 

@@ -3614,7 +3614,7 @@ class InstagramBotSettings(models.Model):
     # AI-режим (Gemini). Якщо увімкнено — бот веде вільну розмову; інакше
     # працює простий тригер trigger_text -> reply_text.
     ai_enabled = models.BooleanField(default=True)
-    gemini_model = models.CharField(max_length=80, default="gemini-3.5-flash")
+    gemini_model = models.CharField(max_length=80, default="gemini-3.6-flash")
     system_prompt = models.TextField(blank=True, default=DEFAULT_BOT_SYSTEM_PROMPT)
     # Додаткова база знань (правила доставки, оплати, повернень, графік тощо).
     # Підставляється в контекст Gemini поряд з каталогом. Редагується в UI.
@@ -3645,6 +3645,9 @@ class InstagramBotSettings(models.Model):
     last_reply_at = models.DateTimeField(null=True, blank=True)
     replies_count = models.PositiveIntegerField(default=0)
     last_error = models.TextField(blank=True, default="")
+    last_gemini_model = models.CharField(max_length=80, blank=True, default="")
+    last_gemini_key = models.CharField(max_length=80, blank=True, default="")
+    last_gemini_at = models.DateTimeField(null=True, blank=True)
 
     updated_at = models.DateTimeField(auto_now=True)
 

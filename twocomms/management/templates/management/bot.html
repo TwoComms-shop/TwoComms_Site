@@ -226,6 +226,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           <div class="bot-metric"><div class="v" id="bot-pending">{{ status.pending }}</div><div class="k">У черзі</div></div>
           <div class="bot-metric"><div class="v" id="bot-lastreply">—</div><div class="k">Остання</div></div>
           <div class="bot-metric"><div class="v" id="bot-heartbeat">—</div><div class="k">Heartbeat</div></div>
+          <div class="bot-metric"><div class="v" id="bot-model">—</div><div class="k">Модель</div></div>
         </div>
         <div class="bot-hint" id="bot-error" style="margin-top:12px;color:#f87171;"></div>
       </div>
@@ -284,11 +285,11 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           <div class="bot-field">
             <label>Модель Gemini</label>
             <select name="gemini_model" id="gemini_model">
+              <option value="gemini-3.6-flash" {% if settings.gemini_model == 'gemini-3.6-flash' %}selected{% endif %}>gemini-3.6-flash (рекомендовано)</option>
               <option value="gemini-3.5-flash" {% if settings.gemini_model == 'gemini-3.5-flash' %}selected{% endif %}>gemini-3.5-flash (рекомендовано)</option>
-              <option value="gemini-3-flash-preview" {% if settings.gemini_model == 'gemini-3-flash-preview' %}selected{% endif %}>gemini-3-flash-preview</option>
-              <option value="gemini-3-pro-preview" {% if settings.gemini_model == 'gemini-3-pro-preview' %}selected{% endif %}>gemini-3-pro-preview (найрозумніша)</option>
+              <option value="gemini-3.1-flash-lite" {% if settings.gemini_model == 'gemini-3.1-flash-lite' %}selected{% endif %}>gemini-3.1-flash-lite</option>
               <option value="gemini-2.5-flash" {% if settings.gemini_model == 'gemini-2.5-flash' %}selected{% endif %}>gemini-2.5-flash</option>
-              <option value="gemini-2.5-pro" {% if settings.gemini_model == 'gemini-2.5-pro' %}selected{% endif %}>gemini-2.5-pro</option>
+              <option value="gemini-2.5-flash-lite" {% if settings.gemini_model == 'gemini-2.5-flash-lite' %}selected{% endif %}>gemini-2.5-flash-lite</option>
             </select>
           </div>
         </div>
@@ -489,6 +490,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     var p2=document.getElementById('bot-pending'); if(p2) p2.textContent=st.pending;
     document.getElementById('bot-lastreply').textContent=fmt(st.last_reply_at);
     document.getElementById('bot-heartbeat').textContent=fmt(st.heartbeat_at);
+    document.getElementById('bot-model').textContent=st.last_gemini_model||st.gemini_effective_model||'—';
     document.getElementById('bot-error').textContent=st.last_error||'';
     document.getElementById('bot-start').disabled=st.is_enabled;
     document.getElementById('bot-stop').disabled=!st.is_enabled;
