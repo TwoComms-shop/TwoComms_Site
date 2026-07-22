@@ -33,9 +33,11 @@ PT = ZoneInfo("America/Los_Angeles")
 
 # Пули ключів за ролями: own (основні) + borrow (позичання у менш пріоритетної ролі).
 DEFAULT_ROLE_KEY_POOLS = {
-    "chat": {"own": ["GEMINI_API", "GEMINI_API2"], "borrow": ["GEMINI_API5", "GEMINI_API6"]},
-    "management": {"own": ["GEMINI_API3", "GEMINI_API4"], "borrow": ["GEMINI_API5", "GEMINI_API6"]},
-    "checker": {"own": ["GEMINI_API5", "GEMINI_API6"], "borrow": []},
+    # Own keys remain first; every role may borrow the other configured keys
+    # after its own pool is exhausted, so a healthy key is never stranded.
+    "chat": {"own": ["GEMINI_API", "GEMINI_API2"], "borrow": ["GEMINI_API3", "GEMINI_API4", "GEMINI_API5", "GEMINI_API6"]},
+    "management": {"own": ["GEMINI_API3", "GEMINI_API4"], "borrow": ["GEMINI_API", "GEMINI_API2", "GEMINI_API5", "GEMINI_API6"]},
+    "checker": {"own": ["GEMINI_API5", "GEMINI_API6"], "borrow": ["GEMINI_API", "GEMINI_API2", "GEMINI_API3", "GEMINI_API4"]},
 }
 
 # Цепочки моделей за ролями — ЛИШЕ безкоштовні моделі, з деградацією до меншої.

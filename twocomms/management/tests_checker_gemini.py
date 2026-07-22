@@ -140,8 +140,8 @@ class GeminiTextPoolTests(TestCase):
         with patch.dict("os.environ", ENV6, clear=False), \
              patch.object(caa, "_gemini_call_once", side_effect=fake):
             caa.gemini_generate_text(payload, role="chat")
-        # перший ключ chat-пулу = GEMINI_API, перша модель = gemini-3.5-flash
-        self.assertEqual(seen[0], ("key-val-1", "gemini-3.5-flash"))
+        # перший ключ chat-пулу = GEMINI_API, перша модель = gemini-3.6-flash
+        self.assertEqual(seen[0], ("key-val-1", "gemini-3.6-flash"))
 
     def test_chat_manual_key_first(self):
         seen = []
@@ -156,9 +156,9 @@ class GeminiTextPoolTests(TestCase):
             caa.gemini_generate_text(payload, role="chat", manual_key="bot-custom")
         self.assertEqual(seen[0], "bot-custom")
 
-    def test_chat_borrows_reserve_on_35_when_own_exhausted(self):
+    def test_chat_borrows_reserve_on_36_when_own_exhausted(self):
         """Коли own-ключі чату (API, API2) у денному кулдауні — чат бере резерв
-        чекера (API5/API6) на тій самій моделі 3.5-flash. Це пріоритет спілкування."""
+        усіх доступних ключів (починаючи з API3) на тій самій моделі 3.6-flash. Це пріоритет спілкування."""
         from django.utils import timezone
         now = timezone.now()
         gk.mark_429("GEMINI_API", "day", 0, now=now)
@@ -174,8 +174,8 @@ class GeminiTextPoolTests(TestCase):
              patch.object(caa, "_gemini_call_once", side_effect=fake):
             out = caa.gemini_generate_text(payload, role="chat")
         self.assertEqual(out["parsed"], "ok-text")
-        # перший доступний — резервний ключ чекера, модель найновіша gen-3
-        self.assertEqual(seen[0], ("key-val-5", "gemini-3.5-flash"))
+        # перший доступний — позичений management-ключ, модель найновіша gen-3
+        self.assertEqual(seen[0], ("key-val-3", "gemini-3.6-flash"))
 
 
 class GeminiEmptyResponseTests(TestCase):
@@ -306,9 +306,9 @@ class ChatRoundsRetryTests(TestCase):
     def test_chat_cycles_three_rounds_before_error(self):
         """503 на всіх моделях → чат робить 3 круги (з backoff між ними), тільки потім помилка.
 
-        Model-major: кожен круг — повний свип пулу (усі моделі цепочки × 4 ключі),
+        Model-major: кожен круг — повний свип пулу (усі моделі цепочки × 6 ключів),
         бо пріоритетну модель пробуємо на ВСІХ ключах. Кількість викликів =
-        len(chain) × 4 ключі × max_rounds. Між кругами clear_model_overload() + backoff 2с, 4с."""
+        len(chain) × 6 ключів × max_rounds. Між кругами clear_model_overload() + backoff 2с, 4с."""
         calls = {"n": 0}
 
         def fake(model, payload, key, *, parse=True, timeout=None):
@@ -321,8 +321,8 @@ class ChatRoundsRetryTests(TestCase):
              patch("management.services.call_ai_analysis.time.sleep", side_effect=lambda s: sleeps.append(s)):
             with self.assertRaises(caa.CallAIAnalysisError):
                 caa.gemini_generate_text({"contents": []}, role="chat")
-        # усі моделі цепочки × 4 ключі (own API/API2 + borrow API5/API6) × 3 круги
-        n_keys = 4
+        # усі моделі цепочки × шість ключів (own API/API2 + усі borrow) × 3 круги
+        n_keys = 6
         expected = len(gk.role_model_chains()["chat"]) * n_keys * gk.max_rounds("chat")
         self.assertEqual(calls["n"], expected)
         self.assertEqual(len(sleeps), 2)

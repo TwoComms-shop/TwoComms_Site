@@ -141,7 +141,18 @@ class IterAttemptsTests(TestCase):
             keys = [a[0] for a in gk.iter_attempts("chat")]
         self.assertNotIn("GEMINI_API", keys)
         self.assertNotIn("GEMINI_API2", keys)
-        self.assertEqual(keys[0], "GEMINI_API5")
+        self.assertEqual(keys[0], "GEMINI_API3")
+
+    def test_cooldown_only_removes_affected_key_from_all_six_pool(self):
+        from management.services import gemini_keys as gk
+        now = timezone.now()
+        gk.mark_429("GEMINI_API3", "minute", 120, now=now)
+        with patch.dict("os.environ", ENV6, clear=False):
+            keys = [a[0] for a in gk.iter_attempts("chat")]
+        self.assertNotIn("GEMINI_API3", keys)
+        self.assertIn("GEMINI_API4", keys)
+        self.assertIn("GEMINI_API5", keys)
+        self.assertIn("GEMINI_API6", keys)
 
     def test_overloaded_model_skipped(self):
         from management.services import gemini_keys as gk
@@ -156,8 +167,36 @@ class IterAttemptsTests(TestCase):
         from management.services import gemini_keys as gk
         with patch.dict("os.environ", ENV6, clear=False):
             combos = list(gk.iter_attempts("checker"))
-        self.assertTrue(all(k in ("GEMINI_API5", "GEMINI_API6") for k, _, _ in combos))
+        self.assertTrue(all(k in set(ENV6) for k, _, _ in combos))
+        key_order = []
+        for key_name, _, _ in combos:
+            if key_name not in key_order:
+                key_order.append(key_name)
+        self.assertEqual(key_order[:2], ["GEMINI_API5", "GEMINI_API6"])
+        self.assertEqual(set(key_order), set(ENV6))
         self.assertIn("gemini-2.5-flash", [m for _, _, m in combos])
+
+    def test_management_pool_uses_own_then_all_borrowed_keys(self):
+        from management.services import gemini_keys as gk
+        with patch.dict("os.environ", ENV6, clear=False):
+            combos = list(gk.iter_attempts("management"))
+        key_order = []
+        for key_name, _, _ in combos:
+            if key_name not in key_order:
+                key_order.append(key_name)
+        self.assertEqual(key_order[:2], ["GEMINI_API3", "GEMINI_API4"])
+        self.assertEqual(set(key_order), set(ENV6))
+
+    def test_chat_pool_uses_all_six_keys_with_own_priority(self):
+        from management.services import gemini_keys as gk
+        with patch.dict("os.environ", ENV6, clear=False):
+            combos = list(gk.iter_attempts("chat"))
+        key_order = []
+        for key_name, _, _ in combos:
+            if key_name not in key_order:
+                key_order.append(key_name)
+        self.assertEqual(key_order[:2], ["GEMINI_API", "GEMINI_API2"])
+        self.assertEqual(set(key_order), set(ENV6))
 
     def test_primary_model_tried_on_all_keys_before_lower(self):
         """Model-major: gemini-3.6-flash перебирається на ВСІХ ключах раніше за
@@ -172,7 +211,7 @@ class IterAttemptsTests(TestCase):
         keys_with_primary = {k for k, _, m in combos if m == "gemini-3.6-flash"}
         self.assertEqual(
             keys_with_primary,
-            {"GEMINI_API", "GEMINI_API2", "GEMINI_API5", "GEMINI_API6"},
+            set(ENV6),
         )
 
     def test_primary_kept_for_other_keys_after_midpass_overload(self):
@@ -189,7 +228,7 @@ class IterAttemptsTests(TestCase):
         keys_with_primary = {k for k, _, m in combos if m == "gemini-3.6-flash"}
         self.assertEqual(
             keys_with_primary,
-            {"GEMINI_API", "GEMINI_API2", "GEMINI_API5", "GEMINI_API6"},
+            set(ENV6),
         )
         gk.clear_model_overload()
 
