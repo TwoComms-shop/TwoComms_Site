@@ -124,6 +124,9 @@ class IgBotNotification(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="bot_notifications",
+        # Legacy IG client table is MyISAM on production; keep the Django
+        # relation without asking MariaDB to create a cross-engine FK.
+        db_constraint=False,
     )
     event_type = models.CharField(max_length=64, default="generic", db_index=True)
     dedupe_key = models.CharField(max_length=255, unique=True)

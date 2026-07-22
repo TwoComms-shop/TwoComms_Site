@@ -26,7 +26,7 @@ class Migration(migrations.Migration):
                 ('sent_at', models.DateTimeField(blank=True, null=True)),
                 ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
-                ('client', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='bot_notifications', to='management.igclient')),
+                ('client', models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='bot_notifications', to='management.igclient')),
             ],
             options={
                 'ordering': ['-id'],
