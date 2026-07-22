@@ -195,11 +195,11 @@ def resolve_option_size_grid(product, option_key: str | dict, variant=None):
         # keeps the legacy catalog default when no Fable5 assignment exists.
         if key == "fit=classic":
             catalog_id = getattr(product, "catalog_id", None)
-            if not catalog_id:
-                return None
+            grids = SizeGrid.objects.filter(is_active=True)
+            if catalog_id:
+                grids = grids.filter(catalog_id=catalog_id)
             return (
-                SizeGrid.objects
-                .filter(catalog_id=catalog_id, is_active=True)
+                grids
                 .exclude(fable5_profile__option_key=DEFAULT_OVERSIZE_OPTION_KEY)
                 .order_by("order", "name", "id")
                 .first()
@@ -207,20 +207,19 @@ def resolve_option_size_grid(product, option_key: str | dict, variant=None):
         if key != DEFAULT_OVERSIZE_OPTION_KEY:
             return None
         catalog_id = getattr(product, "catalog_id", None)
-        if not catalog_id:
-            return None
-        profile = (
+        profiles = (
             SizeGridProfile.objects
             .filter(
                 option_key=key,
                 is_active=True,
-                size_grid__catalog_id=catalog_id,
                 size_grid__is_active=True,
             )
             .select_related("size_grid")
             .order_by("size_grid__order", "size_grid_id")
-            .first()
         )
+        if catalog_id:
+            profiles = profiles.filter(size_grid__catalog_id=catalog_id)
+        profile = profiles.first()
         return profile.size_grid if profile is not None else None
     profile = getattr(assignment.size_grid, "fable5_profile", None)
     if profile is not None and not profile.is_active:

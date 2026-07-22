@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.db.models import Q
 
 from fable5.default_size_guides import OVERSIZE_GUIDE_DATA
 from fable5.models import ProductOptionSizeGrid, SizeGridProfile
@@ -30,10 +31,16 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR(f"Missing optimized asset: {asset_path}"))
             return
 
+        t_shirt_category = (
+            Q(category__name__icontains="футбол")
+            | Q(category__name__icontains="t-shirt")
+            | Q(category__slug__icontains="shirt")
+            | Q(category__slug__icontains="tshirt")
+        )
         products = (
             Product.objects
             .filter(
-                catalog__isnull=False,
+                t_shirt_category,
                 fit_options__code="oversize",
                 fit_options__is_active=True,
             )
@@ -115,6 +122,37 @@ class Command(BaseCommand):
                     ],
                     ignore_conflicts=True,
                 )
+
+        uncategorized = products.filter(catalog__isnull=True).exclude(
+            fable5_size_grid_assignments__option_key=OPTION_KEY,
+        )
+        if uncategorized.exists():
+            global_profile = (
+                SizeGridProfile.objects
+                .filter(
+                    option_key=OPTION_KEY,
+                    is_active=True,
+                    size_grid__is_active=True,
+                    size_grid__image__isnull=False,
+                )
+                .select_related("size_grid")
+                .order_by("size_grid__order", "size_grid_id")
+                .first()
+            )
+            if global_profile is None:
+                self.stderr.write(self.style.ERROR("No canonical oversize grid exists for uncategorized T-shirts."))
+                return
+            count = uncategorized.count()
+            if not dry_run:
+                ProductOptionSizeGrid.objects.bulk_create(
+                    [
+                        ProductOptionSizeGrid(product=product, option_key=OPTION_KEY, size_grid=global_profile.size_grid)
+                        for product in uncategorized.iterator()
+                    ],
+                    ignore_conflicts=True,
+                )
+            stats["assignments_created"] += count
+            self.stdout.write(f"uncategorized: reuse grid={global_profile.size_grid_id}, missing assignments={count}")
 
         self.stdout.write(
             self.style.SUCCESS(
