@@ -87,6 +87,89 @@ class SalesClassifierTests(TestCase):
 
 
 class FollowUpPolicyTests(TestCase):
+    def test_transient_followup_failure_is_backed_off_and_not_hot_looped(self):
+        from management.models import IgFollowUpTask, InstagramBotSettings
+        from management.services import bot_followups
+
+        now = datetime(2026, 7, 9, 14, 0, tzinfo=KYIV)
+        client = IgClient.get_or_create_for_sender("fu_retry")
+        client.last_message_at = now
+        client.stage = IgClient.Stage.QUALIFYING
+        client.save(update_fields=["last_message_at", "stage", "updated_at"])
+        task = IgFollowUpTask.objects.create(
+            client=client,
+            due_at=now,
+            kind=IgFollowUpTask.Kind.QUALIFICATION,
+            reason="retryable_provider_error",
+        )
+
+        with patch(
+            "management.services.instagram_bot.send_text",
+            return_value=(False, "transient", "temporary provider failure"),
+        ) as send_text:
+            self.assertEqual(
+                bot_followups.process_due_followups(
+                    InstagramBotSettings.load(), now=now, limit=1
+                ),
+                0,
+            )
+            task.refresh_from_db()
+            self.assertEqual(task.status, IgFollowUpTask.Status.PENDING)
+            self.assertEqual(task.attempt_count, 1)
+            self.assertGreater(task.next_attempt_at, now)
+            self.assertEqual(task.due_at, task.next_attempt_at)
+
+            # The daemon can run again immediately, but the task is not eligible
+            # until its persisted retry timestamp.
+            self.assertEqual(
+                bot_followups.process_due_followups(
+                    InstagramBotSettings.load(), now=now, limit=1
+                ),
+                0,
+            )
+            send_text.assert_called_once()
+
+    def test_followup_retries_after_backoff_and_marks_sent(self):
+        from management.models import IgFollowUpTask, InstagramBotMessage, InstagramBotSettings
+        from management.services import bot_followups
+
+        now = datetime(2026, 7, 9, 14, 0, tzinfo=KYIV)
+        client = IgClient.get_or_create_for_sender("fu_retry_recovery")
+        client.last_message_at = now
+        client.stage = IgClient.Stage.QUALIFYING
+        client.save(update_fields=["last_message_at", "stage", "updated_at"])
+        task = IgFollowUpTask.objects.create(
+            client=client,
+            due_at=now,
+            kind=IgFollowUpTask.Kind.QUALIFICATION,
+            reason="retryable_provider_error",
+        )
+        retry_at = now + timedelta(minutes=5)
+        task.next_attempt_at = retry_at
+        task.due_at = retry_at
+        task.attempt_count = 1
+        task.save(update_fields=["next_attempt_at", "due_at", "attempt_count", "updated_at"])
+
+        with patch(
+            "management.services.instagram_bot.send_text",
+            return_value=(True, "", ""),
+        ):
+            self.assertEqual(
+                bot_followups.process_due_followups(
+                    InstagramBotSettings.load(), now=retry_at, limit=1
+                ),
+                1,
+            )
+
+        task.refresh_from_db()
+        self.assertEqual(task.status, IgFollowUpTask.Status.SENT)
+        self.assertIsNone(task.next_attempt_at)
+        self.assertTrue(
+            InstagramBotMessage.objects.filter(
+                client=client, source="followup", role=InstagramBotMessage.Role.MODEL
+            ).exists()
+        )
+
     def test_quiet_hours_move_due_time_to_next_10_kyiv(self):
         from management.models import IgFollowUpTask
         from management.services import bot_followups

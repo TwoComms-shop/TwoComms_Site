@@ -5,6 +5,7 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from management.models import (
@@ -20,6 +21,9 @@ KYIV_TZ = ZoneInfo("Europe/Kyiv")
 QUIET_START = time(10, 0)
 QUIET_END = time(19, 0)
 META_REPLY_WINDOW = timedelta(hours=23)
+FOLLOWUP_MAX_ATTEMPTS = 4
+FOLLOWUP_RETRY_BASE = timedelta(minutes=5)
+FOLLOWUP_RETRY_CAP = timedelta(hours=1)
 
 
 def _now() -> datetime:
@@ -147,6 +151,7 @@ def schedule_followup(
             meta_window_deadline=deadline,
             message_text=message_text or "",
             skip_reason=skip_reason,
+            next_attempt_at=None,
         )
     _update_client_next(client)
     return task
@@ -295,6 +300,8 @@ def _claim_due_followup(
         pk=task_id,
         status=IgFollowUpTask.Status.PENDING,
         due_at__lte=now,
+    ).filter(
+        Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now),
     ).values("client_id").first()
     if not candidate:
         return None
@@ -323,6 +330,8 @@ def _claim_due_followup(
         client_id=client.id,
         status=IgFollowUpTask.Status.PENDING,
         due_at__lte=now,
+    ).filter(
+        Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now),
     ).first()
     if not task:
         automation.release_client_automation_lease(client.id, lease_token)
@@ -348,6 +357,8 @@ def _renew_due_followup_claim(
         client_id=client.id,
         status=IgFollowUpTask.Status.PENDING,
         due_at__lte=now,
+    ).filter(
+        Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now),
     ).first()
     if not task:
         return None
@@ -366,6 +377,7 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
     task_ids = list(
         IgFollowUpTask.objects
         .filter(status=IgFollowUpTask.Status.PENDING, due_at__lte=now)
+        .filter(Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
         .order_by("due_at", "id")[:limit]
         .values_list("id", flat=True)
     )
@@ -400,6 +412,26 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
             if not ok:
                 if kind == "permanent":
                     _mark_skipped(task, hint or "send_blocked")
+                elif kind == "unknown":
+                    _mark_skipped(task, hint or "delivery_unknown")
+                else:
+                    task.attempt_count = int(task.attempt_count or 0) + 1
+                    if task.attempt_count >= FOLLOWUP_MAX_ATTEMPTS:
+                        _mark_skipped(task, hint or "retry_exhausted")
+                    else:
+                        delay = min(
+                            FOLLOWUP_RETRY_CAP,
+                            FOLLOWUP_RETRY_BASE * (2 ** (task.attempt_count - 1)),
+                        )
+                        retry_at = next_allowed_send_at(now + delay)
+                        task.next_attempt_at = retry_at
+                        task.due_at = retry_at
+                        task.last_error = (hint or "transient_send_error")[:500]
+                        task.updated_at = _now()
+                        task.save(update_fields=[
+                            "attempt_count", "next_attempt_at", "due_at", "last_error", "updated_at",
+                        ])
+                        _update_client_next(client)
                 continue
             msg = InstagramBotMessage.objects.create(
                 sender_id=client.igsid,
@@ -413,7 +445,11 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
             task.status = IgFollowUpTask.Status.SENT
             task.sent_at = now
             task.sent_message = msg
-            task.save(update_fields=["status", "sent_at", "sent_message", "updated_at"])
+            task.next_attempt_at = None
+            task.last_error = ""
+            task.save(update_fields=[
+                "status", "sent_at", "sent_message", "next_attempt_at", "last_error", "updated_at",
+            ])
             client.followup_level = max(int(client.followup_level or 0), int(task.level or 0) + 1)
             if task.discount_percent:
                 client.discount_offered_percent = max(

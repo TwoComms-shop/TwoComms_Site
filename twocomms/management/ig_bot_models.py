@@ -715,6 +715,9 @@ class IgFollowUpTask(models.Model):
         related_name="+",
     )
     skip_reason = models.CharField(max_length=255, blank=True, default="")
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_error = models.CharField(max_length=500, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
     sent_at = models.DateTimeField(null=True, blank=True)
