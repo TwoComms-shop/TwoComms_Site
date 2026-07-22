@@ -1,39 +1,98 @@
-{% load admin_filters %}
-<div class="tc-size-comparison" data-size-grid-comparison>
-  {% for item in size_grid_comparison %}
-    <article class="tc-size-comparison__card" data-size-grid-fit="{{ item.fit_code }}">
-      <header class="tc-size-comparison__head">
-        <div>
-          <span>Посадка</span>
-          <h3>{{ item.label }}</h3>
-        </div>
-        <small>{{ item.selected_color_name|default:"" }}</small>
-      </header>
-      {% with guide=item.display_guide %}
-        {% if guide.intro %}<p class="tc-muted-copy">{{ guide.intro }}</p>{% endif %}
-        {% if guide.rows %}
-          <div class="tc-size-table-wrap">
-            <table class="tc-size-table">
-              <thead>
-                <tr>
-                  {% for column in guide.columns %}<th scope="col">{{ column.label }}</th>{% endfor %}
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in guide.rows %}
-                  <tr>
-                    {% for column in guide.columns %}
-                      <td{% if column.key == 'size' %} class="tc-size-table-key"{% endif %}>
-                        {% if column.key == 'size' %}{{ row.display_size|default:row.size }}{% else %}{{ row|get_item:column.key }}{% endif %}
-                      </td>
-                    {% endfor %}
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+{% load admin_filters %}{% load i18n %}{% load static %}
+<section class="tc-size-comparison" data-size-grid-comparison aria-labelledby="size-guide-title-{{ product.id }}">
+  <div class="tc-size-comparison__intro">
+    <div>
+      <span class="tc-guide-eyebrow">{% trans "Посадка та розміри" %}</span>
+      <h2 class="tc-guide-title" id="size-guide-title-{{ product.id }}">{% trans "Оберіть розмірну сітку для порівняння" %}</h2>
+    </div>
+    <p class="tc-muted-copy tc-size-comparison__lead">
+      {% trans "Класика та оверсайз мають різну посадку й власні фактичні виміри. Переглядайте будь-яку сітку незалежно від вибраної посадки товару." %}
+    </p>
+  </div>
+
+  <div class="tc-size-guide-switch" role="tablist" aria-label="{% trans 'Розмірні сітки' %}">
+    {% for item in size_grid_comparison %}
+      <button
+        type="button"
+        class="tc-size-guide-switch__button{% if forloop.first %} is-active{% endif %}"
+        role="tab"
+        id="size-guide-tab-{{ product.id }}-{{ item.fit_code }}"
+        aria-controls="size-guide-panel-{{ product.id }}-{{ item.fit_code }}"
+        aria-selected="{% if forloop.first %}true{% else %}false{% endif %}"
+        data-size-guide-fit="{{ item.fit_code }}">
+        <span>{{ item.label }}</span>
+        <small>{% if item.fit_code == 'oversize' %}{% trans 'XS–2XL' %}{% else %}{% trans 'S–2XL' %}{% endif %}</small>
+      </button>
+    {% endfor %}
+  </div>
+  <p class="tc-size-guide-live" data-size-guide-live role="status" aria-live="polite"></p>
+
+  <div class="tc-size-comparison__panels">
+    {% for item in size_grid_comparison %}
+      <article
+        class="tc-size-comparison__card{% if forloop.first %} is-active{% endif %}"
+        id="size-guide-panel-{{ product.id }}-{{ item.fit_code }}"
+        role="tabpanel"
+        aria-labelledby="size-guide-tab-{{ product.id }}-{{ item.fit_code }}"
+        data-size-grid-fit="{{ item.fit_code }}"
+        {% if not forloop.first %}hidden{% endif %}>
+        <header class="tc-size-comparison__head">
+          <div>
+            <span>{% trans "Розмірна сітка" %}</span>
+            <h3>{{ item.label }}</h3>
           </div>
-        {% endif %}
-      {% endwith %}
-    </article>
-  {% endfor %}
-</div>
+          <small data-size-guide-color>{{ item.selected_color_name|default:"" }}</small>
+        </header>
+        {% with guide=item.display_guide %}
+          {% if guide.intro %}<p class="tc-muted-copy tc-size-guide-intro">{{ guide.intro }}</p>{% endif %}
+          {% if guide.fit_explanation %}<p class="tc-size-guide-explanation" data-size-guide-explanation>{{ guide.fit_explanation }}</p>{% endif %}
+
+          {% if guide.image_url %}
+            <figure class="tc-size-guide-visual">
+              <a class="tc-size-image-link" href="{{ guide.image_url }}" target="_blank" rel="noopener" data-size-guide-image-link>
+                <picture>
+                  {% if guide.image_avif_url %}<source type="image/avif" srcset="{{ guide.image_avif_url }}">{% endif %}
+                  <img
+                    src="{{ guide.image_url }}"
+                    alt="{{ guide.image_alt }}"
+                    width="{{ guide.image_width|default:2400 }}"
+                    height="{{ guide.image_height|default:1800 }}"
+                    loading="lazy"
+                    decoding="async"
+                    data-size-guide-image>
+                </picture>
+              </a>
+              {% if guide.image_caption %}<figcaption data-size-guide-caption>{{ guide.image_caption }}</figcaption>{% endif %}
+            </figure>
+          {% endif %}
+
+          {% if guide.rows %}
+            <div class="tc-size-table-wrap" tabindex="0" aria-label="{% trans 'Таблиця вимірів' %}">
+              <table class="tc-size-table">
+                <caption class="visually-hidden">{{ item.label }} — {{ product.title }}</caption>
+                <thead>
+                  <tr>
+                    {% for column in guide.columns %}<th scope="col">{{ column.label }}</th>{% endfor %}
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in guide.rows %}
+                    <tr>
+                      {% for column in guide.columns %}
+                        <td{% if column.key == 'size' %} class="tc-size-table-key"{% endif %}>
+                          {% if column.key == 'size' %}{{ row.display_size|default:row.size }}{% else %}{{ row|get_item:column.key }}{% endif %}
+                        </td>
+                      {% endfor %}
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% elif not guide.image_url %}
+            <p class="tc-muted-copy">{% trans "Для цієї посадки ще немає окремої таблиці вимірів. Уточніть розмір у менеджера." %}</p>
+          {% endif %}
+        {% endwith %}
+      </article>
+    {% endfor %}
+  </div>
+</section>

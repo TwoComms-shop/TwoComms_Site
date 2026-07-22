@@ -1,4 +1,7 @@
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
+from django.template.loader import render_to_string
+from io import StringIO
 from django.test import TestCase
 
 from productcolors.models import Color, ProductColorVariant
@@ -181,6 +184,76 @@ class EffectiveSizeGridTests(TestCase):
             resolve_option_size_grid(self.product, "fit=oversize"),
             self.oversize_grid,
         )
+
+    def test_canonical_oversize_profile_is_fallback_for_new_products(self):
+        from fable5.size_grid_services import resolve_option_size_grid
+
+        ProductOptionSizeGrid.objects.filter(
+            product=self.product,
+            option_key="fit=oversize",
+        ).delete()
+        SizeGridProfile.objects.filter(size_grid=self.oversize_grid).delete()
+        self.assertEqual(
+            resolve_option_size_grid(self.product, "fit=oversize"),
+            None,
+        )
+        SizeGridProfile.objects.create(
+            size_grid=self.oversize_grid,
+            option_key="fit=oversize",
+            garment_code="tshirt",
+        )
+        self.assertEqual(
+            resolve_option_size_grid(self.product, "fit=oversize"),
+            self.oversize_grid,
+        )
+
+    def test_comparison_adds_fallback_and_product_specific_image_alt(self):
+        from fable5.size_grid_services import build_size_grid_comparison
+
+        ProductOptionSizeGrid.objects.filter(
+            product=self.product,
+            option_key="fit=oversize",
+        ).delete()
+        comparison = build_size_grid_comparison(self.product, lang="uk")
+        oversize = next(item for item in comparison if item["fit_code"] == "oversize")
+        self.assertEqual([row["size"] for row in oversize["sizes"]], ["XS", "S", "M", "L"])
+        self.assertIn(self.product.title, oversize["guide"]["image_alt"])
+        self.assertEqual(oversize["guide"]["image_width"], 2400)
+        self.assertEqual(oversize["guide"]["image_height"], 1800)
+
+    def test_ensure_oversize_command_fills_only_missing_assignment(self):
+        ProductOptionSizeGrid.objects.filter(
+            product=self.product,
+            option_key="fit=oversize",
+        ).delete()
+        output = StringIO()
+        call_command("ensure_oversize_size_guides", stdout=output, no_input=True)
+        assignment = ProductOptionSizeGrid.objects.get(
+            product=self.product,
+            option_key="fit=oversize",
+        )
+        self.assertEqual(assignment.size_grid_id, self.oversize_grid.id)
+        self.assertTrue(
+            assignment.size_grid.image.name.startswith("size_grids/oversize-tshirt"),
+            assignment.size_grid.image.name,
+        )
+        self.assertIn("assignments_created=1", output.getvalue())
+
+    def test_comparison_template_exposes_independent_accessible_guide_tabs(self):
+        from fable5.size_grid_services import build_size_grid_comparison
+
+        comparison = build_size_grid_comparison(self.product, lang="uk")
+        for item in comparison:
+            item["display_guide"] = item["guide"]
+        html = render_to_string(
+            "fable5/_size_grid_comparison.html",
+            {"product": self.product, "size_grid_comparison": comparison},
+        )
+        self.assertIn('data-size-guide-fit="classic"', html)
+        self.assertIn('data-size-guide-fit="oversize"', html)
+        self.assertIn('role="tablist"', html)
+        self.assertIn("Класичний крій починається з S", html)
+        self.assertIn("Таблиця розмірів оверсайз футболки", html)
 
     def test_comparison_contains_both_fits_without_selecting_one(self):
         from fable5.size_grid_services import build_size_grid_comparison

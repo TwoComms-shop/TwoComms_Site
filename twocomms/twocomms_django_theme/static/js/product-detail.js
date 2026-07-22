@@ -7,6 +7,15 @@ function buildOptionKey(values) {
     .join(';');
 }
 
+function resolveSizeGuideSelection({ requestedFit = '', fitCodes = [], disabledFits = [] } = {}) {
+  const disabled = new Set((disabledFits || []).map((fit) => String(fit || '').toLowerCase()));
+  const available = (fitCodes || [])
+    .map((fit) => String(fit || '').toLowerCase())
+    .filter((fit) => fit && !disabled.has(fit));
+  const requested = String(requestedFit || '').toLowerCase();
+  return available.includes(requested) ? requested : (available[0] || '');
+}
+
 function resolveSwipe({ dx = 0, dy = 0 } = {}) {
   if (Math.abs(dx) < 42 || Math.abs(dx) <= Math.abs(dy) * 1.25) return 0;
   return dx < 0 ? 1 : -1;
@@ -190,6 +199,7 @@ if (typeof module !== 'undefined' && module.exports) {
     resolveOptionSelection,
     resolvePriceBreakdown,
     resolveRestockSummary,
+    resolveSizeGuideSelection,
     resolveSwipe,
   };
 }
@@ -234,6 +244,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     initVariantPriceNote(root);
     applyCurrentVariantMerchandising(state);
     initTabs(root);
+    initSizeGuideComparison(root);
     initDescriptionCollapse(root);
     initShare(root, container);
     initZoom(state);
@@ -953,6 +964,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       const colorLabel = card.querySelector('.tc-size-comparison__head small');
       if (colorLabel) colorLabel.textContent = variant.name || '';
+      const image = card.querySelector('[data-size-guide-image]');
+      if (image) {
+        if (guide.image_url) {
+          image.src = guide.image_url;
+          image.alt = guide.image_alt || image.alt || '';
+          if (guide.image_width) image.width = Number(guide.image_width);
+          if (guide.image_height) image.height = Number(guide.image_height);
+          image.hidden = false;
+          const link = card.querySelector('[data-size-guide-image-link]');
+          if (link) link.href = guide.image_url;
+        } else {
+          image.hidden = true;
+        }
+      }
+      const caption = card.querySelector('[data-size-guide-caption]');
+      if (caption) caption.textContent = guide.image_caption || '';
+      const explanation = card.querySelector('[data-size-guide-explanation]');
+      if (explanation) {
+        explanation.textContent = guide.fit_explanation || '';
+        explanation.hidden = !guide.fit_explanation;
+      }
       const intro = card.querySelector('.tc-muted-copy');
       if (intro) {
         intro.textContent = guide.intro || '';
@@ -1000,9 +1032,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (rule.reason) label.setAttribute('title', rule.reason);
         else label.removeAttribute('title');
       }
-      state.root.querySelectorAll(`[data-size-grid-fit="${input.value}"]`).forEach((card) => {
-        card.hidden = !enabled;
-      });
       if (enabled) enabledInputs.push(input);
     });
 
@@ -1016,6 +1045,85 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       label.classList.toggle('active', Boolean(input && input.checked && !input.disabled));
     });
     if (selected) state.container.dataset.currentFit = selected.value || '';
+    updateSizeGuideAvailability(state.root, rules);
+  }
+
+  function initSizeGuideComparison(root) {
+    const comparison = root.querySelector('[data-size-grid-comparison]');
+    if (!comparison) return;
+    const tabs = Array.from(comparison.querySelectorAll('[data-size-guide-fit]'));
+    const panels = Array.from(comparison.querySelectorAll('[data-size-grid-fit]'));
+    if (!tabs.length || !panels.length) return;
+
+    const activate = (fitCode, focus = false) => {
+      const target = resolveSizeGuideSelection({
+        requestedFit: fitCode,
+        fitCodes: tabs.map((item) => item.dataset.sizeGuideFit),
+        disabledFits: tabs.filter((item) => item.disabled).map((item) => item.dataset.sizeGuideFit),
+      });
+      const tab = tabs.find((item) => item.dataset.sizeGuideFit === target);
+      if (!tab) return;
+      const selected = tab.dataset.sizeGuideFit;
+      tabs.forEach((item) => {
+        const active = item === tab;
+        item.classList.toggle('is-active', active);
+        item.setAttribute('aria-selected', active ? 'true' : 'false');
+        item.tabIndex = active ? 0 : -1;
+      });
+      panels.forEach((panel) => {
+        const active = panel.dataset.sizeGridFit === selected;
+        panel.hidden = !active;
+        panel.classList.toggle('is-active', active);
+      });
+      const live = comparison.querySelector('[data-size-guide-live]');
+      if (live) {
+        const label = tab.querySelector('span');
+        live.textContent = label ? label.textContent : selected;
+      }
+      comparison.dataset.selectedGuideFit = selected;
+      if (focus) tab.focus();
+    };
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => activate(tab.dataset.sizeGuideFit));
+      tab.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const enabled = tabs.filter((item) => !item.disabled);
+        if (!enabled.length) return;
+        const current = Math.max(0, enabled.indexOf(tab));
+        const next = event.key === 'Home'
+          ? 0
+          : event.key === 'End'
+            ? enabled.length - 1
+            : (current + (event.key === 'ArrowLeft' ? -1 : 1) + enabled.length) % enabled.length;
+        activate(enabled[next].dataset.sizeGuideFit, true);
+      });
+    });
+    tabs.forEach((tab) => { tab.tabIndex = tab.classList.contains('is-active') ? 0 : -1; });
+    activate(comparison.dataset.selectedGuideFit || tabs[0].dataset.sizeGuideFit);
+  }
+
+  function updateSizeGuideAvailability(root, rules) {
+    const comparison = root.querySelector('[data-size-grid-comparison]');
+    if (!comparison) return;
+    const normalized = rules && typeof rules === 'object' ? rules : {};
+    const tabs = Array.from(comparison.querySelectorAll('[data-size-guide-fit]'));
+    tabs.forEach((tab) => {
+      const fit = tab.dataset.sizeGuideFit || '';
+      const enabled = !normalized[fit] || normalized[fit].is_enabled !== false;
+      tab.disabled = !enabled;
+      tab.hidden = !enabled;
+      tab.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+      const panel = comparison.querySelector(`[data-size-grid-fit="${fit}"]`);
+      if (panel && !enabled) panel.hidden = true;
+    });
+    const selected = comparison.dataset.selectedGuideFit;
+    const selectedTab = tabs.find((tab) => tab.dataset.sizeGuideFit === selected && !tab.disabled);
+    if (!selectedTab) {
+      const next = tabs.find((tab) => !tab.disabled);
+      if (next) next.click();
+    }
   }
 
   function applyVariantSizeRules(state, rules, sizeMatrix) {

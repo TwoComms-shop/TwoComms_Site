@@ -8,12 +8,14 @@ from copy import deepcopy
 from typing import Any, Iterable
 
 from django.core.exceptions import ValidationError
+from django.templatetags.static import static
 from django.utils.html import strip_tags
 
 from .content_resolution import build_combination_key, normalize_option_values
 from .models import (
     ProductOptionSizeGrid,
     ProductSizeRule,
+    SizeGridProfile,
     VariantOptionSizeGrid,
     VariantSizeRule,
 )
@@ -26,6 +28,9 @@ SIZE_ALIASES = {
     "X2L": "XXL",
 }
 TEXT_LIST_FIELDS = ("notes", "fit_notes")
+DEFAULT_OVERSIZE_OPTION_KEY = "fit=oversize"
+DEFAULT_OVERSIZE_STATIC_URL = static("img/size-guides/oversize-tshirt.webp")
+DEFAULT_OVERSIZE_AVIF_URL = static("img/size-guides/oversize-tshirt.avif")
 
 
 def _plain_text(value: Any) -> str:
@@ -174,7 +179,26 @@ def resolve_option_size_grid(product, option_key: str | dict, variant=None):
         .first()
     )
     if assignment is None:
-        return None
+        # A canonical oversize profile is a read-only default for new products.
+        # Explicit product and variant assignments above always win.
+        if key != DEFAULT_OVERSIZE_OPTION_KEY:
+            return None
+        catalog_id = getattr(product, "catalog_id", None)
+        if not catalog_id:
+            return None
+        profile = (
+            SizeGridProfile.objects
+            .filter(
+                option_key=key,
+                is_active=True,
+                size_grid__catalog_id=catalog_id,
+                size_grid__is_active=True,
+            )
+            .select_related("size_grid")
+            .order_by("size_grid__order", "size_grid_id")
+            .first()
+        )
+        return profile.size_grid if profile is not None else None
     profile = getattr(assignment.size_grid, "fable5_profile", None)
     if profile is not None and not profile.is_active:
         return None
@@ -248,6 +272,70 @@ def _fit_label(product, fit_code: str, lang: str) -> str:
     return _plain_text(localized) or option.label
 
 
+def _guide_copy(product, fit_code: str, lang: str) -> dict[str, str]:
+    title = _plain_text(getattr(product, "title", ""))
+    label = _fit_label(product, fit_code, lang)
+    if lang == "ru":
+        return {
+            "alt": f"Таблица размеров {label.lower()} футболки «{title}»",
+            "caption": f"Размерная сетка {label.lower()} для {title}",
+            "note": (
+                "Снимайте мерки с разложенной футболки и сравнивайте их с таблицей. "
+                "Классический крой начинается с S, оверсайз — с XS."
+            ),
+        }
+    if lang == "en":
+        return {
+            "alt": f"{label} T-shirt size chart for {title}",
+            "caption": f"{label} size guide for {title}",
+            "note": (
+                "Measure a laid-flat T-shirt and compare it with the chart. "
+                "Classic starts at S; oversize starts at XS."
+            ),
+        }
+    return {
+        "alt": f"Таблиця розмірів {label.lower()} футболки «{title}»",
+        "caption": f"Розмірна сітка {label.lower()} для {title}",
+        "note": (
+            "Знімайте мірки з розкладеної футболки та порівнюйте їх із таблицею. "
+            "Класичний крій починається з S, оверсайз — з XS."
+        ),
+    }
+
+
+def _decorate_guide(product, grid, guide: dict | None, fit_code: str, lang: str) -> dict:
+    decorated = deepcopy(guide or {})
+    image_url = ""
+    image_width = 0
+    image_height = 0
+    image = getattr(grid, "image", None) if grid is not None else None
+    if image:
+        try:
+            image_url = image.url
+            image_width = int(getattr(image, "width", 0) or 0)
+            image_height = int(getattr(image, "height", 0) or 0)
+        except (OSError, ValueError):
+            image_url = ""
+    used_static_fallback = not image_url and fit_code == "oversize"
+    if used_static_fallback:
+        image_url = DEFAULT_OVERSIZE_STATIC_URL
+        image_width = 2400
+        image_height = 1800
+    copy = _guide_copy(product, fit_code, lang)
+    decorated.update(
+        {
+            "image_url": image_url,
+            "image_width": image_width,
+            "image_height": image_height,
+            "image_avif_url": DEFAULT_OVERSIZE_AVIF_URL if used_static_fallback else "",
+            "image_alt": copy["alt"],
+            "image_caption": copy["caption"],
+            "fit_explanation": copy["note"],
+        }
+    )
+    return decorated
+
+
 def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list[dict]:
     """Build all assigned fit grids so the PDP can compare them at once."""
 
@@ -310,7 +398,9 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
             if override_grid is not None:
                 return override_grid
         shared = assignment_by_key.get(option_key)
-        return usable_grid(shared.size_grid if shared else None)
+        if shared is not None:
+            return usable_grid(shared.size_grid)
+        return usable_grid(resolve_option_size_grid(product, option_key))
 
     def normalized_guide(grid):
         if grid.id not in guide_cache:
@@ -348,6 +438,11 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
         return rows
     option_keys = set(assignment_by_key)
     option_keys.update(item.option_key for item in variant_assignments)
+    for fit in fit_options:
+        if fit.is_active:
+            option_key = f"fit={fit.code}"
+            if resolve_option_size_grid(product, option_key) is not None:
+                option_keys.add(option_key)
     ordered_keys = sorted(
         option_keys,
         key=lambda key: (*fit_order.get(_fit_code(key), (10_000, 10_000)), key),
@@ -368,12 +463,18 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
         if size_grid is None:
             continue
         try:
-            guide = normalized_guide(size_grid)
+            guide = _decorate_guide(
+                product,
+                size_grid,
+                normalized_guide(size_grid),
+                fit_code,
+                language,
+            )
         except Exception:
             guide = None
         if guide is None:
             continue
-        base_sizes = effective_rows(size_grid, option_key) if assignment is not None else []
+        base_sizes = effective_rows(size_grid, option_key)
         if not base_sizes and assignment is None:
             for variant in variants:
                 variant_grid = grid_for(option_key, variant)
@@ -387,7 +488,17 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
         variant_payloads = []
         for variant in variants:
             variant_grid = grid_for(option_key, variant)
-            variant_guide = normalized_guide(variant_grid) if variant_grid is not None else guide
+            variant_guide = (
+                _decorate_guide(
+                    product,
+                    variant_grid,
+                    normalized_guide(variant_grid),
+                    fit_code,
+                    language,
+                )
+                if variant_grid is not None
+                else guide
+            )
             if variant_guide is None:
                 variant_guide = guide
             variant_payloads.append({

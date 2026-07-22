@@ -11,6 +11,7 @@ const {
   resolveGalleryStep,
   resolveMaterialStory,
   resolveRestockSummary,
+  resolveSizeGuideSelection,
   resolveSwipe,
 } = require('./product-detail.js');
 
@@ -22,6 +23,24 @@ test('buildOptionKey is stable for normalized product options', () => {
   assert.equal(
     buildOptionKey({ fit: ' OVERSIZE ', lining: 'FLEECE' }),
     'fit=oversize;lining=fleece'
+  );
+});
+
+test('size guide selection stays independent and falls back to the first enabled guide', () => {
+  assert.equal(
+    resolveSizeGuideSelection({
+      requestedFit: 'classic',
+      fitCodes: ['classic', 'oversize'],
+    }),
+    'classic'
+  );
+  assert.equal(
+    resolveSizeGuideSelection({
+      requestedFit: 'classic',
+      fitCodes: ['classic', 'oversize'],
+      disabledFits: ['classic'],
+    }),
+    'oversize'
   );
 });
 
