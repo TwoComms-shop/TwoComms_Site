@@ -7,6 +7,7 @@ import re
 from copy import deepcopy
 from typing import Any, Iterable
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.templatetags.static import static
 from django.utils.html import strip_tags
@@ -29,12 +30,21 @@ SIZE_ALIASES = {
 }
 TEXT_LIST_FIELDS = ("notes", "fit_notes")
 DEFAULT_OVERSIZE_OPTION_KEY = "fit=oversize"
-DEFAULT_OVERSIZE_STATIC_URL = static("img/size-guides/oversize-tshirt.webp")
-DEFAULT_OVERSIZE_AVIF_URL = static("img/size-guides/oversize-tshirt.avif")
+DEFAULT_OVERSIZE_STATIC_PATH = "img/size-guides/oversize-tshirt.webp"
+DEFAULT_OVERSIZE_AVIF_PATH = "img/size-guides/oversize-tshirt.avif"
 
 
 def _plain_text(value: Any) -> str:
     return html.unescape(strip_tags(str(value or ""))).strip()
+
+
+def _static_asset_url(path: str) -> str:
+    """Resolve a manifest URL lazily without breaking startup before collectstatic."""
+
+    try:
+        return static(path)
+    except (ValueError, OSError):
+        return f"{settings.STATIC_URL.rstrip('/')}/{path}"
 
 
 def _cell_key(value: Any) -> str:
@@ -318,7 +328,7 @@ def _decorate_guide(product, grid, guide: dict | None, fit_code: str, lang: str)
             image_url = ""
     used_static_fallback = not image_url and fit_code == "oversize"
     if used_static_fallback:
-        image_url = DEFAULT_OVERSIZE_STATIC_URL
+        image_url = _static_asset_url(DEFAULT_OVERSIZE_STATIC_PATH)
         image_width = 2400
         image_height = 1800
     copy = _guide_copy(product, fit_code, lang)
@@ -327,7 +337,7 @@ def _decorate_guide(product, grid, guide: dict | None, fit_code: str, lang: str)
             "image_url": image_url,
             "image_width": image_width,
             "image_height": image_height,
-            "image_avif_url": DEFAULT_OVERSIZE_AVIF_URL if used_static_fallback else "",
+            "image_avif_url": _static_asset_url(DEFAULT_OVERSIZE_AVIF_PATH) if used_static_fallback else "",
             "image_alt": copy["alt"],
             "image_caption": copy["caption"],
             "fit_explanation": copy["note"],
