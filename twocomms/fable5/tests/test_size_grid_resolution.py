@@ -207,6 +207,18 @@ class EffectiveSizeGridTests(TestCase):
             self.oversize_grid,
         )
 
+    def test_classic_falls_back_to_legacy_catalog_grid_without_copying(self):
+        from fable5.size_grid_services import resolve_option_size_grid
+
+        ProductOptionSizeGrid.objects.filter(
+            product=self.product,
+            option_key="fit=classic",
+        ).delete()
+        self.assertEqual(
+            resolve_option_size_grid(self.product, "fit=classic"),
+            self.classic_grid,
+        )
+
     def test_comparison_adds_fallback_and_product_specific_image_alt(self):
         from fable5.size_grid_services import build_size_grid_comparison
 

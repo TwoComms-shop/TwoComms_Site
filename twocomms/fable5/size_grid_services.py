@@ -20,6 +20,7 @@ from .models import (
     VariantOptionSizeGrid,
     VariantSizeRule,
 )
+from storefront.models import SizeGrid
 
 
 CELL_KEY_RE = re.compile(r"^[a-z][a-z0-9_-]{0,49}$")
@@ -190,7 +191,19 @@ def resolve_option_size_grid(product, option_key: str | dict, variant=None):
     )
     if assignment is None:
         # A canonical oversize profile is a read-only default for new products.
-        # Explicit product and variant assignments above always win.
+        # Explicit product and variant assignments above always win. Classic
+        # keeps the legacy catalog default when no Fable5 assignment exists.
+        if key == "fit=classic":
+            catalog_id = getattr(product, "catalog_id", None)
+            if not catalog_id:
+                return None
+            return (
+                SizeGrid.objects
+                .filter(catalog_id=catalog_id, is_active=True)
+                .exclude(fable5_profile__option_key=DEFAULT_OVERSIZE_OPTION_KEY)
+                .order_by("order", "name", "id")
+                .first()
+            )
         if key != DEFAULT_OVERSIZE_OPTION_KEY:
             return None
         catalog_id = getattr(product, "catalog_id", None)
