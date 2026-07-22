@@ -48,7 +48,12 @@ class Command(BaseCommand):
             .distinct()
             .order_by("catalog_id", "id")
         )
-        catalog_ids = list(products.values_list("catalog_id", flat=True).distinct())
+        catalog_ids = list(
+            products
+            .exclude(catalog_id__isnull=True)
+            .values_list("catalog_id", flat=True)
+            .distinct()
+        )
         stats = {"catalogs": 0, "grids_created": 0, "grids_updated": 0, "assignments_created": 0, "skipped": 0}
 
         for catalog_id in catalog_ids:
