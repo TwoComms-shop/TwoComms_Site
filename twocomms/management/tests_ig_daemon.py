@@ -14,6 +14,7 @@ from management.management.commands.run_instagram_bot import (
     MANAGE_PY_PATH,
     PROJECT_ROOT,
     Command,
+    _daemon_alive,
 )
 from management.models import InstagramBotSettings
 from management.services import instagram_bot as bot
@@ -39,6 +40,26 @@ class DaemonPathTests(SimpleTestCase):
         self.assertEqual(kwargs["cwd"], PROJECT_ROOT)
         self.assertTrue(os.path.isabs(args[0][1]))
         stdout.write.assert_called()
+
+    @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
+    @patch("management.management.commands.run_instagram_bot._daemon_code_current", return_value=False)
+    @patch("management.management.commands.run_instagram_bot._daemon_alive", return_value=True)
+    @patch("management.management.commands.run_instagram_bot.cache.add", return_value=True)
+    def test_ensure_replaces_old_worker_after_restart_sentinel(
+        self, _add, _alive, _current, popen
+    ):
+        command = Command()
+        with patch.object(command, "stdout") as stdout:
+            command._ensure()
+        popen.assert_called_once()
+        stdout.write.assert_called()
+
+
+class DaemonHeartbeatTests(SimpleTestCase):
+    @patch("management.management.commands.run_instagram_bot.cache.get", return_value={"at": 100.0})
+    @patch("management.management.commands.run_instagram_bot.time.time", return_value=110.0)
+    def test_dict_heartbeat_is_supported(self, _time, _get):
+        self.assertTrue(_daemon_alive())
 
 
 class DaemonStatusTests(TestCase):

@@ -44,7 +44,11 @@ PID_FILE = os.path.join(PROJECT_ROOT, "tmp", "ig_bot.pid")
 
 def _daemon_alive() -> bool:
     hb = cache.get(HB_KEY)
-    return bool(hb and (time.time() - float(hb)) < HB_ALIVE_WINDOW)
+    try:
+        heartbeat_at = float(hb.get("at")) if isinstance(hb, dict) else float(hb)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return bool(heartbeat_at and (time.time() - heartbeat_at) < HB_ALIVE_WINDOW)
 
 
 def _restart_sentinel_mtime() -> float:
@@ -54,6 +58,14 @@ def _restart_sentinel_mtime() -> float:
         return os.path.getmtime(os.path.join(PROJECT_ROOT, "tmp", "restart.txt"))
     except OSError:
         return 0.0
+
+
+def _daemon_code_current() -> bool:
+    """A fresh heartbeat from a process started before deploy is not usable."""
+    try:
+        return os.path.getmtime(PID_FILE) >= _restart_sentinel_mtime()
+    except OSError:
+        return False
 
 
 def _conv_refresher(stop_event: threading.Event):
@@ -99,9 +111,14 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
     def _ensure(self):
-        if _daemon_alive():
+        if _daemon_alive() and _daemon_code_current():
             self.stdout.write("daemon alive — ok")
             return
+        # A deploy changes restart.txt before the old process exits. Release
+        # only the stale worker's lease so the new child can claim it.
+        if _daemon_alive() and not _daemon_code_current():
+            cache.delete(HB_KEY)
+            cache.delete(DAEMON_LOCK_KEY)
         # Захист від подвійного спавну.
         if not cache.add(SPAWN_LOCK_KEY, "1", 30):
             self.stdout.write("spawn in progress — skip")
@@ -128,14 +145,17 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
     def _forever(self):
         # Singleton: не стартуємо другий демон поверх живого.
-        if _daemon_alive():
+        if _daemon_alive() and _daemon_code_current():
             self.stdout.write("daemon already alive — exit")
             return
+        if _daemon_alive() and not _daemon_code_current():
+            cache.delete(HB_KEY)
+            cache.delete(DAEMON_LOCK_KEY)
         owner = f"{os.getpid()}:{time.time_ns()}"
         if not cache.add(DAEMON_LOCK_KEY, owner, HB_ALIVE_WINDOW * 3):
             self.stdout.write("daemon start lock held — exit")
             return
-        cache.set(HB_KEY, time.time(), HB_ALIVE_WINDOW * 3)
+        cache.set(HB_KEY, {"at": time.time(), "sentinel": _restart_sentinel_mtime()}, HB_ALIVE_WINDOW * 3)
         try:
             os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
             with open(PID_FILE, "w") as f:
@@ -186,7 +206,7 @@ class Command(BaseCommand):
                 except Exception as exc:
                     bot.log("error", "daemon_loop", repr(exc))
                 finally:
-                    cache.set(HB_KEY, time.time(), HB_ALIVE_WINDOW * 3)
+                    cache.set(HB_KEY, {"at": time.time(), "sentinel": start_sentinel}, HB_ALIVE_WINDOW * 3)
                     cache.set(DAEMON_LOCK_KEY, owner, HB_ALIVE_WINDOW * 3)
                 # працює — кожні ~1.5 c (низька латентність черги); зупинено — рідше
                 time.sleep(1.5 if enabled else 5)
@@ -195,11 +215,8 @@ class Command(BaseCommand):
             # Звільняємо heartbeat одразу, щоб watchdog підняв новий демон без
             # очікування TTL (інакше до 45 c простою після деплою).
             try:
-                cache.delete(HB_KEY)
-            except Exception:
-                pass
-            try:
                 if cache.get(DAEMON_LOCK_KEY) == owner:
+                    cache.delete(HB_KEY)
                     cache.delete(DAEMON_LOCK_KEY)
             except Exception:
                 pass
