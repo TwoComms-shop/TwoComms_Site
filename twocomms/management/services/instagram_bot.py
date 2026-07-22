@@ -27,7 +27,7 @@ import secrets
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
@@ -36,6 +36,7 @@ from django.utils import timezone
 from management.models import (
     IgClient,
     IgBotNotification,
+    IgPollCursor,
     InstagramBotLog,
     InstagramBotMessage,
     InstagramBotSettings,
@@ -2323,30 +2324,81 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
     reply_after = s.reply_after or s.last_started_at
     enq = 0
     for cid in conv_ids:
-        code, body = _http(
-            f"{GRAPH}/{cid}?fields=messages.limit(5)"
-            f"{{message,from,created_time,id}}&access_token={page_token}",
-            timeout=HTTP_TIMEOUT,
+        cursor, _created = IgPollCursor.objects.get_or_create(conversation_id=str(cid))
+        cursor_at = cursor.last_message_at
+        cursor_id = cursor.last_message_id or ""
+        page_url = (
+            f"{GRAPH}/{cid}?fields=messages.limit(50)"
+            f"{{message,from,created_time,id,attachments}}&access_token={page_token}"
         )
-        if code != 200:
-            continue
-        try:
-            msgs = json.loads(body).get("messages", {}).get("data", [])
-        except Exception:
-            continue
-        if not msgs:
-            continue
-        latest = msgs[0]
-        sender = (latest.get("from") or {}).get("id", "")
-        if not sender or sender == s.ig_user_id:
-            continue
-        created = _parse_ig_time(latest.get("created_time", ""))
-        if reply_after and created and created <= reply_after:
-            continue
-        if enqueue_inbound(
-            s, sender_id=sender, text=latest.get("message", ""), mid=latest.get("id", ""), source="poll"
-        ):
-            enq += 1
+        all_msgs: list[dict] = []
+        for _page in range(5):
+            code, body = _http(page_url, timeout=HTTP_TIMEOUT)
+            if code != 200:
+                break
+            try:
+                envelope = json.loads(body)
+            except Exception:
+                break
+            messages = (envelope.get("messages") or {}).get("data") or []
+            all_msgs.extend(messages)
+            if not messages:
+                break
+            # Meta returns newest first. Once a page reaches our durable cursor,
+            # older pages cannot contain new messages for this conversation.
+            if cursor_at and any(
+                (_parse_ig_time(m.get("created_time", "")) or datetime.min.replace(tzinfo=dt_timezone.utc)) < cursor_at
+                or (
+                    (_parse_ig_time(m.get("created_time", "")) or datetime.min.replace(tzinfo=dt_timezone.utc)) == cursor_at
+                    and str(m.get("id") or "") <= cursor_id
+                )
+                for m in messages
+            ):
+                break
+            page_url = (envelope.get("messages") or {}).get("paging", {}).get("next") or ""
+            if not page_url:
+                break
+
+        unique: dict[str, dict] = {}
+        for message in all_msgs:
+            mid = str(message.get("id") or "")
+            if mid:
+                unique[mid] = message
+
+        def _key(message: dict):
+            return (
+                _parse_ig_time(message.get("created_time", ""))
+                or datetime.min.replace(tzinfo=dt_timezone.utc),
+                str(message.get("id") or ""),
+            )
+
+        ordered = sorted(unique.values(), key=_key)
+        for message in ordered:
+            mid = str(message.get("id") or "")
+            created = _parse_ig_time(message.get("created_time", ""))
+            if cursor_at and _key(message) <= (cursor_at, cursor_id):
+                continue
+            sender = (message.get("from") or {}).get("id", "")
+            if not sender or sender == s.ig_user_id:
+                continue
+            if reply_after and created and created <= reply_after:
+                continue
+            if enqueue_inbound(
+                s,
+                sender_id=sender,
+                text=message.get("message", ""),
+                mid=mid,
+                source="poll",
+                attachments=_extract_media_urls(message),
+            ):
+                enq += 1
+
+        if ordered:
+            newest = max(ordered, key=_key)
+            newest_at, newest_id = _key(newest)
+            cursor.last_message_at = newest_at if newest_at != datetime.min.replace(tzinfo=dt_timezone.utc) else cursor.last_message_at
+            cursor.last_message_id = newest_id
+            cursor.save(update_fields=["last_message_at", "last_message_id", "updated_at"])
     return {"ok": True, "enqueued": enq, "conversations": len(conv_ids)}
 
 

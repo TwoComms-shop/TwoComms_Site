@@ -24,6 +24,7 @@ __all__ = [
     "BotAdCampaign",
     "IgClientStageEvent",
     "IgFollowUpTask",
+    "IgPollCursor",
     "IgConversationSignal",
     "IgMetaEventLog",
     "BotDataDeletionRequest",
@@ -734,6 +735,22 @@ class IgFollowUpTask(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - тривіально
         return f"FollowUp#{self.pk} {self.client_id} {self.kind}/{self.status}"
+
+
+class IgPollCursor(models.Model):
+    """Durable per-conversation cursor for the optional polling backstop."""
+
+    conversation_id = models.CharField(max_length=255, unique=True)
+    last_message_id = models.CharField(max_length=255, blank=True, default="")
+    last_message_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "IG polling cursor"
+        verbose_name_plural = "IG polling cursors"
+
+    def __str__(self) -> str:  # pragma: no cover - trivial representation
+        return f"IgPollCursor({self.conversation_id})"
 
 
 class IgConversationSignal(models.Model):
