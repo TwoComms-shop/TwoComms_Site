@@ -347,7 +347,29 @@ def _handle_echo(recipient_igsid: str, text: str) -> None:
         return
     if text and cache.get(_bot_sent_key(recipient_igsid, text)):
         return  # власне відлуння бота — ігноруємо
-    client = IgClient.get_or_create_for_sender(recipient_igsid)
+    now = timezone.now()
+    # The takeover notification is a state transition, not a per-message
+    # event. Lock the client row so two webhook workers cannot both announce
+    # the same transition while manager messages are still stored separately.
+    with transaction.atomic():
+        client, _ = IgClient.objects.select_for_update().get_or_create(
+            igsid=recipient_igsid,
+            defaults={"first_contact_at": now, "last_message_at": now},
+        )
+        takeover_started = not client.manager_takeover
+        client.manager_takeover = True
+        client.bot_paused = True
+        client.paused_reason = "manager_takeover"
+        if takeover_started:
+            client.paused_at = now
+        client.last_manager_message_at = now
+        update_fields = [
+            "manager_takeover", "bot_paused", "paused_reason",
+            "last_manager_message_at", "updated_at",
+        ]
+        if takeover_started:
+            update_fields.append("paused_at")
+        client.save(update_fields=update_fields)
     msg = None
     if text:
         try:
@@ -362,15 +384,6 @@ def _handle_echo(recipient_igsid: str, text: str) -> None:
             )
         except Exception:
             msg = None
-    client.manager_takeover = True
-    client.bot_paused = True
-    client.paused_reason = "manager_takeover"
-    client.paused_at = timezone.now()
-    client.last_manager_message_at = timezone.now()
-    client.save(update_fields=[
-        "manager_takeover", "bot_paused", "paused_reason", "paused_at",
-        "last_manager_message_at", "updated_at",
-    ])
     try:
         from management.services import bot_followups, bot_sales_classifier
 
@@ -381,11 +394,14 @@ def _handle_echo(recipient_igsid: str, text: str) -> None:
             )
     except Exception:
         pass
-    notify_manager(
-        f"👤 IG: менеджер підключився до {client.username or client.igsid} — "
-        f"бот на паузі для цього клієнта."
-    )
-    log("warning", "takeover", f"{recipient_igsid}: менеджер підключився")
+    if takeover_started:
+        notify_manager(
+            f"👤 IG: менеджер підключився до {client.username or client.igsid} — "
+            f"бот на паузі для цього клієнта."
+        )
+        log("warning", "takeover", f"{recipient_igsid}: менеджер підключився")
+    else:
+        log("info", "manager_message", f"{recipient_igsid}: повідомлення менеджера збережено")
 
 
 def _match_allowed(sender_id: str, limit: int = 15, window: int = 3600) -> bool:
