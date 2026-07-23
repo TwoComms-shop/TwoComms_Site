@@ -10570,3 +10570,81 @@ msgid "Оберіть тканину."
 msgstr "Choose a fabric."
 msgid "Оберіть колір."
 msgstr "Choose a colour."
+# T-shirt size advisor (2026-07-24)
+msgid "Знайдіть свою посадку"
+msgstr "Find your fit"
+
+msgid "Класичний крій починається з S. Порівняйте точні виміри або отримайте підказку за зростом і вагою."
+msgstr "Classic starts at S. Compare exact measurements or get a height and weight recommendation."
+
+msgid "Точні виміри"
+msgstr "Exact measurements"
+
+msgid "Підібрати розмір"
+msgstr "Find my size"
+
+msgid "За зростом і вагою"
+msgstr "From height and weight"
+
+msgid "Персональна підказка"
+msgstr "Personal recommendation"
+
+msgid "Який розмір обрати?"
+msgstr "Which size should I choose?"
+
+msgid "Рекомендація орієнтовна: крій і бажана свобода посадки також впливають на вибір."
+msgstr "This is an estimate: garment cut and your preferred ease also affect the fit."
+
+msgid "Класична посадка: ближче до тіла, без зайвого об’єму."
+msgstr "Classic fit: closer to the body without extra volume."
+
+msgid "Оверсайз: вільніший силует із додатковим об’ємом."
+msgstr "Oversize: a looser silhouette with extra volume."
+
+msgid "Щільніша альтернатива:"
+msgstr "Closer-fitting alternative:"
+
+msgid "Вільніша альтернатива:"
+msgstr "Looser alternative:"
+
+msgid "Це крайній доступний розмір для обраної посадки."
+msgstr "This is the largest available size for the selected fit."
+
+msgid "Вкажіть зріст від 145 до 210 см."
+msgstr "Enter a height from 145 to 210 cm."
+
+msgid "Вкажіть вагу від 40 до 160 кг."
+msgstr "Enter a weight from 40 to 160 kg."
+
+msgid "Оберіть бажану посадку."
+msgstr "Choose your preferred fit."
+
+msgid "Для цієї посадки зараз немає доступного розміру. Напишіть нам, і ми допоможемо."
+msgstr "No size is currently available for this fit. Message us and we will help."
+
+msgid "Зріст"
+msgstr "Height"
+
+msgid "Вага"
+msgstr "Weight"
+
+msgid "см"
+msgstr "cm"
+
+msgid "кг"
+msgstr "kg"
+
+msgid "Бажана посадка"
+msgstr "Preferred fit"
+
+msgid "Отримати рекомендацію"
+msgstr "Get recommendation"
+
+msgid "Рекомендований розмір"
+msgstr "Recommended size"
+
+msgid "Вкажіть параметри, щоб побачити рекомендацію."
+msgstr "Enter your measurements to see a recommendation."
+
+msgid "Допомога з вибором розміру"
+msgstr "Help choosing a size"

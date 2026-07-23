@@ -475,7 +475,7 @@ def resolve_product_size_context(product, requested_size=None):
                 (item for item in comparisons if item["option_key"] == default_key),
                 comparisons[0],
             )
-            sizes = [row["size"] for row in selected_comparison["sizes"]]
+            sizes = list(selected_comparison.get("available_sizes") or [])
             selected_size = _normalize_size_value(requested_size)
             if selected_size not in sizes:
                 selected_size = sizes[0] if sizes else ""
@@ -483,6 +483,7 @@ def resolve_product_size_context(product, requested_size=None):
             display_labels = {
                 row["size"]: row.get("display_size") or row["size"]
                 for row in selected_comparison["sizes"]
+                if row["size"] in sizes
             }
             guide = _build_structured_guide(
                 size_grid.get("profile_key") or detect_size_profile(product),

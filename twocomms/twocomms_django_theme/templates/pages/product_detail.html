@@ -99,6 +99,7 @@ namespace + the legacy og:price aliases for the older social parsers.
   the page graph.
   {% endcomment %}
   {% product_graph product breadcrumbs=breadcrumbs canonical_path=variant_canonical_path selected_variant=selected_color_variant review_summary=product_review_summary fit_code=preselected_fit_code %}
+  {% if size_advisor_enabled %}{% size_advisor_schema product language=request.LANGUAGE_CODE canonical_path=variant_canonical_path %}{% endif %}
   {% comment %}
   SEO 2026-05-16 (P1-1) — restored a per-product FAQPage JSON-LD,
   but ONLY when ``product_faq_items`` is non-empty. The previous
@@ -125,7 +126,7 @@ namespace + the legacy og:price aliases for the older social parsers.
 {% block extra_css %}
 {% comment %}Above-fold (hero/gallery/buybox/fit-selector) — render-blocking is OK,
    нужен сразу для корректного LCP/CLS.{% endcomment %}
-<link rel="stylesheet" href="{% static 'css/product-detail.css' %}?v=20260717-breadcrumb-layer-v1">
+<link rel="stylesheet" href="{% static 'css/product-detail.css' %}?v=20260724-size-advisor-v1">
 <link rel="stylesheet" href="{% static 'css/product-media-fit.css' %}?v=20260428-media-fit-v1">
 {% comment %}
 Phase 19c (2026-05-10) — below-fold CSS lazy-load.
@@ -356,10 +357,21 @@ CSS rules на mobile FCP/LCP window.
       <div class="tc-selector-block">
         <div class="tc-selector-head">
           <span>{% trans 'Розмір' %}</span>
-          <a href="{% url 'size_guide' %}" class="tc-soft-link">
-            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.25V21h3.75L18.8 9.95l-3.75-3.75L4 17.25Zm13.7-8.7-2.25-2.25 1.4-1.4a1.06 1.06 0 0 1 1.5 0l.75.75c.42.42.42 1.08 0 1.5l-1.4 1.4Z" fill="currentColor"/></svg>
-            {% trans 'Як обрати розмір?' %}
-          </a>
+          {% if size_grid_comparison %}
+            <span class="tc-selector-head__actions" role="group" aria-label="{% trans 'Допомога з вибором розміру' %}">
+              <button type="button" class="tc-soft-link tc-soft-link--button" data-pdp-tab-trigger="size" data-pdp-size-tool-trigger="guide">
+                {% trans 'Розмірна сітка' %}
+              </button>
+              {% if size_advisor_enabled %}
+                <span aria-hidden="true">/</span>
+                <button type="button" class="tc-soft-link tc-soft-link--button" data-pdp-tab-trigger="size" data-pdp-size-tool-trigger="advisor">
+                  {% trans 'Підібрати розмір' %}
+                </button>
+              {% endif %}
+            </span>
+          {% else %}
+            <a href="{% url 'size_guide' %}" class="tc-soft-link">{% trans 'Як обрати розмір?' %}</a>
+          {% endif %}
         </div>
         {% if product_size_options %}
           <div class="tc-size-grid" role="radiogroup" aria-label="{% trans 'Розмір' %}">
@@ -465,12 +477,6 @@ CSS rules на mobile FCP/LCP window.
                 </label>
               {% endfor %}
             </div>
-            {% if axis.code == 'fit' and size_grid_comparison %}
-              <button type="button" class="tc-size-compare-link" data-pdp-tab-trigger="size">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4V5Zm3 3v2m3-2v3m3-3v2m3-2v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-                <span>{% trans 'Порівняти розмірні сітки' %}</span><small>{% trans 'Класика та оверсайз поруч' %}</small>
-              </button>
-            {% endif %}
           </div>
           {% endif %}
         {% endfor %}
@@ -839,7 +845,7 @@ CSS rules на mobile FCP/LCP window.
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/product-detail.js' %}?v=20260716-compact-v5" defer></script>
+<script src="{% static 'js/product-detail.js' %}?v=20260724-size-advisor-v1" defer></script>
 <script src="{% static 'js/product-media-fit.js' %}?v=20260428-media-fit-v1" defer></script>
 <script src="{% static 'js/product-variant-history.js' %}?v=20260509-phase8-v1" defer></script>
 {% endblock %}

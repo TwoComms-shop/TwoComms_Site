@@ -343,7 +343,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                 sizes = [
                     row.get('size')
                     for row in variant_item.get('sizes', [])
-                    if row.get('size')
+                    if row.get('size') in variant_item.get('available_sizes', [])
                 ]
                 variant_size_matrix.setdefault(
                     variant_item.get('variant_id'), {}
@@ -367,6 +367,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
                 preselected_size = available_sizes[0]
     except Exception:
         size_grid_comparison = []
+    size_advisor_enabled = _is_tshirt_product(product) and bool(size_grid_comparison)
 
     # Phase 7.2 — path-style variant URLs. Segments may arrive in any
     # order; we dispatch content-addressably (a segment is a size if it
@@ -1064,6 +1065,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             'resolved_size_guide': size_context["guide"],
             'resolved_size_profile': size_context["profile"],
             'size_grid_comparison': size_grid_comparison,
+            'size_advisor_enabled': size_advisor_enabled,
             'public_product_order_version': public_product_order_version,
             'fit_options': fit_options,
             'show_fit_selector': bool(fit_options),

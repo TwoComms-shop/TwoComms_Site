@@ -29,11 +29,49 @@ SIZE_ALIASES = {
     "2XL": "XXL",
     "XXL": "XXL",
     "X2L": "XXL",
+    "3XL": "XXXL",
+    "XXXL": "XXXL",
+    "X3L": "XXXL",
 }
 TEXT_LIST_FIELDS = ("notes", "fit_notes")
 DEFAULT_OVERSIZE_OPTION_KEY = "fit=oversize"
 DEFAULT_OVERSIZE_STATIC_PATH = "img/size-guides/oversize-tshirt.webp"
 DEFAULT_OVERSIZE_AVIF_PATH = "img/size-guides/oversize-tshirt.avif"
+DEFAULT_CLASSIC_STATIC_PATH = "img/size-guides/classic-tshirt.webp"
+LEGACY_SELLABLE_SIZES = ("XS", "S", "M", "L", "XL", "XXL")
+
+GUIDE_LOCALIZATION = {
+    "ru": {
+        "classic_title": "Таблица размеров классической футболки",
+        "oversize_title": "Таблица размеров оверсайз-футболки",
+        "classic_intro": "Фактические замеры классической футболки в разложенном виде. Допустимая погрешность ±1–2 см.",
+        "oversize_intro": "Фактические замеры оверсайз-футболки в разложенном виде. Допустимая погрешность ±1–2 см.",
+        "columns": {
+            "size": "Размер",
+            "chest": "Обхват груди",
+            "garment_length": "Длина изделия",
+            "shoulder_length": "Длина плеча",
+            "sleeve_length": "Длина рукава",
+            "shoulder_width": "Ширина плеч",
+            "width": "Ширина",
+        },
+    },
+    "en": {
+        "classic_title": "Classic T-shirt size chart",
+        "oversize_title": "Oversize T-shirt size chart",
+        "classic_intro": "Actual measurements of the classic T-shirt laid flat. Allow for a ±1–2 cm measuring tolerance.",
+        "oversize_intro": "Actual measurements of the oversize T-shirt laid flat. Allow for a ±1–2 cm measuring tolerance.",
+        "columns": {
+            "size": "Size",
+            "chest": "Chest circumference",
+            "garment_length": "Garment length",
+            "shoulder_length": "Shoulder length",
+            "sleeve_length": "Sleeve length",
+            "shoulder_width": "Shoulder width",
+            "width": "Width",
+        },
+    },
+}
 
 
 def _plain_text(value: Any) -> str:
@@ -311,7 +349,7 @@ def _guide_copy(product, fit_code: str, lang: str) -> dict[str, str]:
             "caption": f"Размерная сетка {label.lower()} для {title}",
             "note": (
                 "Снимайте мерки с разложенной футболки и сравнивайте их с таблицей. "
-                "Классический крой начинается с S, оверсайз — с XS."
+                "Классическая таблица охватывает S–3XL, оверсайз — XS–2XL."
             ),
         }
     if lang == "en":
@@ -320,7 +358,7 @@ def _guide_copy(product, fit_code: str, lang: str) -> dict[str, str]:
             "caption": f"{label} size guide for {title}",
             "note": (
                 "Measure a laid-flat T-shirt and compare it with the chart. "
-                "Classic starts at S; oversize starts at XS."
+                "The classic chart covers S–3XL; oversize covers XS–2XL."
             ),
         }
     return {
@@ -328,13 +366,24 @@ def _guide_copy(product, fit_code: str, lang: str) -> dict[str, str]:
         "caption": f"Розмірна сітка {label.lower()} для {title}",
         "note": (
             "Знімайте мірки з розкладеної футболки та порівнюйте їх із таблицею. "
-            "Класичний крій починається з S, оверсайз — з XS."
+            "Класична таблиця охоплює S–3XL, оверсайз — XS–2XL."
         ),
     }
 
 
 def _decorate_guide(product, grid, guide: dict | None, fit_code: str, lang: str) -> dict:
     decorated = deepcopy(guide or {})
+    localized = GUIDE_LOCALIZATION.get(lang)
+    if localized:
+        decorated["title"] = localized.get(f"{fit_code}_title", decorated.get("title", ""))
+        decorated["intro"] = localized.get(f"{fit_code}_intro", decorated.get("intro", ""))
+        decorated["columns"] = [
+            {
+                **column,
+                "label": localized["columns"].get(column.get("key"), column.get("label", "")),
+            }
+            for column in decorated.get("columns", [])
+        ]
     image_url = ""
     image_width = 0
     image_height = 0
@@ -346,18 +395,26 @@ def _decorate_guide(product, grid, guide: dict | None, fit_code: str, lang: str)
             image_height = int(getattr(image, "height", 0) or 0)
         except (OSError, ValueError):
             image_url = ""
-    used_static_fallback = not image_url and fit_code == "oversize"
-    if used_static_fallback:
+    from storefront.services.size_guides import detect_size_profile
+
+    is_tshirt = detect_size_profile(product) == "basic_tshirt"
+    used_static_oversize = not image_url and is_tshirt and fit_code == "oversize"
+    used_static_classic = not image_url and is_tshirt and fit_code == "classic"
+    if used_static_oversize:
         image_url = _static_asset_url(DEFAULT_OVERSIZE_STATIC_PATH)
         image_width = 2400
         image_height = 1800
+    elif used_static_classic:
+        image_url = _static_asset_url(DEFAULT_CLASSIC_STATIC_PATH)
+        image_width = 993
+        image_height = 292
     copy = _guide_copy(product, fit_code, lang)
     decorated.update(
         {
             "image_url": image_url,
             "image_width": image_width,
             "image_height": image_height,
-            "image_avif_url": _static_asset_url(DEFAULT_OVERSIZE_AVIF_PATH) if used_static_fallback else "",
+            "image_avif_url": _static_asset_url(DEFAULT_OVERSIZE_AVIF_PATH) if used_static_oversize else "",
             "image_alt": copy["alt"],
             "image_caption": copy["caption"],
             "fit_explanation": copy["note"],
@@ -411,6 +468,23 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
         for rule in VariantSizeRule.objects.filter(variant__in=variants).order_by("id")
     } if variants else {}
     guide_cache = {}
+
+    catalog_size_values = []
+    catalog = getattr(product, "catalog", None)
+    if catalog is not None:
+        size_options = catalog.options.filter(option_type="size").order_by("order", "id")
+        size_option = size_options.first()
+        if size_option is not None:
+            catalog_size_values = [
+                normalize_size_value(value)
+                for value in size_option.values.order_by("order", "id").values_list("value", flat=True)
+                if normalize_size_value(value)
+            ]
+
+    def sellable_sizes(rows):
+        row_sizes = [normalize_size_value(row.get("size")) for row in rows if row.get("size")]
+        allowed_sizes = catalog_size_values or LEGACY_SELLABLE_SIZES
+        return [size for size in allowed_sizes if size in row_sizes]
 
     def usable_grid(grid):
         if grid is None or not grid.is_active:
@@ -543,6 +617,7 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
                     variant,
                 ) if variant_grid is not None else [],
             })
+            variant_payloads[-1]["available_sizes"] = sellable_sizes(variant_payloads[-1]["sizes"])
         comparison.append(
             {
                 "option_key": option_key,
@@ -555,6 +630,7 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
                 "grid_name": size_grid.name,
                 "guide": guide,
                 "sizes": base_sizes,
+                "available_sizes": sellable_sizes(base_sizes),
                 "variants": variant_payloads,
             }
         )

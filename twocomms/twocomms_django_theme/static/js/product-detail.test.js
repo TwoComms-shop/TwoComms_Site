@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   buildOptionKey,
   focusTrapIndex,
+  formatAdvisorSummary,
   galleryStatus,
   MODAL_FOCUSABLE_SELECTOR,
   resolveOptionSelection,
@@ -11,9 +12,147 @@ const {
   resolveGalleryStep,
   resolveMaterialStory,
   resolveRestockSummary,
+  recommendTshirtSize,
+  resolveAdvisorAvailableSizes,
   resolveSizeGuideSelection,
   resolveSwipe,
 } = require('./product-detail.js');
+
+test('size advisor validates anthropometric bounds and fit', () => {
+  assert.deepEqual(recommendTshirtSize({ height: 140, weight: 70, fit: 'classic' }), {
+    ok: false,
+    error: 'height',
+  });
+  assert.deepEqual(recommendTshirtSize({ height: 180, weight: 170, fit: 'classic' }), {
+    ok: false,
+    error: 'weight',
+  });
+  assert.deepEqual(recommendTshirtSize({ height: 180, weight: 80, fit: 'relaxed' }), {
+    ok: false,
+    error: 'fit',
+  });
+});
+
+test('size advisor recommends balanced classic and oversize sizes', () => {
+  const classic = recommendTshirtSize({
+    height: 180,
+    weight: 80,
+    fit: 'classic',
+    availableSizes: ['S', 'M', 'L', 'XL', 'XXL'],
+  });
+  const oversize = recommendTshirtSize({
+    height: 180,
+    weight: 80,
+    fit: 'oversize',
+    availableSizes: ['XS', 'S', 'M', 'L', 'XL', 'XXL'],
+  });
+
+  assert.equal(classic.ok, true);
+  assert.equal(classic.size, 'L');
+  assert.equal(oversize.ok, true);
+  assert.equal(oversize.size, 'L');
+});
+
+test('size advisor balances height, weight and high BMI edge cases', () => {
+  assert.equal(recommendTshirtSize({
+    height: 198,
+    weight: 65,
+    fit: 'classic',
+    availableSizes: ['S', 'M', 'L', 'XL', 'XXL'],
+  }).size, 'L');
+  assert.equal(recommendTshirtSize({
+    height: 160,
+    weight: 100,
+    fit: 'classic',
+    availableSizes: ['S', 'M', 'L', 'XL', 'XXL'],
+  }).size, 'XXL');
+});
+
+test('size advisor never recommends unavailable or informational-only sizes', () => {
+  assert.deepEqual(recommendTshirtSize({
+    height: 180,
+    weight: 80,
+    fit: 'classic',
+    availableSizes: [],
+  }), {
+    ok: false,
+    error: 'availability',
+  });
+
+  const result = recommendTshirtSize({
+    height: 195,
+    weight: 125,
+    fit: 'classic',
+    availableSizes: ['S', 'M', 'L', 'XL', 'XXL'],
+  });
+
+  assert.equal(result.size, 'XXL');
+  assert.ok(!['3XL', 'XXXL'].includes(result.size));
+  assert.ok(result.limitReached);
+
+  const sparse = recommendTshirtSize({
+    height: 180,
+    weight: 80,
+    fit: 'classic',
+    availableSizes: ['M', 'XL'],
+  });
+  assert.equal(sparse.size, 'XL');
+  assert.equal(sparse.alternative, 'M');
+  assert.equal(sparse.alternativeRelation, 'tighter');
+});
+
+test('size advisor uses exact option availability and supports catalogued 3XL', () => {
+  const configurations = {
+    'fit=classic;lining=plain': {
+      option_values: { fit: 'classic', lining: 'plain' },
+      is_available: true,
+      size_availability: { S: false, M: false, L: true, XL: false, XXL: false },
+    },
+    'fit=oversize;lining=plain': {
+      option_values: { fit: 'oversize', lining: 'plain' },
+      is_available: false,
+      size_availability: { S: true, M: true },
+    },
+  };
+
+  assert.deepEqual(resolveAdvisorAvailableSizes({
+    fit: 'classic',
+    baseMatrix: { classic: ['S', 'M', 'L', 'XL', 'XXL'] },
+    configurations,
+    selectedValues: { fit: 'classic', lining: 'plain' },
+  }), ['L']);
+  assert.deepEqual(resolveAdvisorAvailableSizes({
+    fit: 'oversize',
+    baseMatrix: { oversize: ['S', 'M'] },
+    configurations,
+    selectedValues: { fit: 'classic', lining: 'plain' },
+  }), []);
+
+  const catalogued3xl = recommendTshirtSize({
+    height: 205,
+    weight: 130,
+    fit: 'classic',
+    availableSizes: ['S', 'M', 'L', 'XL', 'XXL', 'XXXL'],
+  });
+  assert.equal(catalogued3xl.size, 'XXXL');
+});
+
+test('size advisor summary uses localized units from the template', () => {
+  assert.equal(formatAdvisorSummary({
+    fitCopy: 'Classic fit.',
+    height: '180',
+    weight: '80',
+    heightUnit: 'cm',
+    weightUnit: 'kg',
+  }), 'Classic fit. 180 cm · 80 kg.');
+  assert.equal(formatAdvisorSummary({
+    fitCopy: 'Классическая посадка.',
+    height: '180',
+    weight: '80',
+    heightUnit: 'см',
+    weightUnit: 'кг',
+  }), 'Классическая посадка. 180 см · 80 кг.');
+});
 
 test('buildOptionKey is stable for normalized product options', () => {
   assert.equal(

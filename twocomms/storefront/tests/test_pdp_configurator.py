@@ -239,12 +239,20 @@ class ProductConfiguratorRenderTests(TestCase):
     def test_versioned_pdp_assets_use_one_fresh_release_key(self):
         html = self.client.get(self.url).content.decode()
 
-        self.assertIn("css/product-detail.css?v=20260716-compact-v3", html)
+        self.assertIn("css/product-detail.css?v=20260724-size-advisor-v1", html)
         self.assertIn("css/product-seo-landing.css?v=20260716-pdp-v2", html)
-        self.assertIn("js/product-detail.js?v=20260716-compact-v5", html)
+        self.assertIn("js/product-detail.js?v=20260724-size-advisor-v1", html)
         self.assertIn("js/telegram-verify.js?v=20260716-pdp-v2", html)
         self.assertNotIn("20260715-fable5-v1", html)
         self.assertNotIn("20260716-configurator-v1", html)
+
+    def test_non_tshirt_product_does_not_publish_tshirt_size_advisor(self):
+        response = self.client.get(self.url)
+        html = response.content.decode()
+
+        self.assertFalse(response.context["size_advisor_enabled"])
+        self.assertNotIn('data-pdp-size-tool-trigger="advisor"', html)
+        self.assertNotIn("TwoComms T-shirt size finder", html)
 
     def test_exact_inactive_combination_is_serialized_as_unavailable(self):
         VariantFitRule.objects.filter(

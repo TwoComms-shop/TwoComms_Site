@@ -16,6 +16,118 @@ function resolveSizeGuideSelection({ requestedFit = '', fitCodes = [], disabledF
   return available.includes(requested) ? requested : (available[0] || '');
 }
 
+function resolveAdvisorAvailableSizes({
+  fit = '',
+  baseMatrix = {},
+  configurations = {},
+  selectedValues = {},
+} = {}) {
+  const normalizedFit = String(fit || '').trim().toLowerCase();
+  const matrixSizes = Array.isArray(baseMatrix && baseMatrix[normalizedFit])
+    ? baseMatrix[normalizedFit]
+    : [];
+  const hasConfigurations = Object.values(configurations || {}).some((item) => (
+    item && typeof item.option_values === 'object'
+  ));
+  if (!hasConfigurations) return matrixSizes;
+
+  const optionValues = { ...(selectedValues || {}), fit: normalizedFit };
+  const configuration = configurations[buildOptionKey(optionValues)];
+  if (!configuration || configuration.is_available === false) return [];
+  if (!configuration.size_availability || typeof configuration.size_availability !== 'object') {
+    return matrixSizes;
+  }
+  return Object.entries(configuration.size_availability)
+    .filter(([, enabled]) => enabled !== false)
+    .map(([size]) => size);
+}
+
+function formatAdvisorSummary({
+  fitCopy = '',
+  height = '',
+  weight = '',
+  heightUnit = 'cm',
+  weightUnit = 'kg',
+} = {}) {
+  return `${fitCopy} ${height} ${heightUnit} · ${weight} ${weightUnit}.`.trim();
+}
+
+function recommendTshirtSize({ height, weight, fit, availableSizes = null } = {}) {
+  const normalizedHeight = Number(height);
+  const normalizedWeight = Number(weight);
+  const normalizedFit = String(fit || '').trim().toLowerCase();
+  if (!Number.isFinite(normalizedHeight) || normalizedHeight < 145 || normalizedHeight > 210) {
+    return { ok: false, error: 'height' };
+  }
+  if (!Number.isFinite(normalizedWeight) || normalizedWeight < 40 || normalizedWeight > 160) {
+    return { ok: false, error: 'weight' };
+  }
+  if (!['classic', 'oversize'].includes(normalizedFit)) {
+    return { ok: false, error: 'fit' };
+  }
+
+  const profiles = {
+    classic: {
+      sizes: ['S', 'M', 'L', 'XL', 'XXL', 'XXXL'],
+      heightBreaks: [166, 174, 182, 190, 200],
+      weightBreaks: [58, 70, 82, 96, 112],
+    },
+    oversize: {
+      sizes: ['XS', 'S', 'M', 'L', 'XL', 'XXL'],
+      heightBreaks: [160, 168, 176, 184, 192],
+      weightBreaks: [52, 61, 72, 84, 99],
+    },
+  };
+  const profile = profiles[normalizedFit];
+  const band = (value, breaks) => breaks.reduce((index, boundary) => (
+    value >= boundary ? index + 1 : index
+  ), 0);
+  const heightIndex = band(normalizedHeight, profile.heightBreaks);
+  const weightIndex = band(normalizedWeight, profile.weightBreaks);
+  const bmi = normalizedWeight / Math.pow(normalizedHeight / 100, 2);
+  let targetIndex = Math.round(weightIndex * 0.72 + heightIndex * 0.28);
+  if (bmi >= 32 && weightIndex > targetIndex) targetIndex += 1;
+  targetIndex = Math.max(0, Math.min(profile.sizes.length - 1, targetIndex));
+
+  const availabilityProvided = Array.isArray(availableSizes);
+  const normalizedAvailable = Array.from(new Set((availableSizes || []).map((size) => {
+    const value = String(size || '').trim().toUpperCase();
+    if (['2XL', 'X2L'].includes(value)) return 'XXL';
+    if (['3XL', 'X3L'].includes(value)) return 'XXXL';
+    return value;
+  }))).filter((size) => profile.sizes.includes(size));
+  if (availabilityProvided && !normalizedAvailable.length) {
+    return { ok: false, error: 'availability' };
+  }
+  const candidates = availabilityProvided ? normalizedAvailable : profile.sizes;
+  if (!candidates.length) return { ok: false, error: 'availability' };
+
+  const indexedCandidates = candidates.map((size) => ({ size, index: profile.sizes.indexOf(size) }));
+  indexedCandidates.sort((left, right) => {
+    const distance = Math.abs(left.index - targetIndex) - Math.abs(right.index - targetIndex);
+    return distance || right.index - left.index;
+  });
+  const selected = indexedCandidates[0];
+  const alternatives = indexedCandidates.slice(1).sort((left, right) => {
+    const distance = Math.abs(left.index - selected.index) - Math.abs(right.index - selected.index);
+    return distance || right.index - left.index;
+  });
+  const alternative = alternatives[0] || null;
+
+  return {
+    ok: true,
+    fit: normalizedFit,
+    size: selected.size,
+    targetSize: profile.sizes[targetIndex],
+    alternative: alternative ? alternative.size : '',
+    alternativeRelation: alternative
+      ? (alternative.index < selected.index ? 'tighter' : 'looser')
+      : '',
+    limitReached: targetIndex >= selected.index
+      && Math.max(...indexedCandidates.map((candidate) => candidate.index)) === selected.index,
+  };
+}
+
 function resolveSwipe({ dx = 0, dy = 0 } = {}) {
   if (Math.abs(dx) < 42 || Math.abs(dx) <= Math.abs(dy) * 1.25) return 0;
   return dx < 0 ? 1 : -1;
@@ -192,6 +304,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     buildOptionKey,
     focusTrapIndex,
+    formatAdvisorSummary,
     galleryStatus,
     MODAL_FOCUSABLE_SELECTOR,
     resolveGalleryStep,
@@ -199,6 +312,8 @@ if (typeof module !== 'undefined' && module.exports) {
     resolveOptionSelection,
     resolvePriceBreakdown,
     resolveRestockSummary,
+    resolveAdvisorAvailableSizes,
+    recommendTshirtSize,
     resolveSizeGuideSelection,
     resolveSwipe,
   };
@@ -244,7 +359,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     initVariantPriceNote(root);
     applyCurrentVariantMerchandising(state);
     initTabs(root);
-    initSizeGuideComparison(root);
+    initSizeGuideComparison(state);
     initDescriptionCollapse(root);
     initShare(root, container);
     initZoom(state);
@@ -1048,33 +1163,47 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     updateSizeGuideAvailability(state.root, rules);
   }
 
-  function initSizeGuideComparison(root) {
+  function initSizeGuideComparison(state) {
+    const root = state.root;
     const comparison = root.querySelector('[data-size-grid-comparison]');
     if (!comparison) return;
-    const tabs = Array.from(comparison.querySelectorAll('[data-size-guide-fit]'));
-    const panels = Array.from(comparison.querySelectorAll('[data-size-grid-fit]'));
-    if (!tabs.length || !panels.length) return;
+    const guideTabs = Array.from(comparison.querySelectorAll('[data-size-guide-fit]'));
+    const advisorTab = comparison.querySelector('[data-size-advisor-tab]');
+    const tabs = advisorTab ? [...guideTabs, advisorTab] : guideTabs;
+    const guidePanels = Array.from(comparison.querySelectorAll('[data-size-grid-fit]'));
+    const advisorPanel = comparison.querySelector('[data-size-advisor-panel]');
+    if (!guideTabs.length || !guidePanels.length) return;
 
-    const activate = (fitCode, focus = false) => {
-      const target = resolveSizeGuideSelection({
-        requestedFit: fitCode,
-        fitCodes: tabs.map((item) => item.dataset.sizeGuideFit),
-        disabledFits: tabs.filter((item) => item.disabled).map((item) => item.dataset.sizeGuideFit),
-      });
-      const tab = tabs.find((item) => item.dataset.sizeGuideFit === target);
+    const tabMode = (tab) => tab.dataset.sizeGuideFit || (tab.hasAttribute('data-size-advisor-tab') ? 'advisor' : '');
+
+    const activate = (requestedMode, focus = false, scroll = false) => {
+      const requested = String(requestedMode || '').toLowerCase();
+      const target = requested === 'advisor'
+        ? 'advisor'
+        : resolveSizeGuideSelection({
+          requestedFit: requested,
+          fitCodes: guideTabs.map((item) => item.dataset.sizeGuideFit),
+          disabledFits: guideTabs.filter((item) => item.disabled).map((item) => item.dataset.sizeGuideFit),
+        });
+      const tab = tabs.find((item) => tabMode(item) === target);
       if (!tab) return;
-      const selected = tab.dataset.sizeGuideFit;
+      const selected = tabMode(tab);
       tabs.forEach((item) => {
         const active = item === tab;
         item.classList.toggle('is-active', active);
         item.setAttribute('aria-selected', active ? 'true' : 'false');
         item.tabIndex = active ? 0 : -1;
       });
-      panels.forEach((panel) => {
+      guidePanels.forEach((panel) => {
         const active = panel.dataset.sizeGridFit === selected;
         panel.hidden = !active;
         panel.classList.toggle('is-active', active);
       });
+      if (advisorPanel) {
+        const active = selected === 'advisor';
+        advisorPanel.hidden = !active;
+        advisorPanel.classList.toggle('is-active', active);
+      }
       const live = comparison.querySelector('[data-size-guide-live]');
       if (live) {
         const label = tab.querySelector('span');
@@ -1082,10 +1211,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
       comparison.dataset.selectedGuideFit = selected;
       if (focus) tab.focus();
+      if (scroll) {
+        comparison.scrollIntoView({
+          behavior: prefersReducedMotion ? 'auto' : 'smooth',
+          block: 'start',
+        });
+      }
     };
 
     tabs.forEach((tab, index) => {
-      tab.addEventListener('click', () => activate(tab.dataset.sizeGuideFit));
+      tab.addEventListener('click', () => activate(tabMode(tab)));
       tab.addEventListener('keydown', (event) => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
@@ -1097,7 +1232,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           : event.key === 'End'
             ? enabled.length - 1
             : (current + (event.key === 'ArrowLeft' ? -1 : 1) + enabled.length) % enabled.length;
-        activate(enabled[next].dataset.sizeGuideFit, true);
+        activate(tabMode(enabled[next]), true);
       });
     });
     tabs.forEach((tab) => { tab.tabIndex = tab.classList.contains('is-active') ? 0 : -1; });
@@ -1106,28 +1241,126 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       || comparison.dataset.sizeGuideInitialFit
       || tabs[0].dataset.sizeGuideFit
     );
+
+    root.querySelectorAll('[data-pdp-size-tool-trigger]').forEach((trigger) => {
+      trigger.addEventListener('click', () => {
+        const mode = trigger.dataset.pdpSizeToolTrigger === 'advisor'
+          ? 'advisor'
+          : (state.container.dataset.currentFit || guideTabs[0].dataset.sizeGuideFit);
+        window.requestAnimationFrame(() => activate(mode, true, true));
+      });
+    });
+
+    initSizeAdvisor(state, comparison, activate);
+  }
+
+  function initSizeAdvisor(state, comparison, activateMode) {
+    const form = comparison.querySelector('[data-size-advisor-form]');
+    if (!form) return;
+    const heightInput = form.querySelector('[data-size-advisor-height]');
+    const weightInput = form.querySelector('[data-size-advisor-weight]');
+    const error = form.querySelector('[data-size-advisor-error]');
+    const result = comparison.querySelector('[data-size-advisor-result]');
+    const sizeOutput = result && result.querySelector('[data-size-advisor-size]');
+    const summary = result && result.querySelector('[data-size-advisor-summary]');
+    const alternative = result && result.querySelector('[data-size-advisor-alternative]');
+    const limit = result && result.querySelector('[data-size-advisor-limit]');
+    if (!heightInput || !weightInput || !result || !sizeOutput || !summary) return;
+
+    const availableSizes = (fit) => {
+      const variant = currentVariantData(state);
+      if (variant) {
+        return resolveAdvisorAvailableSizes({
+          fit,
+          baseMatrix: variant.available_sizes_by_fit || {},
+          configurations: variant.configurations || {},
+          selectedValues: selectedOptionValues(state),
+        });
+      }
+      const guideTab = comparison.querySelector(`[data-size-guide-fit="${fit}"]`);
+      return String(guideTab && guideTab.dataset.sizeGuideAvailableSizes || '')
+        .split(',')
+        .map((size) => size.trim())
+        .filter(Boolean);
+    };
+    const showError = (key) => {
+      const attribute = `error${key.charAt(0).toUpperCase()}${key.slice(1)}`;
+      error.textContent = form.dataset[attribute] || '';
+      error.hidden = false;
+      result.classList.remove('is-ready');
+    };
+    const displaySize = (size) => ({ XXL: '2XL', XXXL: '3XL' }[size] || size);
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const fitInput = form.querySelector('input[name="size_advisor_fit"]:checked');
+      const fit = fitInput ? fitInput.value : '';
+      const recommendation = recommendTshirtSize({
+        height: heightInput.value,
+        weight: weightInput.value,
+        fit,
+        availableSizes: availableSizes(fit),
+      });
+      if (!recommendation.ok) {
+        showError(recommendation.error);
+        return;
+      }
+
+      error.hidden = true;
+      error.textContent = '';
+      sizeOutput.textContent = displaySize(recommendation.size);
+      const fitCopy = recommendation.fit === 'oversize'
+        ? form.dataset.copyOversize
+        : form.dataset.copyClassic;
+      const heightUnit = form.dataset.heightUnit || 'cm';
+      const weightUnit = form.dataset.weightUnit || 'kg';
+      summary.textContent = formatAdvisorSummary({
+        fitCopy,
+        height: heightInput.value,
+        weight: weightInput.value,
+        heightUnit,
+        weightUnit,
+      });
+      if (alternative) {
+        const relationCopy = recommendation.alternativeRelation === 'tighter'
+          ? form.dataset.copyAlternativeTighter
+          : form.dataset.copyAlternativeLooser;
+        alternative.textContent = recommendation.alternative
+          ? `${relationCopy || ''} ${displaySize(recommendation.alternative)}.`.trim()
+          : '';
+      }
+      if (limit) {
+        limit.textContent = recommendation.limitReached ? (form.dataset.copyLimit || '') : '';
+      }
+      result.classList.add('is-ready');
+    });
+
+    form.querySelectorAll('input').forEach((input) => {
+      input.addEventListener('input', () => {
+        if (!error.hidden) {
+          error.hidden = true;
+          error.textContent = '';
+        }
+      });
+    });
+
+    const selectedFit = String(state.container.dataset.currentFit || 'classic');
+    const selectedFitInput = form.querySelector(`input[name="size_advisor_fit"][value="${selectedFit}"]`);
+    if (selectedFitInput) selectedFitInput.checked = true;
+    comparison.querySelectorAll('[data-pdp-size-tool-trigger="advisor"]').forEach((trigger) => {
+      trigger.addEventListener('click', () => activateMode('advisor', true, true));
+    });
   }
 
   function updateSizeGuideAvailability(root, rules) {
     const comparison = root.querySelector('[data-size-grid-comparison]');
     if (!comparison) return;
-    const normalized = rules && typeof rules === 'object' ? rules : {};
     const tabs = Array.from(comparison.querySelectorAll('[data-size-guide-fit]'));
     tabs.forEach((tab) => {
-      const fit = tab.dataset.sizeGuideFit || '';
-      const enabled = !normalized[fit] || normalized[fit].is_enabled !== false;
-      tab.disabled = !enabled;
-      tab.hidden = !enabled;
-      tab.setAttribute('aria-disabled', enabled ? 'false' : 'true');
-      const panel = comparison.querySelector(`[data-size-grid-fit="${fit}"]`);
-      if (panel && !enabled) panel.hidden = true;
+      tab.disabled = false;
+      tab.hidden = false;
+      tab.setAttribute('aria-disabled', 'false');
     });
-    const selected = comparison.dataset.selectedGuideFit;
-    const selectedTab = tabs.find((tab) => tab.dataset.sizeGuideFit === selected && !tab.disabled);
-    if (!selectedTab) {
-      const next = tabs.find((tab) => !tab.disabled);
-      if (next) next.click();
-    }
   }
 
   function applyVariantSizeRules(state, rules, sizeMatrix) {

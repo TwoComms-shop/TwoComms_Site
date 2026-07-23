@@ -48,6 +48,92 @@ def _site_base_url():
     return (getattr(settings, "SITE_BASE_URL", "") or "https://twocomms.shop").rstrip("/")
 
 
+@register.simple_tag
+def size_advisor_schema(product, language="uk", canonical_path=""):
+    """Describe the visible free size tool without claiming a personal result."""
+
+    if not product:
+        return ""
+    lang = str(language or "uk").split("-", 1)[0].lower()
+    if lang not in {"uk", "ru", "en"}:
+        lang = "uk"
+    copy = {
+        "uk": {
+            "name": "Підбір розміру футболки TwoComms",
+            "description": "Безкоштовний підбір розміру футболки за зростом, вагою та бажаною посадкою: класика або оверсайз.",
+            "howto": "Як підібрати розмір футболки",
+            "steps": [
+                ("Вкажіть параметри", "Введіть свій зріст у сантиметрах і вагу в кілограмах."),
+                ("Оберіть посадку", "Оберіть класичну або оверсайз посадку."),
+                ("Отримайте рекомендацію", "Перегляньте рекомендований і сусідній доступний розмір та порівняйте виміри."),
+            ],
+        },
+        "ru": {
+            "name": "Подбор размера футболки TwoComms",
+            "description": "Бесплатный подбор размера футболки по росту, весу и желаемой посадке: классика или оверсайз.",
+            "howto": "Как подобрать размер футболки",
+            "steps": [
+                ("Укажите параметры", "Введите свой рост в сантиметрах и вес в килограммах."),
+                ("Выберите посадку", "Выберите классическую или оверсайз посадку."),
+                ("Получите рекомендацию", "Посмотрите рекомендованный и соседний доступный размер и сравните замеры."),
+            ],
+        },
+        "en": {
+            "name": "TwoComms T-shirt size finder",
+            "description": "A free T-shirt size finder based on height, weight, and preferred classic or oversize fit.",
+            "howto": "How to find your T-shirt size",
+            "steps": [
+                ("Enter your measurements", "Enter your height in centimetres and weight in kilograms."),
+                ("Choose a fit", "Choose a classic or oversize fit."),
+                ("Get a recommendation", "Review the recommended and adjacent available size, then compare garment measurements."),
+            ],
+        },
+    }[lang]
+    path = canonical_path or reverse("product", kwargs={"slug": product.slug})
+    page_url = f"{_site_base_url()}{path}"
+    tool_id = f"{page_url}#size-advisor"
+    schema = {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "WebApplication",
+                "@id": tool_id,
+                "name": copy["name"],
+                "description": copy["description"],
+                "url": tool_id,
+                "applicationCategory": "LifestyleApplication",
+                "operatingSystem": "Any",
+                "isAccessibleForFree": True,
+                "inLanguage": lang,
+                "offers": {
+                    "@type": "Offer",
+                    "price": "0",
+                    "priceCurrency": "UAH",
+                },
+            },
+            {
+                "@type": "HowTo",
+                "@id": f"{page_url}#size-advisor-howto",
+                "name": copy["howto"],
+                "inLanguage": lang,
+                "tool": {"@id": tool_id},
+                "step": [
+                    {
+                        "@type": "HowToStep",
+                        "position": position,
+                        "name": name,
+                        "text": text,
+                    }
+                    for position, (name, text) in enumerate(copy["steps"], start=1)
+                ],
+            },
+        ],
+    }
+    encoded = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return mark_safe(f'<script type="application/ld+json">{encoded}</script>')
+
+
 @register.simple_tag(takes_context=True)
 def seo_title(context, product=None, category=None):
     """Возвращает SEO заголовок"""

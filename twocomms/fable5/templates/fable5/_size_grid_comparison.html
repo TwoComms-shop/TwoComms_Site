@@ -3,14 +3,14 @@
   <div class="tc-size-comparison__intro">
     <div>
       <span class="tc-guide-eyebrow">{% trans "Посадка та розміри" %}</span>
-      <h2 class="tc-guide-title" id="size-guide-title-{{ product.id }}">{% trans "Оберіть розмірну сітку для порівняння" %}</h2>
+      <h2 class="tc-guide-title" id="size-guide-title-{{ product.id }}">{% trans "Знайдіть свою посадку" %}</h2>
     </div>
     <p class="tc-muted-copy tc-size-comparison__lead">
-      {% trans "Класика та оверсайз мають різну посадку й власні фактичні виміри. Переглядайте будь-яку сітку незалежно від вибраної посадки товару." %}
+      {% trans "Класичний крій починається з S. Порівняйте точні виміри або отримайте підказку за зростом і вагою." %}
     </p>
   </div>
 
-  <div class="tc-size-guide-switch" role="tablist" aria-label="{% trans 'Розмірні сітки' %}">
+  <div class="tc-size-guide-switch{% if not size_advisor_enabled %} tc-size-guide-switch--guides-only{% endif %}" role="tablist" aria-label="{% trans 'Розмірні сітки' %}">
     {% for item in size_grid_comparison %}
       <button
         type="button"
@@ -19,11 +19,26 @@
         id="size-guide-tab-{{ product.id }}-{{ item.fit_code }}"
         aria-controls="size-guide-panel-{{ product.id }}-{{ item.fit_code }}"
         aria-selected="{% if item.fit_code == preselected_fit_code or not preselected_fit_code and forloop.first %}true{% else %}false{% endif %}"
-        data-size-guide-fit="{{ item.fit_code }}">
+        data-size-guide-fit="{{ item.fit_code }}"
+        data-size-guide-available-sizes="{{ item.available_sizes|join:',' }}">
         <span>{{ item.label }}</span>
-        <small>{% if item.fit_code == 'oversize' %}{% trans 'XS–2XL' %}{% else %}{% trans 'S–2XL' %}{% endif %}</small>
+        <small>{% trans 'Точні виміри' %}</small>
       </button>
     {% endfor %}
+    {% if size_advisor_enabled %}
+      <button
+        type="button"
+        class="tc-size-guide-switch__button tc-size-guide-switch__button--advisor"
+        role="tab"
+        id="size-advisor-tab-{{ product.id }}"
+        aria-controls="size-advisor-panel-{{ product.id }}"
+        aria-selected="false"
+        tabindex="-1"
+        data-size-advisor-tab>
+        <span>{% trans 'Підібрати розмір' %}</span>
+        <small>{% trans 'За зростом і вагою' %}</small>
+      </button>
+    {% endif %}
   </div>
   <p class="tc-size-guide-live" data-size-guide-live role="status" aria-live="polite"></p>
 
@@ -94,5 +109,102 @@
         {% endwith %}
       </article>
     {% endfor %}
+
+    {% if size_advisor_enabled %}<article
+      class="tc-size-advisor"
+      id="size-advisor-panel-{{ product.id }}"
+      role="tabpanel"
+      aria-labelledby="size-advisor-tab-{{ product.id }}"
+      data-size-advisor-panel
+      hidden>
+      <header class="tc-size-advisor__head">
+        <div>
+          <span>{% trans 'Персональна підказка' %}</span>
+          <h3>{% trans 'Який розмір обрати?' %}</h3>
+        </div>
+        <p>{% trans 'Рекомендація орієнтовна: крій і бажана свобода посадки також впливають на вибір.' %}</p>
+      </header>
+
+      <form
+        class="tc-size-advisor__form"
+        data-size-advisor-form
+        data-copy-classic="{% trans 'Класична посадка: ближче до тіла, без зайвого об’єму.' %}"
+        data-copy-oversize="{% trans 'Оверсайз: вільніший силует із додатковим об’ємом.' %}"
+        data-copy-alternative-tighter="{% trans 'Щільніша альтернатива:' %}"
+        data-copy-alternative-looser="{% trans 'Вільніша альтернатива:' %}"
+        data-copy-limit="{% trans 'Це крайній доступний розмір для обраної посадки.' %}"
+        data-error-height="{% trans 'Вкажіть зріст від 145 до 210 см.' %}"
+        data-error-weight="{% trans 'Вкажіть вагу від 40 до 160 кг.' %}"
+        data-error-fit="{% trans 'Оберіть бажану посадку.' %}"
+        data-error-availability="{% trans 'Для цієї посадки зараз немає доступного розміру. Напишіть нам, і ми допоможемо.' %}"
+        data-height-unit="{% trans 'см' %}"
+        data-weight-unit="{% trans 'кг' %}"
+        novalidate>
+        <div class="tc-size-advisor__fields">
+          <label class="tc-size-advisor__field" for="size-advisor-height-{{ product.id }}">
+            <span>{% trans 'Зріст' %}</span>
+            <span class="tc-size-advisor__input-wrap">
+              <input
+                type="number"
+                id="size-advisor-height-{{ product.id }}"
+                min="145"
+                max="210"
+                step="1"
+                inputmode="numeric"
+                autocomplete="off"
+                placeholder="175"
+                aria-describedby="size-advisor-height-unit-{{ product.id }}"
+                data-size-advisor-height>
+              <span id="size-advisor-height-unit-{{ product.id }}">{% trans 'см' %}</span>
+            </span>
+          </label>
+          <label class="tc-size-advisor__field" for="size-advisor-weight-{{ product.id }}">
+            <span>{% trans 'Вага' %}</span>
+            <span class="tc-size-advisor__input-wrap">
+              <input
+                type="number"
+                id="size-advisor-weight-{{ product.id }}"
+                min="40"
+                max="160"
+                step="1"
+                inputmode="numeric"
+                autocomplete="off"
+                placeholder="70"
+                aria-describedby="size-advisor-weight-unit-{{ product.id }}"
+                data-size-advisor-weight>
+              <span id="size-advisor-weight-unit-{{ product.id }}">{% trans 'кг' %}</span>
+            </span>
+          </label>
+        </div>
+
+        <fieldset class="tc-size-advisor__fit">
+          <legend>{% trans 'Бажана посадка' %}</legend>
+          <div class="tc-size-advisor__fit-options">
+            <input type="radio" name="size_advisor_fit" id="size-advisor-fit-classic-{{ product.id }}" value="classic"{% if preselected_fit_code != 'oversize' %} checked{% endif %}>
+            <label for="size-advisor-fit-classic-{{ product.id }}">{% trans 'Класика' %}</label>
+            <input type="radio" name="size_advisor_fit" id="size-advisor-fit-oversize-{{ product.id }}" value="oversize"{% if preselected_fit_code == 'oversize' %} checked{% endif %}>
+            <label for="size-advisor-fit-oversize-{{ product.id }}">{% trans 'Оверсайз' %}</label>
+          </div>
+        </fieldset>
+
+        <p class="tc-size-advisor__error" role="alert" data-size-advisor-error hidden></p>
+        <button type="submit" class="tc-size-advisor__submit" data-size-advisor-submit>
+          <span>{% trans 'Отримати рекомендацію' %}</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+
+      <div class="tc-size-advisor__result" data-size-advisor-result role="status" aria-live="polite" aria-atomic="true">
+        <div class="tc-size-advisor__recommendation">
+          <small>{% trans 'Рекомендований розмір' %}</small>
+          <strong data-size-advisor-size>—</strong>
+        </div>
+        <div class="tc-size-advisor__result-copy">
+          <p data-size-advisor-summary>{% trans 'Вкажіть параметри, щоб побачити рекомендацію.' %}</p>
+          <p class="tc-size-advisor__alternative" data-size-advisor-alternative></p>
+          <p class="tc-size-advisor__limit" data-size-advisor-limit></p>
+        </div>
+      </div>
+    </article>{% endif %}
   </div>
 </section>
