@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone as dt_timezone
+from urllib.parse import urlsplit
 
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
@@ -52,6 +53,13 @@ MAX_ATTEMPTS = 3            # ретраї обробки одного пові�
 PAGE_TOKEN_TTL = 1200
 HTTP_TIMEOUT = 12
 CONV_LIST_TIMEOUT = 30
+CONV_PAGE_LIMIT = 100
+CONV_MAX_PAGES = 10
+CONV_MAX_IDS = 500
+CONV_MIN_INTERVAL = 0.5  # Meta Conversations API: at most 2 requests/second.
+CONV_CACHE_TTL = 3600
+CONV_REFRESH_LOCK_TTL = CONV_LIST_TIMEOUT * CONV_MAX_PAGES + 30
+_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:_-]{1,255}$")
 MSG_KEEP_ROWS = 2000        # підрізання історії
 AUTOMATION_LEASE_TTL = timedelta(minutes=3)
 
@@ -745,29 +753,116 @@ def get_page_token(s: InstagramBotSettings, *, force: bool = False) -> str:
     return ""
 
 
-def refresh_conv_ids(s: InstagramBotSettings, page_token: str) -> list[str]:
-    """Важкий виклик /conversations (~20-27 c) — лише у фоновому потоці демона."""
-    code, body = _http(
-        f"{GRAPH}/{s.page_id}/conversations?platform=instagram"
-        f"&fields=id&limit=10&access_token={page_token}",
-        timeout=CONV_LIST_TIMEOUT,
-    )
-    if code != 200:
-        stale = cache.get("ig_bot_conv_ids")
-        if stale is not None:
-            return stale
-        log("warning", "conversations", f"HTTP {code}: {body[:150]}")
+def _conv_cache_key(s: InstagramBotSettings) -> str:
+    return f"ig_bot_conv_ids:{s.page_id or 'unknown'}"
+
+
+def _valid_conv_snapshot(value) -> list[str]:
+    if not isinstance(value, list) or len(value) > CONV_MAX_IDS:
         return []
+    result = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, str):
+            return []
+        item = item.strip()
+        if not _CONV_ID_RE.fullmatch(item):
+            return []
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _valid_conversation_page_url(value: str) -> bool:
     try:
-        ids = [c["id"] for c in json.loads(body).get("data", [])]
-        cache.set("ig_bot_conv_ids", ids, 3600)
-        return ids
-    except Exception:
-        return cache.get("ig_bot_conv_ids") or []
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == "graph.facebook.com"
+        and parsed.path.startswith(f"/{GRAPH_VERSION}/")
+        and not parsed.fragment
+    )
 
 
-def get_conv_ids_cached() -> list[str] | None:
-    return cache.get("ig_bot_conv_ids")
+def refresh_conv_ids(s: InstagramBotSettings, page_token: str) -> list[str]:
+    """Refresh a complete bounded conversation snapshot in the background."""
+    stale = _valid_conv_snapshot(cache.get(_conv_cache_key(s)))
+    lock_key = f"ig_bot_conv_refresh:{s.page_id or 'unknown'}"
+    if not cache.add(lock_key, "1", timeout=CONV_REFRESH_LOCK_TTL):
+        return stale
+    try:
+        return _refresh_conv_ids_unlocked(s, page_token, stale)
+    finally:
+        cache.delete(lock_key)
+
+
+def _refresh_conv_ids_unlocked(s: InstagramBotSettings, page_token: str, stale: list[str]) -> list[str]:
+    """Refresh a complete bounded conversation snapshot in the background.
+
+    A failed later page must never replace a known-good snapshot with partial
+    data: polling a partial list silently drops customers from observation.
+    """
+    page_url = (
+        f"{GRAPH}/{s.page_id}/conversations?platform=instagram"
+        f"&fields=id&limit={CONV_PAGE_LIMIT}&access_token={page_token}"
+    )
+    discovered: list[str] = []
+    seen: set[str] = set()
+    visited_pages: set[str] = set()
+    for page_index in range(CONV_MAX_PAGES):
+        if page_index:
+            # Fixed conservative spacing is easier to reason about than a
+            # provider-header guess and remains within the documented limit.
+            time.sleep(CONV_MIN_INTERVAL)
+        code, body = _http(page_url, timeout=CONV_LIST_TIMEOUT)
+        if code != 200:
+            log("warning", "conversations", f"page={page_index + 1} HTTP {code}; keeping complete cache")
+            return stale
+        try:
+            if page_url in visited_pages:
+                raise ValueError("repeated paging URL")
+            visited_pages.add(page_url)
+            envelope = json.loads(body)
+            if not isinstance(envelope, dict) or not isinstance(envelope.get("data"), list):
+                raise ValueError("malformed data")
+            for conversation in envelope["data"]:
+                if not isinstance(conversation, dict):
+                    raise ValueError("malformed conversation")
+                conversation_id = conversation.get("id")
+                if not isinstance(conversation_id, str) or not _CONV_ID_RE.fullmatch(conversation_id.strip()):
+                    raise ValueError("malformed conversation id")
+                conversation_id = conversation_id.strip()
+                if conversation_id not in seen:
+                    seen.add(conversation_id)
+                    discovered.append(conversation_id)
+                    if len(discovered) > CONV_MAX_IDS:
+                        raise ValueError("conversation cap exceeded")
+            paging = envelope.get("paging")
+            if paging is None:
+                paging = {}
+            if not isinstance(paging, dict):
+                raise ValueError("malformed paging")
+            next_url = paging.get("next")
+            if not next_url:
+                cache.set(_conv_cache_key(s), discovered, CONV_CACHE_TTL)
+                return discovered
+            if not isinstance(next_url, str) or not _valid_conversation_page_url(next_url):
+                raise ValueError("untrusted paging URL")
+            page_url = next_url
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            log("warning", "conversations", f"page={page_index + 1} malformed; keeping complete cache ({exc})")
+            return stale
+    log("warning", "conversations", "page cap reached; keeping complete cache")
+    return stale
+
+
+def get_conv_ids_cached(s: InstagramBotSettings | None = None) -> list[str] | None:
+    if s is None:
+        return None
+    return cache.get(_conv_cache_key(s))
 
 
 # ---------------------------------------------------------------------------
@@ -2322,9 +2417,9 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
     page_token = get_page_token(s)
     if not page_token:
         return {"ok": False, "error": "no_page_token"}
-    conv_ids = get_conv_ids_cached()
+    conv_ids = get_conv_ids_cached(s)
     if conv_ids is None:
-        conv_ids = refresh_conv_ids(s, page_token)
+        return {"ok": True, "enqueued": 0, "conversations": 0, "refresh_pending": True}
     if not conv_ids:
         return {"ok": True, "enqueued": 0, "conversations": 0}
     if s.last_error:
