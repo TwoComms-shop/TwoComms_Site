@@ -368,7 +368,7 @@ The order is intentional. P0 blocks safe operation; P1 improves conversion and o
 ### P0 — production correctness and safety
 
 - [ ] **P0.1 Baseline lock and observability contract.** Freeze current production/local evidence, add correlation IDs and status event schema, and write read-only health checks. Files: `instagram_bot.py`, `models.py`, `bot_views.py`, new tests. Verify current deployed SHA and no unrelated files staged. Commit/push/deploy.
-- [ ] **P0.2 REOPENED — restore daemon liveness with a cache-independent singleton.** The daemon is live on production, but the production backend is `FileBasedCache`; Django file-cache `add()` is not a cross-process lock. Replace the watchdog/daemon spawn lock with OS `flock` or an atomic database lease and prove exactly one worker under concurrent `--ensure`. Preserve the existing heartbeat/reload behavior. Commit/push/deploy.
+- [x] **P0.2 — restore daemon liveness with a cache-independent singleton.** Watchdog spawn and daemon lifetime are now protected by separate OS `flock` files; cache heartbeat is telemetry only. Spawn failure, child-without-lock, and stale-reload timeout fail deploy through `CommandError`. Thirteen focused tests include a real two-process ensure race. Production SHA `912e6120` transitioned cleanly from the old worker, three concurrent `--ensure` calls all observed the same daemon, and exactly one PID remained with fresh DB/cache heartbeat. Commit/push/deploy.
 - [ ] **P0.3 REOPENED — deduplicate takeover alerts on the real MySQL engine.** The transition logic is correct sequentially, but production `IgClient` is MyISAM, so `transaction.atomic()+select_for_update()` does not serialize two echoes. Make the epoch transition atomic without relying on MyISAM row locks, or migrate the critical state table to InnoDB. Prove one alert for concurrent echoes and one new alert only after resume. Commit/push/deploy.
 - [ ] **P0.4 REOPENED — complete the notification outbox.** Unique dedupe rows and Telegram message IDs exist, but no autonomous worker drains failed rows. Add due time, bounded backoff/jitter, stale-`sending` recovery, terminal/dead-letter state, daemon/command drain, and operator visibility. Verify one-shot Telegram failure recovers without another business transition and never duplicates a confirmed message. Commit/push/deploy.
 - [x] **P0.5 Make Gemini 3.6 authoritative.** Add `gemini-3.6-flash` to model/key policy, make the settings model effective, and add model-aware generation config/finish-reason handling. Run mocked tests plus the six-key read-only production probe. Commit/push/deploy.
@@ -470,13 +470,14 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
     - [x] Core payment/order ledger: append-only provider events, InnoDB locked projection, amount validation, partial/full refund and reversal truth, order/shipment fail-closed reconciliation, net-paid client/ad aggregates, dirty-marker recovery for MyISAM mirrors, and audit-only Meta refund records are deployed at production SHA `fc727a35`. Fresh migration and 405 related tests pass; production has both append-only triggers, zero dirty projections and zero reconciliation findings.
     - [ ] External Meta Purchase correction/refund delivery remains blocked on an explicit reviewed CAPI policy and owner permission; no live or test Meta event was sent.
 
-- [ ] **P0.B2 Make daemon singleton correctness independent of Redis/cache backend.**
+- [x] **P0.B2 Make daemon singleton correctness independent of Redis/cache backend.**
   - **Symptom:** two concurrent cron/manual `--ensure` invocations can both spawn a worker on production.
   - **Root cause:** production uses `FileBasedCache`; watchdog and daemon singleton depend on non-atomic cross-process `cache.add()`.
   - **Risk:** duplicate sends/follow-ups/alerts, competing leases, Gemini quota pressure, and DB load.
   - **Affected branches:** minute watchdog, deploy restart, manual ensure, stale heartbeat recovery, Passenger-triggered paths.
   - **Acceptance:** OS `flock` or atomic DB lease owns the daemon; PID/start-time/SHA are verified; stale ownership recovers; cache eviction/outage cannot produce two workers.
   - **Tests:** real multiprocess FileBasedCache race, two concurrent ensures, stale PID, deploy sentinel race, killed owner, cache deletion, exactly one live PID.
+  - **Production proof:** SHA `912e6120`; PID `939730` was the only `--forever` process after three simultaneous production ensures, all three returned `daemon alive — ok`, heartbeat ages were 2.5 seconds, queue/outbox were zero, and effective model was `gemini-3.6-flash`.
 
 - [ ] **P0.B3 Remove MyISAM-invalid concurrency assumptions from critical CRM paths.**
   - **Symptom:** concurrent manager echoes, hide-vs-send, webhook-vs-poll, or two client leases can both cross a supposed `select_for_update()` boundary.
