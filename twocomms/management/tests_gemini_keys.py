@@ -163,6 +163,19 @@ class IterAttemptsTests(TestCase):
         self.assertIn("gemini-3.1-flash-lite", models_for_first_key)
         gk.clear_model_overload()
 
+    def test_model_chain_override_is_used_for_pooled_attempts(self):
+        from management.services import gemini_keys as gk
+
+        with patch.dict("os.environ", ENV6, clear=False):
+            combos = list(
+                gk.iter_attempts(
+                    "chat",
+                    model_chain_override=["gemini-2.5-flash", "gemini-3.6-flash"],
+                )
+            )
+        self.assertTrue(combos)
+        self.assertEqual(combos[0][2], "gemini-2.5-flash")
+
     def test_checker_chain_uses_25_flash(self):
         from management.services import gemini_keys as gk
         with patch.dict("os.environ", ENV6, clear=False):

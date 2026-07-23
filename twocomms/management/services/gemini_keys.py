@@ -320,7 +320,7 @@ def _sticky_order(key_names: list[str]) -> list[str]:
     return sorted(key_names, key=_last_ok, reverse=True)
 
 
-def iter_attempts(role: str):
+def iter_attempts(role: str, model_chain_override: list[str] | None = None):
     """Генерує (key_name, key_value, model) у порядку пріоритету.
 
     MODEL-MAJOR: зовнішній цикл — МОДЕЛІ цепочки, внутрішній — КЛЮЧІ. Тобто
@@ -339,7 +339,9 @@ def iter_attempts(role: str):
     Per-key cooldown (429) перевіряється ліниво — вичерпаний ключ пропускаємо.
     """
     pool = role_key_pools().get(role, {"own": [], "borrow": []})
-    models = model_chain(role)
+    models = list(
+        model_chain_override if model_chain_override is not None else model_chain(role)
+    )
     ordered_keys = _sticky_order(list(pool.get("own", []))) + _sticky_order(list(pool.get("borrow", [])))
     present = [(kn, _key_value(kn)) for kn in ordered_keys]
     present = [(kn, kv) for kn, kv in present if kv]

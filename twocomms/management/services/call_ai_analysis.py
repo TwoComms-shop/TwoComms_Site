@@ -508,7 +508,9 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
             if aborted:
                 break
 
-        for key_name, key_value, model in gemini_keys.iter_attempts(role):
+        for key_name, key_value, model in gemini_keys.iter_attempts(
+            role, model_chain_override=models
+        ):
             if _over_deadline():
                 aborted = True
                 break
