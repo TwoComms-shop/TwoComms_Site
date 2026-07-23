@@ -1,10 +1,14 @@
 """Regression tests for the Instagram bot daemon/watchdog boundary."""
 
 import os
+import subprocess
+import sys
+import tempfile
 from datetime import timedelta
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
@@ -15,6 +19,7 @@ from management.management.commands.run_instagram_bot import (
     PROJECT_ROOT,
     Command,
     _daemon_alive,
+    _process_lock_held,
 )
 from management.models import InstagramBotSettings
 from management.services import instagram_bot as bot
@@ -27,9 +32,9 @@ class DaemonPathTests(SimpleTestCase):
         self.assertEqual(PROJECT_ROOT, os.path.dirname(MANAGE_PY_PATH))
 
     @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
-    @patch("management.management.commands.run_instagram_bot._daemon_alive", return_value=False)
-    @patch("management.management.commands.run_instagram_bot.cache.add", return_value=True)
-    def test_ensure_spawns_from_project_root_with_absolute_manage_path(self, _add, _alive, popen):
+    @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=True)
+    @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=False)
+    def test_ensure_spawns_from_project_root_with_absolute_manage_path(self, _held, _wait, popen):
         command = Command()
 
         with patch.object(command, "stdout") as stdout:
@@ -42,17 +47,111 @@ class DaemonPathTests(SimpleTestCase):
         stdout.write.assert_called()
 
     @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
+    @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=True)
+    @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=True)
     @patch("management.management.commands.run_instagram_bot._daemon_code_current", return_value=False)
-    @patch("management.management.commands.run_instagram_bot._daemon_alive", return_value=True)
-    @patch("management.management.commands.run_instagram_bot.cache.add", return_value=True)
     def test_ensure_replaces_old_worker_after_restart_sentinel(
-        self, _add, _alive, _current, popen
+        self, _current, _held, _wait, popen
     ):
         command = Command()
         with patch.object(command, "stdout") as stdout:
             command._ensure()
         popen.assert_called_once()
         stdout.write.assert_called()
+
+    @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
+    @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=True)
+    @patch("management.management.commands.run_instagram_bot._daemon_code_current", return_value=True)
+    def test_ensure_does_not_spawn_over_current_process_lock(self, _current, _held, popen):
+        command = Command()
+        with patch.object(command, "stdout") as stdout:
+            command._ensure()
+        popen.assert_not_called()
+        stdout.write.assert_called_with("daemon alive — ok")
+
+    def test_process_lock_is_exclusive_across_real_processes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = os.path.join(temp_dir, "daemon.lock")
+            child_code = (
+                "import fcntl,sys,time; "
+                "f=open(sys.argv[1],'a+'); "
+                "fcntl.flock(f.fileno(), fcntl.LOCK_EX); "
+                "print('locked', flush=True); time.sleep(10)"
+            )
+            child = subprocess.Popen(
+                [sys.executable, "-c", child_code, lock_path],
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertEqual(child.stdout.readline().strip(), "locked")
+                self.assertTrue(_process_lock_held(lock_path))
+            finally:
+                child.terminate()
+                child.wait(timeout=5)
+            self.assertFalse(_process_lock_held(lock_path))
+
+    @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
+    @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=False)
+    @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=False)
+    def test_ensure_fails_when_child_never_acquires_daemon_lock(self, _held, _wait, popen):
+        with self.assertRaisesMessage(CommandError, "exited before acquiring"):
+            Command()._ensure()
+        popen.assert_called_once()
+
+    @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=False)
+    @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=True)
+    @patch("management.management.commands.run_instagram_bot._daemon_code_current", return_value=False)
+    def test_ensure_fails_when_stale_daemon_does_not_release_lock(self, _current, _held, _wait):
+        with self.assertRaisesMessage(CommandError, "did not release"):
+            Command()._ensure()
+
+    @patch("management.management.commands.run_instagram_bot.subprocess.Popen", side_effect=OSError("fork failed"))
+    @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=False)
+    def test_ensure_fails_when_process_spawn_fails(self, _held, popen):
+        with self.assertRaisesMessage(CommandError, "spawn failed"):
+            Command()._ensure()
+        popen.assert_called_once()
+
+    def test_two_real_ensure_processes_enter_spawn_boundary_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            spawn_lock = os.path.join(temp_dir, "spawn.lock")
+            daemon_lock = os.path.join(temp_dir, "daemon.lock")
+            marker = os.path.join(temp_dir, "spawned.txt")
+            child_code = """
+import os, sys, time
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'test_settings')
+import django
+django.setup()
+from unittest.mock import patch
+from management.management.commands import run_instagram_bot as runner
+runner.SPAWN_LOCK_FILE, runner.DAEMON_LOCK_FILE = sys.argv[1], sys.argv[2]
+def fake_spawn(*args, **kwargs):
+    with open(sys.argv[3], 'a') as marker_file:
+        marker_file.write('spawned\\n')
+    time.sleep(0.5)
+with patch.object(runner.subprocess, 'Popen', side_effect=fake_spawn), patch.object(runner, '_wait_for_lock', return_value=True), patch.object(runner.bot, 'log'):
+    runner.Command()._ensure()
+"""
+            env = os.environ.copy()
+            env["PYTHONPATH"] = os.pathsep.join(
+                filter(None, [PROJECT_ROOT, env.get("PYTHONPATH", "")])
+            )
+            children = [
+                subprocess.Popen(
+                    [sys.executable, "-c", child_code, spawn_lock, daemon_lock, marker],
+                    cwd=PROJECT_ROOT,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(2)
+            ]
+            results = [child.communicate(timeout=10) for child in children]
+            self.assertEqual([child.returncode for child in children], [0, 0], results)
+            with open(marker) as marker_file:
+                self.assertEqual(marker_file.read().splitlines(), ["spawned"])
 
 
 class DaemonHeartbeatTests(SimpleTestCase):

@@ -10,19 +10,21 @@
               cron НЕ робить запитів до API, лише підстраховує, що демон живий.
   --once      Один прохід опитування (для діагностики).
 
-Демон-singleton тримається через кеш-heartbeat: другий демон не стартує, поки
-живий перший. Кожна ітерація викликає close_old_connections() — інакше на
+Демон-singleton тримається через OS advisory lock: другий демон не стартує,
+навіть якщо FileBasedCache очищений або недоступний. Кожна ітерація викликає close_old_connections() — інакше на
 shared-MySQL (wait_timeout=60) з'являється "MySQL server has gone away".
 """
 import os
+import fcntl
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from contextlib import contextmanager
 
 from django.core.cache import cache
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 
 from management.models import InstagramBotSettings
@@ -34,12 +36,50 @@ HB_ALIVE_WINDOW = 45                   # демон вважається жив�
 SPAWN_LOCK_KEY = "ig_bot_spawn_lock"
 DAEMON_LOCK_KEY = "ig_bot_daemon_lock"
 CONV_REFRESH_EVERY = 120               # фонове оновлення списку тредів, c
+RELOAD_LOCK_WAIT_SECONDS = 45
 
 # Cron may invoke manage.py from an arbitrary working directory. Resolve the
 # entry point from this command module and keep the child in the Django root.
 MANAGE_PY_PATH = str(Path(__file__).resolve().parents[3] / "manage.py")
 PROJECT_ROOT = str(Path(MANAGE_PY_PATH).parent)
 PID_FILE = os.path.join(PROJECT_ROOT, "tmp", "ig_bot.pid")
+SPAWN_LOCK_FILE = os.path.join(PROJECT_ROOT, "tmp", "ig_bot_spawn.lock")
+DAEMON_LOCK_FILE = os.path.join(PROJECT_ROOT, "tmp", "ig_bot_daemon.lock")
+
+
+@contextmanager
+def _try_process_lock(path: str):
+    """Yield an open lock handle, or ``None`` when another process owns it."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    handle = open(path, "a+")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            yield None
+            return
+        yield handle
+    finally:
+        if not handle.closed:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+
+def _process_lock_held(path: str) -> bool:
+    with _try_process_lock(path) as handle:
+        return handle is None
+
+
+def _wait_for_lock(path: str, *, held: bool, timeout: float = 6.0) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if _process_lock_held(path) is held:
+            return True
+        time.sleep(0.1)
+    return _process_lock_held(path) is held
 
 
 def _daemon_alive() -> bool:
@@ -111,50 +151,55 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
     def _ensure(self):
-        if _daemon_alive() and _daemon_code_current():
-            self.stdout.write("daemon alive — ok")
-            return
-        # A deploy changes restart.txt before the old process exits. Release
-        # only the stale worker's lease so the new child can claim it.
-        if _daemon_alive() and not _daemon_code_current():
-            cache.delete(HB_KEY)
-            cache.delete(DAEMON_LOCK_KEY)
-        # Захист від подвійного спавну.
-        if not cache.add(SPAWN_LOCK_KEY, "1", 30):
-            self.stdout.write("spawn in progress — skip")
-            return
-        log_dir = os.path.join(PROJECT_ROOT, "tmp")
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, "ig_bot_daemon.log")
-        try:
-            with open(log_path, "a") as logf:
-                subprocess.Popen(
-                    [sys.executable, MANAGE_PY_PATH, "run_instagram_bot", "--forever"],
-                    stdout=logf,
-                    stderr=logf,
-                    stdin=subprocess.DEVNULL,
-                    start_new_session=True,  # відв'язуємо (setsid) — переживе cron
-                    cwd=PROJECT_ROOT,
-                    env=os.environ.copy(),
-                )
-            bot.log("info", "daemon_spawn", "watchdog підняв демона")
-            self.stdout.write("daemon spawned")
-        except Exception as exc:
-            self.stdout.write(f"spawn failed: {exc!r}")
+        with _try_process_lock(SPAWN_LOCK_FILE) as spawn_lock:
+            if spawn_lock is None:
+                self.stdout.write("spawn in progress — skip")
+                return
+            if _process_lock_held(DAEMON_LOCK_FILE):
+                if _daemon_code_current():
+                    self.stdout.write("daemon alive — ok")
+                    return
+                # Old code sees restart.txt and exits within at most one idle
+                # loop. Never spawn while it still owns the process lock.
+                if not _wait_for_lock(
+                    DAEMON_LOCK_FILE,
+                    held=False,
+                    timeout=RELOAD_LOCK_WAIT_SECONDS,
+                ):
+                    raise CommandError("stale daemon did not release singleton lock during reload")
+            log_dir = os.path.join(PROJECT_ROOT, "tmp")
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, "ig_bot_daemon.log")
+            try:
+                with open(log_path, "a") as logf:
+                    subprocess.Popen(
+                        [sys.executable, MANAGE_PY_PATH, "run_instagram_bot", "--forever"],
+                        stdout=logf,
+                        stderr=logf,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True,
+                        cwd=PROJECT_ROOT,
+                        env=os.environ.copy(),
+                    )
+                if not _wait_for_lock(DAEMON_LOCK_FILE, held=True, timeout=3.0):
+                    raise CommandError("daemon child exited before acquiring singleton lock")
+                bot.log("info", "daemon_spawn", "watchdog підняв демона")
+                self.stdout.write("daemon spawned")
+            except CommandError:
+                raise
+            except Exception as exc:
+                raise CommandError(f"daemon spawn failed: {exc!r}") from exc
 
     # ------------------------------------------------------------------
     def _forever(self):
-        # Singleton: не стартуємо другий демон поверх живого.
-        if _daemon_alive() and _daemon_code_current():
-            self.stdout.write("daemon already alive — exit")
-            return
-        if _daemon_alive() and not _daemon_code_current():
-            cache.delete(HB_KEY)
-            cache.delete(DAEMON_LOCK_KEY)
+        with _try_process_lock(DAEMON_LOCK_FILE) as daemon_lock:
+            if daemon_lock is None:
+                self.stdout.write("daemon already alive — exit")
+                return
+            return self._forever_locked()
+
+    def _forever_locked(self):
         owner = f"{os.getpid()}:{time.time_ns()}"
-        if not cache.add(DAEMON_LOCK_KEY, owner, HB_ALIVE_WINDOW * 3):
-            self.stdout.write("daemon start lock held — exit")
-            return
         cache.set(HB_KEY, {"at": time.time(), "sentinel": _restart_sentinel_mtime()}, HB_ALIVE_WINDOW * 3)
         try:
             os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
