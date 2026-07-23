@@ -417,5 +417,12 @@ def pool_status(now: datetime.datetime | None = None) -> list[dict]:
             "last_status": st.last_status,
             "needs_topup": (st.cooldown_scope == "topup") and not available,
             "last_ok_at": st.last_ok_at.isoformat() if st.last_ok_at else None,
+            "last_probe_at": st.last_probe_at.isoformat() if st.last_probe_at else None,
+            "last_probe_status": st.last_probe_status,
+            "last_probe_model": st.last_probe_model,
+            "last_probe_latency_ms": st.last_probe_latency_ms,
+            "last_probe_finish_reason": st.last_probe_finish_reason,
+            "last_probe_http_code": st.last_probe_http_code,
+            "last_probe_error": st.last_probe_error,
         })
     return out

@@ -3863,6 +3863,13 @@ class GeminiKeyState(models.Model):
     requests_today = models.PositiveIntegerField(default=0)
     day_date = models.DateField(null=True, blank=True)
     last_error = models.TextField(blank=True)
+    last_probe_at = models.DateTimeField(null=True, blank=True)
+    last_probe_status = models.CharField(max_length=32, blank=True)
+    last_probe_model = models.CharField(max_length=80, blank=True)
+    last_probe_latency_ms = models.PositiveIntegerField(default=0)
+    last_probe_finish_reason = models.CharField(max_length=32, blank=True)
+    last_probe_http_code = models.PositiveSmallIntegerField(null=True, blank=True)
+    last_probe_error = models.CharField(max_length=120, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

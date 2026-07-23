@@ -15,12 +15,14 @@
 
 Аудіо локально НЕ зберігається — лише структурований розбор та метрики.
 Ключ Gemini — з ENV GEMINI_API (той самий, що використовує Instagram-бот),
-модель за замовчуванням gemini-3.5-flash. Бібліотека google.generativeai НЕ
+модель для Instagram-чату за замовчуванням gemini-3.6-flash, із керованим
+fallback для інших ролей. Бібліотека google.generativeai НЕ
 потрібна — прямий REST-виклик (як у services/instagram_bot.py).
 """
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import logging
 import os
@@ -275,6 +277,23 @@ def upsert_call_record(client: BinotelClient, general_call_id: str) -> CallRecor
 # ---------------------------------------------------------------------------
 # Gemini
 # ---------------------------------------------------------------------------
+def _payload_for_model(model: str, payload: dict) -> dict:
+    """Normalize model-specific generation settings without mutating the caller."""
+    normalized = copy.deepcopy(payload)
+    generation = normalized.get("generationConfig")
+    if not isinstance(generation, dict):
+        return normalized
+    thinking = generation.get("thinkingConfig")
+    if not isinstance(thinking, dict):
+        return normalized
+    if model == "gemini-3.6-flash" and "thinkingBudget" in thinking:
+        # Gemini 3.6 documents thinkingLevel; legacy thinkingBudget is not its
+        # portable contract and can turn a health/chat request into HTTP 400.
+        thinking.pop("thinkingBudget", None)
+        thinking.setdefault("thinkingLevel", "low")
+    return normalized
+
+
 def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                 n_attempts: int, grounded: bool, log: list, parse: bool = True,
                 timeout: tuple | None = None, log_cb=None) -> tuple[str, dict | None]:
@@ -556,6 +575,7 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
     типізовану помилку (_GeminiTransient / _Gemini429 / _GeminiModelUnavailable / _GeminiFatal).
     parse=False → повертає сирий текст замість JSON (для діалогового бота)."""
     url = f"{GENAI_BASE}/models/{model}:generateContent"
+    payload = _payload_for_model(model, payload)
     try:
         resp = requests.post(
             url,
