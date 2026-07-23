@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
 
 from management.models import IgClient, IgDeal, IgDealItem, InstagramBotSettings
 from management.services import bot_orders
@@ -220,6 +221,7 @@ class SafetyNetTests(TestCase):
         d = IgDeal.objects.create(
             client=c, pay_type=IgDeal.PayType.ONLINE_FULL,
             status=IgDeal.Status.PAID, payment_status="paid",
+            paid_at=timezone.now(),
             np_full_name=("Іван" if with_np else ""), np_phone=("0931112233" if with_np else ""),
             np_city=("Київ" if with_np else ""), np_office=("Відд 1" if with_np else ""),
         )

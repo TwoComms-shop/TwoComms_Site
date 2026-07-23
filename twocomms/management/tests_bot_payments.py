@@ -94,6 +94,17 @@ class ApplyPaymentStatusTests(TestCase):
         self.assertEqual(self.deal.payment_status, "unpaid")
         self.assertEqual(self.deal.status, IgDeal.Status.AWAITING_PAYMENT)
 
+    def test_provider_success_heals_missing_paid_timestamp_on_legacy_paid_row(self):
+        self.deal.status = IgDeal.Status.PAID
+        self.deal.payment_status = "paid"
+        self.deal.paid_at = None
+        self.deal.save(update_fields=["status", "payment_status", "paid_at", "updated_at"])
+
+        bot_payments.apply_payment_status(self.deal, "success")
+
+        self.deal.refresh_from_db()
+        self.assertIsNotNone(self.deal.paid_at)
+
     @patch("storefront.views.monobank._monobank_api_request")
     def test_poll_deal_status_applies(self, mock_api):
         mock_api.return_value = {"status": "success"}

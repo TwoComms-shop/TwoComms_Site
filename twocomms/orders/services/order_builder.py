@@ -32,6 +32,13 @@ def create_order_from_deal(deal, *, created_by=None):
         _ensure_purchase_action(deal.order, deal.pk)
         return deal.order
 
+    # This is the materialization boundary, so callers cannot bypass payment
+    # truth by invoking the order builder directly with a forged deal status.
+    from management.services.bot_payment_truth import verified_payment_deals
+
+    if not verified_payment_deals(deal.__class__.objects.filter(pk=deal.pk)).exists():
+        raise ValueError("IG order requires provider-confirmed payment")
+
     from orders.models import Order, OrderItem
 
     is_prepay = deal.pay_type == deal.PayType.PREPAY_200

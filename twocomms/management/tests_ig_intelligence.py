@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from management.models import IgClient, IgConversationAnalysisSnapshot, InstagramBotMessage
+from management.models import IgClient, IgConversationAnalysisSnapshot, IgDeal, InstagramBotMessage
 from management.services.bot_sales_classifier import classify_message
 
 
@@ -184,6 +184,12 @@ class ConversationIntelligenceSnapshotTests(TestCase):
     def test_paid_customer_opt_out_preserves_verified_stage(self):
         self.client.stage = IgClient.Stage.PAID
         self.client.save(update_fields=["stage", "updated_at"])
+        IgDeal.objects.create(
+            client=self.client,
+            status=IgDeal.Status.PAID,
+            payment_status="paid",
+            paid_at=timezone.now(),
+        )
         message = self.message("Стоп, більше не пишіть")
 
         result = classify_message(self.client, message=message)
@@ -193,6 +199,30 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         self.assertEqual(result["interaction_type"], "opt_out")
         self.assertEqual(self.client.stage, IgClient.Stage.PAID)
         self.assertEqual(snapshot.score_band, "paid")
+
+    def test_forged_paid_stage_is_not_payment_truth(self):
+        self.client.stage = IgClient.Stage.PAID
+        self.client.save(update_fields=["stage", "updated_at"])
+
+        classify_message(self.client, text="Дякую", role=InstagramBotMessage.Role.USER)
+
+        snapshot = self.client.analysis_snapshots.get()
+        self.assertNotEqual(snapshot.score_band, "paid")
+        self.assertNotEqual(snapshot.interaction_type, "paid_order_waiting")
+
+    def test_verified_deal_is_payment_truth_even_if_soft_stage_is_stale(self):
+        IgDeal.objects.create(
+            client=self.client,
+            status=IgDeal.Status.PAID,
+            payment_status="paid",
+            paid_at=timezone.now(),
+        )
+
+        classify_message(self.client, text="Дякую", role=InstagramBotMessage.Role.USER)
+
+        snapshot = self.client.analysis_snapshots.get()
+        self.assertEqual(snapshot.score_band, "paid")
+        self.assertEqual(snapshot.interaction_type, "paid_order_waiting")
 
     def test_persisted_no_reply_objection_is_classified_as_no_reply(self):
         self.client.primary_objection = IgClient.Objection.NO_REPLY

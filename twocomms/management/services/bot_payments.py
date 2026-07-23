@@ -122,6 +122,7 @@ def apply_payment_status(deal, status_value, payload=None) -> str:
         deal.payment_status = target
         if not already_paid:
             deal.status = deal.Status.PAID
+        if deal.paid_at is None:
             deal.paid_at = timezone.now()
         deal.save(update_fields=["payment_status", "status", "paid_at", "payment_payload", "updated_at"])
         if not already_paid:

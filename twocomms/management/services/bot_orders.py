@@ -17,6 +17,10 @@ from decimal import Decimal
 from django.db.models import Q
 
 from management.services.bot_payments import create_payment_link
+from management.services.bot_payment_truth import (
+    verified_payment_deals,
+    verified_payment_q,
+)
 from management.services.call_ai_analysis import gemini_generate_text
 from management.services.instagram_bot import notify_manager, send_text
 from orders.services.order_builder import create_order_from_deal
@@ -77,7 +81,7 @@ def fulfill_if_ready(deal, created_by=None) -> bool:
     """Створює замовлення, якщо угода оплачена, ще без замовлення і дані НП повні."""
     if deal.order_id:
         return False
-    if deal.status != deal.Status.PAID:
+    if not verified_payment_deals(deal.__class__.objects.filter(pk=deal.pk)).exists():
         return False
     if not deal_has_np_data(deal):
         return False
@@ -98,7 +102,9 @@ def collect_np_and_fulfill(client, created_by=None) -> bool:
     from management.models import IgDeal
 
     deal = (
-        IgDeal.objects.filter(client=client, status=IgDeal.Status.PAID, order__isnull=True)
+        verified_payment_deals(
+            IgDeal.objects.filter(client=client, order__isnull=True)
+        )
         .order_by("-id")
         .first()
     )
@@ -317,10 +323,12 @@ def fulfill_ready_paid_deals(limit: int = 50) -> int:
         action_type='purchase',
         order_id__isnull=False,
     ).values('order_id')
-    missing_order = Q(status=IgDeal.Status.PAID, order__isnull=True)
+    missing_order = verified_payment_q() & Q(order__isnull=True)
     missing_purchase = (
         Q(
             status=IgDeal.Status.ORDER_CREATED,
+            payment_status__in=("paid", "prepaid"),
+            paid_at__isnull=False,
             order__isnull=False,
             order__payment_status__in=('paid', 'prepaid', 'partial'),
         )

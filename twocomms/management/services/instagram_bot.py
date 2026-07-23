@@ -70,6 +70,11 @@ AUTOMATION_LEASE_TTL = timedelta(minutes=3)
 # Керуючі теги, які модель може додавати у відповідь (вирізаються перед
 # відправкою клієнту). [STAGE:x] просуває воронку, [MANAGER] кличе людину.
 STAGE_VALUES = {s.value for s in IgClient.Stage}
+MODEL_HARD_STAGES = {
+    IgClient.Stage.PAID,
+    IgClient.Stage.ORDER_CREATED,
+    IgClient.Stage.DONE,
+}
 _CONTROL_TAG_RE = re.compile(r"\[([A-Z]+)(?::([^\]]+))?\]")
 _SECRET_PARAM_RE = re.compile(
     r"((?:access_token|client_secret|api[_-]?key|password|token)=)[^&\s]+",
@@ -100,10 +105,17 @@ def _extract_control(reply: str) -> tuple[str, dict]:
 
 
 def _apply_stage(client, stage_value) -> bool:
-    """Просуває клієнта на стадію, якщо вона валідна й відрізняється від поточної."""
+    """Apply only model-authorized workflow stages.
+
+    Payment and fulfilment stages belong exclusively to verified provider/order
+    services.  The model may neither claim them nor regress an existing hard
+    stage through a generated control tag.
+    """
     if not client or not stage_value or not isinstance(stage_value, str):
         return False
     if stage_value not in STAGE_VALUES:
+        return False
+    if stage_value in MODEL_HARD_STAGES or client.stage in MODEL_HARD_STAGES:
         return False
     if client.stage == stage_value:
         return False
@@ -2210,8 +2222,11 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
             log("warning", "followup_schedule", repr(exc))
         # [ORDER] або safety-net: оплачений клієнт надіслав контактні дані, а
         # модель не виставила тег — все одно намагаємось зібрати дані й створити заказ.
+        from management.services.bot_payment_truth import client_has_verified_payment
+
         if control.get("order") or (
-            row.client.stage == IgClient.Stage.PAID and _looks_like_contact_info(row.text)
+            _looks_like_contact_info(row.text)
+            and client_has_verified_payment(row.client)
         ):
             try:
                 from management.services import bot_orders

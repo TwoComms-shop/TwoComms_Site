@@ -464,6 +464,9 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Affected branches:** chat control tags, classifier, stage history, follow-ups, client list/detail, funnel/stats, ad reports, order collection.
   - **Acceptance:** AI can change only soft intent/routing state; verified payment is derived from provider/deal/order ledger; fulfillment is derived from linked order/TTN; hard truth cannot be cleared by later model replies; a dry-run inconsistency report lists forged/legacy paid rows before repair.
   - **Tests:** forged `paid/order_created/done` tags, payment promise/screenshot/link, verified full/prepayment, webhook+poll duplicate, refund/reversal/cancel, post-paid chat, fake legacy paid in every aggregate.
+  - [x] **P0.B1a — authority boundary:** model hard-stage tags are rejected; CRM paid view/card, score band, follow-up stop, paid/ad aggregates, and order creation use one confirmed-deal predicate (`paid|prepaid`, `paid_at`, paid/order-created ledger status). Existing prompt rows are updated by reversible migration `0088`; focused and full related suites cover forged stage, stale soft stage, repeated unpaid attempt, and unverified order creation.
+  - [ ] **P0.B1b — reconciliation/repair:** add a read-only inconsistency command for legacy forged stages and mismatched deal/order rows; review its production output before any repair.
+  - [ ] **P0.B1c — reversals:** add append-only refund/reversal/cancellation truth and prove that every paid aggregate, lifecycle summary, follow-up policy, and CAPI path reverses safely without rewriting historical evidence.
 
 - [ ] **P0.B2 Make daemon singleton correctness independent of Redis/cache backend.**
   - **Symptom:** two concurrent cron/manual `--ensure` invocations can both spawn a worker on production.

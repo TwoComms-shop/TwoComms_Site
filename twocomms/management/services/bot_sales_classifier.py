@@ -129,8 +129,9 @@ def _extract_context(text: str) -> dict:
 
 
 def _analysis_band(client: IgClient, result: dict) -> str:
-    paid_stages = {IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE}
-    if client.stage in paid_stages:
+    from management.services.bot_payment_truth import client_has_verified_payment
+
+    if client_has_verified_payment(client):
         return IgConversationAnalysisSnapshot.Band.PAID
     if result.get("no_buy"):
         return IgConversationAnalysisSnapshot.Band.LOST
@@ -148,6 +149,8 @@ def _analysis_band(client: IgClient, result: dict) -> str:
 
 
 def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> str:
+    from management.services.bot_payment_truth import client_has_verified_payment
+
     types = IgConversationAnalysisSnapshot.InteractionType
     if role == InstagramBotMessage.Role.MANAGER:
         return types.MANAGER_OBSERVATION
@@ -158,7 +161,7 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
         if "не пиш" in low or re.search(r"\bстоп\b", low):
             return types.OPT_OUT
         return types.EXPLICIT_NO_BUY
-    if client.stage in {IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE}:
+    if client_has_verified_payment(client):
         return types.PAID_ORDER_WAITING
     if client.stage == IgClient.Stage.SPAM or client.is_blocked:
         return types.SPAM_ABUSE
@@ -303,11 +306,9 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         objection = IgClient.Objection.NO_BUY
         client.lost_reason = "no_buy"
         add(IgConversationSignal.Type.LOST, conf=0.95, value="no_buy")
-        if client.stage not in {
-            IgClient.Stage.PAID,
-            IgClient.Stage.ORDER_CREATED,
-            IgClient.Stage.DONE,
-        }:
+        from management.services.bot_payment_truth import client_has_verified_payment
+
+        if not client_has_verified_payment(client):
             try:
                 client.set_stage(IgClient.Stage.COLD, reason="no_buy")
             except Exception:

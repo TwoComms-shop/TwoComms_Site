@@ -87,6 +87,26 @@ class SalesClassifierTests(TestCase):
 
 
 class FollowUpPolicyTests(TestCase):
+    def test_followup_stops_only_for_verified_payment(self):
+        from management.services import bot_followups
+
+        forged = IgClient.get_or_create_for_sender("fu_forged_paid")
+        forged.stage = IgClient.Stage.PAID
+        forged.save(update_fields=["stage", "updated_at"])
+        verified = IgClient.get_or_create_for_sender("fu_verified_paid")
+        IgDeal.objects.create(
+            client=verified,
+            status=IgDeal.Status.PAID,
+            payment_status="paid",
+            paid_at=timezone.now(),
+        )
+
+        self.assertEqual(bot_followups._client_allows_followup(forged), (True, ""))
+        self.assertEqual(
+            bot_followups._client_allows_followup(verified),
+            (False, "already_converted"),
+        )
+
     def test_transient_followup_failure_is_backed_off_and_not_hot_looped(self):
         from management.models import IgFollowUpTask, InstagramBotSettings
         from management.services import bot_followups
@@ -300,6 +320,12 @@ class SalesCockpitApiTests(TestCase):
         paid = IgClient.get_or_create_for_sender("api_paid")
         paid.stage = IgClient.Stage.PAID
         paid.save()
+        IgDeal.objects.create(
+            client=paid,
+            status=IgDeal.Status.PAID,
+            payment_status="paid",
+            paid_at=timezone.now(),
+        )
 
         data = self.client.get(reverse("management_bot_stats_api")).json()
 
@@ -308,6 +334,104 @@ class SalesCockpitApiTests(TestCase):
         self.assertEqual(data["totals"]["conversations"], 2)
         self.assertGreaterEqual(data["stages"].get(IgClient.Stage.PAID, 0), 1)
         self.assertGreaterEqual(data["objections"].get("price_objection", 0), 1)
+
+    def test_paid_views_and_stats_ignore_stage_without_verified_payment(self):
+        forged = IgClient.get_or_create_for_sender("api_forged_paid")
+        forged.stage = IgClient.Stage.PAID
+        forged.save(update_fields=["stage", "updated_at"])
+        verified = IgClient.get_or_create_for_sender("api_verified_paid")
+        IgDeal.objects.create(
+            client=verified,
+            status=IgDeal.Status.PAID,
+            payment_status="prepaid",
+            paid_at=timezone.now(),
+        )
+
+        paid_rows = self.client.get(
+            reverse("management_bot_clients_api") + "?view=paid"
+        ).json()["clients"]
+        paid_ids = {row["id"] for row in paid_rows}
+        stats = self.client.get(reverse("management_bot_stats_api")).json()
+
+        self.assertNotIn(forged.id, paid_ids)
+        self.assertIn(verified.id, paid_ids)
+        self.assertEqual(stats["totals"]["paid"], 1)
+
+        active_rows = self.client.get(
+            reverse("management_bot_clients_api") + "?view=active"
+        ).json()["clients"]
+        forged_row = next(item for item in active_rows if item["id"] == forged.id)
+        self.assertEqual(forged_row["stage"], "unverified")
+        self.assertEqual(forged_row["stage_raw"], IgClient.Stage.PAID)
+        self.assertEqual(forged_row["payment_truth"], "unverified")
+        self.assertEqual(stats["stages"].get("unverified"), 1)
+        self.assertNotIn(IgClient.Stage.PAID, stats["stages"])
+
+    def test_active_filter_does_not_combine_truth_across_different_deals(self):
+        split = IgClient.get_or_create_for_sender("api_split_deal_truth")
+        IgDeal.objects.create(
+            client=split,
+            status=IgDeal.Status.PAID,
+            payment_status="unpaid",
+            paid_at=timezone.now(),
+        )
+        IgDeal.objects.create(
+            client=split,
+            status=IgDeal.Status.DRAFT,
+            payment_status="paid",
+            paid_at=timezone.now(),
+        )
+
+        active_ids = {
+            item["id"]
+            for item in self.client.get(
+                reverse("management_bot_clients_api") + "?view=active"
+            ).json()["clients"]
+        }
+        self.assertIn(split.id, active_ids)
+
+    def test_date_filtered_paid_metrics_use_payment_date(self):
+        old_paid = IgClient.get_or_create_for_sender("api_old_payment_event")
+        old_paid.last_message_at = timezone.now()
+        old_paid.ad_id = "ad-old-payment"
+        old_paid.save(update_fields=["last_message_at", "ad_id", "updated_at"])
+        IgDeal.objects.create(
+            client=old_paid,
+            status=IgDeal.Status.PAID,
+            payment_status="paid",
+            paid_at=timezone.now() - timedelta(days=60),
+            amount=Decimal("900"),
+        )
+
+        data = self.client.get(
+            reverse("management_bot_stats_api") + "?days=7"
+        ).json()
+        ad_row = next(row for row in data["ads"] if row["ad_id"] == "ad-old-payment")
+
+        self.assertEqual(data["totals"]["paid"], 0)
+        self.assertEqual(ad_row["paid"], 0)
+        self.assertEqual(ad_row["revenue"], "0")
+
+    def test_payment_status_card_uses_verified_truth_not_latest_unpaid_attempt(self):
+        verified = IgClient.get_or_create_for_sender("api_paid_then_retry")
+        IgDeal.objects.create(
+            client=verified,
+            status=IgDeal.Status.PAID,
+            payment_status="paid",
+            paid_at=timezone.now(),
+        )
+        IgDeal.objects.create(
+            client=verified,
+            status=IgDeal.Status.AWAITING_PAYMENT,
+            payment_status="unpaid",
+        )
+
+        rows = self.client.get(
+            reverse("management_bot_clients_api") + "?view=paid"
+        ).json()["clients"]
+        row = next(item for item in rows if item["id"] == verified.id)
+
+        self.assertEqual(row["payment_status"], "paid")
 
     def test_stats_date_range_excludes_old_inactive_conversations(self):
         self.active.last_message_at = timezone.now()

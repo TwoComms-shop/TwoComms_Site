@@ -23,8 +23,13 @@ import re
 import secrets
 
 from .bot_access import is_meta_bot_reviewer
-from .models import InstagramBotLog, InstagramBotSettings
+from .models import IgClient, InstagramBotLog, InstagramBotSettings
 from .services import instagram_bot as bot
+from .services.bot_payment_truth import (
+    annotate_verified_payment,
+    latest_verified_payment_deal,
+    verified_payment_q,
+)
 
 
 def _is_admin(user) -> bool:
@@ -449,18 +454,26 @@ def _client_card(c) -> dict:
             latest_analysis = None
     payment_status = ""
     try:
-        latest_deal = c.deals.order_by("-id").first()
-        payment_status = latest_deal.payment_status if latest_deal else ""
+        latest_deal = latest_verified_payment_deal(c)
+        payment_status = latest_deal.payment_status if latest_deal else "unpaid"
     except Exception:
         latest_deal = None
+    has_verified_payment = bool(latest_deal)
+    hard_stages = {IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE}
+    displayed_stage = c.stage
+    displayed_stage_label = c.get_stage_display()
+    if c.stage in hard_stages and not has_verified_payment:
+        displayed_stage = "unverified"
+        displayed_stage_label = "Потребує звірки оплати"
     return {
         "id": c.id,
         "igsid": c.igsid,
         "username": c.username,
         "name": c.display_name or c.username or c.igsid,
         "avatar": c.avatar_local or c.profile_pic_url,
-        "stage": c.stage,
-        "stage_label": c.get_stage_display(),
+        "stage": displayed_stage,
+        "stage_raw": c.stage,
+        "stage_label": displayed_stage_label,
         "last_message_at": c.last_message_at.isoformat() if c.last_message_at else "",
         "purchases": c.purchases_count,
         "total_spent": str(c.total_spent),
@@ -494,6 +507,7 @@ def _client_card(c) -> dict:
         "followup_level": c.followup_level,
         "discount_offered_percent": c.discount_offered_percent,
         "payment_status": payment_status,
+        "payment_truth": "verified" if has_verified_payment else "unverified",
         "delivery_status": c.delivery_status,
         "delivery_status_label": c.get_delivery_status_display() if c.delivery_status else "",
         "delivery_error": c.delivery_error,
@@ -509,19 +523,26 @@ def bot_clients_api(request):
         return blocked
     from django.db.models import Q
 
-    from .models import IgClient
+    from .models import IgClient, IgDeal
 
     view = (request.GET.get("view") or "active").strip().lower()
     from django.db.models import Prefetch
     from .ig_bot_models import IgConversationAnalysisSnapshot
 
-    qs = IgClient.objects.select_related("current_product").prefetch_related(
+    qs = annotate_verified_payment(
+        IgClient.objects.select_related("current_product").prefetch_related(
         Prefetch(
             "analysis_snapshots",
             queryset=IgConversationAnalysisSnapshot.objects.order_by("-id")[:1],
             to_attr="_latest_analysis",
-        )
-    ).all()
+        ),
+        Prefetch(
+            "deals",
+            queryset=IgDeal.objects.filter(verified_payment_q()).order_by("-paid_at", "-id"),
+            to_attr="_verified_payment_deals",
+        ),
+        ).all()
+    )
     if view in {"hidden"}:
         qs = qs.filter(hidden_at__isnull=False)
     else:
@@ -529,7 +550,7 @@ def bot_clients_api(request):
     if view in {"spam", "cold", "spam-cold", "spam_cold"}:
         qs = qs.filter(Q(stage__in=[IgClient.Stage.SPAM, IgClient.Stage.COLD]) | Q(spam_strikes__gt=0))
     elif view == "paid":
-        qs = qs.filter(stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE])
+        qs = qs.filter(has_verified_payment=True)
     elif view == "due":
         qs = qs.filter(followup_tasks__status="pending", followup_tasks__due_at__lte=timezone.now()).distinct()
     elif view == "ads":
@@ -537,7 +558,8 @@ def bot_clients_api(request):
     elif view in {"delivery-blocked", "delivery_blocked"}:
         qs = qs.filter(delivery_status__gt="")
     elif view == "active":
-        qs = qs.exclude(stage__in=[IgClient.Stage.SPAM, IgClient.Stage.COLD, IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE])
+        qs = qs.exclude(stage__in=[IgClient.Stage.SPAM, IgClient.Stage.COLD])
+        qs = qs.filter(has_verified_payment=False)
     qs = qs.order_by("-last_message_at", "-id")
     q = (request.GET.get("q") or "").strip()
     if q:
@@ -830,17 +852,23 @@ def bot_stats_api(request):
     elif range_days:
         since = timezone.now() - timedelta(days=range_days)
 
-    active_clients = IgClient.objects.filter(hidden_at__isnull=True)
+    active_clients = annotate_verified_payment(
+        IgClient.objects.filter(hidden_at__isnull=True)
+    )
     if since:
         active_clients = active_clients.filter(
             Q(last_message_at__gte=since)
             | Q(last_message_at__isnull=True, created_at__gte=since)
         )
     conversations = active_clients.count()
-    stage_counts = {
-        row["stage"]: row["count"]
-        for row in active_clients.values("stage").annotate(count=Count("id")).order_by()
-    }
+    stage_counts = {}
+    for row in active_clients.values("stage", "has_verified_payment").annotate(
+        count=Count("id")
+    ).order_by():
+        stage = row["stage"]
+        if stage in {IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE} and not row["has_verified_payment"]:
+            stage = "unverified"
+        stage_counts[stage] = stage_counts.get(stage, 0) + row["count"]
     signal_qs = IgConversationSignal.objects.filter(client__hidden_at__isnull=True)
     if since:
         signal_qs = signal_qs.filter(created_at__gte=since)
@@ -866,12 +894,21 @@ def bot_stats_api(request):
         .values("current_product_id", "current_product__title").annotate(count=Count("id"))
         .order_by("-count")[:25]
     ]
-    revenue_filter = Q(deals__status__in=[IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED])
+    payment_event_filter = verified_payment_q("deals__")
     if since:
-        revenue_filter &= (
-            Q(deals__paid_at__gte=since)
-            | Q(deals__paid_at__isnull=True, deals__created_at__gte=since)
-        )
+        payment_event_filter &= Q(deals__paid_at__gte=since)
+    revenue_filter = payment_event_filter
+    payment_deals = IgDeal.objects.all()
+    if since:
+        payment_deals = payment_deals.filter(paid_at__gte=since)
+    active_clients = annotate_verified_payment(
+        active_clients,
+        alias="paid_in_range",
+        deal_queryset=payment_deals,
+    )
+    followup_payment_filter = verified_payment_q("client__deals__")
+    if since:
+        followup_payment_filter &= Q(client__deals__paid_at__gte=since)
     ad_rows = []
     for row in (
         active_clients.exclude(Q(ad_id="") & Q(ad_ref="") & Q(ad_title=""))
@@ -880,11 +917,7 @@ def bot_stats_api(request):
             chats=Count("id", distinct=True),
             paid=Count(
                 "id",
-                filter=Q(stage__in=[
-                    IgClient.Stage.PAID,
-                    IgClient.Stage.ORDER_CREATED,
-                    IgClient.Stage.DONE,
-                ]),
+                filter=payment_event_filter,
                 distinct=True,
             ),
             revenue=Sum("deals__amount", filter=revenue_filter),
@@ -904,11 +937,11 @@ def bot_stats_api(request):
         "qualified": active_clients.filter(buying_readiness__gte=40).count(),
         "product_matched": active_clients.filter(current_product__isnull=False).count(),
         "checkout_or_payment": active_clients.filter(stage__in=[IgClient.Stage.CHECKOUT, IgClient.Stage.PAYMENT_PENDING]).count(),
-        "paid": active_clients.filter(stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
+        "paid": active_clients.filter(paid_in_range=True).count(),
         "hidden": IgClient.objects.filter(hidden_at__isnull=False).count(),
         "pending_followups": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.PENDING, client__hidden_at__isnull=True).count(),
-        "followup_recoveries": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.SENT, client__hidden_at__isnull=True, client__stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
-        "discount_conversions": active_clients.filter(discount_offered_percent__gt=0, stage__in=[IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE]).count(),
+        "followup_recoveries": IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.SENT, client__hidden_at__isnull=True).filter(followup_payment_filter).distinct().count(),
+        "discount_conversions": active_clients.filter(discount_offered_percent__gt=0, paid_in_range=True).count(),
         "manager_takeovers": active_clients.filter(manager_takeover=True).count(),
         "custom_print_handoffs": active_clients.filter(intent=IgClient.Intent.CUSTOM_PRINT, stage=IgClient.Stage.LEAD_TO_MANAGER).count(),
     }

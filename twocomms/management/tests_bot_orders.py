@@ -7,6 +7,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from management.models import IgClient, IgDeal, IgDealItem, InstagramBotMessage
 from management.services import bot_orders
@@ -18,6 +19,7 @@ def _paid_deal(igsid, with_np=True):
     d = IgDeal.objects.create(
         client=c, pay_type=IgDeal.PayType.ONLINE_FULL,
         status=IgDeal.Status.PAID, payment_status="paid",
+        paid_at=timezone.now(),
         np_full_name=("Іван" if with_np else ""), np_phone=("0931112233" if with_np else ""),
         np_city=("Київ" if with_np else ""), np_office=("Відд 1" if with_np else ""),
     )
@@ -48,6 +50,25 @@ class FulfillTests(TestCase):
         IgDealItem.objects.create(deal=d, title="x", qty=1, unit_price=Decimal("100"))
         d.recalc_total()
         self.assertFalse(bot_orders.fulfill_if_ready(d))
+
+    def test_fulfill_false_for_unverified_paid_stage(self):
+        c = IgClient.get_or_create_for_sender("o-forged-paid")
+        d = IgDeal.objects.create(
+            client=c,
+            status=IgDeal.Status.PAID,
+            payment_status="unpaid",
+            np_full_name="Іван",
+            np_phone="0931112233",
+            np_city="Київ",
+            np_office="Відділення 1",
+        )
+        IgDealItem.objects.create(deal=d, title="x", qty=1, unit_price=Decimal("100"))
+        d.recalc_total()
+
+        self.assertFalse(bot_orders.fulfill_if_ready(d))
+        self.assertIsNone(d.order_id)
+        with self.assertRaisesMessage(ValueError, "provider-confirmed payment"):
+            bot_orders.create_order_from_deal(d)
 
 
 class ExtractNpTests(TestCase):

@@ -8,6 +8,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from management.models import IgClient, IgDeal, IgDealItem
 from management.services import bot_orders
@@ -81,7 +82,11 @@ class ResetCurrentProductOnOrderTests(TestCase):
         c.current_product = p
         c.save(update_fields=["current_product"])
         deal = IgDeal.objects.create(
-            client=c, pay_type=IgDeal.PayType.ONLINE_FULL, status=IgDeal.Status.PAID
+            client=c,
+            pay_type=IgDeal.PayType.ONLINE_FULL,
+            status=IgDeal.Status.PAID,
+            payment_status="paid",
+            paid_at=timezone.now(),
         )
         IgDealItem.objects.create(
             deal=deal, product=p, title=p.title, qty=1, unit_price=Decimal("1650")

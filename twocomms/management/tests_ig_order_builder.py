@@ -7,6 +7,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from management.models import IgClient, IgDeal, IgDealItem
 from orders.models import Order
@@ -26,6 +27,7 @@ class CreateOrderFromDealTests(TestCase):
         self.deal.recalc_total()
         self.deal.payment_status = "paid"
         self.deal.status = IgDeal.Status.PAID
+        self.deal.paid_at = timezone.now()
         self.deal.save()
 
     def test_creates_order_with_items(self):

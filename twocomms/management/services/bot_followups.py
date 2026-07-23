@@ -16,6 +16,7 @@ from management.models import (
     InstagramBotMessage,
     InstagramBotSettings,
 )
+from management.services.bot_payment_truth import client_has_verified_payment
 
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 QUIET_START = time(10, 0)
@@ -100,7 +101,7 @@ def _client_allows_followup(client: IgClient) -> tuple[bool, str]:
         return False, "spam"
     if client.manager_takeover or client.bot_paused:
         return False, "manager_takeover"
-    if client.stage in {IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE}:
+    if client_has_verified_payment(client):
         return False, "already_converted"
     if client.primary_objection == IgClient.Objection.NO_BUY or client.lost_reason in {"no_buy", "stop"}:
         return False, "client_no_buy"

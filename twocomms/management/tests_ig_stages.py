@@ -6,7 +6,7 @@
 """
 from django.test import SimpleTestCase, TestCase
 
-from management.models import IgClient, IgClientStageEvent
+from management.models import IgClient, IgClientStageEvent, InstagramBotSettings
 from management.services import instagram_bot as bot
 
 
@@ -33,6 +33,15 @@ class ExtractControlTests(SimpleTestCase):
 
 
 class ApplyStageTests(TestCase):
+    def test_default_prompt_reserves_hard_stages_for_system_truth(self):
+        prompt = InstagramBotSettings.load().system_prompt
+
+        self.assertIn("Ніколи не став paid/order_created/done", prompt)
+        self.assertNotIn(
+            "payment_pending, paid, order_created, done, lead_manager",
+            prompt,
+        )
+
     def test_apply_valid_stage(self):
         c = IgClient.get_or_create_for_sender("s1")
         self.assertTrue(bot._apply_stage(c, "checkout"))
@@ -48,6 +57,24 @@ class ApplyStageTests(TestCase):
     def test_apply_same_stage_noop(self):
         c = IgClient.get_or_create_for_sender("s3")
         self.assertFalse(bot._apply_stage(c, "new"))
+
+    def test_model_cannot_claim_payment_or_fulfilment_stages(self):
+        c = IgClient.get_or_create_for_sender("s-hard-targets")
+
+        for stage in (IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE):
+            with self.subTest(stage=stage):
+                self.assertFalse(bot._apply_stage(c, stage))
+                c.refresh_from_db()
+                self.assertEqual(c.stage, IgClient.Stage.NEW)
+
+    def test_model_cannot_regress_a_hard_stage(self):
+        c = IgClient.get_or_create_for_sender("s-hard-current")
+        c.stage = IgClient.Stage.PAID
+        c.save(update_fields=["stage", "updated_at"])
+
+        self.assertFalse(bot._apply_stage(c, IgClient.Stage.QUALIFYING))
+        c.refresh_from_db()
+        self.assertEqual(c.stage, IgClient.Stage.PAID)
 
 
 class StageEventTests(TestCase):
