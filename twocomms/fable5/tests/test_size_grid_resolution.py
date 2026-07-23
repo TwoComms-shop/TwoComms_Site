@@ -423,6 +423,19 @@ class EffectiveSizeGridTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("ensure_tshirt_size_guides", stdout=StringIO(), no_input=True)
 
+    def test_ensure_tshirt_guides_dry_run_counts_each_catalog_once(self):
+        output = StringIO()
+
+        call_command(
+            "ensure_tshirt_size_guides",
+            stdout=output,
+            no_input=True,
+            dry_run=True,
+        )
+
+        self.assertEqual(output.getvalue().count("tshirts-grids:"), 1)
+        self.assertIn("catalogs=1", output.getvalue())
+
     def test_ensure_oversize_command_fills_only_missing_assignment(self):
         ProductOptionSizeGrid.objects.filter(
             product=self.product,

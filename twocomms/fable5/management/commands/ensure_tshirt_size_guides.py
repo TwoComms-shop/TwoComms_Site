@@ -48,6 +48,7 @@ class Command(BaseCommand):
         )
         catalog_ids = list(
             products.exclude(catalog_id__isnull=True)
+            .order_by("catalog_id")
             .values_list("catalog_id", flat=True)
             .distinct()
         )
