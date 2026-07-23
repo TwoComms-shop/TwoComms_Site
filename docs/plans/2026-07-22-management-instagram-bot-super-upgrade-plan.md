@@ -496,21 +496,23 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Acceptance:** autonomous due-row drain, `next_attempt_at`, bounded exponential backoff+jitter, stale-sending recovery, timeout ambiguity policy, confirmed-message idempotency, dead-letter state and Ukrainian operator action.
   - **Tests:** one-shot failure then recovery without new event, restart, concurrent drains, missing credentials, stale sending, ambiguous timeout, confirmed Telegram message ID.
 
-- [ ] **P0.B4a Make notification claiming valid on the production DB engine.**
+- [x] **P0.B4a Make notification claiming valid on the production DB engine.**
   - **Symptom:** two notification workers can both cross the apparent `select_for_update()` boundary and call Telegram for one pending row.
   - **Root cause:** migration `0091` and the engine audit omit `management_igbotnotification`; on a legacy MyISAM installation its row locks are ineffective.
   - **Risk:** duplicate takeover, payment, shipment, delivery-block, and AI-outage alerts.
   - **Affected branches:** synchronous `notify_manager`, daemon drain, manual drain command, deploy/restart overlap.
   - **Acceptance:** the notification table is explicitly InnoDB, deploy health fails on any other engine, and one database claim owns each attempt before provider I/O.
   - **Tests:** idempotent engine migration/audit plus a real two-process claim fixture with mocked provider I/O and exactly one claimed send.
+  - **Production proof:** SHA `0225caf2`; all 14 required tables are InnoDB. Two separate production MariaDB processes produced one mocked provider marker, one attempt and one stored Telegram message ID; the fixture/audit were removed and no real provider request ran.
 
-- [ ] **P0.B4b Isolate outbox failure from customer message processing.**
+- [x] **P0.B4b Isolate outbox failure from customer message processing.**
   - **Symptom:** an outbox schema/database/bad-row exception aborts `_run_work_cycle()` before the customer queue and follow-ups run.
   - **Root cause:** notification drain and customer work share one unguarded call chain.
   - **Risk:** a broken manager-alert subsystem silently stops all automated customer replies.
   - **Affected branches:** daemon cycle while enabled, migration rollout, corrupt outbox payload, transient DB failure.
   - **Acceptance:** drain failure is logged and surfaced as degraded health but customer queue/follow-up processing continues; reply failures cannot suppress later outbox cycles either.
   - **Tests:** `drain raises -> process_pending/follow-ups still run`, disabled reply gate, and subsequent-cycle recovery.
+  - **Production proof:** deployed at SHA `044e9bdf`; daemon drain is isolated from reply work and fresh production runtime at SHA `0225caf2` has one healthy worker with empty queue/outbox.
 
 - [ ] **P1.B4c Do not render unavailable outbox telemetry as zero.**
   - **Symptom:** backend `None` values become `0` through JavaScript fallback and the cockpit claims an empty healthy outbox.
@@ -528,37 +530,41 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Acceptance:** authorized operators can see event/client/time/attempts/sanitized error and payload preview, mark a row resolved after checking Telegram, or deliberately requeue it with an audit trail; no automatic retry of UNKNOWN.
   - **Tests:** authorization, redaction, list ordering, resolve/requeue transitions, CSRF, duplicate-safe requeue, mobile/desktop rendering.
 
-- [ ] **P1.B4e Honour Telegram rate-limit retry timing.**
+- [x] **P1.B4e Honour Telegram rate-limit retry timing.**
   - **Symptom:** HTTP 429 uses the generic short backoff and can exhaust all attempts before Telegram's requested wait expires.
   - **Root cause:** `parameters.retry_after` is parsed but ignored.
   - **Risk:** recoverable alerts enter dead-letter unnecessarily and create alert gaps.
   - **Affected branches:** provider 429 response, retry scheduling, restart drain.
   - **Acceptance:** validated bounded `retry_after` is the minimum next-attempt delay, malformed/extreme values fall back safely, and jitter never schedules earlier than the provider delay.
   - **Tests:** valid, missing, string, negative, and extreme retry-after fixtures plus attempt-budget preservation.
+  - **Production proof:** deployed parser/backoff contract at SHA `044e9bdf`; production MariaDB rollback fixtures at SHA `0225caf2` prove retry/dead-letter state without any real Telegram request.
 
-- [ ] **P0.B4f Keep outbox schema creation recoverable from partial MySQL DDL.**
+- [x] **P0.B4f Keep outbox schema creation recoverable from partial MySQL DDL.**
   - **Symptom:** a failed migration can leave the audit table created while Django still considers the migration unapplied; retry then fails on `table already exists`.
   - **Root cause:** one `atomic=False` migration mixes `CreateModel`/`AlterField` with later engine-changing DDL that commits implicitly.
   - **Risk:** production deploy cannot safely resume after a metadata lock, timeout, or engine conversion failure.
   - **Affected branches:** migrations `0093+`, deploy retry, rollback/recovery, engine health gate.
   - **Acceptance:** transactional schema state and non-atomic idempotent engine conversion are separate migrations; the engine step checks table existence/current engine before each DDL.
   - **Tests:** migration structure assertion, idempotent conversion fixture, partial-state rerun, then production migration table/engine verification.
+  - **Production proof:** migrations `0092`-`0094` are applied; schema state and non-atomic idempotent engine conversion are separate, and the production engine audit reports 14/14 InnoDB.
 
-- [ ] **P1.B4h Remove server AppleDouble files from Python compile scope.**
+- [x] **P1.B4h Remove server AppleDouble files from Python compile scope.**
   - **Symptom:** production `compileall management orders` fails with `source code string cannot contain null bytes` for `orders/._nova_poshta_documents.py` and `orders/._telegram_notifications.py`.
   - **Root cause:** ignored 163-byte AppleDouble resource-fork metadata was copied to production beside real `.py` modules; `compileall` treats the `._*.py` names as Python source.
   - **Risk:** a required deploy gate stays red and can hide a genuine syntax error among known noise; future recursive tooling may attempt to parse metadata as code.
   - **Affected branches:** production compile gate, recursive scanners, manual file uploads from macOS.
   - **Acceptance:** verify the files are untracked AppleDouble metadata, move only the proven artifacts to a recoverable quarantine, keep `._*` ignored, and make production compileall pass without excluding real tracked Python files.
   - **Tests:** `file`, `git check-ignore`, `git ls-files`, clean production `compileall`, and no tracked-tree change from cleanup.
+  - **Production proof:** exactly two ignored AppleDouble files were moved to recoverable `tmp/appledouble_quarantine_20260723/`; production `compileall management orders` passes at SHA `0225caf2` and the tracked tree is clean.
 
-- [ ] **P0.B4i Add an explicit bounded daemon maintenance lease.**
+- [x] **P0.B4i Add an explicit bounded daemon maintenance lease.**
   - **Symptom:** after `restart.txt` stopped the daemon for a production outbox fixture, the minute cron immediately ran `--ensure`, restarted the daemon, claimed the fixture, and sent one synthetic administrator Telegram notification.
   - **Root cause:** the restart sentinel only asks the current daemon to reload; it is not a durable maintenance contract and `--ensure` has no state that distinguishes an intentional pause from a crash.
   - **Risk:** a migration, rollback fixture, or pending operational alert can be processed during a maintenance window; deploy verification is no longer no-network by construction.
   - **Affected branches:** cron watchdog, manual `--ensure`, deploy restart, daemon outbox drain, production rollback fixtures.
   - **Acceptance:** an explicit atomic maintenance lease prevents both watchdog spawn and daemon work, is visible in runtime status, has a bounded expiry so a forgotten lease recovers, and the production deploy process enters/exits it deliberately before `restart/ensure`.
   - **Tests:** ensure during active maintenance, running daemon observes maintenance and exits before work, stale lease recovery, malformed lease fail-safe, concurrent maintenance activation, and one production no-send fixture while cron continues.
+  - **Production proof:** SHA `0225caf2` used the one-time old-daemon bootstrap under spawn/daemon OS locks. Active maintenance blocked watchdog, `--forever`, manual drain, a second owner and a wrong release token. A production MariaDB rollback fixture remained pending with zero claims/HTTP calls; after exact-token release, one daemon returned with both heartbeat ages 4.3 seconds, queue/outbox zero and no lease/fixture residue.
 
 - [ ] **P0.B4j Make every production-DB verification command fail closed.**
   - **Symptom:** production lacked `rg`; an empty discovery pipeline still invoked Django and launched the complete 2,803-test SQLite suite. An earlier ambiguous inline settings invocation also attempted to create a MySQL test database before failing permissions.
@@ -821,11 +827,15 @@ Telegram alert, payment request, order, or CAPI event.
 ### Standard server sequence after each approved slice
 
 ```bash
-IG_BOT_MAINTENANCE_ID=$(python manage.py run_instagram_bot --maintenance-on 900 \
+IG_BOT_MAINTENANCE_ID=$(python manage.py run_instagram_bot --maintenance-on 1800 \
   | sed -n 's/^maintenance active lease_id=\([^ ]*\).*/\1/p')
 test -n "$IG_BOT_MAINTENANCE_ID"
 git pull --ff-only origin main
+python manage.py verify_ig_production_contract \
+  --expected-database qlknpodo_MySQL_DB
 python manage.py migrate
+python manage.py verify_ig_production_contract \
+  --expected-database qlknpodo_MySQL_DB --rollback-fixtures
 python manage.py check
 python manage.py collectstatic --noinput
 python manage.py compress --force
