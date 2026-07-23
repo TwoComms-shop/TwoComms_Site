@@ -162,6 +162,8 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
         return types.PAID_ORDER_WAITING
     if client.stage == IgClient.Stage.SPAM or client.is_blocked:
         return types.SPAM_ABUSE
+    if result.get("objection") == IgClient.Objection.NO_REPLY:
+        return types.NO_REPLY
     if client.stage == IgClient.Stage.PAYMENT_PENDING:
         return types.PAYMENT_PENDING
     if IgConversationSignal.Type.CHECKOUT_STARTED in result.get("signals", []):

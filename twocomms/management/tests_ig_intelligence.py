@@ -194,6 +194,20 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         self.assertEqual(self.client.stage, IgClient.Stage.PAID)
         self.assertEqual(snapshot.score_band, "paid")
 
+    def test_persisted_no_reply_objection_is_classified_as_no_reply(self):
+        self.client.primary_objection = IgClient.Objection.NO_REPLY
+        self.client.save(update_fields=["primary_objection", "updated_at"])
+
+        result = classify_message(
+            self.client,
+            text="",
+            role=InstagramBotMessage.Role.USER,
+        )
+
+        snapshot = self.client.analysis_snapshots.get()
+        self.assertEqual(result["interaction_type"], "no_reply")
+        self.assertEqual(snapshot.interaction_type, "no_reply")
+
     def test_terminal_inbound_cancels_existing_followup_immediately(self):
         from datetime import timedelta
 
