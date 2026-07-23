@@ -26,6 +26,7 @@ __all__ = [
     "IgFollowUpTask",
     "IgPollCursor",
     "IgConversationSignal",
+    "IgConversationAnalysisSnapshot",
     "IgMetaEventLog",
     "BotDataDeletionRequest",
     "IgBotNotification",
@@ -801,6 +802,60 @@ class IgConversationSignal(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - тривіально
         return f"{self.client_id}: {self.signal_type}"
+
+
+class IgConversationAnalysisSnapshot(models.Model):
+    """Versioned, evidence-bound interpretation of one conversation watermark."""
+
+    class Band(models.TextChoices):
+        COLD = "cold", _("Холодний")
+        EXPLORING = "exploring", _("Вивчає")
+        QUALIFIED = "qualified", _("Кваліфікований")
+        HIGH_INTENT = "high_intent", _("Високий намір")
+        CHECKOUT = "checkout", _("Оформлення")
+        PAID = "paid", _("Оплачено")
+        LOST = "lost", _("Втрачено")
+        OPTED_OUT = "opted_out", _("Відмовився від повідомлень")
+
+    client = models.ForeignKey(
+        "management.IgClient", on_delete=models.CASCADE, related_name="analysis_snapshots"
+    )
+    last_analyzed_message = models.ForeignKey(
+        "management.InstagramBotMessage",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_snapshots",
+    )
+    dedupe_key = models.CharField(max_length=160, unique=True)
+    score_band = models.CharField(max_length=24, choices=Band.choices, db_index=True)
+    purchase_probability = models.DecimalField(
+        max_digits=5, decimal_places=4, default=Decimal("0.0000")
+    )
+    confidence = models.DecimalField(
+        max_digits=5, decimal_places=4, default=Decimal("0.0000")
+    )
+    evidence = models.JSONField(default=list, blank=True)
+    uncertainties = models.JSONField(default=list, blank=True)
+    analysis_model = models.CharField(max_length=80, blank=True, default="rules")
+    analysis_prompt_version = models.CharField(max_length=40, blank=True, default="")
+    rules_version = models.CharField(max_length=40, blank=True, default="")
+    reasoning_task = models.CharField(max_length=64, blank=True, default="")
+    trigger = models.CharField(max_length=32, blank=True, default="message", db_index=True)
+    analysis_latency_ms = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = _("Знімок аналізу IG-діалогу")
+        verbose_name_plural = _("Знімки аналізу IG-діалогів")
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["client", "-id"], name="ig_analysis_client_id"),
+            models.Index(fields=["score_band", "-id"], name="ig_analysis_band_id"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial representation
+        return f"{self.client_id}: {self.score_band} ({self.purchase_probability})"
 
 
 class IgMetaEventLog(models.Model):

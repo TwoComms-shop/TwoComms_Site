@@ -439,6 +439,14 @@ def bot_settings_save_api(request):
 def _client_card(c) -> dict:
     product = getattr(c, "current_product", None)
     next_followup = getattr(c, "next_followup_at", None)
+    latest_analysis = getattr(c, "_latest_analysis", None)
+    if isinstance(latest_analysis, (list, tuple)):
+        latest_analysis = latest_analysis[0] if latest_analysis else None
+    if latest_analysis is None:
+        try:
+            latest_analysis = c.analysis_snapshots.order_by("-id").first()
+        except Exception:
+            latest_analysis = None
     payment_status = ""
     try:
         latest_deal = c.deals.order_by("-id").first()
@@ -465,6 +473,12 @@ def _client_card(c) -> dict:
         "language": c.language,
         "intent": c.intent,
         "buying_readiness": c.buying_readiness,
+        "analysis_band": latest_analysis.score_band if latest_analysis else "",
+        "analysis_probability": str(latest_analysis.purchase_probability) if latest_analysis else "",
+        "analysis_confidence": str(latest_analysis.confidence) if latest_analysis else "",
+        "analysis_evidence": latest_analysis.evidence if latest_analysis else [],
+        "analysis_uncertainties": latest_analysis.uncertainties if latest_analysis else [],
+        "analysis_at": latest_analysis.created_at.isoformat() if latest_analysis else "",
         "primary_objection": c.primary_objection,
         "lost_reason": c.lost_reason,
         "hidden": bool(c.hidden_at),
@@ -497,7 +511,16 @@ def bot_clients_api(request):
     from .models import IgClient
 
     view = (request.GET.get("view") or "active").strip().lower()
-    qs = IgClient.objects.select_related("current_product").all()
+    from django.db.models import Prefetch
+    from .ig_bot_models import IgConversationAnalysisSnapshot
+
+    qs = IgClient.objects.select_related("current_product").prefetch_related(
+        Prefetch(
+            "analysis_snapshots",
+            queryset=IgConversationAnalysisSnapshot.objects.order_by("-id")[:1],
+            to_attr="_latest_analysis",
+        )
+    ).all()
     if view in {"hidden"}:
         qs = qs.filter(hidden_at__isnull=False)
     else:

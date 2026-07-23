@@ -574,7 +574,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
               c.ad_title?('ad: '+c.ad_title):'',
               c.delivery_status_label?('⚠ '+c.delivery_status_label):''
             ].filter(Boolean).join(' · ');
-            row.innerHTML=ava+'<div class="bot-client-meta"><div class="bot-client-name">'+esc(c.name)+' <span class="bot-client-score">'+(c.buying_readiness||0)+'%</span></div><div class="bot-client-sub">'+esc(sub)+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'">'+esc(c.stage_label)+'</span>';
+          const analysisLabel=c.analysis_band
+            ? (c.analysis_band+' · '+Math.round(Number(c.analysis_probability||0)*100)+'% · conf '+Math.round(Number(c.analysis_confidence||0)*100)+'%')
+            : ('legacy '+(c.buying_readiness||0)+'%');
+          row.innerHTML=ava+'<div class="bot-client-meta"><div class="bot-client-name">'+esc(c.name)+' <span class="bot-client-score">'+esc(analysisLabel)+'</span></div><div class="bot-client-sub">'+esc(sub)+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'">'+esc(c.stage_label)+'</span>';
             row.addEventListener('click',()=>{activeId=c.id;document.querySelectorAll('.bot-client-row').forEach(e=>e.classList.remove('active'));row.classList.add('active');detail(c.id);});
             listEl.appendChild(row);
           });
@@ -639,7 +642,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           let h='<div class="bot-detail-head">'+(c.avatar?('<img class="bot-client-ava" style="width:46px;height:46px;" src="'+esc(c.avatar)+'" alt="">'):('<div class="bot-client-ava" style="width:46px;height:46px;">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>'))+'<div><div class="bot-detail-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+(c.phone?(' · '+esc(c.phone)):'')+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'" style="margin-left:auto;">'+esc(c.stage_label)+'</span></div>';
           if(c.ad_title) h+='<div class="bot-client-sub" style="margin-top:8px;">📣 Реклама: '+esc(c.ad_title)+'</div>';
           if(c.delivery_status_label) h+='<div class="bot-client-sub" style="margin-top:8px;padding:9px 11px;border:1px solid rgba(251,191,36,.42);border-radius:10px;background:rgba(251,191,36,.08);color:#fde68a;">⚠ <b>Не можу відповісти:</b> '+esc(c.delivery_status_label)+(c.delivery_error?(' · '+esc(c.delivery_error)):'')+'</div>';
-          h+='<div class="bot-client-sub" style="margin-top:8px;">Готовність: <b style="color:#34d399;">'+(c.buying_readiness||0)+'%</b> · намір: '+esc(c.intent||'')+' · заперечення: '+esc(c.primary_objection||'')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div>';
+          h+='<div class="bot-client-sub" style="margin-top:8px;">Оцінка: <b style="color:#34d399;">'+esc(c.analysis_band||'legacy')+'</b> · ймовірність: '+(c.analysis_probability?Math.round(Number(c.analysis_probability)*100)+'%':'—')+' · впевненість: '+(c.analysis_confidence?Math.round(Number(c.analysis_confidence)*100)+'%':'—')+' · намір: '+esc(c.intent||'')+' · заперечення: '+esc(c.primary_objection||'')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div>';
+          if((c.analysis_evidence||[]).length){h+='<div class="bot-hint" style="margin-top:6px;">Доказ: '+esc((c.analysis_evidence[0].signals||[]).join(', ')||'структуровані факти')+' · невизначеність: '+esc((c.analysis_uncertainties||[]).join(', ')||'немає')+'</div>';}
           const pauseBtn=c.bot_paused?'<button type="button" class="bot-client-action primary resume" data-act="resume">▶ Відновити бота</button>':'<button type="button" class="bot-client-action primary pause" data-act="pause">⏸ Зупинити бота</button>';
           const primaryAction=c.hidden?'<span class="bot-stage-chip st-cold">🗂 Бот не обробляє прихованого клієнта</span>':pauseBtn;
           const visibilityBtn=c.hidden?'<button type="button" class="bot-client-action restore" data-act="unhide">↩ Повернути до активних</button>':'<button type="button" class="bot-client-action hide" data-act="hide">🗂 Приховати</button>';
