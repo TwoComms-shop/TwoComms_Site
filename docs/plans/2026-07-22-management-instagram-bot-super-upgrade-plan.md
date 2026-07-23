@@ -566,13 +566,14 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Tests:** ensure during active maintenance, running daemon observes maintenance and exits before work, stale lease recovery, malformed lease fail-safe, concurrent maintenance activation, and one production no-send fixture while cron continues.
   - **Production proof:** SHA `0225caf2` used the one-time old-daemon bootstrap under spawn/daemon OS locks. Active maintenance blocked watchdog, `--forever`, manual drain, a second owner and a wrong release token. A production MariaDB rollback fixture remained pending with zero claims/HTTP calls; after exact-token release, one daemon returned with both heartbeat ages 4.3 seconds, queue/outbox zero and no lease/fixture residue.
 
-- [ ] **P0.B4j Make every production-DB verification command fail closed.**
+- [x] **P0.B4j Make every production-DB verification command fail closed.**
   - **Symptom:** production lacked `rg`; an empty discovery pipeline still invoked Django and launched the complete 2,803-test SQLite suite. An earlier ambiguous inline settings invocation also attempted to create a MySQL test database before failing permissions.
   - **Root cause:** the shell pipeline did not require a non-empty explicit module list, and the acceptance path still allowed `test_settings`/SQLite to be mistaken for production evidence.
   - **Risk:** runaway processes, checks against the wrong database contract, misleading green evidence, and accidental test-schema creation attempts on production infrastructure.
   - **Affected branches:** focused/full suite discovery, migration verification, concurrency fixtures, deploy handoff and P0.10 closure.
   - **Acceptance:** the production-contract verifier asserts MySQL/MariaDB, the exact configured production database identity, no `test_*` schema and explicit no-network fixtures; missing tools, empty discovery and wrong settings stop before Django tests or database mutation. SQLite may remain a fast developer aid but can never satisfy a checklist acceptance gate.
   - **Tests:** missing `rg`, empty module list, SQLite/wrong settings, `test_*` DB name, expected production identity, rollback-only MariaDB fixture, and orphan-process cleanup.
+  - **Production proof:** SHA `b58cd2a6`; the dedicated verifier rejected a wrong DB name and rollback fixtures without maintenance, while the six DB-free guard tests rejected SQLite, `test_*`, configured/selected DB mismatches and visible test schemas. Pre-migrate identity and post-migrate production MariaDB rollback fixtures passed with `mocked_no_network`, forced mid-fixture exception cleanup, unchanged `AUTO_INCREMENT`, zero test schemas and zero leaked rows. No Django test database was created.
 
 - [ ] **P0.B5 Separate observation/analysis from global and per-client reply enablement.**
   - **Symptom:** when global `is_enabled=False`, customer webhook events return 200 but are discarded before message/client storage; paused manager-led chats also finish without scheduled high-reasoning analysis.
