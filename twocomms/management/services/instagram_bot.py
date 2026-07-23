@@ -60,6 +60,10 @@ CONV_MIN_INTERVAL = 0.5  # Meta Conversations API: at most 2 requests/second.
 CONV_CACHE_TTL = 3600
 CONV_REFRESH_LOCK_TTL = CONV_LIST_TIMEOUT * CONV_MAX_PAGES + 30
 _CONV_ID_RE = re.compile(r"^[A-Za-z0-9:_-]{1,255}$")
+POLL_MESSAGE_TIMEOUT = 5
+POLL_MESSAGE_MAX_PAGES = 5
+POLL_MAX_REQUESTS = 40
+POLL_MAX_SECONDS = 20
 MSG_KEEP_ROWS = 2000        # підрізання історії
 AUTOMATION_LEASE_TTL = timedelta(minutes=3)
 
@@ -862,7 +866,18 @@ def _refresh_conv_ids_unlocked(s: InstagramBotSettings, page_token: str, stale: 
 def get_conv_ids_cached(s: InstagramBotSettings | None = None) -> list[str] | None:
     if s is None:
         return None
-    return cache.get(_conv_cache_key(s))
+    cache_key = _conv_cache_key(s)
+    value = cache.get(cache_key)
+    if value is None:
+        return None
+    valid = _valid_conv_snapshot(value)
+    if value == []:
+        return []
+    if not valid:
+        cache.delete(cache_key)
+        log("warning", "poll_cache", "invalid conversation cache discarded")
+        return None
+    return valid
 
 
 # ---------------------------------------------------------------------------
@@ -2503,6 +2518,186 @@ def _parse_ig_time(raw: str):
             return None
 
 
+def _valid_message_id(value) -> bool:
+    return bool(
+        isinstance(value, str)
+        and 0 < len(value.strip()) <= 512
+        and all(ord(char) >= 32 and ord(char) != 127 for char in value)
+    )
+
+
+def _poll_offset_cache_key(s: InstagramBotSettings) -> str:
+    return f"ig_bot_poll_offset:{s.page_id or 'unknown'}"
+
+
+def _poll_conversation_order(s: InstagramBotSettings, conv_ids: list[str]) -> tuple[list[str], int]:
+    if not conv_ids:
+        return [], 0
+    raw_offset = cache.get(_poll_offset_cache_key(s))
+    try:
+        offset = int(raw_offset or 0) % len(conv_ids)
+    except (TypeError, ValueError):
+        offset = 0
+    return conv_ids[offset:] + conv_ids[:offset], offset
+
+
+def _polled_message_key(message: dict) -> tuple[datetime, str]:
+    return (
+        _parse_ig_time(message.get("created_time", ""))
+        or datetime.min.replace(tzinfo=dt_timezone.utc),
+        message["id"],
+    )
+
+
+def _validate_polled_page(envelope) -> tuple[list[dict], str]:
+    if not isinstance(envelope, dict):
+        raise ValueError("malformed envelope")
+    messages_block = envelope.get("messages")
+    if messages_block is None:
+        messages_block = {}
+    if not isinstance(messages_block, dict):
+        raise ValueError("malformed messages")
+    messages = messages_block.get("data", [])
+    if not isinstance(messages, list):
+        raise ValueError("malformed message data")
+    for message in messages:
+        if not isinstance(message, dict) or not _valid_message_id(message.get("id")):
+            raise ValueError("malformed message id")
+        created_time = message.get("created_time")
+        if not isinstance(created_time, str) or _parse_ig_time(created_time) is None:
+            raise ValueError("malformed message time")
+        sender = message.get("from")
+        if not isinstance(sender, dict):
+            raise ValueError("malformed message sender")
+        sender_id = sender.get("id")
+        if (
+            not isinstance(sender_id, str)
+            or not _CONV_ID_RE.fullmatch(sender_id.strip())
+        ):
+            raise ValueError("malformed sender id")
+        text = message.get("message")
+        if text is not None and not isinstance(text, str):
+            raise ValueError("malformed message text")
+        attachments = message.get("attachments")
+        if attachments is not None and (
+            not isinstance(attachments, list)
+            or any(
+                not isinstance(item, dict)
+                or (
+                    item.get("payload") is not None
+                    and not isinstance(item.get("payload"), dict)
+                )
+                for item in attachments
+            )
+        ):
+            raise ValueError("malformed attachments")
+    paging = messages_block.get("paging")
+    if paging is None:
+        paging = {}
+    if not isinstance(paging, dict):
+        raise ValueError("malformed message paging")
+    next_url = paging.get("next") or ""
+    if next_url and (
+        not isinstance(next_url, str) or not _valid_conversation_page_url(next_url)
+    ):
+        raise ValueError("untrusted message paging URL")
+    return messages, next_url
+
+
+def _fetch_polled_conversation(
+    conversation_id: str,
+    page_token: str,
+    *,
+    cursor_at: datetime | None,
+    cursor_id: str,
+    deadline: float,
+    request_limit: int,
+) -> dict:
+    page_url = (
+        f"{GRAPH}/{conversation_id}?fields=messages.limit(50)"
+        f"{{message,from,created_time,id,attachments}}&access_token={page_token}"
+    )
+    all_messages: list[dict] = []
+    visited_pages: set[str] = set()
+    requests_used = 0
+    for _page in range(POLL_MESSAGE_MAX_PAGES):
+        if requests_used >= request_limit or time.monotonic() >= deadline:
+            return {
+                "messages": [],
+                "requests": requests_used,
+                "complete": False,
+                "budget_exhausted": True,
+                "reason": "poll_budget",
+            }
+        if page_url in visited_pages:
+            return {
+                "messages": [],
+                "requests": requests_used,
+                "complete": False,
+                "budget_exhausted": False,
+                "reason": "page_cycle",
+            }
+        visited_pages.add(page_url)
+        remaining_seconds = max(1, int(deadline - time.monotonic()))
+        timeout = min(POLL_MESSAGE_TIMEOUT, remaining_seconds)
+        code, body = _http(page_url, timeout=timeout)
+        requests_used += 1
+        if code != 200:
+            return {
+                "messages": [],
+                "requests": requests_used,
+                "complete": False,
+                "budget_exhausted": False,
+                "reason": f"http_{code}",
+            }
+        try:
+            messages, next_url = _validate_polled_page(json.loads(body))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return {
+                "messages": [],
+                "requests": requests_used,
+                "complete": False,
+                "budget_exhausted": False,
+                "reason": f"malformed:{exc}",
+            }
+        all_messages.extend(messages)
+        if cursor_at and any(
+            _polled_message_key(message) <= (cursor_at, cursor_id)
+            for message in messages
+        ):
+            return {
+                "messages": all_messages,
+                "requests": requests_used,
+                "complete": True,
+                "budget_exhausted": False,
+                "reason": "cursor_reached",
+            }
+        if not next_url:
+            return {
+                "messages": all_messages,
+                "requests": requests_used,
+                "complete": True,
+                "budget_exhausted": False,
+                "reason": "complete",
+            }
+        if next_url in visited_pages:
+            return {
+                "messages": [],
+                "requests": requests_used,
+                "complete": False,
+                "budget_exhausted": False,
+                "reason": "page_cycle",
+            }
+        page_url = next_url
+    return {
+        "messages": [],
+        "requests": requests_used,
+        "complete": False,
+        "budget_exhausted": False,
+        "reason": "page_cap",
+    }
+
+
 def poll_ingest(s: InstagramBotSettings) -> dict:
     """Читає інбокс IG і кладе нові вхідні в чергу. Лише коли receive_via_poll."""
     if not s.is_enabled or not s.receive_via_poll:
@@ -2520,60 +2715,48 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
         s.save(update_fields=["last_error"])
     reply_after = s.reply_after or s.last_started_at
     enq = 0
-    for cid in conv_ids:
-        cursor, _created = IgPollCursor.objects.get_or_create(conversation_id=str(cid))
+    ordered_conv_ids, start_offset = _poll_conversation_order(s, conv_ids)
+    deadline = time.monotonic() + POLL_MAX_SECONDS
+    requests_used = 0
+    conversations_checked = 0
+    budget_exhausted = False
+    for cid in ordered_conv_ids:
+        if requests_used >= POLL_MAX_REQUESTS or time.monotonic() >= deadline:
+            budget_exhausted = True
+            break
+        conversations_checked += 1
+        cursor, _created = IgPollCursor.objects.get_or_create(conversation_id=cid)
         cursor_at = cursor.last_message_at
         cursor_id = cursor.last_message_id or ""
-        page_url = (
-            f"{GRAPH}/{cid}?fields=messages.limit(50)"
-            f"{{message,from,created_time,id,attachments}}&access_token={page_token}"
+        fetched = _fetch_polled_conversation(
+            cid,
+            page_token,
+            cursor_at=cursor_at,
+            cursor_id=cursor_id,
+            deadline=deadline,
+            request_limit=POLL_MAX_REQUESTS - requests_used,
         )
-        all_msgs: list[dict] = []
-        for _page in range(5):
-            code, body = _http(page_url, timeout=HTTP_TIMEOUT)
-            if code != 200:
+        requests_used += fetched["requests"]
+        if not fetched["complete"]:
+            log(
+                "warning",
+                "poll_messages",
+                f"conversation skipped: {fetched['reason']}",
+            )
+            if fetched["budget_exhausted"]:
+                budget_exhausted = True
                 break
-            try:
-                envelope = json.loads(body)
-            except Exception:
-                break
-            messages = (envelope.get("messages") or {}).get("data") or []
-            all_msgs.extend(messages)
-            if not messages:
-                break
-            # Meta returns newest first. Once a page reaches our durable cursor,
-            # older pages cannot contain new messages for this conversation.
-            if cursor_at and any(
-                (_parse_ig_time(m.get("created_time", "")) or datetime.min.replace(tzinfo=dt_timezone.utc)) < cursor_at
-                or (
-                    (_parse_ig_time(m.get("created_time", "")) or datetime.min.replace(tzinfo=dt_timezone.utc)) == cursor_at
-                    and str(m.get("id") or "") <= cursor_id
-                )
-                for m in messages
-            ):
-                break
-            page_url = (envelope.get("messages") or {}).get("paging", {}).get("next") or ""
-            if not page_url:
-                break
+            continue
 
         unique: dict[str, dict] = {}
-        for message in all_msgs:
-            mid = str(message.get("id") or "")
-            if mid:
-                unique[mid] = message
+        for message in fetched["messages"]:
+            unique[message["id"]] = message
 
-        def _key(message: dict):
-            return (
-                _parse_ig_time(message.get("created_time", ""))
-                or datetime.min.replace(tzinfo=dt_timezone.utc),
-                str(message.get("id") or ""),
-            )
-
-        ordered = sorted(unique.values(), key=_key)
+        ordered = sorted(unique.values(), key=_polled_message_key)
         for message in ordered:
-            mid = str(message.get("id") or "")
+            mid = message["id"]
             created = _parse_ig_time(message.get("created_time", ""))
-            if cursor_at and _key(message) <= (cursor_at, cursor_id):
+            if cursor_at and _polled_message_key(message) <= (cursor_at, cursor_id):
                 continue
             sender = (message.get("from") or {}).get("id", "")
             if not sender or sender == s.ig_user_id:
@@ -2591,12 +2774,26 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
                 enq += 1
 
         if ordered:
-            newest = max(ordered, key=_key)
-            newest_at, newest_id = _key(newest)
+            newest = max(ordered, key=_polled_message_key)
+            newest_at, newest_id = _polled_message_key(newest)
             cursor.last_message_at = newest_at if newest_at != datetime.min.replace(tzinfo=dt_timezone.utc) else cursor.last_message_at
             cursor.last_message_id = newest_id
             cursor.save(update_fields=["last_message_at", "last_message_id", "updated_at"])
-    return {"ok": True, "enqueued": enq, "conversations": len(conv_ids)}
+    if conversations_checked < len(conv_ids):
+        budget_exhausted = True
+    next_offset = (start_offset + conversations_checked) % len(conv_ids)
+    if budget_exhausted:
+        cache.set(_poll_offset_cache_key(s), next_offset, CONV_CACHE_TTL)
+    else:
+        cache.delete(_poll_offset_cache_key(s))
+    return {
+        "ok": True,
+        "enqueued": enq,
+        "conversations": len(conv_ids),
+        "conversations_checked": conversations_checked,
+        "requests_used": requests_used,
+        "budget_exhausted": budget_exhausted,
+    }
 
 
 # Зворотна сумісність для --once: інгест + обробка.
