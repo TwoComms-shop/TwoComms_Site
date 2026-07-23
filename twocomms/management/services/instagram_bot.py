@@ -1101,9 +1101,26 @@ def send_text(s: InstagramBotSettings, recipient_id: str, text: str) -> tuple[bo
     return True, "", ""
 
 
-def send_text_tagged(s: InstagramBotSettings, recipient_id: str, text: str, tag: str = "HUMAN_AGENT") -> tuple[bool, str, str]:
-    """Як send_text, але з messaging_type=MESSAGE_TAG (вікно 7 днів для HUMAN_AGENT).
-    Потрібно для сповіщень поза 24-год вікном (напр. «замовлення відправлено»)."""
+def send_text_tagged(
+    s: InstagramBotSettings,
+    recipient_id: str,
+    text: str,
+    tag: str = "HUMAN_AGENT",
+    *,
+    human_authored: bool = False,
+) -> tuple[bool, str, str]:
+    """Send an explicitly human-authored support reply with ``HUMAN_AGENT``.
+
+    Meta documents this tag for human support beyond the normal response
+    window. Automated sales, reminder, and shipment jobs must use the regular
+    response window or create an operator task instead.
+    """
+    if tag != "HUMAN_AGENT" or not human_authored:
+        return (
+            False,
+            "policy",
+            "HUMAN_AGENT дозволено лише для явно підтвердженої відповіді human support",
+        )
     page_token = get_page_token(s)
     if not page_token:
         hint = "немає page-token"

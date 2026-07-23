@@ -11,13 +11,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db.models import Q
 
 from management.services.bot_payments import create_payment_link
 from management.services.call_ai_analysis import gemini_generate_text
-from management.services.instagram_bot import notify_manager, send_text_tagged
+from management.services.instagram_bot import notify_manager, send_text
 from orders.services.order_builder import create_order_from_deal
 
 logger = logging.getLogger(__name__)
@@ -345,14 +346,68 @@ def fulfill_ready_paid_deals(limit: int = 50) -> int:
 
 
 NP_TRACK_URL = "https://novaposhta.ua/tracking/?cargo_number="
+SHIPMENT_RESPONSE_WINDOW = timedelta(hours=23)
+SHIPMENT_REVIEW_REASONS = {"shipment_human_review", "shipment_delivery_review"}
+
+
+def _shipment_message(ttn: str) -> str:
+    return (
+        "📦 Гарна новина — ваше замовлення вже відправлено Новою Поштою! 🚚\n"
+        f"ТТН: {ttn}\n"
+        f"Відстежити: {NP_TRACK_URL}{ttn}\n"
+        "Дякуємо за покупку 💛 Будуть питання — пишіть, я на зв'язку!"
+    )
+
+
+def _queue_shipment_manager_review(deal, text: str, *, reason: str, hint: str = ""):
+    from django.utils import timezone
+
+    from management.models import IgFollowUpTask
+
+    task, created = IgFollowUpTask.objects.get_or_create(
+        client=deal.client,
+        deal=deal,
+        kind=IgFollowUpTask.Kind.MANAGER_TASK,
+        reason=reason,
+        defaults={
+            "due_at": timezone.now(),
+            # Manager tasks must never enter the automatic send worker.
+            "status": IgFollowUpTask.Status.SKIPPED,
+            "skip_reason": "human_agent_required",
+            "message_text": text,
+            "last_error": (hint or "")[:500],
+        },
+    )
+    if not created:
+        changed = []
+        if task.message_text != text:
+            task.message_text = text
+            changed.append("message_text")
+        bounded_hint = (hint or "")[:500]
+        if task.last_error != bounded_hint:
+            task.last_error = bounded_hint
+            changed.append("last_error")
+        if changed:
+            changed.append("updated_at")
+            task.save(update_fields=changed)
+    client_label = deal.client.username or deal.client.display_name or deal.client.igsid
+    notify_manager(
+        f"📦 IG: потрібна ручна відповідь про відправку для {client_label}. "
+        f"Угода #{deal.pk}; готовий текст збережено у завданні менеджеру.",
+        dedupe_key=f"{reason}:{deal.pk}",
+        event_type="shipment_human_review",
+        client=deal.client,
+    )
+    return task
 
 
 def notify_shipped_deals(limit: int = 50) -> int:
     """Сповіщає IG-клієнта в Direct, що замовлення відправлено (з ТТН).
 
     Лише для IG-угод, чиє замовлення в статусі 'ship' і має tracking_number.
-    Ідемпотентно (shipped_notified_at). Шлемо з тегом HUMAN_AGENT — бо відправка
-    зазвичай поза 24-год вікном звичайних повідомлень. Запускається кроном.
+    Усередині response window надсилає звичайний RESPONSE. Поза вікном або
+    після непідтвердженої доставки створює завдання менеджеру; автоматичний
+    HUMAN_AGENT tag не використовується.
     """
     from django.utils import timezone
 
@@ -372,22 +427,44 @@ def notify_shipped_deals(limit: int = 50) -> int:
         ttn = (deal.order.tracking_number or "").strip()
         if not ttn or not deal.client_id:
             continue
-        text = (
-            "📦 Гарна новина — ваше замовлення вже відправлено Новою Поштою! 🚚\n"
-            f"ТТН: {ttn}\n"
-            f"Відстежити: {NP_TRACK_URL}{ttn}\n"
-            "Дякуємо за покупку 💛 Будуть питання — пишіть, я на зв'язку!"
+        text = _shipment_message(ttn)
+        existing_review = deal.followup_tasks.filter(
+            reason__in=SHIPMENT_REVIEW_REASONS
+        ).first()
+        if existing_review:
+            _queue_shipment_manager_review(
+                deal,
+                text,
+                reason=existing_review.reason,
+                hint=existing_review.last_error,
+            )
+            continue
+        response_deadline = (
+            deal.client.last_message_at + SHIPMENT_RESPONSE_WINDOW
+            if deal.client.last_message_at
+            else None
         )
+        if not response_deadline or timezone.now() > response_deadline:
+            _queue_shipment_manager_review(
+                deal,
+                text,
+                reason="shipment_human_review",
+                hint="standard_response_window_closed",
+            )
+            continue
         try:
-            ok, kind, _hint = send_text_tagged(s, deal.client.igsid, text)
-        except Exception:
-            ok, kind = False, "transient"
+            ok, kind, hint = send_text(s, deal.client.igsid, text)
+        except Exception as exc:
+            ok, kind, hint = False, "unknown", repr(exc)
         if ok:
             deal.shipped_notified_at = timezone.now()
             deal.save(update_fields=["shipped_notified_at", "updated_at"])
             sent += 1
-        elif kind == "permanent":
-            # Перманентна помилка (напр. поза 7-денним вікном) — не повторюємо вічно.
-            deal.shipped_notified_at = timezone.now()
-            deal.save(update_fields=["shipped_notified_at", "updated_at"])
+        else:
+            _queue_shipment_manager_review(
+                deal,
+                text,
+                reason="shipment_delivery_review",
+                hint=f"{kind}:{hint}",
+            )
     return sent
