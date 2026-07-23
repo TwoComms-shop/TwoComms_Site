@@ -18,6 +18,8 @@ __all__ = [
     "InstagramBotRawEvent",
     "IgClient",
     "IgDeal",
+    "IgPaymentEvent",
+    "IgPaymentProjection",
     "IgDealItem",
     "BotInstruction",
     "BotQuickLink",
@@ -422,6 +424,16 @@ class IgDeal(models.Model):
         ONLINE_FULL = "online_full", _("Повна онлайн-оплата")
         PREPAY_200 = "prepay_200", _("Передплата 200 грн")
 
+    class PaymentTruth(models.TextChoices):
+        UNVERIFIED = "unverified", _("Не підтверджено")
+        PENDING = "pending", _("Перевіряється")
+        CONFIRMED = "confirmed", _("Оплату підтверджено")
+        PARTIALLY_REFUNDED = "partially_refunded", _("Частково повернено")
+        REFUNDED = "refunded", _("Повністю повернено")
+        REVERSED = "reversed", _("Платіж скасовано банком")
+        FAILED = "failed", _("Оплата не пройшла")
+        CANCELLED = "cancelled", _("Оплату скасовано")
+
     client = models.ForeignKey(
         "management.IgClient", on_delete=models.CASCADE, related_name="deals"
     )
@@ -440,6 +452,15 @@ class IgDeal(models.Model):
     payment_status = models.CharField(max_length=20, default="unpaid")
     payment_payload = models.JSONField(default=dict, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
+    payment_truth = models.CharField(
+        max_length=24,
+        choices=PaymentTruth.choices,
+        default=PaymentTruth.UNVERIFIED,
+        db_index=True,
+    )
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    refunded_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    payment_truth_updated_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     # Створене замовлення (після оплати)
     order = models.ForeignKey(
@@ -488,6 +509,112 @@ class IgDeal(models.Model):
         if self.pay_type == self.PayType.PREPAY_200:
             return self.PREPAYMENT_AMOUNT
         return self.amount
+
+
+class AppendOnlyPaymentEventQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValueError("IgPaymentEvent is append-only")
+
+    def delete(self):
+        raise ValueError("IgPaymentEvent is append-only")
+
+
+class IgPaymentEvent(models.Model):
+    """Append-only, idempotent provider evidence for payment truth changes."""
+
+    event_key = models.CharField(max_length=64, unique=True)
+    deal = models.ForeignKey(
+        "management.IgDeal",
+        on_delete=models.DO_NOTHING,
+        related_name="payment_events",
+        db_constraint=False,
+    )
+    client = models.ForeignKey(
+        "management.IgClient",
+        on_delete=models.DO_NOTHING,
+        related_name="payment_events",
+        db_constraint=False,
+    )
+    provider = models.CharField(max_length=32, default="monobank")
+    source = models.CharField(max_length=32, default="provider")
+    invoice_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    provider_status = models.CharField(max_length=32, db_index=True)
+    provider_modified_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    gross_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    final_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    refunded_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    amount_valid = models.BooleanField(null=True, blank=True)
+    currency = models.CharField(max_length=8, default="UAH")
+    evidence = models.JSONField(default=dict, blank=True)
+    payload_digest = models.CharField(max_length=64)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    objects = models.Manager.from_queryset(AppendOnlyPaymentEventQuerySet)()
+
+    class Meta:
+        ordering = ["-provider_modified_at", "-id"]
+        indexes = [
+            models.Index(fields=["deal", "-received_at"], name="ig_payevt_deal_dt"),
+            models.Index(fields=["provider_status", "-received_at"], name="ig_payevt_status_dt"),
+        ]
+
+    def __str__(self):
+        return f"IgPaymentEvent#{self.pk} deal={self.deal_id} {self.provider_status}"
+
+    def save(self, *args, **kwargs):
+        if self.pk and not kwargs.get("force_insert"):
+            raise ValueError("IgPaymentEvent is append-only")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("IgPaymentEvent is append-only")
+
+
+class IgPaymentProjection(models.Model):
+    """Transactional current truth derived from append-only payment events."""
+
+    deal = models.OneToOneField(
+        "management.IgDeal",
+        on_delete=models.DO_NOTHING,
+        related_name="payment_projection",
+        db_constraint=False,
+    )
+    client = models.ForeignKey(
+        "management.IgClient",
+        on_delete=models.DO_NOTHING,
+        related_name="payment_projections",
+        db_constraint=False,
+    )
+    truth = models.CharField(
+        max_length=24,
+        choices=IgDeal.PaymentTruth.choices,
+        default=IgDeal.PaymentTruth.UNVERIFIED,
+        db_index=True,
+    )
+    gross_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    refunded_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    paid_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    provider_modified_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    needs_reconciliation = models.BooleanField(default=False, db_index=True)
+    reconciled_at = models.DateTimeField(null=True, blank=True)
+    last_event = models.ForeignKey(
+        "management.IgPaymentEvent",
+        on_delete=models.PROTECT,
+        related_name="projected_by",
+        null=True,
+        blank=True,
+    )
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["client", "-updated_at"], name="ig_payproj_client_dt"),
+            models.Index(fields=["truth", "-updated_at"], name="ig_payproj_truth_dt"),
+        ]
+
+    @property
+    def net_paid_amount(self):
+        return max(Decimal("0"), self.gross_amount - self.refunded_amount)
 
 
 class IgDealItem(models.Model):

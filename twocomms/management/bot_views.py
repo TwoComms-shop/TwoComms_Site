@@ -7,7 +7,7 @@ Start/Stop, вибором джерела ключів і онлайн-конс�
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, F, Q, Sum
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -23,10 +23,12 @@ import re
 import secrets
 
 from .bot_access import is_meta_bot_reviewer
-from .models import IgClient, InstagramBotLog, InstagramBotSettings
+from .models import IgClient, IgDeal, IgPaymentProjection, InstagramBotLog, InstagramBotSettings
 from .services import instagram_bot as bot
 from .services.bot_payment_truth import (
     annotate_verified_payment,
+    latest_payment_projection,
+    latest_legacy_payment_truth_deal,
     latest_verified_payment_deal,
     verified_payment_q,
 )
@@ -454,17 +456,46 @@ def _client_card(c) -> dict:
             latest_analysis = None
     payment_status = ""
     try:
-        latest_deal = latest_verified_payment_deal(c)
-        payment_status = latest_deal.payment_status if latest_deal else "unpaid"
+        verified_deal = latest_verified_payment_deal(c)
+        truth_projection = latest_payment_projection(c)
+        truth_deal = (
+            truth_projection.deal
+            if truth_projection
+            else (latest_legacy_payment_truth_deal(c) or verified_deal)
+        )
+        payment_status = (
+            truth_projection.truth
+            if truth_projection
+            else (
+                truth_deal.payment_truth
+                if truth_deal and truth_deal.payment_truth != IgDeal.PaymentTruth.UNVERIFIED
+                else (truth_deal.payment_status if truth_deal else "unpaid")
+            )
+        )
     except Exception:
-        latest_deal = None
-    has_verified_payment = bool(latest_deal)
+        verified_deal = None
+        truth_projection = None
+        truth_deal = None
+    has_verified_payment = bool(verified_deal)
+    payment_truth = (
+        truth_projection.truth
+        if truth_projection
+        else (
+            truth_deal.payment_truth
+            if truth_deal and truth_deal.payment_truth != IgDeal.PaymentTruth.UNVERIFIED
+            else (IgDeal.PaymentTruth.CONFIRMED if has_verified_payment else IgDeal.PaymentTruth.UNVERIFIED)
+        )
+    )
     hard_stages = {IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE}
     displayed_stage = c.stage
     displayed_stage_label = c.get_stage_display()
     if c.stage in hard_stages and not has_verified_payment:
-        displayed_stage = "unverified"
-        displayed_stage_label = "Потребує звірки оплати"
+        if payment_truth in {IgDeal.PaymentTruth.REFUNDED, IgDeal.PaymentTruth.REVERSED}:
+            displayed_stage = "payment_reversed"
+            displayed_stage_label = "Оплату повернено / скасовано"
+        else:
+            displayed_stage = "unverified"
+            displayed_stage_label = "Потребує звірки оплати"
     return {
         "id": c.id,
         "igsid": c.igsid,
@@ -507,7 +538,7 @@ def _client_card(c) -> dict:
         "followup_level": c.followup_level,
         "discount_offered_percent": c.discount_offered_percent,
         "payment_status": payment_status,
-        "payment_truth": "verified" if has_verified_payment else "unverified",
+        "payment_truth": payment_truth,
         "delivery_status": c.delivery_status,
         "delivery_status_label": c.get_delivery_status_display() if c.delivery_status else "",
         "delivery_error": c.delivery_error,
@@ -540,6 +571,11 @@ def bot_clients_api(request):
             "deals",
             queryset=IgDeal.objects.filter(verified_payment_q()).order_by("-paid_at", "-id"),
             to_attr="_verified_payment_deals",
+        ),
+        Prefetch(
+            "payment_projections",
+            queryset=IgPaymentProjection.objects.select_related("deal").order_by("-updated_at", "-id"),
+            to_attr="_payment_projections",
         ),
         ).all()
     )
@@ -896,11 +932,17 @@ def bot_stats_api(request):
     ]
     payment_event_filter = verified_payment_q("deals__")
     if since:
-        payment_event_filter &= Q(deals__paid_at__gte=since)
+        payment_event_filter &= (
+            Q(deals__payment_projection__paid_at__gte=since)
+            | Q(deals__payment_projection__isnull=True, deals__paid_at__gte=since)
+        )
     revenue_filter = payment_event_filter
     payment_deals = IgDeal.objects.all()
     if since:
-        payment_deals = payment_deals.filter(paid_at__gte=since)
+        payment_deals = payment_deals.filter(
+            Q(payment_projection__paid_at__gte=since)
+            | Q(payment_projection__isnull=True, paid_at__gte=since)
+        )
     active_clients = annotate_verified_payment(
         active_clients,
         alias="paid_in_range",
@@ -908,7 +950,10 @@ def bot_stats_api(request):
     )
     followup_payment_filter = verified_payment_q("client__deals__")
     if since:
-        followup_payment_filter &= Q(client__deals__paid_at__gte=since)
+        followup_payment_filter &= (
+            Q(client__deals__payment_projection__paid_at__gte=since)
+            | Q(client__deals__payment_projection__isnull=True, client__deals__paid_at__gte=since)
+        )
     ad_rows = []
     for row in (
         active_clients.exclude(Q(ad_id="") & Q(ad_ref="") & Q(ad_title=""))
@@ -920,7 +965,11 @@ def bot_stats_api(request):
                 filter=payment_event_filter,
                 distinct=True,
             ),
-            revenue=Sum("deals__amount", filter=revenue_filter),
+            revenue=Sum(
+                F("deals__payment_projection__gross_amount")
+                - F("deals__payment_projection__refunded_amount"),
+                filter=revenue_filter,
+            ),
         )
         .order_by("-chats")[:50]
     ):

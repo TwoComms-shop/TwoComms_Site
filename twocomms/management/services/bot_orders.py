@@ -420,12 +420,14 @@ def notify_shipped_deals(limit: int = 50) -> int:
     from django.utils import timezone
 
     from management.models import IgDeal, InstagramBotSettings
+    from management.services.bot_payment_truth import verified_payment_q
 
     s = InstagramBotSettings.load()
     qs = (
         IgDeal.objects.filter(
             order__isnull=False, order__status="ship", shipped_notified_at__isnull=True
         )
+        .filter(verified_payment_q())
         .exclude(order__tracking_number__isnull=True)
         .exclude(order__tracking_number="")
         .select_related("order", "client")[:limit]

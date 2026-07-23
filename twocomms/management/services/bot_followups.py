@@ -16,7 +16,12 @@ from management.models import (
     InstagramBotMessage,
     InstagramBotSettings,
 )
-from management.services.bot_payment_truth import client_has_verified_payment
+from management.services.bot_payment_truth import (
+    TERMINAL_NEGATIVE_PAYMENT_TRUTHS,
+    client_has_terminal_negative_payment,
+    client_has_verified_payment,
+    verified_payment_deals,
+)
 
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 QUIET_START = time(10, 0)
@@ -94,15 +99,25 @@ def cancel_pending_for_deal(deal: IgDeal, *, reason: str = "") -> int:
     return count
 
 
-def _client_allows_followup(client: IgClient) -> tuple[bool, str]:
+def _client_allows_followup(client: IgClient, *, deal: IgDeal | None = None) -> tuple[bool, str]:
     if client.hidden_at:
         return False, "hidden"
     if client.is_blocked or client.stage == IgClient.Stage.SPAM:
         return False, "spam"
     if client.manager_takeover or client.bot_paused:
         return False, "manager_takeover"
-    if client_has_verified_payment(client):
-        return False, "already_converted"
+    if deal is not None:
+        if verified_payment_deals(IgDeal.objects.filter(pk=deal.pk)).exists():
+            return False, "already_converted"
+        projection = getattr(deal, "payment_projection", None)
+        truth = projection.truth if projection else deal.payment_truth
+        if truth in TERMINAL_NEGATIVE_PAYMENT_TRUTHS:
+            return False, "payment_reversed"
+    else:
+        if client_has_verified_payment(client):
+            return False, "already_converted"
+        if client_has_terminal_negative_payment(client):
+            return False, "payment_reversed"
     if client.primary_objection == IgClient.Objection.NO_BUY or client.lost_reason in {"no_buy", "stop"}:
         return False, "client_no_buy"
     return True, ""
@@ -193,6 +208,9 @@ def schedule_rescue_offer(client: IgClient, *, explicit_negotiation: bool = Fals
 def schedule_payment_followup(deal: IgDeal, *, now: datetime | None = None) -> IgFollowUpTask | None:
     if not deal or not deal.client_id:
         return None
+    allowed, _why = _client_allows_followup(deal.client, deal=deal)
+    if not allowed:
+        return None
     return schedule_followup(
         deal.client,
         kind=IgFollowUpTask.Kind.PAYMENT,
@@ -211,7 +229,7 @@ def schedule_after_inbound(client: IgClient, *, reason: str = "client_reply") ->
 def schedule_after_bot_reply(client: IgClient, *, reply: str = "", control: dict | None = None, deal: IgDeal | None = None) -> IgFollowUpTask | None:
     if not client:
         return None
-    allowed, why = _client_allows_followup(client)
+    allowed, why = _client_allows_followup(client, deal=deal)
     if not allowed:
         cancel_pending(client, reason=why)
         return None
@@ -315,18 +333,20 @@ def _claim_due_followup(
         # so it cannot be reconsidered forever after a pause/hide/paid state.
         fresh_client = IgClient.objects.filter(pk=candidate["client_id"]).first()
         if fresh_client:
-            allowed, why = _client_allows_followup(fresh_client)
+            stale_task = IgFollowUpTask.objects.select_related("deal").filter(
+                pk=task_id,
+                client_id=fresh_client.id,
+                status=IgFollowUpTask.Status.PENDING,
+            ).first()
+            allowed, why = _client_allows_followup(
+                fresh_client, deal=stale_task.deal if stale_task else None
+            )
             if not allowed:
-                stale_task = IgFollowUpTask.objects.select_related("client").filter(
-                    pk=task_id,
-                    client_id=fresh_client.id,
-                    status=IgFollowUpTask.Status.PENDING,
-                ).first()
                 if stale_task:
                     stale_task.client = fresh_client
                     _mark_skipped(stale_task, why)
         return None
-    task = IgFollowUpTask.objects.select_related("client").filter(
+    task = IgFollowUpTask.objects.select_related("client", "deal").filter(
         pk=task_id,
         client_id=client.id,
         status=IgFollowUpTask.Status.PENDING,
@@ -338,7 +358,7 @@ def _claim_due_followup(
         automation.release_client_automation_lease(client.id, lease_token)
         return None
     task.client = client
-    allowed, why = _client_allows_followup(client)
+    allowed, why = _client_allows_followup(client, deal=task.deal)
     if not allowed:
         _mark_skipped(task, why)
         automation.release_client_automation_lease(client.id, lease_token)
@@ -353,7 +373,7 @@ def _renew_due_followup_claim(
     client = automation.renew_client_automation_lease(client_id, lease_token)
     if not client:
         return None
-    task = IgFollowUpTask.objects.select_related("client").filter(
+    task = IgFollowUpTask.objects.select_related("client", "deal").filter(
         pk=task_id,
         client_id=client.id,
         status=IgFollowUpTask.Status.PENDING,
@@ -364,7 +384,7 @@ def _renew_due_followup_claim(
     if not task:
         return None
     task.client = client
-    allowed, why = _client_allows_followup(client)
+    allowed, why = _client_allows_followup(client, deal=task.deal)
     if not allowed:
         _mark_skipped(task, why)
         return None

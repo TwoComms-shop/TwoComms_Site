@@ -107,6 +107,25 @@ class FollowUpPolicyTests(TestCase):
             (False, "already_converted"),
         )
 
+    def test_followup_does_not_restart_automatically_after_reversal(self):
+        from management.services import bot_followups
+
+        client = IgClient.get_or_create_for_sender("fu_reversed_payment")
+        IgDeal.objects.create(
+            client=client,
+            status=IgDeal.Status.PAID,
+            payment_status="reversed",
+            payment_truth=IgDeal.PaymentTruth.REVERSED,
+            paid_at=timezone.now(),
+            paid_amount=Decimal("950"),
+            refunded_amount=Decimal("950"),
+        )
+
+        self.assertEqual(
+            bot_followups._client_allows_followup(client),
+            (False, "payment_reversed"),
+        )
+
     def test_transient_followup_failure_is_backed_off_and_not_hot_looped(self):
         from management.models import IgFollowUpTask, InstagramBotSettings
         from management.services import bot_followups
@@ -256,8 +275,48 @@ class FollowUpPolicyTests(TestCase):
             ).exists()
         )
 
-        bot_payments.apply_payment_status(deal, "success")
+        bot_payments.apply_payment_status(
+            deal, "success",
+            payload={"status": "success", "amount": 90000, "finalAmount": 90000},
+        )
         self.assertFalse(IgFollowUpTask.objects.filter(client=client, status="pending").exists())
+
+    def test_previous_paid_order_does_not_block_new_deal_payment_followup(self):
+        from management.models import IgFollowUpTask, IgPaymentProjection
+        from management.services import bot_followups
+
+        client = IgClient.get_or_create_for_sender("fu_repeat_buyer")
+        old = IgDeal.objects.create(
+            client=client,
+            status=IgDeal.Status.PAID,
+            payment_truth=IgDeal.PaymentTruth.CONFIRMED,
+            paid_at=timezone.now(),
+            amount=Decimal("900"),
+        )
+        IgPaymentProjection.objects.create(
+            deal=old,
+            client=client,
+            truth=IgDeal.PaymentTruth.CONFIRMED,
+            gross_amount=Decimal("900"),
+            paid_at=timezone.now(),
+        )
+        current = IgDeal.objects.create(
+            client=client,
+            status=IgDeal.Status.AWAITING_PAYMENT,
+            payment_truth=IgDeal.PaymentTruth.PENDING,
+            amount=Decimal("950"),
+        )
+        IgPaymentProjection.objects.create(
+            deal=current,
+            client=client,
+            truth=IgDeal.PaymentTruth.PENDING,
+        )
+
+        task = bot_followups.schedule_payment_followup(current)
+
+        self.assertIsNotNone(task)
+        self.assertEqual(task.deal_id, current.id)
+        self.assertEqual(task.kind, IgFollowUpTask.Kind.PAYMENT)
 
 
 class ManagerEchoAnalysisTests(TestCase):
@@ -432,6 +491,39 @@ class SalesCockpitApiTests(TestCase):
         row = next(item for item in rows if item["id"] == verified.id)
 
         self.assertEqual(row["payment_status"], "paid")
+
+    def test_reversed_payment_is_explicit_and_not_rendered_as_paid(self):
+        reversed_client = IgClient.get_or_create_for_sender("api_reversed_payment")
+        reversed_client.stage = IgClient.Stage.PAID
+        reversed_client.save(update_fields=["stage", "updated_at"])
+        IgDeal.objects.create(
+            client=reversed_client,
+            status=IgDeal.Status.PAID,
+            payment_status="reversed",
+            payment_truth=IgDeal.PaymentTruth.REVERSED,
+            paid_at=timezone.now(),
+            paid_amount=Decimal("950"),
+            refunded_amount=Decimal("950"),
+            payment_truth_updated_at=timezone.now(),
+        )
+
+        active_rows = self.client.get(
+            reverse("management_bot_clients_api") + "?view=active"
+        ).json()["clients"]
+        row = next(item for item in active_rows if item["id"] == reversed_client.id)
+        paid_ids = {
+            item["id"]
+            for item in self.client.get(
+                reverse("management_bot_clients_api") + "?view=paid"
+            ).json()["clients"]
+        }
+
+        self.assertEqual(row["stage"], "payment_reversed")
+        self.assertEqual(row["payment_truth"], IgDeal.PaymentTruth.REVERSED)
+        self.assertEqual(row["payment_status"], "reversed")
+        self.assertNotIn(reversed_client.id, paid_ids)
+        stats = self.client.get(reverse("management_bot_stats_api")).json()
+        self.assertEqual(stats["totals"]["paid"], 0)
 
     def test_stats_date_range_excludes_old_inactive_conversations(self):
         self.active.last_message_at = timezone.now()

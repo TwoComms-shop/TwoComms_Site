@@ -15,6 +15,7 @@ class Command(BaseCommand):
         parser.add_argument("--limit", type=int, default=50)
 
     def handle(self, *args, **opts):
+        reconciled = bot_payments.reconcile_payment_projections(limit=opts.get("limit") or 50)
         paid = bot_payments.poll_pending_deals(limit=opts.get("limit") or 50)
         # Safety-net: дотворюємо замовлення для оплачених угод з повними даними НП,
         # якщо модель не виставила тег [ORDER].
@@ -24,7 +25,8 @@ class Command(BaseCommand):
         shipped = bot_orders.notify_shipped_deals(limit=opts.get("limit") or 50)
         self.stdout.write(
             self.style.SUCCESS(
-                f"Оплачено угод за цей прогін: {paid}; дотворено замовлень: {fulfilled}; "
+                f"Звірено проєкцій: {reconciled}; Оплачено угод за цей прогін: {paid}; "
+                f"дотворено замовлень: {fulfilled}; "
                 f"сповіщень про відправку: {shipped}"
             )
         )

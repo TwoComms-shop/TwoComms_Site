@@ -508,6 +508,14 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Acceptance:** missing secret rejects the signed callback with a safe status; explicit local-test override is isolated; manual authenticated deletion remains available; no secret/raw signed payload in logs.
   - **Tests:** missing secret, valid/invalid HMAC, malformed payload, replay/idempotency, manual deletion unaffected.
 
+- [ ] **P0.B7 Do not treat an acquiring `hold` as confirmed payment.**
+  - **Symptom:** the payment service grouped Monobank `hold` with `success`, set `paid_at`, moved the client to paid, created an order, and counted conversion before funds were captured.
+  - **Root cause:** `MONO_SUCCESS` contained both statuses even though the provider contract distinguishes an authorization hold from a successful debit.
+  - **Risk:** unfunded orders, false paid conversion/revenue, premature Purchase attribution, and shipment before confirmed capture.
+  - **Affected branches:** provider webhook/poll, deal truth, order materialization, follow-up cancellation, CRM paid view, statistics, CAPI eligibility.
+  - **Acceptance:** `hold` is append-only pending evidence only; it cannot set `paid_at`, positive payment truth, paid stage, order, conversion, or Purchase. A later provider `success` promotes exactly once; reversal/cancel remains independently auditable.
+  - **Tests:** hold-only, hold→success, duplicate hold, out-of-order success→older hold, prepayment/full payment, every paid aggregate and order boundary.
+
 #### P1.B — CRM truth, intelligence, orders, and conversion
 
 - [ ] **P1.B1 Implement the four-axis CRM state model.** Store and display interaction stage, payment truth, fulfillment truth, and automation/capability state independently. Derived lifecycle summaries may show `paid` or `waiting_shipment`, but Gemini never writes them. Add append-only transition history, reason, evidence, actor/service, source event, version, and timestamp for every axis. Tests cover conflicting axes, legal transition matrices, late/refunded payments, shipment updates, manager takeover, opt-out after purchase, and legacy migration.

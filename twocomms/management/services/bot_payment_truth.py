@@ -6,24 +6,40 @@ contract for code that needs confirmed payment truth.
 """
 from __future__ import annotations
 
-from django.db.models import Exists, OuterRef, Q, QuerySet
+from django.db.models import Count, DecimalField, Exists, ExpressionWrapper, F, OuterRef, Q, QuerySet, Sum
 
 from management.models import IgDeal
 
 
 VERIFIED_DEAL_STATUSES = (IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED)
 VERIFIED_PAYMENT_STATUSES = ("paid", "prepaid")
+VERIFIED_PAYMENT_TRUTHS = (
+    IgDeal.PaymentTruth.CONFIRMED,
+    IgDeal.PaymentTruth.PARTIALLY_REFUNDED,
+)
+TERMINAL_NEGATIVE_PAYMENT_TRUTHS = (
+    IgDeal.PaymentTruth.REFUNDED,
+    IgDeal.PaymentTruth.REVERSED,
+    IgDeal.PaymentTruth.FAILED,
+    IgDeal.PaymentTruth.CANCELLED,
+)
 
 
 def verified_payment_q(prefix: str = "") -> Q:
     """Return a composable predicate for a provider-confirmed payment row."""
-    return Q(
+    materialized_truth = Q(
+        **{f"{prefix}payment_projection__truth__in": VERIFIED_PAYMENT_TRUTHS}
+    )
+    transitional_legacy_truth = Q(
         **{
             f"{prefix}status__in": VERIFIED_DEAL_STATUSES,
             f"{prefix}payment_status__in": VERIFIED_PAYMENT_STATUSES,
             f"{prefix}paid_at__isnull": False,
+            f"{prefix}payment_truth": IgDeal.PaymentTruth.UNVERIFIED,
+            f"{prefix}payment_projection__isnull": True,
         }
     )
+    return materialized_truth | transitional_legacy_truth
 
 
 def verified_payment_deals(queryset: QuerySet | None = None) -> QuerySet:
@@ -56,6 +72,19 @@ def client_has_verified_payment(client) -> bool:
     return verified_payment_deals(client.deals.all()).exists()
 
 
+def client_has_terminal_negative_payment(client) -> bool:
+    if not client or not getattr(client, "pk", None):
+        return False
+    latest = client.payment_projections.order_by("-updated_at", "-id").first()
+    if latest:
+        return latest.truth in TERMINAL_NEGATIVE_PAYMENT_TRUTHS
+    # Transitional compatibility until 0090 has backfilled legacy truth rows.
+    latest_deal = client.deals.exclude(
+        payment_truth=IgDeal.PaymentTruth.UNVERIFIED
+    ).order_by("-payment_truth_updated_at", "-id").first()
+    return bool(latest_deal and latest_deal.payment_truth in TERMINAL_NEGATIVE_PAYMENT_TRUTHS)
+
+
 def latest_verified_payment_deal(client):
     if not client or not getattr(client, "pk", None):
         return None
@@ -63,6 +92,50 @@ def latest_verified_payment_deal(client):
     if prefetched is not None:
         return prefetched[0] if prefetched else None
     return verified_payment_deals(client.deals.all()).order_by("-paid_at", "-id").first()
+
+
+def latest_payment_projection(client):
+    if not client or not getattr(client, "pk", None):
+        return None
+    prefetched = getattr(client, "_payment_projections", None)
+    if prefetched is not None:
+        return prefetched[0] if prefetched else None
+    return client.payment_projections.select_related("deal").order_by("-updated_at", "-id").first()
+
+
+def latest_legacy_payment_truth_deal(client):
+    """Projectionless fallback used only during the 0089→0090 transition."""
+    if not client or not getattr(client, "pk", None):
+        return None
+    if client.payment_projections.exists():
+        return None
+    return client.deals.exclude(
+        payment_truth=IgDeal.PaymentTruth.UNVERIFIED
+    ).order_by("-payment_truth_updated_at", "-id").first()
+
+
+def recalculate_client_payment_aggregates(client) -> None:
+    """Project current verified payments into legacy client summary fields."""
+    if not client or not getattr(client, "pk", None):
+        return
+    net_expression = ExpressionWrapper(
+        F("gross_amount") - F("refunded_amount"),
+        output_field=DecimalField(max_digits=12, decimal_places=2),
+    )
+    totals = client.payment_projections.filter(
+        truth__in=VERIFIED_PAYMENT_TRUTHS
+    ).aggregate(purchases=Count("id"), net_paid=Sum(net_expression))
+    purchases = int(totals["purchases"] or 0)
+    flags = dict(client.conversion_flags or {})
+    flags["is_buyer"] = purchases > 0
+    client.__class__.objects.filter(pk=client.pk).update(
+        purchases_count=purchases,
+        total_spent=totals["net_paid"] or 0,
+        conversion_flags=flags,
+    )
+    client.purchases_count = purchases
+    client.total_spent = totals["net_paid"] or 0
+    client.conversion_flags = flags
 
 
 def payment_truth_inconsistency_report(*, sample_limit: int = 50) -> dict:
@@ -78,18 +151,26 @@ def payment_truth_inconsistency_report(*, sample_limit: int = 50) -> dict:
     clients = annotate_verified_payment(
         IgClient.objects.filter(stage__in=hard_stages)
     ).filter(has_verified_payment=False)
+    historical_payment_evidence = Q(paid_at__isnull=False) & (
+        Q(paid_amount__gt=0)
+        | Q(
+            payment_truth=IgDeal.PaymentTruth.UNVERIFIED,
+            payment_status__in=VERIFIED_PAYMENT_STATUSES,
+        )
+    )
     hard_deals_without_truth = IgDeal.objects.filter(status__in=hard_deal_statuses).exclude(
-        payment_status__in=VERIFIED_PAYMENT_STATUSES,
-        paid_at__isnull=False,
+        historical_payment_evidence
     )
     verified_fields_without_hard_status = IgDeal.objects.filter(
-        payment_status__in=VERIFIED_PAYMENT_STATUSES,
-        paid_at__isnull=False,
+        Q(payment_truth__in=VERIFIED_PAYMENT_TRUTHS)
+        | Q(
+            payment_truth=IgDeal.PaymentTruth.UNVERIFIED,
+            payment_status__in=VERIFIED_PAYMENT_STATUSES,
+            paid_at__isnull=False,
+        )
     ).exclude(status__in=hard_deal_statuses)
     orders_without_truth = IgDeal.objects.filter(order__isnull=False).exclude(
-        status__in=hard_deal_statuses,
-        payment_status__in=VERIFIED_PAYMENT_STATUSES,
-        paid_at__isnull=False,
+        historical_payment_evidence
     )
     order_status_without_order = IgDeal.objects.filter(
         status=IgDeal.Status.ORDER_CREATED,

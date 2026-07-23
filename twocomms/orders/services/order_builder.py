@@ -32,13 +32,6 @@ def create_order_from_deal(deal, *, created_by=None):
         _ensure_purchase_action(deal.order, deal.pk)
         return deal.order
 
-    # This is the materialization boundary, so callers cannot bypass payment
-    # truth by invoking the order builder directly with a forged deal status.
-    from management.services.bot_payment_truth import verified_payment_deals
-
-    if not verified_payment_deals(deal.__class__.objects.filter(pk=deal.pk)).exists():
-        raise ValueError("IG order requires provider-confirmed payment")
-
     from orders.models import Order, OrderItem
 
     is_prepay = deal.pay_type == deal.PayType.PREPAY_200
@@ -53,8 +46,26 @@ def create_order_from_deal(deal, *, created_by=None):
     phone = deal.np_phone or deal.client.phone or ""
 
     with transaction.atomic():
-        # Блокування рядка угоди + повторна перевірка: захист від дубля замовлення
-        # при гонці (вебхук Monobank + cron-поллінг одночасно).
+        # The projection is InnoDB even where the legacy deal table is MyISAM.
+        # Lock it first so a concurrent reversal and order materialization are
+        # serialized around the same authoritative payment truth.
+        from management.models import IgPaymentProjection
+        from management.services.bot_payment_truth import (
+            VERIFIED_PAYMENT_TRUTHS,
+            verified_payment_deals,
+        )
+
+        projection = IgPaymentProjection.objects.select_for_update().filter(
+            deal_id=deal.pk
+        ).first()
+        projection_verified = projection and projection.truth in VERIFIED_PAYMENT_TRUTHS
+        legacy_verified = (
+            projection is None
+            and verified_payment_deals(deal.__class__.objects.filter(pk=deal.pk)).exists()
+        )
+        if not projection_verified and not legacy_verified:
+            raise ValueError("IG order requires provider-confirmed payment")
+
         locked = deal.__class__.objects.select_for_update().get(pk=deal.pk)
         if locked.order_id:
             _ensure_purchase_action(locked.order, locked.pk)
@@ -104,21 +115,22 @@ def create_order_from_deal(deal, *, created_by=None):
         deal.order_id = order.id
         deal.status = locked.Status.ORDER_CREATED
 
-    # Лічильники й стадія клієнта (best-effort, поза транзакцією замовлення).
+    # Client summary is projected from payment truth. Legacy projectionless
+    # rows retain the old one-time behavior only during migration transition.
     try:
         from management.models import IgClient
 
         c = deal.client
-        c.purchases_count = (c.purchases_count or 0) + 1
-        c.total_spent = (c.total_spent or Decimal("0")) + (deal.amount or Decimal("0"))
-        flags = dict(c.conversion_flags or {})
-        flags["is_buyer"] = True
-        c.conversion_flags = flags
-        # Скидаємо закріплений товар: наступна покупка почнеться «з чистого аркуша».
+        update_fields = ["current_product", "updated_at"]
+        if projection is None:
+            c.purchases_count = (c.purchases_count or 0) + 1
+            c.total_spent = (c.total_spent or Decimal("0")) + (deal.amount or Decimal("0"))
+            flags = dict(c.conversion_flags or {})
+            flags["is_buyer"] = True
+            c.conversion_flags = flags
+            update_fields.extend(["purchases_count", "total_spent", "conversion_flags"])
         c.current_product = None
-        c.save(update_fields=[
-            "purchases_count", "total_spent", "conversion_flags", "current_product", "updated_at",
-        ])
+        c.save(update_fields=update_fields)
         c.set_stage(IgClient.Stage.ORDER_CREATED, reason="order")
     except Exception:
         pass

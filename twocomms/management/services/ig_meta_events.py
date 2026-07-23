@@ -121,3 +121,26 @@ def log_or_send(event_name: str, *, client=None, deal=None, order=None, reason: 
         status=IgMetaEventLog.Status.SKIPPED,
         reason=reason or "skipped_no_order_event_mapping",
     )
+
+
+def log_payment_reversal(*, client=None, deal=None, order=None) -> IgMetaEventLog:
+    """Record refund/reversal feedback without ever sending a live Meta event.
+
+    Meta Purchase correction needs an explicit, reviewed event policy. Until
+    that policy is approved, preserving a visible audit record is safer than
+    silently emitting an unsupported or duplicate conversion event.
+    """
+    settings_obj = InstagramBotSettings.load()
+    return IgMetaEventLog.objects.create(
+        event_name="Refund",
+        event_id=f"ig-refund-{uuid.uuid4().hex[:16]}",
+        client=client,
+        deal=deal,
+        order=order,
+        status=(
+            IgMetaEventLog.Status.SKIPPED
+            if settings_obj.meta_feedback_enabled
+            else IgMetaEventLog.Status.DISABLED
+        ),
+        reason="refund_feedback_requires_explicit_policy",
+    )

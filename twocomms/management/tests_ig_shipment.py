@@ -5,7 +5,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from management.models import IgClient, IgDeal, IgFollowUpTask
+from management.models import IgClient, IgDeal, IgFollowUpTask, IgPaymentProjection
 from management.services import bot_orders
 from management.services import instagram_bot as bot
 
@@ -17,6 +17,25 @@ def _order(status="ship", ttn="59000111222"):
         full_name="Тест", phone="0501112233", city="Київ", np_office="Відділення 1",
         status=status, tracking_number=ttn, total_sum=950,
     )
+
+
+def _verified_deal(client, order):
+    deal = IgDeal.objects.create(
+        client=client,
+        status=IgDeal.Status.ORDER_CREATED,
+        order=order,
+        payment_truth=IgDeal.PaymentTruth.CONFIRMED,
+        payment_status="paid",
+        paid_at=timezone.now(),
+    )
+    IgPaymentProjection.objects.create(
+        deal=deal,
+        client=client,
+        truth=IgDeal.PaymentTruth.CONFIRMED,
+        gross_amount=order.total_sum,
+        paid_at=deal.paid_at,
+    )
+    return deal
 
 
 class SendTextTaggedTests(TestCase):
@@ -84,7 +103,7 @@ class NotifyShippedDealsTests(TestCase):
         c.last_message_at = timezone.now()
         c.save(update_fields=["last_message_at", "updated_at"])
         order = _order(ttn="59000111222")
-        IgDeal.objects.create(client=c, status=IgDeal.Status.ORDER_CREATED, order=order)
+        _verified_deal(c, order)
         n = bot_orders.notify_shipped_deals()
         self.assertEqual(n, 1)
         mock_send.assert_called_once()
@@ -100,7 +119,7 @@ class NotifyShippedDealsTests(TestCase):
     def test_skips_when_not_shipped_or_no_ttn(self, mock_send):
         c = IgClient.get_or_create_for_sender("sh2")
         order = _order(status="new", ttn="")
-        IgDeal.objects.create(client=c, status=IgDeal.Status.ORDER_CREATED, order=order)
+        _verified_deal(c, order)
         self.assertEqual(bot_orders.notify_shipped_deals(), 0)
         mock_send.assert_not_called()
 
@@ -112,7 +131,7 @@ class NotifyShippedDealsTests(TestCase):
     ):
         c = IgClient.get_or_create_for_sender("sh3")
         order = _order(ttn="59000999888")
-        deal = IgDeal.objects.create(client=c, status=IgDeal.Status.ORDER_CREATED, order=order)
+        deal = _verified_deal(c, order)
 
         self.assertEqual(bot_orders.notify_shipped_deals(), 0)
         self.assertEqual(bot_orders.notify_shipped_deals(), 0)
@@ -148,7 +167,7 @@ class NotifyShippedDealsTests(TestCase):
         c.last_message_at = timezone.now()
         c.save(update_fields=["last_message_at", "updated_at"])
         order = _order(ttn="59000444444")
-        deal = IgDeal.objects.create(client=c, status=IgDeal.Status.ORDER_CREATED, order=order)
+        deal = _verified_deal(c, order)
 
         self.assertEqual(bot_orders.notify_shipped_deals(), 0)
         self.assertEqual(bot_orders.notify_shipped_deals(), 0)

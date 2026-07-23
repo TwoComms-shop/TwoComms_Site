@@ -60,7 +60,7 @@ class EndToEndFlowTests(TestCase):
         deal.save()
 
         # 2) Оплата підтверджена → вебхук → pull-verify (status success).
-        mock_api.return_value = {"status": "success"}
+        mock_api.return_value = {"status": "success", "amount": 95000, "finalAmount": 95000}
         self.assertTrue(bot_payments.handle_webhook_invoice("e2einv"))
 
         # 3) Замовлення створено автоматично.
