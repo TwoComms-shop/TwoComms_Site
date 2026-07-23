@@ -368,9 +368,9 @@ The order is intentional. P0 blocks safe operation; P1 improves conversion and o
 ### P0 — production correctness and safety
 
 - [ ] **P0.1 Baseline lock and observability contract.** Freeze current production/local evidence, add correlation IDs and status event schema, and write read-only health checks. Files: `instagram_bot.py`, `models.py`, `bot_views.py`, new tests. Verify current deployed SHA and no unrelated files staged. Commit/push/deploy.
-- [x] **P0.2 Restore daemon liveness.** Harden `run_instagram_bot --ensure`, install guarded cron, fix absolute paths/locks, and expose honest offline/dead-worker states. Test concurrent ensure and heartbeat ages. Commit/push/deploy.
-- [x] **P0.3 Deduplicate takeover Telegram alerts.** Add transition/epoch logic and regression tests for repeated manager echoes, resume, and concurrent events. Commit/push/deploy.
-- [x] **P0.4 Add idempotent notification outbox.** Route permanent delivery, AI failure, spam, payment-link failure, takeover, and recovery alerts through one deduplicated mechanism. Verify Telegram call count and persisted status. Commit/push/deploy.
+- [ ] **P0.2 REOPENED — restore daemon liveness with a cache-independent singleton.** The daemon is live on production, but the production backend is `FileBasedCache`; Django file-cache `add()` is not a cross-process lock. Replace the watchdog/daemon spawn lock with OS `flock` or an atomic database lease and prove exactly one worker under concurrent `--ensure`. Preserve the existing heartbeat/reload behavior. Commit/push/deploy.
+- [ ] **P0.3 REOPENED — deduplicate takeover alerts on the real MySQL engine.** The transition logic is correct sequentially, but production `IgClient` is MyISAM, so `transaction.atomic()+select_for_update()` does not serialize two echoes. Make the epoch transition atomic without relying on MyISAM row locks, or migrate the critical state table to InnoDB. Prove one alert for concurrent echoes and one new alert only after resume. Commit/push/deploy.
+- [ ] **P0.4 REOPENED — complete the notification outbox.** Unique dedupe rows and Telegram message IDs exist, but no autonomous worker drains failed rows. Add due time, bounded backoff/jitter, stale-`sending` recovery, terminal/dead-letter state, daemon/command drain, and operator visibility. Verify one-shot Telegram failure recovers without another business transition and never duplicates a confirmed message. Commit/push/deploy.
 - [x] **P0.5 Make Gemini 3.6 authoritative.** Add `gemini-3.6-flash` to model/key policy, make the settings model effective, and add model-aware generation config/finish-reason handling. Run mocked tests plus the six-key read-only production probe. Commit/push/deploy.
 - [x] **P0.6 Make key rotation health-aware.** All six configured keys now participate in role-prioritized fallback (own keys first, then borrowed keys); per-key cooldown remains isolated; Gemini 3.6 model-major ordering and telemetry are covered by 56 focused tests. Production SHA `857ac233` verified all six chat candidates with `state=running`; probe output exposed names/status only, never key values. Commit/push/deploy.
 - [x] **P0.7 Fail closed on webhook signature in production.** Missing `IG_APP_SECRET` now rejects POSTs; only explicit `IG_BOT_ALLOW_UNSIGNED_WEBHOOKS=true` enables a development bypass. Status exposes `configured`, `unsigned_override`, `healthy`, and `state`; the missing-secret warning is bounded instead of emitted for every event. Production SHA `11b4f9cf` reports `missing_secret` with override disabled, so unsigned traffic is intentionally blocked until the real Meta secret is configured. Commit/push/deploy.
@@ -387,7 +387,7 @@ These findings were discovered while tracing the full queue/worker/provider path
 - [x] **P0.A2 Polling cursor/batch correctness.** Added durable `IgPollCursor` (migration `0083`), chronological batch processing, bounded paging, per-conversation cursor gating, webhook-mid dedup through the existing unique constraint, and attachment propagation. Production migration is applied on SHA `9b7610c3`; daemon status remains `running` after deploy.
 - [x] **P0.A3 Model allowlist and authority.** Settings accept arbitrary model strings while the UI omits `gemini-3.6-flash`; enforce a provider allowlist, make the selected model effective, and expose configured versus actually used model.
 - [x] **P0.A4 Fail-closed webhook verification.** Covered by P0.7: HMAC success/failure, missing-secret rejection, explicit development override, endpoint status, and configuration health tests are in `tests_ig_webhook_security.py`.
-- [x] **P0.A5 Durable Telegram notification delivery.** Covered by P0.4: `IgBotNotification` persists a unique dedupe key, attempt/error/status, payload hash, and confirmed Telegram message ID; repeated state transitions retry safely without duplicate sends.
+- [ ] **P0.A5 REOPENED — durable Telegram notification delivery.** Persistence/dedupe is implemented, but autonomous recovery is not. Close only together with reopened P0.4 after restart, concurrent-drain, timeout-ambiguity, missing-credential, and dead-letter tests plus production outbox evidence.
 - [x] **P1.A6 Gemini 3.6 model-aware generation and health probe.** Context7 confirms `gemini-3.6-flash` as an official model and documents `thinkingConfig.thinkingLevel` for 3.6 plus separate thought/output usage. The current chat payload always sends legacy `thinkingBudget=0`, and the planned six-key probe command is absent. Added model-specific generation normalization (`thinkingLevel=low` for 3.6, compatible settings for older fallbacks), redacted `probe_ig_gemini_pool --role chat --model gemini-3.6-flash --parallel 2`, persisted bounded probe telemetry, and correct `STOP`/`MAX_TOKENS`/`SAFETY`/empty-content classification. Production `10586cd6`: all six keys returned HTTP 200/STOP for `gemini-3.6-flash`; 69 targeted tests, `check`, and migration check passed. A `200 + MAX_TOKENS` probe proves reachability but not a usable answer and does not quarantine the model/key. Commit/push/deploy.
 
 ### Additional findings from the Context7/API contract audit (2026-07-23)
@@ -411,7 +411,7 @@ These items preserve the complete customer-intelligence, paused-chat analysis, s
 - [x] **P0.A11 Make the selected chat model authoritative for pooled keys.** `_run_with_pool()` now passes one validated model chain into both manual and pooled-key paths; non-default allowed primary selection and fallback ordering are covered by regression tests. Production SHA `27c389ac` confirmed `gemini-2.5-flash` becomes the first pooled candidate when selected, with 12 expected key/model candidates, while daemon/heartbeats/queue/outbox remained healthy. The normal configured primary remains `gemini-3.6-flash`.
 - [x] **P0.A12 Harden per-conversation message pagination.** `poll_ingest()` now validates cached conversation IDs and every nested message/time/sender/text/attachment/paging field, rejects non-string bounded IDs, allows only centrally versioned `graph.facebook.com/v25.0` page URLs, detects cycles, and publishes messages/cursor movement only after a complete usable page chain. Each provider call is capped at 5 seconds; one poll is capped at 40 requests/20 seconds and persists a round-robin cache offset so older chats cannot starve. Commit `a96302ed` passed 19 polling tests, 374 IG/Gemini/chat tests, `check`, migration drift, compile, and diff gates. Production polling is enabled and running on SHA `a96302ed`; a mocked hostile-host smoke made one v25 request and rejected the next URL without Meta I/O, then live daemon observation showed two validated cached conversations/two cursors, no recent polling safety warnings, fresh heartbeats, empty queue/outbox, and no `last_error`. No live customer test message was sent.
 - [x] **P1.A11 Persist versioned customer-intelligence snapshots.** Added idempotent append-only `IgConversationAnalysisSnapshot` records keyed by message/rules watermark with band, bounded heuristic purchase estimate, independent confidence, structured role/message evidence, uncertainties, last analyzed message, model/rules version, latency, and trigger. Manager messages are labeled as manager evidence and no longer inflate customer readiness; payment intent remains unverified rather than paid; legacy `buying_readiness` is visibly labeled as fallback. Production migration `0086` required `db_constraint=False` because both referenced legacy tables are MyISAM; the empty partial table from the first failed DDL was verified and removed, then production SHA `ad4d02fb` passed an InnoDB snapshot insert/read smoke (`exploring`, `0.2800`) with daemon/queue/outbox healthy. Historical backfill and high-reasoning reanalysis remain open under P1.1/P1.A14.
-- [x] **P1.A12 Build an explicit interaction taxonomy.** Added the complete versioned snapshot taxonomy for `reaction_only`, `information_only`, `product_interest`, `size_fit_question`, `custom_print`, `price_objection`, `high_intent`, `payment_pending`, `paid_order_waiting`, `no_reply`, `explicit_no_buy`, `opt_out`, `spam_abuse`, `manager_observation`, and `unknown`. Emoji-only reactions are stored with zero readiness/unknown intent and finish without Gemini, typing/seen, Send API, or a new follow-up. Terminal interactions cancel pending reminders immediately; explicit refusal cannot add positive intent signals; opt-out after verified payment preserves the paid/order stage. Commits `70bc4531` and `a40f05d5` passed 366 IG/Gemini/chat tests plus `check`, migration drift, compile, and diff gates. Production migration `0087` is applied on SHA `a40f05d5`; isolated `reaction_only` and `no_reply` DB smokes passed and were deleted, with daemon/DB heartbeats fresh, queue/outbox zero, and effective model `gemini-3.6-flash`.
+- [ ] **P1.A12 PARTIAL — build the complete interaction taxonomy.** The first version added reaction/info/product/size/custom/price/high-intent/payment/no-buy/opt-out/spam/manager classes and correctly avoids replying to emoji-only text. It still lacks collaboration/creator/advertising, wholesale/B2B, support/complaint, community/casual/meme, and real reaction-webhook coverage; `opt_out` is also collapsed into the `lost` band. Preserve the shipped behavior and add the missing classes, independent opt-out state, Ukrainian labels, fixtures, and production-safe backfill.
 - [ ] **P1.A13 Analyze paused and manager-led conversations without auto-reply.** Customer and manager messages must update deterministic facts and queue analysis even while automation is paused. Manager text is labeled as manager evidence, cancels unsafe follow-ups, and can never prove customer intent or trigger a generated customer reply. Add paused/resumed/takeover race fixtures.
 - [ ] **P1.A14 Add idempotent event-triggered and delayed reanalysis.** Run cheap deterministic extraction once per new message, coalesce high-reasoning work by conversation/message watermark, and support configurable hourly/nightly reconciliation for changed chats. Record trigger, due time, lease, attempts, token usage, last analyzed watermark, and skip reason so pause/restarts cannot duplicate cost.
 - [ ] **P1.A15 Store structured commercial memory with provenance.** Track requested product/variant, size, color, quantity, custom-print brief, language, desired purchase time, delivery need, objections, price sensitivity evidence, likes/dislikes, last promise, and next action. Every value needs source role/message/time, confidence, conflict state, and expiration where catalog facts can change.
@@ -428,6 +428,196 @@ These items preserve the complete customer-intelligence, paused-chat analysis, s
 - [ ] **P2.A3 Add privacy, retention, and export governance for intelligence data.** Define retention for raw message excerpts, evidence, media metadata, model outputs, and audit corrections; redact sensitive values; support deletion/anonymization without corrupting aggregate reports; document who can view/export customer profiles.
 - [ ] **P2.A4 Add outcome-driven experimentation controls.** Version follow-up/playbook/scoring policies, assign only eligible cohorts, preserve holdouts, measure verified conversion and complaints/opt-outs, and stop harmful variants. Do not optimize on reply rate alone.
 - [ ] **P2.A5 Add data-quality monitoring and repair.** Detect stale analysis watermarks, impossible state combinations, paid-without-ledger rows, conflicting product facts, orphan snapshots, missing denominators, and hidden-client leakage. Provide read-only diagnostics first and idempotent repair commands with dry-run.
+
+### Additional findings from the full local + production truth audit (2026-07-23)
+
+The owner requested a complete re-audit before further implementation. Three independent read-only passes covered CRM/payment/order truth, Meta/Gemini/runtime boundaries, and UX/statistics. Production was then inspected through SSH without customer sends, Gemini generation probes, CAPI events, database writes, or deploy changes.
+
+Context7 was not available in this execution environment, so API conclusions were
+checked directly against primary current sources: Meta's official Instagram API
+collection for [messaging access and test-role requirements](https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api?entity=request-23987686-4b9737aa-d320-498a-a092-7225a0a785b7)
+and Google's official [Gemini thinking contract](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
+and [rate-limit contract](https://ai.google.dev/gemini-api/docs/rate-limits). Documentation
+is contract input; mocked tests and production evidence remain acceptance authority.
+
+Production evidence at audit time:
+
+- local, `origin/main`, and production SHA: `fa0b6a9b42aa64211f5cc6f7301a0c7d0fbb6443`;
+- daemon running; DB/cache heartbeat about five seconds old; queue and notification outbox empty;
+- migrations through `0087` applied; `manage.py check` clean;
+- webhook secret absent, unsigned override disabled, webhook state `missing_secret`;
+- direct/page tokens present and `v25.0/me/permissions` returned `instagram_manage_messages=granted`; Advanced Access and public-recipient delivery remain unproven separate facts;
+- cache backend `FileBasedCache`;
+- `management_igclient`, `management_instagrambotmessage`, `management_igfollowuptask`, and `management_igdeal` are MyISAM; notification and analysis snapshot tables are InnoDB;
+- 58 clients, 37 hidden, 0 analysis snapshots, 0 follow-up tasks, 0 Meta event rows;
+- one active paused/takeover conversation has explicit order intent, delivery data, full-prepayment wording, and manager order acknowledgement, but remains `new`, has no snapshot, and has no exact phone-linked order candidate;
+- all 375 current local Instagram/Gemini/bot tests pass, proving that the defects below require new contracts rather than being covered by the legacy suite.
+
+The approved architecture is documented in `docs/plans/2026-07-23-management-instagram-crm-truth-design.md`.
+
+#### P0.B — newly proven production-safety defects
+
+- [ ] **P0.B1 Make payment and fulfillment truth ledger-only.**
+  - **Symptom:** model output `[STAGE:paid]`, `[STAGE:order_created]`, or `[STAGE:done]` can make the CRM green/paid, stop follow-ups, force snapshot probability to 1, and increase paid/ad conversion without a payment.
+  - **Root cause:** the prompt allows hard stages, `_apply_stage()` accepts every `IgClient.Stage`, and stats/follow-ups/snapshots trust the mutable client stage.
+  - **Risk:** false revenue, wrong customer treatment, lost recovery work, invalid CAPI attribution, and an auditable claim of payment without provider evidence.
+  - **Affected branches:** chat control tags, classifier, stage history, follow-ups, client list/detail, funnel/stats, ad reports, order collection.
+  - **Acceptance:** AI can change only soft intent/routing state; verified payment is derived from provider/deal/order ledger; fulfillment is derived from linked order/TTN; hard truth cannot be cleared by later model replies; a dry-run inconsistency report lists forged/legacy paid rows before repair.
+  - **Tests:** forged `paid/order_created/done` tags, payment promise/screenshot/link, verified full/prepayment, webhook+poll duplicate, refund/reversal/cancel, post-paid chat, fake legacy paid in every aggregate.
+
+- [ ] **P0.B2 Make daemon singleton correctness independent of Redis/cache backend.**
+  - **Symptom:** two concurrent cron/manual `--ensure` invocations can both spawn a worker on production.
+  - **Root cause:** production uses `FileBasedCache`; watchdog and daemon singleton depend on non-atomic cross-process `cache.add()`.
+  - **Risk:** duplicate sends/follow-ups/alerts, competing leases, Gemini quota pressure, and DB load.
+  - **Affected branches:** minute watchdog, deploy restart, manual ensure, stale heartbeat recovery, Passenger-triggered paths.
+  - **Acceptance:** OS `flock` or atomic DB lease owns the daemon; PID/start-time/SHA are verified; stale ownership recovers; cache eviction/outage cannot produce two workers.
+  - **Tests:** real multiprocess FileBasedCache race, two concurrent ensures, stale PID, deploy sentinel race, killed owner, cache deletion, exactly one live PID.
+
+- [ ] **P0.B3 Remove MyISAM-invalid concurrency assumptions from critical CRM paths.**
+  - **Symptom:** concurrent manager echoes, hide-vs-send, webhook-vs-poll, or two client leases can both cross a supposed `select_for_update()` boundary.
+  - **Root cause:** production critical tables are MyISAM, which does not provide transactional row locks, while the code and SQLite tests assume them.
+  - **Risk:** duplicate takeover alerts, reply after confirmed hide/pause, parallel sends, lost state transitions, and inconsistent deal/order linkage.
+  - **Affected branches:** `_handle_echo`, enqueue/client creation, automation lease, hide/resume, follow-up claim, deal reconciliation.
+  - **Acceptance:** migrate required tables to InnoDB with measured DDL/rollback safety or replace locks with atomic conditional updates/unique epochs that work on the actual engine; deploy health fails when required engines differ.
+  - **Tests:** MySQL concurrency fixtures for two echoes, hide-vs-send, two leases, webhook-vs-poll, deal payment race, migration/engine assertion.
+
+- [ ] **P0.B4 Add autonomous notification outbox drain and recovery.**
+  - **Symptom:** one Telegram timeout/500 leaves a critical alert failed forever unless the same business transition calls `notify_manager()` again.
+  - **Root cause:** the request path creates and sends outbox rows synchronously; daemon/status never claims due failed rows.
+  - **Risk:** silent loss of takeover, payment, AI outage, shipment review, delivery block, and spam escalation alerts.
+  - **Affected branches:** every `IgBotNotification` event producer, daemon loop, deploy/restart, cockpit health.
+  - **Acceptance:** autonomous due-row drain, `next_attempt_at`, bounded exponential backoff+jitter, stale-sending recovery, timeout ambiguity policy, confirmed-message idempotency, dead-letter state and Ukrainian operator action.
+  - **Tests:** one-shot failure then recovery without new event, restart, concurrent drains, missing credentials, stale sending, ambiguous timeout, confirmed Telegram message ID.
+
+- [ ] **P0.B5 Separate observation/analysis from global and per-client reply enablement.**
+  - **Symptom:** when global `is_enabled=False`, customer webhook events return 200 but are discarded before message/client storage; paused manager-led chats also finish without scheduled high-reasoning analysis.
+  - **Root cause:** one enable flag gates ingress, analysis, reply, and follow-up instead of reply automation only.
+  - **Risk:** permanent CRM blind spots and inability to recover history after access is granted or the bot is resumed.
+  - **Affected branches:** webhook ingress, polling, queue, deterministic extraction, manager echo, snapshots, follow-ups, resume behavior.
+  - **Acceptance:** global stop, client pause, and takeover store every eligible customer/manager event exactly once, run deterministic extraction, and coalesce analysis; they generate zero typing/seen/customer Gemini chat/Send API/follow-up; resume does not reply to old backlog.
+  - **Tests:** global off, paused client, takeover, stop/resume race, webhook+poll duplicate, manager message provenance, hidden/opt-out skip policy.
+
+- [ ] **P0.B6 Fail closed for Meta data-deletion signed requests.**
+  - **Symptom:** the public data-deletion callback accepts a syntactically valid signed request when the app secret is absent.
+  - **Root cause:** HMAC validation runs only inside `if app_secret`.
+  - **Risk:** forged audit/receipt rows and false compliance signals; current callback is not destructive, but fail-open verification is still incorrect.
+  - **Affected branches:** public deletion callback, audit receipts, privacy incident response.
+  - **Acceptance:** missing secret rejects the signed callback with a safe status; explicit local-test override is isolated; manual authenticated deletion remains available; no secret/raw signed payload in logs.
+  - **Tests:** missing secret, valid/invalid HMAC, malformed payload, replay/idempotency, manual deletion unaffected.
+
+#### P1.B — CRM truth, intelligence, orders, and conversion
+
+- [ ] **P1.B1 Implement the four-axis CRM state model.** Store and display interaction stage, payment truth, fulfillment truth, and automation/capability state independently. Derived lifecycle summaries may show `paid` or `waiting_shipment`, but Gemini never writes them. Add append-only transition history, reason, evidence, actor/service, source event, version, and timestamp for every axis. Tests cover conflicting axes, legal transition matrices, late/refunded payments, shipment updates, manager takeover, opt-out after purchase, and legacy migration.
+
+- [ ] **P1.B2 Add idempotent event-triggered and delayed conversation analysis.** Deterministic extraction runs once per new watermark; high-reasoning jobs coalesce by client/message watermark and support hourly/nightly reconciliation. Persist due time, lease, attempts, remaining-time deadline, model/key/task/level, tokens, latency, outcome, skip reason, and analyzed watermark. A restart, pause, or repeated hook cannot duplicate analysis cost. Prioritize payment ambiguity/high intent and skip hidden/opt-out/spam according to explicit policy.
+
+- [ ] **P1.B3 Store structured commercial memory with provenance and conflicts.** Track product stable ID/SKU/variant, size/fit, color, quantity, custom-print brief, language, desired time, delivery need, objections, explicit price-sensitivity evidence, likes/dislikes, last promise, category, and next action. Every fact stores source role/message/time, deterministic/model/operator origin, confidence, model/rules version, superseded/conflict state, and expiry for changing catalog facts. Manager facts never become customer intent/payment proof.
+
+- [ ] **P1.B4 Replace cumulative readiness with reversible evidence scoring.** Deduplicate repeated semantic signals; allow later refusal, silence, unavailability, changed product, and verified outcome to move state in either direction; separate deterministic facts from model inference; expose probability and confidence independently. Prohibit language, nationality, ethnicity, grammar, writing manner, or inferred wealth as features. Add at least 100 Ukrainian/Russian fixtures spanning terse speech, sarcasm, mixed language, reactions, abuse, custom print, collaboration, wholesale, stock/size ambiguity, promise-to-pay, verified payment, refund, and repeat purchase.
+
+- [ ] **P1.B5 Complete role-preserving memory and analysis transcripts.**
+  - **Symptom/root cause:** rolling memory and order/product extraction label every non-customer message as bot text because they use a binary user/non-user renderer.
+  - **Risk/branches:** manager promises can be presented to Gemini as bot statements, corrupting intent, objection, product, order, and next-action provenance in memory, snapshots, and follow-ups.
+  - **Acceptance:** preserve `customer`, `bot`, `manager`, `system`, and `followup` roles end-to-end; manager facts remain searchable but never become customer intent/payment proof.
+  - **Tests:** identical sentence from customer/bot/manager, manager payment promise, manager order acknowledgement, follow-up text, rolling summary, product/order extraction, snapshot evidence.
+
+- [ ] **P1.B6 Add evidence-bound multi-order identity linking.** Link one IG client to zero/many site/manual orders through an append-only match record. Exact normalized phone is the primary candidate key; corroborate with name, city, Nova Poshta branch, time window, products, amount, checkout/payment/deal IDs, and manager confirmation. Ambiguous/shared-phone/fuzzy-only candidates stay review-only. Store confidence, evidence, matcher version, rejected candidates, link/unlink actor/time/reason. UI shows each order/items/order value/paid value/payment/order/TTN state. Tests cover one client-many orders, shared phone, typo, manual bank payment, site checkout, wrong-order rejection, duplicate payment, link correction, and TTN update.
+
+- [ ] **P1.B7 Reconcile refunds, reversals, cancellations, returns, and multiple payments.** The current `already_paid` fast path ignores later reversal/refund semantics. Preserve an immutable payment-event ledger, derive current truth, keep full/prepayment as one Purchase with full discounted order value plus actual paid value, and never erase history. Tests cover partial/full refund, disputed payment, cancelled order, returned shipment, repeated webhook/poll, and a later second order for the same client.
+
+- [ ] **P1.B8 Expand taxonomy and policy routing.** Add collaboration/creator/advertising, wholesale/B2B, support/complaint, community/casual/meme, real reaction events, and unknown-safe handling. Keep opt-out distinct from lost. Reaction-only and casual acknowledgement rules must not create automatic sales replies. Add abuse warning/escalation rules without interpreting profanity alone as non-buying intent.
+
+- [ ] **P1.B9 Make discounts a versioned eligibility policy, not a prompt suggestion.** Record previous objection handling, elapsed conversation time, explicit affordability evidence, margin eligibility, product exclusions, manager approval, offer version, and expiry. A 10% rescue is rare, capped, independently visible, and impossible after refusal/opt-out/paid/manager takeover. Measure verified outcome and complaints, not reply rate. Tests cover repeated requests for discounts, prompt injection, low-margin/custom products, 5% then exceptional 10%, quiet hours, Meta window, and no-buy stop.
+
+- [ ] **P1.B10 Govern retention without deleting CRM/audit truth.**
+  - **Symptom/root cause:** `purge_stale_clients()` physically cascades stale CRM cards without dry-run, and `_trim_messages()` keeps only the last 2000 messages globally rather than by evidence/retention policy.
+  - **Risk/branches:** hidden/paid/order history, score evidence, reanalysis sources, correction audit, and legal/payment evidence can disappear during routine maintenance.
+  - **Acceptance:** dry-run-first archive/anonymization rules preserve payment/order/stage/score/correction truth; explicit privacy erasure remains separate and authenticated; redacted evidence receives tombstones.
+  - **Tests:** hidden stale, paid stale, old active chat, snapshot references, global-volume pressure, dry run, idempotency, verified privacy deletion.
+
+#### P1.C — Meta, Gemini, webhook, and CAPI contracts
+
+- [ ] **P1.C1 Finish P0.A9 with a central Meta request contract.** Build all Graph URLs through a versioned request builder/transport that rejects unversioned, wrong-host, downgrade, fragment, and credential-leaking URLs. Status/UI separately expose local allowlist mode, token permission probe/time, account access mode (`standard_test`, `advanced_public`, `unknown`), and per-recipient delivery result. App Role/Standard Access is labelled test-only and never treated as public Advanced Access. Contract tests enumerate every bot Meta endpoint and pagination URL.
+
+- [ ] **P1.C2 Complete webhook coverage and observability.**
+  - **Symptom/root cause:** the parser handles only message-shaped events; referral/postback without `message` is discarded, `is_self` and reaction events are not classified, unknown/deleted fields have no counters, and each nonempty webhook may spawn an unbounded thread.
+  - **Risk/branches:** lost attribution/actions, accidental response to self events, missed reaction taxonomy, invisible API drift, and worker/thread exhaustion.
+  - **Acceptance:** handle messages, quick replies, postbacks, referrals without text, echoes/`is_self`, reactions, attachments, deletes/unsends, unsupported/unknown-valid fields, duplicate `mid`, and out-of-order delivery; bounded queue/backpressure owns async work.
+  - **Tests:** one official-style fixture per field variant, unknown counters, no-response assertions, duplicate/out-of-order events, referral-only postback, thread/backpressure limit.
+
+- [ ] **P1.C3 Add endpoint-class Meta rate limiting and headers.**
+  - **Symptom/root cause:** conversation-list pages are paced, but per-conversation message pages can burst; `_http()` drops response headers, so `Retry-After` and proven usage state cannot be observed.
+  - **Risk/branches:** avoidable 429s, incomplete polling, misleading health, and starvation across older conversations.
+  - **Acceptance:** one shared-account pacer covers list and message pagination; Send endpoint classes remain separate; bounded headers, retry time, error class/time, counters, latency, and degraded state are recorded without guessing remaining quota.
+  - **Tests:** multipage list+message pacing, concurrent pollers, 429 with/without headers, server errors, deadline exhaustion, stale-cache fallback, fair round robin.
+
+- [ ] **P1.C4 Make Meta feedback test/live modes safe and truthful.**
+  - **Symptom/root cause:** the UI stores a `TEST...` code, but the IG event sender never passes it to the CAPI service; an operator can believe an event is test-only while the code path is live.
+  - **Risk/branches:** unintended production ad events, misleading operator controls, polluted attribution, and inability to verify test mode safely.
+  - **Acceptance:** disabled/preview/test/live are separate; preview is no-network; test validates and forwards the code; live requires explicit server capability/authorization and cannot be selected accidentally; Ukrainian help explains consent, match data, dedupe, attribution-not-causality, and status meanings.
+  - **Tests:** code forwarded in test mode, disabled/preview zero SDK calls, invalid/blank code rejected, live permission guard, no silent test-to-live fallback, actor/config audit.
+
+- [ ] **P1.C5 Emit one deferred IG Purchase only after verified payment and linked/materialized order.**
+  - **Symptom/root cause:** verified payment calls `log_or_send(Purchase)` before `_on_deal_paid()` materializes the order; with `order=None` the event is skipped, and order creation has no later CAPI hook.
+  - **Risk/branches:** confirmed IG purchases silently never reach the configured feedback pipeline, while the cockpit may imply that enabling the checkbox works.
+  - **Acceptance:** provider payment verifies first, order is created/linked second, one stable Purchase event is prepared third, retail-flow dedupe is honored, and full order value/paid value/refund semantics are explicit.
+  - **Tests:** full/prepay, webhook+poll race, delayed order creation, duplicate callback, SDK timeout/retry, retail dedupe, refund/cancel, disabled/test/live modes. Do not run live events during implementation.
+
+- [ ] **P1.C6 Group Gemini keys by provider project/quota domain.** Six aliases do not necessarily represent six independent quotas. Store/configure project grouping, apply 429 cooldown at the proven project scope, retain key-specific auth/model errors, and show capacity without claiming unsupported remaining quota. Tests cover two aliases in one project, independent projects, borrow pools, project 429, key 403/404, and recovery.
+
+- [ ] **P1.C7 Enforce a real end-to-end Gemini deadline.**
+  - **Symptom/root cause:** the 75-second deadline is checked before an attempt, but the final HTTP call and backoff may still receive their full timeout and overrun the advertised hard ceiling.
+  - **Risk/branches:** stuck client lease, delayed reply/analysis, daemon lag, and overlapping work after retries.
+  - **Acceptance:** compute remaining time before HTTP/backoff, cap connect/read/sleep to that budget, stop when another attempt cannot fit, and persist deadline/attempt outcome; keep chat `medium`, complex decisions/intelligence `high`, probes `low`.
+  - **Tests:** fake-clock connect/read timeout, backoff, last-attempt overrun, fallback model, cancellation, lease release, telemetry.
+
+- [ ] **P1.C8 Add truthful provider/runtime health.** Expose daemon PID/SHA, cache backend/health, DB engine contract, webhook last seen/signature state, queue depth/oldest age/lag, outbox due/failed oldest age, configured/effective/last Gemini model and key, key-pool probe health, generation capability, Meta token capability, and concrete delivery blockers. “Daemon alive” never means “can answer this recipient.”
+
+#### P1.D — statistics and Ukrainian cockpit
+
+- [ ] **P1.D1 Define separate measures and explicit denominators.**
+  - **Symptom/root cause:** current “conversations” equals client count, paid equals mutable stage, revenue sums deal order value, and objection output mixes distinct clients with raw signal events.
+  - **Risk/branches:** false conversion/revenue, incomparable percentages, repeated-signal inflation, and business decisions made from undefined denominators.
+  - **Acceptance:** count users, conversations, messages by role, invoices/attempts, verified payment transactions, paying users, orders, order value, paid value, refunds, shipments, and deliveries separately; every metric declares numerator, denominator, exclusions, unknowns, sample size, timezone, range, and date semantics.
+  - **Tests:** one user-many conversations/orders/payments, repeated signals, hidden/archive, prepayment, refund, unknown attribution, boundary timestamps in `Europe/Kiev`.
+
+- [ ] **P1.D2 Implement honest time/cohort semantics.** Support custom from/to plus first-contact cohort, interaction-event, analysis, payment, order, and shipment dates. Current “last message in range then current stage” is not a funnel and must be labelled/replaced. Add cumulative funnel/drop-off with cohort retention, current-state distribution as a separate view, and drill-down to the exact included users/events.
+
+- [ ] **P1.D3 Centralize hidden/archive and eligibility scopes.** Implement one tested analytics scope used by overview, funnel, products, objections, language, campaign, drop-off, follow-up, revenue, calibration, and export. Hidden records remain stored and visible only through an explicit archive scope; excluded counts and reasons are shown. Define paused/blocked/test/staff/friend semantics explicitly.
+
+- [ ] **P1.D4 Add complete filters and stable identifiers.** Filters: custom dates, interaction stage, payment truth, fulfillment truth, stable product ID/SKU/variant, source/ad/campaign, assigned manager/owner, objection, category, language, follow-up outcome, and archive scope. Add an auditable assigned-manager model before offering that filter. Product analytics keeps stable IDs and treats titles as labels only.
+
+- [ ] **P1.D5 Separate user objections from signal-event volume.** Distinct-client objection rates and raw/repeated signal counts are separate measures. “Дорого” requires explicit evidence/confidence or operator confirmation; it cannot be inferred from language/nationality/writing style. Show threshold/version/evidence and allow drill-down/correction. Tests cover repeated price messages, conflict, later acceptance, multiple objections, and small denominators.
+
+- [ ] **P1.D6 Build prediction calibration and audit correction.** Compare saved predictions with later verified paid/lost outcomes; report Brier/calibration bands, false-high/false-low, sample size, version drift, and manual corrections. Authorized operators may correct product/category/objection/band/next action with required reason and before/after audit; payment/order facts remain read-only to this workflow.
+
+- [ ] **P1.D7 Rebuild client list/detail around evidence and next action.** Each row/card shows Ukrainian interaction stage, payment truth, fulfillment truth, owner, product, next action and reason, full due date and live countdown, delivery capability, analysis model/version/time, probability/confidence, evidence/uncertainty, and score/stage history. Do not truncate the only evidence line with nowrap/ellipsis; render all evidence accessibly.
+
+- [ ] **P1.D8 Complete Ukrainian localization and help text.** Replace raw `Paid`, `legacy`, `conf`, `obj`, `FU`, `discount`, `ad`, `Reasoning`, `Worker`, `Heartbeat`, `Rescue offer`, raw signal/deal/follow-up enums, and unexplained acronyms with backend labels and Ukrainian copy. Every setting explains what it controls, what it does not prove, risk, default, and operator action—especially Meta feedback/test code, polling, allowlist, analysis, reply automation, and model choice.
+
+- [ ] **P1.D9 Apply semantic colors without using color as the sole carrier.** Green only for verified paid/delivered truth, yellow for high intent/payment pending, blue for shipped/in transit, neutral for information/exploration, red for opt-out/lost/abuse/blockers. Waiting shipment is not “complete.” Every chip has text/icon/state semantics; funnel completion is not inferred from mutable stage.
+
+- [ ] **P1.D10 Remove stored DOM-XSS paths from the cockpit.**
+  - **Symptom/root cause:** the JavaScript escape helper omits quotes while untrusted avatar/name/invoice values are concatenated into HTML attributes and an inline `onerror` handler.
+  - **Risk/branches:** stored DOM XSS in authenticated CRM through profile/catalog/payment-controlled strings; session/action compromise.
+  - **Acceptance:** build nodes with `textContent`, validated `setAttribute`, safe URL scheme/host policy, and event listeners; remove inline handler construction and unsafe `innerHTML` data paths.
+  - **Tests:** double/single quotes, markup, `javascript:`, data URLs, broken avatars, long names, malicious invoice URLs, CSP-compatible rendering.
+
+- [ ] **P1.D11 Add full responsive/accessibility browser acceptance.** Verify 1440/1280/768/390/320 widths, long Ukrainian text, long product/ad IDs, 200+ clients, responsive/scrolled tables, no overlap/clipping, keyboard-only client rows/tabs/actions, focus visibility, screen-reader state, empty/loading/error modes, and live countdown/status updates. Save desktop/mobile evidence for overview, offline/dead worker, client detail, filters, stats, key health, and Meta capability.
+
+- [ ] **P1.D12 Add catalog/size/custom-print operator guidance.** Instructions and structured context must expose current product/SKU/price/availability and both oversize and future classic size-guide resources without scanning the entire site on every reply. Store guide type/product applicability/stable media ID/version, send concise links/media, and keep custom-print pricing/feasibility manager-authoritative when structured data is insufficient. Test stale catalog, classic/oversize choice, ambiguous fit, missing image fallback, custom garment constraints, Telegram/contact copy convenience, and no invented facts.
+
+#### P2.B — validation, governance, and handoff
+
+- [ ] **P2.B1 Add a production-contract test profile.** Run MySQL/InnoDB/MyISAM-aware concurrency, FileBasedCache multiprocess singleton, Meta/Gemini mocked contracts, CAPI no-network fixtures, and migration engine assertions separately from fast SQLite unit tests. Document what each profile proves and what it cannot prove.
+
+- [ ] **P2.B2 Add read-only health and data-quality commands.** Report impossible axis combinations, paid-without-ledger, ledger-paid-without lifecycle update, stale analysis watermarks, conflicting facts, orphan snapshots/order links, hidden leakage, overdue queue/outbox/follow-ups, wrong table engines, cache singleton state, missing keys/secrets, and attribution without event/order evidence. Repair commands are separate, idempotent, and dry-run first.
+
+- [ ] **P2.B3 Add privacy/retention/export governance.** Define access, retention, redaction, anonymization, export, and deletion for raw messages, evidence excerpts, media metadata, model outputs, order links, attribution touches, corrections, and audit history. Never expose secrets or unnecessary PII in list views/logs/exports.
+
+- [ ] **P2.B4 Add outcome-driven experimentation controls.** Version scoring, prompt, follow-up, and discount policies; assign eligible cohorts with holdouts; measure verified conversion, refunds, complaints, and opt-outs; stop harmful variants. Do not optimize on reply rate or model score alone.
+
+- [ ] **P2.B5 Reconcile this master plan after every slice.** A checkbox closes only when its exact code/tests/production evidence exist. Narrow `P1.A*` work must not falsely close broader `P1.*` acceptance. Keep SHA, migration, engine/cache, runtime, and browser evidence next to the checkbox. Remove stale handoff statements rather than leaving contradictory history.
 
 ### P1 — CRM truth and conversion behavior
 
@@ -468,10 +658,30 @@ cd /Users/zainllw0w/TwoComms/site
   management.tests_ig_sales_automation \
   management.tests_ig_clients_ui \
   management.tests_gemini_keys
+.venv/bin/python -m compileall -q twocomms/management twocomms/orders
 git diff --check
 ```
 
 Add the slice-specific test module to that command rather than relying on the full suite alone. Use mocked HTTP for Gemini/Meta/Telegram. Do not send live customer messages in tests.
+
+### Complete related regression gate for every slice
+
+After the focused red/green cycle, run every `tests_ig_*`, `tests_gemini_*`, and
+`tests_bot_*` module. This is mandatory even when the focused test passes:
+
+```bash
+cd /Users/zainllw0w/TwoComms/site
+DJANGO_SETTINGS_MODULE=test_settings .venv/bin/python twocomms/manage.py test \
+  $(rg --files twocomms/management \
+    | rg '/tests_(ig|gemini|bot).*\.py$' \
+    | sort \
+    | sed -E 's#^twocomms/##; s#/#.#g; s#\.py$##')
+```
+
+The pre-change 2026-07-23 baseline is **375 tests passing**. A passing legacy
+suite does not replace new MySQL/FileBasedCache/browser/provider contract tests.
+No command in this gate may send a real Meta message, Gemini customer response,
+Telegram alert, payment request, order, or CAPI event.
 
 ### Required integration scenarios
 
@@ -522,6 +732,20 @@ Then verify:
 - queue, follow-up, notification outbox, and error counts are sane.
 - live endpoints return expected management/storefront status codes.
 
+The deployment is incomplete until the slice also proves:
+
+- exact production SHA equals the pushed SHA and the worktree/main diff is understood;
+- required table engines match the concurrency contract;
+- exactly one daemon PID owns the current SHA after concurrent `--ensure` checks;
+- cache backend/health, DB heartbeat, daemon heartbeat, queue depth/oldest age,
+  outbox due/failed oldest age, and follow-up backlog are sane;
+- configured, effective, and last-success Gemini model/key/task are distinguished;
+- webhook signature health, local allowlist, token permission probe, account
+  access level, and concrete recipient delivery history are separate facts;
+- no live Meta/CAPI test event or customer message was sent without a new explicit
+  authorization for that exact smoke;
+- desktop and mobile browser evidence exists for every UX-affecting slice.
+
 ### Rollback
 
 - Stop the daemon only if required to prevent duplicate sends.
@@ -545,8 +769,31 @@ Until these are answered, use the recommended defaults and keep policy values co
 
 ---
 
-## 18. Handoff Summary
+## 18. Handoff Summary (reconciled 2026-07-23)
 
-The immediate production blockers are known: the daemon is dead despite `is_enabled=True`, watchdog cron is missing, `IG_APP_SECRET` is absent, the configured model is not authoritative, and manager echo alerts are not transition-idempotent. The first implementation slices must restore liveness and eliminate duplicate alerts before any conversion optimization is trusted. Gemini 3.6 capability is already verified on all six production keys; the remaining work is safe routing, telemetry, model configuration, and regression coverage.
+Production is currently on the same SHA as local `main`; the daemon/watchdog are
+running and both heartbeats are fresh. That does **not** mean the bot is ready to
+reply publicly or that the CRM is trustworthy. The webhook app secret is absent,
+Advanced Access/public-recipient delivery is unproven, configured model state is
+stale, and production has no analysis snapshots/follow-up tasks/Meta event ledger.
 
-This file is deliberately the source of truth for future agents: it records current evidence, root causes, invariants, policy defaults, exact code surfaces, test scenarios, deploy commands, rollback constraints, and the checkbox-by-checkbox delivery contract.
+The highest-priority implementation order is now:
+
+1. P0.B1 ledger-only payment/fulfillment truth;
+2. P0.B2/P0.B3 real FileBasedCache/MyISAM concurrency correctness;
+3. P0.B4 autonomous alert outbox;
+4. P0.B5 observation and analysis while reply automation is paused/stopped;
+5. P1.C1 explicit Graph/permission/delivery capability;
+6. structured memory, reversible score, multi-order/TTN linking, honest analytics,
+   and the Ukrainian cockpit described by the remaining P1/P2 items.
+
+The previously shipped takeover logic is correct sequentially and the prior
+duplicate-alert symptom is covered by unit tests, but it must be reverified after
+the production-engine concurrency fix. The first production chat requiring
+reanalysis is already evidenced by message watermarks; do not manually promote it
+to paid or auto-link an order without provider/order evidence.
+
+This file remains the source of truth for future agents. A checkbox is never closed
+from code inspection or a passing SQLite suite alone: it needs its focused tests,
+complete related suite, checks/compile/diff gates, pushed SHA, production deploy,
+runtime evidence, and browser proof where applicable.
