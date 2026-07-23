@@ -23,6 +23,7 @@ import re
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
 from management.models import GeminiKeyState
@@ -49,7 +50,7 @@ DEFAULT_ROLE_KEY_POOLS = {
 # iter_attempts: пріоритетна модель пробується на ВСІХ ключах перш ніж спуститись.
 DEFAULT_ROLE_MODEL_CHAINS = {
     "chat": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
-    "management": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    "management": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
     # Grounding (Google Search) безкоштовний ЛИШЕ на 2.5-flash / 2.5-flash-lite.
     "checker": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
 }
@@ -122,6 +123,38 @@ PAID_MODEL_SKIP_SECONDS = 30 * 60
 _model_unavailable: dict[str, datetime.datetime] = {}
 
 _RETRY_RE = re.compile(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"')
+
+
+def key_project_groups() -> dict[str, str]:
+    """Return non-secret key-alias -> Google project-group mapping.
+
+    Quotas are project-scoped. Unknown aliases deliberately remain isolated and
+    visible as unknown instead of guessing that similarly named keys share a
+    project. Configure ``GEMINI_KEY_PROJECT_GROUPS`` as a dict or as
+    ``GEMINI_API=project-a,GEMINI_API2=project-a``.
+    """
+    configured = getattr(settings, "GEMINI_KEY_PROJECT_GROUPS", None)
+    if configured is None:
+        configured = os.environ.get("GEMINI_KEY_PROJECT_GROUPS", "")
+    if isinstance(configured, dict):
+        pairs = configured.items()
+    else:
+        pairs = []
+        for part in str(configured or "").split(","):
+            alias, separator, group = part.partition("=")
+            if separator:
+                pairs.append((alias, group))
+    result = {}
+    for alias, group in pairs:
+        alias = str(alias or "").strip()
+        group = str(group or "").strip()
+        if alias in ALL_KEYS and re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", group):
+            result[alias] = group
+    return result
+
+
+def project_group(key_name: str) -> str:
+    return key_project_groups().get(key_name, "")
 
 
 # ---------------------------------------------------------------------------
@@ -214,15 +247,83 @@ def is_available(key_name: str, now: datetime.datetime | None = None) -> bool:
     return st.cooldown_until <= now
 
 
+def _project_aliases(key_name: str) -> list[str]:
+    group = project_group(key_name)
+    if not group:
+        return [key_name]
+    return [alias for alias in ALL_KEYS if project_group(alias) == group]
+
+
+def _locked_key_states(aliases: list[str]) -> list[GeminiKeyState]:
+    for alias in aliases:
+        GeminiKeyState.objects.get_or_create(key_name=alias)
+    return list(
+        GeminiKeyState.objects.select_for_update()
+        .filter(key_name__in=aliases)
+        .order_by("key_name")
+    )
+
+
+def _active_project_cooldown(
+    states: list[GeminiKeyState],
+    *,
+    now: datetime.datetime,
+) -> tuple[datetime.datetime, str] | None:
+    active = [
+        state for state in states
+        if state.cooldown_until and state.cooldown_until > now
+    ]
+    if not active:
+        return None
+    strongest = max(active, key=lambda state: state.cooldown_until)
+    return strongest.cooldown_until, strongest.cooldown_scope
+
+
 def mark_success(key_name: str, now: datetime.datetime | None = None) -> GeminiKeyState:
     now = now or timezone.now()
-    st = GeminiKeyState.get(key_name)
+    aliases = _project_aliases(key_name)
+    with transaction.atomic():
+        states = _locked_key_states(aliases)
+        by_name = {state.key_name: state for state in states}
+        st = by_name[key_name]
+        _roll_day(st, now)
+        active = (
+            _active_project_cooldown(states, now=now)
+            if len(aliases) > 1
+            else None
+        )
+        if active:
+            st.cooldown_until, st.cooldown_scope = active
+            st.last_status = "ok:project_cooldown"
+        else:
+            st.cooldown_until = None
+            st.cooldown_scope = ""
+            st.last_status = "ok"
+        st.last_ok_at = now
+        st.requests_today = (st.requests_today or 0) + 1
+        st.save()
+        return st
+
+
+def _apply_429_state(
+    st: GeminiKeyState,
+    scope: str,
+    seconds: int,
+    now: datetime.datetime,
+    error: str = "",
+) -> GeminiKeyState:
     _roll_day(st, now)
-    st.cooldown_until = None
-    st.cooldown_scope = ""
-    st.last_status = "ok"
-    st.last_ok_at = now
-    st.requests_today = (st.requests_today or 0) + 1
+    if scope == "day" and not seconds:
+        proposed_until = next_midnight_pt(now)
+    else:
+        proposed_until = now + datetime.timedelta(seconds=max(1, int(seconds)))
+    if not st.cooldown_until or proposed_until > st.cooldown_until:
+        st.cooldown_until = proposed_until
+        st.cooldown_scope = scope
+    st.last_status = f"429:{scope}"
+    st.last_429_at = now
+    if error:
+        st.last_error = error[:500]
     st.save()
     return st
 
@@ -230,19 +331,13 @@ def mark_success(key_name: str, now: datetime.datetime | None = None) -> GeminiK
 def mark_429(key_name: str, scope: str, seconds: int,
              now: datetime.datetime | None = None, error: str = "") -> GeminiKeyState:
     now = now or timezone.now()
-    st = GeminiKeyState.get(key_name)
-    _roll_day(st, now)
-    if scope == "day" and not seconds:
-        st.cooldown_until = next_midnight_pt(now)
-    else:
-        st.cooldown_until = now + datetime.timedelta(seconds=max(1, int(seconds)))
-    st.cooldown_scope = scope
-    st.last_status = f"429:{scope}"
-    st.last_429_at = now
-    if error:
-        st.last_error = error[:500]
-    st.save()
-    return st
+    aliases = _project_aliases(key_name)
+    with transaction.atomic():
+        states = _locked_key_states(aliases)
+        by_name = {state.key_name: state for state in states}
+        for state in states:
+            _apply_429_state(state, scope, seconds, now, error=error)
+        return by_name[key_name]
 
 
 def mark_model_overloaded(model: str, seconds: int = MODEL_OVERLOAD_SECONDS,
@@ -411,6 +506,8 @@ def pool_status(now: datetime.datetime | None = None) -> list[dict]:
             "key_name": key_name,
             "present": bool(_key_value(key_name)),
             "role": primary_role_of(key_name),
+            "project_group": project_group(key_name),
+            "project_identity_known": bool(project_group(key_name)),
             "available": available,
             "cooldown_until": st.cooldown_until.isoformat() if st.cooldown_until else None,
             "cooldown_scope": st.cooldown_scope,

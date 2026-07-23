@@ -355,6 +355,19 @@ def apply_payment_status(deal, status_value, payload=None, *, source="provider")
             )
         except Exception:
             pass
+    try:
+        from management.services.bot_conversation_analysis import (
+            schedule_client_truth_analysis,
+        )
+
+        schedule_client_truth_analysis(
+            deal.client,
+            trigger="payment_truth",
+        )
+    except Exception:
+        # Payment truth is authoritative even if analysis scheduling is
+        # temporarily unavailable; reconciliation will recover the watermark.
+        pass
     return status
 
 

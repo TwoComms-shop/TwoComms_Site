@@ -31,13 +31,14 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 from urllib.parse import urlsplit
 
 from django.core.cache import cache
-from django.db import IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
 from management.models import (
     IgClient,
     IgBotNotification,
+    IgConversationAnalysisJob,
     IgPollCursor,
     InstagramBotLog,
     InstagramBotMessage,
@@ -136,7 +137,15 @@ PHONE_RE = re.compile(r"(?:\+?38)?0\d{9}")
 
 def _client_blocked(client) -> bool:
     """Бот не відповідає, якщо клієнта поставлено на паузу або заблоковано."""
-    return bool(client and (client.bot_paused or client.is_blocked or client.hidden_at))
+    active_opt_out = bool(
+        client
+        and client.opted_out_at
+        and (not client.opted_in_at or client.opted_in_at < client.opted_out_at)
+    )
+    return bool(
+        client
+        and (client.bot_paused or client.is_blocked or client.hidden_at or active_opt_out)
+    )
 
 
 def _register_spam(client) -> bool:
@@ -1833,9 +1842,38 @@ def enqueue_inbound(
                 processed_at=None if reply_eligible else timezone.now(),
             )
             client.touch_inbound()
-            try:
-                from management.services import bot_followups, bot_sales_classifier
+            from management.services import bot_followups, bot_sales_classifier
 
+            # Consent is a routing barrier, not best-effort CRM enrichment. If
+            # later classification fails, an explicit stop must already be
+            # durable and impossible to reach Gemini or customer transport.
+            if bot_sales_classifier.is_explicit_opt_out(text):
+                opted_out_at = timezone.now()
+                client.opted_out_at = opted_out_at
+                client.opt_out_message_id = msg.pk
+                client.bot_paused = True
+                client.paused_reason = "opt_out"
+                client.paused_at = client.paused_at or opted_out_at
+                client.save(update_fields=[
+                    "opted_out_at",
+                    "opt_out_message_id",
+                    "bot_paused",
+                    "paused_reason",
+                    "paused_at",
+                    "updated_at",
+                ])
+                if msg.status == InstagramBotMessage.Status.PENDING:
+                    msg.status = InstagramBotMessage.Status.DONE
+                    msg.processed_at = opted_out_at
+                    msg.save(update_fields=["status", "processed_at"])
+                reply_eligible = False
+                try:
+                    bot_followups.cancel_pending(client, reason="opt_out")
+                except DatabaseError:
+                    raise
+                except Exception:
+                    pass
+            try:
                 classified = bot_sales_classifier.classify_message(client, message=msg)
                 interaction_type = classified.get("interaction_type")
                 terminal_followup_reasons = {
@@ -1862,6 +1900,8 @@ def enqueue_inbound(
                     reply_eligible = False
                 elif reply_eligible:
                     bot_followups.schedule_after_inbound(client)
+            except DatabaseError:
+                raise
             except Exception:
                 pass
     except IntegrityError:
@@ -3192,11 +3232,33 @@ def status_snapshot() -> dict:
         notification_unknown = None
         notification_dead_letter = None
     try:
-        from management.services.gemini_keys import normalize_chat_model
+        analysis_pending = IgConversationAnalysisJob.objects.filter(
+            status__in=[
+                IgConversationAnalysisJob.Status.PENDING,
+                IgConversationAnalysisJob.Status.PROCESSING,
+            ]
+        ).count()
+        analysis_failed = IgConversationAnalysisJob.objects.filter(
+            status=IgConversationAnalysisJob.Status.FAILED
+        ).count()
+    except Exception:
+        analysis_pending = None
+        analysis_failed = None
+    try:
+        from management.services.gemini_keys import (
+            ALL_KEYS,
+            key_project_groups,
+            normalize_chat_model,
+        )
 
         effective_model = normalize_chat_model(s.gemini_model)
+        project_groups = key_project_groups()
+        project_mapping_count = len(project_groups)
+        project_mapping_complete = all(alias in project_groups for alias in ALL_KEYS)
     except Exception:
         effective_model = s.gemini_model
+        project_mapping_count = 0
+        project_mapping_complete = False
     return {
         "is_enabled": s.is_enabled,
         # Backwards-compatible alias: only the daemon heartbeat proves a
@@ -3219,6 +3281,9 @@ def status_snapshot() -> dict:
         "notification_failed": notification_failed,
         "notification_unknown": notification_unknown,
         "notification_dead_letter": notification_dead_letter,
+        "analysis_pending": analysis_pending,
+        "analysis_failed": analysis_failed,
+        "analysis_reconcile_cursor": s.analysis_reconcile_cursor,
         "unique_senders": unique_senders_count(),
         "allow_all": not bool(allowed_sender_ids(s)),
         "last_error": s.last_error,
@@ -3227,6 +3292,8 @@ def status_snapshot() -> dict:
         "ai_enabled": s.ai_enabled,
         "gemini_model": s.gemini_model,
         "gemini_effective_model": effective_model,
+        "gemini_project_mapping_count": project_mapping_count,
+        "gemini_project_mapping_complete": project_mapping_complete,
         "last_gemini_model": s.last_gemini_model,
         "last_gemini_key": s.last_gemini_key,
         "last_gemini_at": s.last_gemini_at.isoformat() if s.last_gemini_at else "",

@@ -702,12 +702,15 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       feedback.textContent=text;
     }
     async function runClientAction(id, action, button){
+      const confirmsOptIn=action==='resume' && button.dataset.optout==='1';
+      if(confirmsOptIn && !window.confirm('Клієнт раніше попросив не писати. Продовжуйте лише якщо він явно дав нову згоду. Підтвердити згоду та ввімкнути бота?')) return;
       const originalLabel=button.innerHTML;
       button.disabled=true;
       button.textContent='Зберігаємо…';
       const formData=new FormData();
       if(action==='hide') formData.append('reason','manual');
       if(action==='lost') formData.append('reason','manual_lost');
+      if(confirmsOptIn) formData.append('confirm_opt_in','1');
       try{
         const response=await fetch(base+id+'/'+action+'/',{
           method:'POST', headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'}, body:formData
@@ -743,10 +746,12 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           if(c.delivery_status_label) h+='<div class="bot-client-sub" style="margin-top:8px;padding:9px 11px;border:1px solid rgba(251,191,36,.42);border-radius:10px;background:rgba(251,191,36,.08);color:#fde68a;">⚠ <b>Не можу відповісти:</b> '+esc(c.delivery_status_label)+(c.delivery_error?(' · '+esc(c.delivery_error)):'')+'</div>';
           h+='<div class="bot-client-sub" style="margin-top:8px;">Оцінка: <b style="color:#34d399;">'+esc(c.analysis_band||'legacy')+'</b> · ймовірність: '+(c.analysis_probability?Math.round(Number(c.analysis_probability)*100)+'%':'—')+' · впевненість: '+(c.analysis_confidence?Math.round(Number(c.analysis_confidence)*100)+'%':'—')+' · намір: '+esc(c.intent||'')+' · заперечення: '+esc(c.primary_objection||'')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div>';
           if((c.analysis_evidence||[]).length){h+='<div class="bot-hint" style="margin-top:6px;">Доказ: '+esc((c.analysis_evidence[0].signals||[]).join(', ')||'структуровані факти')+' · невизначеність: '+esc((c.analysis_uncertainties||[]).join(', ')||'немає')+'</div>';}
-          const pauseBtn=c.bot_paused?'<button type="button" class="bot-client-action primary resume" data-act="resume">▶ Відновити бота</button>':'<button type="button" class="bot-client-action primary pause" data-act="pause">⏸ Зупинити бота</button>';
+          const pauseBtn=c.opted_out
+            ? '<button type="button" class="bot-client-action primary resume" data-act="resume" data-optout="1">Підтвердити нову згоду</button>'
+            : (c.bot_paused?'<button type="button" class="bot-client-action primary resume" data-act="resume">▶ Відновити бота</button>':'<button type="button" class="bot-client-action primary pause" data-act="pause">⏸ Зупинити бота</button>');
           const primaryAction=c.hidden?'<span class="bot-stage-chip st-cold">🗂 Бот не обробляє прихованого клієнта</span>':pauseBtn;
           const visibilityBtn=c.hidden?'<button type="button" class="bot-client-action restore" data-act="unhide">↩ Повернути до активних</button>':'<button type="button" class="bot-client-action hide" data-act="hide">🗂 Приховати</button>';
-          const stateCopy=c.hidden?'Прихований клієнт не отримує автоматичних відповідей і не входить до активної статистики.':(c.manager_takeover?'Менеджер веде діалог; автоматичні відповіді зупинені.':'Керуйте ботом і статусом клієнта без перезавантаження сторінки.');
+          const stateCopy=c.hidden?'Прихований клієнт не отримує автоматичних відповідей і не входить до активної статистики.':(c.opted_out?'Клієнт відмовився від автоматичних повідомлень. Відновлення можливе лише після нової явної згоди.':(c.manager_takeover?'Менеджер веде діалог; автоматичні відповіді зупинені.':'Керуйте ботом і статусом клієнта без перезавантаження сторінки.'));
           h+='<section class="bot-action-panel" aria-label="Дії з клієнтом"><div class="bot-action-label">Керування діалогом</div><div class="bot-action-primary">'+primaryAction+'</div><div class="bot-action-state"><div class="bot-action-state-copy">'+esc(stateCopy)+'</div><div class="bot-action-state-buttons">'+visibilityBtn+'<button type="button" class="bot-client-action lost" data-act="lost">✕ Позначити як втрачено</button></div></div><div id="bot-action-feedback" class="bot-action-feedback" role="status" aria-live="polite" hidden></div></section>';
           h+='<div class="bot-funnel">';
           (d.funnel||[]).forEach(f=>{h+='<span class="bot-circle'+(f.done?' done':'')+(f.current?' current':'')+'"><i></i>'+esc(f.label)+'</span>';});

@@ -30,6 +30,7 @@ __all__ = [
     "IgPollCursor",
     "IgConversationSignal",
     "IgConversationAnalysisSnapshot",
+    "IgConversationAnalysisJob",
     "IgMetaEventLog",
     "BotDataDeletionRequest",
     "IgBotNotification",
@@ -280,6 +281,17 @@ class IgClient(models.Model):
     paused_reason = models.CharField(max_length=255, blank=True, default="")
     paused_at = models.DateTimeField(null=True, blank=True)
     manager_takeover = models.BooleanField(_("Веде менеджер"), default=False)
+    opted_out_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    opt_out_message_id = models.PositiveBigIntegerField(null=True, blank=True)
+    opted_in_at = models.DateTimeField(null=True, blank=True)
+    opted_in_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ig_manual_opt_ins",
+        db_constraint=False,
+    )
 
     # Закріплений товар діалогу (визначений за [PRODUCT:id] від моделі або
     # впевненим матчингом фото). Посилання на оплату формується саме на нього,
@@ -1032,10 +1044,17 @@ class IgConversationAnalysisSnapshot(models.Model):
     uncertainties = models.JSONField(default=list, blank=True)
     analysis_model = models.CharField(max_length=80, blank=True, default="rules")
     analysis_prompt_version = models.CharField(max_length=40, blank=True, default="")
+    required_state_fingerprint = models.CharField(max_length=64, blank=True, default="")
     rules_version = models.CharField(max_length=40, blank=True, default="")
+    key_alias = models.CharField(max_length=32, blank=True, default="")
     reasoning_task = models.CharField(max_length=64, blank=True, default="")
+    reasoning_level = models.CharField(max_length=16, blank=True, default="")
+    reasoning_policy_version = models.CharField(max_length=32, blank=True, default="")
+    thoughts_tokens = models.PositiveIntegerField(default=0)
+    candidates_tokens = models.PositiveIntegerField(default=0)
     trigger = models.CharField(max_length=32, blank=True, default="message", db_index=True)
     analysis_latency_ms = models.PositiveIntegerField(default=0)
+    analyzed_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -1049,6 +1068,65 @@ class IgConversationAnalysisSnapshot(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - trivial representation
         return f"{self.client_id}: {self.score_band} ({self.purchase_probability})"
+
+
+class IgConversationAnalysisJob(models.Model):
+    """One durable, coalescing high-reasoning analysis cursor per IG client."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", _("Очікує аналізу")
+        PROCESSING = "processing", _("Аналізується")
+        DONE = "done", _("Проаналізовано")
+        FAILED = "failed", _("Помилка аналізу")
+        SKIPPED = "skipped", _("Аналіз пропущено")
+
+    client = models.OneToOneField(
+        "management.IgClient",
+        on_delete=models.CASCADE,
+        related_name="analysis_job",
+        db_constraint=False,
+    )
+    watermark_message_id = models.PositiveBigIntegerField(default=0)
+    analyzed_watermark_message_id = models.PositiveBigIntegerField(default=0)
+    revision = models.PositiveBigIntegerField(default=0)
+    analyzed_revision = models.PositiveBigIntegerField(default=0)
+    claimed_watermark_message_id = models.PositiveBigIntegerField(default=0)
+    claimed_revision = models.PositiveBigIntegerField(default=0)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True
+    )
+    due_at = models.DateTimeField(default=timezone.now, db_index=True)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    lease_token = models.CharField(max_length=40, blank=True, default="")
+    lease_until = models.DateTimeField(null=True, blank=True, db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    last_error = models.CharField(max_length=1000, blank=True, default="")
+    skip_reason = models.CharField(max_length=64, blank=True, default="")
+    trigger = models.CharField(max_length=32, blank=True, default="message")
+    analysis_model = models.CharField(max_length=80, blank=True, default="")
+    analysis_prompt_version = models.CharField(max_length=40, blank=True, default="")
+    required_state_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    key_alias = models.CharField(max_length=32, blank=True, default="")
+    reasoning_task = models.CharField(max_length=64, blank=True, default="")
+    reasoning_level = models.CharField(max_length=16, blank=True, default="")
+    reasoning_policy_version = models.CharField(max_length=32, blank=True, default="")
+    thoughts_tokens = models.PositiveIntegerField(default=0)
+    candidates_tokens = models.PositiveIntegerField(default=0)
+    analysis_latency_ms = models.PositiveIntegerField(default=0)
+    analyzed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Завдання аналізу IG-діалогу")
+        verbose_name_plural = _("Завдання аналізу IG-діалогів")
+        ordering = ["due_at", "id"]
+        indexes = [
+            models.Index(fields=["status", "next_attempt_at", "due_at"], name="ig_analysis_job_due"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial representation
+        return f"{self.client_id}: {self.status}@{self.watermark_message_id}"
 
 
 class IgMetaEventLog(models.Model):

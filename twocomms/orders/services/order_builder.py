@@ -135,4 +135,14 @@ def create_order_from_deal(deal, *, created_by=None):
     except Exception:
         pass
 
+    try:
+        from management.services.bot_conversation_analysis import (
+            schedule_client_truth_analysis,
+        )
+
+        schedule_client_truth_analysis(deal.client, trigger="order_truth")
+    except Exception:
+        # Periodic reconciliation repairs a missed best-effort order trigger.
+        pass
+
     return order

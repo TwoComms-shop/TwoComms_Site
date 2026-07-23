@@ -15,12 +15,15 @@ from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from management.management.commands.run_instagram_bot import (
+    ANALYSIS_RECONCILE_BATCH,
+    ANALYSIS_RECONCILE_EVERY,
     DAEMON_LOCK_KEY,
     HB_KEY,
     MANAGE_PY_PATH,
     PROJECT_ROOT,
     Command,
     _daemon_alive,
+    _analysis_worker,
     _process_lock_held,
     _run_work_cycle,
 )
@@ -101,6 +104,7 @@ class DaemonPathTests(SimpleTestCase):
                 child.wait(timeout=5)
             self.assertFalse(_process_lock_held(lock_path))
 
+
     @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
     @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=False)
     @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=False)
@@ -162,6 +166,98 @@ with patch.object(runner.subprocess, 'Popen', side_effect=fake_spawn), patch.obj
             self.assertEqual([child.returncode for child in children], [0, 0], results)
             with open(marker) as marker_file:
                 self.assertEqual(marker_file.read().splitlines(), ["spawned"])
+
+
+class _BoundedWorkerEvent:
+    def __init__(self, cycles):
+        self.cycles = cycles
+        self.wait_calls = 0
+
+    def is_set(self):
+        return self.wait_calls >= self.cycles
+
+    def wait(self, _seconds):
+        self.wait_calls += 1
+        return self.is_set()
+
+
+class AnalysisWorkerTests(SimpleTestCase):
+    @patch("management.services.bot_conversation_analysis.process_due_analysis")
+    @patch("management.services.bot_conversation_analysis.reconcile_analysis_jobs")
+    @patch("management.management.commands.run_instagram_bot.close_old_connections")
+    @patch(
+        "management.management.commands.run_instagram_bot.maintenance_status",
+        return_value={"active": False},
+    )
+    @patch("management.management.commands.run_instagram_bot.time.monotonic", return_value=100.0)
+    def test_analysis_worker_reconciles_immediately_after_start(
+        self, _monotonic, _maintenance, _close, reconcile, process
+    ):
+        _analysis_worker(_BoundedWorkerEvent(cycles=1))
+
+        reconcile.assert_called_once_with(limit=ANALYSIS_RECONCILE_BATCH)
+        process.assert_called_once_with(limit=1)
+
+    @patch("management.management.commands.run_instagram_bot.bot.log")
+    @patch(
+        "management.services.bot_conversation_analysis.process_due_analysis"
+    )
+    @patch(
+        "management.services.bot_conversation_analysis.reconcile_analysis_jobs",
+        side_effect=RuntimeError("reconcile unavailable"),
+    )
+    @patch("management.management.commands.run_instagram_bot.close_old_connections")
+    @patch(
+        "management.management.commands.run_instagram_bot.maintenance_status",
+        return_value={"active": False},
+    )
+    @patch("management.management.commands.run_instagram_bot.time.monotonic", return_value=100.0)
+    def test_reconciliation_failure_does_not_block_due_job_drain(
+        self, _monotonic, _maintenance, _close, reconcile, process, log
+    ):
+        _analysis_worker(_BoundedWorkerEvent(cycles=1))
+
+        reconcile.assert_called_once_with(limit=ANALYSIS_RECONCILE_BATCH)
+        process.assert_called_once_with(limit=1)
+        log.assert_any_call(
+            "error",
+            "conversation_analysis_reconcile",
+            "RuntimeError('reconcile unavailable')",
+        )
+
+    @patch("management.services.bot_conversation_analysis.process_due_analysis")
+    @patch("management.services.bot_conversation_analysis.reconcile_analysis_jobs")
+    @patch("management.management.commands.run_instagram_bot.close_old_connections")
+    @patch(
+        "management.management.commands.run_instagram_bot.maintenance_status",
+        return_value={"active": True},
+    )
+    def test_analysis_worker_does_nothing_during_maintenance(
+        self, _maintenance, _close, reconcile, process
+    ):
+        _analysis_worker(_BoundedWorkerEvent(cycles=1))
+
+        reconcile.assert_not_called()
+        process.assert_not_called()
+
+    @patch("management.services.bot_conversation_analysis.process_due_analysis")
+    @patch("management.services.bot_conversation_analysis.reconcile_analysis_jobs")
+    @patch("management.management.commands.run_instagram_bot.close_old_connections")
+    @patch(
+        "management.management.commands.run_instagram_bot.maintenance_status",
+        return_value={"active": False},
+    )
+    @patch(
+        "management.management.commands.run_instagram_bot.time.monotonic",
+        side_effect=[100.0, 101.0, 100.0 + ANALYSIS_RECONCILE_EVERY],
+    )
+    def test_analysis_worker_reconciles_only_at_bounded_interval(
+        self, _monotonic, _maintenance, _close, reconcile, process
+    ):
+        _analysis_worker(_BoundedWorkerEvent(cycles=3))
+
+        self.assertEqual(reconcile.call_count, 2)
+        self.assertEqual(process.call_count, 3)
 
 
 class DaemonMaintenanceTests(SimpleTestCase):

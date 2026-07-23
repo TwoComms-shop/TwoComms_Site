@@ -1,11 +1,48 @@
 from decimal import Decimal
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
-from management.models import IgClient, IgConversationAnalysisSnapshot, IgDeal, InstagramBotMessage
-from management.services.bot_sales_classifier import classify_message
+from management.models import (
+    IgClient,
+    IgConversationAnalysisSnapshot,
+    IgConversationSignal,
+    IgDeal,
+    InstagramBotMessage,
+)
+from management.services.bot_sales_classifier import NO_BUY_RE, OPT_OUT_RE, classify_message
+
+
+class RefusalAxisRegexTests(SimpleTestCase):
+    def test_common_consent_withdrawal_phrases_are_opt_out_not_commercial_loss(self):
+        phrases = [
+            "Мне не нужно больше писать",
+            "Мені не потрібно більше писати",
+            "Меня не интересует рассылка",
+            "Не хочу получать сообщения",
+        ]
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                self.assertIsNotNone(OPT_OUT_RE.search(phrase))
+                self.assertIsNone(NO_BUY_RE.search(phrase))
+
+    def test_explicit_purchase_refusal_is_no_buy_not_opt_out(self):
+        for phrase in (
+            "Не буду покупать",
+            "Не хочу замовляти",
+            "Купувати не буду",
+            "Покупать не хочу",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIsNotNone(NO_BUY_RE.search(phrase))
+                self.assertIsNone(OPT_OUT_RE.search(phrase))
+
+    def test_ambiguous_negative_phrase_is_not_final_commercial_loss(self):
+        for phrase in ("Мені не потрібен червоний колір", "Меня не интересует XL"):
+            with self.subTest(phrase=phrase):
+                self.assertIsNone(NO_BUY_RE.search(phrase))
+                self.assertIsNone(OPT_OUT_RE.search(phrase))
 
 
 class ConversationIntelligenceSnapshotTests(TestCase):
@@ -32,7 +69,7 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         self.assertEqual(snapshot.purchase_probability, Decimal("0.28"))
         self.assertGreaterEqual(snapshot.confidence, Decimal("0.55"))
         self.assertEqual(snapshot.analysis_model, "rules")
-        self.assertEqual(snapshot.rules_version, "2026-07-23.v1")
+        self.assertEqual(snapshot.rules_version, "2026-07-24.v2")
         self.assertEqual(snapshot.evidence[0]["source_role"], "user")
         self.assertIn("product", snapshot.uncertainties)
 
@@ -62,13 +99,13 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         self.assertEqual(snapshot.purchase_probability, Decimal("0.00"))
 
     def test_explicit_no_buy_is_lost_not_high_probability(self):
-        message = self.message("Більше не пишіть, купувати не буду")
+        message = self.message("Купувати не буду")
 
         classify_message(self.client, message=message)
 
         snapshot = self.client.analysis_snapshots.get()
         self.assertEqual(snapshot.score_band, "lost")
-        self.assertEqual(snapshot.interaction_type, "opt_out")
+        self.assertEqual(snapshot.interaction_type, "explicit_no_buy")
         self.assertEqual(snapshot.purchase_probability, Decimal("0.00"))
 
     def test_new_snapshot_fks_are_cross_engine_safe(self):
@@ -324,8 +361,8 @@ class ConversationIntelligenceSnapshotTests(TestCase):
             },
         )
 
-    def test_explicit_no_buy_does_not_add_positive_intent_or_readiness(self):
-        message = self.message("Не хочу кастомний принт, більше не пишіть")
+    def test_combined_no_buy_and_opt_out_records_both_axes_without_positive_intent(self):
+        message = self.message("Не буду купувати, більше не пишіть")
 
         result = classify_message(self.client, message=message)
 
@@ -333,6 +370,17 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         self.assertEqual(result["interaction_type"], "opt_out")
         self.assertEqual(self.client.intent, IgClient.Intent.UNKNOWN)
         self.assertEqual(self.client.buying_readiness, 0)
+        self.assertEqual(self.client.primary_objection, IgClient.Objection.NO_BUY)
+        self.assertEqual(self.client.lost_reason, "no_buy")
+        self.assertTrue(
+            self.client.conversation_signals.filter(
+                signal_type=IgConversationSignal.Type.LOST
+            ).exists()
+        )
+        self.assertIsNotNone(self.client.opted_out_at)
+        self.assertEqual(self.client.opt_out_message_id, message.id)
+        self.assertTrue(self.client.bot_paused)
+        self.assertEqual(self.client.paused_reason, "opt_out")
 
     def test_paid_customer_opt_out_preserves_verified_stage(self):
         self.client.stage = IgClient.Stage.PAID
@@ -352,6 +400,71 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         self.assertEqual(result["interaction_type"], "opt_out")
         self.assertEqual(self.client.stage, IgClient.Stage.PAID)
         self.assertEqual(snapshot.score_band, "paid")
+        self.assertIsNotNone(self.client.opted_out_at)
+        self.assertTrue(self.client.bot_paused)
+
+    def test_common_explicit_opt_out_phrases_create_durable_hard_stop(self):
+        phrases = [
+            "Не пишите мне",
+            "Не надсилайте повідомлення",
+            "Відпишіть мене",
+            "Уберите меня из рассылки",
+            "unsubscribe",
+            "do not message me",
+            "STOP",
+        ]
+        for index, phrase in enumerate(phrases):
+            with self.subTest(phrase=phrase):
+                client = IgClient.objects.create(igsid=f"opt-out-{index}")
+                message = InstagramBotMessage.objects.create(
+                    client=client,
+                    sender_id=client.igsid,
+                    role=InstagramBotMessage.Role.USER,
+                    text=phrase,
+                    status=InstagramBotMessage.Status.DONE,
+                )
+
+                result = classify_message(client, message=message)
+
+                client.refresh_from_db()
+                self.assertEqual(result["interaction_type"], "opt_out")
+                self.assertTrue(client.bot_paused)
+                self.assertEqual(client.paused_reason, "opt_out")
+                self.assertEqual(client.opt_out_message_id, message.id)
+                self.assertEqual(client.lost_reason, "")
+                self.assertEqual(client.primary_objection, IgClient.Objection.NONE)
+                self.assertFalse(
+                    client.conversation_signals.filter(
+                        signal_type=IgConversationSignal.Type.LOST
+                    ).exists()
+                )
+
+    def test_pure_opt_out_preserves_existing_commercial_state(self):
+        self.client.stage = IgClient.Stage.CHECKOUT
+        self.client.intent = IgClient.Intent.PAYMENT
+        self.client.buying_readiness = 82
+        self.client.primary_objection = IgClient.Objection.PRICE
+        self.client.save(update_fields=[
+            "stage", "intent", "buying_readiness", "primary_objection", "updated_at",
+        ])
+        message = self.message("STOP")
+
+        result = classify_message(self.client, message=message)
+
+        self.client.refresh_from_db()
+        self.assertEqual(result["interaction_type"], "opt_out")
+        self.assertFalse(result["no_buy"])
+        self.assertTrue(result["opt_out"])
+        self.assertEqual(self.client.stage, IgClient.Stage.CHECKOUT)
+        self.assertEqual(self.client.intent, IgClient.Intent.PAYMENT)
+        self.assertEqual(self.client.buying_readiness, 82)
+        self.assertEqual(self.client.primary_objection, IgClient.Objection.PRICE)
+        self.assertEqual(self.client.lost_reason, "")
+        self.assertFalse(
+            self.client.conversation_signals.filter(
+                signal_type=IgConversationSignal.Type.LOST
+            ).exists()
+        )
 
     def test_forged_paid_stage_is_not_payment_truth(self):
         self.client.stage = IgClient.Stage.PAID
@@ -420,3 +533,71 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         task.refresh_from_db()
         self.assertEqual(task.status, IgFollowUpTask.Status.CANCELLED)
         self.assertEqual(task.skip_reason, "opt_out")
+
+    @patch(
+        "management.services.bot_sales_classifier.classify_message",
+        side_effect=RuntimeError("classifier unavailable"),
+    )
+    def test_opt_out_guard_survives_classifier_failure(self, _classify):
+        from datetime import timedelta
+
+        from management.models import IgFollowUpTask, InstagramBotSettings
+        from management.services import instagram_bot
+
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.allowed_senders = ""
+        settings.save(update_fields=["is_enabled", "allowed_senders"])
+        task = IgFollowUpTask.objects.create(
+            client=self.client,
+            due_at=timezone.now() + timedelta(hours=2),
+            kind=IgFollowUpTask.Kind.QUALIFICATION,
+            reason="qualification_unanswered",
+        )
+
+        self.assertTrue(
+            instagram_bot.enqueue_inbound(
+                settings,
+                sender_id=self.client.igsid,
+                text="STOP",
+                mid="classifier-failure-stop",
+            )
+        )
+
+        self.client.refresh_from_db()
+        task.refresh_from_db()
+        message = InstagramBotMessage.objects.get(mid="classifier-failure-stop")
+        self.assertIsNotNone(self.client.opted_out_at)
+        self.assertTrue(self.client.bot_paused)
+        self.assertEqual(message.status, InstagramBotMessage.Status.DONE)
+        self.assertIsNotNone(message.processed_at)
+        self.assertEqual(task.status, IgFollowUpTask.Status.CANCELLED)
+
+    @patch(
+        "management.services.bot_followups.cancel_pending",
+        side_effect=RuntimeError("follow-up unavailable"),
+    )
+    def test_followup_enrichment_failure_cannot_keep_opt_out_replyable(self, _cancel):
+        from management.models import InstagramBotSettings
+        from management.services import instagram_bot
+
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.allowed_senders = ""
+        settings.save(update_fields=["is_enabled", "allowed_senders"])
+
+        self.assertTrue(
+            instagram_bot.enqueue_inbound(
+                settings,
+                sender_id=self.client.igsid,
+                text="STOP",
+                mid="followup-failure-stop",
+            )
+        )
+
+        self.client.refresh_from_db()
+        message = InstagramBotMessage.objects.get(mid="followup-failure-stop")
+        self.assertIsNotNone(self.client.opted_out_at)
+        self.assertTrue(self.client.bot_paused)
+        self.assertEqual(message.status, InstagramBotMessage.Status.DONE)
+        self.assertIsNotNone(message.processed_at)

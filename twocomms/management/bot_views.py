@@ -614,6 +614,10 @@ def _client_card(c) -> dict:
         else:
             displayed_stage = "unverified"
             displayed_stage_label = "Потребує звірки оплати"
+    active_opt_out = bool(
+        c.opted_out_at
+        and (not c.opted_in_at or c.opted_in_at < c.opted_out_at)
+    )
     return {
         "id": c.id,
         "igsid": c.igsid,
@@ -627,6 +631,8 @@ def _client_card(c) -> dict:
         "purchases": c.purchases_count,
         "total_spent": str(c.total_spent),
         "bot_paused": c.bot_paused,
+        "opted_out": active_opt_out,
+        "opted_out_at": c.opted_out_at.isoformat() if c.opted_out_at else "",
         "manager_takeover": c.manager_takeover,
         "spam_strikes": c.spam_strikes,
         "ad_title": c.ad_title,
@@ -641,7 +647,7 @@ def _client_card(c) -> dict:
         "analysis_confidence": str(latest_analysis.confidence) if latest_analysis else "",
         "analysis_evidence": latest_analysis.evidence if latest_analysis else [],
         "analysis_uncertainties": latest_analysis.uncertainties if latest_analysis else [],
-        "analysis_at": latest_analysis.created_at.isoformat() if latest_analysis else "",
+        "analysis_at": latest_analysis.analyzed_at.isoformat() if latest_analysis else "",
         "primary_objection": c.primary_objection,
         "lost_reason": c.lost_reason,
         "hidden": bool(c.hidden_at),
@@ -890,6 +896,8 @@ def bot_client_resume_api(request, client_id):
     blocked = _require_bot_json(request)
     if blocked:
         return blocked
+    from django.utils import timezone
+
     from .models import IgClient
     from .services.ig_reply_boundary import pause_reply_boundary
 
@@ -898,10 +906,34 @@ def bot_client_resume_api(request, client_id):
             c = IgClient.objects.select_for_update().filter(id=client_id).first()
             if not c:
                 return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+            active_opt_out = bool(
+                c.opted_out_at
+                and (not c.opted_in_at or c.opted_in_at < c.opted_out_at)
+            )
+            if active_opt_out and request.POST.get("confirm_opt_in") not in {"1", "true"}:
+                return JsonResponse({
+                    "success": False,
+                    "error": (
+                        "Клієнт відмовився від автоматичних повідомлень. "
+                        "Потрібне окреме підтвердження ручної згоди."
+                    ),
+                    "requires_opt_in_confirmation": True,
+                }, status=409)
             c.bot_paused = False
             c.manager_takeover = False
             c.paused_reason = ""
-            c.save(update_fields=["bot_paused", "manager_takeover", "paused_reason", "updated_at"])
+            update_fields = ["bot_paused", "manager_takeover", "paused_reason", "updated_at"]
+            if active_opt_out:
+                c.opted_in_at = timezone.now()
+                c.opted_in_by = request.user
+                update_fields.extend(["opted_in_at", "opted_in_by"])
+            c.save(update_fields=update_fields)
+            if active_opt_out:
+                bot.log(
+                    "warning",
+                    "manual_opt_in",
+                    f"client={c.pk}; user={request.user.pk}; explicit consent confirmed",
+                )
     return JsonResponse({"success": True, "bot_paused": False})
 
 

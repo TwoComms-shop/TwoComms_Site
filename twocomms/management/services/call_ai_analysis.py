@@ -553,6 +553,10 @@ def gemini_generate_json(system_instruction: str, user_text: str, *,
     return _run_with_pool(
         role,
         payload,
+        timeout=MANAGEMENT_TEXT_TIMEOUT if role == "management" else None,
+        deadline_seconds=(
+            MANAGEMENT_TEXT_DEADLINE_SECONDS if role == "management" else None
+        ),
         reasoning_task=reasoning_task or (
             "customer_intelligence" if role in {"management", "checker"} else "customer_chat"
         ),

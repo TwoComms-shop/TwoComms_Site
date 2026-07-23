@@ -3654,6 +3654,7 @@ class InstagramBotSettings(models.Model):
     last_gemini_policy_version = models.CharField(max_length=32, blank=True, default="")
     last_gemini_thoughts_tokens = models.PositiveIntegerField(default=0)
     last_gemini_candidates_tokens = models.PositiveIntegerField(default=0)
+    analysis_reconcile_cursor = models.PositiveBigIntegerField(default=0)
 
     updated_at = models.DateTimeField(auto_now=True)
 

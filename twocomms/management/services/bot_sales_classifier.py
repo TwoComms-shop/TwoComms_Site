@@ -19,7 +19,7 @@ from management.models import (
     InstagramBotMessage,
 )
 
-ANALYSIS_RULES_VERSION = "2026-07-23.v1"
+ANALYSIS_RULES_VERSION = "2026-07-24.v2"
 
 
 UK_HINTS = (
@@ -31,10 +31,29 @@ RU_HINTS = (
     "спасибо", "хочу", "можно", "себе", "печать", "футболк",
 )
 NO_BUY_RE = re.compile(
-    r"\b(не\s+(буду|хочу|надо|треба|куплю|покупать|купувати)|"
-    r"больше\s+не\s+пишите|більше\s+не\s+пишіть|відмов|отказ|стоп)\b",
+    r"\b(?:не\s+буду\s+(?:брати|брать|купувати|покупать|замовляти|заказывать)|"
+    r"не\s+хочу\s+(?:купувати|покупать|замовляти|заказывать)|"
+    r"(?:брати|брать|купувати|покупать|замовляти|заказывать)\s+не\s+(?:буду|хочу)|"
+    r"відмовляюсь\s+від\s+(?:покупки|замовлення)|"
+    r"отказываюсь\s+от\s+(?:покупки|заказа))\b",
     re.I,
 )
+OPT_OUT_RE = re.compile(
+    r"(?:\b(?:не\s+(?:пиш(?:и|іть|ите)(?:\s+мені|\s+мне)?|"
+    r"надсилайте|присылайте|відправляйте|отправляйте)|"
+    r"(?:мені|мне)\s+не\s+(?:потрібно|нужно)\s+(?:більше\s+|больше\s+)?(?:писати|писать)|"
+    r"(?:мене|меня)\s+не\s+(?:цікавить|интересует)\s+(?:ця\s+|эта\s+)?(?:розсилка|рассылка)|"
+    r"не\s+хочу\s+(?:більше\s+|больше\s+)?(?:отримувати|получать)\s+(?:повідомлення|сообщения|розсилку|рассылку)|"
+    r"відпишіть\s+мене|отпишите\s+меня|відписатися|отписаться|"
+    r"приберіть\s+(?:мене\s+)?з\s+розсилки|уберите\s+(?:меня\s+)?из\s+рассылки|"
+    r"unsubscribe|do\s+not\s+(?:message|contact)\s+me)\b|^\s*stop\s*$|\bstop\s+messaging\b)",
+    re.I,
+)
+
+
+def is_explicit_opt_out(text: str) -> bool:
+    """Return deterministic consent truth without CRM or provider side effects."""
+    return bool(OPT_OUT_RE.search(str(text or "")))
 THINKING_RE = re.compile(r"\b(подумаю|подумаємо|думаю|подума|позже|пізніше|потом)\b", re.I)
 PRICE_RE = re.compile(r"\b(дорого|дорогувато|цена|ціна|сколько|скільки|price|вартість)\b", re.I)
 PREPAY_RE = re.compile(r"\b(предоплат|передоплат|налож|наклад|післяплат|без\s+пред|без\s+перед)\b", re.I)
@@ -133,6 +152,8 @@ def _analysis_band(client: IgClient, result: dict) -> str:
 
     if client_has_verified_payment(client):
         return IgConversationAnalysisSnapshot.Band.PAID
+    if result.get("interaction_type") == IgConversationAnalysisSnapshot.InteractionType.OPT_OUT:
+        return IgConversationAnalysisSnapshot.Band.OPTED_OUT
     if result.get("no_buy"):
         return IgConversationAnalysisSnapshot.Band.LOST
     if client.stage == IgClient.Stage.SPAM:
@@ -156,10 +177,9 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
         return types.MANAGER_OBSERVATION
     if is_reaction_only(text):
         return types.REACTION_ONLY
+    if result.get("opt_out"):
+        return types.OPT_OUT
     if result.get("no_buy"):
-        low = (text or "").lower()
-        if "не пиш" in low or re.search(r"\bстоп\b", low):
-            return types.OPT_OUT
         return types.EXPLICIT_NO_BUY
     if client_has_verified_payment(client):
         return types.PAID_ORDER_WAITING
@@ -301,6 +321,7 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
     if not is_manager and (client.ad_id or client.ad_ref or client.referral_payload):
         add(IgConversationSignal.Type.AD_REPLY, conf=0.85, value=client.ad_id or client.ad_ref)
 
+    opt_out = bool(not is_manager and is_explicit_opt_out(low))
     no_buy = bool(not is_manager and NO_BUY_RE.search(low))
     if no_buy:
         objection = IgClient.Objection.NO_BUY
@@ -313,46 +334,54 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
                 client.set_stage(IgClient.Stage.COLD, reason="no_buy")
             except Exception:
                 client.stage = IgClient.Stage.COLD
+    if opt_out:
+        opted_out_at = timezone.now()
+        client.opted_out_at = opted_out_at
+        client.opt_out_message_id = getattr(message, "pk", None)
+        client.bot_paused = True
+        client.paused_reason = "opt_out"
+        client.paused_at = client.paused_at or opted_out_at
 
-    if not is_manager and not reaction_only and not no_buy and CUSTOM_RE.search(low):
+    commercially_actionable = not is_manager and not reaction_only and not no_buy and not opt_out
+    if commercially_actionable and CUSTOM_RE.search(low):
         intent = IgClient.Intent.CUSTOM_PRINT
         readiness += 30
         add(IgConversationSignal.Type.CUSTOM_PRINT, conf=0.9)
-    elif not is_manager and not reaction_only and not no_buy and (PAYMENT_RE.search(low) or PHONE_RE.search(low)):
+    elif commercially_actionable and (PAYMENT_RE.search(low) or PHONE_RE.search(low)):
         intent = IgClient.Intent.PAYMENT
         readiness += 40
         add(IgConversationSignal.Type.CHECKOUT_STARTED, conf=0.8)
-    elif not is_manager and not reaction_only and not no_buy and SIZE_RE.search(low):
+    elif commercially_actionable and SIZE_RE.search(low):
         intent = IgClient.Intent.SIZE
         readiness += 20
-    elif not is_manager and not reaction_only and not no_buy and PRICE_RE.search(low):
+    elif commercially_actionable and PRICE_RE.search(low):
         intent = IgClient.Intent.PRICE
         readiness += 20
-    elif not is_manager and not reaction_only and PRODUCT_RE.search(low) and not no_buy:
+    elif commercially_actionable and PRODUCT_RE.search(low):
         intent = IgClient.Intent.PRODUCT
         readiness += 10
         add(IgConversationSignal.Type.PRODUCT_INTEREST, conf=0.75)
 
-    if not is_manager and not no_buy and PRICE_RE.search(low):
+    if not is_manager and not no_buy and not opt_out and PRICE_RE.search(low):
         objection = IgClient.Objection.PRICE
         readiness += 12
         add(IgConversationSignal.Type.PRICE_OBJECTION, conf=0.85)
-    if not is_manager and not no_buy and PREPAY_RE.search(low):
+    if not is_manager and not no_buy and not opt_out and PREPAY_RE.search(low):
         objection = IgClient.Objection.PREPAYMENT
         readiness += 10
         add(IgConversationSignal.Type.PREPAYMENT_OBJECTION, conf=0.9)
-    if not is_manager and not no_buy and SIZE_RE.search(low):
+    if not is_manager and not no_buy and not opt_out and SIZE_RE.search(low):
         if objection == IgClient.Objection.NONE:
             objection = IgClient.Objection.SIZE
         readiness += 8
         add(IgConversationSignal.Type.SIZE_CONCERN, conf=0.8)
-    if not is_manager and not no_buy and THINKING_RE.search(low):
+    if not is_manager and not no_buy and not opt_out and THINKING_RE.search(low):
         objection = IgClient.Objection.THINKING
         readiness = max(readiness, 25)
-    if not is_manager and not no_buy and GIFT_RE.search(low):
+    if not is_manager and not no_buy and not opt_out and GIFT_RE.search(low):
         add(IgConversationSignal.Type.GIFT, conf=0.85)
         readiness += 10
-    if not is_manager and not no_buy and SELF_RE.search(low):
+    if not is_manager and not no_buy and not opt_out and SELF_RE.search(low):
         add(IgConversationSignal.Type.SELF_PURCHASE, conf=0.75)
         readiness += 8
 
@@ -374,6 +403,11 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         "sales_context",
         "updated_at",
     ]
+    if opt_out:
+        fields.extend([
+            "opted_out_at", "opt_out_message_id", "bot_paused",
+            "paused_reason", "paused_at",
+        ])
     if is_manager:
         client.last_manager_message_at = timezone.now()
         fields.append("last_manager_message_at")
@@ -388,6 +422,7 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         "readiness": readiness,
         "signals": signals,
         "no_buy": no_buy,
+        "opt_out": opt_out,
         "sales_context": sales_context,
     }
     result["interaction_type"] = _interaction_type(client, result, text, role)
@@ -396,4 +431,12 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         result["analysis_snapshot_id"] = snapshot.pk
     except Exception:
         result["analysis_snapshot_id"] = None
+    if isinstance(message, InstagramBotMessage):
+        try:
+            from management.services.bot_conversation_analysis import schedule_analysis
+
+            job = schedule_analysis(client, message)
+            result["analysis_job_id"] = job.pk if job else None
+        except Exception:
+            result["analysis_job_id"] = None
     return result

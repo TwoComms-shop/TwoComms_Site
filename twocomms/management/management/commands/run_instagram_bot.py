@@ -44,6 +44,8 @@ HB_ALIVE_WINDOW = 45                   # демон вважається жив�
 SPAWN_LOCK_KEY = "ig_bot_spawn_lock"
 DAEMON_LOCK_KEY = "ig_bot_daemon_lock"
 CONV_REFRESH_EVERY = 120               # фонове оновлення списку тредів, c
+ANALYSIS_RECONCILE_EVERY = 600         # bounded repair of missed scheduling, c
+ANALYSIS_RECONCILE_BATCH = 100
 RELOAD_LOCK_WAIT_SECONDS = 45
 
 # Cron may invoke manage.py from an arbitrary working directory. Resolve the
@@ -133,6 +135,47 @@ def _conv_refresher(stop_event: threading.Event):
             except Exception:
                 pass
         stop_event.wait(CONV_REFRESH_EVERY)
+
+
+def _analysis_worker(stop_event: threading.Event):
+    """Drain durable CRM-analysis jobs without coupling them to reply enablement."""
+    from management.services.bot_conversation_analysis import (
+        process_due_analysis,
+        reconcile_analysis_jobs,
+    )
+
+    last_reconcile_at = None
+    while not stop_event.is_set():
+        try:
+            close_old_connections()
+            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                monotonic_now = time.monotonic()
+                if (
+                    last_reconcile_at is None
+                    or monotonic_now - last_reconcile_at >= ANALYSIS_RECONCILE_EVERY
+                ):
+                    try:
+                        reconcile_analysis_jobs(limit=ANALYSIS_RECONCILE_BATCH)
+                    except Exception as exc:
+                        try:
+                            bot.log(
+                                "error",
+                                "conversation_analysis_reconcile",
+                                repr(exc),
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        last_reconcile_at = monotonic_now
+                process_due_analysis(limit=1)
+        except Exception as exc:
+            try:
+                bot.log("error", "conversation_analysis", repr(exc))
+            except Exception:
+                pass
+        finally:
+            close_old_connections()
+        stop_event.wait(5)
 
 
 def _run_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
@@ -315,6 +358,12 @@ class Command(BaseCommand):
         stop_event = threading.Event()
         refresher = threading.Thread(target=_conv_refresher, args=(stop_event,), daemon=True)
         refresher.start()
+        analysis_worker = threading.Thread(
+            target=_analysis_worker,
+            args=(stop_event,),
+            daemon=True,
+        )
+        analysis_worker.start()
 
         from django.utils import timezone as tz
 

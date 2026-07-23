@@ -1,7 +1,8 @@
 import datetime
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from management.models import GeminiKeyState, LeadCheckerSettings
@@ -106,6 +107,50 @@ class MarkAndAvailabilityTests(TestCase):
         self.assertIsNone(st.cooldown_until)
         self.assertEqual(st.requests_today, 1)
         self.assertTrue(gk.is_available("GEMINI_API3", now))
+
+    @override_settings(GEMINI_KEY_PROJECT_GROUPS={
+        "GEMINI_API": "project-chat",
+        "GEMINI_API2": "project-chat",
+        "GEMINI_API3": "project-management",
+    })
+    def test_429_cools_every_alias_in_the_same_known_project(self):
+        from management.services import gemini_keys as gk
+        now = timezone.now()
+
+        gk.mark_429("GEMINI_API", "minute", 40, now=now)
+
+        self.assertFalse(gk.is_available("GEMINI_API", now))
+        self.assertFalse(gk.is_available("GEMINI_API2", now))
+        self.assertTrue(gk.is_available("GEMINI_API3", now))
+
+    @override_settings(GEMINI_KEY_PROJECT_GROUPS={})
+    def test_unknown_project_identity_does_not_guess_alias_relationship(self):
+        from management.services import gemini_keys as gk
+        now = timezone.now()
+
+        gk.mark_429("GEMINI_API", "minute", 40, now=now)
+
+        self.assertFalse(gk.is_available("GEMINI_API", now))
+        self.assertTrue(gk.is_available("GEMINI_API2", now))
+
+    @override_settings(GEMINI_KEY_PROJECT_GROUPS={
+        "GEMINI_API": "project-chat",
+        "GEMINI_API2": "project-chat",
+    })
+    def test_success_cannot_clear_active_sibling_project_cooldown(self):
+        from management.services import gemini_keys as gk
+
+        now = timezone.now()
+        gk.mark_429("GEMINI_API", "minute", 60, now=now)
+
+        state = gk.mark_success(
+            "GEMINI_API2",
+            now=now + datetime.timedelta(seconds=1),
+        )
+
+        self.assertEqual(state.last_status, "ok:project_cooldown")
+        self.assertFalse(gk.is_available("GEMINI_API", now + datetime.timedelta(seconds=1)))
+        self.assertFalse(gk.is_available("GEMINI_API2", now + datetime.timedelta(seconds=1)))
 
 
 class ModelOverloadTests(SimpleTestCase):
@@ -259,6 +304,7 @@ class PoolStatusTests(TestCase):
         self.assertGreater(by_name["GEMINI_API"]["seconds_remaining"], 0)
         self.assertTrue(by_name["GEMINI_API2"]["available"])
         self.assertEqual(by_name["GEMINI_API"]["role"], "chat")
+        self.assertIn("project_identity_known", by_name["GEMINI_API"])
 
 
 class KeyLevel429Tests(SimpleTestCase):
@@ -277,6 +323,57 @@ class KeyLevel429Tests(SimpleTestCase):
         self.assertFalse(gk.is_key_level_429("gemini-3.5-flash", grounded=True))
 
 
+class ModelChainPolicyTests(SimpleTestCase):
+    def test_management_chain_uses_gemini_36_flash_first(self):
+        from management.services import gemini_keys as gk
+
+        chain = gk.model_chain("management")
+
+        self.assertEqual(chain[0], "gemini-3.6-flash")
+        self.assertEqual(len(chain), len(set(chain)))
+
+
+class ProjectCooldownPolicyTests(SimpleTestCase):
+    def test_success_preserves_strongest_active_project_cooldown(self):
+        from management.services import gemini_keys as gk
+
+        now = timezone.now()
+        sibling_until = now + datetime.timedelta(minutes=5)
+        states = [
+            SimpleNamespace(cooldown_until=None, cooldown_scope=""),
+            SimpleNamespace(
+                cooldown_until=sibling_until,
+                cooldown_scope="minute",
+            ),
+        ]
+
+        active = gk._active_project_cooldown(states, now=now)
+
+        self.assertEqual(active, (sibling_until, "minute"))
+
+    def test_shorter_429_does_not_shorten_existing_project_cooldown(self):
+        from management.services import gemini_keys as gk
+
+        now = timezone.now()
+        longer_until = now + datetime.timedelta(hours=6)
+        state = SimpleNamespace(
+            day_date=now.astimezone(gk.PT).date(),
+            requests_today=0,
+            cooldown_until=longer_until,
+            cooldown_scope="topup",
+            last_status="429:topup",
+            last_429_at=now,
+            last_error="",
+            save=Mock(),
+        )
+
+        gk._apply_429_state(state, "minute", 30, now, error="short limit")
+
+        self.assertEqual(state.cooldown_until, longer_until)
+        self.assertEqual(state.cooldown_scope, "topup")
+        state.save.assert_called_once()
+
+
 class ModelChainDegradationTests(SimpleTestCase):
     """Фаза 1: цепочки моделей — лише безкоштовні, з деградацією до меншої моделі.
     Платні моделі (pro) НЕ в цепочці (free-tier ключі не можуть їх юзати → марна трата)."""
@@ -284,7 +381,7 @@ class ModelChainDegradationTests(SimpleTestCase):
     def test_management_degrades_to_smaller_free_models_without_paid(self):
         from management.services import gemini_keys as gk
         chain = gk.role_model_chains()["management"]
-        self.assertEqual(chain[0], "gemini-3.5-flash")
+        self.assertEqual(chain[0], "gemini-3.6-flash")
         self.assertIn("gemini-2.5-flash", chain)
         self.assertIn("gemini-2.5-flash-lite", chain)
         self.assertNotIn("gemini-3.1-pro-preview", chain)

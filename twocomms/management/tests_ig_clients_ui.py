@@ -6,8 +6,9 @@ JSON-API списку карток і детальної (переписка, к
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
-from management.models import IgClient, InstagramBotMessage
+from management.models import IgClient, InstagramBotLog, InstagramBotMessage
 
 User = get_user_model()
 
@@ -119,6 +120,35 @@ class ClientPauseResumeApiTests(TestCase):
         self.c.refresh_from_db()
         self.assertFalse(self.c.bot_paused)
         self.assertFalse(self.c.manager_takeover)
+
+    def test_opt_out_requires_explicit_manual_consent_and_audits_opt_in(self):
+        self.c.bot_paused = True
+        self.c.paused_reason = "opt_out"
+        self.c.opted_out_at = timezone.now()
+        self.c.opt_out_message_id = 123
+        self.c.save(update_fields=[
+            "bot_paused", "paused_reason", "opted_out_at", "opt_out_message_id", "updated_at",
+        ])
+        url = reverse("management_bot_client_resume_api", args=[self.c.id])
+
+        refused = self.client.post(url)
+
+        self.assertEqual(refused.status_code, 409)
+        self.assertTrue(refused.json()["requires_opt_in_confirmation"])
+        self.c.refresh_from_db()
+        self.assertTrue(self.c.bot_paused)
+        self.assertIsNone(self.c.opted_in_at)
+
+        accepted = self.client.post(url, {"confirm_opt_in": "1"})
+
+        self.assertEqual(accepted.status_code, 200)
+        self.c.refresh_from_db()
+        self.assertFalse(self.c.bot_paused)
+        self.assertEqual(self.c.opted_in_by_id, self.admin.id)
+        self.assertGreaterEqual(self.c.opted_in_at, self.c.opted_out_at)
+        self.assertTrue(
+            InstagramBotLog.objects.filter(event="manual_opt_in", detail__contains=f"user={self.admin.id}").exists()
+        )
 
 
 @MGMT

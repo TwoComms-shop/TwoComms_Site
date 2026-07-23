@@ -585,6 +585,264 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - [x] **P0.B5a — observation/reply boundary:** webhook and fallback polling persist eligible inbound while global/per-client reply is paused, run deterministic evidence extraction, mark the row observed without a reply backlog, suppress typing/Gemini/Meta/follow-up, and atomically drain pre-stop pending rows to observed state.
     - **Production proof:** SHA `3d71a6f2`; production MariaDB rollback fixtures covered global stop, per-client pause, delayed-provider cutoff, stop/resume, manager takeover, and a due follow-up with every network/classifier/log transport mocked. Observed rows ended `done`, no stopped backlog became replyable after resume, the eligible follow-up sent exactly once through the mock, fixture rows were removed, and `AUTO_INCREMENT` values stayed unchanged. The production contract selected only `qlknpodo_MySQL_DB` with zero visible `test_*` schemas. After maintenance release exactly one daemon PID was running; DB/cache heartbeat ages were about 0.1 seconds, queue/outbox were zero, maintenance was absent, and the effective model was `gemini-3.6-flash`. The six DB-free lock/heartbeat tests explicitly skipped both configured databases; no local SQLite result is used as production evidence.
   - [ ] **P0.B5b — coalesced high-reasoning analysis:** add a durable per-client watermark/debounce job that analyzes the whole changed conversation after the manager/customer burst, stores model/version/reasoning/confidence/evidence/analyzed_at, retries safely across six-key project-aware pools, and never grants reply permission.
+  - [ ] **P0.B5d — include every analysis table in the production engine contract.**
+    - **Priority:** P0 — durable leases and coalescing rely on transactional row ownership.
+    - **Symptom:** the green `audit_ig_table_engines` result covers 14 runtime tables but omits the existing `management_igconversationanalysissnapshot` table; a new analysis-job table would be omitted as well unless the contract changes.
+    - **Root cause:** `IG_RUNTIME_TABLES` was assembled before analysis persistence became a daemon-owned critical path and was not extended with migration `0086`.
+    - **Risk:** MyISAM/default-engine drift can silently invalidate snapshot/job transaction assumptions while deploy health still reports every required table healthy.
+    - **Affected branches:** deterministic snapshots, high-reasoning job claim/retry, concurrent webhook/poll scheduling, deploy verification, and production recovery.
+    - **Acceptance:** both snapshot and job tables are explicitly InnoDB, the authoritative engine audit requires them, and missing/wrong-engine state fails closed.
+    - **Tests:** required-table contract, missing table, wrong engine, idempotent conversion, and a production MariaDB two-claimer rollback fixture.
+  - [ ] **P0.B5e Make opt-out a durable communication hard stop.**
+    - **Priority:** P0 — consent and customer safety override conversion automation.
+    - **Symptom:** an explicit `не пишіть/стоп` marks only that message as no-reply and cancels current follow-ups; a later neutral message can become reply-eligible because `_client_blocked()` has no durable opt-out truth.
+    - **Root cause:** opt-out exists only as one analysis-snapshot interaction type, not as an independently persisted client communication state.
+    - **Risk:** unwanted automated replies after explicit withdrawal, complaints, platform-policy exposure, and invalid funnel/follow-up behavior.
+    - **Affected branches:** webhook/poll ingress, resume, follow-ups, high-reasoning analysis, manual client controls, and CRM lifecycle display.
+    - **Acceptance:** explicit opt-out stores timestamp/source evidence and makes every automatic customer send/follow-up/high-analysis ineligible until an authorized, audited manual opt-in; payment/order history is preserved and opt-out remains distinct from lost.
+    - **Tests:** opt-out then neutral message, paid customer opt-out, global stop/resume, manager message, duplicate webhook/poll, follow-up due, hidden client, and authorized opt-in audit.
+  - [ ] **P0.B5f Configure and verify Gemini key aliases by Google Cloud project.**
+    - **Priority:** P0 — analysis retry correctness and quota pressure depend on the provider's project boundary.
+    - **Symptom:** six configured key aliases are cooled independently even though Gemini quotas are project-scoped; the repository has no non-secret evidence showing which aliases share a project.
+    - **Root cause:** key rotation stores alias-level state but has no authoritative `alias -> project group` configuration.
+    - **Risk:** repeated 429 calls against the same exhausted project, misleading key-health UI, delayed analysis, and unnecessary quota pressure.
+    - **Affected branches:** chat, management analysis, checker, health probes, retry ordering, and effective capacity reporting.
+    - **Acceptance:** configure the non-secret project group for all six aliases, propagate project-scoped 429 cooldown to every alias in that group, show unknown/incomplete mapping explicitly, and verify behavior with mocked provider responses; never store API keys in the mapping or logs.
+    - **Tests:** two aliases in one project, aliases in separate projects, missing/invalid mapping, project 429/recovery, pool status, and six-key retry order.
+    - **External input required:** an owner must confirm only the project grouping of `GEMINI_API` through `GEMINI_API6`; the implementation accepts `GEMINI_KEY_PROJECT_GROUPS` without exposing key values.
+  - [ ] **P0.B5g Reject analysis finalization by an expired or superseded lease owner.**
+    - **Priority:** P0 — a stale worker must never publish CRM truth after another worker has reclaimed the durable job.
+    - **Symptom:** the post-Gemini transaction locks the client and payment rows, but creates the snapshot before proving that the same processing job still has the claimed lease token, unexpired lease, and claimed revision.
+    - **Root cause:** ownership is checked only by a conditional telemetry update after snapshot creation; a zero-row update cannot undo the already-created snapshot.
+    - **Risk:** two workers can publish conflicting analysis for one revision, stale payment/policy evidence can become operator-visible, and a previous worker can interfere with a reclaimed job.
+    - **Affected branches:** stale-lease reclaim, slow Gemini completion, payment/opt-out races, snapshot dedupe, retry accounting, and daemon concurrency.
+    - **Acceptance:** finalization follows the established client-to-job lock order, verifies processing status/token/lease/claimed revision before locking projections or writing a snapshot, returns an explicit lease-lost outcome, and never mutates the replacement claim.
+    - **Tests:** worker A claim, lease expiry/reclaim, worker B claim, worker A completion without snapshot/job mutation, and worker B-only successful completion.
+  - [ ] **P0.B5h Reconcile missed conversation-analysis scheduling automatically in the daemon.**
+    - **Priority:** P0 — payment and order truth commits are authoritative even when their best-effort analysis scheduler crashes.
+    - **Symptom:** `reconcile_ig_analysis_jobs` can repair stale/missing jobs manually, but the long-running daemon only drains already-scheduled jobs and never invokes reconciliation.
+    - **Root cause:** reconciliation was implemented as an operator command without a bounded periodic daemon schedule.
+    - **Risk:** a crash between payment commit and scheduling leaves the CRM snapshot stale indefinitely; paused/manager-led chats can also remain unanalyzed until manual intervention.
+    - **Affected branches:** payment truth, order truth, manager-led conversations, daemon restart, retry/backoff, reconciliation cursor, and queue health.
+    - **Acceptance:** the analysis thread performs a small reconciliation batch soon after startup and every bounded interval while not in maintenance, independently from reply enablement; existing covered pending/processing work keeps its revision and backoff.
+    - **Tests:** scheduler failure after payment commit, automatic mismatch recovery, no revision churn for covered pending/processing jobs, maintenance suppression, startup run, interval gating, and cursor traversal beyond one batch.
+  - [ ] **P0.B5i Make the payment-during-analysis regression executable.**
+    - **Priority:** P0 — payment authority is a release gate for this slice.
+    - **Symptom:** `test_payment_confirmed_during_gemini_overrides_model_intent` references `Decimal` without importing it.
+    - **Root cause:** the concurrency regression was added after the module imports and was only compile-checked; Python compilation does not resolve runtime names.
+    - **Risk:** the suite fails before exercising payment override behavior and can provide no evidence that verified ledger truth wins over stale model output.
+    - **Affected branches:** high-reasoning finalization, payment truth race verification, and the production MariaDB rollback fixture gate.
+    - **Acceptance:** the test module imports the standard decimal type and the regression reaches its assertions with all network transports mocked.
+    - **Tests:** targeted payment-during-Gemini regression plus the complete analysis-job verification set.
+  - [ ] **P0.B5j Keep the analysis retry budget terminal for unchanged input.**
+    - **Priority:** P0 — periodic repair must not turn a bounded provider retry policy into an infinite quota loop.
+    - **Symptom:** reconciliation treats a terminal `FAILED` job as stale and calls `schedule_analysis`; scheduling resets attempts and backoff for every non-processing job, so the same conversation receives another five attempts every reconciliation interval.
+    - **Root cause:** the durable job stores watermark/revision but no fingerprint of the payment/prompt/message state whose retry budget was exhausted.
+    - **Risk:** unbounded Gemini quota/cost pressure, repeated failures hidden as fresh retries, misleading queue health, and starvation of other conversations.
+    - **Affected branches:** max-attempt handling, periodic reconciliation, payment-truth repair, prompt upgrades, six-key cooldown, and daemon queue fairness.
+    - **Acceptance:** store a non-secret required-state fingerprint covering message watermark, prompt version, and verified-payment truth; unchanged terminal failures remain failed, while a changed fingerprint schedules exactly one new revision and retry budget.
+    - **Tests:** repeated reconciliation after terminal failure, payment change at the same watermark, new message, prompt-version change, and pending/processing coverage without backoff reset.
+  - [ ] **P0.B5k Do not publish an obsolete transcript when its claimed revision changes.**
+    - **Priority:** P0 — a valid lease token does not authorize a worker to publish analysis for a revision it did not claim.
+    - **Symptom:** `_claim_is_current()` accepts `watermark/revision >= claimed`; a new message or truth revision arriving during Gemini therefore lets the old worker publish its older transcript before requeueing.
+    - **Root cause:** lease ownership and revision identity are treated as one monotonic condition instead of two independent invariants.
+    - **Risk:** append-only history gains knowingly stale snapshots, operators see transiently wrong evidence, and a later failure can leave the stale snapshot as the latest result.
+    - **Affected branches:** burst coalescing, payment/order changes during Gemini, snapshot dedupe, stale reclaim, and retry accounting.
+    - **Acceptance:** finalization requires exact claimed watermark/revision; a live owner with newer input atomically releases to pending without snapshot, while an expired/reclaimed owner changes nothing.
+    - **Tests:** new message during Gemini, payment/order revision during Gemini, exact current claim, expired token, and replacement-token preservation.
+  - [ ] **P0.B5l Persist analysis telemetry in each append-only snapshot.**
+    - **Priority:** P0 — one mutable job row cannot provide historical evidence for model policy, cost, or calibration.
+    - **Symptom:** key alias, reasoning level/policy, thought tokens, and candidate tokens are overwritten on `IgConversationAnalysisJob` but absent from `IgConversationAnalysisSnapshot`.
+    - **Root cause:** telemetry fields were added only to the queue-control model, while the approved design requires every material snapshot to retain its own provenance.
+    - **Risk:** past decisions cannot be audited or compared after the next run, key/project incidents cannot be reconstructed, and calibration by model/policy is impossible.
+    - **Affected branches:** high-reasoning analysis, six-key routing, usage statistics, incident review, and future calibration.
+    - **Acceptance:** each AI snapshot stores non-secret key alias, effective reasoning level/policy, thought/candidate token counts, model, prompt version, latency, trigger, and analyzed time.
+    - **Tests:** snapshot telemetry persistence, repeated revisions with distinct telemetry, safe empty metadata, and no API-key value storage.
+  - [ ] **P0.B5m Include durable order truth in analysis scheduling and reconciliation.**
+    - **Priority:** P0 — paid and fulfillment/order state are independent CRM facts.
+    - **Symptom:** the current fingerprint/reconciliation checks only whether verified payment exists; order creation, cancellation, shipment, or reversal can leave the same-message analysis snapshot current indefinitely.
+    - **Root cause:** payment projection hooks schedule analysis, but authoritative order materialization and later order-state transitions have no equivalent versioned trigger.
+    - **Risk:** manager-led paid/order conversations show stale next actions, shipment reminders conflict with real fulfillment, and statistics mix payment intent with order truth.
+    - **Affected branches:** order materialization/linking, payment reconciliation, shipment/TTN updates, periodic reconciliation, and CRM lifecycle display.
+    - **Acceptance:** the non-secret required-state fingerprint includes authoritative linked deal/order state; order truth transitions schedule or are automatically reconciled into exactly one new revision without granting reply permission.
+    - **Tests:** order created/cancelled/shipped at the same message watermark, scheduler failure recovery, no change/no churn, and payment/order axes remaining independent.
+  - [ ] **P0.B5n Bound analysis provider time below its durable lease and use fresh clocks.**
+    - **Priority:** P0 — a lease shorter than a worst-case provider attempt creates routine false reclaim.
+    - **Symptom:** management JSON can spend two 90-second attempts without an overall deadline while the job lease is 150 seconds; one `now` is also reused for later claims and failure backoff in the same drain batch.
+    - **Root cause:** conversation reanalysis reused the audio-oriented management timeout and the batch captured time only once.
+    - **Risk:** valid workers are reclaimed mid-call, subsequent jobs start with shortened leases, retries become immediately due, and snapshots churn under provider degradation.
+    - **Affected branches:** Gemini timeout/backoff, multi-job drain, stale reclaim, failure retry, and daemon throughput.
+    - **Acceptance:** management JSON has a bounded deadline/read timeout with margin below the analysis lease; every claim, reclaim and failure uses a fresh clock.
+    - **Tests:** provider timeout, two-attempt transient, later claim in one batch, fresh failure backoff, and lease-lost recovery.
+  - [ ] **P0.B5o Preserve substantive messages when a burst ends with a reaction.**
+    - **Priority:** P0 — reaction suppression must not discard sales evidence from the same debounce window.
+    - **Symptom:** `_skip_reason()` inspects only the latest rules snapshot, so a product question followed by an emoji makes the whole coalesced job `reaction_only` and permanently skipped.
+    - **Root cause:** skip policy has no analyzed-watermark window and treats the final event as representative of the full changed range.
+    - **Risk:** product/size/payment intent disappears from CRM analysis and follow-up decisions while the job is marked current.
+    - **Affected branches:** deterministic taxonomy, debounce, paused observation, reconciliation, and high-reasoning scheduling.
+    - **Acceptance:** skip Gemini only when every newly changed message since the analyzed watermark is reaction-only; any substantive changed message keeps the coalesced analysis eligible.
+    - **Tests:** reaction only, substantive then reaction, reaction then substantive, already-analyzed substantive plus new reaction, and duplicate delivery.
+  - [ ] **P0.B5p Make Gemini 3.6 Flash primary for management conversation analysis.**
+    - **Priority:** P0 — the configured product model must be the model actually attempted for high-reasoning CRM work.
+    - **Symptom:** `role="management"` uses a chain beginning at Gemini 3.5 and excludes Gemini 3.6, although the effective bot model and requirements specify 3.6.
+    - **Root cause:** only the chat role chain was upgraded.
+    - **Risk:** CRM decisions silently use an older model and UI telemetry misleads operators about effective capability.
+    - **Affected branches:** conversation reanalysis, order/product decisions, manager summaries, model fallback, and health reporting.
+    - **Acceptance:** management attempts Gemini 3.6 Flash first across its key pool, retains bounded free-model fallbacks, and persists the actually used model.
+    - **Tests:** management chain order, configured override validation, fallback, telemetry, and no unsupported model.
+  - [ ] **P0.B5q Make project-scoped Gemini cooldown atomic and monotonic.**
+    - **Priority:** P0 — provider quota is project-scoped, not alias-scoped.
+    - **Symptom:** project 429 updates aliases in separate autocommit writes, and an in-flight success can clear one alias after a sibling recorded the project cooldown.
+    - **Root cause:** project identity was added to selection/status, but durable health remains six independent mutable rows without a transactional group invariant.
+    - **Risk:** concurrent workers continue calling the exhausted project, quota pressure grows, and UI reports contradictory alias availability.
+    - **Affected branches:** chat, management, checker, probes, six-key fallback, and pool status.
+    - **Acceptance:** known-group 429 locks and updates all aliases atomically; success cannot shorten an active sibling project cooldown; unknown aliases remain independent.
+    - **Tests:** concurrent 429/success ordering, atomic group visibility, expiry recovery, separate projects, unknown mapping, and rollback.
+  - [ ] **P0.B5r Use one evidence source-role vocabulary for rules and AI snapshots.**
+    - **Priority:** P0 — provenance must be machine-comparable across analysis engines.
+    - **Symptom:** deterministic snapshots store `user`, while the high-analysis transcript normalizer emits `customer`; the focused regression expects the established `user` value.
+    - **Root cause:** presentation labels were reused as persisted role identifiers.
+    - **Risk:** evidence filters, audits, manager-vs-customer safeguards, and tests disagree about who made a claim.
+    - **Affected branches:** evidence normalization, historical snapshots, UX drill-down, and calibration exports.
+    - **Acceptance:** persisted roles use the message enum vocabulary `user|model|manager|system`; prompt presentation may use localized labels without changing stored provenance.
+    - **Tests:** user/model/manager evidence, invalid message ID, false quote, and mixed transcript.
+  - [ ] **P0.B5s Preserve historical snapshot timestamps during schema upgrade.**
+    - **Priority:** P0 — migration time is not analysis time.
+    - **Symptom:** adding non-null `analyzed_at=timezone.now` rewrites every old snapshot to the deploy timestamp, and the UI then presents that value as analysis recency.
+    - **Root cause:** the migration default did not backfill from immutable `created_at` before enforcing the final field contract.
+    - **Risk:** historical records appear freshly analyzed and operators trust stale CRM conclusions.
+    - **Affected branches:** migration 0095, cockpit recency, reconciliation freshness, and audit history.
+    - **Acceptance:** existing rows copy `created_at`; new rows receive real analysis time; migration remains deterministic and idempotent.
+    - **Tests:** old snapshot preservation, new snapshot default, null-free final schema, and migration replay on MariaDB.
+  - [ ] **P0.B5t Reconcile skipped analysis against the current required-state fingerprint.**
+    - **Priority:** P0 — automatic repair must recover a missed payment/order hook even when the previous conversation revision was intentionally skipped.
+    - **Symptom:** reconciliation treats every watermark-current `SKIPPED` job as current without comparing its stored fingerprint to current payment/order/prompt truth.
+    - **Root cause:** the skipped fast path checks only analyzed watermark/revision, while completed AI snapshots also check `required_state_fingerprint`.
+    - **Risk:** a reaction-only conversation can remain permanently stale after verified payment or order creation if the best-effort scheduler crashes between the authoritative commit and job scheduling.
+    - **Affected branches:** reaction-only skip, payment/order commit recovery, daemon reconciliation, terminal job coverage, and CRM payment display.
+    - **Acceptance:** a skipped job is current only when its required-state fingerprint still matches; a truth change queues exactly one revision, while unchanged skipped work creates no churn.
+    - **Tests:** reaction-only skip followed by a missed verified-payment hook, unchanged repeated reconciliation, order change at the same watermark, and preserved pending/processing backoff.
+  - [ ] **P0.B5u Require an unexpired lease on every analysis completion path.**
+    - **Priority:** P0 — skip and provider-failure paths are durable job finalization just like snapshot publication.
+    - **Symptom:** `_finish_skip()` and `_finish_failure()` select by processing status/token but do not reject an expired lease; before reclaim, an old owner can still mark the job skipped/failed or release a newer revision.
+    - **Root cause:** exact lease validation was added only to the post-Gemini snapshot transaction.
+    - **Risk:** an expired worker can mutate retry accounting or analyzed watermarks, hide due work, and interfere with the next owner even though stale ownership is no longer valid.
+    - **Affected branches:** hidden/opt-out/reaction skip, empty transcript, provider error, stale reclaim, newer revision during processing, and queue telemetry.
+    - **Acceptance:** every skip/failure completion locks the job, validates processing status, exact token and an unexpired lease with a fresh clock; expired/reclaimed owners change nothing, while a still-owned superseded revision is released to pending without publishing analyzed state.
+    - **Tests:** expired skip owner, expired failure owner, replacement token, newer revision under the same live token, and exact current skip/failure.
+  - [ ] **P0.B5v Make the historical-timestamp migration test field-specific.**
+    - **Priority:** P0 — this test is the release evidence that deploy does not rewrite historical analysis recency.
+    - **Symptom:** the test finds the first `AddField` after a numeric list offset, which can be `IgClient.opted_out_at` instead of snapshot `analyzed_at`, yet still passes the ordering assertion.
+    - **Root cause:** migration operations are matched only by class name and position, not by model/field identity or the backfill callable.
+    - **Risk:** a later migration edit can regress historical timestamps while the focused contract test remains falsely green.
+    - **Affected branches:** migration 0095, cockpit analysis recency, migration review, and production rollback verification.
+    - **Acceptance:** the test locates the nullable add and final alter specifically for `IgConversationAnalysisSnapshot.analyzed_at`, verifies the intervening backfill callable, and rejects reordered or unrelated operations.
+    - **Tests:** exact operation identity/order plus a MariaDB fixture proving old `created_at` is preserved.
+  - [ ] **P0.B5w Give each reclaimed revision its own retry budget.**
+    - **Priority:** P0 — a newer customer/payment/order revision must not inherit exhausted provider attempts from a crashed older claim.
+    - **Symptom:** scheduling increments `revision` while a job is processing but leaves the active lease and attempts intact; if that worker dies, bulk stale reclaim cannot tell which revision those attempts belonged to and carries them into the new work.
+    - **Root cause:** the durable job stores only mutable current watermark/revision and no claimed watermark/revision for the active lease.
+    - **Risk:** a newly changed conversation can receive fewer than the configured five attempts, become terminal after its first failure, or expose misleading retry telemetry after a process crash.
+    - **Affected branches:** new message/payment/order during Gemini, daemon crash/restart, stale reclaim, max attempts, and periodic reconciliation.
+    - **Acceptance:** every claim persists its exact claimed watermark/revision; conditional claim rejects a candidate changed before ownership; stale reclaim preserves attempts only for the same revision and resets them for newer input; every completion clears claimed ownership fields.
+    - **Tests:** stale reclaim of unchanged fifth attempt, new revision during the fifth attempt followed by crash, conditional-claim race, successful completion, skip, failure, and replacement claim telemetry.
+  - [ ] **P0.B5x Give Gemini current authoritative order truth and revalidate it before publish.**
+    - **Priority:** P0 — an order-triggered analysis cannot reason about facts that never enter its input, and an old order snapshot cannot be published after those facts change.
+    - **Symptom:** the fingerprint hashes deal/order/payment/tracking/shipment fields, but the Gemini payload contains only `verified_payment`, watermark and transcript; finalization also reuses the pre-provider fingerprint without recomputing current order truth.
+    - **Root cause:** scheduling identity and provider context were implemented as separate payloads, and only payment boolean received a post-provider deterministic override.
+    - **Risk:** shipment/order reanalysis spends quota without seeing the triggering state, publishes stale next-action evidence, and immediately churns another reconciliation revision.
+    - **Affected branches:** order creation/cancellation/shipment/TTN, payment during Gemini, append-only snapshot fingerprint, reconciliation, and CRM next action.
+    - **Acceptance:** one canonical non-secret truth payload feeds both fingerprint and Gemini; finalization recomputes it under locks; changed order truth supersedes/requeues without snapshot, while a missed payment-only transition is deterministically normalized and stored with the current fingerprint.
+    - **Tests:** order truth present in provider payload, order change during Gemini with missed hook, payment during Gemini, no stale snapshot, current fingerprint persistence, and no follow-up revision churn.
+  - [ ] **P0.B5y Use one deterministic projection-to-deal lock order.**
+    - **Priority:** P0 — MariaDB deadlocks can abort paid-order materialization or analysis finalization.
+    - **Symptom:** analysis finalization locks deals then payment projections, while order creation locks the projection then deal.
+    - **Root cause:** the two services independently chose opposite row-lock order for the same client/deal graph.
+    - **Risk:** concurrent payment/order creation and slow-analysis completion form a wait cycle, producing deadlock victims and stale operational state.
+    - **Affected branches:** paid order materialization, payment reversal, analysis finalization, linked order reads, and retry/reconciliation.
+    - **Acceptance:** all involved paths use deterministic projection -> deal -> linked order ordering after client/job ownership; analysis locks each set by primary key before recomputing truth or writing a snapshot.
+    - **Tests:** concurrent order materialization/finalization MariaDB fixture, deterministic query order, reversal overlap, and deadlock-free rollback cleanup.
+  - [ ] **P0.B5z Keep project cooldown monotonic under repeated 429 events.**
+    - **Priority:** P0 — a stale short rate-limit response must not reopen a project already held by a longer day/top-up cooldown.
+    - **Symptom:** `_apply_429_state()` unconditionally overwrites `cooldown_until`, so a later short `minute` 429 shortens an active longer cooldown even though group writes are atomic.
+    - **Root cause:** atomic alias locking was added without a max-deadline merge policy.
+    - **Risk:** workers resume calls against an exhausted project early, amplify quota pressure, and show contradictory recovery times.
+    - **Affected branches:** all Gemini roles, project alias groups, retry ordering, health UI, and concurrent 429/success handling.
+    - **Acceptance:** each 429 computes a proposed deadline and preserves the later active deadline/scope; no event can shorten cooldown, while expiry and later longer cooldown work normally.
+    - **Tests:** long then short 429, short then long, grouped aliases, unknown alias, success ordering, expiry, and transaction rollback.
+  - [ ] **P0.B5aa Fail migration when a required analysis table is missing.**
+    - **Priority:** P0 — recording the engine migration as applied must prove every transactional table exists.
+    - **Symptom:** migration 0096 silently skips `row is None` and succeeds even when a required snapshot/job/key-state table is absent.
+    - **Root cause:** the conversion loop treats missing and already-correct tables as the same no-op path.
+    - **Risk:** deploy reports applied migrations and healthy code while leases/cooldowns run on an incomplete schema.
+    - **Affected branches:** production migrate, engine audit, daemon startup, key project cooldown, rollback, and disaster recovery.
+    - **Acceptance:** 0096 raises before completion for any missing required table, converts wrong engines idempotently, and the post-migrate runtime audit requires all 17 tables.
+    - **Tests:** missing first/middle/last table, MyISAM conversion, all-InnoDB no-op, non-MySQL skip, and production 17/17 proof.
+  - [ ] **P0.B5ab Make analysis scheduling idempotent for an already covered state.**
+    - **Priority:** P0 — overlapping message/payment/order/reconcile hooks must not duplicate Gemini cost or supersede useful work.
+    - **Symptom:** `schedule_analysis()` increments revision for every call even when watermark and required-state fingerprint are identical and already pending, processing, terminal, skipped, or done.
+    - **Root cause:** coalescing only guarantees one job row, not one revision per required state.
+    - **Risk:** overlapping hooks cancel an in-flight owner, reset terminal budgets, postpone debounce, create needless revisions, and consume provider quota twice for one truth state.
+    - **Affected branches:** classifier, payment hook, order hook, periodic reconciliation, retry/backoff, and daemon throughput.
+    - **Acceptance:** exact covered watermark/fingerprint returns the existing job unchanged in every lifecycle state; only a new message/prompt/payment/order fingerprint creates one revision, and changed input starts with a fresh retry budget without stealing the active token.
+    - **Tests:** duplicate pending/processing/done/skipped/failed schedules, overlapping hooks, changed watermark, changed truth, unchanged due/backoff/token, and concurrent conditional claim.
+  - [ ] **P0.B5ac Terminalize an unchanged stale claim at the retry cap.**
+    - **Priority:** P0 — a crashed provider worker must not bypass the bounded retry policy.
+    - **Symptom:** stale reclaim always returns an expired processing job to `pending`, and the claim query accepts it even when the unchanged revision has already reached `MAX_ATTEMPTS`.
+    - **Root cause:** terminal retry handling exists in the ordinary provider-failure path but is missing from lease-expiry recovery; claim eligibility also has no retry-cap guard.
+    - **Risk:** repeated worker crashes or lease expirations can produce attempts 6, 7, and beyond, consume Gemini quota indefinitely, and starve other conversations.
+    - **Affected branches:** daemon crash/restart, stale lease reclaim, retry telemetry, queue health, reconciliation coverage, and provider degradation.
+    - **Acceptance:** stale reclaim marks an unchanged revision `failed` when its attempt count is at the cap, clears lease ownership, and leaves it terminal; a newer revision still returns to `pending` with attempts reset, and no pending job at the cap can be claimed.
+    - **Tests:** unchanged fifth-attempt stale reclaim, defensive pending-at-cap claim rejection, newer revision during fifth attempt, and unchanged sub-cap reclaim.
+  - [ ] **P0.B5ad Keep communication opt-out independent from commercial loss.**
+    - **Priority:** P0 — consent truth must not corrupt conversion, objection, or drop-off analytics.
+    - **Symptom:** classifier defines `no_buy = opt_out or NO_BUY_RE`, so pure `STOP`, `unsubscribe`, or `не пишіть` also writes `lost_reason=no_buy`, `NO_BUY`, a LOST signal, and may move a non-paid client to cold.
+    - **Root cause:** communication withdrawal phrases were embedded in the commercial-refusal regex and both axes shared one boolean branch.
+    - **Risk:** loss statistics overcount opt-outs, prior customer intent/stage is destroyed, retargeting cohorts become invalid, and operators cannot distinguish consent from purchase refusal.
+    - **Affected branches:** deterministic classification, snapshots, funnel/lost reasons, objections, follow-ups, manual opt-in, and hidden/paid statistics.
+    - **Acceptance:** pure opt-out changes only communication state and yields `interaction_type=opt_out`; explicit no-buy changes commercial truth; a message containing both records both independently; paid/order truth remains untouched.
+    - **Tests:** pure STOP/unsubscribe/no-write phrases with prior high intent, pure explicit no-buy, combined no-buy plus opt-out, paid opt-out, and absence/presence of LOST signals and NO_BUY objection as appropriate.
+  - [ ] **P0.B5ae Evaluate stale-reclaim decisions before clearing their source fields.**
+    - **Priority:** P0 — production MariaDB evaluates single-table `UPDATE` assignments from left to right by default.
+    - **Symptom:** stale reclaim clears `claimed_revision` before the later `last_error=Case(...)` reads it, so an unchanged exhausted claim can receive the non-terminal `stale_lease_recovered` reason even while its status becomes `failed`.
+    - **Root cause:** the bulk update was reviewed with simultaneous-assignment semantics, but production MariaDB exposes earlier assignments to later expressions.
+    - **Risk:** queue diagnostics and incident automation misclassify terminal quota exhaustion, while SQLite or mocked checks can remain green.
+    - **Affected branches:** stale lease recovery, terminal retry telemetry, production health UI, incident review, and MariaDB-only verification.
+    - **Acceptance:** every conditional expression reads the original claimed revision/attempt count before those source fields are cleared; unchanged capped work records `stale_lease_retry_exhausted`, and newer work records `stale_lease_recovered` with reset attempts.
+    - **Tests:** production MariaDB rollback fixture for unchanged fifth attempt and newer fifth-attempt revision, exact status/reason/attempts, and no fixture residue.
+  - [ ] **P0.B5af Make refusal and communication-consent phrase matching conservative.**
+    - **Priority:** P0 — consent withdrawal must be recognized, while vague negative wording must not falsify commercial loss.
+    - **Symptom:** `Мне не нужно больше писать`, `Мені не потрібно більше писати`, and `Меня не интересует рассылка` match the generic `NO_BUY_RE` branch but not `OPT_OUT_RE`; generic `не нужно/не интересует` can also classify a product or preference phrase as a final purchase refusal.
+    - **Root cause:** object-free negative fragments were placed in the commercial regex, while the consent regex covered imperative forms but omitted common infinitive and message-receipt forms.
+    - **Risk:** the bot may continue messaging after consent withdrawal, corrupt lost/objection analytics, cancel valid sales work, and place clients into wrong retargeting cohorts.
+    - **Affected branches:** deterministic classification, durable opt-out, follow-up cancellation, no-reply routing, rules snapshots, funnel statistics, and manual opt-in.
+    - **Acceptance:** consent phrases are recognized independently of grammar form; a commercial refusal requires an explicit purchase/order/product object or refusal verb; ambiguous negative preferences do not become final loss; combined messages set both axes.
+    - **Tests:** RU/UA imperative and infinitive opt-out, unsubscribe/STOP, newsletter/message-receipt variants, explicit purchase refusal, product-specific rejection, ambiguous `не нужно/не интересует`, and combined phrases.
+  - [ ] **P0.B5ag Fail closed for opt-out when deterministic enrichment raises.**
+    - **Priority:** P0 — a classifier failure cannot authorize a customer reply after an explicit stop request.
+    - **Symptom:** ingress creates an eligible opt-out message as `pending`, then swallows every classifier/follow-up exception; if deterministic classification raises, that row remains eligible for Gemini and Send API.
+    - **Root cause:** the consent/no-reply barrier lives inside a best-effort enrichment block after the pending state has already been persisted.
+    - **Risk:** a customer can receive an automated reply or follow-up after saying `STOP`, creating consent, reputation, and platform-policy exposure.
+    - **Affected branches:** webhook and polling ingress, classifier failures, follow-up cancellation, pending queue drain, Gemini generation, Send API, and duplicate delivery.
+    - **Acceptance:** a small deterministic opt-out guard runs inside the ingress transaction before fallible enrichment; it persists the communication hard stop, marks the message observed/done, and cancels pending follow-ups even when classification fails; no customer transport is invoked.
+    - **Tests:** mocked classifier exception for RU/UA/EN opt-out, message status/processed time, durable client fields, pending follow-up cancellation, `process_pending=0`, and zero Gemini/Meta calls.
+  - [ ] **P0.B5ah Version changed deterministic classification semantics.**
+    - **Priority:** P0 — append-only evidence must identify which rules produced it.
+    - **Symptom:** opt-out/no-buy and score-band semantics changed while `ANALYSIS_RULES_VERSION` and the rules-snapshot dedupe key remained `2026-07-23.v1`.
+    - **Root cause:** behavioral edits were made without advancing the persisted policy version.
+    - **Risk:** old collapsed snapshots cannot be distinguished or safely recomputed, calibration mixes incompatible policies, and per-message `get_or_create` can retain stale v1 truth.
+    - **Affected branches:** rules snapshot dedupe, reconciliation, analytics calibration, UI evidence, backfill, and audit history.
+    - **Acceptance:** advance the rules version for the semantic change; new snapshots use the new version/dedupe key; historical rows stay append-only and explicitly identifiable.
+    - **Tests:** version contract, new dedupe key, old/new coexistence, and idempotence within the new version.
+  - [ ] **P0.B5ai Backfill durable opt-out truth for existing conversations.**
+    - **Priority:** P0 — newly safe ingress does not protect clients whose opt-out was recorded before durable fields existed.
+    - **Symptom:** migration 0095 adds nullable opt-out fields but does not derive them from existing deterministic opt-out evidence/messages.
+    - **Root cause:** schema rollout and legacy-state reconciliation were separated without a bounded data migration or explicit production command.
+    - **Risk:** an existing opted-out client can remain reply/follow-up eligible after deploy even though append-only evidence already records the stop request.
+    - **Affected branches:** legacy rules snapshots, inbound messages, client pause state, pending follow-ups, statistics, manual opt-in audit, and deployment rollback.
+    - **Acceptance:** a bounded, idempotent, no-network reconciliation derives only high-confidence historical opt-outs, preserves payment/order/commercial state, records source message/time, cancels pending follow-ups, and reports ambiguous rows for manager review; production proof is rollback-only before any committed backfill is authorized.
+    - **Tests:** deterministic old snapshot/message, ambiguous phrase, paid client, already opted-in-after-opt-out, duplicate run, bounded cursor, no Gemini/Meta/Telegram, and no fixture residue.
+    - **Current production evidence:** read-only inventory on SHA `2406a879` found `0` historical `opt_out` snapshots, `0` affected clients, and `0` pending rows for such clients. No live backfill was run; this item remains open as a future upgrade guard and is not a data-remediation blocker for migration 0095.
 
 - [ ] **P1.B5c Replace the global long-held reply lock with a bounded two-level permission barrier.**
   - **Priority:** P1 — correctness is currently fail-closed, but latency and operator availability degrade under slow AI/provider calls.
