@@ -1608,8 +1608,21 @@ def enqueue_inbound(
             try:
                 from management.services import bot_followups, bot_sales_classifier
 
-                bot_followups.schedule_after_inbound(client)
-                bot_sales_classifier.classify_message(client, message=msg)
+                classified = bot_sales_classifier.classify_message(client, message=msg)
+                interaction_type = classified.get("interaction_type")
+                terminal_followup_reasons = {
+                    "explicit_no_buy": "explicit_no_buy",
+                    "opt_out": "opt_out",
+                    "spam_abuse": "spam_abuse",
+                    "paid_order_waiting": "already_converted",
+                }
+                if interaction_type in terminal_followup_reasons:
+                    bot_followups.cancel_pending(
+                        client,
+                        reason=terminal_followup_reasons[interaction_type],
+                    )
+                elif interaction_type != "reaction_only":
+                    bot_followups.schedule_after_inbound(client)
             except Exception:
                 pass
     except IntegrityError:
@@ -1897,6 +1910,24 @@ def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
 
 
 def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lease_token: str = "") -> bool:
+    if not row.attachments:
+        try:
+            from management.services.bot_sales_classifier import is_reaction_only
+
+            if is_reaction_only(row.text):
+                processed_at = timezone.now()
+                updated = _own_processing_claim(row).update(
+                    status=InstagramBotMessage.Status.DONE,
+                    processed_at=processed_at,
+                )
+                if updated:
+                    row.status = InstagramBotMessage.Status.DONE
+                    row.processed_at = processed_at
+                    log("info", "reaction_observed", f"{row.sender_id}: реакція без auto-reply")
+                    return True
+                return False
+        except Exception:
+            pass
     # Захоплення телефону клієнта (лід), якщо ще немає.
     if row.client_id:
         try:

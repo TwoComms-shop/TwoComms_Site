@@ -40,6 +40,11 @@ PRICE_RE = re.compile(r"\b(дорого|дорогувато|цена|ціна|�
 PREPAY_RE = re.compile(r"\b(предоплат|передоплат|налож|наклад|післяплат|без\s+пред|без\s+перед)\b", re.I)
 SIZE_RE = re.compile(r"\b(размер|розмір|сітка|сетка|оверсайз|regular|регуляр|xs|s|m|l|xl|xxl)\b", re.I)
 CUSTOM_RE = re.compile(r"\b(кастом|custom|свой\s+принт|власн\w*\s+принт|dtf|дтф|печать|друк|принт)\b", re.I)
+PRODUCT_RE = re.compile(
+    r"\b(товар\w*|футболк\w*|худі|худи|лонгслів\w*|одяг\w*|одежд\w*|"
+    r"колекц\w*|модель\w*|термохром\w*)\b",
+    re.I,
+)
 PAYMENT_RE = re.compile(r"\b(оплат|платеж|платіж|ссылка|посилання|линк|лінк|карта|монобанк)\b", re.I)
 DELIVERY_RE = re.compile(r"\b(достав|відправ|отправ|нова\s+пошта|новая\s+почта|нп|відділен|отделен)\b", re.I)
 GIFT_RE = re.compile(r"\b(подарок|подарунок|на\s+подар|в\s+подар)\b", re.I)
@@ -58,6 +63,17 @@ COLOR_WORDS = {
     "сір": "gray",
     "сер": "gray",
 }
+REACTION_MARKS = ("🔥", "❤", "👍", "👏", "😍", "😂", "🥰", "🙌", "💯", "🙏", "✨", "😊")
+
+
+def is_reaction_only(text: str) -> bool:
+    value = (text or "").strip()
+    return bool(
+        value
+        and len(value) <= 24
+        and not any(char.isalnum() for char in value)
+        and any(mark in value for mark in REACTION_MARKS)
+    )
 
 
 def _contains_any(text: str, terms: Iterable[str]) -> int:
@@ -131,6 +147,38 @@ def _analysis_band(client: IgClient, result: dict) -> str:
     return IgConversationAnalysisSnapshot.Band.COLD
 
 
+def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> str:
+    types = IgConversationAnalysisSnapshot.InteractionType
+    if role == InstagramBotMessage.Role.MANAGER:
+        return types.MANAGER_OBSERVATION
+    if is_reaction_only(text):
+        return types.REACTION_ONLY
+    if result.get("no_buy"):
+        low = (text or "").lower()
+        if "не пиш" in low or re.search(r"\bстоп\b", low):
+            return types.OPT_OUT
+        return types.EXPLICIT_NO_BUY
+    if client.stage in {IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE}:
+        return types.PAID_ORDER_WAITING
+    if client.stage == IgClient.Stage.SPAM or client.is_blocked:
+        return types.SPAM_ABUSE
+    if client.stage == IgClient.Stage.PAYMENT_PENDING:
+        return types.PAYMENT_PENDING
+    if IgConversationSignal.Type.CHECKOUT_STARTED in result.get("signals", []):
+        return types.HIGH_INTENT
+    if result.get("intent") == IgClient.Intent.CUSTOM_PRINT:
+        return types.CUSTOM_PRINT
+    if result.get("intent") == IgClient.Intent.SIZE:
+        return types.SIZE_FIT_QUESTION
+    if result.get("objection") == IgClient.Objection.PRICE:
+        return types.PRICE_OBJECTION
+    if result.get("intent") == IgClient.Intent.PRODUCT:
+        return types.PRODUCT_INTEREST
+    if (text or "").strip():
+        return types.INFORMATION_ONLY
+    return types.UNKNOWN
+
+
 def _record_analysis_snapshot(
     client: IgClient,
     message: InstagramBotMessage | None,
@@ -188,6 +236,7 @@ def _record_analysis_snapshot(
             "client": client,
             "last_analyzed_message": message if isinstance(message, InstagramBotMessage) else None,
             "score_band": band,
+            "interaction_type": result.get("interaction_type") or "unknown",
             "purchase_probability": probability,
             "confidence": confidence,
             "evidence": evidence,
@@ -211,6 +260,7 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
     low = text.lower()
     role = role or getattr(message, "role", "") or ""
     is_manager = role == InstagramBotMessage.Role.MANAGER
+    reaction_only = bool(not is_manager and is_reaction_only(text))
     lang = (
         client.language or "uk"
         if is_manager
@@ -251,49 +301,55 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         objection = IgClient.Objection.NO_BUY
         client.lost_reason = "no_buy"
         add(IgConversationSignal.Type.LOST, conf=0.95, value="no_buy")
-        try:
-            client.set_stage(IgClient.Stage.COLD, reason="no_buy")
-        except Exception:
-            client.stage = IgClient.Stage.COLD
+        if client.stage not in {
+            IgClient.Stage.PAID,
+            IgClient.Stage.ORDER_CREATED,
+            IgClient.Stage.DONE,
+        }:
+            try:
+                client.set_stage(IgClient.Stage.COLD, reason="no_buy")
+            except Exception:
+                client.stage = IgClient.Stage.COLD
 
-    if not is_manager and CUSTOM_RE.search(low):
+    if not is_manager and not reaction_only and not no_buy and CUSTOM_RE.search(low):
         intent = IgClient.Intent.CUSTOM_PRINT
         readiness += 30
         add(IgConversationSignal.Type.CUSTOM_PRINT, conf=0.9)
-    elif not is_manager and (PAYMENT_RE.search(low) or PHONE_RE.search(low)):
+    elif not is_manager and not reaction_only and not no_buy and (PAYMENT_RE.search(low) or PHONE_RE.search(low)):
         intent = IgClient.Intent.PAYMENT
         readiness += 40
         add(IgConversationSignal.Type.CHECKOUT_STARTED, conf=0.8)
-    elif not is_manager and SIZE_RE.search(low):
+    elif not is_manager and not reaction_only and not no_buy and SIZE_RE.search(low):
         intent = IgClient.Intent.SIZE
         readiness += 20
-    elif not is_manager and PRICE_RE.search(low):
+    elif not is_manager and not reaction_only and not no_buy and PRICE_RE.search(low):
         intent = IgClient.Intent.PRICE
         readiness += 20
-    elif not is_manager and text.strip() and not no_buy:
-        intent = IgClient.Intent.PRODUCT if intent == IgClient.Intent.UNKNOWN else intent
+    elif not is_manager and not reaction_only and PRODUCT_RE.search(low) and not no_buy:
+        intent = IgClient.Intent.PRODUCT
         readiness += 10
+        add(IgConversationSignal.Type.PRODUCT_INTEREST, conf=0.75)
 
-    if not is_manager and PRICE_RE.search(low):
+    if not is_manager and not no_buy and PRICE_RE.search(low):
         objection = IgClient.Objection.PRICE
         readiness += 12
         add(IgConversationSignal.Type.PRICE_OBJECTION, conf=0.85)
-    if not is_manager and PREPAY_RE.search(low):
+    if not is_manager and not no_buy and PREPAY_RE.search(low):
         objection = IgClient.Objection.PREPAYMENT
         readiness += 10
         add(IgConversationSignal.Type.PREPAYMENT_OBJECTION, conf=0.9)
-    if not is_manager and SIZE_RE.search(low):
+    if not is_manager and not no_buy and SIZE_RE.search(low):
         if objection == IgClient.Objection.NONE:
             objection = IgClient.Objection.SIZE
         readiness += 8
         add(IgConversationSignal.Type.SIZE_CONCERN, conf=0.8)
-    if not is_manager and THINKING_RE.search(low):
+    if not is_manager and not no_buy and THINKING_RE.search(low):
         objection = IgClient.Objection.THINKING
         readiness = max(readiness, 25)
-    if not is_manager and GIFT_RE.search(low):
+    if not is_manager and not no_buy and GIFT_RE.search(low):
         add(IgConversationSignal.Type.GIFT, conf=0.85)
         readiness += 10
-    if not is_manager and SELF_RE.search(low):
+    if not is_manager and not no_buy and SELF_RE.search(low):
         add(IgConversationSignal.Type.SELF_PURCHASE, conf=0.75)
         readiness += 8
 
@@ -331,6 +387,7 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         "no_buy": no_buy,
         "sales_context": sales_context,
     }
+    result["interaction_type"] = _interaction_type(client, result, text, role)
     try:
         snapshot = _record_analysis_snapshot(client, message, result, role=role)
         result["analysis_snapshot_id"] = snapshot.pk

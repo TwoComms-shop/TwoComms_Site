@@ -474,6 +474,7 @@ def _client_card(c) -> dict:
         "intent": c.intent,
         "buying_readiness": c.buying_readiness,
         "analysis_band": latest_analysis.score_band if latest_analysis else "",
+        "interaction_type": latest_analysis.interaction_type if latest_analysis else "",
         "analysis_probability": str(latest_analysis.purchase_probability) if latest_analysis else "",
         "analysis_confidence": str(latest_analysis.confidence) if latest_analysis else "",
         "analysis_evidence": latest_analysis.evidence if latest_analysis else [],

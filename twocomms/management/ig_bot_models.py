@@ -817,6 +817,23 @@ class IgConversationAnalysisSnapshot(models.Model):
         LOST = "lost", _("Втрачено")
         OPTED_OUT = "opted_out", _("Відмовився від повідомлень")
 
+    class InteractionType(models.TextChoices):
+        UNKNOWN = "unknown", _("Невідомо")
+        REACTION_ONLY = "reaction_only", _("Лише реакція")
+        INFORMATION_ONLY = "information_only", _("Лише інформація")
+        PRODUCT_INTEREST = "product_interest", _("Інтерес до товару")
+        SIZE_FIT_QUESTION = "size_fit_question", _("Питання про розмір")
+        CUSTOM_PRINT = "custom_print", _("Кастомний принт")
+        PRICE_OBJECTION = "price_objection", _("Заперечення щодо ціни")
+        HIGH_INTENT = "high_intent", _("Високий намір")
+        PAYMENT_PENDING = "payment_pending", _("Очікує оплату")
+        PAID_ORDER_WAITING = "paid_order_waiting", _("Оплачено / очікує товар")
+        NO_REPLY = "no_reply", _("Не відповідає")
+        EXPLICIT_NO_BUY = "explicit_no_buy", _("Явно не купує")
+        OPT_OUT = "opt_out", _("Відмовився від повідомлень")
+        SPAM_ABUSE = "spam_abuse", _("Спам / образи")
+        MANAGER_OBSERVATION = "manager_observation", _("Спостереження менеджера")
+
     client = models.ForeignKey(
         "management.IgClient",
         on_delete=models.CASCADE,
@@ -835,6 +852,12 @@ class IgConversationAnalysisSnapshot(models.Model):
     )
     dedupe_key = models.CharField(max_length=160, unique=True)
     score_band = models.CharField(max_length=24, choices=Band.choices, db_index=True)
+    interaction_type = models.CharField(
+        max_length=32,
+        choices=InteractionType.choices,
+        default=InteractionType.UNKNOWN,
+        db_index=True,
+    )
     purchase_probability = models.DecimalField(
         max_digits=5, decimal_places=4, default=Decimal("0.0000")
     )
