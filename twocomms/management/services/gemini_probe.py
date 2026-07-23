@@ -21,7 +21,7 @@ def build_probe_payload(model: str) -> dict:
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    return _payload_for_model(model, payload)
+    return _payload_for_model(model, payload, reasoning_task="health_probe")
 
 
 def _usage_value(usage: dict, *names: str) -> int:

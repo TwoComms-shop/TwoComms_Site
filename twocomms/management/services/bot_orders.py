@@ -57,13 +57,14 @@ def extract_np_data(client) -> dict:
         "contents": [{"role": "user", "parts": [{"text": NP_EXTRACT_INSTRUCTION + "\n\nДІАЛОГ:\n" + transcript}]}],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 300,
+            "maxOutputTokens": 4096,
             "responseMimeType": "application/json",
-            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
     try:
-        out = gemini_generate_text(payload, role="management")
+        out = gemini_generate_text(
+            payload, role="management", reasoning_task="order_decision"
+        )
     except Exception:
         return {}
     from management.services.bot_vision import _parse_fingerprint
@@ -212,13 +213,14 @@ def resolve_product_for_payment(client, product_id=None):
         "contents": [{"role": "user", "parts": [{"text": instruction + "\n\nДІАЛОГ:\n" + transcript}]}],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 120,
+            "maxOutputTokens": 4096,
             "responseMimeType": "application/json",
-            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
     try:
-        out = gemini_generate_text(payload, role="management")
+        out = gemini_generate_text(
+            payload, role="management", reasoning_task="product_decision"
+        )
     except Exception:
         return None
     from management.services.bot_vision import _parse_fingerprint

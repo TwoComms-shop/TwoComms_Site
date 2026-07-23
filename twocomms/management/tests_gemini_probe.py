@@ -18,7 +18,9 @@ class GeminiModelPayloadContractTests(TestCase):
             }
         }
 
-        normalized = caa._payload_for_model("gemini-3.6-flash", payload)
+        normalized = caa._payload_for_model(
+            "gemini-3.6-flash", payload, reasoning_task="health_probe"
+        )
 
         self.assertEqual(
             normalized["generationConfig"]["thinkingConfig"],
@@ -26,7 +28,7 @@ class GeminiModelPayloadContractTests(TestCase):
         )
         self.assertEqual(payload["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0)
 
-    def test_legacy_models_keep_legacy_thinking_budget(self):
+    def test_gemini_25_probe_uses_low_fallback_budget(self):
         payload = {
             "generationConfig": {
                 "maxOutputTokens": 128,
@@ -34,11 +36,13 @@ class GeminiModelPayloadContractTests(TestCase):
             }
         }
 
-        normalized = caa._payload_for_model("gemini-2.5-flash", payload)
+        normalized = caa._payload_for_model(
+            "gemini-2.5-flash", payload, reasoning_task="health_probe"
+        )
 
         self.assertEqual(
             normalized["generationConfig"]["thinkingConfig"],
-            {"thinkingBudget": 0},
+            {"thinkingBudget": 1024},
         )
 
     def test_gemini_36_preserves_explicit_level_and_other_thinking_fields(self):
@@ -52,7 +56,9 @@ class GeminiModelPayloadContractTests(TestCase):
             },
         }
 
-        normalized = caa._payload_for_model("gemini-3.6-flash", payload)
+        normalized = caa._payload_for_model(
+            "gemini-3.6-flash", payload, reasoning_task="payment_decision"
+        )
 
         self.assertEqual(
             normalized["generationConfig"]["thinkingConfig"],

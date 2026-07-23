@@ -3648,6 +3648,11 @@ class InstagramBotSettings(models.Model):
     last_gemini_model = models.CharField(max_length=80, blank=True, default="")
     last_gemini_key = models.CharField(max_length=80, blank=True, default="")
     last_gemini_at = models.DateTimeField(null=True, blank=True)
+    last_gemini_reasoning_task = models.CharField(max_length=64, blank=True, default="")
+    last_gemini_reasoning_level = models.CharField(max_length=16, blank=True, default="")
+    last_gemini_policy_version = models.CharField(max_length=32, blank=True, default="")
+    last_gemini_thoughts_tokens = models.PositiveIntegerField(default=0)
+    last_gemini_candidates_tokens = models.PositiveIntegerField(default=0)
 
     updated_at = models.DateTimeField(auto_now=True)
 

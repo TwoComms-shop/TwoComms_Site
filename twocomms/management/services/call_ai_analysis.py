@@ -66,6 +66,40 @@ BACKOFF_BASE = 2.0          # секунди, експоненційно між 
 CHAT_DEADLINE_SECONDS = 75.0
 MANAGEMENT_TEXT_DEADLINE_SECONDS = 75.0
 
+# This is an application policy, not a provider claim about token equivalence.
+# Gemini 3.x consumes the level; Gemini 2.5 fallbacks consume the budget table.
+REASONING_POLICY_VERSION = "2026-07-23.v1"
+_REASONING_BUDGETS = {"minimal": 0, "low": 1024, "medium": 4096, "high": 8192}
+_REASONING_POLICIES = {
+    "health_probe": "low",
+    "customer_chat": "medium",
+    "product_decision": "high",
+    "size_fit_decision": "high",
+    "catalog_match": "high",
+    "media_analysis": "high",
+    "payment_decision": "high",
+    "order_decision": "high",
+    "customer_intelligence": "high",
+    "conversion_analysis": "high",
+    "conversation_reanalysis": "high",
+    "memory_summary": "medium",
+    "reporting_summary": "medium",
+}
+
+
+def reasoning_policy(task: str) -> dict:
+    """Return the validated, versioned reasoning policy for a provider task."""
+    key = str(task or "").strip().lower()
+    if key not in _REASONING_POLICIES:
+        raise ValueError(f"Unknown Gemini reasoning task: {key or '<empty>'}")
+    level = _REASONING_POLICIES[key]
+    return {
+        "task": key,
+        "level": level,
+        "thinking_budget": _REASONING_BUDGETS[level],
+        "policy_version": REASONING_POLICY_VERSION,
+    }
+
 
 
 class CallAIAnalysisError(Exception):
@@ -277,20 +311,34 @@ def upsert_call_record(client: BinotelClient, general_call_id: str) -> CallRecor
 # ---------------------------------------------------------------------------
 # Gemini
 # ---------------------------------------------------------------------------
-def _payload_for_model(model: str, payload: dict) -> dict:
+def _payload_for_model(
+    model: str, payload: dict, *, reasoning_task: str = "customer_chat"
+) -> dict:
     """Normalize model-specific generation settings without mutating the caller."""
+    policy = reasoning_policy(reasoning_task)
     normalized = copy.deepcopy(payload)
     generation = normalized.get("generationConfig")
     if not isinstance(generation, dict):
-        return normalized
+        generation = {}
+        normalized["generationConfig"] = generation
     thinking = generation.get("thinkingConfig")
     if not isinstance(thinking, dict):
-        return normalized
-    if model == "gemini-3.6-flash" and "thinkingBudget" in thinking:
-        # Gemini 3.6 documents thinkingLevel; legacy thinkingBudget is not its
-        # portable contract and can turn a health/chat request into HTTP 400.
+        thinking = {}
+        generation["thinkingConfig"] = thinking
+    if str(model or "").startswith("gemini-3"):
+        # Gemini 3.x documents thinkingLevel; sending thinkingBudget can turn a
+        # valid health/chat request into HTTP 400. Gemini 3 reasoning is also
+        # optimized for provider-default sampling; explicit low temperature can
+        # degrade complex answers or cause loops.
+        for sampling_key in ("temperature", "topP", "topK", "top_p", "top_k"):
+            generation.pop(sampling_key, None)
         thinking.pop("thinkingBudget", None)
-        thinking.setdefault("thinkingLevel", "low")
+        thinking["thinkingLevel"] = policy["level"]
+    elif str(model or "").startswith("gemini-2.5"):
+        # This numeric mapping is our versioned fallback policy, not an official
+        # Google equivalence. Never send both controls to a Gemini 2.5 model.
+        thinking.pop("thinkingLevel", None)
+        thinking["thinkingBudget"] = policy["thinking_budget"]
     return normalized
 
 
@@ -315,7 +363,14 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
     for attempt in range(n_attempts):
         t0 = time.monotonic()
         try:
-            parsed, usage = _gemini_call_once(model, payload, key_value, parse=parse, timeout=timeout)
+            policy = reasoning_policy(payload.get("_reasoning_task", "customer_chat"))
+            request_payload = _payload_for_model(
+                model, payload, reasoning_task=policy["task"]
+            )
+            request_payload.pop("_reasoning_task", None)
+            parsed, usage = _gemini_call_once(
+                model, request_payload, key_value, parse=parse, timeout=timeout
+            )
         except _GeminiTransient as exc:
             dt = time.monotonic() - t0
             log.append(f"{key_name}/{model}: transient {exc} (#{attempt + 1})")
@@ -361,9 +416,30 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                 gemini_keys.mark_success(key_name)
             log.append(f"{key_name}/{model}: ok")
             _emit(f"{key_name}/{model}: ✅ відповідь за {dt:.1f}с")
+            usage = usage if isinstance(usage, dict) else {}
             return ("ok", {
                 "parsed": parsed, "raw": parsed, "usage": usage, "model": model,
-                "meta": {"key": key_name, "used_model": model, "attempts": list(log)},
+                "meta": {
+                    "key": key_name,
+                    "used_model": model,
+                    "attempts": list(log),
+                    "reasoning_task": policy["task"],
+                    "reasoning_level": policy["level"],
+                    "reasoning_budget": policy["thinking_budget"],
+                    "reasoning_policy_version": policy["policy_version"],
+                    "finish_reason": str(usage.get("_finish_reason") or "")[:32],
+                    "thoughts_tokens": int(
+                        usage.get("thoughtsTokenCount")
+                        or usage.get("thoughts_token_count")
+                        or 0
+                    ),
+                    "candidates_tokens": int(
+                        usage.get("candidatesTokenCount")
+                        or usage.get("candidates_token_count")
+                        or 0
+                    ),
+                    "latency_ms": max(0, int((time.monotonic() - t0) * 1000)),
+                },
             })
     return ("model_skip", None)  # transient вичерпано
 
@@ -371,7 +447,8 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
 def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
                    grounded: bool = False, parse: bool = True,
                    timeout: tuple | None = None, deadline_seconds: float | None = None,
-                   log_cb=None, model_override: str | None = None) -> dict:
+                   log_cb=None, model_override: str | None = None,
+                   reasoning_task: str | None = None) -> dict:
     """Прогоняє payload через пул ключів ролі та цепочку моделей.
 
     Кругова стратегія: у кожному КРУЗІ — ручний ключ (якщо є) першим, далі весь
@@ -384,6 +461,10 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
     ролі chat, інакше без стелі). Захищає від багатохвилинних зависань.
     log_cb: колбек, що отримує короткі рядки про кожну спробу (для консолі бота).
     """
+    task = reasoning_task or ("customer_chat" if role == "chat" else "reporting_summary")
+    policy = reasoning_policy(task)
+    payload = copy.deepcopy(payload)
+    payload["_reasoning_task"] = policy["task"]
     log: list[str] = []
     n_attempts = gemini_keys.attempts_per_model(role)
     rounds = gemini_keys.max_rounds(role)
@@ -455,7 +536,8 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
 
 
 def gemini_generate_json(system_instruction: str, user_text: str, *,
-                         role: str = "management", max_output_tokens: int = 4096) -> dict:
+                         role: str = "management", max_output_tokens: int = 4096,
+                         reasoning_task: str | None = None) -> dict:
     """Текстовий JSON-запит до Gemini. Пул ключів ролі + цепочка моделей."""
     payload = {
         "contents": [{"role": "user", "parts": [{"text": user_text}]}],
@@ -466,7 +548,13 @@ def gemini_generate_json(system_instruction: str, user_text: str, *,
             "responseMimeType": "application/json",
         },
     }
-    return _run_with_pool(role, payload)
+    return _run_with_pool(
+        role,
+        payload,
+        reasoning_task=reasoning_task or (
+            "customer_intelligence" if role in {"management", "checker"} else "customer_chat"
+        ),
+    )
 
 
 def gemini_generate_grounded(
@@ -476,6 +564,7 @@ def gemini_generate_grounded(
     role: str = "checker",
     api_key: str | None = None,
     max_output_tokens: int = 12288,
+    reasoning_task: str = "conversion_analysis",
 ) -> dict:
     """Grounded (Google Search) JSON-запит до Gemini для AI-чекера.
 
@@ -498,13 +587,19 @@ def gemini_generate_grounded(
             "thinkingConfig": {"thinkingBudget": 1024},
         },
     }
-    return _run_with_pool(role, payload, manual_key=(api_key or "").strip() or None,
-                          grounded=True)
+    return _run_with_pool(
+        role,
+        payload,
+        manual_key=(api_key or "").strip() or None,
+        grounded=True,
+        reasoning_task=reasoning_task,
+    )
 
 
 def gemini_generate_text(payload: dict, *, role: str = "chat",
                          manual_key: str | None = None, log_cb=None,
-                         model_override: str | None = None) -> dict:
+                         model_override: str | None = None,
+                         reasoning_task: str | None = None) -> dict:
     """Текстовий (не-JSON) запит для діалогового бота. Пул ключів ролі + цепочка
     моделей. У result['parsed'] — сирий текст відповіді моделі.
     log_cb (опц.) отримує короткі рядки про кожну спробу (для консолі бота)."""
@@ -520,13 +615,18 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
         ),
         log_cb=log_cb,
         model_override=model_override,
+        reasoning_task=reasoning_task or (
+            "customer_chat" if role == "chat" else "reporting_summary"
+        ),
     )
 
 
 def _gemini_analyze(audio_bytes: bytes, mime: str, manager_context: str, manager_snapshot: str = "") -> dict:
     """Шле аудіо в Gemini (роль management) з ретраями та фолбеком моделей/ключів."""
     payload = _build_payload(audio_bytes, mime, manager_context, manager_snapshot)
-    return _run_with_pool("management", payload)
+    return _run_with_pool(
+        "management", payload, reasoning_task="customer_intelligence"
+    )
 
 
 def _build_payload(audio_bytes: bytes, mime: str, manager_context: str, manager_snapshot: str = "") -> dict:
@@ -575,7 +675,6 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
     типізовану помилку (_GeminiTransient / _Gemini429 / _GeminiModelUnavailable / _GeminiFatal).
     parse=False → повертає сирий текст замість JSON (для діалогового бота)."""
     url = f"{GENAI_BASE}/models/{model}:generateContent"
-    payload = _payload_for_model(model, payload)
     try:
         resp = requests.post(
             url,
@@ -607,7 +706,13 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
 
     cand = (data.get("candidates") or [{}])[0]
     parts = (cand.get("content") or {}).get("parts") or []
-    text = "".join(p.get("text", "") for p in parts).strip()
+    # Thought parts are provider-internal and must never leak into a customer
+    # answer, JSON parser, logs, or CRM memory.
+    text = "".join(
+        p.get("text", "")
+        for p in parts
+        if isinstance(p, dict) and not p.get("thought")
+    ).strip()
     if not text:
         # Порожньо: часто finishReason=MAX_TOKENS/STOP, коли thinking зʼїв бюджет
         # виводу. Це проблема запиту, а не перевантаження моделі → _GeminiEmpty.
@@ -623,7 +728,8 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
             raise _GeminiEmpty(f"unparseable JSON: {exc}") from exc
     else:
         parsed = text
-    usage = data.get("usageMetadata") or {}
+    usage = dict(data.get("usageMetadata") or {})
+    usage["_finish_reason"] = str(cand.get("finishReason") or "")[:32]
     return parsed, usage
 
 

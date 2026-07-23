@@ -60,8 +60,7 @@ def build_summary_payload(transcript: str) -> dict:
         ],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 400,
-            "thinkingConfig": {"thinkingBudget": 0},
+            "maxOutputTokens": 4096,
         },
     }
 
@@ -73,7 +72,11 @@ def update_client_memory(client: IgClient) -> bool:
     if not transcript.strip():
         return False
     try:
-        out = gemini_generate_text(build_summary_payload(transcript), role="management")
+        out = gemini_generate_text(
+            build_summary_payload(transcript),
+            role="management",
+            reasoning_task="memory_summary",
+        )
     except Exception:
         return False
     summary = (out.get("parsed") or "").strip()

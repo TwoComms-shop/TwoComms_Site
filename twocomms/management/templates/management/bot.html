@@ -227,6 +227,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           <div class="bot-metric"><div class="v" id="bot-lastreply">—</div><div class="k">Остання</div></div>
           <div class="bot-metric"><div class="v" id="bot-heartbeat">—</div><div class="k">Heartbeat</div></div>
           <div class="bot-metric"><div class="v" id="bot-model">—</div><div class="k">Модель</div></div>
+          <div class="bot-metric"><div class="v" id="bot-reasoning">—</div><div class="k">Reasoning</div></div>
         </div>
         <div class="bot-hint" id="bot-error" style="margin-top:12px;color:#f87171;"></div>
       </div>
@@ -493,6 +494,13 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     document.getElementById('bot-lastreply').textContent=fmt(st.last_reply_at);
     document.getElementById('bot-heartbeat').textContent=fmt(st.heartbeat_at);
     document.getElementById('bot-model').textContent=st.last_gemini_model||st.gemini_effective_model||'—';
+    const reasoning=document.getElementById('bot-reasoning');
+    if(reasoning){
+      reasoning.textContent=st.last_gemini_reasoning_level||'—';
+      reasoning.title=st.last_gemini_reasoning_task
+        ? (st.last_gemini_reasoning_task+' · '+(st.last_gemini_policy_version||''))
+        : 'Ще немає успішного AI-виклику';
+    }
     document.getElementById('bot-error').textContent=st.last_error||'';
     document.getElementById('bot-start').disabled=st.is_enabled;
     document.getElementById('bot-stop').disabled=!st.is_enabled;

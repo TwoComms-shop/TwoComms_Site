@@ -47,9 +47,8 @@ def build_fingerprint_payload(images: list[tuple[str, bytes]]) -> dict:
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 512,
+            "maxOutputTokens": 4096,
             "responseMimeType": "application/json",
-            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
 
@@ -83,7 +82,9 @@ def describe_images(images: list[tuple[str, bytes]] | None) -> dict | None:
         return None
     payload = build_fingerprint_payload(images)
     try:
-        out = gemini_generate_text(payload, role="management")
+        out = gemini_generate_text(
+            payload, role="management", reasoning_task="media_analysis"
+        )
     except Exception:
         return None
     return _parse_fingerprint(out.get("parsed") or "")
@@ -240,9 +241,8 @@ def build_match_payload(images: list[tuple[str, bytes]], candidates: list[dict])
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 400,
+            "maxOutputTokens": 4096,
             "responseMimeType": "application/json",
-            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
 
@@ -260,7 +260,9 @@ def match(images: list[tuple[str, bytes]] | None, candidates: list[dict] | None 
 
     payload = build_match_payload(images, candidates)
     try:
-        out = gemini_generate_text(payload, role="management")
+        out = gemini_generate_text(
+            payload, role="management", reasoning_task="catalog_match"
+        )
     except Exception:
         return {"product_id": None, "confidence": 0.0, "reason": "error"}
     data = _parse_fingerprint(out.get("parsed") or "")

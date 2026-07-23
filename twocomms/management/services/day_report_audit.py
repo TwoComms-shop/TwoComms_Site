@@ -234,7 +234,12 @@ def build_day_report_audit(report: Report) -> DayReportAudit:
             audit.save()
             return audit
         user_text = json.dumps(ctx["context"], ensure_ascii=False)
-        out = gemini_generate_json(_system_instruction(), user_text, max_output_tokens=4096)
+        out = gemini_generate_json(
+            _system_instruction(),
+            user_text,
+            max_output_tokens=4096,
+            reasoning_task="reporting_summary",
+        )
         parsed = out["parsed"]
         usage = out.get("usage") or {}
         audit.status = DayReportAudit.Status.DONE

@@ -1133,6 +1133,54 @@ def send_text_tagged(s: InstagramBotSettings, recipient_id: str, text: str, tag:
 # ---------------------------------------------------------------------------
 # Gemini
 # ---------------------------------------------------------------------------
+_CHAT_REASONING_PATTERNS = (
+    (
+        "payment_decision",
+        re.compile(r"\b(оплат\w*|плат\w*|paylink|рахунок\w*|счет\w*)\b", re.I),
+    ),
+    (
+        "order_decision",
+        re.compile(
+            r"\b(замов\w*|заказ\w*|достав\w*|нова\s+пошт\w*|новая\s+почт\w*|"
+            r"відділен\w*|отделен\w*)\b",
+            re.I,
+        ),
+    ),
+    (
+        "size_fit_decision",
+        re.compile(
+            r"\b(розмір\w*|размер\w*|oversize|оверсайз\w*|посадк\w*|зріст\w*|рост\w*)\b",
+            re.I,
+        ),
+    ),
+    (
+        "product_decision",
+        re.compile(
+            r"\b(товар\w*|футболк\w*|худі|худи|лонгслів\w*|колір\w*|цвет\w*|"
+            r"ткан\w*|термохром\w*|наявн\w*|налич\w*|цін\w*|цен\w*)\b",
+            re.I,
+        ),
+    ),
+)
+
+
+def select_chat_reasoning_task(
+    history: list[dict], images: list[tuple[str, bytes]] | None = None
+) -> str:
+    """Choose the provider reasoning task from explicit current-turn evidence."""
+    if images:
+        return "media_analysis"
+    latest_user = ""
+    for item in reversed(history or []):
+        if item.get("role") == "user" and item.get("text"):
+            latest_user = str(item["text"])
+            break
+    for task, pattern in _CHAT_REASONING_PATTERNS:
+        if pattern.search(latest_user):
+            return task
+    return "customer_chat"
+
+
 def gemini_generate(
     s: InstagramBotSettings, history: list[dict], images: list[tuple[str, bytes]] | None = None,
     match_hint: str | None = None, memory_note: str | None = None,
@@ -1210,16 +1258,11 @@ def gemini_generate(
 
     payload = {
         "contents": contents,
-        # Flash-моделі можуть витрачати бюджет на thinking: без обмеження вони
-        # зʼїдають весь бюджет на
-        # внутрішнє мислення й повертає finishReason=MAX_TOKENS з порожнім текстом
-        # (тоді чат завжди падав на молодші моделі). thinkingBudget=0 вимикає
-        # мислення (чату потрібна пряма швидка відповідь), а 1536 токенів — запас
-        # на сам текст.
+        # Reasoning level is applied centrally from the task policy. The output
+        # budget remains reserved for a concise customer-facing answer.
         "generationConfig": {
             "temperature": 0.5,
-            "maxOutputTokens": 1536,
-            "thinkingConfig": {"thinkingBudget": 0},
+            "maxOutputTokens": 4096,
         },
         "safetySettings": [
             {"category": c, "threshold": "BLOCK_ONLY_HIGH"}
@@ -1252,8 +1295,10 @@ def gemini_generate(
         log("info", "gemini_try", msg)
 
     effective_model = normalize_chat_model(s.gemini_model)
+    reasoning_task = select_chat_reasoning_task(history, images)
     log("info", "gemini_start",
-        f"генерую відповідь (chat/{effective_model}; кастом-ключ: {'так' if manual_key else 'ні'})")
+        f"генерую відповідь (chat/{effective_model}; task={reasoning_task}; "
+        f"кастом-ключ: {'так' if manual_key else 'ні'})")
     _t0 = _time.monotonic()
     try:
         out = gemini_generate_text(
@@ -1262,6 +1307,7 @@ def gemini_generate(
             manual_key=manual_key,
             log_cb=_cb,
             model_override=effective_model,
+            reasoning_task=reasoning_task,
         )
     except CallAIAnalysisError as exc:
         log("error", "gemini", f"({_time.monotonic() - _t0:.1f}с) {str(exc)[:300]}")
@@ -1275,9 +1321,25 @@ def gemini_generate(
         return None
     try:
         s.last_gemini_model = str(out.get("model") or effective_model)[:80]
-        s.last_gemini_key = str((out.get("meta") or {}).get("key") or "")[:80]
+        meta = out.get("meta") or {}
+        usage = out.get("usage") or {}
+        s.last_gemini_key = str(meta.get("key") or "")[:80]
         s.last_gemini_at = timezone.now()
-        s.save(update_fields=["last_gemini_model", "last_gemini_key", "last_gemini_at", "updated_at"])
+        s.last_gemini_reasoning_task = str(meta.get("reasoning_task") or reasoning_task)[:64]
+        s.last_gemini_reasoning_level = str(meta.get("reasoning_level") or "")[:16]
+        s.last_gemini_policy_version = str(meta.get("reasoning_policy_version") or "")[:32]
+        s.last_gemini_thoughts_tokens = max(
+            0, int(meta.get("thoughts_tokens") or usage.get("thoughtsTokenCount") or 0)
+        )
+        s.last_gemini_candidates_tokens = max(
+            0, int(meta.get("candidates_tokens") or usage.get("candidatesTokenCount") or 0)
+        )
+        s.save(update_fields=[
+            "last_gemini_model", "last_gemini_key", "last_gemini_at",
+            "last_gemini_reasoning_task", "last_gemini_reasoning_level",
+            "last_gemini_policy_version", "last_gemini_thoughts_tokens",
+            "last_gemini_candidates_tokens", "updated_at",
+        ])
     except Exception:
         pass
     log("info", "gemini_ok",
@@ -2612,6 +2674,11 @@ def status_snapshot() -> dict:
         "last_gemini_model": s.last_gemini_model,
         "last_gemini_key": s.last_gemini_key,
         "last_gemini_at": s.last_gemini_at.isoformat() if s.last_gemini_at else "",
+        "last_gemini_reasoning_task": s.last_gemini_reasoning_task,
+        "last_gemini_reasoning_level": s.last_gemini_reasoning_level,
+        "last_gemini_policy_version": s.last_gemini_policy_version,
+        "last_gemini_thoughts_tokens": s.last_gemini_thoughts_tokens,
+        "last_gemini_candidates_tokens": s.last_gemini_candidates_tokens,
         "receive_via_poll": s.receive_via_poll,
         "app_secret_set": bool(app_secret()),
         "webhook_signature": webhook_signature_status(),
