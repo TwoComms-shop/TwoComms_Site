@@ -467,6 +467,8 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - [x] **P0.B1a — authority boundary:** model hard-stage tags are rejected; CRM paid view/card, score band, follow-up stop, paid/ad aggregates, and order creation use one confirmed-deal predicate (`paid|prepaid`, `paid_at`, paid/order-created ledger status). Existing prompt rows are updated by reversible migration `0088`; focused and full related suites cover forged stage, stale soft stage, repeated unpaid attempt, and unverified order creation.
   - [x] **P0.B1b — reconciliation/repair audit:** added PII-free, strictly read-only `audit_ig_payment_truth` with full counts and bounded ID samples for forged client stages, incomplete payment evidence, split truth fields, orders without verified payment, and order-created rows without orders. Production SHA `96b1b370` returned zero findings in all five categories; no repair was run. One daemon PID remained healthy, both heartbeat ages were under 4 seconds, queue/outbox were zero, and the effective model remained `gemini-3.6-flash`.
   - [ ] **P0.B1c — reversals:** add append-only refund/reversal/cancellation truth and prove that every paid aggregate, lifecycle summary, follow-up policy, and CAPI path reverses safely without rewriting historical evidence.
+    - [x] Core payment/order ledger: append-only provider events, InnoDB locked projection, amount validation, partial/full refund and reversal truth, order/shipment fail-closed reconciliation, net-paid client/ad aggregates, dirty-marker recovery for MyISAM mirrors, and audit-only Meta refund records are deployed at production SHA `fc727a35`. Fresh migration and 405 related tests pass; production has both append-only triggers, zero dirty projections and zero reconciliation findings.
+    - [ ] External Meta Purchase correction/refund delivery remains blocked on an explicit reviewed CAPI policy and owner permission; no live or test Meta event was sent.
 
 - [ ] **P0.B2 Make daemon singleton correctness independent of Redis/cache backend.**
   - **Symptom:** two concurrent cron/manual `--ensure` invocations can both spawn a worker on production.
@@ -508,21 +510,23 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Acceptance:** missing secret rejects the signed callback with a safe status; explicit local-test override is isolated; manual authenticated deletion remains available; no secret/raw signed payload in logs.
   - **Tests:** missing secret, valid/invalid HMAC, malformed payload, replay/idempotency, manual deletion unaffected.
 
-- [ ] **P0.B7 Do not treat an acquiring `hold` as confirmed payment.**
+- [x] **P0.B7 Do not treat an acquiring `hold` as confirmed payment.**
   - **Symptom:** the payment service grouped Monobank `hold` with `success`, set `paid_at`, moved the client to paid, created an order, and counted conversion before funds were captured.
   - **Root cause:** `MONO_SUCCESS` contained both statuses even though the provider contract distinguishes an authorization hold from a successful debit.
   - **Risk:** unfunded orders, false paid conversion/revenue, premature Purchase attribution, and shipment before confirmed capture.
   - **Affected branches:** provider webhook/poll, deal truth, order materialization, follow-up cancellation, CRM paid view, statistics, CAPI eligibility.
   - **Acceptance:** `hold` is append-only pending evidence only; it cannot set `paid_at`, positive payment truth, paid stage, order, conversion, or Purchase. A later provider `success` promotes exactly once; reversal/cancel remains independently auditable.
   - **Tests:** hold-only, hold→success, duplicate hold, out-of-order success→older hold, prepayment/full payment, every paid aggregate and order boundary.
+  - **Production proof:** SHA `fc727a35`; `hold` is pending-only, `success` requires exact expected amount, terminal truth cannot be resurrected, provider event/projection tables are InnoDB, and paid-truth audit returned zero findings.
 
-- [ ] **P0.B8 Make payment-ledger trigger migration safe on MariaDB.**
+- [x] **P0.B8 Make payment-ledger trigger migration safe on MariaDB.**
   - **Symptom:** production `0090_payment_truth_projection` created its table/columns, then failed before trigger creation and migration recording with `TransactionManagementError`.
   - **Root cause:** trigger DDL ran inside Django's default atomic migration although MariaDB cannot roll that DDL back.
   - **Risk:** partially applied schema, deploy interruption, absent append-only database guards, and unsafe repeated migration attempts against already-created objects.
   - **Affected branches:** fresh install, production upgrade, rollback/retry, append-only enforcement, deploy completion evidence.
   - **Acceptance:** migration declares the correct non-atomic boundary; fresh SQLite/MariaDB migration creates both triggers; the observed partial production state is reconciled without deleting payment evidence; migration history, schema, triggers, engines and runtime all agree.
   - **Tests:** fresh migration, interrupted/partial recovery inspection, idempotent trigger recreation, production `showmigrations`, information-schema engine/column/trigger checks.
+  - **Production proof:** the observed empty partial schema was inspected before recovery; no payment evidence was deleted. `0090` now declares `atomic = False`, fresh SQLite migration passed, production migration history is applied, and `ig_payevt_no_update`/`ig_payevt_no_delete` exist on the InnoDB event table at SHA `fc727a35`.
 
 #### P1.B — CRM truth, intelligence, orders, and conversion
 
