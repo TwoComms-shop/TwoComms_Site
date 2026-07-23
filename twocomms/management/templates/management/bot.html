@@ -493,7 +493,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     const pill=document.getElementById('bot-pill'), pillT=document.getElementById('bot-pill-text');
     const dot=document.getElementById('bot-dot');
     let txt, sub, cls;
-    if(st.state==='enabled_but_worker_missing'){ txt='Worker не запущено'; sub='Бот увімкнено, watchdog відновлює демон (до 1 хв)'; cls='off'; }
+    if(st.state==='maintenance'){ txt='Технічна пауза'; sub='Daemon і watchdog тимчасово зупинені maintenance-режимом'; cls='off'; }
+    else if(st.state==='enabled_but_worker_missing'){ txt='Worker не запущено'; sub='Бот увімкнено, watchdog відновлює демон (до 1 хв)'; cls='off'; }
     else if(st.state==='worker_error'){ txt='Помилка worker'; sub='DB heartbeat є, але daemon heartbeat відсутній'; cls='off'; }
     else if(!online){ txt='Офлайн'; sub='Демон не запущено'; cls='off'; }
     else if(st.is_enabled){ txt='Працює'; sub='Агент онлайн і відповідає'; cls='on'; }

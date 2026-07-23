@@ -30,6 +30,14 @@ from django.db import close_old_connections
 from management.models import InstagramBotSettings
 from management.services import bot_followups
 from management.services import instagram_bot as bot
+from management.services.ig_maintenance import (
+    DEFAULT_MAINTENANCE_SECONDS,
+    MAINTENANCE_FILE,
+    MaintenanceLeaseConflict,
+    activate_maintenance,
+    deactivate_maintenance,
+    maintenance_status,
+)
 
 HB_KEY = "ig_bot_daemon_hb"            # heartbeat демона (epoch seconds)
 HB_ALIVE_WINDOW = 45                   # демон вважається живим, якщо hb свіжіший
@@ -157,9 +165,44 @@ class Command(BaseCommand):
         parser.add_argument("--forever", action="store_true", help="Постійний демон.")
         parser.add_argument("--ensure", action="store_true", help="Watchdog: підняти демона, якщо мертвий.")
         parser.add_argument("--once", action="store_true", help="Один прохід.")
+        parser.add_argument(
+            "--maintenance-on",
+            nargs="?",
+            const=DEFAULT_MAINTENANCE_SECONDS,
+            type=int,
+            metavar="SECONDS",
+            help="Зупинити daemon і заблокувати watchdog на обмежений час.",
+        )
+        parser.add_argument(
+            "--maintenance-off",
+            metavar="LEASE_ID",
+            help="Зняти лише власний maintenance lease; потім запустіть --ensure.",
+        )
 
     def handle(self, *args, **opts):
+        selected = sum(
+            bool(opts.get(name))
+            for name in ("once", "ensure", "forever")
+        )
+        selected += int(opts.get("maintenance_on") is not None)
+        selected += int(opts.get("maintenance_off") is not None)
+        if selected > 1:
+            raise CommandError("choose exactly one daemon mode")
+        if opts.get("maintenance_on") is not None:
+            return self._maintenance_on(opts["maintenance_on"])
+        if opts.get("maintenance_off") is not None:
+            try:
+                deactivate_maintenance(
+                    lease_id=opts["maintenance_off"],
+                    path=MAINTENANCE_FILE,
+                )
+            except MaintenanceLeaseConflict as exc:
+                raise CommandError(str(exc)) from exc
+            self.stdout.write("maintenance disabled")
+            return
         if opts["once"]:
+            if maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                raise CommandError("maintenance active — --once refused")
             res = bot.poll_once(InstagramBotSettings.load())
             self.stdout.write(f"poll_once: {res}")
             return
@@ -170,13 +213,40 @@ class Command(BaseCommand):
         if opts["forever"]:
             return self._forever()
 
-        self.stdout.write("Вкажіть режим: --forever | --ensure | --once")
+        self.stdout.write(
+            "Вкажіть режим: --forever | --ensure | --once | --maintenance-on | --maintenance-off"
+        )
+
+    def _maintenance_on(self, duration_seconds: int):
+        try:
+            payload = activate_maintenance(
+                path=MAINTENANCE_FILE,
+                duration_seconds=duration_seconds,
+                actor="run_instagram_bot",
+            )
+        except MaintenanceLeaseConflict as exc:
+            raise CommandError(str(exc)) from exc
+        # The daemon observes the lease before its next work cycle. Do not
+        # report a safe maintenance boundary until its OS singleton is free.
+        if _process_lock_held(DAEMON_LOCK_FILE) and not _wait_for_lock(
+            DAEMON_LOCK_FILE,
+            held=False,
+            timeout=RELOAD_LOCK_WAIT_SECONDS,
+        ):
+            raise CommandError("daemon did not stop after maintenance activation")
+        self.stdout.write(
+            f"maintenance active lease_id={payload['lease_id']} "
+            f"expires_at={payload['expires_at']:.0f}"
+        )
 
     # ------------------------------------------------------------------
     def _ensure(self):
         with _try_process_lock(SPAWN_LOCK_FILE) as spawn_lock:
             if spawn_lock is None:
                 self.stdout.write("spawn in progress — skip")
+                return
+            if maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                self.stdout.write("maintenance active — watchdog skip")
                 return
             if _process_lock_held(DAEMON_LOCK_FILE):
                 if _daemon_code_current():
@@ -215,6 +285,9 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
     def _forever(self):
+        if maintenance_status(path=MAINTENANCE_FILE)["active"]:
+            self.stdout.write("maintenance active — daemon exit")
+            return
         with _try_process_lock(DAEMON_LOCK_FILE) as daemon_lock:
             if daemon_lock is None:
                 self.stdout.write("daemon already alive — exit")
@@ -248,6 +321,9 @@ class Command(BaseCommand):
         try:
             while True:
                 close_old_connections()  # лікує "MySQL server has gone away"
+                if maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    bot.log("info", "daemon_maintenance", "Maintenance активний — daemon зупинено")
+                    break
                 if _restart_sentinel_mtime() != start_sentinel:
                     bot.log("info", "daemon_reload",
                             "restart.txt змінено — демон перезавантажується для нового коду")

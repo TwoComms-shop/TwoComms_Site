@@ -661,6 +661,15 @@ def _finish_notification(
 
 
 def _deliver_manager_notification(dedupe_key: str) -> bool:
+    from management.services.ig_maintenance import notification_send_boundary
+
+    with notification_send_boundary() as send_allowed:
+        if not send_allowed:
+            return False
+        return _deliver_manager_notification_unlocked(dedupe_key)
+
+
+def _deliver_manager_notification_unlocked(dedupe_key: str) -> bool:
     now = timezone.now()
     row = IgBotNotification.objects.filter(dedupe_key=dedupe_key).first()
     if not row:
@@ -3012,7 +3021,10 @@ def stop_bot() -> InstagramBotSettings:
 
 
 def status_snapshot() -> dict:
+    from management.services.ig_maintenance import maintenance_status
+
     s = InstagramBotSettings.load()
+    maintenance = maintenance_status()
     now = timezone.now()
     hb = s.heartbeat_at
     db_heartbeat_age = (now - hb).total_seconds() if hb else None
@@ -3025,7 +3037,9 @@ def status_snapshot() -> dict:
     except (TypeError, ValueError):
         daemon_heartbeat_age = None
     daemon_online = bool(daemon_heartbeat_age is not None and daemon_heartbeat_age < 45)
-    if not s.is_enabled:
+    if maintenance["active"]:
+        state = "maintenance"
+    elif not s.is_enabled:
         state = "disabled"
     elif daemon_online:
         state = "running"
@@ -3063,9 +3077,10 @@ def status_snapshot() -> dict:
         # worker is alive. A fresh DB timestamp alone is not liveness proof.
         "alive": daemon_online,
         "daemon_online": daemon_online,
-        "running": s.is_enabled and daemon_online,
+        "running": s.is_enabled and daemon_online and not maintenance["active"],
         "state": state,
-        "recovery_expected": bool(s.is_enabled and not daemon_online),
+        "recovery_expected": bool(s.is_enabled and not daemon_online and not maintenance["active"]),
+        "maintenance": maintenance,
         "db_heartbeat_fresh": db_heartbeat_fresh,
         "db_heartbeat_age_seconds": round(db_heartbeat_age, 1) if db_heartbeat_age is not None else None,
         "daemon_heartbeat_age_seconds": round(daemon_heartbeat_age, 1) if daemon_heartbeat_age is not None else None,

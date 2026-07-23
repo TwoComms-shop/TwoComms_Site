@@ -5,6 +5,8 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -18,6 +20,27 @@ MGMT = override_settings(ROOT_URLCONF="twocomms.urls_management")
 
 
 class InstagramBotNotificationTests(TestCase):
+    @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": True})
+    @patch("management.services.instagram_bot._http")
+    def test_maintenance_does_not_claim_or_send_notification(self, http, _maintenance):
+        row = IgBotNotification.objects.create(
+            dedupe_key="maintenance-pending",
+            payload={"text": "Не надсилати", "chat_id": "123"},
+        )
+        self.assertFalse(bot._deliver_manager_notification(row.dedupe_key))
+        row.refresh_from_db()
+        self.assertEqual(row.status, IgBotNotification.Status.PENDING)
+        self.assertEqual(row.attempts, 0)
+        http.assert_not_called()
+
+    @patch(
+        "management.management.commands.drain_ig_notifications.maintenance_status",
+        return_value={"active": True},
+    )
+    def test_manual_drain_command_refuses_during_maintenance(self, _maintenance):
+        with self.assertRaisesMessage(CommandError, "notification drain refused"):
+            call_command("drain_ig_notifications")
+
     @patch.dict("os.environ", {}, clear=True)
     def test_missing_telegram_credentials_are_recorded(self):
         self.assertFalse(bot.notify_manager("Немає credentials", dedupe_key="missing-credentials"))

@@ -1,5 +1,6 @@
 """Regression tests for the Instagram bot daemon/watchdog boundary."""
 
+import json
 import os
 import subprocess
 import sys
@@ -24,6 +25,13 @@ from management.management.commands.run_instagram_bot import (
 )
 from management.models import InstagramBotSettings
 from management.services import instagram_bot as bot
+from management.services.ig_maintenance import (
+    MaintenanceLeaseConflict,
+    activate_maintenance,
+    deactivate_maintenance,
+    maintenance_status,
+    notification_send_boundary,
+)
 
 
 class DaemonPathTests(SimpleTestCase):
@@ -155,6 +163,162 @@ with patch.object(runner.subprocess, 'Popen', side_effect=fake_spawn), patch.obj
                 self.assertEqual(marker_file.read().splitlines(), ["spawned"])
 
 
+class DaemonMaintenanceTests(SimpleTestCase):
+    def test_active_lease_blocks_watchdog_spawn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lease_path = os.path.join(temp_dir, "maintenance.json")
+            activate_maintenance(path=lease_path, duration_seconds=60, actor="test")
+            command = Command()
+            with (
+                patch("management.management.commands.run_instagram_bot.MAINTENANCE_FILE", lease_path),
+                patch("management.management.commands.run_instagram_bot.subprocess.Popen") as popen,
+                patch.object(command, "stdout") as stdout,
+            ):
+                command._ensure()
+            popen.assert_not_called()
+            stdout.write.assert_called_with("maintenance active — watchdog skip")
+
+    def test_stale_lease_does_not_block_recovery(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lease_path = os.path.join(temp_dir, "maintenance.json")
+            activate_maintenance(path=lease_path, duration_seconds=1, actor="test", now=100)
+            self.assertFalse(maintenance_status(path=lease_path, now=131)["active"])
+
+    def test_malformed_lease_fails_safe_but_expires_from_mtime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lease_path = os.path.join(temp_dir, "maintenance.json")
+            with open(lease_path, "w", encoding="utf-8") as lease_file:
+                lease_file.write("not-json")
+            os.utime(lease_path, (100, 100))
+            active = maintenance_status(path=lease_path, now=101, max_seconds=30)
+            stale = maintenance_status(path=lease_path, now=131, max_seconds=30)
+            self.assertTrue(active["active"])
+            self.assertEqual(active["state"], "malformed_active")
+            self.assertFalse(stale["active"])
+            self.assertEqual(stale["state"], "malformed_stale")
+
+    def test_future_dated_valid_json_is_bounded_by_file_mtime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lease_path = os.path.join(temp_dir, "maintenance.json")
+            with open(lease_path, "w", encoding="utf-8") as lease_file:
+                json.dump(
+                    {
+                        "lease_id": "future",
+                        "started_at": 4_000_000_000,
+                        "expires_at": 4_000_000_060,
+                    },
+                    lease_file,
+                )
+            os.utime(lease_path, (100, 100))
+            self.assertTrue(
+                maintenance_status(path=lease_path, now=101, max_seconds=30)["active"]
+            )
+            self.assertFalse(
+                maintenance_status(path=lease_path, now=131, max_seconds=30)["active"]
+            )
+
+    def test_activation_is_atomic_and_deactivation_is_exact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lease_path = os.path.join(temp_dir, "maintenance.json")
+            payload = activate_maintenance(
+                path=lease_path,
+                duration_seconds=60,
+                actor="deploy",
+                now=100,
+            )
+            with open(lease_path, encoding="utf-8") as lease_file:
+                stored = json.load(lease_file)
+            self.assertEqual(stored, payload)
+            self.assertTrue(
+                deactivate_maintenance(lease_id=payload["lease_id"], path=lease_path)
+            )
+            self.assertFalse(os.path.exists(lease_path))
+
+    def test_active_owner_cannot_be_shortened_or_released_by_another_owner(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lease_path = os.path.join(temp_dir, "maintenance.json")
+            lock_path = os.path.join(temp_dir, "maintenance.lock")
+            send_lock_path = os.path.join(temp_dir, "send.lock")
+            payload = activate_maintenance(
+                path=lease_path,
+                lock_path=lock_path,
+                send_lock_path=send_lock_path,
+                duration_seconds=300,
+                actor="first",
+                now=100,
+            )
+            with self.assertRaises(MaintenanceLeaseConflict):
+                activate_maintenance(
+                    path=lease_path,
+                    lock_path=lock_path,
+                    send_lock_path=send_lock_path,
+                    duration_seconds=30,
+                    actor="second",
+                    now=101,
+                )
+            with self.assertRaises(MaintenanceLeaseConflict):
+                deactivate_maintenance(
+                    lease_id="wrong-owner",
+                    path=lease_path,
+                    lock_path=lock_path,
+                )
+            self.assertEqual(
+                maintenance_status(path=lease_path, now=102)["lease_id"],
+                payload["lease_id"],
+            )
+
+    def test_notification_boundary_refuses_send_during_maintenance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lease_path = os.path.join(temp_dir, "maintenance.json")
+            lock_path = os.path.join(temp_dir, "maintenance.lock")
+            send_lock_path = os.path.join(temp_dir, "send.lock")
+            activate_maintenance(
+                path=lease_path,
+                lock_path=lock_path,
+                send_lock_path=send_lock_path,
+                duration_seconds=60,
+                actor="test",
+            )
+            with notification_send_boundary(
+                lease_path=lease_path,
+                send_lock_path=send_lock_path,
+            ) as allowed:
+                self.assertFalse(allowed)
+
+    def test_two_processes_cannot_own_same_maintenance_lease(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lease_path = os.path.join(temp_dir, "maintenance.json")
+            lock_path = os.path.join(temp_dir, "maintenance.lock")
+            send_lock_path = os.path.join(temp_dir, "send.lock")
+            child_code = """
+import sys
+from management.services.ig_maintenance import activate_maintenance, MaintenanceLeaseConflict
+try:
+    activate_maintenance(path=sys.argv[1], lock_path=sys.argv[2], send_lock_path=sys.argv[3], duration_seconds=60)
+    print('owned')
+except MaintenanceLeaseConflict:
+    print('conflict')
+"""
+            env = os.environ.copy()
+            env["PYTHONPATH"] = os.pathsep.join(
+                filter(None, [PROJECT_ROOT, env.get("PYTHONPATH", "")])
+            )
+            children = [
+                subprocess.Popen(
+                    [sys.executable, "-c", child_code, lease_path, lock_path, send_lock_path],
+                    cwd=PROJECT_ROOT,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(2)
+            ]
+            results = [child.communicate(timeout=10) for child in children]
+            self.assertEqual([child.returncode for child in children], [0, 0], results)
+            self.assertEqual(sorted(stdout.strip() for stdout, _stderr in results), ["conflict", "owned"])
+
+
 class DaemonHeartbeatTests(SimpleTestCase):
     @patch("management.management.commands.run_instagram_bot.cache.get", return_value={"at": 100.0})
     @patch("management.management.commands.run_instagram_bot.time.time", return_value=110.0)
@@ -193,6 +357,24 @@ class DaemonHeartbeatTests(SimpleTestCase):
         pending.assert_called_once_with(settings)
         followups.assert_called_once_with(settings)
         log.assert_called_once()
+
+    @patch("management.management.commands.run_instagram_bot._run_work_cycle")
+    @patch("management.management.commands.run_instagram_bot._conv_refresher")
+    @patch("management.management.commands.run_instagram_bot.bot.log")
+    @patch(
+        "management.management.commands.run_instagram_bot.maintenance_status",
+        return_value={"active": True},
+    )
+    def test_running_daemon_exits_before_work_when_maintenance_appears(
+        self, _maintenance, _log, _refresher, work_cycle
+    ):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch(
+                "management.management.commands.run_instagram_bot.PID_FILE",
+                os.path.join(temp_dir, "daemon.pid"),
+            ):
+                Command()._forever_locked()
+        work_cycle.assert_not_called()
 
 
 class DaemonStatusTests(TestCase):

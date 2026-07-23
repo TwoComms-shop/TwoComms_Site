@@ -544,6 +544,30 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Acceptance:** transactional schema state and non-atomic idempotent engine conversion are separate migrations; the engine step checks table existence/current engine before each DDL.
   - **Tests:** migration structure assertion, idempotent conversion fixture, partial-state rerun, then production migration table/engine verification.
 
+- [ ] **P1.B4h Remove server AppleDouble files from Python compile scope.**
+  - **Symptom:** production `compileall management orders` fails with `source code string cannot contain null bytes` for `orders/._nova_poshta_documents.py` and `orders/._telegram_notifications.py`.
+  - **Root cause:** ignored 163-byte AppleDouble resource-fork metadata was copied to production beside real `.py` modules; `compileall` treats the `._*.py` names as Python source.
+  - **Risk:** a required deploy gate stays red and can hide a genuine syntax error among known noise; future recursive tooling may attempt to parse metadata as code.
+  - **Affected branches:** production compile gate, recursive scanners, manual file uploads from macOS.
+  - **Acceptance:** verify the files are untracked AppleDouble metadata, move only the proven artifacts to a recoverable quarantine, keep `._*` ignored, and make production compileall pass without excluding real tracked Python files.
+  - **Tests:** `file`, `git check-ignore`, `git ls-files`, clean production `compileall`, and no tracked-tree change from cleanup.
+
+- [ ] **P0.B4i Add an explicit bounded daemon maintenance lease.**
+  - **Symptom:** after `restart.txt` stopped the daemon for a production outbox fixture, the minute cron immediately ran `--ensure`, restarted the daemon, claimed the fixture, and sent one synthetic administrator Telegram notification.
+  - **Root cause:** the restart sentinel only asks the current daemon to reload; it is not a durable maintenance contract and `--ensure` has no state that distinguishes an intentional pause from a crash.
+  - **Risk:** a migration, rollback fixture, or pending operational alert can be processed during a maintenance window; deploy verification is no longer no-network by construction.
+  - **Affected branches:** cron watchdog, manual `--ensure`, deploy restart, daemon outbox drain, production rollback fixtures.
+  - **Acceptance:** an explicit atomic maintenance lease prevents both watchdog spawn and daemon work, is visible in runtime status, has a bounded expiry so a forgotten lease recovers, and the production deploy process enters/exits it deliberately before `restart/ensure`.
+  - **Tests:** ensure during active maintenance, running daemon observes maintenance and exits before work, stale lease recovery, malformed lease fail-safe, concurrent maintenance activation, and one production no-send fixture while cron continues.
+
+- [ ] **P0.B4j Make every production-DB verification command fail closed.**
+  - **Symptom:** production lacked `rg`; an empty discovery pipeline still invoked Django and launched the complete 2,803-test SQLite suite. An earlier ambiguous inline settings invocation also attempted to create a MySQL test database before failing permissions.
+  - **Root cause:** the shell pipeline did not require a non-empty explicit module list, and the acceptance path still allowed `test_settings`/SQLite to be mistaken for production evidence.
+  - **Risk:** runaway processes, checks against the wrong database contract, misleading green evidence, and accidental test-schema creation attempts on production infrastructure.
+  - **Affected branches:** focused/full suite discovery, migration verification, concurrency fixtures, deploy handoff and P0.10 closure.
+  - **Acceptance:** the production-contract verifier asserts MySQL/MariaDB, the exact configured production database identity, no `test_*` schema and explicit no-network fixtures; missing tools, empty discovery and wrong settings stop before Django tests or database mutation. SQLite may remain a fast developer aid but can never satisfy a checklist acceptance gate.
+  - **Tests:** missing `rg`, empty module list, SQLite/wrong settings, `test_*` DB name, expected production identity, rollback-only MariaDB fixture, and orphan-process cleanup.
+
 - [ ] **P0.B5 Separate observation/analysis from global and per-client reply enablement.**
   - **Symptom:** when global `is_enabled=False`, customer webhook events return 200 but are discarded before message/client storage; paused manager-led chats also finish without scheduled high-reasoning analysis.
   - **Root cause:** one enable flag gates ingress, analysis, reply, and follow-up instead of reply automation only.
@@ -690,7 +714,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
 
 #### P2.B — validation, governance, and handoff
 
-- [ ] **P2.B1 Add a production-contract test profile.** Run MySQL/InnoDB/MyISAM-aware concurrency, FileBasedCache multiprocess singleton, Meta/Gemini mocked contracts, CAPI no-network fixtures, and migration engine assertions separately from fast SQLite unit tests. Document what each profile proves and what it cannot prove.
+- [ ] **P2.B1 Add a production-contract test profile.** Run MySQL/MariaDB engine-aware concurrency, FileBasedCache multiprocess singleton, Meta/Gemini mocked contracts, CAPI no-network fixtures, and migration engine assertions against the explicitly asserted production database contract. Local SQLite may be used only as developer feedback and must never close an acceptance checkbox. Document what each profile proves and fail closed before mutation when database identity differs.
 
 - [ ] **P2.B2 Add read-only health and data-quality commands.** Report impossible axis combinations, paid-without-ledger, ledger-paid-without lifecycle update, stale analysis watermarks, conflicting facts, orphan snapshots/order links, hidden leakage, overdue queue/outbox/follow-ups, wrong table engines, cache singleton state, missing keys/secrets, and attribution without event/order evidence. Repair commands are separate, idempotent, and dry-run first.
 
@@ -727,7 +751,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
 
 ## 15. Test Matrix and Commands
 
-### Local fast checks per slice
+### Local developer feedback per slice (never acceptance evidence)
 
 ```bash
 cd /Users/zainllw0w/TwoComms/site
@@ -745,7 +769,11 @@ git diff --check
 
 Add the slice-specific test module to that command rather than relying on the full suite alone. Use mocked HTTP for Gemini/Meta/Telegram. Do not send live customer messages in tests.
 
-### Complete related regression gate for every slice
+These commands may use local SQLite only as quick developer feedback. Per the
+owner's production-truth rule, their result cannot close any checkbox and is not
+reported as production compatibility evidence.
+
+### Complete related developer regression feedback
 
 After the focused red/green cycle, run every `tests_ig_*`, `tests_gemini_*`, and
 `tests_bot_*` module. This is mandatory even when the focused test passes:
@@ -759,7 +787,8 @@ DJANGO_SETTINGS_MODULE=test_settings .venv/bin/python twocomms/manage.py test \
     | sed -E 's#^twocomms/##; s#/#.#g; s#\.py$##')
 ```
 
-The pre-change 2026-07-23 baseline is **375 tests passing**. A passing legacy
+The pre-change 2026-07-23 baseline is **375 tests passing**. This SQLite command
+is optional developer feedback, not a deployment or acceptance gate. A passing legacy
 suite does not replace new MySQL/FileBasedCache/browser/provider contract tests.
 No command in this gate may send a real Meta message, Gemini customer response,
 Telegram alert, payment request, order, or CAPI event.
@@ -792,6 +821,9 @@ Telegram alert, payment request, order, or CAPI event.
 ### Standard server sequence after each approved slice
 
 ```bash
+IG_BOT_MAINTENANCE_ID=$(python manage.py run_instagram_bot --maintenance-on 900 \
+  | sed -n 's/^maintenance active lease_id=\([^ ]*\).*/\1/p')
+test -n "$IG_BOT_MAINTENANCE_ID"
 git pull --ff-only origin main
 python manage.py migrate
 python manage.py check
@@ -799,9 +831,19 @@ python manage.py collectstatic --noinput
 python manage.py compress --force
 python manage.py seed_ig_bot_sales_playbooks
 touch tmp/restart.txt
+python manage.py run_instagram_bot --maintenance-off "$IG_BOT_MAINTENANCE_ID"
 python manage.py run_instagram_bot --ensure
 python manage.py poll_ig_deal_payments --limit 5
 ```
+
+For the **first rollout that introduces maintenance support**, the old in-memory
+daemon cannot observe the new lease. Bootstrap once by taking the existing
+`ig_bot_spawn.lock`, touching `restart.txt`, waiting for and holding
+`ig_bot_daemon.lock`, then pull the new code and create the lease directly through
+`management.services.ig_maintenance.activate_maintenance()` before releasing both
+OS locks. Record the returned `lease_id`. Do not use the future standard sequence
+until that bootstrap has completed. This closes the old-daemon/cron window without
+customer, Telegram, Gemini, payment, order, or Meta sends.
 
 Then verify:
 
