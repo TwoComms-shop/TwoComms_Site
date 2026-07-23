@@ -63,3 +63,57 @@ def latest_verified_payment_deal(client):
     if prefetched is not None:
         return prefetched[0] if prefetched else None
     return verified_payment_deals(client.deals.all()).order_by("-paid_at", "-id").first()
+
+
+def payment_truth_inconsistency_report(*, sample_limit: int = 50) -> dict:
+    """Build a bounded, PII-free and strictly read-only reconciliation report."""
+    from django.utils import timezone
+
+    from management.models import IgClient
+
+    limit = max(0, min(int(sample_limit), 500))
+    hard_stages = (IgClient.Stage.PAID, IgClient.Stage.ORDER_CREATED, IgClient.Stage.DONE)
+    hard_deal_statuses = (IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED)
+
+    clients = annotate_verified_payment(
+        IgClient.objects.filter(stage__in=hard_stages)
+    ).filter(has_verified_payment=False)
+    hard_deals_without_truth = IgDeal.objects.filter(status__in=hard_deal_statuses).exclude(
+        payment_status__in=VERIFIED_PAYMENT_STATUSES,
+        paid_at__isnull=False,
+    )
+    verified_fields_without_hard_status = IgDeal.objects.filter(
+        payment_status__in=VERIFIED_PAYMENT_STATUSES,
+        paid_at__isnull=False,
+    ).exclude(status__in=hard_deal_statuses)
+    orders_without_truth = IgDeal.objects.filter(order__isnull=False).exclude(
+        status__in=hard_deal_statuses,
+        payment_status__in=VERIFIED_PAYMENT_STATUSES,
+        paid_at__isnull=False,
+    )
+    order_status_without_order = IgDeal.objects.filter(
+        status=IgDeal.Status.ORDER_CREATED,
+        order__isnull=True,
+    )
+
+    categories = {
+        "client_hard_stage_without_verified_payment": clients,
+        "deal_hard_status_without_verified_payment": hard_deals_without_truth,
+        "deal_verified_fields_without_hard_status": verified_fields_without_hard_status,
+        "deal_order_without_verified_payment": orders_without_truth,
+        "deal_order_created_without_order": order_status_without_order,
+    }
+    counts = {name: queryset.count() for name, queryset in categories.items()}
+    samples = {
+        name: list(queryset.order_by("id").values_list("id", flat=True)[:limit])
+        for name, queryset in categories.items()
+    }
+    return {
+        "schema_version": "2026-07-23.v1",
+        "generated_at": timezone.now().isoformat(),
+        "read_only": True,
+        "sample_limit": limit,
+        "finding_count": sum(counts.values()),
+        "counts": counts,
+        "samples": samples,
+    }
