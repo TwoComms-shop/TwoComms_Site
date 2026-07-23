@@ -29,8 +29,8 @@ class Migration(migrations.Migration):
                 ('trigger', models.CharField(blank=True, db_index=True, default='message', max_length=32)),
                 ('analysis_latency_ms', models.PositiveIntegerField(default=0)),
                 ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('client', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='analysis_snapshots', to='management.igclient')),
-                ('last_analyzed_message', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='analysis_snapshots', to='management.instagrambotmessage')),
+                ('client', models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name='analysis_snapshots', to='management.igclient')),
+                ('last_analyzed_message', models.ForeignKey(blank=True, db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='analysis_snapshots', to='management.instagrambotmessage')),
             ],
             options={
                 'verbose_name': 'Знімок аналізу IG-діалогу',

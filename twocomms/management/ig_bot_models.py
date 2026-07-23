@@ -818,7 +818,12 @@ class IgConversationAnalysisSnapshot(models.Model):
         OPTED_OUT = "opted_out", _("Відмовився від повідомлень")
 
     client = models.ForeignKey(
-        "management.IgClient", on_delete=models.CASCADE, related_name="analysis_snapshots"
+        "management.IgClient",
+        on_delete=models.CASCADE,
+        related_name="analysis_snapshots",
+        # IgClient is a legacy MyISAM table in production; keep this new
+        # InnoDB snapshot table valid without a cross-engine FK constraint.
+        db_constraint=False,
     )
     last_analyzed_message = models.ForeignKey(
         "management.InstagramBotMessage",
@@ -826,6 +831,7 @@ class IgConversationAnalysisSnapshot(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="analysis_snapshots",
+        db_constraint=False,
     )
     dedupe_key = models.CharField(max_length=160, unique=True)
     score_band = models.CharField(max_length=24, choices=Band.choices, db_index=True)

@@ -66,3 +66,11 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         snapshot = self.client.analysis_snapshots.get()
         self.assertEqual(snapshot.score_band, "lost")
         self.assertEqual(snapshot.purchase_probability, Decimal("0.00"))
+
+    def test_new_snapshot_fks_are_cross_engine_safe(self):
+        from management.models import IgConversationAnalysisSnapshot
+
+        self.assertFalse(IgConversationAnalysisSnapshot._meta.get_field("client").db_constraint)
+        self.assertFalse(
+            IgConversationAnalysisSnapshot._meta.get_field("last_analyzed_message").db_constraint
+        )
