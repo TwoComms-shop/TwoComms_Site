@@ -20,6 +20,7 @@ from management.management.commands.run_instagram_bot import (
     Command,
     _daemon_alive,
     _process_lock_held,
+    _run_work_cycle,
 )
 from management.models import InstagramBotSettings
 from management.services import instagram_bot as bot
@@ -159,6 +160,20 @@ class DaemonHeartbeatTests(SimpleTestCase):
     @patch("management.management.commands.run_instagram_bot.time.time", return_value=110.0)
     def test_dict_heartbeat_is_supported(self, _time, _get):
         self.assertTrue(_daemon_alive())
+
+    @patch("management.management.commands.run_instagram_bot.bot_followups.process_due_followups")
+    @patch("management.management.commands.run_instagram_bot.bot.process_pending")
+    @patch("management.management.commands.run_instagram_bot.bot.drain_manager_notifications")
+    def test_disabled_reply_gate_still_drains_operational_outbox(self, drain, pending, followups):
+        settings = InstagramBotSettings(is_enabled=False, receive_via_poll=False)
+
+        enabled, last_poll = _run_work_cycle(settings, 17.0)
+
+        self.assertFalse(enabled)
+        self.assertEqual(last_poll, 17.0)
+        drain.assert_called_once_with(limit=10)
+        pending.assert_not_called()
+        followups.assert_not_called()
 
 
 class DaemonStatusTests(TestCase):

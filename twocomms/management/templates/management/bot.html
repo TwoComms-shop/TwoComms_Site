@@ -228,8 +228,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           <div class="bot-metric"><div class="v" id="bot-heartbeat">—</div><div class="k">Heartbeat</div></div>
           <div class="bot-metric"><div class="v" id="bot-model">—</div><div class="k">Модель</div></div>
           <div class="bot-metric"><div class="v" id="bot-reasoning">—</div><div class="k">Reasoning</div></div>
+          <div class="bot-metric"><div class="v" id="bot-outbox">—</div><div class="k">Сповіщення</div></div>
         </div>
         <div class="bot-hint" id="bot-error" style="margin-top:12px;color:#f87171;"></div>
+        <div class="bot-hint" id="bot-outbox-help" style="margin-top:8px;"></div>
       </div>
       <div class="bot-card">
         <h2>Як працює</h2>
@@ -500,6 +502,21 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       reasoning.title=st.last_gemini_reasoning_task
         ? (st.last_gemini_reasoning_task+' · '+(st.last_gemini_policy_version||''))
         : 'Ще немає успішного AI-виклику';
+    }
+    const outbox=document.getElementById('bot-outbox');
+    const outboxHelp=document.getElementById('bot-outbox-help');
+    const outboxRetry=Number(st.notification_failed||0);
+    const outboxPending=Number(st.notification_pending||0);
+    const outboxManual=Number(st.notification_unknown||0)+Number(st.notification_dead_letter||0);
+    if(outbox){
+      outbox.textContent=outboxManual ? (outboxManual+' вручну') : (outboxRetry ? (outboxRetry+' повтор') : (outboxPending||'0'));
+      outbox.title='У черзі: '+outboxPending+' · автоматичний повтор: '+outboxRetry+' · ручна перевірка: '+outboxManual;
+    }
+    if(outboxHelp){
+      outboxHelp.textContent=outboxManual
+        ? 'Є сповіщення з невідомим результатом або вичерпаними спробами. Перевірте Telegram вручну, щоб не надіслати дубль.'
+        : (outboxRetry ? 'Telegram тимчасово недоступний: демон повторить сповіщення автоматично.' : '');
+      outboxHelp.style.color=outboxManual?'#fbbf24':'';
     }
     document.getElementById('bot-error').textContent=st.last_error||'';
     document.getElementById('bot-start').disabled=st.is_enabled;

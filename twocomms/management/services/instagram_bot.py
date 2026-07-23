@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from management.models import (
@@ -610,6 +611,163 @@ def _log_token_error(s: InstagramBotSettings, code, body: str) -> None:
         pass
 
 
+NOTIFICATION_STALE_SENDING_SECONDS = 300
+NOTIFICATION_MAX_ATTEMPTS = 5
+
+
+def _notification_retry_at(row, now):
+    base = min(3600, 30 * (2 ** max(0, int(row.attempts or 1) - 1)))
+    jitter = int(hashlib.sha256(row.dedupe_key.encode("utf-8")).hexdigest()[:2], 16) % 16
+    return now + timedelta(seconds=base + jitter)
+
+
+def _finish_notification(dedupe_key, *, status, error="", failure_kind="", message_id=""):
+    now = timezone.now()
+    with transaction.atomic():
+        row = IgBotNotification.objects.select_for_update().get(dedupe_key=dedupe_key)
+        if row.status != IgBotNotification.Status.SENDING:
+            return False
+        row.status = status
+        row.telegram_message_id = message_id
+        row.last_error = (error or "")[:500]
+        row.failure_kind = (failure_kind or "")[:32]
+        row.sent_at = now if status == IgBotNotification.Status.SENT else None
+        row.next_attempt_at = (
+            _notification_retry_at(row, now)
+            if status == IgBotNotification.Status.FAILED
+            else None
+        )
+        if status == IgBotNotification.Status.FAILED and row.attempts >= NOTIFICATION_MAX_ATTEMPTS:
+            row.status = IgBotNotification.Status.DEAD_LETTER
+            row.failure_kind = "retry_exhausted"
+            row.next_attempt_at = None
+        row.save(update_fields=[
+            "status", "telegram_message_id", "last_error", "failure_kind",
+            "sent_at", "next_attempt_at", "updated_at",
+        ])
+        return row.status == IgBotNotification.Status.SENT
+
+
+def _deliver_manager_notification(dedupe_key: str) -> bool:
+    now = timezone.now()
+    with transaction.atomic():
+        row = IgBotNotification.objects.select_for_update().filter(dedupe_key=dedupe_key).first()
+        if not row:
+            return False
+        if row.status == IgBotNotification.Status.SENT:
+            return True
+        if row.status in {IgBotNotification.Status.UNKNOWN, IgBotNotification.Status.DEAD_LETTER}:
+            return False
+        if row.status == IgBotNotification.Status.SENDING:
+            if row.last_attempt_at and (now - row.last_attempt_at).total_seconds() >= NOTIFICATION_STALE_SENDING_SECONDS:
+                row.status = IgBotNotification.Status.UNKNOWN
+                row.failure_kind = "ambiguous_stale_sending"
+                row.last_error = "delivery outcome unknown after interrupted send"
+                row.next_attempt_at = None
+                row.save(update_fields=[
+                    "status", "failure_kind", "last_error", "next_attempt_at", "updated_at",
+                ])
+            return False
+        if row.status == IgBotNotification.Status.FAILED and row.next_attempt_at and row.next_attempt_at > now:
+            return False
+        row.status = IgBotNotification.Status.SENDING
+        row.attempts += 1
+        row.last_attempt_at = now
+        row.next_attempt_at = None
+        row.last_error = ""
+        row.failure_kind = ""
+        row.save(update_fields=[
+            "status", "attempts", "last_attempt_at", "next_attempt_at",
+            "last_error", "failure_kind", "updated_at",
+        ])
+        payload = dict(row.payload or {})
+
+    token = os.environ.get("MANAGEMENT_TG_BOT_TOKEN", "").strip()
+    chat = os.environ.get("MANAGEMENT_TG_ADMIN_CHAT_ID", "").strip() or str(payload.get("chat_id") or "")
+    text = str(payload.get("text") or "")[:3500]
+    if not token or not chat:
+        _finish_notification(
+            dedupe_key,
+            status=IgBotNotification.Status.FAILED,
+            error="telegram_not_configured",
+            failure_kind="configuration",
+        )
+        return False
+    try:
+        body = json.dumps(
+            {"chat_id": chat, "text": text, "disable_web_page_preview": True}
+        ).encode("utf-8")
+        code, response_body = _http(
+            f"https://api.telegram.org/bot{token}/sendMessage", data=body, timeout=HTTP_TIMEOUT
+        )
+    except Exception as exc:
+        _finish_notification(
+            dedupe_key,
+            status=IgBotNotification.Status.UNKNOWN,
+            error=repr(exc),
+            failure_kind="ambiguous_transport",
+        )
+        return False
+    if code < 0:
+        _finish_notification(
+            dedupe_key,
+            status=IgBotNotification.Status.UNKNOWN,
+            error=response_body,
+            failure_kind="ambiguous_transport",
+        )
+        return False
+    try:
+        response = json.loads(response_body or "{}")
+    except (TypeError, ValueError):
+        response = {}
+        if code == 200:
+            _finish_notification(
+                dedupe_key,
+                status=IgBotNotification.Status.UNKNOWN,
+                error="Telegram returned an unreadable success response",
+                failure_kind="ambiguous_provider_response",
+            )
+            return False
+    if code == 200 and bool(response.get("ok")):
+        return _finish_notification(
+            dedupe_key,
+            status=IgBotNotification.Status.SENT,
+            message_id=str((response.get("result") or {}).get("message_id") or ""),
+        )
+    retryable = code == 429 or code >= 500
+    _finish_notification(
+        dedupe_key,
+        status=(IgBotNotification.Status.FAILED if retryable else IgBotNotification.Status.DEAD_LETTER),
+        error=str(response.get("description") or f"HTTP {code}"),
+        failure_kind=("provider_retryable" if retryable else "provider_permanent"),
+    )
+    return False
+
+
+def drain_manager_notifications(*, limit: int = 20) -> int:
+    now = timezone.now()
+    stale_before = now - timedelta(seconds=NOTIFICATION_STALE_SENDING_SECONDS)
+    stale_ids = list(
+        IgBotNotification.objects.filter(
+            status=IgBotNotification.Status.SENDING,
+            last_attempt_at__lte=stale_before,
+        ).values_list("dedupe_key", flat=True)[:limit]
+    )
+    for dedupe_key in stale_ids:
+        _deliver_manager_notification(dedupe_key)
+    due_ids = list(
+        IgBotNotification.objects.filter(
+            status__in=[IgBotNotification.Status.PENDING, IgBotNotification.Status.FAILED]
+        ).filter(
+            Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now)
+        ).order_by("next_attempt_at", "id").values_list("dedupe_key", flat=True)[:limit]
+    )
+    sent = 0
+    for dedupe_key in due_ids:
+        sent += int(_deliver_manager_notification(dedupe_key))
+    return sent
+
+
 def notify_manager(
     text: str,
     *,
@@ -617,20 +775,13 @@ def notify_manager(
     event_type: str = "generic",
     client: IgClient | None = None,
 ) -> bool:
-    """Deliver one durable, idempotent Telegram notification.
-
-    ``dedupe_key`` identifies a state epoch (for example a manager takeover).
-    Legacy callers omit it and receive a stable content key, which still
-    prevents provider retries from producing an identical alert storm.
-    """
-    token = os.environ.get("MANAGEMENT_TG_BOT_TOKEN", "").strip()
-    chat = os.environ.get("MANAGEMENT_TG_ADMIN_CHAT_ID", "").strip()
+    """Persist one idempotent notification and attempt immediate delivery."""
     text = (text or "").strip()[:3500]
     if not text:
         return False
     if not dedupe_key:
         dedupe_key = "generic:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
-    now = timezone.now()
+    chat = os.environ.get("MANAGEMENT_TG_ADMIN_CHAT_ID", "").strip()
     try:
         with transaction.atomic():
             row, created = IgBotNotification.objects.select_for_update().get_or_create(
@@ -641,66 +792,17 @@ def notify_manager(
                     "payload": {"text": text, "chat_id": chat},
                 },
             )
-            if not created:
-                if row.status == IgBotNotification.Status.SENT:
-                    return True
-                if (
-                    row.status == IgBotNotification.Status.SENDING
-                    and row.last_attempt_at
-                    and (now - row.last_attempt_at).total_seconds() < 300
-                ):
-                    return False
+            if not created and row.status in {
+                IgBotNotification.Status.PENDING,
+                IgBotNotification.Status.FAILED,
+            }:
                 row.client = client or row.client
                 row.event_type = (event_type or row.event_type or "generic")[:64]
                 row.payload = {"text": text, "chat_id": chat}
-            row.status = IgBotNotification.Status.SENDING
-            row.attempts += 1
-            row.last_attempt_at = now
-            row.last_error = ""
-            row.save(update_fields=[
-                "client", "event_type", "payload", "status", "attempts",
-                "last_attempt_at", "last_error", "updated_at",
-            ])
+                row.save(update_fields=["client", "event_type", "payload", "updated_at"])
     except Exception:
-        # A notification must never break customer message processing while a
-        # migration is being rolled out or the outbox database is unavailable.
         return False
-    if not token or not chat:
-        try:
-            with transaction.atomic():
-                row = IgBotNotification.objects.select_for_update().get(dedupe_key=dedupe_key)
-                row.status = IgBotNotification.Status.FAILED
-                row.last_error = "telegram_not_configured"
-                row.save(update_fields=["status", "last_error", "updated_at"])
-        except Exception:
-            pass
-        return False
-    try:
-        body = json.dumps(
-            {"chat_id": chat, "text": text[:3500], "disable_web_page_preview": True}
-        ).encode("utf-8")
-        code, response_body = _http(
-            f"https://api.telegram.org/bot{token}/sendMessage", data=body, timeout=HTTP_TIMEOUT
-        )
-        response = json.loads(response_body or "{}")
-        ok = code == 200 and bool(response.get("ok"))
-        message_id = str((response.get("result") or {}).get("message_id") or "")
-        error = "" if ok else (str(response.get("description") or f"HTTP {code}")[:500])
-    except Exception as exc:
-        ok = False
-        message_id = ""
-        error = repr(exc)[:500]
-    try:
-        with transaction.atomic():
-            row = IgBotNotification.objects.select_for_update().get(dedupe_key=dedupe_key)
-            row.status = IgBotNotification.Status.SENT if ok else IgBotNotification.Status.FAILED
-            row.telegram_message_id = message_id
-            row.last_error = error
-            row.sent_at = now if ok else None
-            row.save(update_fields=["status", "telegram_message_id", "last_error", "sent_at", "updated_at"])
-    except Exception:
-        pass
-    return ok
+    return _deliver_manager_notification(dedupe_key)
 
 
 def _rate_exceeded(s: InstagramBotSettings, sender_id: str, limit: int = 25, window: int = 3600) -> bool:
@@ -2895,9 +2997,17 @@ def status_snapshot() -> dict:
         notification_failed = IgBotNotification.objects.filter(
             status=IgBotNotification.Status.FAILED
         ).count()
+        notification_unknown = IgBotNotification.objects.filter(
+            status=IgBotNotification.Status.UNKNOWN
+        ).count()
+        notification_dead_letter = IgBotNotification.objects.filter(
+            status=IgBotNotification.Status.DEAD_LETTER
+        ).count()
     except Exception:
         notification_pending = None
         notification_failed = None
+        notification_unknown = None
+        notification_dead_letter = None
     try:
         from management.services.gemini_keys import normalize_chat_model
 
@@ -2923,6 +3033,8 @@ def status_snapshot() -> dict:
         "pending": pending_count(),
         "notification_pending": notification_pending,
         "notification_failed": notification_failed,
+        "notification_unknown": notification_unknown,
+        "notification_dead_letter": notification_dead_letter,
         "unique_senders": unique_senders_count(),
         "allow_all": not bool(allowed_sender_ids(s)),
         "last_error": s.last_error,

@@ -127,6 +127,23 @@ def _conv_refresher(stop_event: threading.Event):
         stop_event.wait(CONV_REFRESH_EVERY)
 
 
+def _run_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
+    """Run durable operational work, then reply work only when enabled."""
+    enabled = bool(settings_obj.is_enabled)
+    interval = max(2, settings_obj.poll_interval_seconds or 3)
+    bot.drain_manager_notifications(limit=10)
+    if enabled:
+        bot.process_pending(settings_obj)
+        bot_followups.process_due_followups(settings_obj)
+        now = time.time()
+        if settings_obj.receive_via_poll and (now - last_poll) >= interval:
+            bot.poll_ingest(settings_obj)
+            bot.process_pending(settings_obj)
+            bot_followups.process_due_followups(settings_obj)
+            last_poll = now
+    return enabled, last_poll
+
+
 class Command(BaseCommand):
     help = "Раннер Instagram-бота (демон / watchdog / одиночний прохід)."
 
@@ -232,19 +249,7 @@ class Command(BaseCommand):
                 enabled = False
                 try:
                     s = InstagramBotSettings.load()
-                    enabled = s.is_enabled
-                    interval = max(2, s.poll_interval_seconds or 3)
-                    if enabled:
-                        # 1) Воркер черги — дешево (локальна БД), щоразу.
-                        bot.process_pending(s)
-                        bot_followups.process_due_followups(s)
-                        # 2) Резервний інгест із IG — лише якщо увімкнено й настав час.
-                        now = time.time()
-                        if s.receive_via_poll and (now - last_poll) >= interval:
-                            bot.poll_ingest(s)
-                            bot.process_pending(s)
-                            bot_followups.process_due_followups(s)
-                            last_poll = now
+                    enabled, last_poll = _run_work_cycle(s, last_poll)
                     # heartbeat для UI навіть коли зупинено (агент онлайн)
                     s.heartbeat_at = tz.now()
                     s.save(update_fields=["heartbeat_at"])

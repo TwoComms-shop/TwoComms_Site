@@ -121,6 +121,8 @@ class IgBotNotification(models.Model):
         SENDING = "sending", "Sending"
         SENT = "sent", "Sent"
         FAILED = "failed", "Failed"
+        UNKNOWN = "unknown", "Delivery unknown"
+        DEAD_LETTER = "dead_letter", "Manual review required"
 
     client = models.ForeignKey(
         "management.IgClient",
@@ -128,8 +130,8 @@ class IgBotNotification(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="bot_notifications",
-        # Legacy IG client table is MyISAM on production; keep the Django
-        # relation without asking MariaDB to create a cross-engine FK.
+        # Kept constraint-free for compatibility with installations that have
+        # not yet completed the runtime-table InnoDB migration.
         db_constraint=False,
     )
     event_type = models.CharField(max_length=64, default="generic", db_index=True)
@@ -139,7 +141,9 @@ class IgBotNotification(models.Model):
     attempts = models.PositiveIntegerField(default=0)
     telegram_message_id = models.CharField(max_length=64, blank=True, default="")
     last_error = models.CharField(max_length=500, blank=True, default="")
+    failure_kind = models.CharField(max_length=32, blank=True, default="")
     last_attempt_at = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
