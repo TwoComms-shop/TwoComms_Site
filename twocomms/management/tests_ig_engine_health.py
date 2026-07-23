@@ -1,6 +1,7 @@
 import json
 import importlib
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from django.core.management import call_command
@@ -38,6 +39,38 @@ class AnalysisMigrationContractTests(SimpleTestCase):
 
         self.assertLess(add_index, run_index)
         self.assertLess(run_index, alter_index)
+
+    def test_reconcile_cutoff_migration_quarantines_only_unfinished_history(self):
+        migration = importlib.import_module(
+            "management.migrations.0097_analysis_reconcile_rollout_cutoff"
+        )
+        cutoff = object()
+        settings_model = Mock()
+        settings_model.objects.order_by.return_value.first.return_value = SimpleNamespace(
+            analysis_reconcile_after=cutoff
+        )
+        job_model = Mock()
+        queryset = job_model.objects.filter.return_value
+        apps = Mock()
+        apps.get_model.side_effect = [settings_model, job_model]
+
+        migration.quarantine_pre_cutoff_reconcile_jobs(apps, Mock())
+
+        filter_kwargs = job_model.objects.filter.call_args.kwargs
+        self.assertEqual(filter_kwargs["trigger"], "reconcile")
+        self.assertEqual(filter_kwargs["created_at__lt"], cutoff)
+        self.assertEqual(
+            filter_kwargs["status__in"], ["pending", "processing", "failed"]
+        )
+        self.assertEqual(filter_kwargs["revision__gt"].name, "analyzed_revision")
+        queryset.update.assert_called_once_with(
+            status="skipped",
+            skip_reason="historical_backfill_blocked",
+            lease_token="",
+            lease_until=None,
+            claimed_watermark_message_id=0,
+            claimed_revision=0,
+        )
 
 
 class IgEngineAuditTests(TestCase):

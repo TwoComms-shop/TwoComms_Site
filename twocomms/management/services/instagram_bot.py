@@ -3284,6 +3284,11 @@ def status_snapshot() -> dict:
         "analysis_pending": analysis_pending,
         "analysis_failed": analysis_failed,
         "analysis_reconcile_cursor": s.analysis_reconcile_cursor,
+        "analysis_reconcile_after": s.analysis_reconcile_after.isoformat(),
+        "analysis_backfill_enabled": s.analysis_backfill_enabled,
+        "analysis_backfill_allowed": bool(
+            s.analysis_backfill_enabled and project_mapping_complete
+        ),
         "unique_senders": unique_senders_count(),
         "allow_all": not bool(allowed_sender_ids(s)),
         "last_error": s.last_error,

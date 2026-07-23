@@ -2,7 +2,7 @@ import json
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
@@ -21,6 +21,122 @@ from management.services import bot_conversation_analysis as analysis
 
 
 class ConversationAnalysisLeasePolicyTests(SimpleTestCase):
+    def test_latest_truth_change_ignores_unrelated_deal_updates(self):
+        old_payment_truth = timezone.now() - timedelta(days=2)
+        order_truth = timezone.now() - timedelta(days=1)
+        unrelated_deal_update = timezone.now()
+        unrelated_order_update = timezone.now()
+        client = Mock()
+        client.deals.aggregate.return_value = {
+            "deal_updated_at": unrelated_deal_update,
+            "order_updated_at": unrelated_order_update,
+            "payment_truth_updated_at": old_payment_truth,
+            "order_truth_updated_at": order_truth,
+        }
+        client.payment_projections.aggregate.return_value = {"updated_at": None}
+
+        changed_at = analysis._latest_truth_change(client)
+
+        self.assertEqual(changed_at, order_truth)
+        aggregate_fields = client.deals.aggregate.call_args.kwargs
+        self.assertNotIn("deal_updated_at", aggregate_fields)
+        self.assertNotIn("order_updated_at", aggregate_fields)
+
+    def test_order_truth_change_filter_is_field_specific_and_update_fields_safe(self):
+        from management.services.ig_order_truth import order_truth_changed
+
+        previous = {
+            "status": "new",
+            "payment_status": "unpaid",
+            "tracking_number": "",
+            "shipment_status": "",
+        }
+        current = SimpleNamespace(
+            status="ship",
+            payment_status="unpaid",
+            tracking_number="",
+            shipment_status="",
+            manager_comment="unrelated",
+        )
+
+        self.assertTrue(
+            order_truth_changed(previous, current, update_fields={"status"})
+        )
+        self.assertFalse(
+            order_truth_changed(
+                previous,
+                current,
+                update_fields={"manager_comment"},
+            )
+        )
+
+    @patch("management.models.IgDeal")
+    def test_order_delete_publishes_linked_deal_truth_clock(self, deal_model):
+        from management.services.ig_order_truth import publish_order_truth_unlink
+
+        started_at = timezone.now()
+        publish_order_truth_unlink(
+            sender=Mock(),
+            instance=SimpleNamespace(pk=17),
+        )
+
+        deal_model.objects.filter.assert_called_once_with(order_id=17)
+        changed_at = deal_model.objects.filter.return_value.update.call_args.kwargs[
+            "order_truth_updated_at"
+        ]
+        self.assertGreaterEqual(changed_at, started_at)
+
+    @patch("management.services.gemini_keys.key_project_groups")
+    def test_historical_backfill_requires_explicit_flag_and_complete_mapping(self, groups):
+        from management.services.gemini_keys import ALL_KEYS
+
+        settings_obj = SimpleNamespace(analysis_backfill_enabled=False)
+        groups.return_value = {alias: "project-a" for alias in ALL_KEYS}
+        self.assertFalse(analysis._historical_backfill_allowed(settings_obj))
+
+        settings_obj.analysis_backfill_enabled = True
+        groups.return_value = {alias: "project-a" for alias in ALL_KEYS[:-1]}
+        self.assertFalse(analysis._historical_backfill_allowed(settings_obj))
+
+        groups.return_value = {alias: "project-a" for alias in ALL_KEYS}
+        self.assertTrue(analysis._historical_backfill_allowed(settings_obj))
+
+    def test_reconcile_cutoff_excludes_history_but_keeps_post_rollout_recovery(self):
+        cutoff = timezone.now()
+        old = cutoff - timedelta(days=1)
+        recent = cutoff + timedelta(seconds=1)
+        eligible = getattr(
+            analysis,
+            "_reconcile_candidate_is_eligible",
+            lambda **_kwargs: True,
+        )
+
+        self.assertFalse(
+            eligible(
+                cutoff=cutoff,
+                latest_message_at=old,
+                job_created_at=old,
+                truth_changed_at=old,
+                include_history=False,
+            )
+        )
+        for override in (
+            {"latest_message_at": recent},
+            {"job_created_at": recent},
+            {"truth_changed_at": recent},
+            {"include_history": True},
+        ):
+            values = {
+                "cutoff": cutoff,
+                "latest_message_at": old,
+                "job_created_at": old,
+                "truth_changed_at": old,
+                "include_history": False,
+                **override,
+            }
+            with self.subTest(override=override):
+                self.assertTrue(eligible(**values))
+
     def test_claim_ownership_requires_matching_unexpired_processing_lease(self):
         now = timezone.now()
         claim = SimpleNamespace(
@@ -230,6 +346,12 @@ class ConversationAnalysisProviderPolicyTests(SimpleTestCase):
 class ConversationAnalysisJobTests(TestCase):
     def setUp(self):
         self.client = IgClient.objects.create(igsid="analysis-job-client")
+        settings = InstagramBotSettings.load()
+        settings.analysis_reconcile_after = timezone.now() - timedelta(days=1)
+        settings.analysis_backfill_enabled = False
+        settings.save(update_fields=[
+            "analysis_reconcile_after", "analysis_backfill_enabled",
+        ])
 
     def message(self, text, *, role=InstagramBotMessage.Role.USER):
         return InstagramBotMessage.objects.create(
@@ -640,6 +762,9 @@ class ConversationAnalysisJobTests(TestCase):
 
     def test_reconciliation_queues_changed_conversation_without_gemini(self):
         message = self.message("Новий діалог")
+        settings = InstagramBotSettings.load()
+        settings.analysis_reconcile_after = message.created_at - timedelta(seconds=1)
+        settings.save(update_fields=["analysis_reconcile_after"])
 
         with patch("management.services.bot_conversation_analysis.gemini_generate_json") as generate:
             result = analysis.reconcile_analysis_jobs(now=timezone.now())
@@ -649,6 +774,156 @@ class ConversationAnalysisJobTests(TestCase):
         self.assertEqual(job.watermark_message_id, message.id)
         self.assertEqual(job.trigger, "reconcile")
         generate.assert_not_called()
+
+    def test_reconciliation_does_not_queue_pre_cutoff_history(self):
+        message = self.message("Старий діалог")
+        cutoff = timezone.now()
+        InstagramBotMessage.objects.filter(pk=message.pk).update(
+            created_at=cutoff - timedelta(days=1)
+        )
+        settings = InstagramBotSettings.load()
+        settings.analysis_reconcile_after = cutoff
+        settings.analysis_backfill_enabled = False
+        settings.save(update_fields=[
+            "analysis_reconcile_after", "analysis_backfill_enabled",
+        ])
+
+        result = analysis.reconcile_analysis_jobs(now=cutoff)
+
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["historical_blocked"], 1)
+        self.assertFalse(IgConversationAnalysisJob.objects.filter(client=self.client).exists())
+
+    def test_unrelated_deal_update_does_not_unlock_historical_reconciliation(self):
+        message = self.message("Старий діалог")
+        cutoff = timezone.now()
+        InstagramBotMessage.objects.filter(pk=message.pk).update(
+            created_at=cutoff - timedelta(days=1)
+        )
+        IgDeal.objects.create(client=self.client, amount=Decimal("999.00"))
+        settings = InstagramBotSettings.load()
+        settings.analysis_reconcile_after = cutoff
+        settings.analysis_backfill_enabled = False
+        settings.save(update_fields=[
+            "analysis_reconcile_after", "analysis_backfill_enabled",
+        ])
+
+        result = analysis.reconcile_analysis_jobs(now=cutoff)
+
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["historical_blocked"], 1)
+        self.assertFalse(IgConversationAnalysisJob.objects.filter(client=self.client).exists())
+
+    def test_unrelated_order_update_does_not_unlock_historical_reconciliation(self):
+        from orders.models import Order
+
+        message = self.message("Старий діалог")
+        order = Order.objects.create(
+            full_name="IG fixture",
+            phone="0000000000",
+            city="Kyiv",
+            np_office="1",
+            total_sum=Decimal("1000.00"),
+        )
+        deal = IgDeal.objects.create(
+            client=self.client,
+            order=order,
+            amount=Decimal("1000.00"),
+        )
+        cutoff = timezone.now()
+        InstagramBotMessage.objects.filter(pk=message.pk).update(
+            created_at=cutoff - timedelta(days=1)
+        )
+        IgDeal.objects.filter(pk=deal.pk).update(order_truth_updated_at=None)
+        settings = InstagramBotSettings.load()
+        settings.analysis_reconcile_after = cutoff
+        settings.analysis_backfill_enabled = False
+        settings.save(update_fields=[
+            "analysis_reconcile_after", "analysis_backfill_enabled",
+        ])
+
+        order.manager_comment = "Не впливає на CRM truth"
+        order.save()
+        result = analysis.reconcile_analysis_jobs(now=timezone.now())
+
+        deal.refresh_from_db()
+        self.assertIsNone(deal.order_truth_updated_at)
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["historical_blocked"], 1)
+
+    def test_relevant_order_update_fields_unlocks_missed_event_reconciliation(self):
+        from orders.models import Order
+
+        message = self.message("Старий діалог")
+        order = Order.objects.create(
+            full_name="IG fixture",
+            phone="0000000000",
+            city="Kyiv",
+            np_office="1",
+            total_sum=Decimal("1000.00"),
+        )
+        deal = IgDeal.objects.create(
+            client=self.client,
+            order=order,
+            amount=Decimal("1000.00"),
+        )
+        cutoff = timezone.now()
+        InstagramBotMessage.objects.filter(pk=message.pk).update(
+            created_at=cutoff - timedelta(days=1)
+        )
+        IgDeal.objects.filter(pk=deal.pk).update(order_truth_updated_at=None)
+        settings = InstagramBotSettings.load()
+        settings.analysis_reconcile_after = cutoff
+        settings.analysis_backfill_enabled = False
+        settings.save(update_fields=[
+            "analysis_reconcile_after", "analysis_backfill_enabled",
+        ])
+
+        order.status = "ship"
+        order.save(update_fields=["status"])
+        result = analysis.reconcile_analysis_jobs(now=timezone.now())
+
+        deal.refresh_from_db()
+        self.assertGreaterEqual(deal.order_truth_updated_at, cutoff)
+        self.assertEqual(result["queued"], 1)
+        self.assertEqual(result["historical_blocked"], 0)
+
+    def test_order_delete_unlocks_missed_event_reconciliation(self):
+        from orders.models import Order
+
+        message = self.message("Старий діалог")
+        order = Order.objects.create(
+            full_name="IG fixture",
+            phone="0000000000",
+            city="Kyiv",
+            np_office="1",
+            total_sum=Decimal("1000.00"),
+        )
+        deal = IgDeal.objects.create(
+            client=self.client,
+            order=order,
+            amount=Decimal("1000.00"),
+        )
+        cutoff = timezone.now()
+        InstagramBotMessage.objects.filter(pk=message.pk).update(
+            created_at=cutoff - timedelta(days=1)
+        )
+        IgDeal.objects.filter(pk=deal.pk).update(order_truth_updated_at=None)
+        settings = InstagramBotSettings.load()
+        settings.analysis_reconcile_after = cutoff
+        settings.analysis_backfill_enabled = False
+        settings.save(update_fields=[
+            "analysis_reconcile_after", "analysis_backfill_enabled",
+        ])
+
+        order.delete()
+        result = analysis.reconcile_analysis_jobs(now=timezone.now())
+
+        deal.refresh_from_db()
+        self.assertIsNone(deal.order_id)
+        self.assertGreaterEqual(deal.order_truth_updated_at, cutoff)
+        self.assertEqual(result["queued"], 1)
+        self.assertEqual(result["historical_blocked"], 0)
 
     def test_reconciliation_cursor_reaches_clients_after_first_page(self):
         clients = []

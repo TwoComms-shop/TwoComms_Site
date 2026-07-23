@@ -468,7 +468,12 @@ def notify_shipped_deals(limit: int = 50) -> int:
             ok, kind, hint = False, "unknown", repr(exc)
         if ok:
             deal.shipped_notified_at = timezone.now()
-            deal.save(update_fields=["shipped_notified_at", "updated_at"])
+            deal.order_truth_updated_at = deal.shipped_notified_at
+            deal.save(update_fields=[
+                "shipped_notified_at",
+                "order_truth_updated_at",
+                "updated_at",
+            ])
             sent += 1
         else:
             _queue_shipment_manager_review(

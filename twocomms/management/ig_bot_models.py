@@ -522,6 +522,7 @@ class IgDeal(models.Model):
 
     # Коли клієнта вже сповістили в Direct про відправку (ТТН) — щоб не дублювати.
     shipped_notified_at = models.DateTimeField(null=True, blank=True)
+    order_truth_updated_at = models.DateTimeField(null=True, blank=True)
 
     # Дані доставки (Нова Пошта) — текстом (рішення Q3=a)
     np_full_name = models.CharField(max_length=255, blank=True, default="")

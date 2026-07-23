@@ -11,6 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 
 
 def _ensure_purchase_action(order, deal_id):
@@ -111,9 +112,16 @@ def create_order_from_deal(deal, *, created_by=None):
 
         locked.order = order
         locked.status = locked.Status.ORDER_CREATED
-        locked.save(update_fields=["order", "status", "updated_at"])
+        locked.order_truth_updated_at = timezone.now()
+        locked.save(update_fields=[
+            "order",
+            "status",
+            "order_truth_updated_at",
+            "updated_at",
+        ])
         deal.order_id = order.id
         deal.status = locked.Status.ORDER_CREATED
+        deal.order_truth_updated_at = locked.order_truth_updated_at
 
     # Client summary is projected from payment truth. Legacy projectionless
     # rows retain the old one-time behavior only during migration transition.

@@ -357,6 +357,48 @@ def _job_covers_required_analysis(
     )
 
 
+def _reconcile_candidate_is_eligible(
+    *,
+    cutoff,
+    latest_message_at,
+    job_created_at=None,
+    truth_changed_at=None,
+    include_history: bool = False,
+) -> bool:
+    """Keep automatic repair post-rollout unless history was explicitly allowed."""
+    if include_history:
+        return True
+    return any(
+        value is not None and value >= cutoff
+        for value in (latest_message_at, job_created_at, truth_changed_at)
+    )
+
+
+def _historical_backfill_allowed(settings_obj: InstagramBotSettings) -> bool:
+    if not settings_obj.analysis_backfill_enabled:
+        return False
+    from management.services.gemini_keys import ALL_KEYS, key_project_groups
+
+    mapping = key_project_groups()
+    return bool(ALL_KEYS) and all(alias in mapping for alias in ALL_KEYS)
+
+
+def _latest_truth_change(client: IgClient):
+    deal_times = client.deals.aggregate(
+        payment_truth_updated_at=Max("payment_truth_updated_at"),
+        order_truth_updated_at=Max("order_truth_updated_at"),
+    )
+    projection_updated_at = client.payment_projections.aggregate(
+        updated_at=Max("updated_at")
+    )["updated_at"]
+    values = [
+        deal_times["payment_truth_updated_at"],
+        deal_times["order_truth_updated_at"],
+        projection_updated_at,
+    ]
+    return max((value for value in values if value is not None), default=None)
+
+
 def _rules_window_skip_reason(
     client: IgClient,
     *,
@@ -892,13 +934,18 @@ def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
     bounded_limit = max(1, min(int(limit), 5000))
     settings_obj = InstagramBotSettings.load()
     cursor = int(settings_obj.analysis_reconcile_cursor or 0)
+    cutoff = settings_obj.analysis_reconcile_after
+    include_history = _historical_backfill_allowed(settings_obj)
     base = (
         InstagramBotMessage.objects.filter(
             client_id__isnull=False,
             role__in=[InstagramBotMessage.Role.USER, InstagramBotMessage.Role.MANAGER],
         )
         .values("client_id")
-        .annotate(latest_message_id=Max("id"))
+        .annotate(
+            latest_message_id=Max("id"),
+            latest_message_at=Max("created_at"),
+        )
         .order_by("client_id")
     )
     latest_rows = list(base.filter(client_id__gt=cursor)[:bounded_limit])
@@ -907,10 +954,22 @@ def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
         latest_rows = list(base[:bounded_limit])
     queued = 0
     unchanged = 0
+    historical_blocked = 0
     for row in latest_rows:
         client_id = int(row["client_id"])
         watermark = int(row["latest_message_id"])
         job = IgConversationAnalysisJob.objects.filter(client_id=client_id).first()
+        client = IgClient.objects.filter(pk=client_id).first()
+        truth_changed_at = _latest_truth_change(client) if client else None
+        if not _reconcile_candidate_is_eligible(
+            cutoff=cutoff,
+            latest_message_at=row.get("latest_message_at"),
+            job_created_at=getattr(job, "created_at", None),
+            truth_changed_at=truth_changed_at,
+            include_history=include_history,
+        ):
+            historical_blocked += 1
+            continue
         latest_ai = (
             IgConversationAnalysisSnapshot.objects.filter(client_id=client_id)
             .exclude(analysis_model="rules")
@@ -923,7 +982,6 @@ def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
             )
             .first()
         )
-        client = IgClient.objects.filter(pk=client_id).first()
         required_state_fingerprint = (
             _required_state_fingerprint(client, watermark) if client else ""
         )
@@ -981,6 +1039,10 @@ def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
     return {
         "queued": queued,
         "unchanged": unchanged,
+        "historical_blocked": historical_blocked,
+        "historical_backfill_requested": bool(settings_obj.analysis_backfill_enabled),
+        "historical_backfill_allowed": include_history,
+        "reconcile_after": cutoff.isoformat(),
         "scanned": len(latest_rows),
         "cursor_from": cursor,
         "cursor_next": next_cursor,

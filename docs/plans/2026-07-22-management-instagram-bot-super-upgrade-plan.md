@@ -843,6 +843,22 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
     - **Acceptance:** a bounded, idempotent, no-network reconciliation derives only high-confidence historical opt-outs, preserves payment/order/commercial state, records source message/time, cancels pending follow-ups, and reports ambiguous rows for manager review; production proof is rollback-only before any committed backfill is authorized.
     - **Tests:** deterministic old snapshot/message, ambiguous phrase, paid client, already opted-in-after-opt-out, duplicate run, bounded cursor, no Gemini/Meta/Telegram, and no fixture residue.
     - **Current production evidence:** read-only inventory on SHA `2406a879` found `0` historical `opt_out` snapshots, `0` affected clients, and `0` pending rows for such clients. No live backfill was run; this item remains open as a future upgrade guard and is not a data-remediation blocker for migration 0095.
+  - [ ] **P0.B5aj Separate missed-event reconciliation from historical AI backfill.**
+    - **Priority:** P0 — rollout must not spend an unverified project-scoped Gemini quota across the historical inbox.
+    - **Symptom:** the first daemon start after 0095 scanned every historical client because `analysis_reconcile_cursor=0`; with no confirmed `GEMINI_KEY_PROJECT_GROUPS`, production created 56 historical jobs and completed 8 AI snapshots before maintenance stopped the worker.
+    - **Root cause:** periodic recovery and one-time historical backfill share one unbounded eligibility policy; the cursor paginates the archive but does not define a rollout cutoff or require explicit backfill authorization.
+    - **Risk:** uncontrolled token/quota spend, project-wide 429 amplification across aliases, delayed live analysis, and historical processing that operators did not authorize.
+    - **Affected branches:** daemon startup, periodic reconciliation, payment/order missed-hook recovery, cursor wrap, project cooldown, deployment, and queue health.
+    - **Acceptance:** persist an analysis rollout cutoff; automatically reconcile only messages, jobs, payment truth, or order truth changed at/after that cutoff; historical backfill is disabled by default and cannot run unless explicitly enabled and the alias-to-project mapping is complete; migration quarantines pre-cutoff pending reconcile-only jobs without deleting completed audit rows.
+    - **Tests:** old message/no job, new message, old message/new job, post-cutoff payment/order update, cursor wrap, explicit backfill with complete/incomplete mapping, migration quarantine, daemon restart, and production queue counts with zero further historical Gemini calls.
+  - [ ] **P0.B5ak Use a field-specific durable clock for linked order truth.**
+    - **Priority:** P0 — a broad or missing order timestamp can bypass the rollout cutoff or lose a real missed event.
+    - **Symptom:** generic `Order.updated` changes after unrelated full saves, while relevant `save(update_fields=...)` transitions can leave it unchanged.
+    - **Root cause:** reconciliation used one general-purpose model timestamp for both operational edits and the bounded order fields included in the CRM fingerprint.
+    - **Risk:** address/comment/UTM edits can restart unauthorized historical Gemini work, while payment, status, tracking, or shipment changes can leave a stale snapshot after scheduler failure.
+    - **Affected branches:** order creation/linking/unlinking, direct staff deletion, payment reversal, Nova Poshta status updates, tracking, shipment notification, periodic reconciliation, and rollout cutoff.
+    - **Acceptance:** maintain a dedicated `IgDeal.order_truth_updated_at` only for order creation/linking/unlinking and changes to `status`, `payment_status`, `tracking_number`, `shipment_status`, or `shipped_notified_at`; unrelated order saves do not move it; reconciliation uses this clock and never generic `Order.updated`.
+    - **Tests:** unrelated full save, relevant `update_fields` save, initial order link, transaction-safe `SET_NULL` after direct order deletion, shipment notification, missed scheduler recovery, pre-cutoff rejection, no external transports, and rollback-only MariaDB residue/AUTO_INCREMENT proof.
 
 - [ ] **P1.B5c Replace the global long-held reply lock with a bounded two-level permission barrier.**
   - **Priority:** P1 — correctness is currently fail-closed, but latency and operator availability degrade under slow AI/provider calls.
