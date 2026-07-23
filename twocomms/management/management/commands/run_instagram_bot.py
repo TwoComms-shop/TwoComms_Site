@@ -123,7 +123,7 @@ def _conv_refresher(stop_event: threading.Event):
         try:
             close_old_connections()
             s = InstagramBotSettings.load()
-            if s.is_enabled and s.receive_via_poll:
+            if s.receive_via_poll:
                 token = bot.get_page_token(s)
                 if token:
                     bot.refresh_conv_ids(s, token)
@@ -149,12 +149,13 @@ def _run_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
     if enabled:
         bot.process_pending(settings_obj)
         bot_followups.process_due_followups(settings_obj)
-        now = time.time()
-        if settings_obj.receive_via_poll and (now - last_poll) >= interval:
-            bot.poll_ingest(settings_obj)
+    now = time.time()
+    if settings_obj.receive_via_poll and (now - last_poll) >= interval:
+        bot.poll_ingest(settings_obj)
+        if enabled:
             bot.process_pending(settings_obj)
             bot_followups.process_due_followups(settings_obj)
-            last_poll = now
+        last_poll = now
     return enabled, last_poll
 
 

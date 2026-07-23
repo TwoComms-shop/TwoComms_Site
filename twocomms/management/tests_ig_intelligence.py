@@ -139,6 +139,159 @@ class ConversationIntelligenceSnapshotTests(TestCase):
 
         schedule_after_inbound.assert_not_called()
 
+    @patch("management.services.bot_followups.schedule_after_inbound")
+    @patch("management.services.instagram_bot.send_text")
+    @patch("management.services.instagram_bot.gemini_generate")
+    @patch("management.services.instagram_bot.send_sender_action")
+    def test_global_reply_pause_stores_and_analyzes_without_reply_backlog(
+        self, sender_action, gemini, send_text, schedule_followup
+    ):
+        from management.models import InstagramBotSettings
+        from management.services import instagram_bot
+
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = False
+        settings.allowed_senders = ""
+        settings.save(update_fields=["is_enabled", "allowed_senders"])
+
+        self.assertTrue(
+            instagram_bot.enqueue_inbound(
+                settings,
+                sender_id=self.client.igsid,
+                text="Хочу чорну футболку розміру M",
+                mid="global-paused-observation",
+            )
+        )
+
+        message = InstagramBotMessage.objects.get(mid="global-paused-observation")
+        self.assertEqual(message.status, InstagramBotMessage.Status.DONE)
+        self.assertIsNotNone(message.processed_at)
+        self.assertEqual(message.analysis_snapshots.count(), 1)
+        self.assertEqual(instagram_bot.process_pending(settings), 0)
+        sender_action.assert_not_called()
+        gemini.assert_not_called()
+        send_text.assert_not_called()
+        schedule_followup.assert_not_called()
+
+    @patch("management.services.bot_followups.schedule_after_inbound")
+    def test_paused_client_is_observed_without_followup_or_pending_reply(self, schedule_followup):
+        from management.models import InstagramBotSettings
+        from management.services import instagram_bot
+
+        self.client.bot_paused = True
+        self.client.paused_reason = "manager_takeover"
+        self.client.save(update_fields=["bot_paused", "paused_reason", "updated_at"])
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.allowed_senders = ""
+        settings.save(update_fields=["is_enabled", "allowed_senders"])
+
+        self.assertTrue(
+            instagram_bot.enqueue_inbound(
+                settings,
+                sender_id=self.client.igsid,
+                text="Ціна зависока, я подумаю",
+                mid="client-paused-observation",
+            )
+        )
+
+        message = InstagramBotMessage.objects.get(mid="client-paused-observation")
+        self.assertEqual(message.status, InstagramBotMessage.Status.DONE)
+        self.assertEqual(message.analysis_snapshots.count(), 1)
+        schedule_followup.assert_not_called()
+
+    @patch("management.services.instagram_bot.send_text")
+    @patch("management.services.instagram_bot.gemini_generate")
+    def test_stop_converts_pending_rows_so_resume_never_replies_to_old_backlog(
+        self, gemini, send_text
+    ):
+        from management.models import InstagramBotSettings
+        from management.services import instagram_bot
+
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.allowed_senders = ""
+        settings.save(update_fields=["is_enabled", "allowed_senders"])
+        self.assertTrue(
+            instagram_bot.enqueue_inbound(
+                settings,
+                sender_id=self.client.igsid,
+                text="Скільки коштує?",
+                mid="pre-stop-pending",
+            )
+        )
+        self.assertEqual(
+            InstagramBotMessage.objects.get(mid="pre-stop-pending").status,
+            InstagramBotMessage.Status.PENDING,
+        )
+
+        instagram_bot.stop_bot()
+        instagram_bot.start_bot()
+        self.assertEqual(instagram_bot.process_pending(), 0)
+        message = InstagramBotMessage.objects.get(mid="pre-stop-pending")
+        self.assertEqual(message.status, InstagramBotMessage.Status.DONE)
+        gemini.assert_not_called()
+        send_text.assert_not_called()
+
+    def test_disabled_poll_message_stays_observed_when_resume_wins_before_ingress(self):
+        from datetime import timedelta
+
+        from management.models import InstagramBotSettings
+        from management.services import instagram_bot
+
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = False
+        settings.allowed_senders = ""
+        settings.save(update_fields=["is_enabled", "allowed_senders"])
+        provider_created_at = timezone.now() - timedelta(seconds=5)
+        instagram_bot.start_bot()
+
+        self.assertTrue(
+            instagram_bot.enqueue_inbound(
+                settings,
+                sender_id=self.client.igsid,
+                text="Повідомлення під час паузи",
+                mid="disabled-poll-before-resume",
+                source="poll",
+                received_at=provider_created_at,
+            )
+        )
+
+        message = InstagramBotMessage.objects.get(mid="disabled-poll-before-resume")
+        self.assertEqual(message.status, InstagramBotMessage.Status.DONE)
+
+    def test_manager_takeover_closes_existing_reply_and_followup_backlog(self):
+        from datetime import timedelta
+
+        from management.models import IgFollowUpTask, InstagramBotSettings
+        from management.services import instagram_bot
+
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = True
+        settings.allowed_senders = ""
+        settings.save(update_fields=["is_enabled", "allowed_senders"])
+        self.assertTrue(
+            instagram_bot.enqueue_inbound(
+                settings,
+                sender_id=self.client.igsid,
+                text="Підкажіть ціну",
+                mid="takeover-existing-pending",
+            )
+        )
+        task = IgFollowUpTask.objects.create(
+            client=self.client,
+            due_at=timezone.now() + timedelta(hours=1),
+            kind=IgFollowUpTask.Kind.QUALIFICATION,
+        )
+
+        with patch("management.services.instagram_bot.notify_manager"):
+            instagram_bot._handle_echo(self.client.igsid, "Вже відповідаю клієнту")
+
+        message = InstagramBotMessage.objects.get(mid="takeover-existing-pending")
+        task.refresh_from_db()
+        self.assertEqual(message.status, InstagramBotMessage.Status.DONE)
+        self.assertEqual(task.status, IgFollowUpTask.Status.CANCELLED)
+
     def test_plain_greeting_is_information_only_without_readiness_inflation(self):
         message = self.message("Привіт")
 

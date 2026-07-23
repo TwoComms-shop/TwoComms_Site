@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -319,6 +320,42 @@ except MaintenanceLeaseConflict:
             self.assertEqual(sorted(stdout.strip() for stdout, _stderr in results), ["conflict", "owned"])
 
 
+class ReplyBoundaryLockTests(SimpleTestCase):
+    def test_pause_waits_for_real_inflight_process_boundary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = os.path.join(temp_dir, "reply.lock")
+            child_code = """
+import sys, time
+from management.services.ig_reply_boundary import pause_reply_boundary
+with pause_reply_boundary(lock_path=sys.argv[1]):
+    print('entered', flush=True)
+    time.sleep(1.5)
+"""
+            env = os.environ.copy()
+            env["PYTHONPATH"] = os.pathsep.join(
+                filter(None, [PROJECT_ROOT, env.get("PYTHONPATH", "")])
+            )
+            child = subprocess.Popen(
+                [sys.executable, "-c", child_code, lock_path],
+                cwd=PROJECT_ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertEqual(child.stdout.readline().strip(), "entered")
+                started = time.monotonic()
+                from management.services.ig_reply_boundary import pause_reply_boundary
+
+                with pause_reply_boundary(lock_path=lock_path):
+                    waited = time.monotonic() - started
+                self.assertGreaterEqual(waited, 1.0)
+            finally:
+                child.terminate()
+                child.wait(timeout=5)
+
+
 class DaemonHeartbeatTests(SimpleTestCase):
     @patch("management.management.commands.run_instagram_bot.cache.get", return_value={"at": 100.0})
     @patch("management.management.commands.run_instagram_bot.time.time", return_value=110.0)
@@ -336,6 +373,24 @@ class DaemonHeartbeatTests(SimpleTestCase):
         self.assertFalse(enabled)
         self.assertEqual(last_poll, 17.0)
         drain.assert_called_once_with(limit=10)
+        pending.assert_not_called()
+        followups.assert_not_called()
+
+    @patch("management.management.commands.run_instagram_bot.time.time", return_value=100.0)
+    @patch("management.management.commands.run_instagram_bot.bot.poll_ingest")
+    @patch("management.management.commands.run_instagram_bot.bot_followups.process_due_followups")
+    @patch("management.management.commands.run_instagram_bot.bot.process_pending")
+    @patch("management.management.commands.run_instagram_bot.bot.drain_manager_notifications")
+    def test_disabled_reply_gate_still_polls_for_observation(
+        self, _drain, pending, followups, poll_ingest, _time
+    ):
+        settings = InstagramBotSettings(is_enabled=False, receive_via_poll=True)
+
+        enabled, last_poll = _run_work_cycle(settings, 0.0)
+
+        self.assertFalse(enabled)
+        self.assertEqual(last_poll, 100.0)
+        poll_ingest.assert_called_once_with(settings)
         pending.assert_not_called()
         followups.assert_not_called()
 

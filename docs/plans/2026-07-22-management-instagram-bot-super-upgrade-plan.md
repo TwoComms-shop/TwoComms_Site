@@ -582,6 +582,8 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Affected branches:** webhook ingress, polling, queue, deterministic extraction, manager echo, snapshots, follow-ups, resume behavior.
   - **Acceptance:** global stop, client pause, and takeover store every eligible customer/manager event exactly once, run deterministic extraction, and coalesce analysis; they generate zero typing/seen/customer Gemini chat/Send API/follow-up; resume does not reply to old backlog.
   - **Tests:** global off, paused client, takeover, stop/resume race, webhook+poll duplicate, manager message provenance, hidden/opt-out skip policy.
+  - [ ] **P0.B5a — observation/reply boundary:** webhook and fallback polling persist eligible inbound while global/per-client reply is paused, run deterministic evidence extraction, mark the row observed without a reply backlog, suppress typing/Gemini/Meta/follow-up, and atomically drain pre-stop pending rows to observed state.
+  - [ ] **P0.B5b — coalesced high-reasoning analysis:** add a durable per-client watermark/debounce job that analyzes the whole changed conversation after the manager/customer burst, stores model/version/reasoning/confidence/evidence/analyzed_at, retries safely across six-key project-aware pools, and never grants reply permission.
 
 - [ ] **P0.B6 Fail closed for Meta data-deletion signed requests.**
   - **Symptom:** the public data-deletion callback accepts a syntactically valid signed request when the app secret is absent.

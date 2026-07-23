@@ -383,53 +383,68 @@ def _handle_echo(recipient_igsid: str, text: str) -> None:
         return
     if text and cache.get(_bot_sent_key(recipient_igsid, text)):
         return  # власне відлуння бота — ігноруємо
+    from management.services.ig_reply_boundary import pause_reply_boundary
+
     now = timezone.now()
     # The takeover notification is a state transition, not a per-message
     # event. Lock the client row so two webhook workers cannot both announce
     # the same transition while manager messages are still stored separately.
-    with transaction.atomic():
-        client, _ = IgClient.objects.select_for_update().get_or_create(
-            igsid=recipient_igsid,
-            defaults={"first_contact_at": now, "last_message_at": now},
-        )
-        takeover_started = not client.manager_takeover
-        client.manager_takeover = True
-        client.bot_paused = True
-        client.paused_reason = "manager_takeover"
-        if takeover_started:
-            client.paused_at = now
-        client.last_manager_message_at = now
-        update_fields = [
-            "manager_takeover", "bot_paused", "paused_reason",
-            "last_manager_message_at", "updated_at",
-        ]
-        if takeover_started:
-            update_fields.append("paused_at")
-        client.save(update_fields=update_fields)
-    msg = None
-    if text:
-        try:
-            msg = InstagramBotMessage.objects.create(
-                sender_id=recipient_igsid,
+    with pause_reply_boundary():
+        with transaction.atomic():
+            client, _ = IgClient.objects.select_for_update().get_or_create(
+                igsid=recipient_igsid,
+                defaults={"first_contact_at": now, "last_message_at": now},
+            )
+            takeover_started = not client.manager_takeover
+            client.manager_takeover = True
+            client.bot_paused = True
+            client.paused_reason = "manager_takeover"
+            if takeover_started:
+                client.paused_at = now
+            client.last_manager_message_at = now
+            update_fields = [
+                "manager_takeover", "bot_paused", "paused_reason",
+                "last_manager_message_at", "updated_at",
+            ]
+            if takeover_started:
+                update_fields.append("paused_at")
+            client.save(update_fields=update_fields)
+            InstagramBotMessage.objects.filter(
                 client=client,
-                role=InstagramBotMessage.Role.MANAGER,
-                text=text,
+                role=InstagramBotMessage.Role.USER,
+                status__in=[
+                    InstagramBotMessage.Status.PENDING,
+                    InstagramBotMessage.Status.PROCESSING,
+                ],
+            ).update(
                 status=InstagramBotMessage.Status.DONE,
-                source="echo",
-                processed_at=timezone.now(),
+                processed_at=now,
+                processing_started_at=None,
             )
-        except Exception:
-            msg = None
-    try:
-        from management.services import bot_followups, bot_sales_classifier
+        msg = None
+        if text:
+            try:
+                msg = InstagramBotMessage.objects.create(
+                    sender_id=recipient_igsid,
+                    client=client,
+                    role=InstagramBotMessage.Role.MANAGER,
+                    text=text,
+                    status=InstagramBotMessage.Status.DONE,
+                    source="echo",
+                    processed_at=timezone.now(),
+                )
+            except Exception:
+                msg = None
+        try:
+            from management.services import bot_followups, bot_sales_classifier
 
-        bot_followups.cancel_pending(client, reason="manager_takeover")
-        if msg:
-            bot_sales_classifier.classify_message(
-                client, message=msg, role=InstagramBotMessage.Role.MANAGER
-            )
-    except Exception:
-        pass
+            bot_followups.cancel_pending(client, reason="manager_takeover")
+            if msg:
+                bot_sales_classifier.classify_message(
+                    client, message=msg, role=InstagramBotMessage.Role.MANAGER
+                )
+        except Exception:
+            pass
     if takeover_started:
         notify_manager(
             f"👤 IG: менеджер підключився до {client.username or client.igsid} — "
@@ -1765,7 +1780,8 @@ def _is_allowed(s: InstagramBotSettings, sender_id: str) -> bool:
 # ---------------------------------------------------------------------------
 def enqueue_inbound(
     s: InstagramBotSettings, *, sender_id: str, text: str, mid: str,
-    source: str = "webhook", attachments: list[str] | None = None
+    source: str = "webhook", attachments: list[str] | None = None,
+    received_at: datetime | None = None,
 ) -> bool:
     """Кладе вхідне в чергу (pending). Повертає True, якщо додано нове."""
     text = (text or "").strip()
@@ -1777,14 +1793,13 @@ def enqueue_inbound(
         return False  # ні тексту, ні зображення
     if sender_id == s.ig_user_id:
         return False
-    if not s.is_enabled:
-        return False
     if not _is_allowed(s, sender_id):
         log("info", "skip_not_allowed", f"[{source}] {sender_id} поза білим списком")
         return False
     client = IgClient.get_or_create_for_sender(sender_id)
     try:
         with transaction.atomic():
+            current_settings = InstagramBotSettings.objects.select_for_update().get(pk=s.pk)
             # Серіалізуємо ingress із hide: або вхідне повністю оброблено до
             # приховування, або приховування вже виграло і жодного side effect
             # (черги, CRM, classifier, follow-up) не буде.
@@ -1792,15 +1807,30 @@ def enqueue_inbound(
             if client.hidden_at:
                 log("info", "skip_hidden", f"[{source}] {sender_id}: прихований клієнт")
                 return False
+            after_resume_cutoff = bool(
+                not received_at
+                or not current_settings.reply_after
+                or received_at > current_settings.reply_after
+            )
+            reply_eligible = bool(
+                current_settings.is_enabled
+                and after_resume_cutoff
+                and not _client_blocked(client)
+            )
             msg = InstagramBotMessage.objects.create(
                 sender_id=sender_id,
                 client=client,
                 role=InstagramBotMessage.Role.USER,
                 text=text or "(зображення)",
                 mid=mid or None,
-                status=InstagramBotMessage.Status.PENDING,
+                status=(
+                    InstagramBotMessage.Status.PENDING
+                    if reply_eligible
+                    else InstagramBotMessage.Status.DONE
+                ),
                 source=source,
                 attachments=json.dumps(attachments) if attachments else "",
+                processed_at=None if reply_eligible else timezone.now(),
             )
             client.touch_inbound()
             try:
@@ -1819,16 +1849,29 @@ def enqueue_inbound(
                         client,
                         reason=terminal_followup_reasons[interaction_type],
                     )
-                elif interaction_type != "reaction_only":
+                no_reply_interactions = {
+                    "reaction_only",
+                    "explicit_no_buy",
+                    "opt_out",
+                    "spam_abuse",
+                }
+                if interaction_type in no_reply_interactions and msg.status == InstagramBotMessage.Status.PENDING:
+                    msg.status = InstagramBotMessage.Status.DONE
+                    msg.processed_at = timezone.now()
+                    msg.save(update_fields=["status", "processed_at"])
+                    reply_eligible = False
+                elif reply_eligible:
                     bot_followups.schedule_after_inbound(client)
             except Exception:
                 pass
     except IntegrityError:
         return False  # вже у черзі/оброблено (mid unique)
-    s.last_inbound_at = timezone.now()
-    s.save(update_fields=["last_inbound_at"])
+    inbound_at = timezone.now()
+    InstagramBotSettings.objects.filter(pk=s.pk).update(last_inbound_at=inbound_at)
+    s.last_inbound_at = inbound_at
     extra = f" (+{len(attachments)} фото)" if attachments else ""
-    log("info", "queued", f"[{source}] {sender_id}: {text[:140]}{extra}")
+    event = "queued" if msg.status == InstagramBotMessage.Status.PENDING else "observed"
+    log("info", event, f"[{source}] {sender_id}: {text[:140]}{extra}")
     return True
 
 
@@ -1965,6 +2008,18 @@ def _skip_blocked_row(row: InstagramBotMessage, client: IgClient) -> bool:
         row.status = InstagramBotMessage.Status.DONE
         row.processed_at = processed_at
         log("info", "paused_skip", f"{row.sender_id}: на паузі ({client.paused_reason or 'manual'})")
+    return False
+
+
+def _skip_observed_row(row: InstagramBotMessage, *, reason: str) -> bool:
+    processed_at = timezone.now()
+    if _own_processing_claim(row).update(
+        status=InstagramBotMessage.Status.DONE,
+        processed_at=processed_at,
+    ):
+        row.status = InstagramBotMessage.Status.DONE
+        row.processed_at = processed_at
+        log("info", "observed_skip", f"{row.sender_id}: {reason}")
     return False
 
 
@@ -2108,6 +2163,21 @@ def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
 
 
 def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lease_token: str = "") -> bool:
+    from management.services.ig_reply_boundary import reply_execution_boundary
+
+    with reply_execution_boundary(s.pk, row.client_id) as reply_allowed:
+        if not reply_allowed:
+            return _skip_observed_row(row, reason="reply_paused")
+        return _process_one_inside_reply_boundary(s, row, lease_token)
+
+
+def _process_one_inside_reply_boundary(
+    s: InstagramBotSettings,
+    row: InstagramBotMessage,
+    lease_token: str = "",
+) -> bool:
+    if not InstagramBotSettings.objects.filter(pk=s.pk, is_enabled=True).exists():
+        return _skip_observed_row(row, reason="global_reply_paused")
     if not row.attachments:
         try:
             from management.services.bot_sales_classifier import is_reaction_only
@@ -2213,6 +2283,9 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
 
     if not _renew_client_automation_lease(row, lease_token):
         return False
+
+    if not InstagramBotSettings.objects.filter(pk=s.pk, is_enabled=True).exists():
+        return _skip_observed_row(row, reason="global_reply_paused_before_send")
 
     # Керуючі теги моделі: [MANAGER] (ескалація), [STAGE:x] (воронка) тощо.
     control = {}
@@ -2521,6 +2594,10 @@ def _iter_events(payload: dict):
     """
     for entry in payload.get("entry", []) or []:
         for event in entry.get("messaging", []) or []:
+            message = dict(event.get("message") or {})
+            message["_event_created_at"] = _provider_event_datetime(
+                event.get("timestamp") or entry.get("time")
+            )
             ref = (
                 event.get("referral")
                 or (event.get("postback") or {}).get("referral")
@@ -2529,18 +2606,32 @@ def _iter_events(payload: dict):
             yield (
                 (event.get("sender") or {}).get("id", ""),
                 (event.get("recipient") or {}).get("id", ""),
-                event.get("message") or {},
+                message,
                 ref,
             )
         for change in entry.get("changes", []) or []:
             if change.get("field") == "messages":
                 value = change.get("value") or {}
+                message = dict(value.get("message") or {})
+                message["_event_created_at"] = _provider_event_datetime(
+                    value.get("timestamp") or entry.get("time")
+                )
                 yield (
                     (value.get("sender") or {}).get("id", ""),
                     (value.get("recipient") or {}).get("id", ""),
-                    value.get("message") or {},
+                    message,
                     value.get("referral") or {},
                 )
+
+
+def _provider_event_datetime(raw) -> datetime | None:
+    try:
+        value = float(raw)
+        if value > 10_000_000_000:
+            value /= 1000.0
+        return datetime.fromtimestamp(value, tz=dt_timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def record_raw_event(payload: dict):
@@ -2684,6 +2775,7 @@ def handle_webhook_payload(s: InstagramBotSettings, payload: dict) -> int:
             mid=msg.get("mid", ""),
             source="webhook",
             attachments=media,
+            received_at=msg.get("_event_created_at"),
         ):
             enq += 1
     return enq
@@ -2886,7 +2978,7 @@ def _fetch_polled_conversation(
 
 def poll_ingest(s: InstagramBotSettings) -> dict:
     """Читає інбокс IG і кладе нові вхідні в чергу. Лише коли receive_via_poll."""
-    if not s.is_enabled or not s.receive_via_poll:
+    if not s.receive_via_poll:
         return {"ok": True, "enqueued": 0, "skipped": True}
     page_token = get_page_token(s)
     if not page_token:
@@ -2956,6 +3048,7 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
                 mid=mid,
                 source="poll",
                 attachments=_extract_media_urls(message),
+                received_at=created,
             ):
                 enq += 1
 
@@ -2997,24 +3090,57 @@ def poll_once(s: InstagramBotSettings | None = None) -> dict:
 # Start / Stop / Status
 # ---------------------------------------------------------------------------
 def start_bot() -> InstagramBotSettings:
-    s = InstagramBotSettings.load()
-    was = s.is_enabled
-    s.is_enabled = True
-    s.last_started_at = timezone.now()
-    s.reply_after = timezone.now()
-    s.last_error = ""
-    s.save(update_fields=["is_enabled", "last_started_at", "reply_after", "last_error"])
+    from management.services.ig_reply_boundary import pause_reply_boundary
+
+    with pause_reply_boundary():
+        with transaction.atomic():
+            s = InstagramBotSettings.objects.select_for_update().get(
+                pk=InstagramBotSettings.load().pk
+            )
+            was = s.is_enabled
+            s.is_enabled = True
+            s.last_started_at = timezone.now()
+            s.reply_after = timezone.now()
+            s.last_error = ""
+            s.save(update_fields=["is_enabled", "last_started_at", "reply_after", "last_error"])
     if not was:
         log("success", "start", "Бот запущено, очікую повідомлення.")
     return s
 
 
 def stop_bot() -> InstagramBotSettings:
-    s = InstagramBotSettings.load()
-    was = s.is_enabled
-    s.is_enabled = False
-    s.last_stopped_at = timezone.now()
-    s.save(update_fields=["is_enabled", "last_stopped_at"])
+    from management.models import IgFollowUpTask
+    from management.services.ig_reply_boundary import pause_reply_boundary
+
+    now = timezone.now()
+    with pause_reply_boundary():
+        with transaction.atomic():
+            s = InstagramBotSettings.objects.select_for_update().get(
+                pk=InstagramBotSettings.load().pk
+            )
+            was = s.is_enabled
+            s.is_enabled = False
+            s.last_stopped_at = now
+            s.save(update_fields=["is_enabled", "last_stopped_at"])
+            InstagramBotMessage.objects.filter(
+                role=InstagramBotMessage.Role.USER,
+                status__in=[
+                    InstagramBotMessage.Status.PENDING,
+                    InstagramBotMessage.Status.PROCESSING,
+                ],
+            ).update(
+                status=InstagramBotMessage.Status.DONE,
+                processed_at=now,
+                processing_started_at=None,
+            )
+            IgFollowUpTask.objects.filter(status=IgFollowUpTask.Status.PENDING).update(
+                status=IgFollowUpTask.Status.CANCELLED,
+                skip_reason="global_reply_stopped",
+                updated_at=now,
+            )
+            IgClient.objects.filter(next_followup_at__isnull=False).update(
+                next_followup_at=None
+            )
     if was:
         log("warning", "stop", "Бот зупинено.")
     return s

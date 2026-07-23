@@ -853,15 +853,33 @@ def bot_client_pause_api(request, client_id):
         return blocked
     from django.utils import timezone
 
-    from .models import IgClient
+    from .models import IgClient, InstagramBotMessage
+    from .services import bot_followups
+    from .services.ig_reply_boundary import pause_reply_boundary
 
-    c = IgClient.objects.filter(id=client_id).first()
-    if not c:
-        return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
-    c.bot_paused = True
-    c.paused_reason = "manual"
-    c.paused_at = timezone.now()
-    c.save(update_fields=["bot_paused", "paused_reason", "paused_at", "updated_at"])
+    with pause_reply_boundary():
+        with transaction.atomic():
+            c = IgClient.objects.select_for_update().filter(id=client_id).first()
+            if not c:
+                return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+            now = timezone.now()
+            c.bot_paused = True
+            c.paused_reason = "manual"
+            c.paused_at = now
+            c.save(update_fields=["bot_paused", "paused_reason", "paused_at", "updated_at"])
+            bot_followups.cancel_pending(c, reason="manual_pause")
+            InstagramBotMessage.objects.filter(
+                client=c,
+                role=InstagramBotMessage.Role.USER,
+                status__in=[
+                    InstagramBotMessage.Status.PENDING,
+                    InstagramBotMessage.Status.PROCESSING,
+                ],
+            ).update(
+                status=InstagramBotMessage.Status.DONE,
+                processed_at=now,
+                processing_started_at=None,
+            )
     return JsonResponse({"success": True, "bot_paused": True})
 
 
@@ -873,14 +891,17 @@ def bot_client_resume_api(request, client_id):
     if blocked:
         return blocked
     from .models import IgClient
+    from .services.ig_reply_boundary import pause_reply_boundary
 
-    c = IgClient.objects.filter(id=client_id).first()
-    if not c:
-        return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
-    c.bot_paused = False
-    c.manager_takeover = False
-    c.paused_reason = ""
-    c.save(update_fields=["bot_paused", "manager_takeover", "paused_reason", "updated_at"])
+    with pause_reply_boundary():
+        with transaction.atomic():
+            c = IgClient.objects.select_for_update().filter(id=client_id).first()
+            if not c:
+                return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+            c.bot_paused = False
+            c.manager_takeover = False
+            c.paused_reason = ""
+            c.save(update_fields=["bot_paused", "manager_takeover", "paused_reason", "updated_at"])
     return JsonResponse({"success": True, "bot_paused": False})
 
 

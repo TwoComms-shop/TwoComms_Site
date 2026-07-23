@@ -1,6 +1,7 @@
 """Scheduled follow-ups for the Instagram Direct sales bot."""
 from __future__ import annotations
 
+import sys
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -403,13 +404,21 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
         .values_list("id", flat=True)
     )
     from management.services import instagram_bot
+    from management.services.ig_reply_boundary import reply_execution_boundary
 
     for task_id in task_ids:
         claim = _claim_due_followup(task_id, now=now, automation=instagram_bot)
         if not claim:
             continue
         task, client, lease_token = claim
+        reply_boundary = reply_execution_boundary(s.pk, client.id)
+        reply_boundary_entered = False
         try:
+            reply_allowed = reply_boundary.__enter__()
+            reply_boundary_entered = True
+            if not reply_allowed:
+                _mark_skipped(task, "reply_paused")
+                continue
             if task.meta_window_deadline and now > task.meta_window_deadline:
                 _mark_skipped(task, "meta_window_closed")
                 continue
@@ -500,5 +509,7 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
             }:
                 schedule_rescue_offer(client, now=now)
         finally:
+            if reply_boundary_entered:
+                reply_boundary.__exit__(*sys.exc_info())
             instagram_bot.release_client_automation_lease(client.id, lease_token)
     return sent
