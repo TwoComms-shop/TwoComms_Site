@@ -516,6 +516,14 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Acceptance:** `hold` is append-only pending evidence only; it cannot set `paid_at`, positive payment truth, paid stage, order, conversion, or Purchase. A later provider `success` promotes exactly once; reversal/cancel remains independently auditable.
   - **Tests:** hold-only, hold→success, duplicate hold, out-of-order success→older hold, prepayment/full payment, every paid aggregate and order boundary.
 
+- [ ] **P0.B8 Make payment-ledger trigger migration safe on MariaDB.**
+  - **Symptom:** production `0090_payment_truth_projection` created its table/columns, then failed before trigger creation and migration recording with `TransactionManagementError`.
+  - **Root cause:** trigger DDL ran inside Django's default atomic migration although MariaDB cannot roll that DDL back.
+  - **Risk:** partially applied schema, deploy interruption, absent append-only database guards, and unsafe repeated migration attempts against already-created objects.
+  - **Affected branches:** fresh install, production upgrade, rollback/retry, append-only enforcement, deploy completion evidence.
+  - **Acceptance:** migration declares the correct non-atomic boundary; fresh SQLite/MariaDB migration creates both triggers; the observed partial production state is reconciled without deleting payment evidence; migration history, schema, triggers, engines and runtime all agree.
+  - **Tests:** fresh migration, interrupted/partial recovery inspection, idempotent trigger recreation, production `showmigrations`, information-schema engine/column/trigger checks.
+
 #### P1.B — CRM truth, intelligence, orders, and conversion
 
 - [ ] **P1.B1 Implement the four-axis CRM state model.** Store and display interaction stage, payment truth, fulfillment truth, and automation/capability state independently. Derived lifecycle summaries may show `paid` or `waiting_shipment`, but Gemini never writes them. Add append-only transition history, reason, evidence, actor/service, source event, version, and timestamp for every axis. Tests cover conflicting axes, legal transition matrices, late/refunded payments, shipment updates, manager takeover, opt-out after purchase, and legacy migration.

@@ -52,6 +52,8 @@ def drop_append_only_triggers(apps, schema_editor):
 
 class Migration(migrations.Migration):
 
+    atomic = False
+
     dependencies = [
         ('management', '0089_payment_truth_ledger'),
     ]
