@@ -135,7 +135,10 @@
     gap: 10px;
 }
 
-@media (max-width: 1080px) {
+/* The full management navigation is wider than common 1280/1440 desktop
+   viewports. Move it to a horizontally scrollable second row before it can
+   force the entire document wider than the viewport. */
+@media (max-width: 1600px) {
     .global-header {
         height: auto;
         min-height: var(--header-height);

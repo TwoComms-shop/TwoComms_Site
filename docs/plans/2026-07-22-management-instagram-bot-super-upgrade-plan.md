@@ -496,6 +496,54 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Acceptance:** autonomous due-row drain, `next_attempt_at`, bounded exponential backoff+jitter, stale-sending recovery, timeout ambiguity policy, confirmed-message idempotency, dead-letter state and Ukrainian operator action.
   - **Tests:** one-shot failure then recovery without new event, restart, concurrent drains, missing credentials, stale sending, ambiguous timeout, confirmed Telegram message ID.
 
+- [ ] **P0.B4a Make notification claiming valid on the production DB engine.**
+  - **Symptom:** two notification workers can both cross the apparent `select_for_update()` boundary and call Telegram for one pending row.
+  - **Root cause:** migration `0091` and the engine audit omit `management_igbotnotification`; on a legacy MyISAM installation its row locks are ineffective.
+  - **Risk:** duplicate takeover, payment, shipment, delivery-block, and AI-outage alerts.
+  - **Affected branches:** synchronous `notify_manager`, daemon drain, manual drain command, deploy/restart overlap.
+  - **Acceptance:** the notification table is explicitly InnoDB, deploy health fails on any other engine, and one database claim owns each attempt before provider I/O.
+  - **Tests:** idempotent engine migration/audit plus a real two-process claim fixture with mocked provider I/O and exactly one claimed send.
+
+- [ ] **P0.B4b Isolate outbox failure from customer message processing.**
+  - **Symptom:** an outbox schema/database/bad-row exception aborts `_run_work_cycle()` before the customer queue and follow-ups run.
+  - **Root cause:** notification drain and customer work share one unguarded call chain.
+  - **Risk:** a broken manager-alert subsystem silently stops all automated customer replies.
+  - **Affected branches:** daemon cycle while enabled, migration rollout, corrupt outbox payload, transient DB failure.
+  - **Acceptance:** drain failure is logged and surfaced as degraded health but customer queue/follow-up processing continues; reply failures cannot suppress later outbox cycles either.
+  - **Tests:** `drain raises -> process_pending/follow-ups still run`, disabled reply gate, and subsequent-cycle recovery.
+
+- [ ] **P1.B4c Do not render unavailable outbox telemetry as zero.**
+  - **Symptom:** backend `None` values become `0` through JavaScript fallback and the cockpit claims an empty healthy outbox.
+  - **Root cause:** UI conflates unavailable data with a measured zero.
+  - **Risk:** operators miss migration failures and database outages.
+  - **Affected branches:** status API error fallback and overview rendering.
+  - **Acceptance:** unavailable counts render as `Дані недоступні` with a textual warning independent of colour; measured zero remains distinct.
+  - **Tests:** null telemetry render contract and normal zero/non-zero payloads.
+
+- [ ] **P1.B4d Add an actionable Ukrainian notification-review queue.**
+  - **Symptom:** the overview shows only a total manual-review count; an operator cannot identify or resolve an `unknown/dead_letter` row.
+  - **Root cause:** no safe detail endpoint/list or audited resolution action exists.
+  - **Risk:** critical alerts remain unresolved or are blindly resent and duplicated.
+  - **Affected branches:** UNKNOWN ambiguity, retry exhaustion, permanent provider rejection, admin cockpit.
+  - **Acceptance:** authorized operators can see event/client/time/attempts/sanitized error and payload preview, mark a row resolved after checking Telegram, or deliberately requeue it with an audit trail; no automatic retry of UNKNOWN.
+  - **Tests:** authorization, redaction, list ordering, resolve/requeue transitions, CSRF, duplicate-safe requeue, mobile/desktop rendering.
+
+- [ ] **P1.B4e Honour Telegram rate-limit retry timing.**
+  - **Symptom:** HTTP 429 uses the generic short backoff and can exhaust all attempts before Telegram's requested wait expires.
+  - **Root cause:** `parameters.retry_after` is parsed but ignored.
+  - **Risk:** recoverable alerts enter dead-letter unnecessarily and create alert gaps.
+  - **Affected branches:** provider 429 response, retry scheduling, restart drain.
+  - **Acceptance:** validated bounded `retry_after` is the minimum next-attempt delay, malformed/extreme values fall back safely, and jitter never schedules earlier than the provider delay.
+  - **Tests:** valid, missing, string, negative, and extreme retry-after fixtures plus attempt-budget preservation.
+
+- [ ] **P0.B4f Keep outbox schema creation recoverable from partial MySQL DDL.**
+  - **Symptom:** a failed migration can leave the audit table created while Django still considers the migration unapplied; retry then fails on `table already exists`.
+  - **Root cause:** one `atomic=False` migration mixes `CreateModel`/`AlterField` with later engine-changing DDL that commits implicitly.
+  - **Risk:** production deploy cannot safely resume after a metadata lock, timeout, or engine conversion failure.
+  - **Affected branches:** migrations `0093+`, deploy retry, rollback/recovery, engine health gate.
+  - **Acceptance:** transactional schema state and non-atomic idempotent engine conversion are separate migrations; the engine step checks table existence/current engine before each DDL.
+  - **Tests:** migration structure assertion, idempotent conversion fixture, partial-state rerun, then production migration table/engine verification.
+
 - [ ] **P0.B5 Separate observation/analysis from global and per-client reply enablement.**
   - **Symptom:** when global `is_enabled=False`, customer webhook events return 200 but are discarded before message/client storage; paused manager-led chats also finish without scheduled high-reasoning analysis.
   - **Root cause:** one enable flag gates ingress, analysis, reply, and follow-up instead of reply automation only.
@@ -631,6 +679,14 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
 - [ ] **P1.D11 Add full responsive/accessibility browser acceptance.** Verify 1440/1280/768/390/320 widths, long Ukrainian text, long product/ad IDs, 200+ clients, responsive/scrolled tables, no overlap/clipping, keyboard-only client rows/tabs/actions, focus visibility, screen-reader state, empty/loading/error modes, and live countdown/status updates. Save desktop/mobile evidence for overview, offline/dead worker, client detail, filters, stats, key health, and Meta capability.
 
 - [ ] **P1.D12 Add catalog/size/custom-print operator guidance.** Instructions and structured context must expose current product/SKU/price/availability and both oversize and future classic size-guide resources without scanning the entire site on every reply. Store guide type/product applicability/stable media ID/version, send concise links/media, and keep custom-print pricing/feasibility manager-authoritative when structured data is insufficient. Test stale catalog, classic/oversize choice, ambiguous fit, missing image fallback, custom garment constraints, Telegram/contact copy convenience, and no invented facts.
+
+- [ ] **P1.D13 Fix proven global management-header horizontal overflow.**
+  - **Symptom:** a real Chromium run at 1440 px reports document/header/workspace width about 1552 px; right-side status chips and page content extend beyond the viewport.
+  - **Root cause:** the global management header keeps the full navigation and action group on one non-shrinking row without a bounded responsive fallback.
+  - **Risk:** CRM controls are clipped or require horizontal page scrolling on common desktop widths; mobile verification cannot be trusted while the shared shell overflows.
+  - **Affected branches:** management global header, workspace/main content, every CRM tab including notification review.
+  - **Acceptance:** no document-level horizontal overflow at 1440/1280/768/390/320; navigation remains reachable, status is conveyed by text as well as colour, and page-local cards do not overlap.
+  - **Tests:** real Chromium bounding-box/scroll-width assertions and screenshots with long Ukrainian outbox content at desktop/mobile widths.
 
 #### P2.B — validation, governance, and handoff
 

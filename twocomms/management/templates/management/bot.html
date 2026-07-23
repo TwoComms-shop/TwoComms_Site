@@ -251,6 +251,18 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       </div>
       <div class="bot-console-box" id="bot-console"></div>
     </div>
+    {% if not meta_bot_reviewer_mode %}
+    <div class="bot-card" id="bot-notification-review" style="display:none;margin-top:16px;">
+      <div class="bot-card-head">
+        <h2>Сповіщення, які потребують перевірки</h2>
+        <button type="button" class="bot-mini-btn" id="bot-notification-refresh">Оновити</button>
+      </div>
+      <div class="bot-note" style="margin:0 0 12px;">
+        Перед повторним надсиланням перевірте Telegram: невідомий результат може означати, що повідомлення вже доставлено.
+      </div>
+      <div id="bot-notification-review-list"></div>
+    </div>
+    {% endif %}
   </section>
 
   <!-- ===== Налаштування ===== -->
@@ -505,19 +517,28 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     }
     const outbox=document.getElementById('bot-outbox');
     const outboxHelp=document.getElementById('bot-outbox-help');
-    const outboxRetry=Number(st.notification_failed||0);
-    const outboxPending=Number(st.notification_pending||0);
-    const outboxManual=Number(st.notification_unknown||0)+Number(st.notification_dead_letter||0);
+    const outboxAvailable=[st.notification_failed,st.notification_pending,st.notification_unknown,st.notification_dead_letter]
+      .every(v=>v!==null && v!==undefined);
+    const outboxRetry=outboxAvailable?Number(st.notification_failed):0;
+    const outboxPending=outboxAvailable?Number(st.notification_pending):0;
+    const outboxManual=outboxAvailable?(Number(st.notification_unknown)+Number(st.notification_dead_letter)):0;
     if(outbox){
-      outbox.textContent=outboxManual ? (outboxManual+' вручну') : (outboxRetry ? (outboxRetry+' повтор') : (outboxPending||'0'));
-      outbox.title='У черзі: '+outboxPending+' · автоматичний повтор: '+outboxRetry+' · ручна перевірка: '+outboxManual;
+      outbox.textContent=outboxAvailable
+        ? (outboxManual ? (outboxManual+' вручну') : (outboxRetry ? (outboxRetry+' повтор') : (outboxPending||'0')))
+        : 'Дані недоступні';
+      outbox.title=outboxAvailable
+        ? ('У черзі: '+outboxPending+' · автоматичний повтор: '+outboxRetry+' · ручна перевірка: '+outboxManual)
+        : 'Не вдалося прочитати стан таблиці сповіщень';
     }
     if(outboxHelp){
-      outboxHelp.textContent=outboxManual
+      outboxHelp.textContent=!outboxAvailable
+        ? 'Стан сповіщень недоступний. Перевірте міграції та базу даних.'
+        : outboxManual
         ? 'Є сповіщення з невідомим результатом або вичерпаними спробами. Перевірте Telegram вручну, щоб не надіслати дубль.'
         : (outboxRetry ? 'Telegram тимчасово недоступний: демон повторить сповіщення автоматично.' : '');
-      outboxHelp.style.color=outboxManual?'#fbbf24':'';
+      outboxHelp.style.color=(!outboxAvailable||outboxManual)?'#fbbf24':'';
     }
+    if(outboxAvailable) renderNotificationReview(outboxManual);
     document.getElementById('bot-error').textContent=st.last_error||'';
     document.getElementById('bot-start').disabled=st.is_enabled;
     document.getElementById('bot-stop').disabled=!st.is_enabled;
@@ -558,6 +579,66 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   }
   poll().finally(scheduleStatusPoll);
   document.addEventListener('visibilitychange',()=>{ if(!document.hidden) poll(); });
+
+  /* ============ Notification manual review ============ */
+  const notificationReview=document.getElementById('bot-notification-review');
+  const notificationReviewList=document.getElementById('bot-notification-review-list');
+  const notificationReviewUrl='{% url "management_bot_notification_review_api" %}';
+  const notificationActionTemplate='{% url "management_bot_notification_review_action_api" 999999999 %}';
+  let notificationReviewLoading=false;
+  function notificationActionUrl(id){ return notificationActionTemplate.replace('999999999',String(id)); }
+  function renderNotificationReview(expectedCount){
+    if(!notificationReview || !notificationReviewList) return;
+    notificationReview.style.display=expectedCount>0?'':'none';
+    if(expectedCount>0) loadNotificationReview();
+  }
+  function notificationMeta(label,value){
+    const span=document.createElement('span');
+    span.className='bot-signal';
+    span.textContent=label+': '+(value||'—');
+    return span;
+  }
+  function loadNotificationReview(){
+    if(notificationReviewLoading || !notificationReviewList) return Promise.resolve();
+    notificationReviewLoading=true;
+    return fetch(notificationReviewUrl,{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      .then(r=>r.json().then(data=>({ok:r.ok,data})))
+      .then(result=>{
+        notificationReviewList.replaceChildren();
+        if(!result.ok || !result.data.success) throw new Error(result.data.error||'Не вдалося завантажити сповіщення.');
+        (result.data.items||[]).forEach(item=>{
+          const row=document.createElement('div'); row.className='bot-deal';
+          const title=document.createElement('div'); title.style.fontWeight='800';
+          title.textContent='#'+item.id+' · '+item.status_label+' · '+item.event_label;
+          row.appendChild(title);
+          const meta=document.createElement('div'); meta.style.marginTop='7px';
+          meta.append(notificationMeta('Клієнт',item.client||item.client_id),notificationMeta('Спроби',item.attempts),notificationMeta('Причина',item.failure_label));
+          row.appendChild(meta);
+          if(item.text_preview){ const text=document.createElement('div'); text.className='bot-hint'; text.style.marginTop='7px'; text.textContent='Повідомлення: '+item.text_preview; row.appendChild(text); }
+          if(item.error){ const error=document.createElement('div'); error.className='bot-hint'; error.style.marginTop='5px'; error.textContent='Помилка: '+item.error; row.appendChild(error); }
+          const actions=document.createElement('div'); actions.style.cssText='display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;';
+          [['resolve','✓ Перевірено'],['requeue','↻ Надіслати повторно']].forEach(([action,label])=>{
+            const button=document.createElement('button'); button.type='button'; button.className='bot-mini-btn'; button.textContent=label;
+            button.addEventListener('click',()=>reviewNotification(item.id,action,button)); actions.appendChild(button);
+          });
+          row.appendChild(actions); notificationReviewList.appendChild(row);
+        });
+        if(!(result.data.items||[]).length){ notificationReview.style.display='none'; }
+      }).catch(error=>{ notificationReviewList.textContent=error.message||'Не вдалося завантажити сповіщення.'; })
+      .finally(()=>{notificationReviewLoading=false;});
+  }
+  function reviewNotification(id,action,button){
+    const warning=action==='requeue'?'Ви перевірили Telegram і впевнені, що повтор не створить дубль?':'Позначити сповіщення як перевірене?';
+    if(!window.confirm(warning)) return;
+    button.disabled=true;
+    const body=new FormData(); body.append('action',action);
+    fetch(notificationActionUrl(id),{method:'POST',headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'},body})
+      .then(r=>r.json().then(data=>({ok:r.ok,data})))
+      .then(result=>{if(!result.ok||!result.data.success) throw new Error(result.data.error||'Дію не виконано.'); return loadNotificationReview();})
+      .then(()=>poll()).catch(error=>{button.disabled=false;window.alert(error.message||'Дію не виконано.');});
+  }
+  const notificationRefresh=document.getElementById('bot-notification-refresh');
+  if(notificationRefresh) notificationRefresh.addEventListener('click',loadNotificationReview);
 
   /* ============ Clients ============ */
   const Clients=(function(){

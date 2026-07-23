@@ -175,6 +175,25 @@ class DaemonHeartbeatTests(SimpleTestCase):
         pending.assert_not_called()
         followups.assert_not_called()
 
+    @patch("management.management.commands.run_instagram_bot.bot.log")
+    @patch("management.management.commands.run_instagram_bot.bot_followups.process_due_followups")
+    @patch("management.management.commands.run_instagram_bot.bot.process_pending")
+    @patch(
+        "management.management.commands.run_instagram_bot.bot.drain_manager_notifications",
+        side_effect=RuntimeError("outbox unavailable"),
+    )
+    def test_outbox_failure_does_not_block_customer_work(self, drain, pending, followups, log):
+        settings = InstagramBotSettings(is_enabled=True, receive_via_poll=False)
+
+        enabled, last_poll = _run_work_cycle(settings, 23.0)
+
+        self.assertTrue(enabled)
+        self.assertEqual(last_poll, 23.0)
+        drain.assert_called_once_with(limit=10)
+        pending.assert_called_once_with(settings)
+        followups.assert_called_once_with(settings)
+        log.assert_called_once()
+
 
 class DaemonStatusTests(TestCase):
     def tearDown(self):

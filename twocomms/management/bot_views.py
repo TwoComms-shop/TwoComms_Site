@@ -23,7 +23,15 @@ import re
 import secrets
 
 from .bot_access import is_meta_bot_reviewer
-from .models import IgClient, IgDeal, IgPaymentProjection, InstagramBotLog, InstagramBotSettings
+from .models import (
+    IgBotNotification,
+    IgBotNotificationAudit,
+    IgClient,
+    IgDeal,
+    IgPaymentProjection,
+    InstagramBotLog,
+    InstagramBotSettings,
+)
 from .services import instagram_bot as bot
 from .services.bot_payment_truth import (
     annotate_verified_payment,
@@ -352,6 +360,116 @@ def bot_status_api(request):
         for r in rows
     ]
     return JsonResponse({"success": True, "status": bot.status_snapshot(), "log": items})
+
+
+def _notification_preview(value, limit=280):
+    return bot._redact_secret_text(str(value or "")).replace("\n", " ")[:limit]
+
+
+_NOTIFICATION_STATUS_LABELS = {
+    IgBotNotification.Status.UNKNOWN: "Результат доставки невідомий",
+    IgBotNotification.Status.DEAD_LETTER: "Спроби вичерпано",
+}
+_NOTIFICATION_EVENT_LABELS = {
+    "takeover": "Менеджер підключився",
+    "payment": "Оплата",
+    "payment_link": "Посилання на оплату",
+    "shipment": "Відправлення",
+    "shipment_human_review": "Потрібна ручна перевірка відправлення",
+    "payment_reversed_review": "Перевірка повернення або скасування оплати",
+    "delivery_block": "Доставка повідомлення заблокована",
+    "ai_unavailable": "ШІ тимчасово недоступний",
+    "spam": "Антиспам",
+    "generic": "Системне сповіщення",
+}
+_NOTIFICATION_FAILURE_LABELS = {
+    "ambiguous_transport": "Невідомий результат мережевого запиту",
+    "ambiguous_stale_sending": "Відправлення перервано до фіксації результату",
+    "ambiguous_provider_response": "Неможливо прочитати відповідь Telegram",
+    "retry_exhausted": "Вичерпано автоматичні спроби",
+    "provider_permanent": "Telegram відхилив повідомлення",
+    "configuration": "Не налаштовано Telegram",
+    "rate_limited": "Telegram обмежив частоту запитів",
+}
+
+
+@login_required(login_url="management_login")
+@require_GET
+def bot_notification_review_api(request):
+    blocked = _require_admin_json(request)
+    if blocked:
+        return blocked
+    rows = IgBotNotification.objects.filter(
+        status__in=[IgBotNotification.Status.UNKNOWN, IgBotNotification.Status.DEAD_LETTER]
+    ).select_related("client").order_by("created_at", "id")[:100]
+    items = []
+    for row in rows:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        items.append({
+            "id": row.id,
+            "event_type": row.event_type,
+            "client_id": row.client_id,
+            "client": (row.client.display_name or row.client.username or row.client.igsid) if row.client else "",
+            "status": row.status,
+            "status_label": _NOTIFICATION_STATUS_LABELS.get(row.status, "Потрібна ручна перевірка"),
+            "event_label": _NOTIFICATION_EVENT_LABELS.get(row.event_type, "Системне сповіщення"),
+            "attempts": row.attempts,
+            "failure_kind": row.failure_kind,
+            "failure_label": _NOTIFICATION_FAILURE_LABELS.get(row.failure_kind, "Потрібна ручна перевірка"),
+            "error": _notification_preview(row.last_error),
+            "text_preview": _notification_preview(payload.get("text")),
+            "created_at": row.created_at.isoformat(),
+            "last_attempt_at": row.last_attempt_at.isoformat() if row.last_attempt_at else "",
+        })
+    return JsonResponse({"success": True, "items": items, "count": len(items)})
+
+
+@login_required(login_url="management_login")
+@require_POST
+def bot_notification_review_action_api(request, notification_id):
+    blocked = _require_admin_json(request)
+    if blocked:
+        return blocked
+    action = (request.POST.get("action") or "").strip()
+    if action not in {"resolve", "requeue"}:
+        return JsonResponse({"success": False, "error": "Невідома дія."}, status=400)
+    note = (request.POST.get("note") or "").strip()[:500]
+    with transaction.atomic():
+        row = IgBotNotification.objects.select_for_update().filter(pk=notification_id).first()
+        if not row:
+            return JsonResponse({"success": False, "error": "Сповіщення не знайдено."}, status=404)
+        if row.status not in {IgBotNotification.Status.UNKNOWN, IgBotNotification.Status.DEAD_LETTER}:
+            return JsonResponse(
+                {"success": False, "error": "Сповіщення вже опрацьоване або виконується."},
+                status=409,
+            )
+        old_status = row.status
+        if action == "resolve":
+            row.status = IgBotNotification.Status.RESOLVED
+            row.next_attempt_at = None
+            row.failure_kind = "operator_resolved"
+        else:
+            row.status = IgBotNotification.Status.PENDING
+            row.next_attempt_at = timezone.now()
+            row.attempts = 0
+            row.failure_kind = "operator_requeued"
+        row.save(update_fields=[
+            "status", "next_attempt_at", "attempts", "failure_kind", "updated_at",
+        ])
+        IgBotNotificationAudit.objects.create(
+            notification=row,
+            actor=request.user,
+            action=action,
+            from_status=old_status,
+            to_status=row.status,
+            note=note,
+        )
+    bot.log(
+        "warning" if action == "requeue" else "info",
+        "notification_operator_action",
+        f"notification={row.id}; action={action}; actor={request.user.pk}",
+    )
+    return JsonResponse({"success": True, "id": row.id, "status": row.status})
 
 
 @login_required(login_url="management_login")

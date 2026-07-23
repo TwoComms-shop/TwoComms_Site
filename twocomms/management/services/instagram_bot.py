@@ -32,7 +32,7 @@ from urllib.parse import urlsplit
 
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from management.models import (
@@ -615,13 +615,25 @@ NOTIFICATION_STALE_SENDING_SECONDS = 300
 NOTIFICATION_MAX_ATTEMPTS = 5
 
 
-def _notification_retry_at(row, now):
+def _notification_retry_at(row, now, *, minimum_delay_seconds=0):
     base = min(3600, 30 * (2 ** max(0, int(row.attempts or 1) - 1)))
     jitter = int(hashlib.sha256(row.dedupe_key.encode("utf-8")).hexdigest()[:2], 16) % 16
-    return now + timedelta(seconds=base + jitter)
+    try:
+        provider_delay = max(0, min(int(minimum_delay_seconds or 0), 86400))
+    except (TypeError, ValueError):
+        provider_delay = 0
+    return now + timedelta(seconds=max(base, provider_delay) + jitter)
 
 
-def _finish_notification(dedupe_key, *, status, error="", failure_kind="", message_id=""):
+def _finish_notification(
+    dedupe_key,
+    *,
+    status,
+    error="",
+    failure_kind="",
+    message_id="",
+    retry_after_seconds=0,
+):
     now = timezone.now()
     with transaction.atomic():
         row = IgBotNotification.objects.select_for_update().get(dedupe_key=dedupe_key)
@@ -633,7 +645,7 @@ def _finish_notification(dedupe_key, *, status, error="", failure_kind="", messa
         row.failure_kind = (failure_kind or "")[:32]
         row.sent_at = now if status == IgBotNotification.Status.SENT else None
         row.next_attempt_at = (
-            _notification_retry_at(row, now)
+            _notification_retry_at(row, now, minimum_delay_seconds=retry_after_seconds)
             if status == IgBotNotification.Status.FAILED
             else None
         )
@@ -650,37 +662,51 @@ def _finish_notification(dedupe_key, *, status, error="", failure_kind="", messa
 
 def _deliver_manager_notification(dedupe_key: str) -> bool:
     now = timezone.now()
-    with transaction.atomic():
-        row = IgBotNotification.objects.select_for_update().filter(dedupe_key=dedupe_key).first()
-        if not row:
-            return False
-        if row.status == IgBotNotification.Status.SENT:
-            return True
-        if row.status in {IgBotNotification.Status.UNKNOWN, IgBotNotification.Status.DEAD_LETTER}:
-            return False
-        if row.status == IgBotNotification.Status.SENDING:
-            if row.last_attempt_at and (now - row.last_attempt_at).total_seconds() >= NOTIFICATION_STALE_SENDING_SECONDS:
-                row.status = IgBotNotification.Status.UNKNOWN
-                row.failure_kind = "ambiguous_stale_sending"
-                row.last_error = "delivery outcome unknown after interrupted send"
-                row.next_attempt_at = None
-                row.save(update_fields=[
-                    "status", "failure_kind", "last_error", "next_attempt_at", "updated_at",
-                ])
-            return False
-        if row.status == IgBotNotification.Status.FAILED and row.next_attempt_at and row.next_attempt_at > now:
-            return False
-        row.status = IgBotNotification.Status.SENDING
-        row.attempts += 1
-        row.last_attempt_at = now
-        row.next_attempt_at = None
-        row.last_error = ""
-        row.failure_kind = ""
-        row.save(update_fields=[
-            "status", "attempts", "last_attempt_at", "next_attempt_at",
-            "last_error", "failure_kind", "updated_at",
-        ])
-        payload = dict(row.payload or {})
+    row = IgBotNotification.objects.filter(dedupe_key=dedupe_key).first()
+    if not row:
+        return False
+    if row.status == IgBotNotification.Status.SENT:
+        return True
+    if row.status in {
+        IgBotNotification.Status.UNKNOWN,
+        IgBotNotification.Status.DEAD_LETTER,
+        IgBotNotification.Status.RESOLVED,
+    }:
+        return False
+    if row.status == IgBotNotification.Status.SENDING:
+        stale_before = now - timedelta(seconds=NOTIFICATION_STALE_SENDING_SECONDS)
+        IgBotNotification.objects.filter(
+            pk=row.pk,
+            status=IgBotNotification.Status.SENDING,
+            last_attempt_at__lte=stale_before,
+        ).update(
+            status=IgBotNotification.Status.UNKNOWN,
+            failure_kind="ambiguous_stale_sending",
+            last_error="delivery outcome unknown after interrupted send",
+            next_attempt_at=None,
+            updated_at=now,
+        )
+        return False
+    eligible = Q(status=IgBotNotification.Status.PENDING) | Q(
+        status=IgBotNotification.Status.FAILED,
+        next_attempt_at__isnull=True,
+    ) | Q(
+        status=IgBotNotification.Status.FAILED,
+        next_attempt_at__lte=now,
+    )
+    claimed = IgBotNotification.objects.filter(pk=row.pk).filter(eligible).update(
+        status=IgBotNotification.Status.SENDING,
+        attempts=F("attempts") + 1,
+        last_attempt_at=now,
+        next_attempt_at=None,
+        last_error="",
+        failure_kind="",
+        updated_at=now,
+    )
+    if claimed != 1:
+        return False
+    row.refresh_from_db()
+    payload = dict(row.payload or {})
 
     token = os.environ.get("MANAGEMENT_TG_BOT_TOKEN", "").strip()
     chat = os.environ.get("MANAGEMENT_TG_ADMIN_CHAT_ID", "").strip() or str(payload.get("chat_id") or "")
@@ -728,6 +754,16 @@ def _deliver_manager_notification(dedupe_key: str) -> bool:
                 failure_kind="ambiguous_provider_response",
             )
             return False
+    if not isinstance(response, dict):
+        if code == 200:
+            _finish_notification(
+                dedupe_key,
+                status=IgBotNotification.Status.UNKNOWN,
+                error="Telegram returned an invalid success payload",
+                failure_kind="ambiguous_provider_response",
+            )
+            return False
+        response = {}
     if code == 200 and bool(response.get("ok")):
         return _finish_notification(
             dedupe_key,
@@ -735,11 +771,18 @@ def _deliver_manager_notification(dedupe_key: str) -> bool:
             message_id=str((response.get("result") or {}).get("message_id") or ""),
         )
     retryable = code == 429 or code >= 500
+    parameters = response.get("parameters")
+    retry_after = parameters.get("retry_after") if code == 429 and isinstance(parameters, dict) else 0
     _finish_notification(
         dedupe_key,
         status=(IgBotNotification.Status.FAILED if retryable else IgBotNotification.Status.DEAD_LETTER),
         error=str(response.get("description") or f"HTTP {code}"),
-        failure_kind=("provider_retryable" if retryable else "provider_permanent"),
+        failure_kind=(
+            "rate_limited"
+            if code == 429
+            else ("provider_retryable" if retryable else "provider_permanent")
+        ),
+        retry_after_seconds=retry_after,
     )
     return False
 

@@ -92,6 +92,9 @@ class ClientsPageRenderTests(TestCase):
         self.assertIn('data-panel="settings"', html)
         self.assertIn('data-panel="kb"', html)
         self.assertIn("bot-tab-ind", html)  # анімований індикатор
+        self.assertIn("Дані недоступні", html)
+        self.assertIn("Сповіщення, які потребують перевірки", html)
+        self.assertIn("/bot/api/notifications/review/", html)
 
 
 @MGMT

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -32,6 +33,7 @@ __all__ = [
     "IgMetaEventLog",
     "BotDataDeletionRequest",
     "IgBotNotification",
+    "IgBotNotificationAudit",
 ]
 
 
@@ -123,6 +125,7 @@ class IgBotNotification(models.Model):
         FAILED = "failed", "Failed"
         UNKNOWN = "unknown", "Delivery unknown"
         DEAD_LETTER = "dead_letter", "Manual review required"
+        RESOLVED = "resolved", "Resolved by operator"
 
     client = models.ForeignKey(
         "management.IgClient",
@@ -157,6 +160,36 @@ class IgBotNotification(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - trivial representation
         return f"IgBotNotification#{self.pk} {self.event_type}/{self.status}"
+
+
+class IgBotNotificationAudit(models.Model):
+    """Immutable operator action history for notification recovery."""
+
+    notification = models.ForeignKey(
+        "management.IgBotNotification",
+        on_delete=models.CASCADE,
+        related_name="audit_events",
+        db_constraint=False,
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ig_notification_audits",
+        db_constraint=False,
+    )
+    action = models.CharField(max_length=32)
+    from_status = models.CharField(max_length=16)
+    to_status = models.CharField(max_length=16)
+    note = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["notification", "-created_at"], name="ig_notif_audit_dt"),
+        ]
 
 
 class IgClient(models.Model):

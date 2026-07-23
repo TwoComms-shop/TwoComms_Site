@@ -131,7 +131,13 @@ def _run_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
     """Run durable operational work, then reply work only when enabled."""
     enabled = bool(settings_obj.is_enabled)
     interval = max(2, settings_obj.poll_interval_seconds or 3)
-    bot.drain_manager_notifications(limit=10)
+    try:
+        bot.drain_manager_notifications(limit=10)
+    except Exception as exc:
+        # Manager-alert availability must never become a global customer-reply
+        # kill switch. The next cycle retries and the error remains visible in
+        # the operational log/status surface.
+        bot.log("error", "notification_outbox", repr(exc))
     if enabled:
         bot.process_pending(settings_obj)
         bot_followups.process_due_followups(settings_obj)

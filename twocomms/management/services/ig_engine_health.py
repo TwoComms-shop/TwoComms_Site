@@ -6,6 +6,8 @@ IG_RUNTIME_TABLES = (
     "management_igdealitem",
     "management_igfollowuptask",
     "management_igmetaeventlog",
+    "management_igbotnotification",
+    "management_igbotnotificationaudit",
     "management_instagrambotlog",
     "management_instagrambotmessage",
     "management_instagrambotprocessedmessage",
