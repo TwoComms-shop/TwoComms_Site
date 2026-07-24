@@ -95,6 +95,7 @@ from orders.models import (
     PaymentAttempt,
     WholesaleInvoice,
 )
+from warehouse.models import WriteOffRequest
 from .promo import get_promo_admin_context
 from storefront.analytics_exclusions import (
     order_exclusion_q,
@@ -473,6 +474,13 @@ def _build_orders_context(request):
     selected_page_qs = orders_page.object_list.prefetch_related(
         Prefetch('items', queryset=OrderItem.objects.select_related('product')),
         'custom_print_leads',
+        Prefetch(
+            'warehouse_write_off_requests',
+            queryset=WriteOffRequest.objects.only(
+                'id', 'order_id', 'status', 'completed_at'
+            ),
+            to_attr='admin_write_off_requests',
+        ),
     )
     orders = list(selected_page_qs)
     orders_page.object_list = orders
@@ -487,6 +495,13 @@ def _build_orders_context(request):
         order.payment_last_status = last_entry.get('status') or payload.get('last_status')
         order.payment_last_time = last_entry.get('received_at') or last_entry.get('ts') or payload.get('last_update_at')
         order.payment_history_safe = history[-10:]
+        write_offs = getattr(order, 'admin_write_off_requests', [])
+        if any(item.status == WriteOffRequest.STATUS_COMPLETED for item in write_offs):
+            order.admin_writeoff_state = 'completed'
+        elif any(item.status == WriteOffRequest.STATUS_PENDING for item in write_offs):
+            order.admin_writeoff_state = 'pending'
+        else:
+            order.admin_writeoff_state = 'available'
 
     return {
         'orders': orders,

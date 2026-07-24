@@ -298,6 +298,16 @@
 
 /* Cancel + reason */
 .oadm-actions-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:14px; }
+.oadm-operations { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:14px; padding-top:12px; border-top:1px solid var(--o-line); }
+.oadm-operation { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:38px; padding:8px 13px;
+  border-radius:10px; border:1px solid var(--o-line-2); color:var(--o-text); background:rgba(8,14,23,.5);
+  font-size:.82rem; font-weight:700; text-decoration:none; transition:transform .15s ease, border-color .15s ease, background .15s ease; }
+.oadm-operation:hover { color:#fff; border-color:var(--o-accent); background:rgba(249,115,22,.12); transform:translateY(-1px); }
+.oadm-operation svg { flex:0 0 auto; }
+.oadm-operation--np { color:#bfdbfe; border-color:rgba(59,130,246,.3); background:rgba(59,130,246,.1); }
+.oadm-operation--stock { color:#bbf7d0; border-color:rgba(34,197,94,.3); background:rgba(34,197,94,.1); }
+.oadm-operation--unlink { color:#fecdd3; border-color:rgba(251,113,133,.3); background:rgba(251,113,133,.1); }
+@media (max-width:640px) { .oadm-operation { flex:1 1 100%; } }
 .order-cancel-actions { display:flex; flex-direction:column; gap:8px; }
 .oadm-cancel-btn { display:inline-flex; align-items:center; gap:6px; padding:9px 16px; border-radius:11px; cursor:pointer;
   border:1px solid rgba(251,113,133,.3); background:rgba(251,113,133,.08); color:var(--o-red); font-size:.85rem; font-weight:700; transition:all .15s ease; }
@@ -556,7 +566,12 @@
                 <div class="oadm-kv__row"><span class="k">Адреса</span><span class="v">{{ o.city }}{% if o.np_office %}, {{ o.np_office }}{% endif %}</span></div>
                 <div class="oadm-kv__row delivery-item" data-field="ttn">
                   <span class="k">ТТН</span>
-                  <span class="v ttn-info">{% if o.tracking_number %}{{ o.tracking_number }}{% else %}<span class="ttn-pending">очікується</span>{% endif %}</span>
+                  <span class="v ttn-info">
+                    {% if o.tracking_number %}
+                      <a href="https://novaposhta.ua/tracking/?cargo_number={{ o.tracking_number }}" target="_blank" rel="noopener">{{ o.tracking_number }}</a>
+                      {% if o.nova_poshta_document_ref %}<span class="oadm-badge oadm-badge--web">API</span>{% else %}<span class="oadm-badge oadm-badge--manual">Ручна ТТН</span>{% endif %}
+                    {% else %}<span class="ttn-pending">очікується</span>{% endif %}
+                  </span>
                 </div>
                 {% if o.shipment_status %}
                 <div class="oadm-kv__row">
@@ -765,6 +780,38 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
                 Скасувати замовлення
               </button>
+            </div>
+          {% endif %}
+
+          {% if o.status != 'cancelled' %}
+            <div class="oadm-operations" aria-label="Операції замовлення">
+              {% if o.status != 'done' and o.nova_poshta_document_ref %}
+                <a class="oadm-operation oadm-operation--unlink" data-admin-operation="nova-poshta-unlink"
+                   href="{% url 'admin_order_nova_poshta_action' o.id %}" target="_blank" rel="noopener">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                  Відв'язати ТТН
+                </a>
+              {% elif o.status != 'done' and not o.tracking_number %}
+                <a class="oadm-operation oadm-operation--np" data-admin-operation="nova-poshta-create"
+                   href="{% url 'admin_order_nova_poshta_action' o.id %}" target="_blank" rel="noopener">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h4c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5S5.17 15.5 6 15.5 7.5 16.17 7.5 17 6.83 18.5 6 18.5z"/></svg>
+                  Створити ТТН
+                </a>
+              {% endif %}
+
+              {% if o.admin_writeoff_state == 'completed' %}
+                <a class="oadm-operation oadm-operation--stock" data-admin-operation="warehouse-cancel"
+                   href="{% url 'admin_order_warehouse_action' o.id %}" target="_blank" rel="noopener">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6 0 1.1-.3 2.13-.82 3.01l1.46 1.46A7.93 7.93 0 0 0 20 13c0-4.42-3.58-8-8-8zm-6.64.36L3.9 6.82A7.93 7.93 0 0 0 4 13c0 4.42 3.58 8 8 8v4l5-5-5-5v4c-3.31 0-6-2.69-6-6 0-1.1.3-2.13.82-3.01z"/></svg>
+                  Відмінити продаж
+                </a>
+              {% else %}
+                <a class="oadm-operation oadm-operation--stock" data-admin-operation="warehouse-writeoff"
+                   href="{% url 'admin_order_warehouse_action' o.id %}" target="_blank" rel="noopener">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h4c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5S5.17 15.5 6 15.5 7.5 16.17 7.5 17 6.83 18.5 6 18.5z"/></svg>
+                  Списати зі складу
+                </a>
+              {% endif %}
             </div>
           {% endif %}
 
