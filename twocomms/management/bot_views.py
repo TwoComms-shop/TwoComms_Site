@@ -33,7 +33,6 @@ from .models import (
     IgPaymentProjection,
     InstagramBotLog,
     InstagramBotSettings,
-    IgPaymentConfirmationReview,
 )
 from .services import instagram_bot as bot
 from .services.bot_payment_truth import (
@@ -497,6 +496,8 @@ def bot_payment_reviews_api(request):
     blocked = _require_admin_json(request)
     if blocked:
         return blocked
+    from .ig_bot_models import IgPaymentConfirmationReview
+
     rows = (
         IgPaymentConfirmationReview.objects.filter(
             status=IgPaymentConfirmationReview.Status.PENDING,
@@ -533,6 +534,7 @@ def bot_payment_review_action_api(request, review_id):
     blocked = _require_admin_json(request)
     if blocked:
         return blocked
+    from .ig_bot_models import IgPaymentConfirmationReview
     from management.services.ig_payment_review import cancel_review, confirm_review
 
     action = (request.POST.get("action") or "").strip().lower()
