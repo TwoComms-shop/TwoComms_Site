@@ -10,7 +10,7 @@ from django.utils import timezone
 
 
 _PAYMENT_EVIDENCE_RE = re.compile(
-    r"(?:\bоплат\w*\b|\bпередоплат\w*\b|\bплатіж\w*\b|\bплатеж\w*\b|\bоплач\w*\b|\bоплатила\b|\bоплатив\b|\bчек\b|\bквитанц\w*\b|\breceipt\b|\bpaid\b)",
+    r"(?:\bоплат\w*\b|\bпередоплат\w*\b|\bплатіж\w*\b|\bплатеж\w*\b|\bоплач\w*\b|\bоплатила\b|\bоплатив\b|\bчек(?:а|у|ом)?\b|\bквитанц\w*\b|\breceipt\b|\bpaid\b)",
     re.IGNORECASE,
 )
 _NON_EVIDENCE_RE = re.compile(
@@ -18,7 +18,7 @@ _NON_EVIDENCE_RE = re.compile(
     re.IGNORECASE,
 )
 _AFFIRMATION_RE = re.compile(
-    r"(?:я\s+(?:вже\s+)?оплат\w*|оплат\w*\s+(?:вже\s+)?зроб\w*|переказ\w*\s+зроб\w*|чек|квитанц|receipt|paid)",
+    r"(?:я\s+(?:вже\s+)?оплат\w*|оплат\w*\s+(?:вже\s+)?зроб\w*|переказ\w*\s+зроб\w*|\bчек(?:а|у|ом)?\b|\bквитанц\w*\b|receipt|paid)",
     re.IGNORECASE,
 )
 _AMOUNT_RE = re.compile(r"(?<!\d)(\d{2,6}(?:[.,]\d{1,2})?)\s*(?:грн|uah|₴)", re.IGNORECASE)

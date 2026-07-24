@@ -165,6 +165,17 @@ class IgPaymentReviewRulesTests(SimpleTestCase):
         )
         self.assertFalse(result["needs_review"])
 
+    def test_waiting_verbs_do_not_count_as_receipt_evidence(self):
+        from management.services.ig_payment_review import extract_payment_review_evidence
+
+        result = extract_payment_review_evidence(
+            [
+                {"id": 227, "role": "user", "text": "Чекаю розмірну сітку"},
+                {"id": 234, "role": "user", "text": "Почекаємо"},
+            ]
+        )
+        self.assertFalse(result["needs_review"])
+
     def test_confirmation_transition_is_idempotent_and_cancel_is_terminal(self):
         from management.services.ig_payment_review import next_review_status
 
