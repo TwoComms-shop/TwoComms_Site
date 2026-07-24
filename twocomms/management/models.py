@@ -3657,6 +3657,8 @@ class InstagramBotSettings(models.Model):
     analysis_reconcile_cursor = models.PositiveBigIntegerField(default=0)
     analysis_reconcile_after = models.DateTimeField(default=timezone.now)
     analysis_backfill_enabled = models.BooleanField(default=False)
+    # Independent bounded cursor for the one-time durable opt-out migration.
+    opt_out_backfill_cursor = models.PositiveBigIntegerField(default=0)
     # Monotonic global permission epoch. Every global stop/start boundary
     # invalidates workers that generated against an older reply policy.
     reply_permission_epoch = models.PositiveBigIntegerField(default=0)
