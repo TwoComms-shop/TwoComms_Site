@@ -834,7 +834,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
     - **Affected branches:** rules snapshot dedupe, reconciliation, analytics calibration, UI evidence, backfill, and audit history.
     - **Acceptance:** advance the rules version for the semantic change; new snapshots use the new version/dedupe key; historical rows stay append-only and explicitly identifiable.
     - **Tests:** version contract, new dedupe key, old/new coexistence, and idempotence within the new version.
-  - [ ] **P0.B5ai Backfill durable opt-out truth for existing conversations.**
+  - [x] **P0.B5ai Backfill durable opt-out truth for existing conversations.**
     - **Priority:** P0 — newly safe ingress does not protect clients whose opt-out was recorded before durable fields existed.
     - **Symptom:** migration 0095 adds nullable opt-out fields but does not derive them from existing deterministic opt-out evidence/messages.
     - **Root cause:** schema rollout and legacy-state reconciliation were separated without a bounded data migration or explicit production command.
@@ -842,7 +842,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
     - **Affected branches:** legacy rules snapshots, inbound messages, client pause state, pending follow-ups, statistics, manual opt-in audit, and deployment rollback.
     - **Acceptance:** a bounded, idempotent, no-network reconciliation derives only high-confidence historical opt-outs, preserves payment/order/commercial state, records source message/time, cancels pending follow-ups, and reports ambiguous rows for manager review; production proof is rollback-only before any committed backfill is authorized.
     - **Tests:** deterministic old snapshot/message, ambiguous phrase, paid client, already opted-in-after-opt-out, duplicate run, bounded cursor, no Gemini/Meta/Telegram, and no fixture residue.
-    - **Current production evidence:** read-only inventory on SHA `2406a879` found `0` historical `opt_out` snapshots, `0` affected clients, and `0` pending rows for such clients. No live backfill was run; this item remains open as a future upgrade guard and is not a data-remediation blocker for migration 0095.
+    - **Implementation/evidence:** added `backfill_ig_opt_out --dry-run`/bounded write command with a dedicated durable cursor, explicit deterministic consent-withdrawal evidence, ambiguous snapshot reporting, opt-in protection, idempotence, follow-up cancellation, and maintenance-gated writes. Production migration `0099` applied on MariaDB `qlknpodo_MySQL_DB`; dry-run inventory scanned five clients with `updated=0`, `ambiguous=0`, and no cursor mutation. A rollback-only MariaDB fixture proved explicit STOP, opt-in-after-source, ambiguous snapshot, duplicate run, pending follow-up cancellation, cursor persistence, and zero residue; no Gemini/Meta/Telegram transport ran. Existing production inventory remains zero affected historical opt-outs, so no live backfill was authorized.
   - [ ] **P0.B5aj Separate missed-event reconciliation from historical AI backfill.**
     - **Priority:** P0 — rollout must not spend an unverified project-scoped Gemini quota across the historical inbox.
     - **Symptom:** the first daemon start after 0095 scanned every historical client because `analysis_reconcile_cursor=0`; with no confirmed `GEMINI_KEY_PROJECT_GROUPS`, production created 56 historical jobs and completed 8 AI snapshots before maintenance stopped the worker.
