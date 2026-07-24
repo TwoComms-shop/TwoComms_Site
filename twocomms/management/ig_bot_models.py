@@ -1013,6 +1013,10 @@ class IgConversationAnalysisSnapshot(models.Model):
         OPT_OUT = "opt_out", _("Відмовився від повідомлень")
         SPAM_ABUSE = "spam_abuse", _("Спам / образи")
         MANAGER_OBSERVATION = "manager_observation", _("Спостереження менеджера")
+        COLLABORATION = "collaboration", _("Співпраця / creator")
+        WHOLESALE_B2B = "wholesale_b2b", _("Опт / B2B")
+        SUPPORT_COMPLAINT = "support_complaint", _("Підтримка / скарга")
+        COMMUNITY_CASUAL = "community_casual", _("Спільнота / casual")
 
     client = models.ForeignKey(
         "management.IgClient",

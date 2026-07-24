@@ -71,6 +71,25 @@ SELF_RE = re.compile(r"\b(себе|собі|для\s+себя|для\s+себе)
 PHONE_RE = re.compile(r"(?:\+?38)?0\d{9}")
 QTY_RE = re.compile(r"\b(?:x|х|×)?\s*(\d{1,2})\s*(?:шт|штук|pcs|од)\b", re.I)
 SIZE_TOKEN_RE = re.compile(r"\b(xs|s|m|l|xl|xxl|xxxl|2xl|3xl)\b", re.I)
+COLLAB_RE = re.compile(
+    r"\b(коллаб\w*|колаб\w*|collab\w*|creator|креатор|блогер\w*|інфлюенсер\w*|"
+    r"инфлюенсер\w*|партнерств\w*|партнерств\w*)\b",
+    re.I,
+)
+WHOLESALE_RE = re.compile(
+    r"(?:\b(опт\w*|оптов\w*|wholesale|b2b|дропшип\w*|тираж\w*|партію|партия)\b|"
+    r"\b(?:для|в)\s+(?:магазин\w*|бутик\w*))",
+    re.I,
+)
+SUPPORT_RE = re.compile(
+    r"\b(скарг\w*|жалоб\w*|проблем\w*|брак\w*|поверн\w*|обмін\w*|обмен\w*|"
+    r"верн(?:іть|ите)|неs+прийш\w*|неs+приш\w*|пошкодж\w*|підтримк\w*|поддержк\w*)\b",
+    re.I,
+)
+COMMUNITY_RE = re.compile(
+    r"\b(мем\w*|прикол\w*|прикольно|круто|топчик|класно|классно|ахаха|смішн\w*|смешн\w*)\b",
+    re.I,
+)
 COLOR_WORDS = {
     "чорн": "black",
     "черн": "black",
@@ -191,6 +210,12 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
         return types.PAYMENT_PENDING
     if IgConversationSignal.Type.CHECKOUT_STARTED in result.get("signals", []):
         return types.HIGH_INTENT
+    if COLLAB_RE.search(text or ""):
+        return types.COLLABORATION
+    if WHOLESALE_RE.search(text or ""):
+        return types.WHOLESALE_B2B
+    if SUPPORT_RE.search(text or ""):
+        return types.SUPPORT_COMPLAINT
     if result.get("intent") == IgClient.Intent.CUSTOM_PRINT:
         return types.CUSTOM_PRINT
     if result.get("intent") == IgClient.Intent.SIZE:
@@ -199,6 +224,8 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
         return types.PRICE_OBJECTION
     if result.get("intent") == IgClient.Intent.PRODUCT:
         return types.PRODUCT_INTEREST
+    if COMMUNITY_RE.search(text or ""):
+        return types.COMMUNITY_CASUAL
     if (text or "").strip():
         return types.INFORMATION_ONLY
     return types.UNKNOWN
