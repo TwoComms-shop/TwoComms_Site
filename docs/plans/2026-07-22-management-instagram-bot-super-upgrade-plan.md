@@ -859,6 +859,15 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
     - **Affected branches:** order creation/linking/unlinking, direct staff deletion, payment reversal, Nova Poshta status updates, tracking, shipment notification, periodic reconciliation, and rollout cutoff.
     - **Acceptance:** maintain a dedicated `IgDeal.order_truth_updated_at` only for order creation/linking/unlinking and changes to `status`, `payment_status`, `tracking_number`, `shipment_status`, or `shipped_notified_at`; unrelated order saves do not move it; reconciliation uses this clock and never generic `Order.updated`.
     - **Tests:** unrelated full save, relevant `update_fields` save, initial order link, transaction-safe `SET_NULL` after direct order deletion, shipment notification, missed scheduler recovery, pre-cutoff rejection, no external transports, and rollback-only MariaDB residue/AUTO_INCREMENT proof.
+  - [x] **P0.B5al Make schema-aware deploys restart Passenger before declaring the bot page healthy.**
+    - **Priority:** P0 — a stale web process can keep serving pre-migration Python after the database and checkout have moved forward.
+    - **Symptom:** `/bot/api/status/` and `/bot/` returned HTTP 500 after SHA `142e27a2` was checked out and migration `0097` was applied; traceback showed `InstagramBotSettings` loaded without `analysis_reconcile_after`.
+    - **Root cause:** the previous deploy pulled and migrated the new code but did not complete `touch tmp/restart.txt`/Passenger reload, so already-loaded Django workers retained the old model class.
+    - **Risk:** staff loses the management bot console and status visibility while the daemon/database may appear healthy; repeated polling amplifies traceback noise.
+    - **Affected branches:** every schema-aware management deploy, bot dashboard, `/bot/api/status/`, status polling UI, rollout/migration verification, and incident recovery.
+    - **Acceptance:** deploy procedure must run `check`, migration/drift checks, `touch tmp/restart.txt`, `run_instagram_bot --ensure`, and an authenticated or in-process staff HTTP proof of `/bot/api/status/` returning 200 JSON; public unauthenticated boundary must return 302 rather than 500; production SHA, migration state, daemon heartbeat, and Passenger reload evidence are recorded together.
+    - **Tests:** DB-free view smoke with staff request, production `RequestFactory`/view proof, public HTTP auth-boundary smoke, stale-process regression review, no customer/Meta/Telegram sends, and post-restart traceback scan.
+    - **Production evidence:** SHA `142e27a2`; migration `0097` applied; new process view proof returned `200 application/json` with `success=true`; public `/bot/api/status/` returned `302`; one daemon PID and sub-second DB/cache heartbeats; 17/17 InnoDB and payment truth audit findings `0`.
 
 - [ ] **P1.B5c Replace the global long-held reply lock with a bounded two-level permission barrier.**
   - **Priority:** P1 — correctness is currently fail-closed, but latency and operator availability degrade under slow AI/provider calls.
