@@ -889,13 +889,14 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Tests:** slow child acquires within budget, exited child with return code, live child timeout, concurrent winner, stale old daemon release, exact one-spawn boundary, and production maintenance release/ensure proof.
   - **Production evidence:** SHA `84718f60`; `DAEMON_START_WAIT_SECONDS=15`; 11/11 daemon-path tests passed with DB setup skipped; maintenance release returned `daemon spawned` without a false timeout, then one daemon PID held the singleton lock with fresh DB/cache heartbeats; staff status API returned 200 and public auth boundaries returned 302.
 
-- [ ] **P0.B6 Fail closed for Meta data-deletion signed requests.**
+- [x] **P0.B6 Fail closed for Meta data-deletion signed requests.**
   - **Symptom:** the public data-deletion callback accepts a syntactically valid signed request when the app secret is absent.
   - **Root cause:** HMAC validation runs only inside `if app_secret`.
   - **Risk:** forged audit/receipt rows and false compliance signals; current callback is not destructive, but fail-open verification is still incorrect.
   - **Affected branches:** public deletion callback, audit receipts, privacy incident response.
   - **Acceptance:** missing secret rejects the signed callback with a safe status; explicit local-test override is isolated; manual authenticated deletion remains available; no secret/raw signed payload in logs.
   - **Tests:** missing secret, valid/invalid HMAC, malformed payload, replay/idempotency, manual deletion unaffected.
+  - **Implementation/evidence:** `_parse_meta_signed_request` now requires a configured `IG_APP_SECRET`/`FACEBOOK_APP_SECRET`, validates the HMAC before JSON decoding, rejects malformed/non-object payloads without raising, and never logs signed material. Production SHA `e2fa7426` passed the DB-free parser suite (3/3, with both production databases explicitly skipped) and a mocked no-network view proof for missing-secret rejection, valid acceptance, and invalid-signature rejection. The production MariaDB contract remained `qlknpodo_MySQL_DB` with zero test schemas; no Meta callback or customer transport was sent. Passenger restart and daemon ensure completed with one live daemon and no new status errors.
 
 - [x] **P0.B7 Do not treat an acquiring `hold` as confirmed payment.**
   - **Symptom:** the payment service grouped Monobank `hold` with `success`, set `paid_at`, moved the client to paid, created an order, and counted conversion before funds were captured.
