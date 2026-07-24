@@ -2789,36 +2789,56 @@ def _iter_events(payload: dict):
     і з події, і з postback.referral (перший контакт із Click-to-IG реклами).
     recipient_id потрібен для echo (повідомлення сторінки/менеджера клієнту).
     """
-    for entry in payload.get("entry", []) or []:
-        for event in entry.get("messaging", []) or []:
-            message = dict(event.get("message") or {})
-            message["_event_created_at"] = _provider_event_datetime(
-                event.get("timestamp") or entry.get("time")
-            )
-            ref = (
-                event.get("referral")
-                or (event.get("postback") or {}).get("referral")
-                or {}
-            )
-            yield (
-                (event.get("sender") or {}).get("id", ""),
-                (event.get("recipient") or {}).get("id", ""),
-                message,
-                ref,
-            )
-        for change in entry.get("changes", []) or []:
-            if change.get("field") == "messages":
-                value = change.get("value") or {}
-                message = dict(value.get("message") or {})
+    if not isinstance(payload, dict):
+        return
+    entries = payload.get("entry")
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        messaging = entry.get("messaging")
+        if isinstance(messaging, list):
+            for event in messaging:
+                if not isinstance(event, dict):
+                    continue
+                raw_message = event.get("message")
+                message = dict(raw_message) if isinstance(raw_message, dict) else {}
+                raw_referral = event.get("referral")
+                postback = event.get("postback")
+                postback_referral = postback.get("referral") if isinstance(postback, dict) else None
                 message["_event_created_at"] = _provider_event_datetime(
-                    value.get("timestamp") or entry.get("time")
+                    event.get("timestamp") or entry.get("time")
+                )
+                sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+                recipient = event.get("recipient") if isinstance(event.get("recipient"), dict) else {}
+                ref = raw_referral if isinstance(raw_referral, dict) else (
+                    postback_referral if isinstance(postback_referral, dict) else {}
                 )
                 yield (
-                    (value.get("sender") or {}).get("id", ""),
-                    (value.get("recipient") or {}).get("id", ""),
+                    sender.get("id", ""),
+                    recipient.get("id", ""),
                     message,
-                    value.get("referral") or {},
+                    ref,
                 )
+        changes = entry.get("changes")
+        if not isinstance(changes, list):
+            continue
+        for change in changes:
+            if not isinstance(change, dict) or change.get("field") != "messages":
+                continue
+            value = change.get("value")
+            if not isinstance(value, dict):
+                continue
+            raw_message = value.get("message")
+            message = dict(raw_message) if isinstance(raw_message, dict) else {}
+            message["_event_created_at"] = _provider_event_datetime(
+                value.get("timestamp") or entry.get("time")
+            )
+            sender = value.get("sender") if isinstance(value.get("sender"), dict) else {}
+            recipient = value.get("recipient") if isinstance(value.get("recipient"), dict) else {}
+            ref = value.get("referral") if isinstance(value.get("referral"), dict) else {}
+            yield (sender.get("id", ""), recipient.get("id", ""), message, ref)
 
 
 def _provider_event_datetime(raw) -> datetime | None:
@@ -2829,6 +2849,83 @@ def _provider_event_datetime(raw) -> datetime | None:
         return datetime.fromtimestamp(value, tz=dt_timezone.utc)
     except (TypeError, ValueError, OverflowError, OSError):
         return None
+
+
+_WEBHOOK_EVENT_KEYS = frozenset({
+    "sender", "recipient", "timestamp", "message", "postback", "referral",
+    "reaction", "read", "delivery", "attachments", "is_echo", "is_deleted",
+    "is_unsupported", "optin", "account_linking", "standby",
+})
+_WEBHOOK_MESSAGE_KEYS = frozenset({
+    "mid", "text", "attachments", "is_echo", "is_deleted", "is_unsupported",
+    "reply_to", "quick_reply", "nfm_reply", "story", "referral",
+})
+
+
+def _webhook_observation_summary(payload: dict) -> str:
+    """Return bounded evidence counters for valid and ignored webhook shapes."""
+    counts: dict[str, int] = {}
+    unknown_fields = 0
+    malformed = 0
+
+    def bump(kind: str, amount: int = 1) -> None:
+        counts[kind] = counts.get(kind, 0) + amount
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("entry"), list):
+        return "malformed=1"
+    for entry in payload["entry"]:
+        if not isinstance(entry, dict):
+            malformed += 1
+            continue
+        messaging = entry.get("messaging")
+        if messaging is not None and not isinstance(messaging, list):
+            malformed += 1
+        for event in messaging if isinstance(messaging, list) else []:
+            if not isinstance(event, dict):
+                malformed += 1
+                continue
+            unknown_fields += len(set(event) - _WEBHOOK_EVENT_KEYS)
+            message = event.get("message")
+            if isinstance(message, dict):
+                unknown_fields += len(set(message) - _WEBHOOK_MESSAGE_KEYS)
+                if message.get("is_echo"):
+                    bump("echo")
+                elif message.get("is_deleted"):
+                    bump("delete")
+                elif message.get("is_unsupported"):
+                    bump("unsupported")
+                else:
+                    bump("message")
+            elif isinstance(event.get("postback"), dict):
+                bump("postback")
+            elif isinstance(event.get("reaction"), dict):
+                bump("reaction")
+            elif any(key in event for key in ("read", "delivery", "optin", "account_linking")):
+                bump("control")
+            else:
+                bump("unknown")
+        changes = entry.get("changes")
+        if changes is not None and not isinstance(changes, list):
+            malformed += 1
+        for change in changes if isinstance(changes, list) else []:
+            if not isinstance(change, dict):
+                malformed += 1
+                continue
+            unknown_fields += len(set(change) - {"field", "value"})
+            field = str(change.get("field") or "unknown")
+            if field == "messages" and isinstance(change.get("value"), dict):
+                bump("message")
+            elif field in {"messaging_postbacks", "postbacks"}:
+                bump("postback")
+            elif field in {"message_reactions", "reactions"}:
+                bump("reaction")
+            else:
+                bump("unknown_change")
+    if unknown_fields:
+        bump("unknown_fields", unknown_fields)
+    if malformed:
+        bump("malformed", malformed)
+    return ",".join(f"{key}={counts[key]}" for key in sorted(counts))[:255]
 
 
 def record_raw_event(payload: dict):
@@ -2866,6 +2963,7 @@ def record_raw_event(payload: dict):
         attachment_types=",".join(att_types)[:255],
         has_referral=has_referral,
         has_echo=has_echo,
+        note=_webhook_observation_summary(payload),
         payload=raw,
     )
     try:

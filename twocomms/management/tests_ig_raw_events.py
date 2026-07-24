@@ -75,6 +75,24 @@ class RecordRawEventTests(TestCase):
         self.assertEqual(ev.sender_id, "55")
         self.assertIn("story_mention", ev.attachment_types)
 
+    def test_records_ignored_event_kinds_and_unknown_fields(self):
+        payload = {
+            "entry": [{
+                "messaging": [
+                    {"postback": {"title": "start"}, "future": True},
+                    {"reaction": {"emoji": "❤️"}},
+                    {"message": {"mid": "m1", "is_deleted": True}},
+                ],
+                "changes": [{"field": "future_field", "value": {}}],
+            }]
+        }
+        ev = bot.record_raw_event(payload)
+        self.assertIn("delete=1", ev.note)
+        self.assertIn("postback=1", ev.note)
+        self.assertIn("reaction=1", ev.note)
+        self.assertIn("unknown_change=1", ev.note)
+        self.assertIn("unknown_fields=1", ev.note)
+
     def test_keeps_rows_trimmed(self):
         # Не накопичуємо нескінченно — найстаріші підрізаються.
         for i in range(5):

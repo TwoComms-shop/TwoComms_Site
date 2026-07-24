@@ -50,6 +50,30 @@ class ExtractMediaUrlsTests(SimpleTestCase):
         self.assertEqual(bot._extract_media_urls({"text": "привіт"}), [])
 
 
+class WebhookShapeSafetyTests(SimpleTestCase):
+    def test_iter_events_ignores_non_object_envelopes(self):
+        payload = {"entry": ["extension", {"messaging": "not-a-list", "changes": "bad"}]}
+        self.assertEqual(list(bot._iter_events(payload)), [])
+
+    def test_summary_counts_ignored_valid_event_kinds_and_unknown_fields(self):
+        payload = {
+            "entry": [{
+                "messaging": [
+                    {"sender": {"id": "u1"}, "postback": {"title": "start"}, "future": 1},
+                    {"sender": {"id": "u1"}, "reaction": {"emoji": "❤️"}},
+                    {"sender": {"id": "u1"}, "message": {"mid": "m1", "text": "hi"}},
+                ],
+                "changes": [{"field": "message_reactions", "value": {}}, {"field": "future_field", "value": {}}],
+            }]
+        }
+        summary = bot._webhook_observation_summary(payload)
+        self.assertIn("message=1", summary)
+        self.assertIn("postback=1", summary)
+        self.assertIn("reaction=2", summary)
+        self.assertIn("unknown_change=1", summary)
+        self.assertIn("unknown_fields=1", summary)
+
+
 class ApplyReferralTests(TestCase):
     def test_referral_written_to_client(self):
         ref = {
