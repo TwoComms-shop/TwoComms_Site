@@ -1039,7 +1039,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
 - [ ] **P1.D8a Make the bot overview model explanation runtime-truthful.**
   - **Priority:** P1 — operators currently see contradictory model names on the same production screen.
   - **Symptom:** the overview status reports effective model `gemini-3.6-flash`, while the adjacent “Як працює” explanation still claims replies use `gemini-3-flash-preview`.
-  - **Root cause:** the explanatory paragraph hardcodes a retired model identifier instead of rendering the validated configured/effective model status.
+  - **Root cause:** the explanatory paragraph renders the raw legacy `settings.gemini_model` value once on the server and never synchronizes it with the normalized runtime model status.
   - **Risk:** an administrator can misdiagnose model rollout or key compatibility and cannot trust the cockpit as an operational source of truth.
   - **Affected branches:** overview template, status rendering, Ukrainian help copy, configured/effective model distinction, browser QA.
   - **Acceptance:** remove the hardcoded model name; render a localized explanation from the same bounded status field used by the model tile, with an honest fallback before status loads; never expose a key value.

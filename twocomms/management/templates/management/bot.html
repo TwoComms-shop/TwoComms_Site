@@ -254,7 +254,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         <h2>Як працює</h2>
         <div class="bot-note" style="margin:0;">
           Event-driven: вхідні ловить <b>webhook</b> і кладе в чергу, воркер відповідає
-          через <b>Gemini</b> (<b>{{ settings.gemini_model }}</b>) з урахуванням історії,
+          через <b>Gemini</b> (<b id="bot-explainer-model">поточну перевірену модель</b>) з урахуванням історії,
           каталогу та памʼяті клієнта. Розуміє переслані пости, матчить фото з товаром,
           формує оплату й створює замовлення. Якщо список IGSID заповнений —
           відповідає лише дозволеним відправникам; якщо порожній — усім, кого дозволяє Meta.
@@ -529,7 +529,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     var p2=document.getElementById('bot-pending'); if(p2) p2.textContent=st.pending;
     document.getElementById('bot-lastreply').textContent=fmt(st.last_reply_at);
     document.getElementById('bot-heartbeat').textContent=fmt(st.heartbeat_at);
-    document.getElementById('bot-model').textContent=st.last_gemini_model||st.gemini_effective_model||'—';
+    const activeModel=st.last_gemini_model||st.gemini_effective_model||'';
+    document.getElementById('bot-model').textContent=activeModel||'—';
+    const explainerModel=document.getElementById('bot-explainer-model');
+    if(explainerModel) explainerModel.textContent=activeModel||'поточну перевірену модель';
     const reasoning=document.getElementById('bot-reasoning');
     if(reasoning){
       reasoning.textContent=st.last_gemini_reasoning_level||'—';
