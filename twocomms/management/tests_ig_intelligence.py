@@ -69,7 +69,7 @@ class ConversationIntelligenceSnapshotTests(TestCase):
         self.assertEqual(snapshot.purchase_probability, Decimal("0.28"))
         self.assertGreaterEqual(snapshot.confidence, Decimal("0.55"))
         self.assertEqual(snapshot.analysis_model, "rules")
-        self.assertEqual(snapshot.rules_version, "2026-07-24.v2")
+        self.assertEqual(snapshot.rules_version, "2026-07-24.v3")
         self.assertEqual(snapshot.evidence[0]["source_role"], "user")
         self.assertIn("product", snapshot.uncertainties)
 

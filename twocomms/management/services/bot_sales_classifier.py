@@ -19,7 +19,7 @@ from management.models import (
     InstagramBotMessage,
 )
 
-ANALYSIS_RULES_VERSION = "2026-07-24.v2"
+ANALYSIS_RULES_VERSION = "2026-07-24.v3"
 
 
 UK_HINTS = (
@@ -55,6 +55,11 @@ def is_explicit_opt_out(text: str) -> bool:
     """Return deterministic consent truth without CRM or provider side effects."""
     return bool(OPT_OUT_RE.search(str(text or "")))
 THINKING_RE = re.compile(r"\b(подумаю|подумаємо|думаю|подума|позже|пізніше|потом)\b", re.I)
+DEFER_RE = re.compile(
+    r"\b(не\s+зараз|не\s+сейчас|пізніше|позже|подумаю|подумаємо|потом|"
+    r"немає\s+(?:мого\s+)?(?:розміру|кольору)|нет\s+(?:моего\s+)?(?:размера|цвета))\b",
+    re.I,
+)
 PRICE_RE = re.compile(r"\b(дорого|дорогувато|цена|ціна|сколько|скільки|price|вартість)\b", re.I)
 PREPAY_RE = re.compile(r"\b(предоплат|передоплат|налож|наклад|післяплат|без\s+пред|без\s+перед)\b", re.I)
 SIZE_RE = re.compile(r"\b(размер|розмір|сітка|сетка|оверсайз|regular|регуляр|xs|s|m|l|xl|xxl)\b", re.I)
@@ -133,14 +138,49 @@ def detect_language(text: str) -> str:
 
 
 def _signal(client, signal_type: str, *, message=None, confidence: float = 0.9, value: str = "", payload=None):
-    return IgConversationSignal.objects.create(
-        client=client,
-        message=message if isinstance(message, InstagramBotMessage) else None,
-        signal_type=signal_type,
-        confidence=Decimal(str(confidence)),
-        value=(value or "")[:255],
-        payload=payload or {},
-    )
+    message_obj = message if isinstance(message, InstagramBotMessage) else None
+    fields = {
+        "client": client,
+        "message": message_obj,
+        "signal_type": signal_type,
+        "value": (value or "")[:255],
+    }
+    defaults = {
+        "confidence": Decimal(str(confidence)),
+        "payload": payload or {},
+    }
+    if message_obj is not None:
+        signal, _created = IgConversationSignal.objects.get_or_create(
+            **fields,
+            defaults=defaults,
+        )
+        return signal
+    return IgConversationSignal.objects.create(**fields, **defaults)
+
+
+def _resolve_readiness(
+    previous: int,
+    turn_score: int,
+    *,
+    preserve: bool = False,
+    hard_zero: bool = False,
+    soft_negative: bool = False,
+    verified_payment: bool = False,
+) -> int:
+    """Resolve the compatibility score without cumulatively adding repeats."""
+    previous = max(0, min(100, int(previous or 0)))
+    turn_score = max(0, min(100, int(turn_score or 0)))
+    if verified_payment:
+        return 100
+    if hard_zero:
+        return 0
+    if preserve:
+        return previous
+    if soft_negative:
+        return min(35, max(turn_score, previous - 15))
+    if turn_score:
+        return max(turn_score, min(previous, 70))
+    return max(0, previous - 10)
 
 
 def _extract_context(text: str) -> dict:
@@ -370,7 +410,8 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
     signals: list[str] = []
     intent = client.intent or IgClient.Intent.UNKNOWN
     objection = client.primary_objection or IgClient.Objection.NONE
-    readiness = int(client.buying_readiness or 0)
+    previous_readiness = int(client.buying_readiness or 0)
+    readiness = previous_readiness if is_manager or reaction_only else 0
     sales_context = dict(client.sales_context or {})
 
     ctx = _extract_context(text)
@@ -472,7 +513,20 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         add(IgConversationSignal.Type.SELF_PURCHASE, conf=0.75)
         readiness += 8
 
-    readiness = max(0, min(100, readiness))
+    from management.services.bot_payment_truth import client_has_verified_payment
+
+    readiness = _resolve_readiness(
+        previous_readiness,
+        readiness,
+        # Opt-out is a communication decision, not proof that the commercial
+        # opportunity disappeared. Explicit no-buy is the hard negative axis.
+        preserve=is_manager or reaction_only or (opt_out and not no_buy),
+        hard_zero=no_buy,
+        soft_negative=bool(DEFER_RE.search(low)) and not bool(
+            IgConversationSignal.Type.CHECKOUT_STARTED in signals
+        ),
+        verified_payment=client_has_verified_payment(client),
+    )
     client.language = lang
     client.intent = intent
     client.primary_objection = objection
