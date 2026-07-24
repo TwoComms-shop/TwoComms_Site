@@ -16,6 +16,7 @@ from management.models import (
     IgClient,
     IgConversationAnalysisSnapshot,
     IgConversationSignal,
+    IgDeal,
     InstagramBotMessage,
 )
 
@@ -282,6 +283,176 @@ def _analysis_band(client: IgClient, result: dict) -> str:
     if result.get("signals") or client.intent != IgClient.Intent.UNKNOWN:
         return IgConversationAnalysisSnapshot.Band.EXPLORING
     return IgConversationAnalysisSnapshot.Band.COLD
+
+
+_OBSERVED_FUNNEL_ORDER = [
+    IgClient.Stage.NEW,
+    IgClient.Stage.QUALIFYING,
+    IgClient.Stage.PRODUCT_MATCHED,
+    IgClient.Stage.CHECKOUT,
+    IgClient.Stage.PAYMENT_PENDING,
+    IgClient.Stage.PAID,
+    IgClient.Stage.ORDER_CREATED,
+    IgClient.Stage.DONE,
+]
+_OBSERVED_FUNNEL_RANK = {
+    value: index for index, value in enumerate(_OBSERVED_FUNNEL_ORDER)
+}
+
+
+def observed_stage_target(
+    current_stage: str,
+    *,
+    signal_types: Iterable[str] = (),
+    intent: str = "",
+    has_product: bool = False,
+    has_size: bool = False,
+    payment_pending: bool = False,
+    verified_payment: bool = False,
+    order_created: bool = False,
+) -> str:
+    """Return a monotonic evidence-backed funnel stage without reply coupling."""
+    if current_stage == IgClient.Stage.SPAM:
+        return current_stage
+    signals = set(signal_types or ())
+    signals.discard(IgConversationSignal.Type.MANAGER_TAKEOVER)
+    target = IgClient.Stage.NEW
+    if signals or intent not in {"", IgClient.Intent.UNKNOWN} or has_size:
+        target = IgClient.Stage.QUALIFYING
+    if has_product:
+        target = IgClient.Stage.PRODUCT_MATCHED
+    if (
+        IgConversationSignal.Type.CHECKOUT_STARTED in signals
+        or intent == IgClient.Intent.PAYMENT
+    ):
+        target = IgClient.Stage.CHECKOUT
+    if payment_pending:
+        target = IgClient.Stage.PAYMENT_PENDING
+    if verified_payment:
+        target = IgClient.Stage.PAID
+    if verified_payment and order_created:
+        target = IgClient.Stage.ORDER_CREATED
+    current_rank = _OBSERVED_FUNNEL_RANK.get(current_stage, -1)
+    target_rank = _OBSERVED_FUNNEL_RANK.get(target, -1)
+    if current_stage == IgClient.Stage.COLD and not (
+        verified_payment or payment_pending or order_created
+    ):
+        return current_stage
+    if current_stage == IgClient.Stage.LEAD_TO_MANAGER and target not in {
+        IgClient.Stage.CHECKOUT,
+        IgClient.Stage.PAYMENT_PENDING,
+        IgClient.Stage.PAID,
+        IgClient.Stage.ORDER_CREATED,
+        IgClient.Stage.DONE,
+    }:
+        return current_stage
+    return target if target_rank > current_rank else current_stage
+
+
+def project_observed_stage(
+    client: IgClient,
+    *,
+    signal_types: Iterable[str] = (),
+    reason: str = "observed_message",
+) -> str:
+    """Advance CRM stage from stored evidence even while replies are paused."""
+    if not client or not getattr(client, "pk", None) or client.hidden_at:
+        return getattr(client, "stage", IgClient.Stage.NEW)
+    from management.services.bot_payment_truth import client_has_verified_payment
+
+    verified_payment = client_has_verified_payment(client)
+    deal_states = set(client.deals.values_list("status", flat=True))
+    target = observed_stage_target(
+        client.stage,
+        signal_types=signal_types,
+        intent=client.intent,
+        has_product=bool(client.current_product_id),
+        has_size=bool(client.current_size),
+        payment_pending=IgDeal.Status.AWAITING_PAYMENT in deal_states,
+        verified_payment=verified_payment,
+        order_created=bool(
+            IgDeal.Status.ORDER_CREATED in deal_states
+            or client.deals.filter(order_id__isnull=False).exists()
+        ),
+    )
+    if target != client.stage:
+        client.set_stage(target, reason=reason)
+    return target
+
+
+def _aggregate_interaction_type(client: IgClient, signal_types: Iterable[str]) -> str:
+    signals = set(signal_types or ())
+    from management.services.bot_payment_truth import client_has_verified_payment
+
+    types = IgConversationAnalysisSnapshot.InteractionType
+    if client_has_verified_payment(client):
+        return types.PAID_ORDER_WAITING
+    if IgConversationSignal.Type.CHECKOUT_STARTED in signals:
+        return types.HIGH_INTENT
+    if client.intent == IgClient.Intent.PAYMENT:
+        return types.HIGH_INTENT
+    if IgConversationSignal.Type.CUSTOM_PRINT in signals:
+        return types.CUSTOM_PRINT
+    if IgConversationSignal.Type.SIZE_CONCERN in signals:
+        return types.SIZE_FIT_QUESTION
+    if IgConversationSignal.Type.PRICE_OBJECTION in signals:
+        return types.PRICE_OBJECTION
+    if IgConversationSignal.Type.PRODUCT_INTEREST in signals:
+        return types.PRODUCT_INTEREST
+    return types.INFORMATION_ONLY
+
+
+def reconcile_rules_projection(
+    client: IgClient,
+    *,
+    watermark: int,
+) -> IgConversationAnalysisSnapshot | None:
+    """Build one no-network snapshot from durable signals for visible clients."""
+    if (
+        not client
+        or client.hidden_at
+        or client.is_blocked
+        or client.stage == IgClient.Stage.SPAM
+    ):
+        return None
+    existing = client.analysis_snapshots.filter(
+        analysis_model="rules",
+        last_analyzed_message_id=watermark,
+    ).order_by("-id").first()
+    signal_types = list(dict.fromkeys(
+        client.conversation_signals.filter(message_id__lte=watermark)
+        .exclude(signal_type=IgConversationSignal.Type.MANAGER_TAKEOVER)
+        .order_by("id")
+        .values_list("signal_type", flat=True)
+    ))
+    project_observed_stage(
+        client,
+        signal_types=signal_types,
+        reason="rules_reconcile",
+    )
+    if existing:
+        return existing
+    message = client.messages.filter(pk=watermark).first()
+    if not message:
+        return None
+    interaction_type = (
+        IgConversationAnalysisSnapshot.InteractionType.MANAGER_OBSERVATION
+        if message.role == InstagramBotMessage.Role.MANAGER
+        else _aggregate_interaction_type(client, signal_types)
+    )
+    result = {
+        "intent": client.intent,
+        "objection": client.primary_objection,
+        "readiness": client.buying_readiness,
+        "signals": signal_types,
+        "no_buy": client.primary_objection == IgClient.Objection.NO_BUY,
+        "opt_out": bool(
+            client.opted_out_at
+            and (not client.opted_in_at or client.opted_in_at < client.opted_out_at)
+        ),
+        "interaction_type": interaction_type,
+    }
+    return _record_analysis_snapshot(client, message, result, role=message.role)
 
 
 def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> str:
@@ -574,6 +745,11 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         "opt_out": opt_out,
         "sales_context": sales_context,
     }
+    project_observed_stage(
+        client,
+        signal_types=signals,
+        reason=f"observed_{role or 'message'}",
+    )
     result["interaction_type"] = _interaction_type(client, result, text, role)
     try:
         snapshot = _record_analysis_snapshot(client, message, result, role=role)

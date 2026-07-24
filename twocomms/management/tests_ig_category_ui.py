@@ -100,7 +100,6 @@ class InteractionCategoryUiContractTests(SimpleTestCase):
         for raw_visible in (
             ">Heartbeat<",
             ">Reasoning<",
-            "> live<",
             "Ad ID",
             "Інтерес до товарів / SKU",
             "analysis_band||c.analysis_band||'Legacy'",
@@ -109,3 +108,20 @@ class InteractionCategoryUiContractTests(SimpleTestCase):
         self.assertIn("const reasoningLabels=", template)
         self.assertIn("const followupStatusLabels=", template)
         self.assertIn("const paymentTruthLabels=", template)
+
+    def test_exact_technical_terms_keep_their_canonical_english_names(self):
+        template = (
+            Path(__file__).with_name("templates") / "management" / "bot.html"
+        ).read_text(encoding="utf-8")
+
+        for technical_label in (
+            "live",
+            "Server ENV",
+            "Instagram Direct API · Facebook Token",
+            "Gemini API · Google API Key",
+            "Meta Conversions API",
+            "Meta Test Event Code",
+            "Checkout started",
+        ):
+            self.assertIn(technical_label, template)
+        self.assertIn("Сигнали показують події діалогу, але самі по собі не підтверджують оплату.", template)

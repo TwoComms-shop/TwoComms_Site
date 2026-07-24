@@ -7,7 +7,8 @@ Start/Stop, вибором джерела ключів і онлайн-конс�
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Count, F, OuterRef, Q, Subquery, Sum
+from django.db.models import Count, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -594,23 +595,74 @@ def _interaction_tone(interaction_type: str) -> str:
     return "neutral"
 
 
+def _group_signal_rows(rows) -> list[dict]:
+    """Collapse repeated event rows into an auditable per-type summary."""
+    from .ig_bot_models import IgConversationSignal
+
+    labels = dict(IgConversationSignal.Type.choices)
+    grouped = {}
+    for raw in rows or ():
+        signal_type = str(raw.get("type") or "unknown")
+        time_value = str(raw.get("time") or "")
+        current = grouped.get(signal_type)
+        if current is None:
+            current = {
+                "type": signal_type,
+                "type_label": str(labels.get(signal_type, "Інший сигнал")),
+                "count": 0,
+                "latest_time": "",
+                "latest_value": "",
+                "latest_confidence": "",
+            }
+            grouped[signal_type] = current
+        current["count"] += 1
+        if time_value >= current["latest_time"]:
+            current["latest_time"] = time_value
+            current["latest_value"] = str(raw.get("value") or "")
+            current["latest_confidence"] = str(raw.get("confidence") or "")
+    return sorted(
+        grouped.values(),
+        key=lambda item: (-int(item["count"]), item["type"]),
+    )
+
+
 def _with_latest_interaction(queryset):
     from .ig_bot_models import IgConversationAnalysisSnapshot
 
     latest = IgConversationAnalysisSnapshot.objects.filter(
         client_id=OuterRef("pk")
     ).order_by("-id")
+    latest_customer = latest.exclude(
+        interaction_type=IgConversationAnalysisSnapshot.InteractionType.MANAGER_OBSERVATION
+    )
     return queryset.annotate(
-        latest_interaction_type=Subquery(latest.values("interaction_type")[:1])
+        latest_interaction_type=Coalesce(
+            Subquery(latest_customer.values("interaction_type")[:1]),
+            Subquery(latest.values("interaction_type")[:1]),
+            Value(""),
+        )
     )
 
 
 def _client_card(c) -> dict:
+    from .ig_bot_models import IgConversationAnalysisSnapshot
+
     product = getattr(c, "current_product", None)
     next_followup = getattr(c, "next_followup_at", None)
-    latest_analysis = getattr(c, "_latest_analysis", None)
+    latest_analysis = getattr(c, "_latest_customer_analysis", None)
     if isinstance(latest_analysis, (list, tuple)):
         latest_analysis = latest_analysis[0] if latest_analysis else None
+    if latest_analysis is None:
+        try:
+            latest_analysis = c.analysis_snapshots.exclude(
+                interaction_type=IgConversationAnalysisSnapshot.InteractionType.MANAGER_OBSERVATION
+            ).order_by("-id").first()
+        except Exception:
+            latest_analysis = None
+    if latest_analysis is None:
+        latest_analysis = getattr(c, "_latest_analysis", None)
+        if isinstance(latest_analysis, (list, tuple)):
+            latest_analysis = latest_analysis[0] if latest_analysis else None
     if latest_analysis is None:
         try:
             latest_analysis = c.analysis_snapshots.order_by("-id").first()
@@ -738,6 +790,13 @@ def bot_clients_api(request):
         IgClient.objects.select_related("current_product").prefetch_related(
         Prefetch(
             "analysis_snapshots",
+            queryset=IgConversationAnalysisSnapshot.objects.exclude(
+                interaction_type=IgConversationAnalysisSnapshot.InteractionType.MANAGER_OBSERVATION
+            ).order_by("-id")[:1],
+            to_attr="_latest_customer_analysis",
+        ),
+        Prefetch(
+            "analysis_snapshots",
             queryset=IgConversationAnalysisSnapshot.objects.order_by("-id")[:1],
             to_attr="_latest_analysis",
         ),
@@ -858,16 +917,16 @@ def bot_client_detail_api(request, client_id):
         }
         for e in c.stage_events.all()[:50]
     ]
-    signals = [
+    signal_rows = [
         {
             "type": s.signal_type,
             "confidence": str(s.confidence),
             "value": s.value,
-            "payload": s.payload,
             "time": s.created_at.isoformat() if s.created_at else "",
         }
-        for s in c.conversation_signals.all()[:80]
+        for s in c.conversation_signals.all().order_by("-created_at", "-id")[:120]
     ]
+    signals = _group_signal_rows(signal_rows)
     followups = [
         {
             "id": f.id,
@@ -911,6 +970,7 @@ def bot_client_detail_api(request, client_id):
         "last_message_id": last_message_id,
         "events": events,
         "signals": signals,
+        "signal_event_count": len(signal_rows),
         "followups": followups,
         "deals": deals,
         "funnel": c.funnel_progress(),

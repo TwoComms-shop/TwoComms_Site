@@ -264,7 +264,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     <div class="bot-card">
       <div class="bot-card-head">
         <h2>Онлайн-консоль</h2>
-        <span class="bot-live-chip"><i></i> наживо</span>
+        <span class="bot-live-chip"><i></i> live</span>
       </div>
       <div class="bot-console-box" id="bot-console"></div>
     </div>
@@ -295,16 +295,16 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         {% if not meta_bot_reviewer_mode %}
         <div class="bot-grid2">
           <div class="bot-field">
-            <label>Instagram Direct API (токен Facebook)</label>
-            <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_env }}" {% if settings.direct_source == cred_env %}checked{% endif %}> Змінні середовища сервера</label>
-            <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_custom }}" {% if settings.direct_source == cred_custom %}checked{% endif %}> Свій</label>
+            <label>Instagram Direct API · Facebook Token</label>
+            <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_env }}" {% if settings.direct_source == cred_env %}checked{% endif %}> Server ENV</label>
+            <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_custom }}" {% if settings.direct_source == cred_custom %}checked{% endif %}> Власне значення</label>
             <input type="password" name="custom_direct_token" placeholder="Введіть новий Direct токен (необов'язково)" value="" autocomplete="new-password" style="margin-top:8px;">
             {% if has_custom_direct_token %}<small class="bot-hint">Свій Direct токен уже збережено; значення приховано.</small>{% endif %}
           </div>
           <div class="bot-field">
-            <label>Gemini API (Google ключ)</label>
-            <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_env }}" {% if settings.gemini_source == cred_env %}checked{% endif %}> Змінні середовища сервера</label>
-            <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_custom }}" {% if settings.gemini_source == cred_custom %}checked{% endif %}> Свій</label>
+            <label>Gemini API · Google API Key</label>
+            <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_env }}" {% if settings.gemini_source == cred_env %}checked{% endif %}> Server ENV</label>
+            <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_custom }}" {% if settings.gemini_source == cred_custom %}checked{% endif %}> Власне значення</label>
             <input type="password" name="custom_gemini_key" placeholder="Введіть новий Gemini ключ (необов'язково)" value="" autocomplete="new-password" style="margin-top:8px;">
             {% if has_custom_gemini_key %}<small class="bot-hint">Свій Gemini ключ уже збережено; значення приховано.</small>{% endif %}
           </div>
@@ -354,7 +354,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             <div class="bot-hint">За замовчуванням вимкнено. Події лише з Instagram без даних для зіставлення з клієнтом позначаються як пропущені.</div>
           </div>
           <div class="bot-field">
-            <label>Код тестової події Meta</label>
+            <label>Meta Test Event Code</label>
             <input type="text" name="meta_feedback_test_event_code" value="{{ settings.meta_feedback_test_event_code }}" placeholder="TEST...">
           </div>
         </div>
@@ -493,7 +493,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     lost:'Втрачено',delivery:'Питання про доставку',payment_pending:'Очікує оплату',
     product_interest:'Інтерес до товару',custom_print:'Кастомний принт',manager_takeover:'Діалог веде менеджер',
     gift:'На подарунок',self_purchase:'Для себе',ad_reply:'Відповідь з реклами',spam:'Спам',
-    checkout_started:'Почалося оформлення',paid:'Оплачено',discount_offer:'Пропозиція зі знижкою'
+    checkout_started:'Checkout started',paid:'Оплачено',discount_offer:'Пропозиція зі знижкою',delivery:'Питання про доставку'
   };
   const followupKindLabels={payment:'Нагадування про оплату',payment_link:'Посилання на оплату',discount_offer:'Пропозиція зі знижкою',support:'Підтримка',reengagement:'Повернення до діалогу'};
   const followupStatusLabels={pending:'Очікує',sent:'Надіслано',cancelled:'Скасовано',skipped:'Пропущено',failed:'Помилка'};
@@ -833,7 +833,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           if(c.ad_title) h+='<div class="bot-client-sub" style="margin-top:8px;">📣 Реклама: '+esc(c.ad_title)+'</div>';
           if(c.delivery_status_label) h+='<div class="bot-client-sub" style="margin-top:8px;padding:9px 11px;border:1px solid rgba(251,191,36,.42);border-radius:10px;background:rgba(251,191,36,.08);color:#fde68a;">⚠ <b>Не можу відповісти:</b> '+esc(c.delivery_status_label)+(c.delivery_error?(' · '+esc(c.delivery_error)):'')+'</div>';
           h+='<div class="bot-category-strip"><div class="bot-category-copy"><div class="bot-category-title">Категорія діалогу</div><div class="bot-category-value">'+esc(c.interaction_type_label||'Не визначено')+'</div><div class="bot-category-meta">Оцінка: '+esc(c.analysis_band_label||'Попередній аналіз')+' · ймовірність: '+(c.analysis_probability?Math.round(Number(c.analysis_probability)*100)+'%':'—')+' · впевненість: '+(c.analysis_confidence?Math.round(Number(c.analysis_confidence)*100)+'%':'—')+' · намір: '+esc(c.intent_label||c.intent||'—')+' · заперечення: '+esc(c.primary_objection_label||c.primary_objection||'Не визначено')+(c.payment_truth?(' · оплата: '+esc(humanLabel(paymentTruthLabels,c.payment_truth))):'')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div></div><span class="bot-category-badge cat-'+esc(c.interaction_tone||'neutral')+'">'+esc(c.interaction_type_label||'Не визначено')+'</span></div>';
-          if((c.analysis_evidence||[]).length){h+='<div class="bot-hint" style="margin-top:6px;">Доказ: '+esc((c.analysis_evidence[0].signals||[]).join(', ')||'структуровані факти')+' · невизначеність: '+esc((c.analysis_uncertainties||[]).join(', ')||'немає')+'</div>';}
+          if((c.analysis_evidence||[]).length){const evidenceSignals=(c.analysis_evidence[0].signals||[]).map(s=>humanLabel(signalLabels,s,'Інший сигнал')).join(', ');h+='<div class="bot-hint" style="margin-top:6px;">Доказ: '+esc(evidenceSignals||'структуровані факти')+' · невизначеність: '+esc((c.analysis_uncertainties||[]).join(', ')||'немає')+'</div>';}
           const pauseBtn=c.opted_out
             ? '<button type="button" class="bot-client-action primary resume" data-act="resume" data-optout="1">Підтвердити нову згоду</button>'
             : (c.bot_paused?'<button type="button" class="bot-client-action primary resume" data-act="resume">▶ Відновити бота</button>':'<button type="button" class="bot-client-action primary pause" data-act="pause">⏸ Зупинити бота</button>');
@@ -845,7 +845,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           (d.funnel||[]).forEach(f=>{h+='<span class="bot-circle'+(f.done?' done':'')+(f.current?' current':'')+'"><i></i>'+esc(f.label)+'</span>';});
           h+='</div>';
           if(c.memory) h+='<div class="bot-mem">🧠 '+esc(c.memory)+'</div>';
-          if((d.signals||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Сигнали</div><div>';(d.signals||[]).slice(0,18).forEach(s=>{h+='<span class="bot-signal">'+esc(humanLabel(signalLabels,s.type))+(s.value?': '+esc(s.value):'')+'</span>';});h+='</div>';}
+          if((d.signals||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Сигнали</div><div class="bot-hint" style="margin-bottom:5px;">Сигнали показують події діалогу, але самі по собі не підтверджують оплату.</div><div>';(d.signals||[]).slice(0,18).forEach(s=>{const label=s.type_label||humanLabel(signalLabels,s.type,'Інший сигнал');h+='<span class="bot-signal" title="Остання подія: '+esc(fmt(s.latest_time))+'">'+esc(label)+' ×'+esc(s.count)+(s.latest_value?': '+esc(s.latest_value):'')+'</span>';});h+='</div>';}
           if((d.followups||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Заплановані контакти</div>';(d.followups||[]).forEach(f=>{h+='<div class="bot-deal">#'+f.id+' · '+esc(humanLabel(followupKindLabels,f.kind))+' · '+esc(humanLabel(followupStatusLabels,f.status))+' · '+fmt(f.due_at)+(f.discount_percent?(' · знижка '+f.discount_percent+'%'):'')+(f.skip_reason?(' · причина: '+esc(humanLabel(followupReasonLabels,f.skip_reason,'Інша причина'))):'')+'</div>';});}
           if((d.deals||[]).length){h+='<div class="bot-kb-h" style="margin-top:6px;">Угоди</div>';d.deals.forEach(dl=>{const invoiceUrl=safeHttpUrl(dl.invoice_url);h+='<div class="bot-deal">#'+dl.id+' · '+esc(humanLabel(dealStatusLabels,dl.status))+' · '+esc(dl.amount)+' грн'+(dl.order_id?(' · замовлення №'+dl.order_id):'')+(dl.payment_status?(' · '+esc(humanLabel(paymentTruthLabels,dl.payment_status))):'')+(invoiceUrl?(' · <a href="'+esc(invoiceUrl)+'" target="_blank" rel="noopener noreferrer" style="color:#7fb0ff;">відкрити оплату</a>'):'')+'</div>';});}
           h+='<div class="bot-kb-h" style="margin-top:12px;">Переписка</div><div id="bot-msgs" style="display:flex;flex-direction:column;max-height:440px;overflow-y:auto;">';

@@ -4,7 +4,7 @@ JSON-API списку карток і детальної (переписка, к
 угоди, замовлення). Доступ лише адмінам.
 """
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -14,6 +14,7 @@ from management.models import (
     InstagramBotLog,
     InstagramBotMessage,
 )
+from management.bot_views import _group_signal_rows
 
 User = get_user_model()
 
@@ -29,6 +30,36 @@ class FunnelProgressTests(TestCase):
         self.assertTrue(by["checkout"]["done"])
         self.assertTrue(by["checkout"]["current"])
         self.assertFalse(by["paid"]["done"])
+
+
+class SignalGroupingTests(SimpleTestCase):
+    def test_grouping_keeps_latest_event_and_hides_duplicate_rows(self):
+        grouped = _group_signal_rows([
+            {
+                "type": "size_concern",
+                "value": "S",
+                "confidence": "0.80",
+                "time": "2026-07-24T10:00:00+03:00",
+            },
+            {
+                "type": "size_concern",
+                "value": "M",
+                "confidence": "0.95",
+                "time": "2026-07-24T10:05:00+03:00",
+            },
+            {
+                "type": "checkout_started",
+                "value": "",
+                "confidence": "0.90",
+                "time": "2026-07-24T10:04:00+03:00",
+            },
+        ])
+
+        self.assertEqual([row["type"] for row in grouped], ["size_concern", "checkout_started"])
+        self.assertEqual(grouped[0]["count"], 2)
+        self.assertEqual(grouped[0]["latest_value"], "M")
+        self.assertEqual(grouped[0]["latest_time"], "2026-07-24T10:05:00+03:00")
+        self.assertEqual(grouped[0]["type_label"], "Розмір")
 
 
 @MGMT

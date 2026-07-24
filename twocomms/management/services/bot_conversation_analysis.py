@@ -96,7 +96,14 @@ def schedule_analysis(
     delay_seconds: int = DEBOUNCE_SECONDS,
 ) -> IgConversationAnalysisJob | None:
     """Coalesce a changed conversation into one per-client durable job."""
-    if not client or not getattr(client, "pk", None) or not getattr(message, "pk", None):
+    if (
+        not client
+        or not getattr(client, "pk", None)
+        or not getattr(message, "pk", None)
+        or client.hidden_at
+        or client.is_blocked
+        or client.stage == IgClient.Stage.SPAM
+    ):
         return None
     now = now or timezone.now()
     due_at = now + timedelta(seconds=max(0, min(int(delay_seconds), 3600)))
@@ -234,6 +241,10 @@ def _claim_due(now) -> tuple[IgConversationAnalysisJob, int, int, str] | None:
                 attempts__lt=MAX_ATTEMPTS,
                 due_at__lte=now,
                 next_attempt_at__lte=now,
+                client__hidden_at__isnull=True,
+                client__is_blocked=False,
+            ).exclude(
+                client__stage=IgClient.Stage.SPAM,
             )
             .order_by("due_at", "id")
             .first()
@@ -956,11 +967,25 @@ def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
     queued = 0
     unchanged = 0
     historical_blocked = 0
+    hidden_excluded = 0
     for row in latest_rows:
         client_id = int(row["client_id"])
         watermark = int(row["latest_message_id"])
         job = IgConversationAnalysisJob.objects.filter(client_id=client_id).first()
         client = IgClient.objects.filter(pk=client_id).first()
+        if not client or client.hidden_at:
+            hidden_excluded += 1
+            continue
+        message = InstagramBotMessage.objects.filter(
+            pk=watermark,
+            client_id=client_id,
+        ).first()
+        if message:
+            # Deterministic CRM state and a no-network snapshot are always
+            # reconciled, even when historical Gemini backfill is disabled.
+            from management.services.bot_sales_classifier import reconcile_rules_projection
+
+            reconcile_rules_projection(client, watermark=watermark)
         truth_changed_at = _latest_truth_change(client) if client else None
         if not _reconcile_candidate_is_eligible(
             cutoff=cutoff,
@@ -1019,7 +1044,6 @@ def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
         ):
             unchanged += 1
             continue
-        message = InstagramBotMessage.objects.filter(pk=watermark, client_id=client_id).first()
         if message and client:
             schedule_analysis(
                 client,
@@ -1041,6 +1065,7 @@ def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
         "queued": queued,
         "unchanged": unchanged,
         "historical_blocked": historical_blocked,
+        "hidden_excluded": hidden_excluded,
         "historical_backfill_requested": bool(settings_obj.analysis_backfill_enabled),
         "historical_backfill_allowed": include_history,
         "reconcile_after": cutoff.isoformat(),

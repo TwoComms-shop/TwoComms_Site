@@ -909,6 +909,15 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
     - **Tests:** DB-free view smoke with staff request, production `RequestFactory`/view proof, public HTTP auth-boundary smoke, stale-process regression review, no customer/Meta/Telegram sends, and post-restart traceback scan.
     - **Production evidence:** SHA `142e27a2`; migration `0097` applied; new process view proof returned `200 application/json` with `success=true`; public `/bot/api/status/` returned `302`; one daemon PID and sub-second DB/cache heartbeats; 17/17 InnoDB and payment truth audit findings `0`.
 
+  - [ ] **P0.B5am Reconcile paused conversations into an evidence-bound, readable CRM projection.**
+    - **Priority:** P0 — paused replies must not disable stage truth, and operators need one clear category instead of raw duplicate events.
+    - **Symptom:** a manager-led customer who selected a size and discussed payment can remain at `Написав`; the card shows repeated raw signal codes such as `size_concern ×4` and `checkout_started ×2`, while the latest manager snapshot can hide the customer's category.
+    - **Root cause:** deterministic stage projection was coupled to the reply path; historical Gemini backfill is intentionally gated, and the UI rendered the append-only signal event log directly without grouping or source-role precedence.
+    - **Risk:** staff misread a checkout conversation as a cold/new lead, treat a signal as payment proof, miss complaints, and spend analysis quota on hidden/spam clients that should be excluded entirely.
+    - **Affected branches:** paused/takeover ingress, reconciliation cursor, rules snapshots, stage funnel, payment-truth display, client detail API, category filters, statistics, and English/Ukrainian technical labels.
+    - **Acceptance:** visible paused/manager-led clients receive deterministic no-network stage projection and rules snapshots before any historical-AI cutoff; hidden/blocked/spam clients are excluded from reconciliation and due claims; only verified payment ledger truth produces `paid`; detail API groups each signal type with Ukrainian label/count/latest evidence; manager observations never hide the latest customer category; exact terms remain English (`live`, `ENV`, `API Key`, `Conversions API`, `Meta Test Event Code`, `Checkout started`) while explanatory UX remains Ukrainian.
+    - **Tests:** DB-free stage monotonicity and manager-signal exclusion; DB-free signal grouping; production MariaDB rollback fixture for paused payment/size conversation, hidden exclusion, rules snapshot/stage projection, grouped API response, payment `unverified`, and zero external transports; desktop/mobile browser proof.
+
 - [x] **P1.B5c Replace the global long-held reply lock with a bounded two-level permission barrier.**
   - **Priority:** P1 — correctness is currently fail-closed, but latency and operator availability degrade under slow AI/provider calls.
   - **Symptom:** unrelated clients are serialized, while global stop, client pause, or manager takeover can wait for the full Gemini/Meta timeout before returning.

@@ -4,7 +4,11 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 
 from management.models import IgClient, IgConversationAnalysisSnapshot, InstagramBotMessage
-from management.services.bot_sales_classifier import ANALYSIS_RULES_VERSION, _interaction_type
+from management.services.bot_sales_classifier import (
+    ANALYSIS_RULES_VERSION,
+    _interaction_type,
+    observed_stage_target,
+)
 
 
 class InteractionTaxonomyTests(SimpleTestCase):
@@ -56,3 +60,54 @@ class InteractionTaxonomyTests(SimpleTestCase):
 
     def test_taxonomy_rules_version_tracks_semantic_change(self):
         self.assertEqual(ANALYSIS_RULES_VERSION, "2026-07-24.v4")
+
+    def test_observed_payment_intent_advances_paused_conversation_to_checkout(self):
+        self.assertEqual(
+            observed_stage_target(
+                IgClient.Stage.NEW,
+                intent=IgClient.Intent.PAYMENT,
+                has_size=True,
+            ),
+            IgClient.Stage.CHECKOUT,
+        )
+
+    def test_observed_stage_never_claims_paid_without_verified_payment(self):
+        self.assertEqual(
+            observed_stage_target(
+                IgClient.Stage.CHECKOUT,
+                intent=IgClient.Intent.PAYMENT,
+            ),
+            IgClient.Stage.CHECKOUT,
+        )
+
+    def test_manager_takeover_signal_does_not_advance_funnel(self):
+        self.assertEqual(
+            observed_stage_target(
+                IgClient.Stage.NEW,
+                signal_types=["manager_takeover"],
+            ),
+            IgClient.Stage.NEW,
+        )
+
+    def test_manager_led_checkout_can_advance_without_reply_automation(self):
+        self.assertEqual(
+            observed_stage_target(
+                IgClient.Stage.LEAD_TO_MANAGER,
+                intent=IgClient.Intent.PAYMENT,
+            ),
+            IgClient.Stage.CHECKOUT,
+        )
+
+    def test_cold_stage_stays_terminal_until_verified_payment(self):
+        self.assertEqual(
+            observed_stage_target(IgClient.Stage.COLD, intent=IgClient.Intent.PAYMENT),
+            IgClient.Stage.COLD,
+        )
+        self.assertEqual(
+            observed_stage_target(
+                IgClient.Stage.COLD,
+                intent=IgClient.Intent.PAYMENT,
+                verified_payment=True,
+            ),
+            IgClient.Stage.PAID,
+        )
