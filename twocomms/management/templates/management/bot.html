@@ -491,13 +491,15 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     price_objection:'Заперечення щодо ціни',prepayment_objection:'Заперечення щодо передоплати',
     size_concern:'Питання про розмір',no_reply:'Немає відповіді',no_buy:'Відмова від купівлі',
     lost:'Втрачено',delivery:'Питання про доставку',payment_pending:'Очікує оплату',
-    product_interest:'Інтерес до товару',custom_print:'Кастомний принт',manager_takeover:'Діалог веде менеджер'
+    product_interest:'Інтерес до товару',custom_print:'Кастомний принт',manager_takeover:'Діалог веде менеджер',
+    gift:'На подарунок',self_purchase:'Для себе',ad_reply:'Відповідь з реклами',spam:'Спам',
+    checkout_started:'Почалося оформлення',paid:'Оплачено',discount_offer:'Пропозиція зі знижкою'
   };
   const followupKindLabels={payment:'Нагадування про оплату',payment_link:'Посилання на оплату',discount_offer:'Пропозиція зі знижкою',support:'Підтримка',reengagement:'Повернення до діалогу'};
   const followupStatusLabels={pending:'Очікує',sent:'Надіслано',cancelled:'Скасовано',skipped:'Пропущено',failed:'Помилка'};
   const followupReasonLabels={manual_pause:'Зупинено менеджером',hidden:'Клієнта приховано',lost:'Клієнта втрачено',global_reply_stopped:'Автовідповіді зупинено',opt_out:'Клієнт відмовився від повідомлень',manager_takeover:'Діалог веде менеджер',paid:'Оплату підтверджено',meta_window:'Вікно Meta завершено',quiet_hours:'Час тиші',expired:'Термін минув',superseded:'Замінено новішою дією'};
-  const dealStatusLabels={new:'Нова',pending:'Очікує',paid:'Оплачено',completed:'Завершена',cancelled:'Скасована',failed:'Помилка'};
-  const paymentTruthLabels={confirmed:'Оплату підтверджено',paid:'Оплачено',pending:'Очікуємо оплату',unpaid:'Оплату не підтверджено',unverified:'Оплату не підтверджено',refunded:'Оплату повернено',reversed:'Оплату скасовано',unknown:'Стан оплати невідомий'};
+  const dealStatusLabels={draft:'Чернетка',quoted:'Ціну названо',awaiting_payment:'Очікує оплату',new:'Нова',pending:'Очікує',paid:'Оплачено',completed:'Завершена',order_created:'Замовлення створено',cancelled:'Скасована',failed:'Помилка'};
+  const paymentTruthLabels={confirmed:'Оплату підтверджено',paid:'Оплачено',pending:'Перевіряється',unpaid:'Оплату не підтверджено',unverified:'Оплату не підтверджено',partially_refunded:'Частково повернено',refunded:'Повністю повернено',reversed:'Платіж скасовано банком',failed:'Оплата не пройшла',cancelled:'Оплату скасовано',unknown:'Стан оплати невідомий'};
   function humanLabel(map,value,fallback='Невідомо'){ return map[value]||fallback; }
 
   /* ============ Tabs ============ */
