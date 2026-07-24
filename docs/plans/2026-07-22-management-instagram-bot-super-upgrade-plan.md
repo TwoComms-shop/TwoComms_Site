@@ -869,7 +869,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
     - **Tests:** DB-free view smoke with staff request, production `RequestFactory`/view proof, public HTTP auth-boundary smoke, stale-process regression review, no customer/Meta/Telegram sends, and post-restart traceback scan.
     - **Production evidence:** SHA `142e27a2`; migration `0097` applied; new process view proof returned `200 application/json` with `success=true`; public `/bot/api/status/` returned `302`; one daemon PID and sub-second DB/cache heartbeats; 17/17 InnoDB and payment truth audit findings `0`.
 
-- [ ] **P1.B5c Replace the global long-held reply lock with a bounded two-level permission barrier.**
+- [x] **P1.B5c Replace the global long-held reply lock with a bounded two-level permission barrier.**
   - **Priority:** P1 — correctness is currently fail-closed, but latency and operator availability degrade under slow AI/provider calls.
   - **Symptom:** unrelated clients are serialized, while global stop, client pause, or manager takeover can wait for the full Gemini/Meta timeout before returning.
   - **Root cause:** one process-wide exclusive `flock` is held across conversation generation and external provider I/O in order to guarantee that no reply crosses a stop/pause boundary.
@@ -877,7 +877,16 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Affected branches:** inbound reply generation/send, due follow-ups, global stop, per-client pause/resume, and manager takeover.
   - **Acceptance:** use per-client send ownership plus a short global generation/permission epoch; revalidate the global/client epoch immediately before every external customer send; stop/pause/takeover completes within a documented bounded time and guarantees zero post-boundary sends without waiting for another client's whole generation; expose lock-wait/abort telemetry in Ukrainian.
   - **Tests:** two clients generate concurrently, stop during Gemini, pause one client while another is slow, takeover at the pre-send boundary, provider timeout, stale owner recovery, and exactly zero customer sends after a committed stop/pause epoch.
-  - **Implementation checkpoint (uncommitted):** added durable global/client `reply_permission_epoch`, removed the lock from the Gemini generation boundary, and introduced a short send-only permission lock with epoch revalidation and Ukrainian status telemetry (`reply_barrier.waits/aborts`). Follow-up sends use the same barrier. Production MariaDB migration, concurrency tests, and runtime proof are still required before marking this item complete.
+  - **Production evidence:** SHA `6932d822`; migration `0098` applied on MariaDB `qlknpodo_MySQL_DB`; rollback-only fixture proved global/client epoch invalidation with zero persisted residue; 7/7 DB-free reply-boundary tests passed while explicitly skipping both production databases; staff status API returned HTTP 200 with `reply_barrier` telemetry; public auth boundaries returned 302; exactly one daemon was running with sub-second DB/cache heartbeats, queue `0`, analysis pending/failed `0/0`, and effective model `gemini-3.6-flash`; all 17 runtime tables remained InnoDB and payment truth audit findings remained `0`.
+
+- [ ] **P1.B5d Make daemon ensure startup verification truthful and startup-budget aware.**
+  - **Priority:** P1 — deploy recovery succeeded, but the operator command emitted a false failure and could cause repeated/manual spawn attempts.
+  - **Symptom:** immediately after maintenance release on SHA `6932d822`, `run_instagram_bot --ensure` returned `daemon child exited before acquiring singleton lock`; a retry seconds later returned `daemon alive — ok` and production had exactly one healthy daemon.
+  - **Root cause:** `_ensure()` waits a hard-coded 3 seconds for the daemon lock, discards the `Popen` handle, and labels every timeout as a child exit without checking `poll()`, current lock ownership, or heartbeat truth.
+  - **Risk:** false deploy failure, redundant recovery attempts, confusing incident evidence, and unsafe operator pressure to spawn another worker even though the singleton daemon is still starting.
+  - **Affected branches:** maintenance release, schema deploy restart, cron watchdog, slow Django import/startup, concurrent ensure calls, daemon singleton acquisition, and production verification.
+  - **Acceptance:** define a documented startup budget; retain and inspect the child process handle; distinguish exited child, still-starting timeout, and another healthy winner; perform one final lock/heartbeat reconciliation before failing; never report success without singleton lock plus fresh heartbeat.
+  - **Tests:** slow child acquires within budget, exited child with return code, live child timeout, concurrent winner, stale old daemon release, exact one-spawn boundary, and production maintenance release/ensure proof.
 
 - [ ] **P0.B6 Fail closed for Meta data-deletion signed requests.**
   - **Symptom:** the public data-deletion callback accepts a syntactically valid signed request when the app secret is absent.

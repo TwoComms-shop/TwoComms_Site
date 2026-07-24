@@ -47,6 +47,7 @@ CONV_REFRESH_EVERY = 120               # фонове оновлення спи�
 ANALYSIS_RECONCILE_EVERY = 600         # bounded repair of missed scheduling, c
 ANALYSIS_RECONCILE_BATCH = 100
 RELOAD_LOCK_WAIT_SECONDS = 45
+DAEMON_START_WAIT_SECONDS = 15
 
 # Cron may invoke manage.py from an arbitrary working directory. Resolve the
 # entry point from this command module and keep the child in the Django root.
@@ -309,7 +310,7 @@ class Command(BaseCommand):
             log_path = os.path.join(log_dir, "ig_bot_daemon.log")
             try:
                 with open(log_path, "a") as logf:
-                    subprocess.Popen(
+                    child = subprocess.Popen(
                         [sys.executable, MANAGE_PY_PATH, "run_instagram_bot", "--forever"],
                         stdout=logf,
                         stderr=logf,
@@ -318,8 +319,27 @@ class Command(BaseCommand):
                         cwd=PROJECT_ROOT,
                         env=os.environ.copy(),
                     )
-                if not _wait_for_lock(DAEMON_LOCK_FILE, held=True, timeout=3.0):
-                    raise CommandError("daemon child exited before acquiring singleton lock")
+                if not _wait_for_lock(
+                    DAEMON_LOCK_FILE,
+                    held=True,
+                    timeout=DAEMON_START_WAIT_SECONDS,
+                ):
+                    # A cron/watchdog process can win the singleton race while
+                    # our child exits normally. Reconcile lock + heartbeat once
+                    # more before reporting failure.
+                    if _process_lock_held(DAEMON_LOCK_FILE) and _daemon_alive():
+                        self.stdout.write("daemon alive — ok")
+                        return
+                    return_code = child.poll()
+                    if return_code is None:
+                        raise CommandError(
+                            "daemon child still running after "
+                            f"{DAEMON_START_WAIT_SECONDS}s without singleton lock"
+                        )
+                    raise CommandError(
+                        f"daemon child exited with code {return_code} "
+                        "before acquiring singleton lock"
+                    )
                 bot.log("info", "daemon_spawn", "watchdog підняв демона")
                 self.stdout.write("daemon spawned")
             except CommandError:

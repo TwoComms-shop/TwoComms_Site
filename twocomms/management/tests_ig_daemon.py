@@ -20,6 +20,8 @@ from django.utils import timezone
 from management.management.commands.run_instagram_bot import (
     ANALYSIS_RECONCILE_BATCH,
     ANALYSIS_RECONCILE_EVERY,
+    DAEMON_LOCK_FILE,
+    DAEMON_START_WAIT_SECONDS,
     DAEMON_LOCK_KEY,
     HB_KEY,
     MANAGE_PY_PATH,
@@ -66,6 +68,11 @@ class DaemonPathTests(SimpleTestCase):
         self.assertEqual(args[0][:3], [os.sys.executable, MANAGE_PY_PATH, "run_instagram_bot"])
         self.assertEqual(kwargs["cwd"], PROJECT_ROOT)
         self.assertTrue(os.path.isabs(args[0][1]))
+        _wait.assert_called_once_with(
+            DAEMON_LOCK_FILE,
+            held=True,
+            timeout=DAEMON_START_WAIT_SECONDS,
+        )
         stdout.write.assert_called()
 
     @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
@@ -118,9 +125,37 @@ class DaemonPathTests(SimpleTestCase):
     @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=False)
     @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=False)
     def test_ensure_fails_when_child_never_acquires_daemon_lock(self, _held, _wait, popen):
-        with self.assertRaisesMessage(CommandError, "exited before acquiring"):
+        popen.return_value.poll.return_value = None
+        with self.assertRaisesMessage(CommandError, "still running after"):
             Command()._ensure()
         popen.assert_called_once()
+
+    @patch("management.management.commands.run_instagram_bot._daemon_alive", return_value=False)
+    @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
+    @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=False)
+    @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=False)
+    def test_ensure_reports_exited_child_return_code(
+        self, _held, _wait, popen, _alive
+    ):
+        popen.return_value.poll.return_value = 7
+        with self.assertRaisesMessage(CommandError, "exited with code 7"):
+            Command()._ensure()
+
+    @patch("management.management.commands.run_instagram_bot._daemon_alive", return_value=True)
+    @patch("management.management.commands.run_instagram_bot.subprocess.Popen")
+    @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=False)
+    @patch(
+        "management.management.commands.run_instagram_bot._process_lock_held",
+        side_effect=[False, True],
+    )
+    def test_ensure_accepts_healthy_concurrent_winner(
+        self, _held, _wait, popen, _alive
+    ):
+        popen.return_value.poll.return_value = 0
+        command = Command()
+        with patch.object(command, "stdout") as stdout:
+            command._ensure()
+        stdout.write.assert_called_with("daemon alive — ok")
 
     @patch("management.management.commands.run_instagram_bot._wait_for_lock", return_value=False)
     @patch("management.management.commands.run_instagram_bot._process_lock_held", return_value=True)
