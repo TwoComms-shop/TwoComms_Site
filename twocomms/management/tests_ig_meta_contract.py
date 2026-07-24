@@ -6,6 +6,27 @@ from django.test import SimpleTestCase
 from management.services import instagram_bot as bot
 
 
+class _MemoryCache:
+    def __init__(self):
+        self.values = {}
+
+    def add(self, key, value, timeout=None):
+        if key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
+    def incr(self, key):
+        self.values[key] += 1
+        return self.values[key]
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+    def set(self, key, value, timeout=None):
+        self.values[key] = value
+
+
 class InstagramMetaContractTests(SimpleTestCase):
     def test_graph_url_builder_is_versioned_and_rejects_external_paths(self):
         self.assertEqual(
@@ -55,3 +76,20 @@ class InstagramMetaContractTests(SimpleTestCase):
         self.assertEqual(status["token_permission"], "unknown")
         self.assertEqual(status["account_access"], "unknown")
         self.assertEqual(status["recipient_delivery"], "per_recipient")
+
+    def test_rate_observability_counts_endpoint_classes_without_quota_claims(self):
+        self.assertEqual(bot._meta_endpoint_class(f"{bot.GRAPH}/page/conversations"), "conversations")
+        self.assertEqual(bot._meta_endpoint_class(f"{bot.GRAPH}/page/messages"), "send")
+        self.assertEqual(bot._meta_endpoint_class(f"{bot.GRAPH}/oauth/access_token"), "oauth")
+        fake_cache = _MemoryCache()
+        with patch.object(bot, "cache", fake_cache):
+            bot._record_meta_http_observation("send", 429)
+            bot._record_meta_http_observation("conversations", 200, '{"error":{"code":4}}')
+            status = bot.meta_rate_limit_status()
+
+        self.assertEqual(status["endpoints"]["send"]["requests"], 1)
+        self.assertEqual(status["endpoints"]["send"]["rate_limited"], 1)
+        self.assertEqual(status["endpoints"]["conversations"]["requests"], 1)
+        self.assertEqual(status["endpoints"]["conversations"]["rate_limited"], 1)
+        self.assertTrue(status["degraded"])
+        self.assertNotIn("remaining", status)

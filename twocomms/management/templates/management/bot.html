@@ -235,6 +235,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         <div class="bot-hint" id="bot-error" style="margin-top:12px;color:#f87171;"></div>
         <div class="bot-hint" id="bot-outbox-help" style="margin-top:8px;"></div>
         <div class="bot-hint" id="bot-meta-capability" style="margin-top:8px;"></div>
+        <div class="bot-hint" id="bot-meta-rate" style="margin-top:8px;"></div>
       </div>
       <div class="bot-card">
         <h2>Як працює</h2>
@@ -551,6 +552,13 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       const delivery=meta.recipient_delivery==='per_recipient'?'доставка окремо за клієнтом':'стан доставки недоступний';
       metaCapability.textContent='Meta: '+allowlist+' · '+permission+' · '+access+' · '+delivery;
       metaCapability.style.color=(meta.token_configured&&meta.token_permission==='granted')?'#86efac':'#fbbf24';
+    }
+    const metaRate=document.getElementById('bot-meta-rate');
+    if(metaRate){
+      const rate=st.meta_rate_limits||{};
+      const last=rate.last_rate_limited_endpoint ? ('останній ліміт: '+rate.last_rate_limited_endpoint) : 'лімітів не зафіксовано';
+      metaRate.textContent='Meta API: '+(rate.degraded?'тимчасово обмежено · ':'')+last;
+      metaRate.style.color=rate.degraded?'#f87171':'';
     }
     if(outboxAvailable) renderNotificationReview(outboxManual);
     const replyBarrier=document.getElementById('bot-reply-barrier');

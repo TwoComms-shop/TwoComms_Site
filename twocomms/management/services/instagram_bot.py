@@ -573,6 +573,93 @@ def verify_signature(raw_body: bytes, header: str) -> bool:
 GRAPH_SENSITIVE_QUERY_KEYS = frozenset({
     "access_token", "client_secret", "app_secret", "api_key", "password",
 })
+META_ENDPOINT_CLASSES = ("conversations", "send", "read", "oauth")
+META_OBSERVABILITY_TTL = 86400
+META_DEGRADED_TTL = 120
+
+
+def _meta_endpoint_class(url: str) -> str:
+    try:
+        path = urlsplit(url).path
+    except (TypeError, ValueError):
+        return "read"
+    path = path.removeprefix(f"/{GRAPH_VERSION}/")
+    if "/conversations" in path:
+        return "conversations"
+    if path.endswith("/messages"):
+        return "send"
+    if path.startswith("oauth/"):
+        return "oauth"
+    return "read"
+
+
+def _increment_meta_counter(key: str) -> None:
+    try:
+        if cache.add(key, 1, META_OBSERVABILITY_TTL):
+            return
+        cache.incr(key)
+        return
+    except Exception:
+        pass
+    try:
+        cache.set(key, int(cache.get(key) or 0) + 1, META_OBSERVABILITY_TTL)
+    except Exception:
+        pass
+
+
+def _record_meta_http_observation(endpoint: str, code: int, body: str = "") -> None:
+    """Record bounded endpoint/rate facts without persisting provider payloads."""
+    endpoint = endpoint if endpoint in META_ENDPOINT_CLASSES else "read"
+    _increment_meta_counter(f"ig_meta_http_total:{endpoint}")
+    if code == -1:
+        _increment_meta_counter(f"ig_meta_http_transport:{endpoint}")
+    try:
+        graph_code, _graph_subcode = _graph_error_codes(body)
+    except Exception:
+        graph_code = 0
+    rate_limited = code == 429 or graph_code in RATE_LIMIT_CODES
+    if not rate_limited:
+        return
+    _increment_meta_counter(f"ig_meta_http_rate:{endpoint}")
+    try:
+        cache.set(
+            "ig_meta_http_last_rate",
+            {"endpoint": endpoint, "at": timezone.now().isoformat()},
+            META_OBSERVABILITY_TTL,
+        )
+        cache.set("ig_meta_http_degraded_until", time.time() + META_DEGRADED_TTL, META_DEGRADED_TTL)
+    except Exception:
+        pass
+
+
+def meta_rate_limit_status() -> dict[str, object]:
+    try:
+        until = float(cache.get("ig_meta_http_degraded_until") or 0)
+    except (TypeError, ValueError):
+        until = 0
+    endpoints = {}
+    for endpoint in META_ENDPOINT_CLASSES:
+        try:
+            total = int(cache.get(f"ig_meta_http_total:{endpoint}") or 0)
+            rate = int(cache.get(f"ig_meta_http_rate:{endpoint}") or 0)
+            transport = int(cache.get(f"ig_meta_http_transport:{endpoint}") or 0)
+        except (TypeError, ValueError):
+            total = rate = transport = 0
+        endpoints[endpoint] = {
+            "requests": total,
+            "rate_limited": rate,
+            "transport_errors": transport,
+        }
+    last = cache.get("ig_meta_http_last_rate")
+    if not isinstance(last, dict):
+        last = {}
+    return {
+        "degraded": until > time.time(),
+        "degraded_until": datetime.fromtimestamp(until, tz=dt_timezone.utc).isoformat() if until else "",
+        "last_rate_limited_at": str(last.get("at") or ""),
+        "last_rate_limited_endpoint": str(last.get("endpoint") or ""),
+        "endpoints": endpoints,
+    }
 
 
 def _valid_graph_request_url(url: str) -> bool:
@@ -634,7 +721,10 @@ def _graph_http(
     request_headers = dict(headers or {})
     if token:
         request_headers["Authorization"] = f"Bearer {token}"
-    return _http(clean_url, data=data, timeout=timeout, headers=request_headers)
+    endpoint = _meta_endpoint_class(clean_url)
+    code, body = _http(clean_url, data=data, timeout=timeout, headers=request_headers)
+    _record_meta_http_observation(endpoint, code, body)
+    return code, body
 
 
 def _http(
@@ -3583,6 +3673,7 @@ def status_snapshot() -> dict:
         "app_secret_set": bool(app_secret()),
         "webhook_signature": webhook_signature_status(),
         "meta_capability": meta_capability_status(s),
+        "meta_rate_limits": meta_rate_limit_status(),
         "trigger_text": s.trigger_text,
         "reply_text": s.reply_text,
         "poll_interval_seconds": s.poll_interval_seconds,
