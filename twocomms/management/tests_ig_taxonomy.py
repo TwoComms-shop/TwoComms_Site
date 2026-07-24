@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 
 from management.models import IgClient, IgConversationAnalysisSnapshot, InstagramBotMessage
-from management.services.bot_sales_classifier import _interaction_type
+from management.services.bot_sales_classifier import ANALYSIS_RULES_VERSION, _interaction_type
 
 
 class InteractionTaxonomyTests(SimpleTestCase):
@@ -32,3 +32,27 @@ class InteractionTaxonomyTests(SimpleTestCase):
         self.assertNotEqual(self._classify("В каком магазине вы находитесь?"), "wholesale_b2b")
         self.assertEqual(self._classify("Есть проблема: хочу обмен"), "support_complaint")
         self.assertEqual(self._classify("Ахаха, очень круто"), "community_casual")
+
+    def test_missing_delivery_support_variants_are_recognized(self):
+        for phrase in (
+            "Замовлення не прийшло",
+            "Посылка не пришла",
+            "Мне не доставили заказ",
+            "Я не отримав товар",
+            "Заказ не получен",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(self._classify(phrase), "support_complaint")
+
+    def test_unrelated_negative_phrases_are_not_support_complaints(self):
+        for phrase in (
+            "Я не пришлю фото сегодня",
+            "Вона не прийшла на зустріч",
+            "Ви не отримали оплату?",
+            "Коли прийшов новий товар?",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertNotEqual(self._classify(phrase), "support_complaint")
+
+    def test_taxonomy_rules_version_tracks_semantic_change(self):
+        self.assertEqual(ANALYSIS_RULES_VERSION, "2026-07-24.v4")
