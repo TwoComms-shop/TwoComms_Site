@@ -376,7 +376,15 @@ The order is intentional. P0 blocks safe operation; P1 improves conversion and o
 - [x] **P0.7 Fail closed on webhook signature in production.** Missing `IG_APP_SECRET` now rejects POSTs; only explicit `IG_BOT_ALLOW_UNSIGNED_WEBHOOKS=true` enables a development bypass. Status exposes `configured`, `unsigned_override`, `healthy`, and `state`; the missing-secret warning is bounded instead of emitted for every event. Production SHA `11b4f9cf` reports `missing_secret` with override disabled, so unsigned traffic is intentionally blocked until the real Meta secret is configured. Commit/push/deploy.
 - [x] **P0.8 Guarantee no duplicate customer send.** Added `send_state`/timestamps and a conditional send boundary: `sending` is persisted before Meta I/O, success becomes `sent`, and timeout/5xx/partial delivery becomes `unknown` with automatic retry disabled. Stale processing rows that crossed the boundary are failed instead of requeued; post-send claim loss cannot replay the request. Migration `0081` is applied on production SHA `3853088a`; focused resilience/audit/e2e tests pass. Commit/push/deploy.
 - [x] **P0.9 Fix secret presentation and access boundaries.** Custom Direct/Gemini credentials are write-only password fields with explicit presence indicators; blank saves preserve existing values and explicit clear flags are admin-only. Status JSON exposes no custom values, token-like query parameters are redacted in diagnostics, and 17 privacy/secret tests pass. Production SHA `2974501d` reports no `custom_*` fields in status and daemon `running`. Commit/push/deploy.
-- [ ] **P0.10 Production recovery verification.** Confirm daemon heartbeat, webhook health, queue drain, no new duplicate alerts, and a clean rollback point. Mark only after server evidence. Commit/push/deploy.
+- [x] **P0.10 Production recovery verification.** Production SHA `bedca9de7453382b9e0dced759b100b3e1a0f62f` was checked after docs deploy; an active maintenance lease was explicitly discovered and released by its exact owner token, `--ensure` spawned one daemon, and the authenticated overview showed `Працює / Агент онлайн і відповідає`, `gemini-3.6-flash`, and outbox `0`. Webhook capability remains honestly `missing_secret`; no customer/Telegram/Meta transport ran.
+- [x] **P0.10a Maintenance release must be fail-visible.**
+  - **Priority:** P0 — a swallowed release error can leave the daemon in a deliberate maintenance pause after a deploy appears successful.
+  - **Symptom:** the rollback-only verifier cleanup suppressed a failed `--maintenance-off`; the next deploy printed `maintenance active — watchdog skip` and no daemon was running.
+  - **Root cause:** the ad-hoc shell trap redirected release errors and did not assert inactive maintenance status before calling `--ensure`.
+  - **Risk:** production can remain offline while Git SHA and migrations look correct.
+  - **Affected branches:** maintenance-on/off deploy sequence, verifier cleanup, watchdog ensure, offline cockpit state.
+  - **Acceptance:** deploys release only the exact captured lease, fail on release error, explicitly assert `maintenance_status.active=false`, then run `--ensure` and verify one fresh daemon; no cleanup path may hide a release failure.
+  - **Implementation/evidence:** the deploy runbook now requires exact-token release verification and a post-release inactive assertion; the incident was recovered on production with exact-token `--maintenance-off` followed by `--ensure`, one daemon, fresh UI heartbeat, and no transport side effects.
 
 ### Additional findings from the second audit (2026-07-22)
 
@@ -1191,6 +1199,7 @@ python manage.py compress --force
 python manage.py seed_ig_bot_sales_playbooks
 touch tmp/restart.txt
 python manage.py run_instagram_bot --maintenance-off "$IG_BOT_MAINTENANCE_ID"
+test "$(python manage.py shell -c 'from management.services.ig_maintenance import maintenance_status; print(maintenance_status()["active"])' | tail -n 1)" = "False"
 python manage.py run_instagram_bot --ensure
 python manage.py poll_ig_deal_payments --limit 5
 ```
@@ -1221,6 +1230,8 @@ The deployment is incomplete until the slice also proves:
 - exactly one daemon PID owns the current SHA after concurrent `--ensure` checks;
 - cache backend/health, DB heartbeat, daemon heartbeat, queue depth/oldest age,
   outbox due/failed oldest age, and follow-up backlog are sane;
+- maintenance is explicitly inactive after release; a failed exact-token release
+  stops the deploy instead of allowing `--ensure` to report a false success;
 - configured, effective, and last-success Gemini model/key/task are distinguished;
 - webhook signature health, local allowlist, token permission probe, account
   access level, and concrete recipient delivery history are separate facts;
