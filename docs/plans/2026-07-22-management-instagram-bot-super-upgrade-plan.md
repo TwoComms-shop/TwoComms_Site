@@ -879,7 +879,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Tests:** two clients generate concurrently, stop during Gemini, pause one client while another is slow, takeover at the pre-send boundary, provider timeout, stale owner recovery, and exactly zero customer sends after a committed stop/pause epoch.
   - **Production evidence:** SHA `6932d822`; migration `0098` applied on MariaDB `qlknpodo_MySQL_DB`; rollback-only fixture proved global/client epoch invalidation with zero persisted residue; 7/7 DB-free reply-boundary tests passed while explicitly skipping both production databases; staff status API returned HTTP 200 with `reply_barrier` telemetry; public auth boundaries returned 302; exactly one daemon was running with sub-second DB/cache heartbeats, queue `0`, analysis pending/failed `0/0`, and effective model `gemini-3.6-flash`; all 17 runtime tables remained InnoDB and payment truth audit findings remained `0`.
 
-- [ ] **P1.B5d Make daemon ensure startup verification truthful and startup-budget aware.**
+- [x] **P1.B5d Make daemon ensure startup verification truthful and startup-budget aware.**
   - **Priority:** P1 — deploy recovery succeeded, but the operator command emitted a false failure and could cause repeated/manual spawn attempts.
   - **Symptom:** immediately after maintenance release on SHA `6932d822`, `run_instagram_bot --ensure` returned `daemon child exited before acquiring singleton lock`; a retry seconds later returned `daemon alive — ok` and production had exactly one healthy daemon.
   - **Root cause:** `_ensure()` waits a hard-coded 3 seconds for the daemon lock, discards the `Popen` handle, and labels every timeout as a child exit without checking `poll()`, current lock ownership, or heartbeat truth.
@@ -887,6 +887,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Affected branches:** maintenance release, schema deploy restart, cron watchdog, slow Django import/startup, concurrent ensure calls, daemon singleton acquisition, and production verification.
   - **Acceptance:** define a documented startup budget; retain and inspect the child process handle; distinguish exited child, still-starting timeout, and another healthy winner; perform one final lock/heartbeat reconciliation before failing; never report success without singleton lock plus fresh heartbeat.
   - **Tests:** slow child acquires within budget, exited child with return code, live child timeout, concurrent winner, stale old daemon release, exact one-spawn boundary, and production maintenance release/ensure proof.
+  - **Production evidence:** SHA `84718f60`; `DAEMON_START_WAIT_SECONDS=15`; 11/11 daemon-path tests passed with DB setup skipped; maintenance release returned `daemon spawned` without a false timeout, then one daemon PID held the singleton lock with fresh DB/cache heartbeats; staff status API returned 200 and public auth boundaries returned 302.
 
 - [ ] **P0.B6 Fail closed for Meta data-deletion signed requests.**
   - **Symptom:** the public data-deletion callback accepts a syntactically valid signed request when the app secret is absent.
