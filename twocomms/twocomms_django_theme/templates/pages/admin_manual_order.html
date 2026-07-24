@@ -695,6 +695,7 @@
           </label>
         {% endfor %}
       </div>
+      <div id="moReviewNote" class="mo-field-hint" style="display:none;margin-top:10px;color:#fcd34d;"></div>
     </div>
 
     <div class="mo-field mo-field--full">
@@ -786,6 +787,19 @@
         page.querySelectorAll('#moPresets .mo-preset').forEach(function (label) {
           label.classList.toggle('is-active', label.dataset.preset === initial.payment_preset);
         });
+      }
+    }
+    if (initial.quoted_total || (initial.uncertainty_reasons && initial.uncertainty_reasons.length)) {
+      var reviewNote = document.getElementById('moReviewNote');
+      if (reviewNote) {
+        var note = initial.quoted_total
+          ? 'Узгоджена сума з переписки: <b>' + escapeHtml(initial.quoted_total) + ' грн</b>. Ціни каталогу її не замінюють; перевірте ціну кожної позиції.'
+          : 'Узгоджену суму з переписки не знайдено; перевірте її перед створенням замовлення.';
+        if (initial.uncertainty_reasons && initial.uncertainty_reasons.length) {
+          note += ' Необхідно уточнити товарні позиції вручну.';
+        }
+        reviewNote.innerHTML = note;
+        reviewNote.style.display = 'block';
       }
     }
     if (Array.isArray(initial.items)) {

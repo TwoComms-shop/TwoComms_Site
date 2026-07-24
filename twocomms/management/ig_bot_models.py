@@ -699,6 +699,14 @@ class IgPaymentConfirmationReview(models.Model):
         related_name="payment_confirmation_reviews",
         db_constraint=False,
     )
+    order = models.OneToOneField(
+        "orders.Order",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="instagram_payment_review",
+        db_constraint=False,
+    )
     dedupe_key = models.CharField(max_length=160, unique=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
     evidence = models.JSONField(default=dict, blank=True)

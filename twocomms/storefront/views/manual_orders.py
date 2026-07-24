@@ -414,7 +414,53 @@ def _build_ig_review_initial(review):
     """Build an editable manual-order draft from a confirmed IG review."""
     deal = review.deal
     if not deal:
-        return {"review_id": review.pk, "items": [], "delivery_method": "manual"}
+        evidence = review.evidence if isinstance(review.evidence, dict) else {}
+        draft = evidence.get("order_draft") if isinstance(evidence.get("order_draft"), dict) else {}
+        delivery = draft.get("delivery") if isinstance(draft.get("delivery"), dict) else {}
+        items = []
+        for draft_item in draft.get("items") or []:
+            fit = draft_item.get("fit") or ""
+            title = draft_item.get("title") or "Товар з переписки"
+            if fit and "не ідентифіковано" not in title.lower():
+                title = f"{title} · товар потребує вибору"
+            items.append({
+                "kind": "custom",
+                "product_id": "",
+                "color_variant_id": "",
+                "title": title,
+                "unit_price": float(draft_item.get("unit_price") or 0),
+                "qty": int(draft_item.get("qty") or 1),
+                "size": draft_item.get("size") or "",
+                "color_name": "",
+                "image": "",
+            })
+        quoted_total = draft.get("quoted_total") or ""
+        reasons = draft.get("uncertainty_reasons") or []
+        reason_text = "; ".join({
+            "catalog_product_not_identified": "товар не зіставлено з каталогом — виберіть його вручну",
+            "conversation_price_not_found": "ціну з переписки не знайдено",
+        }.get(reason, reason) for reason in reasons)
+        comment = "Платіж підтверджується менеджером через CRM. Дані перевірити перед створенням."
+        if quoted_total:
+            comment += f" Сума з переписки: {quoted_total} грн."
+        if reason_text:
+            comment += f" Потрібно уточнити: {reason_text}."
+        if draft.get("packaging_preference"):
+            comment += f" Пакування: {draft['packaging_preference']}."
+        return {
+            "review_id": review.pk,
+            "quoted_total": quoted_total,
+            "uncertainty_reasons": reasons,
+            "full_name": delivery.get("full_name") or "",
+            "phone": delivery.get("phone") or "",
+            "delivery_method": "manual",
+            "city": delivery.get("city") or "",
+            "np_office": delivery.get("office") or "",
+            "payment_preset": "paid_full",
+            "sale_source": "Instagram",
+            "manager_comment": comment,
+            "items": items,
+        }
     items = []
     for item in deal.items.select_related("product", "color_variant").all():
         product = item.product
@@ -446,6 +492,8 @@ def _build_ig_review_initial(review):
         })
     return {
         "review_id": review.pk,
+        "quoted_total": str(deal.amount or ""),
+        "uncertainty_reasons": [],
         "full_name": deal.np_full_name or deal.client.display_name or deal.client.username or "",
         "phone": deal.np_phone or deal.client.phone or "",
         "delivery_method": "manual",
@@ -546,6 +594,30 @@ def manual_order_create(request):
 
     try:
         with transaction.atomic():
+            if payment_review:
+                from management.ig_bot_models import IgPaymentConfirmationReview
+
+                payment_review = (
+                    IgPaymentConfirmationReview.objects.select_for_update()
+                    .select_related("deal", "order")
+                    .filter(
+                        pk=payment_review.pk,
+                        status=IgPaymentConfirmationReview.Status.CONFIRMED,
+                        client__hidden_at__isnull=True,
+                    )
+                    .first()
+                )
+                if not payment_review:
+                    raise ValueError('Підтвердження оплати недійсне або вже скасоване.')
+                if payment_review.order_id:
+                    existing = payment_review.order
+                    return JsonResponse({
+                        'success': True,
+                        'message': f'Для цієї перевірки вже створено замовлення #{existing.order_number}.',
+                        'order_id': existing.id,
+                        'order_number': existing.order_number,
+                        'redirect_url': f"{reverse('admin_panel')}?section=orders",
+                    })
             order = Order(
                 user=None,
                 full_name=full_name[:200],
@@ -592,7 +664,9 @@ def manual_order_create(request):
                 deal.status = IgDeal.Status.ORDER_CREATED
                 deal.order_truth_updated_at = timezone.now()
                 deal.save(update_fields=['order', 'status', 'order_truth_updated_at', 'updated_at'])
-                payment_review.save(update_fields=['updated_at'])
+            if payment_review:
+                payment_review.order = order
+                payment_review.save(update_fields=['order', 'updated_at'])
     except ValueError as exc:
         return JsonResponse({'success': False, 'message': str(exc)}, status=422)
     except Exception:

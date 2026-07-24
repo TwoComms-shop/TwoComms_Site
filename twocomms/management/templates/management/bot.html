@@ -261,6 +261,16 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         </div>
       </div>
     </div>
+    {% if not meta_bot_reviewer_mode %}
+    <div class="bot-card" id="bot-payment-review" style="display:none;margin-top:16px;">
+      <div class="bot-card-head">
+        <h2>Заяви про оплату · потрібне підтвердження</h2>
+        <button type="button" class="bot-mini-btn" id="bot-payment-review-refresh">Оновити</button>
+      </div>
+      <div class="bot-note" style="margin:0 0 12px;">Спочатку перевірте evidence, позиції та узгоджену ціну з переписки. Чек не є provider payment truth; після підтвердження перевірте форму й лише потім створіть замовлення.</div>
+      <div id="bot-payment-review-list"></div>
+    </div>
+    {% endif %}
     <div class="bot-card">
       <div class="bot-card-head">
         <h2>Онлайн-консоль</h2>
@@ -278,14 +288,6 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         Перед повторним надсиланням перевірте Telegram: невідомий результат може означати, що повідомлення вже доставлено.
       </div>
       <div id="bot-notification-review-list"></div>
-    </div>
-    <div class="bot-card" id="bot-payment-review" style="display:none;margin-top:16px;">
-      <div class="bot-card-head">
-        <h2>Заяви про оплату · потрібне підтвердження</h2>
-        <button type="button" class="bot-mini-btn" id="bot-payment-review-refresh">Оновити</button>
-      </div>
-      <div class="bot-note" style="margin:0 0 12px;">Чек або слова клієнта не є provider payment truth. Після підтвердження відкрийте форму, перевірте товари й доставку та лише потім створіть замовлення.</div>
-      <div id="bot-payment-review-list"></div>
     </div>
     {% endif %}
   </section>
@@ -746,8 +748,15 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           const title=document.createElement('div'); title.style.fontWeight='800'; title.textContent='Клієнт: '+(item.client||item.client_id); row.appendChild(title);
           const evidence=document.createElement('div'); evidence.className='bot-hint'; evidence.style.marginTop='7px';
           evidence.textContent=(item.evidence||[]).map(e=>(e.role==='manager'?'Менеджер':'Клієнт')+': '+(e.quote||'')+(e.attachments?' · вкладення':'')).join(' | ')||'Доказ у переписці'; row.appendChild(evidence);
-          const deal=document.createElement('div'); deal.className='bot-hint'; deal.style.marginTop='5px'; const d=item.deal||{};
-          deal.textContent='Товарів: '+((d.items||[]).length)+' · Сума: '+(d.amount||'0')+' '+(d.currency||'UAH')+' · Доставка: '+((d.delivery||{}).city||'не вказано'); row.appendChild(deal);
+          const deal=document.createElement('div'); deal.className='bot-hint'; deal.style.marginTop='5px'; const d=item.deal||{}; const draft=item.order_draft||{};
+          const total=item.quoted_total||d.amount||'не вказано';
+          const delivery=d.delivery||draft.delivery||{}; const deliveryText=[delivery.full_name,delivery.phone,delivery.city,delivery.office].filter(Boolean).join(', ')||'не вказано';
+          deal.textContent='Позицій: '+((draft.items||d.items||[]).length)+' · Сума з переписки: '+total+' '+(draft.currency||d.currency||'UAH')+' · Доставка: '+deliveryText; row.appendChild(deal);
+          const draftList=document.createElement('div'); draftList.className='bot-hint'; draftList.style.marginTop='6px';
+          const draftItems=draft.items||[];
+          draftList.textContent=draftItems.length ? 'Замовлення: '+draftItems.map(it=>(it.title||it.fit||'Товар')+' · '+(it.size||'розмір не вказано')+' · '+(it.qty||1)+' шт.').join(' | ')+(draft.packaging_preference?' · Пакування: '+draft.packaging_preference:'') : 'Позиції з переписки не визначені'; row.appendChild(draftList);
+          const reasons=item.uncertainty_reasons||[];
+          if(reasons.length){ const warning=document.createElement('div'); warning.className='bot-note'; warning.style.marginTop='8px'; warning.textContent='Потрібно уточнити: '+reasons.map(reason=>({catalog_product_not_identified:'товар не зіставлено з каталогом — виберіть вручну',conversation_price_not_found:'ціну з переписки не знайдено'}[reason]||reason)).join('; '); row.appendChild(warning); }
           const actions=document.createElement('div'); actions.style.cssText='display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;';
           [['confirm','Підтвердити','bot-mini-btn active'],['cancel','Скасувати','bot-mini-btn danger']].forEach(([action,label,cls])=>{const b=document.createElement('button');b.type='button';b.className=cls;b.textContent=label;b.addEventListener('click',()=>paymentReviewAction(item.id,action,b));actions.appendChild(b);}); row.appendChild(actions); paymentReviewList.appendChild(row);
         });

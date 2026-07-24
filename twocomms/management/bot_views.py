@@ -510,6 +510,7 @@ def bot_payment_reviews_api(request):
     for row in rows:
         evidence = row.evidence if isinstance(row.evidence, dict) else {}
         client = row.client
+        draft = evidence.get("order_draft") if isinstance(evidence.get("order_draft"), dict) else {}
         items.append({
             "id": row.id,
             "client_id": row.client_id,
@@ -518,6 +519,9 @@ def bot_payment_reviews_api(request):
             "created_at": row.created_at.isoformat(),
             "evidence": evidence.get("messages", [])[-8:],
             "deal": evidence.get("deal", {}),
+            "order_draft": draft,
+            "uncertainty_reasons": draft.get("uncertainty_reasons", []),
+            "quoted_total": draft.get("quoted_total", ""),
             "confirm_url": reverse("management_bot_payment_review_action_api", args=[row.id]),
             "order_url": (
                 reverse("manual_order_create") + f"?ig_payment_review={row.id}"
