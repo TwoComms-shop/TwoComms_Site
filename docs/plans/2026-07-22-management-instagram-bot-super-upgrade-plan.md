@@ -928,6 +928,14 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
     - **Acceptance:** one confirmed review can link to at most one order; repeated submissions return the existing order; no provider projection is mutated by review creation; alert and form visibly show conversation amount, extracted positions/quantities/sizes, delivery, packaging preference, and explicit uncertainty reasons; catalog identity and price remain editable and are never guessed.
     - **Tests:** exact target transcript (receipt after payment context, basic `S` + oversize `XS`, `2100 UAH`, delivery and separate packaging), receipt-before-context, slash-separated delivery parsing, short follow-up not treated as name, alert dedupe, concurrent/repeated manual POST, hidden/cancelled review rejection, and rollback-only MariaDB proof with zero fixture residue.
     - **Priority:** P0 — duplicate order and payment/order attribution are irreversible operational data risks.
+  - [x] **P0.B5ao Prevent waiting-language false positives in payment evidence.**
+    - **Symptom:** `Чекаю` and `Почекаємо` matched the substring `чек`, producing payment evidence for non-payment messages and polluting Telegram reviews.
+    - **Root cause:** receipt matching used an unbounded substring instead of Ukrainian noun inflections with word boundaries.
+    - **Risk:** false payment alerts, wasted manager review time, and incorrect conversion/order pressure.
+    - **Affected branches:** deterministic evidence extraction, review dedupe, Telegram notification outbox, payment-review UI, and conversion analysis.
+    - **Acceptance:** waiting verbs never create evidence; `чек`, `чека`, `чеку`, and `чеком` remain valid receipt terms; the target client yields only message `238` as payment evidence.
+    - **Tests:** DB-free waiting-verb regression and target transcript extraction; production preview on SHA `89b03c1e` returned `message_ids=[238]` with no false positives.
+    - **Priority:** P0 — false evidence changes an operator's payment decision.
 
 - [x] **P1.B5c Replace the global long-held reply lock with a bounded two-level permission barrier.**
   - **Priority:** P1 — correctness is currently fail-closed, but latency and operator availability degrade under slow AI/provider calls.
