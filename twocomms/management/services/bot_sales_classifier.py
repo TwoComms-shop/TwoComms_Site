@@ -166,6 +166,54 @@ def _extract_context(text: str) -> dict:
     return ctx
 
 
+def _record_context_provenance(
+    sales_context: dict,
+    context: dict,
+    *,
+    message=None,
+    role: str = "",
+    confidence: float = 0.8,
+) -> dict:
+    """Keep legacy flat context while recording bounded source/conflict memory."""
+    if not isinstance(sales_context, dict) or not isinstance(context, dict):
+        return sales_context if isinstance(sales_context, dict) else {}
+    provenance = sales_context.setdefault("_provenance", {})
+    if not isinstance(provenance, dict):
+        provenance = {}
+        sales_context["_provenance"] = provenance
+    source_id = getattr(message, "pk", None)
+    source_role = role or getattr(message, "role", "") or "unknown"
+    observed_at = timezone.now().isoformat()
+    for key, value in context.items():
+        if value in (None, ""):
+            continue
+        previous = provenance.get(key)
+        record = {
+            "value": value,
+            "source_message_id": source_id,
+            "source_role": source_role,
+            "observed_at": observed_at,
+            "confidence": max(0.0, min(1.0, float(confidence))),
+            "conflict": False,
+        }
+        if isinstance(previous, dict) and previous.get("value") != value:
+            history = previous.get("history") if isinstance(previous.get("history"), list) else []
+            history.append({
+                "value": previous.get("value"),
+                "source_message_id": previous.get("source_message_id"),
+                "source_role": previous.get("source_role"),
+                "observed_at": previous.get("observed_at"),
+            })
+            record["history"] = history[-4:]
+            record["conflict"] = True
+        elif isinstance(previous, dict) and isinstance(previous.get("history"), list):
+            record["history"] = previous["history"][-4:]
+            record["conflict"] = bool(previous.get("conflict"))
+        provenance[key] = record
+        sales_context[key] = value
+    return sales_context
+
+
 def _analysis_band(client: IgClient, result: dict) -> str:
     from management.services.bot_payment_truth import client_has_verified_payment
 
@@ -327,7 +375,13 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
 
     ctx = _extract_context(text)
     if ctx:
-        sales_context.update(ctx)
+        _record_context_provenance(
+            sales_context,
+            ctx,
+            message=message,
+            role=role,
+            confidence=0.85,
+        )
     if ctx.get("quantity"):
         client.current_qty = ctx["quantity"]
     if ctx.get("size"):
