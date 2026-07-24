@@ -925,6 +925,24 @@ class ConversationAnalysisJobTests(TestCase):
         self.assertEqual(result["queued"], 1)
         self.assertEqual(result["historical_blocked"], 0)
 
+    def test_shipped_notification_update_fields_advances_order_truth_clock(self):
+        from django.utils import timezone as django_timezone
+
+        deal = IgDeal.objects.create(client=self.client, amount=Decimal("100.00"))
+        deal.status = IgDeal.Status.QUOTED
+        deal.save(update_fields=["status"])
+        deal.refresh_from_db()
+        self.assertIsNone(deal.order_truth_updated_at)
+
+        notified_at = django_timezone.now()
+
+        deal.shipped_notified_at = notified_at
+        deal.save(update_fields=["shipped_notified_at"])
+
+        deal.refresh_from_db()
+        self.assertIsNotNone(deal.order_truth_updated_at)
+        self.assertGreaterEqual(deal.order_truth_updated_at, notified_at)
+
     def test_reconciliation_cursor_reaches_clients_after_first_page(self):
         clients = []
         for index in range(3):
