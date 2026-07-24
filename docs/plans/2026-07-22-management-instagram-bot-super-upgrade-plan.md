@@ -1076,6 +1076,15 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Acceptance:** list summaries use Ukrainian labels and backend-provided objection labels, category badges remain explicit (including `Підтримка / скарга`), and each row supports Enter/Space with an accessible name; no raw legacy abbreviations remain.
   - **Tests:** DB-free template contract for localized labels, absence of raw abbreviations, role/tabindex/keyboard handler; production desktop/mobile browser proof remains required for the broader D11 item.
 
+- [ ] **P1.D8d Remove mixed-language operator vocabulary from the bot cockpit.**
+  - **Priority:** P1 — visible Ukrainian UX must not require an administrator to decode English infrastructure terms or raw enum values.
+  - **Symptom:** overview/settings/statistics still showed `Heartbeat`, `Reasoning`, `Worker`, `live`, `AI`, `Ad ID`, `SKU`, `Legacy`, and raw follow-up/deal/signal statuses.
+  - **Root cause:** internal enum and runtime terminology leaked directly into labels and compact detail HTML.
+  - **Risk:** inconsistent Ukrainian interface, slower complaint/payment triage, and misinterpretation of analysis state or payment truth.
+  - **Affected branches:** overview health, settings, knowledge-base links, client detail, statistics, follow-up/payment visibility.
+  - **Acceptance:** all visible operator labels are Ukrainian; technical identifiers remain only where exact API/model names are necessary; internal status codes are mapped to localized labels with an honest unknown fallback.
+  - **Tests:** DB-free contract asserts localized labels and rejects the retired visible terms; production desktop/mobile browser proof remains required before marking the UX slice complete.
+
 - [ ] **P1.D10 Remove stored DOM-XSS paths from the cockpit.**
   - **Symptom/root cause:** the JavaScript escape helper omits quotes while untrusted avatar/name/invoice values are concatenated into HTML attributes and an inline `onerror` handler.
   - **Risk/branches:** stored DOM XSS in authenticated CRM through profile/catalog/payment-controlled strings; session/action compromise.

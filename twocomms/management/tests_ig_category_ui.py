@@ -81,3 +81,31 @@ class InteractionCategoryUiContractTests(SimpleTestCase):
         self.assertIn("rel=\"noopener noreferrer\"", template)
         self.assertNotIn("onerror=", template)
         self.assertIn("'\"':'&quot;'", template)
+
+    def test_visible_operator_copy_is_ukrainian_and_internal_codes_are_mapped(self):
+        template = (
+            Path(__file__).with_name("templates") / "management" / "bot.html"
+        ).read_text(encoding="utf-8")
+
+        for visible_label in (
+            "Стан зв’язку",
+            "Рівень міркування",
+            "Подієва схема",
+            "Резервне опитування Instagram",
+            "Розмірна таблиця",
+            "Ідентифікатор реклами",
+            "Інтерес до товарів",
+        ):
+            self.assertIn(visible_label, template)
+        for raw_visible in (
+            ">Heartbeat<",
+            ">Reasoning<",
+            "> live<",
+            "Ad ID",
+            "Інтерес до товарів / SKU",
+            "analysis_band||c.analysis_band||'Legacy'",
+        ):
+            self.assertNotIn(raw_visible, template)
+        self.assertIn("const reasoningLabels=", template)
+        self.assertIn("const followupStatusLabels=", template)
+        self.assertIn("const paymentTruthLabels=", template)

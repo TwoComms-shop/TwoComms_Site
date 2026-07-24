@@ -208,7 +208,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   </header>
   {% if meta_bot_reviewer_mode %}
   <div class="bot-reviewer-note">
-    Meta reviewer mode: цей акаунт може керувати лише вкладкою Instagram-бота для перевірки App Review. Інші розділи management заблоковані; API-токени, credential source, allowlist, system prompt та база інструкцій приховані.
+    Режим перевірки Meta: цей обліковий запис може керувати лише вкладкою Instagram-бота для перевірки App Review. Інші розділи панелі керування заблоковані; API-токени, джерело облікових даних, список дозволених відправників, системні правила та база інструкцій приховані.
   </div>
   {% endif %}
 
@@ -239,9 +239,9 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           <div class="bot-metric"><div class="v" id="bot-senders">{{ status.unique_senders }}</div><div class="k">Клієнтів</div></div>
           <div class="bot-metric"><div class="v" id="bot-pending">{{ status.pending }}</div><div class="k">У черзі</div></div>
           <div class="bot-metric"><div class="v" id="bot-lastreply">—</div><div class="k">Остання</div></div>
-          <div class="bot-metric"><div class="v" id="bot-heartbeat">—</div><div class="k">Heartbeat</div></div>
+          <div class="bot-metric"><div class="v" id="bot-heartbeat">—</div><div class="k">Стан зв’язку</div></div>
           <div class="bot-metric"><div class="v" id="bot-model">—</div><div class="k">Модель</div></div>
-          <div class="bot-metric"><div class="v" id="bot-reasoning">—</div><div class="k">Reasoning</div></div>
+          <div class="bot-metric"><div class="v" id="bot-reasoning">—</div><div class="k">Рівень міркування</div></div>
           <div class="bot-metric"><div class="v" id="bot-outbox">—</div><div class="k">Сповіщення</div></div>
           <div class="bot-metric"><div class="v compact" id="bot-reply-barrier">0 · 0</div><div class="k">Бар'єр відповідей</div></div>
         </div>
@@ -253,7 +253,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       <div class="bot-card">
         <h2>Як працює</h2>
         <div class="bot-note" style="margin:0;">
-          Event-driven: вхідні ловить <b>webhook</b> і кладе в чергу, воркер відповідає
+          Подієва схема: вхідні повідомлення отримує <b>webhook</b> і кладе в чергу, автоматичний обробник відповідає
           через <b>Gemini</b> (<b id="bot-explainer-model">поточну перевірену модель</b>) з урахуванням історії,
           каталогу та памʼяті клієнта. Розуміє переслані пости, матчить фото з товаром,
           формує оплату й створює замовлення. Якщо список IGSID заповнений —
@@ -264,7 +264,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     <div class="bot-card">
       <div class="bot-card-head">
         <h2>Онлайн-консоль</h2>
-        <span class="bot-live-chip"><i></i> live</span>
+        <span class="bot-live-chip"><i></i> наживо</span>
       </div>
       <div class="bot-console-box" id="bot-console"></div>
     </div>
@@ -288,22 +288,22 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       <h2>Ключі та параметри</h2>
       {% if meta_bot_reviewer_mode %}
       <div class="bot-reviewer-note">
-        Для перевірки доступні тільки безпечні demo-параметри: Start/Stop, AI-режим, резервний polling, модель Gemini та перегляд переписок. Секрети й приватні правила відповіді не показуються.
+        Для перевірки доступні лише безпечні демонстраційні параметри: запуск і зупинка, режим ШІ, резервне опитування, модель Gemini та перегляд переписок. Секрети й приватні правила відповіді не показуються.
       </div>
       {% endif %}
       <form id="bot-settings-form">
         {% if not meta_bot_reviewer_mode %}
         <div class="bot-grid2">
           <div class="bot-field">
-            <label>Direct API (Facebook токен)</label>
-            <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_env }}" {% if settings.direct_source == cred_env %}checked{% endif %}> ENV сервера</label>
+            <label>Instagram Direct API (токен Facebook)</label>
+            <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_env }}" {% if settings.direct_source == cred_env %}checked{% endif %}> Змінні середовища сервера</label>
             <label class="bot-radio"><input type="radio" name="direct_source" value="{{ cred_custom }}" {% if settings.direct_source == cred_custom %}checked{% endif %}> Свій</label>
             <input type="password" name="custom_direct_token" placeholder="Введіть новий Direct токен (необов'язково)" value="" autocomplete="new-password" style="margin-top:8px;">
             {% if has_custom_direct_token %}<small class="bot-hint">Свій Direct токен уже збережено; значення приховано.</small>{% endif %}
           </div>
           <div class="bot-field">
             <label>Gemini API (Google ключ)</label>
-            <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_env }}" {% if settings.gemini_source == cred_env %}checked{% endif %}> ENV сервера</label>
+            <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_env }}" {% if settings.gemini_source == cred_env %}checked{% endif %}> Змінні середовища сервера</label>
             <label class="bot-radio"><input type="radio" name="gemini_source" value="{{ cred_custom }}" {% if settings.gemini_source == cred_custom %}checked{% endif %}> Свій</label>
             <input type="password" name="custom_gemini_key" placeholder="Введіть новий Gemini ключ (необов'язково)" value="" autocomplete="new-password" style="margin-top:8px;">
             {% if has_custom_gemini_key %}<small class="bot-hint">Свій Gemini ключ уже збережено; значення приховано.</small>{% endif %}
@@ -313,8 +313,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         <div class="bot-grid2">
           <div class="bot-field">
             <label>Режим відповіді</label>
-            <label class="bot-radio"><input type="checkbox" name="ai_enabled" id="ai_enabled" {% if settings.ai_enabled %}checked{% endif %}> AI-спілкування (Gemini)</label>
-            <label class="bot-radio"><input type="checkbox" name="receive_via_poll" id="receive_via_poll" {% if settings.receive_via_poll %}checked{% endif %}> Резервний поллінг IG</label>
+            <label class="bot-radio"><input type="checkbox" name="ai_enabled" id="ai_enabled" {% if settings.ai_enabled %}checked{% endif %}> Спілкування зі ШІ (Gemini)</label>
+            <label class="bot-radio"><input type="checkbox" name="receive_via_poll" id="receive_via_poll" {% if settings.receive_via_poll %}checked{% endif %}> Резервне опитування Instagram</label>
           </div>
           <div class="bot-field">
             <label>Модель Gemini</label>
@@ -329,7 +329,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         </div>
         {% if not meta_bot_reviewer_mode %}
         <div class="bot-field">
-          <label>Системний промпт (як боту відповідати)</label>
+          <label>Системні правила (як бот має відповідати)</label>
           <textarea name="system_prompt" rows="6">{{ settings.system_prompt }}</textarea>
         </div>
         <div class="bot-field">
@@ -349,17 +349,17 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         </div>
         <div class="bot-grid2">
           <div class="bot-field">
-            <label>Meta CAPI feedback</label>
-            <label class="bot-radio"><input type="checkbox" name="meta_feedback_enabled" {% if settings.meta_feedback_enabled %}checked{% endif %}> Увімкнути safe feedback events</label>
-            <div class="bot-hint">За замовчуванням вимкнено. IG-only події без match data логуються як skipped.</div>
+            <label>Зворотні події Meta Conversions API</label>
+            <label class="bot-radio"><input type="checkbox" name="meta_feedback_enabled" {% if settings.meta_feedback_enabled %}checked{% endif %}> Увімкнути безпечні зворотні події</label>
+            <div class="bot-hint">За замовчуванням вимкнено. Події лише з Instagram без даних для зіставлення з клієнтом позначаються як пропущені.</div>
           </div>
           <div class="bot-field">
-            <label>Meta test event code</label>
+            <label>Код тестової події Meta</label>
             <input type="text" name="meta_feedback_test_event_code" value="{{ settings.meta_feedback_test_event_code }}" placeholder="TEST...">
           </div>
         </div>
         <div class="bot-field">
-          <label>Простий режим (коли AI вимкнено): тригер / відповідь</label>
+          <label>Простий режим (коли ШІ вимкнено): тригер / відповідь</label>
           <div class="bot-grid2">
             <input type="text" name="trigger_text" value="{{ settings.trigger_text }}" placeholder="Тригер">
             <input type="text" name="reply_text" value="{{ settings.reply_text }}" placeholder="Текст відповіді">
@@ -392,10 +392,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           <h3 class="bot-kb-h">Швидкі посилання</h3>
           <div id="kb-links" class="bot-kb-list"></div>
           <div class="bot-kb-form">
-            <select id="kbl-kind"><option value="size_chart">Розмірна сітка</option><option value="catalog">Каталог</option><option value="highlight">Хайлайт</option><option value="other">Інше</option></select>
+            <select id="kbl-kind"><option value="size_chart">Розмірна таблиця</option><option value="catalog">Каталог</option><option value="highlight">Історія / хайлайт</option><option value="other">Інше</option></select>
             <input id="kbl-label" placeholder="Підпис">
             <input id="kbl-url" placeholder="https://...">
-            <input id="kbl-garment" placeholder="Тип (hoodie/tshirt/longsleeve)">
+            <input id="kbl-garment" placeholder="Тип одягу (худі / футболка / лонгслів)">
             <button class="bot-save" data-kb-add="quicklink">Додати</button>
           </div>
         </div>
@@ -403,9 +403,9 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           <h3 class="bot-kb-h">Реклама → товар / тема</h3>
           <div id="kb-ads" class="bot-kb-list"></div>
           <div class="bot-kb-form">
-            <input id="kba-adid" placeholder="Ad ID">
+            <input id="kba-adid" placeholder="Ідентифікатор реклами">
             <input id="kba-title" placeholder="Назва кампанії">
-            <input id="kba-theme" placeholder="Тема (hoodie/...)">
+            <input id="kba-theme" placeholder="Тема (худі / футболка / інше)">
             <button class="bot-save" data-kb-add="adcampaign">Додати</button>
           </div>
         </div>
@@ -484,7 +484,21 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       image.replaceWith(fallback);
     },{once:true});
   }
-  function fmt(iso){ if(!iso) return '—'; try{ return new Date(iso).toLocaleTimeString(); }catch(e){ return '—'; } }
+  function fmt(iso){ if(!iso) return '—'; try{ return new Date(iso).toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'}); }catch(e){ return '—'; } }
+  const reasoningLabels={low:'Низький',medium:'Середній',high:'Високий'};
+  const reasoningTaskLabels={conversation_reanalysis:'Повторний аналіз діалогу',chat:'Відповідь у чаті',product_match:'Визначення товару',payment:'Рішення щодо оплати'};
+  const signalLabels={
+    price_objection:'Заперечення щодо ціни',prepayment_objection:'Заперечення щодо передоплати',
+    size_concern:'Питання про розмір',no_reply:'Немає відповіді',no_buy:'Відмова від купівлі',
+    lost:'Втрачено',delivery:'Питання про доставку',payment_pending:'Очікує оплату',
+    product_interest:'Інтерес до товару',custom_print:'Кастомний принт',manager_takeover:'Діалог веде менеджер'
+  };
+  const followupKindLabels={payment:'Нагадування про оплату',payment_link:'Посилання на оплату',discount_offer:'Пропозиція зі знижкою',support:'Підтримка',reengagement:'Повернення до діалогу'};
+  const followupStatusLabels={pending:'Очікує',sent:'Надіслано',cancelled:'Скасовано',skipped:'Пропущено',failed:'Помилка'};
+  const followupReasonLabels={manual_pause:'Зупинено менеджером',hidden:'Клієнта приховано',lost:'Клієнта втрачено',global_reply_stopped:'Автовідповіді зупинено',opt_out:'Клієнт відмовився від повідомлень',manager_takeover:'Діалог веде менеджер',paid:'Оплату підтверджено',meta_window:'Вікно Meta завершено',quiet_hours:'Час тиші',expired:'Термін минув',superseded:'Замінено новішою дією'};
+  const dealStatusLabels={new:'Нова',pending:'Очікує',paid:'Оплачено',completed:'Завершена',cancelled:'Скасована',failed:'Помилка'};
+  const paymentTruthLabels={confirmed:'Оплату підтверджено',paid:'Оплачено',pending:'Очікуємо оплату',unpaid:'Оплату не підтверджено',unverified:'Оплату не підтверджено',refunded:'Оплату повернено',reversed:'Оплату скасовано',unknown:'Стан оплати невідомий'};
+  function humanLabel(map,value,fallback='Невідомо'){ return map[value]||fallback; }
 
   /* ============ Tabs ============ */
   const tabs = Array.from(document.querySelectorAll('.bot-tab'));
@@ -530,10 +544,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     const pill=document.getElementById('bot-pill'), pillT=document.getElementById('bot-pill-text');
     const dot=document.getElementById('bot-dot');
     let txt, sub, cls;
-    if(st.state==='maintenance'){ txt='Технічна пауза'; sub='Daemon і watchdog тимчасово зупинені maintenance-режимом'; cls='off'; }
-    else if(st.state==='enabled_but_worker_missing'){ txt='Worker не запущено'; sub='Бот увімкнено, watchdog відновлює демон (до 1 хв)'; cls='off'; }
-    else if(st.state==='worker_error'){ txt='Помилка worker'; sub='DB heartbeat є, але daemon heartbeat відсутній'; cls='off'; }
-    else if(!online){ txt='Офлайн'; sub='Демон не запущено'; cls='off'; }
+    if(st.state==='maintenance'){ txt='Технічна пауза'; sub='Автоматичний обробник і контроль запуску тимчасово зупинені'; cls='off'; }
+    else if(st.state==='enabled_but_worker_missing'){ txt='Обробник не запущено'; sub='Бот увімкнено, система відновлює автоматичний обробник (до 1 хв)'; cls='off'; }
+    else if(st.state==='worker_error'){ txt='Помилка обробника'; sub='Стан бази даних є, але перевірка зв’язку з обробником відсутня'; cls='off'; }
+    else if(!online){ txt='Офлайн'; sub='Автоматичний обробник не запущено'; cls='off'; }
     else if(st.is_enabled){ txt='Працює'; sub='Агент онлайн і відповідає'; cls='on'; }
     else { txt='Зупинено'; sub='Агент онлайн, але не відповідає'; cls='idle'; }
     pill.className='bot-pill '+cls; pillT.textContent=txt;
@@ -551,10 +565,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     if(explainerModel) explainerModel.textContent=activeModel||'поточну перевірену модель';
     const reasoning=document.getElementById('bot-reasoning');
     if(reasoning){
-      reasoning.textContent=st.last_gemini_reasoning_level||'—';
+      reasoning.textContent=humanLabel(reasoningLabels,st.last_gemini_reasoning_level,'Ще не визначено');
       reasoning.title=st.last_gemini_reasoning_task
-        ? (st.last_gemini_reasoning_task+' · '+(st.last_gemini_policy_version||''))
-        : 'Ще немає успішного AI-виклику';
+        ? (humanLabel(reasoningTaskLabels,st.last_gemini_reasoning_task)+' · політика '+(st.last_gemini_policy_version||'не вказана'))
+        : 'Ще не було успішного виклику ШІ';
     }
     const outbox=document.getElementById('bot-outbox');
     const outboxHelp=document.getElementById('bot-outbox-help');
@@ -582,9 +596,9 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
     const metaCapability=document.getElementById('bot-meta-capability');
     if(metaCapability){
       const meta=st.meta_capability||{};
-      const allowlist=meta.local_allowlist==='restricted'?'обмежений allowlist':'усі дозволені локально';
+      const allowlist=meta.local_allowlist==='restricted'?'обмежений список дозволених':'усі локально дозволені';
       const permission=meta.token_permission==='granted'?'дозвіл підтверджено':'дозвіл Meta не перевірено';
-      const access=meta.account_access==='advanced_public'?'Advanced Access':'режим доступу не підтверджено';
+      const access=meta.account_access==='advanced_public'?'розширений доступ Meta':'режим доступу не підтверджено';
       const delivery=meta.recipient_delivery==='per_recipient'?'доставка окремо за клієнтом':'стан доставки недоступний';
       metaCapability.textContent='Meta: '+allowlist+' · '+permission+' · '+access+' · '+delivery;
       metaCapability.style.color=(meta.token_configured&&meta.token_permission==='granted')?'#86efac':'#fbbf24';
@@ -816,7 +830,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           let h='<div class="bot-detail-head">'+(detailAvatarUrl?('<img class="bot-client-ava" data-avatar style="width:46px;height:46px;" src="'+esc(detailAvatarUrl)+'" alt="">'):('<div class="bot-client-ava" style="width:46px;height:46px;">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>'))+'<div><div class="bot-detail-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+(c.phone?(' · '+esc(c.phone)):'')+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'" style="margin-left:auto;">'+esc(c.stage_label)+'</span></div>';
           if(c.ad_title) h+='<div class="bot-client-sub" style="margin-top:8px;">📣 Реклама: '+esc(c.ad_title)+'</div>';
           if(c.delivery_status_label) h+='<div class="bot-client-sub" style="margin-top:8px;padding:9px 11px;border:1px solid rgba(251,191,36,.42);border-radius:10px;background:rgba(251,191,36,.08);color:#fde68a;">⚠ <b>Не можу відповісти:</b> '+esc(c.delivery_status_label)+(c.delivery_error?(' · '+esc(c.delivery_error)):'')+'</div>';
-          h+='<div class="bot-category-strip"><div class="bot-category-copy"><div class="bot-category-title">Категорія діалогу</div><div class="bot-category-value">'+esc(c.interaction_type_label||'Не визначено')+'</div><div class="bot-category-meta">Оцінка: '+esc(c.analysis_band_label||c.analysis_band||'Legacy')+' · ймовірність: '+(c.analysis_probability?Math.round(Number(c.analysis_probability)*100)+'%':'—')+' · впевненість: '+(c.analysis_confidence?Math.round(Number(c.analysis_confidence)*100)+'%':'—')+' · намір: '+esc(c.intent_label||c.intent||'—')+' · заперечення: '+esc(c.primary_objection_label||c.primary_objection||'—')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div></div><span class="bot-category-badge cat-'+esc(c.interaction_tone||'neutral')+'">'+esc(c.interaction_type_label||'Не визначено')+'</span></div>';
+          h+='<div class="bot-category-strip"><div class="bot-category-copy"><div class="bot-category-title">Категорія діалогу</div><div class="bot-category-value">'+esc(c.interaction_type_label||'Не визначено')+'</div><div class="bot-category-meta">Оцінка: '+esc(c.analysis_band_label||'Попередній аналіз')+' · ймовірність: '+(c.analysis_probability?Math.round(Number(c.analysis_probability)*100)+'%':'—')+' · впевненість: '+(c.analysis_confidence?Math.round(Number(c.analysis_confidence)*100)+'%':'—')+' · намір: '+esc(c.intent_label||c.intent||'—')+' · заперечення: '+esc(c.primary_objection_label||c.primary_objection||'Не визначено')+(c.payment_truth?(' · оплата: '+esc(humanLabel(paymentTruthLabels,c.payment_truth))):'')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div></div><span class="bot-category-badge cat-'+esc(c.interaction_tone||'neutral')+'">'+esc(c.interaction_type_label||'Не визначено')+'</span></div>';
           if((c.analysis_evidence||[]).length){h+='<div class="bot-hint" style="margin-top:6px;">Доказ: '+esc((c.analysis_evidence[0].signals||[]).join(', ')||'структуровані факти')+' · невизначеність: '+esc((c.analysis_uncertainties||[]).join(', ')||'немає')+'</div>';}
           const pauseBtn=c.opted_out
             ? '<button type="button" class="bot-client-action primary resume" data-act="resume" data-optout="1">Підтвердити нову згоду</button>'
@@ -829,9 +843,9 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           (d.funnel||[]).forEach(f=>{h+='<span class="bot-circle'+(f.done?' done':'')+(f.current?' current':'')+'"><i></i>'+esc(f.label)+'</span>';});
           h+='</div>';
           if(c.memory) h+='<div class="bot-mem">🧠 '+esc(c.memory)+'</div>';
-          if((d.signals||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Сигнали</div><div>';(d.signals||[]).slice(0,18).forEach(s=>{h+='<span class="bot-signal">'+esc(s.type)+(s.value?': '+esc(s.value):'')+'</span>';});h+='</div>';}
-          if((d.followups||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Заплановані контакти</div>';(d.followups||[]).forEach(f=>{h+='<div class="bot-deal">#'+f.id+' · '+esc(f.kind)+' · '+esc(f.status)+' · '+fmt(f.due_at)+(f.discount_percent?(' · '+f.discount_percent+'%'):'')+(f.skip_reason?(' · '+esc(f.skip_reason)):'')+'</div>';});}
-          if((d.deals||[]).length){h+='<div class="bot-kb-h" style="margin-top:6px;">Угоди</div>';d.deals.forEach(dl=>{const invoiceUrl=safeHttpUrl(dl.invoice_url);h+='<div class="bot-deal">#'+dl.id+' · '+esc(dl.status)+' · '+esc(dl.amount)+' грн'+(dl.order_id?(' · замовлення #'+dl.order_id):'')+(invoiceUrl?(' · <a href="'+esc(invoiceUrl)+'" target="_blank" rel="noopener noreferrer" style="color:#7fb0ff;">оплата</a>'):'')+'</div>';});}
+          if((d.signals||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Сигнали</div><div>';(d.signals||[]).slice(0,18).forEach(s=>{h+='<span class="bot-signal">'+esc(humanLabel(signalLabels,s.type))+(s.value?': '+esc(s.value):'')+'</span>';});h+='</div>';}
+          if((d.followups||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Заплановані контакти</div>';(d.followups||[]).forEach(f=>{h+='<div class="bot-deal">#'+f.id+' · '+esc(humanLabel(followupKindLabels,f.kind))+' · '+esc(humanLabel(followupStatusLabels,f.status))+' · '+fmt(f.due_at)+(f.discount_percent?(' · знижка '+f.discount_percent+'%'):'')+(f.skip_reason?(' · причина: '+esc(humanLabel(followupReasonLabels,f.skip_reason,'Інша причина'))):'')+'</div>';});}
+          if((d.deals||[]).length){h+='<div class="bot-kb-h" style="margin-top:6px;">Угоди</div>';d.deals.forEach(dl=>{const invoiceUrl=safeHttpUrl(dl.invoice_url);h+='<div class="bot-deal">#'+dl.id+' · '+esc(humanLabel(dealStatusLabels,dl.status))+' · '+esc(dl.amount)+' грн'+(dl.order_id?(' · замовлення №'+dl.order_id):'')+(dl.payment_status?(' · '+esc(humanLabel(paymentTruthLabels,dl.payment_status))):'')+(invoiceUrl?(' · <a href="'+esc(invoiceUrl)+'" target="_blank" rel="noopener noreferrer" style="color:#7fb0ff;">відкрити оплату</a>'):'')+'</div>';});}
           h+='<div class="bot-kb-h" style="margin-top:12px;">Переписка</div><div id="bot-msgs" style="display:flex;flex-direction:column;max-height:440px;overflow-y:auto;">';
           (d.messages||[]).forEach(m=>{h+='<div class="bot-msg '+(m.role==='user'?'user':(m.role==='manager'?'manager':'model'))+'" data-mid="'+(m.id||0)+'">'+esc(m.text)+'</div>';});
           h+='</div>';
@@ -923,14 +937,14 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             stat('Діалоги веде менеджер',t.manager_takeovers)+stat('Кастомні принти менеджеру',t.custom_print_handoffs)+stat('Приховані',t.hidden)+
             '</div>';
           const funnel=funnelOrder.filter(key=>(d.stages||{})[key]).map(key=>({
-            stage:stageLabels[key]||key,count:d.stages[key],share:t.conversations?Math.round(d.stages[key]*100/t.conversations)+'%':'0%'
+            stage:stageLabels[key]||'Невідомий етап',count:d.stages[key],share:t.conversations?Math.round(d.stages[key]*100/t.conversations)+'%':'0%'
           }));
           h+=table('Категорії діалогів', d.interactions, [['label','Категорія'],['count','Клієнти']]);
           h+=table('Воронка продажів', funnel, [['stage','Етап'],['count','Клієнти'],['share','Частка від діалогів']]);
-          h+=table('Інтерес до товарів / SKU', d.products, [['product_id','SKU'],['product_title','Товар'],['count','Діалоги']]);
+          h+=table('Інтерес до товарів', d.products, [['product_id','Код товару'],['product_title','Товар'],['count','Діалоги']]);
           const ads=(d.ads||[]).map(r=>({...r,revenue:new Intl.NumberFormat('uk-UA',{maximumFractionDigits:0}).format(Number(r.revenue||0))}));
-          h+=table('Ефективність реклами', ads, [['ad_id','ID реклами'],['ad_ref','Мітка'],['ad_title','Назва'],['chats','Діалоги'],['paid','Оплачені'],['revenue','Дохід, грн']]);
-          const obs=Object.entries(d.objections||{}).map(([k,v])=>({name:objectionLabels[k]||k,count:v}));
+          h+=table('Ефективність реклами', ads, [['ad_id','Ідентифікатор реклами'],['ad_ref','Мітка'],['ad_title','Назва'],['chats','Діалоги'],['paid','Оплачені'],['revenue','Дохід, грн']]);
+          const obs=Object.entries(d.objections||{}).map(([k,v])=>({name:objectionLabels[k]||'Інше',count:v}));
           h+=table('Заперечення клієнтів', obs, [['name','Причина'],['count','Кількість']]);
           box.innerHTML=h;
         }).catch(()=>{box.innerHTML='<div class="bot-empty">Помилка мережі.</div>';});
