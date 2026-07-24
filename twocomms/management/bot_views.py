@@ -15,6 +15,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -207,7 +208,8 @@ def _parse_meta_signed_request(signed_request: str) -> dict:
     if not signed_request or "." not in signed_request:
         return {}
     encoded_sig, encoded_payload = signed_request.split(".", 1)
-    payload = json.loads(_base64_url_decode(encoded_payload).decode("utf-8"))
+    if not encoded_sig or not encoded_payload:
+        return {}
 
     app_secret = (
         os.environ.get("IG_APP_SECRET")
@@ -215,7 +217,12 @@ def _parse_meta_signed_request(signed_request: str) -> dict:
         or getattr(settings, "IG_APP_SECRET", "")
         or getattr(settings, "FACEBOOK_APP_SECRET", "")
     )
-    if app_secret:
+    # This callback is public and can create compliance/audit records.  Never
+    # accept an unsigned request when the production secret is missing.
+    if not app_secret:
+        return {}
+
+    try:
         expected = hmac.new(
             app_secret.encode("utf-8"),
             msg=encoded_payload.encode("utf-8"),
@@ -223,7 +230,16 @@ def _parse_meta_signed_request(signed_request: str) -> dict:
         ).digest()
         if not hmac.compare_digest(_base64_url_decode(encoded_sig), expected):
             return {}
-    return payload
+        payload = json.loads(_base64_url_decode(encoded_payload).decode("utf-8"))
+    except (
+        ValueError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 @csrf_exempt

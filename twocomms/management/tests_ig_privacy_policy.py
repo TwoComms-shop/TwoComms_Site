@@ -1,10 +1,12 @@
 import base64
+import hashlib
+import hmac
 import json
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from .bot_access import META_REVIEWER_GROUP_NAME
@@ -15,6 +17,37 @@ from .models import (
     InstagramBotRawEvent,
     InstagramBotSettings,
 )
+from .bot_views import _parse_meta_signed_request
+
+
+class MetaSignedRequestParserTests(SimpleTestCase):
+    def _signed_request(self, payload, secret="test-meta-app-secret"):
+        encoded_payload = base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        signature = hmac.new(
+            secret.encode(), encoded_payload.encode(), hashlib.sha256
+        ).digest()
+        encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+        return f"{encoded_signature}.{encoded_payload}"
+
+    def test_missing_secret_rejects_even_well_formed_payload(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                _parse_meta_signed_request(self._signed_request({"user_id": "123"})),
+                {},
+            )
+
+    def test_valid_signature_returns_payload(self):
+        with patch.dict("os.environ", {"IG_APP_SECRET": "test-meta-app-secret"}, clear=True):
+            self.assertEqual(
+                _parse_meta_signed_request(self._signed_request({"user_id": "123"})),
+                {"user_id": "123"},
+            )
+
+    def test_malformed_signed_request_is_rejected_without_raising(self):
+        with patch.dict("os.environ", {"IG_APP_SECRET": "test-meta-app-secret"}, clear=True):
+            self.assertEqual(_parse_meta_signed_request("%%% .%%%".replace(" ", "")), {})
 
 
 @override_settings(
@@ -165,17 +198,43 @@ class InstagramBotPrivacyPolicyTests(TestCase):
         self.assertFalse(InstagramBotMessage.objects.filter(sender_id="123456789").exists())
         self.assertFalse(InstagramBotRawEvent.objects.filter(sender_id="123456789").exists())
 
-    def test_data_deletion_callback_returns_meta_required_json(self):
+    def _signed_meta_request(self, payload, secret="test-meta-app-secret"):
+        encoded_payload = base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        signature = hmac.new(
+            secret.encode(), encoded_payload.encode(), hashlib.sha256
+        ).digest()
+        encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+        return f"{encoded_signature}.{encoded_payload}"
+
+    def test_data_deletion_callback_fails_closed_without_app_secret(self):
         payload = {"user_id": "meta-user-123", "algorithm": "HMAC-SHA256"}
         encoded_payload = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
         signed_request = "ignoredsig." + encoded_payload
 
-        response = self.client.post(
-            "/data-deletion/request/",
-            {"signed_request": signed_request},
-            HTTP_HOST="management.twocomms.shop",
-            secure=True,
-        )
+        with patch.dict("os.environ", {}, clear=True):
+            response = self.client.post(
+                "/data-deletion/request/",
+                {"signed_request": signed_request},
+                HTTP_HOST="management.twocomms.shop",
+                secure=True,
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(BotDataDeletionRequest.objects.count(), 0)
+
+    def test_data_deletion_callback_returns_meta_required_json_for_valid_signature(self):
+        payload = {"user_id": "meta-user-123", "algorithm": "HMAC-SHA256"}
+        signed_request = self._signed_meta_request(payload)
+
+        with patch.dict("os.environ", {"IG_APP_SECRET": "test-meta-app-secret"}, clear=True):
+            response = self.client.post(
+                "/data-deletion/request/",
+                {"signed_request": signed_request},
+                HTTP_HOST="management.twocomms.shop",
+                secure=True,
+            )
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -184,6 +243,21 @@ class InstagramBotPrivacyPolicyTests(TestCase):
         deletion_request = BotDataDeletionRequest.objects.get(confirmation_code=data["confirmation_code"])
         self.assertEqual(deletion_request.source, BotDataDeletionRequest.Source.META_CALLBACK)
         self.assertEqual(deletion_request.meta_user_id, "meta-user-123")
+
+    def test_data_deletion_callback_rejects_invalid_signature(self):
+        payload = {"user_id": "meta-user-123", "algorithm": "HMAC-SHA256"}
+        signed_request = self._signed_meta_request(payload, secret="correct-secret")
+
+        with patch.dict("os.environ", {"IG_APP_SECRET": "wrong-secret"}, clear=True):
+            response = self.client.post(
+                "/data-deletion/request/",
+                {"signed_request": signed_request},
+                HTTP_HOST="management.twocomms.shop",
+                secure=True,
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(BotDataDeletionRequest.objects.count(), 0)
 
     def test_public_bot_dashboard_and_controls_remain_protected(self):
         dashboard = self.client.get(
