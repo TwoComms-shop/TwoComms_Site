@@ -1067,6 +1067,15 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
 
 - [ ] **P1.D9 Apply semantic colors without using color as the sole carrier.** Green only for verified paid/delivered truth, yellow for high intent/payment pending, blue for shipped/in transit, neutral for information/exploration, red for opt-out/lost/abuse/blockers. Waiting shipment is not “complete.” Every chip has text/icon/state semantics; funnel completion is not inferred from mutable stage.
 
+- [ ] **P1.D8c Localize client-card operational labels and keyboard access.**
+  - **Priority:** P1 — an administrator must understand category, objection, next action, attribution, delivery blocker, and legacy score without decoding English abbreviations or relying on pointer-only interaction.
+  - **Symptom:** the client list rendered `obj`, `FU`, `discount`, `ad`, and `legacy` fragments and used clickable `div` rows with no keyboard semantics.
+  - **Root cause:** the first category UI slice localized badges/detail headings but left the compact list summary on an older diagnostic vocabulary.
+  - **Risk:** complaints and next actions are missed during rapid triage; keyboard and assistive-technology operators cannot open a client card reliably.
+  - **Affected branches:** client list, complaint/support filters, delivery-blocked queue, follow-up triage, category UX, accessibility.
+  - **Acceptance:** list summaries use Ukrainian labels and backend-provided objection labels, category badges remain explicit (including `Підтримка / скарга`), and each row supports Enter/Space with an accessible name; no raw legacy abbreviations remain.
+  - **Tests:** DB-free template contract for localized labels, absence of raw abbreviations, role/tabindex/keyboard handler; production desktop/mobile browser proof remains required for the broader D11 item.
+
 - [ ] **P1.D10 Remove stored DOM-XSS paths from the cockpit.**
   - **Symptom/root cause:** the JavaScript escape helper omits quotes while untrusted avatar/name/invoice values are concatenated into HTML attributes and an inline `onerror` handler.
   - **Risk/branches:** stored DOM XSS in authenticated CRM through profile/catalog/payment-controlled strings; session/action compromise.

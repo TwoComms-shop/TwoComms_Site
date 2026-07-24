@@ -56,3 +56,16 @@ class InteractionCategoryUiContractTests(SimpleTestCase):
             "{% if settings.gemini_model == 'gemini-3.6-flash' %}",
             template,
         )
+
+    def test_client_cards_use_localized_operational_labels_and_keyboard_open(self):
+        template = (
+            Path(__file__).with_name("templates") / "management" / "bot.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("row.setAttribute('role','button');", template)
+        self.assertIn("row.setAttribute('tabindex','0');", template)
+        self.assertIn("Заперечення: "+"'+(c.primary_objection_label||c.primary_objection)", template)
+        self.assertIn("Наступний контакт: "+"'+fmt(c.next_followup_at)", template)
+        self.assertIn("Попередня оцінка · "+"'+(c.buying_readiness||0)+'%", template)
+        for raw_label in ("'obj: '", "'FU '", "'discount '", "'ad: '", "'legacy '"):
+            self.assertNotIn(raw_label, template)

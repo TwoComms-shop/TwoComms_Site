@@ -711,21 +711,26 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           (d.clients||[]).forEach(c=>{
             const row=document.createElement('div');
             row.className='bot-client-row'+(c.id===activeId?' active':'');
+            row.setAttribute('role','button');
+            row.setAttribute('tabindex','0');
+            row.setAttribute('aria-label','Відкрити картку клієнта: '+(c.name||c.username||c.igsid||'без імені'));
             const ava=c.avatar?('<img class="bot-client-ava" src="'+esc(c.avatar)+'" alt="" onerror="this.outerHTML=\'<div class=&quot;bot-client-ava&quot;>'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>\'">'):('<div class="bot-client-ava">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>');
             const sub=[
               c.username||c.igsid,
-              c.current_product_title?('SKU '+c.current_product_id+' · '+c.current_product_title):'',
-              c.primary_objection && c.primary_objection!=='none'?('obj: '+c.primary_objection):'',
-              c.next_followup_at?('FU '+fmt(c.next_followup_at)):'',
-              c.discount_offered_percent?('discount '+c.discount_offered_percent+'%'):'',
-              c.ad_title?('ad: '+c.ad_title):'',
-              c.delivery_status_label?('⚠ '+c.delivery_status_label):''
+              c.current_product_title?('Товар: '+c.current_product_title+(c.current_product_id?' · код '+c.current_product_id:'')):'',
+              c.primary_objection && c.primary_objection!=='none'?('Заперечення: '+(c.primary_objection_label||c.primary_objection)):'',
+              c.next_followup_at?('Наступний контакт: '+fmt(c.next_followup_at)):'',
+              c.discount_offered_percent?('Знижка: '+c.discount_offered_percent+'%'):'',
+              c.ad_title?('Реклама: '+c.ad_title):'',
+              c.delivery_status_label?('⚠ Статус доставки: '+c.delivery_status_label):''
             ].filter(Boolean).join(' · ');
           const analysisLabel=c.analysis_band
             ? ((c.analysis_band_label||c.analysis_band)+' · '+Math.round(Number(c.analysis_probability||0)*100)+'% · впевн. '+Math.round(Number(c.analysis_confidence||0)*100)+'%')
-            : ('legacy '+(c.buying_readiness||0)+'%');
+            : ('Попередня оцінка · '+(c.buying_readiness||0)+'%');
           row.innerHTML=ava+'<div class="bot-client-meta"><div class="bot-client-name">'+esc(c.name)+' <span class="bot-client-score">'+esc(analysisLabel)+'</span></div><div class="bot-client-sub">'+esc(sub)+'</div></div><div class="bot-client-tags"><span class="bot-category-badge cat-'+esc(c.interaction_tone||'neutral')+'">'+esc(c.interaction_type_label||'Не визначено')+'</span><span class="bot-stage-chip '+stageCls(c.stage)+'">'+esc(c.stage_label)+'</span></div>';
-            row.addEventListener('click',()=>{activeId=c.id;document.querySelectorAll('.bot-client-row').forEach(e=>e.classList.remove('active'));row.classList.add('active');detail(c.id);});
+            const openRow=()=>{activeId=c.id;document.querySelectorAll('.bot-client-row').forEach(e=>e.classList.remove('active'));row.classList.add('active');detail(c.id);};
+            row.addEventListener('click',openRow);
+            row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openRow();}});
             listEl.appendChild(row);
           });
           if(!(d.clients||[]).length) listEl.innerHTML='<div class="bot-empty">Ще немає клієнтів.</div>';
