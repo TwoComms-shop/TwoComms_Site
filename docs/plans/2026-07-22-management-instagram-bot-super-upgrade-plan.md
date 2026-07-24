@@ -1036,7 +1036,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
 
 - [ ] **P1.D8 Complete Ukrainian localization and help text.** Replace raw `Paid`, `legacy`, `conf`, `obj`, `FU`, `discount`, `ad`, `Reasoning`, `Worker`, `Heartbeat`, `Rescue offer`, raw signal/deal/follow-up enums, and unexplained acronyms with backend labels and Ukrainian copy. Every setting explains what it controls, what it does not prove, risk, default, and operator action—especially Meta feedback/test code, polling, allowlist, analysis, reply automation, and model choice.
 
-- [ ] **P1.D8a Make the bot overview model explanation runtime-truthful.**
+- [x] **P1.D8a Make the bot overview model explanation runtime-truthful.**
   - **Priority:** P1 — operators currently see contradictory model names on the same production screen.
   - **Symptom:** the overview status reports effective model `gemini-3.6-flash`, while the adjacent “Як працює” explanation still claims replies use `gemini-3-flash-preview`.
   - **Root cause:** the explanatory paragraph renders the raw legacy `settings.gemini_model` value once on the server and never synchronizes it with the normalized runtime model status.
@@ -1044,6 +1044,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Affected branches:** overview template, status rendering, Ukrainian help copy, configured/effective model distinction, browser QA.
   - **Acceptance:** remove the hardcoded model name; render a localized explanation from the same bounded status field used by the model tile, with an honest fallback before status loads; never expose a key value.
   - **Tests:** template contract rejects the retired identifier, runtime rendering uses the effective model, missing-status fallback remains readable, production browser shows one consistent model identifier.
+  - **Implementation/evidence:** `023022c6` replaces the stale server-rendered model with a bounded `textContent` update shared by the model tile and explanation, with a readable pre-status fallback. The DB-free production-settings contract passed `3/3` with `Skipping setup of unused database(s): default`, plus compile/diff checks. Production was fast-forwarded to `023022c6361747e8a0cd11eafafc6dd00709345d`; after `--ensure`, authenticated browser QA showed `Працює`, `Агент онлайн і відповідає`, and exact equality `gemini-3.6-flash` in both DOM nodes. No key values or external transports were used.
 
 - [ ] **P1.D9 Apply semantic colors without using color as the sole carrier.** Green only for verified paid/delivered truth, yellow for high intent/payment pending, blue for shipped/in transit, neutral for information/exploration, red for opt-out/lost/abuse/blockers. Waiting shipment is not “complete.” Every chip has text/icon/state semantics; funnel completion is not inferred from mutable stage.
 
