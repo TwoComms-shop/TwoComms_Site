@@ -8,9 +8,8 @@ from django.utils import timezone
 from management.ig_bot_models import (
     IgClient,
     IgConversationAnalysisSnapshot,
-    InstagramBotMessage,
 )
-from management.models import InstagramBotSettings
+from management.models import InstagramBotMessage, InstagramBotSettings
 from management.services.bot_followups import cancel_pending
 from management.services.bot_sales_classifier import is_explicit_opt_out
 

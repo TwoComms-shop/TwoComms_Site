@@ -1,7 +1,7 @@
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from management.models import (
@@ -12,6 +12,11 @@ from management.models import (
     InstagramBotSettings,
 )
 from management.services.ig_opt_out_backfill import reconcile_opt_out_backfill
+
+
+class IgOptOutBackfillImportTests(SimpleTestCase):
+    def test_service_imports_with_production_model_layout(self):
+        self.assertTrue(callable(reconcile_opt_out_backfill))
 
 
 class IgOptOutBackfillTests(TestCase):
