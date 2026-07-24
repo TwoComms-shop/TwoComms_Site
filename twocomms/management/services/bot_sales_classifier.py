@@ -321,6 +321,10 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
     if not is_manager and (client.ad_id or client.ad_ref or client.referral_payload):
         add(IgConversationSignal.Type.AD_REPLY, conf=0.85, value=client.ad_id or client.ad_ref)
 
+    was_opted_out = bool(
+        client.opted_out_at
+        and (not client.opted_in_at or client.opted_in_at < client.opted_out_at)
+    )
     opt_out = bool(not is_manager and is_explicit_opt_out(low))
     no_buy = bool(not is_manager and NO_BUY_RE.search(low))
     if no_buy:
@@ -339,6 +343,8 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         client.opted_out_at = opted_out_at
         client.opt_out_message_id = getattr(message, "pk", None)
         client.bot_paused = True
+        if not was_opted_out:
+            client.reply_permission_epoch = int(client.reply_permission_epoch or 0) + 1
         client.paused_reason = "opt_out"
         client.paused_at = client.paused_at or opted_out_at
 
@@ -406,7 +412,7 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
     if opt_out:
         fields.extend([
             "opted_out_at", "opt_out_message_id", "bot_paused",
-            "paused_reason", "paused_at",
+            "reply_permission_epoch", "paused_reason", "paused_at",
         ])
     if is_manager:
         client.last_manager_message_at = timezone.now()

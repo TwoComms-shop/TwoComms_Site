@@ -281,6 +281,9 @@ class IgClient(models.Model):
     paused_reason = models.CharField(max_length=255, blank=True, default="")
     paused_at = models.DateTimeField(null=True, blank=True)
     manager_takeover = models.BooleanField(_("Веде менеджер"), default=False)
+    # Monotonic permission epoch. Pause/takeover increments it so a worker
+    # that generated before the transition cannot send afterwards.
+    reply_permission_epoch = models.PositiveBigIntegerField(default=0)
     opted_out_at = models.DateTimeField(null=True, blank=True, db_index=True)
     opt_out_message_id = models.PositiveBigIntegerField(null=True, blank=True)
     opted_in_at = models.DateTimeField(null=True, blank=True)

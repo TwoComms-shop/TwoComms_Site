@@ -27,6 +27,7 @@ import secrets
 import time
 import urllib.error
 import urllib.request
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone as dt_timezone
 from urllib.parse import urlsplit
 
@@ -156,9 +157,10 @@ def _register_spam(client) -> bool:
     blocked = client.spam_strikes >= SPAM_STRIKES_LIMIT
     if blocked:
         client.bot_paused = True
+        client.reply_permission_epoch = int(client.reply_permission_epoch or 0) + 1
         client.paused_reason = "spam"
         client.paused_at = timezone.now()
-        fields += ["bot_paused", "paused_reason", "paused_at"]
+        fields += ["bot_paused", "reply_permission_epoch", "paused_reason", "paused_at"]
     client.save(update_fields=fields)
     if blocked:
         try:
@@ -407,12 +409,14 @@ def _handle_echo(recipient_igsid: str, text: str) -> None:
             takeover_started = not client.manager_takeover
             client.manager_takeover = True
             client.bot_paused = True
+            client.reply_permission_epoch = int(client.reply_permission_epoch or 0) + 1
             client.paused_reason = "manager_takeover"
             if takeover_started:
                 client.paused_at = now
             client.last_manager_message_at = now
             update_fields = [
                 "manager_takeover", "bot_paused", "paused_reason",
+                "reply_permission_epoch",
                 "last_manager_message_at", "updated_at",
             ]
             if takeover_started:
@@ -425,7 +429,7 @@ def _handle_echo(recipient_igsid: str, text: str) -> None:
                     InstagramBotMessage.Status.PENDING,
                     InstagramBotMessage.Status.PROCESSING,
                 ],
-            ).update(
+            ).exclude(send_state="sending").update(
                 status=InstagramBotMessage.Status.DONE,
                 processed_at=now,
                 processing_started_at=None,
@@ -1245,8 +1249,14 @@ def _clear_send_error(s: InstagramBotSettings) -> None:
         pass
 
 
-def send_text(s: InstagramBotSettings, recipient_id: str, text: str) -> tuple[bool, str, str]:
-    """Повертає (ok, kind, hint). kind: '' | 'transient' | 'permanent'."""
+def send_text(
+    s: InstagramBotSettings,
+    recipient_id: str,
+    text: str,
+    *,
+    permission_boundary_factory=None,
+) -> tuple[bool, str, str]:
+    """Повертає (ok, kind, hint); ``cancelled`` means no provider request ran."""
     page_token = get_page_token(s)
     if not page_token:
         hint = "немає page-token (перевірте DIRECT_API/IG_MARKER)"
@@ -1257,17 +1267,28 @@ def send_text(s: InstagramBotSettings, recipient_id: str, text: str) -> tuple[bo
         return False, "permanent", "порожня відповідь"
     ok_any = False
     for part in parts:
-        # Позначаємо ДО відправки: echo цього чанка прийде асинхронно і не має
-        # сприйнятись за повідомлення менеджера (виправляє хибний авто-стоп).
-        _mark_bot_sent(recipient_id, part)
-        body = json.dumps(
-            {
-                "recipient": {"id": recipient_id},
-                "message": {"text": part},
-                "messaging_type": "RESPONSE",
-            }
-        ).encode("utf-8")
-        code, resp = _http(f"{GRAPH}/{s.page_id}/messages?access_token={page_token}", data=body)
+        boundary = (
+            permission_boundary_factory()
+            if permission_boundary_factory
+            else nullcontext(True)
+        )
+        with boundary as send_allowed:
+            if not send_allowed:
+                hint = "permission epoch changed before Meta request"
+                if ok_any:
+                    return False, "unknown", f"часткова доставка; {hint}"
+                return False, "cancelled", hint
+            # Позначаємо ДО відправки: echo цього чанка прийде асинхронно і не має
+            # сприйнятись за повідомлення менеджера (виправляє хибний авто-стоп).
+            _mark_bot_sent(recipient_id, part)
+            body = json.dumps(
+                {
+                    "recipient": {"id": recipient_id},
+                    "message": {"text": part},
+                    "messaging_type": "RESPONSE",
+                }
+            ).encode("utf-8")
+            code, resp = _http(f"{GRAPH}/{s.page_id}/messages?access_token={page_token}", data=body)
         if code == 200:
             ok_any = True
             _clear_send_error(s)
@@ -1805,9 +1826,16 @@ def enqueue_inbound(
     if not _is_allowed(s, sender_id):
         log("info", "skip_not_allowed", f"[{source}] {sender_id} поза білим списком")
         return False
+    from management.services import bot_followups, bot_sales_classifier
+    from management.services.ig_reply_boundary import pause_reply_boundary
+
+    explicit_opt_out = bot_sales_classifier.is_explicit_opt_out(text)
+    permission_transition = pause_reply_boundary() if explicit_opt_out else nullcontext()
     client = IgClient.get_or_create_for_sender(sender_id)
     try:
-        with transaction.atomic():
+        # Opt-out follows the same lock order as send/pause: permission file
+        # lock first, then database rows. Normal ingress takes no global lock.
+        with permission_transition, transaction.atomic():
             current_settings = InstagramBotSettings.objects.select_for_update().get(pk=s.pk)
             # Серіалізуємо ingress із hide: або вхідне повністю оброблено до
             # приховування, або приховування вже виграло і жодного side effect
@@ -1842,22 +1870,22 @@ def enqueue_inbound(
                 processed_at=None if reply_eligible else timezone.now(),
             )
             client.touch_inbound()
-            from management.services import bot_followups, bot_sales_classifier
-
             # Consent is a routing barrier, not best-effort CRM enrichment. If
             # later classification fails, an explicit stop must already be
             # durable and impossible to reach Gemini or customer transport.
-            if bot_sales_classifier.is_explicit_opt_out(text):
+            if explicit_opt_out:
                 opted_out_at = timezone.now()
                 client.opted_out_at = opted_out_at
                 client.opt_out_message_id = msg.pk
                 client.bot_paused = True
+                client.reply_permission_epoch = int(client.reply_permission_epoch or 0) + 1
                 client.paused_reason = "opt_out"
                 client.paused_at = client.paused_at or opted_out_at
                 client.save(update_fields=[
                     "opted_out_at",
                     "opt_out_message_id",
                     "bot_paused",
+                    "reply_permission_epoch",
                     "paused_reason",
                     "paused_at",
                     "updated_at",
@@ -2205,16 +2233,17 @@ def _process_one(s: InstagramBotSettings, row: InstagramBotMessage) -> bool:
 def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lease_token: str = "") -> bool:
     from management.services.ig_reply_boundary import reply_execution_boundary
 
-    with reply_execution_boundary(s.pk, row.client_id) as reply_allowed:
-        if not reply_allowed:
+    with reply_execution_boundary(s.pk, row.client_id) as permission:
+        if not permission:
             return _skip_observed_row(row, reason="reply_paused")
-        return _process_one_inside_reply_boundary(s, row, lease_token)
+        return _process_one_inside_reply_boundary(s, row, lease_token, permission)
 
 
 def _process_one_inside_reply_boundary(
     s: InstagramBotSettings,
     row: InstagramBotMessage,
     lease_token: str = "",
+    permission=None,
 ) -> bool:
     if not InstagramBotSettings.objects.filter(pk=s.pk, is_enabled=True).exists():
         return _skip_observed_row(row, reason="global_reply_paused")
@@ -2377,16 +2406,40 @@ def _process_one_inside_reply_boundary(
     # hide не поверне помилковий success: UI отримає чесний retryable-конфлікт.
     if not _renew_client_automation_lease(row, lease_token):
         return False
-    send_started_at = timezone.now()
-    if not _own_processing_claim(row).update(
-        send_state="sending", send_started_at=send_started_at, send_completed_at=None,
-    ):
-        log("warning", "claim_lost", f"{row.sender_id}: send claim lost before Meta request")
-        return False
-    row.send_state = "sending"
-    row.send_started_at = send_started_at
-    row.send_completed_at = None
-    ok, kind, hint = send_text(s, row.sender_id, reply)
+    from management.services.ig_reply_boundary import customer_send_boundary
+
+    # The global lock is held only across the claim/revalidation.  Each Meta
+    # chunk below takes its own short send boundary, so slow generation and
+    # unrelated chunks never block a stop for the whole response.
+    with customer_send_boundary(s.pk, row.client_id, permission) as send_allowed:
+        if not send_allowed:
+            return _skip_observed_row(row, reason="permission_epoch_changed")
+        send_started_at = timezone.now()
+        if not _own_processing_claim(row).update(
+            send_state="sending", send_started_at=send_started_at, send_completed_at=None,
+        ):
+            log("warning", "claim_lost", f"{row.sender_id}: send claim lost before Meta request")
+            return False
+        row.send_state = "sending"
+        row.send_started_at = send_started_at
+        row.send_completed_at = None
+    ok, kind, hint = send_text(
+        s,
+        row.sender_id,
+        reply,
+        permission_boundary_factory=lambda: customer_send_boundary(
+            s.pk, row.client_id, permission
+        ),
+    )
+    if kind == "cancelled":
+        cancelled_at = timezone.now()
+        if _own_processing_claim(row).update(
+            send_state="cancelled",
+            processed_at=cancelled_at,
+        ):
+            row.send_state = "cancelled"
+            row.processed_at = cancelled_at
+        return _skip_observed_row(row, reason="permission_epoch_changed")
     if not ok:
         if kind == "permanent":
             # Перманентна помилка (напр. #200 немає Advanced Access) — ретраї
@@ -3139,10 +3192,14 @@ def start_bot() -> InstagramBotSettings:
             )
             was = s.is_enabled
             s.is_enabled = True
+            s.reply_permission_epoch = int(s.reply_permission_epoch or 0) + 1
             s.last_started_at = timezone.now()
             s.reply_after = timezone.now()
             s.last_error = ""
-            s.save(update_fields=["is_enabled", "last_started_at", "reply_after", "last_error"])
+            s.save(update_fields=[
+                "is_enabled", "reply_permission_epoch", "last_started_at",
+                "reply_after", "last_error",
+            ])
     if not was:
         log("success", "start", "Бот запущено, очікую повідомлення.")
     return s
@@ -3160,15 +3217,16 @@ def stop_bot() -> InstagramBotSettings:
             )
             was = s.is_enabled
             s.is_enabled = False
+            s.reply_permission_epoch = int(s.reply_permission_epoch or 0) + 1
             s.last_stopped_at = now
-            s.save(update_fields=["is_enabled", "last_stopped_at"])
+            s.save(update_fields=["is_enabled", "reply_permission_epoch", "last_stopped_at"])
             InstagramBotMessage.objects.filter(
                 role=InstagramBotMessage.Role.USER,
                 status__in=[
                     InstagramBotMessage.Status.PENDING,
                     InstagramBotMessage.Status.PROCESSING,
                 ],
-            ).update(
+            ).exclude(send_state="sending").update(
                 status=InstagramBotMessage.Status.DONE,
                 processed_at=now,
                 processing_started_at=None,
@@ -3188,6 +3246,7 @@ def stop_bot() -> InstagramBotSettings:
 
 def status_snapshot() -> dict:
     from management.services.ig_maintenance import maintenance_status
+    from management.services.ig_reply_boundary import reply_barrier_telemetry
 
     s = InstagramBotSettings.load()
     maintenance = maintenance_status()
@@ -3313,4 +3372,5 @@ def status_snapshot() -> dict:
         "trigger_text": s.trigger_text,
         "reply_text": s.reply_text,
         "poll_interval_seconds": s.poll_interval_seconds,
+        "reply_barrier": reply_barrier_telemetry(),
     }

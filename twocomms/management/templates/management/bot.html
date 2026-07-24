@@ -54,6 +54,7 @@
 .bot-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:14px;}
 .bot-metric{background:#0c0f17;border:1px solid #1a2030;border-radius:12px;padding:12px;text-align:center;}
 .bot-metric .v{font-size:23px;font-weight:700;line-height:1;}
+.bot-metric .v.compact{font-size:14px;line-height:1.25;overflow-wrap:anywhere;}
 .bot-metric .k{font-size:10.5px;color:#8b95a5;text-transform:uppercase;letter-spacing:.04em;margin-top:6px;}
 .bot-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;}
 .bot-stat-box{background:#0c0f17;border:1px solid #1a2030;border-radius:12px;padding:12px;}
@@ -229,6 +230,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           <div class="bot-metric"><div class="v" id="bot-model">—</div><div class="k">Модель</div></div>
           <div class="bot-metric"><div class="v" id="bot-reasoning">—</div><div class="k">Reasoning</div></div>
           <div class="bot-metric"><div class="v" id="bot-outbox">—</div><div class="k">Сповіщення</div></div>
+          <div class="bot-metric"><div class="v compact" id="bot-reply-barrier">0 · 0</div><div class="k">Бар'єр відповідей</div></div>
         </div>
         <div class="bot-hint" id="bot-error" style="margin-top:12px;color:#f87171;"></div>
         <div class="bot-hint" id="bot-outbox-help" style="margin-top:8px;"></div>
@@ -540,6 +542,13 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       outboxHelp.style.color=(!outboxAvailable||outboxManual)?'#fbbf24':'';
     }
     if(outboxAvailable) renderNotificationReview(outboxManual);
+    const replyBarrier=document.getElementById('bot-reply-barrier');
+    if(replyBarrier){
+      const waits=Number((st.reply_barrier||{}).waits||0);
+      const aborts=Number((st.reply_barrier||{}).aborts||0);
+      replyBarrier.textContent=waits+' оч. · '+aborts+' скас.';
+      replyBarrier.title='Очікування короткого send-lock: '+waits+' · скасовано через зміну дозволу: '+aborts;
+    }
     document.getElementById('bot-error').textContent=st.last_error||'';
     document.getElementById('bot-start').disabled=st.is_enabled;
     document.getElementById('bot-stop').disabled=!st.is_enabled;

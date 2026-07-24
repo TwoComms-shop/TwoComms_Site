@@ -877,6 +877,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Affected branches:** inbound reply generation/send, due follow-ups, global stop, per-client pause/resume, and manager takeover.
   - **Acceptance:** use per-client send ownership plus a short global generation/permission epoch; revalidate the global/client epoch immediately before every external customer send; stop/pause/takeover completes within a documented bounded time and guarantees zero post-boundary sends without waiting for another client's whole generation; expose lock-wait/abort telemetry in Ukrainian.
   - **Tests:** two clients generate concurrently, stop during Gemini, pause one client while another is slow, takeover at the pre-send boundary, provider timeout, stale owner recovery, and exactly zero customer sends after a committed stop/pause epoch.
+  - **Implementation checkpoint (uncommitted):** added durable global/client `reply_permission_epoch`, removed the lock from the Gemini generation boundary, and introduced a short send-only permission lock with epoch revalidation and Ukrainian status telemetry (`reply_barrier.waits/aborts`). Follow-up sends use the same barrier. Production MariaDB migration, concurrency tests, and runtime proof are still required before marking this item complete.
 
 - [ ] **P0.B6 Fail closed for Meta data-deletion signed requests.**
   - **Symptom:** the public data-deletion callback accepts a syntactically valid signed request when the app secret is absent.

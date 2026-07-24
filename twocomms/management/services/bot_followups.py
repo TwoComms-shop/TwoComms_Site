@@ -404,7 +404,10 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
         .values_list("id", flat=True)
     )
     from management.services import instagram_bot
-    from management.services.ig_reply_boundary import reply_execution_boundary
+    from management.services.ig_reply_boundary import (
+        customer_send_boundary,
+        reply_execution_boundary,
+    )
 
     for task_id in task_ids:
         claim = _claim_due_followup(task_id, now=now, automation=instagram_bot)
@@ -414,9 +417,9 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
         reply_boundary = reply_execution_boundary(s.pk, client.id)
         reply_boundary_entered = False
         try:
-            reply_allowed = reply_boundary.__enter__()
+            permission = reply_boundary.__enter__()
             reply_boundary_entered = True
-            if not reply_allowed:
+            if not permission:
                 _mark_skipped(task, "reply_paused")
                 continue
             if task.meta_window_deadline and now > task.meta_window_deadline:
@@ -435,10 +438,24 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
             if not renewed:
                 continue
             task, client = renewed
+            with customer_send_boundary(s.pk, client.id, permission) as send_allowed:
+                if not send_allowed:
+                    _mark_skipped(task, "permission_epoch_changed")
+                    continue
             try:
-                ok, kind, hint = instagram_bot.send_text(s, client.igsid, text)
+                ok, kind, hint = instagram_bot.send_text(
+                    s,
+                    client.igsid,
+                    text,
+                    permission_boundary_factory=lambda: customer_send_boundary(
+                        s.pk, client.id, permission
+                    ),
+                )
             except Exception as exc:
                 ok, kind, hint = False, "transient", repr(exc)
+            if kind == "cancelled":
+                _mark_skipped(task, "permission_epoch_changed")
+                continue
             if not ok:
                 if kind == "permanent":
                     _mark_skipped(task, hint or "send_blocked")

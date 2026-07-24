@@ -870,9 +870,12 @@ def bot_client_pause_api(request, client_id):
                 return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
             now = timezone.now()
             c.bot_paused = True
+            c.reply_permission_epoch = int(c.reply_permission_epoch or 0) + 1
             c.paused_reason = "manual"
             c.paused_at = now
-            c.save(update_fields=["bot_paused", "paused_reason", "paused_at", "updated_at"])
+            c.save(update_fields=[
+                "bot_paused", "reply_permission_epoch", "paused_reason", "paused_at", "updated_at",
+            ])
             bot_followups.cancel_pending(c, reason="manual_pause")
             InstagramBotMessage.objects.filter(
                 client=c,
@@ -881,7 +884,7 @@ def bot_client_pause_api(request, client_id):
                     InstagramBotMessage.Status.PENDING,
                     InstagramBotMessage.Status.PROCESSING,
                 ],
-            ).update(
+            ).exclude(send_state="sending").update(
                 status=InstagramBotMessage.Status.DONE,
                 processed_at=now,
                 processing_started_at=None,
@@ -921,8 +924,12 @@ def bot_client_resume_api(request, client_id):
                 }, status=409)
             c.bot_paused = False
             c.manager_takeover = False
+            c.reply_permission_epoch = int(c.reply_permission_epoch or 0) + 1
             c.paused_reason = ""
-            update_fields = ["bot_paused", "manager_takeover", "paused_reason", "updated_at"]
+            update_fields = [
+                "bot_paused", "manager_takeover", "reply_permission_epoch",
+                "paused_reason", "updated_at",
+            ]
             if active_opt_out:
                 c.opted_in_at = timezone.now()
                 c.opted_in_by = request.user
@@ -964,10 +971,11 @@ def bot_client_hide_api(request, client_id):
         c.automation_lease_token = ""
         c.automation_lease_until = None
         c.hidden_at = now
+        c.reply_permission_epoch = int(c.reply_permission_epoch or 0) + 1
         c.hidden_reason = (request.POST.get("reason") or "manual")[:255]
         c.save(update_fields=[
             "automation_lease_token", "automation_lease_until",
-            "hidden_at", "hidden_reason", "updated_at",
+            "hidden_at", "reply_permission_epoch", "hidden_reason", "updated_at",
         ])
         cancelled_followups = bot_followups.cancel_pending(c, reason="hidden")
         # Не залишаємо legacy pending rows, які могли потрапити в чергу до
@@ -1007,8 +1015,11 @@ def bot_client_unhide_api(request, client_id):
         if not c:
             return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
         c.hidden_at = None
+        c.reply_permission_epoch = int(c.reply_permission_epoch or 0) + 1
         c.hidden_reason = ""
-        c.save(update_fields=["hidden_at", "hidden_reason", "updated_at"])
+        c.save(update_fields=[
+            "hidden_at", "reply_permission_epoch", "hidden_reason", "updated_at",
+        ])
     return JsonResponse({
         "success": True,
         "hidden": False,

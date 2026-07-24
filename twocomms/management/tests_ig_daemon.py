@@ -5,7 +5,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -27,7 +30,7 @@ from management.management.commands.run_instagram_bot import (
     _process_lock_held,
     _run_work_cycle,
 )
-from management.models import InstagramBotSettings
+from management.models import IgClient, InstagramBotSettings
 from management.services import instagram_bot as bot
 from management.services.ig_maintenance import (
     MaintenanceLeaseConflict,
@@ -35,6 +38,12 @@ from management.services.ig_maintenance import (
     deactivate_maintenance,
     maintenance_status,
     notification_send_boundary,
+)
+from management.services.ig_reply_boundary import (
+    ReplyPermission,
+    customer_send_boundary,
+    pause_reply_boundary,
+    reply_execution_boundary,
 )
 
 
@@ -417,6 +426,118 @@ except MaintenanceLeaseConflict:
 
 
 class ReplyBoundaryLockTests(SimpleTestCase):
+    @patch("management.services.instagram_bot._clear_client_delivery_error")
+    @patch("management.services.instagram_bot._clear_send_error")
+    @patch("management.services.instagram_bot._http", return_value=(200, "{}"))
+    @patch("management.services.instagram_bot.get_page_token", return_value="token")
+    def test_each_meta_chunk_revalidates_permission(
+        self, _token, http, _clear_settings, _clear_client
+    ):
+        decisions = iter((True, False))
+        boundary_calls = []
+
+        def boundary_factory():
+            boundary_calls.append(True)
+            return nullcontext(next(decisions))
+
+        ok, kind, hint = bot.send_text(
+            InstagramBotSettings(page_id="page"),
+            "recipient",
+            "a" * 1200,
+            permission_boundary_factory=boundary_factory,
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(kind, "unknown")
+        self.assertIn("часткова доставка", hint)
+        self.assertEqual(len(boundary_calls), 2)
+        self.assertEqual(http.call_count, 1)
+
+    def test_two_clients_can_hold_generation_boundaries_concurrently(self):
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+
+        def capture(settings_id, client_id):
+            return ReplyPermission(settings_id, 4, client_id, 2, True)
+
+        def generate(client_id):
+            with reply_execution_boundary(1, client_id) as permission:
+                self.assertTrue(permission)
+                if client_id == 9:
+                    first_entered.set()
+                    return second_entered.wait(1)
+                if not first_entered.wait(1):
+                    return False
+                second_entered.set()
+                return True
+
+        with patch(
+            "management.services.ig_reply_boundary.capture_reply_permission",
+            side_effect=capture,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(generate, (9, 10)))
+        self.assertEqual(results, [True, True])
+
+    @patch(
+        "management.services.ig_reply_boundary.capture_reply_permission",
+        return_value=ReplyPermission(1, 4, 9, 2, True),
+    )
+    def test_generation_boundary_does_not_hold_permission_lock(self, _capture):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = os.path.join(temp_dir, "reply.lock")
+            with reply_execution_boundary(1, 9, lock_path=lock_path) as permission:
+                started = time.monotonic()
+                with pause_reply_boundary(lock_path=lock_path):
+                    pass
+                self.assertLess(time.monotonic() - started, 0.25)
+                self.assertTrue(permission)
+
+    @patch(
+        "management.services.ig_reply_boundary.capture_reply_permission",
+        return_value=ReplyPermission(1, 5, 9, 2, True),
+    )
+    def test_send_boundary_aborts_when_global_epoch_changed(self, _capture):
+        stale = ReplyPermission(1, 4, 9, 2, True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with customer_send_boundary(
+                1,
+                9,
+                stale,
+                lock_path=os.path.join(temp_dir, "reply.lock"),
+            ) as allowed:
+                self.assertFalse(allowed)
+
+    @patch(
+        "management.services.ig_reply_boundary.capture_reply_permission",
+        return_value=ReplyPermission(1, 4, 9, 3, True),
+    )
+    def test_send_boundary_aborts_when_client_epoch_changed(self, _capture):
+        stale = ReplyPermission(1, 4, 9, 2, True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with customer_send_boundary(
+                1,
+                9,
+                stale,
+                lock_path=os.path.join(temp_dir, "reply.lock"),
+            ) as allowed:
+                self.assertFalse(allowed)
+
+    @patch(
+        "management.services.ig_reply_boundary.capture_reply_permission",
+        return_value=ReplyPermission(1, 4, 9, 2, True),
+    )
+    def test_send_boundary_accepts_matching_epochs(self, _capture):
+        permission = ReplyPermission(1, 4, 9, 2, True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with customer_send_boundary(
+                1,
+                9,
+                permission,
+                lock_path=os.path.join(temp_dir, "reply.lock"),
+            ) as allowed:
+                self.assertTrue(allowed)
+
     def test_pause_waits_for_real_inflight_process_boundary(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             lock_path = os.path.join(temp_dir, "reply.lock")
@@ -450,6 +571,40 @@ with pause_reply_boundary(lock_path=sys.argv[1]):
             finally:
                 child.terminate()
                 child.wait(timeout=5)
+
+
+class ReplyPermissionEpochModelTests(TestCase):
+    def setUp(self):
+        self.settings = InstagramBotSettings.load()
+        self.settings.is_enabled = True
+        self.settings.save(update_fields=["is_enabled"])
+        self.client = IgClient.objects.create(igsid="epoch-client")
+
+    def test_global_stop_invalidates_captured_permission(self):
+        from management.services.ig_reply_boundary import capture_reply_permission
+
+        before = capture_reply_permission(self.settings.pk, self.client.pk)
+        bot.stop_bot()
+        after = capture_reply_permission(self.settings.pk, self.client.pk)
+        self.assertTrue(before)
+        self.assertFalse(after)
+        self.assertNotEqual(before.settings_epoch, after.settings_epoch)
+
+    def test_client_pause_epoch_invalidates_only_that_client(self):
+        from management.services.ig_reply_boundary import capture_reply_permission
+
+        other = IgClient.objects.create(igsid="epoch-other")
+        before = capture_reply_permission(self.settings.pk, self.client.pk)
+        other_before = capture_reply_permission(self.settings.pk, other.pk)
+        self.client.bot_paused = True
+        self.client.reply_permission_epoch += 1
+        self.client.save(update_fields=["bot_paused", "reply_permission_epoch", "updated_at"])
+        after = capture_reply_permission(self.settings.pk, self.client.pk)
+        other_after = capture_reply_permission(self.settings.pk, other.pk)
+        self.assertFalse(after)
+        self.assertTrue(other_after)
+        self.assertNotEqual(before.client_epoch, after.client_epoch)
+        self.assertEqual(other_before.client_epoch, other_after.client_epoch)
 
 
 class DaemonHeartbeatTests(SimpleTestCase):
