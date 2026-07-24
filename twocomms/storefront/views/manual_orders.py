@@ -27,6 +27,7 @@ from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from orders.models import Order, OrderItem
@@ -409,7 +410,55 @@ def _collect_items(raw_items):
     return raw_items, products_map, variants_map
 
 
-def _form_context(*, order=None):
+def _build_ig_review_initial(review):
+    """Build an editable manual-order draft from a confirmed IG review."""
+    deal = review.deal
+    if not deal:
+        return {"review_id": review.pk, "items": [], "delivery_method": "manual"}
+    items = []
+    for item in deal.items.select_related("product", "color_variant").all():
+        product = item.product
+        variants = []
+        sizes = []
+        if product:
+            try:
+                sizes = list(resolve_product_sizes(product))
+            except Exception:
+                sizes = []
+            for variant in product.color_variants.select_related("color").all():
+                color = getattr(variant, "color", None)
+                variants.append({
+                    "id": variant.id,
+                    "name": (getattr(color, "name", "") or "Колір").strip() or "Колір",
+                })
+        items.append({
+            "kind": "catalog" if product else "custom",
+            "product_id": item.product_id,
+            "color_variant_id": item.color_variant_id or "",
+            "title": item.title,
+            "unit_price": float(item.unit_price or 0),
+            "qty": item.qty,
+            "size": item.size or "",
+            "color_name": "",
+            "image": getattr(getattr(product, "display_image", None), "url", "") if product else "",
+            "sizes": sizes,
+            "variants": variants,
+        })
+    return {
+        "review_id": review.pk,
+        "full_name": deal.np_full_name or deal.client.display_name or deal.client.username or "",
+        "phone": deal.np_phone or deal.client.phone or "",
+        "delivery_method": "manual",
+        "city": deal.np_city or "",
+        "np_office": deal.np_office or "",
+        "payment_preset": "paid_full",
+        "sale_source": "Instagram",
+        "manager_comment": "Платіж підтверджено менеджером через CRM; дані перевірити перед створенням.",
+        "items": items,
+    }
+
+
+def _form_context(*, order=None, prefill=None):
     order_initial = _build_order_initial(order) if order is not None else None
     context = {
         'products_json': json.dumps(_build_products_payload(), ensure_ascii=False),
@@ -419,7 +468,7 @@ def _form_context(*, order=None):
         'sale_source_presets': Order.SALE_SOURCE_PRESETS,
         'is_edit': order is not None,
         'edit_order_id': order.id if order is not None else None,
-        'order_initial_json': json.dumps(order_initial, ensure_ascii=False) if order_initial else '',
+        'order_initial_json': json.dumps(order_initial or prefill, ensure_ascii=False) if (order_initial or prefill) else '',
     }
     return context
 
@@ -428,12 +477,45 @@ def _form_context(*, order=None):
 @require_http_methods(["GET", "POST"])
 def manual_order_create(request):
     if request.method == 'GET':
-        return render(request, 'pages/admin_manual_order.html', _form_context())
+        prefill = None
+        review_id = request.GET.get('ig_payment_review')
+        if review_id:
+            from management.ig_bot_models import IgPaymentConfirmationReview
+
+            review = (
+                IgPaymentConfirmationReview.objects.select_related("deal", "client")
+                .filter(pk=review_id, status=IgPaymentConfirmationReview.Status.CONFIRMED, client__hidden_at__isnull=True)
+                .first()
+            )
+            if review:
+                prefill = _build_ig_review_initial(review)
+        return render(request, 'pages/admin_manual_order.html', _form_context(prefill=prefill))
 
     # POST — створення замовлення
     data = _parse_request_payload(request)
     if data is None:
         return JsonResponse({'success': False, 'message': 'Некоректний формат запиту.'}, status=400)
+
+    payment_review = None
+    review_id = data.get('payment_review_id')
+    if review_id:
+        from management.ig_bot_models import IgPaymentConfirmationReview
+
+        payment_review = (
+            IgPaymentConfirmationReview.objects.select_related('deal', 'client')
+            .filter(pk=review_id, status=IgPaymentConfirmationReview.Status.CONFIRMED, client__hidden_at__isnull=True)
+            .first()
+        )
+        if not payment_review:
+            return JsonResponse({'success': False, 'message': 'Підтвердження оплати недійсне або вже скасоване.'}, status=409)
+        if payment_review.deal_id and payment_review.deal.order_id:
+            return JsonResponse({
+                'success': True,
+                'message': f'Для цієї угоди вже створено замовлення #{payment_review.deal.order.order_number}.',
+                'order_id': payment_review.deal.order_id,
+                'order_number': payment_review.deal.order.order_number,
+                'redirect_url': f"{reverse('admin_panel')}?section=orders",
+            })
 
     full_name = str(data.get('full_name') or '').strip()
     raw_phone = str(data.get('phone') or '').strip()
@@ -500,6 +582,17 @@ def manual_order_create(request):
                 },
                 raise_errors=True,
             )
+            if payment_review and payment_review.deal_id:
+                from management.ig_bot_models import IgDeal
+
+                deal = IgDeal.objects.select_for_update().get(pk=payment_review.deal_id)
+                if deal.order_id and deal.order_id != order.id:
+                    raise ValueError('Для цієї перевірки вже створено замовлення.')
+                deal.order = order
+                deal.status = IgDeal.Status.ORDER_CREATED
+                deal.order_truth_updated_at = timezone.now()
+                deal.save(update_fields=['order', 'status', 'order_truth_updated_at', 'updated_at'])
+                payment_review.save(update_fields=['updated_at'])
     except ValueError as exc:
         return JsonResponse({'success': False, 'message': str(exc)}, status=422)
     except Exception:

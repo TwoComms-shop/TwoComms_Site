@@ -55,6 +55,7 @@ def create_order_from_deal(deal, *, created_by=None):
             VERIFIED_PAYMENT_TRUTHS,
             verified_payment_deals,
         )
+        from management.ig_bot_models import IgPaymentConfirmationReview
 
         projection = IgPaymentProjection.objects.select_for_update().filter(
             deal_id=deal.pk
@@ -64,7 +65,11 @@ def create_order_from_deal(deal, *, created_by=None):
             projection is None
             and verified_payment_deals(deal.__class__.objects.filter(pk=deal.pk)).exists()
         )
-        if not projection_verified and not legacy_verified:
+        manual_review = IgPaymentConfirmationReview.objects.select_for_update().filter(
+            deal_id=deal.pk,
+            status=IgPaymentConfirmationReview.Status.CONFIRMED,
+        ).first()
+        if not projection_verified and not legacy_verified and not manual_review:
             raise ValueError("IG order requires provider-confirmed payment")
 
         locked = deal.__class__.objects.select_for_update().get(pk=deal.pk)

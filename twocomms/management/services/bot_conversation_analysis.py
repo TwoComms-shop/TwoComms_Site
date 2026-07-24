@@ -908,6 +908,14 @@ def _process_claim(
             "next_attempt_at",
             "updated_at",
         ])
+    try:
+        from management.services.ig_payment_review import create_payment_review
+
+        create_payment_review(client, watermark=watermark)
+    except Exception:
+        # A review alert is best-effort and must not change analysis ownership
+        # or the durable snapshot outcome.
+        pass
     return "done"
 
 

@@ -42,6 +42,13 @@ def verified_payment_q(prefix: str = "") -> Q:
     return materialized_truth | transitional_legacy_truth
 
 
+def manual_confirmation_q(prefix: str = "") -> Q:
+    """Match an explicit manager review without changing provider truth."""
+    return Q(**{
+        f"{prefix}payment_confirmation_reviews__status": "confirmed",
+    })
+
+
 def verified_payment_deals(queryset: QuerySet | None = None) -> QuerySet:
     queryset = queryset if queryset is not None else IgDeal.objects.all()
     return queryset.filter(verified_payment_q())
@@ -160,7 +167,7 @@ def payment_truth_inconsistency_report(*, sample_limit: int = 50) -> dict:
     )
     hard_deals_without_truth = IgDeal.objects.filter(status__in=hard_deal_statuses).exclude(
         historical_payment_evidence
-    )
+    ).exclude(manual_confirmation_q())
     verified_fields_without_hard_status = IgDeal.objects.filter(
         Q(payment_truth__in=VERIFIED_PAYMENT_TRUTHS)
         | Q(
@@ -171,7 +178,7 @@ def payment_truth_inconsistency_report(*, sample_limit: int = 50) -> dict:
     ).exclude(status__in=hard_deal_statuses)
     orders_without_truth = IgDeal.objects.filter(order__isnull=False).exclude(
         historical_payment_evidence
-    )
+    ).exclude(manual_confirmation_q())
     order_status_without_order = IgDeal.objects.filter(
         status=IgDeal.Status.ORDER_CREATED,
         order__isnull=True,

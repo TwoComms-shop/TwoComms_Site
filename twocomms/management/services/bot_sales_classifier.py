@@ -756,6 +756,15 @@ def classify_message(client: IgClient, *, message: InstagramBotMessage | None = 
         result["analysis_snapshot_id"] = snapshot.pk
     except Exception:
         result["analysis_snapshot_id"] = None
+    if isinstance(message, InstagramBotMessage) and not client.hidden_at:
+        try:
+            from management.services.ig_payment_review import create_payment_review
+
+            create_payment_review(client, watermark=message.pk)
+        except Exception:
+            # Payment review is an operational alert; it must never block
+            # message persistence or the reply boundary.
+            pass
     if isinstance(message, InstagramBotMessage):
         try:
             from management.services.bot_conversation_analysis import schedule_analysis

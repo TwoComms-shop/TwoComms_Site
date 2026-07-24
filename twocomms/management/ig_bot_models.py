@@ -35,6 +35,7 @@ __all__ = [
     "BotDataDeletionRequest",
     "IgBotNotification",
     "IgBotNotificationAudit",
+    "IgPaymentConfirmationReview",
 ]
 
 
@@ -668,6 +669,70 @@ class IgPaymentProjection(models.Model):
     @property
     def net_paid_amount(self):
         return max(Decimal("0"), self.gross_amount - self.refunded_amount)
+
+
+class IgPaymentConfirmationReview(models.Model):
+    """Audited manager decision on customer-provided payment evidence.
+
+    This is deliberately separate from :class:`IgPaymentProjection`: a chat
+    statement or receipt is not provider truth.  A confirmed review authorizes
+    the manager to prepare an order, while the provider projection remains
+    unchanged and visible as unverified until a real provider event arrives.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", _("Очікує підтвердження")
+        CONFIRMED = "confirmed", _("Підтверджено менеджером")
+        CANCELLED = "cancelled", _("Скасовано менеджером")
+
+    client = models.ForeignKey(
+        "management.IgClient",
+        on_delete=models.CASCADE,
+        related_name="payment_confirmation_reviews",
+        db_constraint=False,
+    )
+    deal = models.ForeignKey(
+        "management.IgDeal",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="payment_confirmation_reviews",
+        db_constraint=False,
+    )
+    dedupe_key = models.CharField(max_length=160, unique=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
+    evidence = models.JSONField(default=dict, blank=True)
+    watermark_message_id = models.PositiveBigIntegerField(default=0)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="confirmed_ig_payment_reviews",
+        db_constraint=False,
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="cancelled_ig_payment_reviews",
+        db_constraint=False,
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Перевірка оплати Instagram")
+        verbose_name_plural = _("Перевірки оплати Instagram")
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["status", "-created_at"], name="ig_payreview_status_dt"),
+            models.Index(fields=["client", "-id"], name="ig_payreview_client_id"),
+        ]
 
 
 class IgDealItem(models.Model):

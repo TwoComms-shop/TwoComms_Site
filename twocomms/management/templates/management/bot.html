@@ -279,6 +279,14 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
       </div>
       <div id="bot-notification-review-list"></div>
     </div>
+    <div class="bot-card" id="bot-payment-review" style="display:none;margin-top:16px;">
+      <div class="bot-card-head">
+        <h2>Заяви про оплату · потрібне підтвердження</h2>
+        <button type="button" class="bot-mini-btn" id="bot-payment-review-refresh">Оновити</button>
+      </div>
+      <div class="bot-note" style="margin:0 0 12px;">Чек або слова клієнта не є provider payment truth. Після підтвердження відкрийте форму, перевірте товари й доставку та лише потім створіть замовлення.</div>
+      <div id="bot-payment-review-list"></div>
+    </div>
     {% endif %}
   </section>
 
@@ -720,6 +728,40 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
   }
   const notificationRefresh=document.getElementById('bot-notification-refresh');
   if(notificationRefresh) notificationRefresh.addEventListener('click',loadNotificationReview);
+
+  const paymentReview=document.getElementById('bot-payment-review');
+  const paymentReviewList=document.getElementById('bot-payment-review-list');
+  const paymentReviewUrl='{% url "management_bot_payment_reviews_api" %}';
+  const paymentReviewActionTemplate='{% url "management_bot_payment_review_action_api" 999999999 %}';
+  function paymentReviewActionUrl(id){return paymentReviewActionTemplate.replace('999999999',String(id));}
+  function loadPaymentReviews(){
+    if(!paymentReviewList) return Promise.resolve();
+    return fetch(paymentReviewUrl,{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      .then(r=>r.json().then(data=>({ok:r.ok,data})))
+      .then(result=>{
+        if(!result.ok||!result.data.success) throw new Error(result.data.error||'Не вдалося завантажити перевірки оплати.');
+        const items=result.data.items||[]; paymentReview.style.display=items.length?'':'none'; paymentReviewList.replaceChildren();
+        items.forEach(item=>{
+          const row=document.createElement('div'); row.className='bot-deal';
+          const title=document.createElement('div'); title.style.fontWeight='800'; title.textContent='Клієнт: '+(item.client||item.client_id); row.appendChild(title);
+          const evidence=document.createElement('div'); evidence.className='bot-hint'; evidence.style.marginTop='7px';
+          evidence.textContent=(item.evidence||[]).map(e=>(e.role==='manager'?'Менеджер':'Клієнт')+': '+(e.quote||'')+(e.attachments?' · вкладення':'')).join(' | ')||'Доказ у переписці'; row.appendChild(evidence);
+          const deal=document.createElement('div'); deal.className='bot-hint'; deal.style.marginTop='5px'; const d=item.deal||{};
+          deal.textContent='Товарів: '+((d.items||[]).length)+' · Сума: '+(d.amount||'0')+' '+(d.currency||'UAH')+' · Доставка: '+((d.delivery||{}).city||'не вказано'); row.appendChild(deal);
+          const actions=document.createElement('div'); actions.style.cssText='display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;';
+          [['confirm','Підтвердити','bot-mini-btn active'],['cancel','Скасувати','bot-mini-btn danger']].forEach(([action,label,cls])=>{const b=document.createElement('button');b.type='button';b.className=cls;b.textContent=label;b.addEventListener('click',()=>paymentReviewAction(item.id,action,b));actions.appendChild(b);}); row.appendChild(actions); paymentReviewList.appendChild(row);
+        });
+      }).catch(error=>{paymentReviewList.textContent=error.message||'Не вдалося завантажити перевірки оплати.';});
+  }
+  function paymentReviewAction(id,action,button){
+    if(!window.confirm(action==='confirm'?'Підтвердити заяву про оплату менеджером?':'Скасувати цю заяву про оплату?')) return;
+    button.disabled=true; const body=new FormData(); body.append('action',action);
+    fetch(paymentReviewActionUrl(id),{method:'POST',headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'},body})
+      .then(r=>r.json().then(data=>({ok:r.ok,data}))).then(result=>{if(!result.ok||!result.data.success) throw new Error(result.data.error||'Дію не виконано.'); if(action==='confirm'&&result.data.order_url){const row=button.closest('.bot-deal'); if(row){row.replaceChildren(); const note=document.createElement('div'); note.className='bot-hint'; note.textContent='Оплату підтверджено. Перевірте форму перед створенням замовлення.'; const link=document.createElement('a'); link.className='bot-mini-btn active'; link.style.display='inline-flex'; link.style.marginTop='10px'; link.href=result.data.order_url; link.textContent='Сформувати замовлення'; row.append(note,link);} return;} return loadPaymentReviews();}).catch(error=>{button.disabled=false;window.alert(error.message||'Дію не виконано.');});
+  }
+  const paymentReviewRefresh=document.getElementById('bot-payment-review-refresh');
+  if(paymentReviewRefresh) paymentReviewRefresh.addEventListener('click',loadPaymentReviews);
+  loadPaymentReviews();
 
   /* ============ Clients ============ */
   const Clients=(function(){

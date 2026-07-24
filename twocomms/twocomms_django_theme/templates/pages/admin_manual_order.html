@@ -725,6 +725,7 @@
 
   <script type="application/json" id="moProductsData">{{ products_json|safe }}</script>
   <script type="application/json" id="moCategoriesData">{{ categories_json|safe }}</script>
+  <script type="application/json" id="moInitialData">{{ order_initial_json|safe }}</script>
 </div>
 {% endblock %}
 
@@ -750,10 +751,55 @@
     categories = JSON.parse(document.getElementById('moCategoriesData').textContent || '[]');
   } catch (e) { categories = []; }
 
+  var initial = null;
+  try {
+    var initialText = document.getElementById('moInitialData').textContent || '';
+    initial = initialText ? JSON.parse(initialText) : null;
+  } catch (e) { initial = null; }
+
   // ── state ──────────────────────────────────────────────
   var items = [];   // {uid, kind, product_id, title, image, unit_price, qty, size, color_variant_id, color_name, sizes, variants}
   var uidSeq = 1;
   var activeCategory = 'all';   // 'all' | category_id
+
+  function applyInitial() {
+    if (!initial) return;
+    document.getElementById('moFullName').value = initial.full_name || '';
+    document.getElementById('moPhone').value = initial.phone || '';
+    document.getElementById('moSaleSource').value = initial.sale_source || '';
+    document.getElementById('moComment').value = initial.manager_comment || '';
+    if (initial.delivery_method === 'manual') {
+      deliveryMethod = 'manual';
+      page.querySelectorAll('[data-delivery-tab]').forEach(function (tab) {
+        tab.classList.toggle('is-active', tab.dataset.deliveryTab === 'manual');
+      });
+      page.querySelectorAll('[data-delivery-pane]').forEach(function (pane) {
+        pane.classList.toggle('is-active', pane.dataset.deliveryPane === 'manual');
+      });
+      document.getElementById('moManualCity').value = initial.city || '';
+      document.getElementById('moManualOffice').value = initial.np_office || '';
+    }
+    if (initial.payment_preset) {
+      var radio = page.querySelector('input[name="payment_preset"][value="' + initial.payment_preset + '"]');
+      if (radio) {
+        radio.checked = true;
+        page.querySelectorAll('#moPresets .mo-preset').forEach(function (label) {
+          label.classList.toggle('is-active', label.dataset.preset === initial.payment_preset);
+        });
+      }
+    }
+    if (Array.isArray(initial.items)) {
+      items = initial.items.map(function (it) {
+        var product = it.product_id ? productMap[it.product_id] : null;
+        return Object.assign({ uid: uidSeq++ }, it, {
+          title: it.title || (product && product.title) || 'Товар',
+          image: it.image || (product && product.image) || '',
+          sizes: it.sizes || (product && product.sizes) || [],
+          variants: it.variants || (product && product.variants) || []
+        });
+      });
+    }
+  }
 
   function csrf() {
     var m = document.cookie.match(/csrftoken=([^;]+)/);
@@ -1058,7 +1104,8 @@
       delivery_method: deliveryMethod,
       payment_preset: (page.querySelector('input[name="payment_preset"]:checked') || {}).value || 'cod',
       sale_source: saleInput.value.trim(),
-      manager_comment: document.getElementById('moComment').value.trim()
+      manager_comment: document.getElementById('moComment').value.trim(),
+      payment_review_id: initial && initial.review_id ? initial.review_id : ''
     };
 
     if (deliveryMethod === 'manual') {
@@ -1144,6 +1191,7 @@
   // ── init ───────────────────────────────────────────────
   buildCategoryChips();
   renderProductList('');
+  applyInitial();
   renderItems();
 })();
 </script>

@@ -33,6 +33,7 @@ from .models import (
     IgPaymentProjection,
     InstagramBotLog,
     InstagramBotSettings,
+    IgPaymentConfirmationReview,
 )
 from .services import instagram_bot as bot
 from .services.bot_payment_truth import (
@@ -394,6 +395,7 @@ _NOTIFICATION_EVENT_LABELS = {
     "shipment": "Відправлення",
     "shipment_human_review": "Потрібна ручна перевірка відправлення",
     "payment_reversed_review": "Перевірка повернення або скасування оплати",
+    "payment_confirmation_review": "Потрібно підтвердити оплату клієнта",
     "delivery_block": "Доставка повідомлення заблокована",
     "ai_unavailable": "ШІ тимчасово недоступний",
     "spam": "Антиспам",
@@ -487,6 +489,89 @@ def bot_notification_review_action_api(request, notification_id):
         f"notification={row.id}; action={action}; actor={request.user.pk}",
     )
     return JsonResponse({"success": True, "id": row.id, "status": row.status})
+
+
+@login_required(login_url="management_login")
+@require_GET
+def bot_payment_reviews_api(request):
+    blocked = _require_admin_json(request)
+    if blocked:
+        return blocked
+    rows = (
+        IgPaymentConfirmationReview.objects.filter(
+            status=IgPaymentConfirmationReview.Status.PENDING,
+            client__hidden_at__isnull=True,
+        )
+        .select_related("client", "deal")
+        .order_by("created_at", "id")[:100]
+    )
+    items = []
+    for row in rows:
+        evidence = row.evidence if isinstance(row.evidence, dict) else {}
+        client = row.client
+        items.append({
+            "id": row.id,
+            "client_id": row.client_id,
+            "client": client.display_name or client.username or client.igsid,
+            "status": row.status,
+            "created_at": row.created_at.isoformat(),
+            "evidence": evidence.get("messages", [])[-8:],
+            "deal": evidence.get("deal", {}),
+            "confirm_url": reverse("management_bot_payment_review_action_api", args=[row.id]),
+            "order_url": (
+                reverse("manual_order_create") + f"?ig_payment_review={row.id}"
+                if row.status == IgPaymentConfirmationReview.Status.CONFIRMED
+                else ""
+            ),
+        })
+    return JsonResponse({"success": True, "items": items, "count": len(items)})
+
+
+@login_required(login_url="management_login")
+@require_POST
+def bot_payment_review_action_api(request, review_id):
+    blocked = _require_admin_json(request)
+    if blocked:
+        return blocked
+    from management.services.ig_payment_review import cancel_review, confirm_review
+
+    action = (request.POST.get("action") or "").strip().lower()
+    review = IgPaymentConfirmationReview.objects.select_related("client").filter(pk=review_id).first()
+    if not review:
+        return JsonResponse({"success": False, "error": "Перевірку оплати не знайдено."}, status=404)
+    if review.client.hidden_at:
+        return JsonResponse({"success": False, "error": "Прихований клієнт виключений з операцій."}, status=409)
+    if action == "confirm":
+        review = confirm_review(review, actor=request.user)
+    elif action == "cancel":
+        review = cancel_review(review, actor=request.user, reason=request.POST.get("reason") or "")
+    else:
+        return JsonResponse({"success": False, "error": "Невідома дія."}, status=400)
+    notification = IgBotNotification.objects.filter(dedupe_key=review.dedupe_key).first()
+    if notification:
+        notification.status = IgBotNotification.Status.RESOLVED
+        notification.failure_kind = "payment_review_" + review.status
+        notification.payload = {
+            **(notification.payload if isinstance(notification.payload, dict) else {}),
+            "status": review.status,
+            "actor_id": request.user.pk,
+        }
+        notification.save(update_fields=["status", "failure_kind", "payload", "updated_at"])
+    bot.log(
+        "warning" if review.status == IgPaymentConfirmationReview.Status.CANCELLED else "info",
+        "payment_review_operator_action",
+        f"review={review.id}; status={review.status}; actor={request.user.pk}",
+    )
+    return JsonResponse({
+        "success": True,
+        "id": review.id,
+        "status": review.status,
+        "order_url": (
+            reverse("manual_order_create") + f"?ig_payment_review={review.id}"
+            if review.status == IgPaymentConfirmationReview.Status.CONFIRMED
+            else ""
+        ),
+    })
 
 
 @login_required(login_url="management_login")
