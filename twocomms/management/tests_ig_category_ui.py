@@ -69,3 +69,15 @@ class InteractionCategoryUiContractTests(SimpleTestCase):
         self.assertIn("Попередня оцінка · "+"'+(c.buying_readiness||0)+'%", template)
         for raw_label in ("'obj: '", "'FU '", "'discount '", "'ad: '", "'legacy '"):
             self.assertNotIn(raw_label, template)
+
+    def test_client_dom_uses_safe_external_urls_and_no_inline_avatar_handler(self):
+        template = (
+            Path(__file__).with_name("templates") / "management" / "bot.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("function safeHttpUrl(value)", template)
+        self.assertIn("url.protocol==='http:'||url.protocol==='https:'", template)
+        self.assertIn("data-avatar", template)
+        self.assertIn("rel=\"noopener noreferrer\"", template)
+        self.assertNotIn("onerror=", template)
+        self.assertIn("'\"':'&quot;'", template)

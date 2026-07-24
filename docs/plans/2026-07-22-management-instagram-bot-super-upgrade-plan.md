@@ -1081,6 +1081,7 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Risk/branches:** stored DOM XSS in authenticated CRM through profile/catalog/payment-controlled strings; session/action compromise.
   - **Acceptance:** build nodes with `textContent`, validated `setAttribute`, safe URL scheme/host policy, and event listeners; remove inline handler construction and unsafe `innerHTML` data paths.
   - **Tests:** double/single quotes, markup, `javascript:`, data URLs, broken avatars, long names, malicious invoice URLs, CSP-compatible rendering.
+  - **Implementation checkpoint:** client-list/detail avatar and invoice paths now use `safeHttpUrl` (`http/https` only), quote-aware escaping, `data-avatar` fallback listeners, and `rel="noopener noreferrer"`; full D10 closure still requires the remaining dynamic HTML paths and authenticated browser/CSP proof.
 
 - [ ] **P1.D11 Add full responsive/accessibility browser acceptance.** Verify 1440/1280/768/390/320 widths, long Ukrainian text, long product/ad IDs, 200+ clients, responsive/scrolled tables, no overlap/clipping, keyboard-only client rows/tabs/actions, focus visibility, screen-reader state, empty/loading/error modes, and live countdown/status updates. Save desktop/mobile evidence for overview, offline/dead worker, client detail, filters, stats, key health, and Meta capability.
 

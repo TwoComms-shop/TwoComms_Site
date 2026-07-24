@@ -467,7 +467,23 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
 <script>
 (function(){
   const csrf = (document.querySelector('input[name=csrfmiddlewaretoken]')||{}).value || '';
-  function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+  function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  function safeHttpUrl(value){
+    try{
+      const url=new URL(String(value||''),window.location.origin);
+      return (url.protocol==='http:'||url.protocol==='https:')?url.href:'';
+    }catch(_){return '';}
+  }
+  function bindAvatarFallback(root,name){
+    const image=root.querySelector('img[data-avatar]');
+    if(!image) return;
+    image.addEventListener('error',()=>{
+      const fallback=document.createElement('div');
+      fallback.className=image.className;
+      fallback.textContent=(((name||'?').trim()[0])||'?').toUpperCase();
+      image.replaceWith(fallback);
+    },{once:true});
+  }
   function fmt(iso){ if(!iso) return '—'; try{ return new Date(iso).toLocaleTimeString(); }catch(e){ return '—'; } }
 
   /* ============ Tabs ============ */
@@ -714,7 +730,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             row.setAttribute('role','button');
             row.setAttribute('tabindex','0');
             row.setAttribute('aria-label','Відкрити картку клієнта: '+(c.name||c.username||c.igsid||'без імені'));
-            const ava=c.avatar?('<img class="bot-client-ava" src="'+esc(c.avatar)+'" alt="" onerror="this.outerHTML=\'<div class=&quot;bot-client-ava&quot;>'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>\'">'):('<div class="bot-client-ava">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>');
+            const avatarUrl=safeHttpUrl(c.avatar);
+            const ava=avatarUrl?('<img class="bot-client-ava" data-avatar src="'+esc(avatarUrl)+'" alt="">'):('<div class="bot-client-ava">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>');
             const sub=[
               c.username||c.igsid,
               c.current_product_title?('Товар: '+c.current_product_title+(c.current_product_id?' · код '+c.current_product_id:'')):'',
@@ -731,6 +748,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
             const openRow=()=>{activeId=c.id;document.querySelectorAll('.bot-client-row').forEach(e=>e.classList.remove('active'));row.classList.add('active');detail(c.id);};
             row.addEventListener('click',openRow);
             row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openRow();}});
+            bindAvatarFallback(row,c.name||c.username||c.igsid);
             listEl.appendChild(row);
           });
           if(!(d.clients||[]).length) listEl.innerHTML='<div class="bot-empty">Ще немає клієнтів.</div>';
@@ -794,7 +812,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         .then(r=>r.json()).then(d=>{
           if(!d.success){detailEl.innerHTML='<div class="bot-empty">Не знайдено.</div>';return;}
           const c=d.client;
-          let h='<div class="bot-detail-head">'+(c.avatar?('<img class="bot-client-ava" style="width:46px;height:46px;" src="'+esc(c.avatar)+'" alt="">'):('<div class="bot-client-ava" style="width:46px;height:46px;">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>'))+'<div><div class="bot-detail-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+(c.phone?(' · '+esc(c.phone)):'')+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'" style="margin-left:auto;">'+esc(c.stage_label)+'</span></div>';
+          const detailAvatarUrl=safeHttpUrl(c.avatar);
+          let h='<div class="bot-detail-head">'+(detailAvatarUrl?('<img class="bot-client-ava" data-avatar style="width:46px;height:46px;" src="'+esc(detailAvatarUrl)+'" alt="">'):('<div class="bot-client-ava" style="width:46px;height:46px;">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>'))+'<div><div class="bot-detail-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+(c.phone?(' · '+esc(c.phone)):'')+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'" style="margin-left:auto;">'+esc(c.stage_label)+'</span></div>';
           if(c.ad_title) h+='<div class="bot-client-sub" style="margin-top:8px;">📣 Реклама: '+esc(c.ad_title)+'</div>';
           if(c.delivery_status_label) h+='<div class="bot-client-sub" style="margin-top:8px;padding:9px 11px;border:1px solid rgba(251,191,36,.42);border-radius:10px;background:rgba(251,191,36,.08);color:#fde68a;">⚠ <b>Не можу відповісти:</b> '+esc(c.delivery_status_label)+(c.delivery_error?(' · '+esc(c.delivery_error)):'')+'</div>';
           h+='<div class="bot-category-strip"><div class="bot-category-copy"><div class="bot-category-title">Категорія діалогу</div><div class="bot-category-value">'+esc(c.interaction_type_label||'Не визначено')+'</div><div class="bot-category-meta">Оцінка: '+esc(c.analysis_band_label||c.analysis_band||'Legacy')+' · ймовірність: '+(c.analysis_probability?Math.round(Number(c.analysis_probability)*100)+'%':'—')+' · впевненість: '+(c.analysis_confidence?Math.round(Number(c.analysis_confidence)*100)+'%':'—')+' · намір: '+esc(c.intent_label||c.intent||'—')+' · заперечення: '+esc(c.primary_objection_label||c.primary_objection||'—')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div></div><span class="bot-category-badge cat-'+esc(c.interaction_tone||'neutral')+'">'+esc(c.interaction_type_label||'Не визначено')+'</span></div>';
@@ -812,11 +831,12 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           if(c.memory) h+='<div class="bot-mem">🧠 '+esc(c.memory)+'</div>';
           if((d.signals||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Сигнали</div><div>';(d.signals||[]).slice(0,18).forEach(s=>{h+='<span class="bot-signal">'+esc(s.type)+(s.value?': '+esc(s.value):'')+'</span>';});h+='</div>';}
           if((d.followups||[]).length){h+='<div class="bot-kb-h" style="margin-top:8px;">Заплановані контакти</div>';(d.followups||[]).forEach(f=>{h+='<div class="bot-deal">#'+f.id+' · '+esc(f.kind)+' · '+esc(f.status)+' · '+fmt(f.due_at)+(f.discount_percent?(' · '+f.discount_percent+'%'):'')+(f.skip_reason?(' · '+esc(f.skip_reason)):'')+'</div>';});}
-          if((d.deals||[]).length){h+='<div class="bot-kb-h" style="margin-top:6px;">Угоди</div>';d.deals.forEach(dl=>{h+='<div class="bot-deal">#'+dl.id+' · '+esc(dl.status)+' · '+esc(dl.amount)+' грн'+(dl.order_id?(' · замовлення #'+dl.order_id):'')+(dl.invoice_url?(' · <a href="'+esc(dl.invoice_url)+'" target="_blank" style="color:#7fb0ff;">оплата</a>'):'')+'</div>';});}
+          if((d.deals||[]).length){h+='<div class="bot-kb-h" style="margin-top:6px;">Угоди</div>';d.deals.forEach(dl=>{const invoiceUrl=safeHttpUrl(dl.invoice_url);h+='<div class="bot-deal">#'+dl.id+' · '+esc(dl.status)+' · '+esc(dl.amount)+' грн'+(dl.order_id?(' · замовлення #'+dl.order_id):'')+(invoiceUrl?(' · <a href="'+esc(invoiceUrl)+'" target="_blank" rel="noopener noreferrer" style="color:#7fb0ff;">оплата</a>'):'')+'</div>';});}
           h+='<div class="bot-kb-h" style="margin-top:12px;">Переписка</div><div id="bot-msgs" style="display:flex;flex-direction:column;max-height:440px;overflow-y:auto;">';
           (d.messages||[]).forEach(m=>{h+='<div class="bot-msg '+(m.role==='user'?'user':(m.role==='manager'?'manager':'model'))+'" data-mid="'+(m.id||0)+'">'+esc(m.text)+'</div>';});
           h+='</div>';
           detailEl.innerHTML=h;
+          bindAvatarFallback(detailEl,c.name||c.username||c.igsid);
           convId=id; convLastId=d.last_message_id||0;
           const mc0=document.getElementById('bot-msgs'); if(mc0) mc0.scrollTop=mc0.scrollHeight;
           detailEl.querySelectorAll('[data-act]').forEach(ab=>ab.addEventListener('click',(event)=>{
