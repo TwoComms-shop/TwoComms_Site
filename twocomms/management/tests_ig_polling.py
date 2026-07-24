@@ -102,7 +102,14 @@ class ConversationDiscoveryTests(TestCase):
 
         self.assertEqual(ids, ["c1", "c2", "c3"])
         self.assertEqual(http.call_count, 2)
-        self.assertEqual(http.call_args_list[0].args[0], f"{bot.GRAPH}/page/conversations?platform=instagram&fields=id&limit=100&access_token=PT")
+        self.assertEqual(
+            http.call_args_list[0].args[0],
+            f"{bot.GRAPH}/page/conversations?platform=instagram&fields=id&limit=100",
+        )
+        self.assertEqual(
+            http.call_args_list[0].kwargs["headers"]["Authorization"],
+            "Bearer PT",
+        )
         sleep.assert_called_once_with(0.5)
 
     def test_failed_later_page_keeps_last_complete_snapshot(self):

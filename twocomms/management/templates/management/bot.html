@@ -234,6 +234,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         </div>
         <div class="bot-hint" id="bot-error" style="margin-top:12px;color:#f87171;"></div>
         <div class="bot-hint" id="bot-outbox-help" style="margin-top:8px;"></div>
+        <div class="bot-hint" id="bot-meta-capability" style="margin-top:8px;"></div>
       </div>
       <div class="bot-card">
         <h2>Як працює</h2>
@@ -540,6 +541,16 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         ? 'Є сповіщення з невідомим результатом або вичерпаними спробами. Перевірте Telegram вручну, щоб не надіслати дубль.'
         : (outboxRetry ? 'Telegram тимчасово недоступний: демон повторить сповіщення автоматично.' : '');
       outboxHelp.style.color=(!outboxAvailable||outboxManual)?'#fbbf24':'';
+    }
+    const metaCapability=document.getElementById('bot-meta-capability');
+    if(metaCapability){
+      const meta=st.meta_capability||{};
+      const allowlist=meta.local_allowlist==='restricted'?'обмежений allowlist':'усі дозволені локально';
+      const permission=meta.token_permission==='granted'?'дозвіл підтверджено':'дозвіл Meta не перевірено';
+      const access=meta.account_access==='advanced_public'?'Advanced Access':'режим доступу не підтверджено';
+      const delivery=meta.recipient_delivery==='per_recipient'?'доставка окремо за клієнтом':'стан доставки недоступний';
+      metaCapability.textContent='Meta: '+allowlist+' · '+permission+' · '+access+' · '+delivery;
+      metaCapability.style.color=(meta.token_configured&&meta.token_permission==='granted')?'#86efac':'#fbbf24';
     }
     if(outboxAvailable) renderNotificationReview(outboxManual);
     const replyBarrier=document.getElementById('bot-reply-barrier');

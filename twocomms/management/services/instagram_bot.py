@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone as dt_timezone
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.core.cache import cache
 from django.db import DatabaseError, IntegrityError, transaction
@@ -63,6 +63,7 @@ CONV_MIN_INTERVAL = 0.5  # Meta Conversations API: at most 2 requests/second.
 CONV_CACHE_TTL = 3600
 CONV_REFRESH_LOCK_TTL = CONV_LIST_TIMEOUT * CONV_MAX_PAGES + 30
 _CONV_ID_RE = re.compile(r"^[A-Za-z0-9:_-]{1,255}$")
+_GRAPH_VERSION_PATH_RE = re.compile(r"^/v\d+(?:\.\d+)?(?:/|$)")
 POLL_MESSAGE_TIMEOUT = 5
 POLL_MESSAGE_MAX_PAGES = 5
 POLL_MAX_REQUESTS = 40
@@ -569,9 +570,86 @@ def verify_signature(raw_body: bytes, header: str) -> bool:
 # ---------------------------------------------------------------------------
 # HTTP helpers
 # ---------------------------------------------------------------------------
-def _http(url: str, *, data: bytes | None = None, timeout: int = HTTP_TIMEOUT):
-    headers = {"Content-Type": "application/json"} if data is not None else {}
-    req = urllib.request.Request(url, data=data, headers=headers)
+GRAPH_SENSITIVE_QUERY_KEYS = frozenset({
+    "access_token", "client_secret", "app_secret", "api_key", "password",
+})
+
+
+def _valid_graph_request_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "graph.facebook.com"
+        or not parsed.path.startswith(f"/{GRAPH_VERSION}/")
+        or parsed.fragment
+    ):
+        return False
+    query_keys = {key.lower() for key, _value in parse_qsl(parsed.query, keep_blank_values=True)}
+    return not query_keys.intersection(GRAPH_SENSITIVE_QUERY_KEYS)
+
+
+def _graph_url(path: str, params: dict | None = None) -> str:
+    """Build only v25 Graph URLs; credentials belong in headers/body, never query."""
+    parsed = urlsplit(str(path or ""))
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
+        raise ValueError("Graph path must be relative")
+    if parsed.fragment or _GRAPH_VERSION_PATH_RE.match(parsed.path):
+        raise ValueError("invalid Graph path")
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if params:
+        query.update({str(key): str(value) for key, value in params.items()})
+    if {key.lower() for key in query}.intersection(GRAPH_SENSITIVE_QUERY_KEYS):
+        raise ValueError("Graph credentials cannot be placed in query")
+    url = urlunsplit(("https", "graph.facebook.com", f"/{GRAPH_VERSION}{parsed.path}", urlencode(query), ""))
+    if not _valid_graph_request_url(url):
+        raise ValueError("invalid versioned Graph URL")
+    return url
+
+
+def _graph_http(
+    url: str,
+    *,
+    token: str = "",
+    data: bytes | None = None,
+    timeout: int = HTTP_TIMEOUT,
+    headers: dict | None = None,
+):
+    """Call Graph after enforcing host/version and removing query credentials."""
+    if not _valid_graph_request_url(url):
+        try:
+            parsed = urlsplit(url)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if not token:
+                token = query.pop("access_token", "")
+            clean_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), ""))
+        except (TypeError, ValueError):
+            return -1, "graph_url_policy"
+    else:
+        clean_url = url
+    if not _valid_graph_request_url(clean_url):
+        return -1, "graph_url_policy"
+    request_headers = dict(headers or {})
+    if token:
+        request_headers["Authorization"] = f"Bearer {token}"
+    return _http(clean_url, data=data, timeout=timeout, headers=request_headers)
+
+
+def _http(
+    url: str,
+    *,
+    data: bytes | None = None,
+    timeout: int = HTTP_TIMEOUT,
+    headers: dict | None = None,
+):
+    if urlsplit(url).netloc == "graph.facebook.com" and not _valid_graph_request_url(url):
+        return -1, "graph_url_policy"
+    request_headers = dict(headers or {})
+    if data is not None:
+        request_headers.setdefault("Content-Type", "application/json")
+    req = urllib.request.Request(url, data=data, headers=request_headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.getcode(), resp.read().decode("utf-8", "replace")
@@ -590,14 +668,21 @@ def _exchange_long_lived(user_token: str) -> str:
     secret = app_secret()
     if not secret or not user_token:
         return ""
-    code, body = _http(
-        f"{GRAPH}/oauth/access_token?grant_type=fb_exchange_token"
-        f"&client_id={APP_ID}&client_secret={secret}&fb_exchange_token={user_token}",
+    body = urlencode({
+        "grant_type": "fb_exchange_token",
+        "client_id": APP_ID,
+        "client_secret": secret,
+        "fb_exchange_token": user_token,
+    }).encode("utf-8")
+    code, response_body = _graph_http(
+        _graph_url("/oauth/access_token"),
+        data=body,
         timeout=HTTP_TIMEOUT,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     if code == 200:
         try:
-            return json.loads(body).get("access_token", "") or ""
+            return json.loads(response_body).get("access_token", "") or ""
         except Exception:
             return ""
     return ""
@@ -926,8 +1011,9 @@ def get_page_token(s: InstagramBotSettings, *, force: bool = False) -> str:
             return cached
         if cache.get("ig_bot_pt_cooldown"):
             return ""
-    code, body = _http(
-        f"{GRAPH}/me/accounts?fields=name,access_token&access_token={token}",
+    code, body = _graph_http(
+        _graph_url("/me/accounts", {"fields": "name,access_token"}),
+        token=token,
         timeout=HTTP_TIMEOUT,
     )
     if code != 200:
@@ -1003,9 +1089,13 @@ def _refresh_conv_ids_unlocked(s: InstagramBotSettings, page_token: str, stale: 
     A failed later page must never replace a known-good snapshot with partial
     data: polling a partial list silently drops customers from observation.
     """
-    page_url = (
-        f"{GRAPH}/{s.page_id}/conversations?platform=instagram"
-        f"&fields=id&limit={CONV_PAGE_LIMIT}&access_token={page_token}"
+    page_url = _graph_url(
+        f"/{s.page_id}/conversations",
+        {
+            "platform": "instagram",
+            "fields": "id",
+            "limit": CONV_PAGE_LIMIT,
+        },
     )
     discovered: list[str] = []
     seen: set[str] = set()
@@ -1015,7 +1105,7 @@ def _refresh_conv_ids_unlocked(s: InstagramBotSettings, page_token: str, stale: 
             # Fixed conservative spacing is easier to reason about than a
             # provider-header guess and remains within the documented limit.
             time.sleep(CONV_MIN_INTERVAL)
-        code, body = _http(page_url, timeout=CONV_LIST_TIMEOUT)
+        code, body = _graph_http(page_url, token=page_token, timeout=CONV_LIST_TIMEOUT)
         if code != 200:
             log("warning", "conversations", f"page={page_index + 1} HTTP {code}; keeping complete cache")
             return stale
@@ -1084,7 +1174,12 @@ def send_sender_action(s: InstagramBotSettings, recipient_id: str, action: str) 
         return
     try:
         body = json.dumps({"recipient": {"id": recipient_id}, "sender_action": action}).encode("utf-8")
-        _http(f"{GRAPH}/{s.page_id}/messages?access_token={page_token}", data=body, timeout=HTTP_TIMEOUT)
+        _graph_http(
+            _graph_url(f"/{s.page_id}/messages"),
+            token=page_token,
+            data=body,
+            timeout=HTTP_TIMEOUT,
+        )
     except Exception:
         pass
 
@@ -1288,7 +1383,11 @@ def send_text(
                     "messaging_type": "RESPONSE",
                 }
             ).encode("utf-8")
-            code, resp = _http(f"{GRAPH}/{s.page_id}/messages?access_token={page_token}", data=body)
+            code, resp = _graph_http(
+                _graph_url(f"/{s.page_id}/messages"),
+                token=page_token,
+                data=body,
+            )
         if code == 200:
             ok_any = True
             _clear_send_error(s)
@@ -1351,7 +1450,11 @@ def send_text_tagged(
                 "tag": tag,
             }
         ).encode("utf-8")
-        code, resp = _http(f"{GRAPH}/{s.page_id}/messages?access_token={page_token}", data=body)
+        code, resp = _graph_http(
+            _graph_url(f"/{s.page_id}/messages"),
+            token=page_token,
+            data=body,
+        )
         if code == 200:
             ok_any = True
             _clear_send_error(s)
@@ -1709,8 +1812,9 @@ def fetch_ig_profile(s: InstagramBotSettings, igsid: str) -> dict:
     page_token = get_page_token(s)
     if not page_token or not igsid:
         return {}
-    code, body = _http(
-        f"{GRAPH}/{igsid}?fields=name,username,profile_pic&access_token={page_token}",
+    code, body = _graph_http(
+        _graph_url(f"/{igsid}", {"fields": "name,username,profile_pic"}),
+        token=page_token,
         timeout=HTTP_TIMEOUT,
     )
     if code != 200:
@@ -2984,9 +3088,9 @@ def _fetch_polled_conversation(
     deadline: float,
     request_limit: int,
 ) -> dict:
-    page_url = (
-        f"{GRAPH}/{conversation_id}?fields=messages.limit(50)"
-        f"{{message,from,created_time,id,attachments}}&access_token={page_token}"
+    page_url = _graph_url(
+        f"/{conversation_id}",
+        {"fields": "messages.limit(50){message,from,created_time,id,attachments}"},
     )
     all_messages: list[dict] = []
     visited_pages: set[str] = set()
@@ -3011,7 +3115,7 @@ def _fetch_polled_conversation(
         visited_pages.add(page_url)
         remaining_seconds = max(1, int(deadline - time.monotonic()))
         timeout = min(POLL_MESSAGE_TIMEOUT, remaining_seconds)
-        code, body = _http(page_url, timeout=timeout)
+        code, body = _graph_http(page_url, token=page_token, timeout=timeout)
         requests_used += 1
         if code != 200:
             return {
@@ -3244,6 +3348,17 @@ def stop_bot() -> InstagramBotSettings:
     return s
 
 
+def meta_capability_status(s: InstagramBotSettings) -> dict[str, object]:
+    """Expose independent Meta facts without implying public delivery access."""
+    return {
+        "local_allowlist": "restricted" if allowed_sender_ids(s) else "all_allowed",
+        "token_configured": bool(resolve_direct_token(s)),
+        "token_permission": "unknown",
+        "account_access": "unknown",
+        "recipient_delivery": "per_recipient",
+    }
+
+
 def status_snapshot() -> dict:
     from management.services.ig_maintenance import maintenance_status
     from management.services.ig_reply_boundary import reply_barrier_telemetry
@@ -3369,6 +3484,7 @@ def status_snapshot() -> dict:
         "receive_via_poll": s.receive_via_poll,
         "app_secret_set": bool(app_secret()),
         "webhook_signature": webhook_signature_status(),
+        "meta_capability": meta_capability_status(s),
         "trigger_text": s.trigger_text,
         "reply_text": s.reply_text,
         "poll_interval_seconds": s.poll_interval_seconds,
