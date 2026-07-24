@@ -88,11 +88,30 @@ def _raw_media_by_mid(client) -> dict[str, list[dict]]:
                         "ig_post_media_id": str(payload_data.get("ig_post_media_id") or "")[:80],
                         "raw_event_id": event.pk,
                     }
+                    event_at = message.get("_event_created_at")
+                    if event_at is not None:
+                        item["event_at"] = event_at.isoformat() if hasattr(event_at, "isoformat") else str(event_at)
                     existing = recovered.setdefault(mid, [])
                     if not any(row.get("url") == item["url"] for row in existing):
                         existing.append(item)
         except Exception:
             continue
+    # Keep media whose provider mid has no normalized row available for the
+    # timestamp-based fallback in _augment_messages_with_raw_media.
+    known_mids = set()
+    try:
+        from management.models import InstagramBotMessage
+        known_mids = set(
+            InstagramBotMessage.objects.filter(client=client).exclude(mid__isnull=True).values_list("mid", flat=True)
+        )
+    except Exception:
+        pass
+    unmatched = []
+    for mid, items in list(recovered.items()):
+        if mid not in known_mids:
+            unmatched.extend(items)
+    if unmatched:
+        recovered["__unmatched__"] = unmatched
     return recovered
 
 
@@ -143,6 +162,41 @@ def _augment_messages_with_raw_media(client, messages) -> list[dict]:
                 [row["url"] for row in media if row.get("url")], ensure_ascii=False
             )
         result.append(item)
+    unmatched = list(raw_by_mid.get("__unmatched__") or [])
+    if unmatched and result:
+        # Meta may emit the attachment as a follow-up event with a different
+        # mid. Prefer an explicit "Принт …" message; otherwise use the first
+        # normalized user message created after the provider event timestamp.
+        for attachment in unmatched:
+            target = next(
+                (
+                    row for row in result
+                    if str(row.get("role") or "").casefold() in {"user", "customer", "client"}
+                    and "принт" in str(row.get("text") or "").casefold()
+                ),
+                None,
+            )
+            event_at = str(attachment.get("event_at") or "")
+            if target is None and event_at:
+                target = next(
+                    (
+                        row for row in result
+                        if str(row.get("role") or "").casefold() in {"user", "customer", "client"}
+                        and str(row.get("created_at") or "") >= event_at
+                    ),
+                    None,
+                )
+            if target is None:
+                target = next((row for row in result if row.get("role") == "user"), None)
+            if target is not None:
+                target.setdefault("media", [])
+                if not any(row.get("url") == attachment.get("url") for row in target["media"]):
+                    target["media"].append(attachment)
+                target["media"] = target["media"][:8]
+                if not target.get("attachments"):
+                    target["attachments"] = json.dumps(
+                        [row["url"] for row in target["media"] if row.get("url")], ensure_ascii=False
+                    )
     return result
 
 
@@ -537,7 +591,14 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
         )
         rows.reverse()
         messages = [
-            {"id": row.pk, "mid": row.mid, "role": row.role, "text": row.text, "attachments": row.attachments}
+            {
+                "id": row.pk,
+                "mid": row.mid,
+                "role": row.role,
+                "text": row.text,
+                "attachments": row.attachments,
+                "created_at": row.created_at.isoformat(),
+            }
             for row in rows
         ]
     messages = _augment_messages_with_raw_media(client, messages)
