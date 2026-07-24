@@ -634,7 +634,7 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
             reason for reason in extracted["order_draft"].get("uncertainty_reasons", [])
             if reason != "catalog_product_not_identified"
         ]
-    extracted["media_audit_v2"] = True
+    extracted["media_audit_v3"] = True
     watermark = int(watermark or max(extracted["message_ids"] or [0]))
     deal = client.deals.order_by("-id").first()
     dedupe_key = f"ig-payment-review:{client.pk}:{watermark}"
@@ -650,7 +650,7 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
                     "order_draft": extracted["order_draft"],
                     "media": extracted.get("media", []),
                     "catalog_match": extracted.get("catalog_match", {}),
-                    "media_audit_v2": True,
+                    "media_audit_v3": True,
                     "deal": _deal_payload(deal),
                 },
                 "watermark_message_id": watermark,
@@ -658,7 +658,11 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
         )
     from management.services.instagram_bot import notify_manager
 
-    if not created and isinstance(review.evidence, dict) and not review.evidence.get("media_audit_v2"):
+    if not created and isinstance(review.evidence, dict) and (
+        not review.evidence.get("media_audit_v3")
+        or (extracted.get("catalog_match") and not review.evidence.get("catalog_match"))
+        or len(extracted.get("media") or []) > len(review.evidence.get("media") or [])
+    ):
         review.evidence = {
             **review.evidence,
             "messages": extracted["evidence"],
@@ -666,7 +670,7 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
             "order_draft": extracted["order_draft"],
             "media": extracted.get("media", []),
             "catalog_match": extracted.get("catalog_match", {}),
-            "media_audit_v2": True,
+            "media_audit_v3": True,
         }
         review.save(update_fields=["evidence", "updated_at"])
 
