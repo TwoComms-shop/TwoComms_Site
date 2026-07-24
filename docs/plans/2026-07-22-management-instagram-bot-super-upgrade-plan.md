@@ -1056,6 +1056,15 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Tests:** template contract rejects the retired identifier, runtime rendering uses the effective model, missing-status fallback remains readable, production browser shows one consistent model identifier.
   - **Implementation/evidence:** `023022c6` replaces the stale server-rendered model with a bounded `textContent` update shared by the model tile and explanation, with a readable pre-status fallback. The DB-free production-settings contract passed `3/3` with `Skipping setup of unused database(s): default`, plus compile/diff checks. Production was fast-forwarded to `023022c6361747e8a0cd11eafafc6dd00709345d`; after `--ensure`, authenticated browser QA showed `Працює`, `Агент онлайн і відповідає`, and exact equality `gemini-3.6-flash` in both DOM nodes. No key values or external transports were used.
 
+- [ ] **P1.D8b Keep the model settings selector aligned with normalized runtime truth.**
+  - **Priority:** P1 — a legacy alias can leave the settings form with no selected option even while generation correctly uses Gemini 3.6.
+  - **Symptom:** production stores `gemini-3-flash-preview`; status normalizes it to `gemini-3.6-flash`, but the selector compares options with the raw `settings.gemini_model` value.
+  - **Root cause:** the option `selected` conditions read the persisted alias rather than the bounded `status.gemini_effective_model` used by the provider path.
+  - **Risk:** an administrator may save the wrong fallback, believe no model is selected, or misread which model the six-key pool uses.
+  - **Affected branches:** settings form, model allowlist, effective/configured model display, Gemini key pooling, operator QA.
+  - **Acceptance:** exactly one allowed option is selected from normalized status for legacy and current aliases; save validation remains allowlist-bound; no credential values are exposed.
+  - **Tests:** template contract for normalized selection, legacy/current option rendering, invalid model rejection, production browser settings proof.
+
 - [ ] **P1.D9 Apply semantic colors without using color as the sole carrier.** Green only for verified paid/delivered truth, yellow for high intent/payment pending, blue for shipped/in transit, neutral for information/exploration, red for opt-out/lost/abuse/blockers. Waiting shipment is not “complete.” Every chip has text/icon/state semantics; funnel completion is not inferred from mutable stage.
 
 - [ ] **P1.D10 Remove stored DOM-XSS paths from the cockpit.**

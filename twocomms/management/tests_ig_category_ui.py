@@ -42,3 +42,17 @@ class InteractionCategoryUiContractTests(SimpleTestCase):
         self.assertIn(": 'Дані недоступні';", template)
         self.assertIn("Стан сповіщень недоступний.", template)
         self.assertNotIn("st.notification_pending||0", template)
+
+    def test_model_selector_uses_normalized_effective_model(self):
+        template = (
+            Path(__file__).with_name("templates") / "management" / "bot.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "{% if status.gemini_effective_model == 'gemini-3.6-flash' %}",
+            template,
+        )
+        self.assertNotIn(
+            "{% if settings.gemini_model == 'gemini-3.6-flash' %}",
+            template,
+        )
