@@ -124,6 +124,18 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
 .bot-client-name{font-size:13.5px;color:#e7ecf3;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .bot-client-sub{font-size:11.5px;color:#8b95a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .bot-client-score{font-size:10.5px;color:#34d399;font-weight:800;}
+.bot-client-tags{display:flex;flex:0 0 auto;flex-direction:column;align-items:flex-end;gap:5px;max-width:132px;}
+.bot-category-badge{display:inline-flex;align-items:center;max-width:100%;border:1px solid #2b3547;border-radius:6px;background:#141a24;color:#c5cedb;padding:3px 7px;font-size:10px;font-weight:800;line-height:1.2;text-align:right;white-space:normal;}
+.bot-category-badge.cat-support{border-color:#8a3440;background:#32171c;color:#fecdd3;}
+.bot-category-badge.cat-business{border-color:#3f5f91;background:#14243c;color:#bfdbfe;}
+.bot-category-badge.cat-intent{border-color:#8a621a;background:#35270e;color:#fde68a;}
+.bot-category-badge.cat-success{border-color:#276749;background:#102b20;color:#bbf7d0;}
+.bot-category-badge.cat-negative{border-color:#783743;background:#2d171c;color:#fecaca;}
+.bot-category-strip{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-top:12px;padding:10px 0;border-top:1px solid #222b3a;border-bottom:1px solid #222b3a;}
+.bot-category-copy{min-width:0;}
+.bot-category-title{font-size:10px;font-weight:800;color:#7f8ba0;text-transform:uppercase;}
+.bot-category-value{margin-top:3px;font-size:14px;font-weight:800;color:#e7ecf3;}
+.bot-category-meta{margin-top:3px;font-size:11px;color:#8b95a5;line-height:1.4;}
 .bot-stage-chip{font-size:10px;padding:3px 8px;border-radius:20px;background:#1a2233;color:#9fb4d6;white-space:nowrap;font-weight:600;}
 .st-new,.st-qualifying{background:#13233f;color:#7fb0ff;}
 .st-product_matched,.st-checkout{background:#3a2c10;color:#fbbf24;}
@@ -158,6 +170,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
 .bot-action-feedback.info{background:#101f35;border-color:#27456e;color:#bfdbfe;}
 @keyframes actionFeedbackIn{from{opacity:0;transform:translateY(-3px);}to{opacity:1;transform:none;}}
 @media(max-width:560px){.bot-action-state{align-items:flex-start;flex-direction:column;}.bot-action-state-buttons{justify-content:flex-start;}.bot-client-action.primary{width:100%;}.bot-client-action{min-height:36px;}}
+@media(max-width:560px){.bot-client-row{align-items:flex-start;}.bot-client-tags{max-width:112px;}.bot-category-strip{flex-direction:column;}.bot-category-badge{align-self:flex-start;text-align:left;}}
 .bot-funnel{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0;}
 .bot-circle{display:flex;align-items:center;gap:6px;font-size:11px;color:#8b95a5;background:#11151f;border:1px solid #1a2030;border-radius:20px;padding:4px 10px;transition:.2s;}
 .bot-circle i{width:10px;height:10px;border-radius:50%;background:#2a3140;display:inline-block;transition:.25s;}
@@ -417,6 +430,10 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
         <button type="button" class="bot-mini-btn" data-client-view="paid">Оплачені</button>
         <button type="button" class="bot-mini-btn" data-client-view="ads">З реклами</button>
         <button type="button" class="bot-mini-btn" data-client-view="delivery-blocked">Не можу відповісти</button>
+        <button type="button" class="bot-mini-btn" data-client-view="complaints">Скарги / підтримка</button>
+        <button type="button" class="bot-mini-btn" data-client-view="wholesale">Опт / B2B</button>
+        <button type="button" class="bot-mini-btn" data-client-view="collaboration">Колаборації</button>
+        <button type="button" class="bot-mini-btn" data-client-view="reactions">Реакції / casual</button>
       </div>
       <div class="bot-clients-wrap">
         <div id="bot-clients-list" class="bot-clients-list"></div>
@@ -702,9 +719,9 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
               c.delivery_status_label?('⚠ '+c.delivery_status_label):''
             ].filter(Boolean).join(' · ');
           const analysisLabel=c.analysis_band
-            ? (c.analysis_band+' · '+Math.round(Number(c.analysis_probability||0)*100)+'% · conf '+Math.round(Number(c.analysis_confidence||0)*100)+'%')
+            ? ((c.analysis_band_label||c.analysis_band)+' · '+Math.round(Number(c.analysis_probability||0)*100)+'% · впевн. '+Math.round(Number(c.analysis_confidence||0)*100)+'%')
             : ('legacy '+(c.buying_readiness||0)+'%');
-          row.innerHTML=ava+'<div class="bot-client-meta"><div class="bot-client-name">'+esc(c.name)+' <span class="bot-client-score">'+esc(analysisLabel)+'</span></div><div class="bot-client-sub">'+esc(sub)+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'">'+esc(c.stage_label)+'</span>';
+          row.innerHTML=ava+'<div class="bot-client-meta"><div class="bot-client-name">'+esc(c.name)+' <span class="bot-client-score">'+esc(analysisLabel)+'</span></div><div class="bot-client-sub">'+esc(sub)+'</div></div><div class="bot-client-tags"><span class="bot-category-badge cat-'+esc(c.interaction_tone||'neutral')+'">'+esc(c.interaction_type_label||'Не визначено')+'</span><span class="bot-stage-chip '+stageCls(c.stage)+'">'+esc(c.stage_label)+'</span></div>';
             row.addEventListener('click',()=>{activeId=c.id;document.querySelectorAll('.bot-client-row').forEach(e=>e.classList.remove('active'));row.classList.add('active');detail(c.id);});
             listEl.appendChild(row);
           });
@@ -772,7 +789,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           let h='<div class="bot-detail-head">'+(c.avatar?('<img class="bot-client-ava" style="width:46px;height:46px;" src="'+esc(c.avatar)+'" alt="">'):('<div class="bot-client-ava" style="width:46px;height:46px;">'+esc((((c.name||c.username||'?').trim()[0])||'?').toUpperCase())+'</div>'))+'<div><div class="bot-detail-name">'+esc(c.name)+'</div><div class="bot-client-sub">'+esc(c.username||c.igsid)+(c.phone?(' · '+esc(c.phone)):'')+'</div></div><span class="bot-stage-chip '+stageCls(c.stage)+'" style="margin-left:auto;">'+esc(c.stage_label)+'</span></div>';
           if(c.ad_title) h+='<div class="bot-client-sub" style="margin-top:8px;">📣 Реклама: '+esc(c.ad_title)+'</div>';
           if(c.delivery_status_label) h+='<div class="bot-client-sub" style="margin-top:8px;padding:9px 11px;border:1px solid rgba(251,191,36,.42);border-radius:10px;background:rgba(251,191,36,.08);color:#fde68a;">⚠ <b>Не можу відповісти:</b> '+esc(c.delivery_status_label)+(c.delivery_error?(' · '+esc(c.delivery_error)):'')+'</div>';
-          h+='<div class="bot-client-sub" style="margin-top:8px;">Оцінка: <b style="color:#34d399;">'+esc(c.analysis_band||'legacy')+'</b> · ймовірність: '+(c.analysis_probability?Math.round(Number(c.analysis_probability)*100)+'%':'—')+' · впевненість: '+(c.analysis_confidence?Math.round(Number(c.analysis_confidence)*100)+'%':'—')+' · намір: '+esc(c.intent||'')+' · заперечення: '+esc(c.primary_objection||'')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div>';
+          h+='<div class="bot-category-strip"><div class="bot-category-copy"><div class="bot-category-title">Категорія діалогу</div><div class="bot-category-value">'+esc(c.interaction_type_label||'Не визначено')+'</div><div class="bot-category-meta">Оцінка: '+esc(c.analysis_band_label||c.analysis_band||'Legacy')+' · ймовірність: '+(c.analysis_probability?Math.round(Number(c.analysis_probability)*100)+'%':'—')+' · впевненість: '+(c.analysis_confidence?Math.round(Number(c.analysis_confidence)*100)+'%':'—')+' · намір: '+esc(c.intent_label||c.intent||'—')+' · заперечення: '+esc(c.primary_objection_label||c.primary_objection||'—')+(c.current_product_title?' · товар: '+esc(c.current_product_title):'')+(c.next_followup_at?' · наступний контакт: '+fmt(c.next_followup_at):'')+'</div></div><span class="bot-category-badge cat-'+esc(c.interaction_tone||'neutral')+'">'+esc(c.interaction_type_label||'Не визначено')+'</span></div>';
           if((c.analysis_evidence||[]).length){h+='<div class="bot-hint" style="margin-top:6px;">Доказ: '+esc((c.analysis_evidence[0].signals||[]).join(', ')||'структуровані факти')+' · невизначеність: '+esc((c.analysis_uncertainties||[]).join(', ')||'немає')+'</div>';}
           const pauseBtn=c.opted_out
             ? '<button type="button" class="bot-client-action primary resume" data-act="resume" data-optout="1">Підтвердити нову згоду</button>'
@@ -880,6 +897,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           const funnel=funnelOrder.filter(key=>(d.stages||{})[key]).map(key=>({
             stage:stageLabels[key]||key,count:d.stages[key],share:t.conversations?Math.round(d.stages[key]*100/t.conversations)+'%':'0%'
           }));
+          h+=table('Категорії діалогів', d.interactions, [['label','Категорія'],['count','Клієнти']]);
           h+=table('Воронка продажів', funnel, [['stage','Етап'],['count','Клієнти'],['share','Частка від діалогів']]);
           h+=table('Інтерес до товарів / SKU', d.products, [['product_id','SKU'],['product_title','Товар'],['count','Діалоги']]);
           const ads=(d.ads||[]).map(r=>({...r,revenue:new Intl.NumberFormat('uk-UA',{maximumFractionDigits:0}).format(Number(r.revenue||0))}));

@@ -7,7 +7,7 @@ Start/Stop, вибором джерела ключів і онлайн-конс�
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Count, F, Q, Sum
+from django.db.models import Count, F, OuterRef, Q, Subquery, Sum
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -577,6 +577,34 @@ def bot_settings_save_api(request):
 # ---------------------------------------------------------------------------
 # Вкладка «Клиенти» — CRM IG-клієнтів (Task 13)
 # ---------------------------------------------------------------------------
+def _interaction_tone(interaction_type: str) -> str:
+    from .ig_bot_models import IgConversationAnalysisSnapshot
+
+    types = IgConversationAnalysisSnapshot.InteractionType
+    if interaction_type == types.SUPPORT_COMPLAINT:
+        return "support"
+    if interaction_type in {types.WHOLESALE_B2B, types.COLLABORATION}:
+        return "business"
+    if interaction_type in {types.HIGH_INTENT, types.PAYMENT_PENDING}:
+        return "intent"
+    if interaction_type == types.PAID_ORDER_WAITING:
+        return "success"
+    if interaction_type in {types.EXPLICIT_NO_BUY, types.OPT_OUT, types.SPAM_ABUSE}:
+        return "negative"
+    return "neutral"
+
+
+def _with_latest_interaction(queryset):
+    from .ig_bot_models import IgConversationAnalysisSnapshot
+
+    latest = IgConversationAnalysisSnapshot.objects.filter(
+        client_id=OuterRef("pk")
+    ).order_by("-id")
+    return queryset.annotate(
+        latest_interaction_type=Subquery(latest.values("interaction_type")[:1])
+    )
+
+
 def _client_card(c) -> dict:
     product = getattr(c, "current_product", None)
     next_followup = getattr(c, "next_followup_at", None)
@@ -634,6 +662,7 @@ def _client_card(c) -> dict:
         c.opted_out_at
         and (not c.opted_in_at or c.opted_in_at < c.opted_out_at)
     )
+    interaction_type = latest_analysis.interaction_type if latest_analysis else ""
     return {
         "id": c.id,
         "igsid": c.igsid,
@@ -658,13 +687,18 @@ def _client_card(c) -> dict:
         "intent": c.intent,
         "buying_readiness": c.buying_readiness,
         "analysis_band": latest_analysis.score_band if latest_analysis else "",
-        "interaction_type": latest_analysis.interaction_type if latest_analysis else "",
+        "analysis_band_label": latest_analysis.get_score_band_display() if latest_analysis else "",
+        "interaction_type": interaction_type,
+        "interaction_type_label": latest_analysis.get_interaction_type_display() if latest_analysis else "Не визначено",
+        "interaction_tone": _interaction_tone(interaction_type),
         "analysis_probability": str(latest_analysis.purchase_probability) if latest_analysis else "",
         "analysis_confidence": str(latest_analysis.confidence) if latest_analysis else "",
         "analysis_evidence": latest_analysis.evidence if latest_analysis else [],
         "analysis_uncertainties": latest_analysis.uncertainties if latest_analysis else [],
         "analysis_at": latest_analysis.analyzed_at.isoformat() if latest_analysis else "",
+        "intent_label": c.get_intent_display(),
         "primary_objection": c.primary_objection,
+        "primary_objection_label": c.get_primary_objection_display(),
         "lost_reason": c.lost_reason,
         "hidden": bool(c.hidden_at),
         "hidden_reason": c.hidden_reason,
@@ -700,7 +734,7 @@ def bot_clients_api(request):
     from django.db.models import Prefetch
     from .ig_bot_models import IgConversationAnalysisSnapshot
 
-    qs = annotate_verified_payment(
+    qs = _with_latest_interaction(annotate_verified_payment(
         IgClient.objects.select_related("current_product").prefetch_related(
         Prefetch(
             "analysis_snapshots",
@@ -718,7 +752,7 @@ def bot_clients_api(request):
             to_attr="_payment_projections",
         ),
         ).all()
-    )
+    ))
     if view in {"hidden"}:
         qs = qs.filter(hidden_at__isnull=False)
     else:
@@ -733,6 +767,23 @@ def bot_clients_api(request):
         qs = qs.filter(Q(ad_id__gt="") | Q(ad_ref__gt="") | Q(ad_title__gt=""))
     elif view in {"delivery-blocked", "delivery_blocked"}:
         qs = qs.filter(delivery_status__gt="")
+    elif view in {"complaints", "support"}:
+        qs = qs.filter(
+            latest_interaction_type=IgConversationAnalysisSnapshot.InteractionType.SUPPORT_COMPLAINT
+        )
+    elif view == "wholesale":
+        qs = qs.filter(
+            latest_interaction_type=IgConversationAnalysisSnapshot.InteractionType.WHOLESALE_B2B
+        )
+    elif view == "collaboration":
+        qs = qs.filter(
+            latest_interaction_type=IgConversationAnalysisSnapshot.InteractionType.COLLABORATION
+        )
+    elif view in {"reactions", "community"}:
+        qs = qs.filter(latest_interaction_type__in=[
+            IgConversationAnalysisSnapshot.InteractionType.REACTION_ONLY,
+            IgConversationAnalysisSnapshot.InteractionType.COMMUNITY_CASUAL,
+        ])
     elif view == "active":
         qs = qs.exclude(stage__in=[IgClient.Stage.SPAM, IgClient.Stage.COLD])
         qs = qs.filter(has_verified_payment=False)
@@ -1086,15 +1137,30 @@ def bot_stats_api(request):
     elif range_days:
         since = timezone.now() - timedelta(days=range_days)
 
-    active_clients = annotate_verified_payment(
+    active_clients = _with_latest_interaction(annotate_verified_payment(
         IgClient.objects.filter(hidden_at__isnull=True)
-    )
+    ))
     if since:
         active_clients = active_clients.filter(
             Q(last_message_at__gte=since)
             | Q(last_message_at__isnull=True, created_at__gte=since)
         )
     conversations = active_clients.count()
+    from .ig_bot_models import IgConversationAnalysisSnapshot
+
+    interaction_labels = dict(IgConversationAnalysisSnapshot.InteractionType.choices)
+    interaction_counts = [
+        {
+            "type": row["latest_interaction_type"],
+            "label": str(interaction_labels.get(row["latest_interaction_type"], "Не визначено")),
+            "count": row["count"],
+        }
+        for row in active_clients.exclude(latest_interaction_type__isnull=True)
+        .exclude(latest_interaction_type="")
+        .values("latest_interaction_type")
+        .annotate(count=Count("id"))
+        .order_by("-count", "latest_interaction_type")
+    ]
     stage_counts = {}
     for row in active_clients.values("stage", "has_verified_payment").annotate(
         count=Count("id")
@@ -1198,6 +1264,7 @@ def bot_stats_api(request):
         "range_from": since.isoformat() if since else "",
         "totals": totals,
         "stages": stage_counts,
+        "interactions": interaction_counts,
         "objections": objections,
         "signals": signals,
         "products": product_interest,

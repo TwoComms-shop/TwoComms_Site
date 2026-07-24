@@ -8,7 +8,12 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from management.models import IgClient, InstagramBotLog, InstagramBotMessage
+from management.models import (
+    IgClient,
+    IgConversationAnalysisSnapshot,
+    InstagramBotLog,
+    InstagramBotMessage,
+)
 
 User = get_user_model()
 
@@ -44,6 +49,86 @@ class ClientsApiTests(TestCase):
         data = r.json()
         self.assertTrue(data["success"])
         self.assertTrue(any(cl["name"] == "Іван" for cl in data["clients"]))
+
+    def analysis(self, client, interaction_type, *, key):
+        return IgConversationAnalysisSnapshot.objects.create(
+            client=client,
+            dedupe_key=key,
+            score_band=IgConversationAnalysisSnapshot.Band.EXPLORING,
+            interaction_type=interaction_type,
+            analysis_model="rules",
+            rules_version="ui-test",
+        )
+
+    def test_clients_show_localized_latest_interaction_and_category_filter(self):
+        self.analysis(
+            self.c,
+            IgConversationAnalysisSnapshot.InteractionType.SUPPORT_COMPLAINT,
+            key="ui-support",
+        )
+        other = IgClient.get_or_create_for_sender("ig-info")
+        self.analysis(
+            other,
+            IgConversationAnalysisSnapshot.InteractionType.INFORMATION_ONLY,
+            key="ui-info",
+        )
+
+        data = self.client.get(reverse("management_bot_clients_api") + "?view=complaints").json()
+
+        self.assertEqual(data["total"], 1)
+        row = data["clients"][0]
+        self.assertEqual(row["id"], self.c.id)
+        self.assertEqual(row["interaction_type"], "support_complaint")
+        self.assertEqual(row["interaction_type_label"], "Підтримка / скарга")
+        self.assertEqual(row["interaction_tone"], "support")
+        self.assertEqual(row["analysis_band_label"], "Вивчає")
+
+    def test_category_filter_uses_latest_snapshot_and_excludes_hidden(self):
+        self.analysis(
+            self.c,
+            IgConversationAnalysisSnapshot.InteractionType.SUPPORT_COMPLAINT,
+            key="ui-old-support",
+        )
+        self.analysis(
+            self.c,
+            IgConversationAnalysisSnapshot.InteractionType.INFORMATION_ONLY,
+            key="ui-latest-info",
+        )
+        hidden = IgClient.get_or_create_for_sender("ig-hidden-support")
+        hidden.hidden_at = timezone.now()
+        hidden.save(update_fields=["hidden_at", "updated_at"])
+        self.analysis(
+            hidden,
+            IgConversationAnalysisSnapshot.InteractionType.SUPPORT_COMPLAINT,
+            key="ui-hidden-support",
+        )
+
+        data = self.client.get(reverse("management_bot_clients_api") + "?view=complaints").json()
+
+        self.assertEqual(data["total"], 0)
+
+    def test_stats_category_breakdown_excludes_hidden_clients(self):
+        self.analysis(
+            self.c,
+            IgConversationAnalysisSnapshot.InteractionType.SUPPORT_COMPLAINT,
+            key="ui-visible-stats-support",
+        )
+        hidden = IgClient.get_or_create_for_sender("ig-hidden-stats-support")
+        hidden.hidden_at = timezone.now()
+        hidden.save(update_fields=["hidden_at", "updated_at"])
+        self.analysis(
+            hidden,
+            IgConversationAnalysisSnapshot.InteractionType.SUPPORT_COMPLAINT,
+            key="ui-hidden-stats-support",
+        )
+
+        data = self.client.get(reverse("management_bot_stats_api") + "?days=0").json()
+        support = next(
+            row for row in data["interactions"] if row["type"] == "support_complaint"
+        )
+
+        self.assertEqual(support["label"], "Підтримка / скарга")
+        self.assertEqual(support["count"], 1)
 
     def test_clients_list_exposes_ukrainian_delivery_block_status(self):
         setattr(self.c, "delivery_status", "message_request_check")
@@ -96,6 +181,12 @@ class ClientsPageRenderTests(TestCase):
         self.assertIn("Дані недоступні", html)
         self.assertIn("Сповіщення, які потребують перевірки", html)
         self.assertIn("/bot/api/notifications/review/", html)
+        self.assertIn("Скарги / підтримка", html)
+        self.assertIn('data-client-view="wholesale"', html)
+        self.assertIn('data-client-view="collaboration"', html)
+        self.assertIn('data-client-view="reactions"', html)
+        self.assertIn("Категорія діалогу", html)
+        self.assertIn("Категорії діалогів", html)
 
 
 @MGMT
