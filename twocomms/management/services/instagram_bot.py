@@ -931,9 +931,17 @@ def _deliver_manager_notification_unlocked(dedupe_key: str) -> bool:
             failure_kind="configuration",
         )
         return False
+    reply_markup = payload.get("reply_markup")
+    if not isinstance(reply_markup, dict):
+        reply_markup = None
     try:
         body = json.dumps(
-            {"chat_id": chat, "text": text, "disable_web_page_preview": True}
+            {
+                "chat_id": chat,
+                "text": text,
+                "disable_web_page_preview": True,
+                **({"reply_markup": reply_markup} if reply_markup is not None else {}),
+            }
         ).encode("utf-8")
         code, response_body = _http(
             f"https://api.telegram.org/bot{token}/sendMessage", data=body, timeout=HTTP_TIMEOUT
@@ -1029,6 +1037,7 @@ def notify_manager(
     dedupe_key: str | None = None,
     event_type: str = "generic",
     client: IgClient | None = None,
+    reply_markup: dict | None = None,
 ) -> bool:
     """Persist one idempotent notification and attempt immediate delivery."""
     text = (text or "").strip()[:3500]
@@ -1037,6 +1046,9 @@ def notify_manager(
     if not dedupe_key:
         dedupe_key = "generic:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
     chat = os.environ.get("MANAGEMENT_TG_ADMIN_CHAT_ID", "").strip()
+    payload = {"text": text, "chat_id": chat}
+    if isinstance(reply_markup, dict):
+        payload["reply_markup"] = reply_markup
     try:
         with transaction.atomic():
             row, created = IgBotNotification.objects.select_for_update().get_or_create(
@@ -1044,7 +1056,7 @@ def notify_manager(
                 defaults={
                     "client": client,
                     "event_type": (event_type or "generic")[:64],
-                    "payload": {"text": text, "chat_id": chat},
+                    "payload": payload,
                 },
             )
             if not created and row.status in {
@@ -1053,7 +1065,7 @@ def notify_manager(
             }:
                 row.client = client or row.client
                 row.event_type = (event_type or row.event_type or "generic")[:64]
-                row.payload = {"text": text, "chat_id": chat}
+                row.payload = payload
                 row.save(update_fields=["client", "event_type", "payload", "updated_at"])
     except Exception:
         return False

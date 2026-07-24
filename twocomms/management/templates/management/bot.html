@@ -754,7 +754,26 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
           deal.textContent='Позицій: '+((draft.items||d.items||[]).length)+' · Сума з переписки: '+total+' '+(draft.currency||d.currency||'UAH')+' · Доставка: '+deliveryText; row.appendChild(deal);
           const draftList=document.createElement('div'); draftList.className='bot-hint'; draftList.style.marginTop='6px';
           const draftItems=draft.items||[];
-          draftList.textContent=draftItems.length ? 'Замовлення: '+draftItems.map(it=>(it.title||it.fit||'Товар')+' · '+(it.size||'розмір не вказано')+' · '+(it.qty||1)+' шт.').join(' | ')+(draft.packaging_preference?' · Пакування: '+draft.packaging_preference:'') : 'Позиції з переписки не визначені'; row.appendChild(draftList);
+          draftList.textContent=draftItems.length ? 'Замовлення: '+draftItems.map(it=>((it.catalog&&it.catalog.title)||it.title||it.fit||'Товар')+' · '+(it.size||'розмір не вказано')+' · '+(it.qty||1)+' шт.').join(' | ')+(draft.packaging_preference?' · Пакування: '+draft.packaging_preference:'') : 'Позиції з переписки не визначені'; row.appendChild(draftList);
+          const media=(item.media||[]).filter(m=>m&&(m.local_url||m.url));
+          if(media.length){
+            const mediaBlock=document.createElement('div'); mediaBlock.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;';
+            media.forEach(m=>{
+              const wrap=document.createElement('div'); wrap.style.cssText='width:132px;background:#0c0f17;border:1px solid #1e2430;border-radius:9px;padding:6px;';
+              const link=document.createElement('a'); link.href=m.local_url||m.url; link.target='_blank'; link.rel='noopener';
+              const image=document.createElement('img'); image.src=m.local_url||m.url; image.alt=m.role==='receipt'?'Чек з переписки':'Зображення товару'; image.loading='lazy'; image.style.cssText='display:block;width:118px;height:96px;object-fit:cover;border-radius:6px;';
+              link.appendChild(image); wrap.appendChild(link);
+              const label=document.createElement('div'); label.className='bot-hint'; label.style.cssText='font-size:11px;margin-top:5px;'; label.textContent=m.role==='receipt'?'Чек':'Товар'; wrap.appendChild(label);
+              mediaBlock.appendChild(wrap);
+            });
+            row.appendChild(mediaBlock);
+          }
+          const match=item.catalog_match||{};
+          if(match.status){
+            const matchBox=document.createElement('div'); matchBox.className=match.status==='matched'?'bot-hint':'bot-note'; matchBox.style.marginTop='9px';
+            matchBox.textContent=match.status==='matched' ? ('Збіг з каталогом: '+(match.title||'Товар')+' · '+Math.round(Number(match.confidence||0)*100)+'% · ціна сайту '+(match.catalog_price||'—')+' грн. Ціна з переписки залишається окремо.') : 'Збіг з каталогом не підтверджено: '+(match.reason||'потрібна ручна перевірка');
+            row.appendChild(matchBox);
+          }
           const reasons=item.uncertainty_reasons||[];
           if(reasons.length){ const warning=document.createElement('div'); warning.className='bot-note'; warning.style.marginTop='8px'; warning.textContent='Потрібно уточнити: '+reasons.map(reason=>({catalog_product_not_identified:'товар не зіставлено з каталогом — виберіть вручну',conversation_price_not_found:'ціну з переписки не знайдено'}[reason]||reason)).join('; '); row.appendChild(warning); }
           const actions=document.createElement('div'); actions.style.cssText='display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;';

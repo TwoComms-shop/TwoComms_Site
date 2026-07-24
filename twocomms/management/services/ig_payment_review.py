@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
+import hashlib
+import json
 
 from django.conf import settings
 from django.db import transaction
@@ -37,6 +39,197 @@ _NAME_STOPWORDS = {
     "по повній оплаті",
     "потрібна оплата",
 }
+
+_PRODUCT_MEDIA_TYPES = {"ig_post", "share", "ig_reel", "reel", "story_mention", "story"}
+
+
+def _raw_media_by_mid(client) -> dict[str, list[dict]]:
+    """Recover media that Meta kept only in the raw webhook event.
+
+    Instagram sometimes sends an ``ig_post`` in a separate event with the same
+    message id while the normalized message row has an empty ``attachments``
+    field. Raw events are the source evidence; this helper only reads them.
+    """
+    if not client or not getattr(client, "igsid", ""):
+        return {}
+    try:
+        from management.models import InstagramBotRawEvent
+        from management.services.instagram_bot import _iter_events
+    except Exception:
+        return {}
+    recovered: dict[str, list[dict]] = {}
+    rows = InstagramBotRawEvent.objects.filter(sender_id=client.igsid).order_by("-id")[:240]
+    for event in rows:
+        try:
+            payload = json.loads(event.payload or "{}")
+        except (TypeError, ValueError):
+            continue
+        try:
+            events = _iter_events(payload)
+            for sender_id, _recipient_id, message, _referral in events:
+                if sender_id != client.igsid:
+                    continue
+                mid = str(message.get("mid") or "").strip()
+                if not mid:
+                    continue
+                for attachment in message.get("attachments") or []:
+                    if not isinstance(attachment, dict):
+                        continue
+                    payload_data = attachment.get("payload")
+                    if not isinstance(payload_data, dict):
+                        continue
+                    url = str(payload_data.get("url") or "").strip()
+                    if not url or not url.startswith(("https://", "http://")):
+                        continue
+                    item = {
+                        "url": url[:1200],
+                        "type": str(attachment.get("type") or "image")[:32],
+                        "title": str(payload_data.get("title") or "")[:700],
+                        "ig_post_media_id": str(payload_data.get("ig_post_media_id") or "")[:80],
+                        "raw_event_id": event.pk,
+                    }
+                    existing = recovered.setdefault(mid, [])
+                    if not any(row.get("url") == item["url"] for row in existing):
+                        existing.append(item)
+        except Exception:
+            continue
+    return recovered
+
+
+def _existing_media(raw_attachments: str) -> list[dict]:
+    try:
+        urls = json.loads(raw_attachments or "[]")
+    except (TypeError, ValueError):
+        urls = []
+    if not isinstance(urls, list):
+        urls = []
+        for candidate in re.findall(r"https?://[^\s\"'\]]+", raw_attachments or ""):
+            urls.append(candidate)
+    return [
+        {"url": str(url)[:1200], "type": "image", "title": "", "raw_event_id": None}
+        for url in urls
+        if isinstance(url, str) and url.startswith(("https://", "http://"))
+    ]
+
+
+def _role_for_media(item: dict, *, payment_context: bool, explicit_claim: bool) -> str:
+    media_type = str(item.get("type") or "image").casefold()
+    if media_type in _PRODUCT_MEDIA_TYPES:
+        return "product"
+    if payment_context or explicit_claim:
+        return "receipt"
+    return "other"
+
+
+def _augment_messages_with_raw_media(client, messages) -> list[dict]:
+    raw_by_mid = _raw_media_by_mid(client)
+    result = []
+    for raw in list(messages or ()):
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        media = list(item.get("media") or []) if isinstance(item.get("media"), list) else []
+        media.extend(_existing_media(str(item.get("attachments") or "")))
+        mid = str(item.get("mid") or "").strip()
+        for attachment in raw_by_mid.get(mid, []):
+            if not any(row.get("url") == attachment.get("url") for row in media):
+                media.append(attachment)
+        # Keep the old attachments contract intact for callers that only know
+        # how to consume a JSON list of URLs, while exposing structured media
+        # evidence to the review UI and catalog matcher.
+        item["media"] = media[:8]
+        if media and not item.get("attachments"):
+            item["attachments"] = json.dumps(
+                [row["url"] for row in media if row.get("url")], ensure_ascii=False
+            )
+        result.append(item)
+    return result
+
+
+def _persist_review_media(media: list[dict]) -> list[dict]:
+    """Download bounded image evidence to our media storage for durable review.
+
+    Signed Meta URLs can expire; ``local_url`` is best effort and the original
+    URL remains in evidence for audit. Non-image or failed downloads are never
+    sent into catalog matching.
+    """
+    try:
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+        from management.services.instagram_bot import download_image
+    except Exception:
+        return media
+    enriched = []
+    for item in media[:8]:
+        row = dict(item)
+        url = str(row.get("url") or "")
+        if not url:
+            enriched.append(row)
+            continue
+        try:
+            downloaded = download_image(url)
+            if downloaded:
+                mime, raw = downloaded
+                suffix = ".jpg" if mime == "image/jpeg" else ".bin"
+                digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+                path = f"ig_payment_reviews/{digest}{suffix}"
+                if not default_storage.exists(path):
+                    default_storage.save(path, ContentFile(raw))
+                row["local_url"] = default_storage.url(path)
+                row["mime"] = mime[:64]
+                row["bytes"] = len(raw)
+        except Exception:
+            pass
+        enriched.append(row)
+    return enriched
+
+
+def _catalog_match_for_media(media: list[dict]) -> dict:
+    product_media = [row for row in media if row.get("role") == "product" and row.get("url")]
+    if not product_media:
+        return {}
+    try:
+        from management.services.instagram_bot import download_image
+        from management.services import bot_vision
+        images = []
+        for row in product_media[:3]:
+            image = download_image(str(row["url"]))
+            if image:
+                images.append(image)
+        match = bot_vision.match(images) if images else {"product_id": None, "confidence": 0, "reason": "image_download_failed"}
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)[:180]}
+    pid = match.get("product_id")
+    result = {
+        "status": "matched" if pid else "unresolved",
+        "product_id": pid,
+        "confidence": match.get("confidence", 0),
+        "reason": match.get("reason", ""),
+        "source_message_ids": sorted({int(row.get("message_id")) for row in product_media if str(row.get("message_id") or "").isdigit()}),
+    }
+    if not pid:
+        return result
+    try:
+        from storefront.models import Product
+        from productcolors.models import ProductColorVariant
+        product = Product.objects.filter(pk=pid).first()
+        if not product:
+            return result
+        result.update({
+            "title": product.title,
+            "slug": product.slug,
+            "catalog_price": str(getattr(product, "final_price", None) or product.price),
+            "url": f"https://twocomms.shop/product/{product.slug}/",
+        })
+        variants = []
+        for variant in ProductColorVariant.objects.filter(product=product).select_related("color")[:20]:
+            variants.append({"id": variant.pk, "color": getattr(variant.color, "name", "") or "", "sku": variant.sku or ""})
+        result["variant_candidates"] = variants
+        if len(variants) == 1:
+            result["color_variant_id"] = variants[0]["id"]
+    except Exception:
+        pass
+    return result
 
 
 def next_review_status(status: str, action: str) -> str:
@@ -81,17 +274,28 @@ def extract_payment_review_evidence(messages) -> dict:
         raw_text = str(raw.get("text") or "")
         text = " ".join(raw_text.split())
         attachments = str(raw.get("attachments") or "").strip()
-        if not text and not attachments:
+        raw_media = raw.get("media") if isinstance(raw.get("media"), list) else _existing_media(attachments)
+        if not text and not attachments and not raw_media:
             continue
         try:
             message_id = int(raw.get("id") or 0)
         except (TypeError, ValueError):
             message_id = 0
+        media = [dict(item) for item in raw_media if isinstance(item, dict) and item.get("url")]
+        explicit_claim = bool(_AFFIRMATION_RE.search(text)) and not _NON_EVIDENCE_RE.search(text)
+        for media_item in media:
+            media_item["message_id"] = message_id
+            media_item["role"] = _role_for_media(
+                media_item,
+                payment_context=conversation_payment_context,
+                explicit_claim=explicit_claim,
+            )
         context_messages.append({
             "message_id": message_id,
             "role": role,
             "quote": raw_text[:500],
             "attachments": attachments[:500],
+            "media": media[:8],
         })
         amounts = _AMOUNT_RE.findall(text)
         for amount in amounts:
@@ -120,14 +324,17 @@ def extract_payment_review_evidence(messages) -> dict:
                     "unit_price": None,
                     "source_message_id": message_id,
                 })
-            is_explicit_claim = bool(_AFFIRMATION_RE.search(text)) and not _NON_EVIDENCE_RE.search(text)
-            is_receipt_attachment = bool(attachments) and (conversation_payment_context or is_explicit_claim)
-            if is_explicit_claim or is_receipt_attachment:
+            is_receipt_attachment = bool(attachments) and (
+                conversation_payment_context or explicit_claim
+            ) and not any(item.get("role") == "product" for item in media)
+            is_receipt_attachment = is_receipt_attachment or any(item.get("role") == "receipt" for item in media)
+            if explicit_claim or is_receipt_attachment:
                 evidence.append({
                     "message_id": message_id,
                     "role": role,
                     "quote": text[:300],
                     "attachments": attachments[:500],
+                    "media": media[:8],
                 })
 
     # A single explicit quantity describes the only extracted line; numbered
@@ -189,6 +396,11 @@ def extract_payment_review_evidence(messages) -> dict:
                 and not any(word in candidate.lower() for word in ("принт", "футбол", "передоплат", "оплат"))
             ):
                 delivery["full_name"] = candidate
+    media_audit = [
+        media_item
+        for context in context_messages
+        for media_item in context.get("media", [])
+    ]
     order_draft = {
         "items": order_items,
         "quoted_total": quoted_total,
@@ -198,6 +410,7 @@ def extract_payment_review_evidence(messages) -> dict:
         "packaging_preference": packaging_preference,
         "delivery": delivery,
         "context_messages": context_messages[-80:],
+        "media": media_audit[:40],
     }
     return {
         "needs_review": bool(evidence),
@@ -206,6 +419,7 @@ def extract_payment_review_evidence(messages) -> dict:
         "evidence": evidence[-20:],
         "amount_evidence": amount_evidence[-20:],
         "order_draft": order_draft,
+        "media": media_audit[:40],
     }
 
 
@@ -251,8 +465,16 @@ def _alert_text(review, client) -> str:
     if items:
         lines.append("Позиції з переписки:")
         for item in items:
+            catalog = item.get("catalog") if isinstance(item.get("catalog"), dict) else {}
+            product_label = catalog.get("title") or item.get("title") or item.get("fit") or "Товар"
+            variant_label = ""
+            variant_id = catalog.get("color_variant_id")
+            for variant in catalog.get("variant_candidates") or []:
+                if variant.get("id") == variant_id and variant.get("color"):
+                    variant_label = f" · {variant['color']}"
+                    break
             lines.append(
-                f"• {item.get('title') or item.get('fit') or 'Товар'} · "
+                f"• {product_label}{variant_label} · "
                 f"{item.get('size') or 'розмір не вказано'} · {item.get('qty') or 1} шт."
             )
     else:
@@ -273,8 +495,28 @@ def _alert_text(review, client) -> str:
             "conversation_price_not_found": "ціну з переписки не знайдено",
         }
         lines.append("Потрібно уточнити: " + "; ".join(labels.get(reason, reason) for reason in reasons))
-    lines.append(f"Відкрити review: {getattr(settings, 'MANAGEMENT_BASE_URL', 'https://management.twocomms.shop').rstrip('/')}/bot/")
+    catalog_match = evidence.get("catalog_match") if isinstance(evidence.get("catalog_match"), dict) else {}
+    if catalog_match.get("status") == "matched":
+        lines.append(
+            f"Зображення товару: {catalog_match.get('title') or 'збіг з каталогом'} "
+            f"({round(float(catalog_match.get('confidence') or 0) * 100)}% впевненості)."
+        )
+    elif catalog_match:
+        lines.append("Зображення товару: точного збігу з каталогом не знайдено — перевірте вручну.")
+    media = evidence.get("media") if isinstance(evidence.get("media"), list) else []
+    receipts = [item for item in media if item.get("role") == "receipt"]
+    products = [item for item in media if item.get("role") == "product"]
+    lines.append(f"Вкладення: чеків {len(receipts)}, зображень товару {len(products)}.")
+    base = getattr(settings, "MANAGEMENT_BASE_URL", "https://management.twocomms.shop").rstrip("/")
+    lines.append(f"Відкрити review: {base}/bot/?payment_review={review.pk}")
     return "\n".join(lines)
+
+
+def _review_keyboard(review) -> dict:
+    base = getattr(settings, "MANAGEMENT_BASE_URL", "https://management.twocomms.shop").rstrip("/")
+    return {"inline_keyboard": [[
+        {"text": "Перейти до підтвердження", "url": f"{base}/bot/?payment_review={review.pk}"},
+    ]]}
 
 
 def create_payment_review(client, *, watermark: int = 0, messages=None):
@@ -295,12 +537,43 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
         )
         rows.reverse()
         messages = [
-            {"id": row.pk, "role": row.role, "text": row.text, "attachments": row.attachments}
+            {"id": row.pk, "mid": row.mid, "role": row.role, "text": row.text, "attachments": row.attachments}
             for row in rows
         ]
+    messages = _augment_messages_with_raw_media(client, messages)
     extracted = extract_payment_review_evidence(messages)
     if not extracted["needs_review"]:
         return None
+    enriched_media = _persist_review_media(extracted.get("media") or [])
+    for item in enriched_media:
+        item["message_id"] = item.get("message_id") or None
+    for context in extracted.get("order_draft", {}).get("context_messages", []):
+        context_media = context.get("media") or []
+        for context_item in context_media:
+            for item in enriched_media:
+                if item.get("url") == context_item.get("url"):
+                    context_item.update({key: value for key, value in item.items() if key in {"local_url", "mime", "bytes"}})
+    extracted["media"] = enriched_media
+    extracted["order_draft"]["media"] = enriched_media
+    catalog_match = _catalog_match_for_media(enriched_media)
+    extracted["catalog_match"] = catalog_match
+    if catalog_match.get("status") == "matched":
+        for item in extracted["order_draft"].get("items", []):
+            item["product_id"] = catalog_match.get("product_id")
+            item["color_variant_id"] = catalog_match.get("color_variant_id")
+            item["catalog"] = {
+                "product_id": catalog_match.get("product_id"),
+                "title": catalog_match.get("title", ""),
+                "slug": catalog_match.get("slug", ""),
+                "catalog_price": catalog_match.get("catalog_price", ""),
+                "color_variant_id": catalog_match.get("color_variant_id"),
+                "variant_candidates": catalog_match.get("variant_candidates", []),
+            }
+        extracted["order_draft"]["uncertainty_reasons"] = [
+            reason for reason in extracted["order_draft"].get("uncertainty_reasons", [])
+            if reason != "catalog_product_not_identified"
+        ]
+    extracted["media_audit_v2"] = True
     watermark = int(watermark or max(extracted["message_ids"] or [0]))
     deal = client.deals.order_by("-id").first()
     dedupe_key = f"ig-payment-review:{client.pk}:{watermark}"
@@ -314,6 +587,9 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
                     "messages": extracted["evidence"],
                     "amount_evidence": extracted["amount_evidence"],
                     "order_draft": extracted["order_draft"],
+                    "media": extracted.get("media", []),
+                    "catalog_match": extracted.get("catalog_match", {}),
+                    "media_audit_v2": True,
                     "deal": _deal_payload(deal),
                 },
                 "watermark_message_id": watermark,
@@ -321,11 +597,24 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
         )
     from management.services.instagram_bot import notify_manager
 
+    if not created and isinstance(review.evidence, dict) and not review.evidence.get("media_audit_v2"):
+        review.evidence = {
+            **review.evidence,
+            "messages": extracted["evidence"],
+            "amount_evidence": extracted["amount_evidence"],
+            "order_draft": extracted["order_draft"],
+            "media": extracted.get("media", []),
+            "catalog_match": extracted.get("catalog_match", {}),
+            "media_audit_v2": True,
+        }
+        review.save(update_fields=["evidence", "updated_at"])
+
     notify_manager(
         _alert_text(review, client),
         dedupe_key=review.dedupe_key,
         event_type="payment_review",
         client=client,
+        reply_markup=_review_keyboard(review),
     )
     return review
 

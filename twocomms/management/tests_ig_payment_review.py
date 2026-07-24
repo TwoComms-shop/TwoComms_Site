@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from django.test import SimpleTestCase
 
 
@@ -67,6 +70,41 @@ class IgPaymentReviewRulesTests(SimpleTestCase):
         )
         self.assertTrue(result["needs_review"])
         self.assertEqual(result["message_ids"], [238])
+
+    def test_product_post_and_receipt_are_separate_media_roles(self):
+        from management.services.ig_payment_review import extract_payment_review_evidence
+
+        result = extract_payment_review_evidence([
+            {
+                "id": 235,
+                "role": "user",
+                "text": "Принт ось цей",
+                "media": [{"url": "https://cdn/product.jpg", "type": "ig_post", "title": "Біла футболка 1654"}],
+            },
+            {"id": 237, "role": "manager", "text": "Оплата на рахунок ФОП. Сума: 2100 грн"},
+            {
+                "id": 238,
+                "role": "user",
+                "text": "(зображення)",
+                "media": [{"url": "https://cdn/receipt.jpg", "type": "image"}],
+            },
+        ])
+        self.assertEqual(
+            [(item["url"], item["role"]) for item in result["media"]],
+            [("https://cdn/product.jpg", "product"), ("https://cdn/receipt.jpg", "receipt")],
+        )
+        self.assertEqual(result["evidence"][0]["media"][0]["role"], "receipt")
+
+    @patch("management.services.ig_payment_review._raw_media_by_mid", return_value={
+        "mid-product": [{"url": "https://cdn/product.jpg", "type": "ig_post", "raw_event_id": 437}],
+    })
+    def test_raw_event_media_is_recovered_when_normalized_attachment_is_empty(self, _raw):
+        from management.services.ig_payment_review import _augment_messages_with_raw_media
+
+        client = SimpleNamespace(igsid="1735898131060065")
+        rows = _augment_messages_with_raw_media(client, [{"id": 235, "mid": "mid-product", "attachments": ""}])
+        self.assertEqual(rows[0]["media"][0]["type"], "ig_post")
+        self.assertIn("product.jpg", rows[0]["attachments"])
 
     def test_packaging_preference_requires_manager_package_context(self):
         from management.services.ig_payment_review import extract_payment_review_evidence
@@ -140,6 +178,23 @@ class IgPaymentReviewRulesTests(SimpleTestCase):
         self.assertIn("товар не зіставлено з каталогом", text)
         self.assertIn("management.twocomms.shop/bot/", text)
         self.assertNotIn("ціна сайту", text)
+
+    def test_manager_alert_has_review_button_and_media_summary(self):
+        from management.services.ig_payment_review import _alert_text, _review_keyboard
+
+        review = SimpleNamespace(
+            pk=42,
+            evidence={
+                "order_draft": {"quoted_total": "2100", "items": [{"title": "Базова футболка", "size": "S", "qty": 1}]},
+                "media": [{"role": "product"}, {"role": "receipt"}],
+                "catalog_match": {"status": "matched", "title": "Футболка «Харків Вокзальна»", "confidence": 0.94},
+            },
+        )
+        client = SimpleNamespace(display_name="Яна", username="yana", igsid="1735898131060065")
+        text = _alert_text(review, client)
+        self.assertIn("чеків 1", text)
+        self.assertIn("Футболка «Харків Вокзальна»", text)
+        self.assertEqual(_review_keyboard(review)["inline_keyboard"][0][0]["text"], "Перейти до підтвердження")
 
     def test_customer_payment_statement_is_review_evidence_not_provider_paid(self):
         from management.services.ig_payment_review import extract_payment_review_evidence

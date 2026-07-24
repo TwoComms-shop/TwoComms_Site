@@ -518,6 +518,8 @@ def bot_payment_reviews_api(request):
             "status": row.status,
             "created_at": row.created_at.isoformat(),
             "evidence": evidence.get("messages", [])[-8:],
+            "media": evidence.get("media", []),
+            "catalog_match": evidence.get("catalog_match", {}),
             "deal": evidence.get("deal", {}),
             "order_draft": draft,
             "uncertainty_reasons": draft.get("uncertainty_reasons", []),

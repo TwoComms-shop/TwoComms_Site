@@ -71,6 +71,22 @@ class InstagramBotNotificationTests(TestCase):
 
     @patch.dict(
         "os.environ",
+        {
+            "MANAGEMENT_TG_BOT_TOKEN": "test-token",
+            "MANAGEMENT_TG_ADMIN_CHAT_ID": "123",
+        },
+        clear=False,
+    )
+    @patch("management.services.instagram_bot._http", return_value=(200, json.dumps({"ok": True, "result": {"message_id": 88}})))
+    def test_inline_keyboard_is_persisted_and_sent(self, http):
+        keyboard = {"inline_keyboard": [[{"text": "Перейти до підтвердження", "url": "https://management.twocomms.shop/bot/?payment_review=42"}]]}
+        self.assertTrue(bot.notify_manager("Перевірка", dedupe_key="payment-review-button", reply_markup=keyboard))
+        payload = json.loads(http.call_args.kwargs["data"])
+        self.assertEqual(payload["reply_markup"], keyboard)
+        self.assertEqual(IgBotNotification.objects.get(dedupe_key="payment-review-button").payload["reply_markup"], keyboard)
+
+    @patch.dict(
+        "os.environ",
         {"MANAGEMENT_TG_BOT_TOKEN": "test-token", "MANAGEMENT_TG_ADMIN_CHAT_ID": "123"},
         clear=False,
     )
