@@ -29,3 +29,16 @@ class InteractionCategoryUiContractTests(SimpleTestCase):
         self.assertIn("const activeModel=st.last_gemini_model||st.gemini_effective_model||'';", template)
         self.assertIn("explainerModel.textContent=activeModel||'поточну перевірену модель';", template)
         self.assertNotIn("<b>{{ settings.gemini_model }}</b>", template)
+
+    def test_notification_telemetry_keeps_unavailable_distinct_from_zero(self):
+        template = (
+            Path(__file__).with_name("templates") / "management" / "bot.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "const outboxAvailable=[st.notification_failed,st.notification_pending,st.notification_unknown,st.notification_dead_letter]",
+            template,
+        )
+        self.assertIn(": 'Дані недоступні';", template)
+        self.assertIn("Стан сповіщень недоступний.", template)
+        self.assertNotIn("st.notification_pending||0", template)

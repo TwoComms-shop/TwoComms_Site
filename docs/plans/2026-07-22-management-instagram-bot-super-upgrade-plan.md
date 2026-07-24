@@ -541,13 +541,14 @@ The approved architecture is documented in `docs/plans/2026-07-23-management-ins
   - **Tests:** `drain raises -> process_pending/follow-ups still run`, disabled reply gate, and subsequent-cycle recovery.
   - **Production proof:** deployed at SHA `044e9bdf`; daemon drain is isolated from reply work and fresh production runtime at SHA `0225caf2` has one healthy worker with empty queue/outbox.
 
-- [ ] **P1.B4c Do not render unavailable outbox telemetry as zero.**
+- [x] **P1.B4c Do not render unavailable outbox telemetry as zero.**
   - **Symptom:** backend `None` values become `0` through JavaScript fallback and the cockpit claims an empty healthy outbox.
   - **Root cause:** UI conflates unavailable data with a measured zero.
   - **Risk:** operators miss migration failures and database outages.
   - **Affected branches:** status API error fallback and overview rendering.
   - **Acceptance:** unavailable counts render as `Дані недоступні` with a textual warning independent of colour; measured zero remains distinct.
   - **Tests:** null telemetry render contract and normal zero/non-zero payloads.
+  - **Implementation/evidence:** the overview computes an all-fields-present availability guard before rendering counts; `NULL` renders `Дані недоступні` plus a Ukrainian migration/database warning, while measured zero remains `0`. The DB-free template contract passed on production settings with the runner skipping the unused MariaDB database; production browser QA at SHA `6a7c6f6f` showed the measured healthy outbox value `0`, distinct from the unavailable branch.
 
 - [ ] **P1.B4d Add an actionable Ukrainian notification-review queue.**
   - **Symptom:** the overview shows only a total manual-review count; an operator cannot identify or resolve an `unknown/dead_letter` row.
