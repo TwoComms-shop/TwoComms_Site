@@ -2,7 +2,7 @@ from django.test import TransactionTestCase
 from django.utils import timezone
 
 from management.models import (
-    IgClient, IgConversationRouteDecision, IgCustomerTurn,
+    IgClient, IgConversationRouteDecision, IgCustomerTurn, IgJourneyTraceSnapshot,
     IgTurnMessage, InstagramBotMessage, InstagramBotSettings,
 )
 from management.services.ig_conversation_routes import (
@@ -10,10 +10,41 @@ from management.services.ig_conversation_routes import (
 )
 from management.services.ig_turn_revisions import create_collecting_revision
 from management.services.ig_typed_memory import purge_client_analysis_memory
+from management.services.ig_journey_trace_contract import normalize_journey_trace
+from management.services.ig_journey_trace_store import record_journey_trace, JourneyTraceStoreRejected
 
 
 class JourneyErasureTests(TransactionTestCase):
     reset_sequences = True
+
+    def _trace_input(self, client):
+        source = InstagramBotMessage.objects.filter(client=client).latest("id")
+        by_id = {source.pk: {"message_id": source.pk, "role": source.role, "text": source.text}}
+        trace = normalize_journey_trace({"schema_version": 1, "steps": [{
+            "from_node": "inbound", "to_node": "information_question", "kind": "progress",
+            "reason_code": "entered", "confidence": .9,
+            "evidence": [{"message_id": source.pk, "quote": source.text}],
+        }], "current_node": "information_question"}, by_id=by_id, watermark=source.pk)
+        return dict(client_id=client.pk, episode_id=None, watermark=source.pk,
+                    normalized_trace=trace, by_id=by_id, prompt_version="trace-test.v1",
+                    analysis_model="test-model", analyzed_at=timezone.now())
+
+    def test_trace_purge_is_fenced_selective_and_cannot_resurrect(self):
+        target, _, _ = self._journal("e")
+        foreign, _, _ = self._journal("f")
+        target_input = self._trace_input(target)
+        target_trace = record_journey_trace(**target_input)
+        foreign_trace = record_journey_trace(**self._trace_input(foreign))
+        with self.assertRaises(ValueError):
+            purge_client_analysis_memory([target.pk])
+        self.assertTrue(IgJourneyTraceSnapshot.objects.filter(pk=target_trace.pk).exists())
+        IgClient.objects.filter(pk=target.pk).update(privacy_erasure_started_at=timezone.now())
+        outcome = purge_client_analysis_memory([target.pk])
+        self.assertEqual(outcome["tables"]["management_igjourneytracesnapshot"], 1)
+        self.assertFalse(IgJourneyTraceSnapshot.objects.filter(pk=target_trace.pk).exists())
+        self.assertTrue(IgJourneyTraceSnapshot.objects.filter(pk=foreign_trace.pk).exists())
+        with self.assertRaises(JourneyTraceStoreRejected):
+            record_journey_trace(**target_input)
 
     def _journal(self, suffix):
         client = IgClient.objects.create(igsid=f"journey-erasure-{suffix}")

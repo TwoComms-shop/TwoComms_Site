@@ -141,3 +141,11 @@
 .twc-journey-options button{display:block;text-align:left;width:100%;border:0;border-left:2px dashed #64748b;background:transparent;color:#c7d6e9;font-size:11px;line-height:16px;padding:5px 8px;margin:3px 0;}
 .twc-journey-options button:hover{background:#1b2735;}
 .twc-journey-condition{font-size:10px;fill:#bdcadd;stroke:#10151e;stroke-width:4px;paint-order:stroke;stroke-linejoin:round;}
+.twc-journey-edge[data-interpreted=true]{stroke-dasharray:6 3;opacity:1;stroke-width:1.7;}
+.twc-journey-step[data-interpreted=true] .twc-journey-core{border:1.5px dashed #60a5fa;background:#172943;color:#bfdbfe;}
+.twc-journey-step[data-interpreted=true] .twc-journey-step-label{color:#bfdbfe;}
+.twc-journey-inline-key>.twc-journey-key-trace{color:#93c5fd;}
+.twc-journey-inline-key>.twc-journey-key-trace:before{border-color:#60a5fa;border-top-style:dashed;}
+.twc-journey-inline-key[data-has-trace=true]>.twc-journey-key-actual{display:none;}
+.twc-journey-trace-note{font-size:11px;line-height:16px;color:#93c5fd;}
+.twc-journey-trace-note p{margin:0 0 7px;}

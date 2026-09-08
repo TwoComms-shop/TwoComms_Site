@@ -91,7 +91,7 @@
       icon:'info',short_label:node.short_label || node.label || 'Подія'};
   }
   function isReturn(edge, a, b) {
-    return b.col < a.col || edge.relation === 'return' || returns.has(edge.outcome);
+    return b.col < a.col || edge.relation === 'return' || edge.interpretation_kind === 'return' || returns.has(edge.outcome);
   }
   function overview({nodes=[],edges=[],mainIds=[],alternativeIds=[],currentId,width=560}={}) {
     const byId=new Map(nodes.map(n=>[n.id,n]));

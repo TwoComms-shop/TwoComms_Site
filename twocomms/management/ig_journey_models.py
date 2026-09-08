@@ -76,3 +76,56 @@ class IgConversationRouteDecision(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("Conversation route decisions are append-only.")
+
+
+class _JourneyTraceQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError("Journey trace snapshots are immutable.")
+
+    def bulk_update(self, objs, fields, **kwargs):
+        raise ValidationError("Journey trace snapshots are immutable.")
+
+    def delete(self):
+        raise ValidationError("Journey trace snapshots are append-only.")
+
+    def bulk_create(self, objs, **kwargs):
+        if kwargs.get("update_conflicts"):
+            raise ValidationError("Journey trace snapshots are immutable.")
+        return super().bulk_create(objs, **kwargs)
+
+
+class IgJourneyTraceSnapshot(models.Model):
+    """Source-bound transcript interpretation; never business authority."""
+
+    snapshot_key = models.CharField(max_length=64, unique=True)
+    client = models.ForeignKey("management.IgClient", on_delete=models.DO_NOTHING,
+        db_constraint=False, related_name="journey_trace_snapshots")
+    commercial_episode = models.ForeignKey("management.IgCommercialEpisode", null=True, blank=True,
+        on_delete=models.DO_NOTHING, db_constraint=False, related_name="journey_trace_snapshots")
+    watermark_message_id = models.PositiveBigIntegerField()
+    source_digest = models.CharField(max_length=64)
+    trace = models.JSONField()
+    trace_digest = models.CharField(max_length=64)
+    schema_version = models.CharField(max_length=32, default="journey-trace.v1")
+    prompt_version = models.CharField(max_length=32)
+    producer_version = models.CharField(max_length=32, default="journey-trace-store.v1")
+    analysis_model = models.CharField(max_length=80)
+    analyzed_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = _JourneyTraceQuerySet.as_manager()
+
+    class Meta:
+        indexes = [models.Index(fields=["client", "commercial_episode", "-id"], name="ig_trace_client_episode")]
+        constraints = [models.CheckConstraint(condition=models.Q(watermark_message_id__gte=1),
+                                               name="ig_trace_positive_watermark")]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding or kwargs.get("force_update") or (
+            self.pk is not None and type(self).objects.filter(pk=self.pk).exists()
+        ):
+            raise ValidationError("Journey trace snapshots are immutable.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Journey trace snapshots are append-only.")

@@ -67,8 +67,8 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
-        # Two bounded read queries establish the explicit-reset route scope.
-        self.assertLessEqual(len(queries), 8)
+        # Two bounded reads also check current privacy and the latest optional trace.
+        self.assertLessEqual(len(queries), 10)
         self.assertFalse(IgCommercialEpisode.objects.filter(client=self.buyer).exists())
         self.assertIsNone(snapshot["viewed_episode_id"])
         self.assertEqual(snapshot["focus"]["node_id"], "inquiry")
@@ -164,8 +164,8 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             first = build_journey_snapshot(self.buyer, view_episode_id=old.pk)
         second = build_journey_snapshot(SimpleNamespace(pk=self.buyer.pk), view_episode_id=old.pk)
-        # One additional bounded read checks independently retained semantic events.
-        self.assertLessEqual(len(queries), 12)
+        # Trace reads add privacy, exact episode ownership, and one latest-row lookup.
+        self.assertLessEqual(len(queries), 15)
         self.assertEqual(first["revision"], second["revision"])
         self.assertEqual(first["episodes"]["total"], 24)
         self.assertEqual(len(first["episodes"]["items"]), 20)
@@ -299,7 +299,8 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
-        self.assertLessEqual(len(queries), 15)
+        # Privacy, episode ownership and latest trace are fixed-cost optional reads.
+        self.assertLessEqual(len(queries), 18)
         graph = snapshot["graph"]
         self.assertEqual((graph["schema_version"], graph["version"]), (1, 1))
         self.assertEqual(len(graph["edges"]), 1)

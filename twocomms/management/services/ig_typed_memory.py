@@ -1133,6 +1133,7 @@ def purge_client_analysis_memory(client_ids) -> dict:
             ),
             ("management_igmemoryhead", f"client_id IN ({placeholders})"),
             ("management_igmemoryfact", f"client_id IN ({placeholders})"),
+            ("management_igjourneytracesnapshot", f"client_id IN ({placeholders})"),
             (
                 "management_igconversationroutedecision",
                 f"client_id IN ({placeholders})",

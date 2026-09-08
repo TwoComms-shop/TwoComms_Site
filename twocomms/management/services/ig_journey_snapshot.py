@@ -947,6 +947,11 @@ def build_journey_snapshot(client, *, view_episode_id=None):
     from management.services.ig_journey_client_orders import append_client_order_context
     graph = append_client_order_context(graph, client_id=client_id, is_history=is_history,
         bound_order_id=episode["intended_order_id"] if episode else None)
+    from management.services.ig_journey_trace_projection import append_journey_trace
+    graph = append_journey_trace(graph, client_id=client_id,
+        episode_id=episode["id"] if episode else None, is_history=is_history)
+    if graph.get("transcript_reconstruction"):
+        covered.append("source_verified_transcript_reconstruction")
     from management.services.ig_journey_catalogue import journey_catalogue
     result = {
         "catalogue": journey_catalogue(),
