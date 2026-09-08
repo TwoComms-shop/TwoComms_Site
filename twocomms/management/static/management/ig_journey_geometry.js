@@ -73,6 +73,66 @@
   function isReturn(edge, a, b) {
     return b.col < a.col || edge.relation === 'return' || returns.has(edge.outcome);
   }
+  function overview({nodes=[],edges=[],mainIds=[],alternativeIds=[],currentId,width=560}={}) {
+    const byId=new Map(nodes.map(n=>[n.id,n]));
+    const main=mainIds.filter(id=>byId.has(id));
+    const cap=Math.max(3,Math.min(7,Math.floor(width/80)));
+    const factual=edges.filter(e=>!['route','prerequisite'].includes(e.relation)&&(e.evidence_refs||[]).length);
+    const neighbors=id=>factual.flatMap(e=>e.from_node_id===id?[e.to_node_id]:e.to_node_id===id?[e.from_node_id]:[]);
+    const current=byId.get(currentId),contextKey=current?.structural_context_key||current?.structural_key;
+    let focus=main.indexOf(currentId);
+    if(focus<0)focus=main.findIndex(id=>contextKey&&byId.get(id).structural_key===contextKey);
+    if(focus<0)focus=main.findIndex(id=>neighbors(currentId).includes(id));
+    if(focus<0)focus=0;
+    // Keep actual scoped facts first; fill only the immediate neighborhood with
+    // possibilities. A compact slice never turns hidden nodes into visits.
+    const priority=[currentId,...neighbors(currentId),...main.filter(id=>byId.get(id).presentation_kind!=='possible').sort((a,b)=>Math.abs(main.indexOf(a)-focus)-Math.abs(main.indexOf(b)-focus)),...main.slice().sort((a,b)=>Math.abs(main.indexOf(a)-focus)-Math.abs(main.indexOf(b)-focus))];
+    const selected=[...new Set(priority.filter(id=>main.includes(id)))].slice(0,cap).sort((a,b)=>main.indexOf(a)-main.indexOf(b));
+    const slots=new Map(selected.map((id,col)=>[id,{col,row:0}]));
+    const structural=edges.filter(e=>e.relation==='route'&&e.structural_path&&!returns.has(e.outcome));
+    function pathBetween(from,to,visible){
+      const queue=[[from,[]]],seen=new Set([from]);
+      while(queue.length){const [id,path]=queue.shift();for(const edge of structural.filter(e=>e.from_node_id===id)){
+        const next=edge.to_node_id;if(next===to)return [...path,edge];
+        if(seen.has(next)||visible.has(next))continue;
+        seen.add(next);queue.push([next,[...path,edge]]);
+      }}return null;
+    }
+    const connected=id=>selected.map(other=>({other,path:(factual.find(e=>(e.from_node_id===id&&e.to_node_id===other)||(e.to_node_id===id&&e.from_node_id===other))?[factual.find(e=>(e.from_node_id===id&&e.to_node_id===other)||(e.to_node_id===id&&e.from_node_id===other))]:null)||pathBetween(other,id,new Set(selected))||pathBetween(id,other,new Set(selected))})).filter(v=>v.path);
+    const candidates=[...new Set([currentId,...neighbors(currentId),...nodes.filter(n=>n.waiting?.evidence_refs?.length||(n.semantic_key==='objection_case'&&n.state==='partial')).map(n=>n.id),...alternativeIds])].filter(id=>byId.has(id)&&!slots.has(id));
+    candidates.sort((a,b)=>{
+      const score=id=>{if(id===currentId)return -100;const links=connected(id);return byId.get(id).presentation_kind!=='possible'?-10:Math.min(99,...links.map(v=>Math.abs(selected.indexOf(v.other)-Math.max(0,selected.indexOf(currentId)))));};
+      return score(a)-score(b);
+    });
+    const occupied=new Set();
+    for(const id of candidates){
+      if(occupied.size>=(width<560?1:2))break;
+      const links=connected(id);
+      if(!links.length){
+        // Missing edge evidence is not permission to hide the actual focus or
+        // fabricate a transition. Give it a visible slot with no invented edge.
+        if(id===currentId){const col=Math.min(selected.length-1,Math.max(0,focus));occupied.add(col);slots.set(id,{col,row:1});}
+        continue;
+      }
+      const anchor=links.sort((a,b)=>Math.abs(selected.indexOf(a.other)-Math.max(0,selected.indexOf(currentId)))-Math.abs(selected.indexOf(b.other)-Math.max(0,selected.indexOf(currentId))))[0];
+      let col=selected.indexOf(anchor.other);
+      // Place an outgoing alternative to the right of its fork if space allows.
+      if(anchor.path[0].from_node_id===anchor.other)col=Math.min(selected.length-1,col+1);
+      if(occupied.has(col)){col=[...selected.keys()].find(c=>!occupied.has(c));if(col===undefined)continue;}
+      occupied.add(col);slots.set(id,{col,row:1});
+    }
+    const visible=new Set(slots.keys());
+    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
+    const result=edges.filter(e=>visible.has(e.from_node_id)&&visible.has(e.to_node_id)&&(!e.structural_path||(!returns.has(e.outcome)&&!factualPairs.has(e.from_node_id+'\0'+e.to_node_id))));
+    // Only canonical directed paths may bridge omitted steps. No chronology or
+    // coordinate adjacency is ever promoted into an observed edge.
+    for(const from of visible)for(const to of visible){
+      if(from===to||result.some(e=>e.from_node_id===from&&e.to_node_id===to))continue;
+      const path=pathBetween(from,to,visible);if(!path||path.length<2)continue;
+      result.push({id:'collapsed:'+from+':'+to,from_node_id:from,to_node_id:to,relation:'route',evidence_refs:[],tone:'neutral',structural_path:[path[0].structural_path[0],...path.map(e=>e.structural_path[1])],reason_label:'Можливий шлях через '+(path.length-1)+' прихованих етапів; не історія клієнта'});
+    }
+    return {nodes:nodes.filter(n=>visible.has(n.id)),edges:result,slots};
+  }
   function layout({nodes = [],edges = [],width = 560,full = false} = {}) {
     const available = Math.max(80,Number.isFinite(width) ? width : 560);
     const unique = [...new Map(nodes.filter(n => n && typeof n.id === 'string').map(n => [n.id,n])).values()];
@@ -207,5 +267,5 @@
     }
     return result;
   }
-  window.TwcJourneyGeometry=Object.freeze({visualFor,layout,routeEdges});
+  window.TwcJourneyGeometry=Object.freeze({visualFor,layout,routeEdges,overview});
 })();

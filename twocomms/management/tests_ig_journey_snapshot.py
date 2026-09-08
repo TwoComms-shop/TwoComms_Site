@@ -197,6 +197,18 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual(node["waiting"]["evidence_refs"], [{"kind": "payment_review", "id": review.pk}])
         self.assertFalse(node.get("timers"))
 
+    def test_empty_cancelled_archive_is_not_a_future_purchase_option(self):
+        current = self.episode(3)
+        empty = self.episode(4, current=False, state="cancelled")
+        attempted = self.episode(2, current=False, state="cancelled")
+        self.step(attempted, "paylink_issued")
+        snapshot = build_journey_snapshot(self.buyer)
+        self.assertEqual({row["id"] for row in snapshot["episodes"]["items"]}, {current.pk, attempted.pk})
+        self.assertEqual(snapshot["episodes"]["hidden_empty_archives"], 1)
+        self.assertTrue(IgCommercialEpisode.objects.filter(pk=empty.pk).exists())
+        history = build_journey_snapshot(self.buyer, view_episode_id=empty.pk)
+        self.assertEqual(history["viewed_episode_id"], empty.pk)
+
     def test_raw_event_payload_and_unknown_actor_are_not_exposed(self):
         episode = self.episode(product_snapshot=[{"title": "https://example.test/private?token=SECRET", "size": "M"}])
         self.step(episode, "paylink_issued", actor="SECRET", evidence={

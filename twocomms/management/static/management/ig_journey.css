@@ -22,6 +22,14 @@
 .twc-journey-error,.twc-journey-note{font-size:11px;line-height:16px;margin:0;}
 .twc-journey-error{color:#fbbf24;}
 .twc-journey-note{color:var(--journey-muted);padding:0 0 4px;}
+.twc-journey-inline-key{display:flex;align-items:center;gap:12px;min-height:18px;color:var(--journey-muted);font-size:10px;line-height:14px;white-space:nowrap;}
+.twc-journey-inline-key>span:before{content:'';display:inline-block;width:16px;margin-right:5px;vertical-align:middle;border-top:1px solid #94a3b8;}
+.twc-journey-inline-key>.twc-journey-key-possible:before{border-top-style:dashed;}
+.twc-journey-directions{margin-left:auto;border:0;padding:2px 0;background:none;color:#c7d6e9;font-size:10px;white-space:nowrap;}
+.twc-journey-directions:hover{text-decoration:underline;}
+.twc-journey-return-reason{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:0;background:none;color:#fbbf24;font-size:10px;padding:2px 0;}
+.twc-journey-inline-key[data-has-return=true]>.twc-journey-key-actual{display:none;}
+@media(max-width:360px){.twc-journey-inline-key{gap:6px;font-size:9px;}.twc-journey-inline-key>span:before{width:10px;margin-right:3px;}.twc-journey-key-actual{display:none;}}
 .twc-journey-map{position:relative;min-width:0;transform-origin:0 0;}
 .twc-journey-grid,.twc-journey-edge-layer{position:absolute;inset:0;pointer-events:none;}
 .twc-journey-cell{position:absolute;transform:translate(-50%,-22px);height:64px;pointer-events:none;}
@@ -44,7 +52,7 @@
 .twc-journey-step[data-timer=expired] .twc-journey-timer-track{stroke:#fbbf2480;stroke-dasharray:2 3;}
 .twc-journey-guides{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;}
 .twc-journey-edge{fill:none;stroke-width:1.25;stroke-dasharray:3 4;stroke-linecap:round;stroke-linejoin:round;}
-.twc-journey-edge[data-observed=true]{stroke-dasharray:none;}
+.twc-journey-edge[data-observed=true]{stroke-dasharray:none;stroke-width:2;}
 .twc-journey-edge[data-selected=true]{stroke-width:2;}
 .twc-journey-edge-marker{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;display:flex;align-items:center;justify-content:center;gap:2px;min-width:28px;min-height:28px;padding:3px;border:1px solid #495a6e;border-radius:14px;background:#10151e;color:var(--tone,#a4b1c2);font-size:10px;z-index:2;}
 .twc-journey-edge-marker:before{content:'';position:absolute;inset:-8px;}
@@ -108,3 +116,9 @@
 .twc-journey-dialog .twc-journey-step-label{white-space:normal;max-height:28px;line-height:14px;}
 .twc-journey-dialog .twc-journey-step{height:72px;}
 .twc-journey-timer-state{font-variant-numeric:tabular-nums;color:#fbbf24;}
+.twc-journey-requirements{margin-bottom:12px;}
+.twc-journey-requirements h5{font-size:12px;line-height:18px;margin:0 0 6px;}
+.twc-journey-requirement{display:flex;align-items:center;gap:7px;font-size:12px;line-height:18px;padding:3px 0;color:#b5c2d3;}
+.twc-journey-requirement[data-complete=true]>svg{color:#34d399;}
+.twc-journey-requirement-open{width:16px;text-align:center;color:#94a3b8;}
+.twc-journey-requirement small{margin-left:auto;color:#94a3b8;font-size:10px;}

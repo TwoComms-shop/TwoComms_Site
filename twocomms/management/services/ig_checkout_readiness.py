@@ -118,7 +118,7 @@ def _selection_state(client, product_id):
     return dict(state)
 
 
-def _fit_rows(product):
+def _fit_rows(product, *, strict=False):
     try:
         from storefront.models import ProductFitOption
 
@@ -127,10 +127,12 @@ def _fit_rows(product):
             .order_by("order", "id")
         )
     except Exception:
+        if strict:
+            raise
         return []
 
 
-def sizes_for_fit(product, fit_code: str, *, variant=None) -> dict:
+def sizes_for_fit(product, fit_code: str, *, variant=None, strict=False) -> dict:
     """Розміри для конкретного фасону: доступні окремо, вимкнені окремо.
 
     Вимкнені розміри потрібні як факт: коли клієнт просить M, а M вимкнений,
@@ -155,7 +157,21 @@ def sizes_for_fit(product, fit_code: str, *, variant=None) -> dict:
                     available.append(size)
         if not available:
             # Товар без окремої сітки під фасон — беремо загальну.
-            for value in resolve_product_sizes(product):
+            if strict:
+                from storefront.services.size_guides import (
+                    _ordered_size_values_from_catalog, _resolve_size_grid_source,
+                )
+                fallback_sizes = _ordered_size_values_from_catalog(product)
+                if not fallback_sizes:
+                    fallback_grid, _ = _resolve_size_grid_source(product)
+                    if fallback_grid is not None and fallback_grid.image:
+                        # The legacy guide serializer reads image dimensions
+                        # from storage. Optional journey facts must stay SQL-only.
+                        raise ValueError("image_backed_size_guide_unsupported")
+                    fallback_sizes = resolve_product_sizes(product)
+            else:
+                fallback_sizes = resolve_product_sizes(product)
+            for value in fallback_sizes:
                 size = normalize_size_value(value)
                 if size and size not in available:
                     available.append(size)
@@ -163,15 +179,17 @@ def sizes_for_fit(product, fit_code: str, *, variant=None) -> dict:
         # доводиться питати окремо. Без цього кроку вимкнений менеджером розмір
         # виглядав би доступним, і бот пообіцяв би те, чого немає — а нам
         # потрібно рівно протилежне: сказати правду й запропонувати наступний крок.
-        disabled = _disabled_sizes(variant, fit_code)
+        disabled = _disabled_sizes(variant, fit_code, **({"strict": True} if strict else {}))
         available = [size for size in available if size not in disabled]
     except Exception as exc:  # noqa: BLE001 - факт відсутності теж факт
+        if strict:
+            raise
         logger.warning("ig size grid unavailable for product %s: %r", getattr(product, "pk", None), exc)
         return {"available": [], "disabled": [], "resolved": False}
     return {"available": available, "disabled": disabled, "resolved": True}
 
 
-def _disabled_sizes(variant, fit_code: str) -> list[str]:
+def _disabled_sizes(variant, fit_code: str, *, strict=False) -> list[str]:
     """Розміри, вимкнені для цього кольору (загальні + для конкретного фасону)."""
     if variant is None:
         return []
@@ -196,10 +214,12 @@ def _disabled_sizes(variant, fit_code: str) -> list[str]:
                 result.append(size)
         return result
     except Exception:
+        if strict:
+            raise
         return []
 
 
-def _color_rows(product, *, fit_code: str, size: str, option_values=None):
+def _color_rows(product, *, fit_code: str, size: str, option_values=None, strict=False):
     """Кольори, які реально можна купити за правилами вітрини.
 
     Свідомо **не** фільтруємо за числовим `ProductColorVariant.stock`: на проді
@@ -218,6 +238,8 @@ def _color_rows(product, *, fit_code: str, size: str, option_values=None):
             .order_by("order", "id")
         )
     except Exception:
+        if strict:
+            raise
         return []
     result = []
     options = dict(option_values or {})
@@ -239,7 +261,7 @@ def _color_rows(product, *, fit_code: str, size: str, option_values=None):
             raise
         if not allowed:
             continue
-        pricing = resolve_product_pricing(
+        pricing = {"display": "", "exact": False} if strict else resolve_product_pricing(
             product,
             variants=[row],
             selected_variant_id=row.pk,
@@ -289,6 +311,30 @@ def checkout_readiness(
     requested_fit: str = "",
 ) -> dict:
     """Що вже відомо для замовлення і чого бракує, щоб створити посилання."""
+    if not getattr(client, "pk", None):
+        result = selection_readiness(product_id=None, selection={}, size="", fit="", quantity=1)
+        result["missing"] = []
+        return result
+    selected_product_id = _int_or_none(product_id) or _int_or_none(getattr(client, "current_product_id", None))
+    link = _active_deal_state(client)
+    result = selection_readiness(
+        product_id=selected_product_id,
+        selection=_selection_state(client, selected_product_id),
+        size=requested_size or getattr(client, "current_size", "") or "",
+        fit=requested_fit,
+        quantity=getattr(client, "current_qty", 1),
+        color=getattr(client, "current_color", "") or "",
+    )
+    result["link"] = link
+    return result
+
+
+def selection_readiness(*, product_id, selection, size, fit="", quantity=1, color="", strict=False):
+    """Catalog facts for explicit selection inputs; never reads a client or deal.
+
+    ``strict`` exposes unresolved applicability for read-only UI projections.
+    The legacy wrapper keeps its existing tolerant catalog behavior.
+    """
     result = {
         "has_product": False,
         "product": None,
@@ -301,16 +347,11 @@ def checkout_readiness(
         "can_issue_link": False,
         "link": {"status": "none", "expires_at": None},
     }
-    if not getattr(client, "pk", None):
-        return result
-
-    product_id = _int_or_none(product_id) or _int_or_none(getattr(client, "current_product_id", None))
-    result["link"] = _active_deal_state(client)
+    product_id = _int_or_none(product_id)
     try:
-        result["quantity"] = max(1, int(getattr(client, "current_qty", 1) or 1))
+        result["quantity"] = max(1, int(quantity or 1))
     except (TypeError, ValueError):
         result["quantity"] = 1
-
     if not product_id:
         result["missing"] = ["product"]
         return result
@@ -340,10 +381,9 @@ def checkout_readiness(
         "slug": product.slug,
     }
 
-    selection = _selection_state(client, product.pk)
-    fit_rows = _fit_rows(product)
+    fit_rows = _fit_rows(product, **({"strict": True} if strict else {}))
     fit_selected = str(
-        requested_fit or selection.get("fit_option_code") or ""
+        fit or selection.get("fit_option_code") or ""
     ).strip().lower()
     if fit_rows and fit_selected not in {str(row.code).lower() for row in fit_rows}:
         fit_selected = ""
@@ -371,6 +411,8 @@ def checkout_readiness(
                 .first()
             )
         except Exception:
+            if strict:
+                raise
             preselected_variant = None
     if preselected_variant is None:
         try:
@@ -380,11 +422,13 @@ def checkout_readiness(
             if len(variants) == 1:
                 preselected_variant = variants[0]
         except Exception:
+            if strict:
+                raise
             preselected_variant = None
 
-    grid = sizes_for_fit(product, fit_selected, variant=preselected_variant)
+    grid = sizes_for_fit(product, fit_selected, variant=preselected_variant, **({"strict": True} if strict else {}))
     size_selected = str(
-        requested_size or getattr(client, "current_size", "") or ""
+        size or ""
     ).strip().upper()
     requested_unavailable = ""
     if size_selected and grid["available"] and size_selected not in grid["available"]:
@@ -415,6 +459,7 @@ def checkout_readiness(
             fit_code=fit_selected,
             size=size_selected,
             option_values=selected_option_values,
+            **({"strict": True} if strict else {}),
         )
     except Exception:
         colors = []
@@ -509,7 +554,7 @@ def checkout_readiness(
 
     selected_pricing = (
         {"display": "", "exact": False}
-        if option_context_error
+        if option_context_error or strict
         else resolve_product_pricing(
             product,
             variants=[preselected_variant] if preselected_variant is not None else None,
@@ -526,7 +571,7 @@ def checkout_readiness(
         result["product"]["price_exact"] = selected_pricing["exact"]
     result["color"] = {
         "required": len(colors) > 1,
-        "selected": selected_color_name or str(getattr(client, "current_color", "") or ""),
+        "selected": selected_color_name or str(color or ""),
         "selected_variant_id": selected_variant_id,
         "options": colors,
     }
@@ -537,6 +582,18 @@ def checkout_readiness(
         result["missing"].append("options_unavailable")
     result["missing"].extend(f"option:{code}" for code in option_missing)
     result["can_issue_link"] = not result["missing"]
+    if strict:
+        # Empty filtered colors cannot prove there is no color axis. A missing
+        # fit/color can also change the applicable size grid: abstain then.
+        result["applicability_known"] = bool(
+            grid.get("resolved") and not option_context_error and colors
+            and (not fit_rows or fit_selected)
+            and (len(colors) == 1 or selected_variant_id)
+            and (not preselected_variant_id or (
+                getattr(preselected_variant, "pk", None) == preselected_variant_id
+                and selected_variant_id == preselected_variant_id))
+            and (not size_selected or size_selected in grid["available"])
+        )
     return result
 
 

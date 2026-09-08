@@ -178,6 +178,21 @@ def _selector(episode):
     }
 
 
+def _visible_purchase_history(episode):
+    """Hide empty corrected archives, without deleting or renumbering history."""
+    if episode["open_slot"] == 1 or episode["state"] != "cancelled":
+        return True
+    if (episode["intended_order_id"] or episode["primary_payment_review_id"]
+            or episode["product_snapshot"] or episode.get("picker_has_commerce")):
+        return True
+    price = _mapping(episode["price_snapshot"])
+    payment = _mapping(episode["payment_snapshot"])
+    if payment.get("provider_truth") in {"confirmed", "partially_refunded", "refunded", "reversed"}:
+        return True
+    amount = _money(price.get("negotiated_total"))
+    return amount is not None and Decimal(amount) > 0
+
+
 def _event(row, kind):
     evidence = _mapping(row["evidence"])
     event_type = row["event_type"]
@@ -824,9 +839,15 @@ def build_journey_snapshot(client, *, view_episode_id=None):
     client_id = _positive_id(getattr(client, "pk", None))
     if client_id is None:
         raise ValueError("A persisted client is required")
-    queryset = IgCommercialEpisode.objects.filter(client_id=client_id)
+    from django.db.models import Exists, OuterRef
+    commercial_steps = IgFunnelStepEvent.objects.filter(episode_id=OuterRef("pk"), event_type__in=(
+        "product_pinned", "variant_selected", "price_quoted", "paylink_issued", "paylink_viewed",
+        "payment_confirmed", "order_created", "ttn_created", "delivered",
+    ))
+    queryset = IgCommercialEpisode.objects.filter(client_id=client_id).annotate(
+        picker_has_commerce=Exists(commercial_steps))
     total = queryset.count()
-    recent = list(queryset.order_by("-sequence", "-id").values(*EPISODE_FIELDS)[:EPISODE_LIMIT])
+    recent = list(queryset.order_by("-sequence", "-id").values(*EPISODE_FIELDS, "picker_has_commerce")[:EPISODE_LIMIT])
     current = next((row for row in recent if row["open_slot"] == 1), None)
     if current is None:
         current = queryset.filter(open_slot=1).values(*EPISODE_FIELDS).first()
@@ -893,6 +914,17 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         payment_node = next((node for node in graph["nodes"] if node["id"] == "guide:payment"), None)
         if payment_node is not None:
             payment_node["timers"] = invoice_timers(client_id, episode["id"], now=now)
+        selection_node = next((node for node in graph["nodes"] if node["id"] == "guide:selection"), None)
+        if selection_node is not None:
+            from management.services.ig_journey_readiness import selection_requirements
+            try:
+                readiness = selection_requirements(client_id=client_id, episode_id=episode["id"])
+                if readiness["requirements"] is not None:
+                    selection_node["requirements"] = readiness["requirements"]
+                graph["coverage"]["selection_requirements"] = readiness["reason"] or "current_active_line"
+            except Exception:
+                # An optional progress badge cannot make the customer's chat fail.
+                graph["coverage"]["selection_requirements"] = "projection_unavailable"
     from management.services.ig_journey_catalogue import journey_catalogue
     result = {
         "catalogue": journey_catalogue(),
@@ -900,7 +932,9 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         "current_episode_id": current["id"] if current else None,
         "viewed_episode_id": episode["id"] if episode else None,
         "is_history": is_history,
-        "episodes": {"items": [_selector(row) for row in recent], "total": total, "has_more": total > len(recent)},
+        "episodes": {"items": [_selector(row) for row in recent if _visible_purchase_history(row)],
+                     "total": total, "has_more": total > len(recent),
+                     "hidden_empty_archives": sum(not _visible_purchase_history(row) for row in recent)},
         "viewed_episode": _selector(episode) if episode else None,
         "route_kind": "unknown", "focus": {"node_id": focus, "display_only": True},
         "nodes": list(nodes.values()), "history": history,
