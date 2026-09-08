@@ -28,7 +28,7 @@ from management.services.ig_journey_trace_store import (
 from management.services.ig_turn_lineage import turn_lineage
 
 
-PROMPT_VERSION = "journey-trace.text.v2"
+PROMPT_VERSION = "journey-trace.text.v2.medium"
 MAX_CLIENTS = 6
 _ROLES = {"user", "manager", "model"}
 
@@ -275,7 +275,7 @@ def generate_journey_trace(client_id, *, apply=False, allow_historical=False):
         with turn_lineage(lane="analysis", client_id=client_id,
                           logical_turn_id=f"jt:{client_id}:{watermark}:{snapshot_key[:20]}") as lineage:
             response = gemini_generate_json(
-                prompt, user_text, role="management", reasoning_task="conversation_reanalysis",
+                prompt, user_text, role="management", reasoning_task="journey_trace_reconstruction",
                 max_output_tokens=12288, timeout=(8, 45), deadline_seconds=90,
             )
             if lineage.get("request_id"):

@@ -101,7 +101,8 @@ class JourneyTraceGenerationTests(TestCase):
         self.assertEqual(result["status"], "recorded")
         self.assertEqual(self.provider.call_count, 1)
         kwargs = self.provider.call_args.kwargs
-        self.assertEqual(kwargs, {"role": "management", "reasoning_task": "conversation_reanalysis", "max_output_tokens": 12288, "timeout": (8, 45), "deadline_seconds": 90})
+        self.assertEqual(kwargs, {"role": "management", "reasoning_task": "journey_trace_reconstruction", "max_output_tokens": 12288, "timeout": (8, 45), "deadline_seconds": 90})
+        self.assertEqual(IgJourneyTraceSnapshot.objects.get(pk=result["snapshot_id"]).prompt_version, "journey-trace.text.v2.medium")
         repeated = generate_journey_trace(self.buyer.pk, apply=True)
         self.assertEqual(repeated["status"], "existing")
         self.assertEqual(repeated["snapshot_id"], result["snapshot_id"])

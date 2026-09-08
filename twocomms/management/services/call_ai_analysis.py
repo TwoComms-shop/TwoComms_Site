@@ -119,6 +119,7 @@ _REASONING_POLICIES = {
     "customer_intelligence": "high",
     "conversion_analysis": "high",
     "conversation_reanalysis": "high",
+    "journey_trace_reconstruction": "medium",
     "memory_summary": "medium",
     "reporting_summary": "medium",
 }

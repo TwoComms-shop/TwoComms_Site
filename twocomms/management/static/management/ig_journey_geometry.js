@@ -98,7 +98,14 @@
     const main=mainIds.filter(id=>byId.has(id));
     const cap=Math.max(3,Math.min(7,Math.floor(width/80)));
     const factual=edges.filter(e=>!['route','prerequisite'].includes(e.relation)&&(e.evidence_refs||[]).length);
-    const neighbors=id=>factual.flatMap(e=>e.from_node_id===id?[e.to_node_id]:e.to_node_id===id?[e.from_node_id]:[]);
+    const neighbors=id=>{
+      const incident=factual.filter(e=>e.from_node_id===id||e.to_node_id===id);
+      // Trace indices are transcript order, not business-state authority. Keep
+      // the latest cited predecessor when a small viewport cannot show all returns.
+      if(byId.get(id)?.interpreted_focus)incident.sort((a,b)=>
+        (Number.isInteger(b.last_step_index)?b.last_step_index:-1)-(Number.isInteger(a.last_step_index)?a.last_step_index:-1));
+      return incident.map(e=>e.from_node_id===id?e.to_node_id:e.from_node_id);
+    };
     const current=byId.get(currentId),contextKey=current?.structural_context_key||current?.structural_key;
     let focus=main.indexOf(currentId);
     if(focus<0)focus=main.findIndex(id=>contextKey&&byId.get(id).structural_key===contextKey);
@@ -263,11 +270,23 @@
     for(const edge of [...edges].sort((a,b)=>String(a.id).localeCompare(String(b.id)))){
       const a=positions.get(edge.from_node_id),b=positions.get(edge.to_node_id);
       if(!a||!b||!byId.has(edge.from_node_id)||!byId.has(edge.to_node_id))continue;
-      let start,end,path;
+      let start,end,path,selfMarker=null;
       const sourceNode=byId.get(edge.from_node_id),targetNode=byId.get(edge.to_node_id);
       const sourceKey=sourceNode.structural_key||sourceNode.semantic_key,targetKey=targetNode.structural_key||targetNode.semantic_key;
       const helpPair=full&&a.col===b.col&&((sourceKey==='payment_help'&&targetKey==='awaiting_payment')||(sourceKey==='awaiting_payment'&&targetKey==='payment_help'));
-      if(helpPair){
+      if(edge.from_node_id===edge.to_node_id){
+        // A repeated step needs a loop, not a vertical route below its label
+        // (which is outside the 68px inline map). Keep its disclosure in bounds.
+        for(const side of [1,-1]){
+          const rail=a.x+side*40;
+          const top=a.y-(full?25:30);
+          const loop=[{x:a.x,y:a.y-25},{x:a.x,y:top},{x:rail,y:top},{x:rail,y:a.y},{x:a.x+side*25,y:a.y}];
+          if(loop.every(p=>p.x>=4&&p.x<=width-4&&p.y>=4&&p.y<=height-4)
+             &&loop.slice(1).every((p,i)=>!blocked(loop[i],p,boxes))){
+            path=tidy(loop);selfMarker=full?{x:rail,y:a.y-12}:{x:a.x+side*20,y:top};break;
+          }
+        }
+      }else if(helpPair){
         // Opposite rails keep both arrowheads legible instead of painting two
         // directions on the same vertical stroke through the wait label.
         const side=sourceKey==='payment_help'?-1:1,rail=a.x+side*(halfLabel+14);
@@ -295,8 +314,8 @@
       }
       if(!path||path.length<2)continue;
       // The longest clear horizontal segment is a stable reason-marker anchor.
-      let marker=null,length=-1;
-      for(let i=1;i<path.length;i++){
+      let marker=selfMarker,length=-1;
+      for(let i=1;!selfMarker&&i<path.length;i++){
         const p=path[i-1],q=path[i],span=Math.abs(p.x-q.x)+Math.abs(p.y-q.y);
         if(p.y===q.y&&span>length){length=span;marker={x:(p.x+q.x)/2,y:p.y};}
       }

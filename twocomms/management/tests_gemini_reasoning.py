@@ -38,6 +38,24 @@ class GeminiReasoningPolicyTests(SimpleTestCase):
     def test_health_probe_is_low(self):
         self.assertEqual(ai.reasoning_policy("health_probe")["level"], "low")
 
+    def test_journey_trace_medium_preserves_output_and_model_specific_controls(self):
+        policy = ai.reasoning_policy("journey_trace_reconstruction")
+        self.assertEqual(policy["level"], "medium")
+        self.assertEqual(policy["thinking_budget"], 4096)
+        self.assertIsNone(policy["max_output_tokens"])
+        self.assertEqual(ai.reasoning_policy("conversation_reanalysis")["level"], "high")
+        original = {"generationConfig": {"maxOutputTokens": 12288,
+                                         "thinkingConfig": {"thinkingLevel": "high", "thinkingBudget": 8192}}}
+        for model, expected in (
+            ("gemini-3.6-flash", {"thinkingLevel": "medium"}),
+            ("gemini-2.5-flash", {"thinkingBudget": 4096}),
+        ):
+            with self.subTest(model=model):
+                result = ai._payload_for_model(model, original, reasoning_task="journey_trace_reconstruction")
+                self.assertEqual(result["generationConfig"]["thinkingConfig"], expected)
+                self.assertEqual(result["generationConfig"]["maxOutputTokens"], 12288)
+        self.assertEqual(original["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high")
+
     def test_unknown_task_is_rejected(self):
         with self.assertRaises(ValueError):
             ai.reasoning_policy("invented_task")

@@ -91,6 +91,7 @@ DEFAULT_TASK_TIERS = {
     # Разбор и извлечение фактов: вызовов мало, польза от глубины высокая.
     "customer_intelligence": TIER_ANALYSIS,
     "conversation_reanalysis": TIER_ANALYSIS,
+    "journey_trace_reconstruction": TIER_ANALYSIS,
     "memory_summary": TIER_ANALYSIS,
     "ugc_evidence_assessment": TIER_ANALYSIS,
     "reporting_summary": TIER_ANALYSIS,

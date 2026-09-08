@@ -181,3 +181,53 @@ class JourneyTraceProjectionTests(TestCase):
         self.assertEqual([edge["summary"] for edge in graph["edges"]], [first["summary"], second["summary"]])
         self.assertEqual(next(node for node in graph["nodes"] if node["semantic_key"] == "configured_line")["summary"], second["summary"])
         self.assertEqual(len({edge["id"] for edge in graph["edges"]}), 2)
+        self.assertEqual([edge["last_step_index"] for edge in graph["edges"]], [0, 1])
+
+    def test_last_step_order_tracks_returns_without_changing_stored_trace_or_facts(self):
+        steps = [self.step("inbound", "configured_line"), self.step("configured_line", "quoted_offer"),
+            self.step("quoted_offer", "configured_line", "return", "changed_request"),
+            self.step("configured_line", "payment_help"), self.step("payment_help", "configured_line", "return", "changed_request"),
+            self.step("configured_line", "objection_case"), self.step("objection_case", "configured_line", "return", "changed_request"),
+            self.step("quoted_offer", "configured_line", "return", "changed_request")]
+        saved = self.save(steps, current="configured_line")
+        original = deepcopy(saved.trace)
+        graph = self.project()
+        last = next(edge for edge in graph["edges"] if edge["from_node_id"] == "trace:quoted_offer" and edge["to_node_id"] == "trace:configured_line")
+        self.assertEqual((last["last_step_index"], last["repeated_count"]), (7, 2))
+        focus = next(node for node in graph["nodes"] if node.get("interpreted_focus"))
+        self.assertEqual(focus["transcript_interpretation"]["last_step_index"], 7)
+        self.assertEqual(focus["facts"], [])
+        saved.refresh_from_db()
+        self.assertEqual(saved.trace, original)
+
+    def test_stock_revisits_are_amber_without_reclassifying_original_steps(self):
+        steps = [self.step("inbound", "availability_question"),
+            self.step("availability_question", "stock_wait", "waiting", "awaiting_stock"),
+            self.step("stock_wait", "availability_question", "progress", "awaiting_stock"),
+            self.step("availability_question", "stock_wait", "waiting", "awaiting_stock"),
+            self.step("stock_wait", "availability_question", "negative", "changed_request")]
+        saved = self.save(steps, current="stock_wait")
+        original = deepcopy(saved.trace)
+        graph = self.project()
+        # Identical waiting edges retain their aggregate; the later visit makes
+        # that visual amber while the original payload still says "waiting".
+        self.assertEqual([edge["tone"] for edge in graph["edges"]], ["recorded", "warning", "warning", "danger"])
+        self.assertEqual([edge["interpretation_kind"] for edge in graph["edges"]], ["progress", "waiting", "progress", "negative"])
+        self.assertEqual(graph["edges"][1]["repeated_count"], 2)
+        self.assertEqual(graph["edges"][2]["reason_label"], "Очікування наявності")
+        self.assertTrue(all(edge["authority"] == "none" for edge in graph["edges"]))
+        saved.refresh_from_db()
+        self.assertEqual(saved.trace, original)
+
+    def test_objection_attention_is_amber_but_addressed_return_stays_blue(self):
+        steps = [self.step("inbound", "fulfillment"),
+            self.step("fulfillment", "objection_case", "objection", "objection_raised"),
+            self.step("objection_case", "fulfillment", "progress", "objection_addressed"),
+            self.step("fulfillment", "objection_case", "negative", "objection_raised")]
+        saved = self.save(steps, current="fulfillment")
+        original = deepcopy(saved.trace)
+        graph = self.project()
+        self.assertEqual([edge["tone"] for edge in graph["edges"]], ["recorded", "warning", "recorded", "danger"])
+        self.assertTrue(all(node["state"] != "complete" for node in graph["nodes"]))
+        saved.refresh_from_db()
+        self.assertEqual(saved.trace, original)

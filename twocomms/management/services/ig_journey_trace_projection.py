@@ -28,6 +28,7 @@ REASON_LABELS = {
     "repeat_interest": "Повторний інтерес",
 }
 _DISCUSSION_LABELS = {
+    "configured_line": "Обрані параметри",
     "settlement": "Обговорення розрахунку", "fulfillment": "Обговорення виконання",
     "mockup_current_acceptance": "Обговорення макета", "channel_grant_checked": "Обговорення дозволу",
     "prize_decision": "Обговорення призу", "reward_entitlement": "Обговорення права на нагороду",
@@ -116,7 +117,12 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
                                           "label": "За перепискою"}
     definitions = {item["key"]: item for item in journey_catalogue()["definitions"]}
     anchors, trail = {}, []
-    for step in trace["steps"]:
+    for step_index, step in enumerate(trace["steps"]):
+        revisit = (step["kind"] in {"progress", "waiting"}
+                   and step["reason_code"] != "objection_addressed"
+                   and (step["to_node"] in anchors or step["to_node"] == step["from_node"]))
+        attention = (step["kind"] == "retry" or step["reason_code"] == "objection_raised"
+                     or (step["kind"] == "objection" and step["reason_code"] != "objection_addressed"))
         refs = [{"kind": "message", "id": ref["message_id"], "role": ref["role"]} for ref in step["evidence"]]
         for key in (step["from_node"], step["to_node"]):
             if not key:
@@ -143,6 +149,7 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
                 anchors[key] = node
                 trail.append(node["id"])
             node = anchors[key]
+            node["transcript_interpretation"]["last_step_index"] = step_index
             existing = node["transcript_interpretation"]["evidence_refs"]
             existing.extend(ref for ref in refs if ref not in existing)
             if node.get("presentation_kind") == "interpretation":
@@ -161,13 +168,16 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
         edge = next((item for item in result["edges"] if item["id"] == identifier), None)
         if edge:
             edge["repeated_count"] += 1
+            edge["last_step_index"] = step_index
+            if revisit and edge["tone"] != "danger":
+                edge["tone"] = "warning"
             edge["evidence_refs"].extend(ref for ref in refs if ref not in edge["evidence_refs"])
         else:
             result["edges"].append({"id": identifier, "from_node_id": anchors[step["from_node"]]["id"],
                 "to_node_id": target["id"], "relation": "transcript_interpretation", "interpretation_kind": step["kind"],
                 "reason_code": step["reason_code"], "reason_label": REASON_LABELS[step["reason_code"]],
-                "summary": summary,
-                "tone": "danger" if step["kind"] in {"return", "negative"} else "warning" if step["kind"] == "retry" else "recorded",
+                "summary": summary, "last_step_index": step_index,
+                "tone": "danger" if step["kind"] in {"return", "negative"} else "warning" if attention or revisit else "recorded",
                 "authority": "none", "provenance": "transcript_reconstruction", "evidence_refs": refs, "repeated_count": 1})
     result["trace_node_ids"] = trail
     # A recorded accepted route or current business evidence is stronger than an

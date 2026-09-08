@@ -55,6 +55,14 @@ class BudgetTableTests(SimpleTestCase):
 class TaskRoutingTests(SimpleTestCase):
     """Выбор модели — средство изоляции потребителей друг от друга."""
 
+    @override_settings(GEMINI_TASK_TIERS={})
+    def test_journey_trace_keeps_existing_analysis_tier_and_fallback_chain(self):
+        self.assertEqual(quota.DEFAULT_TASK_TIERS["journey_trace_reconstruction"], quota.TIER_ANALYSIS)
+        self.assertEqual(
+            gk.task_model_chain("management", "journey_trace_reconstruction"),
+            gk.task_model_chain("management", "conversation_reanalysis"),
+        )
+
     def test_ordinary_customer_reply_runs_on_the_loose_quota_model(self):
         chain = quota.chain_for_task("customer_chat", role="chat")
         self.assertEqual(chain[0], "gemini-3.5-flash-lite")
