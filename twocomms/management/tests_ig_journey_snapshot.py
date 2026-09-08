@@ -13,7 +13,8 @@ from django.urls import reverse
 from django.utils import timezone
 
 from management.models import (
-    IgClient, IgCommercialEpisode, IgCommercialEpisodeEvent, IgFunnelStepEvent,
+    IgClient, IgCommercialEpisode, IgCommercialEpisodeEvent, IgConversationRouteDecision,
+    IgFunnelResetAudit, IgFunnelStepEvent,
     IgObjection, IgObjectionAttempt, IgPaymentConfirmationReview, InstagramBotMessage,
 )
 from management.services.ig_journey_snapshot import build_journey_snapshot, InvalidJourneyEpisode
@@ -39,6 +40,18 @@ class JourneySnapshotTests(TestCase):
             occurred_at=kwargs.pop("occurred_at", timezone.now()), **kwargs,
         )
 
+    def route_decision(self, *, sequence, message, active_intents, transitions,
+                       focus_key="", previous=None, reset_floor=None):
+        reset_floor = reset_floor or 1
+        return IgConversationRouteDecision.objects.create(
+            client=self.buyer, revision_id=sequence, decision_key=f"journey-route:{self.buyer.pk}:{reset_floor}:{sequence}",
+            sequence=sequence, reset_floor=reset_floor, watermark_message_id=message.pk,
+            input_digest=(f"{sequence:064x}"[-64:]), interpretation_digest=(f"{sequence + 1000:064x}"[-64:]),
+            decision_digest=(f"{sequence + 2000:064x}"[-64:]), source_binding={}, interpretation={},
+            active_intents=active_intents, focus_key=focus_key, transitions=transitions,
+            previous=previous, occurred_at=timezone.now(),
+        )
+
     @staticmethod
     def nodes(snapshot):
         return {node["id"]: node for node in snapshot["nodes"]}
@@ -54,7 +67,8 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
-        self.assertLessEqual(len(queries), 5)
+        # Two bounded read queries establish the explicit-reset route scope.
+        self.assertLessEqual(len(queries), 7)
         self.assertFalse(IgCommercialEpisode.objects.filter(client=self.buyer).exists())
         self.assertIsNone(snapshot["viewed_episode_id"])
         self.assertEqual(snapshot["focus"]["node_id"], "inquiry")
@@ -291,6 +305,119 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual(graph["interpretations"][0]["status"], "interpretation_not_route_authority")
         self.assertNotIn("semantic_key", graph["interpretations"][0])
         self.assertEqual(graph["interpretations"][0]["evidence_refs"], [{"kind": "analysis_snapshot", "id": analysis.pk}])
+
+    def test_accepted_conversation_journal_is_a_current_overlay_with_only_observed_focus_edge(self):
+        episode = self.episode(stage_snapshot={"stage": "paid"})
+        first_message = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user", text="Робота",
+        )
+        second_message = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user", text="Співпраця",
+        )
+        first = self.route_decision(
+            sequence=1, message=first_message,
+            active_intents=[
+                {"key": "employment:none", "kind": "employment", "subtype": "none"},
+                {"key": "collaboration:designer", "kind": "collaboration", "subtype": "designer"},
+            ], focus_key="collaboration:designer", transitions=[
+                {"operation": "open", "key": "employment:none", "reason_code": "customer_intent",
+                 "evidence_message_ids": [first_message.pk]},
+                {"operation": "open", "key": "collaboration:designer", "reason_code": "customer_intent",
+                 "evidence_message_ids": [second_message.pk]},
+                {"operation": "focus", "from_key": "", "key": "collaboration:designer",
+                 "reason_code": "customer_intent"},
+            ],
+        )
+        self.route_decision(
+            sequence=2, message=second_message, previous=first,
+            active_intents=[
+                {"key": "employment:none", "kind": "employment", "subtype": "none"},
+                {"key": "collaboration:designer", "kind": "collaboration", "subtype": "designer"},
+            ], focus_key="employment:none", transitions=[
+                {"operation": "focus", "from_key": "collaboration:designer", "key": "employment:none",
+                 "reason_code": "customer_intent"},
+            ],
+        )
+        snapshot = build_journey_snapshot(self.buyer)
+        route = snapshot["conversation_route"]
+        self.assertEqual(route["status"], "accepted_journal")
+        self.assertEqual({item["key"] for item in route["active_intents"]},
+                         {"employment:none", "collaboration:designer"})
+        self.assertEqual(route["focus_key"], "employment:none")
+        self.assertEqual({node["id"] for node in snapshot["graph"]["nodes"] if node["id"].startswith("conversation_intent:")},
+                         {"conversation_intent:employment:none", "conversation_intent:collaboration:designer"})
+        edges = [edge for edge in snapshot["graph"]["edges"] if edge["relation"] == "conversation_focus"]
+        self.assertEqual(len(edges), 1)
+        self.assertEqual((edges[0]["from_node_id"], edges[0]["to_node_id"]),
+                         ("conversation_intent:collaboration:designer", "conversation_intent:employment:none"))
+        self.assertNotIn("episode", json.dumps(route))
+        self.assertEqual({ref["kind"] for transition in route["history"]["transitions"]
+                          for ref in transition["evidence_refs"]}, {"message"})
+        self.assertEqual(snapshot["current_episode_id"], episode.pk)
+
+    def test_route_history_keeps_explicit_withdrawal_and_omits_current_overlay_from_old_purchase(self):
+        old = self.episode(current=False)
+        current = self.episode(2)
+        message = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user", text="Зміна теми",
+        )
+        self.route_decision(
+            sequence=1, message=message,
+            active_intents=[{"key": "employment:none", "kind": "employment", "subtype": "none"},
+                            {"key": "collaboration:designer", "kind": "collaboration", "subtype": "designer"}],
+            transitions=[],
+        )
+        self.route_decision(
+            sequence=2, message=message,
+            active_intents=[{"key": "collaboration:designer", "kind": "collaboration", "subtype": "designer"}],
+            transitions=[
+                {"operation": "withdraw", "key": "employment:none", "reason_code": "customer_intent",
+                 "evidence_message_ids": [message.pk]},
+                {"operation": "correct", "key": "collaboration:designer", "reason_code": "customer_correction",
+                 "evidence_message_ids": [message.pk]},
+            ],
+        )
+        current_snapshot = build_journey_snapshot(self.buyer)
+        transitions = current_snapshot["conversation_route"]["history"]["transitions"]
+        self.assertEqual([item["operation"] for item in transitions], ["withdraw", "correct"])
+        employment = next(node for node in current_snapshot["graph"]["nodes"]
+                          if node["id"] == "conversation_intent:employment:none")
+        self.assertEqual(employment["state"], "invalidated")
+        history = build_journey_snapshot(self.buyer, view_episode_id=old.pk)
+        self.assertTrue(history["is_history"])
+        self.assertEqual(history["viewed_episode_id"], old.pk)
+        self.assertEqual(history["current_episode_id"], current.pk)
+        self.assertNotIn("conversation_route", history)
+        self.assertFalse(any(node["id"].startswith("conversation_intent:") for node in history["graph"]["nodes"]))
+
+    def test_route_adapter_uses_current_explicit_reset_scope_and_owned_user_refs_read_only(self):
+        before_reset = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user", text="Старий маршрут",
+        )
+        self.route_decision(
+            sequence=1, message=before_reset,
+            active_intents=[{"key": "employment:none", "kind": "employment", "subtype": "none"}],
+            transitions=[{"operation": "open", "key": "employment:none", "reason_code": "customer_intent",
+                          "evidence_message_ids": [before_reset.pk]}],
+        )
+        IgFunnelResetAudit.objects.create(client=self.buyer, reset_after_message_id=before_reset.pk, reason="test")
+        foreign = InstagramBotMessage.objects.create(client=self.other, sender_id="journey-other", role="user", text="Чужий")
+        manager = InstagramBotMessage.objects.create(client=self.buyer, sender_id="journey-buyer", role="manager", text="Менеджер")
+        current_message = InstagramBotMessage.objects.create(client=self.buyer, sender_id="journey-buyer", role="user", text="Новий маршрут")
+        floor = before_reset.pk + 1
+        self.route_decision(
+            sequence=1, reset_floor=floor, message=current_message,
+            active_intents=[{"key": "support:none", "kind": "support", "subtype": "none"}],
+            transitions=[{"operation": "open", "key": "support:none", "reason_code": "customer_intent",
+                          "evidence_message_ids": [current_message.pk, foreign.pk, manager.pk]}],
+        )
+        with CaptureQueriesContext(connection) as queries:
+            snapshot = build_journey_snapshot(self.buyer)
+        self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
+        self.assertEqual(snapshot["conversation_route"]["reset_floor"], floor)
+        refs = snapshot["conversation_route"]["history"]["transitions"][0]["evidence_refs"]
+        self.assertEqual(refs, [{"kind": "message", "id": current_message.pk}])
+        self.assertNotIn(before_reset.pk, [ref["id"] for ref in refs])
 
 
 @override_settings(ROOT_URLCONF="twocomms.urls_management", ALLOWED_HOSTS=["testserver"])

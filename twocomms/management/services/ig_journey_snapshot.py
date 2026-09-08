@@ -13,12 +13,20 @@ import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
-from management.models import IgCommercialEpisode, IgCommercialEpisodeEvent, IgFunnelStepEvent, IgObjectionAttempt
+from django.utils import timezone
+
+from management.models import (
+    IgCommercialEpisode, IgCommercialEpisodeEvent, IgConversationRouteDecision,
+    IgFunnelStepEvent, IgObjectionAttempt,
+)
+from management.services.ig_conversation_routes import conversation_route_reset_floor
 
 
 EPISODE_LIMIT = 20
 EVENT_LIMIT = 50
 LINE_LIMIT = 10
+ROUTE_DECISION_LIMIT = 24
+ROUTE_SOURCE_MESSAGE_LIMIT = 64
 GUIDE = (
     ("inquiry", "Звернення"), ("selection", "Підбір/Бриф"),
     ("terms", "Умови"), ("offer", "Пропозиція/Макет"),
@@ -241,6 +249,254 @@ def _graph_node(identifier, label, *, semantic_key=None, state="partial", curren
         "facts": facts or [], "evidence_refs": evidence_refs or [],
         "layout": {"rank": rank, "lane": lane},
     }
+
+
+def _route_key(value):
+    """Return a registered conversational identity, never an arbitrary JSON key."""
+    if not isinstance(value, str):
+        return ""
+    kind, separator, subtype = value.partition(":")
+    if not separator:
+        return ""
+    from management.services.ig_customer_route_contract import (
+        COLLABORATION_SUBTYPES, KINDS,
+    )
+    if kind not in KINDS:
+        return ""
+    if subtype not in (COLLABORATION_SUBTYPES if kind == "collaboration" else {"none"}):
+        return ""
+    return value
+
+
+def _route_ref_ids(transitions):
+    """Extract bounded syntactic message references from accepted delta records."""
+    result = []
+    for transition in transitions if isinstance(transitions, list) else []:
+        if not isinstance(transition, dict):
+            continue
+        for identifier in transition.get("evidence_message_ids", []):
+            identifier = _positive_id(identifier)
+            if identifier and identifier not in result:
+                result.append(identifier)
+                if len(result) == ROUTE_SOURCE_MESSAGE_LIMIT:
+                    return result
+    return result
+
+
+def _safe_route_transition(value, source_refs):
+    """Expose only an accepted, typed delta and owned USER-message references."""
+    if not isinstance(value, dict):
+        return None
+    operation = value.get("operation")
+    key = _route_key(value.get("key"))
+    if operation not in {"open", "withdraw", "correct", "focus"} or not key:
+        return None
+    from_key = _route_key(value.get("from_key")) if operation == "focus" else ""
+    reason_code = value.get("reason_code")
+    if reason_code not in {"customer_intent", "customer_correction"}:
+        reason_code = "customer_intent"
+    refs = []
+    for identifier in value.get("evidence_message_ids", []):
+        identifier = _positive_id(identifier)
+        ref = source_refs.get(identifier)
+        if ref and ref not in refs:
+            refs.append(ref)
+    result = {
+        "operation": operation, "key": key, "reason_code": reason_code,
+        "evidence_refs": refs,
+    }
+    if operation == "focus":
+        # An empty source is a valid first focus, but never a graph endpoint.
+        result["from_key"] = from_key
+    return result
+
+
+def _safe_active_intents(value):
+    intents = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        key = _route_key(item.get("key"))
+        if not key:
+            continue
+        kind, subtype = key.split(":", 1)
+        intent = {"key": key, "kind": kind, "subtype": subtype}
+        if intent not in intents:
+            intents.append(intent)
+    return sorted(intents, key=lambda item: item["key"])
+
+
+def _conversation_route(client_id):
+    """Read the newest explicit-reset journal scope without interpreting it.
+
+    The journal is an append-only accepted source.  Its historical commercial
+    episode association, analysis payloads and revision payloads are purposely
+    not read here: a current customer dialogue is independent of purchase
+    materialization and model output has no route authority in this adapter.
+    """
+    from management.models import InstagramBotMessage
+
+    reset_floor = conversation_route_reset_floor(client_id)
+    rows = list(IgConversationRouteDecision.objects.filter(
+        client_id=client_id, reset_floor=reset_floor,
+    ).order_by("-sequence", "-id").values(
+        "id", "sequence", "previous_id", "watermark_message_id", "active_intents",
+        "focus_key", "transitions", "reason_code", "occurred_at", "recorded_at",
+    )[:ROUTE_DECISION_LIMIT + 1])
+    has_more = len(rows) > ROUTE_DECISION_LIMIT
+    rows = list(reversed(rows[:ROUTE_DECISION_LIMIT]))
+
+    # Prefer evidence from the newest decisions when the bounded source-ref
+    # budget is exhausted.  This does not alter the accepted route itself.
+    source_ids = []
+    for row in reversed(rows):
+        for identifier in _route_ref_ids(row["transitions"]):
+            if identifier not in source_ids:
+                source_ids.append(identifier)
+                if len(source_ids) == ROUTE_SOURCE_MESSAGE_LIMIT:
+                    break
+        if len(source_ids) == ROUTE_SOURCE_MESSAGE_LIMIT:
+            break
+    source_refs = {
+        row["id"]: _ref("message", row["id"])
+        for row in InstagramBotMessage.objects.filter(
+            client_id=client_id, role=InstagramBotMessage.Role.USER,
+            pk__gte=reset_floor, pk__in=source_ids,
+        ).values("id")
+    } if source_ids else {}
+
+    decisions, transitions = [], []
+    for row in rows:
+        record = {
+            "id": row["id"], "sequence": row["sequence"],
+            "watermark_message_id": row["watermark_message_id"],
+            "reason_code": row["reason_code"] if row["reason_code"] in {
+                "customer_intent", "customer_correction",
+            } else "customer_intent",
+            "occurred_at": _iso(row["occurred_at"]),
+            "recorded_at": _iso(row["recorded_at"]),
+            "transitions": [],
+        }
+        for index, raw in enumerate(row["transitions"] if isinstance(row["transitions"], list) else []):
+            transition = _safe_route_transition(raw, source_refs)
+            if transition is None:
+                continue
+            event = {**transition, "decision_id": row["id"], "sequence": row["sequence"],
+                     "index": index, "occurred_at": record["occurred_at"]}
+            record["transitions"].append(transition)
+            transitions.append(event)
+        decisions.append(record)
+
+    latest = rows[-1] if rows else None
+    active_intents = _safe_active_intents(latest["active_intents"]) if latest else []
+    active_keys = {item["key"] for item in active_intents}
+    focus_key = _route_key(latest["focus_key"]) if latest else ""
+    if focus_key not in active_keys:
+        focus_key = ""
+    return {
+        "status": "accepted_journal" if latest else "absent",
+        "reset_floor": reset_floor,
+        "latest_decision_id": latest["id"] if latest else None,
+        "active_intents": active_intents,
+        "focus_key": focus_key,
+        "history": {"decisions": decisions, "transitions": transitions},
+        "coverage": {
+            "scope": "current_explicit_reset", "decision_limit": ROUTE_DECISION_LIMIT,
+            "returned_decisions": len(rows), "has_more": has_more,
+            "source_message_limit": ROUTE_SOURCE_MESSAGE_LIMIT,
+            "returned_source_messages": len(source_refs),
+            "source_refs": "owned_user_messages_only",
+        },
+    }
+
+
+ROUTE_KIND_LABELS = {"catalog": "Підбір одягу", "custom_print": "Свій принт",
+    "dtf": "DTF-плівка", "information": "Запитання", "employment": "Робота в команді",
+    "collaboration": "Співпраця", "support": "Допомога", "community": "Спільнота"}
+ROUTE_SUBTYPE_LABELS = {"designer": "Дизайнер", "partnership": "Партнерство",
+    "dropship": "Дропшипінг", "wholesale_store": "Магазин", "creator": "Автор контенту",
+    "other": "Інша співпраця"}
+ROUTE_OPERATION_LABELS = {"open": "Тему відкрито", "continue": "Продовження теми",
+    "withdraw": "Клієнт відмовився від теми", "correct": "Тему уточнено", "focus": "Зміна теми"}
+ROUTE_REASON_LABELS = {"customer_intent": "Намір клієнта", "customer_correction": "Уточнення клієнта"}
+
+
+def _append_conversation_route_graph(graph, route):
+    """Append conversational nodes and only recorded focus edges to graph v1."""
+    if route["status"] != "accepted_journal":
+        graph["coverage"]["conversation_routes"] = route["coverage"]
+        return graph
+
+    keys, state_by_key, refs_by_key = [], {}, {}
+    for intent in route["active_intents"]:
+        key = intent["key"]
+        keys.append(key)
+        state_by_key[key] = "partial"
+    for transition in route["history"]["transitions"]:
+        key = transition["key"]
+        if key not in keys:
+            keys.append(key)
+        if transition["operation"] == "withdraw":
+            state_by_key[key] = "invalidated"
+        elif key not in state_by_key:
+            state_by_key[key] = "partial"
+        refs = refs_by_key.setdefault(key, [])
+        for ref in transition["evidence_refs"]:
+            if ref not in refs:
+                refs.append(ref)
+        if transition["operation"] == "focus" and transition["from_key"]:
+            from_key = transition["from_key"]
+            if from_key not in keys:
+                keys.append(from_key)
+            state_by_key.setdefault(from_key, "partial")
+
+    # Latest accepted active set wins over an older withdrawal in the bounded history.
+    for intent in route["active_intents"]:
+        state_by_key[intent["key"]] = "partial"
+    node_ids = {}
+    for key in keys:
+        kind, subtype = key.split(":", 1)
+        node_id = f"conversation_intent:{key}"
+        node_ids[key] = node_id
+        facts = []
+        for transition in route["history"]["transitions"]:
+            if transition["key"] != key or transition["operation"] == "focus":
+                continue
+            facts.append({
+                "id": f"conversation_transition:{transition['decision_id']}:{transition['index']}",
+                "label": ROUTE_OPERATION_LABELS.get(transition["operation"], "Зміна теми"),
+                "value": ROUTE_REASON_LABELS.get(transition["reason_code"], "Прийняте рішення"), "evidence_refs": transition["evidence_refs"],
+            })
+        node = _graph_node(
+            node_id, ROUTE_SUBTYPE_LABELS.get(subtype) or ROUTE_KIND_LABELS.get(kind, "Звернення"), semantic_key="conversation_intent",
+            state=state_by_key.get(key, "partial"), current=route["focus_key"] == key,
+            summary="Прийнятий маршрут діалогу", facts=facts,
+            evidence_refs=refs_by_key.get(key, []),
+        )
+        # Conversational graph geometry and iconography belong to the UI layer.
+        node.pop("layout")
+        node["route_kind"] = kind
+        node["route_subtype"] = subtype
+        node["route_focus"] = route["focus_key"] == key
+        graph["nodes"].append(node)
+
+    for transition in route["history"]["transitions"]:
+        if transition["operation"] != "focus" or not transition["from_key"]:
+            continue
+        from_id, to_id = node_ids.get(transition["from_key"]), node_ids.get(transition["key"])
+        if not from_id or not to_id or from_id == to_id:
+            continue
+        graph["edges"].append({
+            "id": f"conversation_focus:{transition['decision_id']}:{transition['index']}",
+            "from_node_id": from_id, "to_node_id": to_id,
+            "relation": "conversation_focus", "tone": "neutral",
+            "decision_id": transition["decision_id"],
+            "evidence_refs": transition["evidence_refs"],
+        })
+    active_ids = [node_ids[item["key"]] for item in route["active_intents"] if item["key"] in node_ids]
+    graph["overview_node_ids"] = list(dict.fromkeys([*graph["overview_node_ids"], *active_ids]))
+    graph["coverage"]["conversation_routes"] = route["coverage"]
+    return graph
 
 
 def _graph_interpretation(client_id, episode_id=None):
@@ -548,6 +804,7 @@ def _bound_records(episode, nodes):
 
 def build_journey_snapshot(client, *, view_episode_id=None):
     """Return JSON-safe v1; ownership is checked before any selected data read."""
+    now = timezone.now()
     client_id = _positive_id(getattr(client, "pk", None))
     if client_id is None:
         raise ValueError("A persisted client is required")
@@ -568,6 +825,7 @@ def build_journey_snapshot(client, *, view_episode_id=None):
             raise InvalidJourneyEpisode("Недоступний цикл покупки")
     else:
         episode = current
+    is_history = bool(episode and (not current or episode["id"] != current["id"]))
     nodes = {key: {
         "id": key, "label": label, "state": "open", "current": False,
         "coverage": "unknown", "missing_sources": ["live_node_projection"],
@@ -576,6 +834,9 @@ def build_journey_snapshot(client, *, view_episode_id=None):
     history = {"events": [], "total": 0, "has_more": False, "coverage": "unknown", "visits": [], "edges": [], "edge_coverage": "missing_source"}
     covered = ["commercial_episodes"]
     focus = None
+    # The conversational journal has no commercial-episode ownership.  Do not
+    # place the latest client dialogue onto an older selected purchase view.
+    conversation_route = None if is_history else _conversation_route(client_id)
     if episode:
         _snapshots(episode, nodes)
         history = _history(episode["id"], client_id)
@@ -609,11 +870,18 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         graph = _graph(episode, nodes, history, focus)
     else:
         graph = _graph_without_episode(client_id, nodes, focus)
+    if conversation_route is not None:
+        graph = _append_conversation_route_graph(graph, conversation_route)
+    if episode and not is_history:
+        from management.services.ig_journey_timers import invoice_timers
+        payment_node = next((node for node in graph["nodes"] if node["id"] == "guide:payment"), None)
+        if payment_node is not None:
+            payment_node["timers"] = invoice_timers(client_id, episode["id"], now=now)
     result = {
         "schema_version": 1, "client_id": client_id,
         "current_episode_id": current["id"] if current else None,
         "viewed_episode_id": episode["id"] if episode else None,
-        "is_history": bool(episode and (not current or episode["id"] != current["id"])),
+        "is_history": is_history,
         "episodes": {"items": [_selector(row) for row in recent], "total": total, "has_more": total > len(recent)},
         "viewed_episode": _selector(episode) if episode else None,
         "route_kind": "unknown", "focus": {"node_id": focus, "display_only": True},
@@ -623,5 +891,12 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         "deferred_domains": ["live_node_projection", "semantic_transitions", "route_classification", "media_understanding", "checkout_readiness", "offer_validity", "settlement_projection", "attention", "next_action"],
         "capabilities": {"attention": False, "actions": False, "full_projection": False},
     }
+    if conversation_route is not None:
+        result["conversation_route"] = conversation_route
+        if conversation_route["status"] == "accepted_journal":
+            covered.append("accepted_conversation_route_journal")
+            result["covered_sources"] = sorted(set(covered))
     result["revision"] = hashlib.sha256(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+    # Clock sync does not force a semantic rerender on every poll.
+    result["server_now"] = now.isoformat()
     return result
