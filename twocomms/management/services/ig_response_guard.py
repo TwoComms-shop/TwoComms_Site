@@ -101,6 +101,15 @@ class ProviderResponseGuard:
             text for code, text in _SCHEMA_REPAIR_GUIDANCE.items()
             if "schema_" + code in reasons
         ]
+        if "unverified_recruitment" in reasons:
+            guidance.append(
+                "No matching source-backed recruitment status authorizes that claim. "
+                "Do not claim that the company is hiring or has no vacancies. "
+                "Honestly state that you do not have confirmed recruitment information "
+                "and respond helpfully to the original intent. Do not invent a hiring "
+                "policy, promise future contact or announcements, or force a manager "
+                "handoff without an authorized control."
+            )
         if "invalid_response_schema" in reasons:
             guidance.append(
                 'Minimal shape when no action or intelligence is required: '

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import re
-from typing import Iterable
+from typing import Iterable, Literal
 
 
 REASON_CODES = (
@@ -17,6 +17,7 @@ REASON_CODES = (
     "unverified_shipment",
     "unverified_tracking",
     "unverified_timing",
+    "unverified_recruitment",
     "configuration_mismatch",
     "unauthorized_action",
 )
@@ -53,6 +54,9 @@ class ReplyTruthContext:
     allowed_colors: tuple[str, ...] = ()
     authorized_actions: tuple[AuthorizedAction, ...] = ()
     quoted_data: tuple[str, ...] = ()
+    # Future recruitment-policy integration must supply explicit source-backed
+    # authority. Missing policy, customer text and model controls leave unknown.
+    recruitment_status: Literal["unknown", "open", "closed"] = "unknown"
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,36 @@ _NEGATED_DISCOUNT_RE = re.compile(
     r"|(?:зниж\w*|скид\w*|discount)[^.!?\n]{0,30}"
     r"(?:не\s+буде|не\s+будет|немає|нет|not\s+available|no\s+discount)",
     re.I,
+)
+_VACANCY_NOUN = r"(?:ваканс\w*|vacanc(?:y|ies)|(?:job\s+)?positions?|job\s+openings?)"
+_RECRUITMENT_ROLE = r"(?:менеджер\w*|працівник\w*|співробітник\w*|сотрудник\w*|персонал\w*|manager\w*|staff|employees?)"
+_RECRUITMENT_STATUS_RE = re.compile(
+    r"(?P<closed>"
+    r"\b(?:не\s+(?:шукаємо|ищем|наймаємо|нанимаем)\s+" + _RECRUITMENT_ROLE
+    + r"|(?:немає|нема|нет)\s+(?:(?:відкрит\w*|открыт\w*|актуальн\w*)\s+)?" + _VACANCY_NOUN
+    + r"|" + _VACANCY_NOUN + r"\s+(?:немає|нема|нет|відсутн\w*|закрит\w*|закрыт\w*)"
+    r"|we(?:(?:\s+are|['’]re)\s+not|\s+aren['’]?t)\s+(?:currently\s+)?hiring"
+    r"|we\s+(?:are\s+not|aren['’]?t)\s+looking\s+for\s+" + _RECRUITMENT_ROLE
+    + r"|no\s+(?:open\s+)?" + _VACANCY_NOUN
+    + r"|" + _VACANCY_NOUN + r"\s+(?:are\s+)?(?:closed|unavailable|not\s+(?:open|available)))\b"
+    r")|(?P<open>"
+    r"\b(?:(?:шукаємо|ищем|наймаємо|нанимаем)\s+" + _RECRUITMENT_ROLE
+    + r"|(?:є|есть)\s+(?:(?:відкрит\w*|открыт\w*|актуальн\w*)\s+)?" + _VACANCY_NOUN
+    + r"|(?:відкрит\w*|открыт\w*)\s+" + _VACANCY_NOUN
+    + r"|" + _VACANCY_NOUN + r"\s+(?:відкрит\w*|открыт\w*|є|есть)"
+    r"|we(?:\s+are|['’]re)\s+(?:currently\s+)?hiring"
+    r"|we(?:\s+are|['’]re)\s+looking\s+for\s+" + _RECRUITMENT_ROLE
+    + r"|(?:we\s+have|there\s+are)\s+(?:open\s+)?" + _VACANCY_NOUN
+    + r"|" + _VACANCY_NOUN + r"\s+(?:are\s+)?(?:open|available))\b"
+    r")", re.I,
+)
+_RECRUITMENT_CLAUSE_BOUNDARY_RE = re.compile(r";|\s+(?:але|однак|но|однако|but|however)\s+", re.I)
+_RECRUITMENT_UNCERTAINTY_RE = re.compile(
+    r"(?:не\s+(?:можу|можемо|могу|можем)\s+(?:підтвердити|подтвердить)"
+    r"|не\s+(?:знаю|знаємо|знаем)"
+    r"|(?:cannot|can['’]?t|can\s+not)\s+confirm"
+    r"|(?:do\s+not|don['’]?t)\s+know)"
+    r"\s*,?\s*[^,;.!?]{0,80}$", re.I,
 )
 _MONEY_RE = re.compile(
     r"(?<!\d)(?P<amount>\d{1,9}(?:[.,]\d{1,2})?)\s*"
@@ -297,6 +331,15 @@ def _has_positive_claim(pattern: re.Pattern, sentence: str) -> bool:
     )
 
 
+def _recruitment_claims(sentence: str):
+    # Closure is itself a protected assertion; the generic negation helper must
+    # not turn "we are not hiring" into permission to invent a closed policy.
+    for clause in _RECRUITMENT_CLAUSE_BOUNDARY_RE.split(sentence):
+        for match in _RECRUITMENT_STATUS_RE.finditer(clause):
+            if not _RECRUITMENT_UNCERTAINTY_RE.search(clause[:match.start()]):
+                yield match.lastgroup
+
+
 def _add(reasons: list[str], reason: str) -> None:
     if reason in REASON_CODES and reason not in reasons:
         reasons.append(reason)
@@ -374,6 +417,9 @@ def validate_reply_truth(
     approved_timing = {_normalize(value) for value in context.approved_timing_claims}
 
     for sentence in _claim_sentences(reply_text, context.quoted_data):
+        for recruitment_status in _recruitment_claims(sentence):
+            if context.recruitment_status != recruitment_status:
+                _add(reasons, "unverified_recruitment")
         range_spans = []
         for match in _RANGE_RE.finditer(sentence):
             if _locally_negated(sentence, match.start()):

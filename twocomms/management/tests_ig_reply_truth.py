@@ -12,6 +12,72 @@ from management.services.ig_reply_truth import (
 
 
 class ReplyTruthValidatorTests(SimpleTestCase):
+    def test_recruitment_availability_requires_explicit_matching_authority(self):
+        statements = {
+            "closed": (
+                "Наразі ми не шукаємо менеджерів у команду, але якщо щось зміниться, обов’язково повідомимо в соцмережах.",
+                "Немає відкритих вакансій.", "Вакансій немає.",
+                "Сейчас у нас нет вакансий.", "Мы не ищем менеджеров.",
+                "Вакансии закрыты.", "We are not hiring.", "We're not hiring.",
+                "We aren't currently hiring.", "There are no open positions.",
+            ),
+            "open": (
+                "Ми шукаємо менеджерів.", "У нас є відкриті вакансії.",
+                "Вакансії відкриті.", "Мы ищем менеджеров.",
+                "Есть открытые вакансии.", "We are hiring.", "We're currently hiring.",
+                "We have open positions.", "Job vacancies are available.",
+            ),
+        }
+        for status, replies in statements.items():
+            for reply in replies:
+                with self.subTest(status=status, reply=reply):
+                    self.assertReason("unverified_recruitment", reply)
+                    self.assertValid(reply, context=ReplyTruthContext(recruitment_status=status))
+                    opposite = "open" if status == "closed" else "closed"
+                    self.assertReason("unverified_recruitment", reply, context=ReplyTruthContext(recruitment_status=opposite))
+
+    def test_recruitment_uncertainty_questions_and_acknowledgements_remain_allowed(self):
+        for reply in (
+            "Не маю підтвердженої інформації про вакансії.",
+            "Не можу підтвердити, що у нас є вакансії.",
+            "Не знаю, чи ми шукаємо менеджерів.",
+            "У меня нет подтверждённой информации о вакансиях.",
+            "Не могу подтвердить, что вакансий нет.",
+            "I do not have confirmed recruitment information.",
+            "I cannot confirm whether we are hiring.",
+            "I don't know if there are open positions.",
+            "Яка робота вас цікавить?", "Вас цікавить, чи ми шукаємо менеджерів?",
+            "Вы спрашиваете, есть ли вакансии?", "Are you asking whether we are hiring?",
+            "Дякую за інтерес до роботи в TwoComms.",
+            "Робота з людьми може бути цікавою.", "Working with people can be rewarding.",
+            "Будь ласка, гарного дня!",
+        ):
+            with self.subTest(reply=reply):
+                self.assertValid(reply)
+
+    def test_recruitment_uncertainty_or_question_does_not_hide_another_assertion(self):
+        for reply in (
+            "Не маю підтвердженої інформації, але вакансій немає.",
+            "Не можу підтвердити оплату, у нас немає вакансій.",
+            "Не знаю, чи є вакансії, але ми не шукаємо менеджерів.",
+            "Не могу подтвердить, но вакансии закрыты.",
+            "I cannot confirm whether we are hiring, but we have open positions.",
+            "Вакансій немає, яка робота вас цікавить?",
+            "We are not hiring. What role interests you?",
+        ):
+            with self.subTest(reply=reply):
+                self.assertReason("unverified_recruitment", reply)
+
+    def test_only_source_matched_recruitment_quotes_are_exempt(self):
+        quote = "ми не шукаємо менеджерів"
+        reply = "Ви написали: «" + quote + "»."
+        self.assertValid(reply, context=ReplyTruthContext(quoted_data=(quote,)))
+        self.assertReason("unverified_recruitment", reply)
+        self.assertReason("unverified_recruitment", reply + " Але вакансії відкриті.", context=ReplyTruthContext(quoted_data=(quote,)))
+
+    def test_invalid_recruitment_context_does_not_authorize_any_status(self):
+        self.assertReason("unverified_recruitment", "We are hiring.", context=ReplyTruthContext(recruitment_status="model_said_open"))
+
     def assertValid(self, text, *, context=None, actions=()):
         result = validate_reply_truth(
             text,

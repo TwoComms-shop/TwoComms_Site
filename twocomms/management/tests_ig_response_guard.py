@@ -6,6 +6,23 @@ from management.services.ig_response_guard import ProviderResponseGuard
 
 
 class ResponseGuardTests(SimpleTestCase):
+    def test_recruitment_claim_rejected_before_winner_and_repair_explains_unknown_policy(self):
+        guard = self.guard()
+        parsed = {
+            "reply_text": "Наразі ми не шукаємо менеджерів у команду, але якщо щось зміниться, обов’язково повідомимо в соцмережах.",
+            "controls": [],
+        }
+        result = guard.validate(parsed)
+        self.assertEqual(result.reason_codes, ("unverified_recruitment",))
+        self.assertIsNone(guard.source)
+        self.assertIsNone(guard.response)
+        repaired = guard.repair({"contents": []}, parsed, result.reason_codes)
+        correction = repaired["contents"][-1]["parts"][0]["text"]
+        self.assertIn("do not have confirmed recruitment information", correction)
+        self.assertIn("promise future contact", correction)
+        self.assertIn("without an authorized control", correction)
+        self.assertTrue(guard.validate({"reply_text": "Дякую за інтерес до роботи в TwoComms. Не маю підтвердженої інформації про вакансії.", "controls": []}).valid)
+
     def guard(self, **kwargs):
         return ProviderResponseGuard(
             context_factory=lambda _control, _reply_text: ReplyTruthContext(),
