@@ -28,7 +28,7 @@ from management.services.ig_journey_trace_store import (
 from management.services.ig_turn_lineage import turn_lineage
 
 
-PROMPT_VERSION = "journey-trace.text.v1"
+PROMPT_VERSION = "journey-trace.text.v2"
 MAX_CLIENTS = 6
 _ROLES = {"user", "manager", "model"}
 
@@ -59,6 +59,48 @@ Do not infer image contents: media bytes are unavailable. A media placeholder al
 does not establish a certificate, receipt, print or payment. Persisted message text
 can support a discussion about those topics; unsupported media facts must be omitted.
 Preserve returns, retries, negative reactions, objections, waits and real handoffs.
+Business meanings of easily confused nodes:
+- prize_candidate is a competition/giveaway winner, prize certificate, or a free
+  prize request. prize_decision is discussion of the team's prize conditions.
+- reward_entitlement/reward_delivery/reward_use are ONLY the post-purchase UGC /
+  stories reward program and use of its issued reward. A competition certificate
+  or free gifted garment is NOT reward_use. Do not merge these programs.
+- availability_question means a stock question still awaiting an answer. If the
+  manager already answered unavailable and the customer agreed to wait, the
+  CURRENT focus is stock_wait, even if the customer later asked about stock again
+  and received the same unavailable answer. Show inquiry and return to waiting.
+- stock_wait means an agreement to wait; it does NOT mean consent to marketing.
+  Only include restock_consent/channel_consent if permission was actually discussed;
+  a promise to notify, a thanks, a demo button or a product request is not consent.
+- custom_brief is discussion of the requested print/placement/garment details.
+  mockup_current_acceptance is discussion of an actual design version and approval,
+  not a payment link. Catalog print selection does not require a custom mockup.
+- business_decision may describe manager discussion on collaboration but never
+  infer a signed partnership. When a designer's proposal has progressed to a real
+  manager discussing terms and arranging the next discussion, show that progression
+  from collaboration_designer to business_decision, not just repeated entry nodes.
+  Employment belongs to employment/employment_response.
+- A purchase reported on the website can move discussion directly to fulfillment;
+  do not invent a Direct payment link. Free prize discussion can bypass payment.
+  A human offer of a free garment after a gift request supports prize discussion
+  even if the certificate image itself cannot be read; do not assert its validity.
+- ad_resolved_product means an explicitly identified catalog item, including a
+  direct product name, not necessarily an ad. configured_line captures selected
+  product options such as size. A size alone without a known item is not a complete
+  configured product. Selection, size/fit discussion and alternative comparison
+  must not disappear merely because a later message reports an order.
+- fulfillment includes delivery arrangements; a shipping address is not proof of
+  production or dispatch. A later approval of a revised print is the latest design
+  discussion, not proof the order has already been made or sent.
+- A concern about delivery reliability, price or fit is an objection; show its
+  discussion and resolution rather than labelling every alternative as a return.
+  A return means the actual process moved back to an earlier decision.
+Use the available step budget for meaningful changes of direction and decisions,
+not greetings. Preserve the initial reason for contact, selection, objections and
+latest outcome when supported. Do not collapse distinct decisions into one jump.
+Track both questions AND the subsequent human answers before choosing current_node.
+The latest unanswered question is different from a question already resolved by a
+manager. Keep known product/size decisions and objections visible in summaries.
 Do not fill gaps or invent adjacent stages to make a connected route. from_node may
 be empty only for the first step when its start is unknown. Keep actual step order.
 current_node is only the latest human-supported discussion focus already present

@@ -4458,7 +4458,11 @@ def _operational_client_stage(c) -> tuple[str, str]:
             stage = IgClient.Stage.ORDER_CREATED
     elif getattr(c, "has_physical_order", False):
         stage = IgClient.Stage.ORDER_CREATED
-    return stage, str(IgClient.Stage(stage).label)
+    label = str(IgClient.Stage(stage).label)
+    if stage == IgClient.Stage.LEAD_TO_MANAGER:
+        # A routing stage does not prove that a human has taken the dialogue.
+        label = "Режим менеджера" if c.manager_takeover else "Потрібна відповідь команди"
+    return stage, label
 
 
 def _funnel_progress_for_stage(c, stage: str) -> list[dict]:
