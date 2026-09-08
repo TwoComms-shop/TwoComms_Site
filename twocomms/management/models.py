@@ -4944,3 +4944,4 @@ class LeadAICheck(models.Model):
 # цей файл. Імпорт у кінці гарантує реєстрацію моделей під app_label.
 # ===========================================================================
 from .ig_bot_models import *  # noqa: E402,F401,F403
+from .ig_journey_models import IgConversationRouteDecision  # noqa: E402,F401
