@@ -5325,6 +5325,22 @@ def bot_client_detail_api(request, client_id):
     if not c:
         return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
 
+    from management.services.ig_journey_snapshot import (
+        InvalidJourneyEpisode, build_journey_snapshot,
+    )
+
+    viewed_episode_id = request.GET.get("view_episode_id") or None
+    journey = None
+    if request.GET.get("journey_only") == "1" or not request.GET.get("before_id"):
+        try:
+            journey = build_journey_snapshot(c, view_episode_id=viewed_episode_id)
+        except InvalidJourneyEpisode:
+            return JsonResponse(
+                {"success": False, "error": "Покупку не знайдено."}, status=404,
+            )
+    if request.GET.get("journey_only") == "1":
+        return JsonResponse({"success": True, "journey": journey})
+
     try:
         after_id = int(request.GET.get("after_id") or 0)
     except (TypeError, ValueError):
@@ -5393,6 +5409,7 @@ def bot_client_detail_api(request, client_id):
             "stage": operational_stage,
             "stage_label": operational_stage_label,
             "funnel": _funnel_progress_for_stage(c, operational_stage),
+            "journey": journey,
             "follow": _client_follow_payload(c),
         })
 
@@ -5793,6 +5810,7 @@ def bot_client_detail_api(request, client_id):
         "followups": followups,
         "deals": deals,
         "funnel": _funnel_progress_for_stage(c, card["stage"]),
+        "journey": journey,
         "automation": {
             "owner": automation_owner,
             "bot_paused": c.bot_paused,
