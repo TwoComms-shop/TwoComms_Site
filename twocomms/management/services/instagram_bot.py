@@ -7613,7 +7613,9 @@ def _response_validation_fallback(client=None, *, reasons=(), has_images=False) 
     """Describe a bounded validation failure without blaming the customer input."""
     locale = _assisted_checkout_locale(client) if client is not None else "uk"
     codes = {str(reason or "") for reason in reasons}
-    if has_images and codes & {
+    if "unverified_recruitment" in codes:
+        key = "recruitment"
+    elif has_images and codes & {
         "incomplete_image_coverage",
         "missing_turn_intelligence",
         "unknown_inline_coverage",
@@ -7642,18 +7644,21 @@ def _response_validation_fallback(client=None, *, reasons=(), has_images=False) 
             "status": "I cannot confirm that status from the available information. Please share the order reference or clarify which status you mean.",
             "configuration": "Please clarify the product, fit, size, and color so I can give the confirmed option and price.",
             "request": "I’m sorry, I couldn’t prepare a reliable answer to your message just now.",
+            "recruitment": "Thank you for your interest in working with TwoComms! I don’t currently have confirmed information about hiring. Recruitment decisions are made by the team.",
         },
         "ru": {
             "media": "Не удалось чётко прочитать все изображения. Пришлите, пожалуйста, неразборчивую часть ещё раз.",
             "status": "По доступным данным я не могу подтвердить этот статус. Пришлите номер заказа или уточните, какой статус вас интересует.",
             "configuration": "Уточните, пожалуйста, товар, крой, размер и цвет — тогда я назову подтверждённый вариант и цену.",
             "request": "Извините, сейчас мне не удалось подготовить корректный ответ на ваше сообщение.",
+            "recruitment": "Спасибо за интерес к работе в TwoComms! У меня сейчас нет подтверждённой информации о наборе в команду. Решения по трудоустройству принимает команда.",
         },
         "uk": {
             "media": "Не вдалося чітко прочитати всі зображення. Надішліть, будь ласка, нерозбірливу частину ще раз.",
             "status": "За доступними даними я не можу підтвердити цей статус. Надішліть номер замовлення або уточніть, який статус вас цікавить.",
             "configuration": "Уточніть, будь ласка, товар, крій, розмір і колір — тоді я назву підтверджений варіант і ціну.",
             "request": "Перепрошую, зараз мені не вдалося підготувати коректну відповідь на ваше повідомлення.",
+            "recruitment": "Дякую за інтерес до роботи в TwoComms! Не маю підтвердженої інформації про набір у команду. Рішення щодо працевлаштування ухвалює команда.",
         },
     }
     return copy.get(locale, copy["uk"])[key]

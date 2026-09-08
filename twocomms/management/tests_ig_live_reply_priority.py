@@ -42,6 +42,20 @@ class ValidationFailureCopyTests(SimpleTestCase):
                 self.assertTrue(reply)
 
 
+    def test_unverified_recruitment_uses_honest_domain_fallback_without_false_handoff(self):
+        from types import SimpleNamespace
+        from management.services.ig_reply_truth import validate_reply_truth
+
+        for language in ("uk", "ru", "en"):
+            with self.subTest(language=language):
+                reply = instagram_bot._response_validation_fallback(
+                    SimpleNamespace(language=language), reasons=("unverified_recruitment",),
+                )
+                self.assertTrue(validate_reply_truth(reply, context=ReplyTruthContext()).valid)
+                for forbidden in ("перепрош", "извин", "sorry", "повтор", "repeat", "передам", "forward"):
+                    self.assertNotIn(forbidden, reply.casefold())
+
+
 class StructuredProviderBoundaryTests(TestCase):
     """Live chat opts into JSON while the shared provider wrapper stays compatible."""
 
