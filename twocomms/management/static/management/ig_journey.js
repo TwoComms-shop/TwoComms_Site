@@ -3,7 +3,7 @@
   'use strict';
   const NS='http://www.w3.org/2000/svg';
   const STATES=new Set(['open','complete','partial','skipped','not_applicable','invalidated','superseded']);
-  const LABELS={open:'Ще немає підтвердження',complete:'Підтверджено',partial:'Є частина даних',skipped:'Пропущено з причиною',not_applicable:'Не потрібен',invalidated:'Потрібно уточнити',superseded:'Є новіше значення'};
+  const LABELS={possible:'Можливий етап',open:'Ще немає підтвердження',complete:'Підтверджено',partial:'Є частина даних',skipped:'Пропущено з причиною',not_applicable:'Не потрібен',invalidated:'Потрібно уточнити',superseded:'Є новіше значення'};
   const ICONS={
     message:'M5 5h14v10H9l-4 4V5z M8 9h8 M8 12h5',
     shirt:'M8 4l-5 4 3 4 2-1v9h8v-9l2 1 3-4-5-4c-1 3-7 3-8 0z',
@@ -27,7 +27,7 @@
   function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text);return n;}
   function svg(tag,attrs={}){const n=document.createElementNS(NS,tag);Object.entries(attrs).forEach(([k,v])=>n.setAttribute(k,String(v)));return n;}
   function icon(name){const n=svg('svg',{viewBox:'0 0 24 24','aria-hidden':'true',focusable:'false'});n.append(svg('path',{d:ICONS[name]||ICONS.info}));return n;}
-  function iconFor(n){const key=n.route_kind||n.semantic_key||n.id.split(':')[1];return ({inbound:'message',inquiry:'message',catalog:'shirt',selection:'shirt',brief:'brief',custom_print:'image',dtf:'image',quoted_offer:'tag',terms:'tag',offer:'image',settlement:'money',payment:'money',fulfillment:'package',support:'return',objection_case:'question',employment:'work',collaboration:'handshake',information:'info',community:'gift',consent:'bell',reward:'gift'})[key]||(n.id.startsWith('episode:')?'repeat':'info');}
+  function iconFor(n){const mapped=window.TwcJourneyGeometry?.visualFor(n);if(mapped?.icon)return mapped.icon;const key=n.route_kind||n.semantic_key||n.id.split(':')[1];return ({inbound:'message',inquiry:'message',catalog:'shirt',selection:'shirt',brief:'brief',custom_print:'image',dtf:'image',quoted_offer:'tag',terms:'tag',offer:'image',settlement:'money',payment:'money',fulfillment:'package',support:'return',objection_case:'question',employment:'work',collaboration:'handshake',information:'info',community:'gift',consent:'bell',reward:'gift'})[key]||(n.id.startsWith('episode:')?'repeat':'info');}
   function date(value){const d=new Date(value);return value&&!Number.isNaN(d.getTime())?new Intl.DateTimeFormat('uk-UA',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}).format(d):'';}
   function valueText(value){if(value===null||value===undefined||value==='')return 'Не визначено';if(typeof value==='boolean')return value?'Так':'Ні';if(typeof value!=='object')return String(value);if(Array.isArray(value))return value.map(valueText).filter(Boolean).join(' · ');return [value.title,value.size,value.fit_option_label,value.qty?('×'+value.qty):'',value.order_id?('Замовлення №'+value.order_id):'',value.status_label].filter(Boolean).join(' · ')||'Дані збережено';}
   function witnessed(edge){return !['route','prerequisite'].includes(edge.relation)&&(edge.evidence_refs||[]).length>0;}
@@ -58,16 +58,17 @@
       catch(_){if(this.destroyed||ticket!==this.sequence)return;this.select.value=previous?String(previous):'';this.error.textContent='Не вдалося оновити карту. Попередні дані збережено.';this.error.hidden=false;}
       finally{if(!this.destroyed&&ticket===this.sequence)this.select.disabled=false;}
     }
-    update(snapshot,{fromSelection=false}={}){
+    update(snapshot,{fromSelection=false,force=false}={}){
       if(this.destroyed||!snapshot||![1,2].includes(snapshot.schema_version)||!Array.isArray(snapshot.nodes))return;
       if(this.snapshot&&snapshot.client_id!==this.snapshot.client_id)return;
       if(!fromSelection&&(this.select.disabled||(this.snapshot?.is_history&&snapshot.viewed_episode_id!==this.snapshot.viewed_episode_id)))return;
       const server=Date.parse(snapshot.server_now||snapshot.as_of||'');if(Number.isFinite(server)){this.serverTime=server;this.serverAnchor=performance.now();}
-      if(this.snapshot&&snapshot.revision===this.snapshot.revision&&snapshot.viewed_episode_id===this.snapshot.viewed_episode_id){this.updateTimers();return;}
+      if(!force&&this.snapshot&&snapshot.revision===this.snapshot.revision&&snapshot.viewed_episode_id===this.snapshot.viewed_episode_id){this.updateTimers();return;}
       const sameEpisode=this.snapshot&&snapshot.viewed_episode_id===this.snapshot.viewed_episode_id;
       const previousEdges=sameEpisode?new Set((this.edges||[]).filter(witnessed).map(e=>e.id)):null;
       this.snapshot=snapshot;
-      const incoming=snapshot.graph?.schema_version===1?snapshot.graph:{nodes:snapshot.nodes,edges:[]};
+      const source=snapshot.graph?.schema_version===1?snapshot.graph:{nodes:snapshot.nodes,edges:[]};
+      const incoming=this.presentGraph(source,snapshot);
       const seen=new Set();this.graph={...incoming,nodes:(incoming.nodes||[]).filter(n=>{if(!n||typeof n.id!=='string'||seen.has(n.id))return false;seen.add(n.id);return true;})};this.nodeIds=[...seen];
       this.edges=(incoming.edges||[]).filter(e=>e&&typeof e.id==='string'&&seen.has(e.from_node_id)&&seen.has(e.to_node_id));
       this.newEdges=previousEdges?new Set(this.edges.filter(e=>witnessed(e)&&!previousEdges.has(e.id)).map(e=>e.id)):new Set();
@@ -76,7 +77,7 @@
       if(this.selectedEdge&&!this.edges.some(e=>e.id===this.selectedEdge))this.closePanel(false);
       this.root.dataset.clientId=String(snapshot.client_id);this.root.dataset.episodeId=String(snapshot.viewed_episode_id||'');
       const current=this.graph.nodes.find(n=>n.route_focus)||this.graph.nodes.find(n=>n.current);this.currentId=current?.id;
-      const conversational=current?.route_kind||!snapshot.viewed_episode_id||!current;
+      const conversational=current?.route_kind||!snapshot.viewed_episode_id||!current||current.id==='guide:inquiry';
       this.title.textContent=conversational?'Звернення':(snapshot.is_history?'Історія · ':'')+(snapshot.viewed_episode?.label||'Покупка '+(snapshot.viewed_episode?.sequence||''));
       this.mode.textContent=current?' · '+current.label:'';
       const items=[...(snapshot.episodes?.items||[])];if(snapshot.viewed_episode&&!items.some(e=>e.id===snapshot.viewed_episode.id))items.unshift(snapshot.viewed_episode);
@@ -86,7 +87,7 @@
         let button=this.buttons.get(data.id);
         if(!button){button=el('button','twc-journey-step');button.type='button';button.dataset.nodeId=data.id;const core=el('span','twc-journey-core');core.append(el('span','twc-journey-icon'),el('span','twc-journey-status'));button.append(core,el('span','twc-journey-step-label'),el('span','twc-journey-count'));button.addEventListener('click',()=>this.toggleNode(data.id));this.buttons.set(data.id,button);const cell=el('div','twc-journey-cell');cell.append(button);this.cells.set(data.id,cell);this.grid.append(cell);}
         const key=iconFor(data);if(button.dataset.icon!==key){button.dataset.icon=key;button.querySelector('.twc-journey-icon').replaceChildren(icon(key));}
-        const state=STATES.has(data.state)?data.state:'open';button.dataset.state=state;button.dataset.tone=toneFor(data);button.dataset.current=String(data.id===this.currentId);button.querySelector('.twc-journey-step-label').textContent=data.short_label||data.label;
+        const state=data.presentation_kind==='possible'?'possible':STATES.has(data.state)?data.state:'open';button.dataset.state=state;button.dataset.tone=toneFor(data);button.dataset.current=String(data.id===this.currentId);button.querySelector('.twc-journey-step-label').textContent=data.short_label||window.TwcJourneyGeometry?.visualFor(data)?.short_label||data.label;
         const statusKey=state==='complete'?'check':state==='invalidated'?'return':data.tone==='danger'?'cross':data.tone==='manager'?'person':null;const status=button.querySelector('.twc-journey-status');status.hidden=!statusKey;if(statusKey)status.replaceChildren(icon(statusKey));
         const progress=data.requirements;const valid=progress&&Number.isInteger(progress.completed)&&Number.isInteger(progress.total)&&progress.total>0&&progress.completed>=0&&progress.completed<=progress.total;
         const count=button.querySelector('.twc-journey-count');count.hidden=!valid;count.textContent=valid?progress.completed+'/'+progress.total:'';count.title=valid?'Виконано обов’язкових умов: '+count.textContent:'';
@@ -94,13 +95,32 @@
       });
       if(this.selected)this.renderPanel();if(this.modal)this.renderAccessibleList();this.queueLayout();this.updateTimers();
     }
+    presentGraph(source,snapshot){
+      // Cycle metadata belongs in the selector, not a disconnected graph circle.
+      const nodes=(source.nodes||[]).filter(n=>!n.id?.startsWith('episode:')).map(n=>({...n}));
+      const ids=new Set(nodes.map(n=>n.id));const edges=(source.edges||[]).filter(e=>ids.has(e.from_node_id)&&ids.has(e.to_node_id)).map(e=>({...e}));
+      if(!this.modal||!this.showPossible||!snapshot.catalogue)return {...source,nodes,edges};
+      const catalogue=snapshot.catalogue,family=this.possibleFamily||'inbound';
+      const groups=family==='catalog'?['catalog','commerce','payment']:family==='custom'?['custom','dtf','photo','commerce','payment']:family==='after'?['commerce','post_sale','consent','ugc','reward','repeat']:[family];
+      const definitions=catalogue.definitions.filter(d=>family==='all'||(family==='inbound'?(d.semantic_kind==='entry'||d.key==='spam_confirmed'):d.key==='inbound'||d.route_keys.some(k=>groups.includes(k))));
+      const anchors=new Map();
+      definitions.forEach(d=>{
+        // Only exact, unique guide semantics within this one scoped snapshot can
+        // serve as an anchor. A conversation topic is NOT a business milestone.
+        const actual=nodes.filter(n=>n.semantic_key===d.key&&n.id.startsWith('guide:'));
+        if(actual.length===1){anchors.set(d.key,actual[0].id);return;}
+        const id='possible:'+d.key;anchors.set(d.key,id);nodes.push({id,semantic_key:d.key,label:d.label,state:null,current:false,presentation_kind:'possible',summary:'Сценарій передбачає цей етап. Подій цього клієнта тут не зафіксовано.',facts:[],evidence_refs:[],timers:[]});
+      });
+      catalogue.transitions.forEach(e=>{if(anchors.has(e.source_key)&&anchors.has(e.target_key))edges.push({id:e.id,from_node_id:anchors.get(e.source_key),to_node_id:anchors.get(e.target_key),relation:'route',outcome:e.outcome,evidence_refs:[],tone:'neutral'});});
+      return {...source,nodes,edges};
+    }
     syncVisibility(width){
       if(!this.graph)return;let nodes=this.graph.nodes;
       if(!this.modal){
         const current=this.currentId||this.graph.overview_node_ids?.find(id=>this.nodeIds.includes(id))||nodes[0]?.id;
         const direct=this.edges.filter(e=>witnessed(e)&&(e.from_node_id===current||e.to_node_id===current));
         if(width<560){const before=direct.find(e=>e.to_node_id===current),after=direct.find(e=>e.from_node_id===current);const ids=width<330?[current]:[before?.from_node_id,current,after?.to_node_id].filter(Boolean);nodes=nodes.filter(n=>ids.includes(n.id));}
-        else{const cap=Math.max(3,Math.min(8,Math.floor(width/72)));const priorities=[current,...direct.flatMap(e=>[e.from_node_id,e.to_node_id]),...(this.graph.overview_node_ids||[]),...this.nodeIds];const ids=[...new Set(priorities.filter(Boolean))].slice(0,cap);nodes=nodes.filter(n=>ids.includes(n.id));const lanes=[...new Set(nodes.map(n=>n.layout?.lane||0))].sort((a,b)=>a-b);if(lanes.length>3){const activeLane=nodes.find(n=>n.id===current)?.layout?.lane||0;const allowed=[activeLane,...lanes.filter(l=>l!==activeLane)].slice(0,3);nodes=nodes.filter(n=>allowed.includes(n.layout?.lane||0));}}
+        else{const cap=Math.max(3,Math.min(8,Math.floor(width/72)));const priorities=[current,...direct.flatMap(e=>[e.from_node_id,e.to_node_id]),...(this.graph.overview_node_ids||[])];const ids=[...new Set(priorities.filter(Boolean))].slice(0,cap);nodes=nodes.filter(n=>ids.includes(n.id));const lanes=[...new Set(nodes.map(n=>n.layout?.lane||0))].sort((a,b)=>a-b);if(lanes.length>3){const activeLane=nodes.find(n=>n.id===current)?.layout?.lane||0;const allowed=[activeLane,...lanes.filter(l=>l!==activeLane)].slice(0,3);nodes=nodes.filter(n=>allowed.includes(n.layout?.lane||0));}}
       }
       this.visibleIds=nodes.map(n=>n.id);this.cells.forEach((c,id)=>{c.hidden=!this.visibleIds.includes(id);});
       if(this.selected&&!this.visibleIds.includes(this.selected))this.closePanel(false);
@@ -109,7 +129,7 @@
     }
     toggleNode(id){if(this.selected===id&&!this.selectedEdge){this.closePanel(false);return;}this.selected=id;this.selectedEdge=null;this.panelKey='';this.renderPanel();this.buttons.forEach((b,key)=>b.setAttribute('aria-expanded',String(key===id)));this.queueLayout();}
     selectEdge(id){const e=this.edges.find(e=>e.id===id);if(!e)return;if(this.selectedEdge===id){this.closePanel(false);return;}this.selected=e.from_node_id;this.selectedEdge=id;this.panelKey='';this.renderPanel();this.queueLayout();}
-    closePanel(returnFocus){const target=this.selectedEdge?this.edgeButtons.get(this.selectedEdge):this.buttons.get(this.selected);this.selected=null;this.selectedEdge=null;this.panelKey='';this.panel?.remove();this.panel=null;this.buttons.forEach(b=>b.setAttribute('aria-expanded','false'));this.queueLayout();if(returnFocus)target?.focus({preventScroll:true});}
+    closePanel(returnFocus){const target=this.selectedEdge?this.edgeButtons.get(this.selectedEdge):this.buttons.get(this.selected);this.selected=null;this.selectedEdge=null;this.panelKey='';this.panel?.remove();this.panel=null;this.buttons.forEach(b=>b.setAttribute('aria-expanded','false'));this.edgeButtons.forEach(b=>b.setAttribute('aria-expanded','false'));this.queueLayout();if(returnFocus)target?.focus({preventScroll:true});}
     renderPanel(){
       const node=this.graph.nodes.find(item=>item.id===this.selected);if(!node)return;
       const edge=this.selectedEdge?this.edges.find(item=>item.id===this.selectedEdge):null;
@@ -166,13 +186,15 @@
       const close=el('button','twc-journey-close','×');close.type='button';close.setAttribute('aria-label','Закрити повну карту');close.addEventListener('click',()=>this.closeMap());top.append(copy,close);
       const tools=el('div','twc-journey-tools');const action=(label,fn)=>{const b=el('button','',label);b.type='button';b.addEventListener('click',fn);tools.append(b);return b;};
       const minus=action('−',()=>this.setZoom(this.zoom/1.2));minus.setAttribute('aria-label','Зменшити карту');const plus=action('+',()=>this.setZoom(this.zoom*1.2));plus.setAttribute('aria-label','Збільшити карту');this.zoomLabel=el('span','','100%');tools.append(this.zoomLabel);action('Умістити',()=>this.fitMap());action('До поточного',()=>this.centerCurrent());
+      this.possibilities=el('button','','Можливі шляхи');this.possibilities.type='button';this.possibilities.setAttribute('aria-pressed',String(Boolean(this.showPossible)));this.possibilities.addEventListener('click',()=>{this.closePanel(false);this.showPossible=!this.showPossible;this.possibilities.setAttribute('aria-pressed',String(this.showPossible));this.familySelect.hidden=!this.showPossible;this.update(this.snapshot,{force:true});this.layout();this.centerCurrent();});tools.append(this.possibilities);
+      this.familySelect=el('select');this.familySelect.setAttribute('aria-label','Напрям можливих шляхів');[['inbound','Напрями звернень'],['catalog','Одяг і оплата'],['custom','Власний принт / DTF'],['collaboration','Співпраця'],['employment','Робота в команді'],['information','Інформація'],['prize','Приз'],['after','Після покупки'],['all','Усі напрями']].forEach(([value,label])=>this.familySelect.append(new Option(label,value)));this.familySelect.value=this.possibleFamily||'inbound';this.familySelect.hidden=!this.showPossible;this.familySelect.addEventListener('change',()=>{this.closePanel(false);this.possibleFamily=this.familySelect.value;this.update(this.snapshot,{force:true});this.layout();this.centerCurrent();});tools.append(this.familySelect);
       this.viewport=el('div','twc-journey-viewport');this.viewport.tabIndex=0;this.viewport.setAttribute('aria-label','Карта. Стрілки для переміщення; кнопки плюс і мінус для масштабу.');this.canvas=el('div','twc-journey-canvas');this.canvas.append(this.map);this.viewport.append(this.canvas);
       this.accessible=el('details','twc-journey-accessible');this.accessible.append(el('summary','','Етапи й переходи списком'));this.accessibleBody=el('div');this.accessible.append(this.accessibleBody);
       const legend=el('details','twc-journey-legend');legend.append(el('summary','','Позначення'));const keys=el('div');[['success','✓ Підтверджено'],['warning','◷ Очікування / уточнення'],['danger','× Відмова / помилка'],['manager','Рішення команди'],['neutral','─ Пройдений зв’язок · ┄ Можливий шлях']].forEach(([tone,label])=>{const item=el('span','',label);item.dataset.tone=tone;keys.append(item);});legend.append(keys);
       dialog.append(top,tools,this.viewport,legend,this.accessible);this.modal=dialog;document.body.append(dialog);
       dialog.addEventListener('keydown',this.escape);dialog.addEventListener('cancel',event=>{event.preventDefault();this.closeMap();});dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)this.closeMap();}});
       this.viewport.addEventListener('wheel',event=>{if(event.ctrlKey){event.preventDefault();this.setZoom(this.zoom*Math.exp(-event.deltaY*.01));}},{passive:false});
-      this.bindPan();this.modalResize=new ResizeObserver(()=>this.queueLayout());this.modalResize.observe(this.viewport);this.oldBodyOverflow=document.body.style.overflow;document.body.style.overflow='hidden';dialog.showModal();this.zoom=1;this.renderAccessibleList();this.layout();this.centerCurrent();close.focus({preventScroll:true});
+      this.bindPan();this.modalResize=new ResizeObserver(()=>this.queueLayout());this.modalResize.observe(this.viewport);this.oldBodyOverflow=document.body.style.overflow;document.body.style.overflow='hidden';dialog.showModal();this.zoom=1;this.update(this.snapshot,{force:true});this.layout();this.centerCurrent();close.focus({preventScroll:true});
     }
     bindPan(){
       const points=new Map();let drag=null,pinch=null;
@@ -181,7 +203,7 @@
       const end=event=>{points.delete(event.pointerId);drag=null;pinch=null;};this.viewport.addEventListener('pointerup',end);this.viewport.addEventListener('pointercancel',end);
     }
     closeMap(){
-      if(!this.modal)return;this.closePanel(false);this.modalResize.disconnect();this.root.insertBefore(this.map,this.note);this.map.style.transform='';this.modal.close();this.modal.remove();this.modal=null;document.body.style.overflow=this.oldBodyOverflow;this.zoom=1;this.queueLayout();this.expand.focus({preventScroll:true});
+      if(!this.modal)return;this.closePanel(false);this.modalResize.disconnect();this.root.insertBefore(this.map,this.note);this.map.style.transform='';this.modal.close();this.modal.remove();this.modal=null;document.body.style.overflow=this.oldBodyOverflow;this.zoom=1;this.update(this.snapshot,{force:true});this.queueLayout();this.expand.focus({preventScroll:true});
     }
     setZoom(value){
       if(!this.modal)return;const next=Math.max(.4,Math.min(2.2,value));const cx=(this.viewport.scrollLeft+this.viewport.clientWidth/2)/this.zoom,cy=(this.viewport.scrollTop+this.viewport.clientHeight/2)/this.zoom;this.zoom=next;this.map.style.transform='scale('+next+')';this.canvas.style.width=this.mapWidth*next+'px';this.canvas.style.height=this.mapHeight*next+'px';this.zoomLabel.textContent=Math.round(next*100)+'%';this.viewport.scrollLeft=cx*next-this.viewport.clientWidth/2;this.viewport.scrollTop=cy*next-this.viewport.clientHeight/2;
@@ -189,7 +211,7 @@
     fitMap(){if(this.modal)this.setZoom(Math.min(1,(this.viewport.clientWidth-24)/this.mapWidth,(this.viewport.clientHeight-24)/this.mapHeight));}
     centerCurrent(){if(!this.modal)return;const pos=this.positions.get(this.currentId)||this.positions.values().next().value;if(!pos)return;this.setZoom(1);this.viewport.scrollLeft=Math.max(0,pos.x-this.viewport.clientWidth/2);this.viewport.scrollTop=Math.max(0,pos.y-this.viewport.clientHeight/2);}
     renderAccessibleList(){
-      if(!this.accessibleBody)return;this.accessibleBody.replaceChildren();this.graph.nodes.forEach(node=>{const b=el('button','',node.label+' · '+(LABELS[node.state]||LABELS.open));b.type='button';b.addEventListener('click',()=>this.toggleNode(node.id));this.accessibleBody.append(b);});
+      if(!this.accessibleBody)return;this.accessibleBody.replaceChildren();this.graph.nodes.forEach(node=>{const b=el('button','',node.label+' · '+(node.presentation_kind==='possible'?LABELS.possible:LABELS[node.state]||LABELS.open));b.type='button';b.addEventListener('click',()=>this.toggleNode(node.id));this.accessibleBody.append(b);});
       this.edges.forEach(edge=>{const a=this.graph.nodes.find(n=>n.id===edge.from_node_id),b=this.graph.nodes.find(n=>n.id===edge.to_node_id);const item=el('button','',a.label+' → '+b.label+' · '+(edge.reason_label||(witnessed(edge)?'Зафіксований перехід':'Можливий шлях')));item.type='button';item.addEventListener('click',()=>this.selectEdge(edge.id));this.accessibleBody.append(item);});
       if(!this.edges.length)this.accessibleBody.append(el('p','','Переходи ще не зафіксовано. Положення етапів не підтверджує послідовність подій.'));
     }
@@ -198,27 +220,25 @@
       if(this.destroyed||!this.root.isConnected||!this.graph)return;
       const width=this.modal?this.viewport.clientWidth:this.root.getBoundingClientRect().width;this.syncVisibility(width);
       const nodes=this.graph.nodes.filter(n=>this.visibleIds.includes(n.id));const narrow=!this.modal&&width<560;this.map.dataset.narrow=String(narrow);this.map.dataset.single=String(nodes.length===1);
-      // Explicit rank/lane remains stable. Conversational intents are a separate
-      // semantic lane; adjacency never creates a transition.
-      const rankOf=(n,i)=>Number.isFinite(n.layout?.rank)?n.layout.rank:n.route_kind?0:i;
-      const laneOf=n=>Number.isFinite(n.layout?.lane)?n.layout.lane:n.route_kind?-1:0;
-      const ranks=[...new Set(nodes.map(rankOf))].sort((a,b)=>a-b),lanes=[...new Set(nodes.map(laneOf))].sort((a,b)=>a-b);
-      const step=this.modal?100:Math.max(64,Math.min(96,width/Math.max(1,ranks.length))),occupied=new Set();this.positions=new Map();
-      let maxRow=0;nodes.forEach((node,index)=>{
-        let col=narrow?index:ranks.indexOf(rankOf(node,index)),row=narrow?0:lanes.indexOf(laneOf(node));
-        while(occupied.has(col+':'+row)){if(this.modal)row++;else col++;}occupied.add(col+':'+row);maxRow=Math.max(maxRow,row);
-        const x=narrow?(width/nodes.length)*(index+.5):step*(col+.5),y=22+row*50;
-        this.positions.set(node.id,{x,y,col,row});const cell=this.cells.get(node.id);cell.style.left=x+'px';cell.style.top=y+'px';cell.style.width=(narrow?Math.min(width-8,150):step-4)+'px';
-      });
-      this.mapWidth=this.modal?Math.max(width,...[...this.positions.values()].map(p=>p.x+54)):width;this.mapHeight=narrow?58:Math.max(64,64+maxRow*50);
+      this.positions=new Map();
+      if(!narrow&&window.TwcJourneyGeometry){
+        const geometry=window.TwcJourneyGeometry.layout({nodes,edges:this.edges.filter(e=>this.visibleIds.includes(e.from_node_id)&&this.visibleIds.includes(e.to_node_id)),width,full:Boolean(this.modal)});
+        this.positions=geometry.positions;this.mapWidth=geometry.width;this.mapHeight=geometry.height;
+        const rankCount=new Set([...this.positions.values()].map(p=>p.col)).size;
+        const cellWidth=this.modal?100:Math.max(44,(width-32)/Math.max(1,rankCount)-12);
+        nodes.forEach(node=>{const pos=this.positions.get(node.id),cell=this.cells.get(node.id);cell.style.left=pos.x+'px';cell.style.top=pos.y+'px';cell.style.width=cellWidth+'px';});
+      }else{
+        nodes.forEach((node,index)=>{const x=width/Math.max(1,nodes.length)*(index+.5),y=22;this.positions.set(node.id,{x,y,col:index,row:0});const cell=this.cells.get(node.id);cell.style.left=x+'px';cell.style.top=y+'px';cell.style.width=Math.min(width-8,150)+'px';});
+        this.mapWidth=width;this.mapHeight=58;
+      }
       // If rank collisions exceed the overview, retain the focused slice rather
       // than squeeze labels or wrap the path. The full map retains every node.
       if(!this.modal){
-        if([...this.positions.values()].some(p=>p.x>width-24||p.y>126)){
+        if([...this.positions.values()].some(p=>p.x>width-24||p.y>150)){
           const id=this.currentId&&this.positions.has(this.currentId)?this.currentId:nodes[0]?.id;
           this.positions.clear();if(id){this.positions.set(id,{x:width/2,y:22,col:0,row:0});this.visibleIds=[id];this.cells.forEach((cell,key)=>{cell.hidden=key!==id;});const cell=this.cells.get(id);cell.style.left=width/2+'px';cell.style.top='22px';cell.style.width=(width-8)+'px';}
           this.map.dataset.single='true';this.map.dataset.narrow='true';this.mapHeight=58;this.expand.textContent='Весь шлях · '+this.nodeIds.length+' ↗';
-        }this.mapHeight=Math.min(164,this.mapHeight);
+        }this.mapHeight=Math.min(192,this.mapHeight);
       }
       this.map.style.width=this.mapWidth+'px';this.map.style.height=this.mapHeight+'px';
       if(this.modal){this.map.style.transform='scale('+this.zoom+')';this.canvas.style.width=this.mapWidth*this.zoom+'px';this.canvas.style.height=this.mapHeight*this.zoom+'px';}
@@ -227,12 +247,14 @@
     drawGuides(){
       this.svg.setAttribute('viewBox','0 0 '+this.mapWidth+' '+this.mapHeight);this.svg.replaceChildren();const tones={neutral:'#64748b',success:'#34d399',warning:'#fbbf24',danger:'#fb7185',manager:'#a78bfa'},prefix='journey-'+this.snapshot.client_id;
       const defs=svg('defs');Object.entries(tones).forEach(([tone,color])=>{const marker=svg('marker',{id:prefix+'-'+tone,viewBox:'0 0 6 6',refX:5,refY:3,markerWidth:5,markerHeight:5,orient:'auto'});marker.append(svg('path',{d:'M1 1L5 3L1 5',fill:'none',stroke:color,'stroke-width':1}));defs.append(marker);});this.svg.append(defs);
-      const shown=new Set();let returnIndex=0;
+      const shown=new Set();
+      const visibleNodes=this.graph.nodes.filter(n=>this.positions.has(n.id));
+      const geometryRoutes=window.TwcJourneyGeometry?.routeEdges({nodes:visibleNodes,edges:this.edges,positions:this.positions,width:this.mapWidth,height:this.mapHeight});
       this.edges.forEach(edge=>{
         const a=this.positions.get(edge.from_node_id),b=this.positions.get(edge.to_node_id);if(!a||!b)return;
-        const observed=witnessed(edge),tone=observed&&tones[edge.tone]?edge.tone:'neutral';let d,mx,my;
-        if(b.col>a.col&&Math.abs(b.row-a.row)<=1){const start=a.x+16,end=b.x-19,mid=(start+end)/2;d='M'+start+' '+a.y+' C'+mid+' '+a.y+' '+mid+' '+b.y+' '+end+' '+b.y;mx=mid;my=(a.y+b.y)/2;}
-        else{const top=Math.max(4,Math.min(a.y,b.y)-22-(returnIndex++%2)*6);d='M'+a.x+' '+(a.y-16)+' V'+(top+4)+' Q'+a.x+' '+top+' '+(a.x+(b.x>a.x?4:-4))+' '+top+' H'+(b.x+(b.x>a.x?-4:4))+' Q'+b.x+' '+top+' '+b.x+' '+(top+4)+' V'+(b.y-19);mx=(a.x+b.x)/2;my=top;}
+        const observed=witnessed(edge),tone=observed&&tones[edge.tone]?edge.tone:'neutral';
+        const route=geometryRoutes?.get(edge.id);if(!route)return;
+        const d=route.d,mx=route.markerX,my=route.markerY;
         const path=svg('path',{d,'marker-end':'url(#'+prefix+'-'+tone+')',stroke:tones[tone]});path.classList.add('twc-journey-edge');path.dataset.observed=String(observed);path.dataset.selected=String(this.selectedEdge===edge.id);this.svg.append(path);
         if(this.newEdges?.has(edge.id)&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const dot=svg('circle',{r:2,fill:tones[tone]});const motion=svg('animateMotion',{dur:'.6s',path:d,repeatCount:1,fill:'freeze'});dot.append(motion);this.svg.append(dot);motion.addEventListener('endEvent',()=>dot.remove(),{once:true});}
         const count=Number.isInteger(edge.repeated_count)&&edge.repeated_count>1?edge.repeated_count:0;

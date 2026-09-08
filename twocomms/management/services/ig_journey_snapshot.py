@@ -877,7 +877,9 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         payment_node = next((node for node in graph["nodes"] if node["id"] == "guide:payment"), None)
         if payment_node is not None:
             payment_node["timers"] = invoice_timers(client_id, episode["id"], now=now)
+    from management.services.ig_journey_catalogue import journey_catalogue
     result = {
+        "catalogue": journey_catalogue(),
         "schema_version": 1, "client_id": client_id,
         "current_episode_id": current["id"] if current else None,
         "viewed_episode_id": episode["id"] if episode else None,

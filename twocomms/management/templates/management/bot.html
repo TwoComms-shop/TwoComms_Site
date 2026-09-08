@@ -1808,6 +1808,7 @@ body.bot-drawer-open{overflow:hidden;}
 {% endblock %}
 
 {% block extra_js %}
+<script src="{% static 'management/ig_journey_geometry.js' %}"></script>
 <script src="{% static 'management/ig_journey.js' %}"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}"></script>{% endif %}
 <script>
@@ -1839,7 +1840,7 @@ body.bot-drawer-open{overflow:hidden;}
     image.addEventListener('error',()=>{
       const fallback=document.createElement('div');
       fallback.className=image.className;
-      fallback.textContent=(((name||'?').trim()[0])||'?').toUpperCase();
+      fallback.textContent=avatarInitial(name);
       image.replaceWith(fallback);
     },{once:true});
   }
@@ -2466,10 +2467,12 @@ body.bot-drawer-open{overflow:hidden;}
       filterActiveLabel.textContent=label;filterActiveLabel.hidden=!advancedActive;filterToggle.classList.toggle('has-active-filter',advancedActive);
       filterToggle.setAttribute('aria-label',advancedActive?('Додаткові фільтри, активний: '+label):'Додаткові фільтри');
     }
+    const avatarSegmenter=typeof Intl.Segmenter==='function'?new Intl.Segmenter('uk',{granularity:'grapheme'}):null;
+    function avatarInitial(value){const label=String(value||'?').trim()||'?';const first=avatarSegmenter?avatarSegmenter.segment(label)[Symbol.iterator]().next().value.segment:Array.from(label)[0];return first.toLocaleUpperCase('uk-UA');}
     function avatar(c,size){
       const url=safeHttpUrl(c.avatar);const label=c.name||c.username||c.igsid||'?';
       if(url){const image=node('img','bot-client-ava');image.src=url;image.alt='';image.setAttribute('data-avatar','');if(size){image.style.width=size+'px';image.style.height=size+'px';}return image;}
-      const fallback=node('div','bot-client-ava',((label.trim()[0])||'?').toUpperCase());if(size){fallback.style.width=size+'px';fallback.style.height=size+'px';}return fallback;
+      const fallback=node('div','bot-client-ava',avatarInitial(label));if(size){fallback.style.width=size+'px';fallback.style.height=size+'px';}return fallback;
     }
     function listSubtitle(c){return [c.username||c.igsid,c.current_product_title?('Товар: '+c.current_product_title):'',c.primary_objection?('Заперечення: '+(c.primary_objection_label||c.primary_objection)):'',c.post_sale_type_label?('Після продажу: '+c.post_sale_type_label):'',c.next_followup_at?('Наступний контакт: '+relativeTime(c.next_followup_at,{due:true})):'',c.delivery_status_label?('Потрібна увага: '+c.delivery_status_label):''].filter(Boolean).join(' · ');}
     const pagerEl=document.getElementById('bot-clients-pager');

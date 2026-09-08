@@ -99,3 +99,8 @@
 @keyframes journey-appear{from{opacity:0}to{opacity:1}}
 @media(max-width:600px){.twc-journey-dialog{width:calc(100vw - 16px);height:calc(100dvh - 16px);border-radius:16px;padding:12px;}.twc-journey-tools button{min-height:40px;}.twc-journey-close{width:40px;height:40px;}.twc-journey-picker{max-width:100px;}.twc-journey-top{gap:5px;}.twc-journey-mode{display:none;}}
 @media(prefers-reduced-motion:reduce){.twc-journey *{animation:none!important;transition:none!important;scroll-behavior:auto!important;}}
+.twc-journey-tools button[aria-pressed=true]{border-color:#a4b1c2;background:#29394c;color:#f1f5f9;}
+.twc-journey-tools select{min-width:0;max-width:190px;min-height:32px;border:1px solid #405169;border-radius:8px;background:#1a2432;color:#d2deec;font-size:11px;padding:5px 8px;}
+.twc-journey-step[data-state=possible] .twc-journey-core{border-style:dashed;box-shadow:none;background:#10151e;color:#a4b1c2;}
+.twc-journey-step[data-state=possible] .twc-journey-step-label{font-weight:400;color:#a4b1c2;}
+.twc-journey-dialog .twc-journey-step-label{max-width:100px;}
