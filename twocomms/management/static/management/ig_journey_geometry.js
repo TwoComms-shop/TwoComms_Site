@@ -52,6 +52,7 @@
   // Full-map presentation bands. Neighboring cells are never implicit edges:
   // collaboration's two rows fan out/in only through registry transitions.
   const fullCells={
+    client_order_context:[8,3],
     inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[1,4],
     collaboration:[1,1],collaboration_designer:[2,0],collaboration_partnership:[3,0],
     collaboration_dropship:[4,0],collaboration_wholesale_store:[2,1],
