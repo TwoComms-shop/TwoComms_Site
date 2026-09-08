@@ -52,6 +52,7 @@ EPISODE_LABELS = {
     "historical_purchase_corrected": "Історичну покупку виправлено",
     "existing_order_linked": "Існуюче замовлення пов’язано",
     "stage_transition": "Змінено фокус циклу",
+    "semantic_transition": "Запис маршруту",
 }
 LIFECYCLE_EDGE_TYPES = frozenset({
     "order_bound", "fulfillment_updated", "historical_paid_archived",
@@ -921,8 +922,11 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         graph = _graph_without_episode(client_id, nodes, focus)
     if conversation_route is not None:
         graph = _append_conversation_route_graph(graph, conversation_route)
+    if episode:
+        from management.services.ig_journey_event_projection import append_offer_transitions
+        graph = append_offer_transitions(graph, client_id=client_id, episode_id=episode["id"])
     graph["coverage"]["semantic_transitions"] = "partial" if any(
-        edge.get("relation") == "conversation_focus" for edge in graph["edges"]
+        edge.get("relation") in {"conversation_focus", "semantic_transition"} for edge in graph["edges"]
     ) else "missing_source"
     if episode and not is_history:
         from management.services.ig_journey_timers import invoice_timers

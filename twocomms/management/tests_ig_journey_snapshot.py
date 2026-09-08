@@ -164,7 +164,8 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             first = build_journey_snapshot(self.buyer, view_episode_id=old.pk)
         second = build_journey_snapshot(SimpleNamespace(pk=self.buyer.pk), view_episode_id=old.pk)
-        self.assertLessEqual(len(queries), 11)
+        # One additional bounded read checks independently retained semantic events.
+        self.assertLessEqual(len(queries), 12)
         self.assertEqual(first["revision"], second["revision"])
         self.assertEqual(first["episodes"]["total"], 24)
         self.assertEqual(len(first["episodes"]["items"]), 20)
@@ -298,7 +299,7 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
-        self.assertLessEqual(len(queries), 13)
+        self.assertLessEqual(len(queries), 14)
         graph = snapshot["graph"]
         self.assertEqual((graph["schema_version"], graph["version"]), (1, 1))
         self.assertEqual(len(graph["edges"]), 1)

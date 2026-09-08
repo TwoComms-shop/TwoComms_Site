@@ -992,7 +992,7 @@ def create_or_update_proposal(
                 item_index=0,
                 reason=exc.reason,
             )
-    IgCheckoutRevision.objects.create(
+    checkout_revision = IgCheckoutRevision.objects.create(
         proposal=proposal,
         revision=revision_number,
         digest=quote.digest,
@@ -1001,6 +1001,20 @@ def create_or_update_proposal(
         evidence_message_ids=list(quote.evidence_message_ids),
         source_watermark_message_id=max(quote.evidence_message_ids or (0,)),
     )
+    try:
+        # Optional diagram projection cannot poison the valid checkout's
+        # transaction, including when a database statement fails.
+        with transaction.atomic():
+            from management.services.ig_journey_events import record_validated_checkout_revision
+
+            record_validated_checkout_revision(checkout_revision)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "journey_checkout_projection_failed revision_id=%s failure_type=%s",
+            checkout_revision.pk, type(exc).__name__,
+        )
     if locked_client.stage not in {
         IgClient.Stage.PAID,
         IgClient.Stage.ORDER_CREATED,

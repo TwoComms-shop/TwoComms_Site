@@ -117,9 +117,9 @@
       const definitions=catalogue.definitions.filter(d=>family==='all'||(family==='inbound'?(d.semantic_kind==='entry'||d.key==='spam_confirmed'):d.key==='inbound'||d.route_keys.some(k=>groups.includes(k))));
       const anchors=new Map();
       definitions.forEach(d=>{
-        // Only exact, unique guide semantics within this one scoped snapshot can
+        // Only exact, unique guide or witnessed semantic nodes in this scoped snapshot can
         // serve as an anchor. A conversation topic is NOT a business milestone.
-        const actual=nodes.filter(n=>n.structural_key===d.key&&n.id.startsWith('guide:'));
+        const actual=nodes.filter(n=>n.structural_key===d.key&&(n.id.startsWith('guide:')||(n.id.startsWith('semantic:')&&n.episode_id===snapshot.viewed_episode_id&&recorded(n))));
         if(actual.length===1){anchors.set(d.key,actual[0].id);return;}
         const id='possible:'+d.key;anchors.set(d.key,id);nodes.push({id,semantic_key:d.key,label:d.label,state:null,current:false,presentation_kind:'possible',summary:'Сценарій передбачає цей етап. Подій цього клієнта тут не зафіксовано.',facts:[],evidence_refs:[],timers:[]});
       });
