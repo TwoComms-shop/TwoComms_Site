@@ -168,7 +168,7 @@ def requirements_from_readiness(readiness, *, scope, evidence_refs):
     required = [item for item in items if item["required"]]
     if not required:
         return _absent("applicability_unknown")
-    label = "Комплектація для посилання на оплату"
+    label = "Готовність комплектації"
     if scope["line_count"] > 1:
         label += f" · позиція {scope['active_position']} із {scope['line_count']}"
     return {"requirements": {

@@ -154,6 +154,20 @@ class RegistryStaticCheckTests(SimpleTestCase):
                     if item.source_key == "objection_case" and item.outcome == "new_attempt"]
         self.assertEqual([item.target_key for item in attempts], ["awaiting_payment"])
 
+    def test_restock_consent_does_not_gate_passive_wait_or_imply_payment(self):
+        routes = nodes.structural_transitions()
+        consent = {(r.target_key, r.outcome) for r in routes if r.source_key == "restock_consent"}
+        self.assertEqual(consent, {("stock_wait", "restock_consent_granted"),
+                                   ("stock_wait", "restock_consent_not_granted")})
+        waiting = {(r.target_key, r.outcome) for r in routes if r.source_key == "stock_wait"}
+        self.assertIn(("configured_line", "stock_rechecked_available"), waiting)
+        self.assertFalse(any(target in {"settlement", "fulfillment", "post_purchase_contact_offer"}
+                             for target, _ in waiting | consent))
+        from management.services.ig_journey_catalogue import journey_catalogue
+        definitions = {d["key"]: d for d in journey_catalogue()["definitions"]}
+        self.assertEqual(definitions["stock_wait"]["implementation_status"], "planned")
+        self.assertEqual(definitions["restock_consent"]["implementation_status"], "planned")
+
     def test_semantic_transition_target_is_validated(self):
         broken = _registry(
             _definition(

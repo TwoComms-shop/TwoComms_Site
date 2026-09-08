@@ -827,8 +827,8 @@ def _bound_records(episode, nodes):
                   tone="success" if delivered else "warning" if order.status == "cancelled" else "neutral")
             nodes["fulfillment"]["summary"] = str(dict(Order.STATUS_CHOICES).get(order.status, "Невідомо"))
             if order.tracking_number:
-                _fact(nodes["fulfillment"], "tracking_number", "Нова пошта · ТТН", str(order.tracking_number),
-                      source="intended_order.current", ref=ref, captured_at=_iso(order.updated), state="complete")
+                _fact(nodes["fulfillment"], "tracking_number", "Нова пошта · вказана ТТН", str(order.tracking_number),
+                      source="intended_order.current", ref=ref, captured_at=_iso(order.updated), state="partial")
                 if order.shipment_status and order.tracking_status_code is not None:
                     _fact(nodes["fulfillment"], "carrier_status", "Статус перевізника", str(order.shipment_status),
                           source="intended_order.current", ref=ref,
@@ -944,6 +944,9 @@ def build_journey_snapshot(client, *, view_episode_id=None):
             except Exception:
                 # An optional progress badge cannot make the customer's chat fail.
                 graph["coverage"]["selection_requirements"] = "projection_unavailable"
+    from management.services.ig_journey_client_orders import append_client_order_context
+    graph = append_client_order_context(graph, client_id=client_id, is_history=is_history,
+        bound_order_id=episode["intended_order_id"] if episode else None)
     from management.services.ig_journey_catalogue import journey_catalogue
     result = {
         "catalogue": journey_catalogue(),

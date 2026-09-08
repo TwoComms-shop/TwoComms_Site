@@ -54,7 +54,7 @@ from management.models import IgFunnelNodeState
 
 logger = logging.getLogger(__name__)
 
-DEFINITION_VERSION = "funnel-node.v1.1"
+DEFINITION_VERSION = "funnel-node.v1.2"
 PROJECTOR_VERSION = "funnel-node-projector.v1"
 
 MODE_OFF = "off"
@@ -587,16 +587,30 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
                   to("spam_confirmed"), to("post_sale_request"),
               )),
         route("ad_resolved_product", "Відомий товар", entry, "catalog",
-              authority="resolved_ad_or_product_reference", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("configured_line"),)),
+              authority="resolved_ad_or_product_reference", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("configured_line"), to("availability_question", "check_selected_availability"))),
         route("catalog_discovery", "Підбір товару", entry, "catalog",
-              authority="customer_need_or_catalog_selection", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line"),)),
+              authority="customer_need_or_catalog_selection", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line"), to("availability_question", "check_selected_availability"))),
         route("photo_reference", "Фото-референс", entry, "photo",
               authority="owned_media_understanding", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(
                   to("catalog_discovery", "catalog_match"), to("custom_print", "custom_reference"),
                   to("availability_question", "availability"),
               )),
         route("availability_question", "Доступність", decision, "catalog",
-              authority="catalog_availability_fact", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("configured_line"),)),
+              authority="catalog_availability_fact", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(
+                  to("configured_line", "stock_rechecked_available"), to("stock_wait", "unavailable_wait"),
+                  to("catalog_discovery", "choose_alternative"),
+              )),
+        route("stock_wait", "Очікування наявності", decision, "catalog",
+              authority="owned_variant_stock_subscription", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(
+                  to("restock_consent", "offer_restock_consent"),
+                  to("configured_line", "stock_rechecked_available"),
+                  to("catalog_discovery", "choose_alternative"),
+              )),
+        route("restock_consent", "Дозвіл на сповіщення про наявність", decision, "catalog",
+              authority="purpose_scoped_restock_channel_grant", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(
+                  to("stock_wait", "restock_consent_granted"),
+                  to("stock_wait", "restock_consent_not_granted"),
+              )),
         route("custom_print", "Кастом", entry, "custom",
               authority="typed_custom_brief_producer", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("custom_brief"),)),
         route("dtf_only", "DTF-плівка", entry, "dtf",

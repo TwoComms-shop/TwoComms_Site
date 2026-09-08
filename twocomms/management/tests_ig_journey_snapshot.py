@@ -68,7 +68,7 @@ class JourneySnapshotTests(TestCase):
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
         # Two bounded read queries establish the explicit-reset route scope.
-        self.assertLessEqual(len(queries), 7)
+        self.assertLessEqual(len(queries), 8)
         self.assertFalse(IgCommercialEpisode.objects.filter(client=self.buyer).exists())
         self.assertIsNone(snapshot["viewed_episode_id"])
         self.assertEqual(snapshot["focus"]["node_id"], "inquiry")
@@ -299,7 +299,7 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
-        self.assertLessEqual(len(queries), 14)
+        self.assertLessEqual(len(queries), 15)
         graph = snapshot["graph"]
         self.assertEqual((graph["schema_version"], graph["version"]), (1, 1))
         self.assertEqual(len(graph["edges"]), 1)

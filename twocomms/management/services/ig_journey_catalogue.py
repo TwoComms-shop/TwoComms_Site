@@ -8,7 +8,10 @@ def journey_catalogue():
     return {
         "version": DEFINITION_VERSION,
         "definitions": [{"key": item.key, "label": item.ui_label,
-            "route_keys": list(item.route_keys), "semantic_kind": item.semantic_kind}
+            "route_keys": list(item.route_keys), "semantic_kind": item.semantic_kind,
+            **({"implementation_status": "planned", "implementation_note":
+                "Планується автоматичний зв’язок із наявністю та дозволом на повідомлення. Очікування не надає дозволу на відправлення."}
+               if item.key in {"stock_wait", "restock_consent"} else {})}
             for item in semantic_definitions()],
         "transitions": [{"id": f"structural:{i}:{item.source_key}:{item.target_key}",
             "source_key": item.source_key, "target_key": item.target_key,

@@ -7,6 +7,8 @@
     ['catalog_discovery',1,0,'shirt','Потрібен підбір'],
     ['photo_reference',1,2,'image','Фото'],
     ['availability_question',2,2,'question','Доступність'],
+    ['stock_wait',3,2,'package','Чекаємо наявність'],
+    ['restock_consent',4,2,'bell','Дозвіл сповістити'],
     ['custom_print',1,1,'image','Кастом'],
     ['dtf_only',1,3,'image','DTF-плівка'],
     ['custom_brief',2,1,'brief','Бриф'],
@@ -57,7 +59,7 @@
     information_question:[1,2],information_resolved:[3,2],employment:[5,2],employment_response:[7,2],
     configured_line:[4,4],quoted_offer:[5,4],awaiting_payment:[6,4],settlement:[7,4],fulfillment:[8,4],
     custom_print:[1,5],dtf_only:[1,6],custom_brief:[2,5],mockup_current_acceptance:[3,5],
-    photo_reference:[1,7],availability_question:[2,7],prize_candidate:[1,8],prize_decision:[3,8],
+    photo_reference:[1,7],availability_question:[2,7],stock_wait:[3,7],restock_consent:[4,7],prize_candidate:[1,8],prize_decision:[3,8],
     payment_help:[6,6],objection_case:[5,7],post_sale_request:[1,9],post_sale_case:[9,5],
     channel_consent:[8,6],channel_grant_checked:[9,6],post_purchase_contact_offer:[10,6],
     ugc_assessment:[11,6],reward_entitlement:[11,7],reward_delivery:[10,7],reward_use:[9,7],
@@ -69,6 +71,7 @@
   const returns = new Set(['configuration_correction','offer_correction','settlement_correction',
     'new_selection','amended_offer','new_attempt']);
   function visualFor(node = {}) {
+    if(node.semantic_key==='client_order_context')return {rank:7,lane:2,icon:'package',short_label:node.label||'Пов’язане замовлення'};
     if(node.id==='guide:offer'&&!node.semantic_key)return {rank:5,lane:0,icon:'link',short_label:'Посилання'};
     const guideAliases={'guide:selection':'catalog_discovery','guide:terms':'quoted_offer','guide:payment':'settlement','guide:fulfillment':'fulfillment','guide:inquiry':'inbound'};
     const exact = visuals.get(node.semantic_key) || visuals.get(guideAliases[node.id]);
