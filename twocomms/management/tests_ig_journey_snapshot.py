@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from management.models import (
     IgClient, IgCommercialEpisode, IgCommercialEpisodeEvent, IgFunnelStepEvent,
-    IgPaymentConfirmationReview, InstagramBotMessage,
+    IgObjection, IgObjectionAttempt, IgPaymentConfirmationReview, InstagramBotMessage,
 )
 from management.services.ig_journey_snapshot import build_journey_snapshot, InvalidJourneyEpisode
 from orders.models import Order
@@ -54,11 +54,13 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
-        self.assertLessEqual(len(queries), 4)
+        self.assertLessEqual(len(queries), 5)
         self.assertFalse(IgCommercialEpisode.objects.filter(client=self.buyer).exists())
         self.assertIsNone(snapshot["viewed_episode_id"])
         self.assertEqual(snapshot["focus"]["node_id"], "inquiry")
         self.assertEqual(self.nodes(snapshot)["inquiry"]["facts"][0]["evidence_refs"], [{"kind": "message", "id": message.pk}])
+        self.assertEqual(snapshot["graph"]["overview_node_ids"], ["guide:inquiry"])
+        self.assertEqual(snapshot["graph"]["nodes"][0]["id"], "guide:inquiry")
         self.assertNotIn("PRIVATE CUSTOMER TEXT", json.dumps(snapshot))
         self.assertTrue(all(node["state"] == "open" for node in snapshot["nodes"][1:]))
 
@@ -97,6 +99,7 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual(snapshot["history"]["events"][0]["provenance"], "provider_event")
         self.assertEqual(snapshot["history"]["edges"], [])
         self.assertEqual(snapshot["history"]["visits"][0]["node_id"], "payment")
+        self.assertEqual(snapshot["graph"]["history"]["events"][0]["node_id"], "guide:payment")
 
     def test_price_quote_is_history_and_manager_is_not_provider_truth(self):
         episode = self.episode(payment_snapshot={
@@ -127,7 +130,7 @@ class JourneySnapshotTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             first = build_journey_snapshot(self.buyer, view_episode_id=old.pk)
         second = build_journey_snapshot(SimpleNamespace(pk=self.buyer.pk), view_episode_id=old.pk)
-        self.assertLessEqual(len(queries), 8)
+        self.assertLessEqual(len(queries), 11)
         self.assertEqual(first["revision"], second["revision"])
         self.assertEqual(first["episodes"]["total"], 24)
         self.assertEqual(len(first["episodes"]["items"]), 20)
@@ -209,6 +212,85 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual((order_fact["state"], order_fact["tone"]), ("partial", "neutral"))
         payment_fact = next(fact for fact in nodes["payment"]["facts"] if fact["id"] == "payment:order_payment")
         self.assertEqual(payment_fact["tone"], "neutral")
+
+    def test_graph_uses_allowlisted_lifecycle_edges_and_episode_bound_objections(self):
+        episode = self.episode()
+        lifecycle = IgCommercialEpisodeEvent.objects.create(
+            episode=episode, dedupe_key="graph-order", event_type="order_bound",
+            from_state="active", to_state="order_created", source="order_resolution", evidence={"order_id": 9},
+        )
+        IgCommercialEpisodeEvent.objects.create(
+            episode=episode, dedupe_key="graph-stage", event_type="stage_transition",
+            from_state="paid", to_state="qualifying", evidence={"message_id": 7},
+        )
+        objection = IgObjection.objects.create(
+            client=self.buyer, episode=episode, objection_type=IgObjection.Type.PRICE,
+            dedupe_key="graph-objection", repeat_count=3, attempts_count=1,
+        )
+        attempt = IgObjectionAttempt.objects.create(
+            objection=objection, method="answer", verified=False,
+            result=IgObjectionAttempt.Result.PENDING,
+        )
+        with CaptureQueriesContext(connection) as queries:
+            snapshot = build_journey_snapshot(self.buyer)
+        self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
+        self.assertLessEqual(len(queries), 13)
+        graph = snapshot["graph"]
+        self.assertEqual((graph["schema_version"], graph["version"]), (1, 1))
+        self.assertEqual(len(graph["edges"]), 1)
+        lifecycle_edge = next(edge for edge in graph["edges"] if edge["id"] == f"lifecycle:episode_event:{lifecycle.pk}")
+        self.assertEqual(lifecycle_edge["relation"], "episode_lifecycle")
+        self.assertEqual(lifecycle_edge["event_ids"], [f"episode_event:{lifecycle.pk}"])
+        self.assertNotIn("qualifying", json.dumps(graph))
+        objection_node = next(node for node in graph["nodes"] if node["id"] == f"objection:{objection.pk}")
+        self.assertEqual([(fact["label"], fact["value"]) for fact in objection_node["facts"][:2]],
+                         [("Повторних згадок", 3), ("Спроб відповіді", 1)])
+        detail = objection_node["facts"][2]
+        self.assertEqual(detail["id"], f"objection_attempt:{attempt.pk}")
+        self.assertEqual(detail["state"], "partial")
+        self.assertFalse(any(node["id"].startswith("objection_attempt:") for node in graph["nodes"]))
+
+    def test_graph_bounds_attempt_details_and_reports_hidden_unresolved_cases(self):
+        episode = self.episode()
+        cases = [IgObjection.objects.create(
+            client=self.buyer, episode=episode, objection_type=IgObjection.Type.PRICE,
+            dedupe_key=f"graph-open-{index}", attempts_count=101 if index == 10 else 0,
+        ) for index in range(11)]
+        IgObjectionAttempt.objects.bulk_create([
+            IgObjectionAttempt(objection=cases[10], method="answer", verified=False,
+                               result=IgObjectionAttempt.Result.ACCEPTED)
+            for _ in range(101)
+        ])
+        graph = build_journey_snapshot(self.buyer)["graph"]
+        coverage = graph["coverage"]
+        self.assertEqual(coverage["objections"], {
+            "total": 11, "returned": 10, "limit": 20,
+            "unresolved_total": 11, "unresolved_returned": 10, "has_more": True,
+        })
+        self.assertEqual(coverage["attempt_details"]["returned"], 100)
+        self.assertTrue(coverage["attempt_details"]["has_more"])
+        self.assertEqual(len(graph["overview_node_ids"]), 10)
+        self.assertTrue(all(node_id.startswith("objection:") for node_id in graph["overview_node_ids"]))
+        first = next(node for node in graph["nodes"] if node["id"] == f"objection:{cases[10].pk}")
+        self.assertEqual(len(first["facts"]), 102)
+        self.assertTrue(all(fact.get("state") != "complete" for fact in first["facts"][2:]))
+
+    def test_analysis_is_annotation_not_activated_route(self):
+        from management.models import IgConversationAnalysisSnapshot
+        foreign_message = InstagramBotMessage.objects.create(
+            client=self.other, sender_id="journey-other", role="user", text="OTHER CLIENT",
+        )
+        analysis = IgConversationAnalysisSnapshot.objects.create(
+            client=self.buyer, dedupe_key="graph-analysis", score_band="exploring",
+            interaction_type=IgConversationAnalysisSnapshot.InteractionType.COLLABORATION,
+            last_analyzed_message=foreign_message,
+        )
+        graph = build_journey_snapshot(self.buyer)["graph"]
+        self.assertEqual(graph["nodes"], [])
+        self.assertEqual(graph["edges"], [])
+        self.assertEqual(graph["interpretations"][0]["status"], "interpretation_not_route_authority")
+        self.assertNotIn("semantic_key", graph["interpretations"][0])
+        self.assertEqual(graph["interpretations"][0]["evidence_refs"], [{"kind": "analysis_snapshot", "id": analysis.pk}])
 
 
 @override_settings(ROOT_URLCONF="twocomms.urls_management", ALLOWED_HOSTS=["testserver"])

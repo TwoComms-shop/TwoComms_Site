@@ -13,7 +13,7 @@ import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
-from management.models import IgCommercialEpisode, IgCommercialEpisodeEvent, IgFunnelStepEvent
+from management.models import IgCommercialEpisode, IgCommercialEpisodeEvent, IgFunnelStepEvent, IgObjectionAttempt
 
 
 EPISODE_LIMIT = 20
@@ -34,12 +34,42 @@ STEP_NODES = {
 }
 STEP_LABELS = dict(IgFunnelStepEvent.Type.choices)
 EPISODE_LABELS = {
-    "episode_opened": "Цикл відкрито", "deal_bound": "Угоду пов’язано",
-    "payment_review_bound": "Перевірку оплати пов’язано",
+    "opened": "Цикл відкрито", "review_detached": "Перевірку відв’язано",
+    "review_attached": "Перевірку пов’язано", "payment_review": "Перевірку оплати оновлено",
+    "review_superseded": "Перевірку замінено",
     "payment_updated": "Дані оплати оновлено", "order_bound": "Замовлення пов’язано",
     "fulfillment_updated": "Дані виконання оновлено",
-    "stage_changed": "Фокус діалогу змінено", "episode_closed": "Цикл закрито",
+    "repeat_evidence_extended": "Доповнено доказ повтору",
+    "historical_paid_archived": "Історичну оплату заархівовано",
+    "historical_purchase_corrected": "Історичну покупку виправлено",
+    "existing_order_linked": "Існуюче замовлення пов’язано",
+    "stage_transition": "Змінено фокус циклу",
 }
+LIFECYCLE_EDGE_TYPES = frozenset({
+    "order_bound", "fulfillment_updated", "historical_paid_archived",
+    "historical_purchase_corrected",
+})
+EPISODE_STATES = frozenset({"active", "order_created", "fulfilled", "cancelled", "lost"})
+EPISODE_STATE_LABELS = dict(IgCommercialEpisode.State.choices)
+REPEAT_KIND_LABELS = dict(IgCommercialEpisode.RepeatKind.choices)
+LIFECYCLE_EDGE_SOURCES = {
+    "order_bound": frozenset({"order_resolution", "provider_auto", "manager_review", "linked_existing"}),
+    "fulfillment_updated": frozenset({"order_truth", "order_signal"}),
+    "historical_paid_archived": frozenset({"manager_resolution"}),
+    "historical_purchase_corrected": frozenset({"manager_correction"}),
+}
+GRAPH_EPISODE_STATE = {
+    "active": "partial", "order_created": "partial", "fulfilled": "complete",
+    "cancelled": "invalidated", "lost": "invalidated",
+}
+GRAPH_OBJECTION_STATE = {
+    "open": "partial", "handled": "partial", "resolved": "complete", "abandoned": "invalidated",
+}
+GRAPH_ATTEMPT_STATE = {
+    "pending": "partial", "accepted": "complete", "purchased": "complete",
+    "ignored": "invalidated", "re_objected": "partial", "silent": "partial", "escalated": "partial",
+}
+ATTEMPT_RESULT_LABELS = dict(IgObjectionAttempt.Result.choices)
 EPISODE_FIELDS = (
     "id", "client_id", "sequence", "open_slot", "state", "repeat_kind",
     "opened_at", "closed_at", "updated_at", "intended_order_id",
@@ -150,7 +180,7 @@ def _event(row, kind):
         and actor == "provider" and _positive_id(evidence.get("provider_event_id"))
         and _positive_id(evidence.get("projection_id"))
     )
-    return {
+    result = {
         "id": f"{kind}:{row['id']}", "type": event_type if known else "other",
         "label": str((STEP_LABELS if kind == "funnel_event" else EPISODE_LABELS).get(
             event_type, "Подія циклу")),
@@ -166,11 +196,18 @@ def _event(row, kind):
             if (identifier := _positive_id(evidence.get(key))) is not None
         },
     }
+    if kind == "episode_event" and event_type in EPISODE_LABELS:
+        result["episode_event_type"] = event_type
+        from_state, to_state = str(row.get("from_state") or ""), str(row.get("to_state") or "")
+        if (event_type in LIFECYCLE_EDGE_TYPES and actor in LIFECYCLE_EDGE_SOURCES[event_type]
+                and from_state in EPISODE_STATES and to_state in EPISODE_STATES):
+            result["episode_states"] = {"from": from_state, "to": to_state}
+    return result
 
 
-def _history(episode_id):
-    steps = IgFunnelStepEvent.objects.filter(episode_id=episode_id)
-    commercial = IgCommercialEpisodeEvent.objects.filter(episode_id=episode_id)
+def _history(episode_id, client_id):
+    steps = IgFunnelStepEvent.objects.filter(episode_id=episode_id, episode__client_id=client_id)
+    commercial = IgCommercialEpisodeEvent.objects.filter(episode_id=episode_id, episode__client_id=client_id)
     total = steps.count() + commercial.count()
     rows = [
         _event(row, "funnel_event") for row in steps.order_by("-occurred_at", "-id").values(
@@ -179,7 +216,7 @@ def _history(episode_id):
     ]
     rows.extend(_event(row, "episode_event") for row in commercial.order_by(
         "-created_at", "-id",
-    ).values("id", "event_type", "source", "created_at", "evidence")[:EVENT_LIMIT])
+    ).values("id", "event_type", "from_state", "to_state", "source", "created_at", "evidence")[:EVENT_LIMIT])
     rows.sort(key=lambda row: (row["occurred_at"], row["id"].split(":")[0], int(row["id"].split(":")[1])), reverse=True)
     rows = list(reversed(rows[:EVENT_LIMIT]))
     # Commercial events often mirror funnel milestones. Only the typed funnel
@@ -193,6 +230,182 @@ def _history(episode_id):
         "events": rows, "total": total, "has_more": total > len(rows),
         "coverage": "partial", "visits": visits, "edges": [],
         "edge_coverage": "missing_source",
+    }
+
+
+def _graph_node(identifier, label, *, semantic_key=None, state="partial", current=False,
+                summary="", facts=None, evidence_refs=None, rank=0, lane=0):
+    return {
+        "id": identifier, "semantic_key": semantic_key, "label": label,
+        "state": state, "current": bool(current), "summary": summary,
+        "facts": facts or [], "evidence_refs": evidence_refs or [],
+        "layout": {"rank": rank, "lane": lane},
+    }
+
+
+def _graph_interpretation(client_id, episode_id=None):
+    from management.models import IgConversationAnalysisSnapshot, InstagramBotMessage
+
+    query = IgConversationAnalysisSnapshot.objects.filter(client_id=client_id)
+    if episode_id is not None:
+        query = query.filter(commercial_episode_id=episode_id)
+    row = query.order_by("-analyzed_at", "-id").values(
+        "id", "interaction_type", "score_band", "confidence", "last_analyzed_message_id", "analyzed_at",
+        "analysis_model", "analysis_prompt_version", "rules_version", "required_state_fingerprint",
+    ).first()
+    if not row:
+        return []
+    refs = [_ref("analysis_snapshot", row["id"])]
+    message_id = _positive_id(row["last_analyzed_message_id"])
+    if message_id and InstagramBotMessage.objects.filter(pk=message_id, client_id=client_id).exists():
+        refs.append(_ref("message", message_id))
+    # Interpretation values are intentionally omitted: raw analysis evidence and
+    # uncertainty strings can include transcript-derived sensitive material.
+    return [{
+        "id": f"interpretation:{row['id']}", "status": "interpretation_not_route_authority",
+        "interaction_type": row["interaction_type"], "score_band": row["score_band"],
+        "confidence": str(row["confidence"]), "analyzed_at": _iso(row["analyzed_at"]),
+        "versions": {"model": row["analysis_model"], "prompt": row["analysis_prompt_version"],
+                     "rules": row["rules_version"], "state": row["required_state_fingerprint"]},
+        "evidence_refs": refs,
+    }]
+
+
+def _attempt_state(row):
+    if not row["verified"]:
+        return "partial"
+    return GRAPH_ATTEMPT_STATE.get(row["result"], "partial")
+
+
+def _guide_graph_nodes(nodes, milestones, focus):
+    """Merge current snapshots and recorded milestones into one guide node each."""
+    semantics = {"inquiry": "inbound", "terms": "quoted_offer",
+                 "payment": "settlement", "fulfillment": "fulfillment"}
+    result = []
+    for rank, (key, label) in enumerate(GUIDE, start=1):
+        node = nodes[key]
+        milestone = milestones.get(key, {"refs": [], "facts": []})
+        facts = [*node["facts"], *milestone["facts"]]
+        refs = [*node["evidence_refs"], *milestone["refs"]]
+        if not facts:
+            continue
+        result.append(_graph_node(
+            f"guide:{key}", label, semantic_key=semantics.get(key), state=node["state"],
+            current=focus == key, summary=node["summary"], facts=facts, evidence_refs=refs,
+            rank=rank, lane=1,
+        ))
+    return result
+
+
+def _graph(episode, nodes, history, focus):
+    """Build sourced graph details without reinterpreting chronology as a route."""
+    graph_nodes, edges = [], []
+    interpretations = _graph_interpretation(episode["client_id"], episode["id"])
+    episode_ref = _ref("episode", episode["id"])
+    graph_nodes.append(_graph_node(
+        f"episode:{episode['id']}", f"Покупка {episode['sequence']}",
+        state=GRAPH_EPISODE_STATE.get(episode["state"], "partial"),
+        summary="Цикл покупки", facts=[{"id": "episode:repeat_kind", "label": "Тип циклу",
+        "value": str(REPEAT_KIND_LABELS.get(episode["repeat_kind"], "Не вказано")),
+        "evidence_refs": [episode_ref]}], evidence_refs=[episode_ref], rank=0,
+    ))
+    milestones = {}
+    for rank, event in enumerate(history["events"], start=10):
+        ref = event["evidence_refs"]
+        if event["id"].startswith("funnel_event:") and event["node_id"]:
+            key = event["node_id"]
+            milestone = milestones.setdefault(key, {"refs": [], "facts": []})
+            milestone["refs"].extend(ref)
+            milestone["facts"].append({
+                "id": f"milestone:{event['id']}", "label": event["label"],
+                "value": event["occurred_at"], "evidence_refs": ref,
+            })
+        states = event.get("episode_states")
+        if states:
+            source_id = f"episode_state:{episode['id']}:{states['from']}"
+            target_id = f"episode_state:{episode['id']}:{states['to']}"
+            for identifier, value in ((source_id, states["from"]), (target_id, states["to"])):
+                if not any(item["id"] == identifier for item in graph_nodes):
+                    graph_nodes.append(_graph_node(
+                        identifier, str(EPISODE_STATE_LABELS[value]), state=GRAPH_EPISODE_STATE[value],
+                        summary="Зафіксований стан циклу", evidence_refs=ref, rank=rank, lane=3,
+                    ))
+            edges.append({"id": f"lifecycle:{event['id']}", "from_node_id": source_id, "to_node_id": target_id,
+                          "relation": "episode_lifecycle", "outcome": str(EPISODE_STATE_LABELS[states["to"]]), "tone": "neutral",
+                          "evidence_refs": ref, "event_ids": [event["id"]], "repeated_count": 1})
+
+    graph_nodes.extend(_guide_graph_nodes(nodes, milestones, focus))
+
+    from django.db.models import Count, Q
+    from management.models import IgObjection
+    objection_query = IgObjection.objects.filter(episode_id=episode["id"], client_id=episode["client_id"])
+    unresolved_states = (IgObjection.State.OPEN, IgObjection.State.HANDLED)
+    counts = objection_query.aggregate(
+        total=Count("id"), unresolved_total=Count("id", filter=Q(state__in=unresolved_states)),
+    )
+    # Select unresolved cases first, rather than allowing a historical tail to
+    # consume the bounded view. These records retain the model's default order.
+    objections = list(objection_query.filter(state__in=unresolved_states)[:10])
+    remaining = 20 - len(objections)
+    if remaining:
+        objections.extend(objection_query.exclude(state__in=unresolved_states)[:remaining])
+    attempts = list(IgObjectionAttempt.objects.filter(
+        objection_id__in=[objection.pk for objection in objections],
+        objection__episode_id=episode["id"], objection__client_id=episode["client_id"],
+    ).order_by("-id").values("id", "objection_id", "verified", "result")[:100]) if objections else []
+    attempts_by_objection = {}
+    for attempt in attempts:
+        attempts_by_objection.setdefault(attempt["objection_id"], []).append(attempt)
+    for index, objection in enumerate(objections, start=100):
+        obj_ref = _ref("objection", objection.pk)
+        facts = [
+            {"id": f"objection:{objection.pk}:repeat_count", "label": "Повторних згадок",
+             "value": objection.repeat_count, "evidence_refs": [obj_ref]},
+            {"id": f"objection:{objection.pk}:attempt_count", "label": "Спроб відповіді",
+             "value": objection.attempts_count, "evidence_refs": [obj_ref]},
+        ]
+        for attempt in attempts_by_objection.get(objection.pk, []):
+            attempt_ref = _ref("objection_attempt", attempt["id"])
+            facts.append({
+                "id": f"objection_attempt:{attempt['id']}", "label": "Результат спроби відповіді",
+                "value": str(ATTEMPT_RESULT_LABELS.get(attempt["result"], "Результат не визначено")),
+                "state": _attempt_state(attempt), "evidence_refs": [attempt_ref],
+            })
+        node_id = f"objection:{objection.pk}"
+        graph_nodes.append(_graph_node(node_id, "Заперечення", semantic_key="objection_case",
+                           state=GRAPH_OBJECTION_STATE.get(objection.state, "partial"),
+                           summary=objection.get_objection_type_display(), facts=facts, evidence_refs=[obj_ref], rank=index, lane=4))
+    returned_attempts = len(attempts)
+    expected_attempts = sum(objection.attempts_count for objection in objections)
+    graph_events = [
+        {**event, "node_id": f"guide:{event['node_id']}" if event["node_id"] else None}
+        for event in history["events"]
+    ]
+    return {"schema_version": 1, "version": 1, "nodes": graph_nodes, "edges": edges,
+            "history": {"events": graph_events, "total": history["total"], "has_more": history["has_more"]}, "interpretations": interpretations,
+            "coverage": {
+                "episode": "bounded", "milestones": "bounded", "lifecycle_edges": "allowlisted",
+                "objections": {"total": counts["total"], "returned": len(objections), "limit": 20,
+                               "unresolved_total": counts["unresolved_total"],
+                               "unresolved_returned": sum(item.state in unresolved_states for item in objections),
+                               "has_more": counts["total"] > len(objections)},
+                "attempt_details": {"returned": returned_attempts, "limit": 100,
+                                    "expected_from_case_counters": expected_attempts,
+                                    "has_more": returned_attempts == 100 or expected_attempts > returned_attempts},
+                "analysis": "interpretation_only",
+            },
+            "overview_node_ids": [node["id"] for node in graph_nodes if node["current"] or node["id"].startswith("guide:") or node["id"].startswith("objection:") and node["state"] == "partial"]}
+
+
+def _graph_without_episode(client_id, nodes, focus):
+    graph_nodes = _guide_graph_nodes(nodes, {}, focus)
+    return {
+        "schema_version": 1, "version": 1, "nodes": graph_nodes, "edges": [],
+        "history": {"events": [], "total": 0, "has_more": False},
+        "interpretations": _graph_interpretation(client_id),
+        "coverage": {"episode": "absent", "milestones": "absent", "lifecycle_edges": "absent",
+                     "objections": "absent", "attempt_details": "absent", "analysis": "interpretation_only"},
+        "overview_node_ids": [node["id"] for node in graph_nodes if node["current"]],
     }
 
 
@@ -365,7 +578,7 @@ def build_journey_snapshot(client, *, view_episode_id=None):
     focus = None
     if episode:
         _snapshots(episode, nodes)
-        history = _history(episode["id"])
+        history = _history(episode["id"], client_id)
         covered.extend(["episode_snapshots", "funnel_step_events", "commercial_episode_events"])
         for event in history["events"]:
             if event["node_id"]:
@@ -392,6 +605,10 @@ def build_journey_snapshot(client, *, view_episode_id=None):
             covered.append("client_message")
     if focus:
         nodes[focus]["current"] = True
+    if episode:
+        graph = _graph(episode, nodes, history, focus)
+    else:
+        graph = _graph_without_episode(client_id, nodes, focus)
     result = {
         "schema_version": 1, "client_id": client_id,
         "current_episode_id": current["id"] if current else None,
@@ -401,6 +618,7 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         "viewed_episode": _selector(episode) if episode else None,
         "route_kind": "unknown", "focus": {"node_id": focus, "display_only": True},
         "nodes": list(nodes.values()), "history": history,
+        "graph": graph,
         "covered_sources": sorted(set(covered)),
         "deferred_domains": ["live_node_projection", "semantic_transitions", "route_classification", "media_understanding", "checkout_readiness", "offer_validity", "settlement_projection", "attention", "next_action"],
         "capabilities": {"attention": False, "actions": False, "full_projection": False},
