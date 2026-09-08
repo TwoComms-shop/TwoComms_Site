@@ -54,10 +54,11 @@
     'new_selection','amended_offer','new_attempt']);
   function visualFor(node = {}) {
     if(node.id==='guide:offer'&&!node.semantic_key)return {rank:4.5,lane:0,icon:'link',short_label:'Посилання'};
-    const guideAliases={'guide:selection':'catalog_discovery','guide:offer':'mockup_current_acceptance','guide:terms':'quoted_offer','guide:payment':'settlement','guide:fulfillment':'fulfillment','guide:inquiry':'inbound'};
+    const guideAliases={'guide:selection':'catalog_discovery','guide:terms':'quoted_offer','guide:payment':'settlement','guide:fulfillment':'fulfillment','guide:inquiry':'inbound'};
     const exact = visuals.get(node.semantic_key) || visuals.get(guideAliases[node.id]);
     if (exact) return {...exact};
     if (node.semantic_key === 'conversation_intent') {
+      if(node.route_kind==='community')return {rank:1,lane:8.35,icon:'message',short_label:node.short_label||node.label||'Спілкування'};
       const subtype = node.route_kind === 'collaboration' && node.route_subtype
         ? visuals.get('collaboration_' + node.route_subtype) : null;
       const near = subtype || visuals.get(intentKeys[node.route_kind]);
