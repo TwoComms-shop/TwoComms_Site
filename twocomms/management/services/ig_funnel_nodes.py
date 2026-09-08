@@ -35,12 +35,11 @@ API проєкції, два різні шляхи інвалідації і н�
 `invalidates` і `reinforces` можуть бути взаємними; від них вимагається лише
 відсутність самопетлі і наявність цілі.
 
-**Чого тут немає свідомо.** Ні одного нового вузла: рівно ті, що вже існують у
-`checkout_readiness` і в даних угоди (`np_full_name`/`np_phone`/`np_city`/
-`np_office`, `pay_type`, invoice). Плюс два під-умови `size`, які план вимагає
-виразити окремо, бо `size_available` уже реалізовано через `requested_unavailable`.
-`IgClient.stage` не розширюється: закриття вузла доводиться даними, стадія — окреме
-поняття.
+**Матеріалізований checkout scope.** Рівно 14 checkout-вузлів беруться з
+`checkout_readiness` і даних угоди (`np_full_name`/`np_phone`/`np_city`/
+`np_office`, `pay_type`, invoice), включно з двома під-умовами `size`.
+Окремо B09.1 додає structural-only semantic definitions: вони не мають state
+projector, не пишуться в БД і не розширюють `IgClient.stage`.
 """
 from __future__ import annotations
 
@@ -153,9 +152,17 @@ class EvidencePolicy:
     CUSTOMER_STATEMENT = "customer_statement"
     DIRECTORY_CONFIRMED = "directory_confirmed"
     PROVIDER_FACT = "provider_fact"
+    MESSAGE_OBSERVATION = "message_observation"
+    MEDIA_OBSERVATION = "media_observation"
+    MANAGER_DECISION = "manager_decision"
+    ORDER_FACT = "order_fact"
+    CONSENT_FACT = "consent_fact"
+    REWARD_FACT = "reward_fact"
 
     ALL = frozenset({
         CATALOG_FACT, CUSTOMER_STATEMENT, DIRECTORY_CONFIRMED, PROVIDER_FACT,
+        MESSAGE_OBSERVATION, MEDIA_OBSERVATION, MANAGER_DECISION, ORDER_FACT,
+        CONSENT_FACT, REWARD_FACT,
     })
 
 
@@ -166,8 +173,11 @@ class ProjectionTarget:
     CHECKOUT_READINESS = "checkout_readiness"
     DEAL_DELIVERY = "deal_delivery"
     DEAL_PAYMENT = "deal_payment"
+    # Structural route metadata has no state projector.  It must never create
+    # an IgFunnelNodeState merely because the route is possible.
+    NONE = "none"
 
-    ALL = frozenset({CHECKOUT_READINESS, DEAL_DELIVERY, DEAL_PAYMENT})
+    ALL = frozenset({CHECKOUT_READINESS, DEAL_DELIVERY, DEAL_PAYMENT, NONE})
 
 
 class SubjectScope:
@@ -180,12 +190,53 @@ class SubjectScope:
     ALL = frozenset({BUYER, LINE})
 
 
+class SemanticKind:
+    """Role in the structural route catalogue, never observed history."""
+
+    ENTRY = "entry"
+    DECISION = "decision"
+    SHARED_JOIN = "shared_join"
+    CROSS_CUTTING = "cross_cutting"
+    TERMINAL = "terminal"
+
+    ALL = frozenset({ENTRY, DECISION, SHARED_JOIN, CROSS_CUTTING, TERMINAL})
+
+
+class RequirementRole:
+    """Whether a fact is required, helpful, or contextual for an action."""
+
+    REQUIRED = "required"
+    HELPFUL = "helpful"
+    CONTEXT = "context"
+
+    ALL = frozenset({REQUIRED, HELPFUL, CONTEXT})
+
+
 @dataclass(frozen=True, slots=True)
 class NodeDependency:
     """Одне ребро графа. Тільки тип і ціль — жодної умовної логіки."""
 
     kind: str
     on: str
+    note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticTransition:
+    """A possible typed link; it is not a recorded customer transition."""
+
+    target_key: str
+    outcome: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class StructuralTransition:
+    """A source-qualified possible route link returned by the metadata API."""
+
+    source_key: str
+    target_key: str
+    outcome: str = ""
     note: str = ""
 
 
@@ -212,6 +263,14 @@ class FunnelNodeDefinition:
     dependencies: tuple[NodeDependency, ...] = ()
     blocking_for: tuple[str, ...] = ()
     version: str = DEFINITION_VERSION
+    # B09.1 metadata. Existing checkout definitions retain empty defaults.
+    semantic_kind: str = ""
+    route_keys: tuple[str, ...] = ()
+    requirement_role: str = ""
+    authority_contract: str = ""
+    instruction_fragment_key: str = ""
+    allowed_outcomes: tuple[str, ...] = ()
+    transitions: tuple[SemanticTransition, ...] = ()
 
     @property
     def level(self) -> int:
@@ -226,6 +285,10 @@ class FunnelNodeDefinition:
     @property
     def skippable(self) -> bool:
         return self.node_class == NodeClass.QUALITY
+
+    @property
+    def is_materialized(self) -> bool:
+        return self.projection_target != ProjectionTarget.NONE
 
     def dependencies_of(self, kind: str) -> tuple[str, ...]:
         return tuple(dep.on for dep in self.dependencies if dep.kind == kind)
@@ -252,7 +315,7 @@ def _definitions() -> tuple[FunnelNodeDefinition, ...]:
     order_create = IrreversibleAction.ORDER_CREATE
     readiness_target = ProjectionTarget.CHECKOUT_READINESS
 
-    return (
+    checkout = (
         FunnelNodeDefinition(
             key="product",
             node_class=NodeClass.BLOCKING,
@@ -476,12 +539,168 @@ def _definitions() -> tuple[FunnelNodeDefinition, ...]:
             blocking_for=(order_create,),
         ),
     )
+    return checkout + _semantic_definitions()
+
+
+def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
+    """Static D064 route structure, deliberately disconnected from projection.
+
+    Each definition remains in the canonical registry so bot and map can share
+    keys later.  `authority_contract` names the producer that must be linked
+    before a route can become active; this catalogue itself proves nothing.
+    """
+    def route(
+        key: str, label: str, kind: str, route_key: str, *,
+        authority: str, evidence_policy: str, outcomes: tuple[str, ...] = (),
+        transitions: tuple[SemanticTransition, ...] = (),
+        instruction: str = "",
+    ) -> FunnelNodeDefinition:
+        return FunnelNodeDefinition(
+            key=key,
+            node_class=NodeClass.CONTEXT,
+            ui_label=label,
+            group="journey",
+            applicable_when="producer_linked",
+            evidence_policy=evidence_policy,
+            projection_target=ProjectionTarget.NONE,
+            semantic_kind=kind,
+            route_keys=(route_key,),
+            requirement_role=RequirementRole.CONTEXT,
+            authority_contract=authority,
+            instruction_fragment_key=instruction,
+            allowed_outcomes=outcomes,
+            transitions=transitions,
+        )
+
+    to = SemanticTransition
+    entry = SemanticKind.ENTRY
+    decision = SemanticKind.DECISION
+    join = SemanticKind.SHARED_JOIN
+    cross = SemanticKind.CROSS_CUTTING
+    terminal = SemanticKind.TERMINAL
+    return (
+        route("inbound", "Вхідне звернення", entry, "inbound",
+              authority="owned_inbound_message", evidence_policy=EvidencePolicy.MESSAGE_OBSERVATION, transitions=(
+                  to("ad_resolved_product"), to("catalog_discovery"), to("photo_reference"),
+                  to("custom_print"), to("dtf_only"), to("prize_candidate"),
+                  to("information_question"), to("collaboration"), to("employment"),
+                  to("spam_confirmed"), to("post_sale_request"),
+              )),
+        route("ad_resolved_product", "Відомий товар", entry, "catalog",
+              authority="resolved_ad_or_product_reference", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("configured_line"),)),
+        route("catalog_discovery", "Підбір товару", entry, "catalog",
+              authority="customer_need_or_catalog_selection", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line"),)),
+        route("photo_reference", "Фото-референс", entry, "photo",
+              authority="owned_media_understanding", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(
+                  to("catalog_discovery", "catalog_match"), to("custom_print", "custom_reference"),
+                  to("availability_question", "availability"),
+              )),
+        route("availability_question", "Доступність", decision, "catalog",
+              authority="catalog_availability_fact", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("configured_line"),)),
+        route("custom_print", "Кастом", entry, "custom",
+              authority="typed_custom_brief_producer", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("custom_brief"),)),
+        route("dtf_only", "DTF-плівка", entry, "dtf",
+              authority="typed_dtf_brief_producer", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("custom_brief"),)),
+        route("custom_brief", "Бриф", decision, "custom",
+              authority="typed_custom_brief_producer", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("mockup_current_acceptance"),)),
+        route("mockup_current_acceptance", "Актуальний макет", decision, "custom",
+              authority="versioned_mockup_acceptance", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("quoted_offer"),)),
+        route("prize_candidate", "Призовий випадок", entry, "prize",
+              authority="validated_prize_case", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(to("prize_decision", "manager_decision"),)),
+        route("prize_decision", "Рішення про приз", decision, "prize",
+              authority="authorised_prize_entitlement", evidence_policy=EvidencePolicy.MANAGER_DECISION, transitions=(to("configured_line"), to("custom_brief"))),
+        route("information_question", "Інформаційне питання", entry, "information",
+              authority="owned_customer_question", evidence_policy=EvidencePolicy.MESSAGE_OBSERVATION, transitions=(to("information_resolved"),)),
+        route("information_resolved", "Питання закрито", terminal, "information",
+              authority="recorded_answer_outcome", evidence_policy=EvidencePolicy.MESSAGE_OBSERVATION, outcomes=("resolved",)),
+        route("collaboration", "Співпраця", entry, "collaboration",
+              authority="structured_collaboration_intent", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(
+                  to("collaboration_designer"), to("collaboration_partnership"),
+                  to("collaboration_dropship"), to("collaboration_wholesale_store"),
+                  to("collaboration_creator"), to("collaboration_other"),
+              )),
+        route("collaboration_designer", "Дизайнер", decision, "collaboration",
+              authority="published_collaboration_policy", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("business_decision"),)),
+        route("collaboration_partnership", "Партнерство", decision, "collaboration",
+              authority="published_collaboration_policy", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("business_decision"),)),
+        route("collaboration_dropship", "Dropship", decision, "collaboration",
+              authority="published_collaboration_policy", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("business_decision"),)),
+        route("collaboration_wholesale_store", "Опт або магазин", decision, "collaboration",
+              authority="published_collaboration_policy", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("business_decision"),)),
+        route("collaboration_creator", "Creator", decision, "collaboration",
+              authority="published_collaboration_policy", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("business_decision"),)),
+        route("collaboration_other", "Інша співпраця", decision, "collaboration",
+              authority="published_collaboration_policy", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("business_decision"),)),
+        route("business_decision", "Ділове рішення", terminal, "collaboration",
+              authority="authorised_business_decision", evidence_policy=EvidencePolicy.MANAGER_DECISION, outcomes=("resolved", "declined"),
+              transitions=(to("new_purchase_interest", "new_customer_interest"),)),
+        route("employment", "Робота в команді", entry, "employment",
+              authority="published_employment_policy", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("employment_response"),)),
+        route("employment_response", "Відповідь щодо роботи", terminal, "employment",
+              authority="authorised_employment_decision", evidence_policy=EvidencePolicy.MANAGER_DECISION, outcomes=("resolved", "unknown_policy")),
+        route("spam_confirmed", "Підтверджений спам", terminal, "spam",
+              authority="deterministic_spam_or_authorised_decision", evidence_policy=EvidencePolicy.MANAGER_DECISION, outcomes=("blocked", "corrected")),
+        route("configured_line", "Підтверджений склад", join, "commerce",
+              authority="canonical_line_configuration", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("quoted_offer"),)),
+        route("quoted_offer", "Актуальна пропозиція", join, "commerce",
+              authority="versioned_offer_or_quote", evidence_policy=EvidencePolicy.MANAGER_DECISION, transitions=(
+                  to("awaiting_payment"), to("objection_case"), to("configured_line", "configuration_correction"),
+              )),
+        route("awaiting_payment", "Очікування оплати", decision, "payment",
+              authority="current_invoice_or_payment_attempt", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(
+                  to("settlement", "confirmed_coverage"), to("payment_help", "eligible_follow_up"),
+                  to("quoted_offer", "offer_correction"), to("configured_line", "configuration_correction"),
+              )),
+        route("payment_help", "Допомога з оплатою", decision, "payment",
+              authority="current_payment_follow_up_and_permission", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(
+                  to("awaiting_payment", "wait_for_attempt"), to("quoted_offer", "offer_correction"),
+                  to("configured_line", "configuration_correction"), to("objection_case", "payment_objection"),
+              )),
+        route("settlement", "Розрахунок", join, "commerce",
+              authority="payment_or_entitlement_truth", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(
+                  to("fulfillment"), to("objection_case"), to("quoted_offer", "settlement_correction"),
+                  to("configured_line", "configuration_correction"), to("channel_consent", "eligible_opt_in"),
+              )),
+        route("fulfillment", "Виконання", join, "commerce",
+              authority="bound_order_and_shipment_truth", evidence_policy=EvidencePolicy.ORDER_FACT, transitions=(to("post_sale_case"), to("post_purchase_contact_offer"), to("repeat_interest"), to("channel_consent", "eligible_opt_in"))),
+        route("objection_case", "Заперечення", cross, "objection",
+              authority="episode_line_bound_objection_case", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line", "new_selection"), to("quoted_offer", "amended_offer"), to("settlement", "new_attempt"))),
+        route("channel_consent", "Згода на канал", cross, "consent",
+              authority="purpose_scoped_consent_and_permission", evidence_policy=EvidencePolicy.CONSENT_FACT, transitions=(to("channel_grant_checked", "consent_recorded"),)),
+        route("channel_grant_checked", "Перевірка дозволу каналу", cross, "consent",
+              authority="current_server_permission_profile", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(to("post_purchase_contact_offer", "send_capable"),)),
+        route("post_purchase_contact_offer", "Пропозиція після покупки", decision, "ugc",
+              authority="purpose_scoped_offer_delivery_receipt", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(to("ugc_assessment", "material_received"),)),
+        route("post_sale_request", "Сервісний запит", entry, "post_sale",
+              authority="bound_order_or_service_request", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("post_sale_case"),)),
+        route("post_sale_case", "Сервісний випадок", cross, "post_sale",
+              authority="post_sale_case_and_shipment_truth", evidence_policy=EvidencePolicy.ORDER_FACT, outcomes=("resolved", "rejected", "cancelled"),
+              transitions=(to("configured_line", "new_need"),)),
+        route("ugc_assessment", "Перевірка UGC", cross, "ugc",
+              authority="ugc_evidence_assessment", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(to("reward_entitlement"),)),
+        route("reward_entitlement", "Право на нагороду", cross, "reward",
+              authority="authorised_reward_entitlement", evidence_policy=EvidencePolicy.REWARD_FACT, transitions=(to("reward_delivery"),)),
+        route("reward_delivery", "Видача нагороди", cross, "reward",
+              authority="reward_delivery_receipt", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(to("reward_use"),)),
+        route("reward_use", "Використання нагороди", cross, "reward",
+              authority="reward_redemption_truth", evidence_policy=EvidencePolicy.REWARD_FACT, transitions=(to("new_purchase_interest"),)),
+        route("repeat_interest", "Новий інтерес", cross, "repeat",
+              authority="explicit_repeat_evidence", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("new_purchase_interest"),)),
+        route("new_purchase_interest", "Нова покупка", join, "repeat",
+              authority="new_commercial_episode", evidence_policy=EvidencePolicy.ORDER_FACT, transitions=(to("configured_line"),)),
+    )
 
 
 REGISTRY: dict[str, FunnelNodeDefinition] = {
     definition.key: definition for definition in _definitions()
 }
 NODE_KEYS: tuple[str, ...] = tuple(REGISTRY)
+MATERIALIZED_NODE_KEYS: tuple[str, ...] = tuple(
+    key for key, definition in REGISTRY.items() if definition.is_materialized
+)
+SEMANTIC_NODE_KEYS: tuple[str, ...] = tuple(
+    key for key, definition in REGISTRY.items() if not definition.is_materialized
+)
 
 
 class RegistryError(ValueError):
@@ -517,6 +736,25 @@ def validate_registry(registry: dict | None = None) -> tuple[str, ...]:
             problems.append(f"{key}: невідома політика доказу {definition.evidence_policy!r}")
         if definition.projection_target not in ProjectionTarget.ALL:
             problems.append(f"{key}: невідома проєкція {definition.projection_target!r}")
+        if definition.semantic_kind and definition.semantic_kind not in SemanticKind.ALL:
+            problems.append(f"{key}: невідомий semantic kind {definition.semantic_kind!r}")
+        if definition.requirement_role and definition.requirement_role not in RequirementRole.ALL:
+            problems.append(f"{key}: невідома semantic requirement role {definition.requirement_role!r}")
+        if not definition.is_materialized:
+            if definition.node_class != NodeClass.CONTEXT:
+                problems.append(f"{key}: semantic-only вузол має бути CONTEXT")
+            if not definition.semantic_kind or not definition.route_keys:
+                problems.append(f"{key}: semantic-only вузол не має typed metadata")
+            if not str(definition.authority_contract or "").strip():
+                problems.append(f"{key}: semantic-only вузол не має authority contract")
+            if definition.prompt_priority:
+                problems.append(f"{key}: semantic-only вузол не може мати prompt priority")
+            if definition.dependencies:
+                problems.append(f"{key}: semantic-only вузол не може мати checkout dependencies")
+            if definition.blocking_for:
+                problems.append(f"{key}: semantic-only вузол не може блокувати дію")
+        elif definition.semantic_kind or definition.route_keys or definition.transitions:
+            problems.append(f"{key}: materialized вузол не може мати route metadata")
 
         for action in definition.blocking_for:
             if action not in IrreversibleAction.ALL:
@@ -552,6 +790,17 @@ def validate_registry(registry: dict | None = None) -> tuple[str, ...]:
                 problems.append(f"{key}: висяче посилання на {dependency.on!r}")
             elif dependency.on == key:
                 problems.append(f"{key}: залежність від самого себе")
+            elif definition.is_materialized and not nodes[dependency.on].is_materialized:
+                problems.append(f"{key}: projected вузол залежить від semantic-only {dependency.on!r}")
+
+        for transition in definition.transitions:
+            if not isinstance(transition, SemanticTransition):
+                problems.append(f"{key}: некоректний semantic transition")
+                continue
+            if transition.target_key not in nodes:
+                problems.append(f"{key}: semantic transition на невідомий вузол {transition.target_key!r}")
+            elif nodes[transition.target_key].is_materialized:
+                problems.append(f"{key}: semantic transition не може вести до checkout field {transition.target_key!r}")
 
     problems.extend(_ordering_cycles(nodes))
     return tuple(problems)
@@ -614,6 +863,38 @@ def definition_for(key: str) -> FunnelNodeDefinition:
         return REGISTRY[key]
     except KeyError:
         raise RegistryError(f"невідомий вузол воронки: {key!r}") from None
+
+
+def semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
+    """Return static D064 definitions, never per-client state or history."""
+    return tuple(REGISTRY[key] for key in SEMANTIC_NODE_KEYS)
+
+
+def semantic_definition_for(key: str) -> FunnelNodeDefinition:
+    """Return one structural definition and reject checkout-state keys."""
+    definition = definition_for(key)
+    if definition.is_materialized:
+        raise RegistryError(f"{key!r} не є semantic-only вузлом")
+    return definition
+
+
+def structural_transitions(route_keys: tuple[str, ...] = ()) -> tuple[StructuralTransition, ...]:
+    """Return possible links only; callers must not render these as history."""
+    selected = frozenset(route_keys)
+    result = []
+    for definition in semantic_definitions():
+        if selected and not selected.intersection(definition.route_keys):
+            continue
+        result.extend(
+            StructuralTransition(
+                source_key=definition.key,
+                target_key=transition.target_key,
+                outcome=transition.outcome,
+                note=transition.note,
+            )
+            for transition in definition.transitions
+        )
+    return tuple(result)
 
 
 def ask_order(registry: dict | None = None) -> tuple[str, ...]:
@@ -1218,7 +1499,7 @@ def project_nodes(*, readiness: dict, deal=None) -> FunnelProjection:
     nodes.extend(_project_delivery(deal))
 
     by_key = {node.key: node for node in nodes}
-    missing_keys = tuple(REGISTRY.keys() - by_key.keys())
+    missing_keys = tuple(set(MATERIALIZED_NODE_KEYS) - by_key.keys())
     if missing_keys:
         raise RegistryError(
             "проєкція не покрила вузли: " + ", ".join(sorted(missing_keys))
@@ -1226,7 +1507,7 @@ def project_nodes(*, readiness: dict, deal=None) -> FunnelProjection:
     payable_ready = bool(readiness.get("can_issue_link"))
     gaps = _blocking_gaps(by_key, IrreversibleAction.PAY_LINK_ISSUE)
     return FunnelProjection(
-        nodes=tuple(by_key[key] for key in REGISTRY),
+        nodes=tuple(by_key[key] for key in MATERIALIZED_NODE_KEYS),
         payable_ready=payable_ready,
         # Авторитет лишається за `checkout_readiness`; розходження — це факт,
         # який видно, а не привід перекрити його проєкцією.
@@ -1322,6 +1603,11 @@ def persist_projection(
         return {"mode": mode, "created": 0, "updated": 0, "unchanged": 0}
     if not getattr(client, "pk", None):
         return {"mode": mode, "created": 0, "updated": 0, "unchanged": 0}
+    semantic_keys = [node.key for node in projection.nodes if not node.definition.is_materialized]
+    if semantic_keys:
+        raise RegistryError(
+            "semantic-only вузли не можна materialize: " + ", ".join(sorted(semantic_keys))
+        )
 
     moment = now or timezone.now()
     branch = branch_type or IgFunnelNodeState.BranchType.MAIN

@@ -16,8 +16,12 @@ from management.services.ig_funnel_nodes import (
     NodeClass,
     NodeDependency,
     FunnelNodeDefinition,
+    FunnelProjection,
+    NodeProjection,
     REGISTRY,
     RegistryError,
+    SemanticKind,
+    SemanticTransition,
 )
 
 STATUS = IgFunnelNodeState.Status
@@ -75,8 +79,80 @@ class RegistryStaticCheckTests(SimpleTestCase):
     def test_registry_passes_static_check(self):
         self.assertEqual(nodes.validate_registry(), ())
 
-    def test_only_already_existing_nodes_are_registered(self):
-        self.assertEqual(set(REGISTRY), set(EXPECTED_KEYS))
+    def test_only_existing_nodes_are_materialized(self):
+        self.assertEqual(set(nodes.MATERIALIZED_NODE_KEYS), set(EXPECTED_KEYS))
+        self.assertEqual(
+            {definition.key for definition in nodes.semantic_definitions()},
+            set(nodes.SEMANTIC_NODE_KEYS),
+        )
+
+    def test_d064_entries_and_shared_joins_are_structural_only(self):
+        required_entries = {
+            "inbound", "ad_resolved_product", "catalog_discovery", "photo_reference",
+            "custom_print", "dtf_only", "prize_candidate", "information_question",
+            "collaboration", "employment", "spam_confirmed", "post_sale_request",
+        }
+        self.assertTrue(required_entries.issubset(nodes.SEMANTIC_NODE_KEYS))
+        self.assertTrue({"configured_line", "quoted_offer", "settlement", "fulfillment"}.issubset(
+            nodes.SEMANTIC_NODE_KEYS
+        ))
+        self.assertTrue({"awaiting_payment", "payment_help"}.issubset(nodes.SEMANTIC_NODE_KEYS))
+        for definition in nodes.semantic_definitions():
+            self.assertFalse(definition.is_materialized)
+            self.assertEqual(definition.node_class, NodeClass.CONTEXT)
+            self.assertIn(definition.semantic_kind, SemanticKind.ALL)
+            self.assertTrue(definition.route_keys)
+            self.assertTrue(definition.authority_contract)
+            self.assertIn(definition.evidence_policy, nodes.EvidencePolicy.ALL)
+            self.assertEqual(definition.prompt_priority, 0)
+            self.assertFalse(definition.dependencies)
+            self.assertFalse(definition.blocking_for)
+
+    def test_structural_transitions_are_typed_and_not_history(self):
+        transitions = nodes.structural_transitions(("collaboration",))
+        self.assertTrue(transitions)
+        self.assertTrue(all(item.source_key in nodes.SEMANTIC_NODE_KEYS for item in transitions))
+        self.assertTrue(all(item.target_key in REGISTRY for item in transitions))
+        self.assertIn("collaboration_designer", {item.target_key for item in transitions})
+        with self.assertRaises(RegistryError):
+            nodes.semantic_definition_for("product")
+
+    def test_payment_help_has_explicit_non_linear_correction_paths(self):
+        transitions = {
+            item.target_key
+            for item in nodes.structural_transitions(("payment",))
+            if item.source_key == "payment_help"
+        }
+        self.assertEqual(
+            transitions,
+            {"awaiting_payment", "quoted_offer", "configured_line", "objection_case"},
+        )
+
+    def test_post_purchase_contact_has_distinct_consent_capability_and_ugc_offer(self):
+        transitions = nodes.structural_transitions()
+        pairs = {(item.source_key, item.target_key) for item in transitions}
+        self.assertIn(("settlement", "channel_consent"), pairs)
+        self.assertIn(("fulfillment", "channel_consent"), pairs)
+        self.assertIn(("channel_consent", "channel_grant_checked"), pairs)
+        self.assertIn(("channel_grant_checked", "post_purchase_contact_offer"), pairs)
+        self.assertIn(("post_purchase_contact_offer", "ugc_assessment"), pairs)
+        self.assertNotIn(("fulfillment", "channel_grant_checked"), pairs)
+
+    def test_semantic_transition_target_is_validated(self):
+        broken = _registry(
+            _definition(
+                "semantic",
+                node_class=NodeClass.CONTEXT,
+                projection_target=nodes.ProjectionTarget.NONE,
+                semantic_kind=SemanticKind.ENTRY,
+                route_keys=("test",),
+                requirement_role=nodes.RequirementRole.CONTEXT,
+                authority_contract="test_source",
+                transitions=(SemanticTransition("ghost"),),
+            ),
+        )
+        problems = nodes.validate_registry(broken)
+        self.assertTrue(any("semantic transition" in problem for problem in problems), problems)
 
     def test_dangling_dependency_is_reported(self):
         broken = _registry(
@@ -218,9 +294,10 @@ class ProjectionFromFactsTests(SimpleTestCase):
         for node in projection.nodes:
             self.assertIn(node.status, STATUS.values)
 
-    def test_every_registered_node_is_projected(self):
+    def test_every_materialized_node_is_projected(self):
         projection = nodes.project_nodes(readiness=readiness_stub())
-        self.assertEqual(set(projection.by_key()), set(REGISTRY))
+        self.assertEqual(set(projection.by_key()), set(nodes.MATERIALIZED_NODE_KEYS))
+        self.assertFalse(set(projection.by_key()).intersection(nodes.SEMANTIC_NODE_KEYS))
 
     def test_missing_product_leaves_configuration_open_not_not_applicable(self):
         readiness = readiness_stub(
@@ -486,14 +563,14 @@ class NodeStatePersistenceTests(TestCase):
     def test_first_write_creates_one_row_per_node_and_repeat_writes_nothing(self):
         projection = nodes.project_nodes(readiness=readiness_stub())
         created = nodes.persist_projection(self.client_row, projection)
-        self.assertEqual(created["created"], len(REGISTRY))
+        self.assertEqual(created["created"], len(nodes.MATERIALIZED_NODE_KEYS))
         self.assertEqual(
-            IgFunnelNodeState.objects.filter(client=self.client_row).count(), len(REGISTRY)
+            IgFunnelNodeState.objects.filter(client=self.client_row).count(), len(nodes.MATERIALIZED_NODE_KEYS)
         )
         again = nodes.persist_projection(self.client_row, projection)
         self.assertEqual(again["created"], 0)
         self.assertEqual(again["updated"], 0)
-        self.assertEqual(again["unchanged"], len(REGISTRY))
+        self.assertEqual(again["unchanged"], len(nodes.MATERIALIZED_NODE_KEYS))
 
     def test_repeat_write_stays_within_a_bounded_query_budget(self):
         projection = nodes.project_nodes(readiness=readiness_stub())
@@ -507,6 +584,17 @@ class NodeStatePersistenceTests(TestCase):
             with self.assertNumQueries(0):
                 result = nodes.persist_projection(self.client_row, projection)
         self.assertEqual(result["created"], 0)
+        self.assertFalse(IgFunnelNodeState.objects.exists())
+
+    def test_semantic_definition_cannot_be_persisted_as_node_state(self):
+        definition = nodes.semantic_definition_for("inbound")
+        projection = FunnelProjection(
+            nodes=(NodeProjection(definition=definition, status=STATUS.OPEN),),
+            payable_ready=False,
+            authority_agrees=False,
+        )
+        with self.assertRaises(RegistryError):
+            nodes.persist_projection(self.client_row, projection)
         self.assertFalse(IgFunnelNodeState.objects.exists())
 
     def test_changed_value_keeps_the_previous_one(self):
