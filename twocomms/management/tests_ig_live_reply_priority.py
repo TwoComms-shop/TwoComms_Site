@@ -1,4 +1,5 @@
 import hashlib
+import json
 from contextlib import nullcontext
 from datetime import timedelta
 from decimal import Decimal
@@ -8,6 +9,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from management.models import (
+    BotPolicyPublication,
     GeminiKeyState,
     IgBotNotification,
     IgClient,
@@ -58,6 +60,21 @@ class ValidationFailureCopyTests(SimpleTestCase):
 
 class StructuredProviderBoundaryTests(TestCase):
     """Live chat opts into JSON while the shared provider wrapper stays compatible."""
+
+    @classmethod
+    def setUpTestData(cls):
+        snapshot = {"schema_version": 1, "instructions": []}
+        publication = BotPolicyPublication.objects.create(
+            version=1, kind=BotPolicyPublication.Kind.PUBLISH, schema_version=1,
+            snapshot=snapshot,
+            snapshot_hash=hashlib.sha256(json.dumps(
+                snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest(),
+            compiler_version="instruction-set-v1", instruction_count=0,
+        )
+        settings = InstagramBotSettings.load()
+        settings.active_instruction_publication = publication
+        settings.save(update_fields=["active_instruction_publication"])
 
     def test_text_wrapper_parse_mode_is_explicit_and_opt_in(self):
         expected = {"reply_text": "ok", "controls": []}

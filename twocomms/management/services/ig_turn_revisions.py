@@ -83,6 +83,13 @@ class RevisionSealResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class RevisionSuccessorResult:
+    revision: IgCustomerTurnRevision | None
+    created: bool = False
+    reason: str = ""
+
+
 def _canonical(value) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -380,6 +387,16 @@ def create_collecting_revision(
         return RevisionBuildResult(revision, True, reason="created")
 
 
+def _authorized_manual_revision(revision) -> bool:
+    if revision is None or revision.origin not in {"manual_resume", "auto_refresh", "outage_recovery"}:
+        return False
+    if not (revision.action_receipts or {}).get("manual_resume_authorization"):
+        return False
+    from management.services.ig_revision_manual_resume import manual_resume_authority_current
+
+    return manual_resume_authority_current(revision)
+
+
 def claim_revision_preparation(revision_id: int, *, now=None) -> RevisionClaim:
     """CAS one due collecting revision or reclaim an expired preparation lease."""
     now = _aware(now)
@@ -392,7 +409,7 @@ def claim_revision_preparation(revision_id: int, *, now=None) -> RevisionClaim:
         turn_terminal = IgCustomerTurn.objects.filter(pk=revision.turn_id).values(
             "claim_state", "terminal_reason"
         ).first()
-        if turn_terminal and (
+        if turn_terminal and not _authorized_manual_revision(revision) and (
             turn_terminal["claim_state"]
             in {
                 IgCustomerTurn.ClaimState.PROCESSED,
@@ -672,17 +689,21 @@ def claim_sealed_revision(revision_id: int, *, now=None) -> RevisionClaim:
     now = _aware(now)
     token = secrets.token_hex(16)
     lease_until = now + timedelta(seconds=EXECUTION_LEASE_SECONDS)
-    claimed = IgCustomerTurnRevision.objects.filter(
+    revision = IgCustomerTurnRevision.objects.filter(pk=revision_id).first()
+    claimable = IgCustomerTurnRevision.objects.filter(
         pk=revision_id,
         active_slot=1,
         state=IgCustomerTurnRevision.State.SEALED,
         snapshot_digest__gt="",
-    ).exclude(
-        turn__claim_state__in=(
-            IgCustomerTurn.ClaimState.PROCESSED,
-            IgCustomerTurn.ClaimState.SUPERSEDED,
-        )
-    ).exclude(turn__terminal_reason__gt="").update(
+    )
+    if not _authorized_manual_revision(revision):
+        claimable = claimable.exclude(
+            turn__claim_state__in=(
+                IgCustomerTurn.ClaimState.PROCESSED,
+                IgCustomerTurn.ClaimState.SUPERSEDED,
+            )
+        ).exclude(turn__terminal_reason__gt="")
+    claimed = claimable.update(
         state=IgCustomerTurnRevision.State.CLAIMED,
         claim_token=token,
         claimed_at=now,
@@ -803,11 +824,290 @@ def replay_snapshot(revision_id: int) -> dict | None:
     return copy.deepcopy(revision.bundle_snapshot)
 
 
+_REFRESH_REASONS = frozenset({
+    IgCustomerTurnRevision.SuccessorReason.PUBLICATION_CHANGED,
+    IgCustomerTurnRevision.SuccessorReason.PUBLIC_POLICY_INPUTS_STALE,
+    IgCustomerTurnRevision.SuccessorReason.FACT_BINDING_STALE,
+})
+
+
+def _copied_source_payloads(rows) -> list[dict]:
+    return [{
+        "message_id": row.message_id,
+        "ordinal": row.ordinal,
+        "role": row.role,
+        "source_namespace": row.source_namespace,
+        "provider_message_id": row.provider_message_id,
+        "synthetic_event_key": row.synthetic_event_key,
+        "text": row.text,
+        "provider_created_at": (
+            row.provider_created_at.isoformat() if row.provider_created_at else ""
+        ),
+        "reply_to_provider_message_id": row.reply_to_provider_message_id,
+        "quick_reply_payload": row.quick_reply_payload,
+        "referral": copy.deepcopy(row.referral or {}),
+        "discovered_media": copy.deepcopy(row.discovered_media or []),
+        "text_chars": row.text_chars,
+        "media_part_count": row.media_part_count,
+        "source_digest": row.source_digest,
+    } for row in rows]
+
+
+def _exact_refresh_child(parent, child, source_rows) -> bool:
+    if (
+        child.parent_id != parent.pk
+        or child.origin != child.Origin.AUTO_REFRESH
+        or child.snapshot_digest != parent.snapshot_digest
+        or child.bundle_snapshot != parent.bundle_snapshot
+        or child.overall_deadline != parent.overall_deadline
+        or child.permission_epoch != parent.permission_epoch
+        or child.erasure_started_at_snapshot != parent.erasure_started_at_snapshot
+    ):
+        return False
+    child_rows = list(child.sources.order_by("ordinal", "id"))
+    if len(child_rows) != len(source_rows):
+        return False
+    fields = (
+        "message_id", "ordinal", "role", "source_namespace",
+        "provider_message_id", "synthetic_event_key", "text",
+        "provider_created_at", "reply_to_provider_message_id",
+        "quick_reply_payload", "referral", "discovered_media", "text_chars",
+        "media_part_count", "source_digest",
+    )
+    return all(
+        all(getattr(left, field) == getattr(right, field) for field in fields)
+        for left, right in zip(source_rows, child_rows, strict=True)
+    )
+
+
+def create_refresh_successor(
+    source_revision_id: int,
+    source_revision_token: str,
+    *,
+    reason: str,
+    now=None,
+) -> RevisionSuccessorResult:
+    """Create at most one sealed retry from an immutable claimed bundle.
+
+    This is an internal policy/fact refresh only. It never reconstructs source
+    content from mutable message rows and never extends the original deadline.
+    """
+    try:
+        revision_id = int(source_revision_id)
+    except (TypeError, ValueError):
+        revision_id = 0
+    reason = str(reason or "")
+    if revision_id <= 0 or reason not in _REFRESH_REASONS:
+        return RevisionSuccessorResult(None, reason="refresh_reason_invalid")
+    now = _aware(now)
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values(
+        "client_id"
+    ).first()
+    if identity is None:
+        return RevisionSuccessorResult(None, reason="revision_missing")
+
+    from management.models import IgRevisionDeliveryEffect
+
+    with transaction.atomic():
+        # Lock order is client -> revision. No settings row is needed because
+        # the child intentionally binds the policy head only when regenerated.
+        client = IgClient.objects.select_for_update().filter(
+            pk=identity["client_id"]
+        ).first()
+        source = (
+            IgCustomerTurnRevision.objects.select_for_update()
+            .filter(pk=revision_id, client_id=identity["client_id"])
+            .first()
+        )
+        if client is None or source is None:
+            return RevisionSuccessorResult(None, reason="revision_missing")
+        source_rows = list(
+            source.sources.select_for_update().order_by("ordinal", "id")
+        )
+        existing = list(
+            IgCustomerTurnRevision.objects.select_for_update()
+            .filter(
+                parent_id=source.pk,
+                origin=IgCustomerTurnRevision.Origin.AUTO_REFRESH,
+            )
+            .order_by("revision", "id")[:2]
+        )
+        if existing:
+            if len(existing) != 1 or not _exact_refresh_child(
+                source, existing[0], source_rows
+            ):
+                return RevisionSuccessorResult(
+                    existing[0], reason="refresh_successor_conflict"
+                )
+            return RevisionSuccessorResult(
+                existing[0], created=False, reason="existing_successor"
+            )
+        if source.origin == source.Origin.AUTO_REFRESH:
+            return RevisionSuccessorResult(source, reason="refresh_limit_reached")
+
+        head = (
+            IgCustomerTurnRevision.objects.select_for_update()
+            .filter(client_id=client.pk, active_slot=1)
+            .first()
+        )
+        if head is None or head.pk != source.pk:
+            return RevisionSuccessorResult(source, reason="newer_head_exists")
+        if (
+            source.state != source.State.CLAIMED
+            or not source_revision_token
+            or source.claim_token != source_revision_token
+            or not source.lease_until
+            or source.lease_until <= now
+        ):
+            return RevisionSuccessorResult(source, reason="revision_not_current")
+        if (
+            client.reply_permission_epoch != source.permission_epoch
+            or client.manager_takeover
+            or client.bot_paused
+            or client.hidden_at is not None
+            or client.privacy_erasure_started_at is not None
+            or client.is_blocked
+            or (
+                client.opted_out_at
+                and (
+                    not client.opted_in_at
+                    or client.opted_out_at > client.opted_in_at
+                )
+            )
+        ):
+            return RevisionSuccessorResult(source, reason="client_not_eligible")
+        if source.erasure_started_at_snapshot is not None:
+            return RevisionSuccessorResult(source, reason="client_not_eligible")
+        if (
+            not source.snapshot_digest
+            or _digest(source.bundle_snapshot) != source.snapshot_digest
+            or len(source_rows) != source.source_count
+            or not source_rows
+        ):
+            return RevisionSuccessorResult(source, reason="snapshot_invalid")
+        snapshot_sources = source.bundle_snapshot.get("sources")
+        if not isinstance(snapshot_sources, list) or len(snapshot_sources) != len(source_rows):
+            return RevisionSuccessorResult(source, reason="snapshot_invalid")
+        if any(
+            not isinstance(snapshot_item, Mapping)
+            or snapshot_item.get("message_id") != row.message_id
+            or snapshot_item.get("ordinal") != row.ordinal
+            or snapshot_item.get("source_digest") != row.source_digest
+            for snapshot_item, row in zip(snapshot_sources, source_rows, strict=True)
+        ):
+            return RevisionSuccessorResult(source, reason="snapshot_invalid")
+        live_ids = set(
+            InstagramBotMessage.objects.filter(
+                pk__in=[row.message_id for row in source_rows],
+                client_id=client.pk,
+            ).values_list("pk", flat=True)
+        )
+        if live_ids != {row.message_id for row in source_rows}:
+            return RevisionSuccessorResult(source, reason="source_owner_changed")
+
+        turn = IgCustomerTurn.objects.select_for_update().filter(
+            pk=source.turn_id, client_id=client.pk
+        ).first()
+        manual_authorized = _authorized_manual_revision(source)
+        if turn is None or (not manual_authorized and (
+            turn.claim_state in {
+                IgCustomerTurn.ClaimState.PROCESSED,
+                IgCustomerTurn.ClaimState.SUPERSEDED,
+            }
+            or bool(turn.terminal_reason)
+        )):
+            return RevisionSuccessorResult(source, reason="legacy_turn_terminal")
+        if source.overall_deadline <= now:
+            return RevisionSuccessorResult(source, reason="overall_deadline_expired")
+
+        effects = list(
+            IgRevisionDeliveryEffect.objects.select_for_update()
+            .filter(revision=source)
+            .order_by("order_index", "id")
+        )
+        unsafe_states = {
+            IgRevisionDeliveryEffect.State.SENT,
+            IgRevisionDeliveryEffect.State.PROVIDER_STARTED,
+            IgRevisionDeliveryEffect.State.UNKNOWN,
+        }
+        if any(effect.state in unsafe_states for effect in effects):
+            return RevisionSuccessorResult(source, reason="delivery_outcome_uncertain")
+        for effect in effects:
+            if effect.state not in {
+                effect.State.PLANNED,
+                effect.State.CLAIMED,
+            }:
+                continue
+            effect.state = effect.State.CANCELLED
+            effect.failure_code = "revision_refreshed"
+            effect.terminal_at = now
+            effect.claim_token = ""
+            effect.lease_until = None
+            effect.save(update_fields=[
+                "state", "failure_code", "terminal_at", "claim_token",
+                "lease_until", "updated_at",
+            ])
+
+        latest_number = int(
+            IgCustomerTurnRevision.objects.filter(client_id=client.pk)
+            .order_by("-revision")
+            .values_list("revision", flat=True)
+            .first()
+            or 0
+        )
+        source.active_slot = None
+        source.state = source.State.SUPERSEDED
+        source.claim_token = ""
+        source.claimed_at = None
+        source.lease_until = None
+        source.save(update_fields=[
+            "active_slot", "state", "claim_token", "claimed_at",
+            "lease_until", "updated_at",
+        ])
+        child = IgCustomerTurnRevision.objects.create(
+            client=client,
+            turn=turn,
+            parent=source,
+            revision=latest_number + 1,
+            origin=IgCustomerTurnRevision.Origin.AUTO_REFRESH,
+            successor_reason=reason,
+            active_slot=1,
+            state=IgCustomerTurnRevision.State.SEALED,
+            quiet_started_at=source.quiet_started_at,
+            quiet_deadline=min(now, source.overall_deadline),
+            quiet_cap_at=source.quiet_cap_at,
+            overall_deadline=source.overall_deadline,
+            media_prepare_deadline=source.media_prepare_deadline,
+            source_count=source.source_count,
+            text_chars=source.text_chars,
+            media_part_count=source.media_part_count,
+            permission_epoch=source.permission_epoch,
+            erasure_started_at_snapshot=source.erasure_started_at_snapshot,
+            bundle_snapshot=copy.deepcopy(source.bundle_snapshot),
+            snapshot_digest=source.snapshot_digest,
+            sealed_at=source.sealed_at or now,
+            action_receipts=(
+                {"manual_resume_authorization": copy.deepcopy(source.action_receipts["manual_resume_authorization"])}
+                if manual_authorized else {}
+            ),
+        )
+        from management.services.ig_revision_provider_execution import provider_execution_reference, REFERENCE_KEY
+
+        reference = provider_execution_reference(source)
+        if reference:
+            child.action_receipts = {**child.action_receipts, REFERENCE_KEY: reference}
+            child.save(update_fields=["action_receipts", "updated_at"])
+        _create_source_rows(child, _copied_source_payloads(source_rows))
+        return RevisionSuccessorResult(child, created=True, reason="created")
+
+
 __all__ = [
     "MAX_MEDIA_PARTS", "MAX_SOURCES", "MAX_TEXT_CHARS",
     "RevisionBuildResult", "RevisionClaim", "RevisionSealResult",
+    "RevisionSuccessorResult",
     "claim_revision_preparation", "claim_sealed_revision",
-    "create_collecting_revision", "current_revision_for_turn",
+    "create_collecting_revision", "create_refresh_successor",
+    "current_revision_for_turn",
     "prospective_overflow_reason", "replay_snapshot",
     "revision_claim_is_current", "seal_revision",
     "terminalize_legacy_shadow_revision",

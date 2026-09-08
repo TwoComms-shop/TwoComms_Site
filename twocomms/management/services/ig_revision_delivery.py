@@ -9,6 +9,8 @@ from django.db import connection
 
 from management.models import IgRevisionDeliveryEffect
 from management.services.ig_revision_outbox import (
+    KNOWN_NO_DISPATCH_REASONS,
+    _digest,
     cancel_unstarted_effect,
     claim_next_effect,
     finish_effect,
@@ -23,10 +25,10 @@ _FINAL_CAS_STOP_CODES = frozenset({
     "pending_inbound", "publication_changed", "revision_namespace_unavailable",
     "revision_not_current", "revision_snapshot_invalid", "settings_disabled",
     "settings_permission_changed",
-    "permission_transition_pending", "sender_not_allowed",
+    "permission_transition_pending", "sender_not_allowed", "echo_attribution_pending",
     "revision_deadline_exhausted",
     "reply_window_closed", "reply_window_unavailable",
-})
+}) | KNOWN_NO_DISPATCH_REASONS
 
 
 @dataclass(frozen=True)
@@ -135,7 +137,9 @@ def drain_group(
     """Deliver planned parts once each, invoking transport outside transactions.
 
     ``transport_callback`` receives a fresh copy read from the canonical DB row
-    after provider-start CAS.  It must perform exactly one physical request and
+    after provider-start CAS. The factory transport first validates the canonical
+    payload and local configuration outside transactions before that CAS.
+    It must perform exactly one physical request and
     return a typed receipt; it must not split, retry, or fall back internally.
     """
     if connection.in_atomic_block:
@@ -172,6 +176,56 @@ def drain_group(
                 attempted,
                 claim.reason or current.reason,
             )
+        from management.services.ig_revision_transport import (
+            ProviderPartPreflight, RevisionProviderTransport,
+        )
+
+        if type(transport_callback) is RevisionProviderTransport:
+            canonical = IgRevisionDeliveryEffect.objects.filter(
+                pk=claim.effect.pk,
+                state=IgRevisionDeliveryEffect.State.CLAIMED,
+                claim_token=claim.token,
+            ).values(
+                "payload", "payload_digest", "projection_metadata",
+                "projection_digest", "kind", "provider_namespace", "recipient_igsid",
+            ).first()
+            reason = ""
+            try:
+                if canonical is None or (
+                    _digest(canonical["payload"]) != canonical["payload_digest"]
+                    or not (
+                        canonical["projection_digest"] == _digest(canonical["projection_metadata"])
+                        or (not canonical["projection_metadata"] and not canonical["projection_digest"])
+                    )
+                ):
+                    reason = "effect_binding_invalid"
+                else:
+                    checked = transport_callback.preflight(copy.deepcopy(canonical["payload"]))
+                    if type(checked) is not ProviderPartPreflight:
+                        reason = "transport_preflight_check_failed"
+                    elif not checked.ready:
+                        reason = checked.reason or "transport_preflight_check_failed"
+                    elif checked.provider_namespace != canonical["provider_namespace"]:
+                        reason = "transport_preflight_namespace_mismatch"
+                    elif checked.recipient != canonical["recipient_igsid"]:
+                        reason = "transport_preflight_recipient_invalid"
+                    elif checked.payload_kind != (
+                        "text" if canonical["kind"] == "fallback" else canonical["kind"]
+                    ):
+                        reason = "transport_preflight_payload_invalid"
+            except Exception:
+                reason = "transport_preflight_check_failed"
+            if reason:
+                if reason not in _FINAL_CAS_STOP_CODES:
+                    reason = "transport_preflight_check_failed"
+                cancel_unstarted_effect(
+                    claim.effect.pk, revision_token,
+                    effect_token=claim.token, reason=reason,
+                )
+                _cancel_revision_unstarted(revision_id, revision_token, reason=reason)
+                current = _group_state(revision_id, group)
+                return GroupDrainResult(current.state, current.sent_parts, attempted, reason)
+
         started = mark_provider_started(
             claim.effect.pk,
             claim.token,
@@ -217,6 +271,15 @@ def drain_group(
                     raw_result,
                     default_namespace=canonical["provider_namespace"],
                 )
+        if result.outcome == "known_not_dispatched":
+            if type(transport_callback) is RevisionProviderTransport:
+                # Count physical attempts, not a defensive no-I/O return.
+                attempted = max(0, attempted - 1)
+            else:
+                # Arbitrary adapters cannot assert the factory's zero-I/O proof.
+                result = ProviderPartResult(
+                    provider_namespace=result.provider_namespace, outcome="exception",
+                )
         finished = finish_effect(
             claim.effect.pk,
             claim.token,
@@ -227,9 +290,20 @@ def drain_group(
             explicit_rejection_code=result.explicit_rejection_code,
             response_digest=result.response_digest,
         )
+        if type(transport_callback) is RevisionProviderTransport and finished.effect is not None:
+            from management.services.ig_revision_echo_integration import reconcile_effect_echoes
+
+            reconcile_effect_echoes(finished.effect)
         state = getattr(finished.effect, "state", "unknown")
         if state == IgRevisionDeliveryEffect.State.SENT:
             continue
+        if (
+            result.outcome == "known_not_dispatched"
+            and state == IgRevisionDeliveryEffect.State.DEFINITE_FAILED
+        ):
+            _cancel_revision_unstarted(
+                revision_id, revision_token, reason=finished.effect.failure_code,
+            )
         fallback_ready = bool(
             state == IgRevisionDeliveryEffect.State.DEFINITE_FAILED
             and IgRevisionDeliveryEffect.objects.filter(

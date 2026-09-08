@@ -549,3 +549,27 @@ class RevisionOutboxTests(TestCase):
         result = self._plan([{"group": "substantive_text", "kind": "text", "payload": self._payload("answer")}])
         self.assertIn("reply_window_closed", result.reasons)
         self.assertFalse(self.revision.delivery_effects.exists())
+
+    def test_proven_no_dispatch_settles_definite_failure_without_rewriting_boundary(self):
+        self._plan([{"group": "substantive_text", "kind": "text", "payload": self._payload("answer")}])
+        claim = self._start("substantive_text")
+        result = finish_effect(
+            claim.effect.pk, claim.token, provider_namespace="instagram_login:owner-1",
+            transport_outcome="known_not_dispatched",
+            explicit_rejection_code="transport_preflight_namespace_mismatch",
+        )
+        self.assertEqual(result.effect.state, IgRevisionDeliveryEffect.State.DEFINITE_FAILED)
+        self.assertIsNotNone(result.effect.provider_started_at)
+        self.assertIsNone(result.effect.provider_http_status)
+        self.assertFalse(result.effect.provider_message_id)
+
+    def test_no_dispatch_claim_with_a_provider_receipt_remains_unknown(self):
+        self._plan([{"group": "substantive_text", "kind": "text", "payload": self._payload("answer")}])
+        claim = self._start("substantive_text")
+        result = finish_effect(
+            claim.effect.pk, claim.token, provider_namespace="instagram_login:owner-1",
+            transport_outcome="known_not_dispatched", http_status=200,
+            provider_message_id="contradictory-receipt",
+            explicit_rejection_code="transport_preflight_namespace_mismatch",
+        )
+        self.assertEqual(result.effect.state, IgRevisionDeliveryEffect.State.UNKNOWN)

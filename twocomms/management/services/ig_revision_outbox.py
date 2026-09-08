@@ -26,6 +26,16 @@ ACTOR_BOT = "bot"
 PURPOSE_NORMAL_REPLY = "normal_reply"
 MAX_EFFECTS = 16
 MAX_PAYLOAD_BYTES = 256 * 1024
+KNOWN_NO_DISPATCH_REASONS = frozenset({
+    "transport_preflight_transaction_active",
+    "transport_preflight_namespace_mismatch",
+    "transport_preflight_credentials_unavailable",
+    "transport_preflight_recipient_invalid",
+    "transport_preflight_payload_invalid",
+    "transport_preflight_payload_too_large",
+    "transport_preflight_url_invalid",
+    "transport_preflight_check_failed",
+})
 CLAIM_LEASE_SECONDS = 60
 GROUP_KINDS = {
     "catalog_media": frozenset({"image"}),
@@ -222,7 +232,10 @@ def _cas_readiness(
     elif _digest(revision.bundle_snapshot) != revision.snapshot_digest:
         _append(reasons, "revision_snapshot_invalid")
     if revision.overall_deadline <= now:
-        _append(reasons, "revision_deadline_exhausted")
+        from management.services.ig_revision_recovery import execution_resume_is_current
+
+        if not execution_resume_is_current(revision, now=now):
+            _append(reasons, "revision_deadline_exhausted")
     window_deadline = _normal_reply_window_deadline(revision)
     if window_deadline is None:
         _append(reasons, "reply_window_unavailable")
@@ -274,10 +287,13 @@ def _cas_readiness(
         _append(reasons, "pending_inbound")
     if client is not None and settings_obj is not None:
         from management.services.ig_permission_transitions import permission_transition_blocks
+        from management.services.ig_revision_echo import revision_echo_blocks
         from management.services.instagram_bot import allowed_sender_ids
 
         if permission_transition_blocks(settings_id=settings_obj.pk, client_id=client.pk):
             _append(reasons, "permission_transition_pending")
+        if namespace and revision_echo_blocks(client.pk, namespace):
+            _append(reasons, "echo_attribution_pending")
         allowlist = allowed_sender_ids(settings_obj)
         if allowlist and client.igsid not in allowlist:
             _append(reasons, "sender_not_allowed")
@@ -883,7 +899,16 @@ def finish_effect(
                 and all(ord(char) >= 32 and ord(char) != 127 for char in provider_id)
             )
             outcome = str(transport_outcome or "").casefold()
-            if status is not None and 200 <= status < 300 and valid_provider_id:
+            if outcome == "known_not_dispatched":
+                rejection = str(explicit_rejection_code or "").casefold()
+                if (
+                    http_status is None and not provider_id and not response_digest
+                    and rejection in KNOWN_NO_DISPATCH_REASONS
+                ):
+                    state, failure = effect.State.DEFINITE_FAILED, rejection
+                else:
+                    state, failure = effect.State.UNKNOWN, "no_dispatch_evidence_invalid"
+            elif status is not None and 200 <= status < 300 and valid_provider_id:
                 state, failure = effect.State.SENT, ""
             elif status is not None and 200 <= status < 300:
                 state, failure = effect.State.UNKNOWN, "provider_message_id_missing"

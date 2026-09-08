@@ -50,23 +50,89 @@ class IgAIReplyRecoveryTests(TestCase):
         self.assertEqual(first.pk, second.pk)
         self.assertEqual(self.recovery.IgAiReplyRecoveryJob.objects.count(), 1)
 
+    def test_revision_ownership_blocks_legacy_original_and_retargeted_source(self):
+        from types import SimpleNamespace
+        from management.models import IgCustomerTurn, IgTurnMessage
+        from management.services.ig_turn_revisions import create_collecting_revision, claim_revision_preparation
+
+        job = self.recovery.schedule_recovery(self.source)
+        turn = IgCustomerTurn.objects.create(client=self.client, primary_source_message=self.source, window_started_at=timezone.now(), window_deadline=timezone.now())
+        IgTurnMessage.objects.create(turn=turn, message=self.source, ordinal=1, role="user")
+        revision = create_collecting_revision(turn, [self.source], bypass_quiet=True).revision
+        self.assertTrue(claim_revision_preparation(revision.pk).token)
+        newer = InstagramBotMessage.objects.create(client=self.client, sender_id=self.client.igsid, role="user", text="Another source", status="pending")
+        self.assertEqual(self.recovery._guard_reason(job, self.settings, self.client, newer, now=timezone.now()), "revision_execution_owns_source")
+        self.assertEqual(self.recovery._guard_reason(SimpleNamespace(source_message_id=newer.pk), self.settings, self.client, self.source, now=timezone.now()), "revision_execution_owns_source")
+        with patch.object(self.recovery, "gemini_generate") as generate, patch.object(self.recovery, "send_text") as send:
+            blocked = self.recovery.process_recovery_job(job.pk)
+        self.assertEqual(blocked.status, blocked.Status.CANCELLED)
+        generate.assert_not_called()
+        send.assert_not_called()
+
     @override_settings(
         GEMINI_ACCOUNTING_V2_MODE="shadow",
         GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM="2026-08-29T00:00:00-07:00",
         GEMINI_ACCOUNTING_IDENTITY_HMAC_KEY="recovery-shadow-test-key",
     )
     def test_recovery_persists_request_lineage_through_meta_receipt(self):
-        from management.models import GeminiRequest
-        from management.services.ig_turn_lineage import bind_request_id
+        from management.models import GeminiRequest, IgClient, InstagramBotMessage
+        from management.services import gemini_accounting_runtime
+        from management.services.gemini_accounting_contract import canonical_candidate_plan_digest
+        from management.services.ig_legacy_provider_execution import initialize_legacy_provider_root
+        from management.services.ig_turn_lineage import bind_request_id, resolve_logical_turn_key
 
         request_id = "recovery-shadow-request"
+        plan = [{
+            "candidate_index": 1,
+            "key_name": "GEMINI_API",
+            "key_value": "test-secret-never-persisted",
+            "model": "gemini-3.5-flash-lite",
+            "project_identity": "recovery-test-project",
+            "identity_status": "known",
+            "skip_reason": "",
+        }]
+        safe_plan = gemini_accounting_runtime.sanitize_candidate_plan(plan)
+        now = timezone.now()
+        InstagramBotMessage.objects.filter(pk=self.source.pk).update(
+            status=InstagramBotMessage.Status.PROCESSING,
+            processing_started_at=now,
+        )
+        IgClient.objects.filter(pk=self.client.pk).update(
+            automation_lease_token="lineage-live-token",
+            automation_lease_until=now + timedelta(minutes=5),
+        )
         graph = GeminiRequest.objects.create(
             request_id=request_id,
-            lane="recovery",
+            lane="live",
             task_class="ordinary_live",
             reasoning_task="customer_chat",
+            client_id=self.client.pk,
+            source_message_id=self.source.pk,
+            logical_turn_id=resolve_logical_turn_key(self.source),
+            candidate_plan=safe_plan,
+            candidate_plan_digest=canonical_candidate_plan_digest(safe_plan),
             accounting_mode=GeminiRequest.AccountingMode.SHADOW,
         )
+        execution, continuation = initialize_legacy_provider_root(
+            graph_id=graph.pk,
+            automation_token="lineage-live-token",
+            candidate_plan=plan,
+            now=now,
+        )
+        self.assertIsNotNone(execution)
+        self.assertTrue(continuation.ready, continuation.reason)
+        GeminiRequest.objects.filter(pk=graph.pk).update(
+            terminal_resolution="failed", terminal_reason="provider_outage",
+        )
+        InstagramBotMessage.objects.filter(pk=self.source.pk).update(
+            status=InstagramBotMessage.Status.DONE,
+            processing_started_at=None,
+        )
+        IgClient.objects.filter(pk=self.client.pk).update(
+            automation_lease_token="", automation_lease_until=None,
+        )
+        self.source.refresh_from_db()
+        self.client.refresh_from_db()
         job = self.recovery.schedule_recovery(self.source)
 
         def fake_generate(*_args, **_kwargs):
@@ -317,7 +383,14 @@ class IgAIReplyRecoveryTests(TestCase):
         self.assertEqual(job.routing_decision["lane"], "recovery")
         self.assertTrue(job.routing_decision["requires_media_reasoning"])
         self.source.refresh_from_db()
-        self.assertEqual(self.source.turn_intelligence_artifact, artifact)
+        from management.services.ig_media_manifest import media_coverage
+
+        self.assertEqual(
+            self.source.turn_intelligence_artifact,
+            {**artifact, "media_coverage": media_coverage(
+                self.source.attachment_media,
+            )},
+        )
 
     def test_text_only_complex_recovery_preserves_and_revalidates_original_route(self):
         from management.services.gemini_routing import (

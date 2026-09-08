@@ -926,7 +926,12 @@ class AnalysisWorkerTests(SimpleTestCase):
     def test_analysis_worker_reconciles_only_at_bounded_interval(
         self, _monotonic, _maintenance, _close, reconcile, process, process_events
     ):
-        _analysis_worker(_BoundedWorkerEvent(cycles=3))
+        event = _BoundedWorkerEvent(cycles=3)
+        ticks = (100.0, 101.0, 100.0 + ANALYSIS_RECONCILE_EVERY)
+        # The DB circuit reads the same process clock. Advance time per work
+        # cycle, not per incidental monotonic() call inside that cycle.
+        _monotonic.side_effect = lambda: ticks[min(event.wait_calls, 2)]
+        _analysis_worker(event)
 
         self.assertEqual(reconcile.call_count, 2)
         self.assertEqual(process.call_count, 3)
@@ -1361,6 +1366,9 @@ class DaemonMaintenanceDrainTests(SimpleTestCase):
             patch.object(bot, "_send_rate_limit_backoff_active", return_value=False),
             patch.object(bot, "_gemini_backoff_active", return_value=False),
             patch.object(bot, "reclaim_stale_processing"),
+            patch("management.services.ig_revision_live.process_revision_finalizations", return_value=0),
+            patch("management.services.ig_revision_live.process_pending_revisions", return_value=0),
+            patch("management.services.ig_revision_live.revision_execution_enabled", return_value=False),
             patch.object(bot, "maintenance_status", side_effect=[{"active": False}, {"active": True}]),
             patch.object(bot, "_claim_next", return_value=first_row) as claim_next,
             patch.object(bot, "_process_one", return_value=True) as process_one,
@@ -1373,6 +1381,18 @@ class DaemonMaintenanceDrainTests(SimpleTestCase):
 
 
 class DaemonHeartbeatTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        # This class isolates heartbeat/service scheduling. Receipt/inbox
+        # ownership has separate database-backed tests and must not do I/O here.
+        for target in (
+            "management.management.commands.run_instagram_bot._revision_receipt_tick",
+            "management.services.ig_webhook_inbox.drain_webhook_inbox",
+        ):
+            mocked = patch(target)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
     @patch("management.management.commands.run_instagram_bot.cache.get", return_value={"at": 100.0})
     @patch("management.management.commands.run_instagram_bot.time.time", return_value=110.0)
     def test_dict_heartbeat_is_supported(self, _time, _get):
@@ -1799,3 +1819,32 @@ class DaemonStatusTests(TestCase):
         self.assertFalse(snapshot["running"])
         self.assertEqual(snapshot["state"], "disabled")
         self.assertFalse(snapshot["recovery_expected"])
+
+
+class CanonicalReceiptIngressIndependenceTests(SimpleTestCase):
+    @override_settings(IG_WEBHOOK_INBOX_ENABLED=False)
+    def test_paused_poll_only_still_runs_receipt_tick(self):
+        settings_obj = InstagramBotSettings(is_enabled=False, receive_via_poll=True)
+        with (
+            patch.object(runner, "require_database_ready"),
+            patch.object(runner, "_revision_receipt_tick") as receipts,
+            patch.object(runner, "_service_task_isolation_enabled", return_value=False),
+            patch.object(runner, "_run_legacy_work_cycle", return_value=(False, 12.0)),
+        ):
+            self.assertEqual(runner._run_work_cycle(settings_obj, 12.0), (False, 12.0))
+        receipts.assert_called_once_with(settings_obj)
+
+    def test_gemini_backoff_does_not_block_canonical_work(self):
+        settings_obj = InstagramBotSettings(is_enabled=True)
+        with (
+            patch.object(bot, "_maybe_purge_expired_private_media"),
+            patch.object(bot, "_send_rate_limit_backoff_active", return_value=False),
+            patch.object(bot, "_gemini_backoff_active", return_value=True),
+            patch("management.services.ig_revision_live.process_revision_finalizations", return_value=0),
+            patch("management.services.ig_revision_live.process_pending_revisions", return_value=1) as canonical,
+            patch("management.services.ig_revision_live.revision_execution_enabled", return_value=True),
+            patch.object(bot, "_claim_next") as legacy,
+        ):
+            self.assertEqual(bot.process_pending(settings_obj, max_items=1), 1)
+        canonical.assert_called_once_with(settings_obj, max_items=1)
+        legacy.assert_not_called()

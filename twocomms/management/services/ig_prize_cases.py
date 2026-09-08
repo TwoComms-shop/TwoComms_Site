@@ -6,7 +6,10 @@ authorized workflow owns the eventual business decision and alert delivery.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Mapping
 
 from django.db import transaction
@@ -15,8 +18,10 @@ from django.utils import timezone
 from management.models import (
     IgBotNotification,
     IgClient,
+    IgCustomerTurnRevision,
     IgFollowUpTask,
     InstagramBotMessage,
+    InstagramBotSettings,
 )
 from management.services.ig_manager_media_projection import project_manager_media
 from management.services.ig_prize_programme import (
@@ -210,6 +215,136 @@ def _validated_candidate_evidence(
     return result[:8]
 
 
+def _canonical_digest(value) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _revision_observations_for_source(revision, source):
+    proposal = revision.generation_proposal
+    intelligence = proposal.get("turn_intelligence")
+    generation = proposal.get("generation")
+    if not isinstance(intelligence, Mapping) or not isinstance(generation, Mapping):
+        return (), "proposal_intelligence_invalid"
+    request = intelligence.get("media_request")
+    submitted = request.get("submitted_parts") if isinstance(request, Mapping) else None
+    observations = intelligence.get("image_observations")
+    request_id = str(request.get("request_id") or "") if isinstance(request, Mapping) else ""
+    provider_model = str(request.get("provider_model") or "") if isinstance(request, Mapping) else ""
+    if (
+        not isinstance(submitted, list)
+        or not isinstance(observations, list)
+        or len(submitted) > 8
+        or len(observations) > 8
+        or not request_id
+        or not provider_model
+        or request_id != str(generation.get("request_id") or "")
+        or provider_model != str(generation.get("actual_model") or "")
+    ):
+        return (), "proposal_intelligence_invalid"
+    rows = []
+    for observation in observations:
+        if not isinstance(observation, Mapping):
+            return (), "proposal_intelligence_invalid"
+        index = observation.get("source_image_index")
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(submitted):
+            return (), "proposal_intelligence_invalid"
+        part = submitted[index]
+        if not isinstance(part, Mapping):
+            return (), "proposal_intelligence_invalid"
+        try:
+            source_message_id = int(part.get("source_message_id") or 0)
+        except (TypeError, ValueError):
+            return (), "proposal_intelligence_invalid"
+        if source_message_id != source.pk:
+            continue
+        if (
+            str(observation.get("source_part_id") or "")
+            != str(part.get("source_part_id") or "")
+            or str(observation.get("content_hash") or "").casefold()
+            != str(part.get("content_hash") or "").casefold()
+        ):
+            return (), "proposal_intelligence_invalid"
+        rows.append((observation, part, request_id, provider_model))
+    return tuple(rows), ""
+
+
+def _validated_revision_candidate_evidence(
+    revision,
+    source: InstagramBotMessage,
+    programme: PrizeProgramme,
+) -> tuple[list[dict], bool, str]:
+    rows, reason = _revision_observations_for_source(revision, source)
+    if reason:
+        return [], False, reason
+    observations = []
+    candidate_present = any(
+        observation.get("prize_certificate") is not None
+        for observation, _submitted, _request_id, _provider_model in rows
+    )
+    for observation, submitted, request_id, provider_model in rows:
+        media_part = _matching_media_part(source, observation)
+        if media_part is None:
+            continue
+        inspection = (
+            media_part.get("inspection")
+            if isinstance(media_part.get("inspection"), Mapping)
+            else {}
+        )
+        try:
+            inspection_revision_id = int(inspection.get("revision_id") or 0)
+        except (TypeError, ValueError):
+            inspection_revision_id = 0
+        if (
+            inspection.get("state") != "inspected"
+            or inspection_revision_id != revision.pk
+            or str(inspection.get("source_part_id") or "")
+            != str(submitted.get("source_part_id") or "")
+            or str(inspection.get("content_hash") or "").casefold()
+            != str(submitted.get("content_hash") or "").casefold()
+            or str(inspection.get("request_id") or "") != request_id
+            or str(inspection.get("provider_model") or "") != provider_model
+        ):
+            continue
+        observations.append(dict(observation))
+    intelligence = revision.generation_proposal["turn_intelligence"]
+    artifact = dict(intelligence)
+    artifact["source_message_id"] = source.pk
+    artifact["image_observations"] = observations
+    proxy = SimpleNamespace(
+        pk=source.pk,
+        attachment_media=source.attachment_media,
+        turn_intelligence_artifact=artifact,
+    )
+    result = _validated_candidate_evidence(proxy, programme)
+    for item in result:
+        item["revision_id"] = revision.pk
+        item["generation_proposal_digest"] = revision.generation_proposal_digest
+    return result, candidate_present, ""
+
+
+def _revision_preference(revision) -> dict | None:
+    intelligence = (revision.generation_proposal or {}).get("turn_intelligence")
+    if not isinstance(intelligence, Mapping):
+        return None
+    kind = {"prize_catalog": "catalog", "prize_custom": "custom"}.get(
+        str(intelligence.get("intent") or "")
+    )
+    if not kind:
+        return None
+    preference = {"kind": kind}
+    if kind == "catalog":
+        try:
+            product_id = int(intelligence.get("auto_product_id") or 0)
+        except (TypeError, ValueError):
+            product_id = 0
+        if product_id > 0:
+            preference["product_id"] = product_id
+    return preference
+
+
 def _preference_entry(
     source: InstagramBotMessage,
     preference: Mapping[str, object] | None,
@@ -334,6 +469,12 @@ def upsert_prize_review_case(
     programme: PrizeProgramme | None,
     preference: Mapping[str, object] | None = None,
     expected_permission_epoch: int | None = None,
+    revision_id: int | None = None,
+    revision_token: str = "",
+    expected_generation_proposal_digest: str = "",
+    settings_id: int | None = None,
+    settings_permission_epoch: int | None = None,
+    publication=None,
     now=None,
 ) -> PrizeCaseResult:
     """Group validated evidence and preferences into one open business case."""
@@ -348,7 +489,45 @@ def upsert_prize_review_case(
     )
     if not source_identity or not source_identity.get("client_id"):
         return PrizeCaseResult(reason="source_missing")
+    revision_mode = any((
+        revision_id is not None,
+        bool(revision_token),
+        bool(expected_generation_proposal_digest),
+        settings_id is not None,
+        settings_permission_epoch is not None,
+        publication is not None,
+    ))
+    if revision_mode:
+        from management.services.ig_revision_outbox import PublicationBinding
+
+        if (
+            isinstance(revision_id, bool)
+            or not isinstance(revision_id, int)
+            or revision_id <= 0
+            or not revision_token
+            or not isinstance(expected_generation_proposal_digest, str)
+            or len(expected_generation_proposal_digest) != 64
+            or isinstance(settings_id, bool)
+            or not isinstance(settings_id, int)
+            or settings_id <= 0
+            or isinstance(settings_permission_epoch, bool)
+            or not isinstance(settings_permission_epoch, int)
+            or not isinstance(publication, PublicationBinding)
+        ):
+            return PrizeCaseResult(reason="revision_context_invalid")
     with transaction.atomic():
+        settings_obj = None
+        revision = None
+        revision_source = None
+        if revision_mode:
+            settings_obj = (
+                InstagramBotSettings.objects.select_for_update()
+                .select_related("active_instruction_publication")
+                .filter(pk=settings_id)
+                .first()
+            )
+            if settings_obj is None:
+                return PrizeCaseResult(reason="settings_missing")
         client = (
             IgClient.objects.select_for_update()
             .filter(pk=source_identity["client_id"])
@@ -356,6 +535,80 @@ def upsert_prize_review_case(
         )
         if client is None:
             return PrizeCaseResult(reason="source_missing")
+        if revision_mode:
+            revision = (
+                IgCustomerTurnRevision.objects.select_for_update()
+                .filter(pk=revision_id, client_id=client.pk)
+                .first()
+            )
+            if revision is None:
+                return PrizeCaseResult(reason="revision_missing")
+            proposal = revision.generation_proposal
+            if (
+                revision.generation_proposal_digest
+                != expected_generation_proposal_digest
+                or not isinstance(proposal, Mapping)
+                or _canonical_digest(proposal)
+                != expected_generation_proposal_digest
+            ):
+                return PrizeCaseResult(reason="generation_proposal_changed")
+            authority = proposal.get("authority")
+            if (
+                not isinstance(authority, Mapping)
+                or "prize_review_case_create"
+                not in (authority.get("allowed_actions") or ())
+            ):
+                return PrizeCaseResult(reason="action_not_authorized")
+            from management.services.ig_revision_authority import (
+                check_fact_bindings,
+                check_offer_bindings,
+            )
+            from management.services.ig_revision_outbox import (
+                pre_winner_readiness,
+            )
+
+            readiness = pre_winner_readiness(
+                revision.pk,
+                revision_token,
+                settings_id=settings_obj.pk,
+                settings_permission_epoch=settings_permission_epoch,
+                publication=publication,
+                fact_bindings=authority.get("fact_bindings") or (),
+                offer_bindings=authority.get("offer_bindings") or (),
+                fact_checker=check_fact_bindings,
+                offer_checker=check_offer_bindings,
+                now=now,
+            )
+            if not readiness.ready:
+                return PrizeCaseResult(
+                    reason=readiness.reasons[0] if readiness.reasons else "revision_not_current"
+                )
+            try:
+                from management.services.ig_policy_publication import (
+                    load_active_policy_snapshot,
+                )
+                from management.services.ig_prize_programme import (
+                    active_shooting_prize_programme,
+                )
+
+                current_programme = active_shooting_prize_programme(
+                    publication_snapshot=load_active_policy_snapshot(settings_obj)
+                )
+            except Exception:
+                current_programme = None
+            if (
+                current_programme is None
+                or current_programme.programme_id != programme.programme_id
+                or current_programme.version != programme.version
+                or current_programme.cue_codes != programme.cue_codes
+                or current_programme.manager_required is not True
+            ):
+                return PrizeCaseResult(reason="programme_changed")
+            revision_source = (
+                revision.sources.select_for_update()
+                .filter(message_id=source_id)
+                .first()
+            )
         if expected_permission_epoch is not None:
             if isinstance(expected_permission_epoch, bool):
                 return PrizeCaseResult(reason="permission_epoch_invalid")
@@ -390,15 +643,46 @@ def upsert_prize_review_case(
         )
         if source is None:
             return PrizeCaseResult(reason="source_owner_mismatch")
-        candidate_artifact = (
-            source.turn_intelligence_artifact
-            if isinstance(source.turn_intelligence_artifact, dict)
-            else {}
-        )
-        has_candidate_payload = any(
-            isinstance(item, Mapping) and item.get("prize_certificate") is not None
-            for item in candidate_artifact.get("image_observations") or []
-        )
+        if revision_mode:
+            if revision_source is None:
+                return PrizeCaseResult(reason="source_not_in_revision")
+            source_entry = []
+            for item in proposal.get("sources") or ():
+                if not isinstance(item, Mapping):
+                    continue
+                try:
+                    proposal_source_id = int(item.get("message_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if proposal_source_id == source.pk:
+                    source_entry.append(item)
+            if (
+                len(source_entry) != 1
+                or str(source_entry[0].get("source_digest") or "")
+                != revision_source.source_digest
+            ):
+                return PrizeCaseResult(reason="source_identity_changed")
+            evidence, has_candidate_payload, evidence_reason = (
+                _validated_revision_candidate_evidence(
+                    revision, source, current_programme
+                )
+            )
+            if evidence_reason:
+                return PrizeCaseResult(reason=evidence_reason)
+            effective_preference = _revision_preference(revision)
+        else:
+            candidate_artifact = (
+                source.turn_intelligence_artifact
+                if isinstance(source.turn_intelligence_artifact, dict)
+                else {}
+            )
+            has_candidate_payload = any(
+                isinstance(item, Mapping)
+                and item.get("prize_certificate") is not None
+                for item in candidate_artifact.get("image_observations") or []
+            )
+            evidence = []
+            effective_preference = preference
         if source.sender_id != client.igsid:
             return PrizeCaseResult(reason="source_owner_mismatch")
         source_reviewable = bool(
@@ -409,12 +693,15 @@ def upsert_prize_review_case(
         )
         if has_candidate_payload and not source_reviewable:
             return PrizeCaseResult(reason="source_not_reviewable")
-        evidence = (
-            _validated_candidate_evidence(source, programme)
-            if source_reviewable
-            else []
-        )
-        preference_entry = _preference_entry(source, preference)
+        if not revision_mode:
+            evidence = (
+                _validated_candidate_evidence(source, programme)
+                if source_reviewable
+                else []
+            )
+        elif not source_reviewable:
+            evidence = []
+        preference_entry = _preference_entry(source, effective_preference)
         task = (
             IgFollowUpTask.objects.select_for_update()
             .filter(

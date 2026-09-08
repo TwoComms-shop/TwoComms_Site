@@ -65,8 +65,10 @@ __all__ = [
     "IgCustomerTurn",
     "IgTurnMessage",
     "IgCustomerTurnRevision",
+    "IgSourceActionReceipt",
     "IgTurnRevisionSource",
     "IgRevisionDeliveryEffect",
+    "IgDeferredEcho",
     "IgAlertRateBucket",
     "IgPermissionTransitionJob",
     "IgMetaEventLog",
@@ -8200,6 +8202,136 @@ class _IgCustomerTurnRevisionQuerySet(models.QuerySet):
         return super().update(**kwargs)
 
 
+class _IgDeferredEchoQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        if set(kwargs).intersection((*IgDeferredEcho._IMMUTABLE_FIELDS, "client")):
+            raise ValueError("deferred echo identity is immutable")
+        return super().update(**kwargs)
+
+
+class IgDeferredEcho(models.Model):
+    """An exact echo held until competing provider requests have attribution."""
+
+    class State(models.TextChoices):
+        WAITING_RECEIPT = "waiting_receipt", _("Очікує квитанцію")
+        AMBIGUOUS = "ambiguous", _("Потрібна звірка")
+        OWN = "own", _("Підтверджене власне повідомлення")
+        MANAGER_PENDING = "manager_pending", _("Очікує запису менеджера")
+        MANAGER_APPLIED = "manager_applied", _("Менеджера зафіксовано")
+
+    client = models.ForeignKey("management.IgClient", on_delete=models.CASCADE, related_name="deferred_echoes", db_constraint=False)
+    settings_id_snapshot = models.PositiveIntegerField()
+    provider_namespace = models.CharField(max_length=128)
+    recipient_igsid = models.CharField(max_length=64)
+    provider_message_id = models.CharField(max_length=255)
+    payload = models.JSONField(default=dict)
+    event_digest = models.CharField(max_length=64)
+    provider_created_at = models.DateTimeField(null=True, blank=True)
+    observed_at = models.DateTimeField(default=timezone.now)
+    competing_effect_ids = models.JSONField(default=list)
+    candidate_overflow = models.BooleanField(default=False)
+    state = models.CharField(max_length=20, choices=State.choices, default=State.WAITING_RECEIPT)
+    reason = models.CharField(max_length=64, blank=True, default="")
+    matched_effect = models.ForeignKey("management.IgRevisionDeliveryEffect", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
+    manager_message = models.ForeignKey("management.InstagramBotMessage", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
+    permission_transition = models.ForeignKey("management.IgPermissionTransitionJob", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
+    notification = models.ForeignKey("management.IgBotNotification", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    _IMMUTABLE_FIELDS = (
+        "client_id", "settings_id_snapshot", "provider_namespace", "recipient_igsid",
+        "provider_message_id", "payload", "event_digest", "provider_created_at",
+        "observed_at", "competing_effect_ids", "candidate_overflow",
+    )
+    objects = models.Manager.from_queryset(_IgDeferredEchoQuerySet)()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["provider_namespace", "provider_message_id"], name="ig_echo_namespace_mid")]
+        indexes = [
+            models.Index(fields=["client", "provider_namespace", "state"], name="ig_echo_client_scope_state"),
+            models.Index(fields=["state", "observed_at", "id"], name="ig_echo_state_observed"),
+        ]
+
+    def save(self, *args, **kwargs):
+        import hashlib
+        import json
+
+        if not isinstance(self.payload, dict) or not isinstance(self.competing_effect_ids, list) or len(self.competing_effect_ids) > 32:
+            raise ValueError("deferred echo payload is invalid")
+        if self.state == self.State.MANAGER_APPLIED and (
+            not self.manager_message_id
+            or (self.payload.get("historical") is not True and not self.permission_transition_id)
+        ):
+            raise ValueError("deferred echo manager proof is missing")
+        material = {
+            "provider_namespace": self.provider_namespace,
+            "recipient_igsid": self.recipient_igsid,
+            "provider_message_id": self.provider_message_id,
+            "payload": self.payload,
+            "provider_created_at": self.provider_created_at.isoformat() if self.provider_created_at else "",
+        }
+        encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        if len(encoded) > 32 * 1024 or hashlib.sha256(encoded).hexdigest() != self.event_digest:
+            raise ValueError("deferred echo digest is invalid")
+        if self.pk:
+            previous = type(self).objects.filter(pk=self.pk).values(*self._IMMUTABLE_FIELDS, "state").first()
+            if previous:
+                if any(getattr(self, field) != previous[field] for field in self._IMMUTABLE_FIELDS):
+                    raise ValueError("deferred echo identity is immutable")
+                allowed = {
+                    self.State.WAITING_RECEIPT: {self.State.WAITING_RECEIPT, self.State.AMBIGUOUS, self.State.OWN, self.State.MANAGER_PENDING},
+                    self.State.AMBIGUOUS: {self.State.AMBIGUOUS, self.State.OWN, self.State.MANAGER_PENDING},
+                    self.State.MANAGER_PENDING: {self.State.MANAGER_PENDING, self.State.MANAGER_APPLIED},
+                    self.State.OWN: {self.State.OWN},
+                    self.State.MANAGER_APPLIED: {self.State.MANAGER_APPLIED},
+                }
+                if self.state not in allowed.get(previous["state"], set()):
+                    raise ValueError("deferred echo transition is invalid")
+        return super().save(*args, **kwargs)
+
+
+class _IgSourceActionReceiptQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValueError("source action receipt is immutable")
+
+
+class IgSourceActionReceipt(models.Model):
+    """One immutable, global outcome for an original customer source action."""
+
+    client = models.ForeignKey("management.IgClient", on_delete=models.CASCADE, related_name="source_action_receipts", db_constraint=False)
+    source_message = models.ForeignKey("management.InstagramBotMessage", on_delete=models.CASCADE, related_name="source_action_receipts", db_constraint=False)
+    kind = models.CharField(max_length=32)
+    source_digest = models.CharField(max_length=64)
+    payload_digest = models.CharField(max_length=64)
+    outcome = models.JSONField(default=dict)
+    outcome_digest = models.CharField(max_length=64)
+    first_revision_id = models.PositiveBigIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = models.Manager.from_queryset(_IgSourceActionReceiptQuerySet)()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["source_message", "kind"], name="ig_source_action_kind")]
+
+    def save(self, *args, **kwargs):
+        import hashlib
+        import json
+
+        if self.kind != "postback":
+            raise ValueError("source action kind is unsupported")
+        encoded = json.dumps(self.outcome, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        if len(encoded) > 64 * 1024 or hashlib.sha256(encoded).hexdigest() != self.outcome_digest:
+            raise ValueError("source action outcome digest is invalid")
+        if self.pk:
+            fields = ("client_id", "source_message_id", "kind", "source_digest", "payload_digest", "outcome", "outcome_digest", "first_revision_id")
+            previous = type(self).objects.filter(pk=self.pk).values(*fields).first()
+            if previous and any(getattr(self, field) != previous[field] for field in fields):
+                raise ValueError("source action receipt is immutable")
+        return super().save(*args, **kwargs)
+
+
 class IgCustomerTurnRevision(models.Model):
     """One client-head revision; its bundle payload becomes immutable at seal."""
 
@@ -8215,6 +8347,8 @@ class IgCustomerTurnRevision(models.Model):
     class Origin(models.TextChoices):
         INBOUND = "inbound", _("Вхідний хід")
         AUTO_REFRESH = "auto_refresh", _("Автоматичне оновлення")
+        MANUAL_RESUME = "manual_resume", _("Ручне повернення боту")
+        OUTAGE_RECOVERY = "outage_recovery", _("Відновлення після збою")
 
     class SuccessorReason(models.TextChoices):
         NONE = "", _("Не наступник")
@@ -8224,6 +8358,8 @@ class IgCustomerTurnRevision(models.Model):
             _("Публічні правила змінилися"),
         )
         FACT_BINDING_STALE = "fact_binding_stale", _("Факти змінилися")
+        MANUAL_RESUME = "manual_resume", _("Авторизоване ручне повернення")
+        OUTAGE_RECOVERY = "outage_recovery", _("Відновлення відповіді після збою")
 
     client = models.ForeignKey(
         "management.IgClient",
@@ -8260,6 +8396,9 @@ class IgCustomerTurnRevision(models.Model):
         default=SuccessorReason.NONE,
         db_default=SuccessorReason.NONE,
     )
+    recovery_state = models.CharField(max_length=16, blank=True, default="", db_default="")
+    recovery_due_at = models.DateTimeField(null=True, blank=True, db_default=None, db_index=True)
+    recovery_code = models.CharField(max_length=64, blank=True, default="", db_default="")
     # MariaDB permits many NULL values and one active value=1 per client.
     active_slot = models.PositiveSmallIntegerField(null=True, blank=True, default=1)
     state = models.CharField(
@@ -8358,11 +8497,14 @@ class IgCustomerTurnRevision(models.Model):
                     != previous["generation_proposed_at"]
                 ):
                     raise ValueError("revision generation proposal is immutable")
+                prior_receipts = previous["action_receipts"] or {}
+                allowed_receipts = {"input_decision", "client_configuration_update", "manager_handoff", "rate_alert", "postback_decision", "normal_followups", "commerce_reduction", "manual_resume_authorization", "generation_admission", "recovery_lineage", "media_unavailable_reply", "provider_execution_manifest", "provider_execution_reference", "proposal_execution_resume"}
                 if (
-                    previous["action_receipts"]
-                    and self.action_receipts != previous["action_receipts"]
+                    not isinstance(self.action_receipts, dict)
+                    or not set(self.action_receipts).issubset(allowed_receipts)
+                    or any(self.action_receipts.get(key) != value for key, value in prior_receipts.items())
                 ):
-                    raise ValueError("revision action receipts are immutable")
+                    raise ValueError("revision action receipt entries are immutable")
         return super().save(*args, **kwargs)
 
 

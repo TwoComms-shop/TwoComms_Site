@@ -305,6 +305,11 @@ def _guard_reason(
         return "source_or_client_missing"
     if source.role != InstagramBotMessage.Role.USER:
         return "source_not_inbound"
+    from management.services.ig_revision_live import legacy_claimable_messages
+
+    source_ids = {source.pk, getattr(job, "source_message_id", None)} - {None}
+    if legacy_claimable_messages(InstagramBotMessage.objects.filter(pk__in=source_ids)).count() != len(source_ids):
+        return "revision_execution_owns_source"
     if client.hidden_at:
         return "client_hidden"
     if client.is_blocked:
@@ -974,6 +979,7 @@ def _release_for_retry(
     *,
     consume_attempt: bool = True,
     retry_at=None,
+    retry_horizon=None,
     force_exhausted: bool = False,
 ) -> IgAiReplyRecoveryJob:
     exhausted = False
@@ -988,6 +994,16 @@ def _release_for_retry(
             if not consume_attempt:
                 job.attempts = max(0, int(job.attempts or 0) - 1)
             exhausted = force_exhausted or int(job.attempts or 0) >= MAX_RECOVERY_ATTEMPTS
+            planned_retry = retry_at or _recovery_retry_at(
+                attempts=job.attempts,
+                now=now,
+            )
+            if (
+                not exhausted
+                and retry_horizon is not None
+                and (retry_horizon <= now or planned_retry >= retry_horizon)
+            ):
+                exhausted = True
             job.status = job.Status.FAILED if exhausted else job.Status.PENDING
             job.last_error = reason[:1000]
             job.lease_token = ""
@@ -997,10 +1013,7 @@ def _release_for_retry(
                 # Курсор звільняється: наступний інцидент має право на власний.
                 job.active_cursor_key = None
             else:
-                job.next_attempt_at = retry_at or _recovery_retry_at(
-                    attempts=job.attempts,
-                    now=now,
-                )
+                job.next_attempt_at = planned_retry
             job.completed_at = now if exhausted else None
             job.save(update_fields=[
                 "status", "attempts", "last_error", "active_cursor_key",
@@ -1037,6 +1050,7 @@ def _generate_recovery_draft(
     job: IgAiReplyRecoveryJob,
     *,
     model_context: dict | None = None,
+    automation_token: str = "",
 ) -> str:
     """Generate a safe, substantive response for the current customer turn."""
     settings_obj = InstagramBotSettings.load()
@@ -1050,6 +1064,10 @@ def _generate_recovery_draft(
         _recover_current_message_media,
     )
     model_context = model_context if isinstance(model_context, dict) else {}
+    from management.services.ig_turn_lineage import resolve_logical_turn_key
+
+    logical_turn_id = resolve_logical_turn_key(target)
+    legacy_execution = None
 
     existing_intelligence = (
         target.turn_intelligence_artifact
@@ -1100,6 +1118,33 @@ def _generate_recovery_draft(
         )
         return normalized
 
+    if automation_token:
+        try:
+            from management.services import gemini_accounting_runtime
+
+            if gemini_accounting_runtime.shadow_runtime_active():
+                from management.services.ig_legacy_provider_execution import (
+                    resolve_legacy_execution,
+                )
+                from management.services.ig_turn_lineage import (
+                    resolve_logical_turn_key,
+                )
+
+                legacy_execution, bridge_reason = resolve_legacy_execution(
+                    job_id=job.pk,
+                    recovery_token=job.lease_token,
+                    automation_token=automation_token,
+                    client_id=job.client_id,
+                    source_message_id=target.pk,
+                    logical_turn_id=logical_turn_id,
+                )
+                if legacy_execution is None:
+                    model_context["kind"] = bridge_reason
+                    return ""
+        except Exception:
+            model_context["kind"] = "legacy_bridge_unavailable"
+            return ""
+
     from management.services.gemini_routing import recovery_decision_for
 
     routing_decision = recovery_decision_for(
@@ -1119,12 +1164,13 @@ def _generate_recovery_draft(
         lane=Lane.RECOVERY,
         client_id=job.client_id,
         source_message_id=target.pk,
-        logical_turn_id=str(
-            getattr(job.degradation_episode, "logical_turn_id", "") or ""
-        ),
+        logical_turn_id=logical_turn_id,
         incident_id=getattr(job.degradation_episode, "incident_id", None),
         recovery_job_id=job.pk,
     ) as lineage:
+        if legacy_execution is not None:
+            lineage["recovery_token"] = job.lease_token
+            lineage["automation_token"] = automation_token
         draft = gemini_generate(
             settings_obj,
             history,
@@ -1152,6 +1198,19 @@ def _generate_recovery_draft(
             failure_context=model_context,
             routing_decision=routing_decision,
         )
+    if not draft and legacy_execution is not None:
+        try:
+            from management.services.ig_legacy_provider_execution import (
+                legacy_provider_continuation,
+            )
+
+            continuation = legacy_provider_continuation(legacy_execution)
+            if not continuation.ready and continuation.reason:
+                model_context["kind"] = continuation.reason
+                if continuation.next_due_at:
+                    model_context["retry_at"] = continuation.next_due_at
+        except Exception:
+            model_context["kind"] = "legacy_bridge_unavailable"
     model_context["gemini_request_id"] = str(
         lineage.get("request_id") or ""
     )[:40]
@@ -1467,6 +1526,33 @@ def process_recovery_job(job_id: int) -> IgAiReplyRecoveryJob | None:
 
         now = timezone.now()
         cursor_age = now - (job.activated_at or job.created_at or now)
+        if not job.draft_text:
+            try:
+                from management.services import gemini_accounting_runtime
+
+                accounting_active = gemini_accounting_runtime.shadow_runtime_active()
+            except Exception:
+                accounting_active = False
+            if accounting_active:
+                from management.services.ig_legacy_provider_execution import (
+                    classify_legacy_provider_continuation,
+                    inspect_legacy_job_provider_state,
+                )
+
+                provider_state = inspect_legacy_job_provider_state(job, now=now)
+                if not provider_state.ready:
+                    disposition = classify_legacy_provider_continuation(
+                        provider_state, now=now,
+                    )
+                    return _release_for_retry(
+                        job.pk,
+                        token,
+                        disposition.reason,
+                        consume_attempt=disposition.consume_attempt,
+                        retry_at=disposition.retry_at,
+                        retry_horizon=disposition.horizon_at,
+                        force_exhausted=disposition.state == "terminal",
+                    )
         if incident_blocks_recovery(job.degradation_episode, now=now):
             if cursor_age >= RECOVERY_CURSOR_MAX_LIFETIME:
                 # Курсор не живе вічно: інакше порушується І9 — молчання каналу
@@ -1514,7 +1600,9 @@ def process_recovery_job(job_id: int) -> IgAiReplyRecoveryJob | None:
             )
         else:
             draft = _generate_recovery_draft(
-                job, model_context=recovery_model_context
+                job,
+                model_context=recovery_model_context,
+                automation_token=automation_token,
             )
             apology_count = 0
         if not draft:
@@ -1522,6 +1610,46 @@ def process_recovery_job(job_id: int) -> IgAiReplyRecoveryJob | None:
                 recovery_failure_is_retryable,
             )
 
+            bridge_reason = str(recovery_model_context.get("kind") or "")
+            if bridge_reason.startswith(("legacy_", "provider_", "scarce_")):
+                from management.services.ig_legacy_provider_execution import (
+                    classify_legacy_provider_failure,
+                    continuation_horizon,
+                    legacy_provider_continuation,
+                    resolve_legacy_execution,
+                )
+
+                execution, _reason = resolve_legacy_execution(
+                    job_id=job.pk, recovery_token=token,
+                    automation_token=automation_token,
+                    client_id=job.client_id,
+                    source_message_id=target_message.pk,
+                    logical_turn_id=resolve_logical_turn_key(target_message),
+                )
+                continuation = (
+                    legacy_provider_continuation(execution)
+                    if execution is not None else None
+                )
+                disposition = classify_legacy_provider_failure(
+                    bridge_reason,
+                    next_due_at=getattr(continuation, "next_due_at", None),
+                    horizon_at=(
+                        continuation_horizon(continuation)
+                        if continuation is not None else None
+                    ),
+                )
+                return _release_for_retry(
+                    job.pk,
+                    token,
+                    bridge_reason,
+                    consume_attempt=disposition.consume_attempt,
+                    retry_at=(
+                        disposition.retry_at
+                        or recovery_model_context.get("retry_at")
+                    ),
+                    retry_horizon=disposition.horizon_at,
+                    force_exhausted=disposition.state == "terminal",
+                )
             if not recovery_failure_is_retryable(job.pk):
                 return _release_for_retry(
                     job.pk,

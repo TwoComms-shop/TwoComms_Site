@@ -6248,6 +6248,7 @@ def bot_client_resume_api(request, client_id):
         return blocked
     from .services.ig_manual_resume import (
         ManualResumeRejected,
+        manual_resume_message,
         resume_client_automation,
     )
 
@@ -6266,21 +6267,13 @@ def bot_client_resume_api(request, client_id):
         "changed": result.changed,
         "permission_epoch": result.permission_epoch,
         "successor_created": result.successor_created,
+        "successor_revision_id": result.successor_revision_id,
         "successor_turn_id": result.successor_turn_id,
         "successor_source_message_id": result.successor_source_message_id,
         "unresolved_turn_id": result.unresolved_turn_id,
         "unresolved_source_message_id": result.unresolved_source_message_id,
         "successor_reason": result.successor_reason,
-        "message": (
-            (
-                "Клієнта повернуто боту. Останній нерозв’язаний запит "
-                "залишено в історії без автоматичного повтору."
-                if result.successor_reason == "successor_revision_unavailable"
-                else "Клієнта повернуто боту; повторної відповіді не створено."
-            )
-            if result.changed
-            else "Бот уже веде цього клієнта."
-        ),
+        "message": manual_resume_message(result),
     })
 
 

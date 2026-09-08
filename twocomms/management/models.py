@@ -4444,9 +4444,11 @@ class GeminiRequestQuerySet(models.QuerySet):
         from management.services.gemini_accounting_contract import (
             validate_request_contract,
         )
+        from management.services.gemini_accounting_runtime import validate_revision_request_creation
 
         for obj in objs:
             validate_request_contract(obj)
+            validate_revision_request_creation(obj)
         return super().bulk_create(objs, *args, **kwargs)
 
 
@@ -4478,6 +4480,7 @@ class GeminiRequest(models.Model):
     reasoning_task = models.CharField(max_length=40, blank=True, default="")
     logical_turn_id = models.CharField(max_length=64, blank=True, default="")
     source_message_id = models.PositiveBigIntegerField(null=True, blank=True)
+    source_execution_key = models.CharField(max_length=64, blank=True, default="", db_default="")
     client_id = models.PositiveBigIntegerField(null=True, blank=True)
     recovery_job_id = models.PositiveBigIntegerField(null=True, blank=True)
     reply_message_id = models.PositiveBigIntegerField(null=True, blank=True)
@@ -4530,8 +4533,8 @@ class GeminiRequest(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["source_message_id", "lane"],
-                name="gem_req_source_lane_uniq",
+                fields=["source_message_id", "lane", "source_execution_key"],
+                name="gem_req_source_exec_uniq",
             ),
         ]
 
@@ -4552,6 +4555,9 @@ class GeminiRequest(models.Model):
         )
 
         validate_request_contract(self)
+        if self._state.adding:
+            from management.services.gemini_accounting_runtime import validate_revision_request_creation
+            validate_revision_request_creation(self)
         return super().save(*args, **kwargs)
 
 

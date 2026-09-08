@@ -14,6 +14,8 @@ is keyed only by the stable, non-secret project identity.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import math
 import re
 import secrets
@@ -21,6 +23,8 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -59,6 +63,137 @@ _PLAN_FIELDS = frozenset({
     "identity_status",
     "initial_skip_reason",
 })
+
+
+@dataclass(frozen=True)
+class _RevisionExecution:
+    revision_id: int
+    token: str
+    settings_id: int
+    settings_permission_epoch: int
+
+
+_revision_execution = ContextVar("gemini_revision_execution", default=None)
+_legacy_execution = ContextVar("gemini_legacy_execution", default=None)
+
+
+class _LegacyProviderRootBlocked(Exception):
+    def __init__(self, reason):
+        self.reason = str(reason or "legacy_route_invalid")
+        super().__init__(self.reason)
+
+
+@contextmanager
+def revision_request_execution(
+    revision_id, revision_token, *, settings_id, settings_permission_epoch,
+):
+    """Supply an owned revision capability, never a caller-selected dedupe key.
+
+    Admission rechecks this capability against durable truth. Observers retain
+    it for provider workers whose ContextVar context is not inherited.
+    """
+    capability = _RevisionExecution(
+        int(revision_id), str(revision_token), int(settings_id),
+        int(settings_permission_epoch),
+    )
+    context_token = _revision_execution.set(capability)
+    try:
+        yield
+    finally:
+        _revision_execution.reset(context_token)
+
+
+def _revision_execution_valid(capability, *, source_message_id, client_id, lane, logical_turn_id):
+    from management.models import IgCustomerTurnRevision, InstagramBotSettings
+    from management.services.ig_reply_boundary import capture_reply_permission
+    from management.services.ig_revision_outbox import _normal_reply_window_deadline
+
+    if (
+        not isinstance(capability, _RevisionExecution)
+        or not capability.token
+        or lane != "live"
+        or logical_turn_id != f"ig-revision:{capability.revision_id}"
+        or not source_message_id or not client_id
+    ):
+        return False
+    now = timezone.now()
+    revision = IgCustomerTurnRevision.objects.filter(
+        pk=capability.revision_id, client_id=client_id, active_slot=1,
+        state=IgCustomerTurnRevision.State.CLAIMED,
+        claim_token=capability.token, lease_until__gt=now,
+        overall_deadline__gt=now,
+    ).first()
+    if revision is None or revision.erasure_started_at_snapshot is not None:
+        return False
+    snapshot = revision.bundle_snapshot
+    if not isinstance(snapshot, dict) or not revision.snapshot_digest:
+        return False
+    digest = hashlib.sha256(json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    if digest != revision.snapshot_digest:
+        return False
+    sources = snapshot.get("sources") or []
+    # The canonical generation anchor is the final immutable bundle source.
+    # Accepting any other source would permit two graphs for one revision.
+    if not sources or sources[-1].get("message_id") != source_message_id:
+        return False
+    source = sources[-1]
+    if not revision.sources.filter(
+        # Refresh/recovery children preserve the parent's sealed snapshot,
+        # including its historical revision_source_id. Their own source rows
+        # have new PKs and the same immutable envelope identity.
+        ordinal=source.get("ordinal"), message_id=source_message_id,
+        message__client_id=client_id, message__role="user", role="user",
+        source_digest=source.get("source_digest"),
+        source_namespace=source.get("source_namespace"),
+    ).exists():
+        return False
+    window_deadline = _normal_reply_window_deadline(revision)
+    if window_deadline is None or window_deadline <= now:
+        return False
+    permission = capture_reply_permission(capability.settings_id, client_id)
+    return bool(
+        permission.allowed
+        and permission.client_epoch == revision.permission_epoch
+        and permission.settings_epoch == capability.settings_permission_epoch
+        and InstagramBotSettings.objects.filter(
+            pk=capability.settings_id, ai_enabled=True,
+        ).exists()
+    )
+
+
+def validate_revision_request_creation(request):
+    """Prevent arbitrary ORM writers from minting a fresh execution namespace."""
+    if not request.source_execution_key:
+        return
+    from django.core.exceptions import ValidationError
+
+    if str(request.source_execution_key).startswith("ig-recovery:"):
+        from management.services.ig_legacy_provider_execution import (
+            validate_legacy_execution,
+        )
+
+        if validate_legacy_execution(
+            _legacy_execution.get(), source_message_id=request.source_message_id,
+            client_id=request.client_id, lane=request.lane,
+            logical_turn_id=request.logical_turn_id,
+            source_execution_key=request.source_execution_key,
+        ):
+            return
+        raise ValidationError({
+            "source_execution_key": "Legacy recovery execution is not owned."
+        })
+
+    if (
+        request.source_execution_key != request.logical_turn_id
+        or not _revision_execution_valid(
+            _revision_execution.get(), source_message_id=request.source_message_id,
+            client_id=request.client_id, lane=request.lane,
+            logical_turn_id=request.logical_turn_id,
+        )
+    ):
+        raise ValidationError({"source_execution_key": "Revision execution is not owned."})
 
 
 def parse_effective_from(value) -> dt.datetime | None:
@@ -793,6 +928,7 @@ def begin_request(
     routing_decision=None,
     lane: str = "",
     request_policy_manifest=None,
+    legacy_provider_root: bool = False,
 ) -> "RequestObserver | NullRequestObserver":
     """Create one immutable graph only when the shadow gate is active."""
     from management.services.gemini_accounting_contract import (
@@ -810,6 +946,8 @@ def begin_request(
             else "policy_manifest_invalid"
         )
     if not shadow_runtime_active():
+        if _revision_execution.get() is not None:
+            return blocked_observer("provider_accounting_unavailable")
         return NULL_OBSERVER
     try:
         from management.models import (
@@ -839,6 +977,77 @@ def begin_request(
         deadline_ms = max(0, int(float(deadline_seconds or 0) * 1000))
         profile_version = _quota_profile_version_for_plan(safe_plan, now=now)
         source_message_id = lineage.get("source_message_id") or None
+        logical_turn_id = str(lineage.get("logical_turn_id") or "")
+        revision_execution = _revision_execution.get()
+        legacy_execution = None
+        legacy_root_execution = None
+        parent_request_id = None
+        source_execution_key = ""
+        explicit_revision = revision_execution is not None or logical_turn_id.startswith("ig-revision:")
+        if lineage.get("source_execution_key"):
+            return blocked_observer("revision_execution_invalid")
+        if explicit_revision:
+            if not _revision_execution_valid(
+                revision_execution, source_message_id=source_message_id,
+                client_id=lineage.get("client_id"), lane=resolved_lane,
+                logical_turn_id=logical_turn_id,
+            ):
+                return blocked_observer("revision_execution_invalid")
+            source_execution_key = logical_turn_id
+        if legacy_provider_root and (
+            explicit_revision
+            or resolved_lane != "live"
+            or not source_message_id
+            or not lineage.get("client_id")
+            or not logical_turn_id
+            or not lineage.get("automation_token")
+        ):
+            return blocked_observer("legacy_live_claim_invalid")
+        provider_continuation = None
+        if source_execution_key:
+            from management.services.ig_revision_provider_execution import revision_provider_continuation
+
+            provider_continuation = revision_provider_continuation(
+                revision_execution.revision_id, revision_execution.token,
+                settings_id=revision_execution.settings_id,
+                settings_permission_epoch=revision_execution.settings_permission_epoch,
+                candidate_plan=candidate_plan, now=now,
+            )
+            if not provider_continuation.ready:
+                return blocked_observer(provider_continuation.reason)
+            candidate_plan = list(provider_continuation.candidate_plan)
+            safe_plan = sanitize_candidate_plan(candidate_plan)
+        elif (
+            resolved_lane == "recovery"
+            and lineage.get("recovery_job_id")
+            and lineage.get("recovery_token")
+            and lineage.get("automation_token")
+        ):
+            from management.services.ig_legacy_provider_execution import (
+                legacy_provider_continuation,
+                resolve_legacy_execution,
+            )
+
+            legacy_execution, legacy_reason = resolve_legacy_execution(
+                job_id=lineage.get("recovery_job_id"),
+                recovery_token=lineage.get("recovery_token"),
+                automation_token=lineage.get("automation_token"),
+                client_id=lineage.get("client_id"),
+                source_message_id=source_message_id,
+                logical_turn_id=logical_turn_id,
+                now=now,
+            )
+            if legacy_execution is None:
+                return blocked_observer(legacy_reason)
+            source_execution_key = legacy_execution.source_execution_key
+            parent_request_id = legacy_execution.root_graph_id
+            provider_continuation = legacy_provider_continuation(
+                legacy_execution, candidate_plan=candidate_plan, now=now,
+            )
+            if not provider_continuation.ready:
+                return blocked_observer(provider_continuation.reason)
+            candidate_plan = list(provider_continuation.candidate_plan)
+            safe_plan = sanitize_candidate_plan(candidate_plan)
         resolved_request_id = str(request_id or uuid.uuid4().hex)[:40]
         last_contention = None
         for delay in OWNERSHIP_RETRY_DELAYS:
@@ -859,7 +1068,7 @@ def begin_request(
                         message_task_class = str(
                             locked_message.gemini_task_class or ""
                         )
-                        if (
+                        if not source_execution_key and (
                             (
                                 task_class == "no_model"
                                 and message_task_class not in {"", "no_model"}
@@ -875,6 +1084,7 @@ def begin_request(
                             .filter(
                                 source_message_id=source_message_id,
                                 lane=resolved_lane,
+                                source_execution_key=source_execution_key,
                             )
                             .order_by("id")[:2]
                         )
@@ -906,62 +1116,97 @@ def begin_request(
                             if existing_request.policy_manifest != safe_policy_manifest
                             else "request_conflict"
                         )
-                    graph = GeminiRequest.objects.create(
-                        request_id=resolved_request_id,
-                        lane=resolved_lane,
-                        task_class=task_class,
-                        reasoning_task=str(reasoning_task or "")[:40],
-                        logical_turn_id=str(lineage.get("logical_turn_id") or "")[:64],
-                        source_message_id=source_message_id,
-                        client_id=lineage.get("client_id") or None,
-                        recovery_job_id=lineage.get("recovery_job_id") or None,
-                        routing_policy_version=str(
-                            _routing_value(routing_decision, "policy_version", "")
-                        )[:32],
-                        accounting_policy_version=ACCOUNTING_POLICY_VERSION,
-                        quota_profile_version=profile_version,
-                        authority_snapshot_version=str(
-                            _routing_value(
-                                routing_decision,
-                                "authority_snapshot_version",
-                                "",
-                            )
-                        )[:32],
-                        routing_mode=str(
-                            _routing_value(routing_decision, "routing_mode", "")
-                        )[:12],
-                        commercial_risk=str(
-                            _routing_value(routing_decision, "commercial_risk", "")
-                        )[:16],
-                        requires_media_reasoning=bool(
-                            _routing_value(
-                                routing_decision,
-                                "requires_media_reasoning",
-                                False,
-                            )
-                        ),
-                        candidate_plan=safe_plan,
-                        candidate_plan_digest=canonical_candidate_plan_digest(
-                            safe_plan
-                        ),
-                        policy_manifest=safe_policy_manifest,
-                        deadline_ms=deadline_ms,
-                        deadline_at=(
-                            now + dt.timedelta(milliseconds=deadline_ms)
-                            if deadline_ms
-                            else None
-                        ),
-                        accounting_mode=GeminiRequest.AccountingMode.SHADOW,
+                    legacy_context_token = (
+                        _legacy_execution.set(legacy_execution)
+                        if legacy_execution is not None else None
                     )
-                return RequestObserver(
+                    try:
+                        graph = GeminiRequest.objects.create(
+                            request_id=resolved_request_id,
+                            parent_request_id=parent_request_id,
+                            lane=resolved_lane,
+                            task_class=task_class,
+                            reasoning_task=str(reasoning_task or "")[:40],
+                            logical_turn_id=str(lineage.get("logical_turn_id") or "")[:64],
+                            source_message_id=source_message_id,
+                            source_execution_key=source_execution_key,
+                            client_id=lineage.get("client_id") or None,
+                            recovery_job_id=lineage.get("recovery_job_id") or None,
+                            routing_policy_version=str(
+                                _routing_value(routing_decision, "policy_version", "")
+                            )[:32],
+                            accounting_policy_version=ACCOUNTING_POLICY_VERSION,
+                            quota_profile_version=profile_version,
+                            authority_snapshot_version=str(
+                                _routing_value(
+                                    routing_decision,
+                                    "authority_snapshot_version",
+                                    "",
+                                )
+                            )[:32],
+                            routing_mode=str(
+                                _routing_value(routing_decision, "routing_mode", "")
+                            )[:12],
+                            commercial_risk=str(
+                                _routing_value(routing_decision, "commercial_risk", "")
+                            )[:16],
+                            requires_media_reasoning=bool(
+                                _routing_value(
+                                    routing_decision,
+                                    "requires_media_reasoning",
+                                    False,
+                                )
+                            ),
+                            candidate_plan=safe_plan,
+                            candidate_plan_digest=canonical_candidate_plan_digest(
+                                safe_plan
+                            ),
+                            policy_manifest=safe_policy_manifest,
+                            deadline_ms=deadline_ms,
+                            deadline_at=(
+                                now + dt.timedelta(milliseconds=deadline_ms)
+                                if deadline_ms
+                                else None
+                            ),
+                            accounting_mode=GeminiRequest.AccountingMode.SHADOW,
+                        )
+                    finally:
+                        if legacy_context_token is not None:
+                            _legacy_execution.reset(legacy_context_token)
+                    if legacy_provider_root:
+                        from management.services.ig_legacy_provider_execution import (
+                            initialize_legacy_provider_root,
+                        )
+
+                        legacy_root_execution, provider_continuation = (
+                            initialize_legacy_provider_root(
+                                graph_id=graph.pk,
+                                automation_token=lineage.get("automation_token"),
+                                candidate_plan=candidate_plan,
+                                now=now,
+                            )
+                        )
+                        if legacy_root_execution is None:
+                            raise _LegacyProviderRootBlocked(
+                                provider_continuation.reason
+                            )
+                observer = RequestObserver(
                     graph_id=graph.pk,
                     request_id=graph.request_id,
                     raw_plan=candidate_plan,
                     source_message_id=source_message_id,
                     lane=resolved_lane,
+                    source_execution_key=source_execution_key,
+                    revision_execution=revision_execution,
+                    legacy_execution=legacy_execution,
+                    legacy_root_execution=legacy_root_execution,
                 )
+                observer.provider_continuation = provider_continuation
+                return observer
+            except _LegacyProviderRootBlocked as exc:
+                return blocked_observer(exc.reason)
             except IntegrityError:
-                # ``request_id`` and non-null ``source_message_id + lane`` are
+                # ``request_id`` and source/lane/execution identity are
                 # both durable ownership conflicts.  Neither may degrade into
                 # a provider-permitting null observer.
                 return blocked_observer("request_conflict")
@@ -969,11 +1214,28 @@ def begin_request(
                 if source_message_id and _ownership_contention(exc):
                     last_contention = exc
                     continue
+                if explicit_revision:
+                    return blocked_observer("revision_execution_invalid")
+                if legacy_execution is not None or legacy_provider_root:
+                    return blocked_observer("legacy_execution_invalid")
                 return NULL_OBSERVER
         if last_contention is not None:
             return blocked_observer("ownership_contention")
         return NULL_OBSERVER
     except Exception:
+        # Explicit revisions cannot turn an invalid claim or a failed identity
+        # lookup into a provider-permitting legacy null observer.
+        if (
+            _revision_execution.get() is not None
+            or locals().get("explicit_revision", False)
+            or locals().get("legacy_execution") is not None
+            or legacy_provider_root
+        ):
+            return blocked_observer(
+                "revision_execution_invalid"
+                if locals().get("explicit_revision", False)
+                else "legacy_execution_invalid"
+            )
         return NULL_OBSERVER
 
 
@@ -1047,6 +1309,7 @@ class AttemptBoundary:
     state_id: int | None = None
     started_monotonic: float | None = None
     admitted: bool = False
+    provider_repair_token: str = ""
 
     def validate_ownership(self) -> bool:
         try:
@@ -1142,11 +1405,20 @@ class RequestObserver:
         raw_plan,
         source_message_id=None,
         lane: str = "",
+        source_execution_key: str | None = None,
+        revision_execution=None,
+        legacy_execution=None,
+        legacy_root_execution=None,
     ):
         self.graph_id = int(graph_id)
         self.request_id = str(request_id)
         self.source_message_id = int(source_message_id) if source_message_id else None
         self.lane = str(lane or "")[:16]
+        self.source_execution_key = source_execution_key
+        self._revision_execution = revision_execution
+        self._legacy_execution = legacy_execution
+        self._legacy_root_execution = legacy_root_execution
+        self.provider_continuation = None
         self._counter = 0
         self._lock = threading.Lock()
         self._candidate_indexes: dict[tuple[str, str], int] = {}
@@ -1185,7 +1457,7 @@ class RequestObserver:
             return self._counter
 
     def attempt(self, *, key_name: str, model: str, candidate_index: int = 0):
-        return AttemptBoundary(
+        boundary = AttemptBoundary(
             observer=self,
             key_name=str(key_name or "")[:40],
             model=str(model or "")[:80],
@@ -1195,6 +1467,28 @@ class RequestObserver:
             ),
             attempt_index=self._allocate_attempt_index(),
         )
+        pending = getattr(self, "_pending_provider_repair", None)
+        if pending and (pending["key_name"], pending["model"], pending["candidate_index"]) == (boundary.key_name, boundary.model, boundary.candidate_index):
+            boundary.provider_repair_token = pending["token"]
+            self._pending_provider_repair = None
+        return boundary
+
+    def reserve_provider_repair(self, *, key_name, model, candidate_index=0):
+        if (
+            self._legacy_execution is not None
+            or self._legacy_root_execution is not None
+        ):
+            from management.services.ig_legacy_provider_execution import (
+                reserve_legacy_provider_repair,
+            )
+
+            return reserve_legacy_provider_repair(
+                self, key_name=key_name, model=model,
+                candidate_index=candidate_index,
+            )
+        from management.services.ig_revision_provider_execution import reserve_provider_repair
+
+        return reserve_provider_repair(self, key_name=key_name, model=model, candidate_index=candidate_index)
 
     def record_not_attempted(
         self,
@@ -1222,7 +1516,9 @@ class RequestObserver:
         bounded_reason = _safe_reason(reason)[:24] or "policy_stop"
         try:
             with transaction.atomic():
-                graph = GeminiRequest.objects.select_for_update().get(pk=self.graph_id)
+                graph, _message = self._lock_canonical_graph()
+                if graph is None:
+                    return None
                 outcomes = dict(graph.candidate_outcomes or {})
                 outcome_key = str(
                     boundary.candidate_index or boundary.attempt_index
@@ -1295,7 +1591,9 @@ class RequestObserver:
 
             now = timezone.now()
             with transaction.atomic():
-                graph = GeminiRequest.objects.select_for_update().get(pk=self.graph_id)
+                graph, _message = self._lock_canonical_graph()
+                if graph is None:
+                    return
                 outcomes = dict(graph.candidate_outcomes or {})
                 observed = {
                     int(key)
@@ -1376,7 +1674,9 @@ class RequestObserver:
             now = timezone.now()
             bounded_reason = _safe_reason(reason)[:48] or "no_model"
             with transaction.atomic():
-                graph = GeminiRequest.objects.select_for_update().get(pk=self.graph_id)
+                graph, _message = self._lock_canonical_graph()
+                if graph is None:
+                    return
                 if graph.terminal_resolution:
                     return
                 if (
@@ -1440,16 +1740,18 @@ class RequestObserver:
 
         source_message_id = self.source_message_id
         lane = self.lane
-        if not lane:
+        source_execution_key = self.source_execution_key
+        if not lane or source_execution_key is None:
             identity_row = (
                 GeminiRequest.objects.filter(pk=self.graph_id)
-                .values("source_message_id", "lane")
+                .values("source_message_id", "lane", "source_execution_key")
                 .first()
             )
             if identity_row is None:
                 return None, None
             source_message_id = identity_row["source_message_id"]
             lane = str(identity_row["lane"] or "")
+            source_execution_key = identity_row["source_execution_key"]
         locked_message = None
         if source_message_id:
             locked_message = (
@@ -1462,7 +1764,10 @@ class RequestObserver:
                 return None, None
             graphs = list(
                 GeminiRequest.objects.select_for_update()
-                .filter(source_message_id=source_message_id, lane=lane)
+                .filter(
+                    source_message_id=source_message_id, lane=lane,
+                    source_execution_key=source_execution_key,
+                )
                 .order_by("id")[:2]
             )
             if len(graphs) != 1 or graphs[0].pk != self.graph_id:
@@ -1494,6 +1799,38 @@ class RequestObserver:
         graph, locked_message = self._lock_canonical_graph()
         if graph is None:
             return None
+        if self._legacy_root_execution is not None:
+            from management.services.ig_legacy_provider_execution import (
+                validate_legacy_root_execution,
+            )
+
+            if (
+                graph.pk != self._legacy_root_execution.root_graph_id
+                or not validate_legacy_root_execution(self._legacy_root_execution)
+            ):
+                return None
+        if graph.source_execution_key:
+            if str(graph.source_execution_key).startswith("ig-recovery:"):
+                from management.services.ig_legacy_provider_execution import (
+                    validate_legacy_execution,
+                )
+
+                valid_execution = validate_legacy_execution(
+                    self._legacy_execution,
+                    source_message_id=graph.source_message_id,
+                    client_id=graph.client_id, lane=graph.lane,
+                    logical_turn_id=graph.logical_turn_id,
+                    source_execution_key=graph.source_execution_key,
+                )
+            else:
+                valid_execution = _revision_execution_valid(
+                    self._revision_execution,
+                    source_message_id=graph.source_message_id,
+                    client_id=graph.client_id, lane=graph.lane,
+                    logical_turn_id=graph.logical_turn_id,
+                )
+            if not valid_execution:
+                return None
         if (
             graph.task_class == "no_model"
             or not graph.candidate_plan
@@ -1501,7 +1838,7 @@ class RequestObserver:
             or graph.winner_attempt_id is not None
         ):
             return None
-        if locked_message is not None:
+        if locked_message is not None and not graph.source_execution_key:
             message_task = str(locked_message.gemini_task_class or "")
             if message_task == "no_model":
                 return None
@@ -1682,6 +2019,38 @@ class RequestObserver:
                 else:
                     shadow_decision = GeminiRequestAttempt.ShadowDecision.ALLOW
 
+            if self._legacy_root_execution is not None:
+                from management.services.ig_legacy_provider_execution import (
+                    admit_legacy_provider_dispatch_locked,
+                )
+
+                reason = admit_legacy_provider_dispatch_locked(
+                    graph, boundary, now=now,
+                )
+                if reason:
+                    boundary.provider_block_reason = reason
+                    return False
+            elif graph.source_execution_key:
+                if str(graph.source_execution_key).startswith("ig-recovery:"):
+                    from management.services.ig_legacy_provider_execution import (
+                        admit_legacy_provider_dispatch_locked,
+                    )
+
+                    admission = admit_legacy_provider_dispatch_locked
+                else:
+                    from management.services.ig_revision_provider_execution import (
+                        admit_provider_dispatch_locked,
+                    )
+
+                    admission = admit_provider_dispatch_locked
+
+                # Force a current ledger read after acquiring the source mutex.
+                # Keep quota -> attempt ordering shared with settlement; no
+                # source -> root-revision write is introduced here.
+                reason = admission(graph, boundary, now=now)
+                if reason:
+                    boundary.provider_block_reason = reason
+                    return False
             attempt = GeminiRequestAttempt.objects.create(
                 request_id=self.request_id,
                 request_graph=graph,

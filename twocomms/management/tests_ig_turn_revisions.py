@@ -1,4 +1,7 @@
 from datetime import UTC, datetime, timedelta
+import hashlib
+import json
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -6,6 +9,7 @@ from management.models import (
     IgClient,
     IgCustomerTurn,
     IgCustomerTurnRevision,
+    IgRevisionDeliveryEffect,
     IgTurnMessage,
     InstagramBotMessage,
 )
@@ -14,6 +18,7 @@ from management.services.ig_turn_revisions import (
     claim_revision_preparation,
     claim_sealed_revision,
     create_collecting_revision,
+    create_refresh_successor,
     replay_snapshot,
     revision_claim_is_current,
     seal_revision,
@@ -62,6 +67,57 @@ class TurnRevisionTests(TestCase):
             message=message,
             ordinal=self.turn.turn_messages.count() + 1,
             role=message.role,
+        )
+
+    def claimed_revision(self, *, overall_deadline=None, source_metadata=None):
+        revision = create_collecting_revision(
+            self.turn,
+            [self.first],
+            source_metadata=source_metadata,
+            now=self.now,
+            bypass_quiet=True,
+            overall_deadline=overall_deadline,
+        ).revision
+        preparation = claim_revision_preparation(revision.pk, now=self.now)
+        sealed = seal_revision(revision.pk, preparation.token, now=self.now)
+        self.assertTrue(sealed.sealed, sealed.reason)
+        claimed = claim_sealed_revision(revision.pk, now=self.now)
+        self.assertTrue(claimed.token, claimed.reason)
+        return claimed.revision, claimed.token
+
+    def delivery_effect(self, revision, *, state, index=0):
+        payload = {
+            "recipient": {"id": self.client_row.igsid},
+            "message": {"text": "planned reply"},
+        }
+        encoded = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        return IgRevisionDeliveryEffect.objects.create(
+            revision=revision,
+            source_message=self.first,
+            effect_key=f"refresh-effect-{revision.pk}-{index}",
+            actor="bot",
+            purpose="normal_reply",
+            group="substantive_text",
+            kind="text",
+            order_index=index,
+            part_index=index,
+            part_count=1,
+            plan_digest="a" * 64,
+            payload=payload,
+            payload_digest=hashlib.sha256(encoded).hexdigest(),
+            recipient_igsid=self.client_row.igsid,
+            provider_namespace="instagram_login:owner-1",
+            settings_id_snapshot=1,
+            settings_permission_epoch=0,
+            client_permission_epoch=revision.permission_epoch,
+            revision_snapshot_digest=revision.snapshot_digest,
+            publication_id=1,
+            publication_version=1,
+            publication_hash="b" * 64,
+            authority_context_digest="c" * 64,
+            state=state,
         )
 
     def test_each_inbound_advances_active_revision_and_quiet_caps_at_four_seconds(self):
@@ -323,7 +379,8 @@ class TurnRevisionTests(TestCase):
 
         self.assertTrue(first_claim.token)
         self.assertFalse(second_claim.token)
-        self.assertTrue(revision_claim_is_current(revision.pk, first_claim.token))
+        with patch("management.services.ig_turn_revisions.timezone.now", return_value=self.now):
+            self.assertTrue(revision_claim_is_current(revision.pk, first_claim.token))
 
         # Same historical source may participate in a later/manual revision;
         # the source message and its original turn membership remain unchanged.
@@ -355,3 +412,164 @@ class TurnRevisionTests(TestCase):
         self.assertFalse(early.token)
         self.assertTrue(reclaimed.token)
         self.assertNotEqual(first.token, reclaimed.token)
+
+    def test_refresh_successor_copies_sealed_envelopes_not_mutable_message(self):
+        revision, token = self.claimed_revision(source_metadata={
+            self.first.pk: {
+                "referral": {"ref": "sealed-campaign", "ad_id": "42"}
+            }
+        })
+        original_snapshot = revision.bundle_snapshot
+        original_source = revision.sources.get()
+        self.first.text = "mutable row was changed after generation"
+        self.first.save(update_fields=["text"])
+        planned = self.delivery_effect(
+            revision, state=IgRevisionDeliveryEffect.State.PLANNED
+        )
+
+        result = create_refresh_successor(
+            revision.pk,
+            token,
+            reason=IgCustomerTurnRevision.SuccessorReason.PUBLICATION_CHANGED,
+            now=self.now + timedelta(seconds=1),
+        )
+
+        self.assertTrue(result.created, result.reason)
+        child = result.revision
+        copied = child.sources.get()
+        self.assertEqual(child.origin, child.Origin.AUTO_REFRESH)
+        self.assertEqual(child.parent_id, revision.pk)
+        self.assertEqual(child.bundle_snapshot, original_snapshot)
+        self.assertEqual(child.snapshot_digest, revision.snapshot_digest)
+        self.assertEqual(copied.text, original_source.text)
+        self.assertNotEqual(copied.text, self.first.text)
+        self.assertEqual(copied.referral, original_source.referral)
+        self.assertEqual(copied.source_digest, original_source.source_digest)
+        planned.refresh_from_db()
+        self.assertEqual(planned.state, planned.State.CANCELLED)
+        self.assertEqual(planned.failure_code, "revision_refreshed")
+        self.assertEqual(self.first.turn_membership.turn_id, self.turn.pk)
+
+    def test_refresh_is_idempotent_single_hop_and_keeps_original_deadline(self):
+        deadline = self.now + timedelta(seconds=20)
+        revision, token = self.claimed_revision(overall_deadline=deadline)
+        first = create_refresh_successor(
+            revision.pk,
+            token,
+            reason=IgCustomerTurnRevision.SuccessorReason.FACT_BINDING_STALE,
+            now=self.now + timedelta(seconds=2),
+        )
+        repeated = create_refresh_successor(
+            revision.pk,
+            token,
+            reason=IgCustomerTurnRevision.SuccessorReason.FACT_BINDING_STALE,
+            now=self.now + timedelta(seconds=3),
+        )
+
+        self.assertTrue(first.created)
+        self.assertFalse(repeated.created)
+        self.assertEqual(repeated.reason, "existing_successor")
+        self.assertEqual(first.revision.pk, repeated.revision.pk)
+        self.assertEqual(first.revision.overall_deadline, deadline)
+        self.assertEqual(
+            IgCustomerTurnRevision.objects.filter(parent=revision).count(), 1
+        )
+
+        child_claim = claim_sealed_revision(
+            first.revision.pk, now=self.now + timedelta(seconds=4)
+        )
+        denied = create_refresh_successor(
+            first.revision.pk,
+            child_claim.token,
+            reason=(
+                IgCustomerTurnRevision.SuccessorReason.PUBLIC_POLICY_INPUTS_STALE
+            ),
+            now=self.now + timedelta(seconds=5),
+        )
+        self.assertEqual(denied.reason, "refresh_limit_reached")
+
+    def test_newer_inbound_head_and_takeover_block_refresh(self):
+        revision, token = self.claimed_revision()
+        second = self.message("new inbound", mid="turn-rev-newer")
+        self.add_to_turn(second)
+        newer = create_collecting_revision(
+            self.turn,
+            [self.first, second],
+            now=self.now + timedelta(seconds=1),
+        ).revision
+
+        stale = create_refresh_successor(
+            revision.pk,
+            token,
+            reason=IgCustomerTurnRevision.SuccessorReason.PUBLICATION_CHANGED,
+            now=self.now + timedelta(seconds=2),
+        )
+        self.assertEqual(stale.reason, "newer_head_exists")
+        self.assertEqual(
+            IgCustomerTurnRevision.objects.get(active_slot=1).pk, newer.pk
+        )
+
+        # A fresh client/turn proves takeover independently of the newer-head
+        # fence above.
+        other = IgClient.objects.create(
+            igsid="refresh-takeover", reply_permission_epoch=1
+        )
+        message = InstagramBotMessage.objects.create(
+            client=other,
+            sender_id=other.igsid,
+            role=InstagramBotMessage.Role.USER,
+            text="question",
+            mid="refresh-takeover-source",
+            provider_namespace="instagram_login:owner-1",
+            status=InstagramBotMessage.Status.PENDING,
+        )
+        turn = IgCustomerTurn.objects.create(
+            client=other,
+            primary_source_message=message,
+            window_started_at=self.now,
+            window_deadline=self.now,
+        )
+        IgTurnMessage.objects.create(
+            turn=turn, message=message, ordinal=1, role=message.role
+        )
+        other_revision = create_collecting_revision(
+            turn, [message], now=self.now, bypass_quiet=True
+        ).revision
+        prep = claim_revision_preparation(other_revision.pk, now=self.now)
+        seal_revision(other_revision.pk, prep.token, now=self.now)
+        other_claim = claim_sealed_revision(other_revision.pk, now=self.now)
+        other.manager_takeover = True
+        other.save(update_fields=["manager_takeover", "updated_at"])
+        takeover = create_refresh_successor(
+            other_revision.pk,
+            other_claim.token,
+            reason=IgCustomerTurnRevision.SuccessorReason.PUBLICATION_CHANGED,
+            now=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(takeover.reason, "client_not_eligible")
+
+    def test_unknown_delivery_and_exhausted_budget_reject_successor(self):
+        revision, token = self.claimed_revision(
+            overall_deadline=self.now + timedelta(seconds=10)
+        )
+        self.delivery_effect(
+            revision, state=IgRevisionDeliveryEffect.State.UNKNOWN
+        )
+        unknown = create_refresh_successor(
+            revision.pk,
+            token,
+            reason=IgCustomerTurnRevision.SuccessorReason.FACT_BINDING_STALE,
+            now=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(unknown.reason, "delivery_outcome_uncertain")
+        revision.refresh_from_db()
+        self.assertEqual(revision.active_slot, 1)
+
+        IgRevisionDeliveryEffect.objects.filter(revision=revision).delete()
+        expired = create_refresh_successor(
+            revision.pk,
+            token,
+            reason=IgCustomerTurnRevision.SuccessorReason.FACT_BINDING_STALE,
+            now=self.now + timedelta(seconds=10),
+        )
+        self.assertEqual(expired.reason, "overall_deadline_expired")

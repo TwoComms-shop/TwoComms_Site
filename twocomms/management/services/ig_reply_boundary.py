@@ -81,7 +81,7 @@ def capture_reply_permission(settings_id: int | None, client_id: int | None) -> 
 
     settings = (
         InstagramBotSettings.objects.filter(pk=settings_id)
-        .only("id", "is_enabled", "allowed_senders", "reply_permission_epoch")
+        .only("id", "is_enabled", "allowed_senders", "reply_permission_epoch", "ig_user_id", "page_id")
         .first()
         if settings_id
         else None
@@ -151,6 +151,14 @@ def capture_reply_permission(settings_id: int | None, client_id: int | None) -> 
             reason="sender_not_allowed",
         )
     client_allowed, reason = _client_allowed(client)
+    if client_allowed:
+        from management.services.instagram_bot import ingress_provider_namespace
+        from management.services.ig_revision_echo_integration import uses_revision_echo_scope
+        from management.services.ig_revision_echo import revision_echo_blocks
+
+        namespace = ingress_provider_namespace(settings)
+        if uses_revision_echo_scope(namespace, client.igsid) and revision_echo_blocks(client.pk, namespace):
+            client_allowed, reason = False, "echo_attribution_pending"
     return ReplyPermission(
         settings_id=settings_id,
         settings_epoch=settings_epoch,

@@ -45,6 +45,7 @@ FLOW_CACHE_KEY = "ig_alert_flow"
 MAX_ALERT_CHARS = 3500
 _MACHINE_CODE_RE = re.compile(r"[a-z][a-z0-9_:-]{0,63}\Z")
 _INSTRUCTION_TEXT = {
+    "revision_echo_unresolved": "Відкрийте розмову й перевірте, чи відповідала команда; автоматичну відповідь призупинено до звірки.",
     "takeover_released": "Якщо діалог ще веде менеджер, поставте бота на паузу в CRM.",
     "spam_blocked": "Автоматичні відповіді для клієнта зупинено.",
     "paylink_item_gate": "Перевірте товар, кількість, розмір і крій у CRM.",
@@ -76,6 +77,7 @@ _INSTRUCTION_TEXT = {
     "ig_lifecycle_delivery_review": "Перевірте CRM і Meta Inbox перед ручною відповіддю.",
 }
 _ALERT_TITLE_TEXT = {
+    "revision_echo_unresolved": "⚠️ IG: не вдалося визначити автора повідомлення",
     "ai_reply_fallback": "⚠️ IG: Gemini недоступний; потрібна ручна перевірка",
     "takeover": "👤 IG: менеджер підключився; бот поставлено на паузу",
     "takeover_released": "🤖 IG: бот відновив автоматичні відповіді",

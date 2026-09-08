@@ -270,9 +270,18 @@ def _outage_holding_reply(language: str) -> str:
     )
 
 
-def is_generic_provider_outage(row, *, failure_kind: str = "") -> bool:
-    """Whether a typed provider outage may receive automatic recovery."""
-    if failure_kind != "provider_outage":
+def is_generic_provider_outage(
+    row, *, failure_kind: str = "", next_due_at=None, horizon_at=None,
+) -> bool:
+    """Whether a bounded provider interruption may receive automatic recovery."""
+    if failure_kind == "provider_wait":
+        from management.services.ig_legacy_provider_execution import classify_legacy_provider_failure
+
+        if classify_legacy_provider_failure(
+            failure_kind, next_due_at=next_due_at, horizon_at=horizon_at,
+        ).state != "wait":
+            return False
+    elif failure_kind != "provider_outage":
         return False
     reference = _order_reference(row.text)
     if reference:

@@ -24,6 +24,7 @@ REQUEST_IMMUTABLE_FIELDS = (
     "reasoning_task",
     "logical_turn_id",
     "source_message_id",
+    "source_execution_key",
     "client_id",
     "recovery_job_id",
     "routing_policy_version",

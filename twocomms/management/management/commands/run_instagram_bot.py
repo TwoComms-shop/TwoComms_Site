@@ -1257,6 +1257,18 @@ def _run_service_lanes(settings_obj) -> None:
     )
 
 
+def _revision_receipt_tick(settings_obj):
+    """DB-only receipts remain observable in poll-only, pause and flag rollback."""
+    if not cache.add("ig_revision_receipt_tick:v1", True, timeout=2):
+        return
+    from management.services.ig_revision_echo_integration import reconcile_pending_revision_echoes
+    from management.services.ig_revision_execution import finalization_due_ids, finalize_sent_revision_effects
+
+    reconcile_pending_revision_echoes(settings_obj, limit=5)
+    for revision_id in finalization_due_ids(limit=5):
+        finalize_sent_revision_effects(revision_id)
+
+
 def _run_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
     """Один рабочий цикл. Порядок полос задан ЯВНО, и вот почему именно такой.
 
@@ -1276,6 +1288,19 @@ def _run_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
     Порядок до ЭА.15 сохранён в `_run_legacy_work_cycle` и включается флагом.
     """
     require_database_ready(lane="daemon_cycle")
+    try:
+        _revision_receipt_tick(settings_obj)
+    except DbCircuitOpen:
+        raise
+    except Exception as exc:
+        from management.services.ig_db_circuit import record_db_failure
+
+        if record_db_failure(exc, lane="revision_receipts"):
+            close_old_connections()
+            raise DbCircuitOpen("revision receipt work deferred") from exc
+        if cache.add("ig_revision_receipt_error_notice", True, timeout=60):
+            bot.log("error", "revision_receipt_tick", type(exc).__name__)
+
     # Ingress is part of the customer lane, including while replies are
     # disabled: echoes and opt-outs must still acquire their permission fence.
     if (

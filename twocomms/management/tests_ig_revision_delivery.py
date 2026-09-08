@@ -298,3 +298,248 @@ class RevisionDeliveryTests(TransactionTestCase):
                 {"part_index": 1, "product_id": 20, "title": "Second"},
             ),
         )
+
+
+@override_settings(SITE_BASE_URL="https://twocomms.test")
+class RevisionFactoryPreflightTests(TransactionTestCase):
+    reset_sequences = True
+    _payload = RevisionDeliveryTests._payload
+    _plan = RevisionDeliveryTests._plan
+
+    def setUp(self):
+        import os
+        from unittest.mock import patch
+
+        RevisionDeliveryTests.setUp(self)
+        self.environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.settings.ig_user_id = "owner-1"
+        self.settings.save(update_fields=["ig_user_id"])
+
+    def _callback(self, **overrides):
+        from management.services.ig_revision_transport import build_provider_part_callback
+
+        values = dict(expected_namespace="instagram_login:owner-1",
+                      expected_recipient=self.client_row.igsid,
+                      access_token="memory-only-test-token")
+        values.update(overrides)
+        return build_provider_part_callback(self.settings, **values)
+
+    def _text_plan(self, payload=None):
+        return self._plan([{
+            "group": "substantive_text", "kind": "text",
+            "payload": self._payload("Exact canonical text") if payload is None else payload,
+        }])
+
+    def _drain(self, callback):
+        return drain_group(self.revision.pk, self.revision_token, "substantive_text", callback)
+
+    def _assert_no_start(self, callback, reason, *, payload=None):
+        from unittest.mock import patch
+
+        effect = self._text_plan(payload).effects[0]
+        with (
+            patch("management.services.instagram_bot._provider_http") as http,
+            patch("management.services.ig_revision_delivery.mark_provider_started") as start,
+            patch("management.services.instagram_bot._register_outgoing_message") as register,
+        ):
+            result = self._drain(callback)
+        http.assert_not_called()
+        start.assert_not_called()
+        register.assert_not_called()
+        effect.refresh_from_db()
+        self.assertEqual(effect.state, effect.State.CANCELLED)
+        self.assertIsNone(effect.provider_started_at)
+        self.assertEqual(effect.provider_message_id, "")
+        self.assertIsNone(effect.provider_http_status)
+        self.assertEqual(effect.failure_code, reason)
+        self.assertEqual(result.attempted, 0)
+
+    def test_bad_namespace_does_not_record_start_or_unknown(self):
+        self._assert_no_start(self._callback(expected_namespace="instagram_login:other"),
+                              "transport_preflight_namespace_mismatch")
+
+    def test_empty_credential_does_not_record_start_or_unknown(self):
+        self._assert_no_start(self._callback(access_token=""),
+                              "transport_preflight_credentials_unavailable")
+
+    def test_invalid_payload_does_not_record_start_or_unknown(self):
+        self._assert_no_start(self._callback(), "transport_preflight_payload_invalid",
+                              payload=self._payload(""))
+
+    def test_url_policy_failure_does_not_record_start_or_unknown(self):
+        from unittest.mock import patch
+
+        with patch("management.services.instagram_bot._provider_url", return_value="https://example.test/messages"):
+            self._assert_no_start(self._callback(), "transport_preflight_url_invalid")
+
+    def test_valid_preflight_outside_atomic_then_one_send_and_immediate_mid(self):
+        from unittest.mock import patch
+        from management.services.ig_revision_transport import RevisionProviderTransport
+
+        effect = self._text_plan().effects[0]
+        original_preflight = RevisionProviderTransport.preflight
+        events = []
+
+        def preflight(transport, payload):
+            self.assertFalse(connection.in_atomic_block)
+            effect.refresh_from_db()
+            self.assertEqual(effect.state, effect.State.CLAIMED)
+            self.assertIsNone(effect.provider_started_at)
+            events.append("preflight")
+            return original_preflight(transport, payload)
+
+        def send(*args, **kwargs):
+            self.assertFalse(connection.in_atomic_block)
+            effect.refresh_from_db()
+            self.assertEqual(effect.state, effect.State.PROVIDER_STARTED)
+            self.assertIsNotNone(effect.provider_started_at)
+            self.assertEqual(json.loads(kwargs["data"]), effect.payload)
+            events.append("http")
+            return 200, '{"message_id":"actual-provider-mid"}'
+
+        def register(mid, recipient, **kwargs):
+            self.assertEqual(mid, "actual-provider-mid")
+            self.assertEqual(recipient, self.client_row.igsid)
+            effect.refresh_from_db()
+            self.assertEqual(effect.state, effect.State.PROVIDER_STARTED)
+            events.append("register")
+
+        with (
+            patch.object(RevisionProviderTransport, "preflight", autospec=True, side_effect=preflight),
+            patch("management.services.instagram_bot._provider_http", side_effect=send) as http,
+            patch("management.services.instagram_bot._register_outgoing_message", side_effect=register),
+        ):
+            result = self._drain(self._callback())
+        self.assertEqual(events, ["preflight", "http", "register"])
+        self.assertEqual(result.state, "sent")
+        self.assertEqual(result.attempted, 1)
+        http.assert_called_once()
+        effect.refresh_from_db()
+        self.assertEqual(effect.provider_message_id, "actual-provider-mid")
+
+    def test_passed_preflight_actual_timeout_remains_unknown_without_retry(self):
+        from unittest.mock import patch
+
+        effect = self._text_plan().effects[0]
+        with patch("management.services.instagram_bot._provider_http", side_effect=TimeoutError) as http:
+            first = self._drain(self._callback())
+            second = self._drain(self._callback())
+        self.assertEqual(first.state, "unknown")
+        self.assertEqual(first.attempted, 1)
+        self.assertEqual(second.state, "unknown")
+        http.assert_called_once()
+        effect.refresh_from_db()
+        self.assertIsNotNone(effect.provider_started_at)
+
+    def test_namespace_race_after_start_is_proven_no_dispatch(self):
+        from unittest.mock import patch
+        from management.services.ig_revision_outbox import mark_provider_started
+
+        effect = self._text_plan().effects[0]
+        callback = self._callback()
+
+        def start_then_change(*args, **kwargs):
+            result = mark_provider_started(*args, **kwargs)
+            self.assertEqual(result.reason, "provider_started")
+            self.settings.ig_user_id = "other-owner"
+            return result
+
+        with (
+            patch("management.services.ig_revision_delivery.mark_provider_started", side_effect=start_then_change),
+            patch("management.services.instagram_bot._provider_http") as http,
+            patch("management.services.instagram_bot._register_outgoing_message") as register,
+        ):
+            result = self._drain(callback)
+        http.assert_not_called()
+        register.assert_not_called()
+        effect.refresh_from_db()
+        self.assertEqual(result.state, "definite_failed")
+        self.assertEqual(result.attempted, 0)
+        self.assertFalse(result.fallback_ready)
+        self.assertIsNotNone(effect.provider_started_at)
+        self.assertEqual(effect.failure_code, "transport_preflight_namespace_mismatch")
+        self.assertEqual(effect.provider_message_id, "")
+        self.assertIsNone(effect.provider_http_status)
+
+    def test_corrupt_payload_or_projection_digest_cannot_pass_preflight(self):
+        from unittest.mock import patch
+
+        effect = self._text_plan().effects[0]
+        # Simulate damaged persisted input; normal model writes forbid this.
+        table = connection.ops.quote_name(IgRevisionDeliveryEffect._meta.db_table)
+        with connection.cursor() as cursor:
+            cursor.execute(f"UPDATE {table} SET projection_digest = %s WHERE id = %s", ["f" * 64, effect.pk])
+        with (
+            patch("management.services.instagram_bot._provider_http") as http,
+            patch("management.services.ig_revision_delivery.mark_provider_started") as start,
+        ):
+            result = self._drain(self._callback())
+        self.assertEqual(result.reason, "effect_binding_invalid")
+        http.assert_not_called()
+        start.assert_not_called()
+        effect.refresh_from_db()
+        self.assertIsNone(effect.provider_started_at)
+
+    def test_untrusted_callback_cannot_claim_factory_zero_dispatch_proof(self):
+        effect = self._text_plan().effects[0]
+        result = self._drain(lambda payload: ProviderPartResult(
+            "instagram_login:owner-1", outcome="known_not_dispatched",
+            explicit_rejection_code="transport_preflight_payload_invalid",
+        ))
+        self.assertEqual(result.state, "unknown")
+        effect.refresh_from_db()
+        self.assertEqual(effect.failure_code, "provider_transport_unknown")
+
+    def test_second_preflight_exception_is_no_dispatch_not_unknown(self):
+        from unittest.mock import patch
+
+        effect = self._text_plan().effects[0]
+        callback = self._callback()
+        with (
+            patch("management.services.instagram_bot._provider_url", side_effect=[
+                "https://graph.instagram.com/v25.0/owner-1/messages", RuntimeError("local configuration changed"),
+            ]),
+            patch("management.services.instagram_bot._provider_http") as http,
+        ):
+            result = self._drain(callback)
+        http.assert_not_called()
+        effect.refresh_from_db()
+        self.assertEqual(result.state, "definite_failed")
+        self.assertEqual(result.attempted, 0)
+        self.assertEqual(effect.failure_code, "transport_preflight_check_failed")
+        self.assertIsNotNone(effect.provider_started_at)
+        self.assertIsNone(effect.provider_http_status)
+        self.assertEqual(effect.provider_message_id, "")
+
+    def test_first_preflight_exception_never_records_start(self):
+        from unittest.mock import patch
+
+        with patch("management.services.instagram_bot._provider_url", side_effect=RuntimeError("local config")):
+            self._assert_no_start(self._callback(), "transport_preflight_check_failed")
+
+    def test_valid_callback_for_different_owner_cannot_send_this_effect(self):
+        self.settings.ig_user_id = "different-owner"
+        self._assert_no_start(
+            self._callback(expected_namespace="instagram_login:different-owner"),
+            "transport_preflight_namespace_mismatch",
+        )
+
+    def test_corrupt_payload_digest_is_rejected_before_start(self):
+        from unittest.mock import patch
+
+        effect = self._text_plan().effects[0]
+        table = connection.ops.quote_name(IgRevisionDeliveryEffect._meta.db_table)
+        with connection.cursor() as cursor:
+            cursor.execute(f"UPDATE {table} SET payload_digest = %s WHERE id = %s", ["f" * 64, effect.pk])
+        with (
+            patch("management.services.instagram_bot._provider_http") as http,
+            patch("management.services.ig_revision_delivery.mark_provider_started") as start,
+        ):
+            result = self._drain(self._callback())
+        self.assertEqual(result.reason, "effect_binding_invalid")
+        http.assert_not_called()
+        start.assert_not_called()
+        effect.refresh_from_db()
+        self.assertIsNone(effect.provider_started_at)

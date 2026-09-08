@@ -810,14 +810,14 @@ def _bot_sent_key(recipient_id: str, text: str) -> str:
     return "ig_bot_sent:" + h
 
 
-def _register_outgoing_message(message_id: str, recipient_id: str = "", *, kind: str = "text") -> None:
+def _register_outgoing_message(message_id: str, recipient_id: str = "", *, kind: str = "text", provider_namespace: str = "") -> None:
     """Запам'ятати наш `message_id`, щоб не прийняти власне echo за менеджера."""
     if not message_id:
         return
     try:
         from management.services.ig_outgoing_registry import register_outgoing
 
-        register_outgoing(message_id, recipient_id=recipient_id, kind=kind)
+        register_outgoing(message_id, recipient_id=recipient_id, kind=kind, provider_namespace=provider_namespace)
     except Exception as exc:  # noqa: BLE001
         log("warning", "outgoing_registry", repr(exc))
 
@@ -2617,6 +2617,20 @@ def _handle_echo(
         return
     if mid and not _valid_message_id(mid):
         return
+    from management.services.ig_revision_echo_integration import (
+        observe_and_project_echo, uses_revision_echo_scope,
+    )
+    from management.services.ig_outgoing_registry import is_our_outgoing
+
+    settings_row = InstagramBotSettings.load()
+    namespace = provider_namespace or ingress_provider_namespace(settings_row)
+    if mid and uses_revision_echo_scope(namespace, recipient_igsid):
+        if is_our_outgoing(mid, recipient_id=recipient_igsid, provider_namespace=namespace):
+            return True
+        return observe_and_project_echo(
+            settings_row, namespace=namespace, recipient=recipient_igsid, mid=mid,
+            text=text, attachments=attachments, received_at=received_at,
+        )
     # Позитивна ознака «це наше» перевіряється ПЕРШОЮ і до будь-якої зміни
     # стану клієнта. Раніше єдиною перевіркою був відпечаток по тексту, а в
     # медіа-echo тексту немає — тому карусель бота вмикала `manager_takeover`,
@@ -7586,8 +7600,17 @@ def _gemini_failure_kind(exc: Exception) -> str:
     without persisting raw provider text.
     """
     explicit = str(getattr(exc, "failure_kind", "") or "").casefold()
-    if explicit == "invalid_response":
-        return "invalid_response"
+    if explicit in {
+        "invalid_response", "provider_dispatch_budget", "scarce_model_budget",
+        "provider_horizon_exhausted", "provider_wait", "provider_candidates_exhausted",
+        "legacy_manifest_missing", "legacy_manifest_invalid", "legacy_graph_invalid",
+        "legacy_execution_invalid", "legacy_recovery_claim_changed",
+        "legacy_automation_claim_changed", "legacy_source_missing", "legacy_source_changed",
+        "legacy_turn_changed", "legacy_root_missing", "legacy_root_ambiguous",
+        "legacy_holding_root_mismatch", "legacy_live_claim_invalid",
+        "legacy_route_invalid", "legacy_root_resolved",
+    }:
+        return explicit
     if explicit in {
         "read_timeout",
         "transport",
@@ -8022,6 +8045,11 @@ def gemini_generate(
             if failure_context is not None:
                 failure_context["kind"] = "revision_deadline_exhausted"
             return None
+    from management.services.ig_turn_lineage import current_context as current_provider_context
+    provider_lane = current_provider_context().get("lane")
+    durable_reply_scope = client is not None and (
+        generation_boundary is not None or provider_lane in {"live", "recovery"}
+    )
     try:
         out = gemini_generate_text(
             payload,
@@ -8041,7 +8069,8 @@ def gemini_generate(
                 repair_attempt if generation_boundary is not None
                 else response_guard.repair
             ),
-            max_actual_dispatches=2,
+            max_actual_dispatches=8 if durable_reply_scope else 2,
+            legacy_provider_root=client is not None and generation_boundary is None and provider_lane == "live",
             request_policy_manifest=policy_metadata,
         )
     except CallAIAnalysisError as exc:
@@ -8050,6 +8079,9 @@ def gemini_generate(
             "failed deterministic result validation" in str(exc).casefold()
         )
         if failure_context is not None:
+            if failure_kind == "provider_wait":
+                failure_context["provider_next_due_at"] = getattr(exc, "provider_next_due_at", None)
+                failure_context["provider_horizon_at"] = getattr(exc, "provider_horizon_at", None)
             failure_context["kind"] = (
                 "invalid_response"
                 if semantic_rejection
@@ -12928,6 +12960,14 @@ def _claim_next() -> InstagramBotMessage | None:
 
     claimable_at = timezone.now()
     turn, turn_row_id = ig_customer_turns.due_turn_for_claim(now=claimable_at)
+    from management.services.ig_revision_live import (
+        legacy_claimable_messages, revision_owned_turn_ids,
+    )
+
+    if turn is not None and revision_owned_turn_ids().filter(pk=turn.pk).exists():
+        # A flag rollback never transfers an already prepared revision back to
+        # the old sender. Collecting shadow membership alone is not ownership.
+        turn, turn_row_id = None, 0
     if turn is not None and turn_row_id:
         row = (
             InstagramBotMessage.objects.select_related("client")
@@ -12973,6 +13013,7 @@ def _claim_next() -> InstagramBotMessage | None:
             queued_at=Coalesce("provider_created_at", "created_at"),
         )
     )
+    claimable = legacy_claimable_messages(claimable)
     # Э2.8: спочатку голодуючий рядок, потім звичайний свіжий порядок. Свіжість
     # лишається основним критерієм — вона правильна для інтерактивності, — але
     # тепер має верхню межу: рядок, який чекає довше потолка віку, не може бути
@@ -13019,13 +13060,20 @@ def _starving_pending_row(claimable, *, now):
 def _claim_exact_row(row: InstagramBotMessage) -> InstagramBotMessage | None:
     """Conditional claim of exactly this pending row."""
     claimed_at = timezone.now()
-    claimed = InstagramBotMessage.objects.filter(
-        id=row.id, status=InstagramBotMessage.Status.PENDING
-    ).update(
-        status=InstagramBotMessage.Status.PROCESSING,
-        attempts=row.attempts + 1,
-        processing_started_at=claimed_at,
-    )
+    from management.services.ig_revision_live import legacy_claimable_messages
+
+    with transaction.atomic():
+        # Revision preparation takes the same client lock before establishing
+        # durable ownership, so both executors cannot win this source.
+        if row.client_id:
+            IgClient.objects.select_for_update().filter(pk=row.client_id).first()
+        claimed = legacy_claimable_messages(InstagramBotMessage.objects.filter(
+            id=row.id, status=InstagramBotMessage.Status.PENDING
+        )).update(
+            status=InstagramBotMessage.Status.PROCESSING,
+            attempts=row.attempts + 1,
+            processing_started_at=claimed_at,
+        )
     if claimed == 1:
         row.status = InstagramBotMessage.Status.PROCESSING
         row.attempts += 1
@@ -13044,12 +13092,14 @@ def reclaim_stale_processing(max_age_seconds: int = STALE_PROCESSING_SECONDS) ->
     from datetime import timedelta
 
     cutoff = timezone.now() - timedelta(seconds=max_age_seconds)
+    from management.services.ig_revision_live import legacy_claimable_messages
+
     stale = list(
-        InstagramBotMessage.objects.select_related("client").filter(
+        legacy_claimable_messages(InstagramBotMessage.objects.select_related("client").filter(
             role=InstagramBotMessage.Role.USER,
             status=InstagramBotMessage.Status.PROCESSING,
             processing_started_at__lt=cutoff,
-        ).order_by("id")[:50]
+        )).order_by("id")[:50]
     )
     requeued = 0
     bot_settings = None
@@ -14260,6 +14310,7 @@ def _process_one_inside_reply_boundary(
                 source_message_id=row.pk,
                 logical_turn_id=logical_turn_id,
             ) as _lineage:
+                _lineage["automation_token"] = lease_token
                 from management.services.gemini_routing import persist_decision
 
                 routing_decision = live_routing_decision(
@@ -14685,8 +14736,14 @@ def _process_one_inside_reply_boundary(
                         "ugc_deterministic_reply",
                         f"{row.sender_id}: подяка за відмітку без моделі",
                     )
-            provider_outage = (
-                not reply and gemini_failure.get("kind") == "provider_outage"
+            recovery_provider_interruption = is_generic_provider_outage(
+                row, failure_kind=gemini_failure.get("kind", ""),
+                next_due_at=gemini_failure.get("provider_next_due_at"),
+                horizon_at=gemini_failure.get("provider_horizon_at"),
+            )
+            provider_outage = not reply and (
+                gemini_failure.get("kind") == "provider_outage"
+                or recovery_provider_interruption
             )
             if provider_outage and row.client_id:
                 # ЭА.3: ЄДИНА точка рішення про технічне повідомлення. Жоден
@@ -14725,9 +14782,7 @@ def _process_one_inside_reply_boundary(
                     logical_turn_id=logical_turn_id,
                     budget_remaining_ms=max(0, threshold_ms - waited_ms),
                     ugc_turn=bool(ugc_turn),
-                    recovery_expected=is_generic_provider_outage(
-                        row, failure_kind=gemini_failure.get("kind", "")
-                    ),
+                    recovery_expected=recovery_provider_interruption,
                 )
                 outage_episode_id = int(outage_gate.episode_id or 0)
                 # Решение о техтексте должно объяснять себя: одна строка с
@@ -14811,12 +14866,7 @@ def _process_one_inside_reply_boundary(
                     )
             if reply and not ugc_turn:
                 used_ai_failure_fallback = True
-                outage_recovery_required = bool(
-                    row.client_id and is_generic_provider_outage(
-                        row,
-                        failure_kind=gemini_failure.get("kind", ""),
-                    )
-                )
+                outage_recovery_required = bool(row.client_id and recovery_provider_interruption)
                 log(
                     "warning",
                     "gemini_fallback",
@@ -15857,12 +15907,28 @@ def _process_one_inside_reply_boundary(
 def process_pending(s: InstagramBotSettings | None = None, max_items: int = 15) -> int:
     s = s or InstagramBotSettings.load()
     _maybe_purge_expired_private_media()
+    from management.services.ig_revision_live import process_revision_finalizations
+
+    finalized = process_revision_finalizations(max_items=max_items)
     if not s.is_enabled:
-        return 0
+        return finalized
     if _send_rate_limit_backoff_active(s):
-        return 0
+        return finalized
+    from management.services.ig_revision_live import (
+        process_pending_revisions, revision_execution_enabled,
+    )
+
+    if revision_execution_enabled():
+        return finalized + process_pending_revisions(s, max_items=max(0, max_items - finalized))
+    # Recovery remains on the canonical outbox after new-creation is disabled.
+    # It never invokes generation or the old whole-response sender.
+    revision_handled = finalized + process_pending_revisions(
+        s, max_items=max(0, max_items - finalized), create_new=False,
+    )
+    # Provider-only backoff must not strand saved proposals or deterministic
+    # revision outcomes. The canonical worker has its own durable admission.
     if _gemini_backoff_active(s):
-        return 0
+        return revision_handled
     # Реанімація «зависань» у processing (вбитий демон / надто довгий виклик).
     try:
         reclaim_stale_processing()
@@ -15879,8 +15945,8 @@ def process_pending(s: InstagramBotSettings | None = None, max_items: int = 15) 
             log("info", "turn_reconcile", repr(outcome.get("counts")))
     except Exception as exc:
         log("warning", "turn_reconcile", repr(exc))
-    handled = 0
-    for _ in range(max_items):
+    handled = revision_handled
+    for _ in range(max(0, max_items - revision_handled)):
         # Finish the in-flight row, then cooperatively drain before claiming
         # more work so a bounded deploy lease can acquire the daemon lock.
         if maintenance_status()["active"]:
@@ -16471,6 +16537,21 @@ def _handle_polled_page_side(
     if not customer_id:
         return False
     text = str(message.get("message") or "").strip()
+    from management.services.ig_revision_echo_integration import observe_and_project_echo, uses_revision_echo_scope
+
+    namespace = ingress_provider_namespace(s)
+    if uses_revision_echo_scope(namespace, customer_id):
+        try:
+            return observe_and_project_echo(
+                s, namespace=namespace, recipient=customer_id,
+                mid=str(message.get("id") or "").strip(), text=text,
+                attachments=_echo_media_items(message),
+                received_at=_parse_ig_time(message.get("created_time", "")),
+                historical=historical,
+            )
+        except Exception as exc:
+            log("warning", "poll_revision_echo", type(exc).__name__)
+            return False
     if not text and not _extract_media_urls(message):
         return _persist_polled_message(s, message, observed_only=True)
     if historical or (text and cache.get(_bot_sent_key(customer_id, text))):
@@ -16483,6 +16564,7 @@ def _handle_polled_page_side(
             mid=str(message.get("id") or "").strip(),
             received_at=_parse_ig_time(message.get("created_time", "")),
             persistence_only=True,
+            provider_namespace=namespace,
         )
     except Exception as exc:
         log("warning", "poll_manager_message", repr(exc))

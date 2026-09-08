@@ -15,9 +15,8 @@
 і потім присилає в echo як `message.mid`. Він і став основним ключем. Текстовий
 відпечаток лишається другим шаром для сумісності зі старими записами в кеші.
 
-Свідомий вибір: реєстр живе і в кеші (швидко), і в БД (переживає перезапуск і
-евікшн). Кеш сам по собі недостатній — F-DEBT-004 уже відзначала, що збій кеша
-дає хибний takeover, і саме це тут і сталося б навіть для тексту.
+Свідомий вибір: реєстр пише в кеш (швидко) і читає exact transcript proof з БД
+після evict/restart. БД рядок створює delivery path, не сам реєстр.
 """
 from __future__ import annotations
 
@@ -39,7 +38,24 @@ def _cache_key(message_id: str) -> str:
     return _CACHE_PREFIX + digest
 
 
-def register_outgoing(message_id: str, *, recipient_id: str = "", kind: str = "text") -> bool:
+def _current_namespace() -> str:
+    try:
+        from management.models import InstagramBotSettings
+        from management.services.instagram_bot import ingress_provider_namespace
+
+        return str(ingress_provider_namespace(InstagramBotSettings.load()) or "").strip()
+    except Exception as exc:  # noqa: BLE001 - registration remains legacy-compatible
+        logger.warning("ig outgoing registry namespace metadata failed: %r", exc)
+        return ""
+
+
+def register_outgoing(
+    message_id: str,
+    *,
+    recipient_id: str = "",
+    kind: str = "text",
+    provider_namespace: str = "",
+) -> bool:
     """Запам'ятати, що це повідомлення надіслали ми.
 
     Викликається одразу після успішного запиту до Meta — по одному на кожен
@@ -49,20 +65,43 @@ def register_outgoing(message_id: str, *, recipient_id: str = "", kind: str = "t
     message_id = str(message_id or "").strip()
     if not message_id:
         return False
+    recipient_id = str(recipient_id or "").strip()
+    provider_namespace = str(provider_namespace or "").strip() or _current_namespace()
+    value = {
+        "recipient_id": recipient_id,
+        "provider_namespace": provider_namespace,
+        "kind": str(kind or "text")[:32],
+    }
     try:
-        cache.set(_cache_key(message_id), kind or "text", OUTGOING_TTL_SECONDS)
+        cache.set(_cache_key(message_id), value, OUTGOING_TTL_SECONDS)
     except Exception as exc:  # noqa: BLE001 - кеш не єдиний шар
         logger.warning("ig outgoing registry cache write failed: %r", exc)
     return True
 
 
-def is_our_outgoing(message_id: str) -> bool:
+def is_our_outgoing(
+    message_id: str,
+    *,
+    recipient_id: str = "",
+    provider_namespace: str = "",
+) -> bool:
     """Чи це message_id надіслали ми (кеш, потім БД)."""
     message_id = str(message_id or "").strip()
     if not message_id:
         return False
+    recipient_id = str(recipient_id or "").strip()
+    provider_namespace = str(provider_namespace or "").strip()
+    scoped = bool(recipient_id or provider_namespace)
+    if scoped and not (recipient_id and provider_namespace):
+        return False
     try:
-        if cache.get(_cache_key(message_id)):
+        cached = cache.get(_cache_key(message_id))
+        if not scoped and cached:
+            return True
+        if scoped and isinstance(cached, dict) and (
+            cached.get("recipient_id") == recipient_id
+            and cached.get("provider_namespace") == provider_namespace
+        ):
             return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("ig outgoing registry cache read failed: %r", exc)
@@ -71,10 +110,17 @@ def is_our_outgoing(message_id: str) -> bool:
     try:
         from management.models import InstagramBotMessage
 
-        return InstagramBotMessage.objects.filter(
+        proof = InstagramBotMessage.objects.filter(
             provider_message_id=message_id,
             role=InstagramBotMessage.Role.MODEL,
-        ).exists()
+        )
+        if scoped:
+            proof = proof.filter(
+                sender_id=recipient_id,
+                client__igsid=recipient_id,
+                provider_namespace=provider_namespace,
+            )
+        return proof.exists()
     except Exception as exc:  # noqa: BLE001
         logger.warning("ig outgoing registry db read failed: %r", exc)
         return False

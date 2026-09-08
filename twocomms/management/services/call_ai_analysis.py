@@ -183,9 +183,22 @@ class _GeminiTransient(Exception):
 class _GeminiAdmissionRejected(Exception):
     """Canonical source/lane ownership changed before provider dispatch."""
 
+    def __init__(self, message: str, *, reason: str = "stale_provider_boundary"):
+        super().__init__(message)
+        bounded = str(reason or "").strip().casefold()
+        self.reason = (
+            bounded
+            if re.fullmatch(r"[a-z][a-z0-9_]{0,47}", bounded)
+            else "stale_provider_boundary"
+        )
+
 
 class _GeminiDispatchBudgetExhausted(Exception):
     """Validated live request has no remaining actual provider dispatch."""
+
+    def __init__(self, message: str, *, reason: str = "provider_dispatch_budget"):
+        super().__init__(message)
+        self.reason = str(reason or "provider_dispatch_budget")[:32]
 
 
 class _GeminiResultInvalid(Exception):
@@ -1259,7 +1272,8 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                         result_validator=None,
                         repair_payload_factory=None,
                         max_actual_dispatches: int | None = None,
-                        request_policy_manifest=None) -> dict:
+                        request_policy_manifest=None,
+                        legacy_provider_root: bool = False) -> dict:
     """Run one live reply through a deadline-aware, quality-first pool.
 
     The generic runner is intentionally not reused here: its three rounds and
@@ -1267,8 +1281,9 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
     customer reply spending 75 seconds on three equal 25-second timeouts.
     """
     policy = reasoning_policy(reasoning_task)
-    working_payload = copy.deepcopy(payload)
-    working_payload["_reasoning_task"] = policy["task"]
+    original_payload = copy.deepcopy(payload)
+    original_payload["_reasoning_task"] = policy["task"]
+    working_payload = copy.deepcopy(original_payload)
     dispatch_budget = None
     if result_validator is not None:
         from management.services.ig_provider_dispatch_budget import (
@@ -1284,6 +1299,9 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         raise ValueError(
             "repair and actual-dispatch limits require a result validator"
         )
+    # Preserve the opted-in route policy when a durable remaining allowance
+    # later clips the local budget to one or two calls.
+    extended_dispatch_route = bool(dispatch_budget and dispatch_budget.max_dispatches > 2)
     manual_key = str(manual_key or "").strip() or None
     if manual_key and not gemini_keys.manual_key_allowed("chat", manual_key):
         manual_key = None
@@ -1339,15 +1357,26 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         models=models,
         manual_key=manual_key,
     )
-    candidates = [
-        (item["key_name"], item["key_value"], item["model"])
-        for item in candidate_plan
-        if not item["skip_reason"]
-    ]
-    candidate_indexes = {
-        (item["key_name"], item["model"]): int(item["candidate_index"])
-        for item in candidate_plan
-    }
+    def _refresh_executable_candidates() -> tuple[list[tuple[str, str, str]], dict, dict]:
+        executable = [
+            (item["key_name"], item["key_value"], item["model"])
+            for item in candidate_plan
+            if not item["skip_reason"]
+        ]
+        indexes = {
+            (item["key_name"], item["model"]): int(item["candidate_index"])
+            for item in candidate_plan
+        }
+        scarcity = {
+            int(item["candidate_index"]): item.get("scarce")
+            for item in candidate_plan
+            if "scarce" in item
+        }
+        return executable, indexes, scarcity
+
+    candidates, candidate_indexes, candidate_scarcity = (
+        _refresh_executable_candidates()
+    )
     accounting_shadow_active = (
         str(getattr(settings, "GEMINI_ACCOUNTING_V2_MODE", "off") or "off")
         .strip()
@@ -1368,6 +1397,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             deadline_seconds=effective_deadline_seconds,
             routing_decision=routing_decision,
             request_policy_manifest=request_policy_manifest,
+            legacy_provider_root=legacy_provider_root,
         )
         accounting_ownership_blocked = bool(
             getattr(accounting_observer, "provider_blocked", False)
@@ -1394,6 +1424,111 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         if accounting_block_reason.startswith("policy_manifest_"):
             error.policy_readiness = accounting_block_reason
         raise error
+    provider_continuation = (
+        getattr(accounting_observer, "provider_continuation", None)
+        if accounting_observer is not None
+        else None
+    )
+    if (legacy_provider_root or request_policy_manifest is not None) and provider_continuation is None and dispatch_budget is not None:
+        # Older/unowned callers retain the old local allowance. Only a durable
+        # pre-dispatch proof enables the wider live route, never a boolean alone.
+        dispatch_budget = ProviderDispatchBudget(max_dispatches=min(2, dispatch_budget.max_dispatches))
+        extended_dispatch_route = False
+    if provider_continuation is not None:
+        # Revision continuations carry a secret-free route frozen by the root
+        # revision. Reattach only the matching local secret and execute in that
+        # canonical order; a current scoreboard/quota-profile change may narrow
+        # the route but cannot reorder or reclassify its scarcity tier.
+        continuation_reason = str(
+            getattr(provider_continuation, "reason", "") or ""
+        )[:64]
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", continuation_reason):
+            continuation_reason = ""
+        continuation_http_remaining = int(
+            getattr(provider_continuation, "http_remaining", 0) or 0
+        )
+        if (
+            not bool(getattr(provider_continuation, "ready", False))
+            or continuation_http_remaining <= 0
+        ):
+            stop_reason = continuation_reason or (
+                "provider_dispatch_budget"
+                if continuation_http_remaining <= 0
+                else "provider_candidates_exhausted"
+            )
+            accounting_observer.resolve_failure(stop_reason)
+            error = CallAIAnalysisError(
+                f"Gemini provider continuation rejected: {stop_reason}."
+            )
+            error.failure_kind = stop_reason
+            if stop_reason == "provider_wait":
+                from management.services.ig_legacy_provider_execution import continuation_horizon
+
+                error.provider_next_due_at = provider_continuation.next_due_at
+                error.provider_horizon_at = continuation_horizon(provider_continuation)
+            raise error
+        allowed_models = set(models)
+        local_by_identity = {
+            (
+                item["key_name"],
+                item["model"],
+                str(item.get("project_identity") or ""),
+            ): item
+            for item in candidate_plan
+        }
+        continued_plan = []
+        for frozen in provider_continuation.candidate_plan:
+            identity = (
+                str(frozen.get("key_name") or ""),
+                str(frozen.get("model") or ""),
+                str(frozen.get("project_identity") or ""),
+            )
+            local = local_by_identity.get(identity)
+            if local is None:
+                merged = {
+                    "key_name": identity[0],
+                    "key_value": "",
+                    "model": identity[1],
+                    "project_identity": identity[2],
+                }
+                missing_identity = True
+            else:
+                merged = dict(local)
+                missing_identity = False
+            merged.update({
+                "candidate_index": int(frozen["candidate_index"]),
+                "identity_status": str(frozen.get("identity_status") or "unknown"),
+                "skip_reason": (
+                    "provider_candidate_identity_changed"
+                    if missing_identity
+                    else str(frozen.get("skip_reason") or local.get("skip_reason") or "")
+                ),
+                "scarce": bool(frozen.get("scarce", True)),
+            })
+            continued_plan.append(merged)
+        candidate_plan = continued_plan
+        models = []
+        for frozen in provider_continuation.candidate_plan:
+            frozen_model = str(frozen.get("model") or "")
+            if frozen_model in allowed_models and frozen_model not in models:
+                models.append(frozen_model)
+        candidates, candidate_indexes, candidate_scarcity = (
+            _refresh_executable_candidates()
+        )
+        if dispatch_budget is not None:
+            dispatch_budget = ProviderDispatchBudget(
+                max_dispatches=min(
+                    dispatch_budget.max_dispatches,
+                    continuation_http_remaining,
+                ),
+                max_scarce_dispatches=max(
+                    0,
+                    min(
+                        2,
+                        int(provider_continuation.scarce_remaining or 0),
+                    ),
+                ),
+            )
 
     def _audit_not_attempted(key_name: str, model: str, reason: str,
                              candidate_index: int) -> None:
@@ -1440,7 +1575,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         audited_candidate_indexes.add(candidate_index)
 
     for planned in candidate_plan:
-        if planned["skip_reason"] and accounting_observer is None:
+        if planned["skip_reason"]:
             _audit_skip(
                 planned["key_name"],
                 planned["model"],
@@ -1465,17 +1600,26 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             _audit_skip(planned["key_name"], planned["model"], reason, index)
 
     def _call(key_name: str, key_value: str, model: str, *, preserve_fallback: bool,
-              candidate_index: int = 0):
+              candidate_index: int = 0, candidate_scarce: bool | None = None):
         nonlocal last_actual_failure_kind, working_payload
-        if dispatch_budget is not None and dispatch_budget.remaining_dispatches <= 0:
-            _audit_remaining("provider_dispatch_budget")
-            if accounting_observer is not None:
-                accounting_observer.resolve_failure("provider_dispatch_budget")
-            error = CallAIAnalysisError(
-                "Gemini validated reply exhausted its provider dispatch budget."
+        if dispatch_budget is not None:
+            budget_stop = dispatch_budget.dispatch_block_reason(
+                model, scarce=candidate_scarce
             )
-            error.failure_kind = last_actual_failure_kind or "provider_dispatch_budget"
-            raise error
+            if budget_stop == "scarce_model_budget":
+                _audit_remaining(budget_stop, model=model)
+                return None, budget_stop
+            if budget_stop:
+                _audit_remaining(budget_stop)
+                if accounting_observer is not None:
+                    accounting_observer.resolve_failure(budget_stop)
+                error = CallAIAnalysisError(
+                    "Gemini validated reply exhausted its provider dispatch budget."
+                )
+                error.failure_kind = (
+                    last_actual_failure_kind or "provider_dispatch_budget"
+                )
+                raise error
         if gemini_keys.model_circuit_open(model):
             attempts.append(f"{key_name}/{model}: model_circuit_open")
             _emit(f"{key_name}/{model}: model circuit open")
@@ -1584,6 +1728,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 call_kwargs["attempt_boundary"] = attempt_boundary
             if dispatch_budget is not None:
                 call_kwargs["dispatch_budget"] = dispatch_budget
+                call_kwargs["dispatch_scarce"] = candidate_scarce
                 call_kwargs["defer_attempt_success"] = True
             parsed, usage = _gemini_call_once(
                 model, request_payload, key_value, **call_kwargs
@@ -1603,9 +1748,14 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     dispatch_at=quota_dispatch_at,
                 )
             _release()
-            raise CallAIAnalysisError(
-                "Gemini provider dispatch rejected: stale request ownership."
-            ) from exc
+            block_reason = str(
+                getattr(exc, "reason", "") or "stale_provider_boundary"
+            )[:48]
+            error = CallAIAnalysisError(
+                f"Gemini provider dispatch rejected: {block_reason}."
+            )
+            error.failure_kind = block_reason
+            raise error from exc
         except _GeminiDispatchBudgetExhausted as exc:
             if legacy_quota_reserved:
                 gemini_quota.cancel_reservation(
@@ -1615,13 +1765,20 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 )
             if candidate_index:
                 dispatched_candidate_indexes.discard(candidate_index)
-            _audit_skip(
-                key_name, model, "provider_dispatch_budget", candidate_index
+            budget_stop = str(
+                getattr(exc, "reason", "provider_dispatch_budget")
+                or "provider_dispatch_budget"
+            )[:24]
+            _audit_skip(key_name, model, budget_stop, candidate_index)
+            _audit_remaining(
+                budget_stop,
+                model=model if budget_stop == "scarce_model_budget" else "",
             )
-            _audit_remaining("provider_dispatch_budget")
-            if accounting_observer is not None:
-                accounting_observer.resolve_failure("provider_dispatch_budget")
             _release()
+            if budget_stop == "scarce_model_budget":
+                return None, budget_stop
+            if accounting_observer is not None:
+                accounting_observer.resolve_failure(budget_stop)
             error = CallAIAnalysisError(
                 "Gemini validated reply exhausted its provider dispatch budget."
             )
@@ -1826,6 +1983,21 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     and dispatch_budget is not None
                     and dispatch_budget.consume_repair()
                 )
+                if repair_ready and accounting_observer is not None:
+                    reserve_repair = getattr(
+                        accounting_observer, "reserve_provider_repair", None
+                    )
+                    if callable(reserve_repair):
+                        repair_ready = bool(reserve_repair(
+                            key_name=key_name,
+                            model=model,
+                            candidate_index=candidate_index,
+                        ))
+                    elif provider_continuation is not None:
+                        # A durable revision must prove the graph-wide repair
+                        # reservation. Legacy observers without that contract
+                        # retain their request-local one-repair behavior.
+                        repair_ready = False
                 if repair_ready:
                     repair_source = copy.deepcopy(working_payload)
                     repair_source.pop("_reasoning_task", None)
@@ -1837,6 +2009,12 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                         )
                     except Exception:
                         logger.warning("Gemini repair payload factory failed closed")
+                rotate_model_ready = bool(
+                    not isinstance(repaired_payload, dict)
+                    and dispatch_budget is not None
+                    and dispatch_budget.remaining_dispatches > 0
+                    and extended_dispatch_route
+                )
                 _audit(
                     "failed",
                     failure_kind="invalid_response",
@@ -1844,6 +2022,8 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     decision=(
                         "repair_result"
                         if isinstance(repaired_payload, dict)
+                        else "rotate_model"
+                        if rotate_model_ready
                         else "stop_result"
                     ),
                     error_detail=",".join(validation.reason_codes)[:120],
@@ -1856,13 +2036,27 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     # A failed attempt does not consume its immutable candidate.
                     # Reuse that exact candidate under the observer's next unique
                     # attempt index so repair does not depend on a spare API key.
-                    return _call(
-                        key_name,
-                        key_value,
-                        model,
-                        preserve_fallback=preserve_fallback,
-                        candidate_index=candidate_index,
+                    try:
+                        return _call(
+                            key_name,
+                            key_value,
+                            model,
+                            preserve_fallback=preserve_fallback,
+                            candidate_index=candidate_index,
+                            candidate_scarce=candidate_scarce,
+                        )
+                    finally:
+                        # The repair may include the rejected model output. It
+                        # belongs only to this same-candidate call and must not
+                        # become context for another key or model after any
+                        # success, typed failure, or exception.
+                        working_payload = copy.deepcopy(original_payload)
+                working_payload = copy.deepcopy(original_payload)
+                if rotate_model_ready:
+                    _audit_remaining(
+                        "result_validation_failed", model=model
                     )
+                    return None, "invalid_response_model"
                 _audit_remaining("result_validation_failed")
                 if accounting_observer is not None:
                     accounting_observer.resolve_failure(
@@ -2086,6 +2280,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             result, state = _call(
                 key_name, key_value, primary,
                 preserve_fallback=True, candidate_index=index,
+                candidate_scarce=candidate_scarcity.get(index),
             )
             if result:
                 _audit_remaining("winner_found")
@@ -2098,7 +2293,12 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     "Перебір Gemini перервано по live дедлайну. Спроби: "
                     + "; ".join(attempts)
                 )
-            if state in {"model_not_found_global", "model_circuit_open"}:
+            if state in {
+                "invalid_response_model",
+                "model_not_found_global",
+                "model_circuit_open",
+                "scarce_model_budget",
+            }:
                 _audit_remaining("model_terminal", model=primary)
                 break
             if state not in {
@@ -2129,6 +2329,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             result, state = _call(
                 key_name, key_value, model,
                 preserve_fallback=False, candidate_index=fallback_index,
+                candidate_scarce=candidate_scarcity.get(fallback_index),
             )
             if result:
                 _audit_remaining("winner_found")
@@ -2141,7 +2342,12 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     "Перебір Gemini перервано по live дедлайну. Спроби: "
                     + "; ".join(attempts)
                 )
-            if state in {"model_not_found_global", "model_circuit_open"}:
+            if state in {
+                "invalid_response_model",
+                "model_not_found_global",
+                "model_circuit_open",
+                "scarce_model_budget",
+            }:
                 _audit_remaining("model_terminal", model=model)
                 break
             # На fallback-моделях паралелізм недоречний: кожен зайвий виклик —
@@ -2278,7 +2484,8 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
                          result_validator=None,
                          repair_payload_factory=None,
                          max_actual_dispatches: int | None = None,
-                         request_policy_manifest=None) -> dict:
+                         request_policy_manifest=None,
+                         legacy_provider_root: bool = False) -> dict:
     """Текстовий (не-JSON) запит для діалогового бота. Пул ключів ролі + цепочка
     моделей. У result['parsed'] — сирий текст відповіді моделі.
     log_cb (опц.) отримує короткі рядки про кожну спробу (для консолі бота)."""
@@ -2297,12 +2504,14 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
             repair_payload_factory=repair_payload_factory,
             max_actual_dispatches=max_actual_dispatches,
             request_policy_manifest=request_policy_manifest,
+            legacy_provider_root=legacy_provider_root,
         )
     if (
         result_validator is not None
         or repair_payload_factory is not None
         or max_actual_dispatches is not None
         or request_policy_manifest is not None
+        or legacy_provider_root
     ):
         raise ValueError("result validation is supported only for live chat")
     bounded_management = role == "management"
@@ -2534,6 +2743,7 @@ def _final_inline_content_hashes(body: bytes) -> list[str]:
 def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True,
                       timeout: tuple | None = None, attempt_boundary=None,
                       dispatch_budget=None,
+                      dispatch_scarce: bool | None = None,
                       defer_attempt_success: bool = False) -> tuple:
     """Один виклик generateContent. Повертає (parsed_json|text, usage) або кидає
     типізовану помилку (_GeminiTransient / _Gemini429 / _GeminiModelUnavailable / _GeminiFatal).
@@ -2575,14 +2785,24 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
             inline_count=request_inline_count,
         )
         if admitted is not True:
+            block_reason = str(
+                getattr(attempt_boundary, "provider_block_reason", "") or ""
+            )
             error = _GeminiAdmissionRejected(
-                "stale or non-canonical provider boundary"
+                "provider boundary rejected",
+                reason=block_reason or "stale_provider_boundary",
             )
             attempt_boundary.cancelled_pre_dispatch(error)
             raise error
-    if dispatch_budget is not None and not dispatch_budget.consume_dispatch():
+    if dispatch_budget is not None and not dispatch_budget.consume_dispatch(
+        model, scarce=dispatch_scarce
+    ):
+        reason = dispatch_budget.dispatch_block_reason(
+            model, scarce=dispatch_scarce
+        )
         error = _GeminiDispatchBudgetExhausted(
-            "actual provider dispatch budget exhausted"
+            "actual provider dispatch budget exhausted",
+            reason=reason or "provider_dispatch_budget",
         )
         if attempt_boundary is not None:
             attempt_boundary.cancelled_pre_dispatch(error)

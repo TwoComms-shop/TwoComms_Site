@@ -358,8 +358,24 @@ def _mid_namespace_state(row, namespace: str, *, require_materialized: bool = Fa
     if is_echo:
         from management.services.ig_outgoing_registry import is_our_outgoing
         from management.services import instagram_bot as bot
+        from management.services.ig_revision_echo_integration import uses_revision_echo_scope
 
-        if is_our_outgoing(mid) or (message.get("text") and bot.cache.get(bot._bot_sent_key(recipient, message.get("text")))):
+        if uses_revision_echo_scope(namespace, recipient):
+            from management.models import IgDeferredEcho, IgRevisionDeliveryEffect
+
+            if is_our_outgoing(mid, recipient_id=recipient, provider_namespace=namespace):
+                return "ignored"
+            if IgRevisionDeliveryEffect.objects.filter(
+                provider_namespace=namespace, recipient_igsid=recipient,
+                revision__client__igsid=recipient, provider_message_id=mid, state="sent",
+            ).exists():
+                return "ignored"
+            echo = IgDeferredEcho.objects.filter(provider_namespace=namespace, provider_message_id=mid).first()
+            if echo is not None:
+                # An unresolved attribution is itself durable materialization;
+                # forcing a manager message here would invent its author.
+                return "ok" if echo.recipient_igsid == recipient and echo.client.igsid == recipient else "blocked"
+        elif is_our_outgoing(mid) or (message.get("text") and bot.cache.get(bot._bot_sent_key(recipient, message.get("text")))):
             return "ignored"
     existing = InstagramBotMessage.objects.filter(mid=mid).first()
     if existing is None:
