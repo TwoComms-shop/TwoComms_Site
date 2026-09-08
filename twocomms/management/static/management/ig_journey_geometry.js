@@ -53,6 +53,7 @@
   const returns = new Set(['configuration_correction','offer_correction','settlement_correction',
     'new_selection','amended_offer','new_attempt']);
   function visualFor(node = {}) {
+    if(node.id==='guide:offer'&&!node.semantic_key)return {rank:4.5,lane:0,icon:'link',short_label:'Посилання'};
     const guideAliases={'guide:selection':'catalog_discovery','guide:offer':'mockup_current_acceptance','guide:terms':'quoted_offer','guide:payment':'settlement','guide:fulfillment':'fulfillment','guide:inquiry':'inbound'};
     const exact = visuals.get(node.semantic_key) || visuals.get(guideAliases[node.id]);
     if (exact) return {...exact};

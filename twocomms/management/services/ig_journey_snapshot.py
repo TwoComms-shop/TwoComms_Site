@@ -546,7 +546,8 @@ def _guide_graph_nodes(nodes, milestones, focus):
         if not facts:
             continue
         result.append(_graph_node(
-            f"guide:{key}", label, semantic_key=semantics.get(key), state=node["state"],
+            f"guide:{key}", "Посилання на оплату" if key == "offer" else label,
+            semantic_key=semantics.get(key), state=node["state"],
             current=focus == key, summary=node["summary"], facts=facts, evidence_refs=refs,
             rank=rank, lane=1,
         ))
@@ -576,7 +577,7 @@ def _graph(episode, nodes, history, focus):
             milestone["refs"].extend(ref)
             milestone["facts"].append({
                 "id": f"milestone:{event['id']}", "label": event["label"],
-                "value": event["occurred_at"], "evidence_refs": ref,
+                "value": event["occurred_at"], "format": "datetime", "evidence_refs": ref,
             })
         states = event.get("episode_states")
         if states:
