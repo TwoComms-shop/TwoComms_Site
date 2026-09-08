@@ -15,6 +15,12 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from management.services.ig_customer_route_contract import (
+    COLLABORATION_SUBTYPES, KINDS as CUSTOMER_ROUTE_KINDS,
+    OPERATIONS as CUSTOMER_ROUTE_OPERATIONS, CustomerRouteProposal,
+    normalize_customer_routes,
+)
+
 from management.services.ig_media_manifest import (
     IMAGE_EVIDENCE_CODES,
     IMAGE_OBSERVATION_OUTCOMES,
@@ -264,6 +270,28 @@ STRUCTURED_RESPONSE_SCHEMA = {
 }
 
 
+STRUCTURED_RESPONSE_SCHEMA["properties"]["customer_routes"] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["schema_version", "intents"],
+    "properties": {
+        "schema_version": {"type": "string", "enum": ["customer-route.v1"]},
+        "focus_index": {"type": ["integer", "null"], "minimum": 0, "maximum": 3},
+        "intents": {"type": "array", "maxItems": 4, "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["kind", "operation", "evidence_message_ids", "confidence"],
+            "properties": {
+                "kind": {"type": "string", "enum": sorted(CUSTOMER_ROUTE_KINDS)},
+                "subtype": {"type": "string", "enum": sorted(COLLABORATION_SUBTYPES)},
+                "operation": {"type": "string", "enum": sorted(CUSTOMER_ROUTE_OPERATIONS)},
+                "evidence_message_ids": {"type": "array", "minItems": 1, "maxItems": 8,
+                    "uniqueItems": True, "items": {"type": "integer", "minimum": 1}},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            },
+        }},
+    },
+}
+
+
 def structured_response_schema(
     *,
     prize_programme: PrizeProgramme | None = None,
@@ -284,7 +312,7 @@ def structured_response_instruction() -> str:
     return (
         "[RESPONSE JSON CONTRACT — REQUIRED]\n"
         "Return exactly one JSON object, without Markdown or surrounding text. "
-        "Allowed root keys: reply_text, controls, follow_cta, turn_intelligence. "
+        "Allowed root keys: reply_text, controls, follow_cta, turn_intelligence, customer_routes. "
         "reply_text is a non-empty customer reply of at most 4000 characters. "
         "controls is required and is an array of at most 32 objects; every object "
         "has exactly kind and value. Allowed kind values: "
@@ -340,7 +368,23 @@ def structured_response_instruction() -> str:
         + ", ".join(sorted(IMAGE_TYPE_CODES))
         + ". Do not return prize_certificate unless a separate programme contract "
         "explicitly requires it. The server strictly validates every field and "
-        "rejects unknown keys or unauthorized actions."
+        "rejects unknown keys or unauthorized actions. "
+        "customer_routes is an optional topic interpretation, never action authority. "
+        "Emit it only when CURRENT CUSTOMER ROUTE EVIDENCE is supplied. It has "
+        "schema_version=customer-route.v1, intents (at most 4 distinct kind/subtype pairs), "
+        "and optional focus_index (zero-based index of a non-withdrawn intent, or null). "
+        "Each intent has kind, optional subtype (default none), operation, "
+        "evidence_message_ids (positive USER IDs from that supplied evidence only; "
+        "at most 8 unique IDs across the proposal), and numeric confidence from 0 to 1. "
+        "Kinds: " + ", ".join(sorted(CUSTOMER_ROUTE_KINDS)) + ". "
+        "Only collaboration allows subtypes other than none: "
+        + ", ".join(sorted(COLLABORATION_SUBTYPES - {"none"})) + ". "
+        "Operations: open, continue, withdraw, correct. Preserve simultaneous topics; "
+        "omission never withdraws a previous topic. Use withdraw/correct only with "
+        "explicit customer evidence and a supplied active route. Unknown employment "
+        "availability does not mean recruitment is closed or open. A topic opens "
+        "discussion only: no payment, spam, block, reward, discount, manager handoff "
+        "or business-policy authorization follows from customer_routes."
     )
 
 
@@ -401,6 +445,8 @@ class ValidatedResponse:
     error: str = ""
     follow_cta: FollowCtaCandidate | None = None
     turn_intelligence: TurnIntelligenceArtifact | None = None
+    customer_routes: CustomerRouteProposal | None = None
+    route_abstention_reason: str = "route_missing"
 
     @property
     def control(self) -> dict[str, Any]:
@@ -770,7 +816,7 @@ def parse_structured_response(
         not isinstance(payload, dict)
         or not {"reply_text", "controls"}.issubset(payload)
         or not set(payload).issubset({
-            "reply_text", "controls", "follow_cta", "turn_intelligence"
+            "reply_text", "controls", "follow_cta", "turn_intelligence", "customer_routes"
         })
     ):
         return _failure(payload.get("reply_text", "") if isinstance(payload, dict) else "", "malformed_payload")
@@ -810,11 +856,14 @@ def parse_structured_response(
     )
     if "turn_intelligence" in payload and turn_intelligence is None:
         return _failure(reply_text, "invalid_turn_intelligence")
+    routes = normalize_customer_routes(payload.get("customer_routes"))
     return ValidatedResponse(
         reply_text=reply_text.strip(),
         controls=tuple(controls),
         follow_cta=follow_cta,
         turn_intelligence=turn_intelligence,
+        customer_routes=routes.proposal,
+        route_abstention_reason=routes.reason_code,
     )
 
 

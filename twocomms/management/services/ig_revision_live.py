@@ -12,10 +12,9 @@ from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 import hashlib
 import json
-import os
+import logging
 import secrets
 
-from django.conf import settings
 from django.db import connection, transaction
 from django.db.models import Q, Subquery
 from django.utils import timezone
@@ -39,7 +38,6 @@ from management.services.ig_revision_outbox import (
 )
 
 
-EXECUTION_FLAG = "IG_REVISION_EXECUTION_ENABLED"
 # Runtime enablement remains an explicit rollout decision. Implemented producer
 # prerequisites are no longer represented as permanent capability blockers.
 ACTIVATION_BLOCKERS = ()
@@ -63,8 +61,9 @@ class RevisionLiveResult:
 
 
 def revision_execution_enabled() -> bool:
-    value = getattr(settings, EXECUTION_FLAG, os.environ.get(EXECUTION_FLAG, False))
-    return value is True or str(value).strip().casefold() in {"1", "true", "yes", "on"}
+    from management.services.ig_revision_rollout import revision_execution_rollout
+
+    return revision_execution_rollout().enabled
 
 
 def _owned_revisions():
@@ -465,10 +464,15 @@ def _reclaim_execution(revision_id, *, settings_id=1):
 
 
 def _restore_response(proposal):
+    from management.services.ig_customer_route_contract import normalize_customer_routes
+
     response = proposal.get("response") or {}
+    routes = normalize_customer_routes(proposal.get("customer_routes"))
     return ValidatedResponse(
         reply_text=response.get("reply_text") or "",
         controls=tuple(ResponseControl(item["kind"], item["value"]) for item in response.get("controls") or []),
+        customer_routes=routes.proposal,
+        route_abstention_reason=proposal.get("route_abstention_reason") or routes.reason_code,
     )
 
 
@@ -489,7 +493,9 @@ def _normalize_response(response, artifact, client):
 
 def _generate_proposal(revision, token, settings_row, publication, collection):
     from management.services import instagram_bot as bot
-    from management.services.ig_revision_proposal import store_revision_generation_proposal
+    from management.services.ig_revision_proposal import (
+        capture_revision_customer_routes, store_revision_generation_proposal,
+    )
     from management.services.ig_turn_lineage import Lane, turn_lineage
 
     boundary = RevisionGenerationBoundary(
@@ -510,6 +516,17 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         return None, boundary, (admission.reason,)
     sources = revision.bundle_snapshot["sources"]
     source_id = int(sources[-1]["message_id"])
+    try:
+        route_capture = capture_revision_customer_routes(revision.pk, token,
+            settings_id=settings_row.pk, settings_permission_epoch=boundary.settings_epoch,
+            publication=publication)
+        route_context = route_capture.prompt_context() if route_capture else None
+    except Exception:
+        # Optional route infrastructure cannot remove the main reply path.
+        # Log only a finite code, never exception text or customer/provider data.
+        route_capture = None
+        route_context = None
+        logging.getLogger(__name__).warning("revision_route_capture_unavailable")
     failure = {}
     images = collection.inline_media
     candidate_set = bot._build_turn_candidate_set() if images else None
@@ -564,6 +581,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
             turn_media_context=media_context,
             failure_context=failure, generation_boundary=boundary,
             deadline_at=deadline,
+            customer_route_context=route_context,
         )
     if not isinstance(response, ValidatedResponse) or not response.valid:
         return None, boundary, boundary.last_reasons or (str(failure.get("kind") or "generation_failed"),)
@@ -626,6 +644,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         request_media_manifest=media_manifest,
         policy_manifest=failure.get("compiled_policy") or {}, authority=authority,
         prize_programme=boundary.programme,
+        customer_route_capture=route_capture,
     )
     if not stored.stored:
         return None, boundary, stored.reasons
@@ -967,6 +986,26 @@ def execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveRe
         )
         if response is None:
             return RevisionLiveResult(revision_id, "blocked", reasons)
+    # Both fresh generation and execution-only continuation use the same sealed
+    # proposal. Topic acceptance is optional and never authorizes send/actions.
+    if revision.generation_proposal.get("customer_routes") is not None:
+        try:
+            from management.services.ig_conversation_routes import (
+                RevisionRouteSource, accept_customer_routes,
+            )
+
+            route_result = accept_customer_routes(RevisionRouteSource(
+                client_id=revision.client_id, settings_id=settings_row.pk,
+                revision_id=revision.pk, revision_token=token,
+                expected_source_digest=revision.generation_proposal_digest,
+            ), expected_previous_decision_id=revision.generation_proposal.get(
+                "route_expected_previous_decision_id"))
+            if not route_result.accepted:
+                # Existing business/send fences still run below. A route-only
+                # CAS rejection must not discard a valid conversational reply.
+                bot.log("info", "revision_route_abstained", route_result.reason_code)
+        except Exception:
+            logging.getLogger(__name__).warning("revision_route_acceptance_unavailable")
     authority = boundary.authority
     if "manager_escalation_intent" in authority.allowed_actions:
         from management.services.ig_revision_intents import ensure_revision_manager_case
@@ -1102,22 +1141,36 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
     if not limit or connection.in_atomic_block:
         return 0
     handled = process_revision_finalizations(max_items=limit)
-    recover_new = bool(create_new and revision_execution_enabled())
-    for revision_id in expired_revision_debt_ids(limit=limit, owned_only=not create_new):
+    from management.services.ig_revision_rollout import revision_execution_rollout
+
+    rollout = revision_execution_rollout()
+    create_new = bool(create_new and rollout.enabled)
+    recover_new = create_new
+    for revision_id in expired_revision_debt_ids(
+        limit=limit,
+        owned_only=not create_new,
+        cutover_at=rollout.cutover_at if create_new else None,
+    ):
         recovery = None
         if recover_new and not IgRevisionDeliveryEffect.objects.filter(revision_id=revision_id, state__in=("sent", "provider_started", "unknown", "definite_failed")).exists():
             from management.services.ig_revision_recovery import schedule_revision_recovery
 
             recovery = schedule_revision_recovery(revision_id)
         if recovery is None or recovery.state not in {"waiting", "spawned", "cancelled", "execution"}:
-            record_expired_revision_debt(revision_id)
+            record_expired_revision_debt(
+                revision_id,
+                cutover_at=rollout.cutover_at if create_new else None,
+            )
     if recover_new:
         from management.services.ig_revision_recovery import due_recovery_revision_ids, prepare_outage_recovery
 
         for revision_id in due_recovery_revision_ids(limit=limit):
             recovery = prepare_outage_recovery(revision_id)
             if recovery.state == "manual":
-                record_expired_revision_debt(revision_id)
+                record_expired_revision_debt(
+                    revision_id,
+                    cutover_at=rollout.cutover_at if create_new else None,
+                )
     candidates = list(IgCustomerTurnRevision.objects.filter(
         state=IgCustomerTurnRevision.State.CLAIMED, lease_until__lte=timezone.now(),
     ).filter(Q(overall_deadline__gt=timezone.now()) | Q(recovery_state="execution"))
@@ -1125,7 +1178,7 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
         .filter(Q(delivery_effects__isnull=False) | (Q(active_slot=1) if create_new else Q(pk__in=[])))
         .order_by("lease_until", "id").values_list("id", flat=True).distinct()[:limit])
     if create_new:
-        candidates.extend(due_revision_ids(limit=limit))
+        candidates.extend(due_revision_ids(limit=limit, cutover_at=rollout.cutover_at))
     for revision_id in list(dict.fromkeys(candidates))[:max(0, limit - handled)]:
         if bot.maintenance_status()["active"]:
             break

@@ -62,6 +62,14 @@ if _production_context:
         )
 
 from .settings import *
+
+# Activate only the verified new inbound cohort. The past boundary was checked
+# against an empty pending queue; historical shadow revisions must not replay.
+# An explicit private environment override remains the operational kill switch.
+IG_REVISION_EXECUTION_ENABLED = os.environ.get('IG_REVISION_EXECUTION_ENABLED', '1')
+IG_REVISION_EXECUTION_CUTOVER_AT = os.environ.get(
+    'IG_REVISION_EXECUTION_CUTOVER_AT', '2026-09-08T20:14:23+00:00',
+)
 from .cache_headers import add_cache_headers, is_immutable_static_url
 
 # Возможность отключить аналитическую мидлварь через переменную окружения

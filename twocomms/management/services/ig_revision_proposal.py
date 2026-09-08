@@ -67,6 +67,124 @@ class RevisionInspectionProjectionResult:
     reasons: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class RevisionCustomerRouteCapture:
+    """Backend capability captured before HTTP; only prompt_context reaches Gemini."""
+
+    revision_id: int
+    revision_token: str
+    settings_id: int
+    settings_permission_epoch: int
+    client_permission_epoch: int
+    reset_floor: int
+    watermark_message_id: int
+    input_digest: str
+    expected_previous_decision_id: int | None
+    user_sources: tuple[tuple[int, str], ...]
+    active_intent_keys: tuple[str, ...]
+    focus_key: str
+    captured_at: datetime
+
+    def binding(self):
+        return {"schema_version": "route-source.v1", "settings_id": self.settings_id,
+            "settings_permission_epoch": self.settings_permission_epoch,
+            "client_permission_epoch": self.client_permission_epoch,
+            "reset_floor": self.reset_floor, "watermark_message_id": self.watermark_message_id,
+            "input_digest": self.input_digest}
+
+    def prompt_context(self):
+        return {"sources": [{"message_id": pk, "text": text} for pk, text in self.user_sources],
+            "active_intent_keys": list(self.active_intent_keys), "focus_key": self.focus_key}
+
+
+def capture_revision_customer_routes(revision_id, revision_token, *, settings_id,
+    settings_permission_epoch, publication, now=None):
+    """Short settings/client/revision transaction; no provider or business effects."""
+    from management.models import IgConversationRouteDecision, InstagramBotMessage
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_revision_outbox import _cas_readiness
+
+    now = now or timezone.now()
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if identity is None:
+        return None
+    with transaction.atomic():
+        settings_obj = InstagramBotSettings.objects.select_for_update().select_related(
+            "active_instruction_publication").filter(pk=settings_id).first()
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(
+            pk=revision_id, client_id=identity["client_id"]).first()
+        if revision is None or client is None or settings_obj is None:
+            return None
+        ready = _cas_readiness(revision, client=client, settings_obj=settings_obj,
+            revision_token=revision_token, settings_id=settings_id,
+            settings_permission_epoch=settings_permission_epoch, publication=publication,
+            fact_bindings=[], offer_bindings=[], now=now)
+        if not ready.ready:
+            return None
+        sealed, _parts = _snapshot_sources(revision)
+        if not sealed:
+            return None
+        ids = [item["message_id"] for item in sealed]
+        floor = conversation_route_reset_floor(client.pk)
+        current = {row.pk: row for row in InstagramBotMessage.objects.filter(client=client, pk__in=ids)}
+        user_sources = []
+        for row in revision.sources.order_by("ordinal", "id"):
+            message = current.get(row.message_id)
+            if (message is None or message.role != row.role or message.text != row.text
+                or row.message_id < floor):
+                return None
+            if row.role == InstagramBotMessage.Role.USER and row.text.strip():
+                user_sources.append((row.message_id, row.text))
+        if not user_sources:
+            return None
+        previous = IgConversationRouteDecision.objects.filter(client=client, reset_floor=floor).order_by(
+            "-sequence").first()
+        return RevisionCustomerRouteCapture(revision.pk, revision_token, settings_id,
+            settings_permission_epoch, revision.permission_epoch, floor, max(ids), revision.snapshot_digest,
+            previous.pk if previous else None, tuple(user_sources),
+            tuple(item["key"] for item in previous.active_intents) if previous else (),
+            previous.focus_key if previous else "", now)
+
+
+def _customer_route_projection(response, capture, revision, revision_token, settings_obj, generated_at):
+    """Route defects abstain locally; reply/control validation stays independent."""
+    from management.models import InstagramBotMessage
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_customer_route_contract import CustomerRouteProposal, normalize_customer_routes
+
+    if not isinstance(response.customer_routes, CustomerRouteProposal):
+        return {"route_abstention_reason": response.route_abstention_reason or "route_missing"}
+    normalized = normalize_customer_routes(response.customer_routes.to_dict())
+    if normalized.abstained:
+        return {"route_abstention_reason": normalized.reason_code}
+    if not isinstance(capture, RevisionCustomerRouteCapture):
+        return {"route_abstention_reason": "route_binding_missing"}
+    if (capture.revision_id != revision.pk or capture.revision_token != revision_token
+        or capture.settings_id != settings_obj.pk
+        or capture.settings_permission_epoch != settings_obj.reply_permission_epoch
+        or capture.client_permission_epoch != revision.permission_epoch
+        or capture.input_digest != revision.snapshot_digest
+        or capture.captured_at > generated_at
+        or capture.reset_floor != conversation_route_reset_floor(revision.client_id)):
+        return {"route_abstention_reason": "route_binding_changed"}
+    sealed_rows = list(revision.sources.order_by("ordinal", "id"))
+    if (not sealed_rows or capture.watermark_message_id != max(row.message_id for row in sealed_rows)
+        or capture.user_sources != tuple((row.message_id, row.text) for row in sealed_rows
+            if row.role == InstagramBotMessage.Role.USER and row.text.strip())):
+        return {"route_abstention_reason": "route_source_changed"}
+    ids = [pk for pk, _text in capture.user_sources]
+    current = {row.pk: row for row in InstagramBotMessage.objects.filter(
+        client_id=revision.client_id, pk__in=ids, role=InstagramBotMessage.Role.USER)}
+    if any(pk not in current or current[pk].text != text for pk, text in capture.user_sources):
+        return {"route_abstention_reason": "route_source_changed"}
+    evidence = {pk for intent in normalized.proposal.intents for pk in intent.evidence_message_ids}
+    if not evidence.issubset(ids):
+        return {"route_abstention_reason": "evidence_outside_source"}
+    return {"customer_routes": normalized.proposal.to_dict(), "route_binding": capture.binding(),
+        "route_expected_previous_decision_id": capture.expected_previous_decision_id}
+
+
 def _canonical(value) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -450,6 +568,7 @@ def store_revision_generation_proposal(
     fact_checker=check_fact_bindings,
     offer_checker=check_offer_bindings,
     prize_programme=None,
+    customer_route_capture: RevisionCustomerRouteCapture | None = None,
 ) -> RevisionProposalResult:
     """Persist one exact validated proposal before any business or send effect."""
     if connection.in_atomic_block:
@@ -565,6 +684,16 @@ def store_revision_generation_proposal(
                 "authority_digest": authority.authority_digest,
             },
         }
+        try:
+            # Catch OUTSIDE the savepoint: a route DB error must roll back its
+            # own work and clear the broken-transaction state before the already
+            # won main proposal is saved in this outer transaction.
+            with transaction.atomic():
+                route_projection = _customer_route_projection(response, customer_route_capture,
+                    revision, revision_token, settings_obj, generated_at)
+        except Exception:
+            route_projection = {"route_abstention_reason": "route_projection_unavailable"}
+        proposal.update(route_projection)
         encoded = _canonical(proposal)
         if len(encoded) > MAX_PROPOSAL_BYTES:
             return RevisionProposalResult(reasons=("proposal_too_large",))

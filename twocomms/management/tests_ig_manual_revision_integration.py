@@ -15,7 +15,10 @@ from management.services.ig_revision_execution import due_revision_ids, prepare_
 from management.services.ig_turn_revisions import create_collecting_revision, create_refresh_successor
 
 
-@override_settings(IG_REVISION_EXECUTION_ENABLED=True)
+@override_settings(
+    IG_REVISION_EXECUTION_ENABLED=True,
+    IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00",
+)
 class ManualRevisionIntegrationTests(TransactionTestCase):
     def setUp(self):
         transport = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})

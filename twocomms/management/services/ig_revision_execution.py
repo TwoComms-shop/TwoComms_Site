@@ -7,7 +7,7 @@ from datetime import timedelta
 import secrets
 
 from django.db import connection, transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from management.models import (
@@ -16,6 +16,8 @@ from management.models import (
     IgCustomerTurnRevision,
     IgRevisionDeliveryEffect,
     IgFollowUpTask,
+    IgTurnRevisionSource,
+    InstagramBotMessage,
     GeminiRequest,
 )
 from management.services.ig_turn_revisions import (
@@ -52,7 +54,26 @@ class RevisionCompletionResult:
     states: tuple[str, ...] = ()
 
 
-def due_revision_ids(*, now=None, limit: int = 25) -> list[int]:
+def _owned_revision_q() -> Q:
+    return (
+        Q(media_prepare_deadline__isnull=False)
+        | Q(sealed_at__isnull=False)
+        | Q(snapshot_digest__gt="")
+        | Q(generation_proposal_digest__gt="")
+        | Q(has_delivery_effect=True)
+    )
+
+
+def _rollout_eligible_q(cutover_at) -> Q:
+    sticky = _owned_revision_q() | Q(
+        origin__in=("manual_resume", "auto_refresh", "outage_recovery")
+    )
+    if cutover_at is None:
+        return sticky | Q(origin="inbound")
+    return sticky | Q(origin="inbound", created_at__gte=cutover_at)
+
+
+def due_revision_ids(*, now=None, limit: int = 25, cutover_at=None) -> list[int]:
     """Bounded DB-only selector for quiet-due or reclaimable preparation heads."""
     now = now or timezone.now()
     bounded = max(1, min(int(limit), MAX_DUE_SCAN))
@@ -63,7 +84,11 @@ def due_revision_ids(*, now=None, limit: int = 25) -> list[int]:
         | Q(client__opted_out_at__gt=F("client__opted_in_at"))
     )
     return list(
-        IgCustomerTurnRevision.objects.filter(active_slot=1)
+        IgCustomerTurnRevision.objects.annotate(
+            has_delivery_effect=Exists(
+                IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk"))
+            )
+        ).filter(active_slot=1)
         .filter(overall_deadline__gt=now)
         .filter(
             Q(
@@ -93,6 +118,7 @@ def due_revision_ids(*, now=None, limit: int = 25) -> list[int]:
             client__reply_permission_epoch=F("permission_epoch"),
         )
         .exclude(active_opt_out)
+        .filter(_rollout_eligible_q(cutover_at))
         .order_by("quiet_deadline", "revision", "id")
         .values_list("id", flat=True)[:bounded]
     )
@@ -535,12 +561,25 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
         return RevisionFinalizationResult(revision_id, retryable=True, reason=f"finalization_{type(exc).__name__.lower()}")
 
 
-def expired_revision_debt_ids(*, now=None, limit=25, owned_only=False):
-    from django.db.models import CharField, Exists, OuterRef, Value
+def expired_revision_debt_ids(
+    *, now=None, limit=25, owned_only=False, cutover_at=None,
+):
+    from django.db.models import CharField, Value
     from django.db.models.functions import Cast, Concat, Collate
 
     now = now or timezone.now()
-    queue = IgCustomerTurnRevision.objects.filter(
+    source_rows = IgTurnRevisionSource.objects.filter(revision_id=OuterRef("pk"))
+    ineligible_sources = source_rows.exclude(
+        message__status=InstagramBotMessage.Status.PENDING,
+        message__send_state="",
+    )
+    queue = IgCustomerTurnRevision.objects.annotate(
+        has_delivery_effect=Exists(
+            IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk"))
+        ),
+        has_source=Exists(source_rows),
+        has_ineligible_source=Exists(ineligible_sources),
+    ).filter(
         overall_deadline__lte=now, client__privacy_erasure_started_at__isnull=True,
         state__in=("collecting", "preparing", "sealed", "claimed"),
     ).filter(
@@ -548,6 +587,20 @@ def expired_revision_debt_ids(*, now=None, limit=25, owned_only=False):
         | Q(origin__in=("auto_refresh", "outage_recovery"), action_receipts__has_key="manual_resume_authorization")
         | ~Q(turn__terminal_reason__gt="")
     ).exclude(recovery_state__in=("waiting", "spawned", "cancelled"))
+    ordinary = Q(
+        origin="inbound",
+        turn__claim_state=IgCustomerTurn.ClaimState.OPEN,
+        turn__terminal_reason="",
+        has_source=True,
+        has_ineligible_source=False,
+    )
+    if cutover_at is not None:
+        ordinary &= Q(created_at__gte=cutover_at)
+    queue = queue.filter(
+        _owned_revision_q()
+        | Q(origin__in=("manual_resume", "auto_refresh", "outage_recovery"))
+        | ordinary
+    )
     if owned_only:
         from management.services.ig_revision_live import _owned_revisions
 
@@ -559,7 +612,7 @@ def expired_revision_debt_ids(*, now=None, limit=25, owned_only=False):
     return list(queue.annotate(debt_recorded=Exists(recorded)).filter(debt_recorded=False).order_by("overall_deadline", "id").values_list("id", flat=True)[:max(1, min(int(limit), MAX_DUE_SCAN))])
 
 
-def record_expired_revision_debt(revision_id, *, now=None):
+def record_expired_revision_debt(revision_id, *, now=None, cutover_at=None):
     """Classify an expired owed reply once; do not mark it answered or retry HTTP."""
     now = now or timezone.now()
     identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
@@ -571,6 +624,46 @@ def record_expired_revision_debt(revision_id, *, now=None):
         if client is None or revision is None or client.privacy_erasure_started_at is not None:
             return "debt_not_applicable"
         effects = list(revision.delivery_effects.order_by("order_index", "id"))
+        owned = bool(
+            revision.media_prepare_deadline
+            or revision.sealed_at
+            or revision.snapshot_digest
+            or revision.generation_proposal_digest
+            or effects
+        )
+        sticky_origin = revision.origin in {
+            "manual_resume", "auto_refresh", "outage_recovery",
+        }
+        if not owned and not sticky_origin:
+            turn = IgCustomerTurn.objects.select_for_update().filter(
+                pk=revision.turn_id,
+                claim_state=IgCustomerTurn.ClaimState.OPEN,
+                terminal_reason="",
+            ).first()
+            sources = list(
+                revision.sources.select_for_update().order_by("ordinal", "id")
+            )
+            source_messages = list(
+                InstagramBotMessage.objects.select_for_update()
+                .filter(pk__in=[source.message_id for source in sources])
+                .order_by("pk")
+            )
+            messages_by_id = {message.pk: message for message in source_messages}
+            if (
+                revision.origin != "inbound"
+                or (cutover_at is not None and revision.created_at < cutover_at)
+                or turn is None
+                or not sources
+                or len(sources) != revision.source_count
+                or len(source_messages) != revision.source_count
+                or any(
+                    messages_by_id[source.message_id].status
+                    != InstagramBotMessage.Status.PENDING
+                    or bool(messages_by_id[source.message_id].send_state)
+                    for source in sources
+                )
+            ):
+                return "legacy_shadow_not_owed"
         if effects:
             complete, _debt, reason = _completion_decision(effects)
             if complete and reason == "delivered":

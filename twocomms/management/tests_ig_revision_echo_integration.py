@@ -12,7 +12,11 @@ from management.services.ig_revision_outbox import finish_effect
 from management.services.ig_webhook_inbox import accept_webhook, drain_webhook_inbox
 
 
-@override_settings(IG_REVISION_EXECUTION_ENABLED=True, SITE_BASE_URL="https://twocomms.test")
+@override_settings(
+    IG_REVISION_EXECUTION_ENABLED=True,
+    IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00",
+    SITE_BASE_URL="https://twocomms.test",
+)
 class RevisionEchoIntegrationTests(TransactionTestCase):
     _payload = fixtures.RevisionEchoTests._payload
     _plan = fixtures.RevisionEchoTests._plan

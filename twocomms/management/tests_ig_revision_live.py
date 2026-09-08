@@ -902,7 +902,10 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(source.status, "pending")
         self.assertEqual(expired.state, "collecting")
 
-    @override_settings(IG_REVISION_EXECUTION_ENABLED=True)
+    @override_settings(
+        IG_REVISION_EXECUTION_ENABLED=True,
+        IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00",
+    )
     def test_provider_outage_waits_without_operator_case_then_generates_fresh_child(self):
         from management.models import IgFollowUpTask
 
@@ -957,7 +960,10 @@ class RevisionLiveTests(TransactionTestCase):
         generate.assert_not_called()
         self.assertFalse(IgCustomerTurnRevision.objects.filter(parent=self.revision, origin="outage_recovery").exists())
 
-    @override_settings(IG_REVISION_EXECUTION_ENABLED=True)
+    @override_settings(
+        IG_REVISION_EXECUTION_ENABLED=True,
+        IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00",
+    )
     def test_expired_manual_chain_remains_recovery_candidate_without_reopening_old_turn(self):
         from django.contrib.auth import get_user_model
         from management.models import AdminAuditLog

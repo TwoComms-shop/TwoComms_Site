@@ -183,7 +183,10 @@ class RevisionRecoveryTests(TransactionTestCase):
             fact_bindings=authority["fact_bindings"], offer_bindings=authority["offer_bindings"],
             fact_checker=check_fact_bindings, offer_checker=check_offer_bindings, now=now)
 
-    @override_settings(IG_REVISION_EXECUTION_ENABLED=True)
+    @override_settings(
+        IG_REVISION_EXECUTION_ENABLED=True,
+        IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00",
+    )
     def test_last_budget_winner_resumes_same_proposal_without_generation(self):
         from management.services.ig_revision_live import process_pending_revisions
         from management.services.ig_revision_provider_execution import inspect_revision_provider_execution
