@@ -87,7 +87,8 @@ class RouteAcceptance:
 
 def _revision_source(source, client, settings_obj, now):
     from management.services.ig_revision_outbox import _cas_readiness, PublicationBinding
-    from management.services.ig_revision_proposal import _generation_graph_matches, _snapshot_sources
+    from management.services.ig_revision_proposal import (
+        _generation_graph_matches, _snapshot_sources, validated_route_media_evidence)
 
     revision = IgCustomerTurnRevision.objects.select_for_update().filter(
         pk=source.revision_id, client_id=client.pk).first()
@@ -134,7 +135,21 @@ def _revision_source(source, client, settings_obj, now):
         request_id=generation.get("request_id", ""), model=generation.get("actual_model", ""),
         policy_manifest=policy):
         return None, "source_winner_invalid"
+    normalized = normalize_customer_routes(proposal.get("customer_routes"))
+    if normalized.abstained:
+        return None, normalized.reason_code
+    evidence_ids = {pk for intent in normalized.proposal.intents for pk in intent.evidence_message_ids}
+    nontext = {pk for pk in evidence_ids if pk in current_messages
+        and not str(current_messages[pk].text or "").strip()}
+    proof, reason = validated_route_media_evidence(revision, nontext,
+        proposal.get("request_media_manifest") or {}, proposal.get("turn_intelligence") or {},
+        generation.get("request_id", ""), generation.get("actual_model", ""))
+    if reason:
+        return None, reason
+    if proof != proposal.get("route_media_evidence", []):
+        return None, "route_media_evidence_mismatch"
     return {"payload": proposal.get("customer_routes"), "binding": binding,
+        "validated_media_evidence_ids": {part["source_message_id"] for part in proof},
         "evidence_scope": ids, "revision_id": revision.pk, "analysis_result_id": None,
         "source_digest": revision.generation_proposal_digest,
         "source_refs": {"revision_id": revision.pk,
@@ -288,9 +303,10 @@ def accept_customer_routes(source, *, expected_previous_decision_id, now=None):
             role=InstagramBotMessage.Role.USER).values_list("pk", "text"))
         if {pk for pk, _text in evidence} != evidence_ids:
             return RouteAcceptance(reason_code="evidence_not_current_or_owned")
-        # Non-text modality needs a later explicit artifact-binding adapter;
-        # an owned image/voice reference alone is not understood intent evidence.
-        if any(not str(text or "").strip() for _pk, text in evidence):
+        # Only the revision adapter's recomputed immutable proof admits media.
+        # Analysis and unproven image/voice references retain text-only behavior.
+        if any(not str(text or "").strip() and pk not in data.get("validated_media_evidence_ids", set())
+            for pk, text in evidence):
             return RouteAcceptance(reason_code="evidence_modality_unavailable")
         scope = IgConversationRouteDecision.objects.filter(client=client,
             reset_floor=binding["reset_floor"])

@@ -84,6 +84,7 @@ class RevisionCustomerRouteCapture:
     active_intent_keys: tuple[str, ...]
     focus_key: str
     captured_at: datetime
+    media_parts: tuple = ()
 
     def binding(self):
         return {"schema_version": "route-source.v1", "settings_id": self.settings_id,
@@ -92,9 +93,120 @@ class RevisionCustomerRouteCapture:
             "reset_floor": self.reset_floor, "watermark_message_id": self.watermark_message_id,
             "input_digest": self.input_digest}
 
-    def prompt_context(self):
-        return {"sources": [{"message_id": pk, "text": text} for pk, text in self.user_sources],
+    def prompt_context(self, media_items=()):
+        sources = []
+        for pk, text in self.user_sources:
+            source = {"message_id": pk, "text": text}
+            parts = [{"kind": str(item.get("mime") or "").split("/", 1)[0],
+                "source_image_index": index}
+                for index, item in enumerate(media_items)
+                if item.get("source_message_id") == pk
+                and any(part[0] == pk and part[1] == item.get("source_part_id")
+                    for part in self.media_parts)]
+            if parts:
+                source["media_parts"] = parts
+            sources.append(source)
+        return {"sources": sources,
             "active_intent_keys": list(self.active_intent_keys), "focus_key": self.focus_key}
+
+
+def _route_source_parts(revision):
+    """Freeze identities, including unavailable parts, without URL or inspection."""
+    _sources, parts = _snapshot_sources(revision)
+    user_ids = set(revision.sources.filter(role="user").values_list("message_id", flat=True))
+    return tuple((pk, part_id, str(part.get("mime") or ""),
+        str(part.get("content_hash") or "").casefold(), part.get("capture_outcome"),
+        part.get("original_index"), part.get("bytes"))
+        for (pk, part_id), part in parts.items() if pk in user_ids)
+
+
+def validated_route_media_evidence(revision, evidence_ids, media, intelligence, request_id, model):
+    """Backend proof for topic evidence only; never payment, consent or policy.
+
+    Call only after validating the immutable proposal's source and winning request.
+    Recheck live ownership here so delayed journal acceptance cannot revive media.
+    """
+    from management.models import InstagramBotMessage
+    from management.services.ig_media_manifest import normalize_attachment_media, public_media_manifest
+
+    if not evidence_ids:
+        return [], ""
+    request = intelligence.get("media_request") or {}
+    items = media.get("items") or []
+    count = media.get("actual_inline_count")
+    if (not isinstance(count, int) or isinstance(count, bool) or not 0 <= count <= len(items)
+        or request.get("request_id") != request_id or request.get("provider_model") != model
+        or request.get("inline_count_known") is not True
+        or request.get("actual_inline_count") != count
+        or intelligence.get("request_permission_epoch") != revision.permission_epoch
+        or media.get("actual_content_hashes") != [item.get("content_hash") for item in items[:count]]):
+        return [], "route_media_request_invalid"
+    submitted = request.get("submitted_parts") or []
+    if len(submitted) != len(items) or any(
+        any(part.get(key) != item.get(key) for key in
+            ("source_message_id", "source_part_id", "content_hash", "original_index"))
+        for part, item in zip(submitted, items)):
+        return [], "route_media_request_invalid"
+    observations = {item.get("source_image_index"): item
+        for item in intelligence.get("image_observations") or []}
+    audio_owners = {item.get("source_message_id") for item in items[:count]
+        if str(item.get("mime") or "").startswith("audio/")}
+    rows = {row.message_id: row for row in revision.sources.all()}
+    messages = {row.pk: row for row in InstagramBotMessage.objects.select_for_update().filter(
+        client_id=revision.client_id, pk__in=evidence_ids, role="user")}
+    frozen = _route_source_parts(revision)
+    result = []
+    for pk in sorted(evidence_ids):
+        message, source = messages.get(pk), rows.get(pk)
+        parts = [part for part in frozen if part[0] == pk]
+        if (message is None or source is None or not parts
+            or message.text != source.text or source.role != "user"
+            or message.private_media_state != message.PrivateMediaState.ACTIVE
+            or message.sender_id != revision.client.igsid or message.source != "webhook"
+            or message.provider_namespace != source.source_namespace):
+            return [], "route_media_owner_changed"
+        try:
+            current = normalize_attachment_media(message.attachment_media or [], message_scope=pk)
+        except MediaManifestError:
+            return [], "route_media_owner_changed"
+        current_ids = {part.get("source_part_id") for part in current}
+        if len(current) != len(current_ids) or current_ids != {part[1] for part in parts}:
+            return [], "route_media_owner_changed"
+        for _pk, part_id, mime, content_hash, outcome, original_index, byte_length in parts:
+            matches = [part for part in current if part.get("source_part_id") == part_id]
+            admitted = [(index, item) for index, item in enumerate(items[:count])
+                if item.get("source_message_id") == pk and item.get("source_part_id") == part_id]
+            if outcome != "owned" or len(matches) != 1 or len(admitted) != 1:
+                return [], "route_media_not_admitted"
+            part = matches[0]
+            index, item = admitted[0]
+            if (not _HASH_RE.fullmatch(content_hash) or part.get("private_storage") is not True
+                or public_media_manifest([part])[0]["capture_state"] != "owned"
+                or str(part.get("content_hash") or "").casefold() != content_hash
+                or part.get("mime") != mime or part.get("bytes") != byte_length
+                or part.get("original_index") != original_index
+                or item.get("content_hash") != content_hash or item.get("mime") != mime
+                or item.get("source_image_index") != index):
+                return [], "route_media_owner_changed"
+            kind = mime.split("/", 1)[0]
+            if kind == "image":
+                observation = observations.get(index) or {}
+                if (observation.get("outcome") != "understood"
+                    or observation.get("source_part_id") != part_id
+                    or observation.get("content_hash") != content_hash):
+                    return [], "route_media_not_understood"
+                understood = "understood"
+            elif kind == "audio":
+                if (audio_owners != {pk} or intelligence.get("audio_status") != "transcribed"
+                    or not str(intelligence.get("transcript") or "").strip()):
+                    return [], "route_audio_not_attributable"
+                understood = "transcribed"
+            else:
+                return [], "route_media_not_understood"
+            result.append({"source_message_id": pk, "source_part_id": part_id,
+                "kind": kind, "source_image_index": index, "content_hash": content_hash,
+                "outcome": understood, "request_id": request_id, "provider_model": model})
+    return result, ""
 
 
 def capture_revision_customer_routes(revision_id, revision_token, *, settings_id,
@@ -134,7 +246,7 @@ def capture_revision_customer_routes(revision_id, revision_token, *, settings_id
             if (message is None or message.role != row.role or message.text != row.text
                 or row.message_id < floor):
                 return None
-            if row.role == InstagramBotMessage.Role.USER and row.text.strip():
+            if row.role == InstagramBotMessage.Role.USER:
                 user_sources.append((row.message_id, row.text))
         if not user_sources:
             return None
@@ -144,10 +256,11 @@ def capture_revision_customer_routes(revision_id, revision_token, *, settings_id
             settings_permission_epoch, revision.permission_epoch, floor, max(ids), revision.snapshot_digest,
             previous.pk if previous else None, tuple(user_sources),
             tuple(item["key"] for item in previous.active_intents) if previous else (),
-            previous.focus_key if previous else "", now)
+            previous.focus_key if previous else "", now, _route_source_parts(revision))
 
 
-def _customer_route_projection(response, capture, revision, revision_token, settings_obj, generated_at):
+def _customer_route_projection(response, capture, revision, revision_token, settings_obj, generated_at,
+    media, intelligence, request_id, model):
     """Route defects abstain locally; reply/control validation stays independent."""
     from management.models import InstagramBotMessage
     from management.services.ig_conversation_routes import conversation_route_reset_floor
@@ -171,7 +284,8 @@ def _customer_route_projection(response, capture, revision, revision_token, sett
     sealed_rows = list(revision.sources.order_by("ordinal", "id"))
     if (not sealed_rows or capture.watermark_message_id != max(row.message_id for row in sealed_rows)
         or capture.user_sources != tuple((row.message_id, row.text) for row in sealed_rows
-            if row.role == InstagramBotMessage.Role.USER and row.text.strip())):
+            if row.role == InstagramBotMessage.Role.USER)
+        or capture.media_parts != _route_source_parts(revision)):
         return {"route_abstention_reason": "route_source_changed"}
     ids = [pk for pk, _text in capture.user_sources]
     current = {row.pk: row for row in InstagramBotMessage.objects.filter(
@@ -181,8 +295,13 @@ def _customer_route_projection(response, capture, revision, revision_token, sett
     evidence = {pk for intent in normalized.proposal.intents for pk in intent.evidence_message_ids}
     if not evidence.issubset(ids):
         return {"route_abstention_reason": "evidence_outside_source"}
+    nontext = {pk for pk, text in capture.user_sources if pk in evidence and not text.strip()}
+    proof, reason = validated_route_media_evidence(revision, nontext, media, intelligence, request_id, model)
+    if reason:
+        return {"route_abstention_reason": reason}
     return {"customer_routes": normalized.proposal.to_dict(), "route_binding": capture.binding(),
-        "route_expected_previous_decision_id": capture.expected_previous_decision_id}
+        "route_expected_previous_decision_id": capture.expected_previous_decision_id,
+        **({"route_media_evidence": proof} if proof else {})}
 
 
 def _canonical(value) -> bytes:
@@ -690,7 +809,8 @@ def store_revision_generation_proposal(
             # won main proposal is saved in this outer transaction.
             with transaction.atomic():
                 route_projection = _customer_route_projection(response, customer_route_capture,
-                    revision, revision_token, settings_obj, generated_at)
+                    revision, revision_token, settings_obj, generated_at,
+                    media, intelligence, request_id, model)
         except Exception:
             route_projection = {"route_abstention_reason": "route_projection_unavailable"}
         proposal.update(route_projection)
@@ -818,7 +938,10 @@ def project_revision_image_inspections(
                 continue
             message_id = int(submitted_item.get("source_message_id") or 0)
             message = messages.get(message_id)
-            if message is None or not str(media_item.get("mime") or "").startswith("image/"):
+            # Audio occupies a global inline index but is not an image to project.
+            if not str(media_item.get("mime") or "").startswith("image/"):
+                continue
+            if message is None:
                 skipped += 1
                 continue
             if message_id not in media_by_message:

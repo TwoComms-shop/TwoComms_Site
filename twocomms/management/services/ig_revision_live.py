@@ -520,7 +520,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         route_capture = capture_revision_customer_routes(revision.pk, token,
             settings_id=settings_row.pk, settings_permission_epoch=boundary.settings_epoch,
             publication=publication)
-        route_context = route_capture.prompt_context() if route_capture else None
+        route_context = route_capture.prompt_context(collection.binding.get("items") or []) if route_capture else None
     except Exception:
         # Optional route infrastructure cannot remove the main reply path.
         # Log only a finite code, never exception text or customer/provider data.
