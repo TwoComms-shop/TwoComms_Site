@@ -25,6 +25,7 @@ from management.services.ig_journey_trace_store import (
     SCHEMA_VERSION, JourneyTraceStoreConflict, JourneyTraceStoreRejected,
     _digest, _source_manifest, record_journey_trace,
 )
+from management.services.ig_turn_lineage import turn_lineage
 
 
 PROMPT_VERSION = "journey-trace.text.v1"
@@ -221,19 +222,33 @@ def generate_journey_trace(client_id, *, apply=False, allow_historical=False):
     report["provider_called"] = True
     prompt = _prompt()
     user_text = json.dumps({"watermark_message_id": watermark, "window": coverage, "conversation": transcript}, ensure_ascii=False)
+    lineage = {}
     try:
-        response = gemini_generate_json(
-            prompt, user_text,
-            role="management", reasoning_task="conversation_reanalysis", max_output_tokens=4096,
-        )
+        # High reasoning also needs room for the structured answer. The ordinary
+        # short-response budget produced empty candidates on longer transcripts.
+        # A historical window is not a new message execution. Supplying its last
+        # message as the gateway execution source would mutate that message's
+        # route class and collide with ordinary analysis ownership. Keep client
+        # and watermark in diagnostic lineage without claiming that execution.
+        with turn_lineage(lane="analysis", client_id=client_id,
+                          logical_turn_id=f"jt:{client_id}:{watermark}:{snapshot_key[:20]}") as lineage:
+            response = gemini_generate_json(
+                prompt, user_text, role="management", reasoning_task="conversation_reanalysis",
+                max_output_tokens=12288, timeout=(8, 45), deadline_seconds=90,
+            )
+            if lineage.get("request_id"):
+                report["request_id"] = lineage["request_id"]
     except Exception:
         # Provider exceptions can contain prompts/credentials; never echo them.
         report["reason"] = "provider_failed"
+        if lineage.get("request_id"):
+            report["request_id"] = lineage["request_id"]
         return report
     parsed = response.get("parsed") if isinstance(response, dict) else None
     trace = normalize_journey_trace(parsed, by_id=by_id, watermark=watermark)
     if trace["status"] not in {"interpretation_only", "partial"} or not trace["steps"]:
         report["reason"] = "invalid_trace"
+        report["trace_rejections"] = trace["coverage"]["reasons"]
         return report
     model = response.get("model") or "unknown"
     if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,79}", model):

@@ -43,7 +43,7 @@
     if(edge.tone==='warning'||edge.relation==='retry'||RETRY_OUTCOMES.has(edge.outcome))return 'warning';
     return edge.tone==='success'?'success':'recorded';
   }
-  function planned(node){return ['possible','interpretation'].includes(node.presentation_kind)&&node.implementation_status==='planned'&&['stock_wait','restock_consent'].includes(node.semantic_key);}
+  function planned(node){return ['possible','interpretation'].includes(node.presentation_kind)&&node.implementation_status==='planned';}
   function nodeStatusLabel(node){return node.presentation_kind==='interpretation'?'За перепискою'+(planned(node)?' · Заплановано':''):planned(node)?'Заплановано':node.presentation_kind==='possible'?LABELS.possible:node.state==='complete'&&node.tone==='danger'?'Завершено з негативним результатом':LABELS[node.state]||LABELS.open;}
   function recorded(node){const visits=node.recorded_visits;return visits&&Number.isInteger(visits.count)&&visits.count>0&&Array.isArray(visits.evidence_refs)&&visits.evidence_refs.length>0;}
   const CONDITIONS={confirmed_coverage:'Коли оплату підтверджено',settlement_correction:'Якщо змінилися дані розрахунку',eligible_opt_in:'Запропонувати потрібну згоду',consent_recorded:'Коли згоду зафіксовано',send_capable:'Якщо контакт дозволено',catalog_match:'Якщо це товар каталогу',custom_reference:'Якщо потрібен власний принт',availability:'Перевірити доступність',eligible_follow_up:'Якщо потрібна допомога',wait_for_attempt:'Повторити оплату',offer_correction:'Змінити умови',configuration_correction:'Змінити склад',payment_objection:'Обговорити заперечення',new_attempt:'Нова спроба оплати',current_mockup_accepted:'Після погодження чинного макета',payment_required:'Якщо потрібна оплата',verified_entitlement_covers_total:'Якщо підтверджене право покриває суму',permission_check:'Перевірити дозвіл на контакт',new_selection:'Підібрати інший товар',current_configuration_confirmed:'Якщо чинний склад підтверджено',authorised_reward_grant:'Після дозволу на нагороду'};
@@ -102,7 +102,8 @@
       if(this.selectedEdge&&!this.edges.some(e=>e.id===this.selectedEdge))this.closePanel(false);
       this.root.dataset.clientId=String(snapshot.client_id);this.root.dataset.episodeId=String(snapshot.viewed_episode_id||'');
       const current=this.graph.nodes.find(n=>n.route_focus)||this.graph.nodes.find(n=>n.current);this.currentId=current?.id;
-      const conversational=current?.route_kind||!snapshot.viewed_episode_id||!current||current.id==='guide:inquiry';
+      const nonCommercial=current?.semantic_key?.startsWith('collaboration')||['employment','employment_response','business_decision','information_question','information_resolved','spam_confirmed'].includes(current?.semantic_key);
+      const conversational=nonCommercial||current?.route_kind||!snapshot.viewed_episode_id||!current||current.id==='guide:inquiry';
       this.title.textContent=conversational?'Звернення':(snapshot.is_history?'Історія · ':'')+(snapshot.viewed_episode?.label||'Покупка '+(snapshot.viewed_episode?.sequence||''));
       this.mode.textContent=current&&current.label!==this.title.textContent?' · '+current.label+(current.interpreted_focus?' · за перепискою':''):'';
       this.traceKey.hidden=!incoming.transcript_reconstruction;this.traceKey.title=incoming.transcript_reconstruction?.freshness==='new_messages'?'Є нові повідомлення; шлях потребує оновлення':'Відновлено за текстовою перепискою';this.inlineKey.dataset.hasTrace=String(!this.traceKey.hidden);

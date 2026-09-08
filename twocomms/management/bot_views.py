@@ -57,6 +57,7 @@ from .services import bot_followups
 from .services import gemini_health, gemini_keys, gemini_probe, gemini_v2_read_model
 from .services.bot_payment_truth import (
     CONFIRMED_ORDER_PAYMENT_STATUSES,
+    active_client_order_payment_context,
     annotate_confirmed_purchase,
     annotate_verified_payment,
     client_has_confirmed_purchase,
@@ -4690,6 +4691,7 @@ def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
             )
         ).exists()
     payment_confirmation = current_payment_confirmation(c)
+    linked_order_payment_context = active_client_order_payment_context(c)
     commercially_confirmed = bool(payment_confirmation["confirmed"])
     purchase_history = historical_purchase_confirmation(c)
     payment_truth = (
@@ -4836,6 +4838,7 @@ def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
         "commercial_visual_state_label": commercial_visual_state_label,
         "commercial_visual_state_source": commercial_visual_state_source,
         "commercial_visual_state_note": commercial_visual_state_note,
+        "linked_order_payment_context": linked_order_payment_context,
         "purchase_history": purchase_history,
         "delivery_status": c.delivery_status,
         "delivery_status_label": c.get_delivery_status_display() if c.delivery_status else "",
@@ -4958,6 +4961,9 @@ def bot_clients_api(request):
         unassigned_at__isnull=True,
         order__payment_status__in=CONFIRMED_ORDER_PAYMENT_STATUSES,
     )
+    active_assigned_paid_orders = paid_order_assignments.order_by(
+        "-assigned_at", "-id"
+    )
     paid_order_attributions = IgOrderAttribution.objects.filter(
         client_id=OuterRef("pk"),
         order__payment_status__in=CONFIRMED_ORDER_PAYMENT_STATUSES,
@@ -5042,6 +5048,15 @@ def bot_clients_api(request):
             has_current_manager_confirmation=Exists(current_manager_reviews),
             has_current_paid_linked_order=(
                 Exists(paid_order_assignments) | Exists(paid_order_attributions)
+            ),
+            active_assigned_paid_order_id=Subquery(
+                active_assigned_paid_orders.values("order_id")[:1]
+            ),
+            active_assigned_paid_order_payment_status=Subquery(
+                active_assigned_paid_orders.values("order__payment_status")[:1]
+            ),
+            active_assigned_paid_order_source=Subquery(
+                active_assigned_paid_orders.values("order__source")[:1]
             ),
             has_current_episode_provider_payment=Exists(current_episode_deals),
             has_current_episode_manager_confirmation=Exists(current_episode_manager_reviews),

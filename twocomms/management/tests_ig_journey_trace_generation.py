@@ -39,6 +39,11 @@ class JourneyTraceGenerationTests(TestCase):
 
     @staticmethod
     def reply(prompt, user_text, **kwargs):
+        from management.services.ig_turn_lineage import current_context
+        lineage = current_context()
+        assert lineage["lane"] == "analysis" and lineage["client_id"]
+        assert lineage["source_message_id"] is None
+        assert lineage["logical_turn_id"].startswith("jt:")
         rows = json.loads(user_text)["conversation"]
         source = next(row for row in reversed(rows) if row["role"] in {"user", "manager"} and row["text"])
         return {"model": "gemini-test", "parsed": {"schema_version": 1, "steps": [{
@@ -96,7 +101,7 @@ class JourneyTraceGenerationTests(TestCase):
         self.assertEqual(result["status"], "recorded")
         self.assertEqual(self.provider.call_count, 1)
         kwargs = self.provider.call_args.kwargs
-        self.assertEqual(kwargs, {"role": "management", "reasoning_task": "conversation_reanalysis", "max_output_tokens": 4096})
+        self.assertEqual(kwargs, {"role": "management", "reasoning_task": "conversation_reanalysis", "max_output_tokens": 12288, "timeout": (8, 45), "deadline_seconds": 90})
         repeated = generate_journey_trace(self.buyer.pk, apply=True)
         self.assertEqual(repeated["status"], "existing")
         self.assertEqual(repeated["snapshot_id"], result["snapshot_id"])

@@ -399,6 +399,63 @@ def _query_client_has_confirmed_purchase(client) -> bool:
     ).exists()
 
 
+def active_client_order_payment_context(client) -> dict | None:
+    """Return one active paid order owned by the client, without episode meaning.
+
+    This is intentionally separate from :func:`current_payment_confirmation`.
+    An active ``IgOrderAssignment`` establishes operational ownership of an
+    order by a client; it does not establish that the order belongs to the
+    client's current commercial episode.  Consumers may show this as context,
+    but must not use it for payment automation, episode completion, or a
+    current-payment presentation.
+    """
+    if not client or not getattr(client, "pk", None):
+        return None
+
+    def payload(order_id, payment_status, source):
+        return {
+            "order_id": int(order_id),
+            # ``partial`` is the historical spelling of an order prepayment.
+            "payment_status": (
+                "paid" if payment_status == "paid" else "prepaid"
+            ),
+            "source": str(source or ""),
+            "scope": "client",
+        }
+
+    # Client-list rows carry these bounded correlated annotations.  Their
+    # presence, including a NULL id, must suppress a per-card fallback query.
+    if hasattr(client, "active_assigned_paid_order_id"):
+        order_id = getattr(client, "active_assigned_paid_order_id", None)
+        if not order_id:
+            return None
+        return payload(
+            order_id,
+            getattr(client, "active_assigned_paid_order_payment_status", ""),
+            getattr(client, "active_assigned_paid_order_source", ""),
+        )
+
+    from management.ig_bot_models import IgOrderAssignment
+
+    row = (
+        IgOrderAssignment.objects.filter(
+            client_id=client.pk,
+            unassigned_at__isnull=True,
+            order__payment_status__in=CONFIRMED_ORDER_PAYMENT_STATUSES,
+        )
+        .order_by("-assigned_at", "-id")
+        .values("order_id", "order__payment_status", "order__source")
+        .first()
+    )
+    if row is None:
+        return None
+    return payload(
+        row["order_id"],
+        row["order__payment_status"],
+        row["order__source"],
+    )
+
+
 def current_payment_confirmation(client) -> dict:
     """Current payment fact for list presentation, with canonical provenance.
 
