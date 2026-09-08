@@ -1,6 +1,6 @@
 /* Shared semantic shell: overview, anchored details and full-map dialog. */
 .twc-journey{--journey-ink:#e7edf6;--journey-muted:#a4b1c2;--journey-line:#64748b;--journey-bg:#10151e;color:var(--journey-ink);min-width:0;position:relative;font-family:inherit;padding:2px 0 0;}
-.twc-journey *{box-sizing:border-box;}
+.twc-journey,.twc-journey *{box-sizing:border-box;}
 .twc-journey [hidden]{display:none!important;}
 .twc-journey button,.twc-journey select{font-family:inherit;}
 .twc-journey button{cursor:pointer;}
@@ -37,7 +37,7 @@
 .twc-journey-step[data-current=true] .twc-journey-step-label{color:#f1f5f9;font-weight:600;}
 .twc-journey-status{position:absolute;right:-5px;bottom:-4px;width:13px;height:13px;border-radius:50%;display:grid;place-items:center;background:var(--journey-bg);color:var(--tone,#a4b1c2);box-shadow:0 0 0 2px var(--journey-bg);}
 .twc-journey .twc-journey-status svg{width:11px;height:11px;stroke-width:2;}
-.twc-journey-count{position:absolute;right:4px;top:4px;border:1px solid #48596d;border-radius:5px;font-size:9px;line-height:12px;padding:0 3px;background:var(--journey-bg);color:#d2deec;}
+.twc-journey-count{position:absolute;left:calc(50% + 12px);top:4px;border:1px solid #48596d;border-radius:5px;font-size:9px;line-height:12px;padding:0 3px;background:var(--journey-bg);color:#d2deec;white-space:nowrap;}
 .twc-journey .twc-journey-timer{position:absolute;width:38px;height:38px;left:-6px;top:-6px;transform:rotate(-90deg);pointer-events:none;stroke-width:2;}
 .twc-journey-timer-track{stroke:#fbbf241c;}
 .twc-journey-timer-remaining{stroke:#fbbf24;stroke-linecap:round;}
@@ -104,3 +104,7 @@
 .twc-journey-step[data-state=possible] .twc-journey-core{border-style:dashed;box-shadow:none;background:#10151e;color:#a4b1c2;}
 .twc-journey-step[data-state=possible] .twc-journey-step-label{font-weight:400;color:#a4b1c2;}
 .twc-journey-dialog .twc-journey-step-label{max-width:100px;}
+
+.twc-journey-dialog .twc-journey-step-label{white-space:normal;max-height:28px;line-height:14px;}
+.twc-journey-dialog .twc-journey-step{height:72px;}
+.twc-journey-timer-state{font-variant-numeric:tabular-nums;color:#fbbf24;}

@@ -550,6 +550,8 @@ def _guide_graph_nodes(nodes, milestones, focus):
             current=focus == key, summary=node["summary"], facts=facts, evidence_refs=refs,
             rank=rank, lane=1,
         ))
+        if node.get("waiting"):
+            result[-1]["waiting"] = node["waiting"]
     return result
 
 
@@ -769,6 +771,10 @@ def _bound_records(episode, nodes):
                   state=state, tone=tone)
             if review["status"] == "pending":
                 nodes["payment"]["summary"] = "Очікує перевірки менеджером"
+                nodes["payment"]["waiting"] = {
+                    "kind": "manager_review", "label": "Перевірка менеджером",
+                    "evidence_refs": [_ref("payment_review", review["id"])],
+                }
                 return_focus = "payment"
             else:
                 return_focus = None
@@ -781,6 +787,7 @@ def _bound_records(episode, nodes):
         order = Order.objects.filter(pk=episode["intended_order_id"]).only(
             "id", "status", "payment_status", "updated", "tracking_number",
             "tracking_status_code", "tracking_terminal_at", "tracking_provider_event_at",
+            "shipment_status", "shipment_status_updated", "tracking_checked_at",
         ).first()
         if order:
             ref = _ref("order", order.pk)
@@ -790,6 +797,14 @@ def _bound_records(episode, nodes):
                   state="complete" if delivered else "invalidated" if order.status == "cancelled" else "partial",
                   tone="success" if delivered else "warning" if order.status == "cancelled" else "neutral")
             nodes["fulfillment"]["summary"] = str(dict(Order.STATUS_CHOICES).get(order.status, "Невідомо"))
+            if order.tracking_number:
+                _fact(nodes["fulfillment"], "tracking_number", "Нова пошта · ТТН", str(order.tracking_number),
+                      source="intended_order.current", ref=ref, captured_at=_iso(order.updated), state="complete")
+                if order.shipment_status and order.tracking_status_code is not None:
+                    _fact(nodes["fulfillment"], "carrier_status", "Статус перевізника", str(order.shipment_status),
+                          source="intended_order.current", ref=ref,
+                          captured_at=_iso(order.tracking_provider_event_at or order.shipment_status_updated or order.tracking_checked_at),
+                          state="complete" if delivered else "partial", tone="success" if delivered else "neutral")
             _fact(nodes["payment"], "order_payment", "Статус у замовленні", str(dict(Order.PAYMENT_STATUS_CHOICES).get(order.payment_status, "Невідомо")),
                   source="intended_order.current", ref=ref, captured_at=_iso(order.updated),
                   state="complete" if order.payment_status == "paid" else "partial",

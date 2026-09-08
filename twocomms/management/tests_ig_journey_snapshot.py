@@ -164,7 +164,8 @@ class JourneySnapshotTests(TestCase):
         old = self.episode(current=False)
         order = Order.objects.create(full_name="Тест", phone="380500000000", city="Київ", np_office="1", total_sum="900.00",
                                      status="done", payment_status="paid", tracking_number="123", tracking_status_code=9,
-                                     tracking_terminal_at=timezone.now())
+                                     tracking_terminal_at=timezone.now(), shipment_status="Вручено одержувачу",
+                                     shipment_status_updated=timezone.now())
         review = IgPaymentConfirmationReview.objects.create(client=self.other, dedupe_key="wrong-owner")
         old.intended_order = order
         old.primary_payment_review = review
@@ -178,6 +179,23 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual([fact["id"] for fact in payment["facts"]], ["payment:order_payment"])
         self.assertEqual(payment["facts"][0]["source"], "intended_order.current")
         self.assertTrue(payment["facts"][0]["captured_at"])
+        graph_fulfillment = next(n for n in snapshot["graph"]["nodes"] if n["id"] == "guide:fulfillment")
+        facts = {fact["id"]: fact for fact in graph_fulfillment["facts"]}
+        self.assertEqual(facts["fulfillment:tracking_number"]["value"], "123")
+        self.assertEqual(facts["fulfillment:carrier_status"]["value"], "Вручено одержувачу")
+        self.assertTrue(facts["fulfillment:carrier_status"]["captured_at"])
+        self.assertNotIn("waiting", payment)  # Foreign review cannot create an obligation.
+
+    def test_owned_pending_review_exposes_waiting_without_invented_deadline(self):
+        episode = self.episode()
+        review = IgPaymentConfirmationReview.objects.create(client=self.buyer, dedupe_key="owned-wait")
+        episode.primary_payment_review = review
+        episode.save(update_fields=["primary_payment_review"])
+        snapshot = build_journey_snapshot(self.buyer)
+        node = next(n for n in snapshot["graph"]["nodes"] if n["id"] == "guide:payment")
+        self.assertEqual(node["waiting"]["kind"], "manager_review")
+        self.assertEqual(node["waiting"]["evidence_refs"], [{"kind": "payment_review", "id": review.pk}])
+        self.assertFalse(node.get("timers"))
 
     def test_raw_event_payload_and_unknown_actor_are_not_exposed(self):
         episode = self.episode(product_snapshot=[{"title": "https://example.test/private?token=SECRET", "size": "M"}])

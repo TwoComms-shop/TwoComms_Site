@@ -14,7 +14,7 @@
     ['prize_candidate',1,4,'gift','Приз'],
     ['prize_decision',2,4,'person','Рішення про приз'],
     ['information_question',1,-8,'info','Питання'],
-    ['information_resolved',3,-8,'message','Відповідь'],
+    ['information_resolved',3,-8,'message','Відповідь на питання'],
     ['collaboration',1,-3,'handshake','Співпраця'],
     ['collaboration_designer',2,-6,'image','Дизайнер'],
     ['collaboration_partnership',2,-5,'handshake','Партнерство'],
@@ -24,9 +24,9 @@
     ['collaboration_other',2,-1,'handshake','Інше'],
     ['business_decision',3,-3,'person','Рішення команди'],
     ['employment',1,-7,'work','Робота'],
-    ['employment_response',3,-7,'message','Відповідь'],
+    ['employment_response',3,-7,'work','Відповідь щодо роботи'],
     ['spam_confirmed',1,9,'cross','Спам'],
-    ['configured_line',3,0,'shirt','Склад'],
+    ['configured_line',3,0,'brief','Комплектація'],
     ['quoted_offer',4,0,'tag','Пропозиція'],
     ['awaiting_payment',5,0,'money','Очікування оплати'],
     ['payment_help',5,2,'question','Допомога'],
@@ -94,10 +94,10 @@
     const step = full ? 112 : (available - 32) / Math.max(1,ranks.length);
     for (const p of positions.values()) {
       p.x = (full ? 32 : 16) + step * (p.col + .5);
-      p.y = top + 22 + p.row * (full ? 64 : 50);
+      p.y = top + 22 + p.row * (full ? 84 : 50);
     }
     return {positions,width:full ? Math.max(available,64 + ranks.length * 112) : available,
-      height:positions.size ? top + (full ? 70 : 60) + maxRow * (full ? 64 : 50) : 64};
+      height:positions.size ? top + (full ? 82 : 60) + maxRow * (full ? 84 : 50) : 64};
   }
   function tidy(points) {
     const result = [];
@@ -160,7 +160,7 @@
     }
     return d+' L'+xy(points[points.length-1]);
   }
-  function routeEdges({nodes = [],edges = [],positions = new Map(),width = 560,height = 200} = {}) {
+  function routeEdges({nodes = [],edges = [],positions = new Map(),width = 560,height = 200,full = false} = {}) {
     const result=new Map(),byId=new Map(nodes.map(n=>[n.id,n]));
     const distinctX=[...new Set([...positions.values()].map(p=>p.x))].sort((a,b)=>a-b);
     const gap=distinctX.length>1?Math.min(...distinctX.slice(1).map((x,i)=>x-distinctX[i])):112;
@@ -169,7 +169,7 @@
     for(const [id,p] of positions){
       if(!byId.has(id))continue;
       boxes.push({left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23});
-      boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+39});
+      boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(full?53:39)});
     }
     let returnTrack=0;
     const minY=Math.min(...[...positions.values()].map(p=>p.y));
@@ -185,7 +185,7 @@
         if(one&&two&&!blocked(left,right,boxes))path=tidy([...one,right,...two]);
       }else if(a.col===b.col){
         const down=b.y>a.y;
-        start={x:a.x,y:a.y+(down?41:-25)};end={x:b.x,y:b.y+(down?-25:41)};
+        start={x:a.x,y:a.y+(down?(full?55:41):-25)};end={x:b.x,y:b.y+(down?-25:(full?55:41))};
         path=findPath(start,end,boxes,width,height);
       }else{
         start={x:a.x+25,y:a.y};end={x:b.x-25,y:b.y};
