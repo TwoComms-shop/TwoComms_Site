@@ -54,7 +54,7 @@ from management.models import IgFunnelNodeState
 
 logger = logging.getLogger(__name__)
 
-DEFINITION_VERSION = "funnel-node.v1"
+DEFINITION_VERSION = "funnel-node.v1.1"
 PROJECTOR_VERSION = "funnel-node-projector.v1"
 
 MODE_OFF = "off"
@@ -604,7 +604,7 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
         route("custom_brief", "Бриф", decision, "custom",
               authority="typed_custom_brief_producer", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("mockup_current_acceptance"),)),
         route("mockup_current_acceptance", "Актуальний макет", decision, "custom",
-              authority="versioned_mockup_acceptance", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("quoted_offer"),)),
+              authority="versioned_mockup_acceptance", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line", "current_mockup_accepted"),)),
         route("prize_candidate", "Призовий випадок", entry, "prize",
               authority="validated_prize_case", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(to("prize_decision", "manager_decision"),)),
         route("prize_decision", "Рішення про приз", decision, "prize",
@@ -644,7 +644,8 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
               authority="canonical_line_configuration", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("quoted_offer"),)),
         route("quoted_offer", "Актуальна пропозиція", join, "commerce",
               authority="versioned_offer_or_quote", evidence_policy=EvidencePolicy.MANAGER_DECISION, transitions=(
-                  to("awaiting_payment"), to("objection_case"), to("configured_line", "configuration_correction"),
+                  to("awaiting_payment", "payment_required"), to("objection_case"), to("configured_line", "configuration_correction"),
+                  to("settlement", "verified_entitlement_covers_total"),
               )),
         route("awaiting_payment", "Очікування оплати", decision, "payment",
               authority="current_invoice_or_payment_attempt", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(
@@ -662,9 +663,9 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
                   to("configured_line", "configuration_correction"), to("channel_consent", "eligible_opt_in"),
               )),
         route("fulfillment", "Виконання", join, "commerce",
-              authority="bound_order_and_shipment_truth", evidence_policy=EvidencePolicy.ORDER_FACT, transitions=(to("post_sale_case"), to("post_purchase_contact_offer"), to("repeat_interest"), to("channel_consent", "eligible_opt_in"))),
+              authority="bound_order_and_shipment_truth", evidence_policy=EvidencePolicy.ORDER_FACT, transitions=(to("post_sale_case"), to("channel_grant_checked", "permission_check"), to("repeat_interest"), to("channel_consent", "eligible_opt_in"))),
         route("objection_case", "Заперечення", cross, "objection",
-              authority="episode_line_bound_objection_case", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line", "new_selection"), to("quoted_offer", "amended_offer"), to("settlement", "new_attempt"))),
+              authority="episode_line_bound_objection_case", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line", "new_selection"), to("quoted_offer", "amended_offer"), to("awaiting_payment", "new_attempt"))),
         route("channel_consent", "Згода на канал", cross, "consent",
               authority="purpose_scoped_consent_and_permission", evidence_policy=EvidencePolicy.CONSENT_FACT, transitions=(to("channel_grant_checked", "consent_recorded"),)),
         route("channel_grant_checked", "Перевірка дозволу каналу", cross, "consent",
@@ -677,7 +678,7 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
               authority="post_sale_case_and_shipment_truth", evidence_policy=EvidencePolicy.ORDER_FACT, outcomes=("resolved", "rejected", "cancelled"),
               transitions=(to("configured_line", "new_need"),)),
         route("ugc_assessment", "Перевірка UGC", cross, "ugc",
-              authority="ugc_evidence_assessment", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(to("reward_entitlement"),)),
+              authority="ugc_evidence_assessment", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(to("reward_entitlement", "authorised_reward_grant"),)),
         route("reward_entitlement", "Право на нагороду", cross, "reward",
               authority="authorised_reward_entitlement", evidence_policy=EvidencePolicy.REWARD_FACT, transitions=(to("reward_delivery"),)),
         route("reward_delivery", "Видача нагороди", cross, "reward",
@@ -687,7 +688,9 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
         route("repeat_interest", "Новий інтерес", cross, "repeat",
               authority="explicit_repeat_evidence", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("new_purchase_interest"),)),
         route("new_purchase_interest", "Нова покупка", join, "repeat",
-              authority="new_commercial_episode", evidence_policy=EvidencePolicy.ORDER_FACT, transitions=(to("configured_line"),)),
+              authority="new_commercial_episode", evidence_policy=EvidencePolicy.ORDER_FACT, transitions=(
+                  to("catalog_discovery", "new_selection"), to("configured_line", "current_configuration_confirmed"),
+              )),
     )
 
 

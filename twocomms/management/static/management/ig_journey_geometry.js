@@ -3,14 +3,14 @@
   'use strict';
   const rows = [
     ['inbound',0,0,'message','Звернення'],
-    ['ad_resolved_product',1,0,'shirt','Відомий товар'],
-    ['catalog_discovery',2,0,'shirt','Підбір'],
+    ['ad_resolved_product',1,-.5,'shirt','Товар відомий'],
+    ['catalog_discovery',1,0,'shirt','Потрібен підбір'],
     ['photo_reference',1,2,'image','Фото'],
     ['availability_question',2,2,'question','Доступність'],
     ['custom_print',1,1,'image','Кастом'],
     ['dtf_only',1,3,'image','DTF-плівка'],
     ['custom_brief',2,1,'brief','Бриф'],
-    ['mockup_current_acceptance',3,1,'image','Макет'],
+    ['mockup_current_acceptance',3,1,'image','Макет принту'],
     ['prize_candidate',1,4,'gift','Приз'],
     ['prize_decision',2,4,'person','Рішення про приз'],
     ['information_question',1,-8,'info','Питання'],
@@ -53,7 +53,7 @@
   const returns = new Set(['configuration_correction','offer_correction','settlement_correction',
     'new_selection','amended_offer','new_attempt']);
   function visualFor(node = {}) {
-    if(node.id==='guide:offer'&&!node.semantic_key)return {rank:4.5,lane:0,icon:'link',short_label:'Посилання'};
+    if(node.id==='guide:offer'&&!node.semantic_key)return {rank:5,lane:0,icon:'link',short_label:'Посилання'};
     const guideAliases={'guide:selection':'catalog_discovery','guide:terms':'quoted_offer','guide:payment':'settlement','guide:fulfillment':'fulfillment','guide:inquiry':'inbound'};
     const exact = visuals.get(node.semantic_key) || visuals.get(guideAliases[node.id]);
     if (exact) return {...exact};
@@ -233,13 +233,25 @@
       boxes.push({left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23});
       boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(full?53:39)});
     }
-    let returnTrack=0;
+    let returnTrack=0;const labelBoxes=[];
     const minY=Math.min(...[...positions.values()].map(p=>p.y));
     for(const edge of [...edges].sort((a,b)=>String(a.id).localeCompare(String(b.id)))){
       const a=positions.get(edge.from_node_id),b=positions.get(edge.to_node_id);
       if(!a||!b||!byId.has(edge.from_node_id)||!byId.has(edge.to_node_id))continue;
       let start,end,path;
-      if(isReturn(edge,a,b)){
+      const sourceNode=byId.get(edge.from_node_id),targetNode=byId.get(edge.to_node_id);
+      const sourceKey=sourceNode.structural_key||sourceNode.semantic_key,targetKey=targetNode.structural_key||targetNode.semantic_key;
+      const helpPair=full&&a.col===b.col&&((sourceKey==='payment_help'&&targetKey==='awaiting_payment')||(sourceKey==='awaiting_payment'&&targetKey==='payment_help'));
+      if(helpPair){
+        // Opposite rails keep both arrowheads legible instead of painting two
+        // directions on the same vertical stroke through the wait label.
+        const side=sourceKey==='payment_help'?-1:1,rail=a.x+side*(halfLabel+14);
+        start={x:a.x+side*25,y:a.y};end={x:b.x+side*25,y:b.y};
+        const outerStart={x:rail,y:a.y},outerEnd={x:rail,y:b.y};
+        const one=findPath(start,outerStart,boxes,width,height),two=findPath(outerEnd,end,boxes,width,height);
+        if(one&&two&&!blocked(outerStart,outerEnd,boxes))path=tidy([...one,outerEnd,...two]);
+        else path=findPath(start,end,boxes,width,height);
+      }else if(isReturn(edge,a,b)){
         start={x:a.x,y:a.y-25};end={x:b.x,y:b.y-25};
         const corridor=Math.max(4,minY-32-8*returnTrack++);
         const left={x:a.x,y:corridor},right={x:b.x,y:corridor};
@@ -263,7 +275,17 @@
         if(p.y===q.y&&span>length){length=span;marker={x:(p.x+q.x)/2,y:p.y};}
       }
       if(!marker){const p=path[0],q=path[path.length-1];marker={x:(p.x+q.x)/2,y:(p.y+q.y)/2};}
-      result.set(edge.id,{d:pathData(path),markerX:marker.x,markerY:marker.y});
+      let conditionPosition=null;
+      if(helpPair&&edge.relation==='route'){
+        const side=sourceKey==='payment_help'?-1:1;
+        const vertical=path.slice(1).map((q,i)=>({p:path[i],q})).filter(({p,q})=>p.x===q.x&&Math.abs(p.y-q.y)>=34).sort((a,b)=>Math.abs(b.p.y-b.q.y)-Math.abs(a.p.y-a.q.y));
+        for(const {p,q}of vertical){
+          const x=p.x+side*43,y=(p.y+q.y)/2,box={left:x-37,right:x+37,top:y-9,bottom:y+9};
+          if(box.left<0||box.right>width||box.top<0||box.bottom>height||[...boxes,...labelBoxes].some(b=>box.left<b.right&&box.right>b.left&&box.top<b.bottom&&box.bottom>b.top))continue;
+          conditionPosition={x,y};labelBoxes.push(box);break;
+        }
+      }
+      result.set(edge.id,{d:pathData(path),markerX:marker.x,markerY:marker.y,conditionPosition});
     }
     return result;
   }

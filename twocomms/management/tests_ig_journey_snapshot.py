@@ -114,6 +114,26 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual(snapshot["history"]["edges"], [])
         self.assertEqual(snapshot["history"]["visits"][0]["node_id"], "payment")
         self.assertEqual(snapshot["graph"]["history"]["events"][0]["node_id"], "guide:payment")
+        payment = next(node for node in snapshot["graph"]["nodes"] if node["id"] == "guide:payment")
+        self.assertEqual(payment["recorded_visits"]["count"], 1)
+        self.assertEqual(payment["state"], "open")
+        self.assertEqual(snapshot["graph"]["coverage"]["semantic_transitions"], "missing_source")
+
+    def test_recorded_visits_count_only_owned_typed_events_without_mirrored_history(self):
+        episode = self.episode()
+        first = self.step(episode, "paylink_issued", is_backfilled=True)
+        second = self.step(episode, "paylink_viewed")
+        IgCommercialEpisodeEvent.objects.create(episode=episode, event_type="stage_transition")
+        self.step(self.episode(client=self.other), "paylink_issued")
+        snapshot = build_journey_snapshot(self.buyer)
+        offer = next(node for node in snapshot["graph"]["nodes"] if node["id"] == "guide:offer")
+        visits = offer["recorded_visits"]
+        self.assertEqual(visits["count"], 2)
+        self.assertTrue(visits["has_backfilled"])
+        self.assertFalse(visits["history_truncated"])
+        self.assertEqual({ref["id"] for ref in visits["evidence_refs"]}, {first.pk, second.pk})
+        self.assertEqual(offer["label"], "Посилання на оплату")
+        self.assertEqual(snapshot["graph"]["edges"], [])
 
     def test_price_quote_is_history_and_manager_is_not_provider_truth(self):
         episode = self.episode(payment_snapshot={

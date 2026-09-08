@@ -136,7 +136,23 @@ class RegistryStaticCheckTests(SimpleTestCase):
         self.assertIn(("channel_consent", "channel_grant_checked"), pairs)
         self.assertIn(("channel_grant_checked", "post_purchase_contact_offer"), pairs)
         self.assertIn(("post_purchase_contact_offer", "ugc_assessment"), pairs)
-        self.assertNotIn(("fulfillment", "channel_grant_checked"), pairs)
+        self.assertIn(("fulfillment", "channel_grant_checked"), pairs)
+        self.assertNotIn(("fulfillment", "post_purchase_contact_offer"), pairs)
+
+    def test_custom_repeat_and_entitlement_paths_keep_their_requirements(self):
+        paths = {(item.source_key, item.target_key): item.outcome for item in nodes.structural_transitions()}
+        self.assertEqual(paths["mockup_current_acceptance", "configured_line"], "current_mockup_accepted")
+        self.assertNotIn(("mockup_current_acceptance", "quoted_offer"), paths)
+        self.assertEqual(paths["new_purchase_interest", "catalog_discovery"], "new_selection")
+        self.assertEqual(paths["new_purchase_interest", "configured_line"], "current_configuration_confirmed")
+        self.assertEqual(paths["quoted_offer", "settlement"], "verified_entitlement_covers_total")
+        self.assertEqual(paths["quoted_offer", "awaiting_payment"], "payment_required")
+        self.assertEqual(paths["ugc_assessment", "reward_entitlement"], "authorised_reward_grant")
+
+    def test_new_payment_attempt_is_not_confirmed_settlement(self):
+        attempts = [item for item in nodes.structural_transitions()
+                    if item.source_key == "objection_case" and item.outcome == "new_attempt"]
+        self.assertEqual([item.target_key for item in attempts], ["awaiting_payment"])
 
     def test_semantic_transition_target_is_validated(self):
         broken = _registry(

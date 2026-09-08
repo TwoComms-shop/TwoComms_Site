@@ -28,8 +28,8 @@ LINE_LIMIT = 10
 ROUTE_DECISION_LIMIT = 24
 ROUTE_SOURCE_MESSAGE_LIMIT = 64
 GUIDE = (
-    ("inquiry", "Звернення"), ("selection", "Підбір/Бриф"),
-    ("terms", "Умови"), ("offer", "Пропозиція/Макет"),
+    ("inquiry", "Звернення"), ("selection", "Підбір товару"),
+    ("terms", "Умови пропозиції"), ("offer", "Посилання на оплату"),
     ("payment", "Розрахунок"), ("fulfillment", "Виконання"),
 )
 STEP_NODES = {
@@ -548,7 +548,7 @@ def _attempt_state(row):
     return GRAPH_ATTEMPT_STATE.get(row["result"], "partial")
 
 
-def _guide_graph_nodes(nodes, milestones, focus):
+def _guide_graph_nodes(nodes, milestones, focus, *, history_truncated=False):
     """Merge current snapshots and recorded milestones into one guide node each."""
     semantics = {"inquiry": "inbound", "terms": "quoted_offer",
                  "payment": "settlement", "fulfillment": "fulfillment"}
@@ -561,13 +561,24 @@ def _guide_graph_nodes(nodes, milestones, focus):
         if not facts:
             continue
         result.append(_graph_node(
-            f"guide:{key}", "Посилання на оплату" if key == "offer" else label,
+            f"guide:{key}", label,
             semantic_key=semantics.get(key), state=node["state"],
             current=focus == key, summary=node["summary"], facts=facts, evidence_refs=refs,
             rank=rank, lane=1,
         ))
         if node.get("waiting"):
             result[-1]["waiting"] = node["waiting"]
+        events = milestone.get("events", [])
+        if events:
+            dates = sorted(event["occurred_at"] for event in events if event["occurred_at"])
+            result[-1]["recorded_visits"] = {
+                "count": len(events), "first_at": dates[0] if dates else None,
+                "last_at": dates[-1] if dates else None,
+                "history_truncated": bool(history_truncated),
+                "has_backfilled": any(event["is_backfilled"] for event in events),
+                "evidence_refs": list({ref["id"]: ref for event in events
+                                       for ref in event["evidence_refs"]}.values()),
+            }
     return result
 
 
@@ -588,7 +599,8 @@ def _graph(episode, nodes, history, focus):
         ref = event["evidence_refs"]
         if event["id"].startswith("funnel_event:") and event["node_id"]:
             key = event["node_id"]
-            milestone = milestones.setdefault(key, {"refs": [], "facts": []})
+            milestone = milestones.setdefault(key, {"refs": [], "facts": [], "events": []})
+            milestone["events"].append(event)
             milestone["refs"].extend(ref)
             milestone["facts"].append({
                 "id": f"milestone:{event['id']}", "label": event["label"],
@@ -608,7 +620,7 @@ def _graph(episode, nodes, history, focus):
                           "relation": "episode_lifecycle", "outcome": str(EPISODE_STATE_LABELS[states["to"]]), "tone": "neutral",
                           "evidence_refs": ref, "event_ids": [event["id"]], "repeated_count": 1})
 
-    graph_nodes.extend(_guide_graph_nodes(nodes, milestones, focus))
+    graph_nodes.extend(_guide_graph_nodes(nodes, milestones, focus, history_truncated=history["has_more"]))
 
     from django.db.models import Count, Q
     from management.models import IgObjection
@@ -909,6 +921,9 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         graph = _graph_without_episode(client_id, nodes, focus)
     if conversation_route is not None:
         graph = _append_conversation_route_graph(graph, conversation_route)
+    graph["coverage"]["semantic_transitions"] = "partial" if any(
+        edge.get("relation") == "conversation_focus" for edge in graph["edges"]
+    ) else "missing_source"
     if episode and not is_history:
         from management.services.ig_journey_timers import invoice_timers
         payment_node = next((node for node in graph["nodes"] if node["id"] == "guide:payment"), None)
