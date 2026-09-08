@@ -47,6 +47,22 @@
   ];
   const visuals = new Map(rows.map(([key,rank,lane,icon,short_label]) =>
     [key,Object.freeze({rank,lane,icon,short_label})]));
+  // Full-map presentation bands. Neighboring cells are never implicit edges:
+  // collaboration's two rows fan out/in only through registry transitions.
+  const fullCells={
+    inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[1,4],
+    collaboration:[1,1],collaboration_designer:[2,0],collaboration_partnership:[3,0],
+    collaboration_dropship:[4,0],collaboration_wholesale_store:[2,1],
+    collaboration_creator:[3,1],collaboration_other:[4,1],business_decision:[5,1],
+    information_question:[1,2],information_resolved:[3,2],employment:[5,2],employment_response:[7,2],
+    configured_line:[4,4],quoted_offer:[5,4],awaiting_payment:[6,4],settlement:[7,4],fulfillment:[8,4],
+    custom_print:[1,5],dtf_only:[1,6],custom_brief:[2,5],mockup_current_acceptance:[3,5],
+    photo_reference:[1,7],availability_question:[2,7],prize_candidate:[1,8],prize_decision:[3,8],
+    payment_help:[6,6],objection_case:[5,7],post_sale_request:[1,9],post_sale_case:[9,5],
+    channel_consent:[8,6],channel_grant_checked:[9,6],post_purchase_contact_offer:[10,6],
+    ugc_assessment:[11,6],reward_entitlement:[11,7],reward_delivery:[10,7],reward_use:[9,7],
+    repeat_interest:[9,4],new_purchase_interest:[10,4],spam_confirmed:[0,9]
+  };
   const intentKeys = {catalog:'catalog_discovery',custom_print:'custom_print',dtf:'dtf_only',
     information:'information_question',employment:'employment',collaboration:'collaboration',
     support:'post_sale_request',community:'prize_candidate'};
@@ -136,7 +152,12 @@
   function layout({nodes = [],edges = [],width = 560,full = false} = {}) {
     const available = Math.max(80,Number.isFinite(width) ? width : 560);
     const unique = [...new Map(nodes.filter(n => n && typeof n.id === 'string').map(n => [n.id,n])).values()];
-    const ordered = unique.map(node => ({node,...visualFor(node)}))
+    const ordered = unique.map(node => {
+      const view=visualFor(node);
+      const aliases={'guide:inquiry':'inbound','guide:selection':'catalog_discovery','guide:terms':'quoted_offer','guide:offer':'awaiting_payment','guide:payment':'settlement','guide:fulfillment':'fulfillment'};
+      const cell=full&&fullCells[node.structural_key||node.semantic_key||aliases[node.id]];
+      return {node,...view,...(cell?{rank:cell[0],lane:cell[1]}:{})};
+    })
       .sort((a,b) => a.rank-b.rank || a.lane-b.lane || a.node.id.localeCompare(b.node.id));
     const ranks = [...new Set(ordered.map(n => n.rank))];
     const lanes = [...new Set(ordered.map(n => n.lane))].sort((a,b) => a-b);
@@ -152,7 +173,7 @@
     }
     const backwards = edges.filter(e => positions.has(e.from_node_id) && positions.has(e.to_node_id)
       && isReturn(e,positions.get(e.from_node_id),positions.get(e.to_node_id))).length;
-    const top = full ? 32 + backwards * 8 : 4 + Math.min(backwards,2) * 6;
+    const top = full ? 56 : 4 + Math.min(backwards,2) * 6;
     const step = full ? 112 : (available - 32) / Math.max(1,ranks.length);
     for (const p of positions.values()) {
       p.x = (full ? 32 : 16) + step * (p.col + .5);
@@ -253,10 +274,11 @@
         else path=findPath(start,end,boxes,width,height);
       }else if(isReturn(edge,a,b)){
         start={x:a.x,y:a.y-25};end={x:b.x,y:b.y-25};
-        const corridor=Math.max(4,minY-32-8*returnTrack++);
+        const corridor=full?Math.max(4,Math.min(a.y,b.y)-32-8*(returnTrack++%3)):Math.max(4,minY-32-8*returnTrack++);
         const left={x:a.x,y:corridor},right={x:b.x,y:corridor};
         const one=findPath(start,left,boxes,width,height),two=findPath(right,end,boxes,width,height);
         if(one&&two&&!blocked(left,right,boxes))path=tidy([...one,right,...two]);
+        else if(full)path=findPath(start,end,boxes,width,height);
       }else if(a.col===b.col){
         const down=b.y>a.y;
         start={x:a.x,y:a.y+(down?(full?55:41):-25)};end={x:b.x,y:b.y+(down?-25:(full?55:41))};

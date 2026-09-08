@@ -603,7 +603,7 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
               authority="typed_dtf_brief_producer", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("custom_brief"),)),
         route("custom_brief", "Бриф", decision, "custom",
               authority="typed_custom_brief_producer", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("mockup_current_acceptance"),)),
-        route("mockup_current_acceptance", "Актуальний макет", decision, "custom",
+        route("mockup_current_acceptance", "Узгодження макета принту", decision, "custom",
               authority="versioned_mockup_acceptance", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line", "current_mockup_accepted"),)),
         route("prize_candidate", "Призовий випадок", entry, "prize",
               authority="validated_prize_case", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(to("prize_decision", "manager_decision"),)),
