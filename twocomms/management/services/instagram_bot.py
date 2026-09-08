@@ -1864,7 +1864,15 @@ ANTI_HALLUCINATION_NOTE = (
     "Ніколи не стверджуй, що товару немає або що це «кастом/під замовлення», не "
     "звіривши з каталогом нижче. Якщо точного збігу не видно — НЕ відмовляй і НЕ "
     "вигадуй: запропонуй переглянути каталог або чемно уточни деталі (тип, колір, "
-    "принт, місто/напис на принті). Ціни, наявність і назви бери ЛИШЕ з каталогу."
+    "принт, місто/напис на принті). Ціни, наявність і назви бери ЛИШЕ з каталогу. "
+    "Спочатку визнач мету самого повідомлення: пропозиція роботи, співпраці або "
+    "послуг не стає запитом на покупку лише через згадку товарів чи замовлень. "
+    "Відповідай на вже зрозумілий запит без прохання повторити його. Наявність або "
+    "відсутність вакансій, умови праці й рішення про кандидата можна стверджувати "
+    "лише за актуальною явно наданою політикою команди; відсутність таких даних "
+    "означає невідомо, а не «вакансій немає». Не вигадуй вакансії, зарплату чи "
+    "відмову. За потреби запропонуй дозволену передачу питання команді, не "
+    "обіцяючи виконаного пересилання або строку відповіді без підтвердження."
 )
 
 SALES_AUTOMATION_GUARDRAILS = (
@@ -7602,7 +7610,7 @@ def _gemini_failure_kind(exc: Exception) -> str:
 
 
 def _response_validation_fallback(client=None, *, reasons=(), has_images=False) -> str:
-    """Return a claim-free clarification matched to finite rejection codes."""
+    """Describe a bounded validation failure without blaming the customer input."""
     locale = _assisted_checkout_locale(client) if client is not None else "uk"
     codes = {str(reason or "") for reason in reasons}
     if has_images and codes & {
@@ -7633,19 +7641,19 @@ def _response_validation_fallback(client=None, *, reasons=(), has_images=False) 
             "media": "I could not read every attached image clearly. Please resend the unclear part.",
             "status": "I cannot confirm that status from the available information. Please share the order reference or clarify which status you mean.",
             "configuration": "Please clarify the product, fit, size, and color so I can give the confirmed option and price.",
-            "request": "Please repeat the main detail you need, and I’ll answer using confirmed information.",
+            "request": "I’m sorry, I couldn’t prepare a reliable answer to your message just now.",
         },
         "ru": {
             "media": "Не удалось чётко прочитать все изображения. Пришлите, пожалуйста, неразборчивую часть ещё раз.",
             "status": "По доступным данным я не могу подтвердить этот статус. Пришлите номер заказа или уточните, какой статус вас интересует.",
             "configuration": "Уточните, пожалуйста, товар, крой, размер и цвет — тогда я назову подтверждённый вариант и цену.",
-            "request": "Повторите, пожалуйста, главную деталь запроса, и я отвечу по подтверждённым данным.",
+            "request": "Извините, сейчас мне не удалось подготовить корректный ответ на ваше сообщение.",
         },
         "uk": {
             "media": "Не вдалося чітко прочитати всі зображення. Надішліть, будь ласка, нерозбірливу частину ще раз.",
             "status": "За доступними даними я не можу підтвердити цей статус. Надішліть номер замовлення або уточніть, який статус вас цікавить.",
             "configuration": "Уточніть, будь ласка, товар, крій, розмір і колір — тоді я назву підтверджений варіант і ціну.",
-            "request": "Повторіть, будь ласка, головну деталь запиту, і я відповім за підтвердженими даними.",
+            "request": "Перепрошую, зараз мені не вдалося підготувати коректну відповідь на ваше повідомлення.",
         },
     }
     return copy.get(locale, copy["uk"])[key]
@@ -14404,6 +14412,9 @@ def _process_one_inside_reply_boundary(
         reply, control, controls_valid, follow_candidate = _normalize_generated_reply_details(reply)
         if not controls_valid:
             control["_invalid"] = True
+            # A technical fallback is not a successful sales answer. Keep
+            # automatic persuasion/reminders out of this failed interaction.
+            used_ai_failure_fallback = True
             log("warning", "invalid_model_controls", f"{row.sender_id}: controls discarded")
     if ugc_turn:
         from management.services.ig_ugc_assessment import safe_ugc_acknowledgement
@@ -15784,7 +15795,7 @@ def _process_one_inside_reply_boundary(
                     row.client,
                     reason="provider_native_ugc",
                 )
-            elif fallback_manager_handoff:
+            elif fallback_manager_handoff or needs_manager:
                 _apply_stage(row.client, IgClient.Stage.LEAD_TO_MANAGER)
                 bot_followups.cancel_pending(
                     row.client,

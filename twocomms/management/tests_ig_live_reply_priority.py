@@ -27,6 +27,21 @@ from management.services.ig_reply_truth import ReplyTruthContext
 from orders.models import Order
 
 
+class ValidationFailureCopyTests(SimpleTestCase):
+    def test_schema_failure_never_requests_the_received_message_again(self):
+        from types import SimpleNamespace
+
+        for language in ("uk", "ru", "en"):
+            with self.subTest(language=language):
+                reply = instagram_bot._response_validation_fallback(
+                    SimpleNamespace(language=language),
+                    reasons=("invalid_response_schema", "schema_invalid_control"),
+                ).casefold()
+                for forbidden in ("повтор", "repeat", "resend", "менеджер", "manager"):
+                    self.assertNotIn(forbidden, reply)
+                self.assertTrue(reply)
+
+
 class StructuredProviderBoundaryTests(TestCase):
     """Live chat opts into JSON while the shared provider wrapper stays compatible."""
 
@@ -393,6 +408,31 @@ class StructuredWorkerAuthorityBoundaryTests(TestCase):
             handled = instagram_bot.process_pending(self.settings, max_items=1)
         delivered = send_text.call_args.args[2] if send_text.call_args else None
         return source, handled, delivered
+
+    def test_schema_failure_does_not_schedule_a_sales_followup(self):
+        from management.services.ig_response_control import ValidatedResponse
+
+        client = self._client("schema-followup")
+        with patch(
+            "management.services.bot_followups.schedule_after_bot_reply",
+        ) as schedule, patch(
+            "management.services.bot_followups.cancel_pending",
+        ) as cancel, patch(
+            "management.services.instagram_bot._escalate_manager_for_row",
+        ) as escalate:
+            _source, handled, delivered = self._run(
+                client,
+                ValidatedResponse(
+                    reply_text=instagram_bot._response_validation_fallback(client),
+                    valid=False, error="invalid_response",
+                ),
+                suffix="schema-followup", text="Дякую, тихої ночі!",
+            )
+        self.assertEqual(handled, 1)
+        self.assertNotIn("Повтор", delivered)
+        schedule.assert_not_called()
+        escalate.assert_not_called()
+        self.assertTrue(any(call.kwargs.get("reason") == "ai_fallback_safe_reply" for call in cancel.call_args_list))
 
     def test_unapproved_phone_number_is_replaced_before_customer_send(self):
         client = self._client("phone-disclosure-blocked")

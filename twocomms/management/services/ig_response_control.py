@@ -252,7 +252,7 @@ STRUCTURED_RESPONSE_SCHEMA = {
                                 ],
                             },
                         },
-                        "required": ["source_image_index", "outcome"],
+                        "required": ["source_image_index", "outcome", "evidence_code", "type_code"],
                     },
                 },
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -289,8 +289,29 @@ def structured_response_instruction() -> str:
         "controls is required and is an array of at most 32 objects; every object "
         "has exactly kind and value. Allowed kind values: "
         + ", ".join(sorted(PROVIDER_CONTROL_KINDS))
-        + ". Boolean controls use JSON true; other values use the exact bounded "
-        "string, number, integer, or integer-array form requested by the prompt. "
+        + '. If no authorized action is needed, use controls: [], for example '
+        '{"reply_text":"Дякую за повідомлення.","controls":[]}. '
+        "Ordinary questions, vacancy inquiries and thanks do not require a control. "
+        "Never put bracket commands such as [MANAGER] or [STAGE:qualifying] in reply_text; "
+        "represent an authorized action only in controls. "
+        "manager, spam, order and catalog_link accept only JSON true. Omit an action "
+        "that does not apply; never use false, null or a string boolean for it. "
+        "Do not repeat a kind, except item and option. stage accepts only: "
+        + ", ".join(sorted(_STAGES - _HARD_STAGES))
+        + ". paid, order_created and done are server-owned stages. "
+        "paylink accepts only full or prepay. product and color_variant_id accept a "
+        "positive integer ID (up to 10 digits) from supplied facts; qty is a positive "
+        "integer of at most 4 digits. Integer IDs and qty may also be digit strings. "
+        "payment and price_quoted accept positive decimal amounts (JSON number or "
+        "decimal string, at most 9 integer digits and 2 decimal places), only when "
+        "authorized by supplied facts. size and fit are strings matching respectively "
+        + _SIZE_RE.pattern + " and " + _FIT_RE.pattern
+        + ". option is a string matching " + _OPTION_RE.pattern
+        + ". item is a string product_id|qty|size|fit, optionally followed by "
+        "|color_variant_id and then |option1;option2, using the same value rules; "
+        "size is required, fit may be empty. show_products is a non-empty array "
+        "of at most 12 positive integer catalog IDs (or their comma-separated string). "
+        "objhandle is a lowercase string matching " + _OBJHANDLE_RE.pattern + ". "
         "Never emit the legacy price control. For an exact current catalog quote, "
         "use price_quoted and include product plus every known size, fit, "
         "color_variant_id, and option value that determines that configuration. "
@@ -298,7 +319,8 @@ def structured_response_instruction() -> str:
         "restate it as price. "
         "follow_cta is optional; when included it has exactly include:boolean and "
         f"text:string ({_FOLLOW_MIN_LENGTH}-{_FOLLOW_MAX_LENGTH} characters). "
-        "turn_intelligence is optional unless this turn explicitly requires it. "
+        "Omit optional objects when unused; do not return null, false or an empty "
+        "object in their place. turn_intelligence is optional unless this turn explicitly requires it. "
         "When present it has catalog_candidates, transcript, intent, confidence, "
         "and optional audio_status and image_observations. catalog_candidates is an "
         "array of at most 8 objects with exactly product_id, confidence, evidence. "
@@ -309,8 +331,8 @@ def structured_response_instruction() -> str:
         "for example media_review. audio_status is not_applicable, transcribed, "
         "or unintelligible. "
         "image_observations is an array of at most 8 objects with source_image_index "
-        "(unique zero-based integer for an attached image) and outcome, plus "
-        "optional evidence_code and type_code. Allowed outcome: "
+        "(unique zero-based integer for an attached image), outcome, evidence_code "
+        "and type_code; all four fields are required. Allowed outcome: "
         + ", ".join(sorted(IMAGE_OBSERVATION_OUTCOMES))
         + ". Allowed evidence_code: "
         + ", ".join(sorted(IMAGE_EVIDENCE_CODES))

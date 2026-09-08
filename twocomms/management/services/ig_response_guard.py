@@ -9,6 +9,19 @@ from management.services.ig_reply_truth import validate_reply_truth
 from management.services.ig_response_control import parse_structured_response
 
 
+_SCHEMA_REPAIR_GUIDANCE = {
+    "invalid_json": "Return one JSON object, not a JSON string, Markdown or surrounding prose.",
+    "malformed_payload": "Use only reply_text, controls and applicable optional follow_cta/turn_intelligence objects. reply_text and the controls array are required.",
+    "invalid_reply_text": "reply_text must be a non-empty string of at most 4000 characters.",
+    "too_many_controls": "Use at most 32 authorized controls for the current turn.",
+    "control_token_in_reply_text": "Remove bracket commands from reply_text; express an authorized action only as a typed control.",
+    "malformed_control": "Every controls entry must be an object with exactly kind and value, not a legacy mapping or tag.",
+    "invalid_control": "Follow the required per-kind value contract. Boolean actions require JSON true; do not emit false/null placeholders. Use only permitted stage values, never paid/order_created/done. Do not invent a replacement action.",
+    "conflicting_control": "Each kind may occur only once, except item and option. Resolve the intended authorized action without conflicting or duplicate singleton controls.",
+    "invalid_turn_intelligence": "When turn_intelligence is required or provided, supply catalog_candidates, transcript, intent and confidence with their required types. intent is a lowercase ASCII identifier; confidence is 0..1. Each attached image observation requires a unique integer source_image_index plus valid outcome, evidence_code and type_code. Omit an unused optional object rather than emitting null or an empty object; never omit required image evidence.",
+}
+
+
 class ProviderResponseGuard:
     def __init__(self, *, context_factory, image_mimes=(), expected_content_hashes=None, require_intelligence=False, programme=None):
         self.context_factory = context_factory
@@ -29,7 +42,10 @@ class ProviderResponseGuard:
         self.last_reasons = ()
         response = parse_structured_response(parsed, prize_programme=self.programme)
         if not response.valid:
-            return self._decision(False, ("invalid_response_schema",))
+            reasons = ("invalid_response_schema",)
+            if response.error in _SCHEMA_REPAIR_GUIDANCE:
+                reasons += ("schema_" + response.error,)
+            return self._decision(False, reasons)
         if "price" in response.control:
             # No typed manager-approved offer exists yet. The legacy negotiated
             # price path accepts model/agent text and cannot authorize a reply.
@@ -81,11 +97,23 @@ class ProviderResponseGuard:
             result.setdefault("contents", []).append({
                 "role": "model", "parts": [{"text": previous}],
             })
+        guidance = [
+            text for code, text in _SCHEMA_REPAIR_GUIDANCE.items()
+            if "schema_" + code in reasons
+        ]
+        if "invalid_response_schema" in reasons:
+            guidance.append(
+                'Minimal shape when no action or intelligence is required: '
+                '{"reply_text":"Дякую за повідомлення.","controls":[]}. '
+                'This is a format example, not the answer to copy. Answer the original '
+                'customer turn and retain all required evidence and authorized actions.'
+            )
         result.setdefault("contents", []).append({
             "role": "user", "parts": [{"text": (
                 "Server validation rejected the previous proposed response. "
                 "Return one corrected JSON object for the original customer turn. "
                 "Failure codes: " + ", ".join(reasons[:12]) + ". "
+                + " ".join(guidance) + " "
                 "Use only application-provided facts; do not invent prices, payment, "
                 "shipment, discounts, links or completed actions. If a fact is "
                 "unconfirmed, state that briefly and offer the relevant next step. "
