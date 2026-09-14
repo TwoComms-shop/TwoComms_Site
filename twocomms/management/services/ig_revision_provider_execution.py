@@ -18,6 +18,7 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from management.models import GeminiRequest, GeminiRequestAttempt, IgClient, IgCustomerTurnRevision, InstagramBotMessage, InstagramBotSettings
+from management.services.ig_revision_burst_budget import economic_root, economic_family, economic_graphs
 
 
 MANIFEST_KEY = "provider_execution_manifest"
@@ -97,24 +98,11 @@ def _root(head):
 
 def provider_execution_reference(revision):
     """Copy this reference into every automatic child, without copying state."""
-    root = _root(revision)
+    root = economic_root(revision)
     if root is None:
         return {}
     manifest = (root.action_receipts or {}).get(MANIFEST_KEY)
     return {"root_revision_id": root.pk, "manifest_digest": manifest["digest"]} if manifest else {}
-
-
-def _family(root):
-    rows, pending = [root], [root.pk]
-    while pending:
-        children = list(IgCustomerTurnRevision.objects.filter(parent_id__in=pending, origin__in=("auto_refresh", "outage_recovery")).order_by("pk"))
-        if len(rows) + len(children) > MAX_LINEAGE_ROWS:
-            return []
-        if any(row.client_id != root.client_id or row.snapshot_digest != root.snapshot_digest or row.permission_epoch != root.permission_epoch for row in children):
-            return []
-        rows.extend(children)
-        pending = [row.pk for row in children]
-    return rows
 
 
 def _manifest(root):
@@ -129,9 +117,7 @@ def _manifest(root):
 
 
 def _graphs(root, family):
-    source_id = root.bundle_snapshot["sources"][-1]["message_id"]
-    keys = [f"ig-revision:{row.pk}" for row in family]
-    return GeminiRequest.objects.filter(source_message_id=source_id, client_id=root.client_id, lane="live", source_execution_key__in=keys).order_by("pk")
+    return economic_graphs(root, family)
 
 
 def _frozen_candidates(raw_plan):
@@ -189,7 +175,7 @@ def _disposition(candidate, attempts, repair):
 def inspect_revision_provider_execution(revision, *, now=None, lock_ledger=False):
     """Read-only continuation classification, also valid after claim expiry."""
     now = now or timezone.now()
-    root = _root(revision)
+    root = economic_root(revision)
     if root is None:
         return ProviderContinuation(reason="provider_lineage_invalid")
     manifest = _manifest(root)
@@ -201,7 +187,7 @@ def inspect_revision_provider_execution(revision, *, now=None, lock_ledger=False
         return ProviderContinuation(reason="provider_manifest_invalid")
     if timezone.is_naive(horizon) or now >= horizon:
         return ProviderContinuation(reason="provider_horizon_exhausted", root_revision_id=root.pk, manifest=manifest)
-    family = _family(root)
+    family = economic_family(root)
     if not family or revision.pk not in {row.pk for row in family}:
         return ProviderContinuation(reason="provider_lineage_invalid")
     reference = {"root_revision_id": root.pk, "manifest_digest": manifest["digest"]}
@@ -256,7 +242,7 @@ def revision_provider_continuation(revision_id, token, *, settings_id, settings_
         revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
         if not settings_row or not client or not revision:
             return ProviderContinuation(reason="provider_owner_missing")
-        root = _root(revision)
+        root = economic_root(revision)
         if not root:
             return ProviderContinuation(reason="provider_lineage_invalid")
         source_id = revision.bundle_snapshot.get("sources", [{}])[-1].get("message_id")
@@ -264,7 +250,7 @@ def revision_provider_continuation(revision_id, token, *, settings_id, settings_
             return ProviderContinuation(reason="revision_execution_invalid")
         manifest = _manifest(root)
         if not manifest:
-            if (root.action_receipts or {}).get(MANIFEST_KEY) or GeminiRequest.objects.filter(source_message_id=source_id, source_execution_key__in=[f"ig-revision:{row.pk}" for row in _family(root)]).exists():
+            if (root.action_receipts or {}).get(MANIFEST_KEY) or GeminiRequest.objects.filter(source_message_id=source_id, source_execution_key__in=[f"ig-revision:{row.pk}" for row in economic_family(root)]).exists():
                 return ProviderContinuation(reason="provider_manifest_missing")
             candidates = _frozen_candidates(candidate_plan)
             window = _normal_reply_window_deadline(root)
@@ -320,8 +306,8 @@ def admit_provider_dispatch_locked(graph, boundary, *, now):
     from management.services.ig_revision_recovery import _eligibility
 
     client = IgClient.objects.filter(pk=revision.client_id).first()
-    root = _root(revision)
-    family = _family(root) if root else []
+    root = economic_root(revision)
+    family = economic_family(root) if root else []
     if client is None or not family:
         return "provider_lineage_invalid"
     _state, ownership_reason = _eligibility(revision, client, family, now)
@@ -337,8 +323,8 @@ def admit_provider_dispatch_locked(graph, boundary, *, now):
         return "scarce_model_budget"
     repair_token = getattr(boundary, "provider_repair_token", "")
     if repair_token:
-        root = _root(revision)
-        anchor = _graphs(root, _family(root)).first()
+        root = economic_root(revision)
+        anchor = _graphs(root, economic_family(root)).first()
         reserved = next((value for key in (REPAIR_KEY, SALVAGE_KEY)
                          if isinstance(value := (anchor.candidate_outcomes or {}).get(key), dict)
                          and value.get("token") == repair_token), {})
@@ -346,7 +332,7 @@ def admit_provider_dispatch_locked(graph, boundary, *, now):
         if recovery_kind:
             if recovery_kind == "output_cap" and getattr(boundary, "response_generation", {}) != {"max_output_tokens": 4096, "thinking_level": "low"}:
                 return "provider_output_repair_policy_invalid"
-            attempts = list(GeminiRequestAttempt.objects.filter(request_graph__in=_graphs(root, _family(root)), provider_started_at__isnull=False).order_by("pk"))
+            attempts = list(GeminiRequestAttempt.objects.filter(request_graph__in=_graphs(root, economic_family(root)), provider_started_at__isnull=False).order_by("pk"))
             proof = _response_recovery_proof(recovery_kind, candidate, attempts, reasoning_task=graph.reasoning_task)
             expected = {"token": repair_token, "request_id": graph.request_id, "candidate_index": boundary.candidate_index,
                         "key_name": boundary.key_name, "model": boundary.model, "recovery_kind": recovery_kind,
@@ -378,15 +364,15 @@ def reserve_provider_repair(observer, *, key_name, model, candidate_index=0, rec
         candidate = next((row for row in continuation.candidate_plan if row["candidate_index"] == candidate_index and row["key_name"] == key_name and row["model"] == model), None)
         if not candidate or (not recovery_kind and candidate["skip_reason"] != "provider_model_schema_rejected") or (candidate["scarce"] and not continuation.scarce_remaining):
             return False
-        root = _root(revision)
-        anchor = _graphs(root, _family(root)).select_for_update().first()
+        root = economic_root(revision)
+        anchor = _graphs(root, economic_family(root)).select_for_update().first()
         marker_key = SALVAGE_KEY if recovery_kind == "semantic_salvage" else REPAIR_KEY
         if (anchor.candidate_outcomes or {}).get(marker_key):
             return False
         marker = {"token": secrets.token_hex(16), "request_id": graph.request_id, "candidate_index": candidate_index, "key_name": key_name, "model": model}
         if recovery_kind:
             original = next((row for row in continuation.manifest["candidates"] if row["candidate_index"] == candidate_index), {})
-            attempts = list(GeminiRequestAttempt.objects.filter(request_graph__in=_graphs(root, _family(root)), provider_started_at__isnull=False).order_by("pk"))
+            attempts = list(GeminiRequestAttempt.objects.filter(request_graph__in=_graphs(root, economic_family(root)), provider_started_at__isnull=False).order_by("pk"))
             proof = _response_recovery_proof(recovery_kind, candidate, attempts, reasoning_task=graph.reasoning_task)
             if not proof or original.get("skip_reason") or candidate["skip_reason"] not in {"provider_model_schema_rejected", "provider_candidate_wait"} or (recovery_kind == "semantic_salvage" and continuation.repair_remaining):
                 return False

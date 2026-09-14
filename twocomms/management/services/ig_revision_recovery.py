@@ -261,14 +261,15 @@ def execution_resume_is_current(revision, *, now=None):
     The receipt is immutable and its deadline cannot be renewed. Callers still
     apply the ordinary claim, permission, publication and financial CAS.
     """
-    from management.services.ig_revision_provider_execution import _root, _manifest, REFERENCE_KEY
+    from management.services.ig_revision_provider_execution import _manifest, REFERENCE_KEY
+    from management.services.ig_revision_burst_budget import economic_root
     from management.services.ig_revision_proposal import _generation_graph_matches
 
     now = now or timezone.now()
     receipt = (revision.action_receipts or {}).get(EXECUTION_RESUME_KEY) or {}
     proposal = revision.generation_proposal or {}
     generation = proposal.get("generation") or {}
-    root = _root(revision) if receipt else None
+    root = economic_root(revision) if receipt else None
     manifest = _manifest(root) if root else {}
     if not receipt or not manifest:
         return False
@@ -317,7 +318,8 @@ def execution_resume_is_current(revision, *, now=None):
 
 def _authorize_proposal_execution(revision, client, settings_row, *, now):
     """Issue once under settings -> client -> revision; no new graph or child."""
-    from management.services.ig_revision_provider_execution import _root, _manifest, REFERENCE_KEY
+    from management.services.ig_revision_provider_execution import _manifest, REFERENCE_KEY
+    from management.services.ig_revision_burst_budget import economic_root
     from management.services.ig_revision_outbox import PublicationBinding
 
     if (revision.action_receipts or {}).get(EXECUTION_RESUME_KEY):
@@ -339,7 +341,7 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now):
     code = _generation_proof(rows, client, settings_row)
     if code != "recovery_existing_proposal_requires_execution":
         return _set_state(revision, "manual", code or "recovery_success_result_missing")
-    root = _root(revision)
+    root = economic_root(revision)
     manifest = _manifest(root) if root else {}
     if not manifest:
         return _set_state(revision, "manual", "provider_manifest_missing")

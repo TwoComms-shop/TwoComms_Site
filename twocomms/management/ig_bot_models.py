@@ -8506,6 +8506,7 @@ class IgCustomerTurnRevision(models.Model):
                     "provider_execution_reference", "proposal_execution_resume",
                     "response_debt", "source_preference_fallback",
                     "source_transfer_in", "source_transfer_out", "sent_reply_projection",
+                    "burst_budget_in", "burst_budget_out",
                     "reply_projection_admission",
                     "technical_holding", "technical_holding_delivery",
                 }

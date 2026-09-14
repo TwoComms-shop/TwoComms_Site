@@ -1,10 +1,11 @@
-"""Bounded ownership transfer for a new inbound before provider execution.
+"""Bounded ownership transfer for an ordinary new inbound before delivery.
 
 The caller holds the client and active predecessor locks. This module neither
-answers messages nor closes legacy turns or manager cases. Provider-generation
-budget transfer and historical debt reconciliation are separate consumers.
+answers messages nor closes legacy turns or manager cases. Active generation
+shares its existing economics only through a validated paired burst-budget
+link; historical debt reconciliation remains a separate consumer.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from management.models import (
     GeminiRequest, IgCustomerTurnRevision, IgFollowUpTask, IgTurnRevisionSource,
@@ -37,13 +38,14 @@ class SourceTransferPlan:
     root_revision_id: int = 0
     reason: str = ""
     source_refs: tuple = ()
+    budget_binding: dict = field(default_factory=dict)
 
     @property
     def ready(self):
         return bool(self.payloads) and not self.reason
 
 
-def validate_source_transfer(revision):
+def validate_source_transfer(revision, *, revision_rows=None, sources_by_revision=None):
     """Read back the exact paired handoff, without claiming it was fulfilled."""
     from management.services.ig_turn_revisions import _digest
 
@@ -52,9 +54,11 @@ def validate_source_transfer(revision):
         return False
     if receipt.get("digest") != _digest({key: value for key, value in receipt.items() if key != "digest"}):
         return False
-    previous = IgCustomerTurnRevision.objects.filter(pk=receipt.get("predecessor_revision_id"), client_id=revision.client_id).first()
+    previous_id = receipt.get("predecessor_revision_id")
+    previous = (revision_rows.get(previous_id) if revision_rows is not None else
+                IgCustomerTurnRevision.objects.filter(pk=previous_id, client_id=revision.client_id).first())
     if (previous is None or revision.parent_id != previous.pk
-        or receipt.get("client_id") != revision.client_id
+        or previous.client_id != revision.client_id or receipt.get("client_id") != revision.client_id
         or receipt.get("successor_revision_id") != revision.pk
         or (previous.action_receipts or {}).get(TRANSFER_OUT) != receipt
         or receipt.get("outcome") != "transferred"
@@ -64,16 +68,20 @@ def validate_source_transfer(revision):
     refs = receipt.get("source_refs") or []
     previous_refs = [{"message_id": row.message_id, "source_digest": row.source_digest,
                       "predecessor_source_id": row.pk}
-                     for row in previous.sources.order_by("ordinal", "id")]
-    current_rows = list(revision.sources.order_by("ordinal", "id"))
+                     for row in (sources_by_revision.get(previous.pk, ()) if sources_by_revision is not None
+                                 else previous.sources.order_by("ordinal", "id"))]
+    current_rows = (sources_by_revision.get(revision.pk, ()) if sources_by_revision is not None
+                    else list(revision.sources.order_by("ordinal", "id")))
     if (not refs or refs != previous_refs
         or receipt.get("source_message_ids") != [row["message_id"] for row in refs]
         or receipt.get("successor_source_message_ids") != [row.message_id for row in current_rows]
         or [(row.message_id, row.source_digest) for row in current_rows[:len(refs)]]
         != [(row["message_id"], row["source_digest"]) for row in refs]):
         return False
-    root = IgCustomerTurnRevision.objects.filter(pk=receipt.get("root_revision_id"), client_id=revision.client_id).first()
-    return bool(root and root.origin == "inbound" and all(
+    root_id = receipt.get("root_revision_id")
+    root = (revision_rows.get(root_id) if revision_rows is not None else
+            IgCustomerTurnRevision.objects.filter(pk=root_id, client_id=revision.client_id).first())
+    return bool(root and root.client_id == revision.client_id and root.origin == "inbound" and all(
         receipt.get(key) == getattr(revision, attribute).isoformat()
         == getattr(previous, attribute).isoformat() == getattr(root, attribute).isoformat()
         for key, attribute in (("first_unanswered_at", "quiet_started_at"),
@@ -118,13 +126,21 @@ def plan_source_transfer(head, client, fresh_messages, *, now):
     if head.delivery_effects.exists():
         return denied("delivery_already_planned")
     receipts = head.action_receipts or {}
-    # Even definite provider failures need the shared generation budget adapter;
-    # a changed snapshot must not silently mint a second HTTP/repair budget.
-    if (head.generation_proposal_digest or "provider_execution_manifest" in receipts
-        or "provider_execution_reference" in receipts
-        or GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{head.pk}").exists()):
-        return denied("provider_generation_started")
-    if set(receipts) - {TRANSFER_IN, "input_decision", "generation_admission"}:
+    if head.generation_proposal_digest:
+        return denied("generation_already_proposed")
+    budget_binding = {}
+    provider_started = ("provider_execution_manifest" in receipts or "provider_execution_reference" in receipts
+                        or GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{head.pk}").exists())
+    if provider_started:
+        from management.services.ig_revision_burst_budget import transfer_budget_binding
+
+        # Acquire the shared provider mutex before the select_related source
+        # locks below: MariaDB also locks the joined message rows.
+        budget_binding = transfer_budget_binding(head)
+        if not budget_binding:
+            return denied("provider_budget_unproven")
+    if set(receipts) - {TRANSFER_IN, "input_decision", "generation_admission", "commerce_reduction",
+                        "provider_execution_manifest", "provider_execution_reference", "burst_budget_in"}:
         return denied("existing_action_ownership")
     if receipts.get("input_decision") and receipts["input_decision"].get("origin") != "generate":
         return denied("existing_input_disposition")
@@ -145,13 +161,32 @@ def plan_source_transfer(head, client, fresh_messages, *, now):
             or row.source_digest != _digest({key: value for key, value in payload.items() if key != "source_digest"})
             or _source_payload(message, previous=row, ordinal=row.ordinal)["source_digest"] != row.source_digest):
             return denied("predecessor_source_changed_or_terminal")
+    commerce = receipts.get("commerce_reduction")
+    if commerce:
+        from management.models import IgCommerceTurnDecision
+
+        decisions = commerce.get("decisions") or []
+        expected = [{"source_message_id": row.message_id, "source_digest": row.source_digest} for row in rows]
+        if (commerce.get("version") != "revision-commerce-v1" or commerce.get("snapshot_digest") != head.snapshot_digest
+            or [{key: item.get(key) for key in ("source_message_id", "source_digest")} for item in decisions] != expected):
+            return denied("commerce_source_receipt_invalid")
+        for item in decisions:
+            decision = IgCommerceTurnDecision.objects.select_related("transition").filter(
+                pk=item.get("decision_id"), source_message_id=item["source_message_id"], delivery_required=False,
+            ).first()
+            if (decision is None or item.get("transition_id") != decision.transition_id
+                or item.get("accepted") != bool(decision.accepted) or item.get("is_stale") != bool(decision.is_stale)
+                or item.get("action") != (decision.transition.action if decision.transition_id
+                    else str((decision.result_payload or {}).get("reason") or "observed"))):
+                return denied("commerce_source_receipt_invalid")
     namespaces = {row.source_namespace for row in rows} | {str(row.provider_namespace or "") for row in fresh_messages}
     same_legacy_turn = all(row.turn_membership.turn_id == head.turn_id for row in fresh_messages)
     if len(namespaces) != 1 or (not next(iter(namespaces), "") and not same_legacy_turn):
         return denied("source_namespace_unproven")
     refs = tuple({"message_id": row.message_id, "source_digest": row.source_digest,
                   "predecessor_source_id": row.pk} for row in rows)
-    return SourceTransferPlan(tuple(payloads), (receipts.get(TRANSFER_IN) or {}).get("root_revision_id", head.pk), source_refs=refs)
+    return SourceTransferPlan(tuple(payloads), (receipts.get(TRANSFER_IN) or {}).get("root_revision_id", head.pk),
+                              source_refs=refs, budget_binding=budget_binding)
 
 
 def record_source_transfer(previous, successor, plan):
@@ -182,3 +217,7 @@ def record_source_transfer(previous, successor, plan):
     previous.save(update_fields=["action_receipts", "state", "claim_token", "claimed_at", "lease_until", "updated_at"])
     if not validate_source_transfer(successor):
         raise ValueError("source_transfer_receipt_invalid")
+    if plan.budget_binding:
+        from management.services.ig_revision_burst_budget import record_budget_transfer
+
+        record_budget_transfer(previous, successor, plan.budget_binding)

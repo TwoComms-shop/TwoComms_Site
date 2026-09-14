@@ -1056,6 +1056,15 @@ def begin_request(
             try:
                 with transaction.atomic():
                     locked_message = None
+                    if source_execution_key.startswith("ig-revision:"):
+                        from management.services.ig_revision_burst_budget import lock_economic_source
+
+                        if not lock_economic_source(revision_execution.revision_id) or not _revision_execution_valid(
+                            revision_execution, source_message_id=source_message_id,
+                            client_id=lineage.get("client_id"), lane=resolved_lane,
+                            logical_turn_id=logical_turn_id,
+                        ):
+                            return blocked_observer("revision_execution_invalid")
                     if source_message_id:
                         locked_message = (
                             InstagramBotMessage.objects.select_for_update()
@@ -1753,6 +1762,12 @@ class RequestObserver:
             lane = str(identity_row["lane"] or "")
             source_execution_key = identity_row["source_execution_key"]
         locked_message = None
+        if str(source_execution_key or "").startswith("ig-revision:"):
+            from management.services.ig_revision_burst_budget import lock_economic_source
+
+            revision_id = int(source_execution_key.rsplit(":", 1)[1])
+            if not lock_economic_source(revision_id):
+                return None, None
         if source_message_id:
             locked_message = (
                 InstagramBotMessage.objects.select_for_update()
@@ -2276,7 +2291,13 @@ class RequestObserver:
                     failure_kind=failure_kind,
                 )
                 if succeeded:
-                    self.record_remaining("winner_found")
+                    from management.models import GeminiRequest
+
+                    outcome = GeminiRequest.objects.filter(pk=self.graph_id).values(
+                        "winner_attempt_id", "terminal_reason",
+                    ).first() or {}
+                    self.record_remaining("winner_found" if outcome.get("winner_attempt_id")
+                                          else outcome.get("terminal_reason") or "revision_execution_revoked")
                 return result
             except OperationalError as exc:
                 last_error = exc
@@ -2463,7 +2484,17 @@ class RequestObserver:
             else:
                 outcomes[outcome_key] = [existing_outcome, outcome_payload]
             graph.candidate_outcomes = outcomes
-            if succeeded and graph.winner_attempt_id is None:
+            winner_current = True
+            if succeeded and str(graph.source_execution_key or "").startswith("ig-revision:"):
+                winner_current = _revision_execution_valid(
+                    self._revision_execution, source_message_id=graph.source_message_id,
+                    client_id=graph.client_id, lane=graph.lane, logical_turn_id=graph.logical_turn_id,
+                )
+                if not winner_current and graph.winner_attempt_id is None:
+                    graph.terminal_resolution = "failed"
+                    graph.terminal_reason = "revision_execution_revoked"
+                    graph.resolved_at = now
+            if succeeded and winner_current and graph.winner_attempt_id is None:
                 graph.winner_attempt = attempt
                 graph.terminal_resolution = "succeeded"
                 graph.terminal_reason = "provider_success"
