@@ -641,13 +641,19 @@ def plan_revision_effects(
         # Ownership of automatic reply counters starts with this new physical
         # plan, never with a later observation of old SENT rows. Existing-plan
         # replay returned above, so deployment cannot admit historical plans.
-        from management.services.ig_revision_reply_projection import ADMISSION_KEY, admission_binding
+        from management.services.ig_revision_reply_projection import (
+            ADMISSION_KEY, admission_binding, funnel_admission_binding,
+        )
 
         if ADMISSION_KEY in (revision.action_receipts or {}):
             raise ValueError("reply_projection_admission_without_plan")
         revision.action_receipts = {**(revision.action_receipts or {}), ADMISSION_KEY: {
             **admission_binding(revision, plan_digest=plan_digest, settings_id=settings_id),
             "admitted_at": (now or timezone.now()).isoformat(),
+            "funnel": funnel_admission_binding(
+                revision, client, plan_digest=plan_digest, settings_id=settings_id,
+                actor=actor, purpose=purpose, fact_bindings=facts, offer_bindings=offers,
+            ),
         }}
         revision.save(update_fields=["action_receipts", "updated_at"])
         return EffectPlanResult(

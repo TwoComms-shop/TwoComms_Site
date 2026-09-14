@@ -7,11 +7,13 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from management.models import IgClient, InstagramBotMessage, InstagramBotSettings
+from management.bot_access import VIEW_IG_CONVERSATION_PII_PERMISSION
 from management.services import instagram_bot
 
 
@@ -27,6 +29,10 @@ class IgFunnelAnalyticsApiTests(TestCase):
             password="test",
             is_staff=True,
         )
+        app_label, codename = VIEW_IG_CONVERSATION_PII_PERMISSION.split(".", 1)
+        self.staff.user_permissions.add(Permission.objects.get(
+            content_type__app_label=app_label, codename=codename,
+        ))
         self.client.force_login(self.staff)
 
     def test_stats_exposes_event_cohort_instead_of_only_stage_snapshot(self):

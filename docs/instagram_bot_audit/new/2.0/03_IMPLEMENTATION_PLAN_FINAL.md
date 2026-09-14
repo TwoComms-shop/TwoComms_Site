@@ -42,13 +42,23 @@
 
 При смене агента: прочитать D072 в разделе 0, контракты C16–C19, evidence/приёмку раздела 6 и соответствующие задачи раздела 3; сверить рабочее дерево и production, затем начать первый доступный срез. Не повторять старые назначения агентов и probes из исторических заметок. Анкета из 300 вопросов не требуется. Возможности поставщика проверять в первичном источнике и на разрешённом тестовом аккаунте.
 
-### D078 · подтверждённая первая содержательная реплика в исходном episode — подготовка после D077
+### D079 · здоровье рабочих очередей по состоянию и прогрессу — в работе
+
+Astra/high d073_preference_withdrawal READ_ONLY проверяет operational health для B03.20. Raw release-drain counts сохраняются совместимыми; штатное ожидание и известный ручной долг не означают остановку daemon. Нужны отдельные runnable/processing/deferred/manual/failed/UNKNOWN категории и возраст отсутствия прогресса по существующим lanes, без нового scheduler или writes/provider calls из GET health. run_instagram_bot.py содержит stagedD071 и не редактируется в этом срезе. Root утвердил EDIT_SCOPED: новый ig_lane_health.py, только health endpoint в bot_views.py, новые tests_ig_lane_health.py и необходимые health fixtures. No schema/daemon/scheduler изменений; неизвестную coverage не выдавать за healthy.
+
+### D080 · явная просьба помочь с выбором — подтверждённый языковой пробел
+
+D078 fixtures обнаружили: «Підберіть футболку, будь ласка» не получает requested_selection, хотя «Допоможіть підібрати футболку» получает. Нужен отдельный source-bound разбор явных просьб UK/RU/EN, с отказами, цитатами, третьим лицом и unsolicited media как отрицательным корпусом; не разрешать модельному topic label выдавать sales authority. Проверить также negated selection, а не только negated purchase. Приёмка через guard/live/followup, цена/наличие/checkout остаются отдельными authority. D078 не расширяет классификатор; пока это ограничение coverage.
+
+### D078 · подтверждённая первая содержательная реплика в исходном episode — принят к выпуску
 
 Astra/high d073_semantic_review EDIT_SCOPED: новый versioned original-episode/source/plan stamp в admission, whole-SENT consumer и event-time analytics. Только first substantive reply; price-quoted требует отдельного immutable server-validated quote до send и пока не объявляется готовым. Не менять этапы, не открывать episode при позднем consumer и не запускать implicit drop-off recovery. Старые receipts без binding остаются B03.21. Для позднего более раннего ответа append-only correction, глобальный earliest выбирается до since/until; обычный очередной ответ не создаёт новую «первую» реплику.
 
 Область: outbox, reply_projection, funnel_analytics, scoped tests. Root отдельно подключает canonical event reader в ig_journey_snapshot: в нём уже3stagedD071строки, которые нельзя включить в выпуск или потерять; agent этот файл не редактирует. Отдельная clean приёмка после D076/D077: multipart/idempotence, reset между send/projection, wrong episode, earlier receipt arriving last across report windows, holding/followup/noncommerce exclusion, crashretry без второго send. Это начало B03.19 event producer, а не завершение всего блока/полной истории.
 
-### D077 · исчезнувшая резервная квота между проверкой и HTTP — принят к выпуску
+**Приёмка D078:**76 focused tests (14new+23projection+39analytics) и898 root clean tests89.517s PASS, один ожидаемый SQLite row-lock skip;2 независимых adversarial tests проверили четыре out-of-order receipts и повреждённый optional binding без потери transcript/count. Analytics staff fixture получила уже обязательное PII permission, production auth не менялась. Journey reader фильтрует canonical earliest до count/pagination;3stagedD071 строки исключены из чистой копии и сохраняются локально. Следующее действие scoped commit/push/SSH, release SHA фиксируется после проверки.
+
+### D077 · исчезнувшая резервная квота между проверкой и HTTP — выпущен
 
 **Подтверждённый поздний counterexample после D075:** Lite empty×2→3.6 empty×1; lookahead видит доступную3.7, затем её quota либо последний key lease занимают до actualHTTP. 3.7 не вызвана, а отложенный3.6/API2 не пересматривается; root ошибочно exhausted при5HTTP/1scarce remaining и доказанно доступной3.6. Это отдельное изменение условий после read, не тот covered case, где alternative уже недоступна при lookahead. READ_ONLY d073_preference_withdrawal воспроизвёл оба случая настоящим gateway+durable observer без внешнегоHTTP.
 
@@ -56,7 +66,7 @@ Astra/high d073_semantic_review EDIT_SCOPED: новый versioned original-episo
 
 **Второй подтверждённый checkpoint:** root уже сделал Lite×2+3.6empty, затем refresh/restart до следующегоHTTP. Продолжение с1scarce осталось начинать с3.6/API2 и не давало3.7 попытку. D077 читает из исходных durable attempts точное последнее failedHTTP200/empty на scarce profile (model+attempt ID), чтобы принять решение до новогоHTTP; метаданные не возвращают charges и не сбрасывают repair, safety или permissions. Проверить тот же bounded return, если альтернативе достался lease/quota до отправки.
 
-**Приёмка D077:**112 owner/neighbor tests +824 root clean tests87.269s, один ожидаемый SQLite row-lock skip (D076 InnoDB приёмка выше);2 независимых adversarial tests0.628s подтвердили refresh→late lease loss и свежий terminal safety поверх старого EMPTY hint.4functional paths, без новой схемы/бюджетов. Следующий шаг commit/push/SSH; до подтверждения сервера не считать выпущенным.
+**Приёмка D077:**112 owner/neighbor tests +824 root clean tests87.269s, один ожидаемый SQLite row-lock skip (D076 InnoDB приёмка выше);2 независимых adversarial tests0.628s подтвердили refresh→late lease loss и свежий terminal safety поверх старого EMPTY hint.4functional paths, без новой схемы/бюджетов. Выпуск `84c7faad921feeda10524f76b7332932fc1b888b`: commit/push/main SSH pull, Django check, web restart sentinel и supervisor+child healthy на том же SHA подтверждены14.09. Не пересылались старые клиентские сообщения.
 
 ### D076 · активный burst без потери источников и нового бюджета — выпущен
 

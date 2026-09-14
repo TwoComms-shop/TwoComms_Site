@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from django.db import transaction
+from django.db import connection, transaction
 
 from management.models import (
     IgClient, IgCustomerTurnRevision, IgRevisionDeliveryEffect,
@@ -15,6 +15,7 @@ from management.services.ig_revision_outbox import _digest
 RECEIPT_KEY = "sent_reply_projection"
 ADMISSION_KEY = "reply_projection_admission"
 VERSION = "revision-sent-reply-projection-v1"
+FUNNEL_VERSION = "revision-first-reply-admission-v1"
 
 
 class ReplyProjectionError(RuntimeError):
@@ -26,6 +27,97 @@ def admission_binding(revision, *, plan_digest, settings_id):
     return {"version": VERSION, "revision_id": revision.pk,
             "snapshot_digest": revision.snapshot_digest, "plan_digest": plan_digest,
             "settings_id": settings_id}
+
+
+def funnel_admission_binding(revision, client, *, plan_digest, settings_id,
+                             actor, purpose, fact_bindings=(), offer_bindings=()):
+    """Capture optional historical ownership while the plan holds the client lock.
+
+    This never creates an episode or grants permission to send. Missing evidence
+    disables this projection while the ordinary reply may still proceed.
+    """
+    from management.models import IgCommercialEpisode
+    from management.services.ig_turn_intent import build_turn_intent
+
+    if not connection.in_atomic_block:
+        raise RuntimeError("funnel_admission_requires_client_transaction")
+    sources = [{"message_id": row.get("message_id"), "source_digest": row.get("source_digest")}
+               for row in (revision.bundle_snapshot or {}).get("sources", ())]
+    episode = IgCommercialEpisode.objects.filter(
+        pk=client.current_commercial_episode_id, client_id=client.pk,
+    ).first()
+    authority_episodes = sorted({row.get("episode_id") for row in (*fact_bindings, *offer_bindings)
+                                 if type(row.get("episode_id")) is int and row["episode_id"] > 0})
+    decision = build_turn_intent(client, revision)
+    reason = ""
+    if actor != "bot" or purpose != "normal_reply":
+        reason = "not_normal_bot_reply"
+    elif not decision.get("commerce_evidence_refs") or "retail_consultation" not in decision.get("allowed_response_acts", ()):
+        reason = "noncommercial_source_purpose"
+    elif episode is None or episode.open_slot != 1:
+        reason = "original_episode_missing"
+    elif authority_episodes and authority_episodes != [episode.pk]:
+        reason = "original_episode_authority_mismatch"
+    binding = {
+        "version": FUNNEL_VERSION, "revision_id": revision.pk, "client_id": client.pk,
+        "snapshot_digest": revision.snapshot_digest, "plan_digest": plan_digest,
+        "settings_id": settings_id, "source_refs": sources,
+        "permission_epoch": revision.permission_epoch,
+        "episode_id": episode.pk if episode else None,
+        "episode_sequence": episode.sequence if episode else None,
+        "stage": str(client.stage), "authority_episode_ids": authority_episodes,
+        "source_purpose": decision.get("purpose"),
+        "commerce_evidence_refs": decision.get("commerce_evidence_refs", []),
+        "cycle_key": decision.get("cycle_key", ""),
+        "reset_floor": decision.get("reset_floor", 0),
+        "outcome": "unsupported" if reason else "admitted", "reason": reason,
+    }
+    return {**binding, "digest": _digest(binding)}
+
+
+def _project_first_reply(revision, first, *, eligible, binding, sent_at):
+    from management.models import IgCommercialEpisode
+    from management.services.ig_funnel_analytics import record_receipt_first_reply_in_transaction
+
+    unsupported = lambda reason: {"outcome": "unsupported", "reason": reason}
+    admission = ((revision.action_receipts or {}).get(ADMISSION_KEY) or {}).get("funnel")
+    if admission is None:
+        return unsupported("original_episode_binding_not_projected")
+    if (not isinstance(admission, dict) or admission.get("version") != FUNNEL_VERSION
+        or admission.get("digest") != _digest({key: value for key, value in admission.items() if key != "digest"})):
+        return unsupported("original_episode_binding_invalid")
+    if not eligible:
+        return unsupported("not_primary_reply")
+    if admission.get("outcome") != "admitted":
+        return unsupported(admission.get("reason") or "original_episode_not_admitted")
+    expected = {
+        "revision_id": revision.pk, "client_id": revision.client_id,
+        "snapshot_digest": revision.snapshot_digest, "plan_digest": first.plan_digest,
+        "settings_id": first.settings_id_snapshot, "permission_epoch": revision.permission_epoch,
+        "source_refs": [{"message_id": row.get("message_id"), "source_digest": row.get("source_digest")}
+                        for row in revision.bundle_snapshot.get("sources", ())],
+    }
+    if any(admission.get(key) != value for key, value in expected.items()):
+        return unsupported("original_episode_binding_changed")
+    episode = IgCommercialEpisode.objects.select_for_update().filter(
+        pk=admission.get("episode_id"), client_id=revision.client_id,
+        sequence=admission.get("episode_sequence"),
+    ).first()
+    if episode is None:
+        return unsupported("original_episode_owner_changed")
+    # Current episode, stage, source text and prices may already have changed.
+    # Only the admission and immutable delivery evidence describe this reply.
+    return record_receipt_first_reply_in_transaction(
+        episode, revision_id=revision.pk, occurred_at=sent_at, stage=admission["stage"], evidence={
+            "version": FUNNEL_VERSION, "admission_digest": admission["digest"],
+            "logical_reply_key": binding["logical_reply_key"],
+            "revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
+            "plan_digest": first.plan_digest, "source_message_ids": binding["source_message_ids"],
+            "sent_effect_ids": binding["sent_effect_ids"],
+            "provider_message_ids": binding["provider_message_ids"],
+            "reply_message_ids": binding["reply_message_ids"], "provider_confirmed": True,
+        },
+    )
 
 
 def _count_admitted(revision, first):
@@ -202,7 +294,10 @@ def project_sent_reply(revision_id):
                 "legacy_count_requires_review" if not count_admitted else
                 "counted" if delta else "logical_reply_already_counted"
             ),
-            "funnel_projection": {"outcome": "unsupported", "reason": "original_episode_binding_not_projected"},
+            "funnel_projection": _project_first_reply(
+                revision, first, eligible=eligible, binding=binding,
+                sent_at=max(effect.terminal_at for effect in sent),
+            ),
         }
         revision.action_receipts = {**(revision.action_receipts or {}), RECEIPT_KEY: receipt}
         revision.save(update_fields=["action_receipts", "updated_at"])

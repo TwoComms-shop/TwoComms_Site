@@ -230,7 +230,11 @@ def _event(row, kind):
 
 
 def _history(episode_id, client_id):
-    steps = IgFunnelStepEvent.objects.filter(episode_id=episode_id, episode__client_id=client_id)
+    from management.services.ig_funnel_analytics import canonical_first_reply_events
+
+    steps = canonical_first_reply_events(IgFunnelStepEvent.objects.filter(
+        episode_id=episode_id, episode__client_id=client_id,
+    ))
     commercial = IgCommercialEpisodeEvent.objects.filter(episode_id=episode_id, episode__client_id=client_id)
     total = steps.count() + commercial.count()
     rows = [

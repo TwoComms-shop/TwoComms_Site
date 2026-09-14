@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import connection, transaction
-from django.db.models import Count
+from django.db.models import Count, F, OuterRef, Q, Subquery
 from django.utils import timezone
 
 from management.services.bot_followups import KYIV_TZ, QUIET_END, QUIET_START
@@ -387,6 +387,52 @@ def record_first_bot_reply_in_transaction(
     return event
 
 
+def canonical_first_reply_events(events):
+    """Filter superseded first-reply observations before dates or pagination.
+
+    The earliest event-time fact wins globally within its episode, including
+    an append-only correction received after a later reply was projected.
+    """
+    from management.models import IgFunnelStepEvent
+
+    earliest = IgFunnelStepEvent.objects.filter(
+        episode_id=OuterRef("episode_id"), event_type=IgFunnelStepEvent.Type.BOT_REPLIED_FIRST,
+    ).order_by("occurred_at", "id").values("pk")[:1]
+    return events.annotate(_first_reply_event_id=Subquery(earliest)).filter(
+        ~Q(event_type=IgFunnelStepEvent.Type.BOT_REPLIED_FIRST) | Q(pk=F("_first_reply_event_id"))
+    )
+
+
+def record_receipt_first_reply_in_transaction(episode, *, revision_id, occurred_at, stage, evidence):
+    """Append an original-episode first reply, without stage or recovery effects."""
+    from management.models import IgFunnelStepEvent
+
+    if not connection.in_atomic_block:
+        raise RuntimeError("receipt_first_reply_requires_client_transaction")
+    key = f"ig-revision-first-reply:{revision_id}"
+    existing_key = IgFunnelStepEvent.objects.filter(event_key=key).first()
+    if existing_key:
+        expected = {key: value for key, value in existing_key.evidence.items() if key != "supersedes_event_id"}
+        if (existing_key.episode_id != episode.pk or existing_key.event_type != IgFunnelStepEvent.Type.BOT_REPLIED_FIRST
+            or existing_key.occurred_at != occurred_at or existing_key.stage != stage
+            or existing_key.actor != "bot" or expected != evidence):
+            raise ValueError("receipt_first_reply_event_binding_changed")
+        return {"outcome": "projected", "event_id": existing_key.pk,
+                "supersedes_event_id": existing_key.evidence.get("supersedes_event_id")}
+    previous = IgFunnelStepEvent.objects.filter(
+        episode=episode, event_type=IgFunnelStepEvent.Type.BOT_REPLIED_FIRST,
+    ).order_by("occurred_at", "id").first()
+    if previous and previous.occurred_at <= occurred_at:
+        return {"outcome": "first_reply_already_recorded", "event_id": previous.pk}
+    supersedes = previous.pk if previous else None
+    event = _record_step_event_locked(
+        episode, event_type=IgFunnelStepEvent.Type.BOT_REPLIED_FIRST, event_key=key,
+        occurred_at=occurred_at, stage=stage, actor="bot",
+        evidence={**evidence, "supersedes_event_id": supersedes},
+    )
+    return {"outcome": "projected", "event_id": event.pk, "supersedes_event_id": supersedes}
+
+
 def record_episode_step_event_in_transaction(
     episode,
     *,
@@ -757,9 +803,9 @@ def build_funnel_analytics(since=None, until=None, *, client_ids=None) -> dict:
     )
 
     observation_cutoff = until or timezone.now()
-    events = IgFunnelStepEvent.objects.filter(
+    events = canonical_first_reply_events(IgFunnelStepEvent.objects.filter(
         episode__client__hidden_at__isnull=True
-    ).filter(occurred_at__lt=observation_cutoff)
+    )).filter(occurred_at__lt=observation_cutoff)
     drop_offs = IgFunnelDropOff.objects.filter(
         episode__client__hidden_at__isnull=True
     ).filter(occurred_at__lt=observation_cutoff)
