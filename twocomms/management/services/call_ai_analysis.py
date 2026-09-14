@@ -1320,6 +1320,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
     cheap_salvage_used = False
     pending_cheap_salvage_model = ""
     used_project_models = set()
+    empty_response_count = 0
     dispatch_budget = None
     if result_validator is not None:
         from management.services.ig_provider_dispatch_budget import (
@@ -1471,6 +1472,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         dispatch_budget = ProviderDispatchBudget(max_dispatches=min(2, dispatch_budget.max_dispatches))
         extended_dispatch_route = False
     if provider_continuation is not None:
+        empty_response_count = max(0, min(8, int(getattr(provider_continuation, "empty_response_count", 0) or 0)))
         # Revision continuations carry a secret-free route frozen by the root
         # revision. Reattach only the matching local secret and execute in that
         # canonical order; a current scoreboard/quota-profile change may narrow
@@ -1635,10 +1637,66 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 continue
             _audit_skip(planned["key_name"], planned["model"], reason, index)
 
+    def _reserve_same_candidate_repair(key_name, model, candidate_index, *, recovery_kind=""):
+        if dispatch_budget is None or not dispatch_budget.consume_repair():
+            return False
+        reserve = getattr(accounting_observer, "reserve_provider_repair", None)
+        if callable(reserve):
+            kwargs = {"key_name": key_name, "model": model, "candidate_index": candidate_index}
+            if recovery_kind:
+                kwargs["recovery_kind"] = recovery_kind
+            return bool(reserve(**kwargs))
+        return provider_continuation is None
+
+    def _build_repair_payload(parsed, reasons):
+        repair_source = copy.deepcopy(working_payload)
+        repair_source.pop("_reasoning_task", None)
+        try:
+            return repair_payload_factory(repair_source, parsed, reasons)
+        except Exception:
+            logger.warning("Gemini repair payload factory failed closed")
+            return None
+
+    def _run_same_candidate_repair(repaired_payload, key_name, key_value, model, *, preserve_fallback,
+                                   candidate_index, candidate_scarce, response_output_tokens=None):
+        nonlocal working_payload
+        working_payload = copy.deepcopy(repaired_payload)
+        working_payload["_reasoning_task"] = policy["task"]
+        try:
+            return _call(key_name, key_value, model, preserve_fallback=preserve_fallback,
+                         candidate_index=candidate_index, candidate_scarce=candidate_scarce,
+                         response_output_tokens=response_output_tokens)
+        finally:
+            # Repair context belongs only to this exact candidate. Every exit,
+            # including admission rejection, restores the original request.
+            working_payload = copy.deepcopy(original_payload)
+
+    def _alternative_for_last_scarce_slot(model):
+        if (dispatch_budget is None or empty_response_count < 2
+            or dispatch_budget.remaining_dispatches <= 0
+            or dispatch_budget.max_scarce_dispatches - dispatch_budget.consumed_scarce_dispatches != 1
+            or _chat_timeout(deadline - time.monotonic(), preserve_fallback=False) is None):
+            return False
+        later = set(models[models.index(model) + 1:])
+        frozen = {(row["key_name"], row["model"], row["project_identity"])
+                  for row in candidate_plan if row["model"] in later and not row["skip_reason"]
+                  and row.get("scarce") is True and row.get("identity_status") == "known"}
+        if not frozen:
+            return False
+        # Read eligibility once; keep the original order, capabilities and
+        # project identities. Actual quota/ownership admission still follows.
+        try:
+            fresh = gemini_keys.live_chat_candidate_plan(model_chain_override=[item for item in models if item in later])
+        except Exception:
+            # Losing an advisory lookahead cannot retire the current usable tier.
+            return False
+        return any(not row["skip_reason"] and (row["key_name"], row["model"], row["project_identity"]) in frozen
+                   for row in fresh)
+
     def _call(key_name: str, key_value: str, model: str, *, preserve_fallback: bool,
               candidate_index: int = 0, candidate_scarce: bool | None = None,
               response_output_tokens: int | None = None):
-        nonlocal last_actual_failure_kind, working_payload, cheap_salvage_used, pending_cheap_salvage_model
+        nonlocal last_actual_failure_kind, working_payload, cheap_salvage_used, pending_cheap_salvage_model, empty_response_count
         candidate_row = next((row for row in candidate_plan if row["candidate_index"] == candidate_index), {})
         identity = str(candidate_row.get("project_identity") or "")
         pending_salvage = pending_cheap_salvage_model == model
@@ -1862,6 +1920,8 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             return None, "transient"
         except _GeminiEmpty as exc:
             last_actual_failure_kind = exc.failure_kind
+            if exc.failure_kind == "empty":
+                empty_response_count += 1
             if legacy_quota_reserved:
                 _settle_failed_response(key_name, model, exc, quota_dispatch_at)
             blocked = isinstance(exc, _GeminiSafetyBlocked)
@@ -1882,16 +1942,32 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             if (policy["task"] == "customer_chat" and model == "gemini-3.5-flash-lite"
                 and candidate_scarce is False and candidate_row.get("identity_status") == "known"
                 and exc.usage.get("_finish_reason") == "MAX_TOKENS" and response_output_tokens is None
-                and dispatch_budget is not None and dispatch_budget.consume_repair()):
-                reserve = getattr(accounting_observer, "reserve_provider_repair", None)
-                ready = bool(reserve(key_name=key_name, model=model, candidate_index=candidate_index, recovery_kind="output_cap")) if callable(reserve) else provider_continuation is None
-                if ready:
-                    _audit("failed", failure_kind=exc.failure_kind, http_code=200,
+                and _reserve_same_candidate_repair(key_name, model, candidate_index, recovery_kind="output_cap")):
+                _audit("failed", failure_kind=exc.failure_kind, http_code=200,
+                       provider_reason=exc.provider_reason, usage=exc.usage,
+                       error_detail=exc.response_diagnostic, decision="repair_output_cap_4096")
+                return _run_same_candidate_repair(working_payload, key_name, key_value, model,
+                    preserve_fallback=preserve_fallback, candidate_index=candidate_index,
+                    candidate_scarce=candidate_scarce, response_output_tokens=4096)
+            if isinstance(exc, _GeminiMalformedResponse):
+                repaired_payload = None
+                if (exc.provider_reason == "MALFORMED_JSON" and repair_payload_factory is not None
+                    and _reserve_same_candidate_repair(key_name, model, candidate_index)):
+                    repaired_payload = _build_repair_payload(None, ("schema_invalid_json", "invalid_response_schema"))
+                if isinstance(repaired_payload, dict):
+                    _audit("failed", failure_kind="invalid_response", http_code=200,
                            provider_reason=exc.provider_reason, usage=exc.usage,
-                           error_detail=exc.response_diagnostic, decision="repair_output_cap_4096")
-                    return _call(key_name, key_value, model, preserve_fallback=preserve_fallback,
-                                 candidate_index=candidate_index, candidate_scarce=candidate_scarce,
-                                 response_output_tokens=4096)
+                           error_detail=exc.response_diagnostic, decision="repair_parser")
+                    return _run_same_candidate_repair(repaired_payload, key_name, key_value, model,
+                        preserve_fallback=preserve_fallback, candidate_index=candidate_index,
+                        candidate_scarce=candidate_scarce, response_output_tokens=response_output_tokens)
+                _audit_remaining("parser_model_rejected", model=model)
+                # The durable ledger has retired this model. A next-key retry
+                # would be rejected at admission and abort otherwise valid tiers.
+                return None, "invalid_response_model"
+            if candidate_scarce is True and _alternative_for_last_scarce_slot(model):
+                _audit_remaining("scarce_slot_diversified", model=model)
+                return None, "empty_model"
             return None, "empty"
         except _Gemini429 as exc:
             last_actual_failure_kind = "quota_429"
@@ -2060,37 +2136,10 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     )
                 _release()
                 repaired_payload = None
-                repair_ready = bool(
-                    repair_payload_factory is not None
-                    and dispatch_budget is not None
-                    and dispatch_budget.consume_repair()
-                )
-                if repair_ready and accounting_observer is not None:
-                    reserve_repair = getattr(
-                        accounting_observer, "reserve_provider_repair", None
-                    )
-                    if callable(reserve_repair):
-                        repair_ready = bool(reserve_repair(
-                            key_name=key_name,
-                            model=model,
-                            candidate_index=candidate_index,
-                        ))
-                    elif provider_continuation is not None:
-                        # A durable revision must prove the graph-wide repair
-                        # reservation. Legacy observers without that contract
-                        # retain their request-local one-repair behavior.
-                        repair_ready = False
+                repair_ready = bool(repair_payload_factory is not None
+                                    and _reserve_same_candidate_repair(key_name, model, candidate_index))
                 if repair_ready:
-                    repair_source = copy.deepcopy(working_payload)
-                    repair_source.pop("_reasoning_task", None)
-                    try:
-                        repaired_payload = repair_payload_factory(
-                            repair_source,
-                            parsed,
-                            validation.reason_codes,
-                        )
-                    except Exception:
-                        logger.warning("Gemini repair payload factory failed closed")
+                    repaired_payload = _build_repair_payload(parsed, validation.reason_codes)
                 rotate_model_ready = bool(
                     not isinstance(repaired_payload, dict)
                     and dispatch_budget is not None
@@ -2113,26 +2162,9 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 attempts.append(f"{key_name}/{model}: invalid_response")
                 _emit(f"{key_name}/{model}: result validation failed")
                 if isinstance(repaired_payload, dict):
-                    working_payload = copy.deepcopy(repaired_payload)
-                    working_payload["_reasoning_task"] = policy["task"]
-                    # A failed attempt does not consume its immutable candidate.
-                    # Reuse that exact candidate under the observer's next unique
-                    # attempt index so repair does not depend on a spare API key.
-                    try:
-                        return _call(
-                            key_name,
-                            key_value,
-                            model,
-                            preserve_fallback=preserve_fallback,
-                            candidate_index=candidate_index,
-                            candidate_scarce=candidate_scarce,
-                        )
-                    finally:
-                        # The repair may include the rejected model output. It
-                        # belongs only to this same-candidate call and must not
-                        # become context for another key or model after any
-                        # success, typed failure, or exception.
-                        working_payload = copy.deepcopy(original_payload)
+                    return _run_same_candidate_repair(repaired_payload, key_name, key_value, model,
+                        preserve_fallback=preserve_fallback, candidate_index=candidate_index,
+                        candidate_scarce=candidate_scarce)
                 working_payload = copy.deepcopy(original_payload)
                 from management.services.ig_revision_provider_execution import STOCHASTIC_RESPONSE_REASONS
                 if (rotate_model_ready and policy["task"] == "customer_chat"
@@ -2396,6 +2428,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     + "; ".join(attempts)
                 )
             if state in {
+                "empty_model",
                 "invalid_response_model",
                 "model_not_found_global",
                 "model_circuit_open",
@@ -2446,6 +2479,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     + "; ".join(attempts)
                 )
             if state in {
+                "empty_model",
                 "invalid_response_model",
                 "model_not_found_global",
                 "model_circuit_open",

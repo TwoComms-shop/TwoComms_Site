@@ -133,7 +133,8 @@ class DurableResponseRecoveryTests(TransactionTestCase):
         self.addCleanup(self.case.doCleanups)
         self.case._prepare()
 
-    def run_reply(self, replies, *, reason="unauthorized_url", before_response=None, max_calls=8):
+    def run_reply(self, replies, *, reason="unauthorized_url", before_response=None, max_calls=8,
+                  parse=False, model_chain=None, repair_factory=None):
         from management.services.ig_provider_dispatch_budget import ValidationDecision
         from management.services.ig_turn_lineage import turn_lineage
 
@@ -145,7 +146,8 @@ class DurableResponseRecoveryTests(TransactionTestCase):
                 before_response(len(calls))
             return next(responses)
         def validate(parsed, *, usage):
-            return ValidationDecision(valid=parsed == "valid", reason_codes=() if parsed == "valid" else (reason,))
+            valid = parsed == "valid" or parsed == {"reply_text": "valid", "controls": []}
+            return ValidationDecision(valid=valid, reason_codes=() if valid else (reason,))
         with patch.dict(os.environ, {**ONE_KEY, "GEMINI_API2": "test-key-2"}, clear=False), \
              patch.object(ai.requests, "post", side_effect=provider), \
              runtime.revision_request_execution(self.case.revision.pk, self.case.token,
@@ -153,8 +155,8 @@ class DurableResponseRecoveryTests(TransactionTestCase):
              turn_lineage(lane="live", client_id=self.case.customer.pk, source_message_id=self.case.source.pk,
                  logical_turn_id=f"ig-revision:{self.case.revision.pk}"):
             result = ai.gemini_generate_text(PAYLOAD, role="chat",
-                model_chain_override=["gemini-3.5-flash-lite", "gemini-3.6-flash"],
-                result_validator=validate, repair_payload_factory=lambda payload, *_args: payload,
+                model_chain_override=model_chain or ["gemini-3.5-flash-lite", "gemini-3.6-flash"], parse=parse,
+                result_validator=validate, repair_payload_factory=repair_factory or (lambda payload, *_args: payload),
                 max_actual_dispatches=max_calls)
         return result, calls
 
@@ -264,3 +266,114 @@ class DurableResponseRecoveryTests(TransactionTestCase):
         graph = GeminiRequest.objects.get()
         self.assertEqual(graph.candidate_outcomes["_provider_repair_reservation"]["recovery_kind"], "output_cap")
         self.assertEqual(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).count(), 2)
+
+    def test_live_parse_malformed_json_repairs_same_candidate_with_schema_guidance(self):
+        from management.services.ig_response_guard import ProviderResponseGuard
+        repair = Mock(side_effect=ProviderResponseGuard.repair)
+        result, calls = self.run_reply([response(finish="STOP", text="malformed-private-sentinel"),
+            response(finish="STOP", text='{"reply_text":"valid","controls":[]}')], parse=True, repair_factory=repair)
+        self.assertEqual(result["parsed"]["reply_text"], "valid")
+        self.assertEqual(len(calls), 2)
+        repair.assert_called_once()
+        self.assertEqual(repair.call_args.args[2], ("schema_invalid_json", "invalid_response_schema"))
+        second_body = json.loads(calls[1][1]["data"])
+        self.assertIn("corrected JSON object", json.dumps(second_body))
+        self.assertEqual(second_body["contents"][:len(PAYLOAD["contents"])], PAYLOAD["contents"])
+        self.assertFalse(any(row.get("role") == "model" for row in second_body["contents"][len(PAYLOAD["contents"]):]))
+        self.assertNotIn("malformed-private-sentinel", json.dumps(second_body))
+        attempts = list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk"))
+        self.assertEqual(attempts[0].candidate_index, attempts[1].candidate_index)
+        self.assertEqual(attempts[0].provider_reason, "MALFORMED_JSON")
+        self.assertEqual(GeminiRequest.objects.get().winner_attempt_id, attempts[1].pk)
+
+    def test_live_parse_exhausted_repair_retires_model_and_restores_original_payload(self):
+        from management.services.ig_response_guard import ProviderResponseGuard
+        result, calls = self.run_reply([response(finish="STOP", text="malformed"), response(finish="STOP", text="still malformed"),
+            response(finish="STOP", text='{"reply_text":"valid","controls":[]}')], parse=True, repair_factory=ProviderResponseGuard.repair)
+        self.assertEqual(result["parsed"]["reply_text"], "valid")
+        self.assertEqual(len(calls), 3)
+        attempts = list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk"))
+        self.assertEqual([row.model for row in attempts], ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash"])
+        self.assertEqual(json.loads(calls[-1][1]["data"])["contents"], PAYLOAD["contents"])
+        self.assertFalse(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False, failure_kind="provider_model_schema_rejected").exists())
+
+    def test_live_parse_repair_factory_refusal_still_tries_next_model(self):
+        result, calls = self.run_reply([response(finish="STOP", text="malformed"),
+            response(finish="STOP", text='{"reply_text":"valid","controls":[]}')], parse=True, repair_factory=lambda *_args: None)
+        self.assertEqual(result["parsed"]["reply_text"], "valid")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk").values_list("model", flat=True)),
+                         ["gemini-3.5-flash-lite", "gemini-3.6-flash"])
+
+    def test_live_parse_truncated_max_tokens_uses_output_cap_before_schema_repair(self):
+        repair = Mock(side_effect=lambda *_args: self.fail("A second repair must not be granted"))
+        _result, calls = self.run_reply([response(text='{"reply_text":'), response(finish="STOP", text="malformed"),
+            response(finish="STOP", text='{"reply_text":"valid","controls":[]}')], parse=True, repair_factory=repair)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([json.loads(kwargs["data"])["generationConfig"]["maxOutputTokens"] for _args, kwargs in calls], [1536, 4096, 1536])
+        repair.assert_not_called()
+
+    def test_live_parse_safety_never_enters_parser_repair(self):
+        repair = Mock()
+        with self.assertRaises(ai.CallAIAnalysisError) as caught:
+            self.run_reply([response(finish="SAFETY", text="malformed")], parse=True, repair_factory=repair)
+        self.assertEqual(caught.exception.failure_kind, "safety_blocked")
+        self.assertEqual(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).count(), 1)
+        repair.assert_not_called()
+
+    def test_repeated_empty_preserves_last_scarce_slot_for_other_verified_model(self):
+        result, calls = self.run_reply([response(finish="STOP") for _ in range(3)] + [response(finish="STOP", text="valid")],
+            model_chain=["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"])
+        self.assertEqual(result["parsed"], "valid")
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk").values_list("model", flat=True)),
+                         ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash", "gemini-3.7-flash"])
+
+    def test_last_scarce_slot_stays_usable_when_alternative_loses_eligibility(self):
+        candidate_plan = ai.gemini_keys.live_chat_candidate_plan
+        blocked = False
+        def plan(*args, **kwargs):
+            rows = candidate_plan(*args, **kwargs)
+            return [{**row, "skip_reason": "quota_exhausted"} if blocked and row["model"] == "gemini-3.7-flash" else row for row in rows]
+        def quota_after_third(count):
+            nonlocal blocked
+            blocked = count >= 3
+        with patch.object(ai.gemini_keys, "live_chat_candidate_plan", side_effect=plan):
+            result, calls = self.run_reply([response(finish="STOP") for _ in range(3)] + [response(finish="STOP", text="valid")],
+                model_chain=["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"], before_response=quota_after_third)
+        self.assertEqual(result["parsed"], "valid")
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk").values_list("model", flat=True)),
+                         ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash"] * 2)
+
+    def test_fresh_eligibility_read_failure_retains_current_scarce_tier(self):
+        candidate_plan = ai.gemini_keys.live_chat_candidate_plan
+        plan_calls = 0
+        def plan(*args, **kwargs):
+            nonlocal plan_calls
+            plan_calls += 1
+            if plan_calls > 1:
+                raise RuntimeError("bounded lookahead unavailable")
+            return candidate_plan(*args, **kwargs)
+        with patch.object(ai.gemini_keys, "live_chat_candidate_plan", side_effect=plan):
+            result, calls = self.run_reply([response(finish="STOP") for _ in range(3)] + [response(finish="STOP", text="valid")],
+                model_chain=["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"])
+        self.assertEqual(result["parsed"], "valid")
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False, model="gemini-3.6-flash").count(), 2)
+
+    def test_refreshed_root_uses_prior_empty_evidence_for_last_scarce_slot(self):
+        from management.services.ig_turn_revisions import create_refresh_successor
+        chain = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"]
+        with self.assertRaises(ai.CallAIAnalysisError):
+            self.run_reply([response(finish="STOP"), response(finish="STOP")], model_chain=chain, max_calls=2)
+        root_id = self.case.revision.pk
+        successor = create_refresh_successor(root_id, self.case.token, reason="publication_changed")
+        self.assertTrue(successor.created, successor.reason)
+        self.case.revision = successor.revision
+        self.case._prepare()
+        result, calls = self.run_reply([response(finish="STOP"), response(finish="STOP", text="valid")], model_chain=chain)
+        self.assertEqual(result["parsed"], "valid")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk").values_list("model", flat=True)),
+                         ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash", "gemini-3.7-flash"])

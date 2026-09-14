@@ -96,7 +96,7 @@ class ProviderResponseGuard:
             return None
         result = deepcopy(payload)
         try:
-            previous = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+            previous = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if parsed is not None else ""
         except (TypeError, ValueError):
             previous = ""
         if previous and len(previous) <= 5000:

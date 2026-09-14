@@ -556,6 +556,7 @@ def _continuation(
         "http_remaining": http_remaining,
         "scarce_remaining": scarce_remaining,
         "repair_remaining": not bool(repair),
+        "empty_response_count": sum(row.failure_kind == "empty" and row.http_code == 200 for row in attempts),
     }
     if not http_remaining:
         return ProviderContinuation(reason="provider_dispatch_budget", **base)

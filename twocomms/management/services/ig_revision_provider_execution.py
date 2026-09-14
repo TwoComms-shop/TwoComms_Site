@@ -72,6 +72,7 @@ class ProviderContinuation:
     http_remaining: int = 0
     scarce_remaining: int = 0
     repair_remaining: bool = False
+    empty_response_count: int = 0
     next_due_at: object = None
 
 
@@ -218,7 +219,8 @@ def inspect_revision_provider_execution(revision, *, now=None, lock_ledger=False
     remaining = max(0, MAX_HTTP - len(attempts))
     scarce_remaining = max(0, MAX_SCARCE_HTTP - scarce)
     base = {"root_revision_id": root.pk, "manifest": manifest, "http_remaining": remaining,
-            "scarce_remaining": scarce_remaining, "repair_remaining": not bool(repair)}
+            "scarce_remaining": scarce_remaining, "repair_remaining": not bool(repair),
+            "empty_response_count": sum(row.failure_kind == "empty" and row.http_code == 200 for row in attempts)}
     if not remaining:
         return ProviderContinuation(reason="provider_dispatch_budget", **base)
     candidates, waits = [], []
