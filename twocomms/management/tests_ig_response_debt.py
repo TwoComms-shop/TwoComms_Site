@@ -12,6 +12,31 @@ from management.services.ig_response_debt import (
 
 
 class ResponseDebtTests(TestCase):
+    def test_browser_debt_survives_switch_and_incomplete_payload_until_explicit_resolution(self):
+        from pathlib import Path
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node is required for the browser state regression")
+        template = (Path(__file__).parent / "templates/management/bot.html").read_text()
+        start = template.index("const replyDebtByClient=new Map();")
+        end = template.index("function renderReplyDebt(", start)
+        program = template[start:end] + """
+const assert=require('node:assert/strict');
+const debt={required:true,task_id:100};
+assert.equal(reconcileReplyDebt(171,debt),debt);
+assert.equal(reconcileReplyDebt(341,{required:false}).required,false);
+assert.equal(reconcileReplyDebt(171,undefined),debt);
+assert.equal(reconcileReplyDebt(171,{}),debt);
+assert.equal(reconcileReplyDebt(171,null),debt);
+assert.equal(reconcileReplyDebt(172,undefined),null);
+assert.equal(reconcileReplyDebt(171,{required:false}).required,false);
+assert.equal(reconcileReplyDebt(171,undefined).required,false);
+"""
+        completed = subprocess.run([node, "-e", program], text=True, capture_output=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def setUp(self):
         self.client_row = IgClient.objects.create(igsid="reply-debt-owner")
         self.source = InstagramBotMessage.objects.create(client=self.client_row, role="user", text="Оверсайз", status="pending")
@@ -87,9 +112,20 @@ class ResponseDebtTests(TestCase):
         full = self.client.get(url)
         self.assertEqual(full.status_code, 200)
         self.assertTrue(full.json()["client"]["response_debt"]["required"])
+        self.assertIn("no-store", full["Cache-Control"])
         incremental = self.client.get(url, {"after_id": self.source.pk})
         self.assertEqual(incremental.status_code, 200)
         self.assertTrue(incremental.json()["response_debt"]["required"])
+        self.assertIn("no-store", incremental["Cache-Control"])
+        # Returning to the same card must read current state, independent of
+        # the last polled client and of existing browser/intermediary caches.
+        other = IgClient.objects.create(igsid="reply-debt-other")
+        other_url = reverse("management_bot_client_detail_api", args=[other.pk])
+        self.assertFalse(self.client.get(other_url, {"detail": 1}).json()["client"]["response_debt"]["required"])
+        returned = self.client.get(url, {"detail": 1})
+        self.assertTrue(returned.json()["client"]["response_debt"]["required"])
+        listing = self.client.get(reverse("management_bot_clients_api"))
+        self.assertIn("no-store", listing["Cache-Control"])
         resolve_delivered_reply_debt(self.revision)
         self.assertFalse(self.client.get(url, {"after_id": self.source.pk}).json()["response_debt"]["required"])
 

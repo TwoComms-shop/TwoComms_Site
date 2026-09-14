@@ -16,6 +16,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_POST
 import hashlib
 import hmac
@@ -4865,6 +4866,7 @@ def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
 
 @login_required(login_url="management_login")
 @require_GET
+@never_cache
 def bot_clients_api(request):
     blocked = _require_bot_capabilities(
         request, VIEW_IG_CONVERSATION_PII_PERMISSION
@@ -5327,6 +5329,7 @@ def bot_client_followup_continue_api(request, client_id, task_id):
 
 @login_required(login_url="management_login")
 @require_GET
+@never_cache
 def bot_client_detail_api(request, client_id):
     blocked = _require_bot_capabilities(
         request, VIEW_IG_CONVERSATION_PII_PERMISSION
