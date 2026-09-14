@@ -2309,7 +2309,7 @@ class ClientsPageRenderTests(TestCase):
         if not node:
             self.skipTest("node is required for inline script syntax validation")
 
-        admin = User.objects.create_user("adm_js", password="x", is_staff=True)
+        admin = User.objects.create_superuser("adm_js", password="x")
         self.client.force_login(admin)
         response = self.client.get(reverse("management_bot"))
 

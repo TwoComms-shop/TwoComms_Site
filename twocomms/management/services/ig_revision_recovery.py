@@ -115,6 +115,10 @@ def _set_state(revision, state, code, *, due_at=None, child_id=0):
     revision.recovery_code = code
     revision.recovery_due_at = due_at
     revision.save(update_fields=["recovery_state", "recovery_code", "recovery_due_at", "updated_at"])
+    if state == "manual" and code != "recovery_existing_proposal_requires_execution":
+        from management.services.ig_response_debt import park_manual_revision
+
+        park_manual_revision(revision, code)
     return RecoveryResult(revision.pk, state, code, child_id)
 
 

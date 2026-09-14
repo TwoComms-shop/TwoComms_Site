@@ -4183,6 +4183,9 @@ def _group_signal_rows(rows) -> list[dict]:
 
 
 def _with_latest_interaction(queryset):
+    from management.services.ig_response_debt import with_reply_debt
+
+    queryset = with_reply_debt(queryset)
     from .ig_bot_models import (
         IgConversationAnalysisSnapshot,
         IgPaymentConfirmationReview,
@@ -4232,7 +4235,7 @@ def _with_latest_interaction(queryset):
             Value(0),
         ),
         has_post_sale_action=Exists(action_post_sale),
-        has_manager_action=Exists(action_review) | Exists(action_post_sale),
+        has_manager_action=Exists(action_review) | Exists(action_post_sale) | Q(has_reply_debt=True),
         latest_post_sale_type=Coalesce(
             Subquery(latest_post_sale.values("case_type")[:1]),
             Value(""),
@@ -4581,6 +4584,9 @@ def _client_follow_payload(c, *, settings_obj=None, now=None) -> dict:
 
 
 def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
+    from management.services.ig_response_debt import reply_debt_payload
+
+    response_debt = reply_debt_payload(c)
     from .ig_bot_models import IgConversationAnalysisSnapshot, IgPostSaleCase
 
     product = getattr(c, "current_product", None)
@@ -4800,7 +4806,8 @@ def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
         "analysis_uncertainties": latest_analysis.uncertainties if latest_analysis else [],
         "analysis_at": latest_analysis.analyzed_at.isoformat() if latest_analysis else "",
         "potential": potential,
-        "manager_action_required": bool(getattr(c, "has_manager_action", False)),
+        "manager_action_required": bool(getattr(c, "has_manager_action", False)) or bool(response_debt["required"]),
+        "response_debt": response_debt,
         "post_sale_type": post_sale_type,
         "post_sale_type_label": post_sale_type_label,
         "post_sale_status": post_sale_status,
@@ -5415,6 +5422,8 @@ def bot_client_detail_api(request, client_id):
         })
 
     if after_id:
+        from management.services.ig_response_debt import reply_debt_payload
+
         operational_stage, operational_stage_label = _operational_client_stage(c)
         return JsonResponse({
             "success": True,
@@ -5427,6 +5436,7 @@ def bot_client_detail_api(request, client_id):
             "manager_takeover": c.manager_takeover,
             "stage": operational_stage,
             "stage_label": operational_stage_label,
+            "response_debt": reply_debt_payload(c),
             "funnel": _funnel_progress_for_stage(c, operational_stage),
             "journey": journey,
             "follow": _client_follow_payload(c),
@@ -5500,7 +5510,7 @@ def bot_client_detail_api(request, client_id):
             "status_label": (
                 "Потребує перевірки"
                 if f.kind == IgFollowUpTask.Kind.MANAGER_TASK
-                and f.reason.startswith("prize_review:")
+                and (f.reason.startswith("prize_review:") or f.reason == "revision_case:execution_debt")
                 and f.manager_approval_status
                 == IgFollowUpTask.ManagerApprovalStatus.PENDING
                 else f.get_status_display()
@@ -5509,7 +5519,7 @@ def bot_client_detail_api(request, client_id):
             "reason_label": (
                 "Перевірка призового сертифіката"
                 if f.reason.startswith("prize_review:")
-                else ""
+                else "Незавершена відповідь клієнту" if f.reason == "revision_case:execution_debt" else ""
             ),
             "discount_percent": f.discount_percent,
             "due_at": f.due_at.isoformat() if f.due_at else "",

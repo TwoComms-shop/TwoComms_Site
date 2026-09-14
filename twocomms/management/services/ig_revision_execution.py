@@ -553,6 +553,9 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
             # Completion and source acknowledgement commit together. A crash
             # cannot leave terminal revision state with unacknowledged sources.
             _project_completed_sources(revision_id)
+            from management.services.ig_response_debt import resolve_delivered_reply_debt
+
+            resolve_delivered_reply_debt(locked)
             IgCustomerTurnRevision.objects.filter(pk=revision_id, state=IgCustomerTurnRevision.State.PROCESSED).update(claim_token="", claimed_at=None, lease_until=None, updated_at=timezone.now())
         return RevisionFinalizationResult(revision_id, True, reason="receipt_finalized", sent_parts=sum(row.state == row.State.SENT for row in effects))
     except Exception as exc:
@@ -678,17 +681,9 @@ def record_expired_revision_debt(revision_id, *, now=None, cutover_at=None):
                 reason = "generation_outcome_unresolved" if not graph.terminal_resolution else "generation_failed"
             else:
                 reason = "preparation_expired" if not revision.snapshot_digest else "generation_not_started"
-        IgFollowUpTask.objects.get_or_create(event_key=f"ig-revision-debt:{revision.pk}", defaults={
-            "client": client, "due_at": now, "kind": IgFollowUpTask.Kind.MANAGER_TASK,
-            "status": IgFollowUpTask.Status.SKIPPED, "reason": "revision_case:execution_debt",
-            "manager_approval_status": IgFollowUpTask.ManagerApprovalStatus.PENDING,
-            "manager_approval_requested_at": now, "skip_reason": "execution_recovery_required",
-            "trigger": IgFollowUpTask.Trigger.EVENT, "event_occurred_at": revision.overall_deadline,
-            "policy_started_at": now, "policy_version": "revision-debt-v1",
-            "message_text": "Відповідь потребує перевірки: звірити підтверджені частини та незавершений запит перед відновленням.",
-            "event_payload": {"revision_id": revision.pk, "reason": reason, "source_message_ids": list(revision.sources.values_list("message_id", flat=True)), "effect_ids": [row.pk for row in effects]},
-            "manager_context": {"case_kind": "revision_execution_debt", "revision_id": revision.pk, "reason": reason, "automatic_http_retry": False},
-        })
+        from management.services.ig_response_debt import record_reply_debt
+
+        record_reply_debt(revision, reason, effects=effects, now=now)
         return reason
 
 

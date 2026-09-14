@@ -53,6 +53,8 @@ HISTORICAL_ANALYSIS_TRIGGERS = frozenset({
     "manual_refresh",
 })
 REPLY_PROCESSING_GRACE_SECONDS = 300
+ANALYSIS_MAX_LIVE_DEFERRAL_SECONDS = 300
+ANALYSIS_REPLY_DEFER_RETRY_SECONDS = 15
 
 
 def _part_has_bound_inspection(media: dict) -> bool:
@@ -1437,8 +1439,8 @@ def _process_claim(
         item_count=len(media_sources),
     ):
         return "superseded"
-    if _customer_reply_work_waiting():
-        if _defer_claim_for_customer_reply(job.pk, token, now=timezone.now()):
+    if _customer_reply_work_waiting() and not _aged_analysis_has_capacity(job, now=timezone.now()):
+        if _defer_claim_for_customer_reply(job.pk, token, now=timezone.now(), reason=_analysis_live_defer_reason(job, now=timezone.now())):
             return "deferred"
         return "superseded"
     result = gemini_generate_json(
@@ -1766,7 +1768,9 @@ def _process_claim(
 
 
 def _customer_reply_work_waiting() -> bool:
-    if not InstagramBotSettings.load().is_enabled:
+    """Priority belongs to executable replies, not unresolved historical rows."""
+    settings_obj = InstagramBotSettings.load()
+    if not settings_obj.is_enabled:
         return False
     now = timezone.now()
     cutoff = now - timedelta(seconds=REPLY_PROCESSING_GRACE_SECONDS)
@@ -1777,27 +1781,147 @@ def _customer_reply_work_waiting() -> bool:
         | Q(client__opted_in_at__lt=F("client__opted_out_at"))
     )
     processing = Q(status=InstagramBotMessage.Status.PROCESSING) & (
-        Q(processing_started_at__isnull=True)
+        Q(processing_started_at__isnull=True, created_at__gte=cutoff)
         | Q(processing_started_at__gte=cutoff)
     )
-    eligible_client = Q(client_id__isnull=True) | Q(
-        role=InstagramBotMessage.Role.USER,
+    from management.services.ig_revision_live import legacy_claimable_messages
+    legacy = legacy_claimable_messages(InstagramBotMessage.objects.filter(
+        role=InstagramBotMessage.Role.USER, client_id__isnull=False,
+        sender_id=F("client__igsid"),
         client__hidden_at__isnull=True,
         client__is_blocked=False,
         client__bot_paused=False,
-    )
-    return InstagramBotMessage.objects.filter(
-        role=InstagramBotMessage.Role.USER,
-    ).filter(eligible_client).exclude(
+        client__manager_takeover=False,
+        client__privacy_erasure_started_at__isnull=True,
+    )).exclude(
         client__stage=IgClient.Stage.SPAM,
     ).exclude(
         active_opt_out,
     ).filter(
-        Q(status=InstagramBotMessage.Status.PENDING) | processing,
-    ).exists()
+        Q(status=InstagramBotMessage.Status.PENDING, created_at__gte=cutoff) | processing,
+    )
+    from management.services.instagram_bot import allowed_sender_ids
+    allowed = allowed_sender_ids(settings_obj)
+    if allowed:
+        legacy = legacy.filter(sender_id__in=allowed)
+    if legacy.exists():
+        return True
+    return _canonical_reply_work_waiting(settings_obj, now=now)
 
 
-def _defer_claim_for_customer_reply(job_id: int, token: str, now=None) -> bool:
+def _canonical_reply_work_waiting(settings_obj, *, now) -> bool:
+    """Reuse bounded canonical selectors and validate recovery dispositions."""
+    from management.models import IgCustomerTurnRevision, IgRevisionDeliveryEffect
+    from management.services.ig_revision_execution import due_revision_ids
+    from management.services.ig_revision_live import _owned_revisions
+    from management.services.ig_revision_rollout import revision_execution_rollout
+    from management.services.ig_revision_recovery import (
+        due_recovery_revision_ids, execution_resume_is_current,
+        recovery_lineage_for_authority, _eligibility,
+    )
+    from management.services.instagram_bot import allowed_sender_ids
+
+    rollout = revision_execution_rollout()
+    eligible = IgCustomerTurnRevision.objects.filter(
+        active_slot=1, client__hidden_at__isnull=True, client__is_blocked=False,
+        client__bot_paused=False, client__manager_takeover=False,
+        client__privacy_erasure_started_at__isnull=True,
+        client__reply_permission_epoch=F("permission_epoch"),
+    ).exclude(client__stage=IgClient.Stage.SPAM).exclude(
+        Q(client__opted_out_at__isnull=False) & (
+            Q(client__opted_in_at__isnull=True)
+            | Q(client__opted_in_at__lte=F("client__opted_out_at"))
+        )
+    )
+    allowed = allowed_sender_ids(settings_obj)
+    if allowed:
+        eligible = eligible.filter(client__igsid__in=allowed)
+    from management.services.ig_turn_revisions import replay_snapshot
+
+    def head_current(revision):
+        if revision.source_count <= 0 or revision.erasure_started_at_snapshot is not None:
+            return False
+        if revision.turn.terminal_reason or revision.turn.claim_state in {"processed", "superseded"} or revision.origin == "manual_resume":
+            from management.services.ig_revision_manual_resume import manual_resume_authority_current
+            if not manual_resume_authority_current(revision):
+                return False
+        return revision.state not in {"sealed", "claimed"} or replay_snapshot(revision.pk) is not None
+
+    if rollout.enabled:
+        due = eligible.filter(pk__in=due_revision_ids(now=now, limit=50, cutover_at=rollout.cutover_at)).exclude(
+            recovery_state__in=("manual", "waiting", "spawned", "cancelled")
+        ).select_related("client", "turn")
+        if any(head_current(revision) for revision in due):
+            return True
+    active = eligible.filter(pk__in=_owned_revisions().values("pk"), overall_deadline__gt=now).exclude(
+        recovery_state__in=("manual", "waiting", "spawned", "cancelled")
+    ).filter(
+        Q(state="preparing", lease_until__gt=now, media_prepare_deadline__gt=now)
+        | Q(state="claimed", snapshot_digest__gt="")
+    ).select_related("client", "turn").order_by("claimed_at", "pk")[:50]
+    for revision in active:
+        if not head_current(revision) or not revision.claim_token:
+            continue
+        effects = IgRevisionDeliveryEffect.objects.filter(revision=revision)
+        if effects.exists() and not effects.filter(
+            Q(state="planned") | Q(state__in=("claimed", "provider_started"), revision__lease_until__gt=now)
+        ).exists():
+            continue
+        return True
+    recovery_ids = due_recovery_revision_ids(now=now, limit=50) if rollout.enabled else []
+    recovery = eligible.filter(pk__in=recovery_ids).select_related("client")
+    for revision in recovery:
+        if revision.recovery_state == "manual":
+            # Only a separately validated stored-proposal execution receipt can
+            # turn this special manual disposition back into runnable demand.
+            if execution_resume_is_current(revision, now=now):
+                return True
+            continue
+        rows, reason = recovery_lineage_for_authority(revision)
+        if reason:
+            continue
+        state, reason = _eligibility(revision, revision.client, rows, now)
+        if state or reason:
+            continue
+        from management.services.ig_revision_provider_execution import inspect_revision_provider_execution
+        if inspect_revision_provider_execution(revision, now=now).ready:
+            return True
+    execution = eligible.filter(recovery_state="execution", state="claimed").select_related("client")[:50]
+    return any(execution_resume_is_current(revision, now=now) for revision in execution)
+
+
+def _analysis_capacity_available() -> bool:
+    """Advisory provider-free check; atomic dispatch admission still owns quota.
+
+    Management role pools already exclude chat-reserved aliases and identities.
+    Reusing that pool avoids inventing a competing reservation mechanism.
+    """
+    from management.services import gemini_keys
+    try:
+        models = gemini_keys.task_model_chain("management", "conversation_reanalysis")
+        return next(gemini_keys.iter_attempts("management", model_chain_override=models), None) is not None
+    except Exception:
+        return False
+
+
+def _analysis_live_defer_reason(job, *, now):
+    maximum = max(30, int(getattr(settings, "IG_ANALYSIS_MAX_LIVE_DEFERRAL_SECONDS", ANALYSIS_MAX_LIVE_DEFERRAL_SECONDS)))
+    return "deferred_for_analysis_capacity" if job.due_at <= now - timedelta(seconds=maximum) else "deferred_for_live_reply"
+
+
+def _aged_analysis_has_capacity(job, *, now) -> bool:
+    return bool(_analysis_live_defer_reason(job, now=now) == "deferred_for_analysis_capacity" and _analysis_capacity_available())
+
+
+def _record_waiting_analysis_opportunity(job, *, now, reason):
+    """Bound a no-claim defer without erasing its age or failure history."""
+    IgConversationAnalysisJob.objects.filter(
+        pk=job.pk, status=IgConversationAnalysisJob.Status.PENDING,
+        revision=job.revision, due_at__lte=now, next_attempt_at__lte=now,
+    ).update(last_error=reason, next_attempt_at=now + timedelta(seconds=ANALYSIS_REPLY_DEFER_RETRY_SECONDS))
+
+
+def _defer_claim_for_customer_reply(job_id: int, token: str, now=None, *, reason="deferred_for_live_reply") -> bool:
     """Return a claimed analysis job to pending without consuming an attempt."""
     now = now or timezone.now()
     with transaction.atomic():
@@ -1814,9 +1938,10 @@ def _defer_claim_for_customer_reply(job_id: int, token: str, now=None) -> bool:
         job.claimed_watermark_message_id = 0
         job.claimed_revision = 0
         claimed_materiality_fields = _clear_claimed_materiality(job)
-        job.attempts = 0
-        job.last_error = "deferred_for_live_reply"
-        job.next_attempt_at = max(job.due_at, now)
+        # Claiming added one attempt; no provider dispatch happened here.
+        job.attempts = max(0, int(job.attempts or 0) - 1)
+        job.last_error = reason
+        job.next_attempt_at = max(job.due_at, now + timedelta(seconds=ANALYSIS_REPLY_DEFER_RETRY_SECONDS))
         job.save(update_fields=[
             "status", "lease_token", "lease_until",
             "claimed_watermark_message_id", "claimed_revision",
@@ -1866,17 +1991,30 @@ def process_due_analysis(*, limit: int = 2, now=None) -> dict:
     """Claim and analyze due jobs independently from all customer reply flags."""
     counts = {"done": 0, "failed": 0, "skipped": 0, "superseded": 0}
     for _unused in range(max(0, min(int(limit), 10))):
-        if _customer_reply_work_waiting():
-            break
+        live_waiting = _customer_reply_work_waiting()
         claim_now = now or timezone.now()
         _reclaim_stale(claim_now)
+        fairness_slot = False
+        if live_waiting:
+            oldest = IgConversationAnalysisJob.objects.filter(
+                status=IgConversationAnalysisJob.Status.PENDING, attempts__lt=MAX_ATTEMPTS,
+                due_at__lte=claim_now, next_attempt_at__lte=claim_now,
+            ).order_by("due_at", "id").first()
+            if oldest is None:
+                break
+            if not _aged_analysis_has_capacity(oldest, now=claim_now):
+                _record_waiting_analysis_opportunity(oldest, now=claim_now, reason=_analysis_live_defer_reason(oldest, now=claim_now))
+                break
+            fairness_slot = True
         claimed = _claim_due(claim_now)
         if not claimed:
             break
         job, watermark, claimed_revision, token = claimed
         if _customer_reply_work_waiting():
-            _defer_claim_for_customer_reply(job.pk, token, now=claim_now)
-            break
+            if not _aged_analysis_has_capacity(job, now=claim_now):
+                _defer_claim_for_customer_reply(job.pk, token, now=claim_now, reason=_analysis_live_defer_reason(job, now=claim_now))
+                break
+            fairness_slot = True
         try:
             outcome = _process_claim(
                 job, watermark, claimed_revision, token, claim_now
@@ -1895,6 +2033,10 @@ def process_due_analysis(*, limit: int = 2, now=None) -> dict:
                 failure_now,
             )
             counts["failed"] += 1
+        if fairness_slot:
+            # One background start per pass under active live traffic; the
+            # normal provider role pool and atomic reserve remain unchanged.
+            break
     return counts
 
 
