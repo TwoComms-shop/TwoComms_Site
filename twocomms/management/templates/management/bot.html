@@ -4,7 +4,7 @@
 {% block title %}Бот — TwoComms Management{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{% static 'management/ig_journey.css' %}">
+<link rel="stylesheet" href="{% static 'management/ig_journey.css' %}?v=journey-presentation-v1">
 <style>
 .bot-app{max-width:1360px;margin:0 auto;padding:20px 18px 64px;color:#e7ecf3;overflow-x:hidden;}
 .bot-app *{box-sizing:border-box;}
@@ -1809,8 +1809,8 @@ body.bot-drawer-open{overflow:hidden;}
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'management/ig_journey_geometry.js' %}"></script>
-<script src="{% static 'management/ig_journey.js' %}"></script>
+<script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-presentation-v1"></script>
+<script src="{% static 'management/ig_journey.js' %}?v=journey-presentation-v1"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}"></script>{% endif %}
 <script>
 (function(){

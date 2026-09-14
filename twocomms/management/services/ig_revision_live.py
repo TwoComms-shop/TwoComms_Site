@@ -131,6 +131,8 @@ def revision_execution_enabled() -> bool:
 
 
 def _owned_revisions():
+    from management.services.ig_revision_source_coverage import source_transfer_owned_q
+
     # media_prepare_deadline is written only by an explicit preparation claim,
     # and survives supersession. A plain ingress shadow has none of these.
     return IgCustomerTurnRevision.objects.filter(
@@ -139,6 +141,7 @@ def _owned_revisions():
         | Q(snapshot_digest__gt="")
         | Q(generation_proposal_digest__gt="")
         | Q(delivery_effects__isnull=False)
+        | source_transfer_owned_q()
     )
 
 
@@ -821,59 +824,10 @@ def _prepare_effects(revision, response, settings_row):
 
 
 def _project_sent_history(revision_id):
-    """One transcript projection per canonical receipt, under a short DB lock."""
-    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
-    if not identity:
-        return
-    with transaction.atomic():
-        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
-        revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
-        if client is None or revision is None or client.privacy_erasure_started_at is not None:
-            return
-        shown = []
-        for effect in revision.delivery_effects.filter(state=IgRevisionDeliveryEffect.State.SENT).order_by("order_index"):
-            # The revision lock makes get_or_create exact even on old schemas
-            # where synthetic_event_key has no uniqueness constraint.
-            key = f"ig-revision-effect:{effect.pk}"
-            message = effect.payload.get("message") or {}
-            attachment = message.get("attachment") or {}
-            text = message.get("text") or ""
-            attachments = ""
-            if effect.group == "catalog_media":
-                metadata = effect.projection_metadata or {}
-                text = f"(фото товару: {metadata['title']})" if metadata.get("title") else "(фото товару)"
-                url = (attachment.get("payload") or {}).get("url") or ""
-                attachments = json.dumps([url], ensure_ascii=False) if url else ""
-                if metadata.get("product_id") and _digest(metadata) == effect.projection_digest:
-                    shown.append({
-                        "position": effect.part_index + 1,
-                        "product_id": int(metadata["product_id"]),
-                        "title": str(metadata.get("title") or ""),
-                    })
-            InstagramBotMessage.objects.get_or_create(
-                client=client, synthetic_event_key=key,
-                defaults={
-                    "sender_id": client.igsid, "role": InstagramBotMessage.Role.MODEL,
-                    "text": text, "attachments": attachments,
-                    "source": "revision_reply", "status": InstagramBotMessage.Status.DONE,
-                    "send_state": "sent", "provider_namespace": effect.provider_namespace,
-                    "provider_message_id": effect.provider_message_id,
-                    "processed_at": effect.terminal_at or timezone.now(),
-                    "gemini_request_id": effect.generation_request_id,
-                    "gemini_model": effect.generation_model,
-                },
-            )
-        if shown:
-            context = dict(client.sales_context or {})
-            previous = context.get("shown_products") or {}
-            if int(previous.get("revision_number") or 0) <= revision.revision:
-                context["shown_products"] = {
-                    "at": timezone.now().isoformat(), "items": shown,
-                    "revision_number": revision.revision, "revision_id": revision.pk,
-                    "source_message_watermark": max(revision.sources.values_list("message_id", flat=True)),
-                }
-                client.sales_context = context
-                client.save(update_fields=["sales_context", "updated_at"])
+    """Project canonical receipts locally; safe for finalization and exact echo."""
+    from management.services.ig_revision_reply_projection import project_sent_reply
+
+    return project_sent_reply(revision_id)
 
 
 def _revision_response_purpose_reason(revision):

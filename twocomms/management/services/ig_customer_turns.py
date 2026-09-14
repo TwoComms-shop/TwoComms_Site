@@ -176,6 +176,7 @@ def _record_shadow_revision(
         source_metadata=metadata,
         now=now,
         bypass_quiet=bypass,
+        transfer_sources=True,
     )
     if not result.created or result.revision is None:
         raise RuntimeError(result.reason or "turn_revision_not_created")
@@ -199,7 +200,9 @@ def ensure_turn_for_inbound(
     client_id = getattr(row, "client_id", None)
     if not client_id or getattr(row, "role", "") != InstagramBotMessage.Role.USER:
         return None
-    now = now or _event_at(row) or timezone.now()
+    # Local collection clocks begin at durable ingress, independently of an
+    # old/future provider event timestamp (which still governs channel time).
+    now = now or timezone.now()
     dedupe_key = message_dedupe_key(row)
     bypass = bypasses_debounce(row)
 

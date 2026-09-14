@@ -28,11 +28,13 @@
   function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text);return n;}
   function svg(tag,attrs={}){const n=document.createElementNS(NS,tag);Object.entries(attrs).forEach(([k,v])=>n.setAttribute(k,String(v)));return n;}
   function icon(name){const n=svg('svg',{viewBox:'0 0 24 24','aria-hidden':'true',focusable:'false'});n.append(svg('path',{d:ICONS[name]||ICONS.info}));return n;}
-  function iconFor(n){const mapped=window.TwcJourneyGeometry?.visualFor(n);if(mapped?.icon)return mapped.icon;const key=n.route_kind||n.semantic_key||n.id.split(':')[1];return ({inbound:'message',inquiry:'message',catalog:'shirt',selection:'shirt',brief:'brief',custom_print:'image',dtf:'image',quoted_offer:'tag',terms:'tag',offer:'image',settlement:'money',payment:'money',fulfillment:'package',support:'return',objection_case:'question',employment:'work',collaboration:'handshake',information:'info',community:'gift',consent:'bell',reward:'gift'})[key]||(n.id.startsWith('episode:')?'repeat':'info');}
+  function iconFor(n){if(n.semantic_key==='journey_case')return n.topic==='price'?'tag':n.topic==='payment'?'money':'question';const mapped=window.TwcJourneyGeometry?.visualFor(n);if(mapped?.icon)return mapped.icon;const key=n.route_kind||n.semantic_key||n.id.split(':')[1];return ({inbound:'message',inquiry:'message',catalog:'shirt',selection:'shirt',brief:'brief',custom_print:'image',dtf:'image',quoted_offer:'tag',terms:'tag',offer:'image',settlement:'money',payment:'money',fulfillment:'package',support:'return',objection_case:'question',journey_case:'question',employment:'work',collaboration:'handshake',information:'info',community:'gift',consent:'bell',reward:'gift'})[key]||(n.id.startsWith('episode:')?'repeat':'info');}
   function date(value){const d=new Date(value);return value&&!Number.isNaN(d.getTime())?new Intl.DateTimeFormat('uk-UA',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}).format(d):'';}
   function valueText(value){if(value===null||value===undefined||value==='')return 'Не визначено';if(typeof value==='boolean')return value?'Так':'Ні';if(typeof value!=='object')return String(value);if(Array.isArray(value))return value.map(valueText).filter(Boolean).join(' · ');return [value.title,value.size,value.fit_option_label,value.qty?('×'+value.qty):'',value.order_id?('Замовлення №'+value.order_id):'',value.status_label].filter(Boolean).join(' · ')||'Дані збережено';}
   function interpreted(edge){return edge.relation==='transcript_interpretation'&&edge.authority==='none'&&edge.provenance==='transcript_reconstruction'&&(edge.evidence_refs||[]).length>0;}
-  function witnessed(edge){return !['route','prerequisite','transcript_interpretation'].includes(edge.relation)&&(edge.evidence_refs||[]).length>0;}
+  function contextual(edge){return ['client_scope_assignment','client_order_lifecycle'].includes(edge.relation);}
+  function contextNode(node){return node.producer==='client_order_assignments'&&node.scope==='client'&&node.episode_id===null;}
+  function witnessed(edge){return !['route','prerequisite','transcript_interpretation','client_scope_assignment','client_order_lifecycle'].includes(edge.relation)&&(edge.evidence_refs||[]).length>0;}
   function edgePair(edge){return edge.from_node_id+'\0'+edge.to_node_id;}
   function edgePriority(edge){return witnessed(edge)?2:interpreted(edge)?1:0;}
   function edgeCount(edge){return Number.isInteger(edge.repeated_count)&&edge.repeated_count>0?edge.repeated_count:1;}
@@ -42,11 +44,14 @@
   const RETRY_OUTCOMES=new Set(['new_attempt','wait_for_attempt']);
   function edgeTone(edge){
     if(!witnessed(edge)&&!interpreted(edge))return 'neutral';
+    if(edge.presentation_schema_version==='journey-presentation.v1')return edge.marker_eligible===true?(edge.materiality==='technical_failure'?'danger':'warning'):'recorded';
     if(edge.tone==='danger'||returnEdge(edge)||RETURN_OUTCOMES.has(edge.outcome)||NEGATIVE_OUTCOMES.has(edge.outcome))return 'danger';
     if(edge.tone==='warning'||edge.relation==='retry'||RETRY_OUTCOMES.has(edge.outcome))return 'warning';
     return edge.tone==='success'?'success':'recorded';
   }
-  function planned(node){return ['possible','interpretation'].includes(node.presentation_kind)&&node.implementation_status==='planned';}
+  function exceptional(edge){if(edge.presentation_schema_version==='journey-presentation.v1')return edgePriority(edge)>0&&edge.marker_eligible===true;return edgePriority(edge)>0&&(returnEdge(edge)||['danger','warning'].includes(edgeTone(edge))||['objection','retry','negative'].includes(edge.interpretation_kind)||edge.relation==='retry');}
+  function eventNode(node){return Boolean(node?.presentation_event);}
+  function planned(node){return ['possible','interpretation','client_context'].includes(node.presentation_kind)&&node.implementation_status==='planned';}
   function nodeStatusLabel(node){return node.presentation_kind==='interpretation'?'За перепискою'+(planned(node)?' · Заплановано':''):planned(node)?'Заплановано':node.presentation_kind==='possible'?LABELS.possible:node.state==='complete'&&node.tone==='danger'?'Завершено з негативним результатом':LABELS[node.state]||LABELS.open;}
   function recorded(node){const visits=node.recorded_visits;return visits&&Number.isInteger(visits.count)&&visits.count>0&&Array.isArray(visits.evidence_refs)&&visits.evidence_refs.length>0;}
   const CONDITIONS={confirmed_coverage:'Коли оплату підтверджено',settlement_correction:'Якщо змінилися дані розрахунку',eligible_opt_in:'Запропонувати потрібну згоду',consent_recorded:'Коли згоду зафіксовано',send_capable:'Якщо контакт дозволено',catalog_match:'Якщо це товар каталогу',custom_reference:'Якщо потрібен власний принт',availability:'Перевірити доступність',eligible_follow_up:'Якщо потрібна допомога',wait_for_attempt:'Повторити оплату',offer_correction:'Змінити умови',configuration_correction:'Змінити склад',payment_objection:'Обговорити заперечення',new_attempt:'Нова спроба оплати',current_mockup_accepted:'Після погодження чинного макета',payment_required:'Якщо потрібна оплата',verified_entitlement_covers_total:'Якщо підтверджене право покриває суму',permission_check:'Перевірити дозвіл на контакт',new_selection:'Підібрати інший товар',current_configuration_confirmed:'Якщо чинний склад підтверджено',authorised_reward_grant:'Після дозволу на нагороду'};
@@ -64,17 +69,19 @@
       this.expand=el('button','twc-journey-expand','Весь шлях ↗');this.expand.type='button';this.expand.setAttribute('aria-haspopup','dialog');this.expand.addEventListener('click',()=>this.openMap());top.append(heading,this.select,this.expand);
       this.error=el('p','twc-journey-error');this.error.hidden=true;this.error.setAttribute('role','status');
       this.map=el('div','twc-journey-map');this.svg=svg('svg',{'aria-hidden':'true',focusable:'false'});this.svg.classList.add('twc-journey-guides');this.grid=el('div','twc-journey-grid');this.edgeLayer=el('div','twc-journey-edge-layer');this.map.append(this.svg,this.grid,this.edgeLayer);
+      this.detailButtons=new Map();this.discussionDetails=el('div','twc-journey-discussion-details');this.discussionDetails.hidden=true;
       this.note=el('p','twc-journey-note');this.note.hidden=true;
       this.inlineKey=el('div','twc-journey-inline-key');this.inlineKey.append(el('span','twc-journey-key-actual','Фактичний перехід'),el('span','twc-journey-key-possible','Можливий шлях'));
+      this.contextKey=el('span','twc-journey-key-context');this.contextKey.hidden=true;this.inlineKey.append(this.contextKey);
       this.traceKey=el('span','twc-journey-key-trace','За перепискою');this.traceKey.hidden=true;this.inlineKey.append(this.traceKey);
       this.returnReason=el('button','twc-journey-return-reason');this.returnReason.type='button';this.returnReason.hidden=true;this.returnReason.addEventListener('click',()=>this.selectEdge(this.returnReason.dataset.edgeId));this.inlineKey.append(this.returnReason);
       this.directions=el('button','twc-journey-directions');this.directions.type='button';this.directions.setAttribute('aria-haspopup','dialog');this.directions.addEventListener('click',()=>{this.showPossible=true;this.possibleFamily='inbound';this.openMap();});this.inlineKey.append(this.directions);
-      this.root.append(top,this.error,this.map,this.inlineKey,this.note);
+      this.root.append(top,this.error,this.map,this.inlineKey,this.discussionDetails,this.note);
       this.select.addEventListener('change',()=>this.selectEpisode(this.select.value));
       this.escape=event=>{if(event.key==='Escape'&&this.selected){event.preventDefault();event.stopPropagation();this.closePanel(true);}};
       this.root.addEventListener('keydown',this.escape);
       this.reposition=()=>this.positionPanel();window.addEventListener('scroll',this.reposition,true);
-      this.outside=event=>{if(this.panel&&!this.panel.contains(event.target)&&!event.target.closest('.twc-journey-step,.twc-journey-edge-marker'))this.closePanel(false);};document.addEventListener('pointerdown',this.outside);
+      this.outside=event=>{if(this.panel&&!this.panel.contains(event.target)&&!event.target.closest('.twc-journey-step,.twc-journey-edge-marker,.twc-journey-detail-link'))this.closePanel(false);};document.addEventListener('pointerdown',this.outside);
       this.resize=new ResizeObserver(()=>this.queueLayout());this.resize.observe(this.root);
       this.visibility=()=>{if(!document.hidden)this.updateTimers();};document.addEventListener('visibilitychange',this.visibility);
       this.timerInterval=setInterval(()=>{if(!document.hidden)this.updateTimers();},15000);
@@ -96,7 +103,7 @@
       const previousEdges=sameEpisode?new Set((this.edges||[]).filter(witnessed).map(e=>e.id)):null;
       this.snapshot=snapshot;
       const source=snapshot.graph?.schema_version===1?snapshot.graph:{nodes:snapshot.nodes,edges:[]};
-      const incoming=this.presentGraph(source,snapshot);
+      const incoming=this.presentEvents(this.presentGraph(source,snapshot));
       const seen=new Set();this.graph={...incoming,nodes:(incoming.nodes||[]).filter(n=>{if(!n||typeof n.id!=='string'||seen.has(n.id))return false;seen.add(n.id);return true;})};this.nodeIds=[...seen];
       this.edges=(incoming.edges||[]).filter(e=>e&&typeof e.id==='string'&&seen.has(e.from_node_id)&&seen.has(e.to_node_id));
       this.newEdges=previousEdges?new Set(this.edges.filter(e=>witnessed(e)&&!previousEdges.has(e.id)).map(e=>e.id)):new Set();
@@ -104,10 +111,10 @@
       if(this.selected&&!seen.has(this.selected))this.closePanel(false);
       if(this.selectedEdge&&!this.edges.some(e=>e.id===this.selectedEdge))this.closePanel(false);
       this.root.dataset.clientId=String(snapshot.client_id);this.root.dataset.episodeId=String(snapshot.viewed_episode_id||'');
-      const current=this.graph.nodes.find(n=>n.route_focus)||this.graph.nodes.find(n=>n.current);this.currentId=current?.id;
+      const current=this.graph.display_focus?this.graph.nodes.find(n=>n.id===this.graph.display_focus.node_id):this.graph.nodes.find(n=>n.route_focus)||this.graph.nodes.find(n=>n.current);this.currentId=current?.id;
       const nonCommercial=current?.semantic_key?.startsWith('collaboration')||['employment','employment_response','business_decision','information_question','information_resolved','spam_confirmed'].includes(current?.semantic_key);
       const conversational=nonCommercial||current?.route_kind||!snapshot.viewed_episode_id||!current||current.id==='guide:inquiry';
-      this.title.textContent=conversational?'Звернення':(snapshot.is_history?'Історія · ':'')+(snapshot.viewed_episode?.label||'Покупка '+(snapshot.viewed_episode?.sequence||''));
+      this.title.textContent=conversational?'Звернення':incoming.transcript_reconstruction?.scope==='client'?'Шлях клієнта':(snapshot.is_history?'Історія · ':'')+(snapshot.viewed_episode?.label||'Покупка '+(snapshot.viewed_episode?.sequence||''));
       this.mode.textContent=current&&current.label!==this.title.textContent?' · '+current.label+(current.interpreted_focus?' · за перепискою':''):'';
       this.traceKey.hidden=!incoming.transcript_reconstruction;this.traceKey.title=incoming.transcript_reconstruction?.freshness==='new_messages'?'Є нові повідомлення; шлях потребує оновлення':'Відновлено за текстовою перепискою';this.inlineKey.dataset.hasTrace=String(!this.traceKey.hidden);
       const items=[...(snapshot.episodes?.items||[])];if(snapshot.viewed_episode&&!items.some(e=>e.id===snapshot.viewed_episode.id))items.unshift(snapshot.viewed_episode);
@@ -117,16 +124,51 @@
         let button=this.buttons.get(data.id);
         if(!button){button=el('button','twc-journey-step');button.type='button';button.dataset.nodeId=data.id;const core=el('span','twc-journey-core');core.append(el('span','twc-journey-icon'),el('span','twc-journey-status'));button.append(core,el('span','twc-journey-step-label'),el('span','twc-journey-count'));button.addEventListener('click',()=>this.toggleNode(data.id));this.buttons.set(data.id,button);const cell=el('div','twc-journey-cell');cell.append(button);this.cells.set(data.id,cell);this.grid.append(cell);}
         const key=iconFor(data);if(button.dataset.icon!==key){button.dataset.icon=key;button.querySelector('.twc-journey-icon').replaceChildren(icon(key));}
-        const state=data.presentation_kind==='possible'?'possible':STATES.has(data.state)?data.state:'open';button.dataset.state=state;button.dataset.tone=toneFor(data);button.dataset.current=String(data.id===this.currentId);button.querySelector('.twc-journey-step-label').textContent=data.short_label||window.TwcJourneyGeometry?.visualFor(data)?.short_label||data.label;
+        const state=data.presentation_kind==='possible'?'possible':STATES.has(data.state)?data.state:'open';button.dataset.state=state;button.dataset.tone=eventNode(data)?data.presentation_event.tone:toneFor(data);button.dataset.current=String(data.id===this.currentId);button.querySelector('.twc-journey-step-label').textContent=data.short_label||window.TwcJourneyGeometry?.visualFor(data)?.short_label||data.label;
+        button.dataset.event=String(eventNode(data));this.cells.get(data.id).dataset.event=String(eventNode(data));
         button.dataset.recorded=String(Boolean(recorded(data)));button.dataset.interpreted=String(data.presentation_kind==='interpretation');
-        const statusKey=planned(data)?'brief':data.tone==='danger'?'cross':state==='complete'?'check':state==='invalidated'?'return':data.tone==='manager'?'person':data.waiting?.evidence_refs?.length?'clock':null;const status=button.querySelector('.twc-journey-status');status.hidden=!statusKey;if(statusKey)status.replaceChildren(icon(statusKey));
+        const statusKey=eventNode(data)?null:planned(data)?'brief':data.tone==='danger'?'cross':state==='complete'?'check':state==='invalidated'?'return':data.tone==='manager'?'person':data.waiting?.evidence_refs?.length?'clock':null;const status=button.querySelector('.twc-journey-status');status.hidden=!statusKey;if(statusKey)status.replaceChildren(icon(statusKey));
         const progress=data.requirements;const valid=progress&&Number.isInteger(progress.completed)&&Number.isInteger(progress.total)&&progress.total>0&&progress.completed>=0&&progress.completed<=progress.total;
-        const mentions=data.semantic_key==='objection_case'?(data.facts||[]).find(f=>f.id?.endsWith(':repeat_count')):null;const repeats=Number.isInteger(mentions?.value)&&mentions.value>1?mentions.value:0;const count=button.querySelector('.twc-journey-count');count.hidden=!valid&&!repeats;count.textContent=valid?progress.completed+'/'+progress.total:repeats?'×'+repeats:'';count.title=valid?'Виконано обов’язкових умов: '+count.textContent:repeats?'Повторних згадок: '+repeats:'';
+        const mentions=data.semantic_key==='objection_case'?(data.facts||[]).find(f=>f.id?.endsWith(':repeat_count')):null;const eventCount=data.presentation_event?.count;const repeats=Number.isInteger(eventCount)&&eventCount>1?eventCount:Number.isInteger(mentions?.value)&&mentions.value>1?mentions.value:0;const count=button.querySelector('.twc-journey-count');count.hidden=!valid&&!repeats;count.textContent=valid?progress.completed+'/'+progress.total:repeats?'×'+repeats:'';count.title=valid?'Виконано обов’язкових умов: '+count.textContent:repeats?'Повторних згадок: '+repeats:'';
         button.setAttribute('aria-expanded',String(this.selected===data.id));button.dataset.baseLabel=data.label+' — '+nodeStatusLabel(data)+(data.id===this.currentId?', поточний фокус':'')+(data.waiting?.evidence_refs?.length?', очікування: '+data.waiting.label:'')+(valid?', умов '+count.textContent:repeats?', повторних згадок '+repeats:'');button.setAttribute('aria-label',button.dataset.baseLabel);button.title=data.label+' · '+nodeStatusLabel(data);
       });
       if(this.selected)this.renderPanel();if(this.modal){this.renderAccessibleList();this.mapCoverage.textContent=this.graph.transcript_reconstruction?'Кольоровий пунктир — за перепискою; суцільні стрілки — збережені переходи. Початок історії та медіа можуть бути відсутні.':this.graph.coverage?.semantic_transitions==='missing_source'?(this.graph.nodes.some(recorded)?'Є збережені події етапів. Переходи між ними не зафіксовані.':'Переходи між етапами не зафіксовані.'):'Суцільні стрілки — збережені переходи; пунктир — можливі шляхи.';}this.queueLayout();this.updateTimers();
     }
+    possibleCatalogue(catalogue){
+      if(!catalogue)return catalogue;
+      const key='objection_case',incoming=catalogue.transitions.filter(e=>e.target_key===key),outgoing=catalogue.transitions.filter(e=>e.source_key===key);
+      // These are conditional structural paths, not occurrences of an objection.
+      const bypass=incoming.flatMap(a=>outgoing.filter(b=>b.target_key!==a.source_key).map(b=>({id:'possible-objection:'+a.id+':'+b.id,source_key:a.source_key,target_key:b.target_key,outcome:b.outcome,via_objection:true})));
+      return {...catalogue,definitions:catalogue.definitions.filter(d=>d.key!==key),transitions:[...catalogue.transitions.filter(e=>e.source_key!==key&&e.target_key!==key),...bypass]};
+    }
+    presentEvents(graph){
+      const nodes=graph.nodes.filter(n=>n.semantic_key!=='objection_case'||(n.presentation_kind!=='possible'&&((n.evidence_refs||[]).length||graph.edges.some(e=>edgePriority(e)>0&&(e.from_node_id===n.id||e.to_node_id===n.id)))));
+      const ids=new Set(nodes.map(n=>n.id)),edges=graph.edges.filter(e=>ids.has(e.from_node_id)&&ids.has(e.to_node_id));
+      for(const node of nodes.filter(n=>n.semantic_key==='objection_case')){
+        const incident=edges.filter(e=>edgePriority(e)>0&&(e.from_node_id===node.id||e.to_node_id===node.id));
+        if(node.presentation_schema_version==='journey-presentation.v1'&&node.presentation_kind==='interpretation'){
+          node.label='Деталі переписки';node.short_label='Деталі';node.tone='recorded';
+          node.presentation_event={edge_ids:incident.map(e=>e.id),anchor_ids:[],mode:'detail',count:1,tone:'recorded'};continue;
+        }
+        if(!(node.evidence_refs||[]).length&&!incident.length)continue;
+        const incoming=incident.filter(e=>e.to_node_id===node.id&&e.from_node_id!==node.id),outgoing=incident.filter(e=>e.from_node_id===node.id&&e.to_node_id!==node.id);
+        const origins=[...new Set(incoming.map(e=>e.from_node_id))],targets=[...new Set(outgoing.map(e=>e.to_node_id))];
+        const unambiguous=origins.length<=1&&targets.length<=1;
+        const anchors=unambiguous?[...new Set([...origins,...targets])]:[];
+        const count=(node.facts||[]).find(f=>f.id?.endsWith(':repeat_count'))?.value||incident.filter(e=>e.to_node_id===node.id&&e.reason_code!=='objection_addressed').reduce((sum,e)=>sum+edgeCount(e),0)||1;
+        node.presentation_event={edge_ids:incident.map(e=>e.id),anchor_ids:anchors,mode:anchors.length===2?'between':anchors.length===1?'attached':'unplaced',count,tone:incident.some(e=>edgeTone(e)==='danger')?'danger':'warning'};
+      }
+      for(const item of graph.trace_cases||[]){
+        if(item.marker_eligible!==true||!item.source_node_id||!ids.has(item.source_node_id))continue;
+        const labels={price:'Заперечення щодо ціни',payment:'Складність з оплатою',configuration:'Уточнення параметрів',purchase:'Перешкода замовленню'};
+        nodes.push({...item,id:item.id,semantic_key:'journey_case',label:labels[item.topic]||'Важливе уточнення',state:'partial',current:false,presentation_kind:'interpretation',facts:[],
+          presentation_event:{edge_ids:[...new Set([...(item.source_edge_ids||[]),...(item.attempt_edge_ids||[])])],anchor_ids:[item.source_node_id],mode:'attached',count:1,tone:item.materiality==='technical_failure'?'danger':'warning'}});
+      }
+      const processIds=new Set(nodes.filter(n=>!eventNode(n)).map(n=>n.id));
+      return {...graph,nodes,edges,inline_main_ids:graph.inline_main_ids?.filter(id=>processIds.has(id)),inline_alternative_ids:graph.inline_alternative_ids?.filter(id=>processIds.has(id))};
+    }
     presentGraph(source,snapshot){
+      snapshot={...snapshot,catalogue:this.possibleCatalogue(snapshot.catalogue)};
       // Cycle metadata belongs in the selector, not a disconnected graph circle.
       const nodes=(source.nodes||[]).filter(n=>!n.id?.startsWith('episode:')).map(n=>({...n,structural_key:GUIDE_STRUCTURE[n.id]||n.semantic_key}));
       const ids=new Set(nodes.map(n=>n.id));const edges=(source.edges||[]).filter(e=>ids.has(e.from_node_id)&&ids.has(e.to_node_id)).map(e=>({...e}));
@@ -143,7 +185,7 @@
         if(actual.length===1){anchors.set(d.key,actual[0].id);return;}
         const id='possible:'+d.key;anchors.set(d.key,id);nodes.push({id,semantic_key:d.key,label:d.label,state:null,current:false,presentation_kind:'possible',implementation_status:d.implementation_status,implementation_note:d.implementation_note,summary:'Сценарій передбачає цей етап. Подій цього клієнта тут не зафіксовано.',facts:[],evidence_refs:[],timers:[]});
       });
-      catalogue.transitions.forEach(e=>{if(anchors.has(e.source_key)&&anchors.has(e.target_key))edges.push({id:e.id,from_node_id:anchors.get(e.source_key),to_node_id:anchors.get(e.target_key),relation:'route',outcome:e.outcome,evidence_refs:[],tone:'neutral',condition_label:CONDITIONS[e.outcome]||(e.source_key==='inbound'&&e.target_key==='ad_resolved_product'?'Якщо товар відомий':e.source_key==='inbound'&&e.target_key==='catalog_discovery'?'Якщо потрібен підбір':''),structural_path:[e.source_key,e.target_key]});});
+      catalogue.transitions.forEach(e=>{if(anchors.has(e.source_key)&&anchors.has(e.target_key))edges.push({id:e.id,from_node_id:anchors.get(e.source_key),to_node_id:anchors.get(e.target_key),relation:'route',outcome:e.outcome,evidence_refs:[],tone:'neutral',condition_label:e.via_objection?'Якщо виникне заперечення':CONDITIONS[e.outcome]||(e.source_key==='inbound'&&e.target_key==='ad_resolved_product'?'Якщо товар відомий':e.source_key==='inbound'&&e.target_key==='catalog_discovery'?'Якщо потрібен підбір':''),structural_path:[e.source_key,e.target_key]});});
       return {...source,nodes,edges};
     }
     inlineGraph(source,nodes,edges,catalogue){
@@ -170,22 +212,24 @@
         if(topic&&topicKey===d.key){anchors.set(d.key,topic.id);topic.structural_context_key=d.key;return;}
         const id='possible:'+d.key;anchors.set(d.key,id);nodes.push({id,semantic_key:d.key,structural_key:d.key,label:d.label,presentation_kind:'possible',implementation_status:d.implementation_status,implementation_note:d.implementation_note,state:null,current:false,summary:'Можливий шлях. Цей етап не підтверджений подією клієнта.',facts:[],evidence_refs:[],timers:[]});
       });
-      catalogue.transitions.forEach(e=>{if(anchors.has(e.source_key)&&anchors.has(e.target_key))edges.push({id:e.id,from_node_id:anchors.get(e.source_key),to_node_id:anchors.get(e.target_key),relation:'route',outcome:e.outcome,evidence_refs:[],tone:'neutral',structural_path:[e.source_key,e.target_key]});});
+      catalogue.transitions.forEach(e=>{if(anchors.has(e.source_key)&&anchors.has(e.target_key))edges.push({id:e.id,from_node_id:anchors.get(e.source_key),to_node_id:anchors.get(e.target_key),relation:'route',outcome:e.outcome,evidence_refs:[],tone:'neutral',condition_label:e.via_objection?'Якщо виникне заперечення':'',structural_path:[e.source_key,e.target_key]});});
       // An accepted topic and a business fact may coexist at the same semantic
       // location. Keep both identities; only canonical possible neighbors can
       // connect the topic. This is never a topic→business completion edge.
       if(topicKey&&anchors.get(topicKey)!==topic.id)catalogue.transitions.forEach(e=>{
         const from=e.source_key===topicKey?topic.id:anchors.get(e.source_key),to=e.target_key===topicKey?topic.id:anchors.get(e.target_key);
-        if((e.source_key===topicKey||e.target_key===topicKey)&&from&&to)edges.push({id:'topic-context:'+e.id,from_node_id:from,to_node_id:to,relation:'route',outcome:e.outcome,evidence_refs:[],tone:'neutral',structural_path:[e.source_key,e.target_key]});
+        if((e.source_key===topicKey||e.target_key===topicKey)&&from&&to)edges.push({id:'topic-context:'+e.id,from_node_id:from,to_node_id:to,relation:'route',outcome:e.outcome,evidence_refs:[],tone:'neutral',condition_label:e.via_objection?'Якщо виникне заперечення':'',structural_path:[e.source_key,e.target_key]});
       });
       const otherDirections=catalogue.transitions.filter(e=>e.source_key==='inbound'&&e.target_key!=='spam_confirmed'&&!wanted.has(e.target_key)).length;
       return {...source,nodes,edges,inline_main_ids:[...chain.map(k=>anchors.get(k)).filter(Boolean),...nodes.filter(n=>n.semantic_key==='client_order_context').map(n=>n.id)],inline_alternative_ids:extras.map(k=>anchors.get(k)).filter(Boolean),inline_family:family,other_directions:otherDirections};
     }
     syncVisibility(width){
-      if(!this.graph)return;let nodes=this.graph.nodes;
+      if(!this.graph)return;const eventNodes=this.graph.nodes.filter(eventNode),contextNodes=this.graph.nodes.filter(contextNode);let nodes=this.graph.nodes.filter(n=>!eventNode(n)&&(this.modal||!contextNode(n)));
+      const assignment=!this.modal&&this.edges.find(e=>e.relation==='client_scope_assignment'&&contextNodes.some(n=>n.id===e.to_node_id));
+      const focus=this.graph.nodes.find(n=>n.id===this.currentId),layoutFocus=eventNode(focus)?focus.presentation_event.anchor_ids[0]:this.currentId;
       this.displayEdges=this.edges;
       if(!this.modal&&this.graph.inline_main_ids){
-        const overview=window.TwcJourneyGeometry.overview({nodes,edges:this.edges,mainIds:this.graph.inline_main_ids,alternativeIds:this.graph.inline_alternative_ids,currentId:this.currentId,width});
+        const overview=window.TwcJourneyGeometry.overview({nodes,edges:this.edges,mainIds:assignment?[...new Set([...this.graph.inline_main_ids,layoutFocus,assignment.from_node_id])]:this.graph.inline_main_ids,alternativeIds:this.graph.inline_alternative_ids,currentId:layoutFocus,priorityIds:assignment?[assignment.from_node_id]:[],width});
         nodes=overview.nodes;this.inlineSlots=overview.slots;this.displayEdges=overview.edges;
       }else if(!this.modal){
         this.inlineSlots=null;
@@ -194,9 +238,22 @@
         if(width<560){const before=direct.find(e=>e.to_node_id===current),after=direct.find(e=>e.from_node_id===current);const ids=width<330?[current]:[before?.from_node_id,current,after?.to_node_id].filter(Boolean);nodes=nodes.filter(n=>ids.includes(n.id));}
         else{const cap=Math.max(3,Math.min(8,Math.floor(width/72)));const priorityNodes=nodes.filter(n=>n.waiting?.evidence_refs?.length||(n.semantic_key==='objection_case'&&n.state==='partial')).map(n=>n.id);const priorities=[current,...priorityNodes,...direct.flatMap(e=>[e.from_node_id,e.to_node_id]),...(this.graph.overview_node_ids||[])];const ids=[...new Set(priorities.filter(Boolean))].slice(0,cap);nodes=nodes.filter(n=>ids.includes(n.id));const lanes=[...new Set(nodes.map(n=>n.layout?.lane||0))].sort((a,b)=>a-b);if(lanes.length>3){const activeLane=nodes.find(n=>n.id===current)?.layout?.lane||0;const allowed=[activeLane,...lanes.filter(l=>l!==activeLane)].slice(0,3);nodes=nodes.filter(n=>allowed.includes(n.layout?.lane||0));}}
       }
-      this.visibleIds=nodes.map(n=>n.id);this.cells.forEach((c,id)=>{c.hidden=!this.visibleIds.includes(id);});
+      // Website order facts occupy their own compact row, never the discussion sequence.
+      if(!this.modal&&contextNodes.length){
+        const parent=contextNodes.find(n=>n.id===assignment?.to_node_id)||contextNodes.find(n=>n.semantic_key==='client_order_context');
+        const chain=parent?[parent,...contextNodes.filter(n=>n.contextual_binding?.order_id===parent.contextual_binding?.order_id&&['client_order_shipping','client_order_delivery'].includes(n.semantic_key))]:[];
+        if(!this.inlineSlots)this.inlineSlots=new Map(nodes.map((n,col)=>[n.id,{col,row:0}]));
+        nodes=nodes.filter(n=>this.inlineSlots.get(n.id)?.row===0);this.inlineSlots=new Map([...this.inlineSlots].filter(([id])=>nodes.some(n=>n.id===id)));
+        chain.slice(0,3).forEach((n,col)=>{nodes.push(n);this.inlineSlots.set(n.id,{col,row:1});});
+      }
+      this.visibleIds=nodes.map(n=>n.id);
+      this.eventVisibleIds=eventNodes.filter(n=>!n.presentation_event.anchor_ids.length||n.presentation_event.anchor_ids.some(id=>this.visibleIds.includes(id))).map(n=>n.id);
+      this.visibleIds.push(...this.eventVisibleIds);
+      const displayed=new Set(this.displayEdges.map(e=>e.id));this.displayEdges=[...this.displayEdges,...this.edges.filter(e=>!displayed.has(e.id)&&this.visibleIds.includes(e.from_node_id)&&this.visibleIds.includes(e.to_node_id)&&(contextual(e)||eventNode(this.graph.nodes.find(n=>n.id===e.from_node_id))||eventNode(this.graph.nodes.find(n=>n.id===e.to_node_id))))];
+      this.contextKey.hidden=!nodes.some(contextNode);this.contextKey.textContent=assignment?.condition_label||'Пов’язане замовлення';
+      this.cells.forEach((c,id)=>{c.hidden=!this.visibleIds.includes(id);});
       if(this.selected&&!this.visibleIds.includes(this.selected))this.closePanel(false);
-      const omitted=this.nodeIds.length-nodes.length;const attention=nodes.length<this.graph.nodes.length?this.graph.nodes.filter(n=>!this.visibleIds.includes(n.id)&&(n.waiting?.evidence_refs?.length||(n.semantic_key==='objection_case'&&n.state==='partial'))):[];const traceStale=this.graph.transcript_reconstruction?.freshness==='new_messages';this.note.hidden=!attention.length&&!traceStale;this.note.textContent=traceStale?'Є нові повідомлення; шлях потребує оновлення':attention.length?'Поза оглядом: '+attention.map(n=>n.waiting?.label||n.label).slice(0,2).join(' · ')+(attention.length>2?' · ще '+(attention.length-2):''):'';this.expand.textContent=omitted?'Весь шлях · '+this.nodeIds.length+' ↗':'Весь шлях ↗';this.expand.title=omitted?'Ще '+omitted+' етапів у повній карті':'Відкрити повну карту';
+      const omitted=this.nodeIds.length-this.visibleIds.length;const attention=nodes.length<this.graph.nodes.length?this.graph.nodes.filter(n=>!this.visibleIds.includes(n.id)&&(n.waiting?.evidence_refs?.length||(n.semantic_key==='objection_case'&&n.state==='partial'))):[];const traceStale=this.graph.transcript_reconstruction?.freshness==='new_messages';this.note.hidden=!attention.length&&!traceStale;this.note.textContent=traceStale?'Є нові повідомлення; шлях потребує оновлення':attention.length?'Поза оглядом: '+attention.map(n=>n.waiting?.label||n.label).slice(0,2).join(' · ')+(attention.length>2?' · ще '+(attention.length-2):''):'';this.expand.textContent=omitted?'Весь шлях · '+this.nodeIds.length+' ↗':'Весь шлях ↗';this.expand.title=omitted?'Ще '+omitted+' етапів у повній карті':'Відкрити повну карту';
       this.expand.disabled=!this.nodeIds.length;
       this.inlineKey.hidden=Boolean(this.modal)||!this.graph.inline_main_ids;
       this.directions.hidden=!this.graph.inline_main_ids;this.directions.textContent='Інші напрями ↗';
@@ -205,13 +262,14 @@
     selectEdge(id){const e=this.edges.find(e=>e.id===id);if(!e)return;if(this.selectedEdge===id){this.closePanel(false);return;}this.selected=e.from_node_id;this.selectedEdge=id;this.panelKey='';this.renderPanel();this.queueLayout();}
     parallelEdges(edge){return this.edges.filter(item=>edgePair(item)===edgePair(edge)&&(witnessed(item)||interpreted(item))).sort((a,b)=>edgePriority(b)-edgePriority(a)||(b.last_step_index??-1)-(a.last_step_index??-1));}
     edgeControl(id){const edge=this.edges.find(item=>item.id===id);return this.edgeButtons.get(id)||(edge&&this.parallelEdges(edge).map(item=>this.edgeButtons.get(item.id)).find(Boolean))||(!this.returnReason.hidden&&this.returnReason.dataset.edgeId===id?this.returnReason:null);}
-    closePanel(returnFocus){const target=this.selectedEdge?(this.edgeControl(this.selectedEdge)||this.buttons.get(this.selected)):this.buttons.get(this.selected);this.selected=null;this.selectedEdge=null;this.panelKey='';this.panel?.remove();this.panel=null;this.buttons.forEach(b=>b.setAttribute('aria-expanded','false'));this.edgeButtons.forEach(b=>b.setAttribute('aria-expanded','false'));this.queueLayout();if(returnFocus)target?.focus({preventScroll:true});}
+    closePanel(returnFocus){const target=this.selectedEdge?(this.edgeControl(this.selectedEdge)||this.buttons.get(this.selected)):(this.detailButtons.get(this.selected)||this.buttons.get(this.selected));this.selected=null;this.selectedEdge=null;this.panelKey='';this.panel?.remove();this.panel=null;this.buttons.forEach(b=>b.setAttribute('aria-expanded','false'));this.edgeButtons.forEach(b=>b.setAttribute('aria-expanded','false'));this.detailButtons.forEach(b=>b.setAttribute('aria-expanded','false'));this.queueLayout();if(returnFocus)target?.focus({preventScroll:true});}
     renderPanel(){
       const node=this.graph.nodes.find(item=>item.id===this.selected);if(!node)return;
       const edge=this.selectedEdge?this.edges.find(item=>item.id===this.selectedEdge):null;
       const branch=null;
       const observed=edge&&witnessed(edge),reconstructed=edge&&interpreted(edge);
-      const data=edge?{...node,label:node.label+' → '+(this.graph.nodes.find(n=>n.id===edge.to_node_id)?.label||''),summary:(reconstructed?'За перепискою · ':'')+(edge.summary||edge.reason_label||(observed?'Зафіксований зв’язок':(edge.condition_label?edge.condition_label+' · ':'')+'Можливий зв’язок; не підтверджує перехід')),facts:edge.facts||[],evidence_refs:edge.evidence_refs||[]}:planned(node)?{...node,summary:(node.presentation_kind==='interpretation'?'За перепискою · '+(node.summary?node.summary+' · ':''):'')+'Заплановано'+(node.implementation_note?' · '+node.implementation_note:'')}:node;
+      const assignment=!edge&&contextNode(node)?this.edges.find(e=>e.relation==='client_scope_assignment'&&e.to_node_id===node.id):null;
+      const data=edge?{...node,label:node.label+(contextual(edge)?' — ':' → ')+(this.graph.nodes.find(n=>n.id===edge.to_node_id)?.label||''),summary:(reconstructed?'За перепискою · ':'')+(edge.summary||edge.reason_label||(contextual(edge)?(edge.condition_label||'Контекст замовлення')+' · '+(edge.summary||'') :observed?'Зафіксований зв’язок':(edge.condition_label?edge.condition_label+' · ':'')+'Можливий зв’язок; не підтверджує перехід')),facts:edge.facts||[],evidence_refs:edge.evidence_refs||[]}:assignment?{...node,summary:assignment.condition_label+' · '+(node.summary||'Контекст замовлення клієнта')}:planned(node)?{...node,summary:(node.presentation_kind==='interpretation'?'За перепискою · '+(node.summary?node.summary+' · ':''):'')+'Заплановано'+(node.implementation_note?' · '+node.implementation_note:'')}:node;
       const events=((this.graph.history||this.snapshot.history||{}).events||[]).filter(item=>edge?(edge.event_ids||[]).includes(item.id):item.node_id===this.selected);
       const returns=!this.modal&&edge&&returnEdge(edge)?this.edges.filter(item=>returnEdge(item)&&(witnessed(item)||interpreted(item))&&this.positions?.has(item.from_node_id)&&this.positions.has(item.to_node_id)):[];
       const choices=returns.length?returns:edge&&edgePriority(edge)>0?this.parallelEdges(edge):[];
@@ -229,18 +287,34 @@
         choices.forEach(item=>{const from=this.graph.nodes.find(n=>n.id===item.from_node_id),to=this.graph.nodes.find(n=>n.id===item.to_node_id);picker.append(new Option((from?.label||'')+' → '+(to?.label||'')+' · '+(interpreted(item)?'За перепискою · ':'Збережений перехід · ')+(item.summary||item.reason_label||'Уточнення')+(edgeCount(item)>1?' ×'+edgeCount(item):''),item.id));});picker.value=edge.id;
         picker.addEventListener('change',()=>{this.selectEdge(picker.value);this.panel?.querySelector('.twc-journey-return-picker select')?.focus({preventScroll:true});});label.append(picker);body.append(label);
       }
-      if(reconstructed||(!edge&&node.transcript_interpretation)){const note=el('div','twc-journey-trace-note');note.append(el('p','','За перепискою. Підтвердження оплати й дозволів перевіряються окремо.'));if(!edge)this.appendSources(note,node.transcript_interpretation.evidence_refs||[],64);note.append(el('p','','Частина текстової переписки; давніші повідомлення й медіа можуть бути відсутні.'));body.append(note);}
+      if(!edge&&eventNode(node))this.appendEventDetails(body,node);
+      if(reconstructed||(!edge&&node.transcript_interpretation&&!eventNode(node))){const note=el('div','twc-journey-trace-note');note.append(el('p','','За перепискою. Підтвердження оплати й дозволів перевіряються окремо.'));if(!edge)this.appendSources(note,node.transcript_interpretation.evidence_refs||[],64);note.append(el('p','','Частина текстової переписки; давніші повідомлення й медіа можуть бути відсутні.'));body.append(note);}
       if(!edge&&recorded(node)){const visits=node.recorded_visits;const heading=(visits.has_backfilled?'Є відновлені записи подій':'Є збережені події')+' · '+(visits.history_truncated?'≥':'')+visits.count;body.append(el('p','twc-journey-visit-note',heading));if(visits.last_at)body.append(el('p','twc-journey-fact-note','Остання подія: '+date(visits.last_at)));}
       if(!edge)this.appendRequirements(body,node);
       if(!edge&&this.modal){const options=this.edges.filter(e=>e.from_node_id===node.id&&e.relation==='route');if(options.length){const section=el('div','twc-journey-options');section.append(el('h5','','Можливі продовження'));options.forEach(e=>{const target=this.graph.nodes.find(n=>n.id===e.to_node_id),button=el('button','', (e.condition_label?e.condition_label+' → ':'→ ')+(target?.label||''));button.type='button';button.addEventListener('click',()=>this.selectEdge(e.id));section.append(button);});body.append(section);}}
       (data.facts||[]).filter(fact=>!branch||branch.facts.includes(fact.id)).forEach(fact=>{const row=el('div','twc-journey-fact');row.dataset.factId=fact.id;row.dataset.tone=['success','warning'].includes(fact.tone)?fact.tone:'neutral';row.dataset.state=STATES.has(fact.state)?fact.state:'partial';const label=el('div','twc-journey-fact-label');label.append(el('i','twc-journey-fact-mark'),el('span','',fact.label));const value=el('div','twc-journey-fact-value',fact.format==='datetime'?(date(fact.value)||'Час не зафіксовано'):valueText(fact.value));if(fact.captured_at)value.append(el('div','twc-journey-fact-note',date(fact.captured_at)));row.append(label,value);facts.append(row);});
-      if(!facts.children.length)facts.append(el('p','twc-journey-empty','Підтверджених даних цього етапу ще немає.'));body.append(facts);if(!edge)this.appendTimerDetails(body,node);
+      if(!facts.children.length&&!eventNode(node))facts.append(el('p','twc-journey-empty','Підтверджених даних цього етапу ще немає.'));body.append(facts);if(!edge)this.appendTimerDetails(body,node);
       const details=el('details');details.open=oldOpen;details.append(el('summary','','Історія та джерела'));const history=el('ol','twc-journey-history');
       events.forEach(event=>{const item=el('li'),copy=el('div','',event.label||'Подія');const when=el('time','',date(event.occurred_at||event.recorded_at));if(event.occurred_at)when.dateTime=event.occurred_at;copy.append(when);this.appendSources(copy,event.evidence_refs||[]);item.append(copy);history.append(item);});
       if(!events.length)history.append(el('li','','Окремих подій для цього етапу ще не зафіксовано.'));details.append(history);
       const refs=data.evidence_refs||[];if(refs.length){const sources=el('div');this.appendSources(sources,refs,reconstructed?64:8);details.append(sources);}
       if((this.snapshot.history||{}).has_more)details.append(el('p','twc-journey-coverage','Показано останні події. Повна історія зберігається у джерелах.'));body.append(details);this.panel.append(body);(this.modal||this.root).append(this.panel);body.scrollTop=oldScroll;
       if(hadCloseFocus)close.focus({preventScroll:true});if(hadSummaryFocus)details.querySelector('summary').focus({preventScroll:true});
+    }
+    appendEventDetails(body,node){
+      const section=el('div','twc-journey-event-details'),events=this.edges.filter(e=>node.presentation_event.edge_ids.includes(e.id)).sort((a,b)=>(a.last_step_index??0)-(b.last_step_index??0));
+      if(events.some(interpreted))section.append(el('p','twc-journey-fact-note','За перепискою'));
+      if(node.presentation_event.mode!=='detail'&&(node.presentation_event.unplaced||node.presentation_event.mode==='unplaced'))section.append(el('p','twc-journey-fact-note','Зв’язок із конкретним етапом не визначено.'));
+      for(const event of events){
+        const item=el('div','twc-journey-event-detail');item.dataset.tone=edgeTone(event);
+        item.append(el('b','',event.reason_label||'Уточнення'),el('p','',event.summary||'Подробиці — у повідомленні'+(edgeCount(event)>1?' · ×'+edgeCount(event):'')));
+        const times=[...new Set((event.evidence_refs||[]).map(ref=>date(ref.message_at)).filter(Boolean))];
+        item.append(el('p','twc-journey-fact-note','Коли: '+(times.join(' · ')||'час повідомлення не зафіксовано')));
+        if(edgeCount(event)>1)item.append(el('span','twc-journey-fact-note','Повторень: '+edgeCount(event)+' · '));
+        this.appendSources(item,event.evidence_refs||[],64);section.append(item);
+      }
+      if(!events.length){const refs=[...(node.evidence_refs||[]),...(node.trace_details||[]).flatMap(item=>item.evidence_refs||[])],times=[...new Set(refs.map(ref=>date(ref.message_at)).filter(Boolean))];section.append(el('p','twc-journey-fact-note','Коли: '+(times.join(' · ')||'час події не зафіксовано')));}
+      body.append(section);
     }
     appendSources(root,refs,limit=8){const seen=new Set();refs.slice(0,limit).forEach(ref=>{const key=ref.kind+':'+ref.id;if(seen.has(key)||!ref.id)return;seen.add(key);const labels={message:'Повідомлення',source_message:'Повідомлення',order:'Замовлення',funnel_event:'Подія',episode_event:'Подія',episode:'Покупка',payment_projection:'Оплата',payment_review:'Перевірка оплати'};const label=(labels[ref.kind]||'Джерело')+' №'+ref.id;const actionable=this.options.onEvidence&&['message','source_message'].includes(ref.kind);const link=el(actionable?'button':'span','twc-journey-source',label);if(actionable){link.type='button';link.addEventListener('click',()=>{if(this.modal)this.closeMap();this.closePanel(false);this.options.onEvidence(ref,link);});}root.append(link);});}
     appendRequirements(body,node){
@@ -311,8 +385,8 @@
       this.familySelect=el('select');this.familySelect.setAttribute('aria-label','Напрям можливих шляхів');[['inbound','Напрями звернень'],['catalog','Одяг і оплата'],['custom','Власний принт / DTF'],['collaboration','Співпраця'],['employment','Робота в команді'],['information','Інформація'],['prize','Приз'],['after','Після покупки'],['all','Усі напрями']].forEach(([value,label])=>this.familySelect.append(new Option(label,value)));this.familySelect.value=this.possibleFamily||'inbound';this.familySelect.hidden=!this.showPossible;this.familySelect.addEventListener('change',()=>{this.closePanel(false);this.possibleFamily=this.familySelect.value;this.update(this.snapshot,{force:true});this.layout();this.centerCurrent();});tools.append(this.familySelect);
       this.viewport=el('div','twc-journey-viewport');this.viewport.tabIndex=0;this.viewport.setAttribute('aria-label','Карта. Стрілки для переміщення; кнопки плюс і мінус для масштабу.');this.canvas=el('div','twc-journey-canvas');this.canvas.append(this.map);this.viewport.append(this.canvas);
       this.accessible=el('details','twc-journey-accessible');this.accessible.append(el('summary','','Етапи й переходи списком'));this.accessibleBody=el('div');this.accessible.append(this.accessibleBody);
-      const legend=el('div','twc-journey-map-legend');[['recorded','○ Є збережені події'],['recorded','━ Збережений перехід'],['recorded','┄ За перепискою'],['success','✓ Підтверджено'],['danger','↶ Повернення / негативний результат'],['warning','↻ Повтор / заперечення'],['neutral','┄ Можливий шлях']].forEach(([tone,label])=>{const item=el('span','',label);item.dataset.tone=tone;legend.append(item);});
-      this.mapCoverage=el('p','twc-journey-map-coverage');dialog.append(top,tools,legend,this.mapCoverage,this.viewport,this.accessible);this.modal=dialog;document.body.append(dialog);
+      const legend=el('div','twc-journey-map-legend');[['recorded','○ Є збережені події'],['recorded','━ Збережений перехід'],['recorded','┄ За перепискою'],['success','✓ Підтверджено'],['danger','× Негативний результат'],['warning','! Підтверджена перешкода'],['neutral','┄ Можливий шлях'],['neutral','— Замовлення клієнта']].forEach(([tone,label])=>{const item=el('span','',label);item.dataset.tone=tone;legend.append(item);});
+      this.mapCoverage=el('p','twc-journey-map-coverage');dialog.append(top,tools,legend,this.mapCoverage,this.viewport,this.discussionDetails,this.accessible);this.modal=dialog;document.body.append(dialog);
       dialog.addEventListener('keydown',this.escape);dialog.addEventListener('cancel',event=>{event.preventDefault();if(this.selected)this.closePanel(true);else this.closeMap();});dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)this.closeMap();}});
       this.viewport.addEventListener('wheel',event=>{if(event.ctrlKey){event.preventDefault();this.setZoom(this.zoom*Math.exp(-event.deltaY*.01));}},{passive:false});
       this.bindPan();this.modalResize=new ResizeObserver(()=>this.queueLayout());this.modalResize.observe(this.viewport);this.oldBodyOverflow=document.body.style.overflow;document.body.style.overflow='hidden';dialog.showModal();this.zoom=1;this.update(this.snapshot,{force:true});this.layout();this.fitMap();close.focus({preventScroll:true});
@@ -324,7 +398,7 @@
       const end=event=>{points.delete(event.pointerId);drag=null;pinch=null;};this.viewport.addEventListener('pointerup',end);this.viewport.addEventListener('pointercancel',end);
     }
     closeMap(){
-      if(!this.modal)return;this.closePanel(false);this.modalResize.disconnect();this.root.insertBefore(this.map,this.note);this.map.style.transform='';this.modal.close();this.modal.remove();this.modal=null;document.body.style.overflow=this.oldBodyOverflow;this.zoom=1;this.update(this.snapshot,{force:true});this.queueLayout();this.expand.focus({preventScroll:true});
+      if(!this.modal)return;this.closePanel(false);this.modalResize.disconnect();this.root.insertBefore(this.map,this.inlineKey);this.root.insertBefore(this.discussionDetails,this.note);this.map.style.transform='';this.modal.close();this.modal.remove();this.modal=null;document.body.style.overflow=this.oldBodyOverflow;this.zoom=1;this.update(this.snapshot,{force:true});this.queueLayout();this.expand.focus({preventScroll:true});
     }
     setZoom(value){
       if(!this.modal)return;const next=Math.max(.1,Math.min(2.2,value));const cx=(this.viewport.scrollLeft+this.viewport.clientWidth/2)/this.zoom,cy=(this.viewport.scrollTop+this.viewport.clientHeight/2)/this.zoom;this.zoom=next;this.map.style.transform='scale('+next+')';this.canvas.style.width=this.mapWidth*next+'px';this.canvas.style.height=this.mapHeight*next+'px';this.zoomLabel.textContent=Math.round(next*100)+'%';this.viewport.scrollLeft=cx*next-this.viewport.clientWidth/2;this.viewport.scrollTop=cy*next-this.viewport.clientHeight/2;
@@ -333,18 +407,18 @@
     centerCurrent(){if(!this.modal)return;const pos=this.positions.get(this.currentId)||this.positions.values().next().value;if(!pos)return;this.setZoom(1);this.viewport.scrollLeft=Math.max(0,pos.x-this.viewport.clientWidth/2);this.viewport.scrollTop=Math.max(0,pos.y-this.viewport.clientHeight/2);}
     renderAccessibleList(){
       if(!this.accessibleBody)return;this.accessibleBody.replaceChildren();this.graph.nodes.forEach(node=>{const b=el('button','',node.label+' · '+nodeStatusLabel(node));b.type='button';b.addEventListener('click',()=>this.toggleNode(node.id));this.accessibleBody.append(b);});
-      this.edges.forEach(edge=>{const a=this.graph.nodes.find(n=>n.id===edge.from_node_id),b=this.graph.nodes.find(n=>n.id===edge.to_node_id);const item=el('button','',a.label+' → '+b.label+' · '+(edge.reason_label||(witnessed(edge)?'Зафіксований перехід':(edge.condition_label?edge.condition_label+' · ':'')+'Можливий шлях')));item.type='button';item.addEventListener('click',()=>this.selectEdge(edge.id));this.accessibleBody.append(item);});
+      this.edges.forEach(edge=>{const a=this.graph.nodes.find(n=>n.id===edge.from_node_id),b=this.graph.nodes.find(n=>n.id===edge.to_node_id);const item=el('button','',a.label+(contextual(edge)?' — ':' → ')+b.label+' · '+(contextual(edge)?'Пов’язано':(interpreted(edge)?'За перепискою · ':'')+(edge.reason_label||(witnessed(edge)?'Зафіксований перехід':(edge.condition_label?edge.condition_label+' · ':'')+'Можливий шлях'))));item.type='button';item.addEventListener('click',()=>this.selectEdge(edge.id));this.accessibleBody.append(item);});
       if(!this.edges.length)this.accessibleBody.append(el('p','','Переходи ще не зафіксовано. Положення етапів не підтверджує послідовність подій.'));
     }
     queueLayout(){cancelAnimationFrame(this.frame);this.frame=requestAnimationFrame(()=>this.layout());}
     layout(){
       if(this.destroyed||!this.root.isConnected||!this.graph)return;
       const width=this.modal?this.viewport.clientWidth:this.root.getBoundingClientRect().width;this.syncVisibility(width);
-      const nodes=this.graph.nodes.filter(n=>this.visibleIds.includes(n.id));const narrow=!this.modal&&width<560;this.map.dataset.narrow=String(narrow);this.map.dataset.single=String(nodes.length===1);
+      const nodes=this.graph.nodes.filter(n=>this.visibleIds.includes(n.id)&&!eventNode(n));const narrow=!this.modal&&width<560;this.map.dataset.narrow=String(narrow);this.map.dataset.single=String(nodes.length===1&&!this.eventVisibleIds?.length);
       this.positions=new Map();
       if(!this.modal&&this.inlineSlots){
         const columns=Math.max(1,...[...this.inlineSlots.values()].map(p=>p.col+1)),step=width/columns;
-        const loopSpace=this.edges.some(e=>e.from_node_id===e.to_node_id&&nodes.some(n=>n.id===e.from_node_id))?16:0;
+        const loopSpace=this.edges.some(e=>e.from_node_id===e.to_node_id&&nodes.some(n=>n.id===e.from_node_id))||this.eventVisibleIds?.length?20:0;
         nodes.forEach(node=>{const slot=this.inlineSlots.get(node.id),x=step*(slot.col+.5),y=30+loopSpace+slot.row*70;this.positions.set(node.id,{x,y,...slot});const cell=this.cells.get(node.id);cell.style.left=x+'px';cell.style.top=y+'px';cell.style.width=Math.max(44,step-12)+'px';});
         this.mapWidth=width;this.mapHeight=(nodes.some(n=>this.inlineSlots.get(n.id).row)?142:68)+loopSpace;
       }else if(!narrow&&window.TwcJourneyGeometry){
@@ -366,9 +440,35 @@
           this.map.dataset.single='true';this.map.dataset.narrow='true';this.mapHeight=58;this.expand.textContent='Весь шлях · '+this.nodeIds.length+' ↗';
         }this.mapHeight=Math.min(192,this.mapHeight);
       }
+      this.placeEvents();
+      this.map.style.setProperty('--journey-touch-scale',String(this.modal?1/this.zoom:1));
       this.map.style.width=this.mapWidth+'px';this.map.style.height=this.mapHeight+'px';
       if(this.modal){this.map.style.transform='scale('+this.zoom+')';this.canvas.style.width=this.mapWidth*this.zoom+'px';this.canvas.style.height=this.mapHeight*this.zoom+'px';}
       this.drawGuides();this.positionPanel();
+    }
+    placeEvents(){
+      const events=this.graph.nodes.filter(n=>this.eventVisibleIds?.includes(n.id)),details=[];
+      const obstacles=this.graph.nodes.filter(n=>!eventNode(n)&&this.positions.has(n.id)).flatMap(n=>{const p=this.positions.get(n.id);return [{left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23},{left:p.x-50,right:p.x+50,top:p.y+21,bottom:p.y+(this.modal?53:39)}];});
+      for(const node of events){
+        const info=node.presentation_event,anchors=info.anchor_ids.map(id=>this.positions.get(id)).filter(Boolean);let point;
+        if(anchors.length&&info.mode!=='detail'){
+          const a=anchors[0],b=anchors[1],candidates=[];
+          if(b)candidates.push({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
+          candidates.push({x:a.x+40,y:a.y-22},{x:a.x-40,y:a.y-22});
+          point=candidates.find(p=>p.x>=16&&p.x<=this.mapWidth-16&&p.y>=16&&p.y<=this.mapHeight-16&&!obstacles.some(r=>p.x-8<r.right&&p.x+8>r.left&&p.y-8<r.bottom&&p.y+8>r.top));
+        }
+        info.unplaced=!point;
+        if(!point){this.cells.get(node.id).hidden=true;this.positions.delete(node.id);details.push(node);continue;}
+        this.cells.get(node.id).hidden=false;
+        this.positions.set(node.id,{...point,col:(anchors[0]?.col||0)+.35,row:anchors[0]?.row||0});
+        obstacles.push({left:point.x-16,right:point.x+16,top:point.y-16,bottom:point.y+16});
+        const cell=this.cells.get(node.id);cell.style.left=point.x+'px';cell.style.top=point.y+'px';cell.style.width='32px';
+      }
+      this.discussionDetails.hidden=!details.length;
+      const shown=new Set(details.map(n=>n.id));for(const [id,button]of this.detailButtons)if(!shown.has(id)){button.remove();this.detailButtons.delete(id);}
+      if(details.length&&!this.discussionDetails.firstChild)this.discussionDetails.append(el('span','twc-journey-fact-note','Деталі поза схемою:'));
+      for(const node of details){let button=this.detailButtons.get(node.id);if(!button){button=el('button','twc-journey-detail-link');button.type='button';button.addEventListener('click',()=>this.toggleNode(node.id));this.detailButtons.set(node.id,button);this.discussionDetails.append(button);}button.setAttribute('aria-controls','twc-journey-panel-'+this.snapshot.client_id);button.textContent=node.label;button.dataset.tone=node.presentation_event.tone;button.title=node.presentation_event.mode==='detail'?'Подробиці та джерела переписки':'Немає однозначного місця на схемі; зв’язок не домислюється';button.setAttribute('aria-expanded',String(this.selected===node.id));}
+
     }
     drawGuides(){
       this.svg.setAttribute('viewBox','0 0 '+this.mapWidth+' '+this.mapHeight);this.svg.replaceChildren();const tones={neutral:'#64748b',recorded:'#60a5fa',success:'#34d399',warning:'#fbbf24',danger:'#fb7185',manager:'#a78bfa'},prefix='journey-'+this.snapshot.client_id;
@@ -377,31 +477,35 @@
       const inlineReturns=[];
       const visibleNodes=this.graph.nodes.filter(n=>this.positions.has(n.id));
       const candidates=this.displayEdges||this.edges,representedPairs=new Set(candidates.filter(e=>edgePriority(e)>0).map(edgePair));
-      const drawingEdges=candidates.filter(e=>!(e.relation==='route'&&representedPairs.has(edgePair(e))));
+      const unplaced=new Set(this.graph.nodes.filter(n=>eventNode(n)&&(n.presentation_event.mode==='unplaced'||n.presentation_event.unplaced)).map(n=>n.id));
+      const drawingEdges=candidates.filter(e=>!unplaced.has(e.from_node_id)&&!unplaced.has(e.to_node_id)&&!(e.relation==='route'&&representedPairs.has(edgePair(e))));
       const geometryRoutes=window.TwcJourneyGeometry?.routeEdges({nodes:visibleNodes,edges:drawingEdges,positions:this.positions,width:this.mapWidth,height:this.mapHeight,full:Boolean(this.modal)});
       [...drawingEdges].sort((a,b)=>edgePriority(a)-edgePriority(b)).forEach(edge=>{
         const a=this.positions.get(edge.from_node_id),b=this.positions.get(edge.to_node_id);if(!a||!b)return;
         const observed=witnessed(edge),reconstructed=interpreted(edge),tone=edgeTone(edge);
         const route=geometryRoutes?.get(edge.id);if(!route)return;
         const d=route.d,mx=route.markerX,my=route.markerY;
-        const path=svg('path',{d,'marker-end':'url(#'+prefix+'-'+tone+')',stroke:tones[tone]});path.classList.add('twc-journey-edge');path.dataset.edgeId=edge.id;path.dataset.observed=String(observed);path.dataset.interpreted=String(reconstructed);path.dataset.selected=String(this.selectedEdge===edge.id);this.svg.append(path);
-        path.append(svg('title'));path.lastChild.textContent=edge.condition_label||edge.reason_label||(observed?'Збережений перехід':'Можливий шлях');
+        const path=svg('path',{d,stroke:tones[tone],...(contextual(edge)?{}:{'marker-end':'url(#'+prefix+'-'+tone+')'})});path.classList.add('twc-journey-edge');path.dataset.edgeId=edge.id;path.dataset.observed=String(observed);path.dataset.interpreted=String(reconstructed);path.dataset.contextual=String(contextual(edge));path.dataset.selected=String(this.selectedEdge===edge.id);this.svg.append(path);
+        path.append(svg('title'));path.lastChild.textContent=contextual(edge)?'Пов’язано з '+(this.graph.nodes.find(n=>n.id===edge.to_node_id)?.label||'контекстом замовлення'):edge.condition_label||edge.reason_label||(observed?'Збережений перехід':'Можливий шлях');
         if(route.conditionPosition){const p=route.conditionPosition,label=svg('text',{x:p.x,y:p.y,'text-anchor':'middle','dominant-baseline':'middle'});label.classList.add('twc-journey-condition');label.textContent=edge.outcome==='wait_for_attempt'?'Нова спроба':'Допомога';this.svg.append(label);}
         if(this.newEdges?.has(edge.id)&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const dot=svg('circle',{r:2,fill:tones[tone]});const motion=svg('animateMotion',{dur:'.6s',path:d,repeatCount:1,fill:'freeze'});dot.append(motion);this.svg.append(dot);motion.addEventListener('endEvent',()=>dot.remove(),{once:true});}
         const count=Number.isInteger(edge.repeated_count)&&edge.repeated_count>1?edge.repeated_count:0;
+        if(eventNode(this.graph.nodes.find(n=>n.id===edge.from_node_id))||eventNode(this.graph.nodes.find(n=>n.id===edge.to_node_id)))return;
+        if(!exceptional(edge)||this.graph.nodes.some(n=>n.id===edge.case_id&&eventNode(n)))return;
         if(!this.modal&&this.inlineSlots&&(observed||reconstructed)&&returnEdge(edge)){
           // A 44px marker on the narrow outer return corridor would overlap the
           // chat heading. Keep the actual arrow and its disclosure in the key.
           inlineReturns.push(edge);
           return;
         }
-        const peers=this.parallelEdges(edge).filter(item=>drawingEdges.some(shownEdge=>shownEdge.id===item.id)&&(!this.inlineSlots||this.modal||!returnEdge(item)));
+        const peers=this.parallelEdges(edge).filter(item=>exceptional(item)&&drawingEdges.some(shownEdge=>shownEdge.id===item.id)&&(!this.inlineSlots||this.modal||!returnEdge(item)));
         if(peers.length&&peers[0].id!==edge.id)return;
         const total=peers.reduce((sum,item)=>sum+edgeCount(item),0)||edgeCount(edge),selected=peers.some(item=>item.id===this.selectedEdge)||this.selectedEdge===edge.id;
         if(edge.structural_path||(!edge.reason_label&&!count&&edge.relation!=='return'&&peers.length<2))return;shown.add(edge.id);let button=this.edgeButtons.get(edge.id);
         if(!button){button=el('button','twc-journey-edge-marker');button.type='button';button.addEventListener('click',()=>this.selectEdge(edge.id));this.edgeButtons.set(edge.id,button);this.edgeLayer.append(button);}
-        button.replaceChildren(icon(returnEdge(edge)?'return':edge.interpretation_kind==='retry'?'repeat':observed||edge.interpretation_kind==='objection'?'question':'info'));if(total>1)button.append(el('span','','×'+total));button.style.left=mx+'px';button.style.top=my+'px';button.dataset.tone=tone;button.title=edge.summary||edge.reason_label||'Подробиці переходу';button.setAttribute('aria-label',(edge.summary||edge.reason_label||'Подробиці переходу')+(total>1?' · переходів '+total:''));button.setAttribute('aria-expanded',String(selected));
+        button.replaceChildren(icon(returnEdge(edge)?'return':tone==='danger'?'cross':edge.interpretation_kind==='objection'?'question':tone==='warning'?'repeat':'question'));if(total>1)button.append(el('span','','×'+total));button.style.left=mx+'px';button.style.top=my+'px';button.dataset.tone=tone;button.title=edge.summary||edge.reason_label||'Подробиці переходу';button.setAttribute('aria-label',(edge.summary||edge.reason_label||'Подробиці переходу')+(total>1?' · переходів '+total:''));button.setAttribute('aria-expanded',String(selected));
       });
+      this.inlineKey.querySelector('.twc-journey-key-possible').hidden=!drawingEdges.some(e=>e.relation==='route'&&this.positions.has(e.from_node_id)&&this.positions.has(e.to_node_id));
       this.inlineReturnIds=inlineReturns.map(edge=>edge.id);
       const inlineReturn=inlineReturns.find(edge=>edge.id===this.selectedEdge)||inlineReturns[0];
       if(inlineReturn){const count=Number.isInteger(inlineReturn.repeated_count)&&inlineReturn.repeated_count>1?inlineReturn.repeated_count:0;this.returnReason.dataset.edgeId=inlineReturn.id;this.returnReason.dataset.tone=edgeTone(inlineReturn);this.returnReason.textContent='↶ '+(inlineReturn.reason_label||'Уточнення')+(count?' ×'+count:'')+(inlineReturns.length>1?' · ще '+(inlineReturns.length-1):'');this.returnReason.title=this.returnReason.textContent;this.returnReason.setAttribute('aria-expanded',String(this.selectedEdge===inlineReturn.id));}
@@ -410,7 +514,7 @@
     }
     positionPanel(){
       if(!this.panel)return;const mobile=innerWidth<600;this.panel.dataset.mobile=String(mobile);if(mobile){this.panel.style.left='12px';this.panel.style.right='12px';this.panel.style.bottom='12px';this.panel.style.top='auto';return;}
-      const target=this.selectedEdge?(this.edgeControl(this.selectedEdge)||this.buttons.get(this.selected)):this.buttons.get(this.selected);if(!target)return;const r=target.getBoundingClientRect(),w=Math.min(340,innerWidth-24);this.panel.style.width=w+'px';this.panel.style.left=Math.max(12,Math.min(innerWidth-w-12,r.left+r.width/2-w/2))+'px';this.panel.style.right='auto';this.panel.style.bottom='auto';const h=this.panel.getBoundingClientRect().height;this.panel.style.top=Math.max(12,Math.min(innerHeight-h-12,r.bottom+10))+'px';
+      const target=this.selectedEdge?(this.edgeControl(this.selectedEdge)||this.buttons.get(this.selected)):(this.detailButtons.get(this.selected)||this.buttons.get(this.selected));if(!target)return;const r=target.getBoundingClientRect(),w=Math.min(340,innerWidth-24);this.panel.style.width=w+'px';this.panel.style.left=Math.max(12,Math.min(innerWidth-w-12,r.left+r.width/2-w/2))+'px';this.panel.style.right='auto';this.panel.style.bottom='auto';const h=this.panel.getBoundingClientRect().height;this.panel.style.top=Math.max(12,Math.min(innerHeight-h-12,r.bottom+10))+'px';
     }
     destroy(){this.closeMap();this.destroyed=true;this.sequence++;clearInterval(this.timerInterval);cancelAnimationFrame(this.frame);this.resize.disconnect();document.removeEventListener('visibilitychange',this.visibility);document.removeEventListener('pointerdown',this.outside);window.removeEventListener('scroll',this.reposition,true);this.root.remove();}
   }

@@ -52,7 +52,7 @@
   // Full-map presentation bands. Neighboring cells are never implicit edges:
   // collaboration's two rows fan out/in only through registry transitions.
   const fullCells={
-    client_order_context:[8,3],
+    client_order_context:[8,3],client_order_shipping:[9,3],client_order_delivery:[10,3],client_order_contact:[9,2],
     inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[1,4],
     collaboration:[1,1],collaboration_designer:[2,0],collaboration_partnership:[3,0],
     collaboration_dropship:[4,0],collaboration_wholesale_store:[2,1],
@@ -72,7 +72,7 @@
   const returns = new Set(['configuration_correction','offer_correction','settlement_correction',
     'new_selection','amended_offer','new_attempt']);
   function visualFor(node = {}) {
-    if(node.semantic_key==='client_order_context')return {rank:7,lane:2,icon:'package',short_label:node.label||'Пов’язане замовлення'};
+    if(['client_order_context','client_order_shipping','client_order_delivery','client_order_contact'].includes(node.semantic_key))return {rank:7,lane:2,icon:node.semantic_key==='client_order_contact'?'bell':'package',short_label:node.label||'Пов’язане замовлення'};
     if(node.id==='guide:offer'&&!node.semantic_key)return {rank:5,lane:0,icon:'link',short_label:'Посилання'};
     const guideAliases={'guide:selection':'catalog_discovery','guide:terms':'quoted_offer','guide:payment':'settlement','guide:fulfillment':'fulfillment','guide:inquiry':'inbound'};
     const exact = visuals.get(node.semantic_key) || visuals.get(guideAliases[node.id]);
@@ -93,11 +93,11 @@
   function isReturn(edge, a, b) {
     return b.col < a.col || edge.relation === 'return' || edge.interpretation_kind === 'return' || returns.has(edge.outcome);
   }
-  function overview({nodes=[],edges=[],mainIds=[],alternativeIds=[],currentId,width=560}={}) {
+  function overview({nodes=[],edges=[],mainIds=[],alternativeIds=[],currentId,priorityIds=[],width=560}={}) {
     const byId=new Map(nodes.map(n=>[n.id,n]));
     const main=mainIds.filter(id=>byId.has(id));
     const cap=Math.max(3,Math.min(7,Math.floor(width/80)));
-    const factual=edges.filter(e=>!['route','prerequisite'].includes(e.relation)&&(e.evidence_refs||[]).length);
+    const factual=edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle'].includes(e.relation)&&(e.evidence_refs||[]).length);
     const neighbors=id=>{
       const incident=factual.filter(e=>e.from_node_id===id||e.to_node_id===id);
       // Trace indices are transcript order, not business-state authority. Keep
@@ -113,7 +113,7 @@
     if(focus<0)focus=0;
     // Keep actual scoped facts first; fill only the immediate neighborhood with
     // possibilities. A compact slice never turns hidden nodes into visits.
-    const priority=[currentId,...neighbors(currentId),...main.filter(id=>byId.get(id).presentation_kind!=='possible').sort((a,b)=>Math.abs(main.indexOf(a)-focus)-Math.abs(main.indexOf(b)-focus)),...main.slice().sort((a,b)=>Math.abs(main.indexOf(a)-focus)-Math.abs(main.indexOf(b)-focus))];
+    const priority=[currentId,...priorityIds,...neighbors(currentId),...main.filter(id=>byId.get(id).presentation_kind!=='possible').sort((a,b)=>Math.abs(main.indexOf(a)-focus)-Math.abs(main.indexOf(b)-focus)),...main.slice().sort((a,b)=>Math.abs(main.indexOf(a)-focus)-Math.abs(main.indexOf(b)-focus))];
     const selected=[...new Set(priority.filter(id=>main.includes(id)))].slice(0,cap).sort((a,b)=>main.indexOf(a)-main.indexOf(b));
     const slots=new Map(selected.map((id,col)=>[id,{col,row:0}]));
     const structural=edges.filter(e=>e.relation==='route'&&e.structural_path&&!returns.has(e.outcome));
@@ -149,7 +149,7 @@
       occupied.add(col);slots.set(id,{col,row:1});
     }
     const visible=new Set(slots.keys());
-    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
+    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
     const result=edges.filter(e=>visible.has(e.from_node_id)&&visible.has(e.to_node_id)&&(!e.structural_path||(!returns.has(e.outcome)&&!factualPairs.has(e.from_node_id+'\0'+e.to_node_id))));
     // Only canonical directed paths may bridge omitted steps. No chronology or
     // coordinate adjacency is ever promoted into an observed edge.
@@ -262,6 +262,7 @@
     const boxes=[];
     for(const [id,p] of positions){
       if(!byId.has(id))continue;
+      if(byId.get(id).presentation_event){boxes.push({left:p.x-7,right:p.x+7,top:p.y-7,bottom:p.y+7});continue;}
       boxes.push({left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23});
       boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(full?53:39)});
     }
@@ -286,6 +287,19 @@
             path=tidy(loop);selfMarker=full?{x:rail,y:a.y-12}:{x:a.x+side*20,y:top};break;
           }
         }
+      }else if(sourceNode.presentation_event||targetNode.presentation_event){
+        const event=sourceNode.presentation_event||targetNode.presentation_event;
+        const eventPosition=sourceNode.presentation_event?a:b,process=sourceNode.presentation_event?b:a;
+        const side=eventPosition.x>=process.x?1:-1;
+        if(event.mode==='attached'){
+          start=sourceNode.presentation_event?{x:a.x+side*9,y:a.y}:{x:a.x,y:a.y-25};
+          end=targetNode.presentation_event?{x:b.x-side*9,y:b.y}:{x:b.x+side*25,y:b.y};
+        }else{
+          const direction=b.x>=a.x?1:-1;
+          start={x:a.x+direction*(sourceNode.presentation_event?9:25),y:a.y};
+          end={x:b.x-direction*(targetNode.presentation_event?9:25),y:b.y};
+        }
+        path=findPath(start,end,boxes,width,height);
       }else if(helpPair){
         // Opposite rails keep both arrowheads legible instead of painting two
         // directions on the same vertical stroke through the wait label.

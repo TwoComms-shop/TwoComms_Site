@@ -72,6 +72,20 @@ class JourneyTraceProjectionTests(TestCase):
         self.assertEqual(graph["edges"][-1]["evidence_refs"][0]["role"], "manager")
         self.assertEqual(self.graph["nodes"][0].get("transcript_interpretation"), None)
 
+    def test_source_time_uses_owned_message_without_mutating_trace_or_extra_queries(self):
+        provider_time = timezone.now() - timedelta(days=2)
+        InstagramBotMessage.objects.filter(pk=self.manager.pk).update(provider_created_at=provider_time)
+        row = self.save()
+        stored = deepcopy(row.trace)
+        with CaptureQueriesContext(connection) as queries:
+            graph = self.project()
+        self.assertEqual(len(queries), 5)
+        self.assertEqual(graph["edges"][-1]["evidence_refs"][0]["message_at"], provider_time.isoformat())
+        self.assertEqual(graph["edges"][0]["evidence_refs"][0]["message_at"], self.message.created_at.isoformat())
+        row.refresh_from_db()
+        self.assertEqual(row.trace, stored)
+        self.assertNotIn("message_at", json.dumps(row.trace))
+
     def test_freshness_for_every_role_and_foreign_new_message_is_irrelevant(self):
         self.save()
         InstagramBotMessage.objects.create(client=self.other, sender_id="trace-map-other", role="user", text="foreign")
@@ -129,7 +143,8 @@ class JourneyTraceProjectionTests(TestCase):
         self.assertGreater(graph["transcript_reconstruction"]["coverage"]["disconnected_steps"], 0)
         pairs = {(edge["from_node_id"], edge["to_node_id"]) for edge in graph["edges"]}
         self.assertNotIn(("trace:quoted_offer", "trace:payment_help"), pairs)
-        self.assertEqual([edge["tone"] for edge in graph["edges"]][2:4], ["warning", "danger"])
+        self.assertEqual([edge["tone"] for edge in graph["edges"]][2:4], ["recorded", "recorded"])
+        self.assertFalse(any(edge["marker_eligible"] for edge in graph["edges"]))
         self.assertEqual(graph["edges"][-1]["repeated_count"], 2)
 
     def test_financial_discussion_and_consent_never_complete_or_override_typed_facts(self):
@@ -154,7 +169,8 @@ class JourneyTraceProjectionTests(TestCase):
         snapshot = build_journey_snapshot(self.client)
         self.assertIn("source_verified_transcript_reconstruction", snapshot["covered_sources"])
         self.assertEqual(snapshot["graph"]["coverage"]["semantic_transitions"], "missing_source")
-        self.assertEqual(snapshot["focus"]["node_id"], "inquiry")
+        self.assertEqual(snapshot["focus"]["node_id"], "trace:stock_wait")
+        self.assertEqual(snapshot["focus"], snapshot["graph"]["display_focus"])
 
     def test_old_milestone_does_not_override_fresh_discussion_focus(self):
         self.save()
@@ -200,7 +216,7 @@ class JourneyTraceProjectionTests(TestCase):
         saved.refresh_from_db()
         self.assertEqual(saved.trace, original)
 
-    def test_stock_revisits_are_amber_without_reclassifying_original_steps(self):
+    def test_stock_revisits_remain_routine_without_reclassifying_original_steps(self):
         steps = [self.step("inbound", "availability_question"),
             self.step("availability_question", "stock_wait", "waiting", "awaiting_stock"),
             self.step("stock_wait", "availability_question", "progress", "awaiting_stock"),
@@ -209,9 +225,10 @@ class JourneyTraceProjectionTests(TestCase):
         saved = self.save(steps, current="stock_wait")
         original = deepcopy(saved.trace)
         graph = self.project()
-        # Identical waiting edges retain their aggregate; the later visit makes
-        # that visual amber while the original payload still says "waiting".
-        self.assertEqual([edge["tone"] for edge in graph["edges"]], ["recorded", "warning", "warning", "danger"])
+        self.assertEqual([edge["tone"] for edge in graph["edges"]], ["recorded"] * 4)
+        self.assertFalse(any(edge["marker_eligible"] for edge in graph["edges"]))
+        self.assertEqual([edge["materiality"] for edge in graph["edges"]][:3], ["routine_question"] * 3)
+        self.assertEqual(graph["trace_cases"], [])
         self.assertEqual([edge["interpretation_kind"] for edge in graph["edges"]], ["progress", "waiting", "progress", "negative"])
         self.assertEqual(graph["edges"][1]["repeated_count"], 2)
         self.assertEqual(graph["edges"][2]["reason_label"], "Очікування наявності")
@@ -219,7 +236,7 @@ class JourneyTraceProjectionTests(TestCase):
         saved.refresh_from_db()
         self.assertEqual(saved.trace, original)
 
-    def test_objection_attention_is_amber_but_addressed_return_stays_blue(self):
+    def test_objection_classification_without_material_source_remains_quiet(self):
         steps = [self.step("inbound", "fulfillment"),
             self.step("fulfillment", "objection_case", "objection", "objection_raised"),
             self.step("objection_case", "fulfillment", "progress", "objection_addressed"),
@@ -227,7 +244,102 @@ class JourneyTraceProjectionTests(TestCase):
         saved = self.save(steps, current="fulfillment")
         original = deepcopy(saved.trace)
         graph = self.project()
-        self.assertEqual([edge["tone"] for edge in graph["edges"]], ["recorded", "warning", "recorded", "danger"])
+        self.assertEqual([edge["tone"] for edge in graph["edges"]], ["recorded"] * 4)
+        self.assertFalse(any(edge["marker_eligible"] for edge in graph["edges"]))
         self.assertTrue(all(node["state"] != "complete" for node in graph["nodes"]))
         saved.refresh_from_db()
         self.assertEqual(saved.trace, original)
+
+    def set_customer_text(self, text):
+        self.message.text = text
+        self.message.save(update_fields=["text"])
+        self.by_id[self.message.pk]["text"] = text
+
+    def test_repeated_ordinary_size_questions_do_not_become_public_warnings(self):
+        self.set_customer_text("Який розмір? Які заміри? Є оверсайз?")
+        steps = [self.step("quoted_offer", "configured_line", reason="configuration_discussed"),
+                 self.step("configured_line", "configured_line", reason="configuration_discussed"),
+                 self.step("configured_line", "configured_line", reason="configuration_discussed")]
+        self.save(steps, current="configured_line")
+        graph = self.project()
+        self.assertEqual(graph["presentation_schema_version"], "journey-presentation.v1")
+        self.assertEqual(graph["trace_cases"], [])
+        self.assertTrue(all(edge["tone"] == "recorded" and not edge["marker_eligible"]
+                            and edge["display_role"] == "path_detail" for edge in graph["edges"]))
+        self.assertTrue(all(edge["materiality"] == "routine_question" for edge in graph["edges"]))
+        self.assertEqual(graph["edges"][-1]["repeated_count"], 2)
+
+    def test_explicit_price_concern_has_one_case_and_marker_across_summaries(self):
+        self.set_customer_text("Для мене це дорого.")
+        first = self.step("quoted_offer", "objection_case", "objection", "objection_raised")
+        second = {**deepcopy(first), "summary": "Клієнт повторив заперечення щодо ціни."}
+        saved = self.save([first, second], current="objection_case")
+        original = deepcopy(saved.trace)
+        graph = self.project()
+        self.assertEqual(len(graph["edges"]), 2)
+        self.assertEqual(len(graph["trace_cases"]), 1)
+        case = graph["trace_cases"][0]
+        self.assertEqual(case["materiality"], "material_concern")
+        self.assertEqual(case["status"], "unresolved")
+        self.assertEqual(case["source_node_id"], "trace:quoted_offer")
+        self.assertEqual(case["source_edge_id"], graph["edges"][0]["id"])
+        self.assertEqual(case["source_edge_ids"], [edge["id"] for edge in graph["edges"]])
+        self.assertEqual(sum(edge["marker_eligible"] for edge in graph["edges"]), 1)
+        self.assertTrue(all(edge["case_id"] == case["id"] for edge in graph["edges"]))
+        self.assertFalse(next(node for node in graph["nodes"] if node["semantic_key"] == "objection_case")["marker_eligible"])
+        self.assertEqual(case["authority"], "none")
+        self.assertEqual(case["occurred_at"], self.message.created_at.isoformat())
+        saved.refresh_from_db()
+        self.assertEqual(saved.trace, original)
+
+    def test_price_word_in_generated_summary_or_negated_source_is_not_evidence(self):
+        self.set_customer_text("Це не дорого, який розмір обрати?")
+        step = self.step("quoted_offer", "objection_case", "objection", "objection_raised")
+        step["summary"] = "Клієнту дорого, тому не купить."
+        self.save([step], current="objection_case")
+        graph = self.project()
+        self.assertFalse(graph["edges"][0]["marker_eligible"])
+        self.assertEqual(graph["trace_cases"], [])
+
+    def test_cited_configuration_problem_makes_a_real_return_amber(self):
+        self.set_customer_text("Розмір не підійшов, потрібен обмін.")
+        self.save([self.step("fulfillment", "configured_line", "return", "changed_request")], current="configured_line")
+        edge = self.project()["edges"][0]
+        self.assertEqual(edge["materiality"], "correction")
+        self.assertEqual(edge["display_role"], "anchored_case")
+        self.assertEqual(edge["source_node_id"], "trace:configured_line")
+        self.assertTrue(edge["marker_eligible"])
+        self.assertEqual(edge["tone"], "warning")
+        self.assertEqual(edge["connection_kind"], "interpreted_transition")
+
+    def test_unanchored_objection_does_not_invent_a_connection_or_problem_location(self):
+        self.set_customer_text("Дорого.")
+        self.save([self.step("", "objection_case", "objection", "objection_raised")], current="objection_case")
+        graph = self.project()
+        self.assertEqual(graph["edges"], [])
+        detail = graph["nodes"][-1]["trace_details"][0]
+        self.assertEqual(detail["materiality"], "material_concern")
+        self.assertEqual(detail["display_role"], "unattributed_detail")
+        self.assertFalse(detail["marker_eligible"])
+        self.assertIsNone(detail["source_edge_id"])
+        self.assertIsNone(detail["source_node_id"])
+        self.assertIsNone(detail["affected_action"])
+
+    def test_customer_payment_failure_is_blocker_without_claiming_backend_incident(self):
+        self.set_customer_text("Не можу оплатити.")
+        self.save([self.step("payment_help", "awaiting_payment", "retry", "payment_problem")], current="payment_help")
+        edge = self.project()["edges"][0]
+        self.assertEqual(edge["materiality"], "active_blocker")
+        self.assertEqual(edge["authority"], "none")
+        self.assertTrue(edge["marker_eligible"])
+        self.assertEqual(edge["tone"], "warning")
+
+    def test_manager_answer_is_handled_attempt_without_inventing_resolution(self):
+        self.set_customer_text("Дорого.")
+        self.save([self.step("quoted_offer", "objection_case", "objection", "objection_raised"),
+                   self.step("objection_case", "quoted_offer", "progress", "objection_addressed", self.manager)], current="quoted_offer")
+        graph = self.project()
+        self.assertEqual(graph["trace_cases"][0]["status"], "handled")
+        self.assertEqual(graph["trace_cases"][0]["outcome"], "unknown")
+        self.assertEqual(graph["trace_cases"][0]["attempt_edge_ids"], [graph["edges"][-1]["id"]])
+        self.assertFalse(graph["edges"][-1]["marker_eligible"])

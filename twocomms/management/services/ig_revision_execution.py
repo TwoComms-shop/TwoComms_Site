@@ -55,12 +55,15 @@ class RevisionCompletionResult:
 
 
 def _owned_revision_q() -> Q:
+    from management.services.ig_revision_source_coverage import source_transfer_owned_q
+
     return (
         Q(media_prepare_deadline__isnull=False)
         | Q(sealed_at__isnull=False)
         | Q(snapshot_digest__gt="")
         | Q(generation_proposal_digest__gt="")
         | Q(has_delivery_effect=True)
+        | source_transfer_owned_q()
     )
 
 
@@ -456,6 +459,13 @@ def _whole_sent_proof(revision, effects):
     plans = {row.plan_digest for row in effects}
     if len(plans) != 1 or "" in plans or _digest(revision.bundle_snapshot) != revision.snapshot_digest:
         return False, "delivery_plan_proof_invalid"
+    settings_ids = {row.settings_id_snapshot for row in effects}
+    namespaces = {row.provider_namespace for row in effects}
+    sent = [row for row in effects if row.state == row.State.SENT]
+    if len(settings_ids) != 1 or len(namespaces) != 1 or "" in namespaces:
+        return False, "delivery_receipt_scope_invalid"
+    if len({row.provider_message_id for row in sent}) != len(sent):
+        return False, "delivery_provider_receipt_duplicate"
     groups = {}
     for effect in effects:
         groups.setdefault(effect.group, []).append(effect)
@@ -463,7 +473,7 @@ def _whole_sent_proof(revision, effects):
             or effect.recipient_igsid != revision.client.igsid
             or effect.revision_snapshot_digest != revision.snapshot_digest
             or _digest(effect.payload) != effect.payload_digest
-            or (effect.state == effect.State.SENT and not effect.provider_message_id)):
+            or (effect.state == effect.State.SENT and (not effect.provider_message_id or effect.terminal_at is None))):
             return False, "delivery_receipt_proof_invalid"
     for parts in groups.values():
         if [row.part_index for row in parts] != list(range(len(parts))) or any(row.part_count != len(parts) for row in parts):
@@ -475,6 +485,7 @@ def finalization_due_ids(*, now=None, limit=25):
     """Conclusive receipts have their own queue, independent of active head/deadline."""
     now = now or timezone.now()
     from django.db.models import Exists, OuterRef
+    from management.services.ig_revision_reply_projection import VERSION as PROJECTION_VERSION
 
     owed = IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk")).exclude(state=IgRevisionDeliveryEffect.State.SENT).exclude(group="template_fallback", state__in=("cancelled", "superseded"))
     candidates = IgCustomerTurnRevision.objects.filter(
@@ -486,6 +497,10 @@ def finalization_due_ids(*, now=None, limit=25):
     ).filter(
         Q(state=IgCustomerTurnRevision.State.CLAIMED)
         | Q(sources__message__status__in=("pending", "processing"))
+        # Only newly admitted plans own automatic counter projection. Missing
+        # receipts on older plans are not evidence that nobody counted them.
+        | (~Q(action_receipts__has_key="sent_reply_projection") & Q(owed_parts=False)
+           & Q(action_receipts__reply_projection_admission__version=PROJECTION_VERSION))
         | (~Q(action_receipts__has_key="normal_followups") & (Q(generation_proposal_digest__gt="") | Q(action_receipts__input_decision__origin="static_reply")))
     ).order_by("id").values_list("id", flat=True).distinct()
     return list(candidates[:max(1, min(int(limit), MAX_DUE_SCAN))])

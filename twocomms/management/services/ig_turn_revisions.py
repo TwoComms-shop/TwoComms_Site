@@ -243,6 +243,7 @@ def create_collecting_revision(
     now=None,
     bypass_quiet: bool = False,
     overall_deadline=None,
+    transfer_sources: bool = False,
 ) -> RevisionBuildResult:
     """Create the next client-head revision without changing turn membership."""
     turn_id = int(getattr(turn, "pk", turn) or 0)
@@ -287,21 +288,38 @@ def create_collecting_revision(
             .first()
             or 0
         )
-        previous_by_message = {}
-        if head is not None:
-            previous_by_message = {
-                row.message_id: row
-                for row in head.sources.all().order_by("ordinal", "id")
-            }
-        payloads = [
+        from management.services.ig_revision_source_coverage import (
+            SourceTransferPlan, plan_source_transfer, record_source_transfer,
+        )
+        previously_owned = set(IgTurnRevisionSource.objects.filter(
+            message_id__in=[message.pk for message in messages],
+        ).values_list("message_id", flat=True)) if transfer_sources else set()
+        fresh_messages = [message for message in messages if message.pk not in previously_owned]
+        if not fresh_messages:
+            return RevisionBuildResult(head, False, reason="sources_already_revision_owned")
+        transfer = (plan_source_transfer(head, client, fresh_messages, now=now)
+                    if transfer_sources else SourceTransferPlan(reason="native_bundle_rebuild"))
+        if transfer.reason == "legacy_shadow_only":
+            # Before rollout, native legacy grouping remains a shadow only.
+            # It must not acquire canonical ownership merely by receiving a
+            # second message. Already owned revisions retain the handoff path.
+            transfer_sources = False
+            fresh_messages = messages
+        previous_by_message = {row.message_id: row for row in head.sources.all()} if head else {}
+        fresh_payloads = [
             _source_payload(
                 message,
                 metadata=metadata.get(message.pk),
                 previous=previous_by_message.get(message.pk),
-                ordinal=index,
+                ordinal=index + len(transfer.payloads),
             )
-            for index, message in enumerate(messages, start=1)
+            for index, message in enumerate(fresh_messages, start=1)
         ]
+        payloads = [*transfer.payloads, *fresh_payloads]
+        if transfer.ready and _overflow_reason(payloads):
+            transfer = SourceTransferPlan(reason="combined_source_capacity")
+            payloads = [_source_payload(message, metadata=metadata.get(message.pk), ordinal=index)
+                        for index, message in enumerate(fresh_messages, start=1)]
         overflow_reason = _overflow_reason(payloads)
         same_collecting_turn = bool(
             head is not None
@@ -311,15 +329,16 @@ def create_collecting_revision(
                 IgCustomerTurnRevision.State.PREPARING,
             }
         )
-        quiet_started_at = head.quiet_started_at if same_collecting_turn else now
+        inherit_boundaries = transfer.ready or same_collecting_turn
+        quiet_started_at = head.quiet_started_at if inherit_boundaries else now
         quiet_cap_at = (
             head.quiet_cap_at
-            if same_collecting_turn
+            if inherit_boundaries
             else quiet_started_at + timedelta(seconds=QUIET_CAP_SECONDS)
         )
         inherited_overall = (
             head.overall_deadline
-            if same_collecting_turn and head.overall_deadline > now
+            if inherit_boundaries and head.overall_deadline > now
             else None
         )
         requested_overall = (
@@ -335,7 +354,11 @@ def create_collecting_revision(
         if head is not None:
             head.active_slot = None
             update_fields = ["active_slot", "updated_at"]
-            if head.state in {
+            # Ingress that cannot prove a handoff leaves the old obligation
+            # discoverable by expired_revision_debt_ids. Inactive rows cannot
+            # enter the execution selector. Internal native bundle rebuilds
+            # retain their existing supersession contract.
+            if not transfer_sources and head.state in {
                 IgCustomerTurnRevision.State.COLLECTING,
                 IgCustomerTurnRevision.State.PREPARING,
                 IgCustomerTurnRevision.State.SEALED,
@@ -384,7 +407,9 @@ def create_collecting_revision(
                 revision, True, successor_required=True, reason=overflow_reason
             )
         _create_source_rows(revision, payloads)
-        return RevisionBuildResult(revision, True, reason="created")
+        if transfer.ready:
+            record_source_transfer(head, revision, transfer)
+        return RevisionBuildResult(revision, True, reason="source_transferred" if transfer.ready else "created")
 
 
 def _authorized_manual_revision(revision) -> bool:

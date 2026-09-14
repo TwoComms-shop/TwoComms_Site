@@ -8498,7 +8498,16 @@ class IgCustomerTurnRevision(models.Model):
                 ):
                     raise ValueError("revision generation proposal is immutable")
                 prior_receipts = previous["action_receipts"] or {}
-                allowed_receipts = {"input_decision", "client_configuration_update", "manager_handoff", "rate_alert", "postback_decision", "normal_followups", "commerce_reduction", "manual_resume_authorization", "generation_admission", "recovery_lineage", "media_unavailable_reply", "provider_execution_manifest", "provider_execution_reference", "proposal_execution_resume", "response_debt", "source_preference_fallback"}
+                allowed_receipts = {
+                    "input_decision", "client_configuration_update", "manager_handoff",
+                    "rate_alert", "postback_decision", "normal_followups", "commerce_reduction",
+                    "manual_resume_authorization", "generation_admission", "recovery_lineage",
+                    "media_unavailable_reply", "provider_execution_manifest",
+                    "provider_execution_reference", "proposal_execution_resume",
+                    "response_debt", "source_preference_fallback",
+                    "source_transfer_in", "source_transfer_out", "sent_reply_projection",
+                    "reply_projection_admission",
+                }
                 if (
                     not isinstance(self.action_receipts, dict)
                     or not set(self.action_receipts).issubset(allowed_receipts)

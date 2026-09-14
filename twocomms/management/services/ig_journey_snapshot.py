@@ -952,6 +952,10 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         episode_id=episode["id"] if episode else None, is_history=is_history)
     if graph.get("transcript_reconstruction"):
         covered.append("source_verified_transcript_reconstruction")
+    from management.services.ig_journey_presentation import finalize_display_focus
+    display_focus = finalize_display_focus(graph, is_history=is_history)
+    for node in nodes.values():
+        node["current"] = "guide:" + node["id"] == display_focus["node_id"]
     from management.services.ig_journey_catalogue import journey_catalogue
     result = {
         "catalogue": journey_catalogue(),
@@ -963,7 +967,7 @@ def build_journey_snapshot(client, *, view_episode_id=None):
                      "total": total, "has_more": total > len(recent),
                      "hidden_empty_archives": sum(not _visible_purchase_history(row) for row in recent)},
         "viewed_episode": _selector(episode) if episode else None,
-        "route_kind": "unknown", "focus": {"node_id": focus, "display_only": True},
+        "route_kind": "unknown", "focus": display_focus,
         "nodes": list(nodes.values()), "history": history,
         "graph": graph,
         "covered_sources": sorted(set(covered)),

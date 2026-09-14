@@ -29,6 +29,7 @@ REASON_LABELS = {
 }
 _DISCUSSION_LABELS = {
     "configured_line": "Обрані параметри",
+    "awaiting_payment": "Обговорення оплати",
     "settlement": "Обговорення розрахунку", "fulfillment": "Обговорення виконання",
     "mockup_current_acceptance": "Обговорення макета", "channel_grant_checked": "Обговорення дозволу",
     "prize_decision": "Обговорення призу", "reward_entitlement": "Обговорення права на нагороду",
@@ -38,6 +39,61 @@ _DISCUSSION_LABELS = {
 }
 _ROLES = {"user", "manager", "model"}
 _HEX = re.compile(r"[0-9a-f]{64}")
+PRESENTATION_SCHEMA_VERSION = "journey-presentation.v1"
+# A narrow legacy adapter over authenticated customer sources, not generated
+# summaries. Unknown materiality remains quiet; no business outcome is proven.
+_PRICE_CONCERN = re.compile(r"\b(?:дорого|задорого|задорога|задорогий|expensive|overpriced)\b|не по кишені|не можу собі дозволити", re.I)
+_EXPLICIT_BLOCKER = re.compile(r"не (?:замовлятиму|купуватиму|буду замовляти|буду купувати|закажу|буду заказывать)|cannot (?:order|buy)|won't (?:order|buy)", re.I)
+_PAYMENT_FAILURE = re.compile(r"не (?:можу|вдається|могу|получается) (?:оплатити|сплатити|оплатить)|cannot pay|payment failed|платіж відхилено", re.I)
+_FORCED_CORRECTION = re.compile(r"(?:не той|неправильний|неправильный|wrong) (?:розмір|размер|size|колір|цвет|color)|(?:розмір|размер) не (?:підійшов|підходить|подош[её]л|подходит)", re.I)
+_ROUTINE_QUESTION = re.compile(r"(?:який|які|какой|какие|what) (?:розмір|заміри|размер|замеры|size|measurements)|(?:є|есть) (?:в наявності|в наличии)", re.I)
+
+
+def _materiality(step, row):
+    sources = getattr(row, "trace_source_texts", {})
+    texts = [sources.get(ref["message_id"], "") for ref in step["evidence"] if ref["role"] == "user"]
+    reason = step["reason_code"]
+    if reason in {"objection_raised", "payment_problem", "changed_request"}:
+        if reason == "payment_problem" and any(_PAYMENT_FAILURE.search(text) for text in texts):
+            return "active_blocker", "payment", "cited_customer_payment_difficulty"
+        if any(_EXPLICIT_BLOCKER.search(text) for text in texts):
+            return "active_blocker", "purchase", "cited_customer_purchase_condition"
+        if any(_PRICE_CONCERN.search(text) and not re.search(r"\b(?:не|not)\s+(?:(?:дуже|очень|занадто|too|very)\s+)?(?:дорого|expensive)\b", text, re.I)
+               for text in texts):
+            return "material_concern", "price", "cited_customer_price_concern"
+        if any(_FORCED_CORRECTION.search(text) for text in texts):
+            return "correction", "configuration", "cited_customer_configuration_problem"
+    if reason == "changed_request" or step["kind"] == "return":
+        return "correction", "request", "interpreted_change_without_proven_impact"
+    if reason in {"configuration_discussed", "product_selected", "custom_requested", "alternative_considered"}:
+        if any(_ROUTINE_QUESTION.search(text) for text in texts):
+            return "routine_question", "configuration", "cited_customer_question"
+        return "preference", "configuration", "interpreted_preference"
+    if (step["to_node"] in {"availability_question", "information_question", "stock_wait"}
+            or reason in {"information_answered", "awaiting_stock"}):
+        return "routine_question", "information", "interpreted_discussion"
+    return "contextual_note", "discussion", "materiality_not_established"
+
+
+def _step_presentation(step, row, *, node_id, edge_id=None):
+    materiality, topic, basis = _materiality(step, row)
+    action = step["from_node"] if step["to_node"] == "objection_case" else step["to_node"]
+    if action == "objection_case" or not action:
+        action = None
+    proven_impact = basis in {"cited_customer_payment_difficulty", "cited_customer_purchase_condition",
+                              "cited_customer_price_concern", "cited_customer_configuration_problem"}
+    anchored = bool(action and node_id)
+    return {
+        "presentation_schema_version": PRESENTATION_SCHEMA_VERSION,
+        "entity_kind": "case" if proven_impact else "discussion_detail",
+        "materiality": materiality, "materiality_basis": basis, "topic": topic,
+        "marker_eligible": bool(proven_impact and anchored),
+        "display_role": "unattributed_detail" if not anchored else "anchored_case" if proven_impact else "path_detail",
+        "source_edge_id": edge_id if anchored else None,
+        "source_node_id": node_id if anchored else None,
+        "affected_action": action, "status": "unresolved" if proven_impact else "recorded",
+        "outcome": "unknown", "owner": None,
+    }
 
 
 def _digest(value):
@@ -81,7 +137,7 @@ def _read(client_id, episode_id, is_history):
     if reset and (min(evidence) <= reset["reset_after_message_id"]
                   or row.created_at <= reset["created_at"] or row.analyzed_at <= reset["created_at"]):
         return None, "reset_boundary"
-    sources = list(InstagramBotMessage.objects.filter(client_id=client_id, pk__in=evidence).values("id", "role", "text"))
+    sources = list(InstagramBotMessage.objects.filter(client_id=client_id, pk__in=evidence).values("id", "role", "text", "created_at", "provider_created_at"))
     if len(sources) != len(evidence) or sum(len(source["text"]) for source in sources) > 1_000_000:
         return None, "source_rejected"
     for source in sources:
@@ -92,6 +148,9 @@ def _read(client_id, episode_id, is_history):
             return None, "source_rejected"
         if source["role"] != ref["role"] or digest != ref["source_text_sha256"]:
             return None, "source_rejected"
+    row.trace_source_times = {source["id"]: (source["provider_created_at"] or source["created_at"]).isoformat()
+                              for source in sources if source["provider_created_at"] or source["created_at"]}
+    row.trace_source_texts = {source["id"]: source["text"] for source in sources}
     return row, trace["status"]
 
 
@@ -110,20 +169,18 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
     if row is None:
         return result
     trace = row.trace
+    result["presentation_schema_version"] = PRESENTATION_SCHEMA_VERSION
     metadata = {"snapshot_id": row.pk, "authority": "none", "provenance": "transcript_reconstruction",
                 "scope": "client" if row.commercial_episode_id is None else "episode",
                 "episode_id": row.commercial_episode_id, "status": status, "freshness": row.trace_freshness}
     result["transcript_reconstruction"] = {**metadata, "coverage": deepcopy(trace["coverage"]),
                                           "label": "За перепискою"}
     definitions = {item["key"]: item for item in journey_catalogue()["definitions"]}
-    anchors, trail = {}, []
+    anchors, trail, cases = {}, [], []
     for step_index, step in enumerate(trace["steps"]):
-        revisit = (step["kind"] in {"progress", "waiting"}
-                   and step["reason_code"] != "objection_addressed"
-                   and (step["to_node"] in anchors or step["to_node"] == step["from_node"]))
-        attention = (step["kind"] == "retry" or step["reason_code"] == "objection_raised"
-                     or (step["kind"] == "objection" and step["reason_code"] != "objection_addressed"))
-        refs = [{"kind": "message", "id": ref["message_id"], "role": ref["role"]} for ref in step["evidence"]]
+        refs = [{"kind": "message", "id": ref["message_id"], "role": ref["role"],
+                 "message_at": getattr(row, "trace_source_times", {}).get(ref["message_id"], "")}
+                for ref in step["evidence"]]
         for key in (step["from_node"], step["to_node"]):
             if not key:
                 continue
@@ -142,6 +199,9 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
                             "state": "partial", "current": False, "presentation_kind": "interpretation",
                             "summary": "За перепискою. Обговорення не підтверджує виконання етапу.",
                             "facts": [], "evidence_refs": [], "timers": []}
+                    if key == "objection_case":
+                        node.update({"display_role": "unattributed_detail", "marker_eligible": False,
+                                     "presentation_schema_version": PRESENTATION_SCHEMA_VERSION})
                     if definition.get("implementation_status") == "planned":
                         node.update({field: definition[field] for field in ("implementation_status", "implementation_note")})
                     result["nodes"].append(node)
@@ -155,6 +215,9 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
             if node.get("presentation_kind") == "interpretation":
                 node["evidence_refs"] = list(existing)
         target = anchors[step["to_node"]]
+        if step["to_node"] == "objection_case" and target.get("presentation_kind") == "interpretation":
+            target.update({"display_role": "unattributed_detail", "marker_eligible": False,
+                           "presentation_schema_version": PRESENTATION_SCHEMA_VERSION})
         summary = step.get("summary", "")
         if summary and target.get("presentation_kind") == "interpretation":
             target["summary"] = summary
@@ -162,6 +225,11 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
             target["waiting"] = {"kind": "indefinite", "label": "За перепискою: очікуємо наявність; строк невідомий. Автосповіщення ще не налаштовано.",
                                  "evidence_refs": refs}
         if not step["from_node"]:
+            target.setdefault("trace_details", []).append({
+                "id": f"trace-detail:{row.pk}:{step_index}", **metadata,
+                **_step_presentation(step, row, node_id=target["id"]),
+                "evidence_refs": refs, "summary": summary, "last_step_index": step_index,
+            })
             continue
         signature = (step["from_node"], step["to_node"], step["kind"], step["reason_code"])
         identifier = "trace-edge:" + str(row.pk) + ":" + ":".join(signature) + ":" + _digest(summary)[:12]
@@ -169,16 +237,52 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
         if edge:
             edge["repeated_count"] += 1
             edge["last_step_index"] = step_index
-            if revisit and edge["tone"] != "danger":
-                edge["tone"] = "warning"
             edge["evidence_refs"].extend(ref for ref in refs if ref not in edge["evidence_refs"])
         else:
             result["edges"].append({"id": identifier, "from_node_id": anchors[step["from_node"]]["id"],
                 "to_node_id": target["id"], "relation": "transcript_interpretation", "interpretation_kind": step["kind"],
                 "reason_code": step["reason_code"], "reason_label": REASON_LABELS[step["reason_code"]],
                 "summary": summary, "last_step_index": step_index,
-                "tone": "danger" if step["kind"] in {"return", "negative"} else "warning" if attention or revisit else "recorded",
+                "tone": "recorded",
                 "authority": "none", "provenance": "transcript_reconstruction", "evidence_refs": refs, "repeated_count": 1})
+            edge = result["edges"][-1]
+        action_node = anchors[step["from_node"]] if step["to_node"] == "objection_case" else target
+        presentation = _step_presentation(step, row, node_id=action_node["id"], edge_id=identifier)
+        edge.update(presentation)
+        edge["connection_kind"] = "interpreted_transition"
+        if step["reason_code"] == "objection_addressed" and step["from_node"] == "objection_case":
+            related = [case for case in cases if case["affected_action"] == step["to_node"]]
+            if len(related) == 1:
+                # A recorded response is an attempt, not customer acceptance.
+                related[0]["status"] = "handled"
+                related[0].setdefault("attempt_edge_ids", []).append(identifier)
+                edge["case_id"] = related[0]["id"]
+        if presentation["entity_kind"] == "case":
+            source_ids = {ref["id"] for ref in refs}
+            case = next((case for case in cases if case["topic"] == presentation["topic"]
+                and case["affected_action"] == presentation["affected_action"]
+                and source_ids.intersection(ref["id"] for ref in case["evidence_refs"])), None)
+            if case is None:
+                case = {"id": f"trace-case:{row.pk}:" + _digest({"action": presentation["affected_action"],
+                    "topic": presentation["topic"], "sources": sorted(source_ids)})[:16],
+                    **metadata, **presentation, "client_id": client_id, "line_id": None, "intent_id": None,
+                    "summary": summary, "reason_code": step["reason_code"], "evidence_refs": list(refs),
+                    "coverage": deepcopy(trace["coverage"]), "recorded_at": row.created_at.isoformat(),
+                    "occurred_at": min((ref["message_at"] for ref in refs if ref["message_at"]), default=None),
+                    "source_edge_ids": [identifier], "last_step_index": step_index}
+                cases.append(case)
+            else:
+                case["evidence_refs"].extend(ref for ref in refs if ref not in case["evidence_refs"])
+                if identifier not in case["source_edge_ids"]:
+                    case["source_edge_ids"].append(identifier)
+                case["last_step_index"] = step_index
+            edge["case_id"] = case["id"]
+            edge["marker_eligible"] = presentation["marker_eligible"] and case["source_edge_id"] == identifier
+            edge["tone"] = "warning" if edge["marker_eligible"] else "recorded"
+        if step["to_node"] == "objection_case" and target.get("presentation_kind") == "interpretation":
+            target.update({"display_role": "anchored_case" if presentation["source_edge_id"] else "unattributed_detail",
+                "marker_eligible": False, "presentation_schema_version": PRESENTATION_SCHEMA_VERSION})
+    result["trace_cases"] = cases
     result["trace_node_ids"] = trail
     # A recorded accepted route or current business evidence is stronger than an
     # interpreted topic. Merely receiving the first message is not such evidence.
