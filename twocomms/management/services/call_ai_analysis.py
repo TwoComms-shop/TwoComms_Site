@@ -205,11 +205,33 @@ class _GeminiDispatchBudgetExhausted(Exception):
 class _GeminiResultInvalid(Exception):
     """Provider returned a parsed result rejected by application validation."""
 
+    http_code = 200
+    provider_reason = "result_validation_failed"
+
 
 class _GeminiEmpty(Exception):
-    """Порожня відповідь (finishReason=STOP/MAX_TOKENS без тексту) — проблема цього
-    конкретного запиту (мало вихідних токенів через thinking), НЕ перевантаження
-    моделі. Ретраїмо ту саму комбінацію, але НЕ метимо модель глобально overloaded."""
+    """HTTP 200 without usable text; the bounded metadata explains what is known."""
+
+    failure_kind = "empty"
+    http_code = 200
+
+    def __init__(self, message="empty response", *, usage=None, provider_reason="EMPTY_TEXT"):
+        super().__init__(message)
+        self.usage = usage if isinstance(usage, dict) else {}
+        self.provider_reason = provider_reason
+        self.response_diagnostic = _response_diagnostic(self.usage)
+
+
+class _GeminiMalformedResponse(_GeminiEmpty):
+    """A nonempty response could not satisfy the JSON/envelope contract."""
+
+    failure_kind = "invalid_response"
+
+
+class _GeminiSafetyBlocked(_GeminiEmpty):
+    """Provider policy refusal is terminal, never a reason to rotate credentials."""
+
+    failure_kind = "safety_blocked"
 
 
 class _Gemini429(Exception):
@@ -659,7 +681,17 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
             _emit(f"{key_name}/{model}: ⚠ {kind} ({dt:.1f}с) → інша модель")
             if attempt < n_attempts - 1:
                 retry_delay = BACKOFF_BASE * (2 ** attempt)
+        except _GeminiSafetyBlocked as exc:
+            if legacy_quota_reserved:
+                _settle_failed_response(key_name, model, exc, quota_dispatch_at)
+            if accounting_observer is not None:
+                accounting_observer.resolve_failure("safety_blocked")
+            error = CallAIAnalysisError("Gemini response blocked by provider policy.")
+            error.failure_kind = "safety_blocked"
+            raise error from exc
         except _GeminiEmpty as exc:
+            if legacy_quota_reserved:
+                _settle_failed_response(key_name, model, exc, quota_dispatch_at)
             dt = time.monotonic() - t0
             log.append(f"{key_name}/{model}: empty {exc} (#{attempt + 1})")
             _emit(f"{key_name}/{model}: ⚠ порожня відповідь ({dt:.1f}с)")
@@ -1114,7 +1146,7 @@ def _classify_hedge_error(exc: BaseException) -> tuple:
         kind, http_code = _transient_failure_details(exc)
         return kind, http_code, "degrade_model"
     if isinstance(exc, _GeminiEmpty):
-        return "empty", None, "retry_or_degrade"
+        return exc.failure_kind, 200, "stop_safety" if isinstance(exc, _GeminiSafetyBlocked) else "retry_or_degrade"
     if isinstance(exc, _Gemini429):
         return "quota_429", 429, "cooldown_project"
     if isinstance(exc, _GeminiModelUnavailable):
@@ -1285,6 +1317,9 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
     original_payload = copy.deepcopy(payload)
     original_payload["_reasoning_task"] = policy["task"]
     working_payload = copy.deepcopy(original_payload)
+    cheap_salvage_used = False
+    pending_cheap_salvage_model = ""
+    used_project_models = set()
     dispatch_budget = None
     if result_validator is not None:
         from management.services.ig_provider_dispatch_budget import (
@@ -1601,8 +1636,15 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             _audit_skip(planned["key_name"], planned["model"], reason, index)
 
     def _call(key_name: str, key_value: str, model: str, *, preserve_fallback: bool,
-              candidate_index: int = 0, candidate_scarce: bool | None = None):
-        nonlocal last_actual_failure_kind, working_payload
+              candidate_index: int = 0, candidate_scarce: bool | None = None,
+              response_output_tokens: int | None = None):
+        nonlocal last_actual_failure_kind, working_payload, cheap_salvage_used, pending_cheap_salvage_model
+        candidate_row = next((row for row in candidate_plan if row["candidate_index"] == candidate_index), {})
+        identity = str(candidate_row.get("project_identity") or "")
+        pending_salvage = pending_cheap_salvage_model == model
+        if pending_salvage and (not identity or (identity, model) in used_project_models):
+            _audit_skip(key_name, model, "salvage_project_not_fresh", candidate_index)
+            return None, "validation_project_skip"
         if dispatch_budget is not None:
             budget_stop = dispatch_budget.dispatch_block_reason(
                 model, scarce=candidate_scarce
@@ -1659,6 +1701,8 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             model, working_payload, reasoning_task=policy["task"]
         )
         request_payload.pop("_reasoning_task", None)
+        if response_output_tokens == 4096:
+            request_payload["generationConfig"]["maxOutputTokens"] = 4096
         call_started_at = time.monotonic()
         attempt_boundary = None
 
@@ -1690,6 +1734,16 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             except Exception:
                 logger.debug("gemini attempt audit unavailable", exc_info=True)
 
+        if pending_salvage:
+            reserve = getattr(accounting_observer, "reserve_provider_repair", None)
+            if callable(reserve) and not reserve(key_name=key_name, model=model, candidate_index=candidate_index, recovery_kind="semantic_salvage"):
+                _release()
+                _audit_skip(key_name, model, "salvage_not_authorized", candidate_index)
+                return None, "validation_project_skip"
+            if provider_continuation is not None and not callable(reserve):
+                _release()
+                return None, "invalid_response_model"
+            pending_cheap_salvage_model = ""
         attempt_boundary = (
             accounting_observer.attempt(
                 key_name=key_name,
@@ -1724,6 +1778,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         if key_name in gemini_keys.ALL_KEYS:
             legacy_quota_reserved = True
         try:
+            used_project_models.add((identity, model))
             call_kwargs = {"parse": parse, "timeout": timeout}
             if attempt_boundary is not None:
                 call_kwargs["attempt_boundary"] = attempt_boundary
@@ -1806,11 +1861,37 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             _release()
             return None, "transient"
         except _GeminiEmpty as exc:
-            last_actual_failure_kind = "empty"
-            attempts.append(f"{key_name}/{model}: empty: {exc}")
-            _audit("failed", failure_kind="empty", decision="retry_or_degrade")
-            _emit(f"{key_name}/{model}: empty response")
+            last_actual_failure_kind = exc.failure_kind
+            if legacy_quota_reserved:
+                _settle_failed_response(key_name, model, exc, quota_dispatch_at)
+            blocked = isinstance(exc, _GeminiSafetyBlocked)
+            attempts.append(f"{key_name}/{model}: {exc.failure_kind}")
+            _audit("failed", failure_kind=exc.failure_kind, http_code=200,
+                   provider_reason=exc.provider_reason, usage=exc.usage,
+                   error_detail=exc.response_diagnostic,
+                   decision="stop_safety" if blocked else "retry_or_degrade")
+            _emit(f"{key_name}/{model}: {exc.failure_kind}")
             _release()
+            if blocked:
+                _audit_remaining("safety_blocked")
+                if accounting_observer is not None:
+                    accounting_observer.resolve_failure("safety_blocked")
+                error = CallAIAnalysisError("Gemini response blocked by provider policy.")
+                error.failure_kind = "safety_blocked"
+                raise error from exc
+            if (policy["task"] == "customer_chat" and model == "gemini-3.5-flash-lite"
+                and candidate_scarce is False and candidate_row.get("identity_status") == "known"
+                and exc.usage.get("_finish_reason") == "MAX_TOKENS" and response_output_tokens is None
+                and dispatch_budget is not None and dispatch_budget.consume_repair()):
+                reserve = getattr(accounting_observer, "reserve_provider_repair", None)
+                ready = bool(reserve(key_name=key_name, model=model, candidate_index=candidate_index, recovery_kind="output_cap")) if callable(reserve) else provider_continuation is None
+                if ready:
+                    _audit("failed", failure_kind=exc.failure_kind, http_code=200,
+                           provider_reason=exc.provider_reason, usage=exc.usage,
+                           error_detail=exc.response_diagnostic, decision="repair_output_cap_4096")
+                    return _call(key_name, key_value, model, preserve_fallback=preserve_fallback,
+                                 candidate_index=candidate_index, candidate_scarce=candidate_scarce,
+                                 response_output_tokens=4096)
             return None, "empty"
         except _Gemini429 as exc:
             last_actual_failure_kind = "quota_429"
@@ -2053,6 +2134,15 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                         # success, typed failure, or exception.
                         working_payload = copy.deepcopy(original_payload)
                 working_payload = copy.deepcopy(original_payload)
+                from management.services.ig_revision_provider_execution import STOCHASTIC_RESPONSE_REASONS
+                if (rotate_model_ready and policy["task"] == "customer_chat"
+                    and candidate_scarce is False and not cheap_salvage_used
+                    and bool(validation.reason_codes) and set(validation.reason_codes) <= STOCHASTIC_RESPONSE_REASONS):
+                    cheap_salvage_used = True
+                    pending_cheap_salvage_model = model
+                    _audit("failed", failure_kind="invalid_response", provider_reason="result_validation_failed",
+                           decision="salvage_fresh_cheap_project", error_detail=",".join(validation.reason_codes)[:120])
+                    return None, "validation_rotate_project"
                 if rotate_model_ready:
                     _audit_remaining(
                         "result_validation_failed", model=model
@@ -2136,9 +2226,14 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 key_name, model, now=quota_dispatch_at
             ):
                 raise _Gemini429("local quota ledger: pair exhausted")
-            parsed, usage = _gemini_call_once(
-                model, request_payload, key_value, parse=parse, timeout=timeout
-            )
+            try:
+                parsed, usage = _gemini_call_once(
+                    model, request_payload, key_value, parse=parse, timeout=timeout
+                )
+            except _GeminiEmpty as exc:
+                if key_name in gemini_keys.ALL_KEYS:
+                    _settle_failed_response(key_name, model, exc, quota_dispatch_at)
+                raise
             if key_name in gemini_keys.ALL_KEYS:
                 gemini_quota.settle(
                     key_name,
@@ -2159,7 +2254,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 # A 404 is model-wide. A 403 can be project permission state
                 # and must rotate to another project on the same model.
                 aborts_wave=lambda exc: (
-                    isinstance(exc, _GeminiModelUnavailable)
+                    isinstance(exc, _GeminiSafetyBlocked) or isinstance(exc, _GeminiModelUnavailable)
                     and "404" in str(exc)
                 ),
                 max_in_flight=2,
@@ -2230,6 +2325,8 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 http_code=http_code,
                 provider_reason=_bounded_provider_reason(outcome.error),
                 decision=decision, latency_ms=outcome.latency_ms,
+                usage=getattr(outcome.error, "usage", None),
+                error_detail=getattr(outcome.error, "response_diagnostic", ""),
                 remaining_deadline_ms=remaining_ms,
                 attempt_index=attempt_counter[0],
                 candidate_index=frozen_candidate_index,
@@ -2241,6 +2338,10 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             gemini_scoreboard.invalidate("chat")
         except Exception:
             pass
+        if any(isinstance(outcome.error, _GeminiSafetyBlocked) for outcome in wave.outcomes):
+            error = CallAIAnalysisError("Gemini response blocked by provider policy.")
+            error.failure_kind = "safety_blocked"
+            raise error
         return winner_payload
 
     primary = models[0]
@@ -2303,6 +2404,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 _audit_remaining("model_terminal", model=primary)
                 break
             if state not in {
+                "validation_rotate_project", "validation_project_skip",
                 "invalid_key",
                 "permission_denied",
                 "model_not_found_project",
@@ -2356,6 +2458,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             # спроби підряд означають, що і ця модель зараз не відповідає, тому
             # йдемо до наступної, а не тримаємо клієнта.
             if state not in {
+                "validation_rotate_project", "validation_project_skip",
                 "invalid_key",
                 "permission_denied",
                 "model_not_found_project",
@@ -2741,6 +2844,61 @@ def _final_inline_content_hashes(body: bytes) -> list[str]:
         raise _GeminiFatal("final provider inline body is invalid") from exc
 
 
+_RESPONSE_FINISH_REASONS = frozenset({
+    "STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "OTHER", "BLOCKLIST",
+    "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY",
+    "IMAGE_PROHIBITED_CONTENT", "IMAGE_OTHER", "NO_IMAGE", "UNEXPECTED_TOOL_CALL",
+    "TOO_MANY_TOOL_CALLS", "MODEL_ARMOR", "FINISH_REASON_UNSPECIFIED",
+})
+_RESPONSE_BLOCK_REASONS = frozenset({
+    "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "IMAGE_SAFETY", "OTHER", "MODEL_ARMOR",
+})
+_SAFETY_FINISH_REASONS = frozenset({
+    "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+    "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "MODEL_ARMOR",
+})
+_RESPONSE_USAGE_FIELDS = (
+    "promptTokenCount", "thoughtsTokenCount", "candidatesTokenCount", "totalTokenCount",
+    "cachedContentTokenCount", "toolUsePromptTokenCount",
+)
+
+
+def _response_usage(data, candidate):
+    """Keep only provider enums and bounded numeric counts, never response text."""
+    raw = data.get("usageMetadata")
+    usage = {}
+    if isinstance(raw, dict):
+        for field in _RESPONSE_USAGE_FIELDS:
+            value = raw.get(field)
+            if type(value) is int and 0 <= value <= 2_147_483_647:
+                usage[field] = value
+        invalid = any(field in raw and field not in usage for field in _RESPONSE_USAGE_FIELDS)
+        state = "invalid" if invalid else "present" if usage else "missing"
+    else:
+        state = "missing" if raw is None else "invalid"
+    finish = candidate.get("finishReason")
+    usage["_finish_reason"] = finish if isinstance(finish, str) and finish in _RESPONSE_FINISH_REASONS else "UNKNOWN"
+    feedback = data.get("promptFeedback")
+    block = feedback.get("blockReason") if isinstance(feedback, dict) else None
+    usage["_block_reason"] = (block if isinstance(block, str) and block in _RESPONSE_BLOCK_REASONS
+                              else "UNKNOWN_BLOCK" if block and block != "BLOCK_REASON_UNSPECIFIED" else "NONE")
+    usage["_usage_status"] = state
+    usage["_usage_fields"] = "".join("1" if field in usage else "0" for field in _RESPONSE_USAGE_FIELDS[:4])
+    return usage
+
+
+def _response_diagnostic(usage):
+    return (f"response.v1;finish={usage.get('_finish_reason', 'UNKNOWN')};"
+            f"block={usage.get('_block_reason', 'NONE')};"
+            f"usage={usage.get('_usage_status', 'missing')};"
+            f"counts={usage.get('_usage_fields', '0000')}")[:120]
+
+
+def _settle_failed_response(key_name, model, error, dispatch_at):
+    # A received HTTP 200 still consumed provider tokens, even without an answer.
+    gemini_quota.settle(key_name, model, error.usage.get("totalTokenCount", 0), dispatch_at=dispatch_at)
+
+
 def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True,
                       timeout: tuple | None = None, attempt_boundary=None,
                       dispatch_budget=None,
@@ -2781,6 +2939,13 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
             attempt_boundary.cancelled_pre_dispatch(error)
         raise
     if attempt_boundary is not None:
+        generation = payload.get("generationConfig") or {}
+        cap = generation.get("maxOutputTokens")
+        level = (generation.get("thinkingConfig") or {}).get("thinkingLevel")
+        attempt_boundary.response_generation = {
+            "max_output_tokens": cap if type(cap) is int and 0 < cap <= 65536 else 0,
+            "thinking_level": level if level in {"minimal", "low", "medium", "high"} else "",
+        }
         admitted = attempt_boundary.before_provider(
             serialized_bytes=len(body),
             inline_count=request_inline_count,
@@ -2905,64 +3070,60 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
         raise error
 
     candidates = data.get("candidates") or []
-    if not isinstance(candidates, list):
-        error = _GeminiTransient("invalid JSON envelope candidates")
+    cand = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+    usage = _response_usage(data, cand)
+    usage["_request_inline_count"] = request_inline_count
+    usage["_request_inline_content_hashes"] = request_inline_content_hashes
+    usage["_request_trimmed_inline"] = request_trimmed_inline
+    usage["_request_serialized_bytes"] = len(body)
+    generation = payload.get("generationConfig") or {}
+    cap = generation.get("maxOutputTokens")
+    if type(cap) is int and 0 < cap <= 65536:
+        usage["_request_output_tokens"] = cap
+    thinking = generation.get("thinkingConfig") or {}
+    if thinking.get("thinkingLevel") in {"minimal", "low", "medium", "high"}:
+        usage["_request_thinking_level"] = thinking["thinkingLevel"]
+
+    def failed_response(error_type, reason):
+        error = error_type(reason, usage=usage, provider_reason=reason)
         if attempt_boundary is not None:
-            attempt_boundary.failed(error)
-        raise error
-    cand = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+            attempt_boundary.failed(error, usage=usage)
+        return error
+
+    # Explicit provider refusal takes precedence even if text is also present.
+    # Another credential/model must not be used to bypass that refusal.
+    if usage["_block_reason"] != "NONE" or usage["_finish_reason"] in _SAFETY_FINISH_REASONS:
+        raise failed_response(_GeminiSafetyBlocked,
+                              usage["_block_reason"] if usage["_block_reason"] != "NONE" else usage["_finish_reason"])
+    if not isinstance(candidates, list) or (candidates and not isinstance(candidates[0], dict)):
+        raise failed_response(_GeminiMalformedResponse, "INVALID_RESPONSE_ENVELOPE")
     content = cand.get("content") or {}
     if not isinstance(content, dict):
-        error = _GeminiTransient("invalid JSON envelope content")
-        if attempt_boundary is not None:
-            attempt_boundary.failed(error)
-        raise error
+        raise failed_response(_GeminiMalformedResponse, "INVALID_RESPONSE_ENVELOPE")
     parts = content.get("parts") or []
     if not isinstance(parts, list):
-        error = _GeminiTransient("invalid JSON envelope parts")
-        if attempt_boundary is not None:
-            attempt_boundary.failed(error)
-        raise error
+        raise failed_response(_GeminiMalformedResponse, "INVALID_RESPONSE_ENVELOPE")
     # Thought parts are provider-internal and must never leak into a customer
     # answer, JSON parser, logs, or CRM memory.
     text = "".join(
         p.get("text", "")
         for p in parts
-        if isinstance(p, dict) and not p.get("thought")
+        if isinstance(p, dict) and not p.get("thought") and isinstance(p.get("text", ""), str)
     ).strip()
     if not text:
-        # Порожньо: часто finishReason=MAX_TOKENS/STOP, коли thinking зʼїв бюджет
-        # виводу. Це проблема запиту, а не перевантаження моделі → _GeminiEmpty.
-        reason = cand.get("finishReason") or "невідомо"
-        error = _GeminiEmpty(f"порожня відповідь (finishReason={reason})")
-        if attempt_boundary is not None:
-            attempt_boundary.failed(error)
-        raise error
+        raise failed_response(_GeminiEmpty, usage["_finish_reason"] if usage["_finish_reason"] != "UNKNOWN" else "EMPTY_TEXT")
 
     if parse:
         try:
             parsed = _parse_model_json(text)
-        except CallAIAnalysisError as exc:
-            # Невалідний/обрізаний JSON (часто у grounded без json-mime) — трактуємо
-            # як порожній: ретрай тієї ж комбінації, далі наступний ключ. Не fatal.
-            error = _GeminiEmpty(f"unparseable JSON: {exc}")
-            if attempt_boundary is not None:
-                attempt_boundary.failed(error)
-            raise error from exc
+        except CallAIAnalysisError:
+            # Parser errors can contain the candidate text. Retain only the
+            # typed failure plus bounded provider metadata, never that text.
+            raise failed_response(_GeminiMalformedResponse, "MALFORMED_JSON") from None
     else:
         parsed = text
-    raw_usage = data.get("usageMetadata") or {}
-    if not isinstance(raw_usage, dict):
-        error = _GeminiTransient("invalid JSON envelope usage")
-        if attempt_boundary is not None:
-            attempt_boundary.failed(error)
-        raise error
-    usage = dict(raw_usage)
-    usage["_finish_reason"] = str(cand.get("finishReason") or "")[:32]
-    usage["_request_inline_count"] = request_inline_count
-    usage["_request_inline_content_hashes"] = request_inline_content_hashes
-    usage["_request_trimmed_inline"] = request_trimmed_inline
-    usage["_request_serialized_bytes"] = len(body)
+    if usage["_usage_status"] == "invalid":
+        raise failed_response(_GeminiMalformedResponse, "INVALID_USAGE_METADATA")
     if attempt_boundary is not None and not defer_attempt_success:
         attempt_boundary.succeeded(usage)
     return parsed, usage

@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db import transaction
 from django.test import TestCase, override_settings
@@ -47,6 +47,31 @@ assert.equal(reconcileReplyDebt(171,{required:false,observed_at:'2026-09-14T10:0
 assert.equal(reconcileReplyDebt(171,{required:false,observed_at:'2026-09-14T10:00:02Z'}),timedDebt);
 assert.equal(reconcileReplyDebt(171,{required:false}),timedDebt);
 assert.equal(reconcileReplyDebt(171,{required:false,observed_at:'2026-09-14T10:00:03Z'}).required,false);
+// UTC adoption must not compare against the legacy clock three hours ahead.
+const legacy={required:true,task_id:200,observed_at:'2026-09-14T13:19:00Z'};
+assert.equal(reconcileReplyDebt(201,legacy),legacy);
+const canonical={required:true,task_id:200,observed_at:'2026-09-14T13:19:01Z',observation_cursor:'2026-09-14T10:19:01Z'};
+assert.equal(reconcileReplyDebt(201,canonical),canonical);
+assert.equal(reconcileReplyDebt(201,{required:false,observed_at:'2026-09-14T14:00:00Z'}),canonical);
+assert.equal(reconcileReplyDebt(201,{required:false,observation_cursor:'invalid'}),canonical);
+assert.equal(reconcileReplyDebt(201,{required:false,observation_cursor:'2026-09-14T10:19:00Z'}),canonical);
+assert.equal(reconcileReplyDebt(201,{required:false,observation_cursor:'2026-09-14T10:19:01Z'}),canonical);
+const resolved=rememberReviewedReplyDebt(201,200,{required:false,observation_cursor:'2026-09-14T10:19:02Z'});
+assert.equal(resolved.required,false);
+assert.equal(reconcileReplyDebt(201,canonical),resolved);
+assert.equal(reconcileReplyDebt(201,{...canonical,observation_cursor:'2026-09-14T10:19:03Z'}),resolved);
+const next={required:true,task_id:201,observation_cursor:'2026-09-14T10:19:04Z'};
+assert.equal(reconcileReplyDebt(201,next),next);
+assert.equal(rememberReviewedReplyDebt(201,200,{required:false,observation_cursor:'2026-09-14T10:19:05Z'}),next);
+// Exact acknowledgement clears its task even with an old endpoint payload,
+// while retaining the canonical cursor against subsequent legacy responses.
+assert.equal(rememberReviewedReplyDebt(201,201,{required:false}).required,false);
+const tombstone=replyDebtByClient.get(201);
+assert.equal(tombstone.observation_cursor,next.observation_cursor);
+assert.equal(reconcileReplyDebt(201,{required:true,task_id:202,observed_at:'2026-09-14T14:00:00Z'}),tombstone);
+const newer={required:true,task_id:202,observation_cursor:'2026-09-14T10:19:06Z'};
+assert.equal(reconcileReplyDebt(201,newer),newer);
+assert.equal(reconcileReplyDebt(201,{required:false,observation_cursor:'2026-09-14T10:19:07Z'}).required,false);
 """
         completed = subprocess.run([node, "-e", program], text=True, capture_output=True)
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -83,7 +108,42 @@ assert.equal(reconcileReplyDebt(171,{required:false,observed_at:'2026-09-14T10:0
         self.assertEqual(payload["revision_id"], self.revision.pk)
         refreshed = reply_debt_payload(self.client_row)
         self.assertTrue(refreshed.pop("observed_at"))
-        self.assertEqual({key: value for key, value in payload.items() if key != "observed_at"}, refreshed)
+        self.assertTrue(refreshed.pop("observation_cursor"))
+        self.assertEqual({key: value for key, value in payload.items()
+                          if key not in {"observed_at", "observation_cursor"}}, refreshed)
+
+    def test_cursor_uses_backend_utc_sql_without_changing_legacy_clock(self):
+        from unittest.mock import patch
+        from django.db import connection
+        from django.db.models.functions import Now
+        from management.services.ig_response_debt import UtcObservationNow
+
+        queryset = with_reply_debt(IgClient.objects.filter(pk=self.client_row.pk))
+        compiler = queryset.query.get_compiler(connection=connection)
+        # Exercise Django's actual vendor dispatch without connecting to an
+        # external database; the rest of this test runs SQL on local SQLite.
+        with patch.object(connection, "vendor", "mysql"):
+            sql, _ = compiler.as_sql()
+        self.assertIn("UTC_TIMESTAMP(6) AS", sql)
+        self.assertIn("CURRENT_TIMESTAMP(6) AS", sql)
+        for vendor in ("sqlite", "postgresql"):
+            with self.subTest(vendor=vendor), patch.object(connection, "vendor", vendor):
+                self.assertEqual(compiler.compile(UtcObservationNow()), compiler.compile(Now()))
+
+    def test_cursor_is_current_utc_for_debt_and_clear_in_same_select(self):
+        for required in (False, True):
+            with self.subTest(required=required):
+                if required:
+                    record_reply_debt(self.revision, "generation_failed")
+                before = timezone.now()
+                with self.assertNumQueries(1):
+                    payload = reply_debt_payload(self.client_row)
+                after = timezone.now()
+                cursor = datetime.fromisoformat(payload["observation_cursor"])
+                self.assertEqual(cursor.utcoffset(), timedelta(0))
+                self.assertGreaterEqual(cursor, before - timedelta(milliseconds=1))
+                self.assertLessEqual(cursor, after + timedelta(milliseconds=1))
+                self.assertEqual(payload["required"], required)
 
     def test_unrelated_manager_case_does_not_become_reply_debt(self):
         IgFollowUpTask.objects.create(client=self.client_row, due_at=self.now,

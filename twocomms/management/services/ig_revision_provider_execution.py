@@ -23,6 +23,38 @@ from management.models import GeminiRequest, GeminiRequestAttempt, IgClient, IgC
 MANIFEST_KEY = "provider_execution_manifest"
 REFERENCE_KEY = "provider_execution_reference"
 REPAIR_KEY = "_provider_repair_reservation"
+SALVAGE_KEY = "_provider_semantic_salvage"
+STOCHASTIC_RESPONSE_REASONS = frozenset({"unauthorized_url", "unnecessary_manager_handoff"})
+
+
+def _response_recovery_proof(kind, candidate, attempts, *, reasoning_task):
+    """An exception to model rejection needs exact failed HTTP evidence.
+
+    Both generations remain visible. This grants a bounded dispatch, never a
+    winner, source coverage, a fresh quota group or a new root budget.
+    """
+    if reasoning_task != "customer_chat" or candidate.get("scarce", True) or candidate.get("identity_status") != "known" or not candidate.get("project_identity"):
+        return 0
+    model_attempts = [row for row in attempts if row.model == candidate["model"]]
+    if not model_attempts or any(row.failure_kind == "safety_blocked" for row in attempts):
+        return 0
+    latest = model_attempts[-1]
+    if latest.fsm_state != "failed" or latest.http_code != 200:
+        return 0
+    if kind == "output_cap":
+        if candidate["model"] != "gemini-3.5-flash-lite" or latest.key_name != candidate["key_name"] or latest.project_identity != candidate["project_identity"]:
+            return 0
+        relevant = [row for row in model_attempts if row.project_identity == candidate["project_identity"]]
+        return latest.pk if all(row.http_code == 200 and row.failure_kind in {"empty", "invalid_response"}
+            and (row.provider_reason == "MAX_TOKENS" or ";finish=MAX_TOKENS;" in row.error_detail) for row in relevant) else 0
+    if kind == "semantic_salvage":
+        if any(row.project_identity == candidate["project_identity"] for row in model_attempts):
+            return 0
+        failed = [row for row in model_attempts if row.failure_kind == "invalid_response"]
+        return latest.pk if latest in failed and failed and all(
+            row.http_code == 200 and row.fsm_state == "failed" and bool(row.error_detail)
+            and set(row.error_detail.split(",")) <= STOCHASTIC_RESPONSE_REASONS for row in failed) else 0
+    return 0
 MAX_HTTP = 8
 MAX_SCARCE_HTTP = 2
 HORIZON = timedelta(minutes=30)
@@ -132,6 +164,8 @@ def _disposition(candidate, attempts, repair):
     """Reject known bad scopes; transient failures defer this exact pair."""
     defer_until = None
     for attempt in attempts:
+        if attempt.failure_kind == "safety_blocked":
+            return "provider_safety_blocked", None
         same_model = attempt.model == candidate["model"]
         same_identity = attempt.project_identity == candidate["project_identity"]
         same_alias = attempt.key_name == candidate["key_name"]
@@ -303,14 +337,28 @@ def admit_provider_dispatch_locked(graph, boundary, *, now):
     if repair_token:
         root = _root(revision)
         anchor = _graphs(root, _family(root)).first()
-        reserved = (anchor.candidate_outcomes or {}).get(REPAIR_KEY) or {}
+        reserved = next((value for key in (REPAIR_KEY, SALVAGE_KEY)
+                         if isinstance(value := (anchor.candidate_outcomes or {}).get(key), dict)
+                         and value.get("token") == repair_token), {})
+        recovery_kind = reserved.get("recovery_kind", "")
+        if recovery_kind:
+            if recovery_kind == "output_cap" and getattr(boundary, "response_generation", {}) != {"max_output_tokens": 4096, "thinking_level": "low"}:
+                return "provider_output_repair_policy_invalid"
+            attempts = list(GeminiRequestAttempt.objects.filter(request_graph__in=_graphs(root, _family(root)), provider_started_at__isnull=False).order_by("pk"))
+            proof = _response_recovery_proof(recovery_kind, candidate, attempts, reasoning_task=graph.reasoning_task)
+            expected = {"token": repair_token, "request_id": graph.request_id, "candidate_index": boundary.candidate_index,
+                        "key_name": boundary.key_name, "model": boundary.model, "recovery_kind": recovery_kind,
+                        "failure_attempt_id": proof}
+            if not proof or reserved != expected:
+                return "provider_repair_identity_invalid"
+            return "" if candidate["skip_reason"] in {"provider_model_schema_rejected", "provider_candidate_wait"} else candidate["skip_reason"]
         if reserved != {"token": repair_token, "request_id": graph.request_id, "candidate_index": boundary.candidate_index, "key_name": boundary.key_name, "model": boundary.model}:
             return "provider_repair_identity_invalid"
         return "" if candidate["skip_reason"] in {"", "provider_model_schema_rejected"} else candidate["skip_reason"]
     return candidate["skip_reason"] or ("" if continuation.ready else continuation.reason)
 
 
-def reserve_provider_repair(observer, *, key_name, model, candidate_index=0):
+def reserve_provider_repair(observer, *, key_name, model, candidate_index=0, recovery_kind=""):
     """Reserve once even if payload repair or pre-HTTP preparation later fails."""
     if not observer.source_execution_key:
         return True
@@ -322,16 +370,26 @@ def reserve_provider_repair(observer, *, key_name, model, candidate_index=0):
         if revision is None:
             return False
         continuation = inspect_revision_provider_execution(revision)
-        if not continuation.http_remaining or not continuation.repair_remaining:
+        if not continuation.http_remaining or (not continuation.repair_remaining and recovery_kind != "semantic_salvage"):
             return False
         candidate_index = candidate_index or observer.candidate_index(key_name, model)
         candidate = next((row for row in continuation.candidate_plan if row["candidate_index"] == candidate_index and row["key_name"] == key_name and row["model"] == model), None)
-        if not candidate or candidate["skip_reason"] != "provider_model_schema_rejected" or (candidate["scarce"] and not continuation.scarce_remaining):
+        if not candidate or (not recovery_kind and candidate["skip_reason"] != "provider_model_schema_rejected") or (candidate["scarce"] and not continuation.scarce_remaining):
             return False
         root = _root(revision)
         anchor = _graphs(root, _family(root)).select_for_update().first()
+        marker_key = SALVAGE_KEY if recovery_kind == "semantic_salvage" else REPAIR_KEY
+        if (anchor.candidate_outcomes or {}).get(marker_key):
+            return False
         marker = {"token": secrets.token_hex(16), "request_id": graph.request_id, "candidate_index": candidate_index, "key_name": key_name, "model": model}
-        anchor.candidate_outcomes = {**(anchor.candidate_outcomes or {}), REPAIR_KEY: marker}
+        if recovery_kind:
+            original = next((row for row in continuation.manifest["candidates"] if row["candidate_index"] == candidate_index), {})
+            attempts = list(GeminiRequestAttempt.objects.filter(request_graph__in=_graphs(root, _family(root)), provider_started_at__isnull=False).order_by("pk"))
+            proof = _response_recovery_proof(recovery_kind, candidate, attempts, reasoning_task=graph.reasoning_task)
+            if not proof or original.get("skip_reason") or candidate["skip_reason"] not in {"provider_model_schema_rejected", "provider_candidate_wait"} or (recovery_kind == "semantic_salvage" and continuation.repair_remaining):
+                return False
+            marker.update(recovery_kind=recovery_kind, failure_attempt_id=proof)
+        anchor.candidate_outcomes = {**(anchor.candidate_outcomes or {}), marker_key: marker}
         anchor.save(update_fields=["candidate_outcomes", "updated_at"])
         observer._pending_provider_repair = marker
         return True

@@ -10,6 +10,13 @@ from django.utils import timezone
 from management.models import IgFollowUpTask
 
 
+class UtcObservationNow(Now):
+    """Statement observation time independent of the MariaDB session timezone."""
+
+    def as_mysql(self, compiler, connection, **extra_context):
+        return self.as_sql(compiler, connection, template="UTC_TIMESTAMP(6)", **extra_context)
+
+
 DEBT_REASON = "revision_case:execution_debt"
 DEBT_KIND = "revision_execution_debt"
 REASON_LABELS = {
@@ -154,7 +161,10 @@ def with_reply_debt(queryset):
     debts = unresolved_reply_debts().filter(client_id=OuterRef("pk")).order_by("event_occurred_at", "id")
     counts = debts.order_by().values("client_id").annotate(total=Count("pk"))
     return queryset.annotate(
+        # Keep the legacy clock until already-open D074 pages are retired:
+        # changing its MariaDB wall time to UTC would freeze their ordering.
         reply_debt_observed_at=Now(),
+        reply_debt_observation_cursor=UtcObservationNow(),
         has_reply_debt=Exists(debts),
         reply_debt_count=Subquery(counts.values("total")[:1]),
         reply_debt_task_id=Subquery(debts.values("pk")[:1]),
@@ -168,6 +178,9 @@ def reply_debt_payload(client):
         client = with_reply_debt(type(client).objects.filter(pk=client.pk)).first()
     observed_at = getattr(client, "reply_debt_observed_at", None)
     observation = {"observed_at": observed_at.isoformat()} if observed_at else {}
+    cursor = getattr(client, "reply_debt_observation_cursor", None)
+    if cursor:
+        observation["observation_cursor"] = cursor.isoformat()
     if client is None or not client.has_reply_debt:
         return {"required": False, **observation}
     payload = client.reply_debt_payload or {}

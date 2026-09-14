@@ -14,14 +14,14 @@
 
 Статусы пунктов: `[ ]` — не начат; `[~]` — действительно выполняется, включая готовность к выпуску; `[!]` — блокировка с причиной и следующим условием; `[x]` — Astra приняла результат после commit → push main → SSH deploy и релевантной проверки. Исключение — исторический локальный B02.1, явно отмеченный ниже. Начавший агент отмечает пункт до редактирования кода. Закончивший сразу фиксирует результат, проверку и ограничения, не ожидая завершения всего блока. Пункт выпуска подтверждает production отдельно: локальный тест не заменяет факт выпуска. Для принятия ранее выполненного пункта не расширять его смысл задним числом.
 
-**Выполнение: 30 из 196 пунктов · взвешенный прогресс 23.9% · в работе 25 · блокировано 0 · не закрыто 166.** Блоков: 1/17 полностью закрыто, 16 остаются. Из закрытых пунктов один — исторический локальный B02.1; подтверждение новых production выпусков находится непосредственно у пунктов.
+**Выполнение: 31 из 196 пунктов · взвешенный прогресс 24.4% · в работе 25 · блокировано 0 · не закрыто 165.** Блоков: 1/17 полностью закрыто, 16 остаются. Из закрытых пунктов один — исторический локальный B02.1; подтверждение новых production выпусков находится непосредственно у пунктов.
 
 | Блок | Приоритет | Результат | Вес | Готово | Состояние |
 |---|---|---|---:|---:|---|
 | B01 | P0 | Изображения и сертификат | 12% | 10/10 | Завершён |
 | B02 | P0 | Инструкции и ручное управление | 9% | 9/13 | ~ В работе |
-| B03 | P0 | Turn, outbox и ручное управление | 11% | 9/21 | ~ В работе |
-| B04 | P0/P1 | Бесплатные модели и очередь | 7% | 1/12 | ◐ Частично |
+| B03 | P0 | Turn, outbox и ручное управление | 11% | 10/21 | ~ В работе |
+| B04 | P0/P1 | Бесплатные модели и очередь | 7% | 1/12 | ~ В работе |
 | B05 | P1 | Память, понимание и материальность | 11% | 0/11 | ~ В работе |
 | B06 | P1 | Каталог, доступность и спрос | 7% | 0/10 | Не начат |
 | B07 | P1 | Карточки и размер | 4% | 0/8 | Не начат |
@@ -42,7 +42,21 @@
 
 При смене агента: прочитать D072 в разделе 0, контракты C16–C19, evidence/приёмку раздела 6 и соответствующие задачи раздела 3; сверить рабочее дерево и production, затем начать первый доступный срез. Не повторять старые назначения агентов и probes из исторических заметок. Анкета из 300 вопросов не требуется. Возможности поставщика проверять в первичном источнике и на разрешённом тестовом аккаунте.
 
-### D074 · предотвращение повторов инцидентов и ручное закрытие алерта — в работе
+### D075 · empty, квоты и восстановление на дешёвой модели — в работе
+
+Приоритет владельца14.09 после D074. Astra/high d073_semantic_review пишет gateway/typed failures/failed200 accounting и bounded same-Lite cap repair + один unique-project cheap salvage; Astra/high d073_preference_withdrawal независимо проверяет root budget/permission/settlement. Root принимает и выпускает отдельно. Дополнительный root finding: MariaDB CURRENT_TIMESTAMP локальный, прежний observed_at cursor получает сдвиг+3h; d073_journey_materiality Astra/high добавляет canonical UTC DB cursor с безопасным переходом для уже открытого HTML. Production-клиенты не используются для синтетических retry-тестов.
+
+**D075 clean release gate пройден:**757/757 tests,79.817s,10 scoped files от63c3474c4; Django check без замечаний, D071/0209 и прочие изменения исключены. Следующее действие commit/push/main SSH pull/runtime+UTC/UI verification.
+
+**Поведение D075:** gateway различает empty/MALFORMED_JSON/provider blocking и сохраняет allowlisted finish/block, наличие счётчиков и фактический output/thinking profile до первой failed200 settlement. Provider body/thoughts не пишутся. При явном MAX_TOKENS у known non-scarce3.5Lite customer_chat одна существующая repair reservation разрешает тот же candidate4096/low вместо1536; это не новый root budget. Только unauthorized_url/unnecessary_manager_handoff после исчерпанного repair допускают один новый unique-project cheap candidate на весь root; unverified price/payment/authority, pause/stale и provider safety не получают такого обхода. Root8HTTP/2scarce/1repair и исходные source/window/квоты сохраняются, marker проверяется непосредственно передHTTP вместе с actual4096/low profile.
+
+**Проверки до clean gate:**143 owner integration tests;198 distinct независимых gateway/checker/quota/accounting/revision/legacy tests и отдельный финальный18-test rerun — без P1/P2 findings. UTC cursor15 tests. Root принял объединённый clean release от63c3474c4:757 tests, включая483 D074-проверки. Исходная причина5683 остаётся неизвестной из-за потери старых метаданных; это не замещается предположением MAX_TOKENS. Следующий read-only B04.12 audit: распределение последних scarce slots/малформатного ответа и точные незакрытые acceptance cases, без изменения frozen D075 до выпуска.
+
+**Документация:** [Google thinking/output limits](https://ai.google.dev/gemini-api/docs/generate-content/thinking), [GenerateContent finish/prompt feedback](https://ai.google.dev/api/generate-content), Context7 `/googleapis/js-genai` (non-thought text extraction), [MariaDB UTC_TIMESTAMP](https://mariadb.com/docs/server/reference/sql-functions/date-time-functions/utc_timestamp).
+
+**Временная совместимость UI:** новый observation_cursor — UTC_TIMESTAMP(6) на MariaDB, legacy observed_at остаётся для уже открытых D074 страниц. Новый JS переходит на UTC без сравнения со старым+3h cursor; старый ответ после перехода не откатывает состояние. Удалить compatibility field/reader в B17.9 после завершения жизненного цикла старых страниц, не ломать их ordering во время deploy.
+
+### D074 · предотвращение повторов инцидентов и ручное закрытие алерта — выпущен
 
 14.09 владелец уточнил: подсветка ошибки не заменяет исправление; проверить отдельно Vlad/no-response, Radio/unsolicited sales, PRICE1090/no-followup, seen/typing. Разрешена кнопка «Опрацьовано» рядом с «До запиту», снимающая конкретное уведомление даже без ответа клиенту. Она не должна подделывать доставку или запускать сообщение; сохраняется аудит оператора. После этой приёмки продолжать незавершённые пункты плана.
 
@@ -52,6 +66,8 @@
 | d073_preference_withdrawal | Astra/high | Известный SKU исключался из fallback: исправить accepted source preference + корректный следующий вопрос; не скрывать незавершённое checkout обещанием |
 | d073_semantic_review | Astra/high | Unsolicited image мог получить sales authority через accepted catalog route; убрать promotion и расширить CTA negative corpus. Followup требует exact SENT answer proof. Разделить informational old execution debt и настоящие блокеры, не выдумывая coverage |
 | d072_presence_lifecycle | Astra/high | Быстрый send отменял все pending presence; seen failure гасил typing; убрать initial delay, разделить cooldown/lifecycle, проверить IG-only wire enums по official SDK, bounded refresh |
+
+**Выпуск D074:** `63c3474c47f526a6ec76e8aa08d8aec217043f70`, commit/push/main SSH pull подтверждены14.09 около10:18UTC. Production supervisor и child на том же SHA, healthy, Django check без замечаний; web активирован существующим tmp/restart.txt, новых static assets/миграций нет. Реальный Chrome: Vlad → Radio → Vlad сохраняет долг и показывает «До запиту» + «Опрацьовано» с пояснением про отсутствие отправки и аудит. Кнопку на настоящем незакрытом запросе ради проверки не нажимали; POST/CSRF/actor/idempotence/race покрыты локально. SELECT сохраняет cases90/91/100 skipped, источник2948 не переотправлен.
 
 **Evidence до правок:** основной fallback отказывает при current_product_id; принятая catalog topic сама ещё не доказывает запрос покупки; 2MB daemon log не содержат ig_presence, это отсутствие наблюдения, не доказательство исправной доставки. Точные Radio CTA2919/2938/2943 прочитаны через SELECT. Предыдущие433 tests не закрывали эти новые контрпримеры; их нельзя выдавать за полную приёмку D074. D07113staged files не включаются в этот пакет.
 
@@ -825,8 +841,9 @@ Reconciliation старых данных: dry-run с exact IDs, coverage и prop
 - [ ] **B03.14 — Принять ingress → turn → send → recovery и ручное управление целиком.**
   **Зависит:** B03.11, B03.12, B03.13. Изолированно проверить late inbound, competing workers, pause/erasure во время generation, crash до/после provider_started, DB outage, восстановление watchdog и manual command actor/purpose. Production — schema/readiness/permissions/свежие разрешённые события без синтетических клиентских writes. **Приёмка:** нет подтверждённого потерянного durable inbound и blind duplicate; каждое UNKNOWN имеет задачу сверки; базовое внимание/ручное управление отражают истинное состояние. Не включённая внешняя Human Agent capability не считается проверенной, обычный разрешённый manual path и прочие независимые функции не ждут её.
 
-- [~] **B03.15 — P0: явный долг ответа и видимая передача человеку.**
+- [x] **B03.15 — P0: явный долг ответа и видимая передача человеку.**
   **Зависит:** выпущенные B03.3–5/9; не ждёт composer B03.12. **Область:** `ig_revision_execution.py`, `ig_revision_recovery.py`, `ig_revision_live.py`, `bot_views.py`, текущая карточка/очередь внимания. Реализовать C16.1: obligation/owner/disposition, manual debt отдельно от skipped follow-up, terminal lease cleanup без ложного replied. Подключить revision cases в attention_snapshot, age/next action, reason localization и source link. Минимальный badge выпускается вместе с backend.
+  **Выпуск D074:**63c3474c4;483 clean integration tests, exact task-scoped operator review+audit, stale GET/ACK races, source/UNKNOWN preservation; реальный UI и MariaDB проверены. Старый backlog apply является отдельным B03.21, а не условием видимости нового долга.
   **Приёмка:** exact171/2948/revision30/task100 становится одним видимым unresolved debt; UI не говорит «бот печатает» или просто «вопрос о размере». Перезапуск/повторный finalizer не создают второй case; наличие UNKNOWN сохраняет обязательную сверку. Приёмка на fixture, production — только read-only факты до разрешённого исправления.
 
 - [x] **B03.16 — P0: предпочтение без товара и полезный ответ после отказа валидатора.**
@@ -904,7 +921,7 @@ Reconciliation старых данных: dry-run с exact IDs, coverage и prop
 - [ ] **B04.9 — Принять бесплатный маршрут на 2–3 диалогах.**
   **Зависит:** B04.8. Изолированные сценарии contention/429/400/timeout/паузы и разрешённые наблюдения действующих вызовов. Измерять время очереди, p50/p95, errors и useful outcomes, не обещать уровень без выборки. **Приёмка:** все существующие на этом шаге callers учтены, нет hidden paid route, журнал показывает actual model/effort. Для будущих consumers обязателен тот же adapter/admission contract; их собственная приёмка повторяет проверку подключения.
 
-- [ ] **B04.12 — P0: маршрут восстановления по причине ошибки, а не слепая ротация.**
+- [~] **B04.12 — P0: маршрут восстановления по причине ошибки, а не слепая ротация.**
   **Зависит:** выпущенный B04.11; совместный контракт B03.16. **Область:** `ig_revision_provider_execution.py`, `call_ai_analysis.py`, response guard/budget diagnostics. Разделить локальную authority problem, parser/schema, empty, quota и unavailable; не объяснять `unverified_price/catalog_selector_missing` общим «все модели недоступны». Сохранить root8HTTP/2scarce/1repair, проверенную бесплатность/project grouping и горизонты. После повторного empty распределять оставшийся scarce slot по другому совместимому проверенному model profile, если это лучше по deadline/capability; не считать большее число aliases большим бюджетом.
   **Приёмка:** replay5586–5594, early success, last-slot success, two depleted projects, incompatible model, delayed receipt и no remaining time. Сохранять finite reason, finish/usage coverage, actual HTTP vs skipped; zero tokens при missing usage не выдавать за доказанный нулевой расход. Изменение generation profile — через измерение валидных полезных ответов, не обещание «сильнее всегда лучше»; paid fallback не включать.
   **Уточнение14.09 / D075:** до расходования scarce tier различать `MAX_TOKENS` без текста, `STOP` без текста, отсутствие candidates/provider blocking и malformed JSON. Сохранять bounded finish/block reason и счётчики даже при HTTP200 с негодным результатом; не сохранять raw body/thoughts. Проверить schema/выходной бюджет и разрешённый thinking profile; исправление payload и повтор на той же модели учитываются в общем root budget. Key quota/credential failure использует следующий допустимый уникальный project той же модели; semantic failure не означает исчерпание квот всех остальных keys. Зафиксировать конкретное правило same-tier salvage и диагностировать skipped reasons; не считать старый `result_validation_failed` автоматически доказательством слабости всей модели. B02.3/B02.13 context должен отделять текущий запрос от устаревших обещаний и подбирать только нужные инструкции, сохраняя обязательные truth/permission guards.

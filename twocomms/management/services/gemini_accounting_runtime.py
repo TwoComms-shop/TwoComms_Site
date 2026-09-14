@@ -1346,7 +1346,7 @@ class AttemptBoundary:
                 self,
                 succeeded=False,
                 error=error,
-                usage=usage or {},
+                usage=usage if usage is not None else getattr(error, "usage", {}),
                 failure_kind=failure_kind,
             )
         except Exception:
@@ -1473,7 +1473,7 @@ class RequestObserver:
             self._pending_provider_repair = None
         return boundary
 
-    def reserve_provider_repair(self, *, key_name, model, candidate_index=0):
+    def reserve_provider_repair(self, *, key_name, model, candidate_index=0, recovery_kind=""):
         if (
             self._legacy_execution is not None
             or self._legacy_root_execution is not None
@@ -1484,11 +1484,11 @@ class RequestObserver:
 
             return reserve_legacy_provider_repair(
                 self, key_name=key_name, model=model,
-                candidate_index=candidate_index,
+                candidate_index=candidate_index, recovery_kind=recovery_kind,
             )
         from management.services.ig_revision_provider_execution import reserve_provider_repair
 
-        return reserve_provider_repair(self, key_name=key_name, model=model, candidate_index=candidate_index)
+        return reserve_provider_repair(self, key_name=key_name, model=model, candidate_index=candidate_index, recovery_kind=recovery_kind)
 
     def record_not_attempted(
         self,
@@ -2365,6 +2365,9 @@ class RequestObserver:
             attempt.thoughts_tokens = _usage_int(usage, "thoughtsTokenCount", "thoughts_token_count")
             attempt.candidates_tokens = _usage_int(usage, "candidatesTokenCount", "candidates_token_count")
             attempt.total_tokens = _usage_int(usage, "totalTokenCount", "total_token_count")
+            response_detail = str(getattr(error, "response_diagnostic", "") or "")
+            if re.fullmatch(r"response\.v1;finish=[A-Z_]+;block=[A-Z_]+;usage=(present|missing|invalid);counts=[01]{4}", response_detail):
+                attempt.error_detail = response_detail[:120]
             attempt.latency_ms = latency_ms
             attempt.finished_at = now
             attempt.settled_at = now
@@ -2376,7 +2379,7 @@ class RequestObserver:
                 "provider_quota_dimensions", "provider_retry_after_seconds",
                 "provider_block_until", "prompt_tokens", "thoughts_tokens",
                 "candidates_tokens", "total_tokens", "latency_ms", "finished_at",
-                "settled_at", "permit_released_at",
+                "settled_at", "permit_released_at", "error_detail",
             ])
 
             if state is not None:
@@ -2444,6 +2447,14 @@ class RequestObserver:
                 "outcome": attempt.outcome,
                 "failure_kind": attempt.failure_kind,
             }
+            generation = getattr(boundary, "response_generation", {})
+            generation = generation if isinstance(generation, dict) else {}
+            output_tokens = usage.get("_request_output_tokens", generation.get("max_output_tokens"))
+            if type(output_tokens) is int and 0 < output_tokens <= 65536:
+                outcome_payload["response_policy"] = {"version": "response-budget.v1", "max_output_tokens": output_tokens}
+                level = usage.get("_request_thinking_level", generation.get("thinking_level"))
+                if level in {"minimal", "low", "medium", "high"}:
+                    outcome_payload["response_policy"]["thinking_level"] = level
             existing_outcome = outcomes.get(outcome_key)
             if existing_outcome is None:
                 outcomes[outcome_key] = outcome_payload
@@ -2830,6 +2841,10 @@ def classify_failure(error, *, http_code=None, failure_kind="") -> dict:
         elif name == "_GeminiModelUnavailable":
             kind = "model_not_found" if "404" in detail else "permission_denied"
             code = 404 if kind == "model_not_found" else 403
+        elif name == "_GeminiSafetyBlocked":
+            kind = "safety_blocked"
+        elif name == "_GeminiMalformedResponse":
+            kind = "invalid_response"
         elif name == "_GeminiEmpty":
             kind = "empty"
         elif name == "_GeminiResultInvalid":

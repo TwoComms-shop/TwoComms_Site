@@ -128,6 +128,7 @@ _KIND_TO_CLASS = {
     "invalid_payload": INVALID_PAYLOAD,
     "request_error": INVALID_PAYLOAD,
     "request_too_large": INVALID_PAYLOAD,
+    "safety_blocked": INVALID_PAYLOAD,
     # ключ / доступ
     "invalid_key": AUTH,
     "permission_denied": AUTH,

@@ -2776,14 +2776,20 @@ body.bot-drawer-open{overflow:hidden;}
       // This acknowledgement resolves exactly one task. A response assembled
       // before another alert arrived cannot clear that different alert.
       if(current?.required&&Number(current.task_id)!==Number(taskId))return current;
-      if(current?.required)replyDebtByClient.delete(id);
+      if(current?.required)replyDebtByClient.set(id,{...current,required:false});
       return reconcileReplyDebt(id,incoming);
     }
     function reconcileReplyDebt(clientId,incoming){
       const id=Number(clientId);
       if(!id)return null;
       const current=replyDebtByClient.get(id);
-      const currentTime=Date.parse(current?.observed_at),incomingTime=Date.parse(incoming?.observed_at);
+      const currentCursor=Date.parse(current?.observation_cursor),incomingCursor=Date.parse(incoming?.observation_cursor);
+      const hasCurrentCursor=Number.isFinite(currentCursor),hasIncomingCursor=Number.isFinite(incomingCursor);
+      if(hasCurrentCursor&&!hasIncomingCursor)return current;
+      // Adopt the UTC cursor without comparing it to the legacy MariaDB wall
+      // clock. Once adopted, a legacy response cannot move this client back.
+      const currentTime=hasIncomingCursor?(hasCurrentCursor?currentCursor:NaN):Date.parse(current?.observed_at);
+      const incomingTime=hasIncomingCursor?incomingCursor:Date.parse(incoming?.observed_at);
       if(Number.isFinite(currentTime)&&(!Number.isFinite(incomingTime)||incomingTime<currentTime||(incomingTime===currentTime&&current.required&&!incoming?.required)))return current;
       // An older in-flight list/card GET cannot resurrect an acknowledged task.
       // A different task for this same client is still a new visible alert.

@@ -24,6 +24,7 @@ from management.services.ig_revision_provider_execution import ProviderContinuat
 
 MANIFEST_KEY = "_legacy_provider_manifest"
 REPAIR_KEY = "_provider_repair_reservation"
+SALVAGE_KEY = "_provider_semantic_salvage"
 MAX_HTTP = 8
 MAX_SCARCE_HTTP = 2
 HORIZON = timedelta(minutes=30)
@@ -457,9 +458,17 @@ def _candidate_key(row):
     return row["key_name"], row["model"], row["project_identity"]
 
 
+def _response_recovery_attempts(root):
+    graphs = _family_graphs(root, client_id=root.client_id, source_message_id=root.source_message_id,
+                           logical_turn_id=root.logical_turn_id, lock_ledger=True)
+    return list(GeminiRequestAttempt.objects.filter(request_graph__in=graphs, provider_started_at__isnull=False).order_by("pk"))
+
+
 def _disposition(candidate, attempts):
     due = None
     for attempt in attempts:
+        if attempt.failure_kind == "safety_blocked":
+            return "provider_safety_blocked", None
         same_model = attempt.model == candidate["model"]
         same_identity = attempt.project_identity == candidate["project_identity"]
         same_alias = attempt.key_name == candidate["key_name"]
@@ -714,7 +723,22 @@ def admit_legacy_provider_dispatch_locked(graph, boundary, *, now):
     repair_token = getattr(boundary, "provider_repair_token", "")
     if repair_token:
         root = GeminiRequest.objects.filter(pk=root_graph_id).first()
-        marker = (root.candidate_outcomes or {}).get(REPAIR_KEY) if root else None
+        marker = next((value for key in (REPAIR_KEY, SALVAGE_KEY)
+                       if isinstance(value := (root.candidate_outcomes or {}).get(key), dict)
+                       and value.get("token") == repair_token), {}) if root else {}
+        recovery_kind = marker.get("recovery_kind", "")
+        if recovery_kind:
+            if recovery_kind == "output_cap" and getattr(boundary, "response_generation", {}) != {"max_output_tokens": 4096, "thinking_level": "low"}:
+                return "provider_output_repair_policy_invalid"
+            from management.services.ig_revision_provider_execution import _response_recovery_proof
+            attempts = _response_recovery_attempts(root)
+            proof = _response_recovery_proof(recovery_kind, candidate, attempts, reasoning_task=graph.reasoning_task)
+            expected = {"token": repair_token, "request_id": graph.request_id, "candidate_index": boundary.candidate_index,
+                        "key_name": boundary.key_name, "model": boundary.model, "recovery_kind": recovery_kind,
+                        "failure_attempt_id": proof}
+            if not proof or marker != expected:
+                return "provider_repair_identity_invalid"
+            return "" if candidate["skip_reason"] in {"provider_model_schema_rejected", "provider_candidate_wait"} else candidate["skip_reason"]
         expected = {
             "token": repair_token, "request_id": graph.request_id,
             "candidate_index": boundary.candidate_index,
@@ -726,7 +750,7 @@ def admit_legacy_provider_dispatch_locked(graph, boundary, *, now):
     return candidate["skip_reason"] or ("" if continuation.ready else continuation.reason)
 
 
-def reserve_legacy_provider_repair(observer, *, key_name, model, candidate_index=0):
+def reserve_legacy_provider_repair(observer, *, key_name, model, candidate_index=0, recovery_kind=""):
     execution = observer._legacy_execution
     root_execution = getattr(observer, "_legacy_root_execution", None)
     with transaction.atomic():
@@ -738,14 +762,14 @@ def reserve_legacy_provider_repair(observer, *, key_name, model, candidate_index
             if root_execution is not None
             else legacy_provider_continuation(execution, lock_ledger=True)
         )
-        if not continuation.http_remaining or not continuation.repair_remaining:
+        if not continuation.http_remaining or (not continuation.repair_remaining and recovery_kind != "semantic_salvage"):
             return False
         candidate_index = candidate_index or observer.candidate_index(key_name, model)
         candidate = next((row for row in continuation.candidate_plan if (
             row["candidate_index"] == candidate_index
             and row["key_name"] == key_name and row["model"] == model
         )), None)
-        if not candidate or candidate["skip_reason"] != "provider_model_schema_rejected" or (
+        if not candidate or (not recovery_kind and candidate["skip_reason"] != "provider_model_schema_rejected") or (
             candidate["scarce"] and not continuation.scarce_remaining
         ):
             return False
@@ -756,13 +780,24 @@ def reserve_legacy_provider_repair(observer, *, key_name, model, candidate_index
         root = GeminiRequest.objects.filter(pk=root_graph_id).first()
         if root is None:
             return False
+        marker_key = SALVAGE_KEY if recovery_kind == "semantic_salvage" else REPAIR_KEY
+        if (root.candidate_outcomes or {}).get(marker_key):
+            return False
         marker = {
             "token": secrets.token_hex(16), "request_id": graph.request_id,
             "candidate_index": candidate_index, "key_name": key_name,
             "model": model,
         }
+        if recovery_kind:
+            from management.services.ig_revision_provider_execution import _response_recovery_proof
+            original = next((row for row in continuation.manifest["candidates"] if row["candidate_index"] == candidate_index), {})
+            attempts = _response_recovery_attempts(root)
+            proof = _response_recovery_proof(recovery_kind, candidate, attempts, reasoning_task=graph.reasoning_task)
+            if not proof or original.get("skip_reason") or candidate["skip_reason"] not in {"provider_model_schema_rejected", "provider_candidate_wait"} or (recovery_kind == "semantic_salvage" and continuation.repair_remaining):
+                return False
+            marker.update(recovery_kind=recovery_kind, failure_attempt_id=proof)
         GeminiRequest.objects.filter(pk=root.pk).update(
-            candidate_outcomes={**(root.candidate_outcomes or {}), REPAIR_KEY: marker},
+            candidate_outcomes={**(root.candidate_outcomes or {}), marker_key: marker},
             updated_at=timezone.now(),
         )
         observer._pending_provider_repair = marker
