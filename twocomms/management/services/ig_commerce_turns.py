@@ -17,25 +17,121 @@ _COLOR_WORDS = {
     "green": "green", "зелен": "green",
 }
 _FIT_WORDS = {
-    "classic": "classic", "классик": "classic", "класик": "classic",
+    "classic": "classic", "классик": "classic", "классич": "classic", "класик": "classic",
     "класич": "classic", "standard": "classic", "стандарт": "classic",
     "regular": "classic", "oversize": "oversize", "oversized": "oversize",
     "оверсайз": "oversize",
+}
+_GARMENT_WORDS = {
+    "футболк": "tshirt", "t-shirt": "tshirt", "tshirt": "tshirt",
+    "худі": "hoodie", "худи": "hoodie", "hoodie": "hoodie",
 }
 _SIZE_RE = re.compile(r"\b(?:xxxs|xxl|xxxl|2xl|3xl|4xl|5xl|xs|s|m|l|xl)\b", re.I)
 
 
 def _find_prefix_value(text: str, words: dict[str, str]) -> str:
-    lowered = text.casefold()
-    for needle, value in words.items():
-        if needle in lowered:
-            return value
-    return ""
+    """Return one explicitly selected value, never just a mentioned one.
+
+    Preference source evidence must survive a reparse, so negated choices,
+    alternatives, questions, and quoted product copy deliberately abstain.
+    """
+    lowered = text.casefold().replace("ё", "е")
+    candidates = [
+        (match.start(), match.end(), value)
+        for needle, value in words.items()
+        for match in re.finditer(re.escape(needle), lowered)
+    ]
+    if not candidates:
+        return ""
+
+    selected: list[tuple[int, str]] = []
+    for start, end, value in candidates:
+        segment_start, segment_end = _preference_segment(lowered, start)
+        segment = lowered[segment_start:segment_end]
+        if "?" in segment or _is_quoted_preference(lowered, start, end):
+            continue
+        if re.search(r"(?:описани|description|карточк|характеристик)\w*", segment):
+            continue
+        before = lowered[segment_start:start]
+        if re.search(
+            r"(?:^|[\s,;:])(?:не|ні|без|no|not)(?:\s+[\w-]+){0,2}\s*$",
+            before,
+        ):
+            continue
+        selected.append((start, value))
+
+    # "классика или оверсайз" names possibilities, not a choice. Do not let
+    # either side become state, even when the question mark was omitted.
+    if any(
+        re.search(r"\b(?:или|або|чи|or)\b", lowered[first[0]:second[0]])
+        for index, first in enumerate(candidates)
+        for second in candidates[index + 1:]
+    ):
+        return ""
+
+    values = {value for _position, value in selected}
+    if len(values) != 1:
+        return ""
+    if _withdrawn_preference(text, words) in values:
+        return ""
+    return selected[-1][1]
+
+
+def _preference_segment(text: str, position: int) -> tuple[int, int]:
+    """Return the sentence-like span that supplies preference context."""
+    starts = [text.rfind(marker, 0, position) for marker in ".!?"]
+    start = max(starts) + 1
+    ends = [index for marker in ".!?" if (index := text.find(marker, position)) >= 0]
+    # Keep the delimiter in the scope: otherwise a trailing "?" would be
+    # omitted and a question such as "Оверсайз?" would look affirmative.
+    return start, min(ends) + 1 if ends else len(text)
+
+
+def _is_quoted_preference(text: str, start: int, end: int) -> bool:
+    """Quotes often repeat card or product-description text rather than select it."""
+    for match in re.finditer(r'"[^"\n]{0,240}"|«[^»\n]{0,240}»|“[^”\n]{0,240}”', text):
+        if match.start() <= start and end <= match.end():
+            return True
+    return False
+
+
+def _has_unaffirmed_preference_mention(text: str, words: dict[str, str]) -> bool:
+    """Keep model hints from turning an abstained source mention into a choice."""
+    lowered = text.casefold().replace("ё", "е")
+    return any(needle in lowered for needle in words) and not _find_prefix_value(text, words)
 
 
 def _is_negated_url(text: str, url: str) -> bool:
     before = text[: text.find(url)].casefold()
     return bool(re.search(r"(?:не|не хочу|не нужен|not|don't want)\s*$", before[-32:]))
+
+
+def _withdrawn_preference(text: str, words: dict[str, str]) -> str:
+    """Recognize a direct rejection of one value, not a negative description."""
+    lowered = text.casefold().replace("ё", "е").replace("’", "'")
+    values = set()
+    for needle, value in words.items():
+        for match in re.finditer(r"(?<!\w)" + re.escape(needle) + r"[\w-]*", lowered):
+            start, end = _preference_segment(lowered, match.start())
+            segment = lowered[start:end]
+            if "?" in segment or _is_quoted_preference(lowered, match.start(), match.end()):
+                continue
+            if re.search(r"(?:описани|description|карточк|характеристик)\w*", segment):
+                continue
+            before = lowered[start:match.start()]
+            after = lowered[match.end():end].strip(" .!")
+            direct_prefix = re.search(
+                r"(?:^|[,;:])\s*(?:(?:я|i)\s+)?"
+                r"(?:не(?:\s+(?:хочу|нужен|нужна|нужно|треба|потрібен|потрібна))?"
+                r"|not|no|(?:don't|do not|no longer)\s+want)\s+$", before,
+            )
+            direct_suffix = (
+                not before.strip()
+                and re.fullmatch(r"(?:не\s+(?:хочу|нужен|нужна|нужно|треба)|not\s+wanted)", after)
+            )
+            if direct_prefix or direct_suffix:
+                values.add(value)
+    return next(iter(values)) if len(values) == 1 else ""
 
 
 def _parse_model_payload(payload) -> dict:
@@ -168,10 +264,19 @@ def parse_turn(text: str | None, *, media_evidence=None) -> CommerceTurnRequest:
     if reset_requested and not new_purchase_requested and not exchange_requested and not exact_product_id:
         pending = pending or "new_purchase_or_exchange"
 
+    garment_type = _find_prefix_value(raw, _GARMENT_WORDS)
+    withdrawals = {
+        key: value
+        for key, words in (("fit", _FIT_WORDS), ("color", _COLOR_WORDS), ("garment_type", _GARMENT_WORDS))
+        if (value := _withdrawn_preference(raw, words))
+    }
+
     return CommerceTurnRequest(
         exact_product_id=exact_product_id,
+        garment_type=garment_type,
         exact_unique_alias=False,
         field_updates=field_updates,
+        preference_withdrawals=withdrawals,
         hard=hard,
         semantic_constraints=hard,
         exact_reference=reference,
@@ -196,8 +301,11 @@ def understand_turn(text: str | None, *, model_payload=None, media_evidence=None
     if model_payload is not None and not model:
         return CommerceTurnRequest(pending_clarification="which_product")
     updates = dict(deterministic.field_updates)
+    words_by_key = {"color": _COLOR_WORDS, "fit": _FIT_WORDS, "garment_type": _GARMENT_WORDS}
     for key in ("color", "fit", "size", "garment_type"):
         if key not in updates and key in model:
+            if key in words_by_key and _has_unaffirmed_preference_mention(text or "", words_by_key[key]):
+                continue
             updates[key] = model[key]
     return CommerceTurnRequest(
         **{

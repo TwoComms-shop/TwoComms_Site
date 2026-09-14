@@ -30,6 +30,11 @@ class RevisionLiveTests(TransactionTestCase):
     reset_sequences = True
 
     def setUp(self):
+        # Presence has its own threaded lifecycle suite. Real advisory threads
+        # would contend with this fixture's shared in-memory SQLite connection.
+        presence = patch("management.services.ig_presence.start_presence", return_value=None)
+        presence.start()
+        self.addCleanup(presence.stop)
         environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
         environment.start()
         self.addCleanup(environment.stop)
@@ -402,7 +407,7 @@ class RevisionLiveTests(TransactionTestCase):
             {"kind": "color_variant_id", "value": str(variant.pk)},
             {"kind": "qty", "value": "2"},
         ]
-        self._prepare()
+        self._replace_bundle(["Хочу замовити дві футболки."])
         with (
             patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate),
             patch("management.services.instagram_bot.get_page_token", return_value=""),
@@ -412,6 +417,10 @@ class RevisionLiveTests(TransactionTestCase):
         self.revision.refresh_from_db()
         receipt = json.dumps(self.revision.action_receipts, sort_keys=True)
         self.assertIn("client_configuration_update", self.revision.action_receipts)
+        selection_receipt = self.revision.action_receipts["client_configuration_update"]
+        self.assertIn("source_preferences", {row["claim"] for row in selection_receipt["before_authority"]["fact_bindings"]})
+        self.assertNotIn("source_preferences", {row["claim"] for row in selection_receipt["after_authority"]["fact_bindings"]})
+        self.assertIn("catalog_configuration", {row["claim"] for row in selection_receipt["after_authority"]["fact_bindings"]})
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.current_product_id, product.pk)
         self.assertEqual(self.customer.current_qty, 2)
@@ -792,10 +801,15 @@ class RevisionLiveTests(TransactionTestCase):
         from management.services.ig_revision_followups import RevisionFollowupResult
         from management.services.ig_revision_execution import finalize_sent_revision_effects
 
+        self.source = self._message("Допоможіть підібрати розмір", "followup-selection")
+        self.turn = IgCustomerTurn.objects.create(client=self.customer, primary_source_message=self.source, window_started_at=timezone.now(), window_deadline=timezone.now())
+        IgTurnMessage.objects.create(turn=self.turn, message=self.source, ordinal=1, role="user")
+        self.revision = create_collecting_revision(self.turn, [self.source], bypass_quiet=True).revision
+        self.parsed["reply_text"] = "Можу допомогти з вибором. Який крій вам подобається?"
         self._prepare()
         with patch("management.services.ig_revision_followups.settle_revision_normal_followups", return_value=RevisionFollowupResult(reason="normal_followup_failed")):
             first, _generation, http = self._execute()
-        self.assertEqual(first.state, "finalization_pending")
+        self.assertEqual(first.state, "finalization_pending", first)
         self.assertEqual(http.call_count, 1)
         self.revision.refresh_from_db()
         self.assertEqual(self.revision.state, "claimed")
@@ -815,8 +829,8 @@ class RevisionLiveTests(TransactionTestCase):
         token.assert_not_called()
         generate.assert_not_called()
         self.revision.refresh_from_db()
-        self.assertEqual(self.revision.action_receipts["normal_followups"]["reason"], "reply_deadline_elapsed")
-        self.assertEqual(self.revision.action_receipts["normal_followups"]["outcome"], "not_scheduled")
+        self.assertEqual(self.revision.action_receipts["normal_followups"]["reason"], "normal_followup_scheduled")
+        self.assertEqual(self.revision.action_receipts["normal_followups"]["outcome"], "scheduled")
 
     def test_sent_history_finalizes_when_bot_disabled_and_client_permission_changed(self):
         from management.services.instagram_bot import process_pending

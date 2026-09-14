@@ -111,6 +111,7 @@ class CommerceTurnRequest:
     field_updates: Mapping[str, str] = field(default_factory=dict)
     hard: Mapping[str, str] = field(default_factory=dict)
     preferences: Mapping[str, str] = field(default_factory=dict)
+    preference_withdrawals: Mapping[str, str] = field(default_factory=dict)
     semantic_constraints: Mapping[str, str] = field(default_factory=dict)
     garment_type: str = ""
     exact_reference: ProductReference | None = None
@@ -131,6 +132,7 @@ class CommerceTurnRequest:
             "field_updates",
             "hard",
             "preferences",
+            "preference_withdrawals",
             "semantic_constraints",
         ):
             object.__setattr__(self, field_name, immutable_mapping(getattr(self, field_name)))

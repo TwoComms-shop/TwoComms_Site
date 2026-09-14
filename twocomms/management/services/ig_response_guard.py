@@ -101,6 +101,19 @@ class ProviderResponseGuard:
             text for code, text in _SCHEMA_REPAIR_GUIDANCE.items()
             if "schema_" + code in reasons
         ]
+        if "unverified_price" in reasons:
+            guidance.append(
+                "Remove the unverified price from the new candidate's prose and controls. "
+                "This does not authorize a substitute price or a price range."
+            )
+        if "catalog_selector_missing" in reasons:
+            guidance.append(
+                "No exact catalog product is confirmed. Source-backed fit, colour and "
+                "garment preferences may be acknowledged as customer wishes, without "
+                "selection controls. Ask only the next unknown model/print question. "
+                "Do not ask again for an accepted preference or invent a product, "
+                "SKU, size recommendation, availability, price or checkout."
+            )
         if "unverified_recruitment" in reasons:
             guidance.append(
                 "No matching source-backed recruitment status authorizes that claim. "
@@ -131,3 +144,43 @@ class ProviderResponseGuard:
             )}],
         })
         return result
+
+
+def build_source_preference_fallback(client):
+    """Build fresh local prose, with a recomputable source-backed proof.
+
+    No rejected provider text is read or sanitized. This narrow answer covers
+    preference acknowledgement and the missing model, never a product offer.
+    """
+    import hashlib
+    from management.services.ig_commerce_projection import source_preferences_for
+    from management.services.ig_reply_truth import ReplyTruthContext
+
+    projection = source_preferences_for(client)
+    values = projection.get("values") or {}
+    fit = values.get("fit_option_code")
+    if fit not in {"oversize", "classic"} or client.current_product_id:
+        return None, {}
+    from management.models import IgCommerceSelectionSession
+    session = IgCommerceSelectionSession.objects.filter(pk=projection.get("session_id"), open_slot=1).first()
+    if session is None or (session.query_constraints or {}).get("query"):
+        # A model/print query already exists; this narrow template cannot decide
+        # which remaining selector needs clarification.
+        return None, {}
+    language = client.language if client.language in {"uk", "ru", "en"} else "uk"
+    labels = {"uk": {"oversize": "оверсайз", "classic": "класична посадка"},
+              "ru": {"oversize": "оверсайз", "classic": "классическая посадка"},
+              "en": {"oversize": "oversize", "classic": "classic fit"}}
+    templates = {"uk": "Врахую ваше побажання «{fit}». Яку модель або принт ви хочете?",
+                 "ru": "Учту ваше пожелание «{fit}». Какую модель или принт вы хотите?",
+                 "en": 'I will use your preference “{fit}”. Which model or print would you like?'}
+    payload = {"reply_text": templates[language].format(fit=labels[language][fit]), "controls": []}
+    guard = ProviderResponseGuard(context_factory=lambda _control, _reply: ReplyTruthContext())
+    if not guard.validate(payload).valid:
+        return None, {}
+    canonical = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    proof = {"kind": "source_preference_fallback", "version": 1,
+             "template": "preference_then_model", "language": language,
+             "source_preferences_digest": hashlib.sha256(canonical(projection)).hexdigest(),
+             "response_digest": hashlib.sha256(canonical(payload)).hexdigest()}
+    return guard.response, proof

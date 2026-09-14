@@ -306,6 +306,7 @@ def build_provider_part_callback(
     expected_namespace: str,
     expected_recipient: str,
     access_token: str,
+    response_gate: Callable[[dict], str] | None = None,
 ) -> RevisionProviderTransport:
     """Capture credentials in memory and return an exactly-once transport."""
     from management.services.instagram_bot import (
@@ -366,6 +367,10 @@ def build_provider_part_callback(
                 return "transport_preflight_url_invalid", "", b"", ""
         except (TypeError, ValueError):
             return "transport_preflight_url_invalid", "", b"", ""
+        if response_gate is not None:
+            reason = response_gate(payload)
+            if reason:
+                return reason, "", b"", ""
         return "", kind, body, url
 
     def preflight(payload: dict) -> ProviderPartPreflight:

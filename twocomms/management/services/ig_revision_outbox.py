@@ -35,6 +35,8 @@ KNOWN_NO_DISPATCH_REASONS = frozenset({
     "transport_preflight_payload_too_large",
     "transport_preflight_url_invalid",
     "transport_preflight_check_failed",
+    "current_purpose_disallows_sales",
+    "pending_inbound",
 })
 CLAIM_LEASE_SECONDS = 60
 GROUP_KINDS = {
@@ -202,6 +204,16 @@ def _normal_reply_window_deadline(revision):
     return max(anchors) + RESPONSE_WINDOW
 
 
+def revision_has_newer_source(revision):
+    """Durable ingress survives acknowledgement of its inbox work item."""
+    source_ids = [item.get("message_id") for item in revision.bundle_snapshot.get("sources", ())
+                  if isinstance(item, dict) and isinstance(item.get("message_id"), int)]
+    return bool(source_ids) and InstagramBotMessage.objects.filter(
+        client_id=revision.client_id, role=InstagramBotMessage.Role.USER,
+        pk__gt=max(source_ids),
+    ).exists()
+
+
 def _cas_readiness(
     revision,
     *,
@@ -231,6 +243,10 @@ def _cas_readiness(
         _append(reasons, "revision_not_current")
     elif _digest(revision.bundle_snapshot) != revision.snapshot_digest:
         _append(reasons, "revision_snapshot_invalid")
+    # Inbox work may already be acknowledged while its new revision/reducer
+    # has not run yet. The durable USER watermark remains an independent fence.
+    if revision_has_newer_source(revision):
+        _append(reasons, "pending_inbound")
     if revision.overall_deadline <= now:
         from management.services.ig_revision_recovery import execution_resume_is_current
 
@@ -523,6 +539,16 @@ def plan_revision_effects(
             return EffectPlanResult(reasons=(str(exc),))
         if not revision.sources.filter(message_id=source_message_id).exists():
             return EffectPlanResult(reasons=("source_message_not_in_revision",))
+        if (revision.action_receipts or {}).get("source_preference_fallback"):
+            from management.services.ig_revision_recovery import recovery_lineage_for_authority
+
+            # All planners hold this same client lock. Recheck the full immutable
+            # lineage at plan commit, including a resume after receipt admission.
+            lineage, lineage_reason = recovery_lineage_for_authority(revision)
+            if lineage_reason or IgRevisionDeliveryEffect.objects.filter(
+                revision_id__in=[row.pk for row in lineage if row.pk != revision.pk],
+            ).exists():
+                return EffectPlanResult(reasons=("fallback_lineage_delivery_or_invalid",))
         readiness = _cas_readiness(
             revision,
             client=client,

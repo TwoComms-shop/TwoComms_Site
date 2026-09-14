@@ -9,6 +9,92 @@ from django.db import IntegrityError, transaction
 from management.ig_bot_models import IgCommerceSelectionSession
 
 
+def source_preferences_for(client) -> dict:
+    """Read preferences from the reducer with accepted original-source evidence.
+
+    This is a projection, never a second selection store. A legacy snapshot or
+    an unaccepted/stale decision cannot authorize preference acknowledgement.
+    Product changes and resets bound the provenance search to the current line.
+    """
+    from management.models import IgCommerceTurnDecision
+    from management.services.ig_commerce_turns import parse_turn
+    import hashlib
+
+    session = IgCommerceSelectionSession.objects.filter(
+        client_id=client.pk, open_slot=1,
+    ).order_by("-generation").first()
+    if session is None:
+        return {}
+    snapshot = session.snapshot()
+    lines = snapshot.get("lines") or []
+    index = int(snapshot.get("active_index") or 0)
+    line = lines[index] if 0 <= index < len(lines) and isinstance(lines[index], dict) else {}
+    if line.get("product_id"):
+        return {}
+    values = {
+        key: line[key] for key in ("fit_option_code", "color", "size", "quantity")
+        if line.get(key) not in (None, "")
+    }
+    garment = (snapshot.get("query_constraints") or {}).get("garment_type")
+    if garment:
+        values["garment_type"] = garment
+    evidence = {}
+    withdrawn_keys = set()
+    decisions = IgCommerceTurnDecision.objects.filter(
+        session=session, accepted=True, is_stale=False, transition__session=session,
+        source_message__client_id=client.pk, source_message__sender_id=client.igsid,
+        source_message__role="user", source_message__source="webhook",
+    ).select_related("transition", "source_message").order_by("-transition__to_revision")[:64]
+    for decision in decisions:
+        transition = decision.transition
+        if transition.source_message_id != decision.source_message_id:
+            continue
+        after = transition.next_snapshot or {}
+        if int(after.get("active_index") or 0) != index:
+            break
+        after_lines = after.get("lines") or []
+        after_line = after_lines[index] if index < len(after_lines) and isinstance(after_lines[index], dict) else {}
+        if after_line.get("product_id") or (after_line and after_line.get("line_id") != line.get("line_id")):
+            break
+        request = decision.request_payload or {}
+        original = parse_turn(decision.source_message.text)
+        original_updates = dict(original.field_updates)
+        updates = {**(request.get("field_updates") or {}), **(request.get("hard") or {})}
+        stated = {
+            "fit_option_code": updates.get("fit_option_code", updates.get("fit")),
+            "color": updates.get("color"), "size": updates.get("size"),
+            "quantity": updates.get("quantity", updates.get("qty")),
+            "garment_type": request.get("garment_type") or (request.get("preferences") or {}).get("garment_type"),
+        }
+        for key, value in values.items():
+            source_value = original_updates.get("fit" if key == "fit_option_code" else key)
+            if key == "garment_type":
+                source_value = original.garment_type
+            if key not in evidence and key not in withdrawn_keys and stated.get(key) is not None and str(stated[key]) == str(value) and str(source_value) == str(value):
+                evidence[key] = {"decision_id": decision.pk, "transition_id": transition.pk,
+                                 "source_message_id": decision.source_message_id,
+                                 "source_digest": hashlib.sha256(decision.source_message.text.encode()).hexdigest()}
+        # A later rejection ends the old evidence chain. Even an accidental
+        # legacy write of that value must not revive its previous source proof.
+        # Corrections above may prove their new value from this same turn.
+        withdrawal = (decision.result_payload or {}).get("preference_withdrawal") or {}
+        if withdrawal.get("source_message_id") == decision.source_message_id:
+            withdrawn_keys.update(
+                "fit_option_code" if key == "fit" else key
+                for key in (withdrawal.get("values") or {})
+                if key in {"fit", "color", "garment_type"}
+            )
+        if transition.action in {"selection_reset", "product_rejected", "product_selected", "candidate_selected"}:
+            break
+    confirmed = {key: value for key, value in values.items() if key in evidence}
+    if not confirmed:
+        return {}
+    return {"session_id": session.pk, "generation": session.generation,
+            "revision": session.revision, "active_index": index,
+            "line_id": str(line.get("line_id") or ""), "values": confirmed,
+            "evidence": {key: evidence[key] for key in confirmed}}
+
+
 def _matching_legacy_selection(client) -> dict:
     context = client.sales_context if isinstance(client.sales_context, dict) else {}
     selection = context.get("assisted_checkout_selection")

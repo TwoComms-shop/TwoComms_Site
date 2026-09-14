@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
@@ -1456,6 +1457,9 @@ def _schedule_next_policy_step(
     *,
     now: datetime,
 ) -> bool:
+    from management.services.ig_turn_intent import LEGACY_ORDINARY_REASONS
+    if (task.event_payload or {}).get("origin") == "ordinary_intent_followup" or task.reason in LEGACY_ORDINARY_REASONS:
+        return False
     resolved = _policy_step_for_task(task)
     if resolved is None:
         return False
@@ -1590,6 +1594,10 @@ COLD_ON_POLICY_EXHAUSTION = frozenset(
 
 
 def _complete_policy_after_send(task: IgFollowUpTask, client: IgClient) -> bool:
+    from management.services.ig_turn_intent import LEGACY_ORDINARY_REASONS
+    if (task.event_payload or {}).get("origin") == "ordinary_intent_followup" or task.reason in LEGACY_ORDINARY_REASONS:
+        # Silence is neither a refusal nor evidence of a lost sale.
+        return True
     resolved = _policy_step_for_task(task)
     if resolved is None:
         return False
@@ -1925,6 +1933,21 @@ def _policy_followup_copy(
 def compose_followup(task: IgFollowUpTask, *, now: datetime | None = None) -> str:
     client = task.client
     language = _lang(client)
+    if (task.event_payload or {}).get("origin") == "ordinary_intent_followup":
+        purpose = (task.event_payload or {}).get("purpose")
+        variants = {
+            "price_inquiry": {
+                "uk": "Чи залишилися питання щодо цієї моделі? Можу допомогти визначитися.",
+                "ru": "Остались ли вопросы по этой модели? Могу помочь определиться.",
+                "en": "Do you have any questions about this item? I can help you decide.",
+            },
+            "requested_selection": {
+                "uk": "Чи залишилися питання щодо вибору? Можу допомогти визначитися.",
+                "ru": "Остались ли вопросы по выбору? Могу помочь определиться.",
+                "en": "Do you have any questions about your choice? I can help you decide.",
+            },
+        }
+        return variants.get(purpose, {}).get(language, "")
     ru = language == "ru"
     en = language == "en"
     pct = int(task.discount_percent or 0)
@@ -2170,6 +2193,47 @@ def _recheck_followup_send_claim(
     return task
 
 
+@dataclass(frozen=True)
+class _FollowupSendPermission:
+    allowed: bool
+    reason: str = ""
+
+    def __bool__(self):
+        return self.allowed
+
+
+@contextmanager
+def _ordinary_followup_provider_boundary(task_id, claim_token, *, prepared_text=None, checked_at=None, **delivery):
+    """Re-read the task and context at the actual provider request boundary.
+
+    send_text enters this inside its permission serializer, after token lookup
+    and transport preparation. Never replace this fresh client with the object
+    captured before generation. No database transaction spans provider I/O.
+    """
+    from management.services.ig_turn_intent import revalidate_followup_intent
+
+    now = checked_at or _now()
+    with transaction.atomic():
+        task = IgFollowUpTask.objects.select_for_update().select_related("client", "deal").filter(
+            pk=task_id, status=IgFollowUpTask.Status.PROCESSING,
+            claim_token=claim_token, claim_until__gt=now,
+        ).first()
+        reason = "followup_claim_changed" if task is None else ""
+        if not reason and (task.event_payload or {}).get("origin") != "ordinary_intent_followup":
+            reason = "followup_purpose_changed"
+        if not reason:
+            reason = revalidate_followup_intent(task, now=now)
+        if not reason:
+            expected_text = compose_followup(task, now=now)
+            if not expected_text or prepared_text != expected_text or task.message_text != expected_text:
+                reason = "ordinary_followup_copy_changed"
+        if not reason and (delivery.get("delivered_chunk_count", 0) or delivery.get("planned_chunk_count", 1) != 1):
+            reason = "ordinary_followup_delivery_shape_changed"
+        if reason and task is not None:
+            _mark_skipped(task, reason)
+    yield _FollowupSendPermission(not reason, reason)
+
+
 def _persist_provider_receipt(
     task_id: int,
     *,
@@ -2292,6 +2356,7 @@ def _finalize_confirmed_followup(
             policy_scheduled = _schedule_next_policy_step(task, client, now=now)
         if (
             policy_step is None
+            and (task.event_payload or {}).get("origin") != "ordinary_intent_followup"
             and not policy_scheduled
             and not task.discount_percent
             and task.kind in {
@@ -2802,7 +2867,18 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
                 task.save(update_fields=["due_at", "updated_at"])
                 _update_client_next(client)
                 continue
-            text = (task.message_text or "").strip() or compose_followup(task)
+            from management.services.ig_turn_intent import revalidate_followup_intent, ordinary_next_send_at
+            intent_reason = revalidate_followup_intent(task, now=now)
+            if intent_reason:
+                if intent_reason == "ordinary_quiet_hours":
+                    task.due_at = ordinary_next_send_at(now)
+                    task.save(update_fields=["due_at", "updated_at"])
+                    _update_client_next(client)
+                else:
+                    _mark_skipped(task, intent_reason)
+                continue
+            ordinary = (task.event_payload or {}).get("origin") == "ordinary_intent_followup"
+            text = compose_followup(task, now=now) if ordinary else (task.message_text or "").strip() or compose_followup(task)
             renewed = _renew_due_followup_claim(
                 task.id,
                 client.id,
@@ -2821,7 +2897,7 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
             )
             if task is None:
                 continue
-            task.client = client
+            client = task.client
             if task.message_text != text:
                 task.message_text = text
                 task.save(update_fields=["message_text", "updated_at"])
@@ -2836,7 +2912,7 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
             )
             if task is None:
                 continue
-            task.client = client
+            client = task.client
             if task.trigger == IgFollowUpTask.Trigger.EVENT:
                 allowed_event, event_reason = event_followup_fact_guard(task, now=now)
                 if not allowed_event:
@@ -2845,6 +2921,13 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
                     else:
                         _mark_skipped(task, event_reason)
                     continue
+            intent_reason = revalidate_followup_intent(task, now=now if clock_injected else _now())
+            if intent_reason:
+                _mark_skipped(task, intent_reason)
+                continue
+            if not text:
+                _mark_skipped(task, "ordinary_followup_copy_unavailable")
+                continue
             try:
                 delivery = instagram_bot.send_text(
                     s,
@@ -2854,6 +2937,10 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
                     permission_boundary_factory=lambda: customer_send_boundary(
                         s.pk, client.id, permission
                     ),
+                    **({"provider_request_boundary_factory": lambda **state: _ordinary_followup_provider_boundary(
+                        task.id, task_claim_token,
+                        prepared_text=text, checked_at=now if clock_injected else None, **state,
+                    )} if (task.event_payload or {}).get("origin") == "ordinary_intent_followup" else {}),
                 )
             except Exception as exc:
                 task.last_error = repr(exc)[:500]
@@ -2870,7 +2957,14 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
                 provider_message_id = ""
                 receipt_present = False
             if kind == "cancelled":
-                _mark_skipped(task, "permission_epoch_changed")
+                # The provider boundary may already have recorded a precise
+                # reason or another owner may have taken this task.
+                owned = IgFollowUpTask.objects.select_related("client", "deal").filter(
+                    pk=task.id, status=IgFollowUpTask.Status.PROCESSING,
+                    claim_token=task_claim_token,
+                ).first()
+                if owned is not None:
+                    _mark_skipped(owned, hint or "permission_epoch_changed")
                 continue
             if receipt_present:
                 if not ok:

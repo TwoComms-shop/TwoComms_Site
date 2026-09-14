@@ -27,6 +27,7 @@ _HASH_RE = re.compile(r"[0-9a-f]{64}")
 _SELECTOR_CODE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
 CLAIM_CATALOG_CONFIGURATION = "catalog_configuration"
+CLAIM_SOURCE_PREFERENCES = "source_preferences"
 CLAIM_CATALOG_ASSET_REFERENCES = "catalog_asset_references"
 CLAIM_CANONICAL_URLS = "canonical_urls"
 CLAIM_PUBLIC_POLICY_INPUTS = "public_policy_inputs"
@@ -36,6 +37,7 @@ CLAIM_ORDER = "order"
 CLAIM_SHIPMENT = "shipment"
 
 FACT_CLAIMS = frozenset({
+    CLAIM_SOURCE_PREFERENCES,
     CLAIM_CATALOG_ASSET_REFERENCES,
     CLAIM_CATALOG_CONFIGURATION,
     CLAIM_CANONICAL_URLS,
@@ -741,7 +743,17 @@ def build_revision_authority_bindings(
     offers: list[dict] = []
     reasons: list[str] = []
     for claim in requested:
-        if claim == CLAIM_CATALOG_CONFIGURATION:
+        if claim == CLAIM_SOURCE_PREFERENCES:
+            from management.services.ig_commerce_projection import source_preferences_for
+
+            preferences = source_preferences_for(fresh)
+            binding, reason = (
+                (_base_binding(claim, fresh, episode, {}, preferences,
+                               session_id=preferences["session_id"],
+                               source_message_ids=sorted({row["source_message_id"] for row in preferences["evidence"].values()})), "")
+                if preferences else (None, "source_preferences_unavailable")
+            )
+        elif claim == CLAIM_CATALOG_CONFIGURATION:
             binding, reason = _catalog_configuration_binding(
                 fresh, safe_control, episode
             )
@@ -852,6 +864,7 @@ __all__ = [
     "ACTION_REQUIRED_CLAIMS",
     "CLAIM_CANONICAL_URLS",
     "CLAIM_CATALOG_CONFIGURATION",
+    "CLAIM_SOURCE_PREFERENCES",
     "CLAIM_CATALOG_ASSET_REFERENCES",
     "CLAIM_CURRENT_OFFER",
     "CLAIM_ORDER",

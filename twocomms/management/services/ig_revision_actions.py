@@ -17,6 +17,7 @@ from management.models import (
 from management.services import bot_orders
 from management.services.ig_revision_authority import (
     CLAIM_CATALOG_CONFIGURATION,
+    CLAIM_SOURCE_PREFERENCES,
     RevisionAuthorityBindingSet,
     build_revision_authority_bindings,
     check_fact_bindings,
@@ -90,6 +91,12 @@ def _rebuild_authority(client, authority, control, settings_obj):
     facts, offers = [], []
     for binding in (*authority.fact_bindings, *authority.offer_bindings):
         claim = str(binding.get("claim") or "")
+        if (claim == CLAIM_SOURCE_PREFERENCES and client.current_product_id
+            and _catalog_binding(authority) is not None):
+            # The verified selection transaction replaces provisional no-SKU
+            # preferences with exact catalog authority. Preserve the before
+            # binding in the immutable action receipt, not in the send snapshot.
+            continue
         # Catalog selection changes here; independent URL/offer selectors keep
         # their own exact meaning instead of being overwritten by that selector.
         selector = control if claim == CLAIM_CATALOG_CONFIGURATION else binding.get("selector") or {}

@@ -21,7 +21,13 @@ class RevisionNormalFollowupTests(TransactionTestCase):
     _plan = delivery_fixtures.RevisionDeliveryTests._plan
 
     def setUp(self):
-        delivery_fixtures.RevisionDeliveryTests.setUp(self)
+        original_create = delivery_fixtures.InstagramBotMessage.objects.create
+        def explicit_price_source(**kwargs):
+            if kwargs.get("mid") == "revision-delivery-source":
+                kwargs["text"] = "Яка ціна?"
+            return original_create(**kwargs)
+        with patch.object(delivery_fixtures.InstagramBotMessage.objects, "create", side_effect=explicit_price_source):
+            delivery_fixtures.RevisionDeliveryTests.setUp(self)
         self.settings.ai_enabled = False
         self.settings.trigger_text = self.source.text
         self.settings.reply_text = "Thanks for your message."
@@ -71,18 +77,20 @@ class RevisionNormalFollowupTests(TransactionTestCase):
         self.assertEqual(scheduled.reason, "pending_manager_case")
         self.assertEqual(scheduled.task_id, 0)
 
-    def test_existing_first_reply_policy_is_source_anchored_and_once_only(self):
+    def test_price_policy_is_sent_reply_anchored_and_once_only(self):
         self._sent(parts=2)
         anchor = self.source.provider_created_at or self.source.created_at
-        expected_due = policy.next_allowed_send_at(anchor + timedelta(hours=2), deadline=anchor + policy.META_REPLY_WINDOW)
+        from management.services.ig_turn_intent import ordinary_next_send_at
+        sent_anchor = max(self.revision.delivery_effects.values_list("terminal_at", flat=True))
+        expected_due = ordinary_next_send_at(sent_anchor + timedelta(hours=3))
         result = self._schedule()
         self.assertTrue(result.ready, result.reason)
         task = IgFollowUpTask.objects.get(pk=result.task_id)
-        self.assertEqual(task.reason, "first_reply_silence")
-        self.assertEqual(task.kind, "qualification")
+        self.assertEqual(task.reason, "ordinary_price_inquiry")
+        self.assertEqual(task.kind, "thinking")
         self.assertEqual(task.level, 0)
         self.assertEqual(task.due_at, expected_due)
-        self.assertEqual(task.policy_started_at, anchor)
+        self.assertEqual(task.policy_started_at, sent_anchor)
         self.assertEqual(task.meta_window_deadline, anchor + timedelta(hours=23))
         again = self._schedule(now=timezone.now() + timedelta(seconds=1))
         self.assertTrue(again.replayed, again.reason)

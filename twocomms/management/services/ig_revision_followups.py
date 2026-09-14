@@ -26,7 +26,7 @@ from management.services.ig_revision_outbox import PublicationBinding, _digest, 
 
 
 RECEIPT_KEY = "normal_followups"
-VERSION = "revision-normal-followups-v1"
+VERSION = "revision-normal-followups-v2"
 AUTOMATIC_SALES_KINDS = ("qualification", "payment", "thinking", "rescue", "final")
 
 
@@ -88,7 +88,7 @@ def _check_source(revision, client, settings_row, token, epoch, publication, now
 def _automatic_timers(client):
     from management.services import bot_followups as policy
 
-    reasons = tuple(policy.FOLLOWUP_POLICIES) + tuple(policy.POLICY_REASON_ALIASES)
+    reasons = tuple(policy.FOLLOWUP_POLICIES) + tuple(policy.POLICY_REASON_ALIASES) + ("ordinary_price_inquiry", "ordinary_requested_selection")
     return IgFollowUpTask.objects.filter(
         client=client, status=IgFollowUpTask.Status.PENDING,
         kind__in=AUTOMATIC_SALES_KINDS, trigger=IgFollowUpTask.Trigger.TIME,
@@ -167,14 +167,6 @@ def _sent_reply(revision):
     return rows, text, origin, policy_facts
 
 
-def _pending_case(client):
-    # Human cases use SKIPPED + approval=PENDING so a timer worker cannot send
-    # operator copy to the customer. SENT is not necessarily human resolution.
-    return IgFollowUpTask.objects.filter(client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK).exclude(
-        status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED),
-    ).exclude(reason__startswith="parcel_reminder:").exists()
-
-
 def _fulfillment_case(client, deal, revision, anchor, now):
     from management.services.instagram_bot import notify_manager
 
@@ -230,55 +222,62 @@ def _schedule(client, revision, rows, anchor, now):
         # proven such form, hand the existing deal to the team; never reuse a
         # ready payment URL which might create a second invoice.
         return _fulfillment_case(client, deal, revision, anchor, now), "paid_fulfillment_case"
-    if _pending_case(client):
-        return None, "pending_manager_case"
-    policy_row = policy.FOLLOWUP_POLICIES.get(scenario)
-    step = next((item for item in policy_row.steps if item.trigger == "time" and item.offset is not None), None) if policy_row else None
-    if step is None:
-        return None, "normal_policy_unavailable"
-    kind = policy._persisted_step_kind(step)
-    allowed, reason = policy._client_allows_followup(client, deal=deal, kind=kind)
+    from management.services.ig_turn_intent import build_turn_intent, purpose_blockers, ordinary_next_send_at
+
+    decision = build_turn_intent(client, revision)
+    blocker = purpose_blockers(client, decision, revision=revision)
+    if blocker:
+        return None, blocker
+    purpose = decision["purpose"]
+    offsets = {"price_inquiry": timedelta(hours=3), "requested_selection": timedelta(minutes=90)}
+    if purpose not in offsets or not decision["commerce_evidence_refs"]:
+        return None, "current_purpose_not_followup_eligible"
+    if deal and deal.active_checkout_proposal:
+        return None, "hosted_checkout_v2_owns_followups" if deal.active_checkout_proposal.assisted_checkout_v2 else "checkout_owns_followups"
+    allowed, reason = policy._client_allows_followup(client, deal=deal, kind=IgFollowUpTask.Kind.THINKING)
     if not allowed:
         return None, reason
-    if not policy._policy_condition_holds(step.condition, client, deal=deal):
-        return None, "normal_policy_condition_absent"
-    proposal = deal.active_checkout_proposal if deal else None
-    offset = step.offset
-    task_reason = scenario
-    if proposal and proposal.status in {proposal.Status.READY, proposal.Status.VIEWED}:
-        if proposal.assisted_checkout_v2:
-            return None, "hosted_checkout_v2_owns_followups"
-        policy_row = policy.FOLLOWUP_POLICIES["payment_link_unpaid"]
-        step = next(item for item in policy_row.steps if item.trigger == "time" and item.offset is not None)
-        kind = policy._persisted_step_kind(step)
-        offset = max(proposal.expires_at - anchor, timedelta(0))
-        task_reason = "checkout_proposal_abandoned"
-    deadline = anchor + policy.META_REPLY_WINDOW
-    due = policy.next_allowed_send_at(anchor + offset, deadline=deadline)
-    if due <= now:
-        return None, "normal_followup_due_elapsed"
-    skip_reason = ""
-    if due > deadline and kind != IgFollowUpTask.Kind.MANAGER_TASK:
-        kind = IgFollowUpTask.Kind.MANAGER_TASK
-        skip_reason = "meta_window_closed"
-    task, _created = IgFollowUpTask.objects.get_or_create(
-        event_key=f"revision-normal-followup:{revision.pk}:{task_reason}",
+    sent_parts = [row for row in rows if row.group == "substantive_text"]
+    if not sent_parts or any(row.terminal_at is None for row in sent_parts):
+        return None, "sent_reply_timestamp_missing"
+    sent_anchor = max(row.terminal_at for row in sent_parts)
+    # Channel permission is inbound-based; sending our reply never renews it.
+    inbound = InstagramBotMessage.objects.filter(client=client, role="user", pk__lte=max(decision["source_message_ids"])).order_by("-pk").first()
+    inbound_anchor = (inbound.provider_created_at or inbound.created_at) if inbound else anchor
+    deadline = inbound_anchor + policy.META_REPLY_WINDOW
+    # Optional sales use ordinary hours only; passing deadline widens legacy
+    # helper hours to its emergency slot, which is inappropriate here.
+    due = ordinary_next_send_at(max(sent_anchor + offsets[purpose], now))
+    if due >= deadline:
+        return None, "ordinary_followup_not_sendable"
+    key = f"ordinary-intent-followup:{decision['cycle_key']}"
+    task, created = IgFollowUpTask.objects.get_or_create(
+        event_key=key,
         defaults={
             "client": client, "deal": deal, "due_at": due, "status": IgFollowUpTask.Status.PENDING,
-            "kind": kind, "level": step.index, "reason": task_reason,
-            "discount_percent": step.discount_percent,
-            "manager_approval_status": (IgFollowUpTask.ManagerApprovalStatus.PENDING if step.discount_percent else IgFollowUpTask.ManagerApprovalStatus.NOT_REQUIRED),
+            "kind": IgFollowUpTask.Kind.THINKING, "level": 0, "reason": f"ordinary_{purpose}",
             "meta_window_deadline": deadline, "trigger": IgFollowUpTask.Trigger.TIME,
-            "event_occurred_at": anchor, "policy_started_at": anchor, "policy_version": "followup-v1",
-            "event_payload": {"origin": "normal_followups", "revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest},
-            "skip_reason": skip_reason,
+            "event_occurred_at": inbound_anchor, "policy_started_at": sent_anchor,
+            "policy_version": "ordinary-intent.v1",
+            "event_payload": {"origin": "ordinary_intent_followup", "revision_id": revision.pk,
+                              "snapshot_digest": revision.snapshot_digest, "purpose": purpose,
+                              "cycle_key": decision["cycle_key"], "source_message_ids": decision["source_message_ids"],
+                              "commerce_evidence_refs": decision["commerce_evidence_refs"],
+                              "route_decision_id": decision["route_decision_id"],
+                              "client_permission_epoch": client.reply_permission_epoch,
+                              "product_id": client.current_product_id,
+                              "settings_id": getattr(sent_parts[0], "settings_id_snapshot", 0),
+                              "settings_permission_epoch": getattr(sent_parts[0], "settings_permission_epoch", -1),
+                              "publication_id": getattr(sent_parts[0], "publication_id", 0),
+                              "publication_hash": getattr(sent_parts[0], "publication_hash", ""),
+                              "sent_effect_ids": [row.pk for row in sent_parts],
+                              "sent_reply_anchor": sent_anchor.isoformat(), "budget": "reserved"},
         },
     )
-    if task.client_id != client.pk or task.due_at != due:
+    if task.client_id != client.pk:
         raise _Blocked("followup_timer_identity_mismatch")
-    if task.kind == IgFollowUpTask.Kind.MANAGER_TASK and not task.message_text:
-        task.message_text = policy.compose_followup(task, now=due)
-        task.save(update_fields=["message_text", "updated_at"])
+    if not created:
+        return task, "ordinary_cycle_already_reserved"
     policy._update_client_next(client)
     return task, "normal_followup_scheduled"
 
@@ -398,8 +397,6 @@ def settle_revision_normal_followups(revision_id, finalization_token, *, now=Non
                 reason = "erasure_private_projection_suppressed"
             elif not source_valid or anchor is None:
                 reason = "followup_source_unavailable"
-            elif revision.overall_deadline <= now:
-                reason = "reply_deadline_elapsed"
             elif revision.active_slot != 1:
                 reason = "newer_customer_head"
             elif settings_row is None or not settings_row.is_enabled:
@@ -412,10 +409,11 @@ def settle_revision_normal_followups(revision_id, finalization_token, *, now=Non
                     fact_bindings=policy_facts, fact_checker=check_fact_bindings,
                     offer_checker=check_offer_bindings, now=now,
                 )
-                if not readiness.ready:
-                    # These are current policy/permission denials, not a reason
-                    # to retry delivery or rewrite the accepted generation.
-                    reason = readiness.reasons[0]
+                denied = [item for item in readiness.reasons if item != "revision_deadline_exhausted"]
+                if denied:
+                    # Follow-up timing survives the short answer deadline; all
+                    # source, channel, policy and permission denials remain.
+                    reason = denied[0]
             task = None
             if not reason:
                 task, reason = _schedule(client, revision, rows, anchor, now)

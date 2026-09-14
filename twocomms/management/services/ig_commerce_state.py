@@ -186,6 +186,42 @@ def _apply_candidate_prompt(snapshot: dict, candidate_prompt: dict | None) -> bo
     return True
 
 
+def _apply_preference_withdrawals(snapshot, request, source, client) -> dict:
+    """Clear only the named current choice proved by this customer's source."""
+    from management.services.ig_commerce_turns import parse_turn
+
+    if not request.preference_withdrawals or not (
+        source.client_id == client.pk and source.sender_id == client.igsid
+        and source.role == "user" and source.source == "webhook"
+    ):
+        return {}
+    original = parse_turn(source.text).preference_withdrawals
+    withdrawn = {}
+    line = _active_line(snapshot) or {}
+    for key, value in request.preference_withdrawals.items():
+        if key not in {"fit", "color", "garment_type"} or original.get(key) != value:
+            continue
+        line_key = "fit_option_code" if key == "fit" else key
+        changed = False
+        if line.get(line_key) == value:
+            line.pop(line_key)
+            if key == "color":
+                line.pop("color_variant_id", None)
+            changed = True
+        for constraint_key in ("selection_constraints", "query_constraints"):
+            constraints = dict(snapshot.get(constraint_key) or {})
+            for alias in {key, line_key}:
+                if constraints.get(alias) == value:
+                    constraints.pop(alias)
+                    changed = True
+            snapshot[constraint_key] = constraints
+        if changed:
+            withdrawn[key] = value
+    if withdrawn:
+        _clear_candidate_anchor(snapshot)
+    return withdrawn
+
+
 def _clear_candidate_anchor(snapshot: dict) -> None:
     snapshot["candidate_product_ids"] = []
     snapshot["candidate_digest"] = ""
@@ -459,6 +495,13 @@ def apply_turn(
             action = "candidate_selected"
             reasons.append(numeric_reason)
 
+    withdrawn = {} if candidate_rejected else _apply_preference_withdrawals(
+        after, request, source, locked_client,
+    )
+    if withdrawn:
+        action = "preference_withdrawn"
+        reasons.append("explicit_preference_withdrawal")
+
     if candidate_rejected:
         pass
     elif rejects_active_product and not request.exact_product_id:
@@ -547,6 +590,11 @@ def apply_turn(
         result_payload={
             "reason": reasons[-1] if reasons else action,
             "candidate_generation": session.candidate_generation,
+            **({"preference_withdrawal": {
+                "values": withdrawn,
+                "source_message_id": source.pk,
+                "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest(),
+            }} if withdrawn else {}),
         },
         reply_payload=reply_payload or {},
         effects_payload=effects_payload or {},

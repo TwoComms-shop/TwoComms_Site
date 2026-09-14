@@ -219,3 +219,64 @@ def record_unavailable_media_reply(revision_id, token, *, settings_id, collectio
         revision.action_receipts = {**(revision.action_receipts or {}), "media_unavailable_reply": receipt}
         revision.save(update_fields=["action_receipts", "updated_at"])
         return RevisionInputDecision(True, "media_unavailable", "owned_media_unavailable", receipt)
+
+
+def record_source_preference_fallback(revision_id, token, *, settings_id):
+    """Admit a separate local reply after a conclusive failed provider graph.
+
+    This is an input/action receipt, not a fabricated successful Gemini proposal.
+    Every retry recomputes its exact text/provenance and ordinary send authority.
+    """
+    from management.models import GeminiRequest, IgRevisionDeliveryEffect
+    from management.services.ig_revision_live import RevisionGenerationBoundary
+    from management.services.ig_revision_recovery import recovery_lineage_for_authority
+
+    if connection.in_atomic_block:
+        return RevisionInputDecision(reason="caller_transaction_active")
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if identity is None:
+        return RevisionInputDecision(reason="revision_missing")
+    with transaction.atomic():
+        settings_row = InstagramBotSettings.objects.select_for_update().select_related("active_instruction_publication").filter(pk=settings_id).first()
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
+        if settings_row is None or client is None or revision is None or settings_row.active_instruction_publication is None:
+            return RevisionInputDecision(reason="fallback_identity_missing")
+        if revision.generation_proposal_digest:
+            return RevisionInputDecision(reason="fallback_existing_proposal")
+        rows, reason = recovery_lineage_for_authority(revision)
+        if reason or IgRevisionDeliveryEffect.objects.filter(revision_id__in=[row.pk for row in rows]).exists():
+            return RevisionInputDecision(reason="fallback_lineage_delivery_or_invalid")
+        graph = GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{revision.pk}").first()
+        if graph is None or graph.client_id != client.pk or graph.terminal_resolution != "failed" or graph.winner_attempt_id:
+            return RevisionInputDecision(reason="fallback_generation_not_failed")
+        sources = revision.bundle_snapshot.get("sources") or []
+        if any(source.get("media_parts") for source in sources):
+            return RevisionInputDecision(reason="fallback_media_not_supported")
+        pub = settings_row.active_instruction_publication
+        publication = PublicationBinding(pub.pk, pub.version, pub.snapshot_hash)
+        policy = {"instruction_publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash}}
+        revision.client = client
+        boundary = RevisionGenerationBoundary(revision, token, settings_row, publication)
+        response, proof = boundary.contextual_fallback(policy_manifest=policy)
+        if response is None:
+            return RevisionInputDecision(reason="fallback_preference_not_admitted")
+        authority = boundary.authority
+        receipt = {
+            "version": "revision-preference-fallback-v1", "origin": "source_preference_fallback",
+            "reason": "provider_failed_source_preference", "snapshot_digest": revision.snapshot_digest,
+            "source_message_ids": [source["message_id"] for source in sources],
+            "failed_request_id": graph.request_id, "proof": proof,
+            "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,
+            "publication": policy["instruction_publication"],
+            "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),
+                "offer_bindings": list(authority.offer_bindings), "authority_digest": authority.authority_digest},
+            "reply_text": response.reply_text,
+        }
+        existing = (revision.action_receipts or {}).get("source_preference_fallback")
+        if existing and existing != receipt:
+            return RevisionInputDecision(reason="fallback_receipt_changed")
+        if not existing:
+            revision.action_receipts = {**(revision.action_receipts or {}), "source_preference_fallback": receipt}
+            revision.save(update_fields=["action_receipts", "updated_at"])
+        return RevisionInputDecision(True, receipt["origin"], receipt["reason"], receipt, bool(existing))

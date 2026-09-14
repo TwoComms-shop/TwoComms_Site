@@ -8,6 +8,7 @@ an unsupported path fails closed without entering a legacy direct-send branch.
 from __future__ import annotations
 
 from copy import deepcopy
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 import hashlib
@@ -29,6 +30,7 @@ from management.services.ig_response_control import ResponseControl, ValidatedRe
 from management.services.ig_revision_authority import (
     CLAIM_CANONICAL_URLS, CLAIM_CATALOG_CONFIGURATION, CLAIM_CURRENT_OFFER,
     CLAIM_ORDER, CLAIM_PAYMENT, CLAIM_PUBLIC_POLICY_INPUTS, CLAIM_SHIPMENT,
+    CLAIM_SOURCE_PREFERENCES,
     RevisionAuthorityBindingSet, build_revision_authority_bindings,
     check_fact_bindings, check_offer_bindings,
 )
@@ -49,6 +51,68 @@ SUPPORTED_CONTROLS = SELECTION_KEYS | {
     "stage", "spam", "manager", "order",
 }
 FACT_DRIFT_REASONS = frozenset({"fact_binding_unavailable", "offer_binding_unavailable"})
+_PRESENCE_SCOPE = ContextVar("ig_revision_presence", default=None)
+
+
+def _stop_revision_presence(scope=None):
+    scope = scope if scope is not None else _PRESENCE_SCOPE.get()
+    if scope and scope.get("handle") is not None:
+        try:
+            scope["handle"].stop()
+        except Exception:
+            logging.getLogger(__name__).info("ig_presence outcome=stop_unavailable")
+
+
+def _start_revision_presence(revision, token, settings_row, scope, *, preparing=False):
+    try:
+        _start_revision_presence_advisory(revision, token, settings_row, scope, preparing=preparing)
+    except Exception:
+        logging.getLogger(__name__).info("ig_presence outcome=start_unavailable")
+
+
+def _start_revision_presence_advisory(revision, token, settings_row, scope, *, preparing=False):
+    """Advisory ownership follows the exact claim, never a reconstructed lease."""
+    from management.services.ig_presence import start_presence
+
+    if not scope or not scope.get("lease"):
+        logging.getLogger(__name__).info("ig_presence outcome=missing_caller_lease")
+        return
+    state = revision.State.PREPARING if preparing else revision.State.CLAIMED
+
+    def current_owner():
+        now = timezone.now()
+        return IgCustomerTurnRevision.objects.filter(
+            pk=revision.pk, client_id=revision.client_id, active_slot=1,
+            state=state, claim_token=token, lease_until__gt=now,
+        ).filter(Q(overall_deadline__gt=now) | Q(recovery_state="execution")).exists()
+
+    watermark = max(revision.sources.values_list("message_id", flat=True), default=0)
+    handle = scope.get("handle")
+    if handle is not None and not handle.finished.is_set() and not handle.stopped.is_set():
+        handle.update(source_watermark=watermark, owner_check=current_owner, resume=True)
+        return
+    scope["handle"] = start_presence(
+        settings_row, client_id=revision.client_id, recipient_id=revision.client.igsid,
+        owner_token=scope["lease"], source_watermark=watermark, owner_check=current_owner,
+    )
+
+
+def _preparation_presence_admitted(revision, settings_row):
+    """Read-only early admission using the same finite source classifier/cap."""
+    from management.services.ig_revision_input import classify_sealed_input, RATE_LIMIT, RATE_WINDOW
+
+    sources = [{
+        "role": source.role, "text": source.text,
+        "quick_reply_payload": source.quick_reply_payload,
+        "media_parts": source.discovered_media or ([{}] if source.media_part_count else []),
+    } for source in revision.sources.all()]
+    origin, _, _ = classify_sealed_input({"sources": sources}, revision.client, settings_row)
+    if origin not in {"generate", "static_reply", "postback"}:
+        return False
+    return IgCustomerTurnRevision.objects.filter(
+        client_id=revision.client_id, created_at__gte=timezone.now() - RATE_WINDOW,
+        action_receipts__input_decision__rate_counted=True,
+    ).values("snapshot_digest").distinct().count() < RATE_LIMIT
 
 
 @dataclass(frozen=True)
@@ -220,6 +284,9 @@ class RevisionGenerationBoundary:
     def _baseline(self):
         client = IgClient.objects.get(pk=self.revision.client_id)
         claims = [CLAIM_PUBLIC_POLICY_INPUTS]
+        from management.services.ig_commerce_projection import source_preferences_for
+        if source_preferences_for(client):
+            claims.append(CLAIM_SOURCE_PREFERENCES)
         if client.current_product_id:
             claims.append(CLAIM_CATALOG_CONFIGURATION)
         if client.current_commercial_episode_id:
@@ -274,9 +341,19 @@ class RevisionGenerationBoundary:
         actions = []
         case_reason = manager_case_reason(self.revision, response)
         checkout_requested = bool(control.get("paylink") or control.get("payment")) and not case_reason
+        from management.services.ig_commerce_projection import source_preferences_for
+        preferences = source_preferences_for(client).get("values") or {}
+        preference_keys = SELECTION_KEYS.intersection(control)
+        preference_acknowledgement = bool(
+            not client.current_product_id and preference_keys
+            and preference_keys.issubset({"fit", "size", "qty"})
+            and not checkout_requested and "price_quoted" not in control
+            and all(str(control[key]) == str(preferences.get({"fit": "fit_option_code", "qty": "quantity"}.get(key, key)))
+                    for key in preference_keys)
+        )
         if "items" in control and not checkout_requested and not case_reason:
             return RevisionAuthorityBindingSet(False, ("revision_cart_selection_unsupported",))
-        if not case_reason and (SELECTION_KEYS.intersection(control) or "price_quoted" in control or checkout_requested):
+        if not case_reason and ((preference_keys and not preference_acknowledgement) or "price_quoted" in control or checkout_requested):
             claims.append(CLAIM_CATALOG_CONFIGURATION)
         authority_control = dict(control)
         if checkout_requested:
@@ -305,7 +382,7 @@ class RevisionGenerationBoundary:
             return admitted
         if checkout_requested:
             actions.append("checkout_proposal_create")
-        elif SELECTION_KEYS.intersection(control) and not case_reason:
+        elif preference_keys and not preference_acknowledgement and not case_reason:
             actions.append("client_configuration_update")
         if case_reason:
             actions.append("manager_escalation_intent")
@@ -315,6 +392,36 @@ class RevisionGenerationBoundary:
             client, claims=claims, control=authority_control,
             server_authorized_actions=actions, settings_obj=self.settings,
         )
+
+    def contextual_fallback(self, *, policy_manifest):
+        """Independently admit a local candidate; caller stores local provenance.
+
+        The caller must additionally fence delivery effects across the recovery
+        lineage. This method fences this revision and its current sealed source.
+        """
+        from management.services.ig_response_guard import build_source_preference_fallback
+        client = IgClient.objects.get(pk=self.revision.client_id)
+        response, proof = build_source_preference_fallback(client)
+        if response is None or self.has_images or self.revision.delivery_effects.exists():
+            return None, {}
+        from management.services.ig_commerce_projection import source_preferences_for
+        projection = source_preferences_for(client)
+        evidence = projection.get("evidence", {}).get("fit_option_code") or {}
+        receipt = (self.revision.action_receipts or {}).get("commerce_reduction") or {}
+        if receipt.get("snapshot_digest") != self.revision.snapshot_digest or not any(
+            item.get("source_message_id") == evidence.get("source_message_id")
+            and item.get("decision_id") == evidence.get("decision_id")
+            and item.get("accepted") is True and not item.get("is_stale")
+            for item in receipt.get("decisions") or []
+        ):
+            return None, {}
+        decision = self.validate(response, policy_manifest=policy_manifest)
+        if not decision.valid:
+            return None, {}
+        proof = {**proof, "revision_id": self.revision.pk,
+                 "snapshot_digest": self.revision.snapshot_digest,
+                 "authority_digest": self.authority.authority_digest}
+        return response, proof
 
     def validate(self, response, *, policy_manifest):
         from management.services.ig_revision_intents import manager_case_reason, manager_handoff_promised
@@ -332,6 +439,16 @@ class RevisionGenerationBoundary:
         if not readiness.ready:
             self.last_reasons = readiness.reasons
             return ValidationDecision(False, readiness.reasons)
+        # Customer routes produced by this candidate are accepted only after
+        # proposal storage. Unknown purpose cannot reject that classification
+        # prematurely; the mandatory action/send gates below run after acceptance.
+        from management.services.ig_turn_intent import build_turn_intent, validate_turn_response
+        intent = build_turn_intent(IgClient.objects.get(pk=self.revision.client_id), self.revision)
+        if intent["purpose"] != "unknown":
+            intent_reason = validate_turn_response(intent, response.reply_text)
+            if intent_reason:
+                self.last_reasons = (intent_reason,)
+                return ValidationDecision(False, self.last_reasons)
         case_reason = manager_case_reason(self.revision, response)
         if manager_handoff_promised(response) and not case_reason:
             self.last_reasons = ("unnecessary_manager_handoff",)
@@ -564,6 +681,8 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     commerce = (revision.action_receipts or {}).get("commerce_reduction") or {}
     if commerce:
         coverage_note += "\n[DETERMINISTIC SOURCE COMMERCE EVENTS]\n" + json.dumps(commerce.get("decisions") or [], ensure_ascii=False, separators=(",", ":"))
+    from management.services.ig_turn_intent import build_turn_intent, intent_generation_guidance
+    coverage_note += "\n" + intent_generation_guidance(build_turn_intent(revision.client, revision))
     from management.services.gemini_accounting_runtime import revision_request_execution
 
     with revision_request_execution(
@@ -757,7 +876,26 @@ def _project_sent_history(revision_id):
                 client.save(update_fields=["sales_context", "updated_at"])
 
 
+def _revision_response_purpose_reason(revision):
+    """Recheck current source purpose against the whole immutable reply.
+
+    Checking individual split parts could miss a CTA crossing their boundary.
+    This gate has no business mutations and also runs on crash-resumed outboxes.
+    """
+    from management.services.ig_turn_intent import build_turn_intent, validate_turn_response
+    from management.services.ig_revision_outbox import revision_has_newer_source
+
+    current = IgCustomerTurnRevision.objects.select_related("client").get(pk=revision.pk)
+    if revision_has_newer_source(current):
+        return "pending_inbound"
+    text = "\n".join(str((row.payload.get("message") or {}).get("text") or "")
+        for row in current.delivery_effects.filter(group="substantive_text").order_by("order_index"))
+    return validate_turn_response(build_turn_intent(current.client, current), text)
+
+
 def _drain_effects(revision, token, settings_row, access_token):
+    # A late advisory HTTP completion is cleaned up separately from this send.
+    _stop_revision_presence()
     from management.services.ig_revision_delivery import drain_group
     from management.services.ig_revision_execution import finalize_sent_revision_effects
     from management.services.ig_revision_transport import build_provider_part_callback
@@ -768,6 +906,7 @@ def _drain_effects(revision, token, settings_row, access_token):
     transport = build_provider_part_callback(
         settings_row, expected_namespace=effect.provider_namespace,
         expected_recipient=effect.recipient_igsid, access_token=access_token,
+        response_gate=lambda _payload: _revision_response_purpose_reason(revision),
     )
     attempted = 0
     for group in dict.fromkeys(revision.delivery_effects.order_by("order_index").values_list("group", flat=True)):
@@ -870,7 +1009,17 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     return _drain_effects(revision, token, settings_row, access_token)
 
 
-def execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveResult:
+def execute_claimed_revision(revision_id, token, settings_row, *, presence_scope=None) -> RevisionLiveResult:
+    scope = presence_scope if presence_scope is not None else {"lease": "", "handle": None}
+    context_token = _PRESENCE_SCOPE.set(scope)
+    try:
+        return _execute_claimed_revision(revision_id, token, settings_row)
+    finally:
+        _stop_revision_presence(scope)
+        _PRESENCE_SCOPE.reset(context_token)
+
+
+def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveResult:
     """Execute an explicitly claimed revision; never delegates to legacy sends."""
     if connection.in_atomic_block:
         return RevisionLiveResult(revision_id, "blocked", ("caller_transaction_active",))
@@ -912,6 +1061,7 @@ def execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveRe
                 return RevisionLiveResult(revision_id, "blocked", (notification.reason,))
         consumed = complete_no_reply_input(revision.pk, token)
         return RevisionLiveResult(revision_id, "completed" if consumed else "blocked", (input_decision.reason,))
+    _start_revision_presence(revision, token, settings_row, _PRESENCE_SCOPE.get())
     if input_decision.origin == "static_reply":
         return _execute_deterministic_input(revision, token, settings_row, input_decision.receipt)
     if input_decision.origin == "postback":
@@ -968,6 +1118,11 @@ def execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveRe
         # A crashed request without its successful proposal is reconciliation
         # debt, never an excuse to open another two-dispatch request.
         if GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{revision.pk}").exists():
+            from management.services.ig_revision_input import record_source_preference_fallback
+
+            fallback = record_source_preference_fallback(revision.pk, token, settings_id=settings_row.pk)
+            if fallback.ready:
+                return _execute_deterministic_input(revision, token, settings_row, fallback.receipt)
             return RevisionLiveResult(revision_id, "blocked", ("generation_reconciliation_required",))
         from management.services.ig_revision_media import collect_revision_media
 
@@ -985,6 +1140,11 @@ def execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveRe
             revision, token, settings_row, publication, collection,
         )
         if response is None:
+            from management.services.ig_revision_input import record_source_preference_fallback
+
+            fallback = record_source_preference_fallback(revision.pk, token, settings_id=settings_row.pk)
+            if fallback.ready:
+                return _execute_deterministic_input(revision, token, settings_row, fallback.receipt)
             return RevisionLiveResult(revision_id, "blocked", reasons)
     # Both fresh generation and execution-only continuation use the same sealed
     # proposal. Topic acceptance is optional and never authorizes send/actions.
@@ -1007,6 +1167,13 @@ def execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveRe
         except Exception:
             logging.getLogger(__name__).warning("revision_route_acceptance_unavailable")
     authority = boundary.authority
+    from management.services.ig_turn_intent import build_turn_intent, validate_turn_response
+    intent_reason = validate_turn_response(
+        build_turn_intent(IgClient.objects.get(pk=revision.client_id), revision),
+        response.reply_text, authority.allowed_actions,
+    )
+    if intent_reason:
+        return RevisionLiveResult(revision_id, "blocked", (intent_reason,))
     if "manager_escalation_intent" in authority.allowed_actions:
         from management.services.ig_revision_intents import ensure_revision_manager_case
 
@@ -1188,6 +1355,7 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
         client, lease = bot.acquire_client_automation_lease(identity["client_id"])
         if client is None:
             continue
+        presence_scope = {"lease": lease, "handle": None}
         try:
             if identity["state"] == IgCustomerTurnRevision.State.CLAIMED:
                 revision, token = _reclaim_execution(revision_id, settings_id=settings_row.pk)
@@ -1200,13 +1368,30 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
                     if preparation is None or not preparation.token:
                         continue
                     preparation_token = preparation.token
+
+                def capture_with_presence(**capture_kwargs):
+                    try:
+                        revision = IgCustomerTurnRevision.objects.select_related("client").get(pk=revision_id)
+                        if preparation_token and _preparation_presence_admitted(revision, settings_row):
+                            _start_revision_presence(revision, preparation_token, settings_row, presence_scope, preparing=True)
+                    except Exception:
+                        logging.getLogger(__name__).info("ig_presence outcome=preparation_unavailable")
+                    try:
+                        return capture_revision_source(**capture_kwargs)
+                    finally:
+                        handle = presence_scope.get("handle")
+                        if handle is not None:
+                            # Keep the generation across seal->claim. No owner
+                            # predicate/I/O runs until the exact token is updated.
+                            handle.suspend()
+
                 prepared = prepare_revision(
-                    revision_id, capture_revision_source, preparation_token=preparation_token,
+                    revision_id, capture_with_presence, preparation_token=preparation_token,
                 )
                 if not prepared.ready:
                     continue
                 token = prepared.execution_token
-            outcome = execute_claimed_revision(revision_id, token, settings_row)
+            outcome = execute_claimed_revision(revision_id, token, settings_row, presence_scope=presence_scope)
             if outcome.state == "completed":
                 handled += 1
             elif outcome.reasons:
@@ -1227,5 +1412,6 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
             # No source attempts, transcript, or legacy send key are reset.
             bot.log("error", "revision_execution", f"revision={revision_id} error={type(exc).__name__}")
         finally:
+            _stop_revision_presence(presence_scope)
             bot.release_client_automation_lease(identity["client_id"], lease)
     return handled
