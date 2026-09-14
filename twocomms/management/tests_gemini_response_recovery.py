@@ -1,9 +1,12 @@
 """HTTP-200 failures must retain accounting without exposing provider content."""
 import json
 import os
+from contextlib import contextmanager
+from datetime import timedelta
 from unittest.mock import Mock, patch
 
 from django.test import TestCase, TransactionTestCase, override_settings
+from django.utils import timezone
 
 from management import tests_gemini_accounting_shadow as fixtures
 from management.models import GeminiModelQuotaUsage, GeminiQuotaState, GeminiRequest, GeminiRequestAttempt
@@ -377,3 +380,161 @@ class DurableResponseRecoveryTests(TransactionTestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk").values_list("model", flat=True)),
                          ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash", "gemini-3.7-flash"])
+
+    @contextmanager
+    def _late_alternative_loss(self, kind, *, after_loss=None):
+        """Change real quota/lease state only AFTER returning a green lookahead."""
+        from management.models import GeminiKeyState
+
+        def exhaust(key):
+            GeminiModelQuotaUsage.objects.update_or_create(
+                key_name=key, model="gemini-3.7-flash", day_date=ai.gemini_quota.pacific_day(timezone.now()),
+                defaults={"requests": ai.gemini_quota.budget_for("gemini-3.7-flash")["rpd"]},
+            )
+        if kind == "lease":
+            # Only project 1 can use the later model; project 2 remains usable
+            # for the previous model when project 1's lease is taken elsewhere.
+            exhaust("GEMINI_API2")
+        original = ai.gemini_keys.live_chat_candidate_plan
+        lookaheads = []
+
+        def plan(*args, **kwargs):
+            rows = original(*args, **kwargs)
+            if kwargs.get("model_chain_override") == ["gemini-3.7-flash"]:
+                self.assertTrue(any(not row["skip_reason"] for row in rows))
+                lookaheads.append(True)
+                if kind == "quota":
+                    for key in ("GEMINI_API", "GEMINI_API2"):
+                        exhaust(key)
+                else:
+                    GeminiKeyState.objects.update_or_create(key_name="GEMINI_API", defaults={
+                        "lease_token": "another-fixture-worker", "lease_role": "chat",
+                        "lease_until": timezone.now() + timedelta(minutes=1),
+                    })
+                if after_loss:
+                    after_loss()
+            return rows
+
+        with patch.object(ai.gemini_keys, "live_chat_candidate_plan", side_effect=plan):
+            yield
+        self.assertEqual(lookaheads, [True])
+
+    def _assert_deferred_scarce_succeeds(self, kind):
+        from management.services.ig_revision_provider_execution import inspect_revision_provider_execution
+
+        with self._late_alternative_loss(kind):
+            result, calls = self.run_reply([response(finish="STOP")] * 3 + [response(finish="STOP", text="valid")],
+                model_chain=["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"])
+        self.assertEqual(result["parsed"], "valid")
+        self.assertEqual(len(calls), 4)
+        attempts = list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk"))
+        self.assertEqual([row.model for row in attempts], ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash"] * 2)
+        self.assertEqual(attempts[-1].key_name, "GEMINI_API2")
+        graph = GeminiRequest.objects.get()
+        self.assertEqual(graph.winner_attempt_id, attempts[-1].pk)
+        self.assertNotIn("_provider_repair_reservation", graph.candidate_outcomes)
+        self.case.revision.refresh_from_db()
+        continuation = inspect_revision_provider_execution(self.case.revision)
+        self.assertEqual((continuation.http_remaining, continuation.scarce_remaining), (4, 0))
+        # Temporary deferral must not record this later winner as terminally
+        # skipped before it actually gets its provider attempt.
+        previous = GeminiRequestAttempt.objects.filter(request_graph=graph, candidate_index=attempts[-1].candidate_index).exclude(pk=attempts[-1].pk)
+        self.assertFalse(previous.exists())
+
+    def test_late_alternative_quota_loss_returns_once_to_unspent_scarce_candidate(self):
+        self._assert_deferred_scarce_succeeds("quota")
+
+    def test_late_alternative_lease_loss_returns_once_to_unspent_scarce_candidate(self):
+        self._assert_deferred_scarce_succeeds("lease")
+
+    def test_actual_alternative_http_failure_never_revisits_deferred_tier(self):
+        calls = []
+        with self.assertRaises(ai.CallAIAnalysisError):
+            self.run_reply([response(finish="STOP")] * 4,
+                model_chain=["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"], before_response=calls.append)
+        self.assertEqual(calls, [1, 2, 3, 4])
+        self.assertEqual(list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk").values_list("model", flat=True)),
+                         ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash", "gemini-3.7-flash"])
+        self.assertIsNone(GeminiRequest.objects.get().winner_attempt_id)
+
+    def test_pause_after_alternative_quota_skip_prevents_deferred_http(self):
+        from management.models import IgClient
+        reserve = ai.gemini_quota.try_reserve
+        calls = []
+        def skip_then_pause(key, model, **kwargs):
+            allowed = reserve(key, model, **kwargs)
+            if model == "gemini-3.7-flash" and key == "GEMINI_API2" and not allowed:
+                IgClient.objects.filter(pk=self.case.customer.pk).update(bot_paused=True)
+            return allowed
+        with self._late_alternative_loss("quota"), patch.object(ai.gemini_quota, "try_reserve", side_effect=skip_then_pause):
+            with self.assertRaises(ai.CallAIAnalysisError):
+                self.run_reply([response(finish="STOP")] * 3,
+                    model_chain=["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"], before_response=calls.append)
+        self.assertEqual(calls, [1, 2, 3])
+        self.assertIsNone(GeminiRequest.objects.get().winner_attempt_id)
+
+    def test_deadline_after_alternative_quota_skip_prevents_deferred_http(self):
+        reserve = ai.gemini_quota.try_reserve
+        timeout = ai._chat_timeout
+        expired = False
+        calls = []
+        def skip_then_expire(key, model, **kwargs):
+            nonlocal expired
+            allowed = reserve(key, model, **kwargs)
+            if model == "gemini-3.7-flash" and key == "GEMINI_API2" and not allowed:
+                expired = True
+            return allowed
+        with self._late_alternative_loss("quota"), patch.object(ai.gemini_quota, "try_reserve", side_effect=skip_then_expire), \
+             patch.object(ai, "_chat_timeout", side_effect=lambda *args, **kwargs: None if expired else timeout(*args, **kwargs)):
+            with self.assertRaises(ai.CallAIAnalysisError):
+                self.run_reply([response(finish="STOP")] * 3,
+                    model_chain=["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"], before_response=calls.append)
+        self.assertEqual(calls, [1, 2, 3])
+        self.assertIsNone(GeminiRequest.objects.get().winner_attempt_id)
+
+    def _refresh_after_first_scarce_empty(self):
+        from management.services.ig_turn_revisions import create_refresh_successor
+        chain = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"]
+        with self.assertRaises(ai.CallAIAnalysisError):
+            self.run_reply([response(finish="STOP")] * 3, model_chain=chain, max_calls=3)
+        successor = create_refresh_successor(self.case.revision.pk, self.case.token, reason="publication_changed")
+        self.assertTrue(successor.created, successor.reason)
+        self.case.revision = successor.revision
+        self.case._prepare()
+        return chain
+
+    def test_refresh_after_scarce_empty_preserves_alternative_before_next_http(self):
+        chain = self._refresh_after_first_scarce_empty()
+        result, calls = self.run_reply([response(finish="STOP", text="valid")], model_chain=chain)
+        self.assertEqual(result["parsed"], "valid")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk").values_list("model", flat=True)),
+                         ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash", "gemini-3.7-flash"])
+
+    def test_refreshed_deferred_tier_returns_if_alternative_loses_quota_before_http(self):
+        from management.services.ig_revision_provider_execution import inspect_revision_provider_execution
+        chain = self._refresh_after_first_scarce_empty()
+        with self._late_alternative_loss("quota"):
+            result, calls = self.run_reply([response(finish="STOP", text="valid")], model_chain=chain)
+        self.assertEqual(result["parsed"], "valid")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk").values_list("model", flat=True)),
+                         ["gemini-3.5-flash-lite"] * 2 + ["gemini-3.6-flash"] * 2)
+        self.case.revision.refresh_from_db()
+        continuation = inspect_revision_provider_execution(self.case.revision)
+        self.assertEqual((continuation.http_remaining, continuation.scarce_remaining), (4, 0))
+
+    def test_scarce_transport_timeout_does_not_claim_empty_response_resume_proof(self):
+        from management.services.ig_revision_provider_execution import inspect_revision_provider_execution
+        def timeout_on_scarce(count):
+            if count == 3:
+                raise ai.requests.Timeout("fixture timeout")
+        with self.assertRaises(ai.CallAIAnalysisError):
+            self.run_reply([response(finish="STOP")] * 3, max_calls=3,
+                model_chain=["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"],
+                before_response=timeout_on_scarce)
+        self.case.revision.refresh_from_db()
+        continuation = inspect_revision_provider_execution(self.case.revision)
+        self.assertEqual((continuation.http_remaining, continuation.scarce_remaining), (5, 1))
+        self.assertEqual(continuation.last_scarce_empty_model, "")
+        self.assertEqual(continuation.last_scarce_empty_attempt_id, 0)

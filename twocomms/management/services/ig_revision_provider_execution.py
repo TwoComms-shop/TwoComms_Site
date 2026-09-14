@@ -74,6 +74,8 @@ class ProviderContinuation:
     scarce_remaining: int = 0
     repair_remaining: bool = False
     empty_response_count: int = 0
+    last_scarce_empty_model: str = ""
+    last_scarce_empty_attempt_id: int = 0
     next_due_at: object = None
 
 
@@ -172,6 +174,21 @@ def _disposition(candidate, attempts, repair):
     return "", defer_until
 
 
+def _last_scarce_empty_proof(attempts, frozen_by_key):
+    """Only the latest actual scarce failure can defer that model on resume."""
+    latest = next((row for row in reversed(attempts) if frozen_by_key.get(
+        (row.key_name, row.model, row.project_identity), {},
+    ).get("scarce", True)), None)
+    if latest is None:
+        return {}
+    candidate = frozen_by_key.get((latest.key_name, latest.model, latest.project_identity), {})
+    if (candidate.get("scarce") is not True or candidate.get("identity_status") != "known"
+        or candidate.get("skip_reason") or not latest.quota_profile_id
+        or latest.fsm_state != "failed" or latest.http_code != 200 or latest.failure_kind != "empty"):
+        return {}
+    return {"last_scarce_empty_model": latest.model, "last_scarce_empty_attempt_id": latest.pk}
+
+
 def inspect_revision_provider_execution(revision, *, now=None, lock_ledger=False):
     """Read-only continuation classification, also valid after claim expiry."""
     now = now or timezone.now()
@@ -206,7 +223,8 @@ def inspect_revision_provider_execution(revision, *, now=None, lock_ledger=False
     scarce_remaining = max(0, MAX_SCARCE_HTTP - scarce)
     base = {"root_revision_id": root.pk, "manifest": manifest, "http_remaining": remaining,
             "scarce_remaining": scarce_remaining, "repair_remaining": not bool(repair),
-            "empty_response_count": sum(row.failure_kind == "empty" and row.http_code == 200 for row in attempts)}
+            "empty_response_count": sum(row.failure_kind == "empty" and row.http_code == 200 for row in attempts),
+            **_last_scarce_empty_proof(attempts, by_key)}
     if not remaining:
         return ProviderContinuation(reason="provider_dispatch_budget", **base)
     candidates, waits = [], []

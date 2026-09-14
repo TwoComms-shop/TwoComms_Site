@@ -1321,6 +1321,8 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
     pending_cheap_salvage_model = ""
     used_project_models = set()
     empty_response_count = 0
+    scarce_diversification_used = False
+    deferred_scarce_tier = None
     dispatch_budget = None
     if result_validator is not None:
         from management.services.ig_provider_dispatch_budget import (
@@ -1672,7 +1674,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             working_payload = copy.deepcopy(original_payload)
 
     def _alternative_for_last_scarce_slot(model):
-        if (dispatch_budget is None or empty_response_count < 2
+        if (scarce_diversification_used or dispatch_budget is None or empty_response_count < 2
             or dispatch_budget.remaining_dispatches <= 0
             or dispatch_budget.max_scarce_dispatches - dispatch_budget.consumed_scarce_dispatches != 1
             or _chat_timeout(deadline - time.monotonic(), preserve_fallback=False) is None):
@@ -1693,10 +1695,26 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         return any(not row["skip_reason"] and (row["key_name"], row["model"], row["project_identity"]) in frozen
                    for row in fresh)
 
+    def _defer_resumed_scarce_tier(model, tier_candidates, slow_limit):
+        nonlocal scarce_diversification_used, deferred_scarce_tier
+        previous_attempt_id = getattr(provider_continuation, "last_scarce_empty_attempt_id", 0)
+        if (not tier_candidates or type(previous_attempt_id) is not int or previous_attempt_id <= 0
+            or getattr(provider_continuation, "last_scarce_empty_model", "") != model
+            or not _alternative_for_last_scarce_slot(model)):
+            return False
+        # The original root already spent one scarce HTTP attempt on this exact
+        # model and received EMPTY. Reserve diversity before spending the last
+        # slot, including when the worker restarted between those two steps.
+        scarce_diversification_used = True
+        deferred_scarce_tier = (
+            model, tier_candidates, 1, dispatch_budget.consumed_dispatches, slow_limit,
+        )
+        return True
+
     def _call(key_name: str, key_value: str, model: str, *, preserve_fallback: bool,
               candidate_index: int = 0, candidate_scarce: bool | None = None,
               response_output_tokens: int | None = None):
-        nonlocal last_actual_failure_kind, working_payload, cheap_salvage_used, pending_cheap_salvage_model, empty_response_count
+        nonlocal last_actual_failure_kind, working_payload, cheap_salvage_used, pending_cheap_salvage_model, empty_response_count, scarce_diversification_used
         candidate_row = next((row for row in candidate_plan if row["candidate_index"] == candidate_index), {})
         identity = str(candidate_row.get("project_identity") or "")
         pending_salvage = pending_cheap_salvage_model == model
@@ -1966,7 +1984,12 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 # would be rejected at admission and abort otherwise valid tiers.
                 return None, "invalid_response_model"
             if candidate_scarce is True and _alternative_for_last_scarce_slot(model):
-                _audit_remaining("scarce_slot_diversified", model=model)
+                scarce_diversification_used = True
+                # The next tier has only advisory eligibility. Keep this tier's
+                # unused candidates open until another actual dispatch occurs.
+                _audit("failed", failure_kind=exc.failure_kind, http_code=200,
+                       provider_reason=exc.provider_reason, usage=exc.usage,
+                       error_detail=exc.response_diagnostic, decision="defer_scarce_tier")
                 return None, "empty_model"
             return None, "empty"
         except _Gemini429 as exc:
@@ -2409,7 +2432,9 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         # evidence, fast key-specific failures may rotate immediately, and at
         # most two slow primary calls cross provider I/O before quality fallback.
         primary_slow_calls = 0
-        for key_name, key_value, _model in primary_attempts:
+        for position, (key_name, key_value, _model) in enumerate(primary_attempts):
+            if position == 0 and _defer_resumed_scarce_tier(primary, primary_attempts, CHAT_PRIMARY_ATTEMPT_LIMIT):
+                break
             index = candidate_indexes.get((key_name, primary), 0)
             result, state = _call(
                 key_name, key_value, primary,
@@ -2427,8 +2452,13 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     "Перебір Gemini перервано по live дедлайну. Спроби: "
                     + "; ".join(attempts)
                 )
+            if state == "empty_model":
+                deferred_scarce_tier = (
+                    primary, primary_attempts[position + 1:], primary_slow_calls + 1,
+                    dispatch_budget.consumed_dispatches, CHAT_PRIMARY_ATTEMPT_LIMIT,
+                )
+                break
             if state in {
-                "empty_model",
                 "invalid_response_model",
                 "model_not_found_global",
                 "model_circuit_open",
@@ -2458,9 +2488,15 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
     # A slow primary-model/transport fault gets one quality fallback phase.  A
     # fast key failure may still walk the full key list below without spending
     # the live budget on six long timeouts.
-    for model in models[1:]:
-        slow_fallback_calls = 0
-        for key_name, key_value, _ in (candidate for candidate in candidates if candidate[2] == model):
+    def _run_fallback_tier(model, tier_candidates, *, slow_fallback_calls=0,
+                           slow_limit=CHAT_FALLBACK_ATTEMPT_LIMIT):
+        nonlocal deferred_scarce_tier
+        if slow_fallback_calls >= slow_limit:
+            _audit_remaining("sla_model_budget", model=model)
+            return None
+        if _defer_resumed_scarce_tier(model, tier_candidates, slow_limit):
+            return None
+        for position, (key_name, key_value, _) in enumerate(tier_candidates):
             fallback_index = candidate_indexes.get((key_name, model), 0)
             result, state = _call(
                 key_name, key_value, model,
@@ -2478,8 +2514,13 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     "Перебір Gemini перервано по live дедлайну. Спроби: "
                     + "; ".join(attempts)
                 )
+            if state == "empty_model":
+                deferred_scarce_tier = (
+                    model, tier_candidates[position + 1:], slow_fallback_calls + 1,
+                    dispatch_budget.consumed_dispatches, slow_limit,
+                )
+                break
             if state in {
-                "empty_model",
                 "invalid_response_model",
                 "model_not_found_global",
                 "model_circuit_open",
@@ -2501,9 +2542,27 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 "quarantined",
             }:
                 slow_fallback_calls += 1
-                if slow_fallback_calls >= CHAT_FALLBACK_ATTEMPT_LIMIT:
+                if slow_fallback_calls >= slow_limit:
                     _audit_remaining("sla_model_budget", model=model)
                     break
+        return None
+
+    for model in models[1:]:
+        result = _run_fallback_tier(model, [candidate for candidate in candidates if candidate[2] == model])
+        if result:
+            return result
+
+    if deferred_scarce_tier is not None:
+        model, remainder, slow_calls, dispatched_at_deferral, slow_limit = deferred_scarce_tier
+        if dispatch_budget.consumed_dispatches == dispatched_at_deferral:
+            # Quota/lease losses before HTTP have spent no slot. Revisit the
+            # original remainder once under all normal admission checks. No
+            # counter is refunded and no candidate/repair budget is recreated.
+            result = _run_fallback_tier(model, remainder, slow_fallback_calls=slow_calls, slow_limit=slow_limit)
+            if result:
+                return result
+        else:
+            _audit_remaining("scarce_slot_spent", model=model)
 
     if accounting_observer is not None:
         accounting_observer.resolve_failure("exhausted")

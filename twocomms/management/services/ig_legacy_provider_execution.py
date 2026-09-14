@@ -551,12 +551,14 @@ def _continuation(
     )
     http_remaining = max(0, MAX_HTTP - len(attempts))
     scarce_remaining = max(0, MAX_SCARCE_HTTP - scarce_used)
+    from management.services.ig_revision_provider_execution import _last_scarce_empty_proof
     base = {
         "root_revision_id": root.pk, "manifest": manifest,
         "http_remaining": http_remaining,
         "scarce_remaining": scarce_remaining,
         "repair_remaining": not bool(repair),
         "empty_response_count": sum(row.failure_kind == "empty" and row.http_code == 200 for row in attempts),
+        **_last_scarce_empty_proof(attempts, by_key),
     }
     if not http_remaining:
         return ProviderContinuation(reason="provider_dispatch_budget", **base)
