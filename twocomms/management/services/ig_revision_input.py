@@ -260,7 +260,7 @@ def record_source_preference_fallback(revision_id, token, *, settings_id):
         boundary = RevisionGenerationBoundary(revision, token, settings_row, publication)
         response, proof = boundary.contextual_fallback(policy_manifest=policy)
         if response is None:
-            return RevisionInputDecision(reason="fallback_preference_not_admitted")
+            return RevisionInputDecision(reason=proof.get("reason") or "fallback_preference_not_admitted")
         authority = boundary.authority
         receipt = {
             "version": "revision-preference-fallback-v1", "origin": "source_preference_fallback",

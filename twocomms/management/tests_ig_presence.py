@@ -247,6 +247,160 @@ class PresenceLifecycleTests(SimpleTestCase):
         self.assertTrue(handle.finished.wait(1))
         self.assertEqual(calls, ["mark_seen", "typing_on", "typing_off"])
 
+    def test_fast_sent_before_thread_start_still_marks_seen_without_typing(self):
+        calls = []
+        controller = presence.PresenceController()
+        with patch.object(presence.threading.Thread, "start"):
+            handle = controller.start(
+                key="instagram:account:client", source_watermark=25,
+                transport=lambda action: calls.append(action) or accepted(action),
+                guard=lambda cleanup: False, completion_guard=lambda: True,
+            )
+        handle.begin_dispatch()
+        handle.complete_delivery()
+        handle.stop()  # Normal process finally cannot cancel confirmed seen.
+        handle._run()
+        self.assertEqual(calls, ["mark_seen"])
+
+    def test_fast_cancel_before_thread_start_has_no_sender_actions(self):
+        calls = []
+        controller = presence.PresenceController()
+        with patch.object(presence.threading.Thread, "start"):
+            handle = controller.start(
+                key="instagram:account:client", source_watermark=25,
+                transport=lambda action: calls.append(action) or accepted(action),
+                guard=lambda cleanup: True, completion_guard=lambda: True,
+            )
+        handle.begin_dispatch()
+        handle.stop()
+        handle._run()
+        self.assertEqual(calls, [])
+
+    def test_completed_seen_never_bypasses_changed_permission_or_new_source(self):
+        transport = Mock(side_effect=accepted)
+        handle = self.manual(transport=transport, completion_guard=lambda: False)
+        handle.begin_dispatch()
+        handle.complete_delivery()
+        self.assertFalse(handle._action("mark_seen", completed_seen=True))
+        transport.assert_not_called()
+
+    def test_completed_seen_can_replace_only_an_older_source_generation(self):
+        old = self.manual()
+        old._action("mark_seen")
+        newer = self.manual(completion_guard=lambda: True)
+        newer.source_watermark = 10
+        newer.begin_dispatch()
+        newer.complete_delivery()
+        self.assertTrue(newer._action("mark_seen", completed_seen=True))
+        old.completion_guard = lambda: True
+        old.begin_dispatch()
+        old.complete_delivery()
+        self.assertFalse(old._action("mark_seen", completed_seen=True))
+
+    def test_unsupported_seen_does_not_prevent_supported_typing(self):
+        calls, entered = [], threading.Event()
+
+        def transport(action):
+            calls.append(action)
+            if action == "mark_seen":
+                return presence.SenderActionResult(False, 400, "unsupported_or_denied", action)
+            if action == "typing_on":
+                entered.set()
+            return accepted(action)
+
+        handle = self.start(transport)
+        self.assertTrue(entered.wait(1))
+        handle.stop()
+        self.assertTrue(handle.finished.wait(1))
+        self.assertEqual(calls, ["mark_seen", "typing_on", "typing_off"])
+
+    def test_long_generation_refreshes_only_after_accepted_typing(self):
+        calls, refreshed = [], threading.Event()
+        report = Mock()
+
+        def transport(action):
+            calls.append(action)
+            if calls.count("typing_on") >= 2:
+                refreshed.set()
+            return accepted(action)
+
+        handle = self.start(transport, refresh_seconds=0.01, report=report)
+        self.assertTrue(refreshed.wait(1))
+        handle.begin_dispatch()
+        handle.complete_delivery()
+        self.assertTrue(handle.finished.wait(1))
+        count = calls.count("typing_on")
+        self.assertGreaterEqual(count, 2)
+        self.assertEqual(calls[-1], "typing_off")
+        report.assert_called_once()
+        self.assertEqual(report.call_args.args[0]["our_mark_seen"], "accepted")
+        self.assertEqual(report.call_args.args[0]["typing_requests"], count)
+
+    def test_initial_typing_has_no_artificial_seen_gap(self):
+        handle = self.manual()
+        handle._action("mark_seen")
+        with patch.object(handle.stopped, "wait", wraps=handle.stopped.wait) as wait:
+            self.assertTrue(handle._action("typing_on"))
+        wait.assert_not_called()
+
+    def test_definite_typing_rejection_does_not_issue_useless_cleanup(self):
+        calls = []
+
+        def rejected(action):
+            calls.append(action)
+            return presence.SenderActionResult(False, 400, "unsupported_or_denied", action)
+
+        handle = self.start(rejected, refresh_seconds=0.01)
+        self.assertTrue(handle.finished.wait(1))
+        self.assertEqual(calls, ["mark_seen", "typing_on"])
+        self.assertFalse(handle.typing_attempted)
+
+    def test_completion_seen_authority_expires_even_after_stuck_http_returns(self):
+        transport = Mock(side_effect=accepted)
+        handle = self.manual(transport=transport, completion_guard=lambda: True)
+        handle.begin_dispatch()
+        handle.complete_delivery()
+        handle.delivery_confirmed_at -= presence.DELIVERY_SEEN_WAIT_SECONDS + 1
+        self.assertFalse(handle._action("mark_seen", completed_seen=True))
+        transport.assert_not_called()
+
+    def test_completion_seen_slow_permission_check_cannot_extend_deadline(self):
+        for slow_call in (1, 2):
+            with self.subTest(slow_call=slow_call):
+                clock, checks = [100.0], [0]
+                transport = Mock(side_effect=accepted)
+
+                def slow_guard():
+                    checks[0] += 1
+                    if checks[0] == slow_call:
+                        clock[0] += presence.DELIVERY_SEEN_WAIT_SECONDS + 1
+                    return True
+
+                with patch.object(presence.time, "monotonic", side_effect=lambda: clock[0]):
+                    handle = self.manual(transport=transport, completion_guard=slow_guard)
+                    handle.begin_dispatch()
+                    handle.complete_delivery()
+                    self.assertFalse(handle._action("mark_seen", completed_seen=True))
+                self.assertEqual(checks[0], slow_call)
+                transport.assert_not_called()
+
+    def test_completion_seen_rechecks_owner_after_last_permission_read(self):
+        transport = Mock(side_effect=accepted)
+        controller = presence.PresenceController()
+        checks = [0]
+
+        def replacing_guard():
+            checks[0] += 1
+            if checks[0] == 2:
+                self.manual(controller=controller)
+            return True
+
+        handle = self.manual(controller=controller, transport=transport, completion_guard=replacing_guard)
+        handle.begin_dispatch()
+        handle.complete_delivery()
+        self.assertFalse(handle._action("mark_seen", completed_seen=True))
+        transport.assert_not_called()
+
 
 class PresenceTransportTests(SimpleTestCase):
     def setUp(self):
@@ -266,6 +420,7 @@ class PresenceTransportTests(SimpleTestCase):
         post = session.return_value.__enter__.return_value.post
         self.assertEqual(post.call_args.args[0], "https://graph.instagram.com/v25.0/17841400000000001/messages")
         self.assertEqual(post.call_args.kwargs["timeout"], (0.5, 1.0))
+        self.assertEqual(post.call_args.kwargs["json"]["sender_action"], "TYPING_ON")
         self.assertFalse(post.call_args.kwargs["allow_redirects"])
         self.assertTrue(post.call_args.kwargs["stream"])
         response.json.assert_not_called()
@@ -302,6 +457,22 @@ class PresenceTransportTests(SimpleTestCase):
             self.assertEqual(presence._cached_token(self.settings_row), "")
         discovery.assert_not_called()
 
+    @patch.object(presence, "_cached_token", return_value="private-token")
+    @patch.object(presence.requests, "Session")
+    def test_legacy_messenger_keeps_lowercase_sender_action(self, session, _token):
+        response = session.return_value.__enter__.return_value.post.return_value.__enter__.return_value
+        response.status_code = 200
+        with patch("management.services.instagram_bot.provider_transport", return_value="legacy_page"):
+            self.assertTrue(presence.send_sender_action(self.settings_row, "recipient", "mark_seen").ok)
+        post = session.return_value.__enter__.return_value.post
+        self.assertEqual(post.call_args.kwargs["json"]["sender_action"], "mark_seen")
+
+    def test_refresh_default_is_acceptance_gated_and_explicit_zero_disables(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(presence.capability_profile(self.settings_row).refresh_seconds, 5)
+        with patch.dict("os.environ", {"IG_PRESENCE_REFRESH_SECONDS": "0"}):
+            self.assertEqual(presence.capability_profile(self.settings_row).refresh_seconds, 0)
+
     def test_retired_legacy_pulse_and_visibility_delay_are_removed(self):
         from management.services import instagram_bot as bot
 
@@ -330,19 +501,24 @@ class DurablePresenceGuardTests(TestCase):
         self.route.start()
         self.addCleanup(self.route.stop)
         self.permission = capture_reply_permission(self.settings_row.pk, self.client.pk)
+        self.completion_valid = True
         with patch.object(presence._controller, "start") as start:
             presence.start_presence(
                 self.settings_row, client_id=self.client.pk, recipient_id=self.client.igsid,
                 owner_token="owner-one", source_watermark=1, permission=self.permission,
+                completion_check=lambda: self.completion_valid,
             )
         self.guard = start.call_args.kwargs["guard"]
+        self.completed_guard = start.call_args.kwargs["completion_guard"]
 
     def test_committed_pause_and_resume_do_not_revive_old_epoch(self):
         self.assertTrue(self.guard(False))
+        self.assertTrue(self.completed_guard())
         self.client.bot_paused = True
         self.client.reply_permission_epoch += 1
         self.client.save()
         self.assertFalse(self.guard(False))
+        self.assertFalse(self.completed_guard())
         self.assertTrue(self.guard(True))
         self.client.bot_paused = False
         self.client.reply_permission_epoch += 1
@@ -354,6 +530,14 @@ class DurablePresenceGuardTests(TestCase):
         self.client.save()
         self.assertFalse(self.guard(False))
         self.assertFalse(self.guard(True))
+        self.assertFalse(self.completed_guard())
+
+    def test_completed_seen_rechecks_source_completion_and_permission_after_release(self):
+        self.client.automation_lease_token = ""
+        self.client.save()
+        self.assertTrue(self.completed_guard())
+        self.completion_valid = False
+        self.assertFalse(self.completed_guard())
 
     def test_lease_expiry_stops_refresh(self):
         self.client.automation_lease_until = timezone.now() - timedelta(seconds=1)
@@ -397,6 +581,8 @@ class CanonicalPresenceIntegrationTests(TransactionTestCase):
             suspend=Mock(), update=Mock(),
         )
         self.handle.stop = Mock(side_effect=self.handle.stopped.set)
+        self.handle.begin_dispatch = Mock(side_effect=self.handle.stopped.set)
+        self.handle.complete_delivery = Mock()
 
     def test_canonical_preparation_execution_and_send_share_one_lifecycle(self):
         from management.services import ig_revision_live as live
@@ -413,7 +599,12 @@ class CanonicalPresenceIntegrationTests(TransactionTestCase):
         self.handle.suspend.assert_called_once()
         self.assertTrue(self.handle.update.call_args.kwargs["resume"])
         self.handle.stop.assert_called()
+        self.handle.complete_delivery.assert_called_once()
         legacy.assert_not_called()
+        completed_guard = start.call_args.kwargs["completion_check"]
+        self.assertTrue(completed_guard())
+        self._message("А ще одне питання", "newer-after-sent")
+        self.assertFalse(completed_guard())
 
     def test_no_reply_input_never_starts_presence_in_preparation_or_execution(self):
         from management.services import ig_revision_live as live

@@ -4,6 +4,7 @@ Reuse the existing durable revision case identity. A parked execution is not an
 answered message, and a later unrelated reply is not proof that this debt ended.
 """
 from django.db.models import Count, Exists, OuterRef, Subquery
+from django.db.models.functions import Now
 from django.utils import timezone
 
 from management.models import IgFollowUpTask
@@ -99,10 +100,61 @@ def resolve_delivered_reply_debt(revision, *, now=None):
     ).update(status=IgFollowUpTask.Status.COMPLETED, updated_at=now or timezone.now())
 
 
+def review_reply_debt(client_id, task_id, *, actor, expected_revision_id, now=None):
+    """Close one operator alert without claiming that a reply was delivered.
+
+    The caller checks bot-operation and conversation permissions. Client-first
+    locking serializes this action with delivery finalization and new debt.
+    Sources, revisions, outbox receipts and customer reminders stay untouched.
+    """
+    from django.db import transaction
+    from management.models import AdminAuditLog, IgClient
+
+    now = now or timezone.now()
+    with transaction.atomic():
+        client = IgClient.objects.select_for_update().filter(
+            pk=client_id, hidden_at__isnull=True, privacy_erasure_started_at__isnull=True,
+        ).first()
+        if client is None:
+            return {"ok": False, "status": 404, "error": "Клієнта не знайдено."}
+        task = IgFollowUpTask.objects.select_for_update().filter(
+            pk=task_id, client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK,
+            reason=DEBT_REASON,
+        ).first()
+        if task is None:
+            return {"ok": False, "status": 404, "error": "Сповіщення не знайдено."}
+        payload = task.event_payload or {}
+        if payload.get("revision_id") != expected_revision_id:
+            return {"ok": False, "status": 409, "error": "Сповіщення змінилося. Оновіть картку."}
+        if task.status in (task.Status.COMPLETED, task.Status.CANCELLED):
+            return {"ok": True, "idempotent": True, "task_id": task.pk}
+        before_status = task.status
+        review = {"version": 1, "outcome": "reviewed_no_reply", "actor_id": actor.pk,
+                  "at": now.isoformat(), "revision_id": expected_revision_id,
+                  "source_message_ids": payload.get("source_message_ids") or [],
+                  "reply_confirmed": False}
+        task.manager_context = {**(task.manager_context or {}), "operator_review": review}
+        task.status = task.Status.CANCELLED
+        task.skip_reason = "operator_reviewed_no_reply"
+        task.manager_approval_status = task.ManagerApprovalStatus.REJECTED
+        task.manager_approval_actor = actor
+        task.manager_approval_decided_at = now
+        task.save(update_fields=["manager_context", "status", "skip_reason", "manager_approval_status",
+                                 "manager_approval_actor", "manager_approval_decided_at", "updated_at"])
+        AdminAuditLog.objects.create(
+            actor=actor, actor_role="staff", action="ig_reply_debt_reviewed",
+            entity_type="IgFollowUpTask", entity_id=str(task.pk),
+            before={"status": before_status}, after={"status": task.status, **review},
+            reason="Сповіщення опрацьовано командою; доставка відповіді не підтверджується.",
+        )
+        return {"ok": True, "idempotent": False, "task_id": task.pk}
+
+
 def with_reply_debt(queryset):
     debts = unresolved_reply_debts().filter(client_id=OuterRef("pk")).order_by("event_occurred_at", "id")
     counts = debts.order_by().values("client_id").annotate(total=Count("pk"))
     return queryset.annotate(
+        reply_debt_observed_at=Now(),
         has_reply_debt=Exists(debts),
         reply_debt_count=Subquery(counts.values("total")[:1]),
         reply_debt_task_id=Subquery(debts.values("pk")[:1]),
@@ -114,11 +166,13 @@ def with_reply_debt(queryset):
 def reply_debt_payload(client):
     if not hasattr(client, "has_reply_debt"):
         client = with_reply_debt(type(client).objects.filter(pk=client.pk)).first()
+    observed_at = getattr(client, "reply_debt_observed_at", None)
+    observation = {"observed_at": observed_at.isoformat()} if observed_at else {}
     if client is None or not client.has_reply_debt:
-        return {"required": False}
+        return {"required": False, **observation}
     payload = client.reply_debt_payload or {}
     reason = str(payload.get("reason") or "reply_unresolved")
-    return {"required": True, "owner": "manager", "count": client.reply_debt_count or 1,
+    return {"required": True, **observation, "owner": "manager", "count": client.reply_debt_count or 1,
         "label": "Потрібна відповідь команди", "reason": reason,
         "reason_label": REASON_LABELS.get(reason, "Запит залишився без підтвердженої відповіді"),
         "since": client.reply_debt_since.isoformat() if client.reply_debt_since else "",

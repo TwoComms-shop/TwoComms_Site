@@ -28,9 +28,14 @@ class RevisionNormalFollowupTests(TransactionTestCase):
             return original_create(**kwargs)
         with patch.object(delivery_fixtures.InstagramBotMessage.objects, "create", side_effect=explicit_price_source):
             delivery_fixtures.RevisionDeliveryTests.setUp(self)
+        from storefront.models import Category, Product
+        category = Category.objects.create(name="Answered price", slug="answered-price")
+        product = Product.objects.create(title="Answered model", slug="answered-model", category=category, price=1090, status="published")
+        self.client_row.current_product = product
+        self.client_row.save(update_fields=["current_product"])
         self.settings.ai_enabled = False
         self.settings.trigger_text = self.source.text
-        self.settings.reply_text = "Thanks for your message."
+        self.settings.reply_text = "Вартість цієї моделі — 1090 грн."
         self.settings.save(update_fields=["ai_enabled", "trigger_text", "reply_text"])
         decision = decide_revision_input(self.revision.pk, self.revision_token, settings_id=self.settings.pk)
         self.assertTrue(decision.ready, decision.reason)
@@ -48,8 +53,8 @@ class RevisionNormalFollowupTests(TransactionTestCase):
     def _schedule(self, **overrides):
         return schedule_revision_normal_followups(self.revision.pk, self.revision_token, **self._kwargs(**overrides))
 
-    def _sent(self, *, parts=1, unknown_last=False):
-        self._plan([{"group": "substantive_text", "kind": "text", "payload": self._payload(f"Confirmed reply {index}")} for index in range(parts)])
+    def _sent(self, *, parts=1, unknown_last=False, reply_text="Вартість цієї моделі — 1090 грн."):
+        self._plan([{"group": "substantive_text", "kind": "text", "payload": self._payload(reply_text)} for index in range(parts)])
         for index in range(parts):
             claim = claim_next_effect(self.revision.pk, self.revision_token, "substantive_text")
             self.assertIsNotNone(claim.effect)
@@ -90,6 +95,7 @@ class RevisionNormalFollowupTests(TransactionTestCase):
         self.assertEqual(task.kind, "thinking")
         self.assertEqual(task.level, 0)
         self.assertEqual(task.due_at, expected_due)
+
         self.assertEqual(task.policy_started_at, sent_anchor)
         self.assertEqual(task.meta_window_deadline, anchor + timedelta(hours=23))
         again = self._schedule(now=timezone.now() + timedelta(seconds=1))
@@ -100,6 +106,14 @@ class RevisionNormalFollowupTests(TransactionTestCase):
         task.refresh_from_db()
         self.assertEqual(task.status, "pending")
         self.assertEqual(task.due_at, expected_due)
+
+    def test_request_for_screenshot_does_not_start_a_price_followup(self):
+        self._sent(reply_text="Надішліть, будь ласка, фото моделі, щоб я уточнив вартість.")
+        result = self._schedule()
+        self.assertTrue(result.ready, result.reason)
+        self.assertEqual(result.reason, "price_answer_not_confirmed")
+        self.assertEqual(result.task_id, 0)
+        self.assertFalse(IgFollowUpTask.objects.exists())
 
     def test_unknown_partial_reply_never_schedules(self):
         self._sent(parts=2, unknown_last=True)

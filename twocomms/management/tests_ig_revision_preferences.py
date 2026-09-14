@@ -58,7 +58,8 @@ class RevisionPreferenceTests(TestCase):
         response, proof = build_source_preference_fallback(self.client)
         self.assertIsNotNone(response)
         self.assertIn("пожелание «оверсайз»", response.reply_text)
-        self.assertIn("модель или принт", response.reply_text)
+        self.assertIn("принт из нашего ассортимента", response.reply_text)
+        self.assertIn("свой дизайн", response.reply_text)
         self.assertEqual(response.control, {})
         self.assertEqual(proof["kind"], "source_preference_fallback")
 
@@ -101,7 +102,7 @@ class RevisionPreferenceTests(TestCase):
         source, decision = self.fit_sequence()
         effects = SimpleNamespace(exists=lambda: False)
         revision = SimpleNamespace(pk=123, client_id=self.client.pk, snapshot_digest="a" * 64,
-                                   delivery_effects=effects, action_receipts={})
+                                   bundle_snapshot={}, delivery_effects=effects, action_receipts={})
         boundary = RevisionGenerationBoundary.__new__(RevisionGenerationBoundary)
         boundary.revision = revision
         boundary.has_images = False

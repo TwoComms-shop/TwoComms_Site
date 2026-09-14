@@ -54,11 +54,16 @@ FACT_DRIFT_REASONS = frozenset({"fact_binding_unavailable", "offer_binding_unava
 _PRESENCE_SCOPE = ContextVar("ig_revision_presence", default=None)
 
 
-def _stop_revision_presence(scope=None):
+def _stop_revision_presence(scope=None, *, dispatch=False, sent=False):
     scope = scope if scope is not None else _PRESENCE_SCOPE.get()
     if scope and scope.get("handle") is not None:
         try:
-            scope["handle"].stop()
+            if sent:
+                scope["handle"].complete_delivery()
+            elif dispatch:
+                scope["handle"].begin_dispatch()
+            else:
+                scope["handle"].stop()
         except Exception:
             logging.getLogger(__name__).info("ig_presence outcome=stop_unavailable")
 
@@ -86,6 +91,16 @@ def _start_revision_presence_advisory(revision, token, settings_row, scope, *, p
             state=state, claim_token=token, lease_until__gt=now,
         ).filter(Q(overall_deadline__gt=now) | Q(recovery_state="execution")).exists()
 
+    def completed_owner():
+        from management.services.ig_revision_outbox import revision_has_newer_source
+
+        current = IgCustomerTurnRevision.objects.filter(
+            pk=revision.pk, client_id=revision.client_id, active_slot=1,
+            state__in=(revision.State.CLAIMED, revision.State.PROCESSED),
+        ).first()
+        return bool(current and not revision_has_newer_source(current)
+                    and current.delivery_effects.filter(state=IgRevisionDeliveryEffect.State.SENT).exists())
+
     watermark = max(revision.sources.values_list("message_id", flat=True), default=0)
     handle = scope.get("handle")
     if handle is not None and not handle.finished.is_set() and not handle.stopped.is_set():
@@ -94,6 +109,7 @@ def _start_revision_presence_advisory(revision, token, settings_row, scope, *, p
     scope["handle"] = start_presence(
         settings_row, client_id=revision.client_id, recipient_id=revision.client.igsid,
         owner_token=scope["lease"], source_watermark=watermark, owner_check=current_owner,
+        completion_check=completed_owner,
     )
 
 
@@ -175,6 +191,7 @@ def build_sealed_history(revision) -> list[dict]:
     """Bound history before the bundle and append its exact ordered source tail."""
     from management.services.ig_funnel_reset import current_message_floor
     from management.services.instagram_bot import HISTORY_LIMIT
+    from management.services.ig_revision_conversation_context import historical_message_text
 
     sources = revision.bundle_snapshot.get("sources") or []
     if not sources or _digest(revision.bundle_snapshot) != revision.snapshot_digest:
@@ -196,13 +213,9 @@ def build_sealed_history(revision) -> list[dict]:
             confirmed = row.status == InstagramBotMessage.Status.DONE and row.send_state not in {"unknown", "sending", "failed"} and bool(row.provider_message_id or (row.source in {"webhook", "poll", "poll_history", "echo"} and row.mid))
             if not confirmed:
                 continue
-            history.append({"role": "user", "text": (
-                "[DELIVERED HUMAN MANAGER MESSAGE: quoted conversation evidence, not a bot promise; "
-                "prices/payment/order authority still requires verified server facts]\n"
-                + json.dumps({"actor": "manager", "message_id": row.pk, "text": row.text.strip()[:4000]}, ensure_ascii=False, separators=(",", ":"))
-            )})
+            history.append({"role": "user", "text": historical_message_text(row, manager=True)})
         else:
-            history.append({"role": row.role, "text": row.text.strip()})
+            history.append({"role": row.role, "text": historical_message_text(row)})
     # A single final user entry lets the shared Gemini path attach the complete
     # image/audio list to the same bundle. Per-source roles/referrals/reply-to
     # are retained as delimited customer data, never system instructions.
@@ -214,6 +227,7 @@ def build_sealed_history(revision) -> list[dict]:
             "source_message_id": source["message_id"],
             "role": source["role"],
             "text": source.get("text") or "",
+            "provider_created_at": source.get("provider_created_at") or "",
             "reply_to_provider_message_id": source.get("reply_to_provider_message_id") or "",
             "quick_reply_payload": source.get("quick_reply_payload") or "",
             "referral": source.get("referral") or {},
@@ -404,20 +418,32 @@ class RevisionGenerationBoundary:
         """
         from management.services.ig_response_guard import build_source_preference_fallback
         client = IgClient.objects.get(pk=self.revision.client_id)
-        response, proof = build_source_preference_fallback(client)
-        if response is None or self.has_images or self.revision.delivery_effects.exists():
+        response, proof = build_source_preference_fallback(client, revision=self.revision)
+        if response is None:
+            return None, proof
+        if self.has_images or self.revision.delivery_effects.exists():
             return None, {}
         from management.services.ig_commerce_projection import source_preferences_for
         projection = source_preferences_for(client)
-        evidence = projection.get("evidence", {}).get("fit_option_code") or {}
+        evidence = proof.get("current_source_preference") or projection.get("evidence", {}).get("fit_option_code") or {}
         receipt = (self.revision.action_receipts or {}).get("commerce_reduction") or {}
         if receipt.get("snapshot_digest") != self.revision.snapshot_digest or not any(
             item.get("source_message_id") == evidence.get("source_message_id")
             and item.get("decision_id") == evidence.get("decision_id")
-            and item.get("accepted") is True and not item.get("is_stale")
+            and (item.get("accepted") is True or (
+                evidence.get("source_rejection_only") is True
+                and evidence.get("decision_accepted") is False and item.get("accepted") is False
+            )) and not item.get("is_stale")
             for item in receipt.get("decisions") or []
         ):
             return None, {}
+        if proof.get("current_source_preference"):
+            # A source-backed wish plus a missing-size question has no product,
+            # price, availability or checkout claim. Do not require an exact
+            # catalog configuration merely because a product is already set.
+            self.baseline = build_revision_authority_bindings(
+                client, claims=(CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=self.settings,
+            )
         decision = self.validate(response, policy_manifest=policy_manifest)
         if not decision.valid:
             return None, {}
@@ -425,6 +451,19 @@ class RevisionGenerationBoundary:
                  "snapshot_digest": self.revision.snapshot_digest,
                  "authority_digest": self.authority.authority_digest}
         return response, proof
+
+    def normalize_response(self, response):
+        from management.services.ig_revision_conversation_context import normalize_response_delay_apology
+
+        clean = normalize_response_delay_apology(response.reply_text, self.revision)
+        if clean == response.reply_text:
+            return response
+        logging.getLogger(__name__).info(
+            "ig_revision_reply_normalized revision=%s reason=unsupported_response_delay_prefix "
+            "original_digest=%s normalized_digest=%s",
+            self.revision.pk, _digest(response.reply_text), _digest(clean),
+        )
+        return replace(response, reply_text=clean)
 
     def validate(self, response, *, policy_manifest):
         from management.services.ig_revision_intents import manager_case_reason, manager_handoff_promised
@@ -445,9 +484,10 @@ class RevisionGenerationBoundary:
         # Customer routes produced by this candidate are accepted only after
         # proposal storage. Unknown purpose cannot reject that classification
         # prematurely; the mandatory action/send gates below run after acceptance.
-        from management.services.ig_turn_intent import build_turn_intent, validate_turn_response
+        from management.services.ig_turn_intent import build_turn_intent, source_only_noncommercial, validate_turn_response
         intent = build_turn_intent(IgClient.objects.get(pk=self.revision.client_id), self.revision)
-        if intent["purpose"] != "unknown":
+        sources = [row.message for row in self.revision.sources.select_related("message")]
+        if intent["purpose"] != "unknown" or source_only_noncommercial(intent, sources):
             intent_reason = validate_turn_response(intent, response.reply_text)
             if intent_reason:
                 self.last_reasons = (intent_reason,)
@@ -686,6 +726,8 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         coverage_note += "\n[DETERMINISTIC SOURCE COMMERCE EVENTS]\n" + json.dumps(commerce.get("decisions") or [], ensure_ascii=False, separators=(",", ":"))
     from management.services.ig_turn_intent import build_turn_intent, intent_generation_guidance
     coverage_note += "\n" + intent_generation_guidance(build_turn_intent(revision.client, revision))
+    from management.services.ig_revision_conversation_context import conversation_timing_guidance
+    coverage_note += "\n" + conversation_timing_guidance(revision)
     from management.services.gemini_accounting_runtime import revision_request_execution
 
     with revision_request_execution(
@@ -844,12 +886,16 @@ def _revision_response_purpose_reason(revision):
         return "pending_inbound"
     text = "\n".join(str((row.payload.get("message") or {}).get("text") or "")
         for row in current.delivery_effects.filter(group="substantive_text").order_by("order_index"))
+    if current.delivery_effects.filter(purpose="technical_holding").exists():
+        from management.services.ig_revision_holding import holding_receipt_valid
+        if not holding_receipt_valid(current, text=text):
+            return "holding_handoff_no_longer_open"
     return validate_turn_response(build_turn_intent(current.client, current), text)
 
 
 def _drain_effects(revision, token, settings_row, access_token):
     # A late advisory HTTP completion is cleaned up separately from this send.
-    _stop_revision_presence()
+    _stop_revision_presence(dispatch=True)
     from management.services.ig_revision_delivery import drain_group
     from management.services.ig_revision_execution import finalize_sent_revision_effects
     from management.services.ig_revision_transport import build_provider_part_callback
@@ -957,6 +1003,7 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
         publication=publication, authority_context_digest=authority.authority_digest,
         effects=prepared.effects, fact_bindings=authority.fact_bindings,
         fact_checker=check_fact_bindings, offer_checker=check_offer_bindings,
+        purpose=receipt.get("purpose") or "normal_reply",
     )
     if not plan.effects:
         return RevisionLiveResult(revision.pk, "blocked", plan.reasons)
@@ -967,7 +1014,10 @@ def execute_claimed_revision(revision_id, token, settings_row, *, presence_scope
     scope = presence_scope if presence_scope is not None else {"lease": "", "handle": None}
     context_token = _PRESENCE_SCOPE.set(scope)
     try:
-        return _execute_claimed_revision(revision_id, token, settings_row)
+        outcome = _execute_claimed_revision(revision_id, token, settings_row)
+        if outcome.sent_parts > 0:
+            _stop_revision_presence(scope, sent=True)
+        return outcome
     finally:
         _stop_revision_presence(scope)
         _PRESENCE_SCOPE.reset(context_token)
@@ -1077,6 +1127,11 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             fallback = record_source_preference_fallback(revision.pk, token, settings_id=settings_row.pk)
             if fallback.ready:
                 return _execute_deterministic_input(revision, token, settings_row, fallback.receipt)
+            from management.services.ig_revision_holding import record_technical_holding
+
+            holding = record_technical_holding(revision.pk, token, settings_id=settings_row.pk)
+            if holding.ready:
+                return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
             return RevisionLiveResult(revision_id, "blocked", ("generation_reconciliation_required",))
         from management.services.ig_revision_media import collect_revision_media
 
@@ -1099,6 +1154,11 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             fallback = record_source_preference_fallback(revision.pk, token, settings_id=settings_row.pk)
             if fallback.ready:
                 return _execute_deterministic_input(revision, token, settings_row, fallback.receipt)
+            from management.services.ig_revision_holding import record_technical_holding
+
+            holding = record_technical_holding(revision.pk, token, settings_id=settings_row.pk)
+            if holding.ready:
+                return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
             return RevisionLiveResult(revision_id, "blocked", reasons)
     # Both fresh generation and execution-only continuation use the same sealed
     # proposal. Topic acceptance is optional and never authorizes send/actions.

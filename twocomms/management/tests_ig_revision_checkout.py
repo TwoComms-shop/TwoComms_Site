@@ -361,8 +361,9 @@ class RevisionCheckoutV2PrepayTests(TransactionTestCase):
         InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid, role="user", text="Добре")
         result = self._prepare()
         self.assertFalse(result.planned)
-        self.assertIn("checkout_prepay_not_authorized", result.reasons)
+        self.assertIn("readiness:pending_inbound", result.reasons)
         self.assertEqual(IgCheckoutAccessToken.objects.count(), 0)
+        self.assertEqual(IgCheckoutProposal.objects.count(), 0)
 
     def test_legacy_checkout_is_not_forced_into_v2_for_prepay(self):
         from management.services.ig_checkout import create_or_update_proposal

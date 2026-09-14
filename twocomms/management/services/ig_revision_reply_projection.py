@@ -40,6 +40,8 @@ def _count_admitted(revision, first):
 
 def _origin(revision):
     receipts = revision.action_receipts or {}
+    if (receipts.get("technical_holding") or {}).get("origin") == "technical_holding":
+        return "technical_holding"
     fallback = receipts.get("source_preference_fallback") or {}
     if fallback.get("origin") == "source_preference_fallback":
         return "source_preference_fallback"
@@ -65,12 +67,13 @@ def _project_part(client, effect):
         if metadata.get("product_id") and _digest(metadata) == effect.projection_digest:
             shown = {"position": effect.part_index + 1, "product_id": int(metadata["product_id"]),
                      "title": str(metadata.get("title") or "")}
+    source = "revision_holding" if effect.purpose == "technical_holding" else "revision_reply"
     message, created = InstagramBotMessage.objects.get_or_create(
         client=client, synthetic_event_key=key,
         defaults={
             "sender_id": client.igsid, "role": InstagramBotMessage.Role.MODEL,
             "text": text, "attachments": attachments,
-            "source": "revision_reply", "status": InstagramBotMessage.Status.DONE,
+            "source": source, "status": InstagramBotMessage.Status.DONE,
             "send_state": "sent", "provider_namespace": effect.provider_namespace,
             "provider_message_id": effect.provider_message_id,
             "provider_created_at": effect.terminal_at, "processed_at": effect.terminal_at,
@@ -80,7 +83,7 @@ def _project_part(client, effect):
         },
     )
     if not created:
-        if (message.role != "model" or message.source != "revision_reply"
+        if (message.role != "model" or message.source != source
             or message.provider_namespace != effect.provider_namespace
             or message.provider_message_id != effect.provider_message_id):
             raise ReplyProjectionError("transcript_receipt_binding_changed")

@@ -9,7 +9,7 @@ from django.utils import timezone
 from management.models import (
     BotPolicyPublication, IgClient, IgCommercialEpisode, IgConversationRouteDecision, IgCustomerTurn,
     IgCustomerTurnRevision, IgDeal, IgFollowUpTask, IgRevisionDeliveryEffect, IgTurnRevisionSource,
-    InstagramBotMessage, InstagramBotSettings,
+    IgTurnMessage, InstagramBotMessage, InstagramBotSettings,
 )
 from management.services import bot_followups as policy
 from management.services.ig_revision_followups import _schedule
@@ -17,6 +17,164 @@ from management.services.ig_turn_intent import (
     build_turn_intent, ordinary_next_send_at, purpose_blockers,
     revalidate_followup_intent, validate_turn_response,
 )
+
+
+@override_settings(GOOGLE_INDEXING_ENABLED=False)
+class RadioReplyPipelineTests(TransactionTestCase):
+    def setUp(self):
+        import hashlib
+        from management import tests_ig_revision_live as live_fixture
+        from management.services.ig_turn_revisions import create_collecting_revision
+
+        self.case = live_fixture.RevisionLiveTests(methodName="runTest")
+        self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.case.source.text = ""
+        self.media_body = b"owned-radio-article-fixture"
+        self.case.source.private_media_state = "active"
+        self.case.source.attachment_media = [{
+            "source_part_id": "mp1_" + "1"*32, "original_index": 0, "identity_origin": "ingress",
+            "type": "image", "status": "owned", "mime": "image/jpeg", "bytes": len(self.media_body),
+            "content_hash": hashlib.sha256(self.media_body).hexdigest(), "private_storage": True,
+            "storage_name": "ig-private/radio-article",
+        }]
+        self.case.source.save(update_fields=["text", "private_media_state", "attachment_media"])
+        self.case.revision = create_collecting_revision(self.case.turn, [self.case.source], bypass_quiet=True).revision
+        self.case._prepare()
+        self.case.actual_inline_count = 1
+        self.case.parsed["turn_intelligence"] = {
+            "catalog_candidates": [], "intent": "visual_question", "confidence": 0.9,
+            "audio_status": "not_applicable", "transcript": "",
+            "image_observations": [{"source_image_index": 0, "outcome": "understood", "evidence_code": "visual_content", "type_code": "document"}],
+        }
+        self.case.parsed["customer_routes"] = {
+            "schema_version": "customer-route.v1", "focus_index": 0,
+            "intents": [{"kind": "catalog", "subtype": "none", "operation": "open",
+                         "evidence_message_ids": [self.case.source.pk], "confidence": 0.99}],
+        }
+
+    def execute(self, reply):
+        self.case.parsed["reply_text"] = reply
+        with patch("management.services.instagram_bot._owned_media_bytes", return_value=("image/jpeg", self.media_body)):
+            return self.case._execute()
+
+    def test_actual_radio_cta_repairs_once_before_winner_then_sends_neutral_ack(self):
+        import hashlib
+
+        original_generate = self.case._generate
+        candidates = []
+
+        def sequential_candidates(payload, **kwargs):
+            candidates.append(self.case.parsed["reply_text"])
+            rejected = kwargs["result_validator"](self.case.parsed, usage={
+                "_request_inline_count": 1,
+                "_request_inline_content_hashes": [hashlib.sha256(self.media_body).hexdigest()],
+            })
+            self.assertFalse(rejected.valid)
+            self.assertIn("current_purpose_disallows_sales", rejected.reason_codes)
+            self.assertFalse(self.case.revision.delivery_effects.exists())
+            repaired = kwargs["repair_payload_factory"](payload, self.case.parsed, rejected.reason_codes)
+            self.assertIsNotNone(repaired)
+            self.assertIsNone(kwargs["repair_payload_factory"](payload, self.case.parsed, rejected.reason_codes))
+            self.case.parsed["reply_text"] = "Дякуємо, що поділилися 💛"
+            candidates.append(self.case.parsed["reply_text"])
+            return original_generate(repaired, **kwargs)
+
+        self.case._generate = sequential_candidates
+        result, generation, transport = self.execute(
+            "О, це ж наша історія і наш засновник Артем! 💛 Дякуємо, що поділилися. Бажаєте підібрати щось із нашого одягу?"
+        )
+        self.assertEqual(result.state, "completed", result.reasons)
+        generation.assert_called_once()
+        self.assertEqual(len(candidates), 2)
+        transport.assert_called_once()
+        self.assertFalse(IgFollowUpTask.objects.exists())
+        self.case.revision.refresh_from_db()
+        text = self.case.revision.delivery_effects.get(group="substantive_text").payload["message"]["text"]
+        self.assertEqual(text, "Дякуємо, що поділилися 💛")
+
+    def test_topic_acknowledgement_sends_once_and_cannot_start_a_sales_ladder(self):
+        result, generation, transport = self.execute("Дякуємо, що поділилися сюжетом про нашу команду!")
+        self.assertEqual(result.state, "completed", result.reasons)
+        generation.assert_called_once()
+        transport.assert_called_once()
+        self.assertFalse(IgFollowUpTask.objects.filter(kind__in=("qualification", "thinking", "rescue", "final")).exists())
+        self.case.revision.refresh_from_db()
+        self.assertEqual(self.case.revision.action_receipts["normal_followups"]["reason"], "current_purpose_not_followup_eligible")
+
+
+@override_settings(GOOGLE_INDEXING_ENABLED=False)
+class PriceReplyPipelineTests(TransactionTestCase):
+    def test_url_price_requested_image_verified_answer_has_one_nonpressuring_followup(self):
+        import hashlib
+        import json
+        from management import tests_ig_revision_live as live_fixture
+        from management.services.ig_turn_revisions import create_collecting_revision
+        from management.services.ig_response_debt import record_reply_debt
+        from storefront.models import Category, Product
+
+        case = live_fixture.RevisionLiveTests(methodName="runTest")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.source.text = "https://example.test/product-post"
+        case.source.save(update_fields=["text"])
+        old = create_collecting_revision(case.turn, [case.source], bypass_quiet=True).revision
+        debt = record_reply_debt(old, "generation_outcome_unresolved")
+        debt.manager_context = {key: value for key, value in debt.manager_context.items() if key not in {"owner", "disposition"}}
+        debt.save(update_fields=["manager_context", "updated_at"])
+        question = case._message("Яка ціна?", "price-question")
+        InstagramBotMessage.objects.create(client=case.customer, sender_id=case.customer.igsid, role="model",
+            text="Надішліть фото моделі, будь ласка.", status="done", send_state="sent", provider_message_id="requested-image")
+        source = case._message("", "requested-product-image")
+        body = b"owned-price-product-image"
+        source.private_media_state = "active"
+        source.attachment_media = [{"source_part_id": "mp1_" + "2"*32, "original_index": 0,
+            "identity_origin": "ingress", "type": "image", "status": "owned", "mime": "image/jpeg",
+            "bytes": len(body), "content_hash": hashlib.sha256(body).hexdigest(), "private_storage": True,
+            "storage_name": "ig-private/price-image"}]
+        source.save(update_fields=["private_media_state", "attachment_media"])
+        turn = IgCustomerTurn.objects.create(client=case.customer, primary_source_message=source,
+            window_started_at=timezone.now(), window_deadline=timezone.now())
+        IgTurnMessage.objects.create(turn=turn, message=source, ordinal=1, role="user")
+        category = Category.objects.create(name="Price proof", slug="price-proof")
+        product = Product.objects.create(title="Price proof model", slug="price-proof-model", category=category, price=1090, status="published")
+        case.customer.current_product = product
+        case.customer.last_message_at = source.created_at
+        case.customer.save(update_fields=["current_product", "last_message_at"])
+        case.source = source
+        case.revision = create_collecting_revision(turn, [source], bypass_quiet=True).revision
+        case._prepare()
+        case.actual_inline_count = 1
+        case.parsed = {"reply_text": "Вартість цієї моделі — 1090 грн.", "controls": [],
+            "turn_intelligence": {"catalog_candidates": [], "intent": "visual_question", "confidence": 0.9,
+                "audio_status": "not_applicable", "transcript": "",
+                "image_observations": [{"source_image_index": 0, "outcome": "understood", "evidence_code": "visual_content", "type_code": "product"}]}}
+        with patch("management.services.instagram_bot._owned_media_bytes", return_value=("image/jpeg", body)):
+            result, generation, reply_http = case._execute()
+        self.assertEqual(result.state, "completed", result.reasons)
+        generation.assert_called_once()
+        reply_http.assert_called_once()
+        task = IgFollowUpTask.objects.get(client=case.customer, kind="thinking")
+        self.assertEqual(task.reason, "ordinary_price_inquiry")
+        self.assertEqual(task.event_payload["commerce_evidence_refs"], [question.pk])
+        self.assertEqual(task.level, 0)
+        self.assertEqual(task.discount_percent, 0)
+        self.assertEqual(task.event_payload["informational_debt_refs"][0]["task_id"], debt.pk)
+        with (
+            patch("management.services.instagram_bot.get_page_token", return_value="memory-token"),
+            patch("management.services.instagram_bot._provider_http", return_value=(200, json.dumps({"message_id": "ordinary-one"}))) as followup_http,
+            patch("management.services.instagram_bot._register_outgoing_message"),
+        ):
+            self.assertEqual(policy.process_due_followups(case.settings, now=task.due_at, limit=1), 1)
+            self.assertEqual(policy.process_due_followups(case.settings, now=task.due_at + timedelta(minutes=1), limit=1), 0)
+        followup_http.assert_called_once()
+        task.refresh_from_db()
+        self.assertEqual(task.status, "sent")
+        self.assertEqual(IgFollowUpTask.objects.filter(client=case.customer, kind="thinking").count(), 1)
+        debt.refresh_from_db()
+        self.assertEqual(debt.status, "skipped")
+        self.assertNotIn("response_debt_resolution", IgCustomerTurnRevision.objects.get(pk=old.pk).action_receipts)
+        self.assertNotRegex(task.message_text, r"(?i)зниж|скид|дорого|онлайн|online|останнє|последнее")
 
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False)
@@ -35,7 +193,7 @@ class FollowupRelevanceTests(TransactionTestCase):
     def schedule(self, message, *, sent_at=None, revision=None):
         row = SimpleNamespace(pk=45, group="substantive_text", terminal_at=sent_at or self.now)
         revision = revision or self.revision([message])
-        with transaction.atomic(), patch.object(policy, "_client_allows_followup", return_value=(True, "")), patch.object(policy, "_update_client_next"):
+        with transaction.atomic(), patch.object(policy, "_client_allows_followup", return_value=(True, "")), patch.object(policy, "_update_client_next"), patch("management.services.ig_revision_followups.delivered_price_answer", return_value=True):
             return _schedule(self.client_row, revision, [row], self.now, self.now)
 
     def test_radio_share_has_no_sales_even_with_old_product_context(self):
@@ -53,6 +211,32 @@ class FollowupRelevanceTests(TransactionTestCase):
         self.assertIsNone(task)
         self.assertEqual(reason, "current_purpose_not_followup_eligible")
         self.assertFalse(IgFollowUpTask.objects.exists())
+
+    def test_catalog_topic_cannot_turn_shared_image_quote_or_url_into_shopping_request(self):
+        for text in ("", "https://example.test/article", '«Хочу купити футболку»', "Дякуємо за сюжет про засновника"):
+            with self.subTest(text=text):
+                source = self.message(text)
+                revision = self.durable_revision(source, "catalog")
+                decision = build_turn_intent(self.client_row, revision)
+                self.assertFalse(decision["commerce_evidence_refs"])
+                self.assertNotIn("retail_consultation", decision["allowed_response_acts"])
+                self.assertEqual(decision["standing_interest"][0]["kind"], "catalog")
+                for reply in (
+                    "О, це ж наша історія і наш засновник Артем! 💛 Дякуємо, що поділилися. Бажаєте підібрати щось із нашого одягу?",
+                    "Если захотите, помогу выбрать модель.",
+                    "Якщо захочете, допоможу підібрати футболку.",
+                    "Thanks for sharing. I can help you choose a hoodie.",
+                ):
+                    self.assertEqual(validate_turn_response(decision, reply), "current_purpose_disallows_sales")
+                self.assertEqual(validate_turn_response(decision, "Дякуємо, що поділилися сюжетом про нашу команду!"), "")
+
+    def test_source_price_question_remains_eligible_without_commercial_route(self):
+        for text in ("Цікавить ціна", "Интересует цена", "How much?", "Price, please"):
+            with self.subTest(text=text):
+                source = self.message(text)
+                decision = build_turn_intent(self.client_row, self.revision([source]))
+                self.assertEqual(decision["purpose"], "price_inquiry")
+                self.assertEqual(decision["commerce_evidence_refs"], [source.pk])
 
     def test_price_uses_sent_answer_three_hours_and_one_durable_cycle(self):
         message = self.message("Яка ціна?")
@@ -160,7 +344,7 @@ class FollowupRelevanceTests(TransactionTestCase):
 
     def test_requested_screenshot_carries_actual_unresolved_price_question(self):
         prior = self.message("Яка ціна?", provider_created_at=self.now-timedelta(minutes=10))
-        InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid, role="model", text="Надішліть модель або скрин, будь ласка.")
+        InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid, role="model", text="Надішліть модель або скрин, будь ласка.", status="done", send_state="sent", provider_message_id="request-image-sent")
         photo = self.message("", provider_created_at=self.now)
         decision = build_turn_intent(self.client_row, self.revision([photo]))
         self.assertEqual(decision["purpose"], "price_inquiry")
@@ -336,6 +520,16 @@ class FollowupRelevanceTests(TransactionTestCase):
         message = self.message("Яка ціна?", provider_created_at=self.now)
         revision = self.durable_revision(message)
         decision = build_turn_intent(self.client_row, revision)
+        answer = {"recipient": {"id": self.client_row.igsid}, "message": {"text": "Вартість цієї моделі — 1090 грн."}}
+        effect = IgRevisionDeliveryEffect.objects.create(revision=revision, source_message=message,
+            effect_key=f"ordinary-answer:{revision.pk}", group="substantive_text", kind="text", order_index=0,
+            part_index=0, part_count=1, plan_digest="a"*64, payload=answer, payload_digest=_digest(answer),
+            recipient_igsid=self.client_row.igsid, provider_namespace="instagram_login:test",
+            settings_id_snapshot=settings.pk, settings_permission_epoch=settings.reply_permission_epoch,
+            client_permission_epoch=self.client_row.reply_permission_epoch,
+            revision_snapshot_digest=revision.snapshot_digest, publication_id=publication.pk, publication_version=1,
+            publication_hash=publication.snapshot_hash, authority_context_digest="c"*64,
+            state="sent", provider_message_id="answer-confirmed", terminal_at=self.now)
         task = IgFollowUpTask.objects.create(client=self.client_row, due_at=self.now,
             kind="thinking", reason="ordinary_price_inquiry", meta_window_deadline=self.now+timedelta(hours=20),
             event_payload={"origin": "ordinary_intent_followup", "revision_id": revision.pk,
@@ -344,8 +538,111 @@ class FollowupRelevanceTests(TransactionTestCase):
                 "publication_id": publication.pk, "publication_hash": publication.snapshot_hash,
                 "source_message_ids": [message.pk], "cycle_key": decision["cycle_key"],
                 "purpose": decision["purpose"], "client_permission_epoch": self.client_row.reply_permission_epoch,
+                "sent_effect_ids": [effect.pk], "sent_reply_anchor": self.now.isoformat(),
                 "product_id": None})
+        revision.action_receipts = {"normal_followups": {"task_id": task.pk, "sent_effect_ids": [effect.pk],
+            "snapshot_digest": revision.snapshot_digest, "plan_digest": effect.plan_digest}}
+        revision.save(update_fields=["action_receipts", "updated_at"])
         return task, settings
+
+    def technical_debt(self, text="https://example.test/product", *, legacy=False, source="webhook"):
+        from management.services.ig_customer_turns import ensure_turn_for_inbound
+        from management.services.ig_response_debt import record_reply_debt
+
+        message = self.message(text, source=source, provider_namespace="instagram_login:test")
+        attached = ensure_turn_for_inbound(message, now=self.now-timedelta(minutes=2))
+        old = IgCustomerTurnRevision.objects.get(pk=attached.revision_id)
+        old.active_slot = None
+        old.save(update_fields=["active_slot", "updated_at"])
+        task = record_reply_debt(old, "generation_outcome_unresolved", now=self.now)
+        if legacy:
+            task.manager_context = {key: value for key, value in task.manager_context.items() if key not in {"owner", "disposition"}}
+            task.save(update_fields=["manager_context", "updated_at"])
+        return old, task
+
+    def test_legacy_bare_url_failure_is_informational_after_independent_confirmed_answer(self):
+        old, debt = self.technical_debt(legacy=True)
+        task, _settings = self.ordinary_task()
+        revision = IgCustomerTurnRevision.objects.get(pk=task.event_payload["revision_id"])
+        decision = build_turn_intent(self.client_row, revision)
+        self.assertEqual(purpose_blockers(self.client_row, decision, revision=revision), "")
+        self.assertEqual(decision["informational_debt_refs"][0]["task_id"], debt.pk)
+        debt.refresh_from_db()
+        old.refresh_from_db()
+        self.assertEqual(debt.status, "skipped")
+        self.assertNotIn("response_debt_resolution", old.action_receipts)
+        # Removing the new answer proof restores blocking; source chronology
+        # alone must never classify an old case as nonblocking.
+        revision.delivery_effects.all().delete()
+        self.assertEqual(purpose_blockers(self.client_row, build_turn_intent(self.client_row, revision), revision=revision), "pending_manager_case")
+
+    def test_sent_holding_is_not_proof_of_a_substantive_customer_answer(self):
+        from management.services.ig_turn_intent import confirmed_substantive_reply
+
+        task, _settings = self.ordinary_task()
+        revision = IgCustomerTurnRevision.objects.get(pk=task.event_payload["revision_id"])
+        self.assertEqual(len(confirmed_substantive_reply(revision)), 1)
+        # Even a whole SENT text with matching immutable source/plan bindings
+        # cannot authorize an ordinary reminder when its purpose is holding.
+        effect = revision.delivery_effects.get()
+        effect.delete()
+        effect.purpose = "technical_holding"
+        effect.save(force_insert=True)
+        self.assertEqual(confirmed_substantive_reply(revision), [])
+        self.assertEqual(revalidate_followup_intent(task, now=self.now), "followup_answer_receipts_changed")
+
+    def test_incomplete_customer_question_is_not_informational_technical_debt(self):
+        _old, debt = self.technical_debt("Коли відправите моє замовлення?")
+        task, _settings = self.ordinary_task()
+        revision = IgCustomerTurnRevision.objects.get(pk=task.event_payload["revision_id"])
+        self.assertEqual(purpose_blockers(self.client_row, build_turn_intent(self.client_row, revision), revision=revision), "pending_manager_case")
+        self.assertEqual(IgFollowUpTask.objects.get(pk=debt.pk).status, "skipped")
+
+    def test_imported_url_and_tampered_source_cannot_use_informational_adapter(self):
+        old, _debt = self.technical_debt(source="poll_history")
+        task, _settings = self.ordinary_task()
+        revision = IgCustomerTurnRevision.objects.get(pk=task.event_payload["revision_id"])
+        decision = build_turn_intent(self.client_row, revision)
+        self.assertEqual(purpose_blockers(self.client_row, decision, revision=revision), "pending_manager_case")
+        message = old.sources.get().message
+        message.source, message.text = "webhook", "https://example.test/changed-product"
+        message.save(update_fields=["source", "text"])
+        self.assertEqual(purpose_blockers(self.client_row, decision, revision=revision), "pending_manager_case")
+
+    def test_any_old_physical_effect_restores_blocking_even_for_bare_url(self):
+        old, _debt = self.technical_debt()
+        task, _settings = self.ordinary_task()
+        revision = IgCustomerTurnRevision.objects.get(pk=task.event_payload["revision_id"])
+        effect = revision.delivery_effects.get()
+        effect.pk = None
+        effect.revision = old
+        effect.source_message_id = old.sources.get().message_id
+        effect.effect_key = "old-url-unknown-effect"
+        effect.state, effect.provider_message_id, effect.terminal_at = "unknown", "", None
+        effect.save(force_insert=True)
+        self.assertEqual(purpose_blockers(self.client_row, build_turn_intent(self.client_row, revision), revision=revision), "pending_manager_case")
+
+    def test_answer_receipt_binding_change_after_transport_preparation_stops_send(self):
+        from management.services.instagram_bot import ProviderDeliveryReceipt
+
+        task, settings = self.ordinary_task()
+        physical_sends = []
+
+        def transport(*args, **kwargs):
+            # Fault injection after worker validation: missing answer evidence
+            # cannot be replaced by the still-valid price-source task payload.
+            IgRevisionDeliveryEffect.objects.filter(pk__in=task.event_payload["sent_effect_ids"]).delete()
+            with kwargs["provider_request_boundary_factory"](delivered_chunk_count=0, planned_chunk_count=1) as allowed:
+                if allowed:
+                    physical_sends.append(args[2])
+                return ProviderDeliveryReceipt(bool(allowed), "" if allowed else "cancelled", allowed.reason, "mid" if allowed else "")
+
+        with patch.object(policy, "_client_allows_followup", return_value=(True, "")), patch("management.services.instagram_bot.send_text", side_effect=transport) as sender:
+            self.assertEqual(policy.process_due_followups(settings, now=self.now, limit=1), 0)
+        sender.assert_called_once()
+        self.assertEqual(physical_sends, [])
+        task.refresh_from_db()
+        self.assertEqual(task.skip_reason, "followup_answer_receipts_changed", task.last_error)
 
     def test_inbound_during_transport_preparation_prevents_physical_followup(self):
         from management.services.instagram_bot import ProviderDeliveryReceipt

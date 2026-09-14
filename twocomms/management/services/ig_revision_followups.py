@@ -199,6 +199,31 @@ def _fulfillment_case(client, deal, revision, anchor, now):
     return task
 
 
+def delivered_price_answer(client, rows):
+    """A screenshot request/holding reply is not an answer to a price question."""
+    from management.services.ig_reply_authority import build_reply_truth_context
+    from management.services.ig_reply_truth import (
+        _MONEY_RE, _PREFIX_MONEY_RE, _currency_code, _decimal, _locally_negated,
+    )
+
+    context = build_reply_truth_context(client)
+    prices = {_decimal(value) for value in context.authorized_prices}
+    prices.discard(None)
+    if not prices:
+        return False
+    for row in rows:
+        if row.group != "substantive_text":
+            continue
+        text = str(((row.payload or {}).get("message") or {}).get("text") or "")
+        for pattern in (_MONEY_RE, _PREFIX_MONEY_RE):
+            for match in pattern.finditer(text):
+                if (_currency_code(match.group("currency")) in context.allowed_currency_codes
+                    and _decimal(match.group("amount")) in prices
+                    and not _locally_negated(text, match.start())):
+                    return True
+    return False
+
+
 def _schedule(client, revision, rows, anchor, now):
     from management.services import bot_followups as policy
 
@@ -225,15 +250,17 @@ def _schedule(client, revision, rows, anchor, now):
     from management.services.ig_turn_intent import build_turn_intent, purpose_blockers, ordinary_next_send_at
 
     decision = build_turn_intent(client, revision)
-    blocker = purpose_blockers(client, decision, revision=revision)
-    if blocker:
-        return None, blocker
     purpose = decision["purpose"]
     offsets = {"price_inquiry": timedelta(hours=3), "requested_selection": timedelta(minutes=90)}
     if purpose not in offsets or not decision["commerce_evidence_refs"]:
         return None, "current_purpose_not_followup_eligible"
     if deal and deal.active_checkout_proposal:
         return None, "hosted_checkout_v2_owns_followups" if deal.active_checkout_proposal.assisted_checkout_v2 else "checkout_owns_followups"
+    if purpose == "price_inquiry" and not delivered_price_answer(client, rows):
+        return None, "price_answer_not_confirmed"
+    blocker = purpose_blockers(client, decision, revision=revision)
+    if blocker:
+        return None, blocker
     allowed, reason = policy._client_allows_followup(client, deal=deal, kind=IgFollowUpTask.Kind.THINKING)
     if not allowed:
         return None, reason
@@ -264,6 +291,7 @@ def _schedule(client, revision, rows, anchor, now):
                               "cycle_key": decision["cycle_key"], "source_message_ids": decision["source_message_ids"],
                               "commerce_evidence_refs": decision["commerce_evidence_refs"],
                               "route_decision_id": decision["route_decision_id"],
+                              "informational_debt_refs": decision.get("informational_debt_refs", []),
                               "client_permission_epoch": client.reply_permission_epoch,
                               "product_id": client.current_product_id,
                               "settings_id": getattr(sent_parts[0], "settings_id_snapshot", 0),

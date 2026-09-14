@@ -155,7 +155,8 @@ def _matching_existing(client, source_id: int, epoch: int):
 def _unsafe_effects(revision) -> bool:
     if revision is None:
         return False
-    return revision.delivery_effects.filter(
+    from management.services.ig_revision_holding import confirmed_holding_effect_ids
+    return revision.delivery_effects.exclude(pk__in=confirmed_holding_effect_ids(revision)).filter(
         state__in=(
             IgRevisionDeliveryEffect.State.SENT,
             IgRevisionDeliveryEffect.State.PROVIDER_STARTED,
@@ -208,11 +209,13 @@ def create_manual_resume_successor(
             client_id=client.pk, role=InstagramBotMessage.Role.MANAGER, id__gt=source.pk
         ).exclude(status=InstagramBotMessage.Status.FAILED).exists():
             return ManualResumeSuccessorResult(None, reason="manual_manager_answered")
-        if InstagramBotMessage.objects.filter(
+        from management.services.ig_revision_holding import is_confirmed_holding_transcript, confirmed_holding_effect_ids
+        later_replies = InstagramBotMessage.objects.filter(
             client_id=client.pk, role=InstagramBotMessage.Role.MODEL, id__gt=source.pk
         ).exclude(status=InstagramBotMessage.Status.FAILED).filter(
             Q(provider_message_id__gt="") | Q(send_state="sent")
-        ).exists():
+        )
+        if any(not is_confirmed_holding_transcript(message) for message in later_replies):
             return ManualResumeSuccessorResult(None, reason="manual_model_answered")
         membership = (
             IgTurnMessage.objects.select_for_update().select_related("turn")
@@ -279,7 +282,7 @@ def create_manual_resume_successor(
                 IgRevisionDeliveryEffect.State.PROVIDER_STARTED,
                 IgRevisionDeliveryEffect.State.UNKNOWN,
             ),
-        ).exists():
+        ).exclude(pk__in=confirmed_holding_effect_ids(source_revision)).exists():
             return ManualResumeSuccessorResult(None, reason="manual_delivery_reconciliation_required")
 
         source_rows = list(

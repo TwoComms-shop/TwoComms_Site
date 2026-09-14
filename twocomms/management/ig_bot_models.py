@@ -8507,6 +8507,7 @@ class IgCustomerTurnRevision(models.Model):
                     "response_debt", "source_preference_fallback",
                     "source_transfer_in", "source_transfer_out", "sent_reply_projection",
                     "reply_projection_admission",
+                    "technical_holding", "technical_holding_delivery",
                 }
                 if (
                     not isinstance(self.action_receipts, dict)

@@ -332,7 +332,7 @@ class RevisionReplyProjectionTests(TransactionTestCase):
     def test_static_reply_retains_origin_and_counts_once(self):
         self.settings.ai_enabled = False
         self.settings.trigger_text = self.source.text
-        self.settings.reply_text = "Можу допомогти з вибором. Який принт?"
+        self.settings.reply_text = "Вітаю! Дякуємо за повідомлення."
         self.settings.save(update_fields=["ai_enabled", "trigger_text", "reply_text"])
         self._prepare()
         result, generate, _ = self._execute()

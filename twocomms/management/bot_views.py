@@ -5247,6 +5247,28 @@ def bot_client_follow_refresh_api(request, client_id):
 
 @login_required(login_url="management_login")
 @require_POST
+def bot_client_reply_debt_review_api(request, client_id, task_id):
+    blocked = _require_bot_write_json(request)
+    if blocked:
+        return blocked
+    try:
+        revision_id = int(request.POST.get("expected_revision_id", ""))
+        if revision_id <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        return JsonResponse({"success": False, "error": "Оновіть картку перед обробкою сповіщення."}, status=400)
+    from management.services.ig_response_debt import review_reply_debt, reply_debt_payload
+
+    result = review_reply_debt(client_id, task_id, actor=request.user, expected_revision_id=revision_id)
+    if not result["ok"]:
+        return JsonResponse({"success": False, **result}, status=result.get("status", 400))
+    client = IgClient.objects.get(pk=client_id)
+    return JsonResponse({"success": True, "task_id": task_id, "idempotent": result["idempotent"],
+                         "response_debt": reply_debt_payload(client)})
+
+
+@login_required(login_url="management_login")
+@require_POST
 def bot_client_followup_delivery_resolve_api(request, client_id, task_id):
     blocked = _require_bot_write_json(request)
     if blocked:

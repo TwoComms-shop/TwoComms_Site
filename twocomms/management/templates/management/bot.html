@@ -2768,9 +2768,26 @@ body.bot-drawer-open{overflow:hidden;}
       parent.appendChild(journeyView.root);journeyView.update(d.journey);journeyView.queueLayout();
     }
     const replyDebtByClient=new Map();
+    const reviewedReplyDebtsByClient=new Map();
+    function rememberReviewedReplyDebt(clientId,taskId,incoming){
+      const id=Number(clientId),reviewed=reviewedReplyDebtsByClient.get(id)||new Set();
+      reviewed.add(Number(taskId));reviewedReplyDebtsByClient.set(id,reviewed);
+      const current=replyDebtByClient.get(id);
+      // This acknowledgement resolves exactly one task. A response assembled
+      // before another alert arrived cannot clear that different alert.
+      if(current?.required&&Number(current.task_id)!==Number(taskId))return current;
+      if(current?.required)replyDebtByClient.delete(id);
+      return reconcileReplyDebt(id,incoming);
+    }
     function reconcileReplyDebt(clientId,incoming){
       const id=Number(clientId);
       if(!id)return null;
+      const current=replyDebtByClient.get(id);
+      const currentTime=Date.parse(current?.observed_at),incomingTime=Date.parse(incoming?.observed_at);
+      if(Number.isFinite(currentTime)&&(!Number.isFinite(incomingTime)||incomingTime<currentTime||(incomingTime===currentTime&&current.required&&!incoming?.required)))return current;
+      // An older in-flight list/card GET cannot resurrect an acknowledged task.
+      // A different task for this same client is still a new visible alert.
+      if(incoming?.required&&reviewedReplyDebtsByClient.get(id)?.has(Number(incoming.task_id)))return replyDebtByClient.get(id)||{required:false};
       // Missing data is unknown, not a server-confirmed resolution. Keep the
       // last confirmed status for this client across card/list/poll replacement.
       if(incoming&&typeof incoming.required==='boolean')replyDebtByClient.set(id,incoming);
@@ -2785,6 +2802,16 @@ body.bot-drawer-open{overflow:hidden;}
       const hint=node('span','',debt.reason_label||debt.next_action);strip.replaceChildren(title,hint);
       const sourceId=(debt.source_message_ids||[]).slice(-1)[0];
       if(sourceId){const button=node('button','bot-order-action','До запиту');button.type='button';button.addEventListener('click',()=>{requestedMessageId=Number(sourceId);const messages=document.getElementById('bot-msgs');const older=conversationEl.querySelector('[data-older-messages]');if(messages&&older)void revealRequestedMessage(messages,older);});strip.append(button);}
+      {% if bot_can_operate %}
+      if(debt.task_id&&debt.revision_id){const reviewed=node('button','bot-order-action','Опрацьовано');reviewed.type='button';reviewed.title='Зняти це сповіщення без надсилання відповіді. Дію буде збережено в журналі.';reviewed.addEventListener('click',async()=>{
+        const id=Number(clientId),taskId=Number(debt.task_id);reviewed.disabled=true;reviewed.textContent='Зберігаємо…';
+        const body=new FormData();body.append('expected_revision_id',String(debt.revision_id));
+        const url='{% url "management_bot_client_reply_debt_review_api" 0 0 %}'.replace('/0/','/'+id+'/').replace('/0/','/'+taskId+'/');
+        try{const response=await fetch(url,{method:'POST',cache:'no-store',headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'},body});const data=await response.json().catch(()=>({}));if(!response.ok||!data.success)throw new Error(data.error||'Не вдалося зняти сповіщення.');
+          const confirmed=rememberReviewedReplyDebt(id,taskId,data.response_debt);if(Number(convId)===id)renderReplyDebt(confirmed,id);await load(currentQuery(),{background:true});
+        }catch(error){reviewed.disabled=false;reviewed.textContent='Опрацьовано';if(strip.isConnected){const feedback=node('span','bot-order-feedback error',error.message||'Не вдалося зняти сповіщення.');feedback.setAttribute('role','alert');strip.append(feedback);}}
+      });strip.append(reviewed);}
+      {% endif %}
     }
     function renderConversation(d){
       const c=d.client;const active=d.review&&d.review.active;conversationEl.replaceChildren();const head=node('header','bot-conversation-head');const meta=node('div','bot-conversation-meta');const titleRow=node('div','bot-conversation-title-row');titleRow.append(node('div','bot-conversation-title',c.name||c.username||c.igsid||'Клієнт'),renderFollowIndicator(c.follow||d.follow||{},c.id));meta.append(titleRow,node('div','bot-conversation-sub',[c.username?('@'+c.username):c.igsid,c.phone,c.ad_title?('Реклама: '+c.ad_title):''].filter(Boolean).join(' · ')));const linkedOrderBadge=linkedOrderContextBadge(c);if(linkedOrderBadge)meta.append(linkedOrderBadge);const actions=node('div','bot-conversation-actions');if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-head-action needs-action',active.approval.state==='needs_order_resolution'?'Прив’язати замовлення':'Перевірити оплату');review.type='button';review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));actions.appendChild(review);}const assignments=d.orders&&d.orders.assignments||[];const assignmentAction=node('button','bot-head-action icon','⇄');assignmentAction.type='button';assignmentAction.title='Прив’язати або відв’язати замовлення';assignmentAction.setAttribute('aria-label','Відкрити прив’язку замовлень');assignmentAction.addEventListener('click',()=>OrderAssignmentDrawer.open(d,assignmentAction));actions.appendChild(assignmentAction);const advanced=node('button','bot-head-action icon','⚙');advanced.type='button';advanced.title='Показати або приховати контекст клієнта';advanced.setAttribute('aria-label','Показати або приховати контекст клієнта');advanced.setAttribute('aria-controls','bot-client-drawer');advanced.setAttribute('data-client-context-toggle','');advanced.setAttribute('aria-expanded',String(ClientContextDrawer.isOpen()));advanced.addEventListener('click',()=>ClientContextDrawer.toggle(advanced));actions.appendChild(advanced);head.append(avatar(c,46),meta,node('span','bot-stage-chip '+stageCls(c.stage),c.stage_label||'Новий'),actions);conversationEl.appendChild(head);

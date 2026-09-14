@@ -96,6 +96,7 @@ urlpatterns = [
     path('bot/api/clients/', bot_views.bot_clients_api, name='management_bot_clients_api'),
     path('bot/api/clients/<int:client_id>/', bot_views.bot_client_detail_api, name='management_bot_client_detail_api'),
     path('bot/api/clients/<int:client_id>/followups/<int:task_id>/delivery-resolve/', bot_views.bot_client_followup_delivery_resolve_api, name='management_bot_client_followup_delivery_resolve_api'),
+    path('bot/api/clients/<int:client_id>/reply-debts/<int:task_id>/review/', bot_views.bot_client_reply_debt_review_api, name='management_bot_client_reply_debt_review_api'),
     path('bot/api/clients/<int:client_id>/followups/<int:task_id>/continue/', bot_views.bot_client_followup_continue_api, name='management_bot_client_followup_continue_api'),
     path('bot/api/clients/<int:client_id>/follow-refresh/', bot_views.bot_client_follow_refresh_api, name='management_bot_client_follow_refresh_api'),
     path('bot/api/clients/<int:client_id>/ugc-rewards/', bot_views.bot_client_ugc_reward_api, name='management_bot_client_ugc_reward_api'),

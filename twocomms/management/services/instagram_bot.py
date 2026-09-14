@@ -7755,6 +7755,7 @@ def gemini_generate(
             routing_decision.task_class == TaskClass.COMPLEX_LIVE
         ),
         programme=prize_programme,
+        response_normalizer=getattr(generation_boundary, "normalize_response", None),
     )
 
     def validate_attempt(parsed, *, usage=None):

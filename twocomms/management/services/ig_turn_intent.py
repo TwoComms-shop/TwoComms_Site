@@ -16,7 +16,7 @@ SALES_RESPONSE_ACTIONS = frozenset({
     "client_configuration_update", "checkout_proposal_create",
     "size_gap_notification_intent", "follow_decision_prepare",
 })
-_PRICE = re.compile(r"(?:яка|який|яку|скільки|сколько|какая|какую|what|how much).{0,35}(?:цін|цен|кошту|стоит|price|cost)|(?:цін[аиу]|цен[аыу]|price)\s*[?？]", re.I)
+_PRICE = re.compile(r"(?:яка|який|яку|скільки|сколько|какая|какую|what|how much).{0,35}(?:цін|цен|кошту|стоит|price|cost)|(?:цін[аиу]|цен[аыу]|price)\s*[?？]|(?:цікавить|интересует)\s+(?:цін|цен)|\bhow much\s*[?？]|\bprice[, ]+please\b", re.I)
 _SELECTION = re.compile(r"(?:допомож|помог|help).{0,45}(?:обрат|вибрат|выбрат|під[іи]брат|подобрат|розмір|размер|size|choose)|(?:який|какой|what).{0,25}(?:розмір|размер|size).{0,25}(?:підій|подойд|fit)", re.I)
 _RETAIL = re.compile(r"(?:хочу|хот[еі]л|можна|можно|want|can i|i would like|i['’]d like).{0,35}(?:купит|купув|покуп|замов|заказ|buy|order)|(?:є|есть|have).{0,30}(?:футболк|худі|худи|t.?shirt|hoodie)", re.I)
 _ORDER_IMPERATIVE = re.compile(
@@ -40,6 +40,11 @@ _NONACTION_GREETING = re.compile(r"^(?:привіт|привет|вітаю|до
 _ELLIPTICAL = re.compile(r"^(?:оверсайз|oversize|regular|класичн[аийі]+|классическ[аийое]+|[xsml]{1,4}|[2-5]xl)[.! ]*$", re.I)
 _CTA = re.compile(r"(?:хочете|хочешь|хотите|бажаєте|want to|would you like).{0,35}(?:замов|заказ|куп|order|buy)|(?:модель|розмір|размер|model|size).{0,25}(?:доставк|оплат|payment|delivery)|(?:оформимо|оформить|оформити)\s*(?:замов|заказ)|(?:можу|могу|i can).{0,45}(?:підібрат|подобрат|модел|розмір|размер|замов|заказ|доставк|order|size|model|delivery)|(?:надішліть|пришлите|напишіть|напишите|send me).{0,35}(?:модел|розмір|размер|місто|город|model|size|city)", re.I)
 _NEW_SALE_CTA = re.compile(r"(?:хочете|хочешь|хотите|бажаєте|want to|would you like).{0,35}(?:замов|заказ|куп|order|buy)|(?:оформимо|оформить|оформити)\s*(?:замов|заказ)", re.I)
+_UNREQUESTED_SELECTION = re.compile(
+    r"(?:допомож|помог|помочь|help|підбер|підібр|подбер|подобр|choose|pick).{0,60}"
+    r"(?:футболк|худі|худи|одяг|одежд|принт|модел|розмір|размер|t.?shirt|hoodie|clothing|clothes|print|model|size)"
+    r"|(?:оберіть|виберіть|выберите|choose|pick).{0,40}(?:модел|розмір|размер|принт|model|size|print)", re.I,
+)
 
 
 def _customer_text(text):
@@ -113,7 +118,13 @@ def build_turn_intent(client, revision=None, source_messages=None):
             intervening_reply = InstagramBotMessage.objects.filter(client=client, role__in=("model", "manager"), pk__gt=prior.pk, pk__lt=min(ids)).order_by("-pk").first()
             prior_at = prior.provider_created_at or prior.created_at
             direct_bundle = intervening_reply is None and latest_at - prior_at <= timedelta(minutes=3)
-            requested_media = intervening_reply is not None and intervening_reply.role == "model" and _MEDIA_REQUEST.search(str(intervening_reply.text or ""))
+            requested_media = (
+                intervening_reply is not None and intervening_reply.role == "model"
+                and intervening_reply.status == "done"
+                and intervening_reply.send_state not in {"unknown", "sending", "failed"}
+                and (intervening_reply.provider_message_id or (intervening_reply.mid and intervening_reply.source in {"webhook", "poll", "poll_history", "echo"}))
+                and _MEDIA_REQUEST.search(str(intervening_reply.text or ""))
+            )
             if direct_bundle or requested_media:
                 purpose = _purpose(prior.text)
                 if purpose:
@@ -128,9 +139,10 @@ def build_turn_intent(client, revision=None, source_messages=None):
             if latest_at - timedelta(hours=24) <= prior_at <= latest_at:
                 purpose = "retail"
                 evidence = ids
-    if not purpose and commercial:
-        purpose = "retail"
-        evidence = sorted({pk for item in commercial for pk in item.get("evidence_message_ids", [])})
+    # An accepted route identifies a topic, not the sender's request to shop.
+    # In particular, recognized apparel in a shared article/photo, a bare URL,
+    # or quoted ad must never become purchase permission through model labels.
+    # Only the observed requests/continuations above grant retail response acts.
     if not purpose:
         purpose = next((item.get("kind") for item in intents if item.get("operation") != "withdraw"), "unknown")
     acts = ["answer_current_question", "acknowledge_current_topic"]
@@ -153,10 +165,19 @@ def intent_generation_guidance(decision):
                "Respond to the current topic and evidenced service, handoff or opt-out request. Do not introduce clothing selection, a new order, payment, discounts or sales follow-up. Image contents and old product interest are not purchase intent."))
 
 
+def source_only_noncommercial(decision, source_messages):
+    """Known lack of a sender request, before accepting model topic labels."""
+    return bool(source_messages) and not decision.get("commerce_evidence_refs") and all(
+        not _customer_text(row.text) or _NONACTION_GREETING.fullmatch(_customer_text(row.text))
+        for row in source_messages
+    )
+
+
 def validate_turn_response(decision, text, actions=()):
     if "retail_consultation" not in decision.get("allowed_response_acts", ()):
         prose_rule = _NEW_SALE_CTA if decision.get("purpose") == "support" else _CTA
-        if SALES_RESPONSE_ACTIONS.intersection(actions) or prose_rule.search(str(text or "")):
+        if (SALES_RESPONSE_ACTIONS.intersection(actions) or prose_rule.search(str(text or ""))
+            or (decision.get("purpose") != "support" and _UNREQUESTED_SELECTION.search(str(text or "")))):
             return "current_purpose_disallows_sales"
     return ""
 
@@ -229,6 +250,56 @@ def _case_scope(client, task):
     return "unknown", {}
 
 
+def _informational_generation_debt(client, task, old, decision, revision):
+    """A failed non-action input can stay owed without vetoing a fresh answer.
+
+    This read-only adapter also handles old canonical cases that predate the
+    owner/disposition JSON fields. It neither declares coverage nor resolves
+    the case. An actual unanswered customer question remains blocking.
+    """
+    from management.services.ig_turn_revisions import _copied_source_payloads, _digest, _source_payload
+
+    payload, context = task.event_payload or {}, task.manager_context or {}
+    failure = payload.get("reason")
+    if (old is None or revision is None or old.pk == revision.pk or getattr(old, "active_slot", 1) is not None
+        or task.event_key != f"ig-revision-debt:{old.pk}"
+        or context.get("case_kind") != "revision_execution_debt"
+        or context.get("revision_id") != old.pk or context.get("reason") != failure
+        or context.get("automatic_http_retry") is not False
+        or context.get("owner", "manager") != "manager"
+        or context.get("disposition", "manager_reply") != "manager_reply"
+        or failure not in {"generation_failed", "generation_not_started", "generation_result_missing",
+                           "generation_outcome_unresolved", "provider_candidates_exhausted", "preparation_expired"}
+        or payload.get("effect_ids") != [] or old.generation_proposal_digest or old.delivery_effects.exists()
+        or decision.get("purpose") not in {"price_inquiry", "requested_selection"}
+        or not decision.get("commerce_evidence_refs") or not confirmed_substantive_reply(revision)):
+        return None
+    receipts = old.action_receipts or {}
+    if (set(receipts) - {"input_decision", "generation_admission", "provider_execution_manifest",
+                         "provider_execution_reference", "response_debt", "source_transfer_in", "source_transfer_out"}
+        or (receipts.get("input_decision") and receipts["input_decision"].get("origin") != "generate")):
+        return None
+    sources = list(old.sources.select_related("message").order_by("ordinal", "id")[:33])
+    ids = {row.message_id for row in sources}
+    current = set(decision.get("source_message_ids", ())) | set(decision.get("commerce_evidence_refs", ()))
+    if (not sources or len(sources) > 32 or len(sources) != old.source_count
+        or ids != set(payload.get("source_message_ids") or ()) or ids.intersection(current)
+        or max(ids) >= min(current, default=0)):
+        return None
+    for source, frozen in zip(sources, _copied_source_payloads(sources), strict=True):
+        row = source.message
+        text = str(source.text or "").strip()
+        if (row.client_id != client.pk or row.sender_id != client.igsid or row.source != "webhook"
+            or row.role != "user" or source.role != "user" or not source.source_namespace
+            or row.send_state or source.quick_reply_payload or source.media_part_count or row.attachment_media
+            or not (_NONACTION_GREETING.fullmatch(text) or re.fullmatch(r"https?://[^\s<>]+", text, re.I))
+            or source.source_digest != _digest({key: value for key, value in frozen.items() if key != "source_digest"})
+            or _source_payload(row, previous=source, ordinal=source.ordinal)["source_digest"] != source.source_digest):
+            return None
+    return {"version": "technical-debt-nonblocking.v1", "task_id": task.pk, "revision_id": old.pk,
+            "source_refs": [{"message_id": row.message_id, "source_digest": row.source_digest} for row in sources]}
+
+
 def purpose_blockers(client, decision, *, revision=None):
     """Return a blocker without resolving or bulk closing manager cases."""
     current_ids = set(decision.get("source_message_ids", ())) | set(decision.get("commerce_evidence_refs", ()))
@@ -241,6 +312,10 @@ def purpose_blockers(client, decision, *, revision=None):
             old_id = payload.get("revision_id") or context.get("revision_id")
             old = IgCustomerTurnRevision.objects.filter(pk=old_id, client=client).first()
             old_ids = set(payload.get("source_message_ids") or ())
+            informational = _informational_generation_debt(client, task, old, decision, revision)
+            if informational:
+                decision.setdefault("informational_debt_refs", []).append(informational)
+                continue
             if old is not None and old_ids and old.pk != revision.pk and max(old_ids) < min(current_ids, default=0):
                 old_sources = list(old.sources.select_related("message").order_by("ordinal", "id"))
                 exact_sources = {row.message_id for row in old_sources} == old_ids and all(row.message.client_id == client.pk and row.message.role == "user" for row in old_sources)
@@ -288,6 +363,47 @@ def ordinary_next_send_at(candidate):
 LEGACY_ORDINARY_REASONS = frozenset({"first_reply_silence", "price_quoted_silence", "missing_customer_size", "thinking_hesitation"})
 
 
+def confirmed_substantive_reply(revision):
+    """Read exact persisted answer receipts; no locks or provider operations.
+
+    Callers that mutate a task already hold their normal settings/client locks.
+    A source question or a model winner alone is insufficient delivery proof.
+    """
+    from management.services.ig_revision_outbox import _digest
+
+    effects = list(IgRevisionDeliveryEffect.objects.filter(revision_id=revision.pk).order_by("order_index", "id")[:17])
+    text = [row for row in effects if row.group == "substantive_text"]
+    if (not text or len(effects) > 16 or len(text) != text[0].part_count
+        or [row.part_index for row in text] != list(range(len(text)))
+        or any(row.state in {"planned", "claimed", "provider_started", "unknown"} for row in effects)):
+        return []
+    source_ids = {row["message_id"] for row in (revision.bundle_snapshot or {}).get("sources", ())}
+    if any(row.actor != "bot" or row.purpose != "normal_reply"
+           or row.state != "sent" or not row.provider_message_id or row.terminal_at is None
+           or row.part_count != len(text) or row.plan_digest != text[0].plan_digest
+           or row.revision_snapshot_digest != revision.snapshot_digest or row.source_message_id not in source_ids
+           or _digest(row.payload) != row.payload_digest for row in text):
+        return []
+    return text
+
+
+def _followup_answer_binding_current(task, revision):
+    payload = task.event_payload or {}
+    receipt = (revision.action_receipts or {}).get("normal_followups") or {}
+    text = confirmed_substantive_reply(revision)
+    ids = [row.pk for row in text]
+    if (not text or payload.get("sent_effect_ids") != ids or receipt.get("sent_effect_ids") != ids
+        or receipt.get("task_id") != task.pk or receipt.get("snapshot_digest") != revision.snapshot_digest
+        or receipt.get("plan_digest") != text[0].plan_digest
+        or payload.get("sent_reply_anchor") != max(row.terminal_at for row in text).isoformat()):
+        return False
+    return all(row.settings_id_snapshot == payload.get("settings_id")
+               and row.settings_permission_epoch == payload.get("settings_permission_epoch")
+               and row.client_permission_epoch == payload.get("client_permission_epoch")
+               and row.publication_id == payload.get("publication_id")
+               and row.publication_hash == payload.get("publication_hash") for row in text)
+
+
 def revalidate_followup_intent(task, now=None):
     payload = task.event_payload or {}
     if payload.get("origin") != "ordinary_intent_followup":
@@ -304,8 +420,12 @@ def revalidate_followup_intent(task, now=None):
     if revision is None:
         return "followup_source_unavailable"
     from management.services.ig_revision_outbox import _digest
-    if not revision.snapshot_digest or _digest(revision.bundle_snapshot) != payload.get("snapshot_digest"):
+    if (not revision.snapshot_digest or _digest(revision.bundle_snapshot) != revision.snapshot_digest
+        or revision.snapshot_digest != payload.get("snapshot_digest")
+        or payload.get("source_message_ids") != [row["message_id"] for row in revision.bundle_snapshot.get("sources", ())]):
         return "followup_source_changed"
+    if not _followup_answer_binding_current(task, revision):
+        return "followup_answer_receipts_changed"
     settings_obj = InstagramBotSettings.objects.select_related("active_instruction_publication").filter(pk=payload.get("settings_id")).first()
     if settings_obj is None or not settings_obj.is_enabled or settings_obj.reply_permission_epoch != payload.get("settings_permission_epoch"):
         return "followup_settings_changed"

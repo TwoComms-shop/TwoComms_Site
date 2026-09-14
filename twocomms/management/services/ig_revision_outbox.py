@@ -24,6 +24,7 @@ from management.models import (
 
 ACTOR_BOT = "bot"
 PURPOSE_NORMAL_REPLY = "normal_reply"
+PURPOSE_TECHNICAL_HOLDING = "technical_holding"
 MAX_EFFECTS = 16
 MAX_PAYLOAD_BYTES = 256 * 1024
 KNOWN_NO_DISPATCH_REASONS = frozenset({
@@ -502,7 +503,7 @@ def plan_revision_effects(
     now=None,
 ) -> EffectPlanResult:
     """Atomically validate the winner and persist its complete physical plan."""
-    if actor != ACTOR_BOT or purpose != PURPOSE_NORMAL_REPLY:
+    if actor != ACTOR_BOT or purpose not in {PURPOSE_NORMAL_REPLY, PURPOSE_TECHNICAL_HOLDING}:
         return EffectPlanResult(reasons=("unsupported_actor_purpose",))
     if not _HASH_RE.fullmatch(str(authority_context_digest or "")):
         return EffectPlanResult(reasons=("authority_digest_invalid",))
@@ -539,6 +540,14 @@ def plan_revision_effects(
             return EffectPlanResult(reasons=(str(exc),))
         if not revision.sources.filter(message_id=source_message_id).exists():
             return EffectPlanResult(reasons=("source_message_not_in_revision",))
+        if purpose == PURPOSE_TECHNICAL_HOLDING:
+            from management.services.ig_revision_holding import holding_receipt_valid
+
+            if (len(specs) != 1 or specs[0]["group"] != "substantive_text"
+                or not holding_receipt_valid(revision, text=(specs[0]["payload"].get("message") or {}).get("text"))):
+                return EffectPlanResult(reasons=("holding_handoff_no_longer_open",))
+        elif (revision.action_receipts or {}).get("technical_holding"):
+            return EffectPlanResult(reasons=("holding_purpose_required",))
         if (revision.action_receipts or {}).get("source_preference_fallback"):
             from management.services.ig_revision_recovery import recovery_lineage_for_authority
 
@@ -788,7 +797,7 @@ def mark_provider_started(
         revision_namespace = _revision_namespace(revision)
         immutable_request_valid = bool(
             effect.actor == ACTOR_BOT
-            and effect.purpose == PURPOSE_NORMAL_REPLY
+            and effect.purpose in {PURPOSE_NORMAL_REPLY, PURPOSE_TECHNICAL_HOLDING}
             and effect.recipient_igsid == client.igsid
             and effect.provider_namespace == revision_namespace
             and effect.client_permission_epoch == revision.permission_epoch
@@ -799,6 +808,12 @@ def mark_provider_started(
             )
             and effect.revision_snapshot_digest == revision.snapshot_digest
         )
+        if immutable_request_valid and effect.purpose == PURPOSE_TECHNICAL_HOLDING:
+            from management.services.ig_revision_holding import holding_receipt_valid
+
+            immutable_request_valid = holding_receipt_valid(
+                revision, text=(effect.payload.get("message") or {}).get("text"),
+            )
         if not immutable_request_valid:
             effect.state = effect.State.CANCELLED
             effect.failure_code = "effect_binding_invalid"

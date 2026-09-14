@@ -371,6 +371,8 @@ def _completion_decision(effects) -> tuple[bool, bool, str]:
     )
     if sent and cancelled_owed:
         return False, True, "partial_cancelled_delivery"
+    if sent and any(effect.purpose == "technical_holding" for effect in effects):
+        return False, True, "technical_holding_sent"
     if sent:
         return True, False, "delivered"
     if states and states <= {state.CANCELLED, state.SUPERSEDED}:
@@ -492,7 +494,7 @@ def finalization_due_ids(*, now=None, limit=25):
         state__in=(IgCustomerTurnRevision.State.CLAIMED, IgCustomerTurnRevision.State.PROCESSED),
         client__privacy_erasure_started_at__isnull=True,
         delivery_effects__state=IgRevisionDeliveryEffect.State.SENT,
-    ).annotate(owed_parts=Exists(owed)).filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now)).filter(
+    ).exclude(action_receipts__has_key="technical_holding_delivery").annotate(owed_parts=Exists(owed)).filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now)).filter(
         ~Q(claim_token__startswith=DEBT_PREFIX) | Q(owed_parts=False)
     ).filter(
         Q(state=IgCustomerTurnRevision.State.CLAIMED)
@@ -545,6 +547,15 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
         _project_sent_history(revision_id)
         project_legacy_message(revision_id)
         complete, _debt, aggregate_reason = _completion_decision(effects)
+        if aggregate_reason == "technical_holding_sent":
+            from management.services.ig_revision_holding import finalize_technical_holding
+
+            with transaction.atomic():
+                client = IgClient.objects.select_for_update().get(pk=identity["client_id"])
+                locked = IgCustomerTurnRevision.objects.select_for_update().get(pk=revision_id, claim_token=finalization_token)
+                finalize_technical_holding(locked, effects)
+            return RevisionFinalizationResult(revision_id, reason=aggregate_reason,
+                                              sent_parts=sum(row.state == row.State.SENT for row in effects))
         if not complete or aggregate_reason != "delivered":
             # Known SENT parts become visible even when another part is
             # unresolved. Keep owed state and stop reprojecting unchanged debt.

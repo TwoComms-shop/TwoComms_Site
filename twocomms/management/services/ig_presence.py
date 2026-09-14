@@ -39,6 +39,7 @@ LOCK_SECONDS = 0.05
 MAX_WORKERS = 8
 MAX_SESSION_SECONDS = 120.0
 MIN_ACTION_INTERVAL = 0.25
+DELIVERY_SEEN_WAIT_SECONDS = 5.0
 PRESENCE_DIRECTORY = Path(__file__).resolve().parents[2] / "tmp" / "ig_presence"
 
 
@@ -64,16 +65,17 @@ def capability_profile(settings_row):
     from management.services import instagram_bot as bot
 
     namespace = bot.ingress_provider_namespace(settings_row)
-    # A tested account/version may opt into refresh. No Messenger TTL is assumed.
+    # Five seconds is our conservative request cadence, not an asserted Meta
+    # indicator TTL. Refresh starts only after this account accepts typing_on.
     try:
-        refresh = float(os.environ.get("IG_PRESENCE_REFRESH_SECONDS", "0"))
+        refresh = float(os.environ.get("IG_PRESENCE_REFRESH_SECONDS", "5"))
     except ValueError:
         refresh = 0.0
     refresh = min(30.0, max(5.0, refresh)) if refresh > 0 else 0.0
     return PresenceCapability(
         bot.provider_transport(settings_row), bot.GRAPH_VERSION,
         hashlib.sha256(namespace.encode()).hexdigest()[:16], refresh,
-        "ui_unverified_refresh_configured" if refresh else "ui_unverified_refresh_disabled",
+        "ui_unverified_refresh_after_acceptance" if refresh else "ui_unverified_refresh_disabled",
     )
 
 
@@ -115,7 +117,11 @@ def send_sender_action(settings_row, recipient_id, action):
                 with requests.Session() as http:
                     with http.post(
                         url, headers={"Authorization": f"Bearer {token}"},
-                        json={"recipient": {"id": recipient_id}, "sender_action": action},
+                        # IG-only Meta SDK create_message lists these uppercase
+                        # literal enum values; legacy Messenger uses lowercase.
+                        json={"recipient": {"id": recipient_id}, "sender_action": (
+                            action.upper() if bot.provider_transport(settings_row) == bot.INSTAGRAM_LOGIN_TRANSPORT else action
+                        )},
                         timeout=(CONNECT_SECONDS, READ_SECONDS),
                         allow_redirects=False, stream=True,
                     ) as response:
@@ -134,6 +140,17 @@ def send_sender_action(settings_row, recipient_id, action):
     logger.info("ig_presence action=%s outcome=%s http=%s latency_ms=%s",
                 result.action, result.kind, result.http_status, result.latency_ms)
     return result
+
+
+def _report_session(summary):
+    """One compact record per lifecycle, never a database write per refresh."""
+    from management.services import instagram_bot as bot
+
+    detail = " ".join(f"{key}={value}" for key, value in summary.items())
+    bot.log("info", "presence_summary", detail)
+    # The standard incident helper omits INFO detail. These finite fields are
+    # deliberately safe for the operational file as well as the admin console.
+    bot._INCIDENT_LOGGER.info("ig_presence %s", detail)
 
 
 @contextmanager
@@ -162,11 +179,15 @@ def _channel_state(key):
 
 class PresenceSession:
     def __init__(self, controller, *, key, transport, guard, source_watermark,
-                 refresh_seconds=0, state_boundary=_channel_state, owner_check=None):
+                 refresh_seconds=0, state_boundary=_channel_state, owner_check=None,
+                 completion_guard=None, report=None, capability=None):
         self.controller, self.key = controller, key
         self.transport, self.guard = transport, guard
         self.source_watermark = int(source_watermark or 0)
         self.owner_check = owner_check
+        self.completion_guard = completion_guard
+        self.report = report
+        self.capability = capability
         self.owner_version = 0
         self.generation = secrets.token_hex(16)
         self.refresh_seconds = refresh_seconds
@@ -174,8 +195,19 @@ class PresenceSession:
         self.stopped = threading.Event()
         self.suspended = threading.Event()
         self.finished = threading.Event()
+        self.dispatching = threading.Event()
+        self.delivery_resolved = threading.Event()
+        self.delivery_confirmed = False
+        self.delivery_confirmed_at = 0.0
+        self.cancelled = False
         self.consecutive_failures = 0
+        self.failure_counts = {}
         self.typing_attempted = False
+        self.typing_accepted = False
+        self.seen_accepted = False
+        self.outcomes = {}
+        self.action_counts = {}
+        self.total_latency_ms = 0
         self.started = time.monotonic()
         self.thread = None
 
@@ -195,6 +227,22 @@ class PresenceSession:
 
     def stop(self):
         # Setting an event cannot block on HTTP, a file lock, or database I/O.
+        if not self.delivery_confirmed:
+            self.cancelled = True
+        self.delivery_resolved.set()
+        self.stopped.set()
+
+    def begin_dispatch(self):
+        """Stop typing now, while allowing confirmed delivery to finish seen."""
+        self.dispatching.set()
+        self.stopped.set()
+
+    def complete_delivery(self):
+        """Called only after substantive SENT evidence, never on mere planning."""
+        if not self.cancelled:
+            self.delivery_confirmed = True
+            self.delivery_confirmed_at = time.monotonic()
+        self.delivery_resolved.set()
         self.stopped.set()
 
     def _allowed(self, cleanup=False, check_owner=True):
@@ -215,13 +263,36 @@ class PresenceSession:
             return bool(self.suspended.is_set() or self.owner_check())
         return bool(allowed)
 
-    def _action(self, action):
+    def _completed_seen_current(self, state):
+        # The channel flock keeps this generation record stable during checks.
+        # Local ownership and the deadline can still change while DB reads run.
+        return bool(
+            not self.cancelled and self.delivery_confirmed
+            and time.monotonic() - self.delivery_confirmed_at <= DELIVERY_SEEN_WAIT_SECONDS
+            and self.controller.is_current(self)
+            and (state.get("generation") in {None, self.generation}
+                 or int(state.get("watermark") or 0) < self.source_watermark)
+        )
+
+    def _completed_seen_allowed(self, state):
+        if not self._completed_seen_current(state) or self.completion_guard is None:
+            return False
+        if not self.completion_guard():
+            return False
+        # Permission/source checks may block. They cannot extend the five-second
+        # delivery window or retain an owner replaced while those checks ran.
+        return self._completed_seen_current(state)
+
+    def _action(self, action, *, completed_seen=False):
         cleanup = action == "typing_off"
         with self.state_boundary(self.key) as state:
-            if not cleanup and self.suspended.is_set():
+            if completed_seen:
+                if action != "mark_seen" or not self._completed_seen_allowed(state):
+                    return False
+            if not cleanup and not completed_seen and self.suspended.is_set():
                 raise _PresenceSuspended()
-            allowed = self._allowed(cleanup)
-            if not cleanup and self.suspended.is_set():
+            allowed = completed_seen or self._allowed(cleanup)
+            if not cleanup and not completed_seen and self.suspended.is_set():
                 raise _PresenceSuspended()
             if not allowed:
                 return False
@@ -229,30 +300,45 @@ class PresenceSession:
                 if state.get("generation") != self.generation:
                     return False
             else:
-                if state.get("cooldown_until", 0) > time.time():
+                cooldowns = state.setdefault("action_cooldowns", {})
+                if cooldowns.get(action, 0) > time.time():
                     return False
-                delay = max(0.0, min(MIN_ACTION_INTERVAL, state.get("next_action_at", 0) - time.time()))
-                if delay and self.stopped.wait(delay):
+                next_actions = state.setdefault("next_actions", {})
+                delay = max(0.0, min(MIN_ACTION_INTERVAL, next_actions.get(action, 0) - time.time()))
+                if delay and not completed_seen and self.stopped.wait(delay):
                     return False
-                allowed = self._allowed()
-                if self.suspended.is_set():
+                allowed = self._completed_seen_allowed(state) if completed_seen else self._allowed()
+                if not completed_seen and self.suspended.is_set():
                     raise _PresenceSuspended()
                 if not allowed:
                     return False
                 state["generation"] = self.generation
                 state["watermark"] = self.source_watermark
-                state["next_action_at"] = time.time() + MIN_ACTION_INTERVAL
+                next_actions[action] = time.time() + MIN_ACTION_INTERVAL
             if action == "typing_on":
                 # Timeout is ambiguous too; a late accepted on needs cleanup.
                 self.typing_attempted = True
             result = self.transport(action)
+            self.outcomes[action] = result.kind
+            self.action_counts[action] = self.action_counts.get(action, 0) + 1
+            self.total_latency_ms += max(0, int(getattr(result, "latency_ms", 0)))
             if result.ok:
-                self.consecutive_failures = 0
+                self.failure_counts[action] = 0
+                if action == "typing_on":
+                    self.typing_accepted = True
+                elif action == "mark_seen":
+                    self.seen_accepted = True
             else:
-                self.consecutive_failures += 1
+                self.failure_counts[action] = self.failure_counts.get(action, 0) + 1
+                if (action == "typing_on" and not self.typing_accepted
+                        and result.kind in {"missing_account", "missing_token", "unsupported_or_denied", "rate_limited"}):
+                    # A definite rejection did not start typing. Preserve
+                    # cleanup only for a prior acceptance or ambiguous timeout.
+                    self.typing_attempted = False
                 if result.kind in {"missing_account", "missing_token", "unsupported_or_denied", "rate_limited"}:
-                    state["cooldown_until"] = time.time() + (60 if result.kind == "rate_limited" else 300)
+                    state.setdefault("action_cooldowns", {})[action] = time.time() + (60 if result.kind == "rate_limited" else 300)
                     return False
+            self.consecutive_failures = self.failure_counts[action]
             return self.consecutive_failures < 3
 
     def _perform(self, action):
@@ -270,9 +356,9 @@ class PresenceSession:
 
     def _run(self):
         try:
-            if not self._perform("mark_seen"):
-                return
-            if self.stopped.wait(MIN_ACTION_INTERVAL) or not self._perform("typing_on"):
+            # An unsupported seen action must not suppress independent typing.
+            self._perform("mark_seen")
+            if not self._perform("typing_on"):
                 return
             next_refresh = time.monotonic() + self.refresh_seconds
             while not self.stopped.wait(0.25):
@@ -280,7 +366,7 @@ class PresenceSession:
                     break
                 if self.suspended.is_set():
                     continue
-                if self.refresh_seconds and time.monotonic() >= next_refresh:
+                if self.typing_accepted and self.refresh_seconds and time.monotonic() >= next_refresh:
                     if not self._perform("typing_on"):
                         break
                     next_refresh = time.monotonic() + self.refresh_seconds
@@ -295,6 +381,32 @@ class PresenceSession:
                     self._action("typing_off")
                 except Exception:
                     logger.info("ig_presence outcome=cleanup_unavailable")
+            # Fast delivery can beat thread startup. Retain one bounded seen
+            # attempt only for real SENT, while typing stays irreversibly off.
+            if self.dispatching.is_set() and not self.seen_accepted and not self.cancelled:
+                self.delivery_resolved.wait(DELIVERY_SEEN_WAIT_SECONDS)
+                if self.delivery_confirmed:
+                    try:
+                        self._action("mark_seen", completed_seen=True)
+                    except Exception:
+                        logger.info("ig_presence outcome=completed_seen_unavailable")
+            try:
+                if self.report:
+                    self.report({
+                        "route": getattr(self.capability, "route", "unknown"),
+                        "version": getattr(self.capability, "api_version", "unknown"),
+                        "account_key": getattr(self.capability, "account_key", "unknown"),
+                        "our_mark_seen": self.outcomes.get("mark_seen", "not_attempted"),
+                        "typing": self.outcomes.get("typing_on", "not_attempted"),
+                        "off": self.outcomes.get("typing_off", "not_attempted"),
+                        "typing_requests": self.action_counts.get("typing_on", 0),
+                        "latency_ms": self.total_latency_ms,
+                        "cancelled": int(self.cancelled),
+                        "late_seen_authorized": int(self.delivery_confirmed),
+                        "ui": "unverified",
+                    })
+            except Exception:
+                logger.info("ig_presence outcome=summary_unavailable")
             try:
                 connections.close_all()  # Django connections are thread-local.
             finally:
@@ -352,7 +464,8 @@ _controller = PresenceController()
 
 
 def start_presence(settings_row, *, client_id, recipient_id, owner_token,
-                   source_watermark, permission=None, owner_check=None):
+                   source_watermark, permission=None, owner_check=None,
+                   completion_check=None):
     """Start only for an admitted, durably claimed preparation/execution.
 
     owner_token is the client's automation lease. owner_check additionally fences
@@ -392,6 +505,13 @@ def start_presence(settings_row, *, client_id, recipient_id, owner_token,
             current = capture_reply_permission(settings_row.pk, client_id)
             return bool(current and current.settings_epoch == permission.settings_epoch and current.client_epoch == permission.client_epoch)
 
+        def completed_guard():
+            if not guard(True) or completion_check is None:
+                return False
+            current = capture_reply_permission(settings_row.pk, client_id)
+            return bool(current and current.settings_epoch == permission.settings_epoch
+                        and current.client_epoch == permission.client_epoch and completion_check())
+
         logger.info("ig_presence route=%s version=%s account_key=%s capability=%s",
                     profile.route, profile.api_version, profile.account_key, profile.visibility)
         return _controller.start(
@@ -399,6 +519,8 @@ def start_presence(settings_row, *, client_id, recipient_id, owner_token,
             transport=lambda action: send_sender_action(settings_row, recipient_id, action),
             guard=guard, source_watermark=source_watermark,
             refresh_seconds=profile.refresh_seconds, owner_check=owner_check,
+            completion_guard=completed_guard,
+            report=_report_session, capability=profile,
         )
     except Exception:
         logger.info("ig_presence outcome=start_unavailable")

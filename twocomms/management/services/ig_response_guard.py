@@ -23,12 +23,13 @@ _SCHEMA_REPAIR_GUIDANCE = {
 
 
 class ProviderResponseGuard:
-    def __init__(self, *, context_factory, image_mimes=(), expected_content_hashes=None, require_intelligence=False, programme=None):
+    def __init__(self, *, context_factory, image_mimes=(), expected_content_hashes=None, require_intelligence=False, programme=None, response_normalizer=None):
         self.context_factory = context_factory
         self.image_mimes = tuple(image_mimes)
         self.expected_content_hashes = tuple(expected_content_hashes) if expected_content_hashes is not None else None
         self.require_intelligence = bool(require_intelligence)
         self.programme = programme
+        self.response_normalizer = response_normalizer
         self.source = None
         self.response = None
         self.last_reasons = ()
@@ -46,6 +47,11 @@ class ProviderResponseGuard:
             if response.error in _SCHEMA_REPAIR_GUIDANCE:
                 reasons += ("schema_" + response.error,)
             return self._decision(False, reasons)
+        if self.response_normalizer is not None:
+            try:
+                response = self.response_normalizer(response)
+            except Exception:
+                return self._decision(False, ("authority_unavailable",))
         if "price" in response.control:
             # No typed manager-approved offer exists yet. The legacy negotiated
             # price path accepts model/agent text and cannot authorize a reply.
@@ -108,9 +114,12 @@ class ProviderResponseGuard:
             )
         if "catalog_selector_missing" in reasons:
             guidance.append(
-                "No exact catalog product is confirmed. Source-backed fit, colour and "
+                "An exact catalog configuration is not confirmed; a selected product "
+                "alone does not prove fit, size or colour availability. Source-backed fit, colour and "
                 "garment preferences may be acknowledged as customer wishes, without "
-                "selection controls. Ask only the next unknown model/print question. "
+                "selection controls. Ask only the next genuinely missing field: "
+                "model/print if no product is known, or usual size if product is known "
+                "and size is missing. Never repeat a known model, fit, colour or size. "
                 "Do not ask again for an accepted preference or invent a product, "
                 "SKU, size recommendation, availability, price or checkout."
             )
@@ -146,7 +155,109 @@ class ProviderResponseGuard:
         return result
 
 
-def build_source_preference_fallback(client):
+def _current_revision_fit_preference(client, revision):
+    """An accepted current source can express a wish even with a selected SKU.
+
+    This proves what the customer requested, never availability or selection of
+    that catalog configuration. No legacy-only fit value can supply the proof.
+    """
+    from management.models import IgCommerceSelectionSession, IgCommerceTurnDecision
+    from management.services.ig_commerce_turns import parse_turn
+
+    receipt = (revision.action_receipts or {}).get("commerce_reduction") or {}
+    if receipt.get("snapshot_digest") != revision.snapshot_digest:
+        return {}
+    snapshots = {row["message_id"]: row for row in (revision.bundle_snapshot or {}).get("sources", [])}
+    session = IgCommerceSelectionSession.objects.filter(client_id=client.pk, open_slot=1).order_by("-generation").first()
+    if session is None:
+        return {}
+    index = int(session.active_index or 0)
+    lines = session.lines or []
+    if not 0 <= index < len(lines) or not isinstance(lines[index], dict):
+        return {}
+    line = lines[index]
+    if line.get("product_id") != client.current_product_id:
+        return {}
+    fit = line.get("fit_option_code")
+    if fit not in {"oversize", "classic"}:
+        return {}
+    for item in reversed(receipt.get("decisions") or []):
+        snapshot = snapshots.get(item.get("source_message_id"))
+        if not snapshot or item.get("accepted") is not True or item.get("is_stale"):
+            continue
+        decision = IgCommerceTurnDecision.objects.select_related("source_message", "transition").filter(
+            pk=item.get("decision_id"), source_message_id=item.get("source_message_id"),
+            session=session, accepted=True, is_stale=False,
+        ).first()
+        if decision is None or not decision.transition_id or decision.transition_id != item.get("transition_id"):
+            continue
+        source = decision.source_message
+        if (source.client_id != client.pk or source.sender_id != client.igsid
+            or source.role != "user" or source.source != "webhook"
+            or source.text != snapshot.get("text")
+            or item.get("source_digest") != snapshot.get("source_digest")
+            or decision.transition.source_message_id != source.pk):
+            continue
+        request = decision.request_payload or {}
+        parsed = parse_turn(source.text)
+        if parsed.field_updates.get("fit") != fit or (request.get("field_updates") or {}).get("fit") != fit:
+            continue
+        after = decision.transition.next_snapshot or {}
+        after_index = int(after.get("active_index") or 0)
+        after_lines = after.get("lines") or []
+        if after_index != index or not 0 <= index < len(after_lines):
+            continue
+        then = after_lines[index]
+        if not isinstance(then, dict) or any(then.get(key) != line.get(key) for key in ("line_id", "product_id", "fit_option_code")):
+            continue
+        return {"fit": fit, "source_message_id": source.pk, "source_digest": snapshot["source_digest"],
+                "decision_id": decision.pk, "transition_id": decision.transition_id,
+                "session_id": session.pk, "session_revision": session.revision,
+                "line_id": line.get("line_id"), "product_id": line.get("product_id"),
+                "size": str(line.get("size") or ""), "snapshot_digest": revision.snapshot_digest}
+    return {}
+
+
+def _current_fit_withdrawal(client, revision):
+    from management.models import IgCommerceTurnDecision
+    from management.services.ig_commerce_turns import parse_turn
+    from management.services.ig_revision_holding import _sources_unchanged
+
+    if not (revision.bundle_snapshot or {}).get("sources"):
+        return {}
+    receipt = (revision.action_receipts or {}).get("commerce_reduction") or {}
+    if receipt.get("snapshot_digest") != revision.snapshot_digest or not _sources_unchanged(revision):
+        return {}
+    snapshots = {row["message_id"]: row for row in revision.bundle_snapshot.get("sources", [])}
+    for item in reversed(receipt.get("decisions") or []):
+        snapshot = snapshots.get(item.get("source_message_id"))
+        if not snapshot or item.get("is_stale"):
+            continue
+        parsed = parse_turn(snapshot.get("text") or "")
+        if parsed.field_updates.get("fit"):
+            return {}
+        rejected = parsed.preference_withdrawals.get("fit")
+        if rejected not in {"oversize", "classic"}:
+            continue
+        decision = IgCommerceTurnDecision.objects.select_related("source_message", "transition").filter(
+            pk=item.get("decision_id"), source_message_id=snapshot["message_id"],
+            is_stale=False, session__client_id=client.pk, session__open_slot=1,
+        ).first()
+        if (decision is None or decision.source_message.role != "user"
+            or decision.source_message.source != "webhook" or decision.source_message.sender_id != client.igsid
+            or decision.transition_id != item.get("transition_id")
+            or (not decision.accepted and decision.result_payload.get("reason") != "no_state_change")
+            or (decision.request_payload.get("preference_withdrawals") or {}).get("fit") != rejected):
+            return {}
+        return {"rejected_fit": rejected, "source_message_id": snapshot["message_id"],
+                "source_digest": snapshot["source_digest"], "decision_id": decision.pk,
+                "transition_id": decision.transition_id, "session_id": decision.session_id,
+                "snapshot_digest": revision.snapshot_digest, "source_rejection_only": True,
+                "decision_accepted": decision.accepted}
+    return {}
+
+
+def build_source_preference_fallback(client, *, revision=None):
     """Build fresh local prose, with a recomputable source-backed proof.
 
     No rejected provider text is read or sanitized. This narrow answer covers
@@ -156,14 +267,18 @@ def build_source_preference_fallback(client):
     from management.services.ig_commerce_projection import source_preferences_for
     from management.services.ig_reply_truth import ReplyTruthContext
 
+    withdrawal = _current_fit_withdrawal(client, revision) if revision is not None else {}
+    direct = withdrawal or (_current_revision_fit_preference(client, revision) if revision is not None and client.current_product_id else {})
     projection = source_preferences_for(client)
     values = projection.get("values") or {}
     fit = values.get("fit_option_code")
-    if fit not in {"oversize", "classic"} or client.current_product_id:
+    if direct and not withdrawal:
+        fit = direct["fit"]
+    if not withdrawal and (fit not in {"oversize", "classic"} or (client.current_product_id and not direct)):
         return None, {}
     from management.models import IgCommerceSelectionSession
-    session = IgCommerceSelectionSession.objects.filter(pk=projection.get("session_id"), open_slot=1).first()
-    if session is None or (session.query_constraints or {}).get("query"):
+    session = IgCommerceSelectionSession.objects.filter(pk=direct.get("session_id") or projection.get("session_id"), open_slot=1).first()
+    if session is None or (not direct and (session.query_constraints or {}).get("query")):
         # A model/print query already exists; this narrow template cannot decide
         # which remaining selector needs clarification.
         return None, {}
@@ -171,16 +286,34 @@ def build_source_preference_fallback(client):
     labels = {"uk": {"oversize": "оверсайз", "classic": "класична посадка"},
               "ru": {"oversize": "оверсайз", "classic": "классическая посадка"},
               "en": {"oversize": "oversize", "classic": "classic fit"}}
-    templates = {"uk": "Врахую ваше побажання «{fit}». Яку модель або принт ви хочете?",
-                 "ru": "Учту ваше пожелание «{fit}». Какую модель или принт вы хотите?",
-                 "en": 'I will use your preference “{fit}”. Which model or print would you like?'}
+    templates = {"uk": "Врахую ваше побажання «{fit}». Хочете обрати принт із нашого асортименту чи маєте свій дизайн?",
+                 "ru": "Учту ваше пожелание «{fit}». Хотите выбрать принт из нашего ассортимента или у вас свой дизайн?",
+                 "en": 'I will use your preference “{fit}”. Would you like to choose a print from our range, or do you have your own design?'}
+    template = "preference_then_model"
+    if direct and not withdrawal:
+        if direct["size"]:
+            # A complete selection/checkout needs its own action authority; an
+            # acknowledgement must not masquerade as fulfillment of that work.
+            return None, {"reason": "fallback_complete_selection_requires_action"}
+        template = "preference_then_usual_size"
+        templates = {"uk": "Врахую ваше побажання «{fit}». Який розмір ви зазвичай носите?",
+                     "ru": "Учту ваше пожелание «{fit}». Какой размер вы обычно носите?",
+                     "en": 'I will use your preference “{fit}”. What size do you usually wear?'}
+    if withdrawal:
+        fit = withdrawal["rejected_fit"]
+        template = "withdrawal_then_fit_preference"
+        templates = {"uk": "Зрозуміло. Яку посадку ви хотіли б натомість?",
+                     "ru": "Понял. Какую посадку вы хотели бы вместо неё?",
+                     "en": 'Understood. What fit would you prefer instead?'}
     payload = {"reply_text": templates[language].format(fit=labels[language][fit]), "controls": []}
     guard = ProviderResponseGuard(context_factory=lambda _control, _reply: ReplyTruthContext())
     if not guard.validate(payload).valid:
         return None, {}
     canonical = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     proof = {"kind": "source_preference_fallback", "version": 1,
-             "template": "preference_then_model", "language": language,
+             "template": template, "language": language,
              "source_preferences_digest": hashlib.sha256(canonical(projection)).hexdigest(),
              "response_digest": hashlib.sha256(canonical(payload)).hexdigest()}
+    if direct:
+        proof["current_source_preference"] = direct
     return guard.response, proof
