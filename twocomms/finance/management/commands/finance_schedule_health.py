@@ -10,7 +10,7 @@ class Command(BaseCommand):
     help = 'Показывает состояние последних финансовых уведомлений и синхронизаций'
 
     def handle(self, *args, **options):
-        latest_notification = NotificationLog.objects.order_by('-created_at').first()
+        latest_notification = NotificationLog.objects.order_by('-sent_at').first()
         integrations = IntegrationConnection.objects.filter(provider='monobank').exclude(status='disconnected')
         self.stdout.write(f'now={timezone.localtime().isoformat()}')
         if latest_notification:
