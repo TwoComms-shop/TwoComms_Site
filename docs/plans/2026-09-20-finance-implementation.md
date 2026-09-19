@@ -10,8 +10,9 @@
 - [x] `USER` Зафиксировать baseline и сохранить незакоммиченные изменения в рабочем дереве.
 - [x] `USER` Не менять старые операции автоматически: исторические предложения проходят `ClassificationReview`.
 - [x] `USER` Для Monobank использовать гибрид: прямой исходящий API только при подтвержденной capability, иначе предзаполненная инструкция + сверка выписки/webhook.
-- [ ] `USER` Production rollout выполнять отдельным подтвержденным шагом через стандартный `git push` + SSH `git pull`.
-- [ ] `USER` После rollout проверить commit, миграции, расписания и read-only health-check на production.
+- [x] `USER` Production rollout выполнять отдельным подтвержденным шагом через стандартный `git push` + SSH `git pull`.
+- [x] `USER` После rollout проверить commit, миграции, расписания и read-only health-check на production.
+- [x] `DERIVED` После pull перезапускать Passenger штатным `tmp/restart.txt` и проверять публичные finance URL, иначе старые workers могут держать кэшированные импорты.
 
 ## Baseline production и тесты
 
