@@ -15,7 +15,7 @@ class Command(BaseCommand):
         self.stdout.write(f'now={timezone.localtime().isoformat()}')
         if latest_notification:
             self.stdout.write(
-                f'latest_notification={latest_notification.created_at.isoformat()} '
+                f'latest_notification={latest_notification.sent_at.isoformat()} '
                 f'type={latest_notification.notification_type} success={latest_notification.success}'
             )
         else:
