@@ -826,6 +826,8 @@ def process_webhook(conn: IntegrationConnection, payload: dict, *, user=None) ->
         return {'ok': False, 'error': 'unknown account'}
     txn = _import_item(account, item, user=user, apply_rules=True)
     if txn is not None:
+        from .payment_intents import match_pending_intents
+        match_pending_intents(txn, user=user)
         # Спершу зводимо внутрішні перекази (може змінити транзакції рахунку),
         # і ЛИШЕ ПОТІМ робимо back-calc балансу проти банку — інакше баланс
         # дрейфує, бо reconcile мутує дані вже після фіксації initial_balance.

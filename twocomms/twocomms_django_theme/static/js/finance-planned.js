@@ -38,6 +38,72 @@
   }
   function todayISO() { return new Date().toISOString().slice(0, 10); }
 
+  // ----------------------------- Component payment fallback
+  var v2Modal = document.getElementById('fin-v2-pay-modal');
+  var v2Form = document.getElementById('fin-v2-pay-form');
+  var v2Result = document.getElementById('fin-v2-pay-result');
+  var activeIntent = null;
+  function openV2Pay(btn) {
+    if (!v2Modal) return;
+    document.getElementById('fin-v2-component-id').value = btn.getAttribute('data-component-id');
+    document.getElementById('fin-v2-pay-name').textContent = btn.getAttribute('data-component-name') || '';
+    document.getElementById('fin-v2-amount').value = btn.getAttribute('data-component-remaining') || '';
+    document.getElementById('fin-v2-purpose').value = btn.getAttribute('data-component-purpose') || '';
+    document.getElementById('fin-v2-comment').value = '';
+    v2Result.hidden = true; v2Result.textContent = '';
+    activeIntent = null;
+    openModal(v2Modal);
+  }
+  if (v2Form) v2Form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (activeIntent) return;
+    api('/api/v2/obligation-components/' + document.getElementById('fin-v2-component-id').value + '/payment-intent/', 'POST', {
+      account_id: document.getElementById('fin-v2-account').value,
+      amount: document.getElementById('fin-v2-amount').value,
+      purpose: document.getElementById('fin-v2-purpose').value,
+      comment: document.getElementById('fin-v2-comment').value,
+    }).then(function (res) {
+      v2Result.hidden = false;
+      if (!res.ok || !res.data.ok) { v2Result.textContent = (res.data && res.data.error) || 'Не удалось сформировать платеж'; return; }
+      activeIntent = res.data.intent;
+      var recipient = activeIntent.recipient || {};
+      v2Result.textContent = 'Проверьте сумму и реквизиты: ' + activeIntent.amount + ' ' + activeIntent.currency +
+        ' · ' + (recipient.iban || recipient.pan_mask || recipient.label || 'реквизиты не указаны') +
+        '. После ручного подтверждения в банке нажмите кнопку еще раз.';
+      var submit = v2Form.querySelector('button[type="submit"]');
+      submit.textContent = 'Я отправил платеж';
+      submit.onclick = function (ev) {
+        ev.preventDefault();
+        api('/api/v2/payment-intents/' + activeIntent.id + '/transition/', 'POST', { status: 'submitted' })
+          .then(function (transition) {
+            if (transition.ok && transition.data.ok) {
+              activeIntent = transition.data.intent;
+              v2Result.textContent = 'Ожидаем подтверждение Monobank. Статус обновится автоматически после выписки.';
+              pollV2Intent(activeIntent.id);
+            }
+          });
+      };
+    });
+  });
+  function pollV2Intent(id) {
+    var timer = setInterval(function () {
+      api('/api/v2/payment-intents/' + id + '/').then(function (res) {
+        if (!res.ok || !res.data.ok) return;
+        var status = res.data.intent.status;
+        if (status === 'detected' || status === 'confirmed' || status === 'rejected' || status === 'expired') {
+          clearInterval(timer);
+          v2Result.textContent = 'Статус платежа: ' + status;
+          if (status === 'confirmed') setTimeout(function () { window.location.reload(); }, 700);
+        }
+      });
+    }, 5000);
+  }
+  document.addEventListener('click', function (e) {
+    var pay = e.target.closest('[data-v2-pay]');
+    if (pay) { e.preventDefault(); openV2Pay(pay); return; }
+    if (e.target.closest('[data-v2-pay-close]')) closeModal(v2Modal);
+  });
+
   // ---------------------------------------------------------------- Settle
   var settleModal = document.getElementById('fin-settle-modal');
   var settleEls = {

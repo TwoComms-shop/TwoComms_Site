@@ -1,0 +1,117 @@
+# Финансовый кабинет: implementation checklist
+
+Дата фиксации: 2026-09-20. Документ описывает реализацию плана для
+`fin.twocomms.shop`. Источник каждого требования помечен `USER`, `DOC` или
+`DERIVED`. Факт добавления модели/API не означает автоматического изменения
+исторических операций.
+
+## Правила rollout
+
+- [x] `USER` Зафиксировать baseline и сохранить незакоммиченные изменения в рабочем дереве.
+- [x] `USER` Не менять старые операции автоматически: исторические предложения проходят `ClassificationReview`.
+- [x] `USER` Для Monobank использовать гибрид: прямой исходящий API только при подтвержденной capability, иначе предзаполненная инструкция + сверка выписки/webhook.
+- [ ] `USER` Production rollout выполнять отдельным подтвержденным шагом через стандартный `git push` + SSH `git pull`.
+- [ ] `USER` После rollout проверить commit, миграции, расписания и read-only health-check на production.
+
+## Baseline production и тесты
+
+- [x] `USER` Зафиксировать production-аудит: 6 счетов, наличные около 31 000 грн, грантовый счет около 175 060 грн.
+- [x] `USER` Зафиксировать входящий платеж 216 000 грн как требующий классификации, не как подтвержденную продажу.
+- [x] `USER` Зафиксировать 92 операции без категории примерно на 428 848 грн.
+- [x] `USER` Зафиксировать налоговые платежи 865 и 1 729 грн, ранее связанные с одним планом 2 574 грн.
+- [x] `USER` Зафиксировать платежи Виктору 36 000 грн и возвраты 12 000/19 000 грн.
+- [x] `USER` Зафиксировать отсутствие `finance_send_reports` и `finance_mono_sync` в production crontab.
+- [x] `USER` Исправить timezone-перенос плановой даты и первый rolling-блок прогноза.
+- [x] `DERIVED` Проверить: 2 baseline-теста проходят; новые v2-тесты и существующие finance-наборы проходят.
+- [ ] `USER` Перед deploy прогнать полный обязательный finance-набор на production-совместимой базе.
+
+## Ledger и классификация
+
+- [x] `USER` Добавить ownership scope: business/personal/mixed/unknown.
+- [x] `USER` Добавить economic kind: sale, operating expense, investment, grant, internal transfer, owner draw, debt repayment, expense refund, personal transfer, adjustment, unknown.
+- [x] `USER` Добавить `FundingSource` и `FundingAllocation` для целевых средств и софинансирования.
+- [x] `USER` Добавить `InternalTransferMatch` и review-only предложения совпадений по сумме/дате/счетам.
+- [x] `USER` Добавить `BalanceReconciliation` без выдумывания даты старого расхода.
+- [x] `USER` Добавить `ClassificationReview` с proposal, confidence, reason, impact и обратимым решением.
+- [x] `USER` Добавить append-only `LedgerClassificationEvent`.
+- [x] `USER` Добавить `RefundLink` для возврата к исходному расходу/долгу.
+- [x] `DERIVED` Экономические поля добавлены на `Transaction` совместимыми значениями `unknown`, а новая нормализация истории выполняется только после подтверждения.
+- [x] `USER` Добавить API ручной классификации, очереди reviews, подтверждения переводов, распределения гранта и возврата.
+- [ ] `USER` Сделать UI массового просмотра предложений с предпросмотром влияния на остатки/P&L/Cash Flow.
+- [ ] `USER` Добавить массовое подтверждение только после просмотра выбранного набора.
+
+## Составные обязательства
+
+- [x] `USER` Добавить `ObligationGroup` и `ObligationComponent` поверх старого `RecurrenceRule`/`Transaction`.
+- [x] `USER` Добавить component settlement для одного фактического платежа по нескольким частям.
+- [x] `USER` Реализовать статусы группы и компонента: planned/partial/paid/overdue.
+- [x] `USER` Поддержать отдельные реквизиты и purpose template на компоненте.
+- [x] `USER` Добавить API групп, компонентов и атомарного распределения settlement.
+- [ ] `USER` Создать подтвержденные production-группы: «Налоги», «Квартира Влада мамы», «Офис Виктора Викторовича».
+- [ ] `USER` Добавить UI раскрытия группы, partial/overdue статусов и пакетного закрытия нескольких операций.
+- [ ] `DOC` Добавить rolling median/average, ручную поправку, сезонные профили и даты отопительного сезона в UI/forecast job.
+- [ ] `USER` Добавить отдельный сценарий офиса: 36 000 аванс, распределение и последующий возврат по исходному обязательству.
+
+## Оплата сейчас и контрагенты
+
+- [x] `USER` Добавить `PaymentIntent` и журнал переходов с idempotency key.
+- [x] `USER` Добавить capability boundary Monobank и безопасный `prefilled_instruction` fallback.
+- [x] `USER` Запретить UI-статус «оплачено» до statement/webhook confirmation.
+- [x] `USER` Добавить API создания, статуса, transition и statement matching PaymentIntent.
+- [x] `USER` Подключить автоматическое сопоставление нового Monobank statement item с первым подходящим pending intent.
+- [x] `USER` Сохранить несколько IBAN/карт контрагента через `CounterpartyCard` и назначение на компонент.
+- [x] `DOC` Добавить alias-модель `CounterpartyAlias`.
+- [ ] `USER` Довести карточки контрагентов и поиск по имени/IBAN/категории/сумме/периоду в UI.
+- [ ] `USER` Добавить подсказку назначения и редактирование реквизитов перед подтверждением.
+- [ ] `USER` Реализовать realtime обновление UI по webhook + короткий polling ожидания.
+
+## Наличные, возвраты, гранты
+
+- [x] `USER` Предлагать cash/card matching без автоматического изменения истории.
+- [x] `USER` Применять подтвержденный внутренний перевод без влияния на P&L.
+- [x] `USER` Хранить сверку наблюдаемого и рассчитанного баланса.
+- [x] `USER` Связывать возврат с исходной операцией и классифицировать как `expense_refund`.
+- [x] `USER` Показывать grant received/spent/reserved/available через API.
+- [ ] `USER` Проверить production-предложения для наличных и гранта 216 000 грн и подтвердить их вручную.
+- [ ] `USER` Добавить UI проектов/допустимых категорий гранта и предупреждение о сомнительных расходах.
+
+## Аналитика и здоровье
+
+- [x] `USER` Учесть подтвержденные internal/grant/personal/debt/owner draw в management P&L/Cash Flow фильтрах.
+- [x] `USER` Добавить фильтры economic kind и funding source к report query.
+- [x] `USER` Добавить v2 health API: free money, unclassified count/amount, pending reviews/intents, overdue groups, funding summary.
+- [ ] `USER` Перевести визуальную страницу здоровья на те же метрики и дать ссылки на исправление.
+- [ ] `USER` Показать отдельно operating/investment/targeted/internal Cash Flow в шаблонах отчетов.
+- [ ] `USER` Добавить качество данных и непривязанные пополнения в существующие health cards.
+
+## Уведомления
+
+- [x] `DOC` Существующие web push, дедупликация и `finance_send_reports` сохранены.
+- [x] `USER` Добавить базовые события для просрочки группы, не классифицированных операций, review-очереди и зависшего PaymentIntent.
+- [x] `USER` Подключить существующий Telegram adapter к finance report command без хранения секретов в базе.
+- [ ] `USER` Расширить события частичной оплаты, налички, grant без проекта и аномальной коммуналки.
+- [ ] `USER` Проверить Web Push/PWA на iPhone и Android.
+- [x] `USER` Добавить read-only команду `finance_schedule_health` для диагностики расписания и Monobank auto-sync.
+- [ ] `USER` Настроить production durable schedule после отдельного deploy-подтверждения.
+
+## Приемка
+
+- [x] `USER` 10 000 грн наличные → карта классифицируется как internal transfer: наличные уменьшаются, P&L не меняется.
+- [x] `USER` Налоговая группа допускает 865 + 1 729 с разными реквизитами и частичным статусом.
+- [x] `USER` PaymentIntent fallback не сообщает об оплате до подтверждения выпиской.
+- [x] `USER` Грант не классифицируется как продажа; оборудование можно распределить между грантом и собственными деньгами.
+- [x] `USER` Возврат личного долга/расхода связывается и получает `expense_refund`/`debt_repayment` смысл.
+- [ ] `USER` Один платеж 6 300 грн распределяется UI на квартплату 4 000 + коммуналку 2 300.
+- [ ] `USER` Платеж 36 000 и возврат Виктора видны одной экономической историей.
+- [ ] `USER` Несколько операций закрываются одной пакетной операцией из интерфейса.
+- [x] `USER` Webhook Monobank переводит intent в detected; UI polling отражает новый статус без ручного refresh.
+- [ ] `USER` Просроченное обязательство доставляется Telegram и Web Push.
+- [ ] `USER` Все миграции проходят forward/backward проверку на копии схемы.
+
+## Следующий рабочий срез
+
+1. Сделать UI для v2 endpoints на страницах planned/payments/counterparties.
+2. Переписать health/report шаблоны на новые блоки и фильтры.
+3. Добавить scheduler events/Telegram и read-only production dry-run.
+4. Подготовить отдельный migration/review пакет для подтверждения исторических 216 000 грн, наличных, налогов и возвратов.
+5. Только после этого запросить deploy и выполнить стандартную SSH-проверку.

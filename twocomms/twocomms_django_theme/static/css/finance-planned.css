@@ -219,3 +219,28 @@
   .fin-tl-seg__title { font-size: 13px; }
   .fin-tl-seg__sums { flex-direction: column; gap: 2px; text-align: right; }
 }
+
+/* Составные обязательства v2. */
+.fin-v2-groups { margin-top: 24px; }
+.fin-oblig-v2 {
+  background: var(--fin-panel); border: 1px solid var(--fin-border);
+  border-radius: var(--fin-radius-md, 14px); overflow: hidden;
+}
+.fin-oblig-v2__head {
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+  border-bottom: 1px solid var(--fin-border); background: var(--fin-bg-850, rgba(20,22,30,.55));
+}
+.fin-oblig-v2__head strong { flex: 1; }
+.fin-oblig-v2__status { font-size: 11px; color: var(--fin-muted); text-transform: uppercase; }
+.fin-oblig-v2__status--overdue { color: #fb7185; }
+.fin-oblig-v2__status--paid { color: #34d399; }
+.fin-oblig-v2__parts { display: flex; flex-direction: column; }
+.fin-oblig-v2__part { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--fin-border); font-size: 13px; }
+.fin-oblig-v2__part:last-child { border-bottom: 0; }
+.fin-oblig-v2__done { color: #34d399; font-size: 12px; }
+.fin-v2-groups .fin-oblig__pay { white-space: nowrap; }
+.fin-v2-groups + .fin-modal { z-index: 20; }
+@media (max-width: 640px) {
+  .fin-oblig-v2__part { grid-template-columns: 1fr auto; }
+  .fin-oblig-v2__part .fin-oblig__pay, .fin-oblig-v2__part .fin-oblig-v2__done { grid-column: 1 / -1; justify-self: start; }
+}

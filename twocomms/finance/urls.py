@@ -17,6 +17,23 @@ urlpatterns = [
 
     # --- Розділи ---
     path('health/', views.financial_health, name='finance_health'),
+    # --- Новий reviewable ledger/API слой ---
+    path('api/v2/health/', views.finance_v2_health_api, name='finance_v2_health_api'),
+    path('api/v2/transactions/<int:txn_id>/classification/', views.classification_api, name='finance_v2_classification_api'),
+    path('api/v2/reviews/', views.review_list_api, name='finance_v2_review_list_api'),
+    path('api/v2/reviews/<int:review_id>/action/', views.review_action_api, name='finance_v2_review_action_api'),
+    path('api/v2/transfers/suggestions/', views.transfer_suggestions_api, name='finance_v2_transfer_suggestions_api'),
+    path('api/v2/funding/', views.funding_sources_api, name='finance_v2_funding_sources_api'),
+    path('api/v2/funding/<int:source_id>/allocate/', views.funding_allocate_api, name='finance_v2_funding_allocate_api'),
+    path('api/v2/obligation-groups/', views.obligation_groups_api, name='finance_v2_obligation_groups_api'),
+    path('api/v2/obligation-groups/<int:group_id>/', views.obligation_group_api, name='finance_v2_obligation_group_api'),
+    path('api/v2/obligation-groups/<int:group_id>/components/', views.obligation_component_api, name='finance_v2_obligation_component_api'),
+    path('api/v2/obligation-components/<int:component_id>/payment-intent/', views.component_payment_intent_api, name='finance_v2_component_payment_intent_api'),
+    path('api/v2/payment-intents/<int:intent_id>/', views.payment_intent_api, name='finance_v2_payment_intent_api'),
+    path('api/v2/payment-intents/<int:intent_id>/transition/', views.payment_intent_transition_api, name='finance_v2_payment_intent_transition_api'),
+    path('api/v2/payment-intents/<int:intent_id>/match/', views.payment_intent_match_api, name='finance_v2_payment_intent_match_api'),
+    path('api/v2/settlements/<int:settlement_id>/components/', views.settlement_components_api, name='finance_v2_settlement_components_api'),
+    path('api/v2/refunds/link/', views.refund_link_api, name='finance_v2_refund_link_api'),
     # Магазини під реалізацію (consignment)
     path('consignment/', views.consignment_list, name='finance_consignment'),
     path('consignment/<int:reseller_id>/', views.consignment_detail, name='finance_consignment_detail'),

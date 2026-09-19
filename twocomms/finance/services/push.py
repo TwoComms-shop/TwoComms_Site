@@ -608,3 +608,38 @@ def build_planned_reminder_report(company) -> dict | None:
                      'income': float(inc), 'expense': float(exp),
                      'income_display': ser.money(inc, cur),
                      'expense_display': ser.money(exp, cur)}}
+
+
+def build_ledger_alert_report(company) -> dict | None:
+    """Actionable v2 alerts kept separate from the legacy health score."""
+    from ..models import ClassificationReview, PaymentIntent, Transaction
+    from . import obligations_v2
+
+    actual = company.transactions.filter(status=Transaction.STATUS_ACTUAL)
+    unclassified = actual.filter(economic_kind='unknown')
+    pending_reviews = ClassificationReview.objects.filter(company=company, status='pending').count()
+    stalled_intents = PaymentIntent.objects.filter(
+        company=company, status__in=['awaiting_confirmation', 'submitted', 'detected'],
+    ).count()
+    overdue = []
+    for group in company.obligation_groups.filter(is_active=True).prefetch_related('components'):
+        if obligations_v2.group_summary(group)['status'] == 'overdue':
+            overdue.append(group.title)
+    parts = []
+    if overdue:
+        parts.append(f'просрочено: {", ".join(overdue[:3])}')
+    if unclassified.exists():
+        parts.append(f'не классифицировано: {unclassified.count()} операций')
+    if pending_reviews:
+        parts.append(f'на подтверждение: {pending_reviews}')
+    if stalled_intents:
+        parts.append(f'ожидают банк: {stalled_intents}')
+    if not parts:
+        return None
+    return {
+        'title': 'Нужно внимание к учету',
+        'body': '; '.join(parts),
+        'data': {'kind': 'ledger_alert', 'overdue_groups': overdue,
+                 'unclassified_count': unclassified.count(),
+                 'pending_reviews': pending_reviews, 'stalled_intents': stalled_intents},
+    }

@@ -49,6 +49,22 @@ from .models_consignment import (  # noqa: F401
     ResellerPayment,
     ConsignmentSale,
 )
+from .models_finance_v2 import (  # noqa: F401
+    BalanceReconciliation,
+    ClassificationReview,
+    LedgerClassificationEvent,
+    CounterpartyAlias,
+    FundingAllocation,
+    FundingSource,
+    InternalTransferMatch,
+    LedgerClassification,
+    ObligationComponent,
+    ObligationComponentSettlement,
+    ObligationGroup,
+    PaymentIntent,
+    PaymentIntentEvent,
+    RefundLink,
+)
 
 __all__ = [
     'Account', 'Category', 'Company', 'Counterparty', 'CounterpartyCard',
@@ -60,4 +76,10 @@ __all__ = [
     'UserSettings', 'PushSubscription', 'NotificationLog',
     'Reseller', 'ConsignmentShipment', 'ConsignmentItem',
     'ResellerPayment', 'ConsignmentSale',
+    'BalanceReconciliation', 'ClassificationReview', 'CounterpartyAlias',
+    'FundingAllocation', 'FundingSource', 'InternalTransferMatch',
+    'LedgerClassification', 'ObligationComponent',
+    'ObligationComponentSettlement', 'ObligationGroup', 'PaymentIntent',
+    'PaymentIntentEvent',
+    'LedgerClassificationEvent', 'RefundLink',
 ]

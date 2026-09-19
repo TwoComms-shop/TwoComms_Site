@@ -55,6 +55,14 @@ def _apply_dim_filters(qs, params):
         ids = [i for i in str(params['counterparties']).split(',') if i.isdigit()]
         if ids:
             qs = qs.filter(counterparty_id__in=ids)
+    if params.get('economic_kind'):
+        kinds = [i.strip() for i in str(params['economic_kind']).split(',') if i.strip()]
+        if kinds:
+            qs = qs.filter(economic_kind__in=kinds)
+    if params.get('funding_source'):
+        ids = [i for i in str(params['funding_source']).split(',') if i.isdigit()]
+        if ids:
+            qs = qs.filter(funding_source_id__in=ids)
     # Бізнес / особисте — наскрізний зріз для всіх звітів.
     scope = (params.get('scope') or '').strip()
     if scope == 'business':
@@ -76,13 +84,27 @@ def cash_flow(company, params):
     qs = _apply_dim_filters(_actual(company), params).filter(
         date_actual__gte=day_start(start), date_actual__lte=day_end(end))
 
-    cash_in = qs.filter(type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
-    cash_out = qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    # A confirmed classification changes the management view without deleting
+    # or rewriting the bank movement.  Unknown legacy rows remain visible.
+    excluded_management = ['internal_transfer', 'owner_draw', 'personal_transfer',
+                            'debt_repayment', 'grant_inflow', 'adjustment']
+    management_qs = qs.exclude(economic_kind__in=excluded_management)
+    cash_in = management_qs.filter(type=Transaction.TYPE_INCOME).exclude(
+        economic_kind='expense_refund').aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    cash_out = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    targeted_in = qs.filter(economic_kind='grant_inflow', type=Transaction.TYPE_INCOME).aggregate(
+        s=Sum('amount_base'))['s'] or Decimal('0')
+    internal_in = qs.filter(economic_kind__in=['internal_transfer', 'personal_transfer'],
+                            type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    internal_out = qs.filter(economic_kind__in=['internal_transfer', 'owner_draw', 'personal_transfer'],
+                             type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    refunds = qs.filter(economic_kind='expense_refund', type=Transaction.TYPE_INCOME).aggregate(
+        s=Sum('amount_base'))['s'] or Decimal('0')
 
     # Серія по днях/місяцях.
     by_period = _series_by_period(qs, start, end)
-    in_by_cat = _group_by_category(qs.filter(type=Transaction.TYPE_INCOME))
-    out_by_cat = _group_by_category(qs.filter(type=Transaction.TYPE_EXPENSE))
+    in_by_cat = _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME).exclude(economic_kind='expense_refund'))
+    out_by_cat = _group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE))
 
     return {
         'cash_in': cash_in,
@@ -91,6 +113,10 @@ def cash_flow(company, params):
         'series': by_period,
         'income_by_category': in_by_cat,
         'expense_by_category': out_by_cat,
+        'targeted_in': targeted_in,
+        'internal_in': internal_in,
+        'internal_out': internal_out,
+        'expense_refunds': refunds,
         'period': (start.isoformat(), end.isoformat()),
     }
 
@@ -130,15 +156,24 @@ def pnl(company, params):
     qs = qs.filter(
         Q_or_date(start, end)
     )
-    income = qs.filter(type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
-    expenses = qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    excluded_management = ['internal_transfer', 'owner_draw', 'personal_transfer',
+                           'debt_repayment', 'grant_inflow', 'adjustment', 'expense_refund']
+    management_qs = qs.exclude(economic_kind__in=excluded_management)
+    income = management_qs.filter(type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    expenses = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    refunds = qs.filter(type=Transaction.TYPE_INCOME, economic_kind='expense_refund').aggregate(
+        s=Sum('amount_base'))['s'] or Decimal('0')
+    expenses = max(Decimal('0'), expenses - refunds)
     return {
         'income': income,
         'expenses': expenses,
         'profit': income - expenses,
         'margin': (float((income - expenses) / income * 100) if income else 0.0),
-        'income_by_category': _group_by_category(qs.filter(type=Transaction.TYPE_INCOME)),
-        'expense_by_category': _group_by_category(qs.filter(type=Transaction.TYPE_EXPENSE)),
+        'income_by_category': _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME)),
+        'expense_by_category': _group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE)),
+        'expense_refunds': refunds,
+        'unclassified_count': qs.filter(economic_kind='unknown').count(),
+        'unclassified_amount': qs.filter(economic_kind='unknown').aggregate(s=Sum('amount_base'))['s'] or Decimal('0'),
         'series': _series_by_period(qs, start, end),
         'period': (start.isoformat(), end.isoformat()),
     }
@@ -394,15 +429,19 @@ def balance_forecast_report(company, months: int = 6):
 
     for month_offset in range(months):
         # Розраховуємо діапазон місяця
-        if month_offset == 0:
-            month_start = today
-        else:
-            month_start = dt.date(today.year, today.month, 1) + dt.timedelta(days=32 * month_offset)
-            month_start = month_start.replace(day=1)
+        # Include the complete current calendar month.  Starting at ``today``
+        # silently dropped planned items earlier in the same month.
+        month_start = dt.date(today.year, today.month, 1) + dt.timedelta(days=32 * month_offset)
+        month_start = month_start.replace(day=1)
 
-        # Останній день місяця
-        last_day = calendar.monthrange(month_start.year, month_start.month)[1]
-        month_end = dt.date(month_start.year, month_start.month, last_day)
+        # The first forecast bucket is a rolling month from today.  This keeps
+        # a payment due in the next few weeks visible even late in a calendar
+        # month; following buckets use calendar months.
+        if month_offset == 0:
+            month_end = today + dt.timedelta(days=31)
+        else:
+            last_day = calendar.monthrange(month_start.year, month_start.month)[1]
+            month_end = dt.date(month_start.year, month_start.month, last_day)
 
         # Планові операції за цей місяць
         planned_qs = Transaction.objects.filter(
@@ -443,4 +482,3 @@ def balance_forecast_report(company, months: int = 6):
         "total_planned_income": sum((m["planned_income"] for m in forecast), Decimal("0")),
         "total_planned_expense": sum((m["planned_expense"] for m in forecast), Decimal("0")),
     }
-

@@ -233,6 +233,19 @@ class Transaction(models.Model):
         ('ai', 'AI радник'),
     ]
 
+    OWNERSHIP_SCOPE_CHOICES = [
+        ('business', 'Бизнес'), ('personal', 'Личное'), ('mixed', 'Смешанное'),
+        ('unknown', 'Не определено'),
+    ]
+    ECONOMIC_KIND_CHOICES = [
+        ('sale', 'Продажа'), ('operating_expense', 'Операционный расход'),
+        ('investment', 'Инвестиция'), ('grant_inflow', 'Грант'),
+        ('internal_transfer', 'Внутренний перевод'), ('owner_draw', 'Вывод владельцу'),
+        ('debt_repayment', 'Погашение долга'), ('expense_refund', 'Возврат расхода'),
+        ('personal_transfer', 'Личный перевод'), ('adjustment', 'Корректировка'),
+        ('unknown', 'Не классифицировано'),
+    ]
+
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='transactions')
     type = models.CharField(max_length=12, choices=TYPE_CHOICES)
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_ACTUAL)
@@ -268,6 +281,16 @@ class Transaction(models.Model):
     # commissionRate, counterIban/counterName, operationAmount/currencyCode тощо.
     # Дозволяє фільтрувати/аналізувати без окремих колонок під кожне поле.
     external_data = models.JSONField(default=dict, blank=True)
+    # Управленческий смысл хранится отдельно от банковского типа движения.
+    # Значения nullable для безопасного rollout на старую историю.
+    ownership_scope = models.CharField(max_length=16, choices=OWNERSHIP_SCOPE_CHOICES,
+                                       default='unknown', db_index=True)
+    economic_kind = models.CharField(max_length=32, choices=ECONOMIC_KIND_CHOICES,
+                                     default='unknown', db_index=True)
+    funding_source = models.ForeignKey(
+        'finance.FundingSource', on_delete=models.SET_NULL, blank=True, null=True,
+        related_name='classified_transactions',
+    )
     # MCC (Merchant Category Code) винесено окремою колонкою для індексованого
     # групування витрат за категоріями мерчанта.
     mcc = models.PositiveIntegerField(blank=True, null=True, db_index=True)

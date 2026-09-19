@@ -18,6 +18,7 @@ from ..permissions import finance_access_required
 from ..services import cards as cards_service
 from ..services import counterparty as cp_service
 from ..services import obligations as obligations_service
+from ..services import obligations_v2
 from ..services import payables as payables_service
 from ..services import payloads as payload_service
 from ..services import serializers as ser
@@ -74,6 +75,11 @@ def planned(request):
         'income_count': data['income_count'],
         'expense_count': data['expense_count'],
         'dropdowns': ser.serialize_dropdowns(company),
+        'v2_groups': [obligations_v2.group_summary(g) for g in company.obligation_groups.filter(is_active=True).prefetch_related('components')],
+        'v2_accounts': [
+            {'id': a.id, 'name': a.name, 'balance': str(a.current_balance), 'currency': a.currency}
+            for a in company.accounts.filter(is_active=True, is_archived=False).order_by('sort_order', 'id')
+        ],
     }
     return render(request, 'finance/planned.html', context)
 
@@ -245,7 +251,10 @@ def obligation_move_current_api(request, txn_id):
     now = timezone.localtime(timezone.now())
     old = planned.date_actual
     keep_time = timezone.localtime(old).time() if old else now.time()
-    new_dt = timezone.make_aware(_dt.datetime.combine(now.date(), keep_time))
+    # The legacy API contract reads ``date_actual.date()`` directly. Store the
+    # selected calendar date in UTC; the UI converts it to local time when it
+    # renders the timestamp.
+    new_dt = timezone.make_aware(_dt.datetime.combine(now.date(), keep_time), _dt.timezone.utc)
     from ..services import transactions as txn_service
     txn_service.update_transaction(planned, user=request.user, date_actual=new_dt)
     return JsonResponse({'ok': True})

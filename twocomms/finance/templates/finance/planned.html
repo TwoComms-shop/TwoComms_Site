@@ -47,6 +47,60 @@
     {% endfor %}
 </div>
 
+{% if v2_groups %}
+<section class="fin-v2-groups" aria-labelledby="fin-v2-groups-title">
+    <div class="fin-page-head">
+        <div>
+            <h2 id="fin-v2-groups-title" class="fin-section-title">Составные обязательства</h2>
+            <p class="fin-plan-subtitle">Одна группа с отдельными частями, реквизитами и подтверждением оплаты через выписку.</p>
+        </div>
+    </div>
+    <div class="fin-plan-columns">
+        {% for group in v2_groups %}
+        <article class="fin-oblig-v2" data-v2-group="{{ group.id }}">
+            <header class="fin-oblig-v2__head">
+                <strong>{{ group.title }}</strong>
+                <span class="fin-oblig-v2__status fin-oblig-v2__status--{{ group.status }}">{{ group.status }}</span>
+                <b>{{ group.remaining }} грн</b>
+            </header>
+            <div class="fin-oblig-v2__parts">
+                {% for component in group.components %}
+                <div class="fin-oblig-v2__part">
+                    <span>{{ component.name }}{% if component.recipient_card_id %} · реквизиты сохранены{% endif %}</span>
+                    <span>{{ component.paid }} / {{ component.planned }} грн</span>
+                    {% if component.remaining > 0 %}
+                    <button type="button" class="fin-oblig__pay" data-v2-pay
+                            data-component-id="{{ component.id }}" data-component-name="{{ component.name }}"
+                            data-component-remaining="{{ component.remaining }}" data-component-purpose="{{ component.purpose }}">
+                        💳 Оплатить сейчас
+                    </button>
+                    {% else %}<span class="fin-oblig-v2__done">Оплачено</span>{% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </article>
+        {% endfor %}
+    </div>
+</section>
+<div id="fin-v2-pay-modal" class="fin-modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="fin-v2-pay-title">
+    <div class="fin-modal-card fin-modal-card--txn">
+        <div class="fin-modal-head"><h3 id="fin-v2-pay-title">Оплатить сейчас</h3><button type="button" class="fin-modal-close" data-v2-pay-close aria-label="Закрыть">×</button></div>
+        <form id="fin-v2-pay-form" class="fin-modal-body">
+            <p id="fin-v2-pay-name" class="fin-muted"></p>
+            <input type="hidden" id="fin-v2-component-id">
+            <label>Сумма <input id="fin-v2-amount" type="number" min="0.01" step="0.01" required></label>
+            <label>Списать со счета <select id="fin-v2-account" required>
+                {% for account in v2_accounts %}<option value="{{ account.id }}">{{ account.name }} · {{ account.balance }} {{ account.currency }}</option>{% endfor %}
+            </select></label>
+            <label>Назначение <textarea id="fin-v2-purpose" rows="2"></textarea></label>
+            <label>Комментарий <textarea id="fin-v2-comment" rows="2"></textarea></label>
+            <p id="fin-v2-pay-result" class="fin-form-alert" hidden></p>
+            <button type="submit" class="fin-btn fin-btn--primary">Сформировать платежные данные</button>
+        </form>
+    </div>
+</div>
+{% endif %}
+
 <details class="fin-plan-bytype">
     <summary>Показати за типом (доходи / витрати окремо)</summary>
     <div class="fin-plan-columns">

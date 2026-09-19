@@ -95,6 +95,11 @@ class Command(BaseCommand):
                 if not self._already(user, key):
                     jobs.append(('planned', key, push_service.build_planned_reminder_report(company)))
 
+            # Reviewable ledger alerts: one deduplicated actionable reminder per day.
+            key = f'ledger-alert:{today.isoformat()}'
+            if st.push_health_alerts and not self._already(user, key):
+                jobs.append(('custom', key, push_service.build_ledger_alert_report(company)))
+
             for ntype, dedup_key, report in jobs:
                 if report is None:
                     # Нема контенту (нема боргів/ризиків) — нічого не шлемо й не
@@ -110,6 +115,15 @@ class Command(BaseCommand):
                     notification_type=ntype, report_data=report.get('data'),
                     dedup_key=dedup_key)
                 sent_total += res.get('sent', 0)
+                if st.telegram_notifications:
+                    # Telegram credentials and chat ids stay in the deployment
+                    # environment; no secrets are persisted in finance data.
+                    try:
+                        from management.services.notify import admin_chat_ids, send_message
+                        for chat_id in admin_chat_ids():
+                            send_message(chat_id, f'{report["title"]}\n\n{report["body"]}')
+                    except Exception as exc:  # pragma: no cover - optional adapter
+                        self.stderr.write(f'Telegram delivery failed for {user.username}: {exc}')
                 self.stdout.write(f'{user.username}: {ntype} → sent={res.get("sent")} '
                                   f'failed={res.get("failed")}')
 
