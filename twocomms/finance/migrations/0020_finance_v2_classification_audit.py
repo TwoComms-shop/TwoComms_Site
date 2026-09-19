@@ -4,12 +4,42 @@ import django.core.validators
 import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
+from django.db.migrations.operations.base import Operation
+
+
+class SetSessionStorageEngine(Operation):
+    """Keep this migration compatible with legacy MyISAM finance tables."""
+
+    reduces_to_sql = False
+    reversible = True
+
+    def __init__(self, engine):
+        self.engine = engine
+
+    def state_forwards(self, app_label, state):
+        pass
+
+    def state_backwards(self, app_label, state):
+        pass
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        if schema_editor.connection.vendor == 'mysql':
+            schema_editor.execute(f'SET SESSION default_storage_engine={self.engine}')
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        if schema_editor.connection.vendor == 'mysql':
+            previous = 'INNODB' if self.engine.upper() == 'MYISAM' else 'MYISAM'
+            schema_editor.execute(f'SET SESSION default_storage_engine={previous}')
+
+    def describe(self):
+        return f'Set session storage engine to {self.engine}'
 
 
 class Migration(migrations.Migration):
     dependencies = [('finance', '0019_finance_v2_ledger')]
 
     operations = [
+        SetSessionStorageEngine('MYISAM'),
         migrations.AddField(
             model_name='transaction', name='ownership_scope',
             field=models.CharField(
@@ -68,4 +98,5 @@ class Migration(migrations.Migration):
                                                             related_name='refund_link', to='finance.transaction')),
             ],
         ),
+        SetSessionStorageEngine('INNODB'),
     ]
