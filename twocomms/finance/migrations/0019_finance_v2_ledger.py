@@ -1,7 +1,41 @@
 from django.conf import settings
 from django.db import migrations, models
+from django.db.migrations.operations.base import Operation
 import django.db.models.deletion
 import django.core.validators
+
+
+class SetSessionStorageEngine(Operation):
+    """Keep new finance tables compatible with the legacy MyISAM schema.
+
+    Older production finance tables are MyISAM, so MariaDB cannot create an
+    InnoDB foreign key pointing at them.  This affects only the migration
+    connection and is a no-op on non-MySQL databases.
+    """
+
+    reduces_to_sql = False
+    reversible = True
+
+    def __init__(self, engine):
+        self.engine = engine
+
+    def state_forwards(self, app_label, state):
+        pass
+
+    def state_backwards(self, app_label, state):
+        pass
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        if schema_editor.connection.vendor == 'mysql':
+            schema_editor.execute(f'SET SESSION default_storage_engine={self.engine}')
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        if schema_editor.connection.vendor == 'mysql':
+            previous = 'INNODB' if self.engine.upper() == 'MYISAM' else 'MYISAM'
+            schema_editor.execute(f'SET SESSION default_storage_engine={previous}')
+
+    def describe(self):
+        return f'Set session storage engine to {self.engine}'
 from decimal import Decimal
 
 
@@ -9,6 +43,7 @@ class Migration(migrations.Migration):
     dependencies = [('finance', '0018_counterpartycard_obligationsettlement')]
 
     operations = [
+        SetSessionStorageEngine('MYISAM'),
         migrations.CreateModel(name='FundingSource', fields=[
             ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
             ('name', models.CharField(max_length=255)), ('source_type', models.CharField(choices=[('grant','Грант'),('targeted','Целевое финансирование'),('other','Другое')], default='grant', max_length=16)),
@@ -44,4 +79,5 @@ class Migration(migrations.Migration):
         ]),
         migrations.CreateModel(name='PaymentIntentEvent', fields=[('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')), ('from_status', models.CharField(blank=True, default='', max_length=24)), ('to_status', models.CharField(max_length=24)), ('payload', models.JSONField(blank=True, default=dict)), ('created_at', models.DateTimeField(auto_now_add=True)), ('created_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to=settings.AUTH_USER_MODEL)), ('intent', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='events', to='finance.paymentintent'))]),
         migrations.CreateModel(name='ObligationComponentSettlement', fields=[('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')), ('amount', models.DecimalField(decimal_places=2, max_digits=18, validators=[django.core.validators.MinValueValidator(Decimal('0.01'))])), ('component', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='settlements', to='finance.obligationcomponent')), ('settlement', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='component_allocations', to='finance.obligationsettlement'))], options={'constraints':[models.UniqueConstraint(fields=('settlement','component'), name='finance_component_settlement_unique')]}),
+        SetSessionStorageEngine('INNODB'),
     ]
