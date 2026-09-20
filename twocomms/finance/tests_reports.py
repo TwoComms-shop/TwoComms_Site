@@ -14,6 +14,7 @@ from finance.models import Account, FundingSource, Transaction, get_default_comp
 from finance.services import reports as rep
 from finance.services import reports_debt as repd
 from finance.services import transactions as txn_service
+from finance.views.analytics import _pnl_heat_color
 
 User = get_user_model()
 
@@ -65,6 +66,16 @@ class ReportsTests(TestCase):
         self.assertEqual(data['income'], Decimal('1000'))
         self.assertEqual(data['expenses'], Decimal('400'))
         self.assertEqual(data['profit'], Decimal('600'))
+
+    def test_pnl_heat_palette_keeps_ranked_steps_distinct(self):
+        positive = [_pnl_heat_color('positive', index / 30) for index in range(31)]
+        negative = [_pnl_heat_color('negative', index / 30) for index in range(31)]
+
+        self.assertEqual(len(set(positive)), 31)
+        self.assertEqual(len(set(negative)), 31)
+        self.assertEqual(_pnl_heat_color('neutral', 0), '#3a4658')
+        self.assertNotEqual(positive[0], positive[-1])
+        self.assertNotEqual(negative[0], negative[-1])
 
     def test_receivables_from_planned(self):
         txn_service.create_transaction(user=self.user, type=Transaction.TYPE_INCOME,

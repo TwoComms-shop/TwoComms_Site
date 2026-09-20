@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import calendar as calendar_lib
+import colorsys
 from decimal import Decimal
 
 from django.db.models import Sum
@@ -106,6 +107,25 @@ def _pnl_detail_rows(company, rows, previous_rows, start, end):
     return out
 
 
+def _pnl_heat_color(tone, heat):
+    """Return a solid, perceptually stepped color for a calendar cell.
+
+    The scale deliberately changes both lightness and saturation. That keeps
+    neighboring ranked values distinguishable on the dark finance surface,
+    even when a period contains a very large outlier.
+    """
+    if tone == 'neutral':
+        return '#3a4658'
+    value = max(0.0, min(1.0, float(heat)))
+    hue = 164 / 360 if tone == 'positive' else 350 / 360
+    saturation = 0.30 + value * 0.58
+    lightness = 0.31 + value * 0.25
+    rgb = tuple(round(channel * 255) for channel in colorsys.hls_to_rgb(
+        hue, lightness, saturation,
+    ))
+    return '#{:02x}{:02x}{:02x}'.format(*rgb)
+
+
 def _pnl_calendar(company, period, start):
     """Build a month grid from actual daily P&L values for the dashboard."""
     from django.utils import timezone
@@ -155,14 +175,7 @@ def _pnl_calendar(company, period, start):
                 cell['heat'] = negative_heats[abs(Decimal(str(cell['profit'])))]
             else:
                 cell['heat'] = 0.0
-            if cell['tone'] == 'neutral':
-                cell['background'] = '#3a4658'
-            else:
-                amount = 0.12 + cell['heat'] * 0.88
-                start = (52, 64, 82)
-                end = (241, 77, 104) if cell['tone'] == 'negative' else (19, 201, 149)
-                rgb = tuple(round(start[index] + (end[index] - start[index]) * amount) for index in range(3))
-                cell['background'] = 'rgb({} {} {})'.format(*rgb)
+            cell['background'] = _pnl_heat_color(cell['tone'], cell['heat'])
     while len(cells) % 7:
         cells.append({'day': None})
     month_names = ('Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень',

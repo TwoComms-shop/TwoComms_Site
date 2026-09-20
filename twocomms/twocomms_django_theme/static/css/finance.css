@@ -3808,12 +3808,7 @@ body.fin-report-open { overflow: hidden; }
 .pnl-flow-lines .pnl-flow-path--income { stroke:rgba(41,194,143,.36); }
 .pnl-flow-lines .pnl-flow-path--expense { stroke:rgba(230,74,111,.42); }
 
-/* Render the calendar heatmap with a real full-cell color layer.  The
-   previous color-mix declaration was ignored by some supported browsers,
-   leaving every day at the dark base color. */
-.pnl-day { overflow:hidden; background:#27344a !important; }
+/* Server-rendered colors are the single source of truth for the heatmap. */
+.pnl-day { overflow:hidden; background:#27344a; }
 .pnl-day > span { position:relative; z-index:1; }
-.pnl-day > i { display:block; position:absolute; inset:0; border-radius:inherit; pointer-events:none; z-index:0; }
-.pnl-day--positive > i { background:rgba(19,201,149,var(--heat)); opacity:1; }
-.pnl-day--negative > i { background:rgba(241,77,104,var(--heat)); opacity:1; }
-.pnl-day--neutral > i { background:#566276; opacity:.42; }
+.pnl-day > i { display:none; }
