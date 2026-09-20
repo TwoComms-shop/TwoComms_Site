@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from .models import (
     Account, Category, Company, Counterparty, CounterpartyCard, FundingSource,
-    ObligationComponent, ObligationGroup, ObligationSettlement, Transaction,
+    ObligationComponent, ObligationGroup, ObligationSettlement, Transaction, InternalTransferMatch,
 )
 from .services import ledger_v2, obligations_v2, payment_intents
 
@@ -62,6 +62,39 @@ class FinanceV2ServiceTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn('грантову програму', response.json()['error'])
+
+    def test_fop_sale_and_pension_quick_actions_are_account_aware(self):
+        fop = Account.objects.create(company=self.company, name='monobank ФОП', currency='UAH', is_business=True)
+        pension = Account.objects.create(company=self.company, name='Пенсійна', currency='UAH', is_business=False)
+        sale = self._txn(Transaction.TYPE_INCOME, Decimal('1650'), account=fop)
+        pension_income = self._txn(Transaction.TYPE_INCOME, Decimal('5000'), account=pension)
+        self.client.force_login(self.user)
+        response = self.client.post(
+            f'/api/v2/transactions/{sale.id}/classification/',
+            data=json.dumps({'quick_action': 'sale'}), content_type='application/json', HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(response.status_code, 200)
+        sale.refresh_from_db()
+        self.assertEqual(sale.economic_kind, 'sale')
+        self.assertTrue(sale.ownership_scope == 'business')
+        response = self.client.post(
+            f'/api/v2/transactions/{pension_income.id}/classification/',
+            data=json.dumps({'quick_action': 'pension'}), content_type='application/json', HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(response.status_code, 200)
+        pension_income.refresh_from_db()
+        self.assertEqual(pension_income.economic_kind, 'pension_income')
+        self.assertEqual(pension_income.ownership_scope, 'personal')
+
+    def test_unequal_transfer_records_fee_and_is_idempotent(self):
+        outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10050'), account=self.cash)
+        incoming = self._txn(Transaction.TYPE_INCOME, Decimal('10000'), account=self.account)
+        match = ledger_v2.create_transfer_suggestion(self.company, outgoing, incoming)
+        self.assertEqual(match.fee_amount, Decimal('50'))
+        ledger_v2.confirm_transfer(match, user=self.user)
+        match.refresh_from_db()
+        self.assertEqual(match.fee_amount, Decimal('50'))
+        self.assertEqual(match.status, 'confirmed')
+        ledger_v2.confirm_transfer(match, user=self.user)
+        self.assertEqual(InternalTransferMatch.objects.filter(id=match.id).count(), 1)
 
     def test_transfer_confirmation_does_not_change_pnl_classification(self):
         outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10000'), account=self.cash)

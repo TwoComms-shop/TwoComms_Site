@@ -7,6 +7,7 @@ payments UI for the Monobank fallback flow.
 from __future__ import annotations
 
 import json
+import datetime as dt
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction as db_transaction
@@ -152,6 +153,23 @@ def classification_api(request, txn_id):
     try:
         economic_kind = data.get('economic_kind') or 'unknown'
         ownership_scope = data.get('ownership_scope') or 'unknown'
+        # Dedicated one-click actions are account-aware.  A sale shortcut is
+        # only valid on the business/FOP account; a pension shortcut is only
+        # valid on an account explicitly named as pension.
+        account = txn.account
+        quick_action = data.get('quick_action') or ''
+        account_name = (account.name if account else '').lower()
+        is_pension_account = 'пенсі' in account_name or 'пенси' in account_name
+        if quick_action == 'sale':
+            if not account or not account.is_business:
+                raise ValueError('Швидке підтвердження продажу доступне лише для ФОП-рахунку')
+            economic_kind, ownership_scope = 'sale', 'business'
+        elif quick_action == 'pension':
+            if not account or not is_pension_account:
+                raise ValueError('Пенсійну виплату можна підтвердити лише на пенсійному рахунку')
+            economic_kind, ownership_scope = 'pension_income', 'personal'
+        if economic_kind == 'sale' and account and not account.is_business and quick_action:
+            raise ValueError('Продажі швидко підтверджуються лише на ФОП-рахунку')
         if economic_kind == 'grant_inflow' and ownership_scope == 'unknown':
             ownership_scope = 'business'
         funding = (company.funding_sources.filter(id=data.get('funding_source_id')).first()
@@ -269,6 +287,46 @@ def transfer_suggestions_api(request):
     except (TypeError, ValueError):
         return _error('Некорректные параметры поиска')
     return JsonResponse({'ok': True, 'review_ids': [r.id for r in reviews], 'count': len(reviews)})
+
+
+@finance_access_required(api=True)
+@require_http_methods(['GET', 'POST'])
+def transfer_match_api(request):
+    """Suggest and confirm an unequal internal transfer with its bank fee."""
+    company = get_default_company()
+    data = _body(request)
+    if request.method == 'GET':
+        txn = get_object_or_404(Transaction.objects.select_related('account'),
+                                 id=data.get('transaction_id') or request.GET.get('transaction_id'),
+                                 company=company)
+        if txn.type != Transaction.TYPE_INCOME:
+            return _error('Оберіть вхідне зарахування', 400)
+        candidates = Transaction.objects.filter(
+            company=company, status=Transaction.STATUS_ACTUAL,
+            type=Transaction.TYPE_EXPENSE, currency=txn.currency,
+            amount__gte=txn.amount,
+            date_actual__date__range=(txn.date_actual.date() - dt.timedelta(days=7),
+                                      txn.date_actual.date() + dt.timedelta(days=7)),
+        ).select_related('account', 'category').order_by('amount', 'date_actual')[:25]
+        return JsonResponse({'ok': True, 'candidates': [
+            {'id': c.id, 'amount': str(c.amount), 'date': c.date_actual.isoformat(),
+             'account_name': c.account.name if c.account else '',
+             'category': c.category.name if c.category else '',
+             'fee_amount': str(ledger_v2.calculate_transfer_fee(c.amount, txn.amount))}
+            for c in candidates
+        ]})
+    try:
+        source = get_object_or_404(Transaction, id=data.get('source_transaction_id'), company=company)
+        destination = get_object_or_404(Transaction, id=data.get('destination_transaction_id'), company=company)
+        match = ledger_v2.create_transfer_suggestion(company, source, destination)
+        if data.get('confirm'):
+            match = ledger_v2.confirm_transfer(match, user=request.user)
+        return JsonResponse({'ok': True, 'match': {
+            'id': match.id, 'status': match.status, 'amount': str(match.amount),
+            'fee_amount': str(match.fee_amount),
+        }}, status=201 if match.status == 'suggested' else 200)
+    except (ValueError, TypeError, InvalidOperation) as exc:
+        return _error(exc)
 
 
 def _funding_row(source):

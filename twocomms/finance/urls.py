@@ -24,6 +24,7 @@ urlpatterns = [
     path('api/v2/reviews/', views.review_list_api, name='finance_v2_review_list_api'),
     path('api/v2/reviews/<int:review_id>/action/', views.review_action_api, name='finance_v2_review_action_api'),
     path('api/v2/transfers/suggestions/', views.transfer_suggestions_api, name='finance_v2_transfer_suggestions_api'),
+    path('api/v2/transfers/match/', views.transfer_match_api, name='finance_v2_transfer_match_api'),
     path('api/v2/terminal-cash/candidates/', views.terminal_cash_candidates_api, name='finance_v2_terminal_cash_candidates_api'),
     path('api/v2/terminal-cash/candidates/<int:txn_id>/review/', views.terminal_cash_review_api, name='finance_v2_terminal_cash_review_api'),
     path('api/v2/funding/', views.funding_sources_api, name='finance_v2_funding_sources_api'),

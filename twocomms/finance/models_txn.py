@@ -242,6 +242,7 @@ class Transaction(models.Model):
         ('investment', 'Инвестиция'), ('grant_inflow', 'Грант'),
         ('internal_transfer', 'Внутренний перевод'), ('owner_draw', 'Вывод владельцу'),
         ('debt_repayment', 'Погашение долга'), ('expense_refund', 'Возврат расхода'),
+        ('pension_income', 'Пенсійна виплата'), ('transfer_fee', 'Комісія за переказ'),
         ('personal_transfer', 'Личный перевод'), ('adjustment', 'Корректировка'),
         ('unknown', 'Не классифицировано'),
     ]

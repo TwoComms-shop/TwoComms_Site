@@ -145,6 +145,7 @@ from .finance_v2 import (  # noqa: F401
     review_list_api,
     review_action_api,
     transfer_suggestions_api,
+    transfer_match_api,
     terminal_cash_candidates_api,
     terminal_cash_review_api,
     funding_sources_api,

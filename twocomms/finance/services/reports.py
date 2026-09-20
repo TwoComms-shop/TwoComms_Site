@@ -10,10 +10,10 @@ import datetime as dt
 from collections import OrderedDict
 from decimal import Decimal
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.db.models.functions import Coalesce
 
-from ..models import Invoice, Transaction
+from ..models import InternalTransferMatch, Invoice, Transaction
 from . import filters as filter_service
 from .timeutil import day_end, day_start
 
@@ -77,6 +77,39 @@ def _actual(company):
             .exclude(excluded_from_reports=True))
 
 
+def _unrepresented_transfer_fees(company, params, start, end, *, pnl_dates=False):
+    """Sum confirmed match fees that have no standalone expense row."""
+    qs = InternalTransferMatch.objects.filter(
+        company=company, status='confirmed', fee_transaction__isnull=True,
+        fee_amount__gt=Decimal('0'),
+        source_transaction__status=Transaction.STATUS_ACTUAL,
+        source_transaction__excluded_from_reports=False,
+    )
+    if pnl_dates:
+        qs = qs.filter(
+            Q(source_transaction__date_agreement__gte=day_start(start),
+              source_transaction__date_agreement__lte=day_end(end))
+            | Q(source_transaction__date_agreement__isnull=True,
+                source_transaction__date_actual__gte=day_start(start),
+                source_transaction__date_actual__lte=day_end(end))
+        )
+    else:
+        qs = qs.filter(source_transaction__date_actual__gte=day_start(start),
+                       source_transaction__date_actual__lte=day_end(end))
+    if params.get('accounts'):
+        ids = [i for i in str(params['accounts']).split(',') if i.isdigit()]
+        if ids:
+            qs = qs.filter(source_account_id__in=ids)
+    return qs.aggregate(total=Sum('fee_amount'))['total'] or Decimal('0')
+
+
+def _add_fee_category(rows, amount):
+    if amount:
+        rows = list(rows)
+        rows.append({'name': 'Комісія за переказ', 'total': float(amount)})
+    return rows
+
+
 # ----------------------------- Cash Flow -----------------------------
 
 def cash_flow(company, params):
@@ -87,11 +120,13 @@ def cash_flow(company, params):
     # A confirmed classification changes the management view without deleting
     # or rewriting the bank movement.  Unknown legacy rows remain visible.
     excluded_management = ['internal_transfer', 'owner_draw', 'personal_transfer',
-                            'debt_repayment', 'grant_inflow', 'adjustment']
+                            'debt_repayment', 'grant_inflow', 'pension_income', 'adjustment']
     management_qs = qs.exclude(economic_kind__in=excluded_management)
+    transfer_fees = _unrepresented_transfer_fees(company, params, start, end)
     cash_in = management_qs.filter(type=Transaction.TYPE_INCOME).exclude(
         economic_kind='expense_refund').aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
     cash_out = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    cash_out += transfer_fees
     targeted_in = qs.filter(economic_kind='grant_inflow', type=Transaction.TYPE_INCOME).aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
     internal_in = qs.filter(economic_kind__in=['internal_transfer', 'personal_transfer'],
@@ -108,7 +143,7 @@ def cash_flow(company, params):
         management_qs.exclude(type=Transaction.TYPE_TRANSFER), start, end,
     )
     in_by_cat = _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME).exclude(economic_kind='expense_refund'))
-    out_by_cat = _group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE))
+    out_by_cat = _add_fee_category(_group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE)), transfer_fees)
 
     return {
         'cash_in': cash_in,
@@ -121,6 +156,7 @@ def cash_flow(company, params):
         'internal_in': internal_in,
         'internal_out': internal_out,
         'expense_refunds': refunds,
+        'transfer_fees': transfer_fees,
         'period': (start.isoformat(), end.isoformat()),
     }
 
@@ -161,10 +197,12 @@ def pnl(company, params):
         Q_or_date(start, end)
     )
     excluded_management = ['internal_transfer', 'owner_draw', 'personal_transfer',
-                           'debt_repayment', 'grant_inflow', 'adjustment', 'expense_refund']
+                           'debt_repayment', 'grant_inflow', 'pension_income', 'adjustment', 'expense_refund']
     management_qs = qs.exclude(economic_kind__in=excluded_management)
+    transfer_fees = _unrepresented_transfer_fees(company, params, start, end, pnl_dates=True)
     income = management_qs.filter(type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    expenses += transfer_fees
     refunds = qs.filter(type=Transaction.TYPE_INCOME, economic_kind='expense_refund').aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = max(Decimal('0'), expenses - refunds)
@@ -174,8 +212,9 @@ def pnl(company, params):
         'profit': income - expenses,
         'margin': (float((income - expenses) / income * 100) if income else 0.0),
         'income_by_category': _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME)),
-        'expense_by_category': _group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE)),
+        'expense_by_category': _add_fee_category(_group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE)), transfer_fees),
         'expense_refunds': refunds,
+        'transfer_fees': transfer_fees,
         'unclassified_count': qs.filter(economic_kind='unknown').count(),
         'unclassified_amount': qs.filter(economic_kind='unknown').aggregate(s=Sum('amount_base'))['s'] or Decimal('0'),
         'series': _series_by_period(qs, start, end),

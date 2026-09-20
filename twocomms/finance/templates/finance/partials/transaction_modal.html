@@ -47,6 +47,30 @@
           </label>
           <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" id="fin-unclassified-save">Зберегти класифікацію</button>
         </div>
+        <div class="fin-quick-classify" id="fin-quick-classify" hidden>
+          <div class="fin-quick-classify__copy">
+            <span class="fin-quick-classify__eyebrow">Швидке підтвердження</span>
+            <strong id="fin-quick-classify-title">Перевірте призначення надходження</strong>
+            <small id="fin-quick-classify-hint"></small>
+          </div>
+          <div class="fin-quick-classify__actions">
+            <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" id="fin-quick-classify-yes">Так, підтвердити</button>
+            <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-quick-classify-no">Ні, це інше надходження</button>
+          </div>
+        </div>
+        <div class="fin-transfer-match" id="fin-transfer-match" hidden>
+          <div class="fin-quick-classify__copy">
+            <span class="fin-quick-classify__eyebrow">Зіставлення переказу</span>
+            <strong>Це переказ із іншого вашого рахунку?</strong>
+            <small>Оберіть списання. Різницю банк покаже окремо як комісію.</small>
+          </div>
+          <label class="fin-field" for="fin-transfer-match-source">
+            <span>Наявне списання</span>
+            <select id="fin-transfer-match-source" class="fin-select"><option value="">Оберіть операцію</option></select>
+          </label>
+          <div class="fin-transfer-match__preview" id="fin-transfer-match-preview" hidden></div>
+          <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" id="fin-transfer-match-confirm">Підтвердити переказ і комісію</button>
+        </div>
         <div class="fin-terminal-review" id="fin-terminal-review" hidden>
           <div class="fin-terminal-review__heading">
             <span class="fin-terminal-review__eyebrow">Поповнення через термінал</span>

@@ -57,6 +57,7 @@ class LedgerClassification(models.Model):
         ('investment', 'Инвестиция'), ('grant_inflow', 'Грант'),
         ('internal_transfer', 'Внутренний перевод'), ('owner_draw', 'Вывод владельцу'),
         ('debt_repayment', 'Погашение долга'), ('expense_refund', 'Возврат расхода'),
+        ('pension_income', 'Пенсійна виплата'), ('transfer_fee', 'Комісія за переказ'),
         ('personal_transfer', 'Личный перевод'), ('adjustment', 'Корректировка'),
         ('unknown', 'Не классифицировано'),
     ]
@@ -128,6 +129,14 @@ class InternalTransferMatch(models.Model):
     source_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name='+')
     destination_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name='+')
     amount = models.DecimalField(max_digits=18, decimal_places=2)
+    # Difference between the principal received and the amount debited by the
+    # bank. It is recorded separately so a transfer never becomes income or
+    # expense while the bank commission remains visible in reports.
+    fee_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal('0'))
+    fee_transaction = models.ForeignKey(
+        Transaction, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='transfer_fee_matches',
+    )
     confidence = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'))
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='suggested')
     confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)

@@ -19,8 +19,39 @@ from . import transactions as transactions_service
 
 TERMINAL_CASH_INCOME_KINDS = (
     'sale', 'investment', 'grant_inflow', 'debt_repayment', 'expense_refund',
-    'personal_transfer', 'adjustment',
+    'personal_transfer', 'pension_income', 'adjustment',
 )
+
+# Keep classification semantics in one service-level place so callers do not
+# need to know which reports treat a kind as personal, operational, or a
+# transfer.  The model choices remain the source of valid persisted values.
+PERSONAL_INCOME_KINDS = frozenset({'pension_income'})
+TRANSFER_FEE_KIND = 'transfer_fee'
+INTERNAL_TRANSFER_KINDS = frozenset({'internal_transfer', 'owner_draw', 'personal_transfer'})
+
+
+def classification_semantics(economic_kind):
+    """Return stable, API-independent semantics for an economic kind."""
+    return {
+        'is_personal_income': economic_kind in PERSONAL_INCOME_KINDS,
+        'is_transfer_fee': economic_kind == TRANSFER_FEE_KIND,
+        'is_internal_transfer': economic_kind in INTERNAL_TRANSFER_KINDS,
+    }
+
+
+def calculate_transfer_fee(source_amount, destination_amount):
+    """Return the non-negative amount lost between debit and credit rows.
+
+    Amounts are normalized through ``Decimal(str(...))`` so this helper is
+    safe for values arriving from JSON/API payloads as well as model fields.
+    A larger credit is not treated as a fee; that is a separate reconciliation
+    problem and must not create a negative expense.
+    """
+    source = Decimal(str(source_amount))
+    destination = Decimal(str(destination_amount))
+    if source < 0 or destination < 0:
+        raise ValueError('Суми переказу не можуть бути від’ємними')
+    return max(source - destination, Decimal('0'))
 
 _TERMINAL_RE = re.compile(r'\b(?:terminal|термінал|терминал)\b', re.IGNORECASE)
 _MONO_RE = re.compile(r'\b(?:mono|monobank|монобанк)\b', re.IGNORECASE)
@@ -281,6 +312,8 @@ def confirm_terminal_cash_transfer(txn, *, source_cash_account_id, user=None, no
 def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_kind='unknown',
                          confidence=Decimal('100'), note='', source='manual', funding_source=None):
     """Upsert explicit meaning without changing the original bank row."""
+    if economic_kind in PERSONAL_INCOME_KINDS and ownership_scope == 'unknown':
+        ownership_scope = 'personal'
     obj, created = LedgerClassification.objects.get_or_create(
         transaction=txn,
         defaults={
@@ -324,6 +357,7 @@ def create_transfer_suggestion(company, source_txn, destination_txn, *, confiden
     if source_txn.id == destination_txn.id or source_txn.amount <= 0 or destination_txn.amount <= 0:
         raise ValueError('Некорректные операции для перевода')
     amount = min(source_txn.amount, destination_txn.amount)
+    fee_amount = calculate_transfer_fee(source_txn.amount, destination_txn.amount)
     return InternalTransferMatch.objects.update_or_create(
         source_transaction=source_txn,
         destination_transaction=destination_txn,
@@ -332,6 +366,7 @@ def create_transfer_suggestion(company, source_txn, destination_txn, *, confiden
             'source_account': source_txn.account,
             'destination_account': destination_txn.account,
             'amount': amount,
+            'fee_amount': fee_amount,
             'confidence': Decimal(str(confidence)),
             'status': 'suggested',
         },
@@ -339,16 +374,78 @@ def create_transfer_suggestion(company, source_txn, destination_txn, *, confiden
 
 
 @db_transaction.atomic
+def record_transfer_fee(match, *, fee_amount=None, fee_transaction=None, user=None):
+    """Persist the fee split for a transfer match idempotently.
+
+    When no explicit amount is supplied, the fee is derived from the source
+    debit and destination credit.  A linked fee row is optional: imported
+    statements commonly contain only the unequal debit/credit pair, while a
+    separate bank commission row can be attached when available.
+    """
+    match = InternalTransferMatch.objects.select_for_update().select_related(
+        'source_transaction', 'destination_transaction', 'fee_transaction',
+    ).get(pk=match.pk)
+    calculated = calculate_transfer_fee(
+        match.source_transaction.amount, match.destination_transaction.amount,
+    )
+    amount = calculated if fee_amount is None else Decimal(str(fee_amount))
+    if amount < 0 or amount > match.source_transaction.amount:
+        raise ValueError('Некоректна сума комісії переказу')
+    if amount != calculated:
+        raise ValueError('Сума комісії має дорівнювати різниці дебету та кредиту')
+    if fee_transaction is not None:
+        fee_transaction = Transaction.objects.get(pk=fee_transaction.pk)
+        if fee_transaction.company_id != match.company_id:
+            raise ValueError('Комісійна операція має належати тій самій компанії')
+        if fee_transaction.type != Transaction.TYPE_EXPENSE:
+            raise ValueError('Комісійна операція має бути витратою')
+        if amount and fee_transaction.amount != amount:
+            raise ValueError('Сума комісійної операції не збігається з комісією')
+
+    changed = []
+    if match.fee_amount != amount:
+        match.fee_amount = amount
+        changed.append('fee_amount')
+    if match.fee_transaction_id != getattr(fee_transaction, 'id', None):
+        match.fee_transaction = fee_transaction
+        changed.append('fee_transaction')
+    if changed:
+        match.save(update_fields=changed)
+    if fee_transaction is not None and amount:
+        classify_transaction(
+            fee_transaction, user=user, ownership_scope='business',
+            economic_kind=TRANSFER_FEE_KIND, source='review',
+            note='Комісія за підтверджений внутрішній переказ.',
+        )
+    return match
+
+
+@db_transaction.atomic
 def confirm_transfer(match, *, user=None):
+    original_match = match
+    match = InternalTransferMatch.objects.select_for_update().get(pk=match.pk)
     if match.status == 'confirmed':
-        return match
+        # Older confirmed matches may predate fee persistence.  Fill only the
+        # missing derived value; repeating confirmation remains idempotent.
+        if match.fee_amount == 0:
+            match = record_transfer_fee(match, user=user)
+        original_match.status = match.status
+        original_match.fee_amount = match.fee_amount
+        original_match.fee_transaction_id = match.fee_transaction_id
+        return original_match
+    match = record_transfer_fee(match, user=user)
     match.status = 'confirmed'
     match.confirmed_by = user if getattr(user, 'is_authenticated', False) else None
     match.confirmed_at = timezone.now()
     match.save(update_fields=['status', 'confirmed_by', 'confirmed_at'])
     classify_transaction(match.source_transaction, user=user, ownership_scope='unknown', economic_kind='internal_transfer', source='review')
     classify_transaction(match.destination_transaction, user=user, ownership_scope='unknown', economic_kind='internal_transfer', source='review')
-    return match
+    original_match.status = match.status
+    original_match.fee_amount = match.fee_amount
+    original_match.fee_transaction_id = match.fee_transaction_id
+    original_match.confirmed_by_id = match.confirmed_by_id
+    original_match.confirmed_at = match.confirmed_at
+    return original_match
 
 
 def funding_summary(source):

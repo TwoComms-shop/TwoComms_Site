@@ -81,6 +81,15 @@
     grantSource: document.getElementById('fin-txn-grant-source'),
     grantSourceWrap: document.getElementById('fin-txn-grant-source-wrap'),
     unclassifiedSave: document.getElementById('fin-unclassified-save'),
+    quickClassify: document.getElementById('fin-quick-classify'),
+    quickClassifyTitle: document.getElementById('fin-quick-classify-title'),
+    quickClassifyHint: document.getElementById('fin-quick-classify-hint'),
+    quickClassifyYes: document.getElementById('fin-quick-classify-yes'),
+    quickClassifyNo: document.getElementById('fin-quick-classify-no'),
+    transferMatch: document.getElementById('fin-transfer-match'),
+    transferMatchSource: document.getElementById('fin-transfer-match-source'),
+    transferMatchPreview: document.getElementById('fin-transfer-match-preview'),
+    transferMatchConfirm: document.getElementById('fin-transfer-match-confirm'),
     terminalReview: document.getElementById('fin-terminal-review'),
     terminalContext: document.getElementById('fin-terminal-review-context'),
     terminalChoices: document.getElementById('fin-terminal-review-choices'),
@@ -102,7 +111,8 @@
   var INCOME_KIND_LABELS = {
     sale: 'Продаж', investment: 'Інвестиція', grant_inflow: 'Грант',
     debt_repayment: 'Повернення боргу', expense_refund: 'Повернення витрат',
-    personal_transfer: 'Переказ від людини', adjustment: 'Коригування',
+    personal_transfer: 'Переказ від людини', pension_income: 'Пенсійна виплата',
+    transfer_fee: 'Комісія за переказ', adjustment: 'Коригування',
   };
 
   function opt(value, label, selected) {
@@ -290,6 +300,8 @@
     els.incomingReview.hidden = true;
     els.unclassifiedNotice.hidden = true;
     els.unclassifiedForm.hidden = true;
+    if (els.quickClassify) els.quickClassify.hidden = true;
+    if (els.transferMatch) els.transferMatch.hidden = true;
     if (els.unclassifiedFundingSourceWrap) els.unclassifiedFundingSourceWrap.hidden = true;
     els.terminalReview.hidden = true;
     els.terminalChoices.hidden = false;
@@ -298,6 +310,80 @@
     els.terminalConfirm.hidden = true;
     els.terminalReviewError.hidden = true;
     els.terminalReviewError.textContent = '';
+  }
+
+  function renderQuickClassification(txn) {
+    if (!els.quickClassify) return;
+    var isPension = /пенсі|пенси/i.test(txn.account_label || txn.account_name || '');
+    var isFop = !!txn.account_is_business;
+    var enabled = txn.type === 'income' && txn.status === 'actual' && txn.economic_kind === 'unknown' && (isPension || isFop);
+    els.quickClassify.hidden = !enabled;
+    if (!enabled) return;
+    els.quickClassifyYes.dataset.quickAction = isPension ? 'pension' : 'sale';
+    els.quickClassifyTitle.textContent = isPension ? 'Це пенсійна виплата?' : 'Це оплата за продаж або послугу?';
+    els.quickClassifyHint.textContent = isPension
+      ? 'Підтвердьте, щоб не змішувати пенсію з доходом бізнесу.'
+      : 'Для ФОП-рахунку це одразу буде класифіковано як продаж.';
+    els.quickClassifyYes.textContent = isPension ? 'Так, це пенсія' : 'Так, це продаж';
+    els.quickClassifyNo.textContent = isPension ? 'Ні, це інше надходження' : 'Ні, це інше надходження';
+  }
+
+  function saveQuickClassification() {
+    var txnId = els.id.value;
+    var action = els.quickClassifyYes && els.quickClassifyYes.dataset.quickAction;
+    if (!txnId || !action) return;
+    els.quickClassifyYes.disabled = true;
+    api('/api/v2/transactions/' + txnId + '/classification/', 'POST', {
+      quick_action: action,
+      economic_kind: action === 'pension' ? 'pension_income' : 'sale',
+      ownership_scope: action === 'pension' ? 'personal' : 'business',
+      note: action === 'pension' ? 'Швидке підтвердження пенсійної виплати' : 'Швидке підтвердження продажу на ФОП-рахунку',
+    }).then(function (res) {
+      if (res.ok && res.data.ok) window.location.reload();
+      else {
+        els.quickClassifyYes.disabled = false;
+        showAlert(res.data.error || 'Не вдалося зберегти класифікацію');
+      }
+    }).catch(function () {
+      els.quickClassifyYes.disabled = false;
+      showAlert('Помилка мережі. Спробуйте ще раз.');
+    });
+  }
+
+  var transferMatchState = { txnId: null, candidates: [] };
+  function renderTransferMatchPreview() {
+    if (!els.transferMatchPreview || !els.transferMatchSource) return;
+    var item = transferMatchState.candidates.find(function (c) { return String(c.id) === String(els.transferMatchSource.value); });
+    els.transferMatchPreview.hidden = !item;
+    if (item) els.transferMatchPreview.textContent = 'Основна сума: ' + item.amount + ' грн · Комісія: ' + item.fee_amount + ' грн';
+  }
+  function loadTransferMatch(txn) {
+    if (!els.transferMatch || !txn || txn.type !== 'income' || txn.status !== 'actual' || txn.economic_kind !== 'unknown' || txn.account_is_business) return;
+    transferMatchState.txnId = txn.id;
+    api('/api/v2/transfers/match/?transaction_id=' + encodeURIComponent(txn.id)).then(function (res) {
+      if (!res.ok || !res.data.ok || !res.data.candidates.length) return;
+      transferMatchState.candidates = res.data.candidates;
+      els.transferMatchSource.innerHTML = '<option value="">Оберіть операцію</option>';
+      res.data.candidates.forEach(function (item) {
+        var label = item.amount + ' грн · ' + item.date.slice(0, 10) + (item.category ? ' · ' + item.category : '');
+        els.transferMatchSource.appendChild(opt(item.id, label));
+      });
+      els.transferMatch.hidden = false;
+      renderTransferMatchPreview();
+    });
+  }
+  function confirmTransferMatch() {
+    var sourceId = els.transferMatchSource && els.transferMatchSource.value;
+    if (!sourceId || !transferMatchState.txnId) { showAlert('Оберіть списання для зіставлення'); return; }
+    els.transferMatchConfirm.disabled = true;
+    api('/api/v2/transfers/match/', 'POST', {
+      source_transaction_id: sourceId,
+      destination_transaction_id: transferMatchState.txnId,
+      confirm: true,
+    }).then(function (res) {
+      if (res.ok && res.data.ok) window.location.reload();
+      else { els.transferMatchConfirm.disabled = false; showAlert(res.data.error || 'Не вдалося підтвердити переказ'); }
+    }).catch(function () { els.transferMatchConfirm.disabled = false; showAlert('Помилка мережі. Спробуйте ще раз.'); });
   }
 
   function setTerminalError(message) {
@@ -373,6 +459,7 @@
 
   function renderTerminalCandidate(txn, candidate) {
     if (!candidate || !els.terminalReview) return;
+    if (els.quickClassify) els.quickClassify.hidden = true;
     var providers = candidate.evidence && candidate.evidence.providers || [];
     terminalReviewState.txnId = txn.id;
     els.incomingReview.hidden = false;
@@ -402,6 +489,8 @@
     }
     function render() {
       if (modal.hidden || String(els.id.value) !== String(txn.id)) return;
+      renderQuickClassification(txn);
+      loadTransferMatch(txn);
       renderTerminalCandidate(txn, terminalCandidateFor(txn.id));
     }
     if (terminalCandidates) { render(); return; }
@@ -787,10 +876,20 @@
   });
   if (els.terminalReviewAccept) els.terminalReviewAccept.addEventListener('click', acceptTerminalProposal);
   if (els.unclassifiedOpen) els.unclassifiedOpen.addEventListener('click', function () {
+    if (els.quickClassify) els.quickClassify.hidden = true;
     els.unclassifiedForm.hidden = false;
     syncFundingSourceField();
     els.unclassifiedKind.focus();
   });
+  if (els.quickClassifyYes) els.quickClassifyYes.addEventListener('click', saveQuickClassification);
+  if (els.quickClassifyNo) els.quickClassifyNo.addEventListener('click', function () {
+    if (els.quickClassify) els.quickClassify.hidden = true;
+    els.unclassifiedForm.hidden = false;
+    syncFundingSourceField();
+    els.unclassifiedKind.focus();
+  });
+  if (els.transferMatchSource) els.transferMatchSource.addEventListener('change', renderTransferMatchPreview);
+  if (els.transferMatchConfirm) els.transferMatchConfirm.addEventListener('click', confirmTransferMatch);
   if (els.unclassifiedKind) els.unclassifiedKind.addEventListener('change', syncFundingSourceField);
   if (els.grantToggle) els.grantToggle.addEventListener('change', syncGrantClassification);
   if (els.unclassifiedSave) els.unclassifiedSave.addEventListener('click', saveUnclassifiedIncome);
