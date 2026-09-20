@@ -631,10 +631,15 @@ def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generati
             try:
                 close_old_connections()
                 require_database_ready(lane="analysis_worker")
-                if lane_owner is None:
-                    stop_event.wait(5)
+                if lane_owner is not None and not renew_owner(
+                    owner_token=lane_owner["owner_token"],
+                    generation=lane_owner["generation"],
+                ):
+                    # The durable lane fence is authoritative. Once renewal is
+                    # rejected, this worker must drain without touching claims,
+                    # reconciliation, typed memory, or analysis events.
+                    stop_event.set()
                     continue
-                renew_owner(owner_token=lane_owner["owner_token"], generation=lane_owner["generation"])
                 if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
                     monotonic_now = time.monotonic()
                     if (

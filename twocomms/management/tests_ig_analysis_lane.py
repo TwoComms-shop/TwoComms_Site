@@ -42,6 +42,30 @@ class AnalysisLaneFenceTests(TestCase):
         self.assertFalse(renew_owner(owner_token="a", generation=owner["generation"] + 1))
         self.assertTrue(renew_owner(owner_token="a", generation=owner["generation"]))
 
+    def test_expired_owner_cannot_revive_or_renew_frozen_generation(self):
+        now = timezone.now()
+        owner = acquire_owner(owner_kind="daemon", owner_token="expired", lease_seconds=1, now=now)
+        self.assertFalse(renew_owner(
+            owner_token="expired", generation=owner["generation"],
+            now=now + timedelta(seconds=2),
+        ))
+        replacement = acquire_owner(
+            owner_kind="manual", owner_token="replacement", now=now + timedelta(seconds=2),
+        )
+        self.assertIsNotNone(replacement)
+        self.assertFalse(renew_owner(
+            owner_token="expired", generation=owner["generation"],
+            now=now + timedelta(seconds=3),
+        ))
+        self.assertTrue(freeze_claims(
+            owner_token="replacement", generation=replacement["generation"],
+            reason="test", now=now + timedelta(seconds=2),
+        ))
+        self.assertFalse(renew_owner(
+            owner_token="replacement", generation=replacement["generation"],
+            now=now + timedelta(seconds=3),
+        ))
+
     def test_expired_owner_can_be_replaced_but_freeze_provenance_remains(self):
         now = timezone.now()
         owner = acquire_owner(owner_kind="daemon", owner_token="a", lease_seconds=1, now=now)

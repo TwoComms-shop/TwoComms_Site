@@ -59,7 +59,16 @@ def renew_owner(*, owner_token, generation, lease_seconds=DEFAULT_LEASE_SECONDS,
     now = now or timezone.now()
     with transaction.atomic():
         row = _row()
-        if row.owner_token != str(owner_token) or int(row.generation) != int(generation):
+        # An expired or frozen generation has lost mutation authority.  It must
+        # not revive itself after a successor has been admitted or recovery has
+        # deliberately stopped new claims.
+        if (
+            row.owner_token != str(owner_token)
+            or int(row.generation) != int(generation)
+            or not row.lease_until
+            or row.lease_until <= now
+            or row.claim_frozen
+        ):
             return False
         row.heartbeat_at = now
         row.lease_until = now + timedelta(seconds=max(1, int(lease_seconds)))
