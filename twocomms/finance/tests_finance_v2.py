@@ -52,6 +52,17 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(ledger_v2.funding_summary(source)['available'], Decimal('209000'))
         self.assertEqual(grant.ledger_classification.events.count(), 1)
 
+    def test_grant_classification_requires_program(self):
+        grant = self._txn(Transaction.TYPE_INCOME, Decimal('216000'), comment='За реквізитами')
+        self.client.force_login(self.user)
+        response = self.client.post(
+            f'/api/v2/transactions/{grant.id}/classification/',
+            data=json.dumps({'economic_kind': 'grant_inflow', 'ownership_scope': 'business'}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('грантову програму', response.json()['error'])
+
     def test_transfer_confirmation_does_not_change_pnl_classification(self):
         outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10000'), account=self.cash)
         incoming = self._txn(Transaction.TYPE_INCOME, Decimal('10000'), account=self.account)

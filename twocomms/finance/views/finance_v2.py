@@ -154,14 +154,17 @@ def classification_api(request, txn_id):
         ownership_scope = data.get('ownership_scope') or 'unknown'
         if economic_kind == 'grant_inflow' and ownership_scope == 'unknown':
             ownership_scope = 'business'
+        funding = (company.funding_sources.filter(id=data.get('funding_source_id')).first()
+                   if data.get('funding_source_id') else None)
+        if economic_kind == 'grant_inflow' and funding is None:
+            raise ValueError('Оберіть активну грантову програму')
         obj = ledger_v2.classify_transaction(
             txn, user=request.user,
             ownership_scope=ownership_scope,
             economic_kind=economic_kind,
             confidence=data.get('confidence') or 100,
             note=data.get('note') or '', source='manual',
-            funding_source=company.funding_sources.filter(id=data.get('funding_source_id')).first()
-            if data.get('funding_source_id') else None,
+            funding_source=funding,
         )
     except (ValueError, TypeError, InvalidOperation) as exc:
         return _error(exc)
