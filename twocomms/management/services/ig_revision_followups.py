@@ -27,6 +27,7 @@ from management.services.ig_revision_outbox import PublicationBinding, _digest, 
 
 RECEIPT_KEY = "normal_followups"
 VERSION = "revision-normal-followups-v2"
+CURSOR_VERSION = "revision-followup-evaluation-v1"
 AUTOMATIC_SALES_KINDS = ("qualification", "payment", "thinking", "rescue", "final")
 
 
@@ -224,8 +225,27 @@ def delivered_price_answer(client, rows):
     return False
 
 
-def _schedule(client, revision, rows, anchor, now):
+def _schedule(client, revision, rows, anchor, now, *, include_cursor=False):
     from management.services import bot_followups as policy
+
+    cursor = {
+        "version": CURSOR_VERSION,
+        "source_message_ids": [
+            row.get("message_id")
+            for row in ((getattr(revision, "bundle_snapshot", {}) or {}).get("sources") or ())
+        ],
+        "source_anchor": anchor.isoformat() if anchor else "",
+        "sent_effect_ids": [row.pk for row in rows if row.group == "substantive_text"],
+        "sent_reply_anchor": "",
+        "inbound_anchor": "",
+        "meta_window_deadline": "",
+        "evaluated_at": now.isoformat(),
+    }
+
+    def finish(task, reason, **extra):
+        result = task, reason, {**cursor, **extra, "reason": reason, "task_id": task.pk if task else 0,
+                               "due_at": task.due_at.isoformat() if task else ""}
+        return result if include_cursor else result[:2]
 
     deal = IgDeal.objects.select_for_update().select_related("active_checkout_proposal").filter(client=client).exclude(status=IgDeal.Status.CANCELLED).order_by("-pk").first()
     scenario = policy.resolve_followup_scenario(client, deal=deal)
@@ -242,41 +262,45 @@ def _schedule(client, revision, rows, anchor, now):
         if obsolete_ids:
             policy._update_client_next(client)
         if deal.order_id:
-            return None, "order_already_materialized"
+            return finish(None, "order_already_materialized")
         # A paid receipt is not a recipient-only collection form. Without a
         # proven such form, hand the existing deal to the team; never reuse a
         # ready payment URL which might create a second invoice.
-        return _fulfillment_case(client, deal, revision, anchor, now), "paid_fulfillment_case"
+        task = _fulfillment_case(client, deal, revision, anchor, now)
+        return finish(task, "paid_fulfillment_case")
     from management.services.ig_turn_intent import build_turn_intent, purpose_blockers, ordinary_next_send_at
 
     decision = build_turn_intent(client, revision)
+    cursor["source_message_ids"] = list(decision.get("source_message_ids") or [])
     purpose = decision["purpose"]
     offsets = {"price_inquiry": timedelta(hours=3), "requested_selection": timedelta(minutes=90)}
     if purpose not in offsets or not decision["commerce_evidence_refs"]:
-        return None, "current_purpose_not_followup_eligible"
+        return finish(None, "current_purpose_not_followup_eligible")
     if deal and deal.active_checkout_proposal:
-        return None, "hosted_checkout_v2_owns_followups" if deal.active_checkout_proposal.assisted_checkout_v2 else "checkout_owns_followups"
+        return finish(None, "hosted_checkout_v2_owns_followups" if deal.active_checkout_proposal.assisted_checkout_v2 else "checkout_owns_followups")
     if purpose == "price_inquiry" and not delivered_price_answer(client, rows):
-        return None, "price_answer_not_confirmed"
+        return finish(None, "price_answer_not_confirmed")
     blocker = purpose_blockers(client, decision, revision=revision)
     if blocker:
-        return None, blocker
+        return finish(None, blocker)
     allowed, reason = policy._client_allows_followup(client, deal=deal, kind=IgFollowUpTask.Kind.THINKING)
     if not allowed:
-        return None, reason
+        return finish(None, reason)
     sent_parts = [row for row in rows if row.group == "substantive_text"]
     if not sent_parts or any(row.terminal_at is None for row in sent_parts):
-        return None, "sent_reply_timestamp_missing"
+        return finish(None, "sent_reply_timestamp_missing")
     sent_anchor = max(row.terminal_at for row in sent_parts)
+    cursor["sent_reply_anchor"] = sent_anchor.isoformat()
     # Channel permission is inbound-based; sending our reply never renews it.
     inbound = InstagramBotMessage.objects.filter(client=client, role="user", pk__lte=max(decision["source_message_ids"])).order_by("-pk").first()
     inbound_anchor = (inbound.provider_created_at or inbound.created_at) if inbound else anchor
     deadline = inbound_anchor + policy.META_REPLY_WINDOW
+    cursor.update({"inbound_anchor": inbound_anchor.isoformat(), "meta_window_deadline": deadline.isoformat()})
     # Optional sales use ordinary hours only; passing deadline widens legacy
     # helper hours to its emergency slot, which is inappropriate here.
     due = ordinary_next_send_at(max(sent_anchor + offsets[purpose], now))
     if due >= deadline:
-        return None, "ordinary_followup_not_sendable"
+        return finish(None, "ordinary_followup_not_sendable")
     key = f"ordinary-intent-followup:{decision['cycle_key']}"
     task, created = IgFollowUpTask.objects.get_or_create(
         event_key=key,
@@ -305,9 +329,9 @@ def _schedule(client, revision, rows, anchor, now):
     if task.client_id != client.pk:
         raise _Blocked("followup_timer_identity_mismatch")
     if not created:
-        return task, "ordinary_cycle_already_reserved"
+        return finish(task, "ordinary_cycle_already_reserved")
     policy._update_client_next(client)
-    return task, "normal_followup_scheduled"
+    return finish(task, "normal_followup_scheduled")
 
 
 def schedule_revision_normal_followups(
@@ -353,8 +377,8 @@ def schedule_revision_normal_followups(
                 if not isinstance(existing, Mapping) or any(existing.get(key) != value for key, value in binding.items()):
                     raise _Blocked("normal_followup_receipt_mismatch")
                 return RevisionFollowupResult(True, existing["reason"], existing["task_id"], dict(existing), True)
-            task, reason = _schedule(client, revision, rows, anchor, now)
-            receipt = {**binding, "reason": reason, "task_id": task.pk if task else 0, "due_at": task.due_at.isoformat() if task else "", "recorded_at": now.isoformat()}
+            task, reason, cursor = _schedule(client, revision, rows, anchor, now, include_cursor=True)
+            receipt = {**binding, "reason": reason, "task_id": task.pk if task else 0, "due_at": task.due_at.isoformat() if task else "", "evaluation_cursor": cursor, "recorded_at": now.isoformat()}
             revision.action_receipts = {**(revision.action_receipts or {}), RECEIPT_KEY: receipt}
             revision.save(update_fields=["action_receipts", "updated_at"])
             return RevisionFollowupResult(True, reason, task.pk if task else 0, receipt)
@@ -420,6 +444,12 @@ def settle_revision_normal_followups(revision_id, finalization_token, *, now=Non
                 for row, source_id in zip(sources, source_ids)
             )
             anchor = max((row.provider_created_at or row.message.created_at for row in sources), default=None) if source_valid else None
+            inbound = InstagramBotMessage.objects.filter(
+                client=client, role="user", pk__lte=max(source_ids, default=0),
+            ).order_by("-pk").first()
+            inbound_anchor = (inbound.provider_created_at or inbound.created_at) if inbound else anchor
+            from management.services import bot_followups as policy
+            meta_window_deadline = inbound_anchor + policy.META_REPLY_WINDOW if inbound_anchor else None
             reason = ""
             if client.privacy_erasure_started_at is not None:
                 reason = "erasure_private_projection_suppressed"
@@ -444,10 +474,23 @@ def settle_revision_normal_followups(revision_id, finalization_token, *, now=Non
                     reason = denied[0]
             task = None
             if not reason:
-                task, reason = _schedule(client, revision, rows, anchor, now)
+                task, reason, cursor = _schedule(client, revision, rows, anchor, now, include_cursor=True)
+            if reason:
+                cursor = {
+                    "version": CURSOR_VERSION,
+                    "source_message_ids": source_ids,
+                    "source_anchor": anchor.isoformat() if anchor else "",
+                    "sent_effect_ids": [row.pk for row in text],
+                    "sent_reply_anchor": max(row.terminal_at for row in text).isoformat(),
+                    "inbound_anchor": inbound_anchor.isoformat() if inbound_anchor else "",
+                    "meta_window_deadline": meta_window_deadline.isoformat() if meta_window_deadline else "",
+                    "evaluated_at": now.isoformat(), "reason": reason,
+                    "task_id": task.pk if task else 0,
+                    "due_at": task.due_at.isoformat() if task else "",
+                }
             receipt = {**binding, "source_anchor": anchor.isoformat() if anchor else "", "reason": reason,
                        "task_id": task.pk if task else 0, "due_at": task.due_at.isoformat() if task else "",
-                       "outcome": "scheduled" if task else "not_scheduled", "recorded_at": now.isoformat()}
+                       "outcome": "scheduled" if task else "not_scheduled", "evaluation_cursor": cursor, "recorded_at": now.isoformat()}
             revision.action_receipts = {**(revision.action_receipts or {}), RECEIPT_KEY: receipt}
             revision.save(update_fields=["action_receipts", "updated_at"])
             return RevisionFollowupResult(True, reason, task.pk if task else 0, receipt)

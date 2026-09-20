@@ -98,6 +98,15 @@ class RevisionNormalFollowupTests(TransactionTestCase):
 
         self.assertEqual(task.policy_started_at, sent_anchor)
         self.assertEqual(task.meta_window_deadline, anchor + timedelta(hours=23))
+        cursor = result.receipt["evaluation_cursor"]
+        self.assertEqual(cursor["version"], "revision-followup-evaluation-v1")
+        self.assertEqual(cursor["source_message_ids"], [self.source.pk])
+        self.assertEqual(cursor["sent_effect_ids"], list(self.revision.delivery_effects.filter(group="substantive_text").values_list("pk", flat=True)))
+        self.assertEqual(cursor["sent_reply_anchor"], sent_anchor.isoformat())
+        self.assertEqual(cursor["inbound_anchor"], anchor.isoformat())
+        self.assertEqual(cursor["meta_window_deadline"], (anchor + timedelta(hours=23)).isoformat())
+        self.assertEqual(cursor["task_id"], task.pk)
+        self.assertEqual(cursor["reason"], "normal_followup_scheduled")
         again = self._schedule(now=timezone.now() + timedelta(seconds=1))
         self.assertTrue(again.replayed, again.reason)
         self.assertEqual(again.receipt, result.receipt)
@@ -114,6 +123,23 @@ class RevisionNormalFollowupTests(TransactionTestCase):
         self.assertEqual(result.reason, "price_answer_not_confirmed")
         self.assertEqual(result.task_id, 0)
         self.assertFalse(IgFollowUpTask.objects.exists())
+
+    def test_settle_cursor_survives_expired_revision_deadline_and_keeps_meta_window(self):
+        from management.services.ig_revision_followups import settle_revision_normal_followups
+
+        self._sent()
+        finalization_token = "finalize:followup-cursor-test"
+        type(self.revision).objects.filter(pk=self.revision.pk).update(
+            claim_token=finalization_token,
+            overall_deadline=timezone.now() - timedelta(hours=1),
+        )
+        result = settle_revision_normal_followups(self.revision.pk, finalization_token, now=timezone.now())
+        self.assertTrue(result.ready, result.reason)
+        self.assertEqual(result.reason, "normal_followup_scheduled")
+        cursor = result.receipt["evaluation_cursor"]
+        source_anchor = self.source.provider_created_at or self.source.created_at
+        self.assertEqual(cursor["meta_window_deadline"], (source_anchor + timedelta(hours=23)).isoformat())
+        self.assertNotIn("overall_deadline", cursor)
 
     def test_unknown_partial_reply_never_schedules(self):
         self._sent(parts=2, unknown_last=True)
