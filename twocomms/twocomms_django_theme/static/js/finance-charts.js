@@ -176,7 +176,7 @@
         // renders the same continuous intensity between neutral and vivid.
         var heat = Number.parseFloat(day.style.getPropertyValue('--heat'));
         heat = Number.isFinite(heat) ? Math.max(0, Math.min(1, heat)) : 0;
-        var visualHeat = Math.pow(heat, 0.6);
+        var visualHeat = heat;
         var start = [52, 64, 82];
         var end = day.classList.contains('pnl-day--negative') ? [241, 77, 104] : [19, 201, 149];
         var neutral = day.classList.contains('pnl-day--neutral');

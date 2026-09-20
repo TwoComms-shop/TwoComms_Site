@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import calendar as calendar_lib
+import math
 from decimal import Decimal
 
 from django.db.models import Sum
@@ -130,13 +131,38 @@ def _pnl_calendar(company, period, start):
             'profit_display': _m(company, profit, signed=True),
             'tone': 'positive' if profit > 0 else 'negative' if profit < 0 else 'neutral',
         })
-    max_profit = max(
-        (abs(Decimal(str(cell['profit']))) for cell in cells if cell.get('day')),
-        default=Decimal('1'),
-    ) or Decimal('1')
+    def reference_max(values):
+        ordered = sorted((abs(float(value)) for value in values if value), reverse=True)
+        if not ordered:
+            return 0.0
+        # A single exceptional day should stay vivid without flattening all
+        # ordinary days into the same muted shade.
+        if len(ordered) > 1 and ordered[0] > ordered[1] * 3:
+            return ordered[1]
+        return ordered[0]
+
+    positive_max = reference_max(
+        cell['profit'] for cell in cells if cell.get('day') and cell['profit'] > 0
+    )
+    negative_max = reference_max(
+        cell['profit'] for cell in cells if cell.get('day') and cell['profit'] < 0
+    )
+
+    def heat(value, maximum):
+        """Compress outliers while preserving fine-grained differences."""
+        amount = abs(float(value))
+        if not amount or not maximum:
+            return 0.0
+        return round(math.log1p(amount) / math.log1p(maximum), 6)
+
     for cell in cells:
         if cell.get('day'):
-            cell['heat'] = round(float(abs(Decimal(str(cell['profit'])) / max_profit)), 3)
+            if cell['tone'] == 'positive':
+                cell['heat'] = heat(cell['profit'], positive_max)
+            elif cell['tone'] == 'negative':
+                cell['heat'] = heat(cell['profit'], negative_max)
+            else:
+                cell['heat'] = 0.0
     while len(cells) % 7:
         cells.append({'day': None})
     month_names = ('Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень',
