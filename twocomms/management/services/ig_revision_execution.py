@@ -651,7 +651,17 @@ def expired_revision_debt_ids(
     if connection.vendor == "mysql":
         event_key = Collate(event_key, "utf8mb4_unicode_ci")
     recorded = IgFollowUpTask.objects.filter(event_key=event_key)
-    return list(queue.annotate(debt_recorded=Exists(recorded)).filter(debt_recorded=False).order_by("overall_deadline", "id").values_list("id", flat=True)[:max(1, min(int(limit), MAX_DUE_SCAN))])
+    # A prior pass may already have created the operator debt task but crashed
+    # before releasing the revision lease. Re-admit only that expired claim so
+    # reconciliation can clear the stale lease; the task's unique event key
+    # prevents duplicate operator cases and no provider action is performed.
+    debt_recorded = Exists(recorded)
+    return list(
+        queue.annotate(debt_recorded=debt_recorded)
+        .filter(Q(debt_recorded=False) | expired_claim)
+        .order_by("overall_deadline", "id")
+        .values_list("id", flat=True)[:max(1, min(int(limit), MAX_DUE_SCAN))]
+    )
 
 
 def record_expired_revision_debt(revision_id, *, now=None, cutover_at=None):

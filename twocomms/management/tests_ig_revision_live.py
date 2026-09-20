@@ -948,6 +948,42 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(record_expired_revision_debt(revision.pk), "preparation_expired")
         self.assertNotIn(revision.pk, expired_revision_debt_ids(owned_only=True))
 
+    def test_expired_claim_with_existing_debt_case_releases_stale_lease(self):
+        from management.models import IgFollowUpTask
+        from management.services.ig_revision_execution import (
+            expired_revision_debt_ids,
+            record_expired_revision_debt,
+        )
+
+        past = timezone.now() - timedelta(minutes=5)
+        client = IgClient.objects.create(igsid="expired-claimed-case")
+        source = InstagramBotMessage.objects.create(
+            client=client, sender_id=client.igsid, role="user", source="webhook",
+            provider_namespace="instagram_login:owner-1", mid="expired-case-source",
+            text="Старий запит", status="pending", provider_created_at=past,
+        )
+        turn = IgCustomerTurn.objects.create(
+            client=client, primary_source_message=source,
+            window_started_at=past, window_deadline=past,
+        )
+        IgTurnMessage.objects.create(turn=turn, message=source, ordinal=1, role="user")
+        revision = create_collecting_revision(turn, [source], now=past, bypass_quiet=True).revision
+        type(revision).objects.filter(pk=revision.pk).update(
+            state=revision.State.CLAIMED, active_slot=None, claim_token="stale-case",
+            claimed_at=past, lease_until=past, overall_deadline=past,
+            updated_at=timezone.now(),
+        )
+        IgFollowUpTask.objects.create(
+            event_key=f"ig-revision-debt:{revision.pk}", client=client,
+            due_at=past, kind=IgFollowUpTask.Kind.MANAGER_TASK,
+            status=IgFollowUpTask.Status.SKIPPED,
+        )
+        self.assertIn(revision.pk, expired_revision_debt_ids(owned_only=True))
+        record_expired_revision_debt(revision.pk)
+        revision.refresh_from_db()
+        self.assertIsNone(revision.lease_until)
+        self.assertTrue(revision.claim_token.startswith("debt:"))
+
     @override_settings(
         IG_REVISION_EXECUTION_ENABLED=True,
         IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00",
