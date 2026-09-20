@@ -138,7 +138,7 @@ def _pnl_calendar(company, period, start):
         # A single exceptional day should stay vivid without flattening all
         # ordinary days into the same muted shade.
         if len(ordered) > 1 and ordered[0] > ordered[1] * 3:
-            return ordered[1]
+            return ordered[1] * 3
         return ordered[0]
 
     positive_max = reference_max(
