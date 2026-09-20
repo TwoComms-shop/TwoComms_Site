@@ -221,6 +221,35 @@
   .fin-tl-seg__sums { flex-direction: column; gap: 2px; text-align: right; }
 }
 
+/* Payment modal v2: shared dark Finance controls, with clear action hierarchy. */
+.fin-v2-pay-card { overflow: hidden; border-color: rgba(255,255,255,.12); box-shadow: 0 24px 80px rgba(0,0,0,.48); }
+.fin-v2-pay-card .fin-modal-head { align-items: flex-start; padding: 20px 22px 16px; background: linear-gradient(135deg, rgba(246,165,26,.14), rgba(255,255,255,.025)); }
+.fin-v2-pay-eyebrow { display: block; margin-bottom: 5px; color: #fbbf24; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.fin-v2-pay-card .fin-modal-head h3 { font-size: 20px; }
+.fin-v2-pay-card .fin-modal-body { padding: 18px 22px 22px; gap: 14px; }
+.fin-v2-pay-name { margin: 0; color: #f8fafc; font-size: 18px; font-weight: 750; }
+.fin-v2-component-picker { margin: 0; color: var(--fin-text-2); font-size: 12px; font-weight: 650; }
+.fin-v2-pay-panel label > span, .fin-v2-component-picker { color: var(--fin-text-2); font-size: 12px; font-weight: 650; }
+.fin-v2-pay-panel input, .fin-v2-pay-panel select, .fin-v2-pay-panel textarea, .fin-v2-component-picker select {
+  min-height: 42px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px;
+  background-color: #171b24; color: #f8fafc; font: inherit; line-height: 1.35; transition: border-color .15s, box-shadow .15s, background-color .15s;
+}
+.fin-v2-pay-panel textarea { min-height: 70px; resize: vertical; }
+.fin-v2-pay-panel select, .fin-v2-component-picker select { appearance: none; padding-right: 38px; background-image: linear-gradient(45deg, transparent 50%, #9ca3af 50%), linear-gradient(135deg, #9ca3af 50%, transparent 50%); background-position: calc(100% - 16px) 18px, calc(100% - 11px) 18px; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+.fin-v2-pay-panel input:hover, .fin-v2-pay-panel select:hover, .fin-v2-pay-panel textarea:hover, .fin-v2-component-picker select:hover { border-color: rgba(255,255,255,.28); background-color: #1b202b; }
+.fin-v2-pay-panel input:focus, .fin-v2-pay-panel select:focus, .fin-v2-pay-panel textarea:focus, .fin-v2-component-picker select:focus { outline: none; border-color: var(--fin-accent); box-shadow: 0 0 0 3px rgba(246,165,26,.16); }
+.fin-v2-fields { display: grid; gap: 11px; }
+.fin-v2-payment-actions { display: flex; align-items: center; gap: 10px; margin-top: 3px; }
+.fin-v2-payment-actions .fin-btn { min-height: 42px; padding-inline: 16px; }
+.fin-v2-payment-actions .fin-btn:disabled { cursor: wait; opacity: .65; }
+.fin-v2-api-note { margin: 0; color: var(--fin-muted); font-size: 11px; line-height: 1.45; }
+.fin-v2-pay-card .fin-form-alert { margin: 0; padding: 11px 12px; border-radius: 10px; line-height: 1.45; }
+@media (max-width: 640px) {
+  .fin-v2-pay-card .fin-modal-head, .fin-v2-pay-card .fin-modal-body { padding-inline: 16px; }
+  .fin-v2-payment-actions { display: block; }
+  .fin-v2-payment-actions .fin-btn { width: 100%; }
+}
+
 /* Составные обязательства v2. */
 .fin-v2-groups { margin-top: 24px; }
 .fin-v2-groups .fin-section-title, .fin-v2-funding .fin-section-title { margin-bottom: 4px; }

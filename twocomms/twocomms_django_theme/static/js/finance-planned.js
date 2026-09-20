@@ -52,6 +52,7 @@
   var v2ExistingButton = document.getElementById('fin-v2-settle-existing');
   var v2ExistingPanel = document.getElementById('fin-v2-existing-panel');
   var v2NewPanel = document.getElementById('fin-v2-new-panel');
+  var v2ApiButton = document.getElementById('fin-v2-pay-api');
   var v2PickerWrap = document.getElementById('fin-v2-component-picker-wrap');
   var v2Picker = document.getElementById('fin-v2-component-picker');
   var activeIntent = null;
@@ -75,32 +76,32 @@
     box.textContent = '';
     var card = data && data.recipient_card;
     if (card && (card.iban || card.pan_mask)) {
-      box.textContent = 'Получатель: ' + (card.label || card.bank || 'сохраненный реквизит') +
+      box.textContent = 'Отримувач: ' + (card.label || card.bank || 'збережений реквізит') +
         ' · ' + (card.iban || card.pan_mask);
       return;
     }
-    box.textContent = 'Реквизиты получателя пока не заполнены. Добавьте IBAN или карту в карточке контрагента перед оплатой.';
+    box.textContent = 'Реквізити отримувача ще не заповнені. Додайте IBAN або картку в картці контрагента перед оплатою.';
     if (counterpartyId) {
       var link = document.createElement('a');
       link.href = '/counterparties/' + counterpartyId + '/';
-      link.textContent = 'Открыть карточку';
+      link.textContent = 'Відкрити картку';
       box.appendChild(document.createTextNode(' '));
       box.appendChild(link);
     }
   }
   function loadV2Context(componentId, counterpartyId) {
     if (!v2Existing) return;
-    v2Existing.innerHTML = '<option value="">Загрузка операций…</option>';
+    v2Existing.innerHTML = '<option value="">Завантаження операцій…</option>';
     api('/api/v2/obligation-components/' + componentId + '/payment-context/').then(function (res) {
       if (!res.ok || !res.data.ok) {
-        v2Existing.innerHTML = '<option value="">Не удалось загрузить операции</option>';
+        v2Existing.innerHTML = '<option value="">Не вдалося завантажити операції</option>';
         return;
       }
       showV2Recipient(res.data, counterpartyId);
       var rows = res.data.candidates || [];
       v2Existing.innerHTML = '';
       if (!rows.length) {
-        v2Existing.appendChild(opt('', 'Нет не привязанных операций', false));
+        v2Existing.appendChild(opt('', 'Немає неповʼязаних операцій', false));
       }
       rows.forEach(function (row) {
         var label = [row.date || row.date_actual || '', row.amount_display || row.amount || '', row.account_name || '', row.comment || '']
@@ -123,6 +124,13 @@
     if (recipient) recipient.hidden = true;
     v2Result.hidden = true; v2Result.textContent = '';
     activeIntent = null;
+    var v2Submit = v2ApiButton;
+    if (v2Submit) {
+      v2Submit.innerHTML = '<span aria-hidden="true">↗</span> Підготувати оплату';
+      v2Submit.classList.remove('fin-btn--secondary');
+      v2Submit.classList.add('fin-btn--primary');
+      v2Submit.onclick = null;
+    }
     setV2Mode('existing');
     loadV2Context(activeComponentId, counterpartyId);
   }
@@ -153,7 +161,7 @@
       if (v2Picker) {
         v2Picker.innerHTML = '';
         components.forEach(function (component) {
-          var option = opt(component.id, component.name + ' · осталось ' + component.remaining + ' грн', false);
+          var option = opt(component.id, component.name + ' · залишок ' + component.remaining + ' грн', false);
           option.dataset.name = component.name;
           option.dataset.remaining = component.remaining;
           option.dataset.purpose = component.purpose || '';
@@ -182,43 +190,58 @@
     }).then(function (res) {
       v2ExistingButton.disabled = false;
       v2Result.hidden = false;
-      v2Result.textContent = res.ok && res.data.ok ? 'Операция привязана. Остаток компонента обновлен.' : ((res.data && res.data.error) || 'Не удалось привязать операцию');
+      v2Result.textContent = res.ok && res.data.ok ? 'Операцію привʼязано. Залишок компонента оновлено.' : ((res.data && res.data.error) || 'Не вдалося привʼязати операцію');
       if (res.ok && res.data.ok) setTimeout(function () { window.location.reload(); }, 700);
     });
   });
   document.querySelectorAll('[data-v2-mode]').forEach(function (button) {
     button.addEventListener('click', function () { setV2Mode(button.getAttribute('data-v2-mode')); });
   });
-  if (v2Form) v2Form.addEventListener('submit', function (e) {
-    e.preventDefault();
+  function createV2Intent(fromApiButton) {
     if (v2Mode !== 'new' || activeIntent) return;
+    var button = fromApiButton ? v2ApiButton : v2Form.querySelector('button[type="submit"]');
+    if (button) button.disabled = true;
     api('/api/v2/obligation-components/' + document.getElementById('fin-v2-component-id').value + '/payment-intent/', 'POST', {
       account_id: document.getElementById('fin-v2-account').value,
       amount: document.getElementById('fin-v2-amount').value,
       purpose: document.getElementById('fin-v2-purpose').value,
       comment: document.getElementById('fin-v2-comment').value,
+      requested_mode: fromApiButton ? 'api' : 'instructions',
     }).then(function (res) {
+      if (button) button.disabled = false;
       v2Result.hidden = false;
-      if (!res.ok || !res.data.ok) { v2Result.textContent = (res.data && res.data.error) || 'Не удалось сформировать платеж'; return; }
+      if (!res.ok || !res.data.ok) { v2Result.textContent = (res.data && res.data.error) || 'Не вдалося сформувати платіж'; return; }
       activeIntent = res.data.intent;
       var recipient = activeIntent.recipient || {};
-      v2Result.textContent = 'Проверьте сумму и реквизиты: ' + activeIntent.amount + ' ' + activeIntent.currency +
-        ' · ' + (recipient.iban || recipient.pan_mask || recipient.label || 'реквизиты не указаны') +
-        '. После подтверждения в банковском приложении нажмите «Я отправил платеж».';
-      var submit = v2Form.querySelector('button[type="submit"]');
-      submit.textContent = 'Я отправил платеж';
+      var capability = activeIntent.capability || {};
+      if (capability.outgoing_supported) {
+        v2Result.textContent = 'Запит на оплату передано Monobank. Очікуємо підтвердження у застосунку.';
+      } else {
+        v2Result.textContent = 'Вихідний платіжний API Monobank Personal для цього токена недоступний. Реквізити підготовлено: ' +
+          activeIntent.amount + ' ' + activeIntent.currency + ' · ' +
+          (recipient.iban || recipient.pan_mask || recipient.label || 'реквізити не вказані') +
+          '. Виконайте платіж у застосунку Monobank, потім натисніть «Я підтвердив оплату».';
+      }
+      var submit = v2ApiButton;
+      submit.textContent = 'Я підтвердив оплату';
+      submit.classList.remove('fin-btn--secondary');
+      submit.classList.add('fin-btn--primary');
       submit.onclick = function (ev) {
         ev.preventDefault();
         api('/api/v2/payment-intents/' + activeIntent.id + '/transition/', 'POST', { status: 'submitted' })
           .then(function (transition) {
             if (transition.ok && transition.data.ok) {
               activeIntent = transition.data.intent;
-              v2Result.textContent = 'Ожидаем подтверждение Monobank. Статус обновится автоматически после выписки.';
+              v2Result.textContent = 'Очікуємо підтвердження Monobank. Статус оновиться автоматично після виписки.';
               pollV2Intent(activeIntent.id);
-            }
+            } else { v2Result.textContent = (transition.data && transition.data.error) || 'Не вдалося змінити статус платежу'; }
           });
       };
     });
+  }
+  if (v2Form) v2Form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    createV2Intent(true);
   });
   function pollV2Intent(id) {
     var timer = setInterval(function () {
@@ -227,7 +250,7 @@
         var status = res.data.intent.status;
         if (status === 'detected' || status === 'confirmed' || status === 'rejected' || status === 'expired') {
           clearInterval(timer);
-          v2Result.textContent = 'Статус платежа: ' + status;
+          v2Result.textContent = 'Статус платежу: ' + ({detected: 'знайдено у виписці', confirmed: 'підтверджено', rejected: 'відхилено', expired: 'прострочено'}[status] || status);
           if (status === 'confirmed') setTimeout(function () { window.location.reload(); }, 700);
         }
       });

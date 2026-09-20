@@ -1,30 +1,35 @@
 <div id="fin-v2-pay-modal" class="fin-modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="fin-v2-pay-title">
     <div class="fin-modal-card fin-modal-card--txn">
-        <div class="fin-modal-head"><h3 id="fin-v2-pay-title">Оплатить сейчас</h3><button type="button" class="fin-modal-close" data-v2-pay-close aria-label="Закрыть">×</button></div>
+        <div class="fin-modal-head"><div><span class="fin-v2-pay-eyebrow">ПЛАТІЖНЕ ДОРУЧЕННЯ</span><h3 id="fin-v2-pay-title">Сплатити зараз</h3></div><button type="button" class="fin-modal-close" data-v2-pay-close aria-label="Закрити">×</button></div>
         <form id="fin-v2-pay-form" class="fin-modal-body">
             <p id="fin-v2-pay-name" class="fin-v2-pay-name"></p>
-            <label id="fin-v2-component-picker-wrap" class="fin-v2-component-picker" hidden>Часть обязательства
+            <label id="fin-v2-component-picker-wrap" class="fin-v2-component-picker" hidden>Компонент зобовʼязання
                 <select id="fin-v2-component-picker"></select>
             </label>
             <div id="fin-v2-recipient" class="fin-v2-recipient" hidden></div>
             <input type="hidden" id="fin-v2-component-id">
-            <div class="fin-v2-pay-switch" role="tablist" aria-label="Способ закрытия">
-                <button type="button" class="is-active" data-v2-mode="existing" role="tab" aria-selected="true">Выбрать оплату</button>
-                <button type="button" data-v2-mode="new" role="tab" aria-selected="false">Сплатити зараз</button>
+            <div class="fin-v2-pay-switch" role="tablist" aria-label="Спосіб закриття">
+                <button type="button" class="is-active" data-v2-mode="existing" role="tab" aria-selected="true">Обрати проведену оплату</button>
+                <button type="button" data-v2-mode="new" role="tab" aria-selected="false">Підготувати оплату</button>
             </div>
             <section id="fin-v2-existing-panel" class="fin-v2-pay-panel">
-                <label>Уже проведённая операция <select id="fin-v2-existing-payment"><option value="">Загрузка операций…</option></select></label>
-                <label>Сумма закрытия <input id="fin-v2-existing-amount" type="number" min="0.01" step="0.01"></label>
-                <button type="button" id="fin-v2-settle-existing" class="fin-btn fin-btn--secondary">Привязать и закрыть часть</button>
+                <label><span>Проведена операція</span><select id="fin-v2-existing-payment"><option value="">Завантаження операцій…</option></select></label>
+                <label><span>Сума закриття</span><input id="fin-v2-existing-amount" type="number" min="0.01" step="0.01"></label>
+                <button type="button" id="fin-v2-settle-existing" class="fin-btn fin-btn--secondary">Привʼязати та закрити компонент</button>
             </section>
             <section id="fin-v2-new-panel" class="fin-v2-pay-panel" hidden>
-                <label>Сумма <input id="fin-v2-amount" type="number" min="0.01" step="0.01" required></label>
-                <label>Списать со счета <select id="fin-v2-account" required>
+                <div class="fin-v2-fields">
+                <label><span>Сума</span><input id="fin-v2-amount" type="number" min="0.01" step="0.01" required></label>
+                <label><span>Рахунок списання</span><select id="fin-v2-account" required>
                     {% for account in v2_accounts %}<option value="{{ account.id }}">{{ account.name }} · {{ account.balance }} {{ account.currency }}</option>{% endfor %}
                 </select></label>
-                <label>Назначение <textarea id="fin-v2-purpose" rows="2"></textarea></label>
-                <label>Комментарий <textarea id="fin-v2-comment" rows="2"></textarea></label>
-                <button type="submit" class="fin-btn fin-btn--primary">Сформировать платежные данные</button>
+                <label><span>Призначення платежу</span><textarea id="fin-v2-purpose" rows="2"></textarea></label>
+                <label><span>Коментар</span><textarea id="fin-v2-comment" rows="2"></textarea></label>
+                </div>
+                <div class="fin-v2-payment-actions">
+                    <button type="submit" id="fin-v2-pay-api" class="fin-btn fin-btn--primary"><span aria-hidden="true">↗</span> Підготувати оплату</button>
+                </div>
+                <p class="fin-v2-api-note">Реквізити перевіряються перед оплатою. Статус оновиться автоматично після підтвердження банком у виписці.</p>
             </section>
             <p id="fin-v2-pay-result" class="fin-form-alert" hidden></p>
         </form>

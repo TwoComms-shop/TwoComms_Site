@@ -25,8 +25,8 @@ class Command(BaseCommand):
         office_cp = cp_qs.filter(name__iregex=r'виктор|владимир|викторов').first()
         specs = [
             ('Налоги', tax_cp, [
-                ('Военный сбор', Decimal('865'), 'military tax'),
-                ('Единый налог', Decimal('1729'), 'unified tax'),
+                ('Военный сбор', Decimal('865'), 'Військовий збір за місяць'),
+                ('Единый налог', Decimal('1729'), 'Єдиний податок за місяць'),
             ]),
             ('Квартира Влада мамы', home_cp, [
                 ('Квартплата', Decimal('4000'), 'rent'),
@@ -58,6 +58,9 @@ class Command(BaseCommand):
                 if amount is not None and component.fixed_amount != amount:
                     component.fixed_amount = amount
                     component.save(update_fields=['fixed_amount'])
+                if purpose and component.payment_purpose_template in {'', 'military tax', 'unified tax'}:
+                    component.payment_purpose_template = purpose
+                    component.save(update_fields=['payment_purpose_template'])
             self.stdout.write(self.style.SUCCESS(f'готово: {title} (id={group.id})'))
         if not options['apply']:
             self.stdout.write('Dry-run: для записи добавьте --apply. История операций не меняется.')
