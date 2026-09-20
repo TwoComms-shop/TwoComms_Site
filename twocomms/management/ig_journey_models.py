@@ -129,3 +129,58 @@ class IgJourneyTraceSnapshot(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("Journey trace snapshots are append-only.")
+
+
+class IgJourneyTraceRefreshControl(models.Model):
+    """Persisted operator gate and a shared, expiring provider admission lease."""
+
+    enabled = models.BooleanField(default=False)
+    activation_watermark = models.PositiveBigIntegerField(default=0)
+    scan_cursor = models.PositiveBigIntegerField(default=0)
+    repair_cursor = models.PositiveBigIntegerField(default=0)
+    repair_at = models.DateTimeField(null=True, blank=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    changed_by_id = models.PositiveBigIntegerField(null=True, blank=True)
+    changed_at = models.DateTimeField(auto_now=True)
+    max_starts_per_hour = models.PositiveSmallIntegerField(default=6)
+    budget_started_at = models.DateTimeField(null=True, blank=True)
+    budget_starts = models.PositiveSmallIntegerField(default=0)
+    lease_token = models.CharField(max_length=32, blank=True, default="")
+    lease_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(pk=1), name="ig_trace_refresh_singleton"),
+            models.CheckConstraint(condition=models.Q(max_starts_per_hour__gte=1,
+                max_starts_per_hour__lte=24), name="ig_trace_refresh_budget_bound"),
+        ]
+
+
+class IgJourneyTraceRefreshJob(models.Model):
+    """One mutable refresh request; independent of ordinary analysis cursors."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        DONE = "done", "Done"
+        FAILED = "failed", "Failed"
+
+    client = models.OneToOneField("management.IgClient", on_delete=models.DO_NOTHING,
+        db_constraint=False, related_name="journey_trace_refresh")
+    requested_watermark = models.PositiveBigIntegerField(default=0)
+    reset_floor = models.PositiveBigIntegerField(default=1)
+    generation = models.PositiveBigIntegerField(default=1)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    due_at = models.DateTimeField()
+    attempted_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    attempted_generation = models.PositiveBigIntegerField(default=0)
+    lease_token = models.CharField(max_length=32, blank=True, default="")
+    lease_until = models.DateTimeField(null=True, blank=True)
+    last_snapshot = models.ForeignKey("management.IgJourneyTraceSnapshot", null=True, blank=True,
+        on_delete=models.DO_NOTHING, db_constraint=False, related_name="refresh_jobs")
+    last_reason = models.CharField(max_length=40, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["status", "due_at"], name="ig_trace_refresh_due")]

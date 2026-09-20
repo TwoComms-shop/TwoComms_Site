@@ -56,6 +56,8 @@ TASK_SPECS = (
     TaskSpec("ig_deal_payments", "backstop перевірки IG-оплат", 240, 720),
     TaskSpec("order_telegram_reconcile", "відновлення Telegram-карток замовлень", 120, 480),
     TaskSpec("nova_poshta_tracking", "оновлення статусів Нової Пошти", 300, 900),
+    TaskSpec("ig_typed_memory_reconcile", "звірка typed memory", 600, 1800),
+    TaskSpec("ig_trace_refresh", "оновлення journey trace", 15, 90),
     TaskSpec("binotel_call_ai_analyses", "Автоаналіз дзвінків", 300, 900),
 )
 MANUAL_TASK_SPECS = (

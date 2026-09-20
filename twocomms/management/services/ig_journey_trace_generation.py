@@ -193,13 +193,21 @@ def _historical_admission(settings_obj, allow_historical):
     return ""
 
 
-def _admission(client, settings_obj, *, allow_historical=False):
+def _admission(client, settings_obj, *, allow_historical=False, automatic=False):
     reason = _client_reason(client)
     if reason:
         return reason
     if settings_obj is None:
         return "settings_missing"
-    if not _historical_admission(settings_obj, allow_historical):
+    if automatic:
+        from management.services.ig_journey_trace_refresh import automatic_enabled
+        if not automatic_enabled():
+            return "refresh_disabled"
+        # Independent persisted admission; only reuse the exact project-mapping
+        # check, never switch on historical backfill or enable AnalysisV2.
+        if not _historical_backfill_allowed(SimpleNamespace(analysis_backfill_enabled=True)):
+            return "key_project_mapping_missing"
+    elif not _historical_admission(settings_obj, allow_historical):
         return "key_project_mapping_missing" if allow_historical else "historical_backfill_gate"
     if _sender_allowlist_skip_reason(client, settings_obj=settings_obj):
         return "sender_not_allowed"
@@ -219,7 +227,27 @@ def _input_identity(client_id, watermark, by_id):
     return source_digest, key
 
 
-def generate_journey_trace(client_id, *, apply=False, allow_historical=False):
+def generate_journey_trace(client_id, *, apply=False, allow_historical=False, _automatic=False):
+    """Shared manual/automatic single-flight lease, released on every exit."""
+    if type(_automatic) is not bool or (_automatic and (not apply or allow_historical)):
+        raise ValueError("invalid_trace_request")
+    context = {}
+    report = {"client_id": client_id, "status": "skipped", "reason": "internal_failure", "provider_called": False}
+    try:
+        report = _generate_journey_trace(client_id, apply=apply, allow_historical=allow_historical,
+                                         automatic=_automatic, context=context)
+        return report
+    finally:
+        if context.get("token") or (_automatic and type(client_id) is int and client_id > 0):
+            from management.services.ig_journey_trace_refresh import finish_trace_attempt
+            try:
+                finish_trace_attempt(client_id=client_id, token=context.get("token", ""), report=report, automatic=_automatic)
+            except DatabaseError:
+                # The durable lease expires; never mask a provider/source result.
+                pass
+
+
+def _generate_journey_trace(client_id, *, apply, allow_historical, automatic, context):
     """One explicitly requested client; return only safe status and counters."""
     if (type(client_id) is not int or client_id <= 0 or type(apply) is not bool
             or type(allow_historical) is not bool or (allow_historical and not apply)):
@@ -235,11 +263,11 @@ def generate_journey_trace(client_id, *, apply=False, allow_historical=False):
         settings_obj = InstagramBotSettings.objects.filter(pk=1).first()
         transcript, by_id, watermark, coverage = _window(client_id)
         report.update(watermark=watermark, coverage=coverage)
-        reason = _admission(client, settings_obj, allow_historical=allow_historical)
+        reason = _admission(client, settings_obj, allow_historical=allow_historical, automatic=automatic)
         if reason:
             report["reason"] = reason
             return report
-        report["admission"] = _historical_admission(settings_obj, allow_historical)
+        report["admission"] = "automatic_refresh" if automatic else _historical_admission(settings_obj, allow_historical)
         if not by_id or not any(item["text"] and item["role"] in {"user", "manager"} for item in transcript):
             report["reason"] = "no_human_text"
             return report
@@ -261,6 +289,17 @@ def generate_journey_trace(client_id, *, apply=False, allow_historical=False):
     except DatabaseError:
         report["reason"] = "database_unavailable"
         return report
+    from management.services.ig_journey_trace_refresh import start_trace_attempt
+    try:
+        token, reason = start_trace_attempt(client_id=client_id, fingerprint=snapshot_key,
+            watermark=watermark, reset_floor=coverage["reset_floor"], automatic=automatic)
+    except DatabaseError:
+        report["reason"] = "database_unavailable"
+        return report
+    if reason:
+        report["reason"] = reason
+        return report
+    context["token"] = token
     report["provider_called"] = True
     prompt = _prompt()
     user_text = json.dumps({"watermark_message_id": watermark, "window": coverage, "conversation": transcript}, ensure_ascii=False)
@@ -302,9 +341,13 @@ def generate_journey_trace(client_id, *, apply=False, allow_historical=False):
             current_client = IgClient.objects.select_for_update().filter(pk=client_id).first()
             IgConversationAnalysisJob.objects.select_for_update().filter(client_id=client_id).only("id", "status").first()
             current_settings = InstagramBotSettings.objects.filter(pk=1).first()
-            reason = _admission(current_client, current_settings, allow_historical=allow_historical)
+            reason = _admission(current_client, current_settings, allow_historical=allow_historical, automatic=automatic)
             if reason:
                 report["reason"] = reason
+                return report
+            from management.services.ig_journey_trace_refresh import lease_is_current
+            if not lease_is_current(context["token"], automatic=automatic):
+                report["reason"] = "lease_expired"
                 return report
             _, current_by_id, current_watermark, current_coverage = _window(client_id)
             if (current_watermark != watermark or current_coverage["reset_floor"] != coverage["reset_floor"]

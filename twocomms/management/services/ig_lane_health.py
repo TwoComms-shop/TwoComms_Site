@@ -15,7 +15,9 @@ from management.models import (
     CallRecord, IgAiReplyRecoveryJob, IgBotNotification, IgClient, IgConversationAnalysisEvent, IgConversationAnalysisJob,
     IgCustomerTurnRevision, IgFollowUpTask, IgRevisionDeliveryEffect,
     IgTurnRevisionSource, InstagramBotMessage, InstagramBotSettings,
+    InstagramBotTaskHeartbeat,
 )
+from management.services.ig_typed_memory import shadow_enabled
 
 SAMPLE_LIMIT = 50
 BUCKETS = ("runnable", "processing", "manual", "deferred", "failed", "unknown", "attention")
@@ -253,6 +255,45 @@ def _binotel_lane(*, now):
                    exact_attention=query.filter(ai_status="error").count())
 
 
+def _consumer_heartbeat_lane(task_key, *, now, threshold):
+    """Observe an isolated consumer without deriving liveness from daemon pulse."""
+    row = InstagramBotTaskHeartbeat.objects.filter(task_key=task_key).first()
+    if row is None:
+        return {
+            "available": True, "healthy": True, "state": "unobserved",
+            "counts": dict.fromkeys(BUCKETS, 0), "sampled": True,
+            "has_more": False, "risk_coverage_complete": True,
+            "progress_age_seconds": None, "progress_evidence": "unobserved",
+        }
+    reference = row.last_succeeded_at or row.last_started_at or row.first_expected_at
+    age = _age(now, reference)
+    failed = bool(row.last_failed_at and (not row.last_succeeded_at or row.last_failed_at >= row.last_succeeded_at))
+    stale = age is not None and age > threshold
+    state = "failed" if failed else "stalled" if stale else "observed"
+    return {
+        "available": True, "healthy": not (failed or stale), "state": state,
+        "counts": dict.fromkeys(BUCKETS, 0), "sampled": True,
+        "has_more": False, "risk_coverage_complete": True,
+        "progress_age_seconds": age, "stall_after_seconds": threshold,
+        "progress_evidence": "task_heartbeat",
+        "last_error_kind": row.last_error_kind,
+        "consecutive_failures": row.consecutive_failures,
+    }
+
+
+def _typed_memory_lane(*, now):
+    if not shadow_enabled():
+        return {"available": True, "healthy": True, "state": "disabled",
+                "counts": dict.fromkeys(BUCKETS, 0), "sampled": True,
+                "has_more": False, "risk_coverage_complete": True,
+                "progress_age_seconds": None, "progress_evidence": "disabled"}
+    return _consumer_heartbeat_lane("ig_typed_memory_reconcile", now=now, threshold=1800)
+
+
+def _trace_refresh_lane(*, now):
+    return _consumer_heartbeat_lane("ig_trace_refresh", now=now, threshold=90)
+
+
 def _job_lane(model, *, now, statuses, progress_field, due_field="next_attempt_at", threshold=SERVICE_STALL_SECONDS, analysis=False, recovery=False):
     query = model.objects.filter(status__in=statuses).order_by("created_at", "id")
     from management.services.bot_conversation_analysis import MAX_ATTEMPTS
@@ -330,12 +371,14 @@ def operational_lane_snapshot(*, now=None):
             "analysis_materialization": _job_lane(IgConversationAnalysisEvent, now=now, statuses=("pending", "failed"), progress_field="applied_at"),
             "reply_recovery": _job_lane(IgAiReplyRecoveryJob, now=now, statuses=("pending", "processing", "sending", "ambiguous", "failed"), progress_field="completed_at", recovery=True),
             "binotel_analysis": _binotel_lane(now=now),
+            "typed_memory": _typed_memory_lane(now=now),
+            "trace_refresh": _trace_refresh_lane(now=now),
         }
         return {
             "available": True, "healthy": bot_state in {"running", "disabled"} and all(lane["healthy"] for lane in lanes.values()),
             "bot_state": bot_state, "lanes": lanes,
             "consumer": {key: daemon[key] for key in ("process_online", "main_healthy", "process_age_seconds", "main_age_seconds", "stalled_reason")},
-            "unobserved_lanes": ["typed_memory", "trace_refresh"],
+            "unobserved_lanes": [],
         }
     except (DatabaseError, OSError, ValueError, TypeError):
         return {"available": False, "healthy": False, "reason": "observation_unavailable", "lanes": {}}

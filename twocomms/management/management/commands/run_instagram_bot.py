@@ -15,6 +15,7 @@
 shared-MySQL (wait_timeout=60) з'являється "MySQL server has gone away".
 """
 import json
+import logging
 import os
 import fcntl
 import signal
@@ -578,6 +579,32 @@ def _conv_refresher(stop_event: threading.Event):
         stop_event.wait(wait_seconds)
 
 
+def _journey_trace_refresh_worker(stop_event: threading.Event):
+    """Isolated low-priority provider work; never blocks ordinary analysis."""
+    from management.services.ig_journey_trace_refresh import refresh_tick, SWEEP_SECONDS
+
+    last_error_log = float("-inf")
+    while not stop_event.is_set():
+        try:
+            close_old_connections()
+            require_database_ready(lane="journey_trace_refresh")
+            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                with task_heartbeat("ig_trace_refresh"):
+                    refresh_tick()
+        except DbCircuitOpen:
+            pass
+        except Exception as exc:
+            if not _database_disconnected(exc, lane="journey_trace_refresh") and time.monotonic() - last_error_log >= 300:
+                # Keep unexpected infrastructure failures visible without source
+                # text, provider payloads or an alert on every 15-second sweep.
+                logging.getLogger(__name__).warning("journey_trace_refresh failure class=%s", type(exc).__name__)
+                last_error_log = time.monotonic()
+        finally:
+            # The one extra thread retains no idle DB connection between sweeps.
+            connection.close()
+        stop_event.wait(SWEEP_SECONDS)
+
+
 def _analysis_worker(stop_event: threading.Event):
     """Drain durable CRM-analysis jobs without coupling them to reply enablement."""
     from management.services.bot_conversation_analysis import (
@@ -619,7 +646,8 @@ def _analysis_worker(stop_event: threading.Event):
                             reconcile_typed_memory,
                         )
 
-                        reconcile_typed_memory(limit=ANALYSIS_RECONCILE_BATCH)
+                        with task_heartbeat("ig_typed_memory_reconcile"):
+                            reconcile_typed_memory(limit=ANALYSIS_RECONCILE_BATCH)
                     except Exception as exc:
                         _raise_disconnected_database(exc, lane="analysis_worker")
                         try:
@@ -1759,6 +1787,11 @@ class Command(BaseCommand):
             daemon=True,
         )
         analysis_worker.start()
+        journey_trace_worker = threading.Thread(
+            name="ig-journey-trace", target=_journey_trace_refresh_worker,
+            args=(stop_event,), daemon=True,
+        )
+        journey_trace_worker.start()
         recovery_worker = threading.Thread(
             name="ig-reply-recovery",
             target=_ai_reply_recovery_worker,
@@ -1807,6 +1840,7 @@ class Command(BaseCommand):
         workers = (
             refresher,
             analysis_worker,
+            journey_trace_worker,
             recovery_worker,
             permission_transition_worker,
             inbox_refresh_worker,

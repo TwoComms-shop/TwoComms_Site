@@ -241,6 +241,8 @@ class TaskHeartbeatTests(TestCase):
                 "ig_deal_payments",
                 "order_telegram_reconcile",
                 "nova_poshta_tracking",
+                "ig_typed_memory_reconcile",
+                "ig_trace_refresh",
                 "binotel_call_ai_analyses",
             },
         )

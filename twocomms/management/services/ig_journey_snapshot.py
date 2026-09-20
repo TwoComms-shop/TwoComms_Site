@@ -956,6 +956,9 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         episode_id=episode["id"] if episode else None, is_history=is_history)
     if graph.get("transcript_reconstruction"):
         covered.append("source_verified_transcript_reconstruction")
+    if not is_history:
+        from management.services.ig_journey_trace_refresh import read_refresh_coverage
+        graph.setdefault("coverage", {})["transcript_refresh"] = read_refresh_coverage(client_id)
     from management.services.ig_journey_presentation import finalize_display_focus
     display_focus = finalize_display_focus(graph, is_history=is_history)
     for node in nodes.values():
