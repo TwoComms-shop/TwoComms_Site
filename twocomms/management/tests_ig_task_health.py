@@ -3,8 +3,9 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.core.management import CommandError, call_command
-from django.db import DatabaseError
+from django.db import DatabaseError, connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from management.models import (
@@ -22,6 +23,7 @@ from management.services.ig_task_health import (
     ensure_task_expectations,
     mark_task_succeeded,
     mark_task_degraded,
+    mark_task_failed,
     task_health_snapshot,
     task_heartbeat,
     release_queue_snapshot,
@@ -113,6 +115,93 @@ class TaskHeartbeatTests(TestCase):
         row = InstagramBotTaskHeartbeat.objects.get(task_key="nova_poshta_tracking")
         self.assertEqual(row.consecutive_failures, 1)
         notify.assert_not_called()
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_summary_cannot_bypass_provider_threshold_or_duplicate_alert(self, notify):
+        self._mark_all_successful()
+        for count in range(1, 4):
+            with task_heartbeat("nova_poshta_tracking") as outcome:
+                outcome.mark_degraded("nova_poshta_provider_degraded")
+            snapshot = check_task_health()
+            provider = next(t for t in snapshot["tasks"] if t["key"] == "nova_poshta_tracking")
+            self.assertEqual(provider["state"], "degraded")
+            self.assertEqual(provider["consecutive_failures"], count)
+            self.assertEqual(notify.call_count, int(count >= 3))
+        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_degraded")
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_degraded_provider_does_not_suppress_other_task_failure(self, notify):
+        self._mark_all_successful()
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        mark_task_failed("ig_deal_payments", RuntimeError("failed"))
+        notify.reset_mock()
+        check_task_health()
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
+        self.assertIn("failed", notify.call_args.args[0])
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_missing_cron_after_one_provider_failure_still_alerts(self, notify):
+        now = timezone.now()
+        self._mark_all_successful(at=now)
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded", at=now - timedelta(seconds=901))
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="nova_poshta_tracking")
+        row.last_succeeded_at = now - timedelta(seconds=1200)
+        row.last_started_at = now - timedelta(seconds=902)
+        row.save(update_fields=["last_succeeded_at", "last_started_at"])
+        snapshot = check_task_health(now=now)
+        provider = next(t for t in snapshot["tasks"] if t["key"] == "nova_poshta_tracking")
+        self.assertEqual(provider["state"], "stale")
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_application_failures_do_not_count_toward_provider_streak(self, notify):
+        for _ in range(2):
+            mark_task_failed("nova_poshta_tracking", RuntimeError("db unavailable"))
+        notify.reset_mock()
+        row = mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        self.assertEqual(row.consecutive_failures, 1)
+        notify.assert_not_called()
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_skipped_pass_preserves_failure_streak_but_records_liveness(self, notify):
+        now = timezone.now()
+        self._mark_all_successful(at=now)
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="nova_poshta_tracking")
+        row.last_succeeded_at = now - timedelta(hours=2)
+        row.last_started_at = now - timedelta(hours=1)
+        row.save(update_fields=["last_succeeded_at", "last_started_at"])
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded", at=now - timedelta(hours=1))
+        with task_heartbeat("nova_poshta_tracking") as outcome:
+            outcome.mark_skipped()
+        row.refresh_from_db()
+        self.assertEqual(row.consecutive_failures, 1)
+        self.assertEqual(row.last_succeeded_at, now - timedelta(hours=2))
+        snapshot = check_task_health()
+        provider = next(t for t in snapshot["tasks"] if t["key"] == "nova_poshta_tracking")
+        self.assertEqual(provider["state"], "degraded")
+        notify.assert_not_called()
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        row.refresh_from_db()
+        self.assertEqual(row.consecutive_failures, 2)
+        notify.assert_not_called()
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_provider_streak_sql_reads_old_reason_before_replacing_it(self, notify):
+        # MariaDB evaluates single-table assignments left-to-right; SQLite
+        # only checks the final values and would miss an ordering regression.
+        mark_task_failed("nova_poshta_tracking", RuntimeError("failure"))
+        with CaptureQueriesContext(connection) as queries:
+            mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        sql = next(q["sql"] for q in queries if q["sql"].startswith("UPDATE") and "CASE" in q["sql"])
+        setters = sql.split(" SET ", 1)[1]
+        self.assertTrue(setters.startswith(connection.ops.quote_name("consecutive_failures") + " = CASE"))
+
+    def test_degraded_reason_rejects_unreviewed_values(self):
+        with self.assertRaises(ValueError):
+            mark_task_degraded("nova_poshta_tracking", "customer private text")
+        self.assertFalse(InstagramBotTaskHeartbeat.objects.exists())
 
     def test_unobserved_task_has_a_deploy_grace_period_then_degrades(self):
         self.assertTrue(ensure_task_expectations())

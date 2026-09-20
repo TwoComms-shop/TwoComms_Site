@@ -12,13 +12,14 @@ from datetime import timedelta
 from time import monotonic, time
 
 from django.db import DatabaseError, OperationalError, ProgrammingError
-from django.db.models import F
+from django.db.models import Case, F, Value, When
 from django.utils import timezone
 
 from management.models import InstagramBotTaskHeartbeat
 
 
 DEGRADED_ALERT_THRESHOLD = 3
+NOVA_PROVIDER_DEGRADED = "nova_poshta_provider_degraded"
 
 
 class _TaskHeartbeatState:
@@ -27,9 +28,14 @@ class _TaskHeartbeatState:
     def __init__(self, task_key: str):
         self.task_key = task_key
         self.degraded_reason = ""
+        self.skipped = False
+
+    def mark_skipped(self) -> None:
+        self.skipped = True
 
     def mark_degraded(self, reason_code: str) -> None:
-        self.degraded_reason = (reason_code or "task_degraded")[:64]
+        _validate_degraded_reason(self.task_key, reason_code)
+        self.degraded_reason = reason_code
 
 
 @dataclass(frozen=True)
@@ -231,7 +237,7 @@ def _notify_degraded(
                 "Тип помилки: ProviderDegraded",
                 f"Причина: {reason_code}",
                 f"Послідовні збої: {row.consecutive_failures}",
-                f"Ожидаемый интервал: {row.expected_interval_seconds} с",
+                f"Очікуваний інтервал: {row.expected_interval_seconds} с",
             ),
         )
         bot.notify_manager(
@@ -253,6 +259,12 @@ def _notify_degraded(
         pass
 
 
+def _validate_degraded_reason(task_key: str, reason_code: str) -> None:
+    # Only this explicitly reviewed provider outcome has delayed alert policy.
+    if task_key != "nova_poshta_tracking" or reason_code != NOVA_PROVIDER_DEGRADED:
+        raise ValueError("Unsupported degraded task outcome")
+
+
 def mark_task_degraded(
     task_key: str,
     reason_code: str,
@@ -261,22 +273,26 @@ def mark_task_degraded(
     at=None,
 ) -> InstagramBotTaskHeartbeat | None:
     """Record a completed but degraded run and alert after three repeats."""
+    _validate_degraded_reason(task_key, reason_code)
     try:
         row = _upsert_expectation(_spec(task_key))
         now = at or timezone.now()
-        row.last_started_at = row.last_started_at or now
-        row.last_failed_at = now
-        row.last_duration_ms = max(0, int(duration_ms or 0))
-        row.last_error_kind = (reason_code or "task_degraded")[:128]
-        row.save(update_fields=[
-            "last_started_at", "last_failed_at", "last_duration_ms",
-            "last_error_kind", "updated_at",
-        ])
+        # One update compares the previous outcome before replacing it. A
+        # preceding application failure must not count as a provider repeat.
         InstagramBotTaskHeartbeat.objects.filter(pk=row.pk).update(
-            consecutive_failures=F("consecutive_failures") + 1,
+            # MariaDB evaluates SET assignments left-to-right: compare the
+            # previous reason before replacing last_error_kind below.
+            consecutive_failures=Case(
+                When(last_error_kind=reason_code, then=F("consecutive_failures") + 1),
+                default=Value(1),
+            ),
+            last_started_at=row.last_started_at or now,
+            last_failed_at=now,
+            last_duration_ms=max(0, int(duration_ms or 0)),
+            last_error_kind=reason_code,
             updated_at=now,
         )
-        row.refresh_from_db(fields=["consecutive_failures"])
+        row.refresh_from_db()
     except (DatabaseError, OperationalError, ProgrammingError):
         return None
     if row.consecutive_failures >= DEGRADED_ALERT_THRESHOLD:
@@ -334,6 +350,17 @@ def task_heartbeat(task_key: str):
                 state.degraded_reason,
                 duration_ms=duration_ms,
             )
+        elif state.skipped:
+            # A backoff/no-due pass is not evidence that the provider recovered.
+            # Preserve unresolved failure and streak, while a healthy empty lane
+            # still records its normal scheduler liveness.
+            try:
+                row = InstagramBotTaskHeartbeat.objects.filter(task_key=task_key).first()
+            except (DatabaseError, OperationalError, ProgrammingError):
+                return
+            if row is not None and row.last_error_kind:
+                return
+            mark_task_succeeded(task_key, duration_ms=duration_ms)
         else:
             mark_task_succeeded(task_key, duration_ms=duration_ms)
 
@@ -371,7 +398,14 @@ def task_health_snapshot(*, now=None) -> dict:
             age_seconds = max(0, int((now - reference).total_seconds())) if reference else None
             error_kind = row.last_error_kind
             if failure_is_newer:
-                state = "degraded" if error_kind == "nova_poshta_provider_degraded" else "failed"
+                if spec.key == "nova_poshta_tracking" and error_kind == NOVA_PROVIDER_DEGRADED:
+                    # A stopped cron is distinct from its last provider error:
+                    # never suppress a vanished owner while waiting for attempt 3.
+                    last_activity = max(filter(None, (row.last_started_at, row.last_failed_at)))
+                    activity_age = max(0, int((now - last_activity).total_seconds()))
+                    state = "stale" if activity_age > spec.stale_after_seconds else "degraded"
+                else:
+                    state = "failed"
             elif not row.last_succeeded_at and age_seconds is not None and age_seconds > spec.stale_after_seconds:
                 state = "not_observed"
             elif age_seconds is not None and age_seconds > spec.stale_after_seconds:
@@ -388,6 +422,7 @@ def task_health_snapshot(*, now=None) -> dict:
             "last_succeeded_at": observed_at.isoformat() if observed_at else "",
             "last_error_kind": error_kind,
             "degraded": state == "degraded",
+            "consecutive_failures": row.consecutive_failures if row else 0,
         })
     unhealthy = [task for task in tasks if not task["healthy"]]
     return {
@@ -520,7 +555,11 @@ def check_task_health(*, now=None) -> dict:
     snapshot = task_health_snapshot(now=now)
     if not snapshot["available"]:
         return snapshot
-    unhealthy = [task for task in snapshot["tasks"] if not task["healthy"]]
+    # Provider degradation has its own thresholded, recoverable alert owner.
+    # It remains unhealthy in the returned snapshot; only the duplicate summary
+    # is suppressed. A vanished cron is projected as stale and still alerts.
+    unhealthy = [task for task in snapshot["tasks"]
+                 if not task["healthy"] and task["state"] != "degraded"]
     if not unhealthy:
         return snapshot
     try:

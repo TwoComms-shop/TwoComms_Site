@@ -128,6 +128,8 @@ class Command(BaseCommand):
         total_orders = orders_with_ttn.count()
 
         if total_orders == 0:
+            if heartbeat_state is not None:
+                heartbeat_state.mark_skipped()
             self.stdout.write("Нет заказов с ТТН для обновления")
             logger.info("No orders with tracking numbers to update")
             return
@@ -178,7 +180,9 @@ class Command(BaseCommand):
                 f"  Обработано: {result['processed']}\n"
                 f"  Обновлено статусов: {result['updated']}\n"
                 f"  Ошибок: {result['errors']}\n"
-                f"  Ошибки провайдера: {result.get('provider_errors', 0)}\n"
+                f"  Временные ошибки провайдера: "
+                f"{result.get('transient_provider_errors', result.get('provider_errors', 0))}\n"
+                f"  Критические ошибки провайдера: {result.get('fatal_provider_errors', 0)}\n"
                 f"  Ошибки строк: {result.get('row_errors', 0)}\n"
                 f"  Ошибки приложения: {result.get('application_errors', 0)}"
             )
@@ -196,14 +200,35 @@ class Command(BaseCommand):
                     f"{result['errors']} errors"
                 )
 
-            provider_errors = int(result.get('provider_errors', 0) or 0)
+            provider_errors = int(
+                result.get('transient_provider_errors', result.get('provider_errors', 0)) or 0
+            )
+            fatal_provider_errors = int(result.get('fatal_provider_errors', 0) or 0)
+            row_errors = int(result.get('row_errors', 0) or 0)
             application_errors = int(result.get('application_errors', 0) or 0)
+            classified_errors = (
+                provider_errors
+                + fatal_provider_errors
+                + application_errors
+                + row_errors
+            )
+            unclassified_errors = max(0, int(result.get('errors', 0) or 0) - classified_errors)
+            if fatal_provider_errors:
+                raise CommandError(
+                    "Nova Poshta tracking fatal provider batch completed with "
+                    f"{fatal_provider_errors} error(s)"
+                )
             if application_errors:
                 raise CommandError(
                     "Nova Poshta tracking application batch completed with "
                     f"{application_errors} error(s)"
                 )
-            if provider_errors:
+            if unclassified_errors:
+                raise CommandError(
+                    "Nova Poshta tracking batch completed with "
+                    f"{unclassified_errors} unclassified error(s)"
+                )
+            if provider_errors or row_errors:
                 # Provider and per-order failures are deferred for retry. Keep
                 # the cron run completed so heartbeat health can classify the
                 # outcome as degraded and alert only after repeated failures.
@@ -211,6 +236,8 @@ class Command(BaseCommand):
                     heartbeat_state.mark_degraded("nova_poshta_provider_degraded")
                 logger.warning(
                     "Nova Poshta tracking provider batch completed with %s "
-                    "error(s); failed rows were deferred for retry",
+                    "provider error(s) and %s row error(s); failed rows were "
+                    "deferred for retry",
                     provider_errors,
+                    row_errors,
                 )

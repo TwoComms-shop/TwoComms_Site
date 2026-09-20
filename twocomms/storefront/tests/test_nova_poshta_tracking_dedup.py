@@ -14,7 +14,12 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from orders.models import Order
-from orders.nova_poshta_service import NovaPoshtaAPIError, NovaPoshtaService
+from orders.nova_poshta_service import (
+    NovaPoshtaAPIError,
+    NovaPoshtaFatalAPIError,
+    NovaPoshtaService,
+    NovaPoshtaTransientAPIError,
+)
 from storefront.models import UserAction
 
 
@@ -159,15 +164,13 @@ class NovaPoshtaTrackingDedupTests(TestCase):
 
         with (
             patch.object(self.service, "get_tracking_info_batch", side_effect=batch),
-            patch.object(self.service, "get_tracking_info", return_value=_tracking("Відправлено", 5)) as single,
             patch.object(self.service, "_send_status_notification"),
         ):
             result = self.service.update_all_tracking_statuses()
 
         self.assertEqual(result["processed"], 101)
-        self.assertEqual([len(call) for call in calls], [100])
-        self.assertEqual(single.call_count, 1)
-        self.assertEqual(len({number for call in calls for number in call}) + single.call_count, 101)
+        self.assertEqual([len(call) for call in calls], [100, 1])
+        self.assertEqual(len({number for call in calls for number in call}), 101)
 
     def test_failed_batch_counts_rows_as_processed_and_increments_failures(self):
         self.order.tracking_failure_count = 2
@@ -213,6 +216,65 @@ class NovaPoshtaTrackingDedupTests(TestCase):
         self.assertEqual(result["20451234999999"]["StatusCode"], 5)
         self.assertNotIn("20451234000000", result)
         self.assertNotIn("99999999999999", result)
+
+    def test_provider_error_payload_classifies_temporary_outage_as_transient(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "success": False,
+            "errors": ["Service temporarily unavailable"],
+        }
+        session = Mock()
+        session.post.return_value = response
+
+        with (
+            patch("orders.nova_poshta_service.requests.Session", return_value=session),
+            patch("orders.nova_poshta_service.time.sleep"),
+        ):
+            with self.assertRaises(NovaPoshtaTransientAPIError):
+                self.service.get_tracking_info_batch(
+                    [{"DocumentNumber": self.order.tracking_number}]
+                )
+
+        self.assertEqual(session.post.call_count, self.service.MAX_RETRIES)
+
+    def test_provider_error_payload_classifies_invalid_key_as_fatal(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "success": False,
+            "errors": ["Invalid API key"],
+        }
+        session = Mock()
+        session.post.return_value = response
+
+        with patch("orders.nova_poshta_service.requests.Session", return_value=session):
+            with self.assertRaises(NovaPoshtaFatalAPIError):
+                self.service.get_tracking_info_batch(
+                    [{"DocumentNumber": self.order.tracking_number}]
+                )
+
+        session.post.assert_called_once()
+
+    def test_provider_validation_and_mixed_errors_are_fatal_without_retry(self):
+        for errors in (
+            ["Invalid timeout value"],
+            ["Service temporarily unavailable", "Invalid API key"],
+            ["Service temporarily unavailable", "Unknown contract rejection"],
+            ["Permission temporarily unavailable"],
+        ):
+            with self.subTest(errors=errors):
+                response = Mock()
+                response.raise_for_status.return_value = None
+                response.json.return_value = {"success": False, "errors": errors}
+                session = Mock()
+                session.post.return_value = response
+                with patch("orders.nova_poshta_service.requests.Session", return_value=session):
+                    with self.assertRaises(NovaPoshtaFatalAPIError):
+                        self.service.get_tracking_info_batch(
+                            [{"DocumentNumber": self.order.tracking_number}]
+                        )
+                session.post.assert_called_once()
 
     def test_delivery_lifecycle_is_emitted_before_telegram_failure(self):
         with (
@@ -367,7 +429,7 @@ class NovaPoshtaTrackingDedupTests(TestCase):
                 self.service,
                 'get_tracking_info',
                 return_value=_tracking('Відправлення отримано', 9, 'одержувачем'),
-            ),
+            ) as get_tracking,
             patch.object(self.service, '_send_admin_delivery_notification'),
             patch.object(self.service, '_send_delivery_notification'),
             patch.object(self.service, '_send_facebook_purchase_event') as facebook_purchase,
@@ -375,6 +437,9 @@ class NovaPoshtaTrackingDedupTests(TestCase):
         ):
             self.service.update_order_tracking_status(self.order)
 
+        get_tracking.assert_called_once_with(self.order.tracking_number, phone=self.order.phone)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, 'done')
         facebook_purchase.assert_not_called()
         tiktok_purchase.assert_not_called()
 
@@ -425,8 +490,12 @@ class NovaPoshtaTrackingDedupTests(TestCase):
         with (
             patch.object(
                 self.service,
-                'get_tracking_info',
-                return_value=_tracking('Відправлення отримано', 9, 'одержувачем'),
+                'get_tracking_info_batch',
+                return_value={
+                    self.service._tracking_key(self.order.tracking_number): _tracking(
+                        'Відправлення отримано', 9, 'одержувачем'
+                    ),
+                },
             ),
             patch.object(self.service, '_send_status_notification'),
             patch.object(self.service, '_send_delivery_notification'),
@@ -583,8 +652,12 @@ class NovaPoshtaTrackingDedupTests(TestCase):
         with (
             patch.object(
                 self.service,
-                "get_tracking_info",
-                return_value=_tracking("Прибув на відділення", 4),
+                "get_tracking_info_batch",
+                return_value={
+                    self.service._tracking_key(self.order.tracking_number): _tracking(
+                        "Прибув на відділення", 4
+                    ),
+                },
             ),
             patch.object(self.service, "_apply_tracking_update", side_effect=RuntimeError("db down")),
             patch("orders.nova_poshta_service.close_old_connections") as close_old,
@@ -603,7 +676,7 @@ class NovaPoshtaTrackingDedupTests(TestCase):
         with patch.object(
             self.service,
             "get_tracking_info_batch",
-            side_effect=NovaPoshtaAPIError("provider unavailable"),
+            side_effect=NovaPoshtaTransientAPIError("provider unavailable"),
         ):
             result = self.service.update_all_tracking_statuses()
 
@@ -618,7 +691,7 @@ class NovaPoshtaTrackingDedupTests(TestCase):
 
     def test_failed_batch_does_not_publish_success_heartbeat(self):
         with (
-            patch.object(self.service, "update_order_tracking_status", side_effect=RuntimeError("boom")),
+            patch.object(self.service, "get_tracking_info_batch", side_effect=RuntimeError("boom")),
             patch("orders.nova_poshta_service.cache.set") as cache_set,
         ):
             result = self.service.update_all_tracking_statuses()
@@ -628,6 +701,43 @@ class NovaPoshtaTrackingDedupTests(TestCase):
             any(call.args[0] == self.service.LAST_UPDATE_CACHE_KEY for call in cache_set.call_args_list),
             "a failed batch must not publish the successful-tracking heartbeat",
         )
+
+    def test_single_row_timeout_is_typed_transient_provider_failure(self):
+        with patch.object(
+            self.service,
+            "get_tracking_info_batch",
+            side_effect=NovaPoshtaTransientAPIError("timeout"),
+        ):
+            result = self.service.update_all_tracking_statuses()
+
+        self.assertEqual(result["transient_provider_errors"], 1)
+        self.assertEqual(result["fatal_provider_errors"], 0)
+        self.assertEqual(result["application_errors"], 0)
+        self.assertEqual(result["errors"], 1)
+
+    def test_fatal_provider_failure_is_not_degraded(self):
+        with patch.object(
+            self.service,
+            "get_tracking_info_batch",
+            side_effect=NovaPoshtaFatalAPIError("invalid key"),
+        ):
+            result = self.service.update_all_tracking_statuses()
+
+        self.assertEqual(result["transient_provider_errors"], 0)
+        self.assertEqual(result["fatal_provider_errors"], 1)
+        self.assertEqual(result["application_errors"], 0)
+
+    def test_malformed_provider_response_is_fatal(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = ["not-an-object"]
+        session = Mock()
+        session.post.return_value = response
+        with patch("orders.nova_poshta_service.requests.Session", return_value=session):
+            with self.assertRaises(NovaPoshtaFatalAPIError):
+                self.service.get_tracking_info_batch(
+                    [{"DocumentNumber": self.order.tracking_number, "Phone": self.order.phone}]
+                )
 
     def test_facebook_purchase_save_error_does_not_fallback_to_full_save(self):
         self.order.pay_type = 'cod'

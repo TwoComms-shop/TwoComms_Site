@@ -31,6 +31,14 @@ class NovaPoshtaAPIError(Exception):
     """Ошибка при работе с Nova Poshta API"""
 
 
+class NovaPoshtaTransientAPIError(NovaPoshtaAPIError):
+    """Recoverable provider/transport failure that should be retried later."""
+
+
+class NovaPoshtaFatalAPIError(NovaPoshtaAPIError):
+    """Permanent provider rejection or invalid local configuration."""
+
+
 class NovaPoshtaService:
     """
     Сервис для работы с API Новой Почты
@@ -300,6 +308,23 @@ class NovaPoshtaService:
                 continue
         return None
 
+    @staticmethod
+    def _classify_provider_message(message):
+        """Classify explicit API errors without exposing provider text to alerts."""
+        normalized = str(message or "").casefold()
+        fatal_markers = ("invalid", "api key", "unauthor", "forbidden", "permission", "access denied")
+        if any(marker in normalized for marker in fatal_markers):
+            return NovaPoshtaFatalAPIError("Nova Poshta tracking rejected the request")
+        transient_markers = (
+            "service temporarily unavailable", "temporarily unavailable",
+            "request timeout", "gateway timeout", "request timed out",
+            "rate limit exceeded", "too many requests", "service overloaded",
+            "service busy", "сервіс тимчасово недоступний", "сервис временно недоступен",
+        )
+        if any(marker in normalized for marker in transient_markers):
+            return NovaPoshtaTransientAPIError("Nova Poshta tracking temporarily unavailable")
+        return NovaPoshtaFatalAPIError("Nova Poshta tracking rejected the request")
+
     def get_tracking_info_batch(self, documents):
         """Fetch at most 100 tracking documents and index them by TTN."""
         documents = [
@@ -313,12 +338,14 @@ class NovaPoshtaService:
         if not documents:
             return {}
         if len(documents) > self.TRACKING_BATCH_SIZE:
-            raise NovaPoshtaAPIError("Nova Poshta tracking batch cannot contain more than 100 documents")
+            raise NovaPoshtaFatalAPIError(
+                "Nova Poshta tracking batch cannot contain more than 100 documents"
+            )
         requested_keys = {self._tracking_key(item["DocumentNumber"]) for item in documents}
         if not self.api_key:
-            raise NovaPoshtaAPIError("NOVA_POSHTA_API_KEY not configured")
+            raise NovaPoshtaFatalAPIError("NOVA_POSHTA_API_KEY not configured")
         if not self._check_rate_limit():
-            raise NovaPoshtaAPIError("Nova Poshta tracking rate limit exceeded")
+            raise NovaPoshtaTransientAPIError("Nova Poshta tracking rate limit exceeded")
 
         payload = {
             "apiKey": self.api_key,
@@ -334,18 +361,48 @@ class NovaPoshtaService:
             for attempt in range(self.MAX_RETRIES):
                 try:
                     response = session.post(self.api_url, json=payload, timeout=self.REQUEST_TIMEOUT)
-                    response.raise_for_status()
-                    data = response.json()
-                    errors = [str(item).strip() for item in data.get("errors") or [] if str(item).strip()]
+                    try:
+                        response.raise_for_status()
+                    except requests.exceptions.HTTPError as exc:
+                        status_code = getattr(response, "status_code", None)
+                        if status_code is not None and 400 <= status_code < 500 and status_code not in {
+                            408, 409, 425, 429,
+                        }:
+                            raise NovaPoshtaFatalAPIError(
+                                f"Nova Poshta tracking rejected the request (HTTP {status_code})"
+                            ) from exc
+                        raise NovaPoshtaTransientAPIError(
+                            f"Nova Poshta tracking unavailable (HTTP {status_code or 'unknown'})"
+                        ) from exc
+                    try:
+                        data = response.json()
+                    except ValueError as exc:
+                        raise NovaPoshtaFatalAPIError(
+                            "Nova Poshta tracking returned invalid JSON"
+                        ) from exc
+                    if not isinstance(data, dict):
+                        raise NovaPoshtaFatalAPIError(
+                            "Nova Poshta tracking returned an invalid response"
+                        )
+                    raw_errors = data.get("errors") or []
+                    if not isinstance(raw_errors, list) or any(not isinstance(item, str) for item in raw_errors):
+                        raise NovaPoshtaFatalAPIError("Nova Poshta tracking returned invalid errors")
+                    errors = [item.strip() for item in raw_errors if item.strip()]
                     if errors:
-                        raise NovaPoshtaAPIError("; ".join(errors))
+                        classified = [self._classify_provider_message(item) for item in errors]
+                        fatal = next((error for error in classified if isinstance(error, NovaPoshtaFatalAPIError)), None)
+                        raise fatal or classified[0]
                     if not data.get("success"):
-                        raise NovaPoshtaAPIError("Nova Poshta tracking returned success=false")
+                        raise NovaPoshtaFatalAPIError(
+                            "Nova Poshta tracking rejected the request with success=false"
+                        )
                     raw_items = data.get("data") or []
                     if isinstance(raw_items, dict):
                         raw_items = [raw_items]
                     if not isinstance(raw_items, list):
-                        raise NovaPoshtaAPIError("Nova Poshta tracking returned invalid data")
+                        raise NovaPoshtaFatalAPIError(
+                            "Nova Poshta tracking returned invalid data"
+                        )
 
                     indexed = {}
                     for item in raw_items:
@@ -363,19 +420,24 @@ class NovaPoshtaService:
                         if current_at is not None and (previous_at is None or current_at >= previous_at):
                             indexed[key] = item
                     return indexed
-                except NovaPoshtaAPIError:
+                except NovaPoshtaFatalAPIError:
                     raise
-                except (requests.exceptions.Timeout, requests.exceptions.RequestException, ValueError) as exc:
+                except NovaPoshtaTransientAPIError as exc:
                     last_error = exc
+                except (requests.exceptions.Timeout, requests.exceptions.RequestException) as exc:
+                    last_error = exc
+                if last_error is not None:
                     logger.warning(
                         "Nova Poshta tracking batch attempt %s/%s failed: %s",
                         attempt + 1,
                         self.MAX_RETRIES,
-                        exc,
+                        last_error,
                     )
                     if attempt < self.MAX_RETRIES - 1:
                         time.sleep(self.RETRY_DELAY * (attempt + 1))
-            raise NovaPoshtaAPIError("Nova Poshta tracking request failed") from last_error
+            raise NovaPoshtaTransientAPIError(
+                "Nova Poshta tracking request failed"
+            ) from last_error
         finally:
             if owned_session:
                 session.close()
@@ -1312,6 +1374,7 @@ class NovaPoshtaService:
         updated_count = 0
         error_count = 0
         provider_error_count = 0
+        fatal_provider_error_count = 0
         row_error_count = 0
         application_error_count = 0
         processed_count = 0
@@ -1330,22 +1393,35 @@ class NovaPoshtaService:
                     for row in batch_rows
                 ]
                 try:
-                    if len(documents) == 1:
-                        single = self.get_tracking_info(
-                            documents[0]['DocumentNumber'],
-                            phone=documents[0]['Phone'],
-                        )
-                        tracking_by_number = {
-                            self._tracking_key(documents[0]['DocumentNumber']): single
-                        } if single else {}
-                    else:
-                        tracking_by_number = self.get_tracking_info_batch(documents)
-                except NovaPoshtaAPIError as exc:
+                    tracking_by_number = self.get_tracking_info_batch(documents)
+                except NovaPoshtaTransientAPIError as exc:
                     error_count += len(batch_rows)
                     provider_error_count += len(batch_rows)
                     processed_count += len(batch_rows)
                     logger.warning(
                         "Nova Poshta tracking provider batch failed (%s rows): %s",
+                        len(batch_rows),
+                        exc,
+                    )
+                    self._defer_tracking_rows([row['pk'] for row in batch_rows])
+                    continue
+                except NovaPoshtaFatalAPIError as exc:
+                    error_count += len(batch_rows)
+                    fatal_provider_error_count += len(batch_rows)
+                    processed_count += len(batch_rows)
+                    logger.error(
+                        "Nova Poshta tracking fatal provider failure (%s rows): %s",
+                        len(batch_rows),
+                        exc,
+                    )
+                    self._defer_tracking_rows([row['pk'] for row in batch_rows])
+                    continue
+                except NovaPoshtaAPIError as exc:
+                    error_count += len(batch_rows)
+                    application_error_count += len(batch_rows)
+                    processed_count += len(batch_rows)
+                    logger.exception(
+                        "Nova Poshta tracking unclassified API failure (%s rows): %s",
                         len(batch_rows),
                         exc,
                     )
@@ -1399,7 +1475,10 @@ class NovaPoshtaService:
             'processed': processed_count,
             'updated': updated_count,
             'errors': error_count,
+            # Keep provider_errors as the legacy aggregate transient count.
             'provider_errors': provider_error_count,
+            'transient_provider_errors': provider_error_count,
+            'fatal_provider_errors': fatal_provider_error_count,
             'row_errors': row_error_count,
             'application_errors': application_error_count,
         }
