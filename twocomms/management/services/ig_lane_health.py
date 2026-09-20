@@ -291,6 +291,13 @@ def _typed_memory_lane(*, now):
 
 
 def _trace_refresh_lane(*, now):
+    from management.models import IgJourneyTraceRefreshControl
+    control = IgJourneyTraceRefreshControl.objects.filter(pk=1).values("enabled").first()
+    if control is None or not control["enabled"]:
+        return {"available": True, "healthy": True, "state": "disabled",
+                "counts": dict.fromkeys(BUCKETS, 0), "sampled": True,
+                "has_more": False, "risk_coverage_complete": True,
+                "progress_age_seconds": None, "progress_evidence": "disabled"}
     return _consumer_heartbeat_lane("ig_trace_refresh", now=now, threshold=90)
 
 

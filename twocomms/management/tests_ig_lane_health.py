@@ -11,6 +11,7 @@ from django.utils import timezone
 from management.models import (
     IgBotNotification, IgClient, IgConversationAnalysisJob, IgCustomerTurn,
     IgCustomerTurnRevision, IgTurnMessage, InstagramBotMessage, InstagramBotSettings,
+    IgJourneyTraceRefreshControl,
 )
 from management.services.ig_lane_health import operational_lane_snapshot, SAMPLE_LIMIT
 from management.services.ig_response_debt import record_reply_debt
@@ -141,11 +142,12 @@ class OperationalLaneHealthTests(TestCase):
         result = self.snapshot()
         self.assertIsNone(result["lanes"]["conversation_analysis"]["progress_age_seconds"])
         self.assertEqual(result["lanes"]["conversation_analysis"]["progress_evidence"], "unavailable")
-        self.assertEqual(result["lanes"]["trace_refresh"]["state"], "unobserved")
+        self.assertEqual(result["lanes"]["trace_refresh"]["state"], "disabled")
         self.assertEqual(result["lanes"]["typed_memory"]["state"], "disabled")
 
     @patch("management.services.ig_lane_health.shadow_enabled", return_value=True)
     def test_isolated_consumer_failure_is_visible_without_raw_queue_rewrite(self, _shadow_enabled):
+        IgJourneyTraceRefreshControl.objects.create(pk=1, enabled=True)
         mark_task_succeeded("ig_typed_memory_reconcile", at=self.now - timedelta(hours=1))
         mark_task_failed("ig_trace_refresh", RuntimeError("refresh failed"), at=self.now)
         result = self.snapshot()
