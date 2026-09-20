@@ -5,12 +5,14 @@ import json
 from decimal import Decimal
 
 from django.http import HttpResponse, JsonResponse
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from ..models import (
-    Account, Category, Counterparty, Project, Tag, Transaction, get_default_company,
+    Account, Category, Counterparty, InternalTransferMatch, Project, Tag, Transaction,
+    get_default_company,
 )
 from ..permissions import finance_access_required
 from ..services import filters as filter_service
@@ -105,6 +107,25 @@ def payments(request):
             prev = n
 
     actual_rows = [ser.serialize_transaction(t) for t in page_items]
+
+    # Add a single visual identity to both legs of a confirmed transfer. The
+    # bank rows remain intact, while the journal explains the principal and
+    # any fee directly in both records.
+    row_ids = [row['id'] for row in actual_rows]
+    transfer_matches = InternalTransferMatch.objects.filter(
+        company=company, status='confirmed',
+    ).filter(Q(source_transaction_id__in=row_ids) | Q(destination_transaction_id__in=row_ids)).select_related(
+        'source_transaction', 'destination_transaction',
+    ) if row_ids else []
+    for match in transfer_matches:
+        for row in actual_rows:
+            if row['id'] not in (match.source_transaction_id, match.destination_transaction_id):
+                continue
+            partner = match.destination_transaction if row['id'] == match.source_transaction_id else match.source_transaction
+            row['transfer_match'] = {
+                'id': match.id, 'principal': str(match.amount), 'fee': str(match.fee_amount),
+                'partner_id': partner.id, 'partner_amount': str(partner.amount),
+            }
 
     # Бейджі «погашення зобов'язання» (кредиторка/дебіторка) для рядків журналу.
     # Пріоритет: явні ObligationSettlement (точна привʼязка, мультимісяць). Інакше

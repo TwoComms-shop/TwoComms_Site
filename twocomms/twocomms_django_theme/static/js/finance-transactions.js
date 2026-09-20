@@ -90,8 +90,12 @@
     quickClassifyYes: document.getElementById('fin-quick-classify-yes'),
     quickClassifyNo: document.getElementById('fin-quick-classify-no'),
     transferMatch: document.getElementById('fin-transfer-match'),
+    transferMatchTitle: document.getElementById('fin-transfer-match-title'),
+    transferMatchHint: document.getElementById('fin-transfer-match-hint'),
+    transferMatchSourceLabel: document.getElementById('fin-transfer-match-source-label'),
     transferMatchSource: document.getElementById('fin-transfer-match-source'),
     transferMatchPreview: document.getElementById('fin-transfer-match-preview'),
+    transferMatchExisting: document.getElementById('fin-transfer-match-existing'),
     transferMatchConfirm: document.getElementById('fin-transfer-match-confirm'),
     terminalReview: document.getElementById('fin-terminal-review'),
     terminalContext: document.getElementById('fin-terminal-review-context'),
@@ -317,6 +321,7 @@
     els.unclassifiedForm.hidden = true;
     if (els.quickClassify) els.quickClassify.hidden = true;
     if (els.transferMatch) els.transferMatch.hidden = true;
+    if (els.transferMatchExisting) els.transferMatchExisting.hidden = true;
     if (els.unclassifiedFundingSourceWrap) els.unclassifiedFundingSourceWrap.hidden = true;
     els.terminalReview.hidden = true;
     els.terminalChoices.hidden = false;
@@ -365,7 +370,7 @@
     });
   }
 
-  var transferMatchState = { txnId: null, candidates: [] };
+  var transferMatchState = { txnId: null, txnType: null, candidates: [], existing: null };
   function renderTransferMatchPreview() {
     if (!els.transferMatchPreview || !els.transferMatchSource) return;
     var item = transferMatchState.candidates.find(function (c) { return String(c.id) === String(els.transferMatchSource.value); });
@@ -373,16 +378,39 @@
     if (item) els.transferMatchPreview.textContent = 'Основна сума: ' + item.amount + ' грн · Комісія: ' + item.fee_amount + ' грн';
   }
   function loadTransferMatch(txn) {
-    if (!els.transferMatch || !txn || txn.type !== 'income' || txn.status !== 'actual' || txn.economic_kind !== 'unknown' || txn.account_is_business) return;
+    if (!els.transferMatch || !txn || (txn.type !== 'income' && txn.type !== 'expense') || txn.status !== 'actual' || txn.economic_kind !== 'unknown') return;
     transferMatchState.txnId = txn.id;
+    transferMatchState.txnType = txn.type;
     api('/api/v2/transfers/match/?transaction_id=' + encodeURIComponent(txn.id)).then(function (res) {
-      if (!res.ok || !res.data.ok || !res.data.candidates.length) return;
+      if (!res.ok || !res.data.ok) return;
+      transferMatchState.existing = res.data.existing || null;
+      if (transferMatchState.existing) {
+        els.transferMatch.hidden = false;
+        els.transferMatchExisting.hidden = false;
+        els.transferMatchExisting.textContent = 'Пов’язано: операція #' + transferMatchState.existing.partner_transaction_id +
+          ' · основна сума ' + transferMatchState.existing.principal_amount + ' грн · комісія −' + transferMatchState.existing.fee_amount + ' грн';
+        els.transferMatchSource.hidden = true;
+        els.transferMatchSourceLabel.hidden = true;
+        els.transferMatchPreview.hidden = true;
+        els.transferMatchConfirm.hidden = true;
+        return;
+      }
+      if (!res.data.candidates.length) return;
       transferMatchState.candidates = res.data.candidates;
       els.transferMatchSource.innerHTML = '<option value="">Оберіть операцію</option>';
       res.data.candidates.forEach(function (item) {
         var label = item.amount + ' грн · ' + item.date.slice(0, 10) + (item.category ? ' · ' + item.category : '');
         els.transferMatchSource.appendChild(opt(item.id, label));
       });
+      if (txn.type === 'expense') {
+        els.transferMatchTitle.textContent = 'Це списання з переказу на іншу вашу картку?';
+        els.transferMatchHint.textContent = 'Оберіть наявне зарахування. Різницю покажемо як комісію банку.';
+        els.transferMatchSourceLabel.textContent = 'Наявне зарахування';
+      } else {
+        els.transferMatchTitle.textContent = 'Це зарахування з іншого вашого рахунку?';
+        els.transferMatchHint.textContent = 'Оберіть наявне списання. Різницю покажемо як комісію банку.';
+        els.transferMatchSourceLabel.textContent = 'Наявне списання';
+      }
       els.transferMatch.hidden = false;
       renderTransferMatchPreview();
     });
@@ -391,11 +419,12 @@
     var sourceId = els.transferMatchSource && els.transferMatchSource.value;
     if (!sourceId || !transferMatchState.txnId) { showAlert('Оберіть списання для зіставлення'); return; }
     els.transferMatchConfirm.disabled = true;
-    api('/api/v2/transfers/match/', 'POST', {
-      source_transaction_id: sourceId,
-      destination_transaction_id: transferMatchState.txnId,
+    var body = {
       confirm: true,
-    }).then(function (res) {
+      source_transaction_id: transferMatchState.txnType === 'expense' ? transferMatchState.txnId : sourceId,
+      destination_transaction_id: transferMatchState.txnType === 'expense' ? sourceId : transferMatchState.txnId,
+    };
+    api('/api/v2/transfers/match/', 'POST', body).then(function (res) {
       if (res.ok && res.data.ok) window.location.reload();
       else { els.transferMatchConfirm.disabled = false; showAlert(res.data.error || 'Не вдалося підтвердити переказ'); }
     }).catch(function () { els.transferMatchConfirm.disabled = false; showAlert('Помилка мережі. Спробуйте ще раз.'); });

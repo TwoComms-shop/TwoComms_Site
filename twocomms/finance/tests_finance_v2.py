@@ -133,6 +133,11 @@ class FinanceV2ServiceTests(TestCase):
             }), content_type='application/json', HTTP_HOST='fin.twocomms.shop')
         self.assertEqual(confirmed.status_code, 200)
         self.assertEqual(confirmed.json()['match']['fee_amount'], '50.00')
+        reverse_preview = self.client.get(
+            f'/api/v2/transfers/match/?transaction_id={outgoing.id}', HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(reverse_preview.status_code, 200)
+        self.assertEqual(reverse_preview.json()['existing']['partner_transaction_id'], incoming.id)
+        self.assertEqual(reverse_preview.json()['existing']['fee_amount'], '50.00')
 
     def test_transfer_confirmation_does_not_change_pnl_classification(self):
         outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10000'), account=self.cash)

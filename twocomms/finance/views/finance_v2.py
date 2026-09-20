@@ -299,20 +299,39 @@ def transfer_match_api(request):
         txn = get_object_or_404(Transaction.objects.select_related('account'),
                                  id=data.get('transaction_id') or request.GET.get('transaction_id'),
                                  company=company)
-        if txn.type != Transaction.TYPE_INCOME:
-            return _error('Оберіть вхідне зарахування', 400)
+        if txn.type not in (Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE):
+            return _error('Оберіть дохід або витрату', 400)
+        existing = (InternalTransferMatch.objects.filter(
+            company=company, status='confirmed',
+            destination_transaction_id=txn.id if txn.type == Transaction.TYPE_INCOME else None,
+        ).select_related('source_transaction', 'destination_transaction').first()
+                    if txn.type == Transaction.TYPE_INCOME else
+                    InternalTransferMatch.objects.filter(
+                        company=company, status='confirmed', source_transaction_id=txn.id,
+                    ).select_related('source_transaction', 'destination_transaction').first())
+        candidate_type = Transaction.TYPE_EXPENSE if txn.type == Transaction.TYPE_INCOME else Transaction.TYPE_INCOME
         candidates = Transaction.objects.filter(
             company=company, status=Transaction.STATUS_ACTUAL,
-            type=Transaction.TYPE_EXPENSE, currency=txn.currency,
-            amount__gte=txn.amount,
+            type=candidate_type, currency=txn.currency,
+            amount__gte=txn.amount if txn.type == Transaction.TYPE_INCOME else 0,
+            amount__lte=txn.amount if txn.type == Transaction.TYPE_EXPENSE else 10**18,
             date_actual__date__range=(txn.date_actual.date() - dt.timedelta(days=7),
                                       txn.date_actual.date() + dt.timedelta(days=7)),
-        ).select_related('account', 'category').order_by('amount', 'date_actual')[:25]
-        return JsonResponse({'ok': True, 'candidates': [
+        ).exclude(id=txn.id).select_related('account', 'category').order_by('amount', 'date_actual')[:25]
+        existing_row = None
+        if existing:
+            partner = existing.source_transaction if txn.type == Transaction.TYPE_INCOME else existing.destination_transaction
+            existing_row = {'id': existing.id, 'status': existing.status,
+                            'principal_amount': str(existing.amount), 'fee_amount': str(existing.fee_amount),
+                            'partner_transaction_id': partner.id, 'partner_amount': str(partner.amount),
+                            'partner_account': partner.account.name if partner.account else ''}
+        return JsonResponse({'ok': True, 'existing': existing_row, 'candidates': [
             {'id': c.id, 'amount': str(c.amount), 'date': c.date_actual.isoformat(),
              'account_name': c.account.name if c.account else '',
              'category': c.category.name if c.category else '',
-             'fee_amount': str(ledger_v2.calculate_transfer_fee(c.amount, txn.amount))}
+             'fee_amount': str(ledger_v2.calculate_transfer_fee(c.amount, txn.amount)
+                                if txn.type == Transaction.TYPE_INCOME
+                                else ledger_v2.calculate_transfer_fee(txn.amount, c.amount))}
             for c in candidates
         ]})
     try:

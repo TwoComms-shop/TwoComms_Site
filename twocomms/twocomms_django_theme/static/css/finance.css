@@ -875,6 +875,10 @@ a { color: inherit; }
 .fin-pension-pill, .fin-fee-pill { display: inline-flex; align-items: center; margin-left: 6px; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; }
 .fin-pension-pill { color: #d9c8ff; background: rgba(168, 85, 247, .16); border: 1px solid rgba(168, 85, 247, .32); }
 .fin-fee-pill { color: #ffd9a8; background: rgba(245, 158, 11, .14); border: 1px solid rgba(245, 158, 11, .3); }
+.fin-transfer-total { color: var(--fin-info); font-weight: 700; }
+.fin-transfer-fee { display: inline-block; margin-left: 5px; color: #ff8796; font-size: 11px; font-weight: 700; }
+.fin-transfer-pill { display: inline-flex; align-items: center; margin-left: 6px; padding: 2px 7px; color: var(--fin-info); background: rgba(56, 189, 248, .12); border: 1px solid rgba(56, 189, 248, .28); border-radius: 999px; font-size: 10px; font-weight: 700; }
+.fin-transfer-match__existing { padding: 9px 10px; color: #b8f3dc; background: rgba(52, 211, 153, .1); border: 1px solid rgba(52, 211, 153, .28); border-radius: var(--fin-radius-sm); font-size: 12px; }
 .fin-grant-classification {
     display: grid; gap: 10px; margin: 4px 0 2px; padding: 13px 14px;
     border: 1px solid rgba(96, 165, 250, 0.30); border-radius: var(--fin-radius-sm);
