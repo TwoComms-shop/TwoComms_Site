@@ -148,9 +148,10 @@ def _collect_media(now, limit):
                 break
         if walked >= limit * 20:
             break
-    cases.append(_case("orphan_private_media", "private_media", count=orphan_count,
-                       ids=(), sampled=walked >= limit * 20, has_more=walked >= limit * 20,
-                       oldest=None))
+    if orphan_count:
+        cases.append(_case("orphan_private_media", "private_media", count=orphan_count,
+                           ids=(), sampled=walked >= limit * 20, has_more=walked >= limit * 20,
+                           oldest=None))
     # File names are intentionally omitted from the report; they can contain
     # provider/customer-derived material and are not needed for triage.
     cases[-1]["sample_ids"] = []

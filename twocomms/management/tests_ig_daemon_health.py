@@ -101,7 +101,7 @@ class DaemonRuntimeHealthSnapshotTests(SimpleTestCase):
         self.assertEqual(snapshot["technical_debt"]["cases"][0]["count"], 3)
 
 
-class TechnicalDebtFingerprintTests(SimpleTestCase):
+class TechnicalDebtFingerprintTests(TestCase):
     def test_fingerprint_is_stable_when_debt_age_and_count_change(self):
         from management.services.ig_technical_debt import technical_debt_snapshot
 
@@ -123,6 +123,18 @@ class TechnicalDebtFingerprintTests(SimpleTestCase):
         ):
             second_snapshot = technical_debt_snapshot()
         self.assertEqual(first_snapshot["fingerprint"], second_snapshot["fingerprint"])
+
+    def test_empty_private_media_root_scan_does_not_create_orphan_case(self):
+        from management.services.ig_technical_debt import _collect_media
+        from django.conf import settings
+        from django.utils import timezone
+
+        with patch("management.services.ig_technical_debt.os.walk", return_value=[]), \
+             patch("management.services.ig_technical_debt.os.path.isdir", return_value=True), \
+             patch.object(settings, "IG_PRIVATE_MEDIA_ROOT", "/private/tmp/empty"):
+            cases, complete = _collect_media(timezone.now(), 10)
+        self.assertTrue(complete)
+        self.assertFalse(any(case["reason"] == "orphan_private_media" for case in cases))
 
 
 class DaemonRuntimeHealthAlertTests(TestCase):
