@@ -202,10 +202,51 @@
         var expenses = compact(d.expense_by_category || []);
         var totalIncome = incomes.reduce(function (sum, row) { return sum + Number(row.total || 0); }, 0);
         var totalExpense = expenses.reduce(function (sum, row) { return sum + Number(row.total || 0); }, 0);
-        var colors = ['#ff5f89', '#8c78ef', '#36d2a0', '#f4b34e', '#36b9dd'];
-        function item(row, color, total) { var pct = total ? (Number(row.total) / total * 100).toFixed(1) : '0.0'; return '<div class="pnl-flow-item"><i style="background:' + color + '"></i><span>' + row.name + '<br><b>' + fmt(row.total) + ' ₴</b> <small>(' + pct + '%)</small></span></div>'; }
-        function flowPaths(rows, total, side) { return rows.map(function (row, index) { var y = 32 + index * 50, width = Math.max(7, Math.min(38, Number(row.total) / (total || 1) * 120)); var path = side === 'income' ? 'M 205 ' + y + ' C 300 ' + y + ', 330 135, 420 135' : 'M 580 135 C 670 135, 700 ' + y + ', 795 ' + y; return '<path d="' + path + '" style="stroke-width:' + width.toFixed(1) + 'px" class="pnl-flow-path--' + side + '"/>'; }).join(''); }
-        flow.innerHTML = '<div class="pnl-flow-side pnl-flow-side--income">' + (incomes.length ? incomes.map(function (r, i) { return item(r, i ? '#aab6c8' : '#36d2a0', totalIncome); }).join('') : '<span class="pnl-muted">Немає доходів</span>') + '</div><div class="pnl-flow-center"><b>' + fmt(totalIncome) + ' ₴</b><span>Загальні надходження</span></div><div class="pnl-flow-side pnl-flow-side--expense">' + (expenses.length ? expenses.map(function (r, i) { return item(r, colors[i % colors.length], totalExpense); }).join('') : '<span class="pnl-muted">Немає витрат</span>') + '</div><svg class="pnl-flow-lines" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden="true">' + flowPaths(incomes, totalIncome, 'income') + flowPaths(expenses, totalExpense, 'expense') + '</svg>';
+        var incomeColors = ['#36d2a0', '#aab6c8', '#aab6c8', '#aab6c8', '#aab6c8'];
+        var expenseColors = ['#ff5f89', '#8c78ef', '#36d2a0', '#f4b34e', '#36b9dd'];
+        var flowHeight = 300;
+        var centerY = flowHeight / 2;
+        var leftPort = 205;
+        var leftCenter = 420;
+        var rightCenter = 580;
+        var rightPort = 795;
+        function positions(count) {
+          if (!count) return [];
+          if (count === 1) return [centerY];
+          var step = Math.min(58, 224 / (count - 1));
+          var start = centerY - step * (count - 1) / 2;
+          return Array.from({ length: count }, function (_, index) { return start + index * step; });
+        }
+        function exactMoney(value) {
+          var number = Number(value || 0);
+          return number.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+        }
+        function branchWidth(row, total) {
+          var share = total ? Math.max(0, Number(row.total || 0) / total) : 0;
+          return Math.max(3, Math.min(42, 3 + Math.sqrt(share) * 42));
+        }
+        function item(row, color, total, y) {
+          var pct = total ? (Number(row.total) / total * 100).toFixed(1) : '0.0';
+          return '<div class="pnl-flow-item" style="--flow-y:' + y.toFixed(1) + 'px"><i style="background:' + color + '"></i><span>' + row.name + '<br><b>' + exactMoney(row.total) + ' ₴</b> <small>(' + pct + '%)</small></span></div>';
+        }
+        function flowPaths(rows, total, side, colors) {
+          var ys = positions(rows.length);
+          return rows.map(function (row, index) {
+            var y = ys[index];
+            var width = branchWidth(row, total);
+            var color = colors[index % colors.length];
+            var path = side === 'income'
+              ? 'M ' + leftPort + ' ' + y.toFixed(1) + ' C 255 ' + y.toFixed(1) + ', 300 ' + centerY + ', ' + leftCenter + ' ' + centerY
+              : 'M ' + rightCenter + ' ' + centerY + ' C 700 ' + centerY + ', 745 ' + y.toFixed(1) + ', ' + rightPort + ' ' + y.toFixed(1);
+            var endpoint = side === 'income'
+              ? '<line x1="' + leftPort + '" x2="' + leftPort + '" y1="' + (y - Math.max(9, width * .8)).toFixed(1) + '" y2="' + (y + Math.max(9, width * .8)).toFixed(1) + '"/>'
+              : '<line x1="' + rightPort + '" x2="' + rightPort + '" y1="' + (y - Math.max(9, width * .8)).toFixed(1) + '" y2="' + (y + Math.max(9, width * .8)).toFixed(1) + '"/>';
+            return '<path d="' + path + '" style="stroke:' + color + ';stroke-width:' + width.toFixed(1) + 'px" class="pnl-flow-path--' + side + '"/><g class="pnl-flow-endpoint pnl-flow-endpoint--' + side + '" style="stroke:' + color + '">' + endpoint + '</g>';
+          }).join('');
+        }
+        var incomeY = positions(incomes.length);
+        var expenseY = positions(expenses.length);
+        flow.innerHTML = '<div class="pnl-flow-side pnl-flow-side--income">' + (incomes.length ? incomes.map(function (r, i) { return item(r, incomeColors[i % incomeColors.length], totalIncome, incomeY[i]); }).join('') : '<span class="pnl-muted">Немає доходів</span>') + '</div><div class="pnl-flow-center"><b>' + exactMoney(totalIncome) + ' ₴</b><span>Загальні надходження</span></div><div class="pnl-flow-side pnl-flow-side--expense">' + (expenses.length ? expenses.map(function (r, i) { return item(r, expenseColors[i % expenseColors.length], totalExpense, expenseY[i]); }).join('') : '<span class="pnl-muted">Немає витрат</span>') + '</div><svg class="pnl-flow-lines" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden="true">' + flowPaths(incomes, totalIncome, 'income', incomeColors) + flowPaths(expenses, totalExpense, 'expense', expenseColors) + '</svg>';
       }
       var detailsGrid = document.querySelector('.pnl-details-grid');
       if (detailsGrid) detailsGrid.classList.add('is-list');

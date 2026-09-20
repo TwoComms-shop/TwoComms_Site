@@ -3812,3 +3812,17 @@ body.fin-report-open { overflow: hidden; }
 .pnl-day { overflow:hidden; background:#27344a; }
 .pnl-day > span { position:relative; z-index:1; }
 .pnl-day > i { display:none; }
+
+/* Sankey-style flow layout: labels and SVG branches share the same y scale. */
+.pnl-flow-panel { min-height:330px; }
+.pnl-flow-chart { height:300px; min-height:300px; align-items:stretch; padding-top:0; }
+.pnl-flow-side { display:block; height:300px; }
+.pnl-flow-item { position:absolute; top:calc(var(--flow-y) * 1px - 17px); left:0; right:0; min-height:34px; line-height:1.2; }
+.pnl-flow-center { align-self:center; min-height:90px; }
+.pnl-flow-lines { inset:0; height:300px; overflow:visible; }
+.pnl-flow-lines path { stroke-linecap:round; opacity:.68 !important; }
+.pnl-flow-endpoint { fill:none; stroke-width:2px; opacity:.95; }
+.pnl-flow-lines .pnl-flow-path--income { opacity:.62 !important; }
+.pnl-flow-lines .pnl-flow-path--expense { opacity:.72 !important; }
+@media (max-width:1200px) { .pnl-flow-chart { grid-template-columns:minmax(0,1fr) 150px minmax(0,1fr); } }
+@media (max-width:760px) { .pnl-flow-chart { grid-template-columns:minmax(0,1fr) 105px minmax(0,1fr); gap:7px; } }
