@@ -3836,6 +3836,30 @@ class InstagramBotTaskHeartbeat(models.Model):
         return f"{self.task_key}: {self.last_succeeded_at or 'not observed'}"
 
 
+class IgWorkerLaneState(models.Model):
+    """Durable owner and claim-admission fence for one worker lane."""
+
+    lane_key = models.CharField(max_length=64, unique=True)
+    owner_kind = models.CharField(max_length=32, blank=True, default="")
+    owner_token = models.CharField(max_length=64, blank=True, default="")
+    generation = models.PositiveBigIntegerField(default=0)
+    owner_started_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True, db_index=True)
+    claim_frozen = models.BooleanField(default=False)
+    freeze_generation = models.PositiveBigIntegerField(default=0)
+    frozen_at = models.DateTimeField(null=True, blank=True)
+    freeze_reason = models.CharField(max_length=128, blank=True, default="")
+    recovery_deadline_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["lane_key"]
+
+    def __str__(self) -> str:
+        return f"{self.lane_key}:{self.owner_kind or 'unowned'}@{self.generation}"
+
+
 class InstagramBotProcessedMessage(models.Model):
     """Дедуп оброблених вхідних повідомлень за message id (mid)."""
 

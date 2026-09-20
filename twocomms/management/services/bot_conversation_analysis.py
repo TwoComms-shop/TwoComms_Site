@@ -372,10 +372,20 @@ def schedule_client_truth_analysis(
 
 
 def _reclaim_stale(now) -> int:
-    return IgConversationAnalysisJob.objects.filter(
-        status=IgConversationAnalysisJob.Status.PROCESSING,
-        lease_until__lt=now,
-    ).update(
+    from management.services.ig_analysis_lane import mutation_guard, owner_claim_admission
+    owner = owner_claim_admission(now=now)
+    if not owner:
+        return 0
+    with mutation_guard(owner_token=owner["owner_token"], generation=owner["generation"], now=now) as allowed:
+        if not allowed:
+            return 0
+        return IgConversationAnalysisJob.objects.filter(
+            status=IgConversationAnalysisJob.Status.PROCESSING,
+            lease_until__lt=now,
+            # Reclaim only leases from this or an older owner generation. A
+            # newer generation can never be touched by an older recovery path.
+            claim_generation__lte=owner["generation"],
+        ).update(
         status=Case(
             When(
                 revision__gt=F("claimed_revision"),
@@ -413,11 +423,15 @@ def _reclaim_stale(now) -> int:
         claimed_materiality_event_highwater=0,
         claimed_materiality_digest="",
         claimed_authority_digest="",
-        claimed_artifact_digest="",
-    )
+            claimed_artifact_digest="",
+        )
 
 
 def _claim_due(now) -> tuple[IgConversationAnalysisJob, int, int, str] | None:
+    from management.services.ig_analysis_lane import mutation_guard, owner_claim_admission
+    owner = owner_claim_admission(now=now)
+    if not owner:
+        return None
     for _unused in range(5):
         candidate = (
             IgConversationAnalysisJob.objects.filter(
@@ -432,8 +446,13 @@ def _claim_due(now) -> tuple[IgConversationAnalysisJob, int, int, str] | None:
         if not candidate:
             return None
         token = secrets.token_hex(16)
+        # A freeze may be published after candidate selection; recheck before
+        # the compare-and-swap so no new lease starts during a stalled lane.
         lease_until = now + timedelta(seconds=LEASE_SECONDS)
-        claimed = IgConversationAnalysisJob.objects.filter(
+        with mutation_guard(owner_token=owner["owner_token"], generation=owner["generation"], now=now) as allowed:
+            if not allowed:
+                return None
+            claimed = IgConversationAnalysisJob.objects.filter(
             pk=candidate.pk,
             status=IgConversationAnalysisJob.Status.PENDING,
             attempts__lt=MAX_ATTEMPTS,
@@ -441,10 +460,11 @@ def _claim_due(now) -> tuple[IgConversationAnalysisJob, int, int, str] | None:
             revision=candidate.revision,
             due_at__lte=now,
             next_attempt_at__lte=now,
-        ).update(
+            ).update(
             status=IgConversationAnalysisJob.Status.PROCESSING,
             lease_token=token,
             lease_until=lease_until,
+            claim_generation=owner["generation"],
             claimed_watermark_message_id=candidate.watermark_message_id,
             claimed_revision=candidate.revision,
             claimed_materiality_event_highwater=F("materiality_event_highwater"),
@@ -459,7 +479,7 @@ def _claim_due(now) -> tuple[IgConversationAnalysisJob, int, int, str] | None:
             media_started_at=None,
             media_completed_at=None,
             media_item_count=0,
-        )
+            )
         if claimed:
             candidate.refresh_from_db()
             return (
@@ -1990,9 +2010,14 @@ def _defer_claim_for_media_retry(
 def process_due_analysis(*, limit: int = 2, now=None) -> dict:
     """Claim and analyze due jobs independently from all customer reply flags."""
     counts = {"done": 0, "failed": 0, "skipped": 0, "superseded": 0}
+    from management.services.ig_analysis_lane import owner_claim_admission
+    if not owner_claim_admission(now=now or timezone.now()):
+        return counts
     for _unused in range(max(0, min(int(limit), 10))):
         live_waiting = _customer_reply_work_waiting()
         claim_now = now or timezone.now()
+        if not owner_claim_admission(now=claim_now):
+            break
         _reclaim_stale(claim_now)
         fairness_slot = False
         if live_waiting:
@@ -2145,6 +2170,9 @@ def report_failed_analysis_jobs(*, limit: int = 500, quota_budget: int = 0) -> d
 def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
     """Queue changed or prompt-stale conversations without invoking Gemini."""
     now = now or timezone.now()
+    from management.services.ig_analysis_lane import owner_claim_admission
+    if not owner_claim_admission(now=now):
+        return {"deferred": "owner_busy", "queued": 0, "scanned": 0}
     bounded_limit = max(1, min(int(limit), 5000))
     # Provider-free housekeeping for request graphs orphaned by an interrupted
     # background pool. It is deliberately coupled to the existing 10-minute

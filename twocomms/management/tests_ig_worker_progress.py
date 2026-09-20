@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 from management.services.ig_daemon_health import daemon_runtime_health_snapshot
 from management.services.ig_worker_progress import (
     WorkerProgressRegistry, WORKER_LIMITS, worker_health_snapshot, worker_iteration,
+    worker_claim_admission,
 )
 
 
@@ -78,3 +79,55 @@ class WorkerProgressTests(SimpleTestCase):
         payload = self.registry.snapshot()
         payload["analysis"]["deadline_at"] = self.now + 1000000
         self.assertEqual(worker_health_snapshot(payload, now=self.now + 601)["lanes"]["analysis"]["state"], "stalled")
+
+    def test_stalled_lane_freezes_new_claims_without_touching_existing_state(self):
+        self.registry.begin("analysis")
+        self.now += 601
+        with patch("management.services.ig_worker_progress.WORKERS", self.registry):
+            self.assertFalse(worker_claim_admission("analysis"))
+        self.assertEqual(self.registry.snapshot()["analysis"]["state"], "running")
+
+    def test_shared_daemon_pulse_freezes_uninitialized_one_shot_process(self):
+        from django.core.cache import cache
+
+        cache.set(
+            "ig_bot_daemon_hb",
+            {
+                "at": self.now,
+                "owner": "instagram_daemon",
+                "worker_lanes": {
+                    "analysis": {
+                        "state": "running",
+                        "progress_at": self.now - 601,
+                    }
+                },
+            },
+            600,
+        )
+        one_shot = WorkerProgressRegistry(clock=lambda: self.now)
+        with patch("management.services.ig_worker_progress.WORKERS", one_shot), patch(
+            "management.services.ig_worker_progress.time.time", return_value=self.now
+        ):
+            self.assertFalse(worker_claim_admission("analysis"))
+        cache.delete("ig_bot_daemon_hb")
+
+    def test_shared_daemon_pulse_allows_fresh_lane(self):
+        from django.core.cache import cache
+
+        cache.set(
+            "ig_bot_daemon_hb",
+            {
+                "at": self.now,
+                "owner": "instagram_daemon",
+                "worker_lanes": {
+                    "analysis": {"state": "idle", "progress_at": self.now}
+                },
+            },
+            600,
+        )
+        one_shot = WorkerProgressRegistry(clock=lambda: self.now)
+        with patch("management.services.ig_worker_progress.WORKERS", one_shot), patch(
+            "management.services.ig_worker_progress.time.time", return_value=self.now
+        ):
+            self.assertTrue(worker_claim_admission("analysis"))
+        cache.delete("ig_bot_daemon_hb")

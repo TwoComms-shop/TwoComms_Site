@@ -2948,19 +2948,19 @@ class ConversationAnalysisCommandTests(SimpleTestCase):
         "management.management.commands.reconcile_ig_analysis_jobs.reconcile_analysis_jobs",
         return_value={"queued": 1},
     )
-    def test_run_due_drains_analysis_and_owned_events(
+    def test_run_due_defers_daemon_owned_consumers(
         self, reconcile, process_analysis, process_events
     ):
-        process_events.return_value = {"applied": 1}
         stdout = StringIO()
 
         call_command("reconcile_ig_analysis_jobs", "--run-due", stdout=stdout)
 
-        reconcile.assert_called_once()
-        process_analysis.assert_called_once_with(limit=1)
-        process_events.assert_called_once_with(limit=1)
+        reconcile.assert_not_called()
+        process_analysis.assert_not_called()
+        process_events.assert_not_called()
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["processed_events"], {"applied": 1})
+        self.assertEqual(payload["processed"], {"deferred": "daemon_owner"})
+        self.assertEqual(payload["processed_events"], {"deferred": "daemon_owner"})
 
 
 class ConversationAnalysisFailureDryRunTests(TestCase):

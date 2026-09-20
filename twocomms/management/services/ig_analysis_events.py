@@ -342,8 +342,11 @@ def _record_failure(event_id: int, exc, now):
 def process_due_analysis_events(*, limit: int = 2, now=None) -> dict:
     """Materialize pending analysis proposals through one owned consumer."""
     from management.ig_bot_models import IgConversationAnalysisEvent
+    from management.services.ig_analysis_lane import owner_claim_admission
 
     now = now or timezone.now()
+    if not owner_claim_admission(now=now):
+        return {"deferred": 1}
     event_ids = list(
         IgConversationAnalysisEvent.objects.filter(
             status=IgConversationAnalysisEvent.Status.PENDING,

@@ -68,6 +68,38 @@ class DaemonRuntimeHealthSnapshotTests(SimpleTestCase):
         self.assertFalse(snapshot["stalled"])
         self.assertEqual(snapshot["main_cycle"], 9)
 
+    @patch(
+        "management.services.ig_daemon_health.technical_debt_snapshot",
+        return_value={
+            "observed_at": "2026-09-20T00:00:00+00:00",
+            "fingerprint": "debt-fingerprint",
+            "cases": [{
+                "reason": "legacy_send_unknown",
+                "scope": "legacy_message",
+                "count": 3,
+                "oldest_age_seconds": 91,
+                "sample_ids": [1, 2],
+                "sampled": True,
+                "has_more": True,
+            }],
+            "case_count": 1,
+            "coverage_complete": True,
+            "errors": [],
+            "sample_limit": 100,
+        },
+    )
+    def test_runtime_snapshot_exposes_bounded_technical_debt(self, debt):
+        now = time.time()
+        cache.set(PROCESS_PULSE_KEY, {"at": now}, 600)
+        cache.set(MAIN_PROGRESS_KEY, {"at": now, "state": "idle"}, 600)
+
+        snapshot = daemon_runtime_health_snapshot()
+
+        debt.assert_called_once_with(limit=100)
+        self.assertTrue(snapshot["main_healthy"])
+        self.assertEqual(snapshot["technical_debt"]["fingerprint"], "debt-fingerprint")
+        self.assertEqual(snapshot["technical_debt"]["cases"][0]["count"], 3)
+
 
 class DaemonRuntimeHealthAlertTests(TestCase):
     def tearDown(self):
@@ -129,6 +161,57 @@ class DaemonRuntimeHealthAlertTests(TestCase):
         self.assertTrue(snapshot["alerted"])
         dedupe.assert_called_once_with("ig_worker_lane_stalled", window_minutes=60, text="worker_lane_stalled")
         self.assertIn("analysis", notify.call_args.kwargs["metadata"]["worker_lanes"])
+
+    @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
+    @patch("management.services.ig_alerts.alert_dedupe_key", return_value="technical-debt-hour")
+    @patch("management.services.instagram_bot.notify_manager", return_value=True)
+    @patch(
+        "management.services.ig_daemon_health.technical_debt_snapshot",
+        return_value={
+            "observed_at": "2026-09-20T00:00:00+00:00",
+            "fingerprint": "debt-fingerprint",
+            "cases": [{
+                "reason": "canonical_delivery_unknown",
+                "scope": "delivery_effect",
+                "count": 2,
+                "oldest_age_seconds": 120,
+                "sample_ids": [99],
+                "sampled": False,
+                "has_more": False,
+            }],
+            "case_count": 1,
+            "coverage_complete": True,
+            "errors": [],
+            "sample_limit": 100,
+        },
+    )
+    def test_technical_debt_alert_is_bounded_and_fingerprint_deduplicated(
+        self, debt, notify, dedupe, _maintenance
+    ):
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.is_enabled = True
+        settings_obj.save(update_fields=["is_enabled", "updated_at"])
+        now = time.time()
+        cache.set(PROCESS_PULSE_KEY, {"at": now}, 600)
+        cache.set(MAIN_PROGRESS_KEY, {"at": now, "state": "idle"}, 600)
+
+        snapshot = alert_daemon_runtime_health()
+
+        self.assertTrue(snapshot["alerted"])
+        dedupe.assert_called_once_with(
+            "ig_technical_debt", window_minutes=60, text="debt-fingerprint"
+        )
+        notify.assert_called_once()
+        kwargs = notify.call_args.kwargs
+        self.assertEqual(kwargs["event_type"], "ig_technical_debt")
+        self.assertEqual(kwargs["metadata"]["technical_debt_fingerprint"], "debt-fingerprint")
+        self.assertEqual(kwargs["metadata"]["technical_debt_cases"], [{
+            "reason": "canonical_delivery_unknown",
+            "scope": "delivery_effect",
+            "count": 2,
+            "oldest_age_seconds": 120,
+        }])
+        self.assertNotIn("sample_ids", kwargs["metadata"]["technical_debt_cases"][0])
 
 
 class DaemonStatusUiContractTests(SimpleTestCase):

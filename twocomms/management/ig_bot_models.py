@@ -7266,6 +7266,7 @@ class IgConversationAnalysisJob(models.Model):
     claimed_artifact_digest = models.CharField(max_length=64, blank=True, default="")
     claimed_watermark_message_id = models.PositiveBigIntegerField(default=0)
     claimed_revision = models.PositiveBigIntegerField(default=0)
+    claim_generation = models.PositiveBigIntegerField(default=0, db_index=True)
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True
     )

@@ -6,6 +6,8 @@ import time
 
 from django.core.cache import cache
 
+from management.services.ig_technical_debt import technical_debt_snapshot
+
 
 PROCESS_PULSE_KEY = "ig_bot_daemon_hb"
 MAIN_PROGRESS_KEY = "ig_bot_daemon_main_progress"
@@ -72,6 +74,18 @@ def daemon_runtime_health_snapshot(*, now_epoch: float | None = None) -> dict:
     supervisor = read_supervisor_observation(
         runtime_root(), expected_child_pid=process.get("pid"), now=now_epoch,
     )
+    try:
+        technical_debt = technical_debt_snapshot(limit=100)
+    except Exception as exc:  # health must remain bounded when DB/storage is down
+        technical_debt = {
+            "observed_at": "",
+            "fingerprint": "",
+            "cases": [],
+            "case_count": 0,
+            "coverage_complete": False,
+            "errors": [type(exc).__name__[:64]],
+            "sample_limit": 100,
+        }
     return {
         "process_online": process_online,
         "process_age_seconds": round(process_age, 1) if process_age is not None else None,
@@ -89,6 +103,7 @@ def daemon_runtime_health_snapshot(*, now_epoch: float | None = None) -> dict:
         "worker_lanes": workers["lanes"],
         "release_generation": process.get("sentinel"),
         "supervisor": supervisor,
+        "technical_debt": technical_debt,
     }
 
 
@@ -96,7 +111,9 @@ def alert_daemon_runtime_health() -> dict:
     """Deliver one hourly technical alert for a live-but-stalled daemon."""
     snapshot = daemon_runtime_health_snapshot()
     snapshot["alerted"] = False
-    if not snapshot["stalled"] and not snapshot.get("worker_stalled"):
+    technical_debt = snapshot.get("technical_debt") or {}
+    debt_cases = technical_debt.get("cases") or []
+    if not snapshot["stalled"] and not snapshot.get("worker_stalled") and not debt_cases:
         return snapshot
     try:
         from management.models import InstagramBotSettings
@@ -108,7 +125,19 @@ def alert_daemon_runtime_health() -> dict:
         if not settings_obj.is_enabled or maintenance_status()["active"]:
             return snapshot
         reason = snapshot["stalled_reason"]
-        title = "🚨 IG daemon не просуває основний цикл" if snapshot["stalled"] else "🚨 IG background lane не просувається"
+        debt_fingerprint = str(technical_debt.get("fingerprint") or "")[:24]
+        # Technical debt has its own durable fingerprint and remains actionable
+        # even when liveness observations are incomplete; preserve the debt
+        # case instead of collapsing it into a generic worker-stall alert.
+        debt_alert = bool(debt_cases)
+        if debt_alert:
+            reason = "technical_debt"
+        title = (
+            "⚠️ IG: накопичився технічний борг"
+            if debt_alert else
+            "🚨 IG daemon не просуває основний цикл" if snapshot["stalled"]
+            else "🚨 IG background lane не просувається"
+        )
         affected_workers = tuple(
             name for name, row in snapshot.get("worker_lanes", {}).items()
             if not row.get("healthy")
@@ -117,6 +146,8 @@ def alert_daemon_runtime_health() -> dict:
             title,
             lines=(
                 f"Причина: {reason}",
+                f"Debt cases: {len(debt_cases)}" if debt_alert else "",
+                f"Debt fingerprint: {debt_fingerprint}" if debt_alert else "",
                 f"Process pulse: {snapshot['process_age_seconds']} с",
                 f"Main progress: {snapshot['main_age_seconds']} с",
                 f"Lanes: {', '.join(affected_workers)[:240]}" if affected_workers else "",
@@ -127,13 +158,22 @@ def alert_daemon_runtime_health() -> dict:
             bot.notify_manager(
                 text,
                 dedupe_key=alert_dedupe_key(
-                    "ig_worker_lane_stalled" if snapshot.get("worker_stalled") else "ig_daemon_stalled",
+                    "ig_technical_debt" if debt_alert else ("ig_worker_lane_stalled" if snapshot.get("worker_stalled") else "ig_daemon_stalled"),
                     window_minutes=60,
-                    text=reason,
+                    text=debt_fingerprint if debt_alert else reason,
                 ),
-                event_type="ig_daemon_stalled",
+                event_type="ig_technical_debt" if debt_alert else "ig_daemon_stalled",
                 metadata={
                     "reason": reason,
+                    "technical_debt_fingerprint": debt_fingerprint,
+                    "technical_debt_cases": [
+                        {"reason": str(row.get("reason") or "")[:64],
+                         "scope": str(row.get("scope") or "")[:64],
+                         "count": int(row.get("count") or 0),
+                         "oldest_age_seconds": row.get("oldest_age_seconds")}
+                        for row in debt_cases[:20]
+                    ],
+                    "technical_debt_coverage_complete": bool(technical_debt.get("coverage_complete")),
                     "process_age_seconds": snapshot["process_age_seconds"],
                     "main_age_seconds": snapshot["main_age_seconds"],
                     "worker_lanes": affected_workers,

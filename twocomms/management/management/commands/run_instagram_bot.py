@@ -609,20 +609,32 @@ def _journey_trace_refresh_worker(stop_event: threading.Event):
         stop_event.wait(SWEEP_SECONDS)
 
 
-def _analysis_worker(stop_event: threading.Event):
+def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generation=None):
     """Drain durable CRM-analysis jobs without coupling them to reply enablement."""
     from management.services.bot_conversation_analysis import (
         process_due_analysis,
         reconcile_analysis_jobs,
     )
     from management.services.ig_analysis_events import process_due_analysis_events
+    if lane_token is not None:
+        from management.services.ig_analysis_lane import bind_owner
+        bind_owner({"owner_token": lane_token, "generation": lane_generation})
 
+    from management.services.ig_analysis_lane import bind_owner, renew_owner
     last_reconcile_at = None
+    lane_owner = (
+        {"owner_token": lane_token, "generation": lane_generation}
+        if lane_token is not None else None
+    )
     while not stop_event.is_set():
         with worker_iteration("analysis"):
             try:
                 close_old_connections()
                 require_database_ready(lane="analysis_worker")
+                if lane_owner is None:
+                    stop_event.wait(5)
+                    continue
+                renew_owner(owner_token=lane_owner["owner_token"], generation=lane_owner["generation"])
                 if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
                     monotonic_now = time.monotonic()
                     if (
@@ -1724,6 +1736,13 @@ class Command(BaseCommand):
             self.stdout.write("maintenance active — daemon exit")
             return
         owner = f"{os.getpid()}:{time.time_ns()}"
+        from management.services.ig_analysis_lane import acquire_owner, release_owner
+        lane_owner = acquire_owner(owner_kind="daemon")
+        if not lane_owner:
+            self.stdout.write("analysis lane owner busy — daemon exit")
+            return
+        lane_token = lane_owner["owner_token"]
+        lane_generation = lane_owner["generation"]
         start_sentinel = _restart_sentinel_mtime()
         stop_event = threading.Event()
         WORKERS.reset()
@@ -1794,7 +1813,7 @@ class Command(BaseCommand):
         analysis_worker = threading.Thread(
             name="ig-analysis",
             target=_analysis_worker,
-            args=(stop_event,),
+            args=(stop_event, lane_token, lane_generation),
             daemon=True,
         )
         analysis_worker.start()
@@ -1941,6 +1960,10 @@ class Command(BaseCommand):
                 for worker in workers:
                     if worker is not threading.current_thread():
                         worker.join(timeout=1)
+                try:
+                    release_owner(owner_token=lane_token, generation=lane_generation)
+                except Exception:
+                    pass
                 if shutdown.get("signal"):
                     try:
                         bot.log(

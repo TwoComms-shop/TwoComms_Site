@@ -47,11 +47,19 @@ class Command(BaseCommand):
             )
             self.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return
+        if options["run_due"]:
+            # This command is a separate process. The runtime manifest assigns
+            # analysis reconciliation and both consumers to the daemon owner;
+            # never mutate the shared cursor or queue before proving ownership.
+            self.stdout.write(json.dumps({
+                "mode": "run_due",
+                "processed": {"deferred": "daemon_owner"},
+                "processed_events": {"deferred": "daemon_owner"},
+                "reason": "owner_busy_or_unverified",
+            }, ensure_ascii=False, sort_keys=True))
+            return
         result = reconcile_analysis_jobs(limit=options["limit"])
         from management.services.ig_typed_memory import reconcile_typed_memory
 
         result["typed_memory"] = reconcile_typed_memory(limit=options["limit"])
-        if options["run_due"]:
-            result["processed"] = process_due_analysis(limit=1)
-            result["processed_events"] = process_due_analysis_events(limit=1)
         self.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True))
