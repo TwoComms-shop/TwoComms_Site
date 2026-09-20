@@ -139,6 +139,20 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(reverse_preview.json()['existing']['partner_transaction_id'], incoming.id)
         self.assertEqual(reverse_preview.json()['existing']['fee_amount'], '50.00')
 
+    def test_payments_renders_confirmed_transfer_as_one_canonical_row(self):
+        outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10050'), account=self.cash)
+        incoming = self._txn(Transaction.TYPE_INCOME, Decimal('10000'), account=self.account)
+        match = ledger_v2.create_transfer_suggestion(self.company, outgoing, incoming)
+        ledger_v2.confirm_transfer(match, user=self.user)
+        self.client.force_login(self.user)
+        response = self.client.get('/?per_page=all', HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertEqual(body.count('Переказ власних коштів'), 1)
+        self.assertIn('−50.00', body)
+        self.assertNotIn(f'data-txn-id="{incoming.id}"', body)
+        self.assertIn(f'data-txn-id="{outgoing.id}"', body)
+
     def test_transfer_confirmation_does_not_change_pnl_classification(self):
         outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10000'), account=self.cash)
         incoming = self._txn(Transaction.TYPE_INCOME, Decimal('10000'), account=self.account)

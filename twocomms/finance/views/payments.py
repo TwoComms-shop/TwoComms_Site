@@ -75,6 +75,14 @@ def payments(request):
     qs = filter_service.filter_transactions(company, request.GET)
     actual_qs, planned_qs = filter_service.split_actual_planned(qs)
 
+    # A confirmed internal match is one user-facing operation. Keep both bank
+    # legs in the ledger, but use the outgoing leg as the canonical journal
+    # row so balances and audit history remain intact without a duplicate.
+    matched_destination_ids = InternalTransferMatch.objects.filter(
+        company=company, status='confirmed',
+    ).values_list('destination_transaction_id', flat=True)
+    actual_qs = actual_qs.exclude(id__in=matched_destination_ids)
+
     total_count = actual_qs.count()
     per_page = _resolve_per_page(request.GET.get('per_page', _PER_PAGE_DEFAULT))
 
@@ -125,6 +133,9 @@ def payments(request):
             row['transfer_match'] = {
                 'id': match.id, 'principal': str(match.amount), 'fee': str(match.fee_amount),
                 'partner_id': partner.id, 'partner_amount': str(partner.amount),
+                'account_label': f'{match.source_transaction.account.name if match.source_transaction.account else "—"} → '
+                                 f'{match.destination_transaction.account.name if match.destination_transaction.account else "—"}',
+                'description': 'Переказ власних коштів',
             }
 
     # Бейджі «погашення зобов'язання» (кредиторка/дебіторка) для рядків журналу.
