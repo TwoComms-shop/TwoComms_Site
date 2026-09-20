@@ -136,6 +136,30 @@ class TechnicalDebtFingerprintTests(TestCase):
         self.assertTrue(complete)
         self.assertFalse(any(case["reason"] == "orphan_private_media" for case in cases))
 
+    def test_capped_reference_scan_does_not_falsely_classify_file_as_orphan(self):
+        from django.conf import settings
+        from django.utils import timezone
+        from management.services.ig_technical_debt import _collect_media
+
+        class Rows:
+            def only(self, *fields):
+                return self
+
+            def iterator(self, **kwargs):
+                for index in range(21):
+                    yield type("Row", (), {"pk": index, "attachment_media": []})()
+
+        with patch.object(settings, "IG_PRIVATE_MEDIA_ROOT", "/private/tmp/media"), \
+             patch("management.services.ig_technical_debt.os.path.isdir", return_value=True), \
+             patch("management.services.ig_technical_debt.os.walk", return_value=[
+                 ("/private/tmp/media", [], ["orphan.jpg"]),
+             ]):
+            # Patch the queryset constructor at the module import boundary.
+            with patch("management.models.InstagramBotMessage.objects.filter", return_value=Rows()):
+                cases, complete = _collect_media(timezone.now(), 1)
+        self.assertFalse(complete)
+        self.assertFalse(any(case["reason"] == "orphan_private_media" for case in cases))
+
 
 class DaemonRuntimeHealthAlertTests(TestCase):
     def tearDown(self):

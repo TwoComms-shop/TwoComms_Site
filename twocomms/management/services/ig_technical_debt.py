@@ -113,8 +113,10 @@ def _collect_media(now, limit):
     rows = InstagramBotMessage.objects.filter(attachment_media__isnull=False).only("id", "attachment_media")
     stale_ids = []
     referenced = set()
+    reference_scan_complete = True
     for row_index, row in enumerate(rows.iterator(chunk_size=min(limit, 100))):
         if row_index >= limit * 20:
+            reference_scan_complete = False
             break
         for item in row.attachment_media or ():
             if not isinstance(item, dict):
@@ -142,7 +144,7 @@ def _collect_media(now, limit):
         for filename in files:
             walked += 1
             relative = os.path.relpath(os.path.join(base, filename), root).replace(os.sep, "/")
-            if relative not in referenced:
+            if reference_scan_complete and relative not in referenced:
                 orphan_count += 1
             if walked >= limit * 20:
                 break
@@ -155,7 +157,10 @@ def _collect_media(now, limit):
     # File names are intentionally omitted from the report; they can contain
     # provider/customer-derived material and are not needed for triage.
     cases[-1]["sample_ids"] = []
-    return cases, walked < limit * 20
+    # An incomplete reference scan cannot distinguish an orphan from a
+    # referenced file outside the row cap. Report degraded coverage and wait
+    # for a complete bounded pass instead of raising a false orphan alert.
+    return cases, bool(reference_scan_complete and walked < limit * 20)
 
 
 def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
