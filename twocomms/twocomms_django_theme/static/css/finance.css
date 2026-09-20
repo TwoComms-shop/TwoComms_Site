@@ -1074,6 +1074,7 @@ body.fin-modal-open { overflow: hidden; }
 .fin-incoming-review__notice[hidden],
 .fin-unclassified-form[hidden],
 .fin-terminal-review[hidden],
+.fin-terminal-review__choices[hidden],
 .fin-terminal-review__form[hidden],
 .fin-terminal-confirm[hidden],
 .fin-terminal-review__error[hidden] { display: none !important; }

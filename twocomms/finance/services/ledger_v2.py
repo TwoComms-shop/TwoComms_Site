@@ -25,6 +25,9 @@ TERMINAL_CASH_INCOME_KINDS = (
 _TERMINAL_RE = re.compile(r'\b(?:terminal|термінал|терминал)\b', re.IGNORECASE)
 _MONO_RE = re.compile(r'\b(?:mono|monobank|монобанк)\b', re.IGNORECASE)
 _CITY24_RE = re.compile(r'\b(?:city[\s-]?24|сіті[\s-]?24|сити[\s-]?24)\b', re.IGNORECASE)
+_REFUND_RE = re.compile(r'повернен|refund', re.IGNORECASE)
+_RENT_RE = re.compile(r'оренд|комунал|rent|utility', re.IGNORECASE)
+_VIKTOR_RE = re.compile(r'віктор|виктор|viktor', re.IGNORECASE)
 
 
 def _terminal_text_values(value, path):
@@ -68,6 +71,52 @@ def terminal_cash_evidence(txn):
         'providers': providers,
         'matched_fields': {key: value for key, value in matched_fields.items() if value},
     }
+
+
+def is_known_rent_refund(txn) -> bool:
+    """Return True only for the stable Viktor rent/utility refund pattern.
+
+    Imported terminal rows can inherit a recurring rule or counterparty, so the
+    provider/source exclusions are part of the identity and prevent a false
+    positive from being silently classified as a refund.
+    """
+    if (txn.status != Transaction.STATUS_ACTUAL or txn.type != Transaction.TYPE_INCOME
+            or txn.economic_kind != 'unknown' or txn.source not in {'manual', 'recurring'}
+            or txn.external_id or terminal_cash_evidence(txn)['is_candidate']):
+        return False
+    rule = getattr(txn, 'recurrence_rule', None)
+    counterparty = getattr(txn, 'counterparty', None)
+    category = getattr(txn, 'category', None)
+    if not rule or rule.template_type != Transaction.TYPE_INCOME:
+        return False
+    if not counterparty or rule.template_counterparty_id != counterparty.id:
+        return False
+    if not _VIKTOR_RE.search(counterparty.name or ''):
+        return False
+    rule_text = ' '.join((rule.title or '', rule.template_comment or ''))
+    if not _RENT_RE.search(rule_text) or not _REFUND_RE.search(rule_text):
+        return False
+    if not _REFUND_RE.search((category.name if category else '') or ''):
+        return False
+    return bool(_REFUND_RE.search(txn.comment or '') and _RENT_RE.search(txn.comment or ''))
+
+
+@db_transaction.atomic
+def classify_known_rent_refund(txn, *, user=None):
+    """Apply the deterministic Viktor refund rule to one actualized row."""
+    txn = Transaction.objects.select_for_update().select_related(
+        'recurrence_rule', 'counterparty', 'category', 'account',
+    ).get(pk=txn.pk)
+    if not is_known_rent_refund(txn):
+        return None
+    if not txn.is_business:
+        txn.is_business = True
+        txn.save(update_fields=['is_business'])
+    return classify_transaction(
+        txn, user=user, ownership_scope='business', economic_kind='expense_refund',
+        confidence=Decimal('100'), source='rule',
+        note='Автоматично визначено: повернення оренди/комунальних від Віктора Викторовича.',
+    )
 
 
 def _assert_terminal_cash_transaction(txn):
@@ -125,11 +174,19 @@ def prepare_terminal_cash_review(company, txn_id, *, action, user=None,
             is_archived=False,
         ).first()
         if source_cash is None:
-            raise ValueError('Оберіть активний власний рахунок')
+            raise ValueError('Оберіть активний рахунок «Готівка»')
+        if source_cash.type != 'cash':
+            raise ValueError('Для цього підтвердження джерелом може бути лише рахунок «Готівка»')
         if source_cash.id == txn.account_id:
             raise ValueError('Рахунок-джерело та рахунок отримувача мають відрізнятися')
         if source_cash.currency != txn.currency:
             raise ValueError('Валюта рахунку-джерела має збігатися з валютою поповнення')
+        if source_cash.current_balance < txn.amount:
+            raise ValueError(
+                f'Недостатньо готівки для підтвердження: доступно {source_cash.current_balance} '
+                f'{source_cash.currency}, потрібно {txn.amount} {txn.currency}. '
+                'Спочатку внесіть або звірте залишок готівки.'
+            )
         proposal = {
             'kind': 'terminal_cash_transfer',
             'source_cash_account_id': source_cash.id,
@@ -186,11 +243,19 @@ def confirm_terminal_cash_transfer(txn, *, source_cash_account_id, user=None, no
         is_archived=False,
     ).first()
     if source_cash is None:
-        raise ValueError('Оберіть активний власний рахунок')
+        raise ValueError('Оберіть активний рахунок «Готівка»')
+    if source_cash.type != 'cash':
+        raise ValueError('Для цього підтвердження джерелом може бути лише рахунок «Готівка»')
     if source_cash.id == destination.id:
         raise ValueError('Рахунок-джерело та рахунок отримувача мають відрізнятися')
     if source_cash.currency != txn.currency:
         raise ValueError('Валюта рахунку-джерела має збігатися з валютою поповнення')
+    if source_cash.current_balance < txn.amount:
+        raise ValueError(
+            f'Недостатньо готівки для підтвердження: доступно {source_cash.current_balance} '
+            f'{source_cash.currency}, потрібно {txn.amount} {txn.currency}. '
+            'Спочатку внесіть або звірте залишок готівки.'
+        )
 
     external_data = dict(txn.external_data or {})
     external_data['terminal_cash_transfer'] = {
@@ -203,8 +268,11 @@ def confirm_terminal_cash_transfer(txn, *, source_cash_account_id, user=None, no
         to_account=destination, to_amount=txn.amount, category=None, counterparty=None,
         external_data=external_data,
     )
+    is_personal_destination = not bool(destination.is_business)
     classify_transaction(
-        transfer, user=user, ownership_scope='unknown', economic_kind='internal_transfer',
+        transfer, user=user,
+        ownership_scope='personal' if is_personal_destination else 'business',
+        economic_kind='owner_draw' if is_personal_destination else 'internal_transfer',
         confidence=Decimal('100'), source='review', note=note,
     )
     return transfer

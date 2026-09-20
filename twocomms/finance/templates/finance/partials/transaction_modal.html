@@ -38,6 +38,13 @@
               <option value="adjustment">Інше коригування</option>
             </select>
           </label>
+          <label class="fin-field" for="fin-unclassified-funding-source" id="fin-unclassified-funding-source-wrap" hidden>
+            <span>Джерело гранту</span>
+            <select id="fin-unclassified-funding-source" class="fin-select">
+              <option value="">Оберіть програму</option>
+            </select>
+            <small class="fin-field__hint">Грантові надходження не потрапляють у P&amp;L як продаж.</small>
+          </label>
           <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" id="fin-unclassified-save">Зберегти класифікацію</button>
         </div>
         <div class="fin-terminal-review" id="fin-terminal-review" hidden>
@@ -49,11 +56,11 @@
 
           <div class="fin-terminal-review__choices" id="fin-terminal-review-choices">
             <button type="button" class="fin-terminal-choice" data-terminal-choice="cash_transfer">
-              <strong>Так, з моєї готівки</strong>
+              <strong>Так, це мої готівкові</strong>
               <span>Підготувати переказ з готівки на цю картку</span>
             </button>
             <button type="button" class="fin-terminal-choice" data-terminal-choice="income">
-              <strong>Не мої кошти</strong>
+              <strong>Ні, це не мої кошти</strong>
               <span>Вказати, яке це надходження</span>
             </button>
           </div>

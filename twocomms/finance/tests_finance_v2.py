@@ -64,6 +64,9 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(incoming.economic_kind, 'internal_transfer')
 
     def test_terminal_cash_review_is_non_destructive_until_confirmed(self):
+        self.cash.initial_balance = Decimal('2000')
+        self.cash.current_balance = Decimal('2000')
+        self.cash.save(update_fields=['initial_balance', 'current_balance'])
         top_up = self._txn(
             Transaction.TYPE_INCOME, Decimal('1250'), account=self.account,
             comment='Поповнення через термінал Mono',
@@ -107,11 +110,12 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(top_up.type, Transaction.TYPE_TRANSFER)
         self.assertEqual(top_up.account_id, self.cash.id)
         self.assertEqual(top_up.to_account_id, self.account.id)
-        self.assertEqual(top_up.economic_kind, 'internal_transfer')
+        self.assertEqual(top_up.economic_kind, 'owner_draw')
+        self.assertEqual(top_up.ownership_scope, 'personal')
         self.assertEqual(top_up.external_data['terminal_cash_transfer']['source_cash_account_id'], self.cash.id)
         self.cash.refresh_from_db()
         self.account.refresh_from_db()
-        self.assertEqual(self.cash.current_balance, Decimal('-1250'))
+        self.assertEqual(self.cash.current_balance, Decimal('750'))
         self.assertEqual(self.account.current_balance, Decimal('1250'))
 
         repeated = self.client.post(
@@ -151,7 +155,7 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(top_up.type, Transaction.TYPE_INCOME)
         self.assertEqual(top_up.economic_kind, 'sale')
 
-    def test_terminal_review_can_use_another_own_account_as_source(self):
+    def test_terminal_review_exposes_only_cash_as_source(self):
         own_card = Account.objects.create(
             company=self.company, name='Власна картка', type='card', currency='UAH')
         top_up = self._txn(
@@ -162,22 +166,64 @@ class FinanceV2ServiceTests(TestCase):
         payload = self.client.get(
             '/api/v2/terminal-cash/candidates/', HTTP_HOST='fin.twocomms.shop').json()
         self.assertEqual(payload['cash_accounts'][0]['id'], self.cash.id)
-        self.assertIn(own_card.id, [account['id'] for account in payload['cash_accounts']])
+        self.assertNotIn(own_card.id, [account['id'] for account in payload['cash_accounts']])
         proposed = self.client.post(
             f'/api/v2/terminal-cash/candidates/{top_up.id}/review/',
             data=json.dumps({'action': 'cash_transfer', 'source_cash_account_id': own_card.id}),
             content_type='application/json', HTTP_HOST='fin.twocomms.shop',
         )
-        self.assertEqual(proposed.status_code, 201)
-        review_id = proposed.json()['review']['id']
-        accepted = self.client.post(
-            f'/api/v2/reviews/{review_id}/action/', data=json.dumps({'action': 'accept'}),
+        self.assertEqual(proposed.status_code, 400)
+        self.assertIn('лише рахунок «Готівка»', proposed.json()['error'])
+
+    def test_terminal_cash_transfer_rejects_insufficient_cash(self):
+        top_up = self._txn(
+            Transaction.TYPE_INCOME, Decimal('1250'), account=self.account,
+            comment='Поповнення через термінал mono',
+        )
+        top_up.external_data = {'counter_name': 'City24'}
+        top_up.save(update_fields=['external_data'])
+        self.client.force_login(self.user)
+        proposed = self.client.post(
+            f'/api/v2/terminal-cash/candidates/{top_up.id}/review/',
+            data=json.dumps({'action': 'cash_transfer', 'source_cash_account_id': self.cash.id}),
             content_type='application/json', HTTP_HOST='fin.twocomms.shop',
         )
-        self.assertEqual(accepted.status_code, 200)
-        top_up.refresh_from_db()
-        self.assertEqual(top_up.account_id, own_card.id)
-        self.assertEqual(top_up.to_account_id, self.account.id)
+        self.assertEqual(proposed.status_code, 400)
+        self.assertIn('Недостатньо готівки', proposed.json()['error'])
+
+    def test_known_viktor_refund_rule_is_strict(self):
+        from .models import RecurrenceRule
+        refund_category = Category.objects.create(company=self.company, name='Повернення коштів', type='income')
+        viktor = Counterparty.objects.create(company=self.company, name='Віктор Викторович', type='other')
+        rule = RecurrenceRule.objects.create(
+            company=self.company, title='Повернення за оренду', frequency='monthly',
+            start_date=timezone.localdate(), template_type='income',
+            template_counterparty=viktor, template_category=refund_category,
+            template_account=self.cash, template_comment='Повернення за оренду',
+        )
+        refund = self._txn(Transaction.TYPE_INCOME, Decimal('12000'), account=self.cash,
+                           comment='Повернення за оренду')
+        refund.counterparty = viktor
+        refund.category = refund_category
+        refund.recurrence_rule = rule
+        refund.source = 'recurring'
+        refund.save(update_fields=['counterparty', 'category', 'recurrence_rule', 'source'])
+        ledger_v2.classify_known_rent_refund(refund, user=self.user)
+        refund.refresh_from_db()
+        self.assertEqual(refund.economic_kind, 'expense_refund')
+        self.assertTrue(refund.is_business)
+
+        terminal = self._txn(Transaction.TYPE_INCOME, Decimal('19820'), account=self.account,
+                             comment='City24')
+        terminal.counterparty = viktor
+        terminal.category = refund_category
+        terminal.recurrence_rule = rule
+        terminal.source = 'integration'
+        terminal.external_id = 'bank-190'
+        terminal.save(update_fields=['counterparty', 'category', 'recurrence_rule', 'source', 'external_id'])
+        self.assertIsNone(ledger_v2.classify_known_rent_refund(terminal, user=self.user))
+        terminal.refresh_from_db()
+        self.assertEqual(terminal.economic_kind, 'unknown')
 
     def test_terminal_review_command_only_creates_decision_markers(self):
         top_up = self._txn(

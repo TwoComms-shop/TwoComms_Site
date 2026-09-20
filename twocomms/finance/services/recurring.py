@@ -441,6 +441,13 @@ def settle_occurrence(txn: Transaction, *, user, account=None, counterparty=None
         fields['counterparty'] = counterparty
     txn_service.update_transaction(txn, user=user, **fields)
 
+    # Stable rent/utility refunds are a known recurring business return. Apply
+    # the rule only after the occurrence is actual and only for the strict
+    # Viktor pattern; ambiguous incoming operations remain reviewable.
+    if txn.type == Transaction.TYPE_INCOME:
+        from . import ledger_v2
+        ledger_v2.classify_known_rent_refund(txn, user=user)
+
     # Прив'язка рахунку до контрагента (історія платежів по контрагенту).
     if (link_account_cp and counterparty is not None and txn.account_id
             and not txn.account.counterparty_id):

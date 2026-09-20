@@ -109,10 +109,8 @@ def terminal_cash_candidates_api(request):
         if len(candidates) >= limit:
             break
     own_accounts = company.accounts.filter(
-        is_active=True, is_archived=False,
-    ).order_by('type', 'sort_order', 'id')
-    # Cash is the safe default. Other own accounts are possible sources too.
-    own_accounts = sorted(own_accounts, key=lambda account: (account.type != 'cash', account.sort_order, account.id))
+        is_active=True, is_archived=False, type='cash',
+    ).order_by('sort_order', 'id')
     return JsonResponse({
         'ok': True, 'candidates': candidates, 'count': len(candidates),
         'cash_accounts': [_cash_account_row(account) for account in own_accounts],
@@ -152,10 +150,14 @@ def classification_api(request, txn_id):
                                              'type': txn.type, 'comment': txn.comment}})
     data = _body(request)
     try:
+        economic_kind = data.get('economic_kind') or 'unknown'
+        ownership_scope = data.get('ownership_scope') or 'unknown'
+        if economic_kind == 'grant_inflow' and ownership_scope == 'unknown':
+            ownership_scope = 'business'
         obj = ledger_v2.classify_transaction(
             txn, user=request.user,
-            ownership_scope=data.get('ownership_scope') or 'unknown',
-            economic_kind=data.get('economic_kind') or 'unknown',
+            ownership_scope=ownership_scope,
+            economic_kind=economic_kind,
             confidence=data.get('confidence') or 100,
             note=data.get('note') or '', source='manual',
             funding_source=company.funding_sources.filter(id=data.get('funding_source_id')).first()

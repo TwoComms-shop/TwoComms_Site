@@ -268,6 +268,10 @@ def serialize_dropdowns(company) -> dict:
     counterparties = [{'id': c.id, 'name': c.name, 'group': c.group or c.get_type_display()}
                       for c in company.counterparties.all().order_by('name')]
     tags = [{'id': t.id, 'name': t.name} for t in company.tags.all().order_by('name')]
+    funding_sources = [
+        {'id': source.id, 'name': source.name}
+        for source in company.funding_sources.filter(is_active=True).order_by('name')
+    ]
     return {
         'accounts': accounts,
         'income_categories': income_cats,
@@ -275,4 +279,5 @@ def serialize_dropdowns(company) -> dict:
         'projects': projects,
         'counterparties': counterparties,
         'tags': tags,
+        'funding_sources': funding_sources,
     }

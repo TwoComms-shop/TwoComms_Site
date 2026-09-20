@@ -75,6 +75,8 @@
     unclassifiedOpen: document.getElementById('fin-unclassified-open'),
     unclassifiedForm: document.getElementById('fin-unclassified-form'),
     unclassifiedKind: document.getElementById('fin-unclassified-kind'),
+    unclassifiedFundingSource: document.getElementById('fin-unclassified-funding-source'),
+    unclassifiedFundingSourceWrap: document.getElementById('fin-unclassified-funding-source-wrap'),
     unclassifiedSave: document.getElementById('fin-unclassified-save'),
     terminalReview: document.getElementById('fin-terminal-review'),
     terminalContext: document.getElementById('fin-terminal-review-context'),
@@ -112,6 +114,19 @@
     sel.innerHTML = '';
     if (opts.placeholder) sel.appendChild(opt('', opts.placeholder));
     items.forEach(function (it) { sel.appendChild(opt(it.id, it.name)); });
+  }
+
+  function syncFundingSourceField() {
+    if (!els.unclassifiedFundingSource || !els.unclassifiedFundingSourceWrap) return;
+    var isGrant = els.unclassifiedKind && els.unclassifiedKind.value === 'grant_inflow';
+    els.unclassifiedFundingSourceWrap.hidden = !isGrant;
+    if (isGrant) {
+      fillSelect(els.unclassifiedFundingSource, DROPDOWNS.funding_sources || [], {
+        placeholder: 'Оберіть програму',
+      });
+    } else {
+      els.unclassifiedFundingSource.value = '';
+    }
   }
 
   function populateAccounts() {
@@ -256,6 +271,7 @@
     els.incomingReview.hidden = true;
     els.unclassifiedNotice.hidden = true;
     els.unclassifiedForm.hidden = true;
+    if (els.unclassifiedFundingSourceWrap) els.unclassifiedFundingSourceWrap.hidden = true;
     els.terminalReview.hidden = true;
     els.terminalChoices.hidden = false;
     els.terminalCashForm.hidden = true;
@@ -278,7 +294,10 @@
   }
 
   function setTerminalChoice(choice) {
-    els.terminalChoices.hidden = true;
+    // No selection is the initial state (including a pending
+    // ``terminal_cash_decision`` review): keep both decisions visible until
+    // the user explicitly chooses one.
+    els.terminalChoices.hidden = choice !== null;
     els.terminalCashForm.hidden = choice !== 'cash_transfer';
     els.terminalIncomeForm.hidden = choice !== 'income';
     els.terminalConfirm.hidden = true;
@@ -418,10 +437,15 @@
     var txnId = els.id.value;
     var kind = els.unclassifiedKind.value;
     if (!txnId || !kind) { showAlert('Оберіть вид надходження'); return; }
+    if (kind === 'grant_inflow' && !els.unclassifiedFundingSource.value) {
+      showAlert('Оберіть джерело гранту');
+      return;
+    }
     els.unclassifiedSave.disabled = true;
     api('/api/v2/transactions/' + txnId + '/classification/', 'POST', {
       economic_kind: kind,
       ownership_scope: 'unknown',
+      funding_source_id: kind === 'grant_inflow' ? els.unclassifiedFundingSource.value : '',
     }).then(function (res) {
       if (res.ok && res.data.ok) window.location.reload();
       else {
@@ -708,8 +732,10 @@
   if (els.terminalReviewAccept) els.terminalReviewAccept.addEventListener('click', acceptTerminalProposal);
   if (els.unclassifiedOpen) els.unclassifiedOpen.addEventListener('click', function () {
     els.unclassifiedForm.hidden = false;
+    syncFundingSourceField();
     els.unclassifiedKind.focus();
   });
+  if (els.unclassifiedKind) els.unclassifiedKind.addEventListener('change', syncFundingSourceField);
   if (els.unclassifiedSave) els.unclassifiedSave.addEventListener('click', saveUnclassifiedIncome);
 
   // Швидке створення сутностей із дропдаунів.
