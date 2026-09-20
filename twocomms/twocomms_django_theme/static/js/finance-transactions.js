@@ -80,6 +80,9 @@
     grantToggle: document.getElementById('fin-txn-grant'),
     grantSource: document.getElementById('fin-txn-grant-source'),
     grantSourceWrap: document.getElementById('fin-txn-grant-source-wrap'),
+    grantToggleExtra: document.getElementById('fin-txn-grant-extra'),
+    grantSourceExtra: document.getElementById('fin-txn-grant-source-extra'),
+    grantSourceExtraWrap: document.getElementById('fin-txn-grant-source-extra-wrap'),
     unclassifiedSave: document.getElementById('fin-unclassified-save'),
     quickClassify: document.getElementById('fin-quick-classify'),
     quickClassifyTitle: document.getElementById('fin-quick-classify-title'),
@@ -143,19 +146,31 @@
   }
 
   function fillGrantSources() {
-    if (!els.grantSource) return;
-    fillSelect(els.grantSource, DROPDOWNS.funding_sources || [], { placeholder: 'Оберіть програму' });
+    [els.grantSource, els.grantSourceExtra].forEach(function (select) {
+      if (select) fillSelect(select, DROPDOWNS.funding_sources || [], { placeholder: 'Оберіть програму' });
+    });
   }
 
-  function syncGrantClassification() {
-    if (!els.grantSourceWrap || !els.grantToggle) return;
-    els.grantSourceWrap.hidden = !els.grantToggle.checked;
-    if (els.grantToggle.checked) {
-      var selected = els.grantSource && els.grantSource.value;
+  function syncGrantClassification(origin) {
+    if (!els.grantToggle || !els.grantSourceWrap) return;
+    var isExtra = origin === 'extra';
+    var enabled = isExtra && els.grantToggleExtra ? els.grantToggleExtra.checked : els.grantToggle.checked;
+    var selected = isExtra && els.grantSourceExtra ? els.grantSourceExtra.value : els.grantSource.value;
+    if (!selected) selected = isExtra ? els.grantSource.value : (els.grantSourceExtra && els.grantSourceExtra.value);
+    els.grantToggle.checked = enabled;
+    if (els.grantToggleExtra) els.grantToggleExtra.checked = enabled;
+    els.grantSourceWrap.hidden = !enabled;
+    if (els.grantSourceExtraWrap) els.grantSourceExtraWrap.hidden = !enabled;
+    if (enabled) {
       fillGrantSources();
-      if (selected && els.grantSource) els.grantSource.value = selected;
+      if (selected) {
+        els.grantSource.value = selected;
+        if (els.grantSourceExtra) els.grantSourceExtra.value = selected;
+      }
+    } else {
+      els.grantSource.value = '';
+      if (els.grantSourceExtra) els.grantSourceExtra.value = '';
     }
-    else if (els.grantSource) els.grantSource.value = '';
   }
 
   function populateAccounts() {
@@ -574,6 +589,7 @@
     populateAccounts();
     if (els.grantToggle) els.grantToggle.checked = false;
     if (els.grantSource) els.grantSource.value = '';
+    if (els.grantSourceExtra) els.grantSourceExtra.value = '';
     syncGrantClassification();
     collapseDisclosures();
     renderAttachments([]);
@@ -590,10 +606,12 @@
       setType(txn.type);
       els.amount.value = txn.amount;
       if (txn.currency && els.currency) els.currency.value = txn.currency;
-      if (els.grantToggle) els.grantToggle.checked = txn.economic_kind === 'grant_inflow';
+      if (els.grantToggle) els.grantToggle.checked = !!txn.funding_source_id;
+      if (els.grantToggleExtra) els.grantToggleExtra.checked = !!txn.funding_source_id;
       if (els.grantToggle && els.grantToggle.checked) {
         fillGrantSources();
         if (els.grantSource) els.grantSource.value = txn.funding_source_id || '';
+        if (els.grantSourceExtra) els.grantSourceExtra.value = txn.funding_source_id || '';
       }
       syncGrantClassification();
       if (txn.type === 'transfer') {
@@ -712,23 +730,31 @@
   }
 
   function persistGrantClassification(txnId) {
-    if (!txnId || els.type.value !== 'income' || !els.grantToggle || !els.grantToggle.checked) {
+    if (!txnId || (els.type.value !== 'income' && els.type.value !== 'expense') || !els.grantToggle || !els.grantToggle.checked) {
       return Promise.resolve({ ok: true });
     }
     if (!els.grantSource || !els.grantSource.value) {
       return Promise.resolve({ ok: false, data: { error: 'Оберіть грантову програму' } });
     }
+    var isIncome = els.type.value === 'income';
     return api('/api/v2/transactions/' + txnId + '/classification/', 'POST', {
-      economic_kind: 'grant_inflow',
+      economic_kind: isIncome ? 'grant_inflow' : 'operating_expense',
       ownership_scope: 'business',
       funding_source_id: els.grantSource.value,
-      note: 'Позначено як цільове грантове надходження у модалці операції',
+      note: isIncome ? 'Позначено як цільове грантове надходження у модалці операції'
+        : 'Позначено як цільова грантова витрата у модалці операції',
+    }).then(function (result) {
+      if (!result.ok || !result.data.ok || isIncome) return result;
+      return api('/api/v2/funding/' + els.grantSource.value + '/allocate/', 'POST', {
+        transaction_id: txnId, amount: els.amount.value, allocation_type: 'spent',
+        note: 'Позначено як грантова витрата у модалці операції', replace: true,
+      });
     });
   }
 
   function save(keepOpen) {
     var id = els.id.value;
-    if (els.type.value === 'income' && els.grantToggle && els.grantToggle.checked &&
+    if ((els.type.value === 'income' || els.type.value === 'expense') && els.grantToggle && els.grantToggle.checked &&
         (!els.grantSource || !els.grantSource.value)) {
       showAlert('Оберіть грантову програму');
       syncGrantClassification();
@@ -891,7 +917,10 @@
   if (els.transferMatchSource) els.transferMatchSource.addEventListener('change', renderTransferMatchPreview);
   if (els.transferMatchConfirm) els.transferMatchConfirm.addEventListener('click', confirmTransferMatch);
   if (els.unclassifiedKind) els.unclassifiedKind.addEventListener('change', syncFundingSourceField);
-  if (els.grantToggle) els.grantToggle.addEventListener('change', syncGrantClassification);
+  if (els.grantToggle) els.grantToggle.addEventListener('change', function () { syncGrantClassification('main'); });
+  if (els.grantToggleExtra) els.grantToggleExtra.addEventListener('change', function () { syncGrantClassification('extra'); });
+  if (els.grantSource) els.grantSource.addEventListener('change', function () { syncGrantClassification('main'); });
+  if (els.grantSourceExtra) els.grantSourceExtra.addEventListener('change', function () { syncGrantClassification('extra'); });
   if (els.unclassifiedSave) els.unclassifiedSave.addEventListener('click', saveUnclassifiedIncome);
 
   // Швидке створення сутностей із дропдаунів.

@@ -377,7 +377,7 @@ def funding_allocate_api(request, source_id):
         allocation = ledger_v2.allocate_funding(
             source=source, txn=txn, amount=_decimal(data.get('amount')),
             allocation_type=data.get('allocation_type') or 'spent', user=request.user,
-            note=data.get('note') or '',
+            note=data.get('note') or '', replace=bool(data.get('replace')),
         )
     except (ValueError, TypeError, InvalidOperation) as exc:
         return _error(exc)

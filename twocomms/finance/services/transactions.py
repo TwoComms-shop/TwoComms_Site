@@ -87,6 +87,12 @@ def create_transaction(*, user, type, amount, account=None, to_account=None,
         summary=f'{txn.get_type_display()} {txn.amount} {txn.currency}',
         after=_snapshot(txn), source=source, company=company,
     )
+    if status == Transaction.STATUS_ACTUAL:
+        try:
+            from .ledger_v2 import ensure_grant_account_review
+            ensure_grant_account_review(txn)
+        except Exception:  # noqa: BLE001 — review creation must not block imports
+            pass
     return txn
 
 

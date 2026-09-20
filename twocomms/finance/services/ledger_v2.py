@@ -351,6 +351,77 @@ def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_
     return obj
 
 
+def ensure_grant_account_review(txn, *, source=None):
+    """Queue a confirmation for a new operation on the dedicated grant card.
+
+    The account is only a strong signal for the review, never an automatic
+    classification. Historical rows are handled by an explicit management
+    command after inspection.
+    """
+    if (txn.status != Transaction.STATUS_ACTUAL or not txn.account_id
+            or txn.account.name.strip().casefold() != 'грантова'
+            or txn.economic_kind != 'unknown'):
+        return None
+    source = source or FundingSource.objects.filter(
+        company=txn.company, name__iexact='УВФ', is_active=True,
+    ).first()
+    if source is None:
+        return None
+    kind = 'grant_inflow' if txn.type == Transaction.TYPE_INCOME else 'operating_expense'
+    review, _ = ClassificationReview.objects.get_or_create(
+        company=txn.company, transaction=txn,
+        status='pending',
+        defaults={
+            'proposal': {
+                'kind': kind, 'economic_kind': kind,
+                'ownership_scope': 'business', 'funding_source_id': source.id,
+                'allocation_amount': str(txn.amount),
+            },
+            'reason': 'Операція на рахунку «Грантова» потребує підтвердження грантового призначення.',
+            'impact': {'funding_source_id': source.id, 'funding_source': source.name},
+            'confidence': Decimal('85'),
+        },
+    )
+    return review
+
+
+@db_transaction.atomic
+def confirm_grant_account_history(account, source, *, user=None):
+    """Confirm existing actual history for a dedicated grant account.
+
+    This is intentionally explicit and idempotent. Planned/future operations
+    are excluded so they remain reviewable when they become actual.
+    """
+    rows = list(Transaction.objects.select_for_update().filter(
+        company=account.company, account=account, status=Transaction.STATUS_ACTUAL,
+    ).order_by('date_actual', 'id'))
+    changed = []
+    for txn in rows:
+        kind = 'grant_inflow' if txn.type == Transaction.TYPE_INCOME else 'operating_expense'
+        if txn.economic_kind == 'unknown' or txn.funding_source_id != source.id:
+            classify_transaction(
+                txn, user=user, ownership_scope='business', economic_kind=kind,
+                confidence=Decimal('100'), source='grant_history',
+                funding_source=source,
+                note='Підтверджено як історична операція грантового рахунку.',
+            )
+            ClassificationReview.objects.filter(
+                transaction=txn, status='pending',
+                proposal__funding_source_id=source.id,
+            ).update(status='accepted', reviewed_by=user if getattr(user, 'is_authenticated', False) else None,
+                    reviewed_at=timezone.now())
+            changed.append(txn)
+        if txn.type == Transaction.TYPE_EXPENSE:
+            if not FundingAllocation.objects.filter(
+                    funding_source=source, transaction=txn, allocation_type='spent').exists():
+                allocate_funding(
+                    source=source, txn=txn, amount=txn.amount,
+                    allocation_type='spent', user=user,
+                    note='Історична витрата з рахунку «Грантова».',
+                )
+    return changed
+
+
 def create_transfer_suggestion(company, source_txn, destination_txn, *, confidence=Decimal('75'), note=''):
     if source_txn.company_id != company.id or destination_txn.company_id != company.id:
         raise ValueError('Операции должны принадлежать одной компании')
@@ -457,7 +528,7 @@ def funding_summary(source):
             'available': received - spent - reserved}
 
 
-def allocate_funding(*, source, txn, amount, allocation_type='spent', user=None, note=''):
+def allocate_funding(*, source, txn, amount, allocation_type='spent', user=None, note='', replace=False):
     amount = Decimal(str(amount))
     if amount <= 0 or amount > txn.amount:
         raise ValueError('Сумма распределения должна быть положительной и не превышать операцию')
@@ -468,6 +539,11 @@ def allocate_funding(*, source, txn, amount, allocation_type='spent', user=None,
         funding_source=source, transaction=txn, allocation_type=allocation_type,
     ).first()
     if existing:
+        if replace:
+            existing.amount = amount
+            existing.note = note or existing.note
+            existing.save(update_fields=['amount', 'note'])
+            return existing
         existing.amount += amount
         existing.save(update_fields=['amount'])
         return existing

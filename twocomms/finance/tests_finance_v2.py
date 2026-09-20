@@ -52,6 +52,27 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(ledger_v2.funding_summary(source)['available'], Decimal('209000'))
         self.assertEqual(grant.ledger_classification.events.count(), 1)
 
+    def test_grant_account_history_confirms_actual_rows_only(self):
+        grant_account = Account.objects.create(company=self.company, name='Грантова', currency='UAH', is_business=True)
+        source = FundingSource.objects.create(company=self.company, name='УВФ', received_amount=Decimal('100000'))
+        receipt = self._txn(Transaction.TYPE_INCOME, Decimal('50000'), account=grant_account)
+        expense = self._txn(Transaction.TYPE_EXPENSE, Decimal('12000'), account=grant_account)
+        planned = Transaction.objects.create(
+            company=self.company, type=Transaction.TYPE_EXPENSE, status=Transaction.STATUS_PLANNED,
+            amount=Decimal('1000'), amount_base=Decimal('1000'), currency='UAH', account=grant_account,
+            date_actual=timezone.now(),
+        )
+        changed = ledger_v2.confirm_grant_account_history(grant_account, source, user=self.user)
+        self.assertEqual({txn.id for txn in changed}, {receipt.id, expense.id})
+        receipt.refresh_from_db(); expense.refresh_from_db(); planned.refresh_from_db()
+        self.assertEqual(receipt.economic_kind, 'grant_inflow')
+        self.assertEqual(expense.economic_kind, 'operating_expense')
+        self.assertEqual(expense.funding_source_id, source.id)
+        self.assertEqual(source.allocations.filter(transaction=expense, allocation_type='spent').count(), 1)
+        self.assertEqual(planned.economic_kind, 'unknown')
+        ledger_v2.confirm_grant_account_history(grant_account, source, user=self.user)
+        self.assertEqual(source.allocations.filter(transaction=expense, allocation_type='spent').count(), 1)
+
     def test_grant_classification_requires_program(self):
         grant = self._txn(Transaction.TYPE_INCOME, Decimal('216000'), comment='За реквізитами')
         self.client.force_login(self.user)
