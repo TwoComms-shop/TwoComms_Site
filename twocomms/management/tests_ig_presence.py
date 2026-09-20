@@ -467,8 +467,12 @@ class PresenceTransportTests(SimpleTestCase):
         post = session.return_value.__enter__.return_value.post
         self.assertEqual(post.call_args.kwargs["json"]["sender_action"], "mark_seen")
 
-    def test_refresh_default_is_acceptance_gated_and_explicit_zero_disables(self):
+    def test_refresh_is_disabled_by_default_and_requires_explicit_configuration(self):
         with patch.dict("os.environ", {}, clear=True):
+            profile = presence.capability_profile(self.settings_row)
+            self.assertEqual(profile.refresh_seconds, 0)
+            self.assertEqual(profile.visibility, "ui_unverified_refresh_disabled")
+        with patch.dict("os.environ", {"IG_PRESENCE_REFRESH_SECONDS": "5"}):
             self.assertEqual(presence.capability_profile(self.settings_row).refresh_seconds, 5)
         with patch.dict("os.environ", {"IG_PRESENCE_REFRESH_SECONDS": "0"}):
             self.assertEqual(presence.capability_profile(self.settings_row).refresh_seconds, 0)

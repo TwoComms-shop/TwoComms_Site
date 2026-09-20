@@ -65,17 +65,17 @@ def capability_profile(settings_row):
     from management.services import instagram_bot as bot
 
     namespace = bot.ingress_provider_namespace(settings_row)
-    # Five seconds is our conservative request cadence, not an asserted Meta
-    # indicator TTL. Refresh starts only after this account accepts typing_on.
+    # Refresh remains opt-in; a configured cadence is not capability proof.
+    # A single accepted sender action is transport evidence, not UI proof.
     try:
-        refresh = float(os.environ.get("IG_PRESENCE_REFRESH_SECONDS", "5"))
+        refresh = float(os.environ.get("IG_PRESENCE_REFRESH_SECONDS", "0"))
     except ValueError:
         refresh = 0.0
     refresh = min(30.0, max(5.0, refresh)) if refresh > 0 else 0.0
     return PresenceCapability(
         bot.provider_transport(settings_row), bot.GRAPH_VERSION,
         hashlib.sha256(namespace.encode()).hexdigest()[:16], refresh,
-        "ui_unverified_refresh_after_acceptance" if refresh else "ui_unverified_refresh_disabled",
+        "ui_unverified_refresh_configured" if refresh else "ui_unverified_refresh_disabled",
     )
 
 
