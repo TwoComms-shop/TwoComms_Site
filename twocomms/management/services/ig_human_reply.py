@@ -24,6 +24,15 @@ class HumanReplyRejected(ValueError):
 
 
 @dataclass(frozen=True)
+class _BoundaryDecision:
+    allowed: bool
+    reason: str = ""
+
+    def __bool__(self) -> bool:
+        return self.allowed
+
+
+@dataclass(frozen=True)
 class HumanReplyResult:
     command: HumanReplyCommand
     idempotent: bool = False
@@ -33,20 +42,22 @@ class HumanReplyResult:
 def _human_send_boundary(command_id: int):
     """Recheck the human command/epoch at the physical request edge."""
     with transaction.atomic():
-        command = HumanReplyCommand.objects.select_for_update().select_related("client").get(pk=command_id)
+        command = HumanReplyCommand.objects.select_for_update().select_related(
+            "client", "actor", "context_message"
+        ).get(pk=command_id)
         client = IgClient.objects.select_for_update().get(pk=command.client_id)
-        allowed = bool(
-            command.state == HumanReplyCommand.State.PROVIDER_STARTED
-            and client.reply_permission_epoch == command.permission_epoch
-            and not client.hidden_at
-            and not client.privacy_erasure_started_at
-            and not (
-                client.opted_out_at
-                and (not client.opted_in_at or client.opted_out_at > client.opted_in_at)
-            )
-            and not getattr(client, "is_blocked", False)
+        from management.services.instagram_bot import ingress_provider_namespace
+
+        settings_obj = InstagramBotSettings.load()
+        namespace = str(ingress_provider_namespace(settings_obj) or "")[:128]
+        reason = _command_boundary_reason(
+            command,
+            client,
+            namespace=namespace,
+            now=timezone.now(),
+            require_provider_started=True,
         )
-    yield allowed
+    yield _BoundaryDecision(not reason, reason)
 
 
 def _window_deadline(message: InstagramBotMessage):
@@ -67,6 +78,75 @@ def _check_actor(actor) -> None:
 
     if not has_bot_capability(actor, OPERATE_IG_BOT_PERMISSION):
         raise HumanReplyRejected("actor_not_authorized")
+
+
+def _command_boundary_reason(
+    command,
+    client,
+    *,
+    namespace: str,
+    now: datetime,
+    require_provider_started: bool = False,
+) -> str:
+    """Return a fail-closed reason for the immutable human-send boundary."""
+    if require_provider_started and command.state != HumanReplyCommand.State.PROVIDER_STARTED:
+        return "command_not_provider_started"
+    if command.client_id != client.pk or command.recipient_igsid != client.igsid:
+        return "recipient_changed"
+    if command.provider_namespace != namespace:
+        return "provider_namespace_changed"
+    if client.reply_permission_epoch != command.permission_epoch:
+        return "permission_epoch_changed"
+    if client.hidden_at or client.privacy_erasure_started_at:
+        return "client_unavailable"
+    if client.opted_out_at and (
+        not client.opted_in_at or client.opted_out_at > client.opted_in_at
+    ):
+        return "opted_out"
+    if getattr(client, "is_blocked", False):
+        return "client_blocked"
+    try:
+        _check_actor(command.actor)
+    except HumanReplyRejected as exc:
+        return exc.code
+    context = command.context_message or InstagramBotMessage.objects.filter(
+        pk=command.context_message_id
+    ).first()
+    if (
+        not context
+        or context.client_id != client.pk
+        or context.role != InstagramBotMessage.Role.USER
+        or context.sender_id != client.igsid
+        or (context.provider_namespace and context.provider_namespace != namespace)
+    ):
+        return "context_changed"
+    latest = _latest_inbound(client)
+    if not latest or command.context_message_id != latest.pk:
+        return "newer_inbound"
+    deadline = _window_deadline(latest)
+    if (
+        deadline is None
+        or command.window_deadline is None
+        or command.window_deadline != deadline
+    ):
+        return "context_window_changed"
+    if command.window_deadline <= now:
+        return "reply_window_closed"
+    return ""
+
+
+def _validate_existing_operation(command, *, client_id: int, actor, text: str,
+                                 context_message_id: int | None) -> None:
+    if (
+        command.client_id != int(client_id)
+        or command.actor_id != getattr(actor, "pk", None)
+        or command.text != text
+        or (
+            context_message_id is not None
+            and command.context_message_id != int(context_message_id)
+        )
+    ):
+        raise HumanReplyRejected("operation_conflict")
 
 
 def create_human_reply_command(
@@ -93,17 +173,34 @@ def create_human_reply_command(
     now = now or timezone.now()
     settings_obj = InstagramBotSettings.load()
     from management.services.instagram_bot import ingress_provider_namespace
+    namespace = str(ingress_provider_namespace(settings_obj) or "")[:128]
+    from management.services.ig_delivery_plan import build_delivery_plan
 
-    existing = HumanReplyCommand.objects.filter(operation_id=op).first()
-    if existing:
-        if existing.client_id != int(client_id) or existing.actor_id != getattr(actor, "pk", None) or existing.text != text:
-            raise HumanReplyRejected("operation_conflict")
-        return HumanReplyResult(existing, idempotent=True)
+    if not build_delivery_plan(text).complete:
+        raise HumanReplyRejected("delivery_plan_incomplete")
 
     with transaction.atomic():
         client = IgClient.objects.select_for_update().filter(pk=client_id).first()
         if not client:
             raise HumanReplyRejected("client_not_found")
+
+        # The client lock serializes operation lookup, competing commands, and
+        # takeover.  A nested savepoint below handles the unique operation race
+        # without leaving the outer transaction broken.
+        existing = (
+            HumanReplyCommand.objects.select_for_update()
+            .filter(operation_id=op)
+            .first()
+        )
+        if existing:
+            _validate_existing_operation(
+                existing,
+                client_id=client.pk,
+                actor=actor,
+                text=text,
+                context_message_id=context_message_id,
+            )
+            return HumanReplyResult(existing, idempotent=True)
         if client.hidden_at or client.privacy_erasure_started_at:
             raise HumanReplyRejected("client_unavailable")
         if client.opted_out_at and (not client.opted_in_at or client.opted_out_at > client.opted_in_at):
@@ -127,6 +224,24 @@ def create_human_reply_command(
         if deadline is None or deadline <= now:
             raise HumanReplyRejected("reply_window_closed")
 
+        competing = (
+            HumanReplyCommand.objects.select_for_update()
+            .filter(
+                client=client,
+                context_message_id=context.pk,
+                state__in=[
+                    HumanReplyCommand.State.PENDING,
+                    HumanReplyCommand.State.CLAIMED,
+                    HumanReplyCommand.State.PROVIDER_STARTED,
+                    HumanReplyCommand.State.UNKNOWN,
+                ],
+            )
+            .exclude(operation_id=op)
+            .first()
+        )
+        if competing:
+            raise HumanReplyRejected("competing_command")
+
         # Confirm takeover before exposing the send button. Manual sends are
         # allowed while bot automation is paused; the epoch fences old workers.
         if not client.manager_takeover or not client.bot_paused:
@@ -146,38 +261,48 @@ def create_human_reply_command(
                 pass
         epoch = int(client.reply_permission_epoch or 0)
         try:
-            command = HumanReplyCommand.objects.create(
-                operation_id=op,
-                client=client,
-                actor=actor,
-                context_message=context,
-                recipient_igsid=client.igsid,
-                text=text,
-                provider_namespace=str(ingress_provider_namespace(settings_obj) or "")[:128],
-                permission_epoch=epoch,
-                window_deadline=deadline,
-                draft_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                context_revision=str(context.pk),
-                operation_context={
-                    "client_id": client.pk,
-                    "context_message_id": context.pk,
-                    "recipient_igsid": client.igsid,
-                    "permission_epoch": epoch,
-                    "window_deadline": deadline.isoformat(),
-                },
-            )
-            AdminAuditLog.objects.create(
-                actor=actor,
-                actor_role="staff",
-                action="ig_bot.human_reply_command_created",
-                entity_type="HumanReplyCommand",
-                entity_id=str(command.pk),
-                before={"bot_paused": False, "manager_takeover": False},
-                after={"bot_paused": True, "manager_takeover": True, "permission_epoch": epoch},
-                reason="authenticated_manual_reply",
-            )
+            with transaction.atomic():
+                command = HumanReplyCommand.objects.create(
+                    operation_id=op,
+                    client=client,
+                    actor=actor,
+                    context_message=context,
+                    recipient_igsid=client.igsid,
+                    text=text,
+                    provider_namespace=namespace,
+                    permission_epoch=epoch,
+                    window_deadline=deadline,
+                    draft_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    context_revision=str(context.pk),
+                    operation_context={
+                        "client_id": client.pk,
+                        "context_message_id": context.pk,
+                        "recipient_igsid": client.igsid,
+                        "permission_epoch": epoch,
+                        "window_deadline": deadline.isoformat(),
+                        "provider_namespace": namespace,
+                    },
+                )
+                AdminAuditLog.objects.create(
+                    actor=actor,
+                    actor_role="staff",
+                    action="ig_bot.human_reply_command_created",
+                    entity_type="HumanReplyCommand",
+                    entity_id=str(command.pk),
+                    before={"bot_paused": False, "manager_takeover": False},
+                    after={"bot_paused": True, "manager_takeover": True, "permission_epoch": epoch},
+                    reason="authenticated_manual_reply",
+                )
         except IntegrityError:
-            command = HumanReplyCommand.objects.get(operation_id=op)
+            with transaction.atomic():
+                command = HumanReplyCommand.objects.select_for_update().get(operation_id=op)
+            _validate_existing_operation(
+                command,
+                client_id=client.pk,
+                actor=actor,
+                text=text,
+                context_message_id=context.pk,
+            )
             return HumanReplyResult(command, idempotent=True)
     return HumanReplyResult(command)
 
@@ -187,32 +312,36 @@ def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None
     now = now or timezone.now()
     with transaction.atomic():
         command = HumanReplyCommand.objects.select_for_update().select_related("client").get(pk=command_id)
-        if command.state in {HumanReplyCommand.State.SENT, HumanReplyCommand.State.DEFINITE_FAILED, HumanReplyCommand.State.UNKNOWN, HumanReplyCommand.State.CANCELLED}:
-            return command
-        if command.state == HumanReplyCommand.State.CLAIMED:
+        if command.state != HumanReplyCommand.State.PENDING:
             return command
         client = IgClient.objects.select_for_update().get(pk=command.client_id)
-        if client.reply_permission_epoch != command.permission_epoch or client.hidden_at or client.privacy_erasure_started_at:
-            command.state = HumanReplyCommand.State.CANCELLED
-            command.failure_code = "permission_epoch_changed"
-            command.terminal_at = now
-            command.save(update_fields=["state", "failure_code", "terminal_at", "updated_at"])
-            return command
-        latest = _latest_inbound(client)
-        if not latest or (command.context_message_id and latest.pk != command.context_message_id):
-            command.state = HumanReplyCommand.State.CANCELLED
-            command.failure_code = "newer_inbound"
-            command.terminal_at = now
-            command.save(update_fields=["state", "failure_code", "terminal_at", "updated_at"])
-            return command
-        deadline = _window_deadline(latest)
-        if deadline is None or deadline <= now:
-            command.state = HumanReplyCommand.State.DEFINITE_FAILED
-            command.failure_code = "reply_window_closed"
-            command.terminal_at = now
-            command.save(update_fields=["state", "failure_code", "terminal_at", "updated_at"])
-            return command
+        from management.services.instagram_bot import ingress_provider_namespace
+
         settings_obj = InstagramBotSettings.load()
+        namespace = str(ingress_provider_namespace(settings_obj) or "")[:128]
+        reason = _command_boundary_reason(
+            command, client, namespace=namespace, now=now
+        )
+        if reason == "reply_window_closed":
+            command.state = HumanReplyCommand.State.DEFINITE_FAILED
+            command.failure_code = reason
+            command.terminal_at = now
+            command.save(update_fields=["state", "failure_code", "terminal_at", "updated_at"])
+            return command
+        if reason:
+            command.state = HumanReplyCommand.State.CANCELLED
+            command.failure_code = reason
+            command.terminal_at = now
+            command.save(update_fields=["state", "failure_code", "terminal_at", "updated_at"])
+            return command
+        from management.services.ig_delivery_plan import build_delivery_plan
+
+        if not build_delivery_plan(command.text).complete:
+            command.state = HumanReplyCommand.State.DEFINITE_FAILED
+            command.failure_code = "delivery_plan_incomplete"
+            command.terminal_at = now
+            command.save(update_fields=["state", "failure_code", "terminal_at", "updated_at"])
+            return command
         reply_message = InstagramBotMessage.objects.create(
             sender_id=client.igsid,
             client=client,
@@ -238,12 +367,26 @@ def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None
             command.text,
             return_receipt=True,
             outgoing_actor="manager",
+            allow_url_fallback=False,
             permission_boundary_factory=lambda: _human_send_boundary(command.pk),
         )
         ok = bool(getattr(receipt, "ok", False))
         kind = str(getattr(receipt, "kind", "") or "")
         hint = str(getattr(receipt, "hint", "") or "")[:96]
         ids = [str(value)[:255] for value in (getattr(receipt, "provider_message_ids", ()) or ()) if str(value)]
+        planned_raw = getattr(receipt, "planned_chunk_count", None)
+        delivered_raw = getattr(receipt, "delivered_chunk_count", None)
+        planned_count = int(planned_raw or 0)
+        delivered_count = int(delivered_raw or 0)
+        if ok and (
+            kind
+            or (
+                planned_raw is not None
+                and delivered_raw is not None
+                and (not planned_count or delivered_count != planned_count)
+            )
+        ):
+            ok, kind, hint = False, "permanent", "delivery_plan_incomplete"
     except Exception as exc:  # provider boundary is unknown after invocation
         ok, kind, hint, ids = False, "unknown", type(exc).__name__, []
 
@@ -267,6 +410,10 @@ def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None
             message.status = InstagramBotMessage.Status.FAILED
             message.send_state = "unknown"
             message.delivery_failure_boundary = hint or "delivery_unknown"
+        elif kind == "cancelled":
+            command.state = HumanReplyCommand.State.CANCELLED
+            message.status = InstagramBotMessage.Status.FAILED
+            message.send_state = "failed"
         else:
             command.state = HumanReplyCommand.State.DEFINITE_FAILED
             message.status = InstagramBotMessage.Status.FAILED

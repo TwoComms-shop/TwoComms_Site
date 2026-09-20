@@ -916,6 +916,38 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(source.status, "pending")
         self.assertEqual(expired.state, "collecting")
 
+    def test_expired_claim_without_sealed_snapshot_is_reconciled(self):
+        from management.services.ig_revision_execution import (
+            expired_revision_debt_ids,
+            record_expired_revision_debt,
+        )
+
+        past = timezone.now() - timedelta(minutes=5)
+        client = IgClient.objects.create(igsid="expired-claimed")
+        source = InstagramBotMessage.objects.create(
+            client=client, sender_id=client.igsid, role="user", source="webhook",
+            provider_namespace="instagram_login:owner-1", mid="expired-claimed-source",
+            text="Старий запит", status="pending", provider_created_at=past,
+        )
+        turn = IgCustomerTurn.objects.create(
+            client=client, primary_source_message=source,
+            window_started_at=past, window_deadline=past,
+        )
+        IgTurnMessage.objects.create(turn=turn, message=source, ordinal=1, role="user")
+        revision = create_collecting_revision(turn, [source], now=past, bypass_quiet=True).revision
+        type(revision).objects.filter(pk=revision.pk).update(
+            state=revision.State.CLAIMED,
+            active_slot=None,
+            claim_token="stale-claim",
+            claimed_at=past,
+            lease_until=past,
+            overall_deadline=past,
+            updated_at=timezone.now(),
+        )
+        self.assertIn(revision.pk, expired_revision_debt_ids(owned_only=True))
+        self.assertEqual(record_expired_revision_debt(revision.pk), "preparation_expired")
+        self.assertNotIn(revision.pk, expired_revision_debt_ids(owned_only=True))
+
     @override_settings(
         IG_REVISION_EXECUTION_ENABLED=True,
         IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00",

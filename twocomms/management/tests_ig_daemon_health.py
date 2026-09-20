@@ -101,6 +101,30 @@ class DaemonRuntimeHealthSnapshotTests(SimpleTestCase):
         self.assertEqual(snapshot["technical_debt"]["cases"][0]["count"], 3)
 
 
+class TechnicalDebtFingerprintTests(SimpleTestCase):
+    def test_fingerprint_is_stable_when_debt_age_and_count_change(self):
+        from management.services.ig_technical_debt import technical_debt_snapshot
+
+        first = {
+            "reason": "canonical_delivery_unknown",
+            "scope": "delivery_effect",
+            "count": 1,
+            "oldest_age_seconds": 10,
+        }
+        second = {**first, "count": 9, "oldest_age_seconds": 900}
+        with patch(
+            "management.services.ig_technical_debt._collect_db",
+            side_effect=lambda _now, _limit: [[first], [second]][0],
+        ):
+            first_snapshot = technical_debt_snapshot()
+        with patch(
+            "management.services.ig_technical_debt._collect_db",
+            side_effect=lambda _now, _limit: [second],
+        ):
+            second_snapshot = technical_debt_snapshot()
+        self.assertEqual(first_snapshot["fingerprint"], second_snapshot["fingerprint"])
+
+
 class DaemonRuntimeHealthAlertTests(TestCase):
     def tearDown(self):
         cache.delete(PROCESS_PULSE_KEY)

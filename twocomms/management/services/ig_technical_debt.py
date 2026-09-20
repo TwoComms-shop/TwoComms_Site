@@ -181,10 +181,15 @@ def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
         complete = False
         errors.append(type(exc).__name__[:64])
     cases = [case for case in cases if case["count"] or case["reason"].endswith("unavailable")]
-    fingerprint_material = [
-        {key: case[key] for key in ("reason", "scope", "count", "oldest_age_seconds")}
+    # Counts and ages are observations, not identity.  Including either value
+    # made the fingerprint change on every health poll while the same debt was
+    # still open, defeating the hourly alert dedupe and spamming Telegram.
+    # Identity is the stable set of debt classes and scopes; the alert metadata
+    # still carries the current counts and ages for triage.
+    fingerprint_material = sorted({
+        (str(case.get("reason") or "")[:64], str(case.get("scope") or "")[:64])
         for case in cases
-    ]
+    })
     fingerprint = hashlib.sha256(repr(fingerprint_material).encode("utf-8")).hexdigest()[:24]
     return {
         "observed_at": now.isoformat(),

@@ -625,15 +625,28 @@ def expired_revision_debt_ids(
     )
     if cutover_at is not None:
         ordinary &= Q(created_at__gte=cutover_at)
+    # An expired claimed/preparing row is already a durable execution claim,
+    # even when it never sealed a source snapshot.  Excluding it behind the
+    # rollout ownership predicate strands crash leftovers forever (and keeps
+    # technical-debt alerts open).  Keep the normal shadow/rollout guards for
+    # collecting rows, while admitting only rows whose lease is actually due.
+    expired_claim = Q(
+        state__in=("preparing", "claimed"),
+        lease_until__isnull=False,
+        lease_until__lte=now,
+    )
     queue = queue.filter(
         _owned_revision_q()
         | Q(origin__in=("manual_resume", "auto_refresh", "outage_recovery"))
         | ordinary
+        | expired_claim
     )
     if owned_only:
         from management.services.ig_revision_live import _owned_revisions
 
-        queue = queue.filter(pk__in=_owned_revisions().values("pk"))
+        queue = queue.filter(
+            Q(pk__in=_owned_revisions().values("pk")) | expired_claim
+        )
     event_key = Concat(Value("ig-revision-debt:"), Cast(OuterRef("pk"), CharField()))
     if connection.vendor == "mysql":
         event_key = Collate(event_key, "utf8mb4_unicode_ci")
@@ -710,6 +723,14 @@ def record_expired_revision_debt(revision_id, *, now=None, cutover_at=None):
         from management.services.ig_response_debt import record_reply_debt
 
         record_reply_debt(revision, reason, effects=effects, now=now)
+        # The claim has reached a terminal operator-debt disposition. Release
+        # the expired worker lease so the same row is not reported as an active
+        # technical debt on every health poll; the response-debt task remains
+        # the durable operator case and no customer/provider action is retried.
+        revision.claim_token = DEBT_PREFIX + secrets.token_hex(16)
+        revision.claimed_at = None
+        revision.lease_until = None
+        revision.save(update_fields=["claim_token", "claimed_at", "lease_until", "updated_at"])
         return reason
 
 
