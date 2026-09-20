@@ -32,13 +32,6 @@ class Migration(migrations.Migration):
     dependencies = [
         ("management", "0208_journey_trace_snapshots"),
     ]
-    # The user-owned local 0209 is absent from production. This one-way edge
-    # keeps a checkout containing both migrations linear without making this
-    # capability migration depend on the trace-refresh work.
-    run_before = [
-        ("management", "0209_journey_trace_refresh"),
-    ]
-
     operations = [
         migrations.CreateModel(
             name="IgPresenceCapability",
