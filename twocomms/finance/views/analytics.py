@@ -153,7 +153,7 @@ def _pnl_calendar(company, period, start):
         amount = abs(float(value))
         if not amount or not maximum:
             return 0.0
-        return round(math.log1p(amount) / math.log1p(maximum), 6)
+        return round(min(1.0, math.log1p(amount) / math.log1p(maximum)), 6)
 
     for cell in cells:
         if cell.get('day'):
