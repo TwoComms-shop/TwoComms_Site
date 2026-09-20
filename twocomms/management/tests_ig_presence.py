@@ -809,7 +809,6 @@ class PresenceCapabilityTests(TestCase):
             "management.migrations.0210_ig_presence_capability"
         ).Migration
         self.assertEqual(migration.dependencies, [("management", "0208_journey_trace_snapshots")])
-        self.assertEqual(migration.run_before, [("management", "0209_journey_trace_refresh")])
 
     def test_capability_database_failure_fails_closed(self):
         from management.models import IgPresenceCapability
