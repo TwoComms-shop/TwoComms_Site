@@ -112,6 +112,24 @@ class DaemonRuntimeHealthAlertTests(TestCase):
         self.assertFalse(snapshot["alerted"])
         notify.assert_not_called()
 
+    @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
+    @patch("management.services.ig_alerts.alert_dedupe_key", return_value="worker-stalled-hour")
+    @patch("management.services.instagram_bot.notify_manager", return_value=True)
+    def test_stalled_background_worker_alerts_with_lane_scope(self, notify, dedupe, _maintenance):
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.is_enabled = True
+        settings_obj.save(update_fields=["is_enabled", "updated_at"])
+        now = time.time()
+        cache.set(PROCESS_PULSE_KEY, {"at": now, "worker_lanes": {
+            "analysis": {"state": "stalled", "progress_at": now - 1000},
+        }}, 600)
+        cache.set(MAIN_PROGRESS_KEY, {"at": now, "state": "idle"}, 600)
+        snapshot = alert_daemon_runtime_health()
+        self.assertTrue(snapshot["worker_stalled"])
+        self.assertTrue(snapshot["alerted"])
+        dedupe.assert_called_once_with("ig_worker_lane_stalled", window_minutes=60, text="worker_lane_stalled")
+        self.assertIn("analysis", notify.call_args.kwargs["metadata"]["worker_lanes"])
+
 
 class DaemonStatusUiContractTests(SimpleTestCase):
     def test_stalled_state_precedes_green_running_copy(self):
@@ -124,5 +142,6 @@ class DaemonStatusUiContractTests(SimpleTestCase):
         stalled = template.index("st.state==='worker_stalled'")
         green = template.index("else if(st.is_enabled){ txt='Працює'")
         self.assertLess(stalled, green)
-        self.assertIn("Обробник завис", template[stalled:green])
+        self.assertIn("Обробник потребує уваги", template[stalled:green])
+        self.assertIn("аналіз діалогів", template[stalled:green])
         self.assertIn("відповіді не підтверджені", template[stalled:green])

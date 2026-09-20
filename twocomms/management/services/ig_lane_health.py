@@ -381,11 +381,20 @@ def operational_lane_snapshot(*, now=None):
             "typed_memory": _typed_memory_lane(now=now),
             "trace_refresh": _trace_refresh_lane(now=now),
         }
+        workers_healthy = daemon.get("workers_healthy", True)
+        if bot_state == "running" and not workers_healthy:
+            bot_state = "worker_stalled"
         return {
             "available": True, "healthy": bot_state in {"running", "disabled"} and all(lane["healthy"] for lane in lanes.values()),
             "bot_state": bot_state, "lanes": lanes,
             "consumer": {key: daemon[key] for key in ("process_online", "main_healthy", "process_age_seconds", "main_age_seconds", "stalled_reason")},
-            "unobserved_lanes": [],
+            "worker_lanes": daemon.get("worker_lanes", {}),
+            "release_generation": daemon.get("release_generation"),
+            "supervisor": daemon.get("supervisor", {}),
+            "unobserved_lanes": sorted(
+                name for name, row in daemon.get("worker_lanes", {}).items()
+                if row.get("state") == "unobserved"
+            ),
         }
     except (DatabaseError, OSError, ValueError, TypeError):
         return {"available": False, "healthy": False, "reason": "observation_unavailable", "lanes": {}}

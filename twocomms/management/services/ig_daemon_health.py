@@ -64,6 +64,14 @@ def daemon_runtime_health_snapshot(*, now_epoch: float | None = None) -> dict:
         stalled_reason = "main_progress_error"
     else:
         stalled_reason = ""
+    from management.services.ig_worker_progress import worker_health_snapshot
+    workers = worker_health_snapshot(process.get("worker_lanes"), now=now_epoch)
+    worker_stalled = bool(process_online and main_healthy and not workers["healthy"])
+    from management.services.ig_maintenance import runtime_root
+    from management.services.ig_supervisor_observation import read_supervisor_observation
+    supervisor = read_supervisor_observation(
+        runtime_root(), expected_child_pid=process.get("pid"), now=now_epoch,
+    )
     return {
         "process_online": process_online,
         "process_age_seconds": round(process_age, 1) if process_age is not None else None,
@@ -73,9 +81,14 @@ def daemon_runtime_health_snapshot(*, now_epoch: float | None = None) -> dict:
         "main_age_seconds": round(main_age, 1) if main_age is not None else None,
         "main_state": main_state,
         "stalled": bool(process_online and not main_healthy),
-        "stalled_reason": stalled_reason,
+        "worker_stalled": worker_stalled,
+        "stalled_reason": stalled_reason or ("worker_lane_stalled" if worker_stalled else ""),
         "process_pid": process.get("pid"),
         "main_cycle": main.get("cycle"),
+        "workers_healthy": workers["healthy"],
+        "worker_lanes": workers["lanes"],
+        "release_generation": process.get("sentinel"),
+        "supervisor": supervisor,
     }
 
 
@@ -83,7 +96,7 @@ def alert_daemon_runtime_health() -> dict:
     """Deliver one hourly technical alert for a live-but-stalled daemon."""
     snapshot = daemon_runtime_health_snapshot()
     snapshot["alerted"] = False
-    if not snapshot["stalled"]:
+    if not snapshot["stalled"] and not snapshot.get("worker_stalled"):
         return snapshot
     try:
         from management.models import InstagramBotSettings
@@ -95,12 +108,18 @@ def alert_daemon_runtime_health() -> dict:
         if not settings_obj.is_enabled or maintenance_status()["active"]:
             return snapshot
         reason = snapshot["stalled_reason"]
+        title = "🚨 IG daemon не просуває основний цикл" if snapshot["stalled"] else "🚨 IG background lane не просувається"
+        affected_workers = tuple(
+            name for name, row in snapshot.get("worker_lanes", {}).items()
+            if not row.get("healthy")
+        )
         text = format_alert(
-            "🚨 IG daemon не просуває основний цикл",
+            title,
             lines=(
                 f"Причина: {reason}",
                 f"Process pulse: {snapshot['process_age_seconds']} с",
                 f"Main progress: {snapshot['main_age_seconds']} с",
+                f"Lanes: {', '.join(affected_workers)[:240]}" if affected_workers else "",
                 "Клієнтські відповіді вважаються недоступними до відновлення progress.",
             ),
         )
@@ -108,7 +127,7 @@ def alert_daemon_runtime_health() -> dict:
             bot.notify_manager(
                 text,
                 dedupe_key=alert_dedupe_key(
-                    "ig_daemon_stalled",
+                    "ig_worker_lane_stalled" if snapshot.get("worker_stalled") else "ig_daemon_stalled",
                     window_minutes=60,
                     text=reason,
                 ),
@@ -117,6 +136,7 @@ def alert_daemon_runtime_health() -> dict:
                     "reason": reason,
                     "process_age_seconds": snapshot["process_age_seconds"],
                     "main_age_seconds": snapshot["main_age_seconds"],
+                    "worker_lanes": affected_workers,
                     "requires_human_review": False,
                 },
                 deliver_immediately=True,

@@ -17241,6 +17241,7 @@ def status_snapshot() -> dict:
     daemon_health = daemon_runtime_health_snapshot()
     daemon_online = daemon_health["process_online"]
     daemon_main_healthy = daemon_health["main_healthy"]
+    daemon_workers_healthy = daemon_health.get("workers_healthy", True)
     ingress = ingress_status(s, now=now)
     try:
         permission_transitions = permission_transition_snapshot()
@@ -17259,7 +17260,7 @@ def status_snapshot() -> dict:
         state = "pause_pending"
     elif not s.is_enabled:
         state = "disabled"
-    elif daemon_online and not daemon_main_healthy:
+    elif daemon_online and (not daemon_main_healthy or not daemon_workers_healthy):
         state = "worker_stalled"
     elif daemon_online and not ingress["healthy"]:
         state = "ingress_degraded"
@@ -17349,6 +17350,7 @@ def status_snapshot() -> dict:
             s.is_enabled
             and daemon_online
             and daemon_main_healthy
+            and daemon_workers_healthy
             and ingress["healthy"]
             and not maintenance["active"]
             and not pause_pending
@@ -17364,7 +17366,7 @@ def status_snapshot() -> dict:
         ),
         "operator_attention_required": bool(
             s.is_enabled
-            and daemon_health["stalled"]
+            and (daemon_health["stalled"] or (daemon_online and not daemon_workers_healthy))
             and not maintenance["active"]
         ),
         "maintenance": maintenance,
@@ -17378,6 +17380,9 @@ def status_snapshot() -> dict:
         "main_progress_state": daemon_health["main_state"],
         "main_progress_stale": daemon_health["stalled"],
         "main_progress_stalled_reason": daemon_health["stalled_reason"],
+        "worker_lanes": daemon_health.get("worker_lanes", {}),
+        "workers_healthy": daemon_workers_healthy,
+        "supervisor": daemon_health.get("supervisor", {}),
         "heartbeat_at": hb.isoformat() if hb else "",
         "last_inbound_at": s.last_inbound_at.isoformat() if s.last_inbound_at else "",
         "last_reply_at": s.last_reply_at.isoformat() if s.last_reply_at else "",

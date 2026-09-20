@@ -176,3 +176,20 @@ class OperationalLaneHealthTests(TestCase):
         self.assertGreater(data["queues"]["dangerous_backlog"], 0)
         for secret in (self.person.igsid, "0501234567", "private-owner", "private source"):
             self.assertNotIn(secret, json.dumps(data))
+
+    def test_stuck_worker_degrades_public_probe_while_main_and_tasks_are_healthy(self):
+        for spec in TASK_SPECS:
+            mark_task_succeeded(spec.key, at=self.now)
+        with patch("management.services.ig_daemon_health.daemon_runtime_health_snapshot", return_value={
+            "process_online": True, "main_healthy": True, "process_age_seconds": 0,
+            "main_age_seconds": 0, "stalled_reason": "", "workers_healthy": False,
+            "worker_lanes": {"analysis": {"state": "stalled", "healthy": False}},
+            "release_generation": 123.0,
+        }):
+            response = self.client.get("/bot/health/", HTTP_HOST="management.twocomms.shop", secure=True)
+        self.assertEqual(response.status_code, 503)
+        body = response.json()
+        self.assertEqual(body["cron_unhealthy"], 0)
+        self.assertEqual(body["bot_state"], "worker_stalled")
+        self.assertTrue(body["operations"]["consumer"]["main_healthy"])
+        self.assertEqual(body["operations"]["worker_lanes"]["analysis"]["state"], "stalled")

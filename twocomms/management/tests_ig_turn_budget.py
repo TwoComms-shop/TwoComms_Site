@@ -17,6 +17,9 @@ class TurnBudgetConsistencyTests(TestCase):
             sum(phase.max_seconds for phase in phases),
         )
 
+    def test_nonblocking_presence_is_not_a_synchronous_turn_phase(self):
+        self.assertNotIn("typing_pause", {phase.name for phase in ig_turn_budget.turn_phases()})
+
     def test_every_phase_has_a_positive_maximum_and_a_note(self):
         for phase in ig_turn_budget.turn_phases():
             self.assertGreater(phase.max_seconds, 0, phase.name)

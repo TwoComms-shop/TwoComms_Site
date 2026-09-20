@@ -1958,7 +1958,13 @@ body.bot-drawer-open{overflow:hidden;}
     else if(st.state==='worker_recovering'){ txt='Відновлюємо обробник'; sub='База даних доступна; supervisor запускає новий процес (зазвичай кілька секунд)'; cls='idle'; }
     else if(st.state==='enabled_but_worker_missing'){ txt='Обробник не запущено'; sub='Бот увімкнено, система відновлює автоматичний обробник (до 1 хв)'; cls='off'; }
     else if(st.state==='worker_error'){ txt='Обробник не відновився'; sub='База даних доступна, але supervisor не підтвердив новий процес за 30 секунд'; cls='off'; }
-    else if(st.state==='worker_stalled'){ txt='Обробник завис'; sub='Процес онлайн, але основний цикл не просувається — відповіді не підтверджені'; cls='off'; }
+    else if(st.state==='worker_stalled'){
+      txt='Обробник потребує уваги';
+      const workerNames={conversation_refresh:'оновлення розмов',journey_trace_refresh:'оновлення воронки',analysis:'аналіз діалогів',reply_recovery:'відновлення відповідей',permission_transition:'передача керування',inbox_refresh:'оновлення вхідних',checkout_lifecycle:'події замовлень',follow_intelligence:'подальші дії'};
+      const affected=Object.entries(st.worker_lanes||{}).filter(([,value])=>!value.healthy).map(([name])=>workerNames[name]||'фонове завдання');
+      sub=st.main_progress_healthy&&affected.length?'Основний цикл працює. Немає підтвердженого поступу: '+affected.join(', '):'Процес онлайн, але основний цикл не просувається — відповіді не підтверджені';
+      cls='off';
+    }
     else if(st.state==='ingress_degraded'){ txt='Прийом повідомлень порушено'; sub='Процес працює, але нові повідомлення не надходять'; cls='off'; }
     else if(!online){ txt='Офлайн'; sub='Автоматичний обробник не запущено'; cls='off'; }
     else if(st.is_enabled){ txt='Працює'; sub='Агент онлайн і відповідає'; cls='on'; }

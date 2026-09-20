@@ -38,6 +38,7 @@ from django.utils import timezone
 
 from management.models import InstagramBotSettings
 from management.services import bot_followups
+from management.services.ig_worker_progress import WORKERS, worker_iteration
 from management.services import instagram_bot as bot
 from management.services.ig_task_health import (
     check_task_health,
@@ -452,6 +453,7 @@ def _publish_process_pulse(*, owner: str, start_sentinel: float, state: str) -> 
         "state": state,
         "owner": owner,
         "pid": os.getpid(),
+        "worker_lanes": WORKERS.snapshot(),
     }
     if operation_pulse_enabled():
         payload.update(_INFLIGHT.snapshot())
@@ -556,26 +558,27 @@ def _conv_refresher(stop_event: threading.Event):
     тільки коли увімкнено резервний поллінг."""
     while not stop_event.is_set():
         wait_seconds = CONV_REFRESH_EVERY
-        try:
-            close_old_connections()
-            require_database_ready(lane="conv_refresher")
-            s = InstagramBotSettings.load()
-            if s.receive_via_poll and bot._provider_account_id(s):
-                token = bot.get_page_token(s)
-                if token:
-                    bot.refresh_conv_ids(s, token)
-                    s.refresh_from_db(fields=["conversation_discovery_cursor"])
-                    wait_seconds = _conversation_refresh_wait_seconds(s)
-        except DbCircuitOpen:
-            pass
-        except Exception as exc:
-            if _database_disconnected(exc, lane="conv_refresher"):
-                stop_event.wait(2)
-                continue
+        with worker_iteration("conversation_refresh"):
             try:
-                bot.log("warning", "conv_refresh", repr(exc))
-            except Exception:
+                close_old_connections()
+                require_database_ready(lane="conv_refresher")
+                s = InstagramBotSettings.load()
+                if s.receive_via_poll and bot._provider_account_id(s):
+                    token = bot.get_page_token(s)
+                    if token:
+                        bot.refresh_conv_ids(s, token)
+                        s.refresh_from_db(fields=["conversation_discovery_cursor"])
+                        wait_seconds = _conversation_refresh_wait_seconds(s)
+            except DbCircuitOpen:
                 pass
+            except Exception as exc:
+                if _database_disconnected(exc, lane="conv_refresher"):
+                    stop_event.wait(2)
+                    continue
+                try:
+                    bot.log("warning", "conv_refresh", repr(exc))
+                except Exception:
+                    pass
         stop_event.wait(wait_seconds)
 
 
@@ -585,23 +588,24 @@ def _journey_trace_refresh_worker(stop_event: threading.Event):
 
     last_error_log = float("-inf")
     while not stop_event.is_set():
-        try:
-            close_old_connections()
-            require_database_ready(lane="journey_trace_refresh")
-            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                with task_heartbeat("ig_trace_refresh"):
-                    refresh_tick()
-        except DbCircuitOpen:
-            pass
-        except Exception as exc:
-            if not _database_disconnected(exc, lane="journey_trace_refresh") and time.monotonic() - last_error_log >= 300:
-                # Keep unexpected infrastructure failures visible without source
-                # text, provider payloads or an alert on every 15-second sweep.
-                logging.getLogger(__name__).warning("journey_trace_refresh failure class=%s", type(exc).__name__)
-                last_error_log = time.monotonic()
-        finally:
-            # The one extra thread retains no idle DB connection between sweeps.
-            connection.close()
+        with worker_iteration("journey_trace_refresh"):
+            try:
+                close_old_connections()
+                require_database_ready(lane="journey_trace_refresh")
+                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    with task_heartbeat("ig_trace_refresh"):
+                        refresh_tick()
+            except DbCircuitOpen:
+                pass
+            except Exception as exc:
+                if not _database_disconnected(exc, lane="journey_trace_refresh") and time.monotonic() - last_error_log >= 300:
+                    # Keep unexpected infrastructure failures visible without source
+                    # text, provider payloads or an alert on every 15-second sweep.
+                    logging.getLogger(__name__).warning("journey_trace_refresh failure class=%s", type(exc).__name__)
+                    last_error_log = time.monotonic()
+            finally:
+                # The one extra thread retains no idle DB connection between sweeps.
+                connection.close()
         stop_event.wait(SWEEP_SECONDS)
 
 
@@ -615,87 +619,88 @@ def _analysis_worker(stop_event: threading.Event):
 
     last_reconcile_at = None
     while not stop_event.is_set():
-        try:
-            close_old_connections()
-            require_database_ready(lane="analysis_worker")
-            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                monotonic_now = time.monotonic()
-                if (
-                    last_reconcile_at is None
-                    or monotonic_now - last_reconcile_at >= ANALYSIS_RECONCILE_EVERY
-                ):
-                    try:
-                        reconcile_result = reconcile_analysis_jobs(
-                            limit=ANALYSIS_RECONCILE_BATCH
-                        )
-                        if isinstance(reconcile_result, dict):
-                            graph_count = int(
-                                reconcile_result.get(
-                                    "request_graphs_reconciled",
-                                    0,
-                                )
-                                or 0
+        with worker_iteration("analysis"):
+            try:
+                close_old_connections()
+                require_database_ready(lane="analysis_worker")
+                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    monotonic_now = time.monotonic()
+                    if (
+                        last_reconcile_at is None
+                        or monotonic_now - last_reconcile_at >= ANALYSIS_RECONCILE_EVERY
+                    ):
+                        try:
+                            reconcile_result = reconcile_analysis_jobs(
+                                limit=ANALYSIS_RECONCILE_BATCH
                             )
-                            if graph_count > 0:
-                                bot.log(
-                                    "info",
-                                    "gemini_request_graphs_reconciled",
-                                    f"reconciled={graph_count}",
+                            if isinstance(reconcile_result, dict):
+                                graph_count = int(
+                                    reconcile_result.get(
+                                        "request_graphs_reconciled",
+                                        0,
+                                    )
+                                    or 0
                                 )
-                        from management.services.ig_typed_memory import (
-                            reconcile_typed_memory,
-                        )
+                                if graph_count > 0:
+                                    bot.log(
+                                        "info",
+                                        "gemini_request_graphs_reconciled",
+                                        f"reconciled={graph_count}",
+                                    )
+                            from management.services.ig_typed_memory import (
+                                reconcile_typed_memory,
+                            )
 
-                        with task_heartbeat("ig_typed_memory_reconcile"):
-                            reconcile_typed_memory(limit=ANALYSIS_RECONCILE_BATCH)
+                            with task_heartbeat("ig_typed_memory_reconcile"):
+                                reconcile_typed_memory(limit=ANALYSIS_RECONCILE_BATCH)
+                        except Exception as exc:
+                            _raise_disconnected_database(exc, lane="analysis_worker")
+                            try:
+                                bot.log(
+                                    "error",
+                                    "conversation_analysis_reconcile",
+                                    repr(exc),
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            last_reconcile_at = monotonic_now
+                    try:
+                        process_due_analysis(limit=1)
                     except Exception as exc:
                         _raise_disconnected_database(exc, lane="analysis_worker")
                         try:
-                            bot.log(
-                                "error",
-                                "conversation_analysis_reconcile",
-                                repr(exc),
-                            )
+                            bot.log("error", "conversation_analysis_due", repr(exc))
                         except Exception:
                             pass
-                    else:
-                        last_reconcile_at = monotonic_now
-                try:
-                    process_due_analysis(limit=1)
-                except Exception as exc:
-                    _raise_disconnected_database(exc, lane="analysis_worker")
                     try:
-                        bot.log("error", "conversation_analysis_due", repr(exc))
-                    except Exception:
-                        pass
-                try:
-                    event_result = process_due_analysis_events(limit=1)
-                    terminal_rejected = int(event_result.get("rejected", 0) or 0)
-                    terminal_failed = int(event_result.get("failed", 0) or 0)
-                    if terminal_rejected or terminal_failed:
-                        bot.log(
-                            "error" if terminal_failed else "warning",
-                            "conversation_analysis_events_terminal",
-                            f"rejected={terminal_rejected} failed={terminal_failed}",
-                        )
-                except Exception as exc:
-                    _raise_disconnected_database(exc, lane="analysis_worker")
-                    try:
-                        bot.log("error", "conversation_analysis_events", repr(exc))
-                    except Exception:
-                        pass
-        except DbCircuitOpen:
-            pass
-        except Exception as exc:
-            if _database_disconnected(exc, lane="analysis_worker"):
-                stop_event.wait(2)
-                continue
-            try:
-                bot.log("error", "conversation_analysis", repr(exc))
-            except Exception:
+                        event_result = process_due_analysis_events(limit=1)
+                        terminal_rejected = int(event_result.get("rejected", 0) or 0)
+                        terminal_failed = int(event_result.get("failed", 0) or 0)
+                        if terminal_rejected or terminal_failed:
+                            bot.log(
+                                "error" if terminal_failed else "warning",
+                                "conversation_analysis_events_terminal",
+                                f"rejected={terminal_rejected} failed={terminal_failed}",
+                            )
+                    except Exception as exc:
+                        _raise_disconnected_database(exc, lane="analysis_worker")
+                        try:
+                            bot.log("error", "conversation_analysis_events", repr(exc))
+                        except Exception:
+                            pass
+            except DbCircuitOpen:
                 pass
-        finally:
-            close_old_connections()
+            except Exception as exc:
+                if _database_disconnected(exc, lane="analysis_worker"):
+                    stop_event.wait(2)
+                    continue
+                try:
+                    bot.log("error", "conversation_analysis", repr(exc))
+                except Exception:
+                    pass
+            finally:
+                close_old_connections()
         stop_event.wait(5)
 
 
@@ -712,37 +717,38 @@ def _ai_reply_recovery_worker(stop_event: threading.Event):
     last_sweep = 0.0
     while not stop_event.is_set():
         worked = False
-        try:
-            close_old_connections()
-            require_database_ready(lane="ai_reply_recovery_worker")
-            if (
-                not maintenance_status(path=MAINTENANCE_FILE)["active"]
-                and time.monotonic() - last_sweep >= INCIDENT_SWEEP_INTERVAL_SECONDS
-            ):
-                last_sweep = time.monotonic()
-                try:
-                    from management.services.ig_provider_incidents import (
-                        close_stale_incidents,
-                    )
-
-                    close_stale_incidents()
-                except Exception as exc:
-                    _raise_disconnected_database(exc, lane="ai_reply_recovery_worker")
-                    bot.log("warning", "provider_incident_sweep", repr(exc))
-            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                worked = bool(process_due_recoveries(limit=1))
-        except DbCircuitOpen:
-            pass
-        except Exception as exc:
-            if _database_disconnected(exc, lane="ai_reply_recovery_worker"):
-                stop_event.wait(2)
-                continue
+        with worker_iteration("reply_recovery"):
             try:
-                bot.log("error", "ai_reply_recovery", repr(exc))
-            except Exception:
+                close_old_connections()
+                require_database_ready(lane="ai_reply_recovery_worker")
+                if (
+                    not maintenance_status(path=MAINTENANCE_FILE)["active"]
+                    and time.monotonic() - last_sweep >= INCIDENT_SWEEP_INTERVAL_SECONDS
+                ):
+                    last_sweep = time.monotonic()
+                    try:
+                        from management.services.ig_provider_incidents import (
+                            close_stale_incidents,
+                        )
+
+                        close_stale_incidents()
+                    except Exception as exc:
+                        _raise_disconnected_database(exc, lane="ai_reply_recovery_worker")
+                        bot.log("warning", "provider_incident_sweep", repr(exc))
+                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    worked = bool(process_due_recoveries(limit=1))
+            except DbCircuitOpen:
                 pass
-        finally:
-            close_old_connections()
+            except Exception as exc:
+                if _database_disconnected(exc, lane="ai_reply_recovery_worker"):
+                    stop_event.wait(2)
+                    continue
+                try:
+                    bot.log("error", "ai_reply_recovery", repr(exc))
+                except Exception:
+                    pass
+            finally:
+                close_old_connections()
         if stop_event.wait(0.5 if worked else 2):
             break
 
@@ -755,27 +761,28 @@ def _permission_transition_worker(stop_event: threading.Event):
 
     while not stop_event.is_set():
         worked = False
-        try:
-            close_old_connections()
-            require_database_ready(lane="permission_transition_worker")
-            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                worked = bool(process_due_permission_transitions(limit=1))
-        except DbCircuitOpen:
-            pass
-        except Exception as exc:
-            if _database_disconnected(exc, lane="permission_transition_worker"):
-                stop_event.wait(2)
-                continue
+        with worker_iteration("permission_transition"):
             try:
-                bot.log(
-                    "error",
-                    "permission_transition",
-                    exc.__class__.__name__,
-                )
-            except Exception:
+                close_old_connections()
+                require_database_ready(lane="permission_transition_worker")
+                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    worked = bool(process_due_permission_transitions(limit=1))
+            except DbCircuitOpen:
                 pass
-        finally:
-            close_old_connections()
+            except Exception as exc:
+                if _database_disconnected(exc, lane="permission_transition_worker"):
+                    stop_event.wait(2)
+                    continue
+                try:
+                    bot.log(
+                        "error",
+                        "permission_transition",
+                        exc.__class__.__name__,
+                    )
+                except Exception:
+                    pass
+            finally:
+                close_old_connections()
         if stop_event.wait(0.25 if worked else 1):
             break
 
@@ -786,24 +793,25 @@ def _inbox_refresh_worker(stop_event: threading.Event):
 
     while not stop_event.is_set():
         worked = False
-        try:
-            close_old_connections()
-            require_database_ready(lane="inbox_refresh_worker")
-            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                result = process_refresh_slice()
-                worked = bool(result.get("worked")) if isinstance(result, dict) else False
-        except DbCircuitOpen:
-            pass
-        except Exception as exc:
-            if _database_disconnected(exc, lane="inbox_refresh_worker"):
-                stop_event.wait(2)
-                continue
+        with worker_iteration("inbox_refresh"):
             try:
-                bot.log("error", "inbox_refresh", repr(exc))
-            except Exception:
+                close_old_connections()
+                require_database_ready(lane="inbox_refresh_worker")
+                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    result = process_refresh_slice()
+                    worked = bool(result.get("worked")) if isinstance(result, dict) else False
+            except DbCircuitOpen:
                 pass
-        finally:
-            close_old_connections()
+            except Exception as exc:
+                if _database_disconnected(exc, lane="inbox_refresh_worker"):
+                    stop_event.wait(2)
+                    continue
+                try:
+                    bot.log("error", "inbox_refresh", repr(exc))
+                except Exception:
+                    pass
+            finally:
+                close_old_connections()
         if stop_event.wait(0.25 if worked else 2):
             break
 
@@ -813,23 +821,24 @@ def _checkout_lifecycle_worker(stop_event: threading.Event):
     from management.services.ig_lifecycle import dispatch_due_lifecycle_events
 
     while not stop_event.is_set():
-        try:
-            close_old_connections()
-            require_database_ready(lane="checkout_lifecycle_worker")
-            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                dispatch_due_lifecycle_events(limit=10)
-        except DbCircuitOpen:
-            pass
-        except Exception as exc:
-            if _database_disconnected(exc, lane="checkout_lifecycle_worker"):
-                stop_event.wait(2)
-                continue
+        with worker_iteration("checkout_lifecycle"):
             try:
-                bot.log("error", "ig_checkout_lifecycle", repr(exc))
-            except Exception:
+                close_old_connections()
+                require_database_ready(lane="checkout_lifecycle_worker")
+                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    dispatch_due_lifecycle_events(limit=10)
+            except DbCircuitOpen:
                 pass
-        finally:
-            close_old_connections()
+            except Exception as exc:
+                if _database_disconnected(exc, lane="checkout_lifecycle_worker"):
+                    stop_event.wait(2)
+                    continue
+                try:
+                    bot.log("error", "ig_checkout_lifecycle", repr(exc))
+                except Exception:
+                    pass
+            finally:
+                close_old_connections()
         if stop_event.wait(5):
             break
 
@@ -842,28 +851,29 @@ def _follow_intelligence_worker(stop_event: threading.Event):
 
     while not stop_event.is_set():
         worked = False
-        try:
-            close_old_connections()
-            require_database_ready(lane="follow_intelligence_worker")
-            if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                counts = reconcile_follow_intelligence_once(limit=10)
-                worked = bool(
-                    int(counts.get("payment_selected", 0) or 0)
-                    + int(counts.get("follow_selected", 0) or 0)
-                    + int(counts.get("ugc_selected", 0) or 0)
-                )
-        except DbCircuitOpen:
-            pass
-        except Exception as exc:
-            if _database_disconnected(exc, lane="follow_intelligence_worker"):
-                stop_event.wait(2)
-                continue
+        with worker_iteration("follow_intelligence"):
             try:
-                bot.log("error", "ig_follow_intelligence", repr(exc))
-            except Exception:
+                close_old_connections()
+                require_database_ready(lane="follow_intelligence_worker")
+                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    counts = reconcile_follow_intelligence_once(limit=10)
+                    worked = bool(
+                        int(counts.get("payment_selected", 0) or 0)
+                        + int(counts.get("follow_selected", 0) or 0)
+                        + int(counts.get("ugc_selected", 0) or 0)
+                    )
+            except DbCircuitOpen:
                 pass
-        finally:
-            close_old_connections()
+            except Exception as exc:
+                if _database_disconnected(exc, lane="follow_intelligence_worker"):
+                    stop_event.wait(2)
+                    continue
+                try:
+                    bot.log("error", "ig_follow_intelligence", repr(exc))
+                except Exception:
+                    pass
+            finally:
+                close_old_connections()
         if stop_event.wait(0.5 if worked else 5):
             break
 
@@ -1716,6 +1726,7 @@ class Command(BaseCommand):
         owner = f"{os.getpid()}:{time.time_ns()}"
         start_sentinel = _restart_sentinel_mtime()
         stop_event = threading.Event()
+        WORKERS.reset()
         # ЭА.14. Порядок здесь — исправление, а не косметика. Раньше первым шагом
         # был `_reconcile_commercial_episodes_after_reload()`, и лишь ПОСЛЕ его
         # возврата процесс публиковал пульс и писал pid-файл. Всё это время

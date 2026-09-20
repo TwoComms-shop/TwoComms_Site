@@ -1,5 +1,6 @@
 """Regression tests for the Instagram bot daemon/watchdog boundary."""
 
+from management.services.ig_worker_progress import WORKER_LIMITS
 import json
 import os
 import signal
@@ -655,6 +656,17 @@ class _BoundedWorkerEvent:
 
 
 class AnalysisWorkerTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        # Typed-memory reconciliation now runs inside the same periodic branch;
+        # this worker scheduling suite must not accidentally attempt DB writes.
+        memory = patch("management.services.ig_typed_memory.reconcile_typed_memory")
+        heartbeat = patch("management.management.commands.run_instagram_bot.task_heartbeat")
+        memory.start()
+        heartbeat.start()
+        self.addCleanup(memory.stop)
+        self.addCleanup(heartbeat.stop)
+
     @patch(
         "management.services.ig_analysis_events.process_due_analysis_events",
         return_value={
@@ -1614,7 +1626,7 @@ class DaemonStatusTests(TestCase):
         self.assertEqual(snapshot["state"], "worker_error")
         self.assertTrue(snapshot["recovery_expected"])
 
-    @patch("management.services.ig_daemon_health.cache.get", return_value={"at": 100.0, "state": "idle"})
+    @patch("management.services.ig_daemon_health.cache.get", return_value={"at": 100.0, "state": "idle", "worker_lanes": {name: {"state": "idle", "progress_at": 100.0} for name in WORKER_LIMITS}})
     @patch("management.services.ig_daemon_health.time.time", return_value=110.0)
     def test_status_snapshot_accepts_structured_daemon_heartbeat(self, _time, _get):
         settings = InstagramBotSettings.load()
@@ -1671,7 +1683,7 @@ class DaemonStatusTests(TestCase):
             "main_progress_missing",
         )
 
-    @patch("management.services.ig_daemon_health.cache.get", return_value={"at": 100.0, "state": "idle"})
+    @patch("management.services.ig_daemon_health.cache.get", return_value={"at": 100.0, "state": "idle", "worker_lanes": {name: {"state": "idle", "progress_at": 100.0} for name in WORKER_LIMITS}})
     @patch("management.services.ig_daemon_health.time.time", return_value=110.0)
     def test_live_daemon_without_a_working_ingress_is_reported_as_degraded(self, _time, _get):
         settings = InstagramBotSettings.load()
@@ -1710,7 +1722,7 @@ class DaemonStatusTests(TestCase):
         settings.refresh_from_db()
         self.assertIsNotNone(settings.last_poll_at)
 
-    @patch("management.services.ig_daemon_health.cache.get", return_value={"at": 100.0, "state": "idle"})
+    @patch("management.services.ig_daemon_health.cache.get", return_value={"at": 100.0, "state": "idle", "worker_lanes": {name: {"state": "idle", "progress_at": 100.0} for name in WORKER_LIMITS}})
     @patch("management.services.ig_daemon_health.time.time", return_value=110.0)
     @patch("management.services.instagram_bot.resolve_direct_token", return_value="page-token")
     def test_poll_provider_error_is_exposed_as_degraded_ingress(
@@ -1756,7 +1768,9 @@ class DaemonStatusTests(TestCase):
             "last_error",
             "updated_at",
         ])
-        cache.set(HB_KEY, {"at": time.time()}, 60)
+        cache.set(HB_KEY, {"at": time.time(), "worker_lanes": {
+            name: {"state": "idle", "progress_at": time.time()} for name in WORKER_LIMITS
+        }}, 60)
         cache.set(MAIN_PROGRESS_KEY, {"at": time.time(), "state": "idle"}, 60)
         signals = (
             ("ig_bot_ingress_refresh_degraded:page", "conversation_refresh_failed"),

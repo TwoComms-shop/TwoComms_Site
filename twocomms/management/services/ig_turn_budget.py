@@ -41,10 +41,7 @@ def turn_phases() -> tuple:
         CHAT_COMPLEX_DEADLINE_SECONDS,
         CHAT_ORDINARY_DEADLINE_SECONDS,
     )
-    from management.services.instagram_bot import (
-        HTTP_TIMEOUT,
-        TYPING_MAX_VISIBLE_SECONDS,
-    )
+    from management.services.instagram_bot import HTTP_TIMEOUT
     from management.services.ig_delivery_plan import DEFAULT_MAX_CHUNKS
 
     return (
@@ -58,11 +55,8 @@ def turn_phases() -> tuple:
             float(CHAT_COMPLEX_DEADLINE_SECONDS),
             f"худший случай: complex-задача; ordinary = {CHAT_ORDINARY_DEADLINE_SECONDS}",
         ),
-        TurnPhase(
-            "typing_pause",
-            float(TYPING_MAX_VISIBLE_SECONDS),
-            "пауза перед отправкой для естественного ритма",
-        ),
+        # Presence runs independently and never delays the reply. Its session
+        # lifetime is not a synchronous phase of the customer turn.
         TurnPhase(
             "delivery",
             float(DEFAULT_MAX_CHUNKS) * float(HTTP_TIMEOUT),
