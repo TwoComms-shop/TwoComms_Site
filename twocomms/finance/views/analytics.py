@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import calendar as calendar_lib
 from decimal import Decimal
 
 from django.db.models import Sum
@@ -103,6 +104,42 @@ def _pnl_detail_rows(company, rows, previous_rows, start, end):
             'status': status, 'status_class': status_class,
         })
     return out
+
+
+def _pnl_calendar(company, period, start):
+    """Build a month grid from actual daily P&L values for the dashboard."""
+    from django.utils import timezone
+
+    anchor = timezone.localdate() if period == 'all' else start
+    month_start = anchor.replace(day=1)
+    month_end = anchor.replace(day=calendar_lib.monthrange(anchor.year, anchor.month)[1])
+    daily = rep.pnl(company, {
+        'period': 'custom', 'date_from': month_start.isoformat(), 'date_to': month_end.isoformat(),
+    })
+    by_day = {row['label']: row for row in daily['series']}
+    cells = [{'day': None} for _ in range(month_start.weekday())]
+    for day in range(1, month_end.day + 1):
+        key = f'{anchor.year}-{anchor.month:02d}-{day:02d}'
+        row = by_day.get(key, {'in': 0, 'out': 0})
+        income = Decimal(str(row.get('in', 0)))
+        expense = Decimal(str(row.get('out', 0)))
+        profit = income - expense
+        cells.append({
+            'day': day, 'income': float(income), 'expense': float(expense), 'profit': float(profit),
+            'income_display': _m(company, income), 'expense_display': _m(company, expense),
+            'profit_display': _m(company, profit, signed=True),
+            'tone': 'positive' if profit > 0 else 'negative' if profit < 0 else 'neutral',
+        })
+    while len(cells) % 7:
+        cells.append({'day': None})
+    month_names = ('Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень',
+                   'Липень', 'Серпень', 'Вересень', 'Жовтень', 'Листопад', 'Грудень')
+    return {
+        'label': f'{month_names[anchor.month - 1]} {anchor.year}',
+        'year': anchor.year, 'month': anchor.month, 'cells': cells,
+        'income': _m(company, daily['income']), 'expense': _m(company, daily['expenses']),
+        'profit': _m(company, daily['profit'], signed=True),
+    }
 
 
 @finance_access_required
@@ -245,6 +282,7 @@ def report(request, kind):
             'income_change': income_change,
             'expense_change': expense_change,
             'previous_period_label': 'попереднім місяцем' if period in ('month', 'last_month') else 'попереднім періодом',
+            'pnl_calendar': _pnl_calendar(company, period, start),
             'insights': insights,
             'chart_data': json.dumps({
                 'series': data['series'],

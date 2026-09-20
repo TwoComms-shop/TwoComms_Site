@@ -171,6 +171,32 @@
         var rows = (d.expense_by_category || []);
         new Chart(donutEl, { type: 'doughnut', data: { labels: rows.map(function (r) { return r.name; }), datasets: [{ data: rows.map(function (r) { return r.total; }), backgroundColor: PIE, borderColor: '#111b2a', borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: false, cutout: '67%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return c.label + ': ' + fmt(c.parsed) + ' ₴'; } } } } } });
       }
+      document.querySelectorAll('.pnl-day:not(.pnl-day--empty)').forEach(function (day) {
+        day.addEventListener('mouseenter', function () {
+          var tip = document.querySelector('.pnl-calendar-tooltip');
+          if (!tip) return;
+          var cal = document.querySelector('.pnl-calendar');
+          var monthNames = ['', 'січ.', 'лют.', 'бер.', 'кві.', 'тра.', 'чер.', 'лип.', 'сер.', 'вер.', 'жов.', 'лис.', 'гру.'];
+          var month = cal ? Number(cal.dataset.month) : 1;
+          var year = cal ? cal.dataset.year : '';
+          tip.innerHTML = '<strong>' + day.dataset.day + ' ' + monthNames[month] + ' ' + year + '</strong><span><i class="is-income"></i>Доходи <b>' + day.dataset.income + '</b></span><span><i class="is-expense"></i>Витрати <b>' + day.dataset.expense + '</b></span><span><i class="is-profit"></i>Прибуток <b>' + day.dataset.profit + '</b></span>';
+          tip.hidden = false;
+        });
+        day.addEventListener('mouseleave', function () { var tip = document.querySelector('.pnl-calendar-tooltip'); if (tip) tip.hidden = true; });
+      });
+      var flow = document.getElementById('pnl-flow-chart');
+      if (flow) {
+        var incomes = (d.income_by_category || []).slice(0, 5);
+        var expenses = (d.expense_by_category || []).slice(0, 5);
+        var totalIncome = incomes.reduce(function (sum, row) { return sum + Number(row.total || 0); }, 0);
+        var totalExpense = expenses.reduce(function (sum, row) { return sum + Number(row.total || 0); }, 0);
+        var colors = ['#ff5f89', '#8c78ef', '#36d2a0', '#f4b34e', '#36b9dd'];
+        function item(row, color, total) { var pct = total ? (Number(row.total) / total * 100).toFixed(1) : '0.0'; return '<div class="pnl-flow-item"><i style="background:' + color + '"></i><span>' + row.name + '<br><b>' + fmt(row.total) + ' ₴</b> <small>(' + pct + '%)</small></span></div>'; }
+        flow.innerHTML = '<div class="pnl-flow-side pnl-flow-side--income">' + (incomes.length ? incomes.map(function (r, i) { return item(r, '#36d2a0', totalIncome); }).join('') : '<span class="pnl-muted">Немає доходів</span>') + '</div><div class="pnl-flow-center"><b>' + fmt(totalIncome) + ' ₴</b><span>Загальні надходження</span></div><div class="pnl-flow-side pnl-flow-side--expense">' + (expenses.length ? expenses.map(function (r, i) { return item(r, colors[i % colors.length], totalExpense); }).join('') : '<span class="pnl-muted">Немає витрат</span>') + '</div><svg class="pnl-flow-lines" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden="true"><path d="M245 40 C370 40 390 145 500 145"/><path d="M245 100 C370 100 390 145 500 145"/><path d="M500 145 C610 145 630 40 755 40"/><path d="M500 145 C610 145 630 100 755 100"/><path d="M500 145 C610 145 630 200 755 200"/></svg>';
+      }
+      var detailsGrid = document.querySelector('.pnl-details-grid');
+      if (detailsGrid) detailsGrid.classList.add('is-list');
+      document.querySelectorAll('.pnl-view-toggle button').forEach(function (button) { button.addEventListener('click', function () { document.querySelectorAll('.pnl-view-toggle button').forEach(function (b) { b.classList.toggle('is-active', b === button); }); document.querySelectorAll('[data-view-panel]').forEach(function (panel) { panel.hidden = panel.dataset.viewPanel !== button.dataset.view; }); if (detailsGrid) { detailsGrid.classList.toggle('is-list', button.dataset.view === 'list'); detailsGrid.classList.toggle('is-chart', button.dataset.view === 'chart'); } }); });
       document.querySelectorAll('.pnl-period-btn').forEach(function (button) { button.addEventListener('click', function () { var select = document.getElementById('pnl-period'); if (select) { select.value = button.dataset.period; select.form.submit(); } }); });
       var search = document.querySelector('.pnl-search input');
       if (search) search.addEventListener('input', function () { var needle = this.value.toLowerCase(); document.querySelectorAll('.pnl-table tbody tr').forEach(function (row) { row.hidden = needle && row.textContent.toLowerCase().indexOf(needle) < 0; }); });
