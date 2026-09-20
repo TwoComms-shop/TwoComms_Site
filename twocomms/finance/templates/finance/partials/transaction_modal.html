@@ -58,20 +58,6 @@
             <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-quick-classify-no">Ні, це інше надходження</button>
           </div>
         </div>
-        <div class="fin-transfer-match" id="fin-transfer-match" hidden>
-          <div class="fin-quick-classify__copy">
-            <span class="fin-quick-classify__eyebrow">Зіставлення переказу</span>
-            <strong id="fin-transfer-match-title">Це переказ із іншого вашого рахунку?</strong>
-            <small id="fin-transfer-match-hint">Оберіть зустрічну операцію. Різницю банк покаже окремо як комісію.</small>
-          </div>
-          <label class="fin-field" for="fin-transfer-match-source">
-            <span id="fin-transfer-match-source-label">Наявна зустрічна операція</span>
-            <select id="fin-transfer-match-source" class="fin-select"><option value="">Оберіть операцію</option></select>
-          </label>
-          <div class="fin-transfer-match__preview" id="fin-transfer-match-preview" hidden></div>
-          <div class="fin-transfer-match__existing" id="fin-transfer-match-existing" hidden></div>
-          <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" id="fin-transfer-match-confirm">Підтвердити переказ і комісію</button>
-        </div>
         <div class="fin-terminal-review" id="fin-terminal-review" hidden>
           <div class="fin-terminal-review__heading">
             <span class="fin-terminal-review__eyebrow">Поповнення через термінал</span>
@@ -120,6 +106,51 @@
             </div>
           </div>
           <div class="fin-terminal-review__error" id="fin-terminal-review-error" hidden role="alert"></div>
+        </div>
+      </section>
+
+      <section class="fin-transfer-match" id="fin-transfer-match" hidden aria-labelledby="fin-transfer-match-title">
+        <div class="fin-quick-classify__copy">
+          <span class="fin-quick-classify__eyebrow">⇄ Між своїми рахунками</span>
+          <strong id="fin-transfer-match-title">Об’єднати в один переказ</strong>
+          <small id="fin-transfer-match-hint"></small>
+        </div>
+        <div class="fin-transfer-match__anchor" id="fin-transfer-match-anchor"></div>
+        <div id="fin-transfer-match-controls" class="fin-transfer-match__controls">
+          <div class="fin-transfer-match__modes" role="group" aria-label="Зустрічна операція">
+            <button type="button" class="is-active" data-transfer-mode="existing" aria-pressed="true"><strong>Знайти наявну</strong><span>Уже є в журналі</span></button>
+            <button type="button" data-transfer-mode="new" aria-pressed="false"><strong>Додати відсутню</strong><span>Ще не внесена вручну</span></button>
+          </div>
+          <label class="fin-field" for="fin-transfer-match-account">
+            <span id="fin-transfer-match-account-label">Інший ваш рахунок</span>
+            <select id="fin-transfer-match-account" class="fin-select"><option value="">Усі рахунки</option></select>
+          </label>
+          <div id="fin-transfer-match-search" class="fin-transfer-match__controls">
+            <label class="fin-field" for="fin-transfer-match-period"><span>Період пошуку від дати операції</span>
+              <select id="fin-transfer-match-period" class="fin-select"><option value="7">± 7 днів</option><option value="30">± 30 днів</option><option value="all">Уся історія</option></select>
+            </label>
+            <label class="fin-field" for="fin-transfer-match-source">
+              <span id="fin-transfer-match-source-label">Наявна зустрічна операція</span>
+              <select id="fin-transfer-match-source" class="fin-select"><option value="">Оберіть операцію</option></select>
+            </label>
+            <p class="fin-transfer-match__note" id="fin-transfer-match-empty" hidden></p>
+            <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-transfer-match-more" hidden>Показати ще</button>
+          </div>
+          <div id="fin-transfer-match-new" class="fin-transfer-match__controls" hidden>
+            <p class="fin-transfer-match__note">Додайте лише відсутню частину переказу. Якщо вона вже є у виписці, скористайтеся «Знайти наявну».</p>
+            <div class="fin-field-row">
+              <label class="fin-field" for="fin-transfer-match-amount"><span id="fin-transfer-match-amount-label">Сума зустрічної операції</span><input id="fin-transfer-match-amount" class="fin-input" type="number" min="0.01" step="0.01"></label>
+              <label class="fin-field" for="fin-transfer-match-date"><span>Її фактична дата</span><input id="fin-transfer-match-date" class="fin-input" type="datetime-local"></label>
+            </div>
+          </div>
+        </div>
+        <div class="fin-transfer-match__preview" id="fin-transfer-match-preview" hidden aria-live="polite"></div>
+        <label class="fin-checkbox fin-transfer-match__fee-confirm" id="fin-transfer-match-fee-wrap" hidden><input type="checkbox" id="fin-transfer-match-fee-confirm"><span>Підтверджую: різниця — це комісія банку</span></label>
+        <div class="fin-transfer-match__existing" id="fin-transfer-match-existing" hidden></div>
+        <div class="fin-form-alert" id="fin-transfer-match-error" hidden role="alert"></div>
+        <div class="fin-transfer-match__actions">
+          <button type="button" class="fin-btn fin-btn--ghost" id="fin-transfer-match-back">Назад до операції</button>
+          <button type="button" class="fin-btn fin-btn--primary" id="fin-transfer-match-confirm" disabled>Об’єднати в переказ</button>
         </div>
       </section>
 
@@ -325,7 +356,7 @@
       <!-- Дії редагування (тільки в режимі редагування) -->
       <div class="fin-edit-actions" id="fin-edit-actions" hidden>
         <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-act-duplicate">Дублювати</button>
-        <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-act-convert" data-show="income,expense">Змінити в переказ</button>
+        <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-act-convert" data-show="income,expense">⇄ Об’єднати в переказ</button>
         <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-act-mark-actual" hidden>Позначити фактичною</button>
         <button type="button" class="fin-btn fin-btn--danger fin-btn--sm" id="fin-act-delete">Видалити</button>
       </div>

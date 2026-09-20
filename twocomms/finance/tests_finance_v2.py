@@ -139,6 +139,23 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(reverse_preview.json()['existing']['partner_transaction_id'], incoming.id)
         self.assertEqual(reverse_preview.json()['existing']['fee_amount'], '50.00')
 
+    def test_transfer_match_api_can_filter_by_account_and_create_missing_counterpart(self):
+        outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('805'), account=self.cash)
+        self.client.force_login(self.user)
+        preview = self.client.get(
+            f'/api/v2/transfers/match/?transaction_id={outgoing.id}&account_id={self.account.id}',
+            HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json()['candidates'], [])
+        created = self.client.post(
+            '/api/v2/transfers/match/', data=json.dumps({
+                'confirm': True, 'create_counterpart': True, 'transaction_id': outgoing.id,
+                'counterpart_account_id': self.account.id, 'counterpart_amount': '800',
+                'fee_amount': '5',
+            }), content_type='application/json', HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(created.status_code, 201, created.content.decode())
+        self.assertEqual(created.json()['match']['fee_amount'], '5.00')
+
     def test_payments_renders_confirmed_transfer_as_one_canonical_row(self):
         outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10050'), account=self.cash)
         incoming = self._txn(Transaction.TYPE_INCOME, Decimal('10000'), account=self.account)

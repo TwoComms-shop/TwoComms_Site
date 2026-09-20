@@ -11,7 +11,7 @@ import datetime as dt
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction as db_transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
@@ -301,6 +301,10 @@ def transfer_match_api(request):
                                  company=company)
         if txn.type not in (Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE):
             return _error('Оберіть дохід або витрату', 400)
+        if txn.status != Transaction.STATUS_ACTUAL or txn.excluded_from_reports:
+            return _error('Доступні лише фактичні операції без виключення з обліку', 400)
+        if not txn.account_id or not txn.account.is_active or txn.account.is_archived:
+            return _error('Операція має бути на активному рахунку', 400)
         existing = (InternalTransferMatch.objects.filter(
             company=company, status='confirmed',
             destination_transaction_id=txn.id if txn.type == Transaction.TYPE_INCOME else None,
@@ -310,14 +314,57 @@ def transfer_match_api(request):
                         company=company, status='confirmed', source_transaction_id=txn.id,
                     ).select_related('source_transaction', 'destination_transaction').first())
         candidate_type = Transaction.TYPE_EXPENSE if txn.type == Transaction.TYPE_INCOME else Transaction.TYPE_INCOME
+        matched_ids = InternalTransferMatch.objects.filter(
+            company=company, status__in=('suggested', 'confirmed'),
+        ).values_list('source_transaction_id', 'destination_transaction_id')
+        matched_transaction_ids = {value for pair in matched_ids for value in pair}
         candidates = Transaction.objects.filter(
             company=company, status=Transaction.STATUS_ACTUAL,
             type=candidate_type, currency=txn.currency,
-            amount__gte=txn.amount if txn.type == Transaction.TYPE_INCOME else 0,
-            amount__lte=txn.amount if txn.type == Transaction.TYPE_EXPENSE else 10**18,
-            date_actual__date__range=(txn.date_actual.date() - dt.timedelta(days=7),
-                                      txn.date_actual.date() + dt.timedelta(days=7)),
-        ).exclude(id=txn.id).select_related('account', 'category').order_by('amount', 'date_actual')[:25]
+        ).exclude(id=txn.id).exclude(id__in=matched_transaction_ids).exclude(
+            excluded_from_reports=True,
+        ).exclude(account_id=txn.account_id).filter(
+            account__is_active=True, account__is_archived=False,
+        )
+        account_id = data.get('account_id') or request.GET.get('account_id')
+        if account_id not in (None, ''):
+            try:
+                candidates = candidates.filter(account_id=int(account_id))
+            except (TypeError, ValueError):
+                return _error('Некоректний account_id')
+        # Amount constraints enforce non-negative bank fees; date is an optional
+        # convenience filter rather than the matching rule itself.
+        if txn.type == Transaction.TYPE_INCOME:
+            candidates = candidates.filter(amount__gte=txn.amount)
+        else:
+            candidates = candidates.filter(amount__lte=txn.amount)
+        search = (data.get('search') or request.GET.get('search') or '').strip()
+        if search:
+            candidates = candidates.filter(
+                Q(comment__icontains=search) | Q(account__name__icontains=search)
+                | Q(category__name__icontains=search)
+            )
+        period_days = data.get('period_days') or request.GET.get('period_days')
+        if period_days in (None, ''):
+            period_days = 7
+        if str(period_days).lower() != 'all':
+            try:
+                period_days = max(0, min(3650, int(period_days)))
+            except (TypeError, ValueError):
+                return _error('Некоректний period_days')
+            candidates = candidates.filter(
+                date_actual__date__range=(txn.date_actual.date() - dt.timedelta(days=period_days),
+                                          txn.date_actual.date() + dt.timedelta(days=period_days)),
+            )
+        try:
+            limit = min(500, max(1, int(data.get('limit') or request.GET.get('limit') or 100)))
+            offset = max(0, int(data.get('offset') or request.GET.get('offset') or 0))
+        except (TypeError, ValueError):
+            return _error('Некоректний limit або offset')
+        candidates = candidates.select_related('account', 'category').order_by('-date_actual', 'amount')
+        candidate_rows = list(candidates[offset:offset + limit + 1])
+        has_more = len(candidate_rows) > limit
+        candidate_rows = candidate_rows[:limit]
         existing_row = None
         if existing:
             partner = existing.source_transaction if txn.type == Transaction.TYPE_INCOME else existing.destination_transaction
@@ -325,19 +372,66 @@ def transfer_match_api(request):
                             'principal_amount': str(existing.amount), 'fee_amount': str(existing.fee_amount),
                             'partner_transaction_id': partner.id, 'partner_amount': str(partner.amount),
                             'partner_account': partner.account.name if partner.account else ''}
-        return JsonResponse({'ok': True, 'existing': existing_row, 'candidates': [
-            {'id': c.id, 'amount': str(c.amount), 'date': c.date_actual.isoformat(),
+        return JsonResponse({'ok': True, 'existing': existing_row, 'has_more': has_more, 'candidates': [
+            {'id': c.id, 'account_id': c.account_id, 'amount': str(c.amount),
+             'date': c.date_actual.isoformat(), 'currency': c.currency,
              'account_name': c.account.name if c.account else '',
+             'comment': c.comment or '',
              'category': c.category.name if c.category else '',
              'fee_amount': str(ledger_v2.calculate_transfer_fee(c.amount, txn.amount)
                                 if txn.type == Transaction.TYPE_INCOME
                                 else ledger_v2.calculate_transfer_fee(txn.amount, c.amount))}
-            for c in candidates
+            for c in candidate_rows
         ]})
     try:
+        if data.get('create_missing') or data.get('create_counterpart'):
+            if not data.get('confirm'):
+                raise ValueError('Для створення пари потрібне підтвердження')
+            anchor = get_object_or_404(
+                Transaction.objects.select_related('account'),
+                id=data.get('transaction_id'), company=company,
+            )
+            counterpart_account = get_object_or_404(
+                Account, id=data.get('counterpart_account_id'), company=company,
+            )
+            fee_amount = data.get('fee_amount') or data.get('expected_fee_amount') or '0'
+            counterpart_date = None
+            if data.get('counterpart_date'):
+                from django.utils.dateparse import parse_datetime
+                counterpart_date = parse_datetime(str(data['counterpart_date']))
+                if counterpart_date is None:
+                    raise ValueError('Некоректна дата створюваної операції')
+                if counterpart_date.tzinfo is None:
+                    from django.utils import timezone
+                    counterpart_date = timezone.make_aware(counterpart_date)
+            requested_amount = data.get('counterpart_amount')
+            if requested_amount not in (None, ''):
+                fee_decimal = Decimal(str(fee_amount))
+                expected_amount = (anchor.amount + fee_decimal
+                                   if anchor.type == Transaction.TYPE_INCOME
+                                   else anchor.amount - fee_decimal)
+                if Decimal(str(requested_amount)) != expected_amount:
+                    raise ValueError('Сума створюваної операції не відповідає комісії')
+            match, counterpart, created = ledger_v2.create_missing_transfer_counterpart(
+                company, anchor, counterpart_account, fee_amount=fee_amount,
+                counterpart_date=counterpart_date, user=request.user,
+            )
+            if Decimal(str(fee_amount)) != match.fee_amount:
+                raise ValueError('Сума комісії змінилася, оновіть пропозицію')
+            return JsonResponse({'ok': True, 'created': created, 'counterpart': {
+                'id': counterpart.id, 'type': counterpart.type, 'amount': str(counterpart.amount),
+                'date': counterpart.date_actual.isoformat(), 'account_id': counterpart.account_id,
+                'account_name': counterpart.account.name if counterpart.account else '',
+            }, 'match': {
+                'id': match.id, 'status': match.status, 'amount': str(match.amount),
+                'fee_amount': str(match.fee_amount),
+            }}, status=200 if not created else 201)
         source = get_object_or_404(Transaction, id=data.get('source_transaction_id'), company=company)
         destination = get_object_or_404(Transaction, id=data.get('destination_transaction_id'), company=company)
         match = ledger_v2.create_transfer_suggestion(company, source, destination)
+        expected_fee = data.get('expected_fee_amount')
+        if expected_fee not in (None, '') and Decimal(str(expected_fee)) != match.fee_amount:
+            raise ValueError('Сума комісії змінилася, оновіть пропозицію')
         if data.get('confirm'):
             match = ledger_v2.confirm_transfer(match, user=request.user)
         return JsonResponse({'ok': True, 'match': {

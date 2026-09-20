@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction as db_transaction
 from django.db.models import Sum
@@ -423,25 +423,133 @@ def confirm_grant_account_history(account, source, *, user=None):
 
 
 def create_transfer_suggestion(company, source_txn, destination_txn, *, confidence=Decimal('75'), note=''):
+    """Create or return a transfer pair after validating imported rows."""
+    with db_transaction.atomic():
+        source_txn, destination_txn = Transaction.objects.select_for_update().select_related(
+            'account', 'company',
+        ).get(pk=source_txn.pk), Transaction.objects.select_for_update().select_related(
+            'account', 'company',
+        ).get(pk=destination_txn.pk)
+        _validate_transfer_rows(company, source_txn, destination_txn)
+        duplicate = InternalTransferMatch.objects.select_for_update().filter(
+            source_transaction__in=(source_txn, destination_txn),
+            destination_transaction__in=(source_txn, destination_txn),
+            status__in=('suggested', 'confirmed'),
+        ).exclude(source_transaction=source_txn, destination_transaction=destination_txn).first()
+        if duplicate:
+            raise ValueError('Одна з операцій вже пов’язана з іншим переказом')
+        existing = InternalTransferMatch.objects.select_for_update().filter(
+            source_transaction=source_txn, destination_transaction=destination_txn,
+        ).first()
+        if existing and existing.status == 'confirmed':
+            return existing
+        amount = min(source_txn.amount, destination_txn.amount)
+        fee_amount = calculate_transfer_fee(source_txn.amount, destination_txn.amount)
+        match, _ = InternalTransferMatch.objects.update_or_create(
+            source_transaction=source_txn,
+            destination_transaction=destination_txn,
+            defaults={
+                'company': company,
+                'source_account': source_txn.account,
+                'destination_account': destination_txn.account,
+                'amount': amount,
+                'fee_amount': fee_amount,
+                'confidence': Decimal(str(confidence)),
+                'status': 'suggested',
+            },
+        )
+        return match
+
+
+def _validate_transfer_rows(company, source_txn, destination_txn):
     if source_txn.company_id != company.id or destination_txn.company_id != company.id:
-        raise ValueError('Операции должны принадлежать одной компании')
-    if source_txn.id == destination_txn.id or source_txn.amount <= 0 or destination_txn.amount <= 0:
-        raise ValueError('Некорректные операции для перевода')
-    amount = min(source_txn.amount, destination_txn.amount)
-    fee_amount = calculate_transfer_fee(source_txn.amount, destination_txn.amount)
-    return InternalTransferMatch.objects.update_or_create(
-        source_transaction=source_txn,
-        destination_transaction=destination_txn,
-        defaults={
-            'company': company,
-            'source_account': source_txn.account,
-            'destination_account': destination_txn.account,
-            'amount': amount,
-            'fee_amount': fee_amount,
-            'confidence': Decimal(str(confidence)),
-            'status': 'suggested',
-        },
-    )[0]
+        raise ValueError('Операції повинні належати одній компанії')
+    if source_txn.id == destination_txn.id:
+        raise ValueError('Оберіть дві різні операції')
+    if source_txn.type != Transaction.TYPE_EXPENSE or destination_txn.type != Transaction.TYPE_INCOME:
+        raise ValueError('Переказ має поєднувати витрату з доходом')
+    if source_txn.status != Transaction.STATUS_ACTUAL or destination_txn.status != Transaction.STATUS_ACTUAL:
+        raise ValueError('Для переказу доступні лише фактичні операції')
+    if source_txn.excluded_from_reports or destination_txn.excluded_from_reports:
+        raise ValueError('Виключені або видалені операції не можна пов’язати')
+    if not source_txn.account_id or not destination_txn.account_id:
+        raise ValueError('Для обох операцій потрібен рахунок')
+    if source_txn.account_id == destination_txn.account_id:
+        raise ValueError('Операції повинні бути на різних рахунках')
+    if source_txn.currency != destination_txn.currency:
+        raise ValueError('Валюта рахунків повинна збігатися')
+    if not source_txn.account.is_active or source_txn.account.is_archived:
+        raise ValueError('Рахунок витрати неактивний')
+    if not destination_txn.account.is_active or destination_txn.account.is_archived:
+        raise ValueError('Рахунок доходу неактивний')
+    if source_txn.amount <= 0 or destination_txn.amount <= 0:
+        raise ValueError('Суми операцій повинні бути більшими за нуль')
+    if source_txn.amount < destination_txn.amount:
+        raise ValueError('Витрата переказу не може бути меншою за отримання')
+
+
+@db_transaction.atomic
+def create_missing_transfer_counterpart(company, anchor_txn, counterpart_account, *, fee_amount=Decimal('0'), counterpart_date=None, user=None):
+    """Create the missing opposite bank row and its confirmed transfer link."""
+    anchor = Transaction.objects.select_for_update().select_related('account').get(pk=anchor_txn.pk)
+    account = Account.objects.select_for_update().get(pk=counterpart_account.pk)
+    if anchor.company_id != company.id or account.company_id != company.id:
+        raise ValueError('Операція та рахунок повинні належати одній компанії')
+    if anchor.type not in (Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE):
+        raise ValueError('Оберіть дохід або витрату')
+    if anchor.status != Transaction.STATUS_ACTUAL or anchor.excluded_from_reports:
+        raise ValueError('Доступні лише фактичні операції без виключення з обліку')
+    if not anchor.account_id or anchor.account_id == account.id:
+        raise ValueError('Оберіть інший активний рахунок')
+    if not account.is_active or account.is_archived or account.currency != anchor.currency:
+        raise ValueError('Рахунок-кореспондент неактивний або має іншу валюту')
+    try:
+        fee = Decimal(str(fee_amount))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError('Некоректна сума комісії')
+    if fee < 0:
+        raise ValueError('Комісія не може бути від’ємною')
+
+    existing = InternalTransferMatch.objects.select_for_update().filter(
+        status__in=('suggested', 'confirmed'),
+    ).filter(source_transaction=anchor) if anchor.type == Transaction.TYPE_EXPENSE else InternalTransferMatch.objects.select_for_update().filter(
+        status__in=('suggested', 'confirmed'), destination_transaction=anchor,
+    )
+    existing = existing.select_related('source_transaction', 'destination_transaction').first()
+    if existing:
+        return existing, (existing.destination_transaction if anchor.type == Transaction.TYPE_EXPENSE
+                          else existing.source_transaction), False
+
+    if anchor.type == Transaction.TYPE_INCOME:
+        counterpart_type = Transaction.TYPE_EXPENSE
+        counterpart_amount = anchor.amount + fee
+        source_account, destination_account = account, anchor.account
+    else:
+        counterpart_type = Transaction.TYPE_INCOME
+        counterpart_amount = anchor.amount - fee
+        if counterpart_amount <= 0:
+            raise ValueError('Комісія повинна бути меншою за витрату')
+        source_account, destination_account = anchor.account, account
+    counterpart_date = counterpart_date or anchor.date_actual
+    counterpart = Transaction.objects.create(
+        company=company, type=counterpart_type, status=Transaction.STATUS_ACTUAL,
+        amount=counterpart_amount, amount_base=counterpart_amount,
+        currency=anchor.currency, account=account,
+        date_actual=counterpart_date, date_agreement=counterpart_date,
+        comment=f'Внутрішній переказ: створено пару до операції #{anchor.id}',
+        source='manual', created_by=user if getattr(user, 'is_authenticated', False) else None,
+        is_business=account.is_business,
+    )
+    source, destination = (counterpart, anchor) if anchor.type == Transaction.TYPE_INCOME else (anchor, counterpart)
+    _validate_transfer_rows(company, source, destination)
+    match = InternalTransferMatch.objects.create(
+        company=company, source_transaction=source, destination_transaction=destination,
+        source_account=source_account, destination_account=destination_account,
+        amount=min(source.amount, destination.amount), fee_amount=fee,
+        confidence=Decimal('100'), status='suggested',
+    )
+    match = confirm_transfer(match, user=user)
+    return match, counterpart, True
 
 
 @db_transaction.atomic
