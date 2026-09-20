@@ -172,27 +172,40 @@
         new Chart(donutEl, { type: 'doughnut', data: { labels: rows.map(function (r) { return r.name; }), datasets: [{ data: rows.map(function (r) { return r.total; }), backgroundColor: PIE, borderColor: '#111b2a', borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: false, cutout: '67%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return c.label + ': ' + fmt(c.parsed) + ' ₴'; } } } } } });
       }
       document.querySelectorAll('.pnl-day:not(.pnl-day--empty)').forEach(function (day) {
-        day.addEventListener('mouseenter', function () {
+        function showDay() {
           var tip = document.querySelector('.pnl-calendar-tooltip');
-          if (!tip) return;
           var cal = document.querySelector('.pnl-calendar');
+          if (!tip || !cal) return;
           var monthNames = ['', 'січ.', 'лют.', 'бер.', 'кві.', 'тра.', 'чер.', 'лип.', 'сер.', 'вер.', 'жов.', 'лис.', 'гру.'];
-          var month = cal ? Number(cal.dataset.month) : 1;
-          var year = cal ? cal.dataset.year : '';
-          tip.innerHTML = '<strong>' + day.dataset.day + ' ' + monthNames[month] + ' ' + year + '</strong><span><i class="is-income"></i>Доходи <b>' + day.dataset.income + '</b></span><span><i class="is-expense"></i>Витрати <b>' + day.dataset.expense + '</b></span><span><i class="is-profit"></i>Прибуток <b>' + day.dataset.profit + '</b></span>';
+          var weekdays = ['нд', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+          var month = Number(cal.dataset.month), year = Number(cal.dataset.year), number = Number(day.dataset.day);
+          var date = new Date(year, month - 1, number);
+          tip.innerHTML = '<strong>' + number + ' ' + monthNames[month] + ' ' + year + ' (' + weekdays[date.getDay()] + ')</strong><span><i class="is-income"></i>Доходи <b>' + day.dataset.income + '</b></span><span><i class="is-expense"></i>Витрати <b>' + day.dataset.expense + '</b></span><span><i class="is-profit"></i>Прибуток <b>' + day.dataset.profit + '</b></span>';
           tip.hidden = false;
-        });
-        day.addEventListener('mouseleave', function () { var tip = document.querySelector('.pnl-calendar-tooltip'); if (tip) tip.hidden = true; });
+          var left = day.offsetLeft + day.offsetWidth + 7;
+          if (left + tip.offsetWidth > cal.clientWidth - 6) left = day.offsetLeft - tip.offsetWidth - 7;
+          var top = day.offsetTop + day.offsetHeight + 7;
+          if (top + tip.offsetHeight > cal.clientHeight - 8) top = day.offsetTop - tip.offsetHeight - 7;
+          tip.style.left = Math.max(6, left) + 'px';
+          tip.style.top = Math.max(6, top) + 'px';
+        }
+        day.addEventListener('mouseenter', showDay);
+        day.addEventListener('focus', showDay);
+        day.addEventListener('click', function (event) { event.stopPropagation(); document.querySelectorAll('.pnl-day.is-selected').forEach(function (selected) { selected.classList.remove('is-selected'); }); day.classList.add('is-selected'); showDay(); });
+        day.addEventListener('mouseleave', function () { var tip = document.querySelector('.pnl-calendar-tooltip'); if (tip && !day.classList.contains('is-selected')) tip.hidden = true; });
       });
+      document.addEventListener('click', function () { var tip = document.querySelector('.pnl-calendar-tooltip'); if (tip) tip.hidden = true; document.querySelectorAll('.pnl-day.is-selected').forEach(function (day) { day.classList.remove('is-selected'); }); });
       var flow = document.getElementById('pnl-flow-chart');
       if (flow) {
-        var incomes = (d.income_by_category || []).slice(0, 5);
-        var expenses = (d.expense_by_category || []).slice(0, 5);
+        function compact(rows) { var top = rows.slice(0, 4), rest = rows.slice(4); if (rest.length) top.push({ name: 'Інші категорії', total: rest.reduce(function (sum, row) { return sum + Number(row.total || 0); }, 0) }); return top; }
+        var incomes = compact(d.income_by_category || []);
+        var expenses = compact(d.expense_by_category || []);
         var totalIncome = incomes.reduce(function (sum, row) { return sum + Number(row.total || 0); }, 0);
         var totalExpense = expenses.reduce(function (sum, row) { return sum + Number(row.total || 0); }, 0);
         var colors = ['#ff5f89', '#8c78ef', '#36d2a0', '#f4b34e', '#36b9dd'];
         function item(row, color, total) { var pct = total ? (Number(row.total) / total * 100).toFixed(1) : '0.0'; return '<div class="pnl-flow-item"><i style="background:' + color + '"></i><span>' + row.name + '<br><b>' + fmt(row.total) + ' ₴</b> <small>(' + pct + '%)</small></span></div>'; }
-        flow.innerHTML = '<div class="pnl-flow-side pnl-flow-side--income">' + (incomes.length ? incomes.map(function (r, i) { return item(r, '#36d2a0', totalIncome); }).join('') : '<span class="pnl-muted">Немає доходів</span>') + '</div><div class="pnl-flow-center"><b>' + fmt(totalIncome) + ' ₴</b><span>Загальні надходження</span></div><div class="pnl-flow-side pnl-flow-side--expense">' + (expenses.length ? expenses.map(function (r, i) { return item(r, colors[i % colors.length], totalExpense); }).join('') : '<span class="pnl-muted">Немає витрат</span>') + '</div><svg class="pnl-flow-lines" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden="true"><path d="M245 40 C370 40 390 145 500 145"/><path d="M245 100 C370 100 390 145 500 145"/><path d="M500 145 C610 145 630 40 755 40"/><path d="M500 145 C610 145 630 100 755 100"/><path d="M500 145 C610 145 630 200 755 200"/></svg>';
+        function flowPaths(rows, total, side) { return rows.map(function (row, index) { var y = 32 + index * 50, width = Math.max(7, Math.min(38, Number(row.total) / (total || 1) * 120)); var path = side === 'income' ? 'M 205 ' + y + ' C 300 ' + y + ', 330 135, 420 135' : 'M 580 135 C 670 135, 700 ' + y + ', 795 ' + y; return '<path d="' + path + '" style="stroke-width:' + width.toFixed(1) + 'px" class="pnl-flow-path--' + side + '"/>'; }).join(''); }
+        flow.innerHTML = '<div class="pnl-flow-side pnl-flow-side--income">' + (incomes.length ? incomes.map(function (r, i) { return item(r, i ? '#aab6c8' : '#36d2a0', totalIncome); }).join('') : '<span class="pnl-muted">Немає доходів</span>') + '</div><div class="pnl-flow-center"><b>' + fmt(totalIncome) + ' ₴</b><span>Загальні надходження</span></div><div class="pnl-flow-side pnl-flow-side--expense">' + (expenses.length ? expenses.map(function (r, i) { return item(r, colors[i % colors.length], totalExpense); }).join('') : '<span class="pnl-muted">Немає витрат</span>') + '</div><svg class="pnl-flow-lines" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden="true">' + flowPaths(incomes, totalIncome, 'income') + flowPaths(expenses, totalExpense, 'expense') + '</svg>';
       }
       var detailsGrid = document.querySelector('.pnl-details-grid');
       if (detailsGrid) detailsGrid.classList.add('is-list');

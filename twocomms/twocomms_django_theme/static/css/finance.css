@@ -3803,3 +3803,7 @@ body.fin-report-open { overflow: hidden; }
 @media (max-width:1200px) { .pnl-details-grid.is-list,.pnl-details-grid.is-chart { grid-template-columns:1fr; }.pnl-structure-pane { border-right:0; }.pnl-flow-panel { border-top:1px solid var(--fin-border); } }
 .pnl-flow-item { transition:color .15s,transform .15s,filter .15s; cursor:default; }
 .pnl-flow-item:hover { color:#fff; transform:translateX(3px); filter:brightness(1.2); }
+.pnl-day.is-selected { border-color:#f2f7ff; box-shadow:0 0 0 1px #f2f7ff inset,0 0 14px rgba(232,241,255,.28); transform:translateY(-1px); }
+.pnl-flow-lines path { stroke-width:14px; }
+.pnl-flow-lines .pnl-flow-path--income { stroke:rgba(41,194,143,.36); }
+.pnl-flow-lines .pnl-flow-path--expense { stroke:rgba(230,74,111,.42); }
