@@ -96,6 +96,23 @@ class FinanceV2ServiceTests(TestCase):
         ledger_v2.confirm_transfer(match, user=self.user)
         self.assertEqual(InternalTransferMatch.objects.filter(id=match.id).count(), 1)
 
+    def test_transfer_match_api_previews_and_confirms_fee(self):
+        outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10050'), account=self.cash)
+        incoming = self._txn(Transaction.TYPE_INCOME, Decimal('10000'), account=self.account)
+        self.client.force_login(self.user)
+        preview = self.client.get(
+            f'/api/v2/transfers/match/?transaction_id={incoming.id}', HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json()['candidates'][0]['fee_amount'], '50.00')
+        confirmed = self.client.post(
+            '/api/v2/transfers/match/', data=json.dumps({
+                'source_transaction_id': outgoing.id,
+                'destination_transaction_id': incoming.id,
+                'confirm': True,
+            }), content_type='application/json', HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(confirmed.json()['match']['fee_amount'], '50.00')
+
     def test_transfer_confirmation_does_not_change_pnl_classification(self):
         outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10000'), account=self.cash)
         incoming = self._txn(Transaction.TYPE_INCOME, Decimal('10000'), account=self.account)
