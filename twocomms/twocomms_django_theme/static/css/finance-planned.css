@@ -222,6 +222,8 @@
 
 /* Составные обязательства v2. */
 .fin-v2-groups { margin-top: 24px; }
+.fin-v2-groups .fin-section-title, .fin-v2-funding .fin-section-title { margin-bottom: 4px; }
+.fin-v2-groups .fin-plan-subtitle, .fin-v2-funding .fin-plan-subtitle { max-width: 760px; }
 .fin-oblig-v2 {
   background: var(--fin-panel); border: 1px solid var(--fin-border);
   border-radius: var(--fin-radius-md, 14px); overflow: hidden;
@@ -240,7 +242,24 @@
 .fin-oblig-v2__done { color: #34d399; font-size: 12px; }
 .fin-v2-groups .fin-oblig__pay { white-space: nowrap; }
 .fin-v2-groups + .fin-modal { z-index: 20; }
+.fin-funding-v2 {
+  background: var(--fin-panel); border: 1px solid rgba(96,165,250,.28);
+  border-radius: var(--fin-radius-md, 14px); padding: 14px 16px;
+}
+.fin-v2-funding { margin-top: 24px; }
+.fin-funding-v2__head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.fin-funding-v2__head strong { flex: 1; font-size: 15px; }
+.fin-funding-v2__badge {
+  color: #93c5fd; border: 1px solid rgba(147,197,253,.35); border-radius: 999px;
+  padding: 3px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+}
+.fin-funding-v2__stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.fin-funding-v2__stats span { display: flex; flex-direction: column; gap: 3px; }
+.fin-funding-v2__stats small { color: var(--fin-muted); font-size: 11px; }
+.fin-funding-v2__stats b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.fin-funding-v2__review { margin: 12px 0 0; color: #fbbf24; font-size: 12px; }
 @media (max-width: 640px) {
   .fin-oblig-v2__part { grid-template-columns: 1fr auto; }
   .fin-oblig-v2__part .fin-oblig__pay, .fin-oblig-v2__part .fin-oblig-v2__done { grid-column: 1 / -1; justify-self: start; }
+  .fin-funding-v2__stats { grid-template-columns: 1fr; gap: 8px; }
 }
