@@ -48,7 +48,7 @@ class Migration(migrations.Migration):
                 ('lease_until', models.DateTimeField(blank=True, null=True)),
             ],
             options={
-                'constraints': [models.CheckConstraint(condition=models.Q(('pk', 1)), name='ig_trace_refresh_singleton'), models.CheckConstraint(condition=models.Q(('max_starts_per_hour__gte', 1), ('max_starts_per_hour__lte', 24)), name='ig_trace_refresh_budget_bound')],
+                'constraints': [models.CheckConstraint(condition=models.Q(('max_starts_per_hour__gte', 1), ('max_starts_per_hour__lte', 24)), name='ig_trace_refresh_budget_bound')],
             },
         ),
         migrations.CreateModel(

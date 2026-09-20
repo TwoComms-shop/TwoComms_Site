@@ -150,7 +150,6 @@ class IgJourneyTraceRefreshControl(models.Model):
 
     class Meta:
         constraints = [
-            models.CheckConstraint(condition=models.Q(pk=1), name="ig_trace_refresh_singleton"),
             models.CheckConstraint(condition=models.Q(max_starts_per_hour__gte=1,
                 max_starts_per_hour__lte=24), name="ig_trace_refresh_budget_bound"),
         ]
