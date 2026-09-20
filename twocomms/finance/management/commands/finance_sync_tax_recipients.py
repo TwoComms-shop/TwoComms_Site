@@ -61,9 +61,10 @@ class Command(BaseCommand):
                 make_primary=False,
                 when=txn.date_actual,
             )
+            component.name = uk_name
             component.recipient_card = card
             component.payment_purpose_template = purpose
-            component.save(update_fields=['recipient_card', 'payment_purpose_template'])
+            component.save(update_fields=['name', 'recipient_card', 'payment_purpose_template'])
             self.stdout.write(self.style.SUCCESS(f'  привʼязано картку #{card.id} до компонента #{component.id}'))
 
         if not options['apply']:
