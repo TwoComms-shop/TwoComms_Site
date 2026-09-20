@@ -378,7 +378,8 @@
     if (item) els.transferMatchPreview.textContent = 'Основна сума: ' + item.amount + ' грн · Комісія: ' + item.fee_amount + ' грн';
   }
   function loadTransferMatch(txn) {
-    if (!els.transferMatch || !txn || (txn.type !== 'income' && txn.type !== 'expense') || txn.status !== 'actual' || txn.economic_kind !== 'unknown') return;
+    if (!els.transferMatch || !txn || (txn.type !== 'income' && txn.type !== 'expense') || txn.status !== 'actual' ||
+        (txn.economic_kind !== 'unknown' && txn.economic_kind !== 'internal_transfer')) return;
     transferMatchState.txnId = txn.id;
     transferMatchState.txnType = txn.type;
     api('/api/v2/transfers/match/?transaction_id=' + encodeURIComponent(txn.id)).then(function (res) {
