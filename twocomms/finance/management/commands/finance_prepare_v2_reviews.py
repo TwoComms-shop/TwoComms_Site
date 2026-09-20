@@ -1,5 +1,6 @@
 """Prepare explicit grant sources and review proposals for known bank inflows."""
 from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -33,11 +34,13 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         company = get_default_company()
         for spec in self.SOURCES:
+            start = datetime.fromisoformat(spec['date']).replace(tzinfo=timezone.utc)
             txn = Transaction.objects.filter(
                 company=company,
                 type=Transaction.TYPE_INCOME,
                 amount=spec['transaction_amount'],
-                date_actual__date=spec['date'],
+                date_actual__gte=start,
+                date_actual__lt=start + timedelta(days=1),
             ).order_by('id').first()
             source = FundingSource.objects.filter(company=company, name=spec['name']).first()
             if not options['apply']:
