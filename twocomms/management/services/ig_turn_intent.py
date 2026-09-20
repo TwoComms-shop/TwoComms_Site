@@ -17,7 +17,31 @@ SALES_RESPONSE_ACTIONS = frozenset({
     "size_gap_notification_intent", "follow_decision_prepare",
 })
 _PRICE = re.compile(r"(?:яка|який|яку|скільки|сколько|какая|какую|what|how much).{0,35}(?:цін|цен|кошту|стоит|price|cost)|(?:цін[аиу]|цен[аыу]|price)\s*[?？]|(?:цікавить|интересует)\s+(?:цін|цен)|\bhow much\s*[?？]|\bprice[, ]+please\b", re.I)
-_SELECTION = re.compile(r"(?:допомож|помог|help).{0,45}(?:обрат|вибрат|выбрат|під[іи]брат|подобрат|розмір|размер|size|choose)|(?:який|какой|what).{0,25}(?:розмір|размер|size).{0,25}(?:підій|подойд|fit)", re.I)
+# These are addressed requests, not arbitrary mentions of choosing clothing.
+# Keep the verb at the start of an own clause and require a bounded target.
+_SELECTION_TARGET = re.compile(r"\b(?:футбол\w*|худі|худи|одяг\w*|одежд\w*|світшот\w*|свитшот\w*|розмір\w*|размер\w*|принт\w*|t.?shirts?|shirts?|hoodies?|sweatshirts?|outfits?|clothes|clothing|sizes?)\b", re.I)
+_SELECTION_REQUEST = re.compile(
+    r"^(?:(?:підберіть|підбери|подберите|подбери|порадьте|порадь|посоветуйте|посоветуй|порекомендуйте|порекомендуй|допоможіть|допоможи|помогите|помоги)\b"
+    r"|(?:чи\s+)?(?:можете|можеш|могли\s+б\s+ви|могли\s+бы\s+вы)\s+(?:(?:мені|мне)\s+)?(?:підібрати|подобрать|порадити|посоветовать|порекомендувати|порекомендовать|допомогти|помочь)\b"
+    r"|(?:help(?:\s+me)?|choose|pick|recommend|suggest)\b"
+    r"|(?:can|could|would)\s+you\s+(?:please\s+)?(?:help(?:\s+me)?|choose|pick|recommend|suggest)\b"
+    r"|(?:i\s+(?:need|want|would\s+like)|i['’]d\s+like)\s+(?:your\s+)?help\b)", re.I,
+)
+_SELECTION_WITHDRAWAL = re.compile(
+    r"^(?:(?:я\s+)?не\s+(?:(?:хочу|треба|потрібно|нужно|надо|більше|больше|зараз|сейчас|поки|пока|щоб|чтобы|ви|вы|мені|мне)\s+){0,6}"
+    r"(?:підбира\w*|підібра\w*|подбира\w*|подобра\w*|радити|советова\w*|рекомендува\w*|рекомендова\w*|допомага\w*|помога\w*)\b"
+    r"|(?:i\s+)?(?:do\s+not|don['’]t|no\s+longer|stop)\s+(?:(?:want|need|you|to|please|help|me|with)\s+){0,6}(?:choose|choosing|pick|picking|recommend|recommending|suggest|suggesting)\b"
+    r"|(?:can|could|would)\s+you\s+(?:please\s+)?not\s+(?:choose|pick|recommend|suggest)\b"
+    r"|(?:можете|можеш)\s+не\s+(?:підбира\w*|підібра\w*|подбира\w*|подобра\w*)\b"
+    r"|(?:підбір|подбор)\s+(?:(?:мені|мне|більше|больше|зараз|сейчас)\s+){0,3}не\s+(?:потріб\w*|нуж\w*)\b)", re.I,
+)
+_SELECTION_REPORTED = re.compile(r"^(?:реклама|оголошення|объявление|цитата|це\s+цитата|у\s+(?:статті|рекламі|дописі)|в\s+(?:статье|рекламе|посте)|переслан[ео]\s+(?:повідомлення|сообщение)|(?:мені|мне)\s+(?:написали|сказали)|(?:друг|подруга|він|вона|он|она)\s+(?:сказ\w*|напис\w*|попрос\w*)|advert\w*|quote|(?:this\s+)?ad\b|forwarded\s+message|(?:he|she|they|my\s+friend)\s+(?:said|wrote|asked))\b", re.I)
+_SELECTION_SELF = re.compile(r"^(?:(?:а|але|но|but)\s+)?(?:мені|мне|для\s+мене|для\s+меня|for\s+me)\b[, ]*", re.I)
+_SELECTION_SELF_SERVICE = re.compile(r"\b(?:для\s+себе|для\s+себя|for\s+yourself|your\s+(?:style|outfit))\b", re.I)
+_SELECTION_POLITE = re.compile(r"^(?:(?:привіт|вітаю|доброго\s+дня|привет|здравствуйте|hello|hi)[, ]+)?(?:(?:а|але|но|but)\s+)?(?:(?:будь\s+ласка|пожалуйста|please)[, ]+)?", re.I)
+_SELECTION_SHORT_STOP = re.compile(r"^(?:(?:ні|нет|no)[, ]+)?(?:не\s+треба|не\s+потрібно|не\s+нужно|не\s+надо|no\s+thanks|not\s+anymore)[, ]*$", re.I)
+_SIZE_QUESTION = re.compile(r"^(?:який|какой|what|which)\s+(?:розмір|размер|size)\b(?:\s+\w+){0,4}\s+(?:підій\w*|подойд\w*|fit\w*)\b", re.I)
+_PRICE_REQUEST = re.compile(r"^(?:(?:тільки|лише|просто|только|just|only)\s+)?(?:скажіть|підкажіть|скажите|подскажите|tell\s+me)\s+(?:(?:мені|мне|the)\s+)?(?:ціну|цену|price)\b", re.I)
 _RETAIL = re.compile(r"(?:хочу|хот[еі]л|можна|можно|want|can i|i would like|i['’]d like).{0,35}(?:купит|купув|покуп|замов|заказ|buy|order)|(?:є|есть|have).{0,30}(?:футболк|худі|худи|t.?shirt|hoodie)", re.I)
 _ORDER_IMPERATIVE = re.compile(
     r"(?:^|[.!?;\n])\s*(?:(?:будь ласка|пожалуйста|please)[, ]+)?"
@@ -62,12 +86,70 @@ def _customer_text(text):
     return value
 
 
+def _selection_signal(text, *, selection_context=False):
+    """Last addressed selection directive, or None when there is no proof.
+
+    Reported/ad introductions constrain subsequent pasted clauses. A marked
+    own request can follow them; unmarked verbatim copying is indistinguishable
+    from an identical customer request and is outside this lexical fallback.
+    """
+    value = _customer_text(text)
+    reported = bool(_SELECTION_REPORTED.match(value))
+    signal = None
+    for part in re.split(r"[.!?;\n]+|,\s*(?:але|но|but)\s+", value, flags=re.I):
+        clause = part.strip()
+        own = _SELECTION_SELF.match(clause)
+        if reported and not own:
+            continue
+        if own:
+            clause = clause[own.end():]
+        clause = _SELECTION_POLITE.sub("", clause, count=1).strip()
+        clause = re.sub(r"[, ]+", " ", clause).strip()
+        if _SELECTION_WITHDRAWAL.match(clause) or (selection_context and _SELECTION_SHORT_STOP.fullmatch(clause)):
+            signal, selection_context = False, False
+            continue
+        request = _SELECTION_REQUEST.match(clause)
+        tail = clause[request.end():] if request else ""
+        target = _SELECTION_TARGET.search(tail)
+        if ((_SIZE_QUESTION.match(clause) or (request and target and len(tail[:target.start()].split()) <= 8))
+            and not _SELECTION_SELF_SERVICE.search(clause)):
+            signal, selection_context = True, True
+    return signal
+
+
+def _selection_history(client, sources, floor):
+    """Bounded source evidence only; truncated neutral history grants nothing."""
+    if not sources:
+        return False, [], False
+    latest_at = max(row.provider_created_at or row.created_at for row in sources)
+    prior = InstagramBotMessage.objects.filter(
+        client=client, role="user", sender_id=client.igsid,
+        pk__gte=floor, pk__lt=min(row.pk for row in sources),
+        created_at__gte=latest_at-timedelta(hours=24),
+    )
+    namespaces = {row.provider_namespace for row in sources}
+    if len(namespaces) == 1:
+        prior = prior.filter(provider_namespace=next(iter(namespaces)))
+    if client.reply_permission_epoch:
+        prior = prior.filter(revision_sources__revision__permission_epoch=client.reply_permission_epoch).distinct()
+    recent = list(prior.order_by("-pk")[:5])
+    signal, refs = None, []
+    for row in reversed(recent[:4]):
+        observed = _selection_signal(row.text, selection_context=signal is True)
+        if observed is not None:
+            signal, refs = observed, [row.pk] if observed is False else []
+    return signal is False, refs, len(recent) > 4 and signal is None
+
+
 def _purpose(text):
     value = _customer_text(text)
-    if _PRICE.search(value):
+    if _PRICE.search(value) or any(_PRICE_REQUEST.match(part.strip()) for part in re.split(r"[.!?;\n,]+", value)):
         return "price_inquiry"
-    if _SELECTION.search(value):
+    selection = _selection_signal(text)
+    if selection is True:
         return "requested_selection"
+    if selection is False:
+        return "selection_withdrawal"
     # A customer imperative can permit checkout discussion, but cannot itself
     # supply the separate product/payment authority required by checkout.
     if not _NEGATED_ORDER.search(value) and (_RETAIL.search(value) or _ORDER_IMPERATIVE.search(value)):
@@ -92,11 +174,14 @@ def build_turn_intent(client, revision=None, source_messages=None):
     ids = sorted(row.pk for row in sources)
     watermark = max(ids, default=0)
     journal = IgConversationRouteDecision.objects.filter(client=client, reset_floor=floor, watermark_message_id__lte=watermark).order_by("-sequence").first()
+    if journal is not None and client.reply_permission_epoch and (journal.source_binding or {}).get("client_permission_epoch") != client.reply_permission_epoch:
+        journal = None
     fresh = journal is not None and ((revision is not None and journal.revision_id == revision.pk) or journal.watermark_message_id in ids)
     intents = (journal.interpretation or {}).get("intents", []) if fresh else []
     commercial = [item for item in intents if item.get("kind") in {"catalog", "custom_print", "dtf"} and item.get("operation") != "withdraw"]
     evidence = []
     purpose = ""
+    selection_withdrawn, withdrawal_refs, continuity_uncertain = _selection_history(client, sources, floor)
     for row in sources:
         if _NEGATED_ORDER.search(_customer_text(row.text)):
             # A catalog topic can remain standing while the customer refuses
@@ -105,8 +190,13 @@ def build_turn_intent(client, revision=None, source_messages=None):
             purpose = "purchase_refusal"
             evidence = []
             continue
+        selection = _selection_signal(row.text, selection_context=purpose == "requested_selection")
+        if selection is not None:
+            selection_withdrawn, withdrawal_refs, continuity_uncertain = not selection, [row.pk] if not selection else [], False
+            if not selection:
+                purpose, evidence = "selection_withdrawal", []
         observed = _purpose(row.text)
-        if observed:
+        if observed and observed != "selection_withdrawal":
             purpose = observed
             evidence.append(row.pk)
     if not purpose and sources and not any(str(row.text or "").strip() for row in sources) and not (fresh and not commercial):
@@ -127,9 +217,11 @@ def build_turn_intent(client, revision=None, source_messages=None):
             )
             if direct_bundle or requested_media:
                 purpose = _purpose(prior.text)
-                if purpose:
+                if purpose == "requested_selection" and (selection_withdrawn or continuity_uncertain):
+                    purpose = "selection_withdrawal" if selection_withdrawn else ""
+                if purpose and purpose != "selection_withdrawal":
                     evidence.append(prior.pk)
-    if not purpose and not fresh and journal is not None:
+    if not purpose and not fresh and journal is not None and not selection_withdrawn and not continuity_uncertain:
         prior_commerce = [item for item in (journal.interpretation or {}).get("intents", ()) if item.get("kind") in {"catalog", "custom_print", "dtf"} and item.get("operation") != "withdraw"]
         # A concrete terse configuration answer can continue an accepted retail
         # route. A greeting/thanks or a fresh community route cannot do so.
@@ -147,7 +239,9 @@ def build_turn_intent(client, revision=None, source_messages=None):
         purpose = next((item.get("kind") for item in intents if item.get("operation") != "withdraw"), "unknown")
     acts = ["answer_current_question", "acknowledge_current_topic"]
     if evidence:
-        acts += ["retail_consultation", "optional_retail_next_step"]
+        acts += ["retail_consultation"]
+        if not selection_withdrawn and not continuity_uncertain:
+            acts += ["optional_retail_next_step"]
     cycle_basis = f"{client.pk}:{floor}:{purpose}:{','.join(map(str, sorted(evidence)))}"
     return {"version": VERSION, "purpose": purpose, "commerce_evidence_refs": sorted(evidence),
             "source_message_ids": ids, "route_decision_id": journal.pk if fresh else 0,
@@ -155,12 +249,18 @@ def build_turn_intent(client, revision=None, source_messages=None):
             "allowed_response_acts": acts, "uncertainty": "" if evidence or fresh else "current_intent_unproven",
             "cycle_key": hashlib.sha256(cycle_basis.encode()).hexdigest() if evidence else "",
             "source_revision_id": getattr(revision, "pk", 0) or 0, "reset_floor": floor,
+            "selection_withdrawn": selection_withdrawn, "selection_withdrawal_refs": withdrawal_refs,
+            "selection_continuity_uncertain": continuity_uncertain,
             "source_scope": _accepted_scope(journal, ids) if fresh else {}}
 
 
 def intent_generation_guidance(decision):
     allowed = "retail_consultation" in decision.get("allowed_response_acts", ())
-    return (f"Current customer purpose: {decision.get('purpose', 'unknown')}. "
+    restriction = ("The customer withdrew clothing selection. Answer any explicit factual question, but do not offer alternatives, optional sales steps or follow-ups. This is not a price objection or a refusal of an independently requested checkout. "
+                   if decision.get("selection_withdrawn") else
+                   "Earlier selection permission is unproven in the bounded source history. Answer the current explicit question without optional selection or follow-ups. "
+                   if decision.get("selection_continuity_uncertain") else "")
+    return (f"Current customer purpose: {decision.get('purpose', 'unknown')}. " + restriction
             + ("Answer the evidenced retail question; any next step is optional. Do not infer order, price objection, budget or online status from silence." if allowed else
                "Respond to the current topic and evidenced service, handoff or opt-out request. Do not introduce clothing selection, a new order, payment, discounts or sales follow-up. Image contents and old product interest are not purchase intent."))
 
@@ -174,6 +274,13 @@ def source_only_noncommercial(decision, source_messages):
 
 
 def validate_turn_response(decision, text, actions=()):
+    if ((decision.get("selection_withdrawn") or decision.get("selection_continuity_uncertain"))
+        and "retail_consultation" in decision.get("allowed_response_acts", ())):
+        # An explicit order retains the independent checkout gate. A factual
+        # price question alone cannot reopen selection or optional sales work.
+        if (_UNREQUESTED_SELECTION.search(str(text or ""))
+            or (decision.get("purpose") != "retail" and (_CTA.search(str(text or "")) or SALES_RESPONSE_ACTIONS.intersection(actions)))):
+            return "selection_withdrawal_disallows_sales"
     if "retail_consultation" not in decision.get("allowed_response_acts", ()):
         prose_rule = _NEW_SALE_CTA if decision.get("purpose") == "support" else _CTA
         if (SALES_RESPONSE_ACTIONS.intersection(actions) or prose_rule.search(str(text or ""))
@@ -302,6 +409,10 @@ def _informational_generation_debt(client, task, old, decision, revision):
 
 def purpose_blockers(client, decision, *, revision=None):
     """Return a blocker without resolving or bulk closing manager cases."""
+    if decision.get("selection_withdrawn"):
+        return "selection_followup_withdrawn"
+    if decision.get("selection_continuity_uncertain"):
+        return "selection_continuity_unproven"
     current_ids = set(decision.get("source_message_ids", ())) | set(decision.get("commerce_evidence_refs", ()))
     current_scope = decision.get("source_scope") or {}
     cases = IgFollowUpTask.objects.filter(client=client, kind="manager_task").select_related("deal").exclude(status__in=("completed", "cancelled")).exclude(reason__startswith="parcel_reminder:")

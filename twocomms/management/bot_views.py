@@ -1266,26 +1266,26 @@ def bot_gemini_health_probe_api(request):
 def bot_health(request):
     """Public, non-sensitive readiness probe for external uptime monitors."""
     from .services.ig_task_health import release_queue_snapshot, task_health_snapshot
+    from .services.ig_lane_health import operational_lane_snapshot
 
-    status = bot.status_snapshot()
     tasks = task_health_snapshot()
     queues = release_queue_snapshot()
-    enabled = bool(InstagramBotSettings.load().is_enabled)
-    bot_healthy = not enabled or status.get("state") == "running"
+    operations = operational_lane_snapshot()
     healthy = bool(
         tasks.get("available")
         and tasks.get("healthy")
         and queues.get("available")
-        and queues.get("dangerous_backlog") == 0
-        and bot_healthy
+        and operations.get("available")
+        and operations.get("healthy")
     )
     response = JsonResponse(
         {
             "status": "ok" if healthy else "degraded",
             "service": "instagram-bot",
-            "bot_state": status.get("state") or "unknown",
+            "bot_state": operations.get("bot_state") or "unknown",
             "cron_unhealthy": int(tasks.get("unhealthy_count") or 0),
             "queues": queues,
+            "operations": operations,
             "checked_at": timezone.now().isoformat(),
         },
         status=200 if healthy else 503,

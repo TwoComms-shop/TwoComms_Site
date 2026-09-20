@@ -46,9 +46,9 @@
 
 Astra/high d073_preference_withdrawal READ_ONLY проверяет operational health для B03.20. Raw release-drain counts сохраняются совместимыми; штатное ожидание и известный ручной долг не означают остановку daemon. Нужны отдельные runnable/processing/deferred/manual/failed/UNKNOWN категории и возраст отсутствия прогресса по существующим lanes, без нового scheduler или writes/provider calls из GET health. run_instagram_bot.py содержит stagedD071 и не редактируется в этом срезе. Root утвердил EDIT_SCOPED: новый ig_lane_health.py, только health endpoint в bot_views.py, новые tests_ig_lane_health.py и необходимые health fixtures. No schema/daemon/scheduler изменений; неизвестную coverage не выдавать за healthy.
 
-### D080 · явная просьба помочь с выбором — подтверждённый языковой пробел
+### D080 · явная просьба помочь с выбором — в работе
 
-D078 fixtures обнаружили: «Підберіть футболку, будь ласка» не получает requested_selection, хотя «Допоможіть підібрати футболку» получает. Нужен отдельный source-bound разбор явных просьб UK/RU/EN, с отказами, цитатами, третьим лицом и unsolicited media как отрицательным корпусом; не разрешать модельному topic label выдавать sales authority. Проверить также negated selection, а не только negated purchase. Приёмка через guard/live/followup, цена/наличие/checkout остаются отдельными authority. D078 не расширяет классификатор; пока это ограничение coverage.
+D078 fixtures обнаружили: «Підберіть футболку, будь ласка» не получает requested_selection, хотя «Допоможіть підібрати футболку» получает. Нужен отдельный source-bound разбор явных просьб UK/RU/EN, с отказами, цитатами, третьим лицом и unsolicited media как отрицательным корпусом; не разрешать модельному topic label выдавать sales authority. Проверить также negated selection, а не только negated purchase. Приёмка через guard/live/followup, цена/наличие/checkout остаются отдельными authority. Astra/high d073_semantic_review EDIT_SCOPED: ig_turn_intent.py и новый tests_ig_selection_intent.py. Root требует mixed price+selection restriction и отсутствие возврата запрещённой инициативы после4+нейтральных сообщений. D078 не расширяет классификатор; D080 проходит отдельную приёмку и выпуск.
 
 ### D078 · подтверждённая первая содержательная реплика в исходном episode — принят к выпуску
 
