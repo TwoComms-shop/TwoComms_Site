@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -26,6 +27,26 @@ class HumanReplyRejected(ValueError):
 class HumanReplyResult:
     command: HumanReplyCommand
     idempotent: bool = False
+
+
+@contextmanager
+def _human_send_boundary(command_id: int):
+    """Recheck the human command/epoch at the physical request edge."""
+    with transaction.atomic():
+        command = HumanReplyCommand.objects.select_for_update().select_related("client").get(pk=command_id)
+        client = IgClient.objects.select_for_update().get(pk=command.client_id)
+        allowed = bool(
+            command.state == HumanReplyCommand.State.PROVIDER_STARTED
+            and client.reply_permission_epoch == command.permission_epoch
+            and not client.hidden_at
+            and not client.privacy_erasure_started_at
+            and not (
+                client.opted_out_at
+                and (not client.opted_in_at or client.opted_out_at > client.opted_in_at)
+            )
+            and not getattr(client, "is_blocked", False)
+        )
+    yield allowed
 
 
 def _window_deadline(message: InstagramBotMessage):
@@ -211,7 +232,14 @@ def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None
     try:
         from management.services.instagram_bot import send_text
 
-        receipt = send_text(settings_obj, client.igsid, command.text, return_receipt=True, outgoing_actor="manager")
+        receipt = send_text(
+            settings_obj,
+            client.igsid,
+            command.text,
+            return_receipt=True,
+            outgoing_actor="manager",
+            permission_boundary_factory=lambda: _human_send_boundary(command.pk),
+        )
         ok = bool(getattr(receipt, "ok", False))
         kind = str(getattr(receipt, "kind", "") or "")
         hint = str(getattr(receipt, "hint", "") or "")[:96]
