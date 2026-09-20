@@ -468,6 +468,14 @@ def _import_item(account: Account, item: dict, *, user, apply_rules=True):
     # Авто-категоризація за MCC (лише витрати без категорії — правила мають
     # пріоритет). Призначає finance.Category, що відповідає групі MCC monobank.
     _auto_categorize_by_mcc(txn)
+    # Terminal text reliably identifies the channel, not the money source.
+    # Queue a review marker and leave the imported income untouched.
+    from .ledger_v2 import ensure_terminal_cash_decision_review
+    ensure_terminal_cash_decision_review(txn)
+    # Only fresh incoming rows can trigger an alert after their surrounding
+    # database transaction has committed.
+    from .transaction_alerts import schedule_new_incoming_classification_alert
+    schedule_new_incoming_classification_alert(txn)
     return txn
 
 

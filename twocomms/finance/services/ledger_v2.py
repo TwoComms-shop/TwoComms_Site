@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from decimal import Decimal
 
 from django.db import transaction as db_transaction
@@ -9,10 +10,204 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from ..models import (
-    BalanceReconciliation, ClassificationReview, FundingAllocation, FundingSource,
+    Account, BalanceReconciliation, ClassificationReview, FundingAllocation, FundingSource,
     InternalTransferMatch, LedgerClassification, LedgerClassificationEvent,
     RefundLink, Transaction,
 )
+from . import transactions as transactions_service
+
+
+TERMINAL_CASH_INCOME_KINDS = (
+    'sale', 'investment', 'grant_inflow', 'debt_repayment', 'expense_refund',
+    'personal_transfer', 'adjustment',
+)
+
+_TERMINAL_RE = re.compile(r'\b(?:terminal|термінал|терминал)\b', re.IGNORECASE)
+_MONO_RE = re.compile(r'\b(?:mono|monobank|монобанк)\b', re.IGNORECASE)
+_CITY24_RE = re.compile(r'\b(?:city[\s-]?24|сіті[\s-]?24|сити[\s-]?24)\b', re.IGNORECASE)
+
+
+def _terminal_text_values(value, path):
+    """Yield string values from bank metadata with their stable JSON paths."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from _terminal_text_values(child, f'{path}.{key}')
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            yield from _terminal_text_values(child, f'{path}[{index}]')
+    elif isinstance(value, str) and value.strip():
+        yield path, value
+
+
+def terminal_cash_evidence(txn):
+    """Return terminal-provider evidence without changing the imported row."""
+    values = []
+    if txn.comment:
+        values.append(('comment', txn.comment))
+    values.extend(_terminal_text_values(txn.external_data or {}, 'external_data'))
+
+    matched_fields = {'terminal': [], 'monobank': [], 'city24': []}
+    for path, value in values:
+        if _TERMINAL_RE.search(value):
+            matched_fields['terminal'].append(path)
+        if _MONO_RE.search(value):
+            matched_fields['monobank'].append(path)
+        if _CITY24_RE.search(value):
+            matched_fields['city24'].append(path)
+
+    providers = []
+    if matched_fields['monobank']:
+        providers.append('monobank')
+    if matched_fields['city24']:
+        providers.append('city24')
+    is_candidate = bool(matched_fields['city24'] or (
+        matched_fields['terminal'] and matched_fields['monobank']
+    ))
+    return {
+        'is_candidate': is_candidate,
+        'providers': providers,
+        'matched_fields': {key: value for key, value in matched_fields.items() if value},
+    }
+
+
+def _assert_terminal_cash_transaction(txn):
+    if txn.status != Transaction.STATUS_ACTUAL or txn.type != Transaction.TYPE_INCOME:
+        raise ValueError('Нужна фактическая входящая операция')
+    evidence = terminal_cash_evidence(txn)
+    if not evidence['is_candidate']:
+        raise ValueError('Операция не похожа на пополнение через терминал Mono или City24')
+    if not txn.account_id:
+        raise ValueError('У входящей операции не указан счет получателя')
+    return evidence
+
+
+def ensure_terminal_cash_decision_review(txn):
+    """Queue a newly imported terminal top-up without changing its meaning.
+
+    This is deliberately a decision marker, rather than a cash-transfer
+    proposal: bank text identifies a terminal, not the person who supplied
+    the money. The UI replaces it with an explicit reviewed decision.
+    """
+    try:
+        evidence = _assert_terminal_cash_transaction(txn)
+    except ValueError:
+        return None
+    existing = ClassificationReview.objects.filter(
+        company=txn.company, transaction=txn, status='pending',
+    ).filter(proposal__kind__startswith='terminal_cash_').first()
+    if existing:
+        return existing
+    return ClassificationReview.objects.create(
+        company=txn.company,
+        transaction=txn,
+        proposal={'kind': 'terminal_cash_decision', 'terminal_evidence': evidence},
+        reason='Термінальне поповнення: вкажіть походження коштів. Історія та баланси не змінені.',
+        impact={'pnl': str(txn.amount), 'cashflow': str(txn.amount), 'requires_decision': True},
+        confidence=Decimal('100'),
+    )
+
+
+@db_transaction.atomic
+def prepare_terminal_cash_review(company, txn_id, *, action, user=None,
+                                 source_cash_account_id=None, economic_kind=None,
+                                 ownership_scope='unknown'):
+    """Create or update one pending, non-destructive terminal-cash review."""
+    txn = Transaction.objects.select_for_update().select_related('account').get(
+        id=txn_id, company=company,
+    )
+    evidence = _assert_terminal_cash_transaction(txn)
+    if ownership_scope not in dict(LedgerClassification.SCOPE_CHOICES):
+        raise ValueError('Некорректная принадлежность операции')
+
+    if action == 'cash_transfer':
+        source_cash = Account.objects.select_for_update().filter(
+            id=source_cash_account_id, company=company, is_active=True,
+            is_archived=False,
+        ).first()
+        if source_cash is None:
+            raise ValueError('Оберіть активний власний рахунок')
+        if source_cash.id == txn.account_id:
+            raise ValueError('Рахунок-джерело та рахунок отримувача мають відрізнятися')
+        if source_cash.currency != txn.currency:
+            raise ValueError('Валюта рахунку-джерела має збігатися з валютою поповнення')
+        proposal = {
+            'kind': 'terminal_cash_transfer',
+            'source_cash_account_id': source_cash.id,
+            'destination_account_id': txn.account_id,
+            'terminal_evidence': evidence,
+        }
+        reason = 'Поповнення через термінал: підтвердьте переказ на власну картку'
+        impact = {
+            'cash_source': str(-txn.amount), 'cash_destination': str(txn.amount), 'pnl': '0',
+        }
+    elif action == 'income':
+        if economic_kind not in TERMINAL_CASH_INCOME_KINDS:
+            raise ValueError('Укажите допустимый экономический вид дохода')
+        proposal = {
+            'kind': 'terminal_cash_income',
+            'economic_kind': economic_kind,
+            'ownership_scope': ownership_scope,
+            'terminal_evidence': evidence,
+        }
+        reason = 'Поповнення через термінал: підтвердьте класифікацію надходження'
+        impact = {'cash_source': '0', 'cash_destination': str(txn.amount), 'pnl': str(txn.amount)}
+    else:
+        raise ValueError('Неизвестное решение для пополнения через терминал')
+
+    pending = list(ClassificationReview.objects.select_for_update().filter(
+        company=company, transaction=txn, status='pending',
+    ))
+    review = next(
+        (item for item in pending if (item.proposal or {}).get('kind', '').startswith('terminal_cash_')),
+        None,
+    )
+    if review is None:
+        review = ClassificationReview.objects.create(
+            company=company, transaction=txn, proposal=proposal, reason=reason,
+            impact=impact, confidence=Decimal('100'),
+        )
+    else:
+        review.proposal = proposal
+        review.reason = reason
+        review.impact = impact
+        review.confidence = Decimal('100')
+        review.save(update_fields=['proposal', 'reason', 'impact', 'confidence'])
+    return review
+
+
+@db_transaction.atomic
+def confirm_terminal_cash_transfer(txn, *, source_cash_account_id, user=None, note=''):
+    """Materialize a confirmed terminal top-up as cash -> own-card transfer."""
+    txn = Transaction.objects.select_for_update().select_related('account').get(pk=txn.pk)
+    _assert_terminal_cash_transaction(txn)
+    destination = txn.account
+    source_cash = Account.objects.select_for_update().filter(
+        id=source_cash_account_id, company=txn.company, is_active=True,
+        is_archived=False,
+    ).first()
+    if source_cash is None:
+        raise ValueError('Оберіть активний власний рахунок')
+    if source_cash.id == destination.id:
+        raise ValueError('Рахунок-джерело та рахунок отримувача мають відрізнятися')
+    if source_cash.currency != txn.currency:
+        raise ValueError('Валюта рахунку-джерела має збігатися з валютою поповнення')
+
+    external_data = dict(txn.external_data or {})
+    external_data['terminal_cash_transfer'] = {
+        'source_cash_account_id': source_cash.id,
+        'destination_account_id': destination.id,
+        'confirmed_at': timezone.now().isoformat(),
+    }
+    transfer = transactions_service.update_transaction(
+        txn, user=user, type=Transaction.TYPE_TRANSFER, account=source_cash,
+        to_account=destination, to_amount=txn.amount, category=None, counterparty=None,
+        external_data=external_data,
+    )
+    classify_transaction(
+        transfer, user=user, ownership_scope='unknown', economic_kind='internal_transfer',
+        confidence=Decimal('100'), source='review', note=note,
+    )
+    return transfer
 
 
 def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_kind='unknown',

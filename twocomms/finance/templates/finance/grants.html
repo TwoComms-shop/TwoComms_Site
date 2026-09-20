@@ -23,12 +23,14 @@
             {% if source.project %}<span class="fin-grant-card__project">{{ source.project }}</span>{% endif %}
         </header>
         <div class="fin-grant-card__stats">
+            {% if source.program_total_amount %}<div><span>Ліміт програми</span><strong>{{ source.program_total_amount }} грн</strong></div>{% endif %}
             <div><span>Отримано</span><strong>{{ source.received }} грн</strong></div>
             <div><span>Витрачено</span><strong>{{ source.spent }} грн</strong></div>
             <div><span>Зарезервовано</span><strong>{{ source.reserved }} грн</strong></div>
             <div class="is-available"><span>Доступно</span><strong>{{ source.available }} грн</strong></div>
         </div>
         <div class="fin-grant-card__meta">
+            {% if source.stage_label %}<span>{{ source.stage_label }}</span>{% endif %}
             {% if source.received_at %}<span>Отримано {{ source.received_at|date:'d.m.Y' }}</span>{% endif %}
             {% if source.valid_until %}<span>До {{ source.valid_until|date:'d.m.Y' }}</span>{% endif %}
         </div>
@@ -42,6 +44,18 @@
             </div>
             {% endfor %}
             <a class="fin-btn fin-btn--secondary fin-btn--sm" href="{% url 'finance_health' %}">Відкрити перевірки</a>
+        </section>
+        {% endif %}
+        {% if source.pending_expenses %}
+        <section class="fin-grant-card__reviews">
+            <h3>Витрати очікують розподілу</h3>
+            {% for transaction in source.pending_expenses %}
+            <div class="fin-grant-review">
+                <span>{{ transaction.amount }} грн · {{ transaction.date_actual|date:'d.m.Y' }}</span>
+                <small>{{ transaction.comment|default:'Без призначення' }}</small>
+            </div>
+            {% endfor %}
+            <p>Ці витрати ще не зменшують залишок гранту, доки ви не підтвердите їхній розподіл.</p>
         </section>
         {% endif %}
         {% if source.allocations %}

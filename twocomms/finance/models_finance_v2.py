@@ -24,6 +24,14 @@ class FundingSource(models.Model):
     source_type = models.CharField(max_length=16, choices=TYPE_CHOICES, default='grant')
     received_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal('0'))
     received_at = models.DateField(blank=True, null=True)
+    # Programme budget stays distinct from money actually received in the bank.
+    program_total_amount = models.DecimalField(max_digits=18, decimal_places=2,
+                                               blank=True, null=True)
+    stage_label = models.CharField(max_length=120, blank=True, default='')
+    receipt_transaction = models.ForeignKey(
+        Transaction, on_delete=models.SET_NULL, blank=True, null=True,
+        related_name='funding_source_receipts',
+    )
     valid_until = models.DateField(blank=True, null=True)
     allowed_categories = models.ManyToManyField(Category, blank=True, related_name='funding_sources')
     project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True,

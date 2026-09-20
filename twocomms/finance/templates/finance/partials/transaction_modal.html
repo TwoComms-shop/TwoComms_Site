@@ -18,6 +18,79 @@
 
       <div class="fin-form-alert" id="fin-txn-alert" hidden></div>
 
+      <section class="fin-incoming-review" id="fin-incoming-review" hidden aria-live="polite">
+        <div class="fin-incoming-review__notice" id="fin-unclassified-notice" hidden>
+          <strong>Надходження ще не класифіковане</strong>
+          <span>Воно поки враховується як дохід. Уточніть його зміст, щоб звітність була коректною.</span>
+          <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-unclassified-open">Уточнити надходження</button>
+        </div>
+        <div class="fin-unclassified-form" id="fin-unclassified-form" hidden>
+          <label class="fin-field" for="fin-unclassified-kind">
+            <span>Що це за надходження</span>
+            <select id="fin-unclassified-kind" class="fin-select">
+              <option value="">Оберіть вид надходження</option>
+              <option value="sale">Продаж</option>
+              <option value="expense_refund">Повернення витрат</option>
+              <option value="debt_repayment">Повернення боргу</option>
+              <option value="grant_inflow">Грант</option>
+              <option value="personal_transfer">Особистий переказ</option>
+              <option value="investment">Інвестиція</option>
+              <option value="adjustment">Інше коригування</option>
+            </select>
+          </label>
+          <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" id="fin-unclassified-save">Зберегти класифікацію</button>
+        </div>
+        <div class="fin-terminal-review" id="fin-terminal-review" hidden>
+          <div class="fin-terminal-review__heading">
+            <span class="fin-terminal-review__eyebrow">Поповнення через термінал</span>
+            <h3>Це мої готівкові?</h3>
+            <p id="fin-terminal-review-context"></p>
+          </div>
+
+          <div class="fin-terminal-review__choices" id="fin-terminal-review-choices">
+            <button type="button" class="fin-terminal-choice" data-terminal-choice="cash_transfer">
+              <strong>Так, з моєї готівки</strong>
+              <span>Підготувати переказ з готівки на цю картку</span>
+            </button>
+            <button type="button" class="fin-terminal-choice" data-terminal-choice="income">
+              <strong>Не мої кошти</strong>
+              <span>Вказати, яке це надходження</span>
+            </button>
+          </div>
+
+          <div class="fin-terminal-review__form" id="fin-terminal-cash-form" hidden>
+            <label class="fin-field" for="fin-terminal-cash-account">
+              <span>Звідки надійшли кошти</span>
+              <select id="fin-terminal-cash-account" class="fin-select"></select>
+            </label>
+            <p class="fin-terminal-review__hint">Буде створено пропозицію переказу. Баланси не зміняться до вашого підтвердження.</p>
+            <button type="button" class="fin-btn fin-btn--primary" id="fin-terminal-cash-propose">Підготувати підтвердження</button>
+          </div>
+
+          <div class="fin-terminal-review__form" id="fin-terminal-income-form" hidden>
+            <label class="fin-field" for="fin-terminal-income-kind">
+              <span>Що це за надходження</span>
+              <select id="fin-terminal-income-kind" class="fin-select">
+                <option value="">Оберіть вид надходження</option>
+              </select>
+            </label>
+            <p class="fin-terminal-review__hint">Буде створено пропозицію класифікації. Надходження залишиться доходом до вашого підтвердження.</p>
+            <button type="button" class="fin-btn fin-btn--primary" id="fin-terminal-income-propose">Підготувати підтвердження</button>
+          </div>
+
+          <div class="fin-terminal-confirm" id="fin-terminal-confirm" hidden>
+            <strong>Пропозицію підготовлено</strong>
+            <p id="fin-terminal-confirm-summary"></p>
+            <p class="fin-terminal-review__hint">Операція та баланси ще не змінені.</p>
+            <div class="fin-terminal-confirm__actions">
+              <button type="button" class="fin-btn fin-btn--ghost" id="fin-terminal-review-change">Змінити рішення</button>
+              <button type="button" class="fin-btn fin-btn--primary" id="fin-terminal-review-accept">Підтвердити зміни</button>
+            </div>
+          </div>
+          <div class="fin-terminal-review__error" id="fin-terminal-review-error" hidden role="alert"></div>
+        </div>
+      </section>
+
       <!-- Факт / План -->
       <div class="fin-status-toggle" id="fin-status-toggle" role="group" aria-label="Статус операції">
         <button type="button" class="fin-status-opt is-active" data-status="actual">Факт</button>

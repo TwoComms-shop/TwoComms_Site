@@ -13,7 +13,7 @@ from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase, Client
 
-from finance.models import Account, IntegrationConnection, Transaction, get_default_company
+from finance.models import Account, ClassificationReview, IntegrationConnection, Transaction, get_default_company
 from finance.services import crypto, mono as mono_service
 from finance.services import mono_api
 
@@ -132,6 +132,17 @@ class MonoSyncTests(TestCase):
             self.acc, [_item('i9', 50000, mcc=5411)], user=self.user, apply_rules=False)
         inc = Transaction.objects.get(external_id='mono:i9')
         self.assertIsNone(inc.category)
+
+    def test_terminal_income_creates_review_marker_without_changing_history(self):
+        mono_service.import_statement(
+            self.acc, [_item('terminal-review', 50000, desc='Термінал mono')],
+            user=self.user, apply_rules=False,
+        )
+        txn = Transaction.objects.get(external_id='mono:terminal-review')
+        review = ClassificationReview.objects.get(transaction=txn, status='pending')
+        self.assertEqual(review.proposal['kind'], 'terminal_cash_decision')
+        self.assertEqual(txn.type, Transaction.TYPE_INCOME)
+        self.assertEqual(txn.economic_kind, 'unknown')
 
     def test_hold_imports_as_actual_and_counts_in_balance(self):
         """Hold-операції (заблоковані кошти) — фактичні: входять у баланс та звіти.

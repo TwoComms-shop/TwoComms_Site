@@ -97,6 +97,13 @@ def serialize_transaction(txn: Transaction, *, running_balance=None) -> dict:
                          'url': (a.file.url if a.file else '')} for a in txn.attachments.all()],
         'source': txn.source,
         'is_business': txn.is_business,
+        'ownership_scope': txn.ownership_scope,
+        'economic_kind': txn.economic_kind,
+        'requires_classification': bool(
+            txn.status == Transaction.STATUS_ACTUAL
+            and txn.type == Transaction.TYPE_INCOME
+            and txn.economic_kind == 'unknown'
+        ),
         'mcc': txn.mcc,
         'mcc_label': _mcc_label(txn.mcc) if txn.mcc else '',
         'cashback': _cashback_display(txn),

@@ -1,7 +1,9 @@
 from decimal import Decimal
 import json
+from io import StringIO
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -60,6 +62,137 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(match.status, 'confirmed')
         self.assertEqual(outgoing.economic_kind, 'internal_transfer')
         self.assertEqual(incoming.economic_kind, 'internal_transfer')
+
+    def test_terminal_cash_review_is_non_destructive_until_confirmed(self):
+        top_up = self._txn(
+            Transaction.TYPE_INCOME, Decimal('1250'), account=self.account,
+            comment='Поповнення через термінал Mono',
+        )
+        top_up.external_data = {'counter_name': 'City24'}
+        top_up.save(update_fields=['external_data'])
+        self.client.force_login(self.user)
+
+        candidates = self.client.get('/api/v2/terminal-cash/candidates/', HTTP_HOST='fin.twocomms.shop')
+        self.assertEqual(candidates.status_code, 200)
+        payload = candidates.json()
+        self.assertEqual(payload['count'], 1)
+        self.assertEqual(payload['candidates'][0]['evidence']['providers'], ['monobank', 'city24'])
+        self.assertEqual(payload['cash_accounts'][0]['id'], self.cash.id)
+
+        proposed = self.client.post(
+            f'/api/v2/terminal-cash/candidates/{top_up.id}/review/',
+            data=json.dumps({'action': 'cash_transfer', 'source_cash_account_id': self.cash.id}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(proposed.status_code, 201)
+        review_id = proposed.json()['review']['id']
+        repeated_proposal = self.client.post(
+            f'/api/v2/terminal-cash/candidates/{top_up.id}/review/',
+            data=json.dumps({'action': 'cash_transfer', 'source_cash_account_id': self.cash.id}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(repeated_proposal.status_code, 201)
+        self.assertEqual(repeated_proposal.json()['review']['id'], review_id)
+        top_up.refresh_from_db()
+        self.assertEqual(top_up.type, Transaction.TYPE_INCOME)
+        self.assertEqual(top_up.account_id, self.account.id)
+        self.assertEqual(top_up.economic_kind, 'unknown')
+
+        accepted = self.client.post(
+            f'/api/v2/reviews/{review_id}/action/', data=json.dumps({'action': 'accept'}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(accepted.status_code, 200)
+        top_up.refresh_from_db()
+        self.assertEqual(top_up.type, Transaction.TYPE_TRANSFER)
+        self.assertEqual(top_up.account_id, self.cash.id)
+        self.assertEqual(top_up.to_account_id, self.account.id)
+        self.assertEqual(top_up.economic_kind, 'internal_transfer')
+        self.assertEqual(top_up.external_data['terminal_cash_transfer']['source_cash_account_id'], self.cash.id)
+        self.cash.refresh_from_db()
+        self.account.refresh_from_db()
+        self.assertEqual(self.cash.current_balance, Decimal('-1250'))
+        self.assertEqual(self.account.current_balance, Decimal('1250'))
+
+        repeated = self.client.post(
+            f'/api/v2/reviews/{review_id}/action/', data=json.dumps({'action': 'accept'}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.json()['status'], 'accepted')
+
+    def test_terminal_cash_income_review_requires_an_explicit_kind(self):
+        top_up = self._txn(
+            Transaction.TYPE_INCOME, Decimal('800'), account=self.account,
+            comment='City24 поповнення картки',
+        )
+        self.client.force_login(self.user)
+        invalid = self.client.post(
+            f'/api/v2/terminal-cash/candidates/{top_up.id}/review/',
+            data=json.dumps({'action': 'income'}), content_type='application/json',
+            HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(invalid.status_code, 400)
+        proposed = self.client.post(
+            f'/api/v2/terminal-cash/candidates/{top_up.id}/review/',
+            data=json.dumps({'action': 'income', 'economic_kind': 'sale', 'ownership_scope': 'business'}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(proposed.status_code, 201)
+        review_id = proposed.json()['review']['id']
+        top_up.refresh_from_db()
+        self.assertEqual(top_up.economic_kind, 'unknown')
+        accepted = self.client.post(
+            f'/api/v2/reviews/{review_id}/action/', data=json.dumps({'action': 'accept'}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(accepted.status_code, 200)
+        top_up.refresh_from_db()
+        self.assertEqual(top_up.type, Transaction.TYPE_INCOME)
+        self.assertEqual(top_up.economic_kind, 'sale')
+
+    def test_terminal_review_can_use_another_own_account_as_source(self):
+        own_card = Account.objects.create(
+            company=self.company, name='Власна картка', type='card', currency='UAH')
+        top_up = self._txn(
+            Transaction.TYPE_INCOME, Decimal('900'), account=self.account,
+            comment='Термінал mono',
+        )
+        self.client.force_login(self.user)
+        payload = self.client.get(
+            '/api/v2/terminal-cash/candidates/', HTTP_HOST='fin.twocomms.shop').json()
+        self.assertEqual(payload['cash_accounts'][0]['id'], self.cash.id)
+        self.assertIn(own_card.id, [account['id'] for account in payload['cash_accounts']])
+        proposed = self.client.post(
+            f'/api/v2/terminal-cash/candidates/{top_up.id}/review/',
+            data=json.dumps({'action': 'cash_transfer', 'source_cash_account_id': own_card.id}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(proposed.status_code, 201)
+        review_id = proposed.json()['review']['id']
+        accepted = self.client.post(
+            f'/api/v2/reviews/{review_id}/action/', data=json.dumps({'action': 'accept'}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(accepted.status_code, 200)
+        top_up.refresh_from_db()
+        self.assertEqual(top_up.account_id, own_card.id)
+        self.assertEqual(top_up.to_account_id, self.account.id)
+
+    def test_terminal_review_command_only_creates_decision_markers(self):
+        top_up = self._txn(
+            Transaction.TYPE_INCOME, Decimal('1250'), account=self.account,
+            comment='City24 поповнення',
+        )
+        dry_run = StringIO()
+        call_command('finance_prepare_terminal_reviews', stdout=dry_run)
+        self.assertIn(str(top_up.id), dry_run.getvalue())
+        self.assertFalse(top_up.classification_reviews.exists())
+        call_command('finance_prepare_terminal_reviews', '--apply', stdout=StringIO())
+        top_up.refresh_from_db()
+        review = top_up.classification_reviews.get(status='pending')
+        self.assertEqual(review.proposal['kind'], 'terminal_cash_decision')
+        self.assertEqual(top_up.type, Transaction.TYPE_INCOME)
 
     def test_tax_components_and_payment_intent_fallback(self):
         group = ObligationGroup.objects.create(company=self.company, title='Налоги', counterparty=self.cp)

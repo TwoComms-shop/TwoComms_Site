@@ -70,6 +70,34 @@
     tags: document.getElementById('fin-txn-tags'),
     statusToggle: document.getElementById('fin-status-toggle'),
     statusHint: document.getElementById('fin-status-hint'),
+    incomingReview: document.getElementById('fin-incoming-review'),
+    unclassifiedNotice: document.getElementById('fin-unclassified-notice'),
+    unclassifiedOpen: document.getElementById('fin-unclassified-open'),
+    unclassifiedForm: document.getElementById('fin-unclassified-form'),
+    unclassifiedKind: document.getElementById('fin-unclassified-kind'),
+    unclassifiedSave: document.getElementById('fin-unclassified-save'),
+    terminalReview: document.getElementById('fin-terminal-review'),
+    terminalContext: document.getElementById('fin-terminal-review-context'),
+    terminalChoices: document.getElementById('fin-terminal-review-choices'),
+    terminalCashForm: document.getElementById('fin-terminal-cash-form'),
+    terminalCashAccount: document.getElementById('fin-terminal-cash-account'),
+    terminalCashPropose: document.getElementById('fin-terminal-cash-propose'),
+    terminalIncomeForm: document.getElementById('fin-terminal-income-form'),
+    terminalIncomeKind: document.getElementById('fin-terminal-income-kind'),
+    terminalIncomePropose: document.getElementById('fin-terminal-income-propose'),
+    terminalConfirm: document.getElementById('fin-terminal-confirm'),
+    terminalConfirmSummary: document.getElementById('fin-terminal-confirm-summary'),
+    terminalReviewChange: document.getElementById('fin-terminal-review-change'),
+    terminalReviewAccept: document.getElementById('fin-terminal-review-accept'),
+    terminalReviewError: document.getElementById('fin-terminal-review-error'),
+  };
+
+  var terminalCandidates = null;
+  var terminalReviewState = { txnId: null, review: null };
+  var INCOME_KIND_LABELS = {
+    sale: 'Продаж', investment: 'Інвестиція', grant_inflow: 'Грант',
+    debt_repayment: 'Повернення боргу', expense_refund: 'Повернення витрат',
+    personal_transfer: 'Переказ від людини', adjustment: 'Коригування',
   };
 
   function opt(value, label, selected) {
@@ -222,10 +250,195 @@
     els.alert.textContent = msg; els.alert.hidden = !msg;
   }
 
+  function hideTerminalReview() {
+    if (!els.incomingReview) return;
+    terminalReviewState = { txnId: null, review: null };
+    els.incomingReview.hidden = true;
+    els.unclassifiedNotice.hidden = true;
+    els.unclassifiedForm.hidden = true;
+    els.terminalReview.hidden = true;
+    els.terminalChoices.hidden = false;
+    els.terminalCashForm.hidden = true;
+    els.terminalIncomeForm.hidden = true;
+    els.terminalConfirm.hidden = true;
+    els.terminalReviewError.hidden = true;
+    els.terminalReviewError.textContent = '';
+  }
+
+  function setTerminalError(message) {
+    els.terminalReviewError.textContent = message || '';
+    els.terminalReviewError.hidden = !message;
+  }
+
+  function terminalCandidateFor(txnId) {
+    var candidates = terminalCandidates && terminalCandidates.candidates || [];
+    return candidates.find(function (candidate) {
+      return String(candidate.transaction && candidate.transaction.id) === String(txnId);
+    });
+  }
+
+  function setTerminalChoice(choice) {
+    els.terminalChoices.hidden = true;
+    els.terminalCashForm.hidden = choice !== 'cash_transfer';
+    els.terminalIncomeForm.hidden = choice !== 'income';
+    els.terminalConfirm.hidden = true;
+    setTerminalError('');
+  }
+
+  function defaultCashAccount(accounts) {
+    return accounts.find(function (account) { return /готівка|cash/i.test(account.name || ''); }) || accounts[0];
+  }
+
+  function fillTerminalCashAccounts(accounts) {
+    els.terminalCashAccount.innerHTML = '';
+    accounts.forEach(function (account) {
+      els.terminalCashAccount.appendChild(opt(account.id, account.name + ' · ' + account.currency));
+    });
+    var selected = defaultCashAccount(accounts);
+    if (selected) els.terminalCashAccount.value = selected.id;
+  }
+
+  function fillTerminalIncomeKinds(kinds) {
+    var selected = els.terminalIncomeKind.value;
+    els.terminalIncomeKind.innerHTML = '';
+    els.terminalIncomeKind.appendChild(opt('', 'Оберіть вид надходження'));
+    (kinds || []).forEach(function (kind) {
+      els.terminalIncomeKind.appendChild(opt(kind, INCOME_KIND_LABELS[kind] || kind));
+    });
+    els.terminalIncomeKind.value = selected;
+  }
+
+  function terminalReviewSummary(review) {
+    var proposal = review.proposal || {};
+    if (proposal.kind === 'terminal_cash_transfer') {
+      var sourceId = proposal.source_cash_account_id;
+      var accounts = terminalCandidates && terminalCandidates.cash_accounts || [];
+      var source = accounts.find(function (account) { return String(account.id) === String(sourceId); });
+      var candidate = terminalCandidateFor(terminalReviewState.txnId);
+      var destination = candidate && candidate.transaction && candidate.transaction.account_name || 'картку';
+      var amount = candidate && candidate.transaction && candidate.transaction.amount || '';
+      return (source ? source.name : 'Власний рахунок') + ' \u2192 ' + destination +
+        (amount ? ': ' + amount + ' грн.' : '.') + ' P&L та управлінський Cash Flow не зміняться.';
+    }
+    return 'Класифікація надходження: ' + (INCOME_KIND_LABELS[proposal.economic_kind] || proposal.economic_kind || 'дохід') + '.';
+  }
+
+  function showTerminalConfirmation(review) {
+    terminalReviewState.review = review;
+    els.terminalChoices.hidden = true;
+    els.terminalCashForm.hidden = true;
+    els.terminalIncomeForm.hidden = true;
+    els.terminalConfirmSummary.textContent = terminalReviewSummary(review);
+    els.terminalConfirm.hidden = false;
+    setTerminalError('');
+  }
+
+  function renderTerminalCandidate(txn, candidate) {
+    if (!candidate || !els.terminalReview) return;
+    var providers = candidate.evidence && candidate.evidence.providers || [];
+    terminalReviewState.txnId = txn.id;
+    els.incomingReview.hidden = false;
+    els.terminalReview.hidden = false;
+    els.unclassifiedForm.hidden = true;
+    els.unclassifiedOpen.hidden = true;
+    els.terminalContext.textContent = providers.length
+      ? 'Виявлено: ' + providers.join(', ') + '. Перевірте походження коштів.'
+      : 'Перевірте походження коштів перед класифікацією.';
+    fillTerminalCashAccounts(terminalCandidates.cash_accounts || []);
+    fillTerminalIncomeKinds(terminalCandidates.income_economic_kinds || []);
+    if (candidate.review && candidate.review.status === 'pending' &&
+        (candidate.review.proposal || {}).kind !== 'terminal_cash_decision') showTerminalConfirmation(candidate.review);
+    else {
+      setTerminalChoice(null);
+      if (!(terminalCandidates.cash_accounts || []).length) {
+        setTerminalError('Немає активного рахунку «Готівка», з якого можна підготувати переказ.');
+      }
+    }
+  }
+
+  function loadTerminalReview(txn) {
+    if (!txn || !txn.id || txn.type !== 'income' || txn.status !== 'actual') return;
+    if (txn.economic_kind === 'unknown') {
+      els.incomingReview.hidden = false;
+      els.unclassifiedNotice.hidden = false;
+    }
+    function render() {
+      if (modal.hidden || String(els.id.value) !== String(txn.id)) return;
+      renderTerminalCandidate(txn, terminalCandidateFor(txn.id));
+    }
+    if (terminalCandidates) { render(); return; }
+    api('/api/v2/terminal-cash/candidates/').then(function (res) {
+      if (!res.ok || !res.data.ok) return;
+      terminalCandidates = res.data;
+      render();
+    }).catch(function () {
+      // The normal transaction editor stays available if the optional review API is unavailable.
+    });
+  }
+
+  function createTerminalProposal(action) {
+    var txnId = terminalReviewState.txnId;
+    if (!txnId) return;
+    var body = { action: action };
+    if (action === 'cash_transfer') {
+      if (!els.terminalCashAccount.value) { setTerminalError('Оберіть активний рахунок-джерело.'); return; }
+      body.source_cash_account_id = els.terminalCashAccount.value;
+    } else {
+      if (!els.terminalIncomeKind.value) { setTerminalError('Оберіть вид надходження.'); return; }
+      body.economic_kind = els.terminalIncomeKind.value;
+    }
+    setTerminalError('');
+    var button = action === 'cash_transfer' ? els.terminalCashPropose : els.terminalIncomePropose;
+    button.disabled = true;
+    api('/api/v2/terminal-cash/candidates/' + txnId + '/review/', 'POST', body).then(function (res) {
+      if (res.ok && res.data.ok && res.data.review) showTerminalConfirmation(res.data.review);
+      else setTerminalError(res.data.error || 'Не вдалося підготувати пропозицію.');
+    }).catch(function () { setTerminalError('Помилка мережі. Спробуйте ще раз.'); })
+      .then(function () { button.disabled = false; });
+  }
+
+  function acceptTerminalProposal() {
+    var review = terminalReviewState.review;
+    if (!review || !review.id) return;
+    setTerminalError('');
+    els.terminalReviewAccept.disabled = true;
+    api('/api/v2/reviews/' + review.id + '/action/', 'POST', { action: 'accept' }).then(function (res) {
+      if (res.ok && res.data.ok) window.location.reload();
+      else {
+        els.terminalReviewAccept.disabled = false;
+        setTerminalError(res.data.error || 'Не вдалося підтвердити зміни.');
+      }
+    }).catch(function () {
+      els.terminalReviewAccept.disabled = false;
+      setTerminalError('Помилка мережі. Спробуйте ще раз.');
+    });
+  }
+
+  function saveUnclassifiedIncome() {
+    var txnId = els.id.value;
+    var kind = els.unclassifiedKind.value;
+    if (!txnId || !kind) { showAlert('Оберіть вид надходження'); return; }
+    els.unclassifiedSave.disabled = true;
+    api('/api/v2/transactions/' + txnId + '/classification/', 'POST', {
+      economic_kind: kind,
+      ownership_scope: 'unknown',
+    }).then(function (res) {
+      if (res.ok && res.data.ok) window.location.reload();
+      else {
+        els.unclassifiedSave.disabled = false;
+        showAlert(res.data.error || 'Не вдалося зберегти класифікацію');
+      }
+    }).catch(function () {
+      els.unclassifiedSave.disabled = false;
+      showAlert('Помилка мережі. Спробуйте ще раз.');
+    });
+  }
+
   function openModal(type, txn) {
     form.reset();
     els.id.value = '';
     showAlert('');
+    hideTerminalReview();
     populateAccounts();
     collapseDisclosures();
     renderAttachments([]);
@@ -270,6 +483,7 @@
     }
     modal.hidden = false;
     document.body.classList.add('fin-modal-open');
+    if (txn) loadTerminalReview(txn);
   }
 
   function closeModal() {
@@ -479,6 +693,25 @@
   form.addEventListener('submit', function (e) { e.preventDefault(); save(false); });
   els.similar.addEventListener('click', function () { save(true); });
 
+  if (els.terminalChoices) els.terminalChoices.addEventListener('click', function (e) {
+    var choice = e.target.closest('[data-terminal-choice]');
+    if (choice) setTerminalChoice(choice.dataset.terminalChoice);
+  });
+  if (els.terminalCashPropose) els.terminalCashPropose.addEventListener('click', function () { createTerminalProposal('cash_transfer'); });
+  if (els.terminalIncomePropose) els.terminalIncomePropose.addEventListener('click', function () { createTerminalProposal('income'); });
+  if (els.terminalReviewChange) els.terminalReviewChange.addEventListener('click', function () {
+    terminalReviewState.review = null;
+    els.terminalConfirm.hidden = true;
+    els.terminalChoices.hidden = false;
+    setTerminalError('');
+  });
+  if (els.terminalReviewAccept) els.terminalReviewAccept.addEventListener('click', acceptTerminalProposal);
+  if (els.unclassifiedOpen) els.unclassifiedOpen.addEventListener('click', function () {
+    els.unclassifiedForm.hidden = false;
+    els.unclassifiedKind.focus();
+  });
+  if (els.unclassifiedSave) els.unclassifiedSave.addEventListener('click', saveUnclassifiedIncome);
+
   // Швидке створення сутностей із дропдаунів.
   modal.querySelectorAll('[data-create]').forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -513,13 +746,17 @@
   });
   var convBtn = document.getElementById('fin-act-convert');
   if (convBtn) convBtn.addEventListener('click', function () {
-    withId(function (id) {
-      var toId = prompt('ID рахунку отримувача:');
-      if (!toId) return;
-      api('/api/transactions/' + id + '/convert-transfer/', 'POST', { to_account: toId }).then(function (res) {
-        if (res.data.ok) window.location.reload(); else showAlert(res.data.error || 'Помилка');
-      });
+    // Reuse the styled transfer fields rather than asking for an opaque account ID.
+    var sourceId = els.account.value;
+    setType('transfer');
+    if (sourceId) els.from.value = sourceId;
+    var alternatives = (DROPDOWNS.accounts || []).filter(function (account) {
+      return String(account.id) !== String(sourceId);
     });
+    if (alternatives.length) els.to.value = alternatives[0].id;
+    syncCurrency();
+    showAlert('Оберіть рахунок отримувача та збережіть зміни.');
+    els.to.focus();
   });
   if (els.markActual) els.markActual.addEventListener('click', function () {
     withId(function (id) { api('/api/transactions/' + id + '/mark-actual/', 'POST').then(function () { window.location.reload(); }); });
@@ -547,6 +784,18 @@
       });
     });
   });
+
+  // Notification links open the exact imported operation once an authenticated
+  // finance page has loaded. They never execute a classification by GET.
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    var txnId = params.get('terminal_review') || params.get('transaction');
+    if (!txnId || !/^\d+$/.test(txnId)) return;
+    window.requestAnimationFrame(function () {
+      var row = document.querySelector('.fin-row[data-txn-id="' + txnId + '"]');
+      if (row) row.click();
+    });
+  })();
 
   // --- Період: показ діапазону ---
   var periodSel = document.getElementById('fin-period');

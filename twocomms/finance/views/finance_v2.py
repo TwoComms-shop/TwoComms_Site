@@ -58,6 +58,88 @@ def _classification_row(c):
     }
 
 
+def _terminal_cash_review_row(review):
+    return {
+        'id': review.id, 'status': review.status, 'proposal': review.proposal,
+        'reason': review.reason, 'impact': review.impact,
+        'confidence': str(review.confidence),
+    }
+
+
+def _cash_account_row(account):
+    return {
+        'id': account.id, 'name': account.name, 'currency': account.currency,
+        'current_balance': str(account.current_balance),
+    }
+
+
+@finance_access_required(api=True)
+@require_GET
+def terminal_cash_candidates_api(request):
+    """Read-only terminal top-up candidates and own accounts usable for review."""
+    company = get_default_company()
+    try:
+        limit = min(500, max(1, int(request.GET.get('limit') or 100)))
+    except (TypeError, ValueError):
+        return _error('Некорректный limit')
+    pending_by_txn = {}
+    for review in ClassificationReview.objects.filter(company=company, status='pending').select_related('transaction'):
+        if (review.proposal or {}).get('kind', '').startswith('terminal_cash_'):
+            pending_by_txn[review.transaction_id] = review
+
+    candidates = []
+    incoming = Transaction.objects.filter(
+        company=company, status=Transaction.STATUS_ACTUAL, type=Transaction.TYPE_INCOME,
+        economic_kind='unknown',
+    ).select_related('account').order_by('-date_actual', '-id')
+    for txn in incoming:
+        evidence = ledger_v2.terminal_cash_evidence(txn)
+        if not evidence['is_candidate']:
+            continue
+        review = pending_by_txn.get(txn.id)
+        candidates.append({
+            'transaction': {
+                'id': txn.id, 'amount': str(txn.amount), 'currency': txn.currency,
+                'date_actual': txn.date_actual.isoformat(), 'account_id': txn.account_id,
+                'account_name': txn.account.name if txn.account else '', 'comment': txn.comment,
+            },
+            'evidence': evidence,
+            'review': _terminal_cash_review_row(review) if review else None,
+        })
+        if len(candidates) >= limit:
+            break
+    own_accounts = company.accounts.filter(
+        is_active=True, is_archived=False,
+    ).order_by('type', 'sort_order', 'id')
+    # Cash is the safe default. Other own accounts are possible sources too.
+    own_accounts = sorted(own_accounts, key=lambda account: (account.type != 'cash', account.sort_order, account.id))
+    return JsonResponse({
+        'ok': True, 'candidates': candidates, 'count': len(candidates),
+        'cash_accounts': [_cash_account_row(account) for account in own_accounts],
+        'income_economic_kinds': list(ledger_v2.TERMINAL_CASH_INCOME_KINDS),
+    })
+
+
+@finance_access_required(api=True)
+@require_POST
+def terminal_cash_review_api(request, txn_id):
+    """Store a review proposal; no imported transaction changes before acceptance."""
+    company = get_default_company()
+    data = _body(request)
+    try:
+        review = ledger_v2.prepare_terminal_cash_review(
+            company, txn_id, user=request.user, action=data.get('action') or '',
+            source_cash_account_id=data.get('source_cash_account_id'),
+            economic_kind=data.get('economic_kind'),
+            ownership_scope=data.get('ownership_scope') or 'unknown',
+        )
+    except Transaction.DoesNotExist:
+        return _error('Операция не найдена', 404)
+    except (ValueError, TypeError, InvalidOperation) as exc:
+        return _error(exc)
+    return JsonResponse({'ok': True, 'review': _terminal_cash_review_row(review)}, status=201)
+
+
 @finance_access_required(api=True)
 @require_http_methods(['GET', 'POST'])
 def classification_api(request, txn_id):
@@ -106,17 +188,34 @@ def review_list_api(request):
 @require_POST
 def review_action_api(request, review_id):
     company = get_default_company()
-    review = get_object_or_404(ClassificationReview, id=review_id, company=company)
     data = _body(request)
     action = data.get('action') or 'accept'
-    if review.status != 'pending':
-        return _error('Предложение уже обработано', 409)
     try:
         with db_transaction.atomic():
+            review = get_object_or_404(
+                ClassificationReview.objects.select_for_update(), id=review_id, company=company,
+            )
+            if review.status != 'pending':
+                if review.status == 'accepted' and action == 'accept':
+                    return JsonResponse({'ok': True, 'status': review.status})
+                return _error('Предложение уже обработано', 409)
             if action == 'accept':
                 proposal = review.proposal or {}
                 kind = proposal.get('kind') or proposal.get('economic_kind')
-                if kind == 'internal_transfer':
+                if kind == 'terminal_cash_transfer':
+                    ledger_v2.confirm_terminal_cash_transfer(
+                        review.transaction,
+                        source_cash_account_id=proposal.get('source_cash_account_id'),
+                        user=request.user, note=review.reason,
+                    )
+                elif kind == 'terminal_cash_income':
+                    ledger_v2.classify_transaction(
+                        review.transaction, user=request.user,
+                        ownership_scope=proposal.get('ownership_scope') or 'unknown',
+                        economic_kind=proposal.get('economic_kind') or 'unknown',
+                        confidence=review.confidence, note=review.reason, source='review',
+                    )
+                elif kind == 'internal_transfer':
                     match = InternalTransferMatch.objects.filter(
                         company=company,
                         source_transaction_id=proposal.get('source_transaction_id'),
@@ -135,6 +234,9 @@ def review_action_api(request, review_id):
                         economic_kind=kind or 'unknown', confidence=review.confidence,
                         note=proposal.get('note') or review.reason, source='review', funding_source=funding,
                     )
+                    if funding and kind == 'grant_inflow' and not funding.receipt_transaction_id:
+                        funding.receipt_transaction = txn
+                        funding.save(update_fields=['receipt_transaction'])
                 review.status = 'accepted'
             elif action in {'reject', 'rejected'}:
                 review.status = 'rejected'
@@ -168,6 +270,10 @@ def _funding_row(source):
     summary = ledger_v2.funding_summary(source)
     return {'id': source.id, 'name': source.name, 'source_type': source.source_type,
             'received_amount': str(source.received_amount),
+            'program_total_amount': (str(source.program_total_amount)
+                                     if source.program_total_amount is not None else None),
+            'stage_label': source.stage_label,
+            'receipt_transaction_id': source.receipt_transaction_id,
             **{k: str(v) for k, v in summary.items()},
             'project_id': source.project_id, 'received_at': source.received_at.isoformat() if source.received_at else None}
 
@@ -186,6 +292,9 @@ def funding_sources_api(request):
             received_amount=Decimal(str(data.get('received_amount') or '0')),
             received_at=data.get('received_at') or None, valid_until=data.get('valid_until') or None,
             project_id=data.get('project_id') or None, notes=data.get('notes') or '',
+            program_total_amount=(Decimal(str(data['program_total_amount']))
+                                  if data.get('program_total_amount') not in (None, '') else None),
+            stage_label=(data.get('stage_label') or '').strip(),
         )
         if not source.name:
             raise ValueError('Укажите название источника')

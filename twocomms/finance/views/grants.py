@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from django.shortcuts import render
 
-from ..models import ClassificationReview, get_default_company
+from ..models import ClassificationReview, Transaction, get_default_company
 from ..permissions import finance_access_required
 from ..services import ledger_v2
 
@@ -19,11 +19,19 @@ def grants(request):
         ).select_related('transaction', 'transaction__account').order_by('-created_at'))
         allocations = list(source.allocations.select_related('transaction', 'transaction__account')
                            .order_by('-created_at')[:50])
+        allocated_ids = [allocation.transaction_id for allocation in allocations]
+        pending_expenses = list(Transaction.objects.filter(
+            company=company, account__name__iexact='Грантова',
+            type=Transaction.TYPE_EXPENSE, status=Transaction.STATUS_ACTUAL,
+        ).exclude(id__in=allocated_ids).select_related('account').order_by('-date_actual')[:50])
         sources.append({
             'id': source.id,
             'name': source.name,
             'source_type': source.get_source_type_display(),
             'received_at': source.received_at,
+            'program_total_amount': source.program_total_amount,
+            'stage_label': source.stage_label,
+            'receipt_transaction_id': source.receipt_transaction_id,
             'valid_until': source.valid_until,
             'project': source.project.name if source.project else '',
             'notes': source.notes,
@@ -33,6 +41,7 @@ def grants(request):
             'available': summary['available'],
             'reviews': reviews,
             'allocations': allocations,
+            'pending_expenses': pending_expenses if source.name == 'УВФ' else [],
         })
     return render(request, 'finance/grants.html', {
         'active_tab': 'grants',
