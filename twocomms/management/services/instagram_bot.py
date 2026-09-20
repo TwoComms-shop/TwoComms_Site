@@ -6097,6 +6097,7 @@ def send_text(
     alert_link_restriction: bool = True,
     return_receipt: bool = False,
     quick_replies=(),
+    outgoing_actor: str = "bot",
 ) -> tuple[bool, str, str] | ProviderDeliveryReceipt:
     """Повертає (ok, kind, hint/delivered_text).
 
@@ -6314,7 +6315,8 @@ def send_text(
                     )
                 # Позначаємо ДО відправки: echo цього чанка прийде асинхронно і не має
                 # сприйнятись за повідомлення менеджера (виправляє хибний авто-стоп).
-                _mark_bot_sent(recipient_id, part)
+                if outgoing_actor == "bot":
+                    _mark_bot_sent(recipient_id, part)
                 payload = {
                     "recipient": {"id": recipient_id},
                     "message": {"text": part},
@@ -6390,7 +6392,8 @@ def send_text(
             # і саме по цьому ідентифікатору ми його впізнаємо. Текстовий
             # відпечаток лишається, але він не працює для медіа й не переживає
             # скидання кеша.
-            _register_outgoing_message(message_id, recipient_id, kind="text")
+            if outgoing_actor == "bot":
+                _register_outgoing_message(message_id, recipient_id, kind="text")
             _clear_send_error(s)
             _clear_client_delivery_error(recipient_id)
             continue
@@ -6463,7 +6466,8 @@ def send_text(
                                 "provider request boundary rejected the fallback",
                                 failure_boundary="fallback:provider_request_rejected",
                             )
-                        _mark_bot_sent(recipient_id, fallback_part)
+                        if outgoing_actor == "bot":
+                            _mark_bot_sent(recipient_id, fallback_part)
                         fallback_body = json.dumps({
                             "recipient": {"id": recipient_id},
                             "message": {"text": fallback_part},
@@ -6506,6 +6510,8 @@ def send_text(
                             "provider_message_id_missing",
                             failure_boundary="fallback:provider_message_id_missing",
                         )
+                    if fallback_message_id and outgoing_actor == "bot":
+                        _register_outgoing_message(fallback_message_id, recipient_id, kind="text")
                     if fallback_message_id:
                         provider_message_ids.append(fallback_message_id)
                     provider_message_id = provider_message_id or fallback_message_id

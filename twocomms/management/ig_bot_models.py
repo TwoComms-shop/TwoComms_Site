@@ -68,6 +68,7 @@ __all__ = [
     "IgSourceActionReceipt",
     "IgTurnRevisionSource",
     "IgRevisionDeliveryEffect",
+    "HumanReplyCommand",
     "IgDeferredEcho",
     "IgAlertRateBucket",
     "IgPermissionTransitionJob",
@@ -8769,6 +8770,67 @@ class IgRevisionDeliveryEffect(models.Model):
             ):
                 raise ValueError("revision delivery effect plan is immutable")
         return super().save(*args, **kwargs)
+
+
+class HumanReplyCommand(models.Model):
+    """Durable, actor-owned manual reply intent.
+
+    A command is created before any provider call and is the idempotency
+    boundary for the management composer.  The transcript row is created by
+    the dispatcher and carries the provider receipt/UNKNOWN state.
+    """
+
+    class State(models.TextChoices):
+        PENDING = "pending", _("В черзі")
+        CLAIMED = "claimed", _("Захоплено")
+        PROVIDER_STARTED = "provider_started", _("Запит почато")
+        SENT = "sent", _("Надіслано")
+        DEFINITE_FAILED = "definite_failed", _("Підтверджена відмова")
+        UNKNOWN = "unknown", _("Результат невідомий")
+        CANCELLED = "cancelled", _("Скасовано")
+
+    operation_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    client = models.ForeignKey(
+        "management.IgClient", on_delete=models.CASCADE,
+        related_name="human_reply_commands", db_constraint=False,
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="ig_human_reply_commands", db_constraint=False,
+    )
+    context_message = models.ForeignKey(
+        "management.InstagramBotMessage", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="human_reply_context_commands",
+        db_constraint=False,
+    )
+    reply_message = models.ForeignKey(
+        "management.InstagramBotMessage", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="human_reply_commands",
+        db_constraint=False,
+    )
+    recipient_igsid = models.CharField(max_length=64)
+    provider_namespace = models.CharField(max_length=128, blank=True, default="")
+    purpose = models.CharField(max_length=32, default="human_reply")
+    context_revision = models.CharField(max_length=128, blank=True, default="")
+    draft_hash = models.CharField(max_length=64, blank=True, default="")
+    text = models.TextField()
+    operation_context = models.JSONField(default=dict, blank=True)
+    permission_epoch = models.PositiveBigIntegerField(default=0)
+    window_deadline = models.DateTimeField(null=True, blank=True, db_index=True)
+    state = models.CharField(max_length=16, choices=State.choices, default=State.PENDING, db_index=True)
+    failure_code = models.CharField(max_length=96, blank=True, default="")
+    provider_message_ids = models.JSONField(default=list, blank=True)
+    provider_started_at = models.DateTimeField(null=True, blank=True)
+    terminal_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["client", "state", "-created_at"], name="ig_human_cmd_client"),
+            models.Index(fields=["state", "-created_at"], name="ig_human_cmd_state"),
+        ]
 
 
 class IgAlertRateBucket(models.Model):

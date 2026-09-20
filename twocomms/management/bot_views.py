@@ -5850,6 +5850,21 @@ def bot_client_detail_api(request, client_id):
         current_analysis_snapshot(c),
         latest_message_id=last_message_id,
     )
+    from management.ig_bot_models import HumanReplyCommand
+    human_commands = [
+        {
+            "id": row.pk,
+            "operation_id": str(row.operation_id),
+            "state": row.state,
+            "failure_code": row.failure_code,
+            "provider_message_ids": list(row.provider_message_ids or []),
+            "context_message_id": row.context_message_id,
+            "window_deadline": row.window_deadline.isoformat() if row.window_deadline else "",
+            "actor_id": row.actor_id,
+            "created_at": row.created_at.isoformat() if row.created_at else "",
+        }
+        for row in HumanReplyCommand.objects.filter(client=c).order_by("-id")[:20]
+    ]
     return JsonResponse({
         "success": True,
         "client": card,
@@ -5875,6 +5890,7 @@ def bot_client_detail_api(request, client_id):
             "opted_out_at": card.get("opted_out_at", ""),
             "reply_permission_epoch": c.reply_permission_epoch,
         },
+        "human_replies": human_commands,
         "interaction": {
             "stage": card["stage"],
             "stage_raw": card["stage_raw"],
@@ -6329,6 +6345,48 @@ def bot_client_resume_api(request, client_id):
         "successor_reason": result.successor_reason,
         "message": manual_resume_message(result),
     })
+
+
+@login_required(login_url="management_login")
+@require_POST
+def bot_client_human_reply_api(request, client_id):
+    """Take over a client and send one authenticated, durable human reply."""
+    blocked = _require_bot_write_json(request)
+    if blocked:
+        return blocked
+    try:
+        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except (TypeError, ValueError, UnicodeDecodeError):
+        payload = request.POST
+    from management.services.ig_human_reply import (
+        HumanReplyRejected,
+        create_human_reply_command,
+        dispatch_human_reply_command,
+    )
+    try:
+        result = create_human_reply_command(
+            client_id,
+            actor=request.user,
+            text=payload.get("text", ""),
+            operation_id=payload.get("operation_id") or None,
+            context_message_id=(int(payload["context_message_id"]) if payload.get("context_message_id") else None),
+            expected_permission_epoch=(int(payload["permission_epoch"]) if payload.get("permission_epoch") is not None else None),
+        )
+        command = dispatch_human_reply_command(result.command.pk)
+    except (ValueError, TypeError, HumanReplyRejected) as exc:
+        code = getattr(exc, "code", "invalid_request")
+        return JsonResponse(
+            {"success": False, "code": code},
+            status=409 if code in {"newer_inbound", "permission_epoch_changed", "reply_window_closed", "operation_conflict"} else 400,
+        )
+    return JsonResponse({
+        "success": command.state == command.State.SENT,
+        "command_id": command.pk,
+        "operation_id": str(command.operation_id),
+        "state": command.state,
+        "failure_code": command.failure_code,
+        "provider_message_ids": list(command.provider_message_ids or []),
+    }, status=200 if command.state == command.State.SENT else 409)
 
 
 @login_required(login_url="management_login")

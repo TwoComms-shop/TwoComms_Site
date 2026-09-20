@@ -367,7 +367,8 @@ def _mid_namespace_state(row, namespace: str, *, require_materialized: bool = Fa
                 return "ignored"
             if IgRevisionDeliveryEffect.objects.filter(
                 provider_namespace=namespace, recipient_igsid=recipient,
-                revision__client__igsid=recipient, provider_message_id=mid, state="sent",
+                revision__client__igsid=recipient, provider_message_id=mid,
+                state="sent", actor="bot",
             ).exists():
                 return "ignored"
             echo = IgDeferredEcho.objects.filter(provider_namespace=namespace, provider_message_id=mid).first()

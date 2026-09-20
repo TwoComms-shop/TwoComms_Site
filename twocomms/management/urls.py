@@ -106,6 +106,7 @@ urlpatterns = [
     path('bot/api/clients/<int:client_id>/post-sale/<int:case_id>/', bot_views.bot_post_sale_case_api, name='management_bot_post_sale_case_api'),
     path('bot/api/clients/<int:client_id>/pause/', bot_views.bot_client_pause_api, name='management_bot_client_pause_api'),
     path('bot/api/clients/<int:client_id>/resume/', bot_views.bot_client_resume_api, name='management_bot_client_resume_api'),
+    path('bot/api/clients/<int:client_id>/human-reply/', bot_views.bot_client_human_reply_api, name='management_bot_client_human_reply_api'),
     path('bot/api/clients/<int:client_id>/hide/', bot_views.bot_client_hide_api, name='management_bot_client_hide_api'),
     path('bot/api/clients/<int:client_id>/unhide/', bot_views.bot_client_unhide_api, name='management_bot_client_unhide_api'),
     path('bot/api/clients/<int:client_id>/lost/', bot_views.bot_client_mark_lost_api, name='management_bot_client_mark_lost_api'),

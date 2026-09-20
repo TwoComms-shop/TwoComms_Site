@@ -112,7 +112,8 @@ def is_our_outgoing(
 
         proof = InstagramBotMessage.objects.filter(
             provider_message_id=message_id,
-            role=InstagramBotMessage.Role.MODEL,
+            role__in=(InstagramBotMessage.Role.MODEL, InstagramBotMessage.Role.MANAGER),
+            source__in=("revision_reply", "human_reply", "echo", "poll_history", "poll"),
         )
         if scoped:
             proof = proof.filter(
