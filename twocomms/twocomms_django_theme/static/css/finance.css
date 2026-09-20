@@ -3861,3 +3861,43 @@ body.fin-report-open { overflow: hidden; }
   .pnl-flow-panel { border-top:1px solid var(--fin-border); }
 }
 @media (prefers-reduced-motion:reduce) { .pnl-flow-item,.pnl-flow-branch { transition:none; } }
+
+/* The list/chart control belongs to the expense structure, so keep it beside
+   that heading and let the category filters occupy the next available space. */
+.pnl-details-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.pnl-details-head h2 { order:1; flex:0 0 auto; }
+.pnl-details-head .pnl-view-toggle { order:2; flex:0 0 auto; margin-left:0; }
+.pnl-details-head nav { order:3; flex:1 1 300px; min-width:180px; }
+.pnl-details-head .pnl-search { order:4; flex:0 1 190px; min-width:150px; }
+.pnl-details-head .pnl-sort { order:5; flex:0 0 auto; }
+.pnl-details-grid.is-list,.pnl-details-grid.is-chart { grid-template-columns:minmax(0,.95fr) minmax(680px,1.12fr); }
+.pnl-structure-pane { min-width:0; overflow:hidden; }
+.pnl-table { table-layout:fixed; min-width:0; }
+.pnl-table th,.pnl-table td { overflow:hidden; text-overflow:ellipsis; }
+.pnl-table th:nth-child(1),.pnl-table td:nth-child(1) { width:5%; }
+.pnl-table th:nth-child(2),.pnl-table td:nth-child(2) { width:25%; }
+.pnl-table th:nth-child(3),.pnl-table td:nth-child(3) { width:14%; }
+.pnl-table th:nth-child(4),.pnl-table td:nth-child(4) { width:18%; }
+.pnl-table th:nth-child(5),.pnl-table td:nth-child(5) { width:20%; }
+.pnl-table th:nth-child(6),.pnl-table td:nth-child(6) { width:14%; }
+.pnl-table th:nth-child(7),.pnl-table td:nth-child(7) { width:4%; }
+.pnl-table td:nth-child(2) { white-space:nowrap; }
+
+@media (max-width:1200px) {
+  .pnl-details-head nav { order:6; flex-basis:100%; min-width:0; overflow-x:auto; }
+  .pnl-details-head .pnl-search { flex:1 1 180px; }
+  .pnl-details-grid.is-list,.pnl-details-grid.is-chart { grid-template-columns:1fr; }
+  .pnl-flow-panel { border-top:1px solid var(--fin-border); }
+}
+@media (max-width:760px) {
+  .pnl-details-head { align-items:stretch; padding:10px; }
+  .pnl-details-head h2 { flex-basis:100%; }
+  .pnl-details-head .pnl-view-toggle { align-self:center; }
+  .pnl-details-head .pnl-search { flex:1 1 160px; min-width:0; }
+  .pnl-details-head .pnl-sort { flex:1 1 130px; }
+  .pnl-details-head nav { flex-basis:100%; }
+  .pnl-table { font-size:9px; }
+  .pnl-table th,.pnl-table td { padding:7px 6px; }
+  .pnl-table th:nth-child(4),.pnl-table td:nth-child(4),
+  .pnl-table th:nth-child(5),.pnl-table td:nth-child(5) { white-space:normal; }
+}
