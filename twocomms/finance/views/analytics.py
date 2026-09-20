@@ -130,6 +130,13 @@ def _pnl_calendar(company, period, start):
             'profit_display': _m(company, profit, signed=True),
             'tone': 'positive' if profit > 0 else 'negative' if profit < 0 else 'neutral',
         })
+    max_profit = max(
+        (abs(Decimal(str(cell['profit']))) for cell in cells if cell.get('day')),
+        default=Decimal('1'),
+    ) or Decimal('1')
+    for cell in cells:
+        if cell.get('day'):
+            cell['heat'] = round(float(abs(Decimal(str(cell['profit'])) / max_profit)), 3)
     while len(cells) % 7:
         cells.append({'day': None})
     month_names = ('Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень',
