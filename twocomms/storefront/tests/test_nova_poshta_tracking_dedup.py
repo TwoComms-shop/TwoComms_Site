@@ -14,7 +14,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from orders.models import Order
-from orders.nova_poshta_service import NovaPoshtaService
+from orders.nova_poshta_service import NovaPoshtaAPIError, NovaPoshtaService
 from storefront.models import UserAction
 
 
@@ -594,7 +594,27 @@ class NovaPoshtaTrackingDedupTests(TestCase):
         self.assertEqual(result["processed"], 1)
         self.assertEqual(result["updated"], 0)
         self.assertEqual(result["errors"], 1)
+        self.assertEqual(result["application_errors"], 1)
+        self.assertEqual(result["provider_errors"], 0)
         self.assertGreaterEqual(close_old.call_count, 1)
+
+    def test_provider_batch_failure_is_categorized_for_degraded_retry(self):
+        second = Order.objects.create(**_order_kwargs("20451234123457"))
+        with patch.object(
+            self.service,
+            "get_tracking_info_batch",
+            side_effect=NovaPoshtaAPIError("provider unavailable"),
+        ):
+            result = self.service.update_all_tracking_statuses()
+
+        self.assertEqual(result["processed"], 2)
+        self.assertEqual(result["errors"], 2)
+        self.assertEqual(result["provider_errors"], 2)
+        self.assertEqual(result["application_errors"], 0)
+        self.order.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(self.order.tracking_failure_count, 1)
+        self.assertEqual(second.tracking_failure_count, 1)
 
     def test_failed_batch_does_not_publish_success_heartbeat(self):
         with (

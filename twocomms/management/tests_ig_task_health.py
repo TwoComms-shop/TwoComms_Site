@@ -21,6 +21,7 @@ from management.services.ig_task_health import (
     check_task_health,
     ensure_task_expectations,
     mark_task_succeeded,
+    mark_task_degraded,
     task_health_snapshot,
     task_heartbeat,
     release_queue_snapshot,
@@ -79,6 +80,39 @@ class TaskHeartbeatTests(TestCase):
             "Причина: daemon_initialization_pending",
             notify.call_args.args[0],
         )
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_provider_degraded_alerts_after_three_runs(self, notify):
+        for _ in range(2):
+            mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        notify.assert_not_called()
+
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_degraded")
+        self.assertEqual(
+            notify.call_args.kwargs["metadata"]["consecutive_failures"], 3
+        )
+
+    def test_degraded_run_is_visible_as_degraded(self):
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        task = next(
+            task for task in task_health_snapshot()["tasks"]
+            if task["key"] == "nova_poshta_tracking"
+        )
+        self.assertEqual(task["state"], "degraded")
+        self.assertTrue(task["degraded"])
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_success_resets_provider_degraded_threshold(self, notify):
+        for _ in range(2):
+            mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        mark_task_succeeded("nova_poshta_tracking")
+
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="nova_poshta_tracking")
+        self.assertEqual(row.consecutive_failures, 1)
+        notify.assert_not_called()
 
     def test_unobserved_task_has_a_deploy_grace_period_then_degrades(self):
         self.assertTrue(ensure_task_expectations())

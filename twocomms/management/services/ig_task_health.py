@@ -16,6 +16,22 @@ from django.db.models import F
 from django.utils import timezone
 
 from management.models import InstagramBotTaskHeartbeat
+
+
+DEGRADED_ALERT_THRESHOLD = 3
+
+
+class _TaskHeartbeatState:
+    """Per-run outcome shared by scheduled commands and the heartbeat wrapper."""
+
+    def __init__(self, task_key: str):
+        self.task_key = task_key
+        self.degraded_reason = ""
+
+    def mark_degraded(self, reason_code: str) -> None:
+        self.degraded_reason = (reason_code or "task_degraded")[:64]
+
+
 @dataclass(frozen=True)
 class TaskSpec:
     key: str
@@ -199,6 +215,75 @@ def _notify_failure(
         pass
 
 
+def _notify_degraded(
+    row: InstagramBotTaskHeartbeat,
+    reason_code: str,
+) -> None:
+    """Notify only after repeated recoverable provider degradation."""
+    try:
+        from management.services.ig_alerts import alert_dedupe_key, format_alert
+        from management.services import instagram_bot as bot
+
+        text = format_alert(
+            "⚠️ IG operations потребують уваги",
+            lines=(
+                f"Задача: {row.label}",
+                "Тип помилки: ProviderDegraded",
+                f"Причина: {reason_code}",
+                f"Послідовні збої: {row.consecutive_failures}",
+                f"Ожидаемый интервал: {row.expected_interval_seconds} с",
+            ),
+        )
+        bot.notify_manager(
+            text,
+            dedupe_key=alert_dedupe_key(
+                "ig_task_degraded", entity_id=row.pk, window_minutes=60
+            ),
+            event_type="ig_task_degraded",
+            metadata={
+                "task_key": row.task_key,
+                "task_heartbeat_id": row.pk,
+                "task_failure_reason": reason_code,
+                "consecutive_failures": row.consecutive_failures,
+                "requires_human_review": False,
+            },
+            deliver_immediately=False,
+        )
+    except Exception:
+        pass
+
+
+def mark_task_degraded(
+    task_key: str,
+    reason_code: str,
+    *,
+    duration_ms: int = 0,
+    at=None,
+) -> InstagramBotTaskHeartbeat | None:
+    """Record a completed but degraded run and alert after three repeats."""
+    try:
+        row = _upsert_expectation(_spec(task_key))
+        now = at or timezone.now()
+        row.last_started_at = row.last_started_at or now
+        row.last_failed_at = now
+        row.last_duration_ms = max(0, int(duration_ms or 0))
+        row.last_error_kind = (reason_code or "task_degraded")[:128]
+        row.save(update_fields=[
+            "last_started_at", "last_failed_at", "last_duration_ms",
+            "last_error_kind", "updated_at",
+        ])
+        InstagramBotTaskHeartbeat.objects.filter(pk=row.pk).update(
+            consecutive_failures=F("consecutive_failures") + 1,
+            updated_at=now,
+        )
+        row.refresh_from_db(fields=["consecutive_failures"])
+    except (DatabaseError, OperationalError, ProgrammingError):
+        return None
+    if row.consecutive_failures >= DEGRADED_ALERT_THRESHOLD:
+        _notify_degraded(row, row.last_error_kind)
+    return row
+
+
 def mark_task_failed(
     task_key: str,
     exc: Exception,
@@ -234,14 +319,23 @@ def mark_task_failed(
 def task_heartbeat(task_key: str):
     """Record success/failure around the real cron work, never a dry-run."""
     mark_task_started(task_key)
+    state = _TaskHeartbeatState(task_key)
     started = monotonic()
     try:
-        yield
+        yield state
     except Exception as exc:
         mark_task_failed(task_key, exc, duration_ms=round((monotonic() - started) * 1000))
         raise
     else:
-        mark_task_succeeded(task_key, duration_ms=round((monotonic() - started) * 1000))
+        duration_ms = round((monotonic() - started) * 1000)
+        if state.degraded_reason:
+            mark_task_degraded(
+                task_key,
+                state.degraded_reason,
+                duration_ms=duration_ms,
+            )
+        else:
+            mark_task_succeeded(task_key, duration_ms=duration_ms)
 
 
 def task_health_snapshot(*, now=None) -> dict:
@@ -277,7 +371,7 @@ def task_health_snapshot(*, now=None) -> dict:
             age_seconds = max(0, int((now - reference).total_seconds())) if reference else None
             error_kind = row.last_error_kind
             if failure_is_newer:
-                state = "failed"
+                state = "degraded" if error_kind == "nova_poshta_provider_degraded" else "failed"
             elif not row.last_succeeded_at and age_seconds is not None and age_seconds > spec.stale_after_seconds:
                 state = "not_observed"
             elif age_seconds is not None and age_seconds > spec.stale_after_seconds:
@@ -293,6 +387,7 @@ def task_health_snapshot(*, now=None) -> dict:
             "stale_after_seconds": spec.stale_after_seconds,
             "last_succeeded_at": observed_at.isoformat() if observed_at else "",
             "last_error_kind": error_kind,
+            "degraded": state == "degraded",
         })
     unhealthy = [task for task in tasks if not task["healthy"]]
     return {

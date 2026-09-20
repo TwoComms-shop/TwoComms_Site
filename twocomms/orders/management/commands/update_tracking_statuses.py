@@ -46,7 +46,7 @@ class Command(BaseCommand):
             if scheduled_batch
             else nullcontext()
         )
-        with heartbeat:
+        with heartbeat as heartbeat_state:
             # Проверяем наличие API ключа
             if not getattr(settings, 'NOVA_POSHTA_API_KEY', ''):
                 message = (
@@ -62,9 +62,9 @@ class Command(BaseCommand):
                 # Обновляем конкретный заказ
                 self._update_single_order(service, options['order_number'], options['dry_run'])
             elif options['dry_run']:
-                self._update_all_orders(service, True)
+                self._update_all_orders(service, True, heartbeat_state=heartbeat_state)
             else:
-                self._update_all_orders(service, False)
+                self._update_all_orders(service, False, heartbeat_state=heartbeat_state)
 
     def _update_single_order(self, service, order_number, dry_run):
         """Обновляет статус одного заказа"""
@@ -121,7 +121,7 @@ class Command(BaseCommand):
             )
             logger.error(f"Order {order_number} not found")
 
-    def _update_all_orders(self, service, dry_run):
+    def _update_all_orders(self, service, dry_run, *, heartbeat_state=None):
         """Обновляет статусы всех заказов"""
         orders_with_ttn = service.get_orders_with_tracking_queryset()
 
@@ -177,7 +177,10 @@ class Command(BaseCommand):
                 f"  Всего заказов с ТТН: {result['total_orders']}\n"
                 f"  Обработано: {result['processed']}\n"
                 f"  Обновлено статусов: {result['updated']}\n"
-                f"  Ошибок: {result['errors']}"
+                f"  Ошибок: {result['errors']}\n"
+                f"  Ошибки провайдера: {result.get('provider_errors', 0)}\n"
+                f"  Ошибки строк: {result.get('row_errors', 0)}\n"
+                f"  Ошибки приложения: {result.get('application_errors', 0)}"
             )
 
             if result['updated'] > 0:
@@ -193,7 +196,21 @@ class Command(BaseCommand):
                     f"{result['errors']} errors"
                 )
 
-            if result['errors']:
+            provider_errors = int(result.get('provider_errors', 0) or 0)
+            application_errors = int(result.get('application_errors', 0) or 0)
+            if application_errors:
                 raise CommandError(
-                    f"Nova Poshta tracking batch completed with {result['errors']} error(s)"
+                    "Nova Poshta tracking application batch completed with "
+                    f"{application_errors} error(s)"
+                )
+            if provider_errors:
+                # Provider and per-order failures are deferred for retry. Keep
+                # the cron run completed so heartbeat health can classify the
+                # outcome as degraded and alert only after repeated failures.
+                if heartbeat_state is not None:
+                    heartbeat_state.mark_degraded("nova_poshta_provider_degraded")
+                logger.warning(
+                    "Nova Poshta tracking provider batch completed with %s "
+                    "error(s); failed rows were deferred for retry",
+                    provider_errors,
                 )

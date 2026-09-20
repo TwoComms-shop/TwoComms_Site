@@ -1311,6 +1311,9 @@ class NovaPoshtaService:
         total_orders = len(order_rows)
         updated_count = 0
         error_count = 0
+        provider_error_count = 0
+        row_error_count = 0
+        application_error_count = 0
         processed_count = 0
 
         logger.info(f"Found {total_orders} orders with TTN to process")
@@ -1337,10 +1340,26 @@ class NovaPoshtaService:
                         } if single else {}
                     else:
                         tracking_by_number = self.get_tracking_info_batch(documents)
+                except NovaPoshtaAPIError as exc:
+                    error_count += len(batch_rows)
+                    provider_error_count += len(batch_rows)
+                    processed_count += len(batch_rows)
+                    logger.warning(
+                        "Nova Poshta tracking provider batch failed (%s rows): %s",
+                        len(batch_rows),
+                        exc,
+                    )
+                    self._defer_tracking_rows([row['pk'] for row in batch_rows])
+                    continue
                 except Exception as exc:
                     error_count += len(batch_rows)
+                    application_error_count += len(batch_rows)
                     processed_count += len(batch_rows)
-                    logger.exception("Nova Poshta tracking batch failed (%s rows): %s", len(batch_rows), exc)
+                    logger.exception(
+                        "Nova Poshta tracking application batch failure (%s rows): %s",
+                        len(batch_rows),
+                        exc,
+                    )
                     self._defer_tracking_rows([row['pk'] for row in batch_rows])
                     continue
 
@@ -1353,6 +1372,7 @@ class NovaPoshtaService:
                         tracking_info = tracking_by_number.get(key)
                         if not tracking_info:
                             error_count += 1
+                            row_error_count += 1
                             self._defer_tracking_rows([order.pk])
                             logger.warning("Nova Poshta returned no result for TTN %s", row['tracking_number'])
                             continue
@@ -1360,10 +1380,12 @@ class NovaPoshtaService:
                             updated_count += 1
                         if getattr(self, '_last_tracking_update_error', False):
                             error_count += 1
+                            application_error_count += 1
                     except ObjectDoesNotExist:
                         logger.warning(f"Order pk={row['pk']} disappeared before tracking update")
                     except Exception as exc:
                         error_count += 1
+                        application_error_count += 1
                         logger.exception("Error updating order pk=%s: %s", row['pk'], exc)
                     finally:
                         close_old_connections()
@@ -1376,7 +1398,10 @@ class NovaPoshtaService:
             'total_orders': total_orders,
             'processed': processed_count,
             'updated': updated_count,
-            'errors': error_count
+            'errors': error_count,
+            'provider_errors': provider_error_count,
+            'row_errors': row_error_count,
+            'application_errors': application_error_count,
         }
 
         logger.info(

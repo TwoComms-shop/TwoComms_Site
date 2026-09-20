@@ -13,16 +13,31 @@ class NovaPoshtaTrackingCommandTests(TestCase):
 
     @override_settings(NOVA_POSHTA_API_KEY="test-key")
     @patch("orders.management.commands.update_tracking_statuses.NovaPoshtaService")
-    def test_batch_errors_exit_with_command_error(self, service_cls):
+    def test_provider_batch_errors_are_deferred_without_command_error(self, service_cls):
         service = service_cls.return_value
         queryset = MagicMock()
         queryset.count.return_value = 2
         service.get_orders_with_tracking_queryset.return_value = queryset
         service.update_all_tracking_statuses.return_value = {
             "total_orders": 2, "processed": 2, "updated": 1, "errors": 1,
+            "provider_errors": 1, "row_errors": 0, "application_errors": 0,
         }
 
-        with self.assertRaisesRegex(CommandError, "1"):
+        call_command("update_tracking_statuses", stdout=StringIO())
+
+    @override_settings(NOVA_POSHTA_API_KEY="test-key")
+    @patch("orders.management.commands.update_tracking_statuses.NovaPoshtaService")
+    def test_application_errors_exit_with_command_error(self, service_cls):
+        service = service_cls.return_value
+        queryset = MagicMock()
+        queryset.count.return_value = 1
+        service.get_orders_with_tracking_queryset.return_value = queryset
+        service.update_all_tracking_statuses.return_value = {
+            "total_orders": 1, "processed": 1, "updated": 0, "errors": 1,
+            "provider_errors": 0, "row_errors": 0, "application_errors": 1,
+        }
+
+        with self.assertRaisesRegex(CommandError, "application"):
             call_command("update_tracking_statuses", stdout=StringIO())
 
     @override_settings(NOVA_POSHTA_API_KEY="test-key")

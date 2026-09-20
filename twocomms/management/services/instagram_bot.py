@@ -4205,7 +4205,7 @@ def reconcile_recovered_system_notifications(*, limit: int = 100) -> int:
 
     candidate_ids = list(
         IgBotNotification.objects.filter(
-            event_type="ig_task_failure",
+            event_type__in=("ig_task_failure", "ig_task_degraded"),
             status__in=[
                 IgBotNotification.Status.PENDING,
                 IgBotNotification.Status.FAILED,
@@ -4223,7 +4223,7 @@ def reconcile_recovered_system_notifications(*, limit: int = 100) -> int:
                 IgBotNotification.objects.select_for_update()
                 .filter(
                     pk=notification_id,
-                    event_type="ig_task_failure",
+                    event_type__in=("ig_task_failure", "ig_task_degraded"),
                     status__in=[
                         IgBotNotification.Status.PENDING,
                         IgBotNotification.Status.FAILED,

@@ -405,6 +405,17 @@ class InstagramBotNotificationTests(TestCase):
             payload={"text": "Legacy watchdog failure"},
             status=IgBotNotification.Status.UNKNOWN,
         )
+        degraded = IgBotNotification.objects.create(
+            dedupe_key=f"ig_task_degraded:e{heartbeat.pk}:w-provider",
+            event_type="ig_task_degraded",
+            payload={
+                "text": "Nova Poshta degraded",
+                "task_key": heartbeat.task_key,
+                "task_heartbeat_id": heartbeat.pk,
+                "requires_human_review": False,
+            },
+            status=IgBotNotification.Status.UNKNOWN,
+        )
         heartbeat.last_succeeded_at = now + timedelta(minutes=1)
         heartbeat.consecutive_failures = 0
         heartbeat.last_error_kind = ""
@@ -412,15 +423,17 @@ class InstagramBotNotificationTests(TestCase):
             "last_succeeded_at", "consecutive_failures", "last_error_kind", "updated_at"
         ])
 
-        self.assertEqual(bot.reconcile_recovered_system_notifications(), 2)
+        self.assertEqual(bot.reconcile_recovered_system_notifications(), 3)
 
         new_style.refresh_from_db()
         legacy.refresh_from_db()
+        degraded.refresh_from_db()
         self.assertEqual(new_style.status, IgBotNotification.Status.RESOLVED)
         self.assertEqual(legacy.status, IgBotNotification.Status.RESOLVED)
+        self.assertEqual(degraded.status, IgBotNotification.Status.RESOLVED)
         self.assertEqual(
             IgBotNotificationAudit.objects.filter(action="auto_recovered").count(),
-            2,
+            3,
         )
 
     def test_obsolete_queued_terminal_monitor_is_resolved_before_delivery(self):
