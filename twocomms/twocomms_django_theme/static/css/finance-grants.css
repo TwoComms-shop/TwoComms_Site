@@ -15,6 +15,7 @@
 .fin-grant-card__reviews h3 { margin: 0 0 8px; font-size: 13px; color: #fcd34d; }
 .fin-grant-review { display: grid; gap: 3px; padding: 8px 0; border-top: 1px solid rgba(251,191,36,.16); font-size: 12px; }
 .fin-grant-review small { line-height: 1.4; }
+.fin-grant-review__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
 .fin-grant-card__reviews .fin-btn { margin-top: 8px; }
 .fin-grant-card__history { border-top: 1px solid var(--fin-border); }
 .fin-grant-card__history summary { cursor: pointer; padding: 12px 18px; color: var(--fin-muted); font-size: 12px; }

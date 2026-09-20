@@ -41,9 +41,12 @@
             <div class="fin-grant-review">
                 <span>{{ review.transaction.amount }} грн · {{ review.transaction.account.name|default:'рахунок' }}</span>
                 <small>{{ review.reason }}</small>
+                <div class="fin-grant-review__actions">
+                    <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" data-grant-review-accept="{{ review.id }}">Підтвердити як грант</button>
+                    <a class="fin-btn fin-btn--ghost fin-btn--sm" href="{% url 'finance_home' %}?transaction={{ review.transaction.id }}">Переглянути операцію</a>
+                </div>
             </div>
             {% endfor %}
-            <a class="fin-btn fin-btn--secondary fin-btn--sm" href="{% url 'finance_health' %}">Відкрити перевірки</a>
         </section>
         {% endif %}
         {% if source.pending_expenses %}
@@ -77,4 +80,30 @@
 
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'css/finance-grants.css' %}?v=20260920v1">
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(() => {
+  const csrf = () => (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '';
+  document.querySelectorAll('[data-grant-review-accept]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!window.confirm('Підтвердити цю операцію як грантове надходження?')) return;
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/v2/reviews/${button.dataset.grantReviewAccept}/action/`, {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf()},
+          body: JSON.stringify({action: 'accept'}),
+        });
+        const payload = await response.json();
+        if (response.ok && payload.ok) window.location.reload();
+        else throw new Error(payload.error || 'Не вдалося підтвердити грант');
+      } catch (error) {
+        button.disabled = false;
+        window.alert(error.message || 'Помилка мережі');
+      }
+    });
+  });
+})();
+</script>
 {% endblock %}
