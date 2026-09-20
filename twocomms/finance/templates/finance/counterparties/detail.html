@@ -214,13 +214,14 @@
 {% block modals %}
 {% include 'finance/counterparties/modal_counterparty.html' %}
 {% include 'finance/partials/settle_modal.html' %}
+{% include 'finance/partials/v2_payment_modal.html' %}
 {% endblock %}
 
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="{% static 'css/finance-planned.css' %}?v=20260613f">
-<script src="{% static 'js/finance-counterparties.js' %}?v=20260613"></script>
-<script src="{% static 'js/finance-planned.js' %}?v=20260613f"></script>
+<link rel="stylesheet" href="{% static 'css/finance-planned.css' %}?v=20260920v2">
+<script src="{% static 'js/finance-counterparties.js' %}?v=20260920v2"></script>
+<script src="{% static 'js/finance-planned.js' %}?v=20260920v2"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     var chartData = {{ chart_data|safe }};

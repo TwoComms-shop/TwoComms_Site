@@ -85,7 +85,7 @@ def planned(request):
             match = next((g for g in v2_group_summaries if 'кварт' in g['title'].lower()), None)
         elif 'офис' in title or 'оренд' in title or 'аренд' in title:
             match = next((g for g in v2_group_summaries if 'офис' in g['title'].lower()), None)
-        if match:
+        if match and row.get('type') == Transaction.TYPE_EXPENSE:
             row['v2_group_id'] = match['id']
             row['v2_group_title'] = match['title']
         return row

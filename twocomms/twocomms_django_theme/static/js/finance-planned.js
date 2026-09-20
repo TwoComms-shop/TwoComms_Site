@@ -225,7 +225,7 @@
     }, 5000);
   }
   document.addEventListener('click', function (e) {
-    var groupPay = e.target.closest('[data-v2-group]');
+    var groupPay = e.target.closest('button[data-v2-group]');
     if (groupPay) { e.preventDefault(); openV2Group(groupPay); return; }
     var pay = e.target.closest('[data-v2-pay]');
     if (pay) { e.preventDefault(); openV2Pay(pay); return; }

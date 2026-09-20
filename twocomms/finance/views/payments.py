@@ -158,10 +158,26 @@ def payments(request):
         return g
 
     planned_timeline = []
+    v2_groups = list(company.obligation_groups.filter(is_active=True).only('id', 'title'))
+
+    def _attach_v2_group(g):
+        title = (g.get('title') or '').lower()
+        match = None
+        if 'подат' in title or 'налог' in title:
+            match = next((item for item in v2_groups if 'налог' in item.title.lower()), None)
+        elif 'комун' in title or 'кварт' in title or 'влад' in title:
+            match = next((item for item in v2_groups if 'кварт' in item.title.lower()), None)
+        elif 'офис' in title or 'оренд' in title or 'аренд' in title:
+            match = next((item for item in v2_groups if 'офис' in item.title.lower()), None)
+        if match and g.get('type') == Transaction.TYPE_EXPENSE:
+            g['v2_group_id'] = match.id
+            g['v2_group_title'] = match.title
+        return g
+
     for seg in timeline['segments']:
         planned_timeline.append({
             'key': seg['key'], 'label': seg['label'], 'tone': seg['tone'],
-            'items': [_fmt_obl(g) for g in seg['items']],
+            'items': [_attach_v2_group(_fmt_obl(g)) for g in seg['items']],
             'count': len(seg['items']),
             'income_sum': ser.money(seg['income_sum'], cur0),
             'expense_sum': ser.money(seg['expense_sum'], cur0),
@@ -183,6 +199,10 @@ def payments(request):
         'per_page_options': _PER_PAGE_OPTIONS,
         'active_filter_count': active_filter_count,
         'dropdowns': ser.serialize_dropdowns(company),
+        'v2_accounts': [
+            {'id': a.id, 'name': a.name, 'balance': str(a.current_balance), 'currency': a.currency}
+            for a in company.accounts.filter(is_active=True, is_archived=False).order_by('sort_order', 'id')
+        ],
         'current_filters': {
             'period': request.GET.get('period', 'all'),
             'search': request.GET.get('search', ''),

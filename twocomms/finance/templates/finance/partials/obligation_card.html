@@ -39,7 +39,7 @@
     </div>
 
     <div class="fin-oblig__act">
-        {% if g.v2_group_id %}
+        {% if g.v2_group_id and g.type == 'expense' and seg_tone != 'future' %}
         <button type="button" class="fin-oblig__pay fin-oblig__pay--now" data-v2-group="{{ g.v2_group_id }}"
                 data-v2-group-title="{{ g.v2_group_title }}" title="Відкрити оплату групи">
             <span aria-hidden="true">↗</span><span class="fin-oblig__pay-tx">Сплатити зараз</span>
@@ -52,10 +52,14 @@
             {% if g.type == 'income' %}↑{% else %}💳{% endif %}<span class="fin-oblig__pay-tx">{% if g.type == 'income' %}Отримано{% else %}Сплатити{% endif %}</span>
         </button>
         {% endif %}
-        {% if g.rule_id or g.next_txn_id %}
+        {% if g.rule_id or g.next_txn_id or g.v2_group_id %}
         <details class="fin-oblig__menu">
             <summary class="fin-icon-btn" title="Ще" aria-label="Більше дій">⋯</summary>
             <div class="fin-oblig__menu-pop">
+                {% if g.v2_group_id and g.type == 'expense' %}
+                <button type="button" data-v2-group="{{ g.v2_group_id }}" data-v2-group-title="{{ g.v2_group_title }}">💳 Сплатити зараз</button>
+                <button type="button" data-v2-group="{{ g.v2_group_id }}" data-v2-group-title="{{ g.v2_group_title }}">↳ Вибрати проведену оплату</button>
+                {% endif %}
                 {% if g.next_txn_id %}<button type="button" data-act="settle" data-txn-id="{{ g.next_txn_id }}">💳 {% if g.type == 'income' %}Прийняти / наперед{% else %}Сплатити / наперед{% endif %}</button>{% endif %}
                 {% if seg_tone == 'future' and g.next_txn_id %}<button type="button" data-act="move-current" data-txn-id="{{ g.next_txn_id }}">↺ Перенести на поточний місяць</button>{% endif %}
                 {% if g.rule_id %}
