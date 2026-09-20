@@ -101,6 +101,20 @@ class WebhookInboxTests(TestCase):
         self.assertEqual(self._post(payload).status_code, 400)
         self.assertFalse(IgWebhookInboxEvent.objects.exists())
 
+    def test_invalid_participant_is_typed_rejection_without_client_or_receipt(self):
+        payload = {"object": "instagram", "entry": [{
+            "id": "owner-1", "messaging": [{
+                "sender": {"id": ""}, "recipient": {"id": "owner-1"},
+                "message": {"mid": "invalid-participant", "text": "Hi"},
+            }],
+        }]}
+
+        response = self._post(payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.content, b"invalid_participant")
+        self.assertFalse(IgWebhookInboxEvent.objects.exists())
+        self.assertFalse(IgClient.objects.exists())
+
     def test_no_mid_event_key_is_stable_when_batch_order_changes(self):
         first = {"sender": {"id": "user-a"}, "recipient": {"id": "owner-1"}, "timestamp": 1, "message": {"text": "A"}}
         second = {"sender": {"id": "user-b"}, "recipient": {"id": "owner-1"}, "timestamp": 2, "message": {"text": "B"}}
