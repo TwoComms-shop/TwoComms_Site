@@ -105,6 +105,7 @@ __all__ = [
     "IgCheckoutInventoryReservation",
     "IgLifecycleEvent",
     "IgFollowCapabilityState",
+    "IgPresenceCapability",
     "IgFollowState",
     "IgFollowObservation",
     "IgFollowRefreshJob",
@@ -3518,6 +3519,59 @@ class IgFollowCapabilityState(models.Model):
             (self.blocked_until and self.blocked_until > now)
             or (self.next_probe_at and self.next_probe_at > now)
         )
+
+
+class IgPresenceCapability(models.Model):
+    """Explicit, token-free authorization for periodic Instagram typing refresh."""
+
+    class Status(models.TextChoices):
+        UNKNOWN = "unknown", _("Невідомо")
+        VERIFIED = "verified", _("Перевірено")
+        DENIED = "denied", _("Відмовлено")
+        INVALIDATED = "invalidated", _("Відкликано")
+
+    transport = models.CharField(max_length=32)
+    graph_version = models.CharField(max_length=16)
+    account_key = models.CharField(max_length=64)
+    capability = models.CharField(max_length=32)
+    config_fingerprint = models.CharField(max_length=64)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.UNKNOWN,
+        db_index=True,
+    )
+    verified_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    verified_by_id = models.PositiveBigIntegerField(null=True, blank=True)
+    evidence_kind = models.CharField(max_length=64, blank=True, default="")
+    evidence_ref = models.CharField(max_length=255, blank=True, default="")
+    denied_at = models.DateTimeField(null=True, blank=True)
+    denied_until = models.DateTimeField(null=True, blank=True, db_index=True)
+    denied_error_kind = models.CharField(max_length=32, blank=True, default="")
+    denied_error_code = models.CharField(max_length=64, blank=True, default="")
+    invalidated_at = models.DateTimeField(null=True, blank=True)
+    invalidated_by_id = models.PositiveBigIntegerField(null=True, blank=True)
+    invalidation_reason = models.CharField(max_length=255, blank=True, default="")
+    last_error_kind = models.CharField(max_length=32, blank=True, default="")
+    last_error_code = models.CharField(max_length=64, blank=True, default="")
+    last_error_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["transport", "graph_version", "account_key", "capability"],
+                name="ig_presence_capability_identity",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["status", "expires_at"],
+                name="ig_presence_cap_status",
+            ),
+        ]
 
 
 class IgFollowState(models.Model):

@@ -1,5 +1,10 @@
 """Deterministic advisory interleavings; no live provider/tester traffic."""
 from datetime import timedelta
+from dataclasses import replace
+from django.db import DatabaseError
+from django.contrib.auth import get_user_model
+import importlib
+import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
@@ -324,7 +329,10 @@ class PresenceLifecycleTests(SimpleTestCase):
                 refreshed.set()
             return accepted(action)
 
-        handle = self.start(transport, refresh_seconds=0.01, report=report)
+        handle = self.start(
+            transport, refresh_seconds=0.01, report=report,
+            refresh_authorized=lambda: True,
+        )
         self.assertTrue(refreshed.wait(1))
         handle.begin_dispatch()
         handle.complete_delivery()
@@ -354,6 +362,57 @@ class PresenceLifecycleTests(SimpleTestCase):
         self.assertTrue(handle.finished.wait(1))
         self.assertEqual(calls, ["mark_seen", "typing_on"])
         self.assertFalse(handle.typing_attempted)
+
+    def test_periodic_refresh_does_not_run_without_durable_authorization(self):
+        calls, first_typing = [], threading.Event()
+
+        def transport(action):
+            calls.append(action)
+            if action == "typing_on":
+                first_typing.set()
+            return accepted(action)
+
+        refresh_authorized = Mock(return_value=False)
+        persistence = Mock()
+        handle = self.start(
+            transport, refresh_seconds=0.01, refresh_authorized=refresh_authorized,
+            typing_result_callback=persistence,
+        )
+        self.assertTrue(first_typing.wait(1))
+        time.sleep(0.35)
+        handle.stop()
+        self.assertTrue(handle.finished.wait(1))
+        self.assertEqual(calls[:2], ["mark_seen", "typing_on"])
+        self.assertEqual(calls.count("typing_on"), 1)
+        refresh_authorized.assert_called()
+        persistence.assert_not_called()
+
+    def test_capability_database_failure_does_not_delay_initial_actions_or_reply(self):
+        calls, initial_typing = [], threading.Event()
+        profile = presence.PresenceCapability(
+            "instagram_login", "v25.0", "a" * 64, "b" * 64, 0.01,
+        )
+
+        def transport(action):
+            calls.append(action)
+            if action == "typing_on":
+                initial_typing.set()
+            return accepted(action)
+
+        with patch("management.models.IgPresenceCapability.objects.filter", side_effect=DatabaseError("unavailable")):
+            handle = self.start(
+                transport, refresh_seconds=0.01,
+                refresh_authorized=lambda: presence.typing_refresh_authorized(profile),
+            )
+            self.assertTrue(initial_typing.wait(1))
+            substantive_send = Mock(return_value="sent")
+            started = time.monotonic()
+            self.assertEqual(substantive_send(), "sent")
+            self.assertLess(time.monotonic() - started, 0.1)
+            time.sleep(0.35)
+            handle.stop()
+            self.assertTrue(handle.finished.wait(1))
+        self.assertEqual(calls.count("typing_on"), 1)
 
     def test_completion_seen_authority_expires_even_after_stuck_http_returns(self):
         transport = Mock(side_effect=accepted)
@@ -564,6 +623,199 @@ class DurablePresenceGuardTests(TestCase):
         self.settings_row.ig_user_id = "different-account"
         self.settings_row.save()
         self.assertFalse(self.guard(True))
+
+
+class PresenceCapabilityTests(TestCase):
+    def setUp(self):
+        from management.models import InstagramBotSettings
+
+        self.settings_row = InstagramBotSettings.load()
+        self.settings_row.ig_user_id = "17841400000000001"
+        self.settings_row.save(update_fields=["ig_user_id"])
+        self.operator = get_user_model().objects.create_user(
+            username="presence-capability-staff", password="fixture", is_staff=True,
+        )
+        self.route = patch("management.services.instagram_bot.provider_transport", return_value="instagram_login")
+        self.token = patch("management.services.instagram_bot.resolve_instagram_login_token", return_value="configured-test-token")
+        self.refresh = patch.dict("os.environ", {"IG_PRESENCE_REFRESH_SECONDS": "5"}, clear=False)
+        self.route.start()
+        self.token.start()
+        self.refresh.start()
+        self.addCleanup(self.route.stop)
+        self.addCleanup(self.token.stop)
+        self.addCleanup(self.refresh.stop)
+        self.profile = presence.capability_profile(self.settings_row)
+
+    def verify(self, *, now=None):
+        return presence.verify_typing_refresh_capability(
+            self.settings_row,
+            verified_by_id=self.operator.pk,
+            evidence_kind=presence.VERIFICATION_EVIDENCE_KIND,
+            evidence_ref="sha256:" + hashlib.sha256(b"presence-test-evidence").hexdigest(),
+            now=now,
+        )
+
+    def test_zero_cadence_does_not_query_capability_storage(self):
+        disabled = replace(self.profile, refresh_seconds=0)
+        with self.assertNumQueries(0):
+            self.assertFalse(presence.typing_refresh_authorized(disabled))
+
+    def test_profile_uses_full_namespaced_account_hash_and_token_fingerprint(self):
+        expected = hashlib.sha256(
+            b"ig-presence-account-v1\0" + b"17841400000000001"
+        ).hexdigest()
+        self.assertEqual(self.profile.account_key, expected)
+        self.assertEqual(len(self.profile.account_key), 64)
+        self.assertEqual(len(self.profile.config_fingerprint), 64)
+
+    def test_verification_requires_operator_and_opaque_evidence(self):
+        with self.assertRaises(ValueError):
+            presence.verify_typing_refresh_capability(
+                self.settings_row, verified_by_id=0,
+                evidence_kind=presence.VERIFICATION_EVIDENCE_KIND,
+                evidence_ref="sha256:" + hashlib.sha256(b"presence-test-evidence").hexdigest(),
+            )
+        with self.assertRaises(ValueError):
+            presence.verify_typing_refresh_capability(
+                self.settings_row, verified_by_id=self.operator.pk,
+                evidence_kind="free_form", evidence_ref="not-opaque",
+            )
+        capability = self.verify()
+        self.assertEqual(capability.status, capability.Status.VERIFIED)
+        self.assertEqual(capability.verified_by_id, self.operator.pk)
+        self.assertTrue(presence.typing_refresh_authorized(self.profile))
+
+    def test_verification_has_exact_24_hour_ttl(self):
+        now = timezone.now()
+        capability = self.verify(now=now)
+        self.assertEqual(capability.verified_at, now)
+        self.assertEqual(capability.expires_at, now + timedelta(hours=24))
+
+    def test_verification_rejects_inactive_or_nonstaff_actors_and_malformed_evidence(self):
+        nonstaff = get_user_model().objects.create_user(
+            username="presence-capability-nonstaff", password="fixture",
+        )
+        inactive = get_user_model().objects.create_user(
+            username="presence-capability-inactive", password="fixture", is_staff=True,
+            is_active=False,
+        )
+        valid_ref = "sha256:" + hashlib.sha256(b"presence-test-evidence").hexdigest()
+        for actor_id in (nonstaff.pk, inactive.pk):
+            with self.subTest(actor_id=actor_id), self.assertRaises(ValueError):
+                presence.verify_typing_refresh_capability(
+                    self.settings_row, verified_by_id=actor_id,
+                    evidence_kind=presence.VERIFICATION_EVIDENCE_KIND, evidence_ref=valid_ref,
+                )
+        with self.assertRaises(ValueError):
+            presence.verify_typing_refresh_capability(
+                self.settings_row, verified_by_id=self.operator.pk,
+                evidence_kind=presence.VERIFICATION_EVIDENCE_KIND,
+                evidence_ref="operator@example.test",
+            )
+
+    def test_expiry_config_mismatch_and_invalidation_block_refresh(self):
+        now = timezone.now()
+        capability = self.verify(now=now)
+        capability.expires_at = now - timedelta(seconds=1)
+        capability.save(update_fields=["expires_at"])
+        self.assertFalse(presence.typing_refresh_authorized(self.profile, now=now))
+        capability = self.verify(now=now)
+        self.assertFalse(presence.typing_refresh_authorized(
+            replace(self.profile, config_fingerprint="0" * 64), now=now,
+        ))
+        presence.invalidate_typing_refresh_capability(
+            self.settings_row, invalidated_by_id=self.operator.pk,
+            reason="operator revocation", now=now,
+        )
+        capability.refresh_from_db()
+        self.assertEqual(capability.status, capability.Status.INVALIDATED)
+        self.assertFalse(presence.typing_refresh_authorized(self.profile, now=now))
+
+    def test_accepted_sender_action_never_creates_verification(self):
+        from management.models import IgPresenceCapability
+
+        presence._record_typing_refresh_outcome(
+            self.profile, presence.SenderActionResult(True, 200, "accepted", "typing_on"),
+        )
+        self.assertEqual(IgPresenceCapability.objects.count(), 0)
+
+    def test_mark_seen_denial_is_not_typing_capability_denial(self):
+        from management.models import IgPresenceCapability
+
+        presence._record_typing_refresh_outcome(
+            self.profile, presence.SenderActionResult(False, 400, "unsupported_or_denied", "mark_seen"),
+        )
+        self.assertEqual(IgPresenceCapability.objects.count(), 0)
+
+    def test_definitive_denial_is_durable_across_new_controller(self):
+        now = timezone.now()
+        presence._record_typing_refresh_outcome(
+            self.profile, presence.SenderActionResult(False, 403, "unsupported_or_denied", "typing_on"), now=now,
+        )
+        from management.models import IgPresenceCapability
+
+        capability = IgPresenceCapability.objects.get()
+        self.assertEqual(capability.status, capability.Status.DENIED)
+        self.assertEqual(capability.denied_until, now + timedelta(hours=24))
+        new_session = presence.PresenceSession(
+            presence.PresenceController(), key="new-controller", transport=accepted,
+            guard=lambda cleanup: True, source_watermark=1,
+            refresh_seconds=self.profile.refresh_seconds,
+            refresh_authorized=lambda: presence.typing_refresh_authorized(self.profile, now=now),
+        )
+        self.assertFalse(new_session.refresh_authorized())
+
+    def test_rate_limit_uses_short_cooldown_without_losing_verified_state(self):
+        now = timezone.now()
+        capability = self.verify(now=now)
+        expires_at = capability.expires_at
+        presence._record_typing_refresh_outcome(
+            self.profile, presence.SenderActionResult(False, 429, "rate_limited", "typing_on"), now=now,
+        )
+        capability.refresh_from_db()
+        self.assertEqual(capability.status, capability.Status.VERIFIED)
+        self.assertEqual(capability.expires_at, expires_at)
+        self.assertEqual(capability.denied_until, now + timedelta(minutes=15))
+        self.assertFalse(presence.typing_refresh_authorized(self.profile, now=now))
+        self.assertTrue(presence.typing_refresh_authorized(self.profile, now=now + timedelta(minutes=15, seconds=1)))
+
+    def test_timeout_transport_and_provider_leave_verified_record_untouched(self):
+        now = timezone.now()
+        capability = self.verify(now=now)
+        original = (capability.status, capability.expires_at, capability.last_error_kind)
+        for kind, status in (("timeout", -1), ("transport", -1), ("provider", 503)):
+            presence._record_typing_refresh_outcome(
+                self.profile, presence.SenderActionResult(False, status, kind, "typing_on"), now=now,
+            )
+        capability.refresh_from_db()
+        self.assertEqual((capability.status, capability.expires_at, capability.last_error_kind), original)
+
+    def test_unique_identity_prevents_duplicate_capability_rows(self):
+        from django.db import IntegrityError
+        from management.models import IgPresenceCapability
+
+        self.verify()
+        with self.assertRaises(IntegrityError):
+            IgPresenceCapability.objects.create(
+                transport=self.profile.route,
+                graph_version=self.profile.api_version,
+                account_key=self.profile.account_key,
+                capability=presence.CAPABILITY_TYPING_REFRESH,
+                config_fingerprint=self.profile.config_fingerprint,
+            )
+
+    def test_migration_is_independent_from_untracked_trace_refresh(self):
+        migration = importlib.import_module(
+            "management.migrations.0210_ig_presence_capability"
+        ).Migration
+        self.assertEqual(migration.dependencies, [("management", "0208_journey_trace_snapshots")])
+        self.assertEqual(migration.run_before, [("management", "0209_journey_trace_refresh")])
+
+    def test_capability_database_failure_fails_closed(self):
+        from management.models import IgPresenceCapability
+
+        with patch.object(IgPresenceCapability.objects, "filter", side_effect=DatabaseError("unavailable")):
+            self.assertFalse(presence.typing_refresh_authorized(self.profile))
 
 
 @override_settings(IG_REVISION_EXECUTION_ENABLED=True, IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00", GOOGLE_INDEXING_ENABLED=False)

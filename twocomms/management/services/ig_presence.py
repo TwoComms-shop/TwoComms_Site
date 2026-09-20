@@ -15,18 +15,22 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 import threading
 import time
 from urllib.parse import urlsplit
 
 from django.core.cache import cache
-from django.db import connections
+from django.contrib.auth import get_user_model
+from django.db import DatabaseError, IntegrityError, connections, transaction
+from django.db.models import Q
 from django.utils import timezone
 import requests
 
@@ -57,14 +61,40 @@ class PresenceCapability:
     route: str
     api_version: str
     account_key: str
+    config_fingerprint: str
     refresh_seconds: float = 0.0
     visibility: str = "ui_unverified_refresh_disabled"
+
+
+CAPABILITY_TYPING_REFRESH = "typing_refresh"
+VERIFIED_CAPABILITY_TTL = timedelta(hours=24)
+DEFINITIVE_DENIAL_COOLDOWN = timedelta(hours=24)
+RATE_LIMIT_COOLDOWN = timedelta(minutes=15)
+VERIFICATION_EVIDENCE_KIND = "tester_observation"
+_EVIDENCE_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _sha256_text(namespace, *values):
+    digest = hashlib.sha256()
+    digest.update(namespace.encode())
+    for value in values:
+        digest.update(b"\0")
+        digest.update(str(value or "").encode())
+    return digest.hexdigest()
+
+
+def _presence_configured_token(settings_row, transport):
+    """Use configured credentials only; this never performs token discovery."""
+    from management.services import instagram_bot as bot
+
+    if transport == bot.INSTAGRAM_LOGIN_TRANSPORT:
+        return bot.resolve_instagram_login_token() or ""
+    return bot.resolve_direct_token(settings_row) or ""
 
 
 def capability_profile(settings_row):
     from management.services import instagram_bot as bot
 
-    namespace = bot.ingress_provider_namespace(settings_row)
     # Refresh remains opt-in; a configured cadence is not capability proof.
     # A single accepted sender action is transport evidence, not UI proof.
     try:
@@ -72,11 +102,191 @@ def capability_profile(settings_row):
     except ValueError:
         refresh = 0.0
     refresh = min(30.0, max(5.0, refresh)) if refresh > 0 else 0.0
+    transport = bot.provider_transport(settings_row)
+    account = bot._provider_account_id(settings_row) or ""
+    token = _presence_configured_token(settings_row, transport)
+    account_key = _sha256_text("ig-presence-account-v1", account)
+    config_fingerprint = _sha256_text(
+        "ig-presence-config-v1", transport, bot.GRAPH_VERSION, account,
+        _sha256_text("ig-presence-token-v1", token),
+    )
     return PresenceCapability(
-        bot.provider_transport(settings_row), bot.GRAPH_VERSION,
-        hashlib.sha256(namespace.encode()).hexdigest()[:16], refresh,
+        transport, bot.GRAPH_VERSION, account_key, config_fingerprint, refresh,
         "ui_unverified_refresh_configured" if refresh else "ui_unverified_refresh_disabled",
     )
+
+
+def _capability_identity(profile):
+    return {
+        "transport": profile.route,
+        "graph_version": profile.api_version,
+        "account_key": profile.account_key,
+        "capability": CAPABILITY_TYPING_REFRESH,
+    }
+
+
+def _authorized_operator_id(operator_id):
+    try:
+        operator_id = int(operator_id)
+    except (TypeError, ValueError):
+        raise ValueError("typing refresh verification requires an active staff operator")
+    if operator_id <= 0:
+        raise ValueError("typing refresh verification requires an active staff operator")
+    authorized = get_user_model().objects.filter(
+        pk=operator_id, is_active=True,
+    ).filter(Q(is_staff=True) | Q(is_superuser=True)).exists()
+    if not authorized:
+        raise ValueError("typing refresh verification requires an active staff operator")
+    return operator_id
+
+
+def _validated_evidence(evidence_kind, evidence_ref):
+    if evidence_kind != VERIFICATION_EVIDENCE_KIND or not _EVIDENCE_REF_RE.fullmatch(str(evidence_ref or "")):
+        raise ValueError("typing refresh verification requires a bounded tester evidence reference")
+    return evidence_kind, evidence_ref
+
+
+def typing_refresh_authorized(profile, *, now=None):
+    """Fail closed unless a matching, explicit verification remains live."""
+    if not profile.refresh_seconds:
+        return False
+    from management.models import IgPresenceCapability
+
+    now = now or timezone.now()
+    try:
+        return IgPresenceCapability.objects.filter(
+            **_capability_identity(profile),
+            config_fingerprint=profile.config_fingerprint,
+            status=IgPresenceCapability.Status.VERIFIED,
+            expires_at__gt=now,
+        ).filter(Q(denied_until__isnull=True) | Q(denied_until__lte=now)).exists()
+    except DatabaseError:
+        logger.info("ig_presence outcome=capability_unavailable")
+        return False
+
+
+def verify_typing_refresh_capability(
+    settings_row, *, verified_by_id, evidence_kind, evidence_ref, now=None,
+):
+    """Record manual, opaque proof that this exact configuration may refresh."""
+    verified_by_id = _authorized_operator_id(verified_by_id)
+    evidence_kind, evidence_ref = _validated_evidence(evidence_kind, evidence_ref)
+    profile = capability_profile(settings_row)
+    now = now or timezone.now()
+    from management.models import IgPresenceCapability
+
+    try:
+        with transaction.atomic():
+            capability, _ = IgPresenceCapability.objects.select_for_update().get_or_create(
+                **_capability_identity(profile),
+                defaults={"config_fingerprint": profile.config_fingerprint},
+            )
+            capability.config_fingerprint = profile.config_fingerprint
+            capability.status = IgPresenceCapability.Status.VERIFIED
+            capability.verified_at = now
+            capability.expires_at = now + VERIFIED_CAPABILITY_TTL
+            capability.verified_by_id = verified_by_id
+            capability.evidence_kind = evidence_kind
+            capability.evidence_ref = evidence_ref
+            capability.denied_at = None
+            capability.denied_until = None
+            capability.denied_error_kind = ""
+            capability.denied_error_code = ""
+            capability.invalidated_at = None
+            capability.invalidated_by_id = None
+            capability.invalidation_reason = ""
+            capability.last_error_kind = ""
+            capability.last_error_code = ""
+            capability.last_error_at = None
+            capability.save()
+            return capability
+    except (DatabaseError, IntegrityError):
+        logger.info("ig_presence outcome=capability_verification_unavailable")
+        raise
+
+
+def invalidate_typing_refresh_capability(
+    settings_row, *, invalidated_by_id, reason, now=None,
+):
+    """Explicitly revoke refresh authority without touching advisory presence."""
+    invalidated_by_id = _authorized_operator_id(invalidated_by_id)
+    if not str(reason or "").strip() or len(str(reason).strip()) > 255:
+        raise ValueError("typing refresh invalidation requires a bounded reason")
+    profile = capability_profile(settings_row)
+    now = now or timezone.now()
+    from management.models import IgPresenceCapability
+
+    try:
+        with transaction.atomic():
+            capability, _ = IgPresenceCapability.objects.select_for_update().get_or_create(
+                **_capability_identity(profile),
+                defaults={"config_fingerprint": profile.config_fingerprint},
+            )
+            capability.config_fingerprint = profile.config_fingerprint
+            capability.status = IgPresenceCapability.Status.INVALIDATED
+            capability.expires_at = None
+            capability.invalidated_at = now
+            capability.invalidated_by_id = invalidated_by_id
+            capability.invalidation_reason = str(reason).strip()
+            capability.save()
+            return capability
+    except (DatabaseError, IntegrityError):
+        logger.info("ig_presence outcome=capability_invalidation_unavailable")
+        raise
+
+
+def _record_typing_refresh_outcome(profile, result, *, now=None):
+    """Persist only negative sender evidence; HTTP acceptance never verifies."""
+    if result.ok or result.action != "typing_on":
+        return
+    if result.kind not in {
+        "missing_account", "missing_token", "unsupported_or_denied", "rate_limited",
+    }:
+        return
+    from management.models import IgPresenceCapability
+
+    now = now or timezone.now()
+    try:
+        with transaction.atomic():
+            capability, _ = IgPresenceCapability.objects.select_for_update().get_or_create(
+                **_capability_identity(profile),
+                defaults={"config_fingerprint": profile.config_fingerprint},
+            )
+            if capability.config_fingerprint != profile.config_fingerprint:
+                # Configuration drift never inherits a prior verification.
+                capability.config_fingerprint = profile.config_fingerprint
+                capability.status = IgPresenceCapability.Status.UNKNOWN
+                capability.expires_at = None
+                capability.verified_at = None
+                capability.verified_by_id = None
+                capability.evidence_kind = ""
+                capability.evidence_ref = ""
+                capability.denied_at = None
+                capability.denied_until = None
+                capability.denied_error_kind = ""
+                capability.denied_error_code = ""
+                capability.invalidated_at = None
+                capability.invalidated_by_id = None
+                capability.invalidation_reason = ""
+            capability.last_error_kind = result.kind
+            capability.last_error_code = str(result.http_status or "")[:64]
+            capability.last_error_at = now
+            if result.kind in {"missing_account", "missing_token", "unsupported_or_denied"}:
+                capability.status = IgPresenceCapability.Status.DENIED
+                capability.expires_at = None
+                capability.denied_at = now
+                capability.denied_until = now + DEFINITIVE_DENIAL_COOLDOWN
+                capability.denied_error_kind = result.kind
+                capability.denied_error_code = str(result.http_status or "")[:64]
+            elif result.kind == "rate_limited":
+                # A rate limit pauses an existing verification; it is not a
+                # policy denial and must recover after its shorter cooldown.
+                capability.denied_until = now + RATE_LIMIT_COOLDOWN
+            capability.save()
+    except (DatabaseError, IntegrityError):
+        # This runs only in the advisory worker. Never let capability storage
+        # hold up a substantive send, and never permit refresh on failure.
+        logger.info("ig_presence outcome=capability_persistence_unavailable")
 
 
 def _cached_token(settings_row):
@@ -180,7 +390,8 @@ def _channel_state(key):
 class PresenceSession:
     def __init__(self, controller, *, key, transport, guard, source_watermark,
                  refresh_seconds=0, state_boundary=_channel_state, owner_check=None,
-                 completion_guard=None, report=None, capability=None):
+                 completion_guard=None, report=None, capability=None,
+                 refresh_authorized=None, typing_result_callback=None):
         self.controller, self.key = controller, key
         self.transport, self.guard = transport, guard
         self.source_watermark = int(source_watermark or 0)
@@ -188,6 +399,8 @@ class PresenceSession:
         self.completion_guard = completion_guard
         self.report = report
         self.capability = capability
+        self.refresh_authorized = refresh_authorized
+        self.typing_result_callback = typing_result_callback
         self.owner_version = 0
         self.generation = secrets.token_hex(16)
         self.refresh_seconds = refresh_seconds
@@ -283,7 +496,7 @@ class PresenceSession:
         # delivery window or retain an owner replaced while those checks ran.
         return self._completed_seen_current(state)
 
-    def _action(self, action, *, completed_seen=False):
+    def _action(self, action, *, completed_seen=False, periodic=False):
         cleanup = action == "typing_off"
         with self.state_boundary(self.key) as state:
             if completed_seen:
@@ -319,6 +532,11 @@ class PresenceSession:
                 # Timeout is ambiguous too; a late accepted on needs cleanup.
                 self.typing_attempted = True
             result = self.transport(action)
+            if action == "typing_on" and periodic and self.typing_result_callback is not None:
+                try:
+                    self.typing_result_callback(result)
+                except Exception:
+                    logger.info("ig_presence outcome=capability_persistence_unavailable")
             self.outcomes[action] = result.kind
             self.action_counts[action] = self.action_counts.get(action, 0) + 1
             self.total_latency_ms += max(0, int(getattr(result, "latency_ms", 0)))
@@ -341,7 +559,7 @@ class PresenceSession:
             self.consecutive_failures = self.failure_counts[action]
             return self.consecutive_failures < 3
 
-    def _perform(self, action):
+    def _perform(self, action, *, periodic=False):
         while not self.stopped.is_set():
             if not self._allowed(check_owner=not self.suspended.is_set()):
                 return False
@@ -349,7 +567,7 @@ class PresenceSession:
                 self.stopped.wait(0.05)
                 continue
             try:
-                return self._action(action)
+                return self._action(action, periodic=periodic)
             except _PresenceSuspended:
                 continue
         return False
@@ -367,7 +585,10 @@ class PresenceSession:
                 if self.suspended.is_set():
                     continue
                 if self.typing_accepted and self.refresh_seconds and time.monotonic() >= next_refresh:
-                    if not self._perform("typing_on"):
+                    if self.refresh_authorized is None or not self.refresh_authorized():
+                        next_refresh = time.monotonic() + self.refresh_seconds
+                        continue
+                    if not self._perform("typing_on", periodic=True):
                         break
                     next_refresh = time.monotonic() + self.refresh_seconds
         except FileLockTimeout:
@@ -521,6 +742,8 @@ def start_presence(settings_row, *, client_id, recipient_id, owner_token,
             refresh_seconds=profile.refresh_seconds, owner_check=owner_check,
             completion_guard=completed_guard,
             report=_report_session, capability=profile,
+            refresh_authorized=(lambda: typing_refresh_authorized(profile)) if profile.refresh_seconds else None,
+            typing_result_callback=lambda result: _record_typing_refresh_outcome(profile, result),
         )
     except Exception:
         logger.info("ig_presence outcome=start_unavailable")
