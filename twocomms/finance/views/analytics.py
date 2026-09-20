@@ -4,7 +4,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import calendar as calendar_lib
-import math
 from decimal import Decimal
 
 from django.db.models import Sum
@@ -131,36 +130,29 @@ def _pnl_calendar(company, period, start):
             'profit_display': _m(company, profit, signed=True),
             'tone': 'positive' if profit > 0 else 'negative' if profit < 0 else 'neutral',
         })
-    def reference_max(values):
-        ordered = sorted((abs(float(value)) for value in values if value), reverse=True)
-        if not ordered:
-            return 0.0
-        # A single exceptional day should stay vivid without flattening all
-        # ordinary days into the same muted shade.
-        if len(ordered) > 1 and ordered[0] > ordered[1] * 3:
-            return ordered[1] * 3
-        return ordered[0]
+    def ranked_heats(tone):
+        """Give every distinct result its own stable position on the scale."""
+        values = sorted({
+            abs(Decimal(str(cell['profit'])))
+            for cell in cells
+            if cell.get('day') and cell['tone'] == tone
+        })
+        if not values:
+            return {}
+        if len(values) == 1:
+            return {values[0]: 1.0}
+        last = len(values) - 1
+        return {value: round(index / last, 6) for index, value in enumerate(values)}
 
-    positive_max = reference_max(
-        cell['profit'] for cell in cells if cell.get('day') and cell['profit'] > 0
-    )
-    negative_max = reference_max(
-        cell['profit'] for cell in cells if cell.get('day') and cell['profit'] < 0
-    )
-
-    def heat(value, maximum):
-        """Compress outliers while preserving fine-grained differences."""
-        amount = abs(float(value))
-        if not amount or not maximum:
-            return 0.0
-        return round(min(1.0, math.log1p(amount) / math.log1p(maximum)), 6)
+    positive_heats = ranked_heats('positive')
+    negative_heats = ranked_heats('negative')
 
     for cell in cells:
         if cell.get('day'):
             if cell['tone'] == 'positive':
-                cell['heat'] = heat(cell['profit'], positive_max)
+                cell['heat'] = positive_heats[abs(Decimal(str(cell['profit'])))]
             elif cell['tone'] == 'negative':
-                cell['heat'] = heat(cell['profit'], negative_max)
+                cell['heat'] = negative_heats[abs(Decimal(str(cell['profit'])))]
             else:
                 cell['heat'] = 0.0
     while len(cells) % 7:
