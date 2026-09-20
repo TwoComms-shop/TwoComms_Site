@@ -100,6 +100,12 @@ class FinanceV2ServiceTests(TestCase):
         )
         self.assertEqual(group_response.status_code, 201)
         group_id = group_response.json()['group']['id']
+        group_detail = self.client.get(
+            f'/api/v2/obligation-groups/{group_id}/',
+            HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(group_detail.status_code, 200)
+        self.assertEqual(group_detail.json()['group']['remaining'], '0')
         component_response = self.client.post(
             f'/api/v2/obligation-groups/{group_id}/components/',
             data=json.dumps({'name': 'Военный сбор', 'fixed_amount': '865',

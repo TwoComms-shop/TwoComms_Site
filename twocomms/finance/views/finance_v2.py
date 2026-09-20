@@ -213,7 +213,19 @@ def funding_allocate_api(request, source_id):
 
 
 def _component_row(component):
-    return obligations_v2.component_summary(component)
+    row = obligations_v2.component_summary(component)
+    for key in ('planned', 'paid', 'remaining'):
+        row[key] = str(row[key])
+    return row
+
+
+def _group_row(group):
+    row = obligations_v2.group_summary(group)
+    row['remaining'] = str(row['remaining'])
+    for component in row['components']:
+        for key in ('planned', 'paid', 'remaining'):
+            component[key] = str(component[key])
+    return row
 
 
 @finance_access_required(api=True)
@@ -222,7 +234,7 @@ def obligation_groups_api(request):
     company = get_default_company()
     if request.method == 'GET':
         groups = company.obligation_groups.filter(is_active=True).prefetch_related('components')
-        return JsonResponse({'ok': True, 'groups': [obligations_v2.group_summary(g) for g in groups]})
+        return JsonResponse({'ok': True, 'groups': [_group_row(g) for g in groups]})
     data = _body(request)
     try:
         group = ObligationGroup.objects.create(
@@ -236,7 +248,7 @@ def obligation_groups_api(request):
             raise ValueError('Укажите название обязательства')
     except (ValueError, TypeError, InvalidOperation) as exc:
         return _error(exc)
-    return JsonResponse({'ok': True, 'group': obligations_v2.group_summary(group)}, status=201)
+    return JsonResponse({'ok': True, 'group': _group_row(group)}, status=201)
 
 
 @finance_access_required(api=True)
@@ -244,7 +256,7 @@ def obligation_groups_api(request):
 def obligation_group_api(request, group_id):
     company = get_default_company()
     group = get_object_or_404(ObligationGroup, id=group_id, company=company)
-    return JsonResponse({'ok': True, 'group': obligations_v2.group_summary(group)})
+    return JsonResponse({'ok': True, 'group': _group_row(group)})
 
 
 @finance_access_required(api=True)

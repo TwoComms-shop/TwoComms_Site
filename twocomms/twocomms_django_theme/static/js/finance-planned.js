@@ -15,7 +15,12 @@
         'X-Requested-With': 'XMLHttpRequest',
       },
       body: body ? JSON.stringify(body) : undefined,
-    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); });
+    }).then(function (r) {
+      return r.json().catch(function () { return { ok: false, error: 'Сервер повернув некоректну відповідь' }; })
+        .then(function (d) { return { ok: r.ok, data: d }; });
+    }).catch(function () {
+      return { ok: false, data: { ok: false, error: 'Не вдалося зв’язатися із сервером' } };
+    });
   }
 
   var DROPDOWNS = {};
@@ -134,7 +139,11 @@
     var groupId = btn.getAttribute('data-v2-group');
     if (!groupId) return;
     api('/api/v2/obligation-groups/' + groupId + '/').then(function (res) {
-      if (!res.ok || !res.data.ok) return;
+      if (!res.ok || !res.data.ok) {
+        if (v2Result) { v2Result.hidden = false; v2Result.textContent = (res.data && res.data.error) || 'Не вдалося відкрити групу оплати'; }
+        openModal(v2Modal);
+        return;
+      }
       var group = res.data.group;
       var components = (group.components || []).filter(function (component) {
         return Number(component.remaining) > 0 || component.needs_amount;
