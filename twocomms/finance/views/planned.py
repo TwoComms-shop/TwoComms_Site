@@ -17,7 +17,6 @@ from ..models import Counterparty, Transaction, get_default_company
 from ..permissions import finance_access_required
 from ..services import cards as cards_service
 from ..services import counterparty as cp_service
-from ..services import ledger_v2
 from ..services import obligations as obligations_service
 from ..services import obligations_v2
 from ..services import payables as payables_service
@@ -114,16 +113,6 @@ def planned(request):
         'v2_accounts': [
             {'id': a.id, 'name': a.name, 'balance': str(a.current_balance), 'currency': a.currency}
             for a in company.accounts.filter(is_active=True, is_archived=False).order_by('sort_order', 'id')
-        ],
-        'v2_funding': [
-            {
-                'id': source.id,
-                'name': source.name,
-                'source_type': source.source_type,
-                **{key: str(value) for key, value in ledger_v2.funding_summary(source).items()},
-                'pending_review_count': source.classified_transactions.filter(economic_kind='unknown').count(),
-            }
-            for source in company.funding_sources.filter(is_active=True).order_by('-received_at', 'name')
         ],
     }
     return render(request, 'finance/planned.html', context)

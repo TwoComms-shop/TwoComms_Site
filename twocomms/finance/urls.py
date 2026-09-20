@@ -17,6 +17,7 @@ urlpatterns = [
 
     # --- Розділи ---
     path('health/', views.financial_health, name='finance_health'),
+    path('grants/', views.grants, name='finance_grants'),
     # --- Новий reviewable ledger/API слой ---
     path('api/v2/health/', views.finance_v2_health_api, name='finance_v2_health_api'),
     path('api/v2/transactions/<int:txn_id>/classification/', views.classification_api, name='finance_v2_classification_api'),

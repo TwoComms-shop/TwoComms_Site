@@ -1,0 +1,66 @@
+{% extends 'finance/base.html' %}
+{% load static %}
+
+{% block title %}Гранти — TwoComms Finance{% endblock %}
+
+{% block content %}
+<div class="fin-page-head">
+    <div>
+        <h1 class="fin-page-title">Гранти</h1>
+        <p class="fin-page-subtitle">Цільові кошти окремо від операційного прибутку. Тут підтверджуються надходження, витрати та співфінансування.</p>
+    </div>
+    {% if pending_reviews %}<span class="fin-grants-review-count">{{ pending_reviews }} потребують перевірки</span>{% endif %}
+</div>
+
+<div class="fin-grants-grid">
+    {% for source in sources %}
+    <article class="fin-grant-card">
+        <header class="fin-grant-card__head">
+            <div>
+                <span class="fin-grant-card__eyebrow">{{ source.source_type }}</span>
+                <h2>{{ source.name }}</h2>
+            </div>
+            {% if source.project %}<span class="fin-grant-card__project">{{ source.project }}</span>{% endif %}
+        </header>
+        <div class="fin-grant-card__stats">
+            <div><span>Отримано</span><strong>{{ source.received }} грн</strong></div>
+            <div><span>Витрачено</span><strong>{{ source.spent }} грн</strong></div>
+            <div><span>Зарезервовано</span><strong>{{ source.reserved }} грн</strong></div>
+            <div class="is-available"><span>Доступно</span><strong>{{ source.available }} грн</strong></div>
+        </div>
+        <div class="fin-grant-card__meta">
+            {% if source.received_at %}<span>Отримано {{ source.received_at|date:'d.m.Y' }}</span>{% endif %}
+            {% if source.valid_until %}<span>До {{ source.valid_until|date:'d.m.Y' }}</span>{% endif %}
+        </div>
+        {% if source.reviews %}
+        <section class="fin-grant-card__reviews">
+            <h3>Потрібно підтвердити</h3>
+            {% for review in source.reviews %}
+            <div class="fin-grant-review">
+                <span>{{ review.transaction.amount }} грн · {{ review.transaction.account.name|default:'рахунок' }}</span>
+                <small>{{ review.reason }}</small>
+            </div>
+            {% endfor %}
+            <a class="fin-btn fin-btn--secondary fin-btn--sm" href="{% url 'finance_health' %}">Відкрити перевірки</a>
+        </section>
+        {% endif %}
+        {% if source.allocations %}
+        <details class="fin-grant-card__history">
+            <summary>Історія розподілу <span>{{ source.allocations|length }}</span></summary>
+            <div>
+                {% for allocation in source.allocations %}
+                <p><span>{{ allocation.transaction.comment|default:'Операція' }}</span><b>{{ allocation.amount }} грн</b></p>
+                {% endfor %}
+            </div>
+        </details>
+        {% endif %}
+    </article>
+    {% empty %}
+    <div class="fin-empty-state"><h2>Грантів ще немає</h2><p>Створіть джерело цільового фінансування, щоб відокремити його від прибутку.</p></div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'css/finance-grants.css' %}?v=20260920v1">
+{% endblock %}

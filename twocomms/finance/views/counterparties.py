@@ -51,6 +51,10 @@ def counterparties(request):
         'type_filter': type_filter,
         'sort': sort,
         'dropdowns': ser.serialize_dropdowns(company),
+        'v2_accounts': [
+            {'id': a.id, 'name': a.name, 'balance': str(a.current_balance), 'currency': a.currency}
+            for a in company.accounts.filter(is_active=True, is_archived=False).order_by('sort_order', 'id')
+        ],
     })
 
 

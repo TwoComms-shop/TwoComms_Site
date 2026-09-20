@@ -43,33 +43,6 @@
 
 {% include 'finance/partials/v2_payment_modal.html' %}
 
-{% if v2_funding %}
-<section class="fin-v2-funding" aria-labelledby="fin-v2-funding-title">
-    <div class="fin-page-head">
-        <div>
-            <h2 id="fin-v2-funding-title" class="fin-section-title">Целевые средства</h2>
-            <p class="fin-plan-subtitle">Гранты отделены от выручки. Операции попадут в источник после подтверждения в очереди проверок.</p>
-        </div>
-    </div>
-    <div class="fin-plan-columns">
-        {% for source in v2_funding %}
-        <article class="fin-funding-v2" data-funding-source="{{ source.id }}">
-            <header class="fin-funding-v2__head">
-                <strong>{{ source.name }}</strong>
-                <span class="fin-funding-v2__badge">Грант</span>
-            </header>
-            <div class="fin-funding-v2__stats">
-                <span><small>Получено</small><b>{{ source.received }} грн</b></span>
-                <span><small>Потрачено</small><b>{{ source.spent }} грн</b></span>
-                <span><small>Доступно</small><b>{{ source.available }} грн</b></span>
-            </div>
-            {% if source.pending_review_count %}<p class="fin-funding-v2__review">{{ source.pending_review_count }} операция требует подтверждения классификации</p>{% endif %}
-        </article>
-        {% endfor %}
-    </div>
-</section>
-{% endif %}
-
 <div class="fin-plan-tl">
     {% for seg in timeline %}
         {% include 'finance/partials/timeline_section.html' with seg=seg %}

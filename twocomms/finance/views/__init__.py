@@ -89,6 +89,9 @@ from .planned import (  # noqa: F401
     obligation_skip_api,
     obligation_move_current_api,
 )
+from .grants import (  # noqa: F401
+    grants,
+)
 from .counterparties import (  # noqa: F401
     counterparties,
     counterparty_detail_page,
