@@ -971,6 +971,7 @@ class RevisionLiveTests(TransactionTestCase):
         type(revision).objects.filter(pk=revision.pk).update(
             state=revision.State.CLAIMED, active_slot=None, claim_token="stale-case",
             claimed_at=past, lease_until=past, overall_deadline=past,
+            recovery_state="cancelled", recovery_code="recovery_head_changed",
             updated_at=timezone.now(),
         )
         IgFollowUpTask.objects.create(

@@ -615,7 +615,13 @@ def expired_revision_debt_ids(
         Q(origin="manual_resume")
         | Q(origin__in=("auto_refresh", "outage_recovery"), action_receipts__has_key="manual_resume_authorization")
         | ~Q(turn__terminal_reason__gt="")
-    ).exclude(recovery_state__in=("waiting", "spawned", "cancelled"))
+    ).filter(
+        # A cancelled recovery is terminal only when its worker lease is gone.
+        # Older releases could leave the claim token behind after cancellation;
+        # admit that bounded cleanup case so it cannot remain technical debt.
+        ~Q(recovery_state__in=("waiting", "spawned"))
+        | Q(recovery_state="cancelled", lease_until__isnull=False, lease_until__lte=now)
+    )
     ordinary = Q(
         origin="inbound",
         turn__claim_state=IgCustomerTurn.ClaimState.OPEN,
