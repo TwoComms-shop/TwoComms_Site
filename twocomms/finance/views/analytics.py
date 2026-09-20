@@ -5,11 +5,12 @@ import datetime as dt
 import json
 from decimal import Decimal
 
+from django.db.models import Sum
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_POST
 
-from ..models import AuditLog, FinancialMetric, Transaction, get_default_company
+from ..models import AuditLog, BudgetPlan, FinancialMetric, Transaction, get_default_company
 from ..permissions import finance_access_required
 from ..services import reports as rep
 from ..services import reports_debt as repd
@@ -48,6 +49,59 @@ def _breakdown(company, rows, total):
         amt = Decimal(str(r['total']))
         pct = round(float(amt / total * 100), 1) if total else 0.0
         out.append({'name': r['name'], 'amount': _m(company, amt), 'pct': pct})
+    return out
+
+
+def _pnl_previous_period(period, start, end):
+    """Return the immediately preceding period for the comparison overlay."""
+    if period == 'all' or not start or not end:
+        return None
+    span = (end - start).days + 1
+    previous_end = start - dt.timedelta(days=1)
+    return previous_end - dt.timedelta(days=span - 1), previous_end
+
+
+def _pnl_detail_rows(company, rows, previous_rows, start, end):
+    """Prepare the compact expense table used by the P&L dashboard."""
+    previous = {row['name']: Decimal(str(row['total'])) for row in previous_rows}
+    budget_rows = (BudgetPlan.objects.filter(
+        company=company, period_start__lte=end, period_end__gte=start,
+    ).values('category__name').annotate(total=Sum('planned_expense')))
+    budgets = {row['category__name'] or 'Без категорії': row['total'] or Decimal('0')
+               for row in budget_rows}
+    icons = {
+        'Готівка та фінанси': '▣', 'Кафе та ресторани': '♜', 'Продукти': '◉',
+        'Їжа та продукти': '◉', 'Транспорт': '▣', 'Без категорії': '▤',
+        'Логістика та доставка': '◌', 'Комісія за переказ': '▤',
+    }
+    out = []
+    for index, row in enumerate(rows, 1):
+        amount = Decimal(str(row['total']))
+        prior = previous.get(row['name'], Decimal('0'))
+        budget = budgets.get(row['name'], Decimal('0'))
+        change = ((amount - prior) / prior * 100) if prior else None
+        ratio = (amount / budget * 100) if budget else None
+        if ratio is None:
+            status, status_class = 'Немає плану', 'muted'
+            progress = 0
+        elif ratio > 100:
+            status, status_class = 'Перевищено', 'danger'
+            progress = 100
+        elif ratio >= 90:
+            status, status_class = 'У межах', 'ok'
+            progress = round(float(ratio))
+        else:
+            status, status_class = 'Нижче плану', 'ok'
+            progress = round(float(ratio))
+        out.append({
+            'index': index, 'name': row['name'], 'icon': icons.get(row['name'], '◌'),
+            'amount': _m(company, amount), 'amount_value': float(amount),
+            'pct': round(float(amount / Decimal(str(sum(float(r['total']) for r in rows))) * 100), 1) if rows else 0,
+            'change': round(float(change), 1) if change is not None else None,
+            'budget': _m(company, budget) if budget else '—',
+            'budget_value': float(budget), 'progress': progress,
+            'status': status, 'status_class': status_class,
+        })
     return out
 
 
@@ -120,6 +174,51 @@ def report(request, kind):
         bi = _breakdown(company, data['income_by_category'], data['income'])
         be = _breakdown(company, data['expense_by_category'], data['expenses'])
         profit = data['profit']
+        start = dt.date.fromisoformat(data['period'][0])
+        end = dt.date.fromisoformat(data['period'][1])
+        previous_period = _pnl_previous_period(period, start, end)
+        previous_data = rep.pnl(company, {
+            'period': 'custom',
+            'date_from': previous_period[0].isoformat(),
+            'date_to': previous_period[1].isoformat(),
+        }) if previous_period else None
+        detail_rows = _pnl_detail_rows(
+            company, data['expense_by_category'],
+            previous_data['expense_by_category'] if previous_data else [], start, end,
+        )
+        top_expense = detail_rows[0] if detail_rows else None
+        expense_change = None
+        if previous_data and previous_data['expenses']:
+            expense_change = float((data['expenses'] - previous_data['expenses']) / previous_data['expenses'] * 100)
+        income_change = None
+        if previous_data and previous_data['income']:
+            income_change = float((data['income'] - previous_data['income']) / previous_data['income'] * 100)
+        recommendations = []
+        if top_expense:
+            recommendations.append({
+                'icon': '⚠', 'tone': 'danger', 'title': f'Скоротити витрати в категорії «{top_expense["name"]}»',
+                'body': f'Найбільша стаття займає {top_expense["pct"]}% усіх витрат. Перевірте повторювані платежі.',
+            })
+        if top_expense and top_expense['change'] is not None and top_expense['change'] > 10:
+            recommendations.append({
+                'icon': '◉', 'tone': 'warning', 'title': f'Оптимізувати «{top_expense["name"]}»',
+                'body': f'Витрати зросли на {top_expense["change"]:.1f}% проти попереднього періоду.',
+            })
+        if detail_rows and not any(row['budget_value'] for row in detail_rows):
+            recommendations.append({
+                'icon': '◌', 'tone': 'violet', 'title': 'Додайте бюджети категорій',
+                'body': 'План-факт стане точнішим, коли для основних категорій буде задано бюджет.',
+            })
+        if income_change is not None and income_change > 0:
+            recommendations.append({
+                'icon': '↗', 'tone': 'success', 'title': 'Доходи зростають',
+                'body': f'Приріст доходів становить {income_change:.1f}% проти попереднього періоду.',
+            })
+        if not recommendations:
+            recommendations.append({
+                'icon': '✓', 'tone': 'success', 'title': 'Дані готові до аналізу',
+                'body': 'Додайте кілька періодів, щоб побачити більше рекомендацій.',
+            })
         insights = [f"Доходи {_m(company, data['income'])}, витрати {_m(company, data['expenses'])}."]
         if profit >= 0:
             insights.append(f"Прибуток {_m(company, profit, signed=True)} за маржі {round(data['margin'], 1)}% — бізнес у плюсі.")
@@ -138,9 +237,18 @@ def report(request, kind):
             'profit_positive': profit >= 0,
             'breakdown_income': bi,
             'breakdown_expense': be,
+            'detail_rows': detail_rows,
+            'budget_rows': detail_rows[:8],
+            'recommendations': recommendations[:4],
+            'date_from': start.strftime('%-d %b %Y'),
+            'date_to': end.strftime('%-d %b %Y'),
+            'income_change': income_change,
+            'expense_change': expense_change,
+            'previous_period_label': 'попереднім місяцем' if period in ('month', 'last_month') else 'попереднім періодом',
             'insights': insights,
             'chart_data': json.dumps({
                 'series': data['series'],
+                'previous_series': previous_data['series'] if previous_data else [],
                 'income_by_category': data['income_by_category'],
                 'expense_by_category': data['expense_by_category'],
             }),

@@ -142,5 +142,38 @@
       donut('fin-chart-income', d.income_by_category);
       donut('fin-chart-expense', d.expense_by_category);
     },
+    renderPnlDashboard: function () {
+      setDefaults();
+      var d = data();
+      var el = document.getElementById('pnl-trend-chart');
+      var donutEl = document.getElementById('pnl-expense-donut');
+      if (el && window.Chart) {
+        var current = d.series || [];
+        var previous = d.previous_series || [];
+        var labels = current.map(function (s) { return s.label.slice(5).replace('-', ' '); });
+        var previousIncome = previous.map(function (s) { return s.in || 0; });
+        var previousExpense = previous.map(function (s) { return s.out || 0; });
+        var chart = new Chart(el, {
+          type: 'line',
+          data: { labels: labels, datasets: [
+            { label: 'Доходи', data: current.map(function (s) { return s.in || 0; }), borderColor: '#38e2a1', backgroundColor: 'rgba(52,211,153,.14)', fill: true, tension: .35, pointRadius: 2, borderWidth: 2 },
+            { label: 'Витрати', data: current.map(function (s) { return s.out || 0; }), borderColor: '#fb7185', backgroundColor: 'rgba(251,113,133,.10)', fill: true, tension: .35, pointRadius: 2, borderWidth: 2 },
+            { label: 'Прибуток', data: current.map(function (s) { return (s.in || 0) - (s.out || 0); }), borderColor: '#f3a43d', backgroundColor: 'transparent', fill: false, tension: .35, pointRadius: 2, borderWidth: 2 },
+            { label: 'Доходи (мін. період)', data: previousIncome, borderColor: '#38e2a1', borderDash: [4, 4], backgroundColor: 'transparent', fill: false, tension: .35, pointRadius: 0, borderWidth: 1.2 },
+            { label: 'Витрати (мін. період)', data: previousExpense, borderColor: '#fb7185', borderDash: [4, 4], backgroundColor: 'transparent', fill: false, tension: .35, pointRadius: 0, borderWidth: 1.2 }
+          ] },
+          options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return c.dataset.label + ': ' + fmt(c.parsed.y) + ' ₴'; } } } }, scales: { x: { grid: { color: GRID }, ticks: { color: TICK, maxTicksLimit: 10, font: { size: 10 } } }, y: { grid: { color: GRID }, ticks: { color: TICK, callback: function (v) { return fmt(v); }, font: { size: 10 } } } } }
+        });
+        var compare = document.getElementById('pnl-compare');
+        if (compare) compare.addEventListener('change', function () { chart.data.datasets[3].hidden = !this.checked; chart.data.datasets[4].hidden = !this.checked; chart.update(); });
+      }
+      if (donutEl && window.Chart) {
+        var rows = (d.expense_by_category || []);
+        new Chart(donutEl, { type: 'doughnut', data: { labels: rows.map(function (r) { return r.name; }), datasets: [{ data: rows.map(function (r) { return r.total; }), backgroundColor: PIE, borderColor: '#111b2a', borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: false, cutout: '67%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return c.label + ': ' + fmt(c.parsed) + ' ₴'; } } } } } });
+      }
+      document.querySelectorAll('.pnl-period-btn').forEach(function (button) { button.addEventListener('click', function () { var select = document.getElementById('pnl-period'); if (select) { select.value = button.dataset.period; select.form.submit(); } }); });
+      var search = document.querySelector('.pnl-search input');
+      if (search) search.addEventListener('input', function () { var needle = this.value.toLowerCase(); document.querySelectorAll('.pnl-table tbody tr').forEach(function (row) { row.hidden = needle && row.textContent.toLowerCase().indexOf(needle) < 0; }); });
+    },
   };
 })();

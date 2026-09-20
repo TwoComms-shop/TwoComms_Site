@@ -1,65 +1,15 @@
 {% extends 'finance/base.html' %}
 {% load static %}
-{% block title %}{{ title }} — TwoComms Finance{% endblock %}
+{% block title %}P&L — TwoComms Finance{% endblock %}
 
 {% block content %}
-{% include 'finance/partials/report_header.html' %}
-
-<div class="fin-kpi-row">
-    <div class="fin-kpi fin-kpi--pos"><span>Доходи</span><strong>{{ income }}</strong></div>
-    <div class="fin-kpi fin-kpi--neg"><span>Витрати</span><strong>{{ expenses }}</strong></div>
-    <div class="fin-kpi {% if profit_positive %}fin-kpi--pos{% else %}fin-kpi--neg{% endif %}"><span>Прибуток</span><strong>{{ profit }}</strong></div>
-    <div class="fin-kpi"><span>Маржа</span><strong>{{ margin }}%</strong></div>
-</div>
-
-{% if data.income or data.expenses %}
-{% if insights %}
-<div class="fin-insight-card">
-    <div class="fin-insight-card__title">📌 Висновки</div>
-    <ul class="fin-insight-list">
-        {% for line in insights %}<li>{{ line }}</li>{% endfor %}
-    </ul>
-</div>
-{% endif %}
-
-<div class="fin-chart-block">
-    <h3 class="fin-chart-title">Доходи, витрати та прибуток за період</h3>
-    <canvas id="fin-chart-series" height="92"></canvas>
-</div>
-
-<div class="fin-chart-grid">
-    <div class="fin-chart-block">
-        <h3 class="fin-chart-title">Структура доходів</h3>
-        <div class="fin-chart-with-legend">
-            <div class="fin-chart-canvas"><canvas id="fin-chart-income"></canvas></div>
-            <div class="fin-breakdown">
-                {% for r in breakdown_income %}
-                <div class="fin-breakdown__row"><span class="fin-dot" style="--i:{{ forloop.counter0 }}"></span><span class="fin-breakdown__name">{{ r.name }}</span><span class="fin-breakdown__pct">{{ r.pct }}%</span><span class="fin-breakdown__amt">{{ r.amount }}</span></div>
-                {% empty %}<div class="fin-day-empty">Немає доходів</div>{% endfor %}
-            </div>
-        </div>
-    </div>
-    <div class="fin-chart-block">
-        <h3 class="fin-chart-title">Структура витрат</h3>
-        <div class="fin-chart-with-legend">
-            <div class="fin-chart-canvas"><canvas id="fin-chart-expense"></canvas></div>
-            <div class="fin-breakdown">
-                {% for r in breakdown_expense %}
-                <div class="fin-breakdown__row"><span class="fin-dot" style="--i:{{ forloop.counter0 }}"></span><span class="fin-breakdown__name">{{ r.name }}</span><span class="fin-breakdown__pct">{{ r.pct }}%</span><span class="fin-breakdown__amt">{{ r.amount }}</span></div>
-                {% empty %}<div class="fin-day-empty">Немає витрат</div>{% endfor %}
-            </div>
-        </div>
-    </div>
-</div>
-{% else %}
-<div class="fin-empty-state"><h2>Немає даних за період</h2></div>
-{% endif %}
-
-<script id="fin-chart-data" type="application/json">{{ chart_data|safe }}</script>
+<div class="pnl-dashboard">
+    <div class="pnl-head"><div><div class="pnl-breadcrumb"><a href="{% url 'finance_analytics' %}">Аналітика</a><span>›</span><span>P&L</span></div><div class="pnl-title-row"><h1>P&L</h1><span class="pnl-title-note">Фінансовий результат вашого бізнесу в розрізі категорій, з порівнянням та рекомендаціями</span></div></div><div class="pnl-head-actions"><a class="pnl-export" href="{% url 'finance_report_export' kind %}?{{ request.GET.urlencode }}">⇧ &nbsp;Експорт⌄</a><button class="pnl-icon-button" type="button" title="Більше дій">•••</button></div></div>
+    <form class="pnl-toolbar" method="get" id="pnl-filter-form"><label class="pnl-date-control"><span>▣</span><select name="period" id="pnl-period" onchange="this.form.submit()"><option value="today" {% if period == 'today' %}selected{% endif %}>Сьогодні</option><option value="week" {% if period == 'week' %}selected{% endif %}>Поточний тиждень</option><option value="month" {% if period == 'month' %}selected{% endif %}>Поточний місяць</option><option value="last_month" {% if period == 'last_month' %}selected{% endif %}>Попередній місяць</option><option value="quarter" {% if period == 'quarter' %}selected{% endif %}>Квартал</option><option value="year" {% if period == 'year' %}selected{% endif %}>Рік</option><option value="all" {% if period == 'all' %}selected{% endif %}>За весь час</option></select><b>⌄</b></label><button class="pnl-period-btn" type="button" data-period="today">Сьогодні</button><button class="pnl-period-btn" type="button" data-period="week">7 днів</button><button class="pnl-period-btn" type="button" data-period="month">30 днів</button><button class="pnl-period-btn is-active" type="button" data-period="month">Поточний місяць</button><button class="pnl-period-btn" type="button" data-period="last_month">Попередній місяць</button><span class="pnl-toolbar-spacer"></span><span class="pnl-compare-label">Порівняти з {{ previous_period_label }}</span><label class="pnl-switch"><input type="checkbox" id="pnl-compare" checked><span></span></label><button class="pnl-filter-btn" type="button" id="pnl-filter-toggle">☷ &nbsp;Фільтри <strong>2</strong></button></form>
+    <section class="pnl-kpis"><article class="pnl-kpi pnl-kpi--income"><div class="pnl-kpi-icon">▥</div><div><span>Доходи</span><strong>{{ income }}</strong><small class="pnl-kpi-change is-up">↑ {% if income_change != None %}{{ income_change|floatformat:1 }}%{% else %}—{% endif %}</small><em>vs попередній період</em></div><div class="pnl-spark pnl-spark--income"></div></article><article class="pnl-kpi pnl-kpi--expense"><div class="pnl-kpi-icon">↓</div><div><span>Витрати</span><strong>{{ expenses }}</strong><small class="pnl-kpi-change is-down">↑ {% if expense_change != None %}{{ expense_change|floatformat:1 }}%{% else %}—{% endif %}</small><em>vs попередній період</em></div><div class="pnl-spark pnl-spark--expense"></div></article><article class="pnl-kpi pnl-kpi--profit"><div class="pnl-kpi-icon">⌁</div><div><span>Прибуток</span><strong>{{ profit }}</strong><small class="pnl-kpi-change {% if profit_positive %}is-up{% else %}is-down{% endif %}">{% if profit_positive %}↑{% else %}↓{% endif %} {{ margin }}%</small><em>маржа за період</em></div><div class="pnl-spark pnl-spark--profit"></div></article><article class="pnl-kpi pnl-kpi--margin"><div class="pnl-kpi-icon">％</div><div><span>Маржа</span><strong>{{ margin }}%</strong><small class="pnl-kpi-change is-down">↓ —</small><em>vs попередній період</em></div><div class="pnl-spark pnl-spark--margin"></div></article></section>
+    <section class="pnl-alerts">{% if expense_change and expense_change > 10 %}<div class="pnl-alert pnl-alert--danger"><b>!</b><div><strong>Витрати зросли на {{ expense_change|floatformat:1 }}%</strong><span>Перевірте категорії з найбільшим приростом.</span></div></div>{% endif %}<div class="pnl-alert pnl-alert--warning"><b>△</b><div><strong>Маржа {{ margin }}%</strong><span>Рекомендований орієнтир — понад 10%.</span></div></div>{% if detail_rows %}<div class="pnl-alert pnl-alert--warning"><b>△</b><div><strong>Найбільша стаття витрат</strong><span>{{ detail_rows.0.name }} — {{ detail_rows.0.pct }}% витрат.</span></div></div>{% endif %}{% if income_change and income_change > 0 %}<div class="pnl-alert pnl-alert--success"><b>✓</b><div><strong>Доходи зростають</strong><span>+{{ income_change|floatformat:1 }}% порівняно з попереднім періодом.</span></div></div>{% endif %}</section>
+    <section class="pnl-main-grid"><article class="pnl-panel pnl-trend-panel"><div class="pnl-panel-head"><div><h2>Динаміка доходів, витрат та прибутку <span>ⓘ</span></h2><div class="pnl-legend"><span class="is-income">Доходи</span><span class="is-expense">Витрати</span><span class="is-profit">Прибуток</span><span class="is-dashed">Доходи (мін. період)</span><span class="is-dashed is-expense-dash">Витрати (мін. період)</span></div></div><div class="pnl-chart-tabs"><button class="is-active" type="button">Дні</button><button type="button">Тижні</button><button type="button">Місяці</button></div></div><div class="pnl-chart-wrap"><canvas id="pnl-trend-chart"></canvas></div></article><article class="pnl-panel pnl-budget-panel"><div class="pnl-panel-head"><h2>Бюджет vs факт <small>(за категоріями)</small> <span>ⓘ</span></h2><div class="pnl-legend pnl-legend--small"><span class="is-fact">Факт</span><span class="is-budget">Бюджет</span></div></div><div class="pnl-budget-list">{% for row in budget_rows %}<div class="pnl-budget-row"><span class="pnl-budget-icon">{{ row.icon }}</span><span class="pnl-budget-name">{{ row.name }}</span><div class="pnl-budget-bars"><i style="width:{{ row.progress }}%"></i><b style="width:{% if row.budget_value %}{{ row.progress }}{% else %}0{% endif %}%"></b></div><strong>{{ row.amount }}</strong><small>{{ row.budget }}</small></div>{% empty %}<div class="pnl-muted">Немає категорій за період</div>{% endfor %}</div></article><aside class="pnl-panel pnl-ai-panel"><div class="pnl-panel-head"><h2>✦ AI Рекомендації</h2></div><div class="pnl-ai-list">{% for item in recommendations %}<div class="pnl-ai-item pnl-ai-item--{{ item.tone }}"><b>{{ item.icon }}</b><div><strong>{{ item.title }}</strong><span>{{ item.body }}</span></div><i>›</i></div>{% endfor %}</div><button class="pnl-ai-more" type="button">Показати всі рекомендації ($) →</button></aside></section>
+    <section class="pnl-panel pnl-details"><div class="pnl-details-head"><h2>◉ &nbsp;Детальна структура витрат</h2><nav><button class="is-active" type="button">Всі категорії</button><button type="button">Операційні</button><button type="button">Маркетинг</button><button type="button">Персонал</button><button type="button">Адміністративні</button><button type="button">Податки</button><button type="button">Інше</button></nav><label class="pnl-search">⌕ <input type="search" placeholder="Пошук категорії..."></label><button class="pnl-sort" type="button">Сума (спадання)⌄</button></div><div class="pnl-details-grid"><div class="pnl-table-wrap"><table class="pnl-table"><thead><tr><th>#</th><th>Категорія</th><th>Сума</th><th>Частка</th><th>Зміна vs попередній період</th><th>Статус</th><th></th></tr></thead><tbody>{% for row in detail_rows %}<tr><td>{{ row.index }}</td><td><span class="pnl-row-icon">{{ row.icon }}</span>{{ row.name }}</td><td class="pnl-num">{{ row.amount }}</td><td><div class="pnl-share"><i style="width:{{ row.pct }}%"></i></div><small>{{ row.pct }}%</small></td><td class="{% if row.change and row.change > 0 %}is-negative{% else %}is-positive{% endif %}">{% if row.change != None %}{% if row.change > 0 %}↑{% else %}↓{% endif %} {{ row.change|floatformat:1 }}%{% else %}—{% endif %}</td><td><span class="pnl-status pnl-status--{{ row.status_class }}">{{ row.status }}</span></td><td>•••</td></tr>{% empty %}<tr><td colspan="7" class="pnl-muted">Немає витрат за період</td></tr>{% endfor %}</tbody></table></div><div class="pnl-donut-panel"><h3>Структура витрат</h3><div class="pnl-donut-layout"><div class="pnl-donut"><canvas id="pnl-expense-donut"></canvas><b>{{ expenses }}</b><small>Всього витрат</small></div><div class="pnl-donut-legend">{% for row in detail_rows %}<div><i style="--dot:{{ forloop.counter0 }}"></i><span>{{ row.name }}</span><small>{{ row.pct }}%<br><b>{{ row.amount }}</b></small></div>{% endfor %}</div></div>{% if detail_rows %}<div class="pnl-donut-note"><b>ⓘ</b><span><strong>{{ detail_rows.0.pct }}% витрат припадає на «{{ detail_rows.0.name }}»</strong><br>Це значно вище за інші категорії.</span>›</div>{% endif %}</div></div></section>
+</div><script id="fin-chart-data" type="application/json">{{ chart_data|safe }}</script>
 {% endblock %}
-
-{% block extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="{% static 'js/finance-charts.js' %}?v=20260530b"></script>
-<script>document.addEventListener('DOMContentLoaded',function(){FinanceCharts.renderPnl();});</script>
-{% endblock %}
+{% block extra_js %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><script src="{% static 'js/finance-charts.js' %}?v=20260920pnl"></script><script>document.addEventListener('DOMContentLoaded',function(){FinanceCharts.renderPnlDashboard();});</script>{% endblock %}
