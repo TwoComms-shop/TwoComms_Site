@@ -155,6 +155,14 @@ def _pnl_calendar(company, period, start):
                 cell['heat'] = negative_heats[abs(Decimal(str(cell['profit'])))]
             else:
                 cell['heat'] = 0.0
+            if cell['tone'] == 'neutral':
+                cell['background'] = '#3a4658'
+            else:
+                amount = 0.12 + cell['heat'] * 0.88
+                start = (52, 64, 82)
+                end = (241, 77, 104) if cell['tone'] == 'negative' else (19, 201, 149)
+                rgb = tuple(round(start[index] + (end[index] - start[index]) * amount) for index in range(3))
+                cell['background'] = 'rgb({} {} {})'.format(*rgb)
     while len(cells) % 7:
         cells.append({'day': None})
     month_names = ('Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень',
