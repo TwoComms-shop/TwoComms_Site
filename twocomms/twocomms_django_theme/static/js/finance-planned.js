@@ -38,25 +38,151 @@
   }
   function todayISO() { return new Date().toISOString().slice(0, 10); }
 
-  // ----------------------------- Component payment fallback
+  // ----------------------------- Component payment workflow
   var v2Modal = document.getElementById('fin-v2-pay-modal');
   var v2Form = document.getElementById('fin-v2-pay-form');
   var v2Result = document.getElementById('fin-v2-pay-result');
+  var v2Existing = document.getElementById('fin-v2-existing-payment');
+  var v2ExistingAmount = document.getElementById('fin-v2-existing-amount');
+  var v2ExistingButton = document.getElementById('fin-v2-settle-existing');
+  var v2ExistingPanel = document.getElementById('fin-v2-existing-panel');
+  var v2NewPanel = document.getElementById('fin-v2-new-panel');
+  var v2PickerWrap = document.getElementById('fin-v2-component-picker-wrap');
+  var v2Picker = document.getElementById('fin-v2-component-picker');
   var activeIntent = null;
-  function openV2Pay(btn) {
-    if (!v2Modal) return;
-    document.getElementById('fin-v2-component-id').value = btn.getAttribute('data-component-id');
-    document.getElementById('fin-v2-pay-name').textContent = btn.getAttribute('data-component-name') || '';
-    document.getElementById('fin-v2-amount').value = btn.getAttribute('data-component-remaining') || '';
-    document.getElementById('fin-v2-purpose').value = btn.getAttribute('data-component-purpose') || '';
+  var activeComponentId = null;
+  var v2Mode = 'existing';
+  function setV2Mode(mode) {
+    v2Mode = mode;
+    document.querySelectorAll('[data-v2-mode]').forEach(function (button) {
+      var active = button.getAttribute('data-v2-mode') === mode;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    if (v2ExistingPanel) v2ExistingPanel.hidden = mode !== 'existing';
+    if (v2NewPanel) v2NewPanel.hidden = mode !== 'new';
+    if (v2Result) v2Result.hidden = true;
+  }
+  function showV2Recipient(data, counterpartyId) {
+    var box = document.getElementById('fin-v2-recipient');
+    if (!box) return;
+    box.hidden = false;
+    box.textContent = '';
+    var card = data && data.recipient_card;
+    if (card && (card.iban || card.pan_mask)) {
+      box.textContent = 'Получатель: ' + (card.label || card.bank || 'сохраненный реквизит') +
+        ' · ' + (card.iban || card.pan_mask);
+      return;
+    }
+    box.textContent = 'Реквизиты получателя пока не заполнены. Добавьте IBAN или карту в карточке контрагента перед оплатой.';
+    if (counterpartyId) {
+      var link = document.createElement('a');
+      link.href = '/counterparties/' + counterpartyId + '/';
+      link.textContent = 'Открыть карточку';
+      box.appendChild(document.createTextNode(' '));
+      box.appendChild(link);
+    }
+  }
+  function loadV2Context(componentId, counterpartyId) {
+    if (!v2Existing) return;
+    v2Existing.innerHTML = '<option value="">Загрузка операций…</option>';
+    api('/api/v2/obligation-components/' + componentId + '/payment-context/').then(function (res) {
+      if (!res.ok || !res.data.ok) {
+        v2Existing.innerHTML = '<option value="">Не удалось загрузить операции</option>';
+        return;
+      }
+      showV2Recipient(res.data, counterpartyId);
+      var rows = res.data.candidates || [];
+      v2Existing.innerHTML = '';
+      if (!rows.length) {
+        v2Existing.appendChild(opt('', 'Нет не привязанных операций', false));
+      }
+      rows.forEach(function (row) {
+        var label = [row.date || row.date_actual || '', row.amount_display || row.amount || '', row.account_name || '', row.comment || '']
+          .filter(Boolean).join(' · ');
+        var option = opt(row.id, label, false);
+        option.dataset.amount = row.amount || '';
+        v2Existing.appendChild(option);
+      });
+      v2ExistingAmount.value = res.data.component.remaining || '';
+    });
+  }
+  function activateV2Component(componentId, componentName, remaining, purpose, counterpartyId) {
+    activeComponentId = componentId;
+    document.getElementById('fin-v2-component-id').value = activeComponentId;
+    document.getElementById('fin-v2-pay-name').textContent = componentName || '';
+    document.getElementById('fin-v2-amount').value = remaining || '';
+    document.getElementById('fin-v2-purpose').value = purpose || '';
     document.getElementById('fin-v2-comment').value = '';
+    var recipient = document.getElementById('fin-v2-recipient');
+    if (recipient) recipient.hidden = true;
     v2Result.hidden = true; v2Result.textContent = '';
     activeIntent = null;
+    setV2Mode('existing');
+    loadV2Context(activeComponentId, counterpartyId);
+  }
+  function openV2Pay(btn) {
+    if (!v2Modal) return;
+    if (v2PickerWrap) v2PickerWrap.hidden = true;
+    activateV2Component(btn.getAttribute('data-component-id'), btn.getAttribute('data-component-name'),
+      btn.getAttribute('data-component-remaining'), btn.getAttribute('data-component-purpose'),
+      btn.getAttribute('data-counterparty-id'));
     openModal(v2Modal);
   }
+  function openV2Group(btn) {
+    if (!v2Modal) return;
+    var groupId = btn.getAttribute('data-v2-group');
+    if (!groupId) return;
+    api('/api/v2/obligation-groups/' + groupId + '/').then(function (res) {
+      if (!res.ok || !res.data.ok) return;
+      var group = res.data.group;
+      var components = (group.components || []).filter(function (component) {
+        return Number(component.remaining) > 0 || component.needs_amount;
+      });
+      if (!components.length) return;
+      if (v2PickerWrap) v2PickerWrap.hidden = false;
+      if (v2Picker) {
+        v2Picker.innerHTML = '';
+        components.forEach(function (component) {
+          var option = opt(component.id, component.name + ' · осталось ' + component.remaining + ' грн', false);
+          option.dataset.name = component.name;
+          option.dataset.remaining = component.remaining;
+          option.dataset.purpose = component.purpose || '';
+          v2Picker.appendChild(option);
+        });
+        v2Picker.onchange = function () {
+          var current = v2Picker.options[v2Picker.selectedIndex];
+          activateV2Component(current.value, current.dataset.name, current.dataset.remaining,
+            current.dataset.purpose, group.counterparty_id || '');
+        };
+      }
+      var first = components[0];
+      activateV2Component(first.id, first.name, first.remaining, first.purpose, group.counterparty_id || '');
+      openModal(v2Modal);
+    });
+  }
+  if (v2Existing) v2Existing.addEventListener('change', function () {
+    var selected = v2Existing.options[v2Existing.selectedIndex];
+    if (selected && selected.value) v2ExistingAmount.value = selected.dataset.amount || v2ExistingAmount.value;
+  });
+  if (v2ExistingButton) v2ExistingButton.addEventListener('click', function () {
+    if (!activeComponentId || !v2Existing.value) return;
+    v2ExistingButton.disabled = true;
+    api('/api/v2/obligation-components/' + activeComponentId + '/settle-existing/', 'POST', {
+      transaction_id: v2Existing.value, amount: v2ExistingAmount.value,
+    }).then(function (res) {
+      v2ExistingButton.disabled = false;
+      v2Result.hidden = false;
+      v2Result.textContent = res.ok && res.data.ok ? 'Операция привязана. Остаток компонента обновлен.' : ((res.data && res.data.error) || 'Не удалось привязать операцию');
+      if (res.ok && res.data.ok) setTimeout(function () { window.location.reload(); }, 700);
+    });
+  });
+  document.querySelectorAll('[data-v2-mode]').forEach(function (button) {
+    button.addEventListener('click', function () { setV2Mode(button.getAttribute('data-v2-mode')); });
+  });
   if (v2Form) v2Form.addEventListener('submit', function (e) {
     e.preventDefault();
-    if (activeIntent) return;
+    if (v2Mode !== 'new' || activeIntent) return;
     api('/api/v2/obligation-components/' + document.getElementById('fin-v2-component-id').value + '/payment-intent/', 'POST', {
       account_id: document.getElementById('fin-v2-account').value,
       amount: document.getElementById('fin-v2-amount').value,
@@ -69,7 +195,7 @@
       var recipient = activeIntent.recipient || {};
       v2Result.textContent = 'Проверьте сумму и реквизиты: ' + activeIntent.amount + ' ' + activeIntent.currency +
         ' · ' + (recipient.iban || recipient.pan_mask || recipient.label || 'реквизиты не указаны') +
-        '. После ручного подтверждения в банке нажмите кнопку еще раз.';
+        '. После подтверждения в банковском приложении нажмите «Я отправил платеж».';
       var submit = v2Form.querySelector('button[type="submit"]');
       submit.textContent = 'Я отправил платеж';
       submit.onclick = function (ev) {
@@ -99,6 +225,8 @@
     }, 5000);
   }
   document.addEventListener('click', function (e) {
+    var groupPay = e.target.closest('[data-v2-group]');
+    if (groupPay) { e.preventDefault(); openV2Group(groupPay); return; }
     var pay = e.target.closest('[data-v2-pay]');
     if (pay) { e.preventDefault(); openV2Pay(pay); return; }
     if (e.target.closest('[data-v2-pay-close]')) closeModal(v2Modal);

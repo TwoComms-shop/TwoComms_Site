@@ -154,4 +154,6 @@ from .finance_v2 import (  # noqa: F401
     settlement_components_api,
     refund_link_api,
     finance_v2_health_api,
+    component_payment_context_api,
+    component_settle_existing_api,
 )

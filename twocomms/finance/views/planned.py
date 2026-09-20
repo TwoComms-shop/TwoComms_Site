@@ -61,6 +61,40 @@ def planned(request):
         })
 
     cur = company.base_currency
+    status_labels = {
+        'planned': 'Запланировано', 'partial': 'Частично оплачено',
+        'paid': 'Оплачено', 'overdue': 'Просрочено',
+    }
+    v2_group_summaries = []
+    for group in company.obligation_groups.filter(is_active=True).prefetch_related('components'):
+        summary = obligations_v2.group_summary(group)
+        summary['status_label'] = status_labels.get(summary['status'], summary['status'])
+        summary['remaining_display'] = ser.money(summary['remaining'], company.base_currency)
+        for component in summary['components']:
+            component['planned_display'] = ser.money(component['planned'], company.base_currency)
+            component['paid_display'] = ser.money(component['paid'], company.base_currency)
+            component['remaining_display'] = ser.money(component['remaining'], company.base_currency)
+        v2_group_summaries.append(summary)
+
+    def attach_v2_group(row):
+        title = (row.get('title') or '').lower()
+        match = None
+        if 'подат' in title or 'налог' in title:
+            match = next((g for g in v2_group_summaries if 'налог' in g['title'].lower()), None)
+        elif 'комун' in title or 'кварт' in title or 'влад' in title:
+            match = next((g for g in v2_group_summaries if 'кварт' in g['title'].lower()), None)
+        elif 'офис' in title or 'оренд' in title or 'аренд' in title:
+            match = next((g for g in v2_group_summaries if 'офис' in g['title'].lower()), None)
+        if match:
+            row['v2_group_id'] = match['id']
+            row['v2_group_title'] = match['title']
+        return row
+
+    for segment in tl_segments:
+        segment['items'] = [attach_v2_group(row) for row in segment['items']]
+    income = [attach_v2_group(row) for row in income]
+    expense = [attach_v2_group(row) for row in expense]
+
     context = {
         'active_tab': 'planned',
         'timeline': tl_segments,
@@ -76,7 +110,7 @@ def planned(request):
         'income_count': data['income_count'],
         'expense_count': data['expense_count'],
         'dropdowns': ser.serialize_dropdowns(company),
-        'v2_groups': [obligations_v2.group_summary(g) for g in company.obligation_groups.filter(is_active=True).prefetch_related('components')],
+        'v2_groups': v2_group_summaries,
         'v2_accounts': [
             {'id': a.id, 'name': a.name, 'balance': str(a.current_balance), 'currency': a.currency}
             for a in company.accounts.filter(is_active=True, is_archived=False).order_by('sort_order', 'id')

@@ -14,10 +14,11 @@ def component_summary(component):
     planned = component.fixed_amount or component.forecast_amount or Decimal('0')
     paid = component.settlements.aggregate(v=Sum('amount'))['v'] or Decimal('0')
     remaining = max(planned - paid, Decimal('0'))
+    needs_amount = planned <= 0 and component.is_active
     due = component.group.recurrence_rule.next_occurrence if component.group.recurrence_rule_id else None
     overdue = bool(due and due < timezone.localdate() and remaining > 0)
     return {'id': component.id, 'name': component.name, 'planned': planned, 'paid': paid,
-            'remaining': remaining, 'overdue': overdue,
+            'remaining': remaining, 'needs_amount': needs_amount, 'overdue': overdue,
             'recipient_card_id': component.recipient_card_id,
             'purpose': component.payment_purpose_template}
 

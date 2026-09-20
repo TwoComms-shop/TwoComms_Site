@@ -54,19 +54,20 @@
         <article class="fin-oblig-v2" data-v2-group="{{ group.id }}">
             <header class="fin-oblig-v2__head">
                 <strong>{{ group.title }}</strong>
-                <span class="fin-oblig-v2__status fin-oblig-v2__status--{{ group.status }}">{{ group.status }}</span>
-                <b>{{ group.remaining }} грн</b>
+                <span class="fin-oblig-v2__status fin-oblig-v2__status--{{ group.status }}">{{ group.status_label }}</span>
+                <b>{{ group.remaining_display }}</b>
             </header>
             <div class="fin-oblig-v2__parts">
                 {% for component in group.components %}
                 <div class="fin-oblig-v2__part">
-                    <span>{{ component.name }}{% if component.recipient_card_id %} · реквизиты сохранены{% endif %}</span>
-                    <span>{{ component.paid }} / {{ component.planned }} грн</span>
-                    {% if component.remaining > 0 %}
+                    <span class="fin-oblig-v2__part-name">{{ component.name }}{% if component.recipient_card_id %}<small>Реквизиты сохранены</small>{% else %}<small class="is-warning">IBAN/карта не заполнены</small>{% endif %}</span>
+                    <span>{{ component.paid_display }} / {{ component.planned_display }}</span>
+                    {% if component.remaining > 0 or component.needs_amount %}
                     <button type="button" class="fin-oblig__pay" data-v2-pay
                             data-component-id="{{ component.id }}" data-component-name="{{ component.name }}"
-                            data-component-remaining="{{ component.remaining }}" data-component-purpose="{{ component.purpose }}">
-                        💳 Оплатить сейчас
+                            data-component-remaining="{{ component.remaining }}" data-component-purpose="{{ component.purpose }}"
+                            data-counterparty-id="{{ group.counterparty_id|default:'' }}">
+                        <span aria-hidden="true">↗</span>{% if component.needs_amount %} Указать сумму{% else %} Сплатити зараз{% endif %}
                     </button>
                     {% else %}<span class="fin-oblig-v2__done">Оплачено</span>{% endif %}
                 </div>
@@ -80,16 +81,31 @@
     <div class="fin-modal-card fin-modal-card--txn">
         <div class="fin-modal-head"><h3 id="fin-v2-pay-title">Оплатить сейчас</h3><button type="button" class="fin-modal-close" data-v2-pay-close aria-label="Закрыть">×</button></div>
         <form id="fin-v2-pay-form" class="fin-modal-body">
-            <p id="fin-v2-pay-name" class="fin-muted"></p>
+            <p id="fin-v2-pay-name" class="fin-v2-pay-name"></p>
+            <label id="fin-v2-component-picker-wrap" class="fin-v2-component-picker" hidden>Часть обязательства
+                <select id="fin-v2-component-picker"></select>
+            </label>
+            <div id="fin-v2-recipient" class="fin-v2-recipient" hidden></div>
             <input type="hidden" id="fin-v2-component-id">
-            <label>Сумма <input id="fin-v2-amount" type="number" min="0.01" step="0.01" required></label>
-            <label>Списать со счета <select id="fin-v2-account" required>
-                {% for account in v2_accounts %}<option value="{{ account.id }}">{{ account.name }} · {{ account.balance }} {{ account.currency }}</option>{% endfor %}
-            </select></label>
-            <label>Назначение <textarea id="fin-v2-purpose" rows="2"></textarea></label>
-            <label>Комментарий <textarea id="fin-v2-comment" rows="2"></textarea></label>
+            <div class="fin-v2-pay-switch" role="tablist" aria-label="Способ закрытия">
+                <button type="button" class="is-active" data-v2-mode="existing" role="tab" aria-selected="true">Выбрать оплату</button>
+                <button type="button" data-v2-mode="new" role="tab" aria-selected="false">Сплатити зараз</button>
+            </div>
+            <section id="fin-v2-existing-panel" class="fin-v2-pay-panel">
+                <label>Уже проведённая операция <select id="fin-v2-existing-payment"><option value="">Загрузка операций…</option></select></label>
+                <label>Сумма закрытия <input id="fin-v2-existing-amount" type="number" min="0.01" step="0.01"></label>
+                <button type="button" id="fin-v2-settle-existing" class="fin-btn fin-btn--secondary">Привязать и закрыть часть</button>
+            </section>
+            <section id="fin-v2-new-panel" class="fin-v2-pay-panel" hidden>
+                <label>Сумма <input id="fin-v2-amount" type="number" min="0.01" step="0.01" required></label>
+                <label>Списать со счета <select id="fin-v2-account" required>
+                    {% for account in v2_accounts %}<option value="{{ account.id }}">{{ account.name }} · {{ account.balance }} {{ account.currency }}</option>{% endfor %}
+                </select></label>
+                <label>Назначение <textarea id="fin-v2-purpose" rows="2"></textarea></label>
+                <label>Комментарий <textarea id="fin-v2-comment" rows="2"></textarea></label>
+                <button type="submit" class="fin-btn fin-btn--primary">Сформировать платежные данные</button>
+            </section>
             <p id="fin-v2-pay-result" class="fin-form-alert" hidden></p>
-            <button type="submit" class="fin-btn fin-btn--primary">Сформировать платежные данные</button>
         </form>
     </div>
 </div>

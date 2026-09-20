@@ -39,8 +39,13 @@
     </div>
 
     <div class="fin-oblig__act">
-        {% if seg_tone == 'future' %}
-        {# Майбутні місяці: без кнопки оплати — лишається лічильник днів у meta + меню. #}
+        {% if g.v2_group_id %}
+        <button type="button" class="fin-oblig__pay fin-oblig__pay--now" data-v2-group="{{ g.v2_group_id }}"
+                data-v2-group-title="{{ g.v2_group_title }}" title="Відкрити оплату групи">
+            <span aria-hidden="true">↗</span><span class="fin-oblig__pay-tx">Сплатити зараз</span>
+        </button>
+        {% elif seg_tone == 'future' %}
+        {# Для несоставных будущих планов остаётся меню; составные открываются выше. #}
         {% elif g.next_txn_id %}
         <button type="button" class="fin-oblig__pay" data-act="settle" data-txn-id="{{ g.next_txn_id }}"
                 title="{% if g.type == 'income' %}Прийняти оплату{% else %}Сплатити{% endif %}">

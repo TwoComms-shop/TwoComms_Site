@@ -10,6 +10,7 @@ import json
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction as db_transaction
+from django.db.models import Sum
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
@@ -22,6 +23,7 @@ from ..models import (
 )
 from ..permissions import finance_access_required
 from ..services import ledger_v2, obligations_v2, payment_intents
+from ..services import payables as payables_service
 
 
 def _body(request):
@@ -292,6 +294,80 @@ def component_payment_intent_api(request, component_id):
         return _error(exc)
     return JsonResponse({'ok': True, 'created': created,
                          'intent': payment_intents.instruction_payload(intent)})
+
+
+@finance_access_required(api=True)
+@require_GET
+def component_payment_context_api(request, component_id):
+    """Return existing unlinked payments and saved recipient details."""
+    company = get_default_company()
+    component = get_object_or_404(
+        ObligationComponent.objects.select_related('group', 'group__counterparty', 'recipient_card'),
+        id=component_id, group__company=company,
+    )
+    group = component.group
+    ttype = Transaction.TYPE_INCOME if group.type == 'income' else Transaction.TYPE_EXPENSE
+    candidates = payables_service.payable_candidates(
+        company, ttype=ttype, counterparty=group.counterparty, limit=60,
+    )
+    card = component.recipient_card
+    return JsonResponse({
+        'ok': True,
+        'component': obligations_v2.component_summary(component),
+        'counterparty': ({'id': group.counterparty_id, 'name': group.counterparty.name}
+                         if group.counterparty_id else None),
+        'recipient_card': ({
+            'id': card.id, 'label': card.label, 'iban': card.iban,
+            'pan_mask': card.pan_mask, 'bank': card.bank,
+        } if card else None),
+        'candidates': candidates,
+    })
+
+
+@finance_access_required(api=True)
+@require_POST
+def component_settle_existing_api(request, component_id):
+    """Attach an already imported payment to one component atomically."""
+    from django.utils import timezone
+
+    company = get_default_company()
+    component = get_object_or_404(
+        ObligationComponent.objects.select_related('group', 'group__counterparty'),
+        id=component_id, group__company=company,
+    )
+    data = _body(request)
+    payment = get_object_or_404(
+        Transaction.objects.select_related('account'),
+        id=data.get('transaction_id'), company=company, status=Transaction.STATUS_ACTUAL,
+    )
+    expected_type = Transaction.TYPE_INCOME if component.group.type == 'income' else Transaction.TYPE_EXPENSE
+    if payment.type != expected_type:
+        return _error('Тип операции не совпадает с обязательством')
+    try:
+        amount = _decimal(data.get('amount') or payment.amount)
+        planned = component.fixed_amount or component.forecast_amount or Decimal('0')
+        already = component.settlements.aggregate(v=Sum('amount'))['v'] or Decimal('0')
+        if amount > payment.amount or amount > max(planned - already, Decimal('0')):
+            raise ValueError('Сумма превышает остаток компонента или операцию')
+        if payment.settlements.exists():
+            raise ValueError('Операция уже привязана к обязательству')
+        with db_transaction.atomic():
+            if component.group.counterparty_id and not payment.counterparty_id:
+                payment.counterparty = component.group.counterparty
+                payment.save(update_fields=['counterparty', 'updated_at'])
+            settlement = ObligationSettlement.objects.create(
+                company=company, payment=payment, rule=component.group.recurrence_rule,
+                period_key=timezone.localdate().strftime('%Y-%m'),
+                period_label=component.name, amount=amount, currency=payment.currency,
+                created_by=request.user if request.user.is_authenticated else None,
+            )
+            obligations_v2.allocate_settlement(
+                settlement=settlement, allocations={str(component.id): str(amount)},
+            )
+    except (ValueError, TypeError, InvalidOperation) as exc:
+        return _error(exc)
+    return JsonResponse({'ok': True, 'settlement_id': settlement.id,
+                         'component': obligations_v2.component_summary(component)})
 
 
 def _intent_row(intent):

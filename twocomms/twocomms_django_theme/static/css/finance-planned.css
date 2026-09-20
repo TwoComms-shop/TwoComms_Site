@@ -104,6 +104,7 @@
 }
 .fin-oblig--income .fin-oblig__pay { background: #34d399; color: #06281c; }
 .fin-oblig__pay:hover { filter: brightness(1.05); }
+.fin-oblig__pay--now { background: #f6a51a; color: #1b1304; border-color: transparent; }
 .fin-icon-btn {
   width: 30px; height: 30px; border-radius: 8px; cursor: pointer; display: inline-flex;
   align-items: center; justify-content: center; list-style: none;
@@ -233,15 +234,32 @@
   border-bottom: 1px solid var(--fin-border); background: var(--fin-bg-850, rgba(20,22,30,.55));
 }
 .fin-oblig-v2__head strong { flex: 1; }
+.fin-oblig-v2__head b { color: #f8fafc; font-size: 15px; font-variant-numeric: tabular-nums; }
 .fin-oblig-v2__status { font-size: 11px; color: var(--fin-muted); text-transform: uppercase; }
 .fin-oblig-v2__status--overdue { color: #fb7185; }
+.fin-oblig-v2__status--partial { color: #fbbf24; }
 .fin-oblig-v2__status--paid { color: #34d399; }
 .fin-oblig-v2__parts { display: flex; flex-direction: column; }
 .fin-oblig-v2__part { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--fin-border); font-size: 13px; }
 .fin-oblig-v2__part:last-child { border-bottom: 0; }
+.fin-oblig-v2__part-name { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fin-oblig-v2__part-name small { color: #6ee7b7; font-size: 11px; }
+.fin-oblig-v2__part-name small.is-warning { color: #fbbf24; }
 .fin-oblig-v2__done { color: #34d399; font-size: 12px; }
-.fin-v2-groups .fin-oblig__pay { white-space: nowrap; }
+.fin-v2-groups .fin-oblig__pay { white-space: nowrap; border: 0; border-radius: 9px; padding: 8px 12px; background: #f6a51a; color: #1b1304; font-weight: 700; cursor: pointer; }
 .fin-v2-groups + .fin-modal { z-index: 20; }
+.fin-v2-pay-name { margin: 0 0 12px; font-size: 17px; font-weight: 750; color: #f8fafc; }
+.fin-v2-component-picker { display: grid; gap: 5px; margin-bottom: 12px; color: var(--fin-muted); font-size: 12px; }
+.fin-v2-recipient { margin: 0 0 14px; padding: 10px 12px; border: 1px solid rgba(251,191,36,.32); border-radius: 10px; background: rgba(251,191,36,.08); color: #fcd34d; font-size: 12px; line-height: 1.45; }
+.fin-v2-recipient a { color: #fde68a; font-weight: 700; margin-left: 6px; }
+.fin-v2-pay-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 14px; padding: 4px; border: 1px solid var(--fin-border); border-radius: 10px; background: rgba(255,255,255,.03); }
+.fin-v2-pay-switch button { border: 0; border-radius: 7px; padding: 9px 10px; background: transparent; color: var(--fin-muted); font-weight: 650; cursor: pointer; }
+.fin-v2-pay-switch button.is-active { background: #2a3344; color: #f8fafc; }
+.fin-v2-pay-panel { display: grid; gap: 10px; }
+.fin-v2-pay-panel[hidden] { display: none; }
+.fin-v2-pay-panel label { display: grid; gap: 5px; color: var(--fin-muted); font-size: 12px; }
+.fin-v2-pay-panel input, .fin-v2-pay-panel select, .fin-v2-pay-panel textarea { width: 100%; box-sizing: border-box; }
+.fin-v2-pay-panel .fin-btn { justify-self: start; }
 .fin-funding-v2 {
   background: var(--fin-panel); border: 1px solid rgba(96,165,250,.28);
   border-radius: var(--fin-radius-md, 14px); padding: 14px 16px;
