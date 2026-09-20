@@ -12,6 +12,23 @@
     {% if pending_reviews %}<span class="fin-grants-review-count">{{ pending_reviews }} потребують перевірки</span>{% endif %}
 </div>
 
+{% if unclassified_incomes %}
+<section class="fin-grants-inbox">
+    <div class="fin-grants-inbox__head">
+        <div><span class="fin-grant-card__eyebrow">Потребують рішення</span><h2>Нерозібрані надходження</h2></div>
+        <span>Поки не змінюємо історію та показуємо їх окремо</span>
+    </div>
+    {% for transaction in unclassified_incomes %}
+    <div class="fin-grant-inbox-row" data-grant-inbox-row="{{ transaction.id }}">
+        <div><strong>{{ transaction.amount }} грн</strong><span>{{ transaction.date_actual|date:'d.m.Y' }} · {{ transaction.account.name|default:'Рахунок' }}</span></div>
+        <span>{{ transaction.comment|default:'Без призначення' }}</span>
+        <label class="fin-field fin-grant-inbox-row__select"><span class="sr-only">Програма</span><select class="fin-select" data-grant-source><option value="">Оберіть грант</option>{% for source in sources %}<option value="{{ source.id }}">{{ source.name }}</option>{% endfor %}</select></label>
+        <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" data-grant-classify="{{ transaction.id }}">Підтвердити як грант</button>
+    </div>
+    {% endfor %}
+</section>
+{% endif %}
+
 <div class="fin-grants-grid">
     {% for source in sources %}
     <article class="fin-grant-card">
@@ -49,6 +66,14 @@
             {% endfor %}
         </section>
         {% endif %}
+        {% if source.received_transactions %}
+        <section class="fin-grant-card__history fin-grant-card__received">
+            <h3>Підтверджені надходження</h3>
+            {% for transaction in source.received_transactions %}
+            <p><span><b>{{ transaction.amount }} грн</b> · {{ transaction.date_actual|date:'d.m.Y' }} · {{ transaction.account.name|default:'Рахунок' }}</span><a href="{% url 'finance_home' %}?transaction={{ transaction.id }}">Відкрити</a></p>
+            {% endfor %}
+        </section>
+        {% endif %}
         {% if source.pending_expenses %}
         <section class="fin-grant-card__reviews">
             <h3>Витрати очікують розподілу</h3>
@@ -56,6 +81,7 @@
             <div class="fin-grant-review">
                 <span>{{ transaction.amount }} грн · {{ transaction.date_actual|date:'d.m.Y' }}</span>
                 <small>{{ transaction.comment|default:'Без призначення' }}</small>
+                <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" data-grant-allocate="{{ transaction.id }}" data-grant-source="{{ source.id }}">Розподілити весь платіж</button>
             </div>
             {% endfor %}
             <p>Ці витрати ще не зменшують залишок гранту, доки ви не підтвердите їхній розподіл.</p>
@@ -79,7 +105,7 @@
 {% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{% static 'css/finance-grants.css' %}?v=20260920v1">
+<link rel="stylesheet" href="{% static 'css/finance-grants.css' %}?v=20260920v2">
 {% endblock %}
 
 {% block extra_js %}
@@ -102,6 +128,42 @@
         button.disabled = false;
         window.alert(error.message || 'Помилка мережі');
       }
+    });
+  });
+  const postJson = async (url, body) => {
+    const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf()}, body: JSON.stringify(body)});
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || 'Не вдалося зберегти зміни');
+    return payload;
+  };
+  document.querySelectorAll('[data-grant-classify]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const row = button.closest('[data-grant-inbox-row]');
+      const source = row && row.querySelector('[data-grant-source]');
+      if (!source || !source.value) { window.alert('Оберіть грантову програму'); return; }
+      button.disabled = true;
+      try {
+        await postJson(`/api/v2/transactions/${button.dataset.grantClassify}/classification/`, {
+          economic_kind: 'grant_inflow', ownership_scope: 'business',
+          funding_source_id: source.value, note: 'Підтверджено у вкладці «Гранти»',
+        });
+        window.location.reload();
+      } catch (error) { button.disabled = false; window.alert(error.message); }
+    });
+  });
+  document.querySelectorAll('[data-grant-allocate]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!window.confirm('Розподілити весь платіж на цю грантову програму?')) return;
+      button.disabled = true;
+      const row = button.closest('.fin-grant-review');
+      const text = (row.querySelector('span') || {}).textContent || '';
+      const amount = (text.match(/[\d\s,.]+/) || [''])[0].replace(/\s/g, '').replace(',', '.');
+      try {
+        await postJson(`/api/v2/funding/${button.dataset.grantSource}/allocate/`, {
+          transaction_id: button.dataset.grantAllocate, amount, allocation_type: 'spent',
+        });
+        window.location.reload();
+      } catch (error) { button.disabled = false; window.alert(error.message); }
     });
   });
 })();

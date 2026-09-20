@@ -10,7 +10,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from finance.models import Account, Transaction, get_default_company
+from finance.models import Account, FundingSource, Transaction, get_default_company
 from finance.services import reports as rep
 from finance.services import reports_debt as repd
 from finance.services import transactions as txn_service
@@ -43,6 +43,22 @@ class ReportsTests(TestCase):
         self.assertEqual(data['cash_in'], Decimal('1000'))
         self.assertEqual(data['cash_out'], Decimal('400'))
         self.assertEqual(data['net'], Decimal('600'))
+
+    def test_cash_flow_separates_grant_from_operating_series(self):
+        source = FundingSource.objects.create(
+            company=self.company, name='Людина в біді', received_amount=Decimal('216000'),
+        )
+        grant = txn_service.create_transaction(
+            user=self.user, type=Transaction.TYPE_INCOME, amount=Decimal('216000'),
+            account=self.acc, date_actual=timezone.now(), is_business=True,
+        )
+        grant.economic_kind = 'grant_inflow'
+        grant.funding_source = source
+        grant.save(update_fields=['economic_kind', 'funding_source'])
+        data = rep.cash_flow(self.company, {'period': 'year'})
+        self.assertEqual(data['cash_in'], Decimal('1000'))
+        self.assertEqual(data['targeted_in'], Decimal('216000'))
+        self.assertEqual(sum(bucket['in'] for bucket in data['series']), 1000.0)
 
     def test_pnl_profit(self):
         data = rep.pnl(self.company, {'period': 'year'})

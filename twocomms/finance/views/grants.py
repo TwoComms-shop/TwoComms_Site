@@ -11,6 +11,10 @@ from ..services import ledger_v2
 @finance_access_required
 def grants(request):
     company = get_default_company()
+    unclassified_incomes = list(Transaction.objects.filter(
+        company=company, status=Transaction.STATUS_ACTUAL,
+        type=Transaction.TYPE_INCOME, economic_kind='unknown',
+    ).select_related('account', 'category').order_by('-date_actual', '-id')[:30])
     sources = []
     for source in company.funding_sources.filter(is_active=True).select_related('project').order_by('-received_at', 'name'):
         summary = ledger_v2.funding_summary(source)
@@ -19,6 +23,10 @@ def grants(request):
         ).select_related('transaction', 'transaction__account').order_by('-created_at'))
         allocations = list(source.allocations.select_related('transaction', 'transaction__account')
                            .order_by('-created_at')[:50])
+        received_transactions = list(Transaction.objects.filter(
+            company=company, funding_source=source, type=Transaction.TYPE_INCOME,
+            status=Transaction.STATUS_ACTUAL,
+        ).select_related('account').order_by('-date_actual', '-id')[:30])
         allocated_ids = [allocation.transaction_id for allocation in allocations]
         pending_expenses = list(Transaction.objects.filter(
             company=company, account__name__iexact='Грантова',
@@ -41,10 +49,12 @@ def grants(request):
             'available': summary['available'],
             'reviews': reviews,
             'allocations': allocations,
+            'received_transactions': received_transactions,
             'pending_expenses': pending_expenses if source.name == 'УВФ' else [],
         })
     return render(request, 'finance/grants.html', {
         'active_tab': 'grants',
         'sources': sources,
         'pending_reviews': sum(len(source['reviews']) for source in sources),
+        'unclassified_incomes': unclassified_incomes,
     })

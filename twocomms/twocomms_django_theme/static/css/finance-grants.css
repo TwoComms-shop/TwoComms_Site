@@ -1,5 +1,17 @@
 .fin-grants-review-count { align-self: center; color: #fbbf24; border: 1px solid rgba(251,191,36,.35); background: rgba(251,191,36,.08); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; }
 .fin-grants-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; }
+.fin-grants-inbox { margin: 0 0 18px; padding: 16px 18px; border: 1px solid rgba(251,191,36,.30); border-radius: 12px; background: rgba(251,191,36,.06); }
+.fin-grants-inbox__head { display: flex; justify-content: space-between; align-items: end; gap: 14px; margin-bottom: 10px; }
+.fin-grants-inbox__head h2 { margin: 4px 0 0; font-size: 18px; }
+.fin-grants-inbox__head > span { color: var(--fin-muted); font-size: 12px; }
+.fin-grant-inbox-row { display: grid; grid-template-columns: minmax(155px, .7fr) minmax(150px, 1fr) minmax(180px, .8fr) auto; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid rgba(251,191,36,.16); }
+.fin-grant-inbox-row > div { display: grid; gap: 3px; }
+.fin-grant-inbox-row > div span, .fin-grant-inbox-row > span { color: var(--fin-muted); font-size: 12px; }
+.fin-grant-inbox-row__select { margin: 0; }
+.fin-grant-card__received { padding: 14px 18px; border-top: 1px solid var(--fin-border); }
+.fin-grant-card__received h3 { margin: 0 0 8px; font-size: 13px; color: #93c5fd; }
+.fin-grant-card__received p { display: flex; justify-content: space-between; gap: 12px; margin: 8px 0; font-size: 12px; }
+.fin-grant-card__received a { color: #93c5fd; text-decoration: none; }
 .fin-grant-card { background: var(--fin-panel); border: 1px solid rgba(96,165,250,.28); border-radius: 14px; overflow: hidden; }
 .fin-grant-card__head { display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; padding: 18px; border-bottom: 1px solid var(--fin-border); background: linear-gradient(135deg, rgba(59,130,246,.14), rgba(255,255,255,.02)); }
 .fin-grant-card__eyebrow { color: #93c5fd; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -22,4 +34,5 @@
 .fin-grant-card__history summary span { margin-left: 6px; padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,.07); }
 .fin-grant-card__history > div { padding: 0 18px 12px; }
 .fin-grant-card__history p { display: flex; justify-content: space-between; gap: 12px; margin: 8px 0; font-size: 12px; }
+@media (max-width: 760px) { .fin-grant-inbox-row { grid-template-columns: 1fr; } .fin-grants-inbox__head { align-items: start; flex-direction: column; } .fin-grant-inbox-row .fin-btn { justify-self: start; } }
 @media (max-width: 640px) { .fin-grants-grid { grid-template-columns: 1fr; } .fin-grant-card__head { padding: 15px; } }

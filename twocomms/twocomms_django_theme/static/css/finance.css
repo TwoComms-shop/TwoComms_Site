@@ -866,6 +866,24 @@ a { color: inherit; }
     background: rgba(251, 191, 36, 0.12); color: #fde68a;
     font-size: 10px; font-weight: 700; vertical-align: middle;
 }
+.fin-grant-pill {
+    display: inline-block; margin: 0 6px 0 0; padding: 2px 8px;
+    border: 1px solid rgba(96, 165, 250, 0.42); border-radius: 999px;
+    background: rgba(59, 130, 246, 0.16); color: #bfdbfe;
+    font-size: 10px; font-weight: 800; vertical-align: middle;
+}
+.fin-grant-classification {
+    display: grid; gap: 10px; margin: 4px 0 2px; padding: 13px 14px;
+    border: 1px solid rgba(96, 165, 250, 0.30); border-radius: var(--fin-radius-sm);
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.11), rgba(15, 23, 42, 0.16));
+}
+.fin-grant-classification__toggle { align-items: flex-start; }
+.fin-grant-classification__toggle span { display: grid; gap: 3px; }
+.fin-grant-classification__toggle strong { color: #dbeafe; font-size: 13px; }
+.fin-grant-classification__toggle small, .fin-grant-classification__source > span { color: var(--fin-text-2); font-size: 11.5px; line-height: 1.4; }
+.fin-grant-classification__source { display: grid; gap: 6px; }
+.fin-kpi--grant { border-color: rgba(96, 165, 250, 0.38); background: rgba(59, 130, 246, 0.10); }
+.fin-kpi--grant strong { color: #93c5fd; }
 .fin-muted-cell { color: var(--fin-muted); }
 
 /* Планова дата операції (в журналі — у слоті прибраної колонки «Проект», лише для планових) */

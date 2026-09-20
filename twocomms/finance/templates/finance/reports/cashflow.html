@@ -9,6 +9,7 @@
     <div class="fin-kpi fin-kpi--pos"><span>Поступлення</span><strong>{{ cash_in }}</strong></div>
     <div class="fin-kpi fin-kpi--neg"><span>Списання</span><strong>{{ cash_out }}</strong></div>
     <div class="fin-kpi {% if net_positive %}fin-kpi--pos{% else %}fin-kpi--neg{% endif %}"><span>Чистий потік</span><strong>{{ net }}</strong></div>
+    {% if data.targeted_in %}<div class="fin-kpi fin-kpi--grant"><span>Цільові гранти</span><strong>{{ targeted_in }}</strong></div>{% endif %}
 </div>
 
 {% if data.cash_in or data.cash_out %}

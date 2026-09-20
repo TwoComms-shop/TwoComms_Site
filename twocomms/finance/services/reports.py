@@ -102,7 +102,11 @@ def cash_flow(company, params):
         s=Sum('amount_base'))['s'] or Decimal('0')
 
     # Серія по днях/місяцях.
-    by_period = _series_by_period(qs, start, end)
+    # Гранти залишаються у фактичному русі рахунку, але не спотворюють
+    # операційний графік: окремий targeted_in показує цільове фінансування.
+    by_period = _series_by_period(
+        management_qs.exclude(type=Transaction.TYPE_TRANSFER), start, end,
+    )
     in_by_cat = _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME).exclude(economic_kind='expense_refund'))
     out_by_cat = _group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE))
 

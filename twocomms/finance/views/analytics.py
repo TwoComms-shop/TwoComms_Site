@@ -102,6 +102,7 @@ def report(request, kind):
             'cash_in': _m(company, data['cash_in']),
             'cash_out': _m(company, data['cash_out']),
             'net': _m(company, data['net'], signed=True),
+            'targeted_in': _m(company, data['targeted_in']),
             'net_positive': net >= 0,
             'breakdown_income': bi,
             'breakdown_expense': be,

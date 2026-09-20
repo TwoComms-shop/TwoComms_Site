@@ -77,6 +77,9 @@
     unclassifiedKind: document.getElementById('fin-unclassified-kind'),
     unclassifiedFundingSource: document.getElementById('fin-unclassified-funding-source'),
     unclassifiedFundingSourceWrap: document.getElementById('fin-unclassified-funding-source-wrap'),
+    grantToggle: document.getElementById('fin-txn-grant'),
+    grantSource: document.getElementById('fin-txn-grant-source'),
+    grantSourceWrap: document.getElementById('fin-txn-grant-source-wrap'),
     unclassifiedSave: document.getElementById('fin-unclassified-save'),
     terminalReview: document.getElementById('fin-terminal-review'),
     terminalContext: document.getElementById('fin-terminal-review-context'),
@@ -127,6 +130,22 @@
     } else {
       els.unclassifiedFundingSource.value = '';
     }
+  }
+
+  function fillGrantSources() {
+    if (!els.grantSource) return;
+    fillSelect(els.grantSource, DROPDOWNS.funding_sources || [], { placeholder: 'Оберіть програму' });
+  }
+
+  function syncGrantClassification() {
+    if (!els.grantSourceWrap || !els.grantToggle) return;
+    els.grantSourceWrap.hidden = !els.grantToggle.checked;
+    if (els.grantToggle.checked) {
+      var selected = els.grantSource && els.grantSource.value;
+      fillGrantSources();
+      if (selected && els.grantSource) els.grantSource.value = selected;
+    }
+    else if (els.grantSource) els.grantSource.value = '';
   }
 
   function populateAccounts() {
@@ -464,6 +483,9 @@
     showAlert('');
     hideTerminalReview();
     populateAccounts();
+    if (els.grantToggle) els.grantToggle.checked = false;
+    if (els.grantSource) els.grantSource.value = '';
+    syncGrantClassification();
     collapseDisclosures();
     renderAttachments([]);
     els.editActions.hidden = true;
@@ -479,6 +501,12 @@
       setType(txn.type);
       els.amount.value = txn.amount;
       if (txn.currency && els.currency) els.currency.value = txn.currency;
+      if (els.grantToggle) els.grantToggle.checked = txn.economic_kind === 'grant_inflow';
+      if (els.grantToggle && els.grantToggle.checked) {
+        fillGrantSources();
+        if (els.grantSource) els.grantSource.value = txn.funding_source_id || '';
+      }
+      syncGrantClassification();
       if (txn.type === 'transfer') {
         if (txn.account_id) els.from.value = txn.account_id;
         if (txn.to_account_id) els.to.value = txn.to_account_id;
@@ -594,18 +622,45 @@
     return fd;
   }
 
+  function persistGrantClassification(txnId) {
+    if (!txnId || els.type.value !== 'income' || !els.grantToggle || !els.grantToggle.checked) {
+      return Promise.resolve({ ok: true });
+    }
+    if (!els.grantSource || !els.grantSource.value) {
+      return Promise.resolve({ ok: false, data: { error: 'Оберіть грантову програму' } });
+    }
+    return api('/api/v2/transactions/' + txnId + '/classification/', 'POST', {
+      economic_kind: 'grant_inflow',
+      ownership_scope: 'business',
+      funding_source_id: els.grantSource.value,
+      note: 'Позначено як цільове грантове надходження у модалці операції',
+    });
+  }
+
   function save(keepOpen) {
     var id = els.id.value;
+    if (els.type.value === 'income' && els.grantToggle && els.grantToggle.checked &&
+        (!els.grantSource || !els.grantSource.value)) {
+      showAlert('Оберіть грантову програму');
+      syncGrantClassification();
+      return;
+    }
     var url = id ? '/api/transactions/' + id + '/update/' : '/api/transactions/create/';
     showAlert('');
     return apiForm(url, collectFormData()).then(function (res) {
       if (res.ok && res.data.ok) {
+        var savedTxn = res.data.transaction;
+        return persistGrantClassification(savedTxn && savedTxn.id).then(function (classification) {
+          if (!classification.ok || (classification.data && classification.data.ok === false)) {
+            showAlert((classification.data && classification.data.error) || 'Не вдалося зберегти ознаку гранту');
+            return;
+          }
         if (keepOpen) {
           var type = els.type.value;
           form.reset(); els.id.value = ''; populateAccounts(); collapseDisclosures();
           renderAttachments([]); els.date.value = nowLocal(); setStatus('actual'); setType(type);
         } else {
-          var txn = res.data.transaction;
+          var txn = savedTxn;
           // Обернений потік: новий фактичний дохід/витрата може бути погашенням
           // запланованого зобовʼязання — пропонуємо привʼязати (один клік).
           if (!id && txn && txn.status === 'actual' &&
@@ -615,6 +670,7 @@
             window.location.reload();
           }
         }
+        });
       } else {
         showAlert(res.data.error || 'Не вдалося зберегти операцію');
       }
@@ -736,6 +792,7 @@
     els.unclassifiedKind.focus();
   });
   if (els.unclassifiedKind) els.unclassifiedKind.addEventListener('change', syncFundingSourceField);
+  if (els.grantToggle) els.grantToggle.addEventListener('change', syncGrantClassification);
   if (els.unclassifiedSave) els.unclassifiedSave.addEventListener('click', saveUnclassifiedIncome);
 
   // Швидке створення сутностей із дропдаунів.

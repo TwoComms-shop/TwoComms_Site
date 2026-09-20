@@ -113,6 +113,22 @@
         </label>
       </div>
 
+      <section class="fin-grant-classification" id="fin-grant-classification" data-show="income" hidden>
+        <label class="fin-checkbox fin-grant-classification__toggle">
+          <input type="checkbox" id="fin-txn-grant" value="1">
+          <span>
+            <strong>Цільове грантове надходження</strong>
+            <small>Не враховувати як прибуток і показувати окремо в Cash Flow</small>
+          </span>
+        </label>
+        <label class="fin-field fin-grant-classification__source" for="fin-txn-grant-source" id="fin-txn-grant-source-wrap" hidden>
+          <span>Грантова програма</span>
+          <select id="fin-txn-grant-source" class="fin-select">
+            <option value="">Оберіть програму</option>
+          </select>
+        </label>
+      </section>
+
       <!-- Рахунки переказу -->
       <div class="fin-field-group fin-field-row" data-show="transfer">
         <label class="fin-field">

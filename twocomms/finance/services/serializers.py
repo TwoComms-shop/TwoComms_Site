@@ -99,6 +99,8 @@ def serialize_transaction(txn: Transaction, *, running_balance=None) -> dict:
         'is_business': txn.is_business,
         'ownership_scope': txn.ownership_scope,
         'economic_kind': txn.economic_kind,
+        'funding_source_id': txn.funding_source_id,
+        'funding_source': txn.funding_source.name if txn.funding_source else '',
         'requires_classification': bool(
             txn.status == Transaction.STATUS_ACTUAL
             and txn.type == Transaction.TYPE_INCOME
