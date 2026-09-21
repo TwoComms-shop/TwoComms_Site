@@ -87,13 +87,81 @@
     border-top: 1px solid rgba(255, 255, 255, .07);
 }
 
-#fin-filters .fin-filters__actions .fin-btn:first-child {
-    margin-right: auto;
+#fin-filters .fin-quick-filters {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 11px;
 }
+
+#fin-filters .fin-quick-filters__label {
+    margin-right: 2px;
+    color: var(--fin-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+}
+
+#fin-filters .fin-filter-chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    cursor: pointer;
+}
+
+#fin-filters .fin-filter-chip input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+}
+
+#fin-filters .fin-filter-chip span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 0 11px;
+    border: 1px solid var(--fin-border);
+    border-radius: 999px;
+    color: var(--fin-text-2);
+    background: rgba(255, 255, 255, .025);
+    font-size: 12px;
+    font-weight: 600;
+    transition: color .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+
+#fin-filters .fin-filter-chip:hover span,
+#fin-filters .fin-filter-chip input:focus-visible + span {
+    border-color: rgba(243, 164, 61, .55);
+    color: var(--fin-text);
+}
+
+#fin-filters .fin-filter-chip input:checked + span {
+    border-color: rgba(243, 164, 61, .72);
+    color: #ffdca8;
+    background: rgba(243, 164, 61, .14);
+    box-shadow: 0 0 0 2px rgba(243, 164, 61, .08);
+}
+
+#fin-filters .fin-filter-chip--planned input:checked + span {
+    border-color: rgba(111, 149, 255, .66);
+    color: #c9d5ff;
+    background: rgba(111, 149, 255, .15);
+    box-shadow: 0 0 0 2px rgba(111, 149, 255, .08);
+}
+
+#fin-filters .fin-filters__actions .fin-btn:first-child { margin-right: 0; }
 
 #fin-filters .fin-filters__actions .fin-btn {
     min-width: 128px;
     min-height: 40px;
+}
+
+#fin-filters .fin-filters__actions .fin-btn--primary {
+    display: none;
 }
 
 #fin-filters .fin-filters__actions .fin-btn--primary {
@@ -137,9 +205,10 @@
     }
 
     #fin-filters .fin-filters__actions .fin-btn:first-child {
-        grid-column: 1 / -1;
         margin-right: 0;
     }
+
+    #fin-filters .fin-filters__actions .fin-btn--primary { display: none; }
 
     #fin-filters .fin-filters__actions .fin-btn {
         width: 100%;
