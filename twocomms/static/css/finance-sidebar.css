@@ -2,10 +2,10 @@
 .fin-sidebar-toggle {
     --toggle-width: 30px;
     --toggle-height: 62px;
-    position: fixed;
+    position: absolute;
     z-index: 70;
-    top: calc(var(--fin-header-h) + ((100vh - var(--fin-header-h)) / 2));
-    left: calc(var(--fin-sidebar-w) - 1px);
+    top: 50%;
+    left: calc(100% - 1px);
     width: var(--toggle-width);
     height: var(--toggle-height);
     display: grid;
@@ -65,6 +65,7 @@
 @media (prefers-reduced-motion: reduce) { .fin-sidebar-toggle, .fin-sidebar-toggle__icon, .fin-sidebar, .fin-sidebar__scroll, .fin-main { transition-duration: .01ms !important; } }
 @media (min-width: 901px) {
     .fin-workspace { transition: grid-template-columns .38s cubic-bezier(.22, 1, .36, 1); }
+    .fin-sidebar { overflow: visible; }
     .fin-body.fin-sidebar-collapsed .fin-workspace { grid-template-columns: 0 minmax(0, 1fr); }
     .fin-body.fin-sidebar-collapsed .fin-content { max-width: none; margin-left: 0; margin-right: 0; padding-left: 68px; }
 }

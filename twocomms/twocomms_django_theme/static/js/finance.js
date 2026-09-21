@@ -8,6 +8,7 @@
         var body = document.body;
         var burger = document.getElementById('fin-burger');
         var sidebar = document.getElementById('fin-sidebar');
+        var sidebarScroll = sidebar ? sidebar.querySelector('.fin-sidebar__scroll') : null;
         var backdrop = document.getElementById('fin-sidebar-backdrop');
         var settingsPanel = document.getElementById('fin-settings-panel');
         var settingsContent = settingsPanel ? settingsPanel.querySelector('.fin-settings-panel__content') : null;
@@ -392,7 +393,8 @@
                 sidebarToggle.setAttribute('aria-label', 'Згорнути бічну панель');
                 sidebarToggle.setAttribute('title', 'Згорнути бічну панель');
                 sidebar.removeAttribute('aria-hidden');
-                sidebar.removeAttribute('inert');
+                if (sidebarScroll) sidebarScroll.removeAttribute('aria-hidden');
+                if (sidebarScroll) sidebarScroll.removeAttribute('inert');
                 return;
             }
             var next = !!collapsed;
@@ -401,11 +403,13 @@
             sidebarToggle.setAttribute('aria-label', next ? 'Розгорнути бічну панель' : 'Згорнути бічну панель');
             sidebarToggle.setAttribute('title', next ? 'Розгорнути бічну панель' : 'Згорнути бічну панель');
             if (next) {
-                sidebar.setAttribute('aria-hidden', 'true');
-                sidebar.setAttribute('inert', '');
+                sidebar.removeAttribute('aria-hidden');
+                if (sidebarScroll) sidebarScroll.setAttribute('aria-hidden', 'true');
+                if (sidebarScroll) sidebarScroll.setAttribute('inert', '');
             } else {
                 sidebar.removeAttribute('aria-hidden');
-                sidebar.removeAttribute('inert');
+                if (sidebarScroll) sidebarScroll.removeAttribute('aria-hidden');
+                if (sidebarScroll) sidebarScroll.removeAttribute('inert');
             }
             if (!options.skipPersist) writeSidebarPreference(next);
         }
