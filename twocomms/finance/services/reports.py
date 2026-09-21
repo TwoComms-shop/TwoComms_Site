@@ -65,7 +65,7 @@ def _include_grants(params):
     return str(params.get('include_grants') or '').strip().lower() in {'1', 'true', 'on', 'yes'}
 
 
-def _apply_dim_filters(qs, params):
+def _apply_dim_filters(qs, params, *, apply_scope=True):
     if params.get('accounts'):
         ids = [i for i in str(params['accounts']).split(',') if i.isdigit()]
         if ids:
@@ -90,7 +90,34 @@ def _apply_dim_filters(qs, params):
         ids = [i for i in str(params['funding_source']).split(',') if i.isdigit()]
         if ids:
             qs = qs.filter(funding_source_id__in=ids)
-    return _apply_scope_filter(qs, params)
+    return _apply_scope_filter(qs, params) if apply_scope else qs
+
+
+def _owner_draw_q(*, prefix=''):
+    """Match owner withdrawals, including legacy bank rows.
+
+    Older imports were saved as an expense or a bare transfer with only the
+    system category.  Newer rows carry the explicit ledger classification.
+    A transfer from a business account to a personal account is also a strong
+    signal, so it remains visible even when classification metadata is absent.
+    """
+    p = prefix
+    return (
+        Q(**{f'{p}economic_kind__in': ['owner_draw', 'personal_transfer']})
+        | Q(**{f'{p}ownership_scope': 'personal', f'{p}type': Transaction.TYPE_TRANSFER})
+        | Q(**{f'{p}category__name': 'Вивід на особисте'})
+        | Q(**{
+            f'{p}type': Transaction.TYPE_TRANSFER,
+            f'{p}account__is_business': True,
+            f'{p}to_account__is_business': False,
+        })
+    )
+
+
+def _owner_draw_amount(qs):
+    return qs.filter(_owner_draw_q()).filter(
+        type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE],
+    ).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
 
 
 def _actual(company):
@@ -148,7 +175,10 @@ def cash_flow(company, params):
                             'debt_repayment', 'pension_income', 'adjustment']
     if not include_grants:
         excluded_management.append('grant_inflow')
-    management_qs = qs.exclude(economic_kind__in=excluded_management)
+    owner_qs = _apply_dim_filters(_actual(company), params, apply_scope=False).filter(
+        date_actual__gte=day_start(start), date_actual__lte=day_end(end),
+    ).filter(_owner_draw_q(), type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE])
+    management_qs = qs.exclude(economic_kind__in=excluded_management).exclude(_owner_draw_q())
     transfer_fees = _unrepresented_transfer_fees(company, params, start, end)
     cash_in = management_qs.filter(type=Transaction.TYPE_INCOME).exclude(
         economic_kind='expense_refund').aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
@@ -160,6 +190,8 @@ def cash_flow(company, params):
                             type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
     internal_out = qs.filter(economic_kind__in=['internal_transfer', 'owner_draw', 'personal_transfer'],
                              type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    owner_drawn = owner_qs.aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    owner_drawn_series = _series_by_period(owner_qs, start, end, transfers_as_out=True)
     refunds = qs.filter(economic_kind='expense_refund', type=Transaction.TYPE_INCOME).aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
 
@@ -182,6 +214,8 @@ def cash_flow(company, params):
         'targeted_in': targeted_in,
         'internal_in': internal_in,
         'internal_out': internal_out,
+        'owner_drawn': owner_drawn,
+        'owner_drawn_count': owner_qs.count(),
         'expense_refunds': refunds,
         'transfer_fees': transfer_fees,
         'include_grants': include_grants,
@@ -190,7 +224,7 @@ def cash_flow(company, params):
     }
 
 
-def _series_by_period(qs, start, end):
+def _series_by_period(qs, start, end, *, transfers_as_out=False):
     """Групування сум по днях (якщо період <= 62 днів) або місяцях."""
     span = (end - start).days
     buckets = OrderedDict()
@@ -203,6 +237,8 @@ def _series_by_period(qs, start, end):
         if t.type == Transaction.TYPE_INCOME:
             buckets[key]['in'] += t.amount_base
         elif t.type == Transaction.TYPE_EXPENSE:
+            buckets[key]['out'] += t.amount_base
+        elif t.type == Transaction.TYPE_TRANSFER and transfers_as_out:
             buckets[key]['out'] += t.amount_base
     return [{'label': k, 'in': float(v['in']), 'out': float(v['out'])}
             for k, v in sorted(buckets.items())]
@@ -245,7 +281,10 @@ def pnl(company, params):
                            'debt_repayment', 'pension_income', 'adjustment', 'expense_refund']
     if not include_grants:
         excluded_management.append('grant_inflow')
-    management_qs = qs.exclude(economic_kind__in=excluded_management)
+    owner_qs = _apply_dim_filters(_actual(company), params, apply_scope=False).filter(
+        Q_or_date(start, end),
+    ).filter(_owner_draw_q(), type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE])
+    management_qs = qs.exclude(economic_kind__in=excluded_management).exclude(_owner_draw_q())
     transfer_fees = _unrepresented_transfer_fees(company, params, start, end, pnl_dates=True)
     income = management_qs.filter(type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
@@ -255,9 +294,13 @@ def pnl(company, params):
     targeted_in = qs.filter(type=Transaction.TYPE_INCOME, economic_kind='grant_inflow').aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = max(Decimal('0'), expenses - refunds)
+    owner_drawn = owner_qs.aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    owner_drawn_series = _series_by_period(owner_qs, start, end, transfers_as_out=True)
     return {
         'income': income,
         'expenses': expenses,
+        'owner_drawn': owner_drawn,
+        'owner_drawn_count': owner_qs.count(),
         'profit': income - expenses,
         'margin': (float((income - expenses) / income * 100) if income else 0.0),
         'income_by_category': _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME)),
@@ -267,6 +310,7 @@ def pnl(company, params):
         'unclassified_count': qs.filter(economic_kind='unknown').count(),
         'unclassified_amount': qs.filter(economic_kind='unknown').aggregate(s=Sum('amount_base'))['s'] or Decimal('0'),
         'series': _series_by_period(management_qs, start, end),
+        'owner_drawn_series': owner_drawn_series,
         'targeted_in': targeted_in,
         'include_grants': include_grants,
         'scope': (params.get('scope') or 'all').strip() or 'all',
@@ -356,36 +400,17 @@ def owner_drawings_report(company, params):
     """
     start, end = resolve_period(params)
 
-    # Знаходимо системну категорію "Вивід на особисте"
-    owner_cat = company.categories.filter(
-        is_system=True, name='Вивід на особисте'
-    ).first()
-
-    # Всі перекази з цією категорією
+    # Include new classifications and legacy rows that only have the system
+    # category or a business-to-personal account direction.
     qs = (_actual(company).filter(
-            type=Transaction.TYPE_TRANSFER,
-            date_actual__gte=day_start(start),
-            date_actual__lte=day_end(end))
-          .select_related('account', 'to_account'))
-
-    if owner_cat:
-        qs = qs.filter(category=owner_cat)
-
-    # Також включаємо перекази без категорії, але з is_business=False
-    # (старі перекази до створення категорії)
-    qs_legacy = (_actual(company).filter(
-            type=Transaction.TYPE_TRANSFER,
-            is_business=False,
-            category__isnull=True,
-            date_actual__gte=day_start(start),
-            date_actual__lte=day_end(end))
-          .select_related('account', 'to_account'))
-
-    # Об'єднуємо
-    all_transfers = list(qs) + list(qs_legacy)
+            date_actual__gte=day_start(start), date_actual__lte=day_end(end))
+          .filter(_owner_draw_q())
+          .filter(type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE])
+          .select_related('account', 'to_account', 'category'))
+    all_transfers = list(qs.order_by('date_actual'))
 
     # Рахуємо загальну суму виведень
-    total_withdrawn = sum((t.amount for t in all_transfers), Decimal('0'))
+    total_withdrawn = sum((t.amount_base or t.amount for t in all_transfers), Decimal('0'))
 
     # Групуємо по місяцях для тренду
     by_month = {}
@@ -393,11 +418,11 @@ def owner_drawings_report(company, params):
         month_key = t.date_actual.strftime('%Y-%m')
         if month_key not in by_month:
             by_month[month_key] = Decimal('0')
-        by_month[month_key] += t.amount
+        by_month[month_key] += (t.amount_base or t.amount)
 
     # Рахуємо бізнес-прибуток за той самий період для порівняння
     business_qs = (_actual(company).filter(
-            is_business=True,
+            Q(ownership_scope='business') | Q(ownership_scope='unknown', is_business=True),
             date_actual__gte=day_start(start),
             date_actual__lte=day_end(end))
           .exclude(type=Transaction.TYPE_TRANSFER))

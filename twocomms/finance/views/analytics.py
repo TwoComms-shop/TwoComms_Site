@@ -73,9 +73,13 @@ def _pnl_detail_rows(company, rows, previous_rows, start, end):
     budgets = {row['category__name'] or 'Без категорії': row['total'] or Decimal('0')
                for row in budget_rows}
     icons = {
-        'Готівка та фінанси': '▣', 'Кафе та ресторани': '♜', 'Продукти': '◉',
-        'Їжа та продукти': '◉', 'Транспорт': '▣', 'Без категорії': '▤',
-        'Логістика та доставка': '◌', 'Комісія за переказ': '▤',
+        'Готівка та фінанси': '▣', 'Кафе та ресторани': '☕', 'Продукти': '🛒',
+        'Їжа та продукти': '🛒', 'Транспорт': '⌁', 'Без категорії': '?',
+        'Логістика та доставка': '▰', 'Комісія за переказ': '▤',
+        'Оренда і комуналка': '⌂', 'Оренда': '⌂', 'Комунальні послуги': '⌂',
+        'Податки': '⚖', 'Закупівля товару': '▰', 'Закупівля одягу': '♢',
+        'Зв’язок': '☎', 'Здоров’я': '✚', 'Одяг': '◇', 'Підписки та сервіси': 'ϟ',
+        'Вивід на особисте': '⇢', 'Цільові гранти': '✦', 'Продажі': '↗',
     }
     out = []
     for index, row in enumerate(rows, 1):
@@ -251,6 +255,7 @@ def report(request, kind):
             'title': 'Cash flow', 'data': data,
             'cash_in': _m(company, data['cash_in']),
             'cash_out': _m(company, data['cash_out']),
+            'owner_drawn': _m(company, data.get('owner_drawn', 0)),
             'net': _m(company, data['net'], signed=True),
             'targeted_in': _m(company, data['targeted_in']),
             'net_positive': net >= 0,
@@ -326,6 +331,7 @@ def report(request, kind):
             'title': 'P&L', 'data': data,
             'income': _m(company, data['income']),
             'expenses': _m(company, data['expenses']),
+            'owner_drawn': _m(company, data.get('owner_drawn', 0)),
             'profit': _m(company, data['profit'], signed=True),
             'targeted_in': _m(company, data['targeted_in']),
             'margin': round(data['margin'], 1),
@@ -347,6 +353,7 @@ def report(request, kind):
                 'previous_series': previous_data['series'] if previous_data else [],
                 'income_by_category': data['income_by_category'],
                 'expense_by_category': data['expense_by_category'],
+                'owner_drawn_series': data.get('owner_drawn_series', []),
                 'period': {'start': data['period'][0], 'end': data['period'][1]},
             }),
         })

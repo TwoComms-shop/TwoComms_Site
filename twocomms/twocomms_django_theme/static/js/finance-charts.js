@@ -127,6 +127,29 @@
     });
   }
 
+  function renderSparks(report) {
+    document.querySelectorAll('.pnl-spark[data-spark]').forEach(function (host) {
+      var kind = host.dataset.spark;
+      var series = kind === 'owner' ? (report.owner_drawn_series || []) : (report.series || []);
+      var values = series.map(function (row) {
+        if (kind === 'income') return Number(row.in) || 0;
+        if (kind === 'expense' || kind === 'owner') return Number(row.out) || 0;
+        return (Number(row.in) || 0) - (Number(row.out) || 0);
+      });
+      if (!values.length) values = [0];
+      var w = 100, h = 42, pad = 3;
+      var min = Math.min.apply(Math, values), max = Math.max.apply(Math, values);
+      if (min === max) { min -= 1; max += 1; }
+      var y = function (v) { return h - pad - ((v - min) / (max - min)) * (h - pad * 2); };
+      var x = function (i) { return pad + (values.length === 1 ? (w - pad * 2) / 2 : i * (w - pad * 2) / (values.length - 1)); };
+      var points = values.map(function (v, i) { return x(i).toFixed(2) + ',' + y(v).toFixed(2); }).join(' ');
+      var baseline = (min <= 0 && max >= 0) ? y(0) : h - pad;
+      var color = kind === 'income' ? '#34d399' : kind === 'owner' ? '#93c5fd' : kind === 'expense' ? '#fb7185' : '#f3a43d';
+      var area = pad + ',' + baseline.toFixed(2) + ' ' + points + ' ' + (w - pad) + ',' + baseline.toFixed(2);
+      host.innerHTML = '<svg viewBox="0 0 100 42" role="img" aria-label="Динаміка показника"><line class="spark-zero" x1="3" x2="97" y1="' + baseline.toFixed(2) + '" y2="' + baseline.toFixed(2) + '"></line><polygon class="spark-area" fill="' + color + '" points="' + area + '"></polygon><polyline class="spark-line" stroke="' + color + '" points="' + points + '"></polyline></svg>';
+    });
+  }
+
   function renderPnlFlow(flow, report) {
     var expanded = { income: false, expense: false };
     var selected = null;
@@ -326,6 +349,7 @@
     renderPnlDashboard: function () {
       setDefaults();
       var d = data();
+      renderSparks(d);
       var el = document.getElementById('pnl-trend-chart');
       var donutEl = document.getElementById('pnl-expense-donut');
       if (el && window.Chart) {

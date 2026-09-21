@@ -3905,6 +3905,20 @@ body.fin-report-open { overflow: hidden; }
 }
 @media (prefers-reduced-motion:reduce) { .pnl-flow-item,.pnl-flow-branch { transition:none; } }
 
+/* P&L dashboard additions: owner distribution and data-driven mini charts. */
+.pnl-kpis { grid-template-columns:repeat(5,minmax(0,1fr)); }
+.pnl-kpi--owner { border-color:rgba(96,165,250,.34); }
+.pnl-kpi--owner .pnl-kpi-icon { background:rgba(96,165,250,.16); color:#93c5fd; }
+.pnl-kpi--owner strong { color:#93c5fd; }
+.pnl-kpi-change.is-neutral { color:#93c5fd; }
+.pnl-spark { width:82px; height:38px; margin-left:auto; flex:0 0 82px; background:none; opacity:1; }
+.pnl-spark svg { display:block; width:100%; height:100%; overflow:visible; }
+.pnl-spark .spark-zero { stroke:rgba(203,213,225,.32); stroke-width:1; stroke-dasharray:3 3; }
+.pnl-spark .spark-area { opacity:.17; }
+.pnl-spark .spark-line { fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+@media (max-width:1100px) { .pnl-kpis { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:760px) { .pnl-kpis { grid-template-columns:1fr 1fr; }.pnl-kpi--owner { grid-column:1/-1; }.pnl-spark { display:block; width:68px; flex-basis:68px; } }
+
 /* The list/chart control belongs to the expense structure, so keep it beside
    that heading and let the category filters occupy the next available space. */
 .pnl-details-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
