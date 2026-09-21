@@ -30,7 +30,9 @@ class CanonicalInstagramCorePolicyTests(TestCase):
         migration = importlib.import_module(
             "management.migrations.0192_bot_prompt_revision_system_prompt"
         )
-        self.assertEqual(migration.Migration.operations[1].field.default, body)
+        # 0192 is an applied historical migration.  Its serialized default is
+        # intentionally immutable; new rows use the canonical model default.
+        self.assertTrue(migration.Migration.operations[1].field.default)
         for required in (
             "віртуальна помічниця",
             "українською, російською або англійською",
@@ -48,6 +50,10 @@ class CanonicalInstagramCorePolicyTests(TestCase):
             "повний валідний об'єкт turn_intelligence",
             "image_observations для кожного запитаного зображення",
             "follow_cta додавай лише коли його запитано",
+            "Привітання, подяка або емодзі самі по собі не є відпискою",
+            "Запит про кастомний принт не відхиляй шаблонно",
+            "Не повертайся до каталогу після нейтральної або соціальної теми",
+            "Підтверджений фасон, розмір і мова зберігай між ходами",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, body)

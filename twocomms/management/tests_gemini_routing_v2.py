@@ -120,6 +120,7 @@ class RoutingDecisionContractTests(SimpleTestCase):
             self.assertEqual(analysis_escalation_chain(**changed), (), field)
 
 
+@override_settings(GEMINI_NONLIVE_ADMISSION_MODE="shadow")
 class ActualInstagramGeminiRoutingTests(TestCase):
     def setUp(self):
         self.settings = InstagramBotSettings.load()
@@ -774,6 +775,7 @@ class ActualInstagramGeminiRoutingTests(TestCase):
         self.assertIn("hoodies", note)
 
 
+@override_settings(GEMINI_NONLIVE_ADMISSION_MODE="shadow")
 class TurnCandidateSnapshotTests(TestCase):
     def _products(self, count):
         from storefront.models import Category, Product, ProductStatus
@@ -891,7 +893,10 @@ class TurnCandidateSnapshotTests(TestCase):
         self.assertLessEqual(observed["queries"], 6)
 
 
-@override_settings(ROOT_URLCONF="twocomms.urls_management")
+@override_settings(
+    ROOT_URLCONF="twocomms.urls_management",
+    GEMINI_NONLIVE_ADMISSION_MODE="shadow",
+)
 class PinnedRoutingPolicyTests(TestCase):
     def setUp(self):
         self.settings = InstagramBotSettings.load()
@@ -1089,6 +1094,7 @@ class PinnedRoutingPolicyTests(TestCase):
         self.assertEqual(self.settings.settings_revision, 3)
 
 
+@override_settings(GEMINI_NONLIVE_ADMISSION_MODE="shadow")
 class SixProjectCandidatePlanTests(TestCase):
     def test_default_identities_are_six_distinct_non_secret_labels(self):
         groups = gemini_keys.key_project_groups()
@@ -1484,6 +1490,7 @@ class OwnedAudioCaptureTests(SimpleTestCase):
         self.assertEqual(omitted, 1)
 
 
+@override_settings(GEMINI_NONLIVE_ADMISSION_MODE="shadow")
 class ManualDiagnosticsOnlyTests(TestCase):
     def test_metadata_command_requires_explicit_manual_flag(self):
         with self.assertRaises(CommandError):

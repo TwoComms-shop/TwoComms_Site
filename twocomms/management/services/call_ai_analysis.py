@@ -544,7 +544,8 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                 n_attempts: int, grounded: bool, log: list, parse: bool = True,
                 timeout: tuple | None = None, log_cb=None, *, role: str,
                 deadline: float | None, accounting_observer=None,
-                candidate_index: int = 0) -> tuple[str, dict | None]:
+                candidate_index: int = 0,
+                accounting_admission_required: bool = False) -> tuple[str, dict | None]:
     """Один (key, model) кандидат із ретраями на transient.
 
     Повертає ('ok', result) | ('key_429', None) | ('model_skip', None).
@@ -610,15 +611,31 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                         reason="deadline",
                     )
                 return ("model_skip", None)
-            attempt_boundary = (
-                accounting_observer.attempt(
-                    key_name=key_name,
-                    model=model,
-                    candidate_index=candidate_index,
+            try:
+                attempt_boundary = (
+                    accounting_observer.attempt(
+                        key_name=key_name,
+                        model=model,
+                        candidate_index=candidate_index,
+                    )
+                    if accounting_observer is not None
+                    else None
                 )
-                if accounting_observer is not None
-                else None
-            )
+            except Exception as exc:
+                if accounting_admission_required:
+                    raise CallAIAnalysisError(
+                        "Gemini provider dispatch rejected: accounting admission unavailable."
+                    ) from exc
+                raise
+            if (
+                accounting_admission_required
+                and (
+                    attempt_boundary is None
+                )
+            ):
+                raise CallAIAnalysisError(
+                    "Gemini provider dispatch rejected: accounting admission unavailable."
+                )
             if (
                 attempt_boundary is not None
                 and attempt_boundary.validate_ownership() is not True
@@ -847,11 +864,20 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
     accounting_observer = None
     planning_candidates = []
     accounting_ownership_blocked = False
+    accounting_admission_required = False
     unsafe_shadow_retry_configuration = False
     try:
         from management.services import gemini_accounting_runtime
 
-        if gemini_accounting_runtime.shadow_runtime_active():
+        accounting_shadow_active = gemini_accounting_runtime.shadow_runtime_active()
+        try:
+            nonlive_mode = gemini_accounting_runtime.nonlive_admission_mode()
+        except Exception:
+            nonlive_mode = "enforce"
+        accounting_admission_required = (
+            role != "chat" and nonlive_mode != "shadow"
+        )
+        if accounting_shadow_active or accounting_admission_required:
             unsafe_shadow_retry_configuration = not single_boundary_rotation
             planning_candidates = list(
                 frozen_candidate_rows
@@ -879,9 +905,22 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
                 accounting_ownership_blocked = bool(
                     getattr(accounting_observer, "provider_blocked", False)
                 )
+                if accounting_admission_required and not accounting_ownership_blocked and (
+                    accounting_observer is None
+                    or not getattr(accounting_observer, "enabled", False)
+                ):
+                    raise CallAIAnalysisError(
+                        "Gemini provider dispatch rejected: accounting admission unavailable."
+                    )
                 if not getattr(accounting_observer, "enabled", False):
                     accounting_observer = None
-    except Exception:
+    except CallAIAnalysisError:
+        raise
+    except Exception as exc:
+        if accounting_admission_required:
+            raise CallAIAnalysisError(
+                "Gemini provider dispatch rejected: accounting admission unavailable."
+            ) from exc
         accounting_observer = None
     if unsafe_shadow_retry_configuration:
         raise CallAIAnalysisError(
@@ -947,6 +986,7 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
                     n_attempts, grounded, log, parse, call_timeout,
                     log_cb, role=role, deadline=deadline,
                     accounting_observer=accounting_observer,
+                    accounting_admission_required=accounting_admission_required,
                     candidate_index=(
                         accounting_observer.candidate_index("(manual)", model)
                         if accounting_observer is not None else 0
@@ -1008,6 +1048,7 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
                 n_attempts, grounded, log, parse, call_timeout,
                 log_cb, role=role, deadline=deadline,
                 accounting_observer=accounting_observer,
+                accounting_admission_required=accounting_admission_required,
                 candidate_index=(
                     accounting_observer.candidate_index(key_name, model)
                     if accounting_observer is not None else 0
@@ -1424,10 +1465,14 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
     )
     accounting_ownership_blocked = False
     accounting_block_reason = ""
+    # Chat remains observational in shadow; mandatory admission is enabled by
+    # the explicit non-live enforce mode used by background callers.
+    accounting_admission_required = False
     try:
         from management.services import gemini_accounting_runtime
 
         accounting_shadow_active = gemini_accounting_runtime.shadow_runtime_active()
+        accounting_admission_required = False
         accounting_observer = gemini_accounting_runtime.begin_request(
             request_id=request_id,
             role="chat",
@@ -1445,15 +1490,23 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             getattr(accounting_observer, "block_reason", "") or ""
         )
         if not getattr(accounting_observer, "enabled", False):
-            if request_policy_manifest is not None and accounting_shadow_active and not accounting_ownership_blocked:
+            if accounting_admission_required and not accounting_ownership_blocked:
                 accounting_ownership_blocked = True
-                accounting_block_reason = "policy_manifest_unavailable"
+                accounting_block_reason = (
+                    "policy_manifest_unavailable"
+                    if request_policy_manifest is not None
+                    else "provider_accounting_unavailable"
+                )
             accounting_observer = None
     except Exception:
         accounting_observer = None
-        if request_policy_manifest is not None:
+        if accounting_admission_required:
             accounting_ownership_blocked = True
-            accounting_block_reason = "policy_manifest_unavailable"
+            accounting_block_reason = (
+                "policy_manifest_unavailable"
+                if request_policy_manifest is not None
+                else "provider_accounting_unavailable"
+            )
     if accounting_ownership_blocked:
         error = CallAIAnalysisError(
             "Gemini provider dispatch rejected: "
@@ -1820,17 +1873,39 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 _release()
                 return None, "invalid_response_model"
             pending_cheap_salvage_model = ""
-        attempt_boundary = (
-            accounting_observer.attempt(
-                key_name=key_name,
-                model=model,
-                candidate_index=accounting_observer.candidate_index(
-                    key_name, model
-                ),
+        try:
+            attempt_boundary = (
+                accounting_observer.attempt(
+                    key_name=key_name,
+                    model=model,
+                    candidate_index=accounting_observer.candidate_index(
+                        key_name, model
+                    ),
+                )
+                if accounting_observer is not None
+                else None
             )
-            if accounting_observer is not None
-            else None
-        )
+        except Exception as exc:
+            _release()
+            if accounting_admission_required:
+                error = CallAIAnalysisError(
+                    "Gemini provider dispatch rejected: accounting admission unavailable."
+                )
+                error.failure_kind = "provider_accounting_unavailable"
+                raise error from exc
+            raise
+        if (
+            accounting_admission_required
+            and (
+                attempt_boundary is None
+            )
+        ):
+            _release()
+            error = CallAIAnalysisError(
+                "Gemini provider dispatch rejected: accounting admission unavailable."
+            )
+            error.failure_kind = "provider_accounting_unavailable"
+            raise error
         if (
             attempt_boundary is not None
             and attempt_boundary.validate_ownership() is not True

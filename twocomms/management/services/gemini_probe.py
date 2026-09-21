@@ -58,6 +58,27 @@ def probe_failure_class(status: str, http_code=None) -> str:
     return classify(kind, http_code)
 
 
+def _local_admission_result(model: str, started: float, reason: str) -> dict:
+    """Return a bounded result for a probe stopped before provider I/O."""
+    allowed_reasons = {
+        "admission_rejected",
+        "boundary_unavailable",
+        "provider_accounting_unavailable",
+    }
+    safe_reason = reason if reason in allowed_reasons else "provider_accounting_unavailable"
+    return {
+        "status": "cancelled_pre_dispatch",
+        "http_code": 0,
+        "finish_reason": "",
+        "thoughts_tokens": 0,
+        "candidates_tokens": 0,
+        "latency_ms": max(0, int((time.monotonic() - started) * 1000)),
+        "model": model,
+        "evidence_kind": "local_admission",
+        "admission_reason": safe_reason,
+    }
+
+
 def _usage_value(usage: dict, *names: str) -> int:
     for name in names:
         value = usage.get(name)
@@ -137,8 +158,16 @@ def probe_key(model: str, key: str, timeout: tuple | None = None) -> dict:
     body = json.dumps(build_probe_payload(model))
     boundary = None
     observer = None
+    admission_required = False
     try:
         from management.services import gemini_accounting_runtime, gemini_keys
+
+        try:
+            admission_required = (
+                gemini_accounting_runtime.nonlive_admission_mode() != "shadow"
+            )
+        except Exception:
+            admission_required = True
 
         alias = gemini_keys.configured_alias_for_secret(key)
         explicit_identities = gemini_keys.explicit_project_groups()
@@ -160,9 +189,30 @@ def probe_key(model: str, key: str, timeout: tuple | None = None) -> dict:
             }],
             lane="diagnostic",
         )
-        boundary = observer.attempt(
-            key_name=alias or "(manual)", model=model, candidate_index=1
-        )
+        if admission_required and (
+            observer is None
+            or getattr(observer, "provider_blocked", False)
+            or not getattr(observer, "enabled", False)
+        ):
+            return _local_admission_result(
+                model,
+                started,
+                str(getattr(observer, "block_reason", "") or "provider_accounting_unavailable"),
+            )
+        try:
+            boundary = observer.attempt(
+                key_name=alias or "(manual)", model=model, candidate_index=1
+            )
+        except Exception:
+            if admission_required:
+                return _local_admission_result(
+                    model, started, "provider_accounting_unavailable"
+                )
+            raise
+        if admission_required and (
+            boundary is None
+        ):
+            return _local_admission_result(model, started, "boundary_unavailable")
         admitted = boundary.before_provider(
             serialized_bytes=len(body.encode("utf-8")),
             inline_count=0,
@@ -183,19 +233,12 @@ def probe_key(model: str, key: str, timeout: tuple | None = None) -> dict:
                 observer.resolve_failure("admission_rejected")
             except Exception:
                 pass
-            return {
-                "status": "cancelled_pre_dispatch",
-                "http_code": 0,
-                "finish_reason": "",
-                "thoughts_tokens": 0,
-                "candidates_tokens": 0,
-                "latency_ms": max(
-                    0, int((time.monotonic() - started) * 1000)
-                ),
-                "model": model,
-                "evidence_kind": "local_admission",
-            }
+            return _local_admission_result(model, started, "admission_rejected")
     except Exception:
+        if admission_required:
+            return _local_admission_result(
+                model, started, "provider_accounting_unavailable"
+            )
         # This command is an explicit, quota-consuming diagnostic.  Preserve
         # its established off/shadow behavior when the observational writer
         # itself is unavailable and no admission decision was returned.

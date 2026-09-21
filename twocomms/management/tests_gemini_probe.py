@@ -288,6 +288,79 @@ class GeminiProbeAdmissionTests(TestCase):
         self.assertEqual(result["http_code"], 200)
         self.assertNotIn("observer unavailable", json.dumps(result))
 
+    @override_settings(
+        GEMINI_ACCOUNTING_V2_MODE="shadow",
+        GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM="2026-08-29T00:00:00-07:00",
+    )
+    @patch("management.services.gemini_probe.requests.post")
+    @patch(
+        "management.services.gemini_accounting_runtime.begin_request",
+        side_effect=RuntimeError("observer unavailable"),
+    )
+    def test_required_observer_failure_stops_probe_before_provider(self, _begin, post):
+        result = gemini_probe.probe_key("gemini-3.6-flash", "private-probe-key")
+
+        post.assert_not_called()
+        self.assertEqual(result["status"], "cancelled_pre_dispatch")
+        self.assertEqual(result["evidence_kind"], "local_admission")
+        self.assertEqual(result["admission_reason"], "provider_accounting_unavailable")
+        self.assertNotIn("private-probe-key", json.dumps(result))
+
+    @override_settings(
+        GEMINI_ACCOUNTING_V2_MODE="shadow",
+        GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM="2026-08-29T00:00:00-07:00",
+    )
+    @patch("management.services.gemini_probe.requests.post")
+    @patch("management.services.gemini_accounting_runtime.begin_request")
+    def test_required_null_observer_stops_probe_before_provider(self, begin_request, post):
+        begin_request.return_value = type("DisabledObserver", (), {"enabled": False})()
+
+        result = gemini_probe.probe_key("gemini-3.6-flash", "private-probe-key")
+
+        post.assert_not_called()
+        self.assertEqual(result["status"], "cancelled_pre_dispatch")
+        self.assertEqual(result["admission_reason"], "provider_accounting_unavailable")
+
+    @override_settings(
+        GEMINI_ACCOUNTING_V2_MODE="shadow",
+        GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM="2026-08-29T00:00:00-07:00",
+    )
+    @patch("management.services.gemini_probe.requests.post")
+    @patch("management.services.gemini_accounting_runtime.begin_request")
+    def test_required_denied_boundary_stops_probe_before_provider(self, begin_request, post):
+        boundary = Mock()
+        boundary.before_provider.return_value = False
+        observer = Mock(enabled=True, provider_blocked=False)
+        observer.attempt.return_value = boundary
+        begin_request.return_value = observer
+
+        result = gemini_probe.probe_key("gemini-3.6-flash", "private-probe-key")
+
+        post.assert_not_called()
+        boundary.cancelled_pre_dispatch.assert_called_once()
+        self.assertEqual(result["status"], "cancelled_pre_dispatch")
+        self.assertEqual(result["admission_reason"], "admission_rejected")
+
+    @override_settings(
+        GEMINI_ACCOUNTING_V2_MODE="shadow",
+        GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM="2026-08-29T00:00:00-07:00",
+    )
+    @patch("management.services.gemini_probe.requests.post")
+    @patch("management.services.gemini_accounting_runtime.begin_request")
+    def test_required_admitted_boundary_posts_once(self, begin_request, post):
+        boundary = Mock()
+        boundary.before_provider.return_value = True
+        observer = Mock(enabled=True, provider_blocked=False)
+        observer.attempt.return_value = boundary
+        begin_request.return_value = observer
+        post.return_value = self._success_response()
+
+        result = gemini_probe.probe_key("gemini-3.6-flash", "private-probe-key")
+
+        post.assert_called_once()
+        boundary.manual_result.assert_called_once()
+        self.assertEqual(result["status"], "ok")
+
 
 class GeminiProviderErrorTests(TestCase):
     def _response(self, code, payload):

@@ -1063,6 +1063,41 @@ class GeminiShadowRuntimeTests(TestCase):
             0,
         )
 
+    @override_settings(**{**SHADOW, "GEMINI_NONLIVE_ADMISSION_MODE": "enforce"})
+    @patch.dict(os.environ, KEY_ENV, clear=False)
+    @patch("management.services.call_ai_analysis.requests.post")
+    @patch(
+        "management.services.gemini_accounting_runtime.begin_request",
+        side_effect=RuntimeError("accounting unavailable"),
+    )
+    def test_required_admission_failure_stops_generic_generation_before_provider(
+        self, _begin, post
+    ):
+        with self.assertRaises(ai.CallAIAnalysisError):
+            ai.gemini_generate_text(
+                {"contents": [{"parts": [{"text": "hello"}]}]},
+                role="management",
+                reasoning_task="memory_summary",
+            )
+        post.assert_not_called()
+
+    @override_settings(**{**SHADOW, "GEMINI_NONLIVE_ADMISSION_MODE": "enforce"})
+    @patch.dict(os.environ, KEY_ENV, clear=False)
+    @patch("management.services.call_ai_analysis.requests.post")
+    @patch("management.services.gemini_accounting_runtime.begin_request")
+    def test_required_null_observer_stops_generic_generation_before_provider(
+        self, begin_request, post
+    ):
+        begin_request.return_value = runtime.NULL_OBSERVER
+
+        with self.assertRaises(ai.CallAIAnalysisError):
+            ai.gemini_generate_text(
+                {"contents": [{"parts": [{"text": "hello"}]}]},
+                role="management",
+                reasoning_task="memory_summary",
+            )
+        post.assert_not_called()
+
     @patch.dict(os.environ, KEY_ENV, clear=False)
     @patch("management.services.call_ai_analysis.requests.post", return_value=_Response())
     def test_internal_request_id_exists_only_in_shadow_meta_and_not_public_health(self, _post):
@@ -2378,17 +2413,18 @@ class GeminiShadowRuntimeTests(TestCase):
         self.assertEqual(GeminiRequest.objects.count(), 0)
         self.assertEqual(GeminiQuotaState.objects.count(), 0)
 
-    @override_settings(**SHADOW)
+    @override_settings(**{**SHADOW, "GEMINI_NONLIVE_ADMISSION_MODE": "enforce"})
     @patch.dict(os.environ, KEY_ENV, clear=False)
     @patch("management.models.GeminiRequest.objects.create", side_effect=DatabaseError("shadow down"))
     @patch("management.services.call_ai_analysis.requests.post", return_value=_Response())
-    def test_v2_database_failure_is_fail_soft_for_real_generation(self, _post, _create):
-        out = ai.gemini_generate_text(
-            {"contents": [{"parts": [{"text": "hello"}]}]},
-            role="management",
-            reasoning_task="memory_summary",
-        )
-        self.assertEqual(out["parsed"], "ok")
+    def test_v2_database_failure_blocks_real_generation(self, _post, _create):
+        with self.assertRaises(ai.CallAIAnalysisError):
+            ai.gemini_generate_text(
+                {"contents": [{"parts": [{"text": "hello"}]}]},
+                role="management",
+                reasoning_task="memory_summary",
+            )
+        _post.assert_not_called()
 
     @override_settings(**SHADOW)
     @patch("management.services.call_ai_analysis.requests.post", return_value=_Response())

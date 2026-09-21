@@ -239,6 +239,26 @@ def shadow_runtime_active(*, now=None) -> bool:
     return current >= effective
 
 
+def nonlive_admission_mode() -> str:
+    """Roll out mandatory accounting without changing canonical live policy.
+
+    Existing active shadow installations enforce non-live admission by default.
+    Explicit ``shadow`` is the compatibility rollback; explicit ``enforce``
+    cannot bypass an inactive accounting gate. Unknown values fail closed.
+    """
+    configured = getattr(settings, "GEMINI_NONLIVE_ADMISSION_MODE", None)
+    if configured is None:
+        return "enforce" if shadow_runtime_active() else "shadow"
+    value = str(configured).strip().casefold()
+    return value if value in {"enforce", "shadow"} else "invalid"
+
+
+NONLIVE_QUOTA_DENIALS = frozenset({
+    "provider_block", "rpd_exhausted", "rpm_exhausted",
+    "permit_exhausted", "tpm_exhausted",
+})
+
+
 def project_ranking_enabled() -> bool:
     """Return the explicit reversible ranking policy state."""
     return str(
@@ -878,7 +898,9 @@ class BlockedRequestObserver(NullRequestObserver):
         self.block_reason = _safe_reason(reason) or "ownership_conflict"
 
     def attempt(self, **_kwargs):
-        return RejectedAttemptBoundary()
+        boundary = RejectedAttemptBoundary()
+        boundary.provider_block_reason = self.block_reason
+        return boundary
 
 
 def blocked_observer(reason: str = "ownership_conflict") -> BlockedRequestObserver:
@@ -936,6 +958,10 @@ def begin_request(
         sanitize_request_policy_manifest,
     )
 
+    nonlive_mode = nonlive_admission_mode() if role != "chat" else "shadow"
+    enforce_nonlive = nonlive_mode != "shadow"
+    if nonlive_mode == "invalid":
+        return blocked_observer("nonlive_policy_invalid")
     try:
         safe_policy_manifest = sanitize_request_policy_manifest(
             request_policy_manifest
@@ -946,7 +972,7 @@ def begin_request(
             else "policy_manifest_invalid"
         )
     if not shadow_runtime_active():
-        if _revision_execution.get() is not None:
+        if _revision_execution.get() is not None or enforce_nonlive:
             return blocked_observer("provider_accounting_unavailable")
         return NULL_OBSERVER
     try:
@@ -1144,7 +1170,10 @@ def begin_request(
                             routing_policy_version=str(
                                 _routing_value(routing_decision, "policy_version", "")
                             )[:32],
-                            accounting_policy_version=ACCOUNTING_POLICY_VERSION,
+                            accounting_policy_version=(
+                                "gemini-nonlive-admission-v1" if enforce_nonlive
+                                else ACCOUNTING_POLICY_VERSION
+                            ),
                             quota_profile_version=profile_version,
                             authority_snapshot_version=str(
                                 _routing_value(
@@ -1177,7 +1206,8 @@ def begin_request(
                                 if deadline_ms
                                 else None
                             ),
-                            accounting_mode=GeminiRequest.AccountingMode.SHADOW,
+                            accounting_mode=(GeminiRequest.AccountingMode.ENFORCED
+                                             if enforce_nonlive else GeminiRequest.AccountingMode.SHADOW),
                         )
                     finally:
                         if legacy_context_token is not None:
@@ -1209,6 +1239,7 @@ def begin_request(
                     revision_execution=revision_execution,
                     legacy_execution=legacy_execution,
                     legacy_root_execution=legacy_root_execution,
+                    enforce_nonlive=enforce_nonlive,
                 )
                 observer.provider_continuation = provider_continuation
                 return observer
@@ -1227,6 +1258,8 @@ def begin_request(
                     return blocked_observer("revision_execution_invalid")
                 if legacy_execution is not None or legacy_provider_root:
                     return blocked_observer("legacy_execution_invalid")
+                if enforce_nonlive:
+                    return blocked_observer("provider_accounting_unavailable")
                 return NULL_OBSERVER
         if last_contention is not None:
             return blocked_observer("ownership_contention")
@@ -1234,6 +1267,8 @@ def begin_request(
     except Exception:
         # Explicit revisions cannot turn an invalid claim or a failed identity
         # lookup into a provider-permitting legacy null observer.
+        if enforce_nonlive:
+            return blocked_observer("provider_accounting_unavailable")
         if (
             _revision_execution.get() is not None
             or locals().get("explicit_revision", False)
@@ -1341,6 +1376,8 @@ class AttemptBoundary:
             self.attempt_id = None
             self.state_id = None
             self.admitted = False
+            if self.observer.enforce_nonlive:
+                self.provider_block_reason = "provider_accounting_unavailable"
             return False
 
     def succeeded(self, usage=None) -> None:
@@ -1418,6 +1455,7 @@ class RequestObserver:
         revision_execution=None,
         legacy_execution=None,
         legacy_root_execution=None,
+        enforce_nonlive: bool = False,
     ):
         self.graph_id = int(graph_id)
         self.request_id = str(request_id)
@@ -1427,6 +1465,7 @@ class RequestObserver:
         self._revision_execution = revision_execution
         self._legacy_execution = legacy_execution
         self._legacy_root_execution = legacy_root_execution
+        self.enforce_nonlive = bool(enforce_nonlive)
         self.provider_continuation = None
         self._counter = 0
         self._lock = threading.Lock()
