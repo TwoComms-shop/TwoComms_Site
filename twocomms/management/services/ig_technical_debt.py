@@ -575,6 +575,7 @@ def reconcile_ig_technical_debt_once(*, now=None, limit=DEFAULT_LIMIT, dry_run=T
         "proposed_cases": proposals,
         "case_count": len(proposals),
         "coverage_complete": bool(snapshot.get("coverage_complete")),
+        "coverage_reasons": list(snapshot.get("coverage_reasons") or ()),
         "errors": list(snapshot.get("errors") or ()),
         "sample_limit": snapshot.get("sample_limit", _bounded_limit(limit)),
     }

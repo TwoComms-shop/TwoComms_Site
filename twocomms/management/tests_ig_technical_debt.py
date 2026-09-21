@@ -161,6 +161,7 @@ class TechnicalDebtCollectorTests(TestCase):
                 "has_more": False,
             }],
             "coverage_complete": True,
+            "coverage_reasons": [],
             "errors": [],
             "sample_limit": 100,
         }
@@ -176,6 +177,7 @@ class TechnicalDebtCollectorTests(TestCase):
         self.assertTrue(result["idempotent"])
         self.assertEqual(result["provider_calls"], 0)
         self.assertEqual(result["writes"], 0)
+        self.assertEqual(result["coverage_reasons"], [])
         self.assertTrue(result["persistence"]["supported"])
         proposal = result["proposed_cases"][0]
         self.assertEqual(proposal["identity"], "canonical_delivery_unknown:delivery_effect")
