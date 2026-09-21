@@ -89,8 +89,9 @@ def create_transaction(*, user, type, amount, account=None, to_account=None,
     )
     if status == Transaction.STATUS_ACTUAL:
         try:
-            from .ledger_v2 import ensure_grant_account_review
+            from .ledger_v2 import ensure_grant_account_review, process_counterparty_policy
             ensure_grant_account_review(txn)
+            process_counterparty_policy(txn, user=user)
         except Exception:  # noqa: BLE001 — review creation must not block imports
             pass
     return txn
@@ -125,6 +126,12 @@ def update_transaction(txn: Transaction, *, user, **fields) -> Transaction:
         summary=f'Зміна операції #{txn.id}', before=before, after=_snapshot(txn),
         company=company,
     )
+    if txn.status == Transaction.STATUS_ACTUAL:
+        try:
+            from .ledger_v2 import process_counterparty_policy
+            process_counterparty_policy(txn, user=user)
+        except Exception:  # noqa: BLE001 - optional review must not block updates
+            pass
     return txn
 
 

@@ -9,9 +9,10 @@ from django.utils import timezone
 
 from .models import (
     Account, Category, Company, Counterparty, CounterpartyCard, FundingSource,
-    ObligationComponent, ObligationGroup, ObligationSettlement, Transaction, InternalTransferMatch,
+    CounterpartyClassificationPolicy, ClassificationReview, ObligationComponent, ObligationGroup,
+    ObligationSettlement, Transaction, InternalTransferMatch,
 )
-from .services import ledger_v2, obligations_v2, payment_intents
+from .services import ledger_v2, obligations_v2, payment_intents, transactions as transactions_service
 
 
 @override_settings(ALLOWED_HOSTS=['testserver', 'fin.twocomms.shop'], SECURE_SSL_REDIRECT=False)
@@ -126,6 +127,62 @@ class FinanceV2ServiceTests(TestCase):
         classify_known_rent_expense(txn, user=self.user)
         txn.refresh_from_db()
         self.assertEqual(txn.category.name, 'Оренда')
+
+    def test_counterparty_policy_requires_confirmation_and_applies_selected_category(self):
+        housing = Category.objects.create(
+            company=self.company, name='Оренда та комуналка — житло', type='expense',
+        )
+        vlada = Counterparty.objects.create(
+            company=self.company, name='Влада мама', type='landlord_personal',
+        )
+        CounterpartyClassificationPolicy.objects.create(
+            company=self.company, counterparty=vlada, is_enabled=True,
+            transaction_type=Transaction.TYPE_EXPENSE, category=housing,
+            economic_kind='operating_expense', ownership_scope='personal',
+            require_confirmation=True, prompt='Це оплата житла?',
+        )
+        payment = transactions_service.create_transaction(
+            user=self.user, type=Transaction.TYPE_EXPENSE, amount=Decimal('2500'),
+            account=self.account, counterparty=vlada, comment='Переказ',
+        )
+        review = ClassificationReview.objects.get(transaction=payment, status='pending')
+        self.assertEqual(review.proposal['kind'], 'counterparty_policy')
+        self.assertEqual(review.proposal['category_id'], housing.id)
+        self.client.force_login(self.user)
+        response = self.client.post(
+            f'/api/v2/reviews/{review.id}/action/', data=json.dumps({'action': 'accept'}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(response.status_code, 200)
+        payment.refresh_from_db()
+        review.refresh_from_db()
+        self.assertEqual(review.status, 'accepted')
+        self.assertEqual(payment.category_id, housing.id)
+        self.assertEqual(payment.economic_kind, 'operating_expense')
+        self.assertEqual(payment.ownership_scope, 'personal')
+
+    def test_counterparty_policy_can_apply_business_rent_without_confirmation(self):
+        business_rent = Category.objects.create(
+            company=self.company, name='Оренда та комуналка — бізнес', type='expense',
+        )
+        viktor = Counterparty.objects.create(
+            company=self.company, name='Виктор Викторович', type='landlord_business',
+        )
+        CounterpartyClassificationPolicy.objects.create(
+            company=self.company, counterparty=viktor, is_enabled=True,
+            transaction_type=Transaction.TYPE_EXPENSE, category=business_rent,
+            economic_kind='operating_expense', ownership_scope='business',
+            require_confirmation=False,
+        )
+        payment = transactions_service.create_transaction(
+            user=self.user, type=Transaction.TYPE_EXPENSE, amount=Decimal('36000'),
+            account=self.account, counterparty=viktor, comment='Оренда офісу',
+        )
+        payment.refresh_from_db()
+        self.assertEqual(payment.category_id, business_rent.id)
+        self.assertEqual(payment.economic_kind, 'operating_expense')
+        self.assertEqual(payment.ownership_scope, 'business')
+        self.assertFalse(ClassificationReview.objects.filter(transaction=payment, status='pending').exists())
 
     def test_unequal_transfer_records_fee_and_is_idempotent(self):
         outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10050'), account=self.cash)

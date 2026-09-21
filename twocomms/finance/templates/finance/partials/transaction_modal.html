@@ -18,6 +18,18 @@
 
       <div class="fin-form-alert" id="fin-txn-alert" hidden></div>
 
+      <section class="fin-counterparty-review" id="fin-counterparty-policy-review" hidden aria-live="polite">
+        <div class="fin-counterparty-review__copy">
+          <span class="fin-counterparty-review__eyebrow">Правило контрагента</span>
+          <strong id="fin-counterparty-policy-question"></strong>
+          <small id="fin-counterparty-policy-detail"></small>
+        </div>
+        <div class="fin-counterparty-review__actions">
+          <button type="button" class="fin-btn fin-btn--primary fin-btn--sm" id="fin-counterparty-policy-accept">Так, підтвердити</button>
+          <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-counterparty-policy-reject">Ні, обрати інше</button>
+        </div>
+      </section>
+
       <section class="fin-incoming-review" id="fin-incoming-review" hidden aria-live="polite">
         <div class="fin-incoming-review__notice" id="fin-unclassified-notice" hidden>
           <strong>Надходження ще не класифіковане</strong>

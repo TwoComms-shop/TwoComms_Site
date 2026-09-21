@@ -107,6 +107,25 @@
     </div>
 
     <aside class="fin-cp-col-side">
+        <div class="fin-cp-panel fin-cp-policy" id="fin-cp-policy" data-cp-id="{{ cp.id }}">
+            <div class="fin-cp-policy__head">
+                <div>
+                    <h4 class="fin-cp-panel__title">Автокласифікація</h4>
+                    <p>Правило для нових операцій цього контрагента.</p>
+                </div>
+                <button type="button" class="fin-icon-btn" data-cp-policy-edit="{{ cp.id }}" title="Налаштувати автокласифікацію" aria-label="Налаштувати автокласифікацію">⚙</button>
+            </div>
+            {% if classification_policy and classification_policy.is_enabled %}
+            <div class="fin-cp-policy__summary">
+                <span class="fin-cp-policy__state {% if classification_policy.require_confirmation %}is-review{% else %}is-auto{% endif %}">{% if classification_policy.require_confirmation %}Підтвердження{% else %}Автоматично{% endif %}</span>
+                <strong>{{ classification_policy.category.name|default:"Категорія не задана" }}</strong>
+                <small>{% if classification_policy.transaction_type == "income" %}Надходження{% else %}Витрати{% endif %} · {% if classification_policy.ownership_scope == "personal" %}Особисте{% else %}Бізнес{% endif %}</small>
+            </div>
+            {% else %}
+            <p class="fin-muted-cell">Правило не увімкнене. Налаштуйте категорію, яку система має пропонувати.</p>
+            {% endif %}
+        </div>
+
         <!-- Реквізити / контакти -->
         <div class="fin-cp-panel">
             <h4 class="fin-cp-panel__title">Реквізити</h4>
@@ -220,7 +239,7 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="{% static 'css/finance-planned.css' %}?v=20260920v4">
-<script src="{% static 'js/finance-counterparties.js' %}?v=20260920v2"></script>
+<script src="{% static 'js/finance-counterparties.js' %}?v=20260921policy1"></script>
 <script src="{% static 'js/finance-planned.js' %}?v=20260920v4"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {

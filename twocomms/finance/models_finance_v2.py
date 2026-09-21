@@ -185,6 +185,38 @@ class CounterpartyAlias(models.Model):
         constraints = [models.UniqueConstraint(fields=['company', 'normalized'], name='finance_counterparty_alias_unique')]
 
 
+class CounterpartyClassificationPolicy(models.Model):
+    """A user-managed classification suggestion for one counterparty.
+
+    A policy is deliberately separate from bank-import rules: it works for
+    imported, manual, and recurring operations and can require a human answer
+    before it changes reporting data.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE,
+                                related_name='counterparty_classification_policies')
+    counterparty = models.OneToOneField(Counterparty, on_delete=models.CASCADE,
+                                        related_name='classification_policy')
+    is_enabled = models.BooleanField(default=False)
+    transaction_type = models.CharField(max_length=12, blank=True, default='',
+                                        help_text='income/expense or blank for either direction')
+    category = models.ForeignKey(Category, on_delete=models.SET_NULL, blank=True, null=True,
+                                 related_name='counterparty_classification_policies')
+    economic_kind = models.CharField(max_length=32, default='unknown')
+    ownership_scope = models.CharField(max_length=16, default='unknown')
+    require_confirmation = models.BooleanField(default=True)
+    prompt = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Політика класифікації контрагента'
+        verbose_name_plural = 'Політики класифікації контрагентів'
+
+    def __str__(self):
+        return f'{self.counterparty}: {self.category or self.economic_kind}'
+
+
 class ObligationGroup(models.Model):
     STATUS_CHOICES = [('planned', 'Планируется'), ('partial', 'Частично'), ('paid', 'Оплачено'), ('overdue', 'Просрочено')]
     ROLE_CHOICES = [('charge', 'Начисление'), ('prepayment', 'Аванс'), ('refund', 'Возврат')]

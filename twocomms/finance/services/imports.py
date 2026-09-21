@@ -182,5 +182,10 @@ def import_rows(parsed_rows, *, user, account, apply_rules=True):
                 rules_engine.apply_rules_to_transaction(txn, user=user, source='import')
             except Exception:
                 pass
+        try:
+            from .ledger_v2 import process_counterparty_policy
+            process_counterparty_policy(txn, user=user)
+        except Exception:
+            pass
         created += 1
     return {'created': created, 'skipped': skipped, 'errors': errors}

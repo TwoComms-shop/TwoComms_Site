@@ -51,6 +51,7 @@ from .models_consignment import (  # noqa: F401
 )
 from .models_finance_v2 import (  # noqa: F401
     BalanceReconciliation,
+    CounterpartyClassificationPolicy,
     ClassificationReview,
     LedgerClassificationEvent,
     CounterpartyAlias,
@@ -76,7 +77,7 @@ __all__ = [
     'UserSettings', 'PushSubscription', 'NotificationLog',
     'Reseller', 'ConsignmentShipment', 'ConsignmentItem',
     'ResellerPayment', 'ConsignmentSale',
-    'BalanceReconciliation', 'ClassificationReview', 'CounterpartyAlias',
+    'BalanceReconciliation', 'CounterpartyClassificationPolicy', 'ClassificationReview', 'CounterpartyAlias',
     'FundingAllocation', 'FundingSource', 'InternalTransferMatch',
     'LedgerClassification', 'ObligationComponent',
     'ObligationComponentSettlement', 'ObligationGroup', 'PaymentIntent',

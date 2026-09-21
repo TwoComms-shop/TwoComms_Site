@@ -18,7 +18,7 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 
 from ..models import (
     Account, Category, Counterparty, CounterpartyCard, FundingSource,
-    ClassificationReview, InternalTransferMatch, LedgerClassification,
+    ClassificationReview, CounterpartyClassificationPolicy, InternalTransferMatch, LedgerClassification,
     ObligationComponent, ObligationGroup, ObligationSettlement, PaymentIntent,
     Transaction, get_default_company,
 )
@@ -64,6 +64,23 @@ def _terminal_cash_review_row(review):
         'id': review.id, 'status': review.status, 'proposal': review.proposal,
         'reason': review.reason, 'impact': review.impact,
         'confidence': str(review.confidence),
+    }
+
+
+def _counterparty_policy_review_row(review):
+    proposal = review.proposal or {}
+    category = Category.objects.filter(
+        company=review.company, id=proposal.get('category_id'), is_active=True,
+    ).first()
+    return {
+        'id': review.id,
+        'status': review.status,
+        'prompt': proposal.get('prompt') or review.reason,
+        'category_id': category.id if category else None,
+        'category': category.name if category else '',
+        'economic_kind': proposal.get('economic_kind') or 'unknown',
+        'ownership_scope': proposal.get('ownership_scope') or 'unknown',
+        'counterparty': review.transaction.counterparty.name if review.transaction.counterparty_id else '',
     }
 
 
@@ -176,17 +193,31 @@ def classification_api(request, txn_id):
                    if data.get('funding_source_id') else None)
         if economic_kind == 'grant_inflow' and funding is None:
             raise ValueError('Оберіть активну грантову програму')
+        category = None
+        if data.get('category_id'):
+            category = company.categories.filter(id=data.get('category_id'), is_active=True).first()
+            if category is None or category.type not in (Category.TYPE_BOTH, txn.type):
+                raise ValueError('Оберіть категорію, що відповідає напрямку операції')
         obj = ledger_v2.classify_transaction(
             txn, user=request.user,
             ownership_scope=ownership_scope,
             economic_kind=economic_kind,
             confidence=data.get('confidence') or 100,
             note=data.get('note') or '', source='manual',
-            funding_source=funding, force_category=True,
+            funding_source=funding, force_category=True, category_override=category,
         )
     except (ValueError, TypeError, InvalidOperation) as exc:
         return _error(exc)
     return JsonResponse({'ok': True, 'classification': _classification_row(obj)})
+
+
+@finance_access_required(api=True)
+@require_GET
+def counterparty_policy_review_api(request, txn_id):
+    company = get_default_company()
+    txn = get_object_or_404(Transaction.objects.select_related('counterparty'), id=txn_id, company=company)
+    review = ledger_v2.counterparty_policy_review(txn)
+    return JsonResponse({'ok': True, 'review': _counterparty_policy_review_row(review) if review else None})
 
 
 @finance_access_required(api=True)
@@ -250,6 +281,10 @@ def review_action_api(request, review_id):
                         dest = get_object_or_404(Transaction, id=proposal.get('destination_transaction_id'), company=company)
                         match = ledger_v2.create_transfer_suggestion(company, source, dest)
                     ledger_v2.confirm_transfer(match, user=request.user)
+                elif kind == 'counterparty_policy':
+                    ledger_v2.apply_counterparty_policy(
+                        review.transaction, user=request.user, proposal=proposal,
+                    )
                 else:
                     txn = review.transaction
                     funding = company.funding_sources.filter(id=proposal.get('funding_source_id')).first()

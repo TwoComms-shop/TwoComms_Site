@@ -127,10 +127,16 @@
     terminalReviewChange: document.getElementById('fin-terminal-review-change'),
     terminalReviewAccept: document.getElementById('fin-terminal-review-accept'),
     terminalReviewError: document.getElementById('fin-terminal-review-error'),
+    counterpartyPolicyReview: document.getElementById('fin-counterparty-policy-review'),
+    counterpartyPolicyQuestion: document.getElementById('fin-counterparty-policy-question'),
+    counterpartyPolicyDetail: document.getElementById('fin-counterparty-policy-detail'),
+    counterpartyPolicyAccept: document.getElementById('fin-counterparty-policy-accept'),
+    counterpartyPolicyReject: document.getElementById('fin-counterparty-policy-reject'),
   };
 
   var terminalCandidates = null;
   var terminalReviewState = { txnId: null, review: null };
+  var counterpartyPolicyReview = null;
   var INCOME_KIND_LABELS = {
     sale: 'Продаж', investment: 'Інвестиція', grant_inflow: 'Грант',
     debt_repayment: 'Повернення боргу', expense_refund: 'Повернення витрат',
@@ -349,6 +355,46 @@
     els.terminalConfirm.hidden = true;
     els.terminalReviewError.hidden = true;
     els.terminalReviewError.textContent = '';
+    counterpartyPolicyReview = null;
+    if (els.counterpartyPolicyReview) els.counterpartyPolicyReview.hidden = true;
+  }
+
+  function renderCounterpartyPolicyReview(review) {
+    if (!els.counterpartyPolicyReview) return;
+    counterpartyPolicyReview = review || null;
+    els.counterpartyPolicyReview.hidden = !review;
+    if (!review) return;
+    els.counterpartyPolicyQuestion.textContent = review.prompt || 'Підтвердьте запропоновану категорію';
+    els.counterpartyPolicyDetail.textContent = [review.counterparty, review.category].filter(Boolean).join(' · ');
+  }
+
+  function loadCounterpartyPolicyReview(txn) {
+    if (!txn || !txn.id || txn.status !== 'actual') return;
+    api('/api/v2/transactions/' + txn.id + '/counterparty-policy-review/').then(function (res) {
+      if (modal.hidden || String(els.id.value) !== String(txn.id)) return;
+      renderCounterpartyPolicyReview(res.ok && res.data.ok ? res.data.review : null);
+    }).catch(function () { renderCounterpartyPolicyReview(null); });
+  }
+
+  function resolveCounterpartyPolicyReview(action) {
+    if (!counterpartyPolicyReview || !counterpartyPolicyReview.id) return;
+    var review = counterpartyPolicyReview;
+    var button = action === 'accept' ? els.counterpartyPolicyAccept : els.counterpartyPolicyReject;
+    button.disabled = true;
+    api('/api/v2/reviews/' + review.id + '/action/', 'POST', { action: action }).then(function (res) {
+      if (!res.ok || !res.data.ok) { showAlert(res.data.error || 'Не вдалося оновити класифікацію'); return; }
+      renderCounterpartyPolicyReview(null);
+      if (action === 'accept') { window.location.reload(); return; }
+      if (activeTxn && activeTxn.type === 'income') {
+        els.incomingReview.hidden = false;
+        els.unclassifiedForm.hidden = false;
+        syncFundingSourceField();
+        els.unclassifiedKind.focus();
+      } else if (els.category) {
+        els.category.focus();
+      }
+    }).catch(function () { showAlert('Помилка мережі. Спробуйте ще раз.'); })
+      .then(function () { button.disabled = false; });
   }
 
   function renderQuickClassification(txn) {
@@ -861,7 +907,10 @@
     }
     modal.hidden = false;
     document.body.classList.add('fin-modal-open');
-    if (txn) loadTerminalReview(txn);
+    if (txn) {
+      loadCounterpartyPolicyReview(txn);
+      loadTerminalReview(txn);
+    }
     if (txn && txn.economic_kind === 'internal_transfer' && txn.type !== 'transfer') loadTransferMatch(txn);
   }
 
@@ -1169,6 +1218,8 @@
   if (els.grantSource) els.grantSource.addEventListener('change', function () { syncGrantClassification('main'); });
   if (els.grantSourceExtra) els.grantSourceExtra.addEventListener('change', function () { syncGrantClassification('extra'); });
   if (els.unclassifiedSave) els.unclassifiedSave.addEventListener('click', saveUnclassifiedIncome);
+  if (els.counterpartyPolicyAccept) els.counterpartyPolicyAccept.addEventListener('click', function () { resolveCounterpartyPolicyReview('accept'); });
+  if (els.counterpartyPolicyReject) els.counterpartyPolicyReject.addEventListener('click', function () { resolveCounterpartyPolicyReview('reject'); });
 
   // Швидке створення сутностей із дропдаунів.
   modal.querySelectorAll('[data-create]').forEach(function (btn) {

@@ -450,6 +450,7 @@ def settle_occurrence(txn: Transaction, *, user, account=None, counterparty=None
     elif txn.type == Transaction.TYPE_EXPENSE:
         from . import ledger_v2
         ledger_v2.classify_known_rent_expense(txn, user=user)
+        ledger_v2.process_counterparty_policy(txn, user=user)
 
     # Прив'язка рахунку до контрагента (історія платежів по контрагенту).
     if (link_account_cp and counterparty is not None and txn.account_id

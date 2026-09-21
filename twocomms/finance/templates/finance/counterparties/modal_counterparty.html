@@ -63,3 +63,25 @@
     </form>
   </div>
 </div>
+
+<div class="fin-modal-overlay" id="fin-cp-policy-modal" hidden>
+  <div class="fin-modal-card fin-cp-policy-modal" role="dialog" aria-modal="true" aria-labelledby="fin-cp-policy-title">
+    <div class="fin-modal-head">
+      <div><h3 id="fin-cp-policy-title">Автокласифікація контрагента</h3><p id="fin-cp-policy-subtitle" class="fin-modal-subtitle"></p></div>
+      <button type="button" class="fin-modal-close" data-cpp-close aria-label="Закрити">×</button>
+    </div>
+    <form class="fin-modal-body" id="fin-cp-policy-form">
+      <div class="fin-form-alert" id="fin-cp-policy-alert" hidden></div>
+      <label class="fin-policy-toggle"><span><strong>Увімкнути правило</strong><small>Застосовується до нових фактичних операцій.</small></span><span class="fin-switch"><input id="fin-cp-policy-enabled" type="checkbox"><i class="fin-switch__ui"></i></span></label>
+      <div class="fin-field-row">
+        <label class="fin-field"><span>Напрямок операції</span><select id="fin-cp-policy-type" class="fin-select"><option value="expense">Витрата</option><option value="income">Надходження</option></select></label>
+        <label class="fin-field"><span>Контур обліку</span><select id="fin-cp-policy-scope" class="fin-select"><option value="business">Бізнес</option><option value="personal">Особисте</option><option value="mixed">Змішане</option><option value="unknown">Не визначено</option></select></label>
+      </div>
+      <label class="fin-field"><span>Рекомендована категорія</span><select id="fin-cp-policy-category" class="fin-select" required></select></label>
+      <label class="fin-field"><span>Значення операції</span><select id="fin-cp-policy-kind" class="fin-select"><option value="operating_expense">Операційна витрата</option><option value="sale">Продаж</option><option value="investment">Інвестиція</option><option value="expense_refund">Повернення витрат</option><option value="debt_repayment">Повернення боргу</option><option value="personal_transfer">Особистий переказ</option><option value="adjustment">Коригування</option></select></label>
+      <label class="fin-policy-toggle"><span><strong>Запитувати підтвердження</strong><small>Перед зміною категорії покажемо варіанти «Так» або «Ні, обрати інше».</small></span><span class="fin-switch"><input id="fin-cp-policy-confirm" type="checkbox"><i class="fin-switch__ui"></i></span></label>
+      <label class="fin-field"><span>Питання для підтвердження</span><input id="fin-cp-policy-prompt" class="fin-input" maxlength="255" placeholder="Напр. Це оплата оренди та комуналки?"></label>
+      <div class="fin-modal-foot"><button type="button" class="fin-btn fin-btn--ghost" data-cpp-close>Скасувати</button><button type="submit" class="fin-btn fin-btn--primary">Зберегти правило</button></div>
+    </form>
+  </div>
+</div>

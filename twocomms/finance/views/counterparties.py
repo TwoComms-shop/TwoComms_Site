@@ -13,7 +13,7 @@ from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_GET, require_POST
 
-from ..models import Counterparty, Transaction, get_default_company
+from ..models import Category, Counterparty, CounterpartyClassificationPolicy, Transaction, get_default_company
 from ..permissions import finance_access_required
 from ..services import audit as audit_service
 from ..services import counterparty as cp_service
@@ -88,6 +88,9 @@ def counterparty_detail_page(request, counterparty_id):
         'initials': cp_service._initials(cp.name),
         'color': cp_service._color_for(cp.name),
         'dropdowns': ser.serialize_dropdowns(company),
+        'classification_policy': CounterpartyClassificationPolicy.objects.filter(
+            company=company, counterparty=cp,
+        ).select_related('category').first(),
     })
 
 
@@ -170,6 +173,74 @@ def counterparty_update_api(request, counterparty_id):
         before=before, after={'name': cp.name, 'type': cp.type, 'group': cp.group},
         company=company)
     return JsonResponse({'ok': True})
+
+
+def _policy_row(policy):
+    if policy is None:
+        return None
+    return {
+        'id': policy.id, 'is_enabled': policy.is_enabled,
+        'transaction_type': policy.transaction_type or '',
+        'category_id': policy.category_id,
+        'category': policy.category.name if policy.category_id else '',
+        'economic_kind': policy.economic_kind or 'unknown',
+        'ownership_scope': policy.ownership_scope or 'unknown',
+        'require_confirmation': policy.require_confirmation,
+        'prompt': policy.prompt or '',
+    }
+
+
+@finance_access_required(api=True)
+@require_GET
+def counterparty_policy_get_api(request, counterparty_id):
+    company = get_default_company()
+    cp = get_object_or_404(Counterparty, id=counterparty_id, company=company)
+    policy = CounterpartyClassificationPolicy.objects.filter(
+        company=company, counterparty=cp,
+    ).select_related('category').first()
+    return JsonResponse({'ok': True, 'policy': _policy_row(policy)})
+
+
+@finance_access_required(api=True)
+@require_POST
+def counterparty_policy_save_api(request, counterparty_id):
+    company = get_default_company()
+    cp = get_object_or_404(Counterparty, id=counterparty_id, company=company)
+    data = _body(request)
+    transaction_type = (data.get('transaction_type') or '').strip()
+    if transaction_type not in ('', Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE):
+        return JsonResponse({'ok': False, 'error': 'Оберіть напрямок операції'}, status=400)
+    category = None
+    if data.get('category_id'):
+        category = Category.objects.filter(company=company, id=data.get('category_id'), is_active=True).first()
+        if category is None:
+            return JsonResponse({'ok': False, 'error': 'Категорію не знайдено'}, status=400)
+        if transaction_type and category.type not in (Category.TYPE_BOTH, transaction_type):
+            return JsonResponse({'ok': False, 'error': 'Категорія не відповідає напрямку операції'}, status=400)
+    enabled = str(data.get('is_enabled', '')).lower() in ('1', 'true', 'on', 'yes')
+    if enabled and category is None:
+        return JsonResponse({'ok': False, 'error': 'Оберіть рекомендовану категорію'}, status=400)
+    economic_kind = (data.get('economic_kind') or 'unknown').strip()
+    valid_kinds = {key for key, _label in Transaction.ECONOMIC_KIND_CHOICES}
+    if economic_kind not in valid_kinds:
+        return JsonResponse({'ok': False, 'error': 'Оберіть коректний вид операції'}, status=400)
+    ownership_scope = (data.get('ownership_scope') or 'unknown').strip()
+    if ownership_scope not in {'business', 'personal', 'mixed', 'unknown'}:
+        return JsonResponse({'ok': False, 'error': 'Оберіть коректний контур обліку'}, status=400)
+    policy, _created = CounterpartyClassificationPolicy.objects.get_or_create(company=company, counterparty=cp)
+    policy.is_enabled = enabled
+    policy.transaction_type = transaction_type
+    policy.category = category
+    policy.economic_kind = economic_kind
+    policy.ownership_scope = ownership_scope
+    policy.require_confirmation = str(data.get('require_confirmation', '')).lower() in ('1', 'true', 'on', 'yes')
+    policy.prompt = (data.get('prompt') or '').strip()[:255]
+    policy.save()
+    audit_service.log_action(
+        request.user, 'update', 'counterparty', cp.id,
+        summary=f'Оновлено політику класифікації для «{cp.name}»', company=company,
+    )
+    return JsonResponse({'ok': True, 'policy': _policy_row(policy)})
 
 
 @finance_access_required(api=True)

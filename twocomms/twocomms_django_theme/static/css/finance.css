@@ -2950,6 +2950,26 @@ body.fin-settings-open { overflow: hidden; }
     padding: 16px;
 }
 .fin-cp-panel__title { font-size: 13px; font-weight: 700; color: var(--fin-text); margin: 0 0 12px; }
+.fin-cp-policy__head { display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; }
+.fin-cp-policy__head p { margin: -7px 0 0; color: var(--fin-muted); font-size: 12px; line-height: 1.4; }
+.fin-cp-policy__summary { display: grid; gap: 5px; margin-top: 12px; }
+.fin-cp-policy__summary strong { font-size: 14px; color: var(--fin-text); }
+.fin-cp-policy__summary small { color: var(--fin-muted); font-size: 12px; }
+.fin-cp-policy__state { width: max-content; padding: 3px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+.fin-cp-policy__state.is-review { color: #fde68a; background: rgba(234,179,8,.14); }
+.fin-cp-policy__state.is-auto { color: #a7f3d0; background: rgba(16,185,129,.14); }
+.fin-cp-policy-modal { width: min(100% - 28px, 580px); }
+.fin-modal-subtitle { margin: 4px 0 0; color: var(--fin-muted); font-size: 12px; }
+.fin-policy-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--fin-border); border-radius: 8px; }
+.fin-policy-toggle > span:first-child { display: grid; gap: 3px; color: var(--fin-text); font-size: 13px; }
+.fin-policy-toggle small { color: var(--fin-muted); font-size: 12px; line-height: 1.35; }
+.fin-counterparty-review { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; background: rgba(20,184,166,.08); border: 1px solid rgba(45,212,191,.28); border-radius: 8px; }
+.fin-counterparty-review__copy { display: grid; gap: 4px; min-width: 0; }
+.fin-counterparty-review__eyebrow { color: #5eead4; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.fin-counterparty-review__copy strong { color: var(--fin-text); font-size: 14px; }
+.fin-counterparty-review__copy small { color: var(--fin-muted); font-size: 12px; }
+.fin-counterparty-review__actions { display: flex; flex: 0 0 auto; gap: 8px; }
+@media (max-width: 640px) { .fin-counterparty-review { align-items: stretch; flex-direction: column; } .fin-counterparty-review__actions { width: 100%; } .fin-counterparty-review__actions .fin-btn { flex: 1 1 0; } }
 .fin-cp-reqs { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: 13px; }
 .fin-cp-reqs dt { color: var(--fin-muted); }
 .fin-cp-reqs dd { margin: 0; color: var(--fin-text); word-break: break-word; }

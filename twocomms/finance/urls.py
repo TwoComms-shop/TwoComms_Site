@@ -21,6 +21,7 @@ urlpatterns = [
     # --- Новий reviewable ledger/API слой ---
     path('api/v2/health/', views.finance_v2_health_api, name='finance_v2_health_api'),
     path('api/v2/transactions/<int:txn_id>/classification/', views.classification_api, name='finance_v2_classification_api'),
+    path('api/v2/transactions/<int:txn_id>/counterparty-policy-review/', views.counterparty_policy_review_api, name='finance_v2_counterparty_policy_review_api'),
     path('api/v2/reviews/', views.review_list_api, name='finance_v2_review_list_api'),
     path('api/v2/reviews/<int:review_id>/action/', views.review_action_api, name='finance_v2_review_action_api'),
     path('api/v2/transfers/suggestions/', views.transfer_suggestions_api, name='finance_v2_transfer_suggestions_api'),
@@ -91,6 +92,8 @@ urlpatterns = [
     path('api/counterparties/create/', views.counterparty_create_api, name='finance_counterparty_create_api'),
     path('api/counterparties/<int:counterparty_id>/get/', views.counterparty_get_api, name='finance_counterparty_get_api'),
     path('api/counterparties/<int:counterparty_id>/update/', views.counterparty_update_api, name='finance_counterparty_update_api'),
+    path('api/counterparties/<int:counterparty_id>/classification-policy/', views.counterparty_policy_get_api, name='finance_counterparty_policy_get_api'),
+    path('api/counterparties/<int:counterparty_id>/classification-policy/save/', views.counterparty_policy_save_api, name='finance_counterparty_policy_save_api'),
     path('api/counterparties/<int:counterparty_id>/delete/', views.counterparty_delete_api, name='finance_counterparty_delete_api'),
     path('api/counterparties/<int:counterparty_id>/cards/', views.counterparty_cards_api, name='finance_counterparty_cards_api'),
     path('api/counterparties/<int:counterparty_id>/cards/save/', views.counterparty_card_save_api, name='finance_counterparty_card_save_api'),

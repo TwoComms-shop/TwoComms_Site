@@ -178,6 +178,100 @@
 })();
 
 
+/* Policy editor: keeps reusable counterparty suggestions next to the person or business. */
+(function () {
+  'use strict';
+  var modal = document.getElementById('fin-cp-policy-modal');
+  var form = document.getElementById('fin-cp-policy-form');
+  var trigger = document.querySelector('[data-cp-policy-edit]');
+  if (!modal || !form || !trigger) return;
+
+  function csrf() { var m = document.cookie.match(/csrftoken=([^;]+)/); return m ? m[1] : ''; }
+  function api(url, method, body) {
+    return fetch(url, {
+      method: method || 'GET',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' },
+      body: body ? JSON.stringify(body) : undefined,
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); });
+  }
+  var dropdowns = {};
+  try {
+    var source = document.getElementById('fin-dropdowns');
+    if (source) dropdowns = JSON.parse(source.textContent || '{}');
+  } catch (ignore) {}
+  var cpId = trigger.getAttribute('data-cp-policy-edit');
+  var els = {
+    title: document.getElementById('fin-cp-policy-title'),
+    subtitle: document.getElementById('fin-cp-policy-subtitle'),
+    alert: document.getElementById('fin-cp-policy-alert'),
+    enabled: document.getElementById('fin-cp-policy-enabled'),
+    type: document.getElementById('fin-cp-policy-type'),
+    scope: document.getElementById('fin-cp-policy-scope'),
+    category: document.getElementById('fin-cp-policy-category'),
+    kind: document.getElementById('fin-cp-policy-kind'),
+    confirm: document.getElementById('fin-cp-policy-confirm'),
+    prompt: document.getElementById('fin-cp-policy-prompt'),
+  };
+  function setAlert(message) { els.alert.textContent = message || ''; els.alert.hidden = !message; }
+  function close() { modal.hidden = true; document.body.classList.remove('fin-modal-open'); }
+  function categoryOptions(type, selected) {
+    var categories = (dropdowns.categories || []).filter(function (item) {
+      return item.type === type || item.type === 'both';
+    });
+    els.category.innerHTML = '<option value="">Оберіть категорію</option>' + categories.map(function (item) {
+      return '<option value="' + item.id + '">' + item.name.replace(/</g, '&lt;') + '</option>';
+    }).join('');
+    els.category.value = selected || '';
+  }
+  function syncKinds() {
+    var expense = els.type.value === 'expense';
+    Array.prototype.forEach.call(els.kind.options, function (option) {
+      option.hidden = expense ? option.value === 'sale' : option.value === 'operating_expense';
+    });
+    if (expense && els.kind.value === 'sale') els.kind.value = 'operating_expense';
+    if (!expense && els.kind.value === 'operating_expense') els.kind.value = 'sale';
+  }
+  function open(policy) {
+    setAlert('');
+    els.subtitle.textContent = trigger.closest('.fin-cp-policy').parentElement.closest('.fin-cp-cols') ? document.querySelector('.fin-page-title').textContent : '';
+    els.enabled.checked = !!(policy && policy.is_enabled);
+    els.type.value = (policy && policy.transaction_type) || 'expense';
+    categoryOptions(els.type.value, policy && policy.category_id);
+    els.scope.value = (policy && policy.ownership_scope) || 'business';
+    els.kind.value = (policy && policy.economic_kind) || (els.type.value === 'income' ? 'sale' : 'operating_expense');
+    els.confirm.checked = !policy || policy.require_confirmation !== false;
+    els.prompt.value = (policy && policy.prompt) || '';
+    syncKinds();
+    modal.hidden = false; document.body.classList.add('fin-modal-open');
+  }
+  trigger.addEventListener('click', function () {
+    api('/api/counterparties/' + cpId + '/classification-policy/').then(function (res) {
+      if (res.ok && res.data.ok) open(res.data.policy);
+      else setAlert((res.data && res.data.error) || 'Не вдалося завантажити налаштування');
+    }).catch(function () { setAlert('Помилка мережі'); });
+  });
+  els.type.addEventListener('change', function () { categoryOptions(els.type.value); syncKinds(); });
+  modal.querySelectorAll('[data-cpp-close]').forEach(function (button) { button.addEventListener('click', close); });
+  modal.addEventListener('click', function (event) { if (event.target === modal) close(); });
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    var payload = {
+      is_enabled: els.enabled.checked,
+      transaction_type: els.type.value,
+      category_id: els.category.value,
+      economic_kind: els.kind.value,
+      ownership_scope: els.scope.value,
+      require_confirmation: els.confirm.checked,
+      prompt: els.prompt.value.trim(),
+    };
+    api('/api/counterparties/' + cpId + '/classification-policy/save/', 'POST', payload).then(function (res) {
+      if (res.ok && res.data.ok) window.location.reload();
+      else setAlert((res.data && res.data.error) || 'Не вдалося зберегти правило');
+    }).catch(function () { setAlert('Помилка мережі'); });
+  });
+})();
+
+
 /* Картки контрагента: ручне додавання/видалення (авто-збереження — при погашенні). */
 (function () {
   'use strict';

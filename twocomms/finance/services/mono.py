@@ -431,6 +431,11 @@ def _import_item(account: Account, item: dict, *, user, apply_rules=True):
                     rules_engine.apply_rules_to_transaction(txn, user=user, source='integration')
                 except Exception:  # noqa: BLE001 — правила не мають ламати імпорт
                     pass
+            try:
+                from .ledger_v2 import process_counterparty_policy
+                process_counterparty_policy(txn, user=user)
+            except Exception:
+                pass
             return txn
         return None
 
@@ -465,6 +470,11 @@ def _import_item(account: Account, item: dict, *, user, apply_rules=True):
             rules_engine.apply_rules_to_transaction(txn, user=user, source='integration')
         except Exception:  # noqa: BLE001 — правила не мають ламати імпорт
             pass
+    try:
+        from .ledger_v2 import process_counterparty_policy
+        process_counterparty_policy(txn, user=user)
+    except Exception:
+        pass
     # Авто-категоризація за MCC (лише витрати без категорії — правила мають
     # пріоритет). Призначає finance.Category, що відповідає групі MCC monobank.
     _auto_categorize_by_mcc(txn)

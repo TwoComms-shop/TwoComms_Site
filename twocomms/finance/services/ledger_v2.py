@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from ..models import (
     Account, BalanceReconciliation, ClassificationReview, FundingAllocation, FundingSource,
-    Category, InternalTransferMatch, LedgerClassification, LedgerClassificationEvent,
+    Category, CounterpartyClassificationPolicy, InternalTransferMatch, LedgerClassification, LedgerClassificationEvent,
     RefundLink, Transaction,
 )
 from . import transactions as transactions_service
@@ -60,6 +60,111 @@ def _category_for_classification(txn, economic_kind):
     return Category.objects.create(
         company=txn.company, name=names[0], type=category_type, is_system=True,
     )
+
+
+def _policy_matches_transaction(policy, txn):
+    return bool(
+        policy and policy.is_enabled and txn.counterparty_id == policy.counterparty_id
+        and txn.type in (Transaction.TYPE_INCOME, Transaction.TYPE_EXPENSE)
+        and (not policy.transaction_type or policy.transaction_type == txn.type)
+    )
+
+
+def _policy_prompt(policy):
+    if policy.prompt:
+        return policy.prompt
+    category = policy.category.name if policy.category_id else 'обрану категорію'
+    return f'Зарахувати цю операцію до «{category}»?'
+
+
+def _policy_review(txn):
+    """Return the one policy review for a transaction, regardless of status."""
+    for review in ClassificationReview.objects.filter(transaction=txn).order_by('-id'):
+        if (review.proposal or {}).get('kind') == 'counterparty_policy':
+            return review
+    return None
+
+
+def counterparty_policy_review(txn):
+    """Create/read a reviewable counterparty proposal for an actual bank row."""
+    if txn.status != Transaction.STATUS_ACTUAL or not txn.counterparty_id:
+        return None
+    policy = CounterpartyClassificationPolicy.objects.filter(
+        company=txn.company, counterparty_id=txn.counterparty_id,
+    ).select_related('category', 'counterparty').first()
+    if not _policy_matches_transaction(policy, txn) or not policy.require_confirmation:
+        return None
+    existing = _policy_review(txn)
+    if existing is not None:
+        return existing if existing.status == 'pending' else None
+    category = policy.category
+    review = ClassificationReview.objects.create(
+        company=txn.company,
+        transaction=txn,
+        proposal={
+            'kind': 'counterparty_policy',
+            'policy_id': policy.id,
+            'category_id': category.id if category else None,
+            'economic_kind': policy.economic_kind,
+            'ownership_scope': policy.ownership_scope,
+            'counterparty_id': policy.counterparty_id,
+            'prompt': _policy_prompt(policy),
+        },
+        reason=f'Політика контрагента «{policy.counterparty.name}»: {_policy_prompt(policy)}',
+        impact={
+            'counterparty_id': policy.counterparty_id,
+            'counterparty': policy.counterparty.name,
+            'category_id': category.id if category else None,
+            'category': category.name if category else '',
+        },
+        confidence=Decimal('90'),
+    )
+    return review
+
+
+def apply_counterparty_policy(txn, *, policy=None, user=None, proposal=None):
+    """Apply an accepted automatic counterparty classification.
+
+    The proposal snapshot wins when a policy changed after a question had been
+    shown, so answering an existing review remains predictable and auditable.
+    """
+    if proposal is not None:
+        category = Category.objects.filter(
+            company=txn.company, id=proposal.get('category_id'), is_active=True,
+        ).first()
+        economic_kind = proposal.get('economic_kind') or 'unknown'
+        ownership_scope = proposal.get('ownership_scope') or 'unknown'
+    else:
+        policy = policy or CounterpartyClassificationPolicy.objects.filter(
+            company=txn.company, counterparty_id=txn.counterparty_id,
+        ).select_related('category').first()
+        if not _policy_matches_transaction(policy, txn):
+            return None
+        category = policy.category
+        economic_kind = policy.economic_kind or 'unknown'
+        ownership_scope = policy.ownership_scope or 'unknown'
+    if category and category.type not in (Category.TYPE_BOTH, txn.type):
+        raise ValueError('Категорія політики не відповідає напрямку операції')
+    return classify_transaction(
+        txn, user=user, ownership_scope=ownership_scope,
+        economic_kind=economic_kind, confidence=Decimal('100'),
+        note='Підтверджено політикою контрагента.', source='counterparty_policy',
+        force_category=True, category_override=category,
+    )
+
+
+def process_counterparty_policy(txn, *, user=None):
+    """Apply an automatic policy or queue an explicit confirmation."""
+    if txn.status != Transaction.STATUS_ACTUAL or not txn.counterparty_id:
+        return None
+    policy = CounterpartyClassificationPolicy.objects.filter(
+        company=txn.company, counterparty_id=txn.counterparty_id,
+    ).select_related('category').first()
+    if not _policy_matches_transaction(policy, txn):
+        return None
+    if policy.require_confirmation:
+        return counterparty_policy_review(txn)
+    return apply_counterparty_policy(txn, policy=policy, user=user)
 
 
 def classification_semantics(economic_kind):
@@ -378,7 +483,7 @@ def confirm_terminal_cash_transfer(txn, *, source_cash_account_id, user=None, no
 
 def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_kind='unknown',
                          confidence=Decimal('100'), note='', source='manual', funding_source=None,
-                         force_category=False):
+                         force_category=False, category_override=None):
     """Upsert explicit meaning without changing the original bank row."""
     if economic_kind in PERSONAL_INCOME_KINDS and ownership_scope == 'unknown':
         ownership_scope = 'personal'
@@ -408,7 +513,7 @@ def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_
     txn.ownership_scope = ownership_scope
     txn.economic_kind = economic_kind
     txn.funding_source = funding_source
-    semantic_category = _category_for_classification(txn, economic_kind)
+    semantic_category = category_override or _category_for_classification(txn, economic_kind)
     category = semantic_category if force_category else (txn.category or semantic_category)
     if category is not None:
         txn.category = category
