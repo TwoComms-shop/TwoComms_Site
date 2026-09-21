@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from django.conf import settings
 from django.db import DatabaseError
 from django.db import transaction
+from django.db.models import Subquery
 from django.utils import timezone
 
 
@@ -294,6 +295,8 @@ def _fingerprint_material(cases):
 def _collect_db(now, limit):
     from management.models import InstagramBotMessage, IgCustomerTurn, IgCustomerTurnRevision
     from management.models import IgDeferredEcho, IgRevisionDeliveryEffect, IgWebhookInboxEvent
+    from management.ig_bot_models import IgTurnRevisionSource
+    from management.services.ig_revision_live import _owned_revisions
 
     cases = []
     cutoff = now - STALE_CLAIM
@@ -302,11 +305,14 @@ def _collect_db(now, limit):
         InstagramBotMessage.objects.filter(status="processing", processing_started_at__lt=cutoff),
         reason="legacy_processing_claim_expired", scope="legacy_message", now=now,
         limit=limit, time_field="processing_started_at"))
+    owned_source_ids = IgTurnRevisionSource.objects.filter(
+        revision_id__in=Subquery(_owned_revisions().values("id")),
+    ).values("message_id")
     cases.append(_query_case(
         InstagramBotMessage.objects.filter(
             role="user", status="pending", processed_at__isnull=True,
             created_at__lt=transient_cutoff,
-        ),
+        ).exclude(pk__in=Subquery(owned_source_ids)),
         reason="inbound_pending_unreconciled", scope="legacy_message", now=now,
         limit=limit, time_field="created_at"))
     cases.append(_query_case(

@@ -74,6 +74,57 @@ class TechnicalDebtCollectorTests(TestCase):
         self.assertEqual(result["writes"], 0)
         self.assertEqual(IgTechnicalDebtCase.objects.count(), 0)
 
+    def test_revision_owned_pending_is_preserved_but_not_actionable_debt(self):
+        from management.ig_bot_models import IgTechnicalDebtCase
+        from management.models import IgClient, IgCustomerTurn, IgTurnMessage, InstagramBotMessage
+        from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
+        from management.services.ig_turn_revisions import create_collecting_revision
+
+        now = timezone.now()
+        client = IgClient.objects.create(igsid="owned-pending-fixture")
+        owned = InstagramBotMessage.objects.create(
+            sender_id=client.igsid,
+            client=client,
+            role="user",
+            status="pending",
+            text="owned revision evidence",
+        )
+        legacy = InstagramBotMessage.objects.create(
+            sender_id="legacy-pending-fixture-2",
+            role="user",
+            status="pending",
+            text="legacy pending evidence",
+        )
+        InstagramBotMessage.objects.filter(pk__in=[owned.pk, legacy.pk]).update(
+            created_at=now - timedelta(minutes=10),
+        )
+        turn = IgCustomerTurn.objects.create(
+            client=client,
+            primary_source_message=owned,
+            window_started_at=now,
+            window_deadline=now,
+        )
+        IgTurnMessage.objects.create(turn=turn, message=owned, ordinal=1, role="user")
+        revision = create_collecting_revision(turn, [owned], bypass_quiet=True).revision
+        revision.sealed_at = now
+        revision.save(update_fields=["sealed_at", "updated_at"])
+
+        with patch(
+            "management.services.ig_technical_debt._collect_media",
+            return_value=([], True),
+        ):
+            result = reconcile_ig_technical_debt_once(now=now, dry_run=True)
+
+        proposal = next(
+            case for case in result["proposed_cases"]
+            if case["identity"] == "inbound_pending_unreconciled:legacy_message"
+        )
+        self.assertEqual(proposal["source_ids"], [legacy.pk])
+        self.assertNotIn(owned.pk, proposal["source_ids"])
+        self.assertEqual(result["provider_calls"], 0)
+        self.assertEqual(result["writes"], 0)
+        self.assertEqual(IgTechnicalDebtCase.objects.count(), 0)
+
     def test_capture_claim_ids_are_unique_and_preserved(self):
         from management.services.ig_technical_debt import _collect_media
 
