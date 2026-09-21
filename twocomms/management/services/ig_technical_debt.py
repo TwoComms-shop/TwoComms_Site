@@ -564,6 +564,7 @@ def reconcile_ig_technical_debt_once(*, now=None, limit=DEFAULT_LIMIT, dry_run=T
                         "sample_ids": proposal["sample_ids"],
                         "has_more": proposal["has_more"],
                         "coverage_complete": True,
+                        "disposition": proposal["disposition"],
                         "status": IgTechnicalDebtCase.Status.OPEN,
                     },
                 )
@@ -578,6 +579,7 @@ def reconcile_ig_technical_debt_once(*, now=None, limit=DEFAULT_LIMIT, dry_run=T
                     "sample_ids": proposal["sample_ids"],
                     "has_more": proposal["has_more"],
                     "coverage_complete": True,
+                    "disposition": proposal["disposition"],
                 }
                 if case.status not in _PRESERVED_STATUSES:
                     updates["status"] = case.status or IgTechnicalDebtCase.Status.OPEN

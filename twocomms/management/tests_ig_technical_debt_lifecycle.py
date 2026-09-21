@@ -97,6 +97,32 @@ class TechnicalDebtLifecycleTests(TestCase):
         self.assertEqual(self.case.status, IgTechnicalDebtCase.Status.RESOLVED)
         self.assertEqual(self.case.sample_ids, [99])
 
+    def test_reconciler_persists_disposition_and_is_idempotent(self):
+        from management.services.ig_technical_debt import (
+            list_ig_technical_debt_cases,
+            reconcile_ig_technical_debt_once,
+        )
+
+        now = timezone.now()
+        snapshot = {"cases": [{
+            "reason": self.case.reason, "scope": self.case.scope, "count": 2,
+            "oldest_age_seconds": 10, "sample_ids": [12], "has_more": False,
+        }], "coverage_complete": True, "errors": [], "sample_limit": 5}
+        with patch(
+            "management.services.ig_technical_debt.technical_debt_snapshot",
+            return_value=snapshot,
+        ):
+            first = reconcile_ig_technical_debt_once(limit=5, dry_run=False, now=now)
+            second = reconcile_ig_technical_debt_once(limit=5, dry_run=False, now=now)
+
+        self.assertEqual(first["writes"], 1)
+        self.assertEqual(second["writes"], 0)
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.status, "open")
+        self.assertEqual(self.case.disposition, "manual_review_required")
+        listed = list_ig_technical_debt_cases(limit=5)["cases"][0]
+        self.assertEqual(listed["disposition"], "manual_review_required")
+
     def test_incomplete_coverage_fails_closed_without_writes(self):
         from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
 
