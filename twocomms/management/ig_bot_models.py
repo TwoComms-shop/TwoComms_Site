@@ -4929,6 +4929,57 @@ class IgFollowUpTask(models.Model):
         return f"FollowUp#{self.pk} {self.client_id} {self.kind}/{self.status}"
 
 
+class IgTechnicalDebtCase(models.Model):
+    """Durable operator case for bounded technical-debt observations."""
+
+    class Status(models.TextChoices):
+        OPEN = "open", _("Відкрито")
+        ACKNOWLEDGED = "acknowledged", _("Прийнято")
+        CLAIMED = "claimed", _("У роботі")
+        RESOLVED = "resolved", _("Вирішено")
+        DISMISSED = "dismissed", _("Відхилено")
+        UNKNOWN = "unknown", _("Потрібна перевірка")
+
+    case_key = models.CharField(max_length=160, unique=True)
+    reason = models.CharField(max_length=64, db_index=True)
+    scope = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.OPEN, db_index=True,
+    )
+    first_observed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_observed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    oldest_observed_at = models.DateTimeField(null=True, blank=True)
+    last_count = models.PositiveIntegerField(default=0)
+    observation_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    sample_ids = models.JSONField(default=list, blank=True)
+    has_more = models.BooleanField(default=False)
+    coverage_complete = models.BooleanField(default=True)
+    disposition = models.CharField(max_length=64, blank=True, default="")
+    operator_note = models.TextField(blank=True, default="")
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="ig_technical_debt_cases",
+        db_constraint=False,
+    )
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    evidence = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("IG technical debt case")
+        verbose_name_plural = _("IG technical debt cases")
+        ordering = ["status", "first_observed_at", "id"]
+        indexes = [
+            models.Index(fields=["status", "last_observed_at"], name="ig_td_status_seen"),
+            models.Index(fields=["reason", "scope"], name="ig_td_reason_scope"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial representation
+        return f"IgTechnicalDebtCase({self.case_key})"
+
+
 class IgPollCursor(models.Model):
     """Durable per-conversation cursor for the optional polling backstop."""
 

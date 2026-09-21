@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from django.conf import settings
 from django.db import DatabaseError
+from django.db import transaction
 from django.utils import timezone
 
 
@@ -21,6 +22,7 @@ STALE_CLAIM = timedelta(minutes=5)
 TRANSIENT_DEBT_GRACE = timedelta(minutes=5)
 RECONCILER_SCHEMA_VERSION = "ig-technical-debt-reconcile-v1"
 RECONCILER_DISPOSITION = "manual_review_required"
+_PRESERVED_STATUSES = {"resolved", "dismissed"}
 
 
 def _bounded_limit(limit: int) -> int:
@@ -286,31 +288,77 @@ def _reconciler_case(case, *, now):
 
 
 def reconcile_ig_technical_debt_once(*, now=None, limit=DEFAULT_LIMIT, dry_run=True):
-    """Return bounded, idempotent technical-debt proposals.
-
-    There is no dedicated technical-debt case table in the current schema.
-    Consequently this pass never writes an operator task, changes source
-    records, or contacts a provider, even when ``dry_run`` is false.  The
-    explicit persistence metadata lets callers distinguish a proposal from a
-    durable reconciliation without inventing lifecycle state.
-    """
+    """Return bounded proposals, optionally persisting operator observations."""
     now = now or timezone.now()
     snapshot = technical_debt_snapshot(now=now, limit=limit)
     proposals = sorted(
         (_reconciler_case(case, now=now) for case in snapshot.get("cases") or ()),
         key=lambda case: (case["identity"], case["case_fingerprint"]),
     )
+    writes = 0
+    if not dry_run and snapshot.get("coverage_complete") and proposals:
+        from management.ig_bot_models import IgTechnicalDebtCase
+
+        with transaction.atomic():
+            for proposal in proposals:
+                case, created = IgTechnicalDebtCase.objects.select_for_update().get_or_create(
+                    case_key=proposal["identity"],
+                    defaults={
+                        "reason": proposal["reason"],
+                        "scope": proposal["scope"],
+                        "first_observed_at": (
+                            now - timedelta(seconds=proposal["oldest_age_seconds"])
+                            if proposal["oldest_age_seconds"] is not None else now
+                        ),
+                        "last_observed_at": now,
+                        "oldest_observed_at": (
+                            now - timedelta(seconds=proposal["oldest_age_seconds"])
+                            if proposal["oldest_age_seconds"] is not None else None
+                        ),
+                        "last_count": proposal["count"],
+                        "observation_fingerprint": proposal["case_fingerprint"],
+                        "sample_ids": proposal["sample_ids"],
+                        "has_more": proposal["has_more"],
+                        "coverage_complete": True,
+                        "status": IgTechnicalDebtCase.Status.OPEN,
+                    },
+                )
+                updates = {
+                    "reason": proposal["reason"], "scope": proposal["scope"],
+                    "last_observed_at": now, "oldest_observed_at": (
+                        now - timedelta(seconds=proposal["oldest_age_seconds"])
+                        if proposal["oldest_age_seconds"] is not None else None
+                    ),
+                    "last_count": proposal["count"],
+                    "observation_fingerprint": proposal["case_fingerprint"],
+                    "sample_ids": proposal["sample_ids"],
+                    "has_more": proposal["has_more"],
+                    "coverage_complete": True,
+                }
+                if case.status not in _PRESERVED_STATUSES:
+                    updates["status"] = case.status or IgTechnicalDebtCase.Status.OPEN
+                changed = {
+                    field: value for field, value in updates.items()
+                    if getattr(case, field) != value
+                }
+                if changed:
+                    for field, value in changed.items():
+                        setattr(case, field, value)
+                    case.save(update_fields=[*changed, "updated_at"])
+                    writes += 1
+                elif created:
+                    writes += 1
     return {
         "schema_version": RECONCILER_SCHEMA_VERSION,
         "observed_at": now.isoformat(),
         "dry_run": bool(dry_run),
-        "mode": "proposal_only",
+        "mode": "proposal_only" if dry_run else "apply",
         "idempotent": True,
         "provider_calls": 0,
-        "writes": 0,
+        "writes": writes,
         "persistence": {
-            "supported": False,
-            "reason": "no_dedicated_technical_debt_case_schema",
+            "supported": True,
+            "reason": "ig_technical_debt_case",
         },
         "proposed_cases": proposals,
         "case_count": len(proposals),

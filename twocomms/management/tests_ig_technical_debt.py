@@ -2,11 +2,11 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.conf import settings
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 
-class TechnicalDebtCollectorTests(SimpleTestCase):
+class TechnicalDebtCollectorTests(TestCase):
     def test_transient_rows_are_filtered_by_the_grace_window(self):
         from management.services import ig_technical_debt
 
@@ -146,7 +146,7 @@ class TechnicalDebtCollectorTests(SimpleTestCase):
         self.assertTrue(result["idempotent"])
         self.assertEqual(result["provider_calls"], 0)
         self.assertEqual(result["writes"], 0)
-        self.assertFalse(result["persistence"]["supported"])
+        self.assertTrue(result["persistence"]["supported"])
         proposal = result["proposed_cases"][0]
         self.assertEqual(proposal["identity"], "canonical_delivery_unknown:delivery_effect")
         self.assertEqual(proposal["source_ids"], [12])
@@ -185,7 +185,7 @@ class TechnicalDebtCollectorTests(SimpleTestCase):
         self.assertEqual(first_case["case_fingerprint"], older_case["case_fingerprint"])
         self.assertNotEqual(first_case["oldest_age_seconds"], older_case["oldest_age_seconds"])
 
-    def test_reconciler_never_persists_when_write_mode_is_requested(self):
+    def test_reconciler_apply_empty_is_safe_and_persistent(self):
         from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
 
         with patch(
@@ -195,10 +195,45 @@ class TechnicalDebtCollectorTests(SimpleTestCase):
             result = reconcile_ig_technical_debt_once(limit=5, dry_run=False)
 
         self.assertFalse(result["dry_run"])
-        self.assertEqual(result["mode"], "proposal_only")
+        self.assertEqual(result["mode"], "apply")
         self.assertEqual(result["writes"], 0)
         self.assertEqual(result["provider_calls"], 0)
+        self.assertTrue(result["persistence"]["supported"])
+
+
+class TechnicalDebtCaseApplyTests(TestCase):
+    def test_apply_is_idempotent_and_preserves_resolved_status(self):
+        from management.ig_bot_models import IgTechnicalDebtCase
+        from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
+
+        now = timezone.now()
+        snapshot = {"cases": [{
+            "reason": "canonical_delivery_unknown", "scope": "delivery_effect",
+            "count": 2, "oldest_age_seconds": 90, "sample_ids": [12],
+            "sampled": False, "has_more": False,
+        }], "coverage_complete": True, "errors": [], "sample_limit": 5}
+        with patch("management.services.ig_technical_debt.technical_debt_snapshot", return_value=snapshot):
+            first = reconcile_ig_technical_debt_once(now=now, limit=5, dry_run=False)
+            case = IgTechnicalDebtCase.objects.get(case_key="canonical_delivery_unknown:delivery_effect")
+            case.status = IgTechnicalDebtCase.Status.RESOLVED
+            case.save(update_fields=["status", "updated_at"])
+            second = reconcile_ig_technical_debt_once(now=now, limit=5, dry_run=False)
+        self.assertEqual(first["writes"], 1)
+        self.assertEqual(second["writes"], 0)
+        self.assertEqual(IgTechnicalDebtCase.objects.count(), 1)
         self.assertEqual(
-            result["persistence"]["reason"],
-            "no_dedicated_technical_debt_case_schema",
+            IgTechnicalDebtCase.objects.get(pk=case.pk).status,
+            IgTechnicalDebtCase.Status.RESOLVED,
         )
+
+    def test_incomplete_coverage_never_persists_cases(self):
+        from management.ig_bot_models import IgTechnicalDebtCase
+        from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
+
+        with patch("management.services.ig_technical_debt.technical_debt_snapshot", return_value={
+            "cases": [{"reason": "unknown", "scope": "db", "count": 1, "sample_ids": []}],
+            "coverage_complete": False, "errors": ["DatabaseError"], "sample_limit": 5,
+        }):
+            result = reconcile_ig_technical_debt_once(limit=5, dry_run=False)
+        self.assertEqual(result["writes"], 0)
+        self.assertEqual(IgTechnicalDebtCase.objects.count(), 0)

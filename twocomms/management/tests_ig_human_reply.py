@@ -7,7 +7,12 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from management.ig_bot_models import HumanReplyCommand
-from management.models import IgClient, InstagramBotMessage, InstagramBotSettings
+from management.models import (
+    IgClient,
+    IgFollowUpTask,
+    InstagramBotMessage,
+    InstagramBotSettings,
+)
 from management.services.ig_human_reply import (
     HumanReplyRejected,
     create_human_reply_command,
@@ -89,8 +94,54 @@ class HumanReplyCommandTests(TestCase):
         result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")
         command = dispatch_human_reply_command(result.command.pk)
         self.assertEqual(command.state, HumanReplyCommand.State.UNKNOWN)
+        task = IgFollowUpTask.objects.get(
+            event_key=f"human-reply-unknown:{command.pk}"
+        )
+        self.assertEqual(task.kind, IgFollowUpTask.Kind.MANAGER_TASK)
+        self.assertEqual(task.status, IgFollowUpTask.Status.SKIPPED)
+        self.assertEqual(task.reason, "human_reply:delivery_unknown")
+        self.assertEqual(
+            task.manager_approval_status,
+            IgFollowUpTask.ManagerApprovalStatus.PENDING,
+        )
+        self.assertEqual(task.event_payload["command_id"], command.pk)
+        self.assertEqual(
+            task.event_payload["operation_id"], str(command.operation_id)
+        )
+        self.assertEqual(task.event_payload["source"], "human_reply_command")
+        self.assertEqual(task.event_payload["source_message_id"], self.inbound.pk)
+        self.assertEqual(task.event_payload["part_count"], 1)
+        self.assertEqual(task.event_payload["parts"][0]["part_index"], 0)
+        self.assertEqual(
+            task.event_payload["parts"][0]["provider_message_id"], ""
+        )
+        self.assertEqual(len(task.event_payload["parts"][0]["payload_digest"]), 64)
+        self.assertFalse(task.manager_context["automatic_http_retry"])
+        from management.bot_views import _with_latest_interaction
+
+        projected = _with_latest_interaction(
+            IgClient.objects.all()
+        ).get(pk=self.customer.pk)
+        self.assertTrue(projected.has_manager_action)
+
+        from django.urls import reverse
+
+        self.client.force_login(self.actor)
+        detail = self.client.get(
+            reverse("management_bot_client_detail_api", args=[self.customer.pk])
+        )
+        self.assertEqual(detail.status_code, 200)
+        detail_task = next(
+            item
+            for item in detail.json()["followups"]
+            if item["event_key"] == f"human-reply-unknown:{command.pk}"
+        )
+        self.assertEqual(detail_task["reason"], "human_reply:delivery_unknown")
+        self.assertEqual(detail_task["status_label"], "Потребує перевірки")
+        self.assertEqual(detail_task["reason_label"], "Звірка ручної доставки")
         dispatch_human_reply_command(command.pk)
         self.assertEqual(send_text.call_count, 1)
+        self.assertEqual(IgFollowUpTask.objects.count(), 1)
 
     def test_new_inbound_invalidates_context_before_send(self):
         result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")

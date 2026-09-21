@@ -10,11 +10,18 @@ from datetime import datetime
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from management.models import AdminAuditLog, IgClient, InstagramBotMessage, InstagramBotSettings
+from management.models import (
+    AdminAuditLog,
+    IgClient,
+    IgFollowUpTask,
+    InstagramBotMessage,
+    InstagramBotSettings,
+)
 from management.ig_bot_models import HumanReplyCommand
 
 
 MAX_HUMAN_REPLY_CHARS = 4000
+HUMAN_REPLY_UNKNOWN_REASON = "human_reply:delivery_unknown"
 
 
 class HumanReplyRejected(ValueError):
@@ -147,6 +154,78 @@ def _validate_existing_operation(command, *, client_id: int, actor, text: str,
         )
     ):
         raise HumanReplyRejected("operation_conflict")
+
+
+def _ensure_unknown_reconciliation(command, *, now: datetime) -> IgFollowUpTask:
+    """Create the operator-only reconciliation case for one ambiguous send."""
+    from management.services.ig_delivery_plan import build_delivery_plan
+
+    plan = build_delivery_plan(command.text)
+    event_key = f"human-reply-unknown:{command.pk}"
+    occurred_at = command.provider_started_at or command.terminal_at or now
+    payload = {
+        "origin": "human_reply",
+        "source": "human_reply_command",
+        "command_id": command.pk,
+        "operation_id": str(command.operation_id),
+        "source_message_id": command.context_message_id,
+        "reply_message_id": command.reply_message_id,
+        "part_count": len(plan.chunks),
+        "parts": [
+            {
+                "part_index": index,
+                "payload_digest": hashlib.sha256(part.encode("utf-8")).hexdigest(),
+                "provider_message_id": (
+                    command.provider_message_ids[index]
+                    if index < len(command.provider_message_ids or [])
+                    else ""
+                ),
+            }
+            for index, part in enumerate(plan.chunks)
+        ],
+        "provider_message_ids": list(command.provider_message_ids or []),
+        "provider_namespace": command.provider_namespace,
+    }
+    task, _created = IgFollowUpTask.objects.get_or_create(
+        event_key=event_key,
+        defaults={
+            "client_id": command.client_id,
+            "due_at": command.terminal_at or now,
+            "status": IgFollowUpTask.Status.SKIPPED,
+            "kind": IgFollowUpTask.Kind.MANAGER_TASK,
+            "reason": HUMAN_REPLY_UNKNOWN_REASON,
+            "manager_approval_status": IgFollowUpTask.ManagerApprovalStatus.PENDING,
+            "manager_approval_requested_at": command.terminal_at or now,
+            "skip_reason": "manual_delivery_reconciliation_required",
+            "trigger": IgFollowUpTask.Trigger.EVENT,
+            "event_occurred_at": occurred_at,
+            "policy_started_at": occurred_at,
+            "policy_version": "human-reply-unknown-v1",
+            "message_text": (
+                "Звірте ручну відповідь з Meta Inbox: результат доставки "
+                "невідомий, автоматичний повтор заборонено."
+            ),
+            "event_payload": payload,
+            "manager_context": {
+                "case_kind": "human_reply_delivery_unknown",
+                "command_id": command.pk,
+                "operation_id": str(command.operation_id),
+                "actor_id": command.actor_id,
+                "source_message_id": command.context_message_id,
+                "reply_message_id": command.reply_message_id,
+                "disposition": "reconcile_delivery",
+                "automatic_http_retry": False,
+            },
+        },
+    )
+    if (
+        task.client_id != command.client_id
+        or task.kind != IgFollowUpTask.Kind.MANAGER_TASK
+        or task.reason != HUMAN_REPLY_UNKNOWN_REASON
+        or task.event_payload != payload
+    ):
+        raise RuntimeError("human reply reconciliation identity mismatch")
+    return task
 
 
 def create_human_reply_command(
@@ -326,6 +405,8 @@ def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None
     with transaction.atomic():
         command = HumanReplyCommand.objects.select_for_update().select_related("client").get(pk=command_id)
         if command.state != HumanReplyCommand.State.PENDING:
+            if command.state == HumanReplyCommand.State.UNKNOWN:
+                _ensure_unknown_reconciliation(command, now=now)
             return command
         client = IgClient.objects.select_for_update().get(pk=command.client_id)
         from management.services.instagram_bot import ingress_provider_namespace
@@ -436,4 +517,6 @@ def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None
             "provider_message_id", "delivery_provider_message_ids", "delivery_failure_boundary",
         ])
         command.save(update_fields=["state", "failure_code", "provider_message_ids", "terminal_at", "updated_at"])
+        if command.state == HumanReplyCommand.State.UNKNOWN:
+            _ensure_unknown_reconciliation(command, now=terminal)
     return command

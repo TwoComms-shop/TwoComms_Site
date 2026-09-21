@@ -570,8 +570,8 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
 
     def test_client_rows_render_the_server_commercial_visual_state_without_replacing_actions(self):
         for contract in (
-            ".bot-client-row.commercial-paid:not(.needs-action):not(.post-sale-action)",
-            ".bot-client-row.commercial-shipped:not(.needs-action):not(.post-sale-action)",
+            ".bot-commercial-badge.commercial-paid",
+            ".bot-commercial-badge.commercial-shipped",
             "c.commercial_visual_state",
             "c.commercial_visual_state_label",
             "c.commercial_visual_state_note",
@@ -593,6 +593,19 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
         ):
             self.assertIn(contract, self.template)
         self.assertIn('payment/shipment stays a badge', self.template)
+        self.assertIn("row.className='bot-client-row'+(Number(c.id)===Number(activeId)?' active':'')", self.template)
+        self.assertIn('.bot-client-row.active{background:#0f1626;}', self.template)
+        self.assertIn('.bot-client-row:focus-visible{outline:2px solid #60a5fa;outline-offset:2px;}', self.template)
+        self.assertNotIn('.bot-client-row.active{border-', self.template)
+        for legacy_frame_rule in (
+            '.bot-client-row.needs-action{',
+            '.bot-client-row.needs-action::after{',
+            '.bot-client-row.reply-debt{',
+            '.bot-client-row.post-sale-action{',
+            '.bot-client-row.commercial-paid:not(',
+            '.bot-client-row.commercial-shipped:not(',
+        ):
+            self.assertNotIn(legacy_frame_rule, self.template)
 
     def test_commercial_truth_stays_visible_and_has_one_primary_row_badge(self):
         self.assertNotIn(".bot-client-tags{display:none}", self.template)

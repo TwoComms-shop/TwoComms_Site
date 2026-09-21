@@ -4222,6 +4222,13 @@ def _with_latest_interaction(queryset):
         client_id=OuterRef("pk"),
         status__in=[IgPostSaleCase.Status.NEEDS_DETAILS, IgPostSaleCase.Status.OPEN],
     )
+    human_reply_unknown = IgFollowUpTask.objects.filter(
+        client_id=OuterRef("pk"),
+        kind=IgFollowUpTask.Kind.MANAGER_TASK,
+        reason="human_reply:delivery_unknown",
+    ).exclude(
+        status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)
+    )
     latest_post_sale = IgPostSaleCase.objects.filter(
         client_id=OuterRef("pk")
     ).order_by("-updated_at", "-id")
@@ -4236,7 +4243,12 @@ def _with_latest_interaction(queryset):
             Value(0),
         ),
         has_post_sale_action=Exists(action_post_sale),
-        has_manager_action=Exists(action_review) | Exists(action_post_sale) | Q(has_reply_debt=True),
+        has_manager_action=(
+            Exists(action_review)
+            | Exists(action_post_sale)
+            | Q(has_reply_debt=True)
+            | Exists(human_reply_unknown)
+        ),
         latest_post_sale_type=Coalesce(
             Subquery(latest_post_sale.values("case_type")[:1]),
             Value(""),
@@ -5387,6 +5399,7 @@ def bot_client_detail_api(request, client_id):
     ).filter(id=client_id).first()
     if not c:
         return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
+    observation_now = timezone.now()
 
     from management.services.ig_journey_snapshot import (
         InvalidJourneyEpisode, build_journey_snapshot,
@@ -5547,7 +5560,13 @@ def bot_client_detail_api(request, client_id):
             "status_label": (
                 "Потребує перевірки"
                 if f.kind == IgFollowUpTask.Kind.MANAGER_TASK
-                and (f.reason.startswith("prize_review:") or f.reason == "revision_case:execution_debt")
+                and (
+                    f.reason.startswith("prize_review:")
+                    or f.reason in {
+                        "revision_case:execution_debt",
+                        "human_reply:delivery_unknown",
+                    }
+                )
                 and f.manager_approval_status
                 == IgFollowUpTask.ManagerApprovalStatus.PENDING
                 else f.get_status_display()
@@ -5556,7 +5575,13 @@ def bot_client_detail_api(request, client_id):
             "reason_label": (
                 "Перевірка призового сертифіката"
                 if f.reason.startswith("prize_review:")
-                else "Незавершена відповідь клієнту" if f.reason == "revision_case:execution_debt" else ""
+                else (
+                    "Незавершена відповідь клієнту"
+                    if f.reason == "revision_case:execution_debt"
+                    else "Звірка ручної доставки"
+                    if f.reason == "human_reply:delivery_unknown"
+                    else ""
+                )
             ),
             "discount_percent": f.discount_percent,
             "due_at": f.due_at.isoformat() if f.due_at else "",
@@ -5782,7 +5807,7 @@ def bot_client_detail_api(request, client_id):
         for row in ugc_assessment_rows
     ]
     manual_order_url = _manual_order_url_for_client(c.pk)
-    card = _client_card(c)
+    card = _client_card(c, follow_now=observation_now)
     card.update({
         "memory": c.memory_summary,
         "phone": c.phone,
