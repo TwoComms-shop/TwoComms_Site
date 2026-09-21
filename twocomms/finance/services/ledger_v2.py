@@ -305,21 +305,28 @@ def is_known_rent_expense(txn) -> bool:
 
 @db_transaction.atomic
 def classify_known_rent_expense(txn, *, user=None):
-    """Assign Viktor's office-rent rows to the stable «Оренда» category."""
+    """Assign Viktor's office-rent rows to the business rent/utility bucket."""
     txn = Transaction.objects.select_for_update().select_related(
         'recurrence_rule', 'counterparty', 'category', 'account',
     ).get(pk=txn.pk)
     if not is_known_rent_expense(txn):
         return None
-    category = (Category.objects.filter(company=txn.company, type__in=(Category.TYPE_EXPENSE, Category.TYPE_BOTH),
-                                        name__iexact='Оренда').first())
+    category = (Category.objects.filter(
+        company=txn.company,
+        type__in=(Category.TYPE_EXPENSE, Category.TYPE_BOTH),
+        name__iexact='Оренда та комуналка — бізнес',
+    ).first())
     if category is None:
-        category = Category.objects.create(company=txn.company, name='Оренда',
-                                           type=Category.TYPE_EXPENSE, is_system=True)
-    if txn.category_id != category.id:
-        txn.category = category
-        txn.save(update_fields=['category'])
-    return category
+        category = Category.objects.create(
+            company=txn.company, name='Оренда та комуналка — бізнес',
+            type=Category.TYPE_EXPENSE, is_system=True,
+        )
+    return classify_transaction(
+        txn, user=user, ownership_scope='business', economic_kind='operating_expense',
+        confidence=Decimal('100'), source='rule',
+        note='Автоматично визначено: бізнес-оренда та комуналка для Віктора Викторовича.',
+        force_category=True, category_override=category,
+    )
 
 
 def _assert_terminal_cash_transaction(txn):

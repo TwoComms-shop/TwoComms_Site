@@ -111,7 +111,7 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(pension_income.ownership_scope, 'personal')
         self.assertIsNotNone(pension_income.category_id)
 
-    def test_known_viktor_rent_expense_uses_rent_category(self):
+    def test_known_viktor_rent_expense_uses_business_rent_category(self):
         from .models import RecurrenceRule
         from .services.ledger_v2 import classify_known_rent_expense
         viktor = Counterparty.objects.create(company=self.company, name='Віктор Вікторович')
@@ -126,7 +126,9 @@ class FinanceV2ServiceTests(TestCase):
         txn.save(update_fields=['counterparty', 'recurrence_rule', 'comment'])
         classify_known_rent_expense(txn, user=self.user)
         txn.refresh_from_db()
-        self.assertEqual(txn.category.name, 'Оренда')
+        self.assertEqual(txn.category.name, 'Оренда та комуналка — бізнес')
+        self.assertEqual(txn.ownership_scope, 'business')
+        self.assertEqual(txn.economic_kind, 'operating_expense')
 
     def test_counterparty_policy_requires_confirmation_and_applies_selected_category(self):
         housing = Category.objects.create(
