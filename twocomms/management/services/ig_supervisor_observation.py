@@ -27,6 +27,7 @@ def _empty_observation() -> dict[str, object]:
         "available": False,
         "status": "unobserved",
         "observed_at": None,
+        "last_ensure_seen_at": None,
         "supervisor_release_sha": None,
         "child_release_sha": None,
         "restart_count": None,
@@ -99,7 +100,9 @@ def read_supervisor_observation(
         return result
 
     observed_at = _safe_timestamp(payload.get("observed_at"))
-    if observed_at is None:
+    ensure_seen_at = _safe_timestamp(payload.get("last_ensure_seen_at"))
+    freshness_at = ensure_seen_at or observed_at
+    if freshness_at is None:
         return result
 
     checked_at = time.time() if now is None else _safe_timestamp(now)
@@ -118,8 +121,13 @@ def read_supervisor_observation(
     result.update(
         {
             "available": True,
-            "status": "stale" if max(0.0, checked_at - observed_at) > threshold else "current",
+            # ``observed_at`` is the last supervisor event (often the child
+            # start), while ensure_seen_at is the recurring watchdog pulse.
+            # Prefer the pulse so a long-lived healthy child does not project
+            # as stale merely because it has not restarted.
+            "status": "stale" if max(0.0, checked_at - freshness_at) > threshold else "current",
             "observed_at": observed_at,
+            "last_ensure_seen_at": ensure_seen_at,
             "supervisor_release_sha": _safe_sha(payload.get("supervisor_release_sha")),
             "child_release_sha": _safe_sha(payload.get("child_release_sha")),
             "restart_count": _safe_int(payload.get("restart_count"), minimum=0),

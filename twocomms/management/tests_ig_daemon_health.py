@@ -145,11 +145,15 @@ class TechnicalDebtFingerprintTests(TestCase):
             def only(self, *fields):
                 return self
 
+            def count(self):
+                return 21
+
             def iterator(self, **kwargs):
                 for index in range(21):
                     yield type("Row", (), {"pk": index, "attachment_media": []})()
 
-        with patch.object(settings, "IG_PRIVATE_MEDIA_ROOT", "/private/tmp/media"), \
+        with patch.object(settings, "IG_TECHNICAL_DEBT_MEDIA_SCAN_CAP", 20, create=True), \
+             patch.object(settings, "IG_PRIVATE_MEDIA_ROOT", "/private/tmp/media"), \
              patch("management.services.ig_technical_debt.os.path.isdir", return_value=True), \
              patch("management.services.ig_technical_debt.os.walk", return_value=[
                  ("/private/tmp/media", [], ["orphan.jpg"]),

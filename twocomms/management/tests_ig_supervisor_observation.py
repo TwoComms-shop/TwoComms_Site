@@ -51,6 +51,7 @@ class SupervisorObservationTests(SimpleTestCase):
                 "available": True,
                 "status": "current",
                 "observed_at": 100.0,
+                "last_ensure_seen_at": None,
                 "supervisor_release_sha": "a" * 40,
                 "child_release_sha": "b" * 12,
                 "restart_count": 3,
@@ -62,14 +63,33 @@ class SupervisorObservationTests(SimpleTestCase):
         self.assertNotIn("child_start_ticks", observation)
 
     def test_stale_observation_is_available_but_not_current(self):
-        self.write_state({"observed_at": 100.0, "child_pid": 421})
+        self.write_state({"observed_at": 100.0, "last_ensure_seen_at": 250.0, "child_pid": 421})
+
+        observation = read_supervisor_observation(self.root, now=281.0)
+
+        self.assertTrue(observation["available"])
+        self.assertEqual(observation["status"], "current")
+        self.assertEqual(observation["child_pid"], 421)
+        self.assertEqual(observation["last_ensure_seen_at"], 250.0)
+        self.assertIsNone(observation["child_pid_matches_expected"])
+
+    def test_stale_ensure_heartbeat_remains_stale_even_with_recent_child_event(self):
+        self.write_state({"observed_at": 275.0, "last_ensure_seen_at": 100.0, "child_pid": 421})
 
         observation = read_supervisor_observation(self.root, now=281.0)
 
         self.assertTrue(observation["available"])
         self.assertEqual(observation["status"], "stale")
-        self.assertEqual(observation["child_pid"], 421)
-        self.assertIsNone(observation["child_pid_matches_expected"])
+        self.assertEqual(observation["observed_at"], 275.0)
+        self.assertEqual(observation["last_ensure_seen_at"], 100.0)
+
+    def test_legacy_state_without_ensure_heartbeat_uses_event_time(self):
+        self.write_state({"observed_at": 100.0, "child_pid": 421})
+
+        observation = read_supervisor_observation(self.root, now=281.0)
+
+        self.assertEqual(observation["status"], "stale")
+        self.assertIsNone(observation["last_ensure_seen_at"])
 
     def test_expected_pid_mismatch_wins_over_current_age(self):
         self.write_state({"observed_at": 100.0, "child_pid": 421})
