@@ -40,6 +40,40 @@ class TechnicalDebtCollectorTests(TestCase):
             [call.kwargs for call in inbox.call_args_list],
         )
 
+    def test_stale_legacy_inbound_pending_projects_without_mutation(self):
+        from management.ig_bot_models import IgTechnicalDebtCase
+        from management.models import InstagramBotMessage
+        from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
+
+        now = timezone.now()
+        message = InstagramBotMessage.objects.create(
+            sender_id="legacy-pending-fixture",
+            role="user",
+            status="pending",
+            text="запит без обробки",
+        )
+        InstagramBotMessage.objects.filter(pk=message.pk).update(
+            created_at=now - timedelta(minutes=10),
+        )
+
+        with patch(
+            "management.services.ig_technical_debt._collect_media",
+            return_value=([], True),
+        ):
+            result = reconcile_ig_technical_debt_once(now=now, dry_run=True)
+
+        proposal = next(
+            case for case in result["proposed_cases"]
+            if case["identity"] == "inbound_pending_unreconciled:legacy_message"
+        )
+        self.assertEqual(proposal["source_ids"], [message.pk])
+        self.assertTrue(result["coverage_complete"])
+        self.assertEqual(result["coverage_reasons"], [])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["provider_calls"], 0)
+        self.assertEqual(result["writes"], 0)
+        self.assertEqual(IgTechnicalDebtCase.objects.count(), 0)
+
     def test_capture_claim_ids_are_unique_and_preserved(self):
         from management.services.ig_technical_debt import _collect_media
 

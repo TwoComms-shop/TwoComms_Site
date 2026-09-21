@@ -303,6 +303,13 @@ def _collect_db(now, limit):
         reason="legacy_processing_claim_expired", scope="legacy_message", now=now,
         limit=limit, time_field="processing_started_at"))
     cases.append(_query_case(
+        InstagramBotMessage.objects.filter(
+            role="user", status="pending", processed_at__isnull=True,
+            created_at__lt=transient_cutoff,
+        ),
+        reason="inbound_pending_unreconciled", scope="legacy_message", now=now,
+        limit=limit, time_field="created_at"))
+    cases.append(_query_case(
         IgCustomerTurn.objects.filter(claim_state="claimed", claimed_at__lt=cutoff),
         reason="turn_claim_expired", scope="customer_turn", now=now,
         limit=limit, time_field="claimed_at"))

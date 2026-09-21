@@ -89,6 +89,21 @@ class OperationalLaneHealthTests(TestCase):
         self.assertEqual(result["lanes"]["conversation_analysis"]["state"], "stalled")
         self.assertGreater(result["lanes"]["conversation_analysis"]["oldest_runnable_age_seconds"], 900)
 
+    def test_old_terminal_analysis_failure_is_historical_and_not_current_attention(self):
+        job = IgConversationAnalysisJob.objects.create(
+            client=self.person,
+            status=IgConversationAnalysisJob.Status.FAILED,
+            attempts=5,
+            last_error="quota exhausted",
+        )
+        IgConversationAnalysisJob.objects.filter(pk=job.pk).update(
+            updated_at=self.now - timedelta(days=3),
+        )
+        lane = self.snapshot()["lanes"]["conversation_analysis"]
+        self.assertEqual(lane["counts"]["historical"], 1)
+        self.assertEqual(lane["attention_total"], 0)
+        self.assertTrue(lane["healthy"])
+
     def test_expired_revision_requires_real_manual_owner(self):
         _source, revision = self.revision(age=3600)
         self.assertFalse(self.snapshot()["healthy"])
@@ -96,6 +111,46 @@ class OperationalLaneHealthTests(TestCase):
         result = self.snapshot()
         self.assertTrue(result["healthy"], result)
         self.assertEqual(result["lanes"]["customer_revisions"]["counts"]["manual"], 1)
+
+    def test_overdue_manager_owned_collecting_head_is_visible_without_actionable_attention(self):
+        source, revision = self.revision(age=3600)
+        source.status = InstagramBotMessage.Status.DONE
+        source.save(update_fields=["status"])
+        self.person.bot_paused = True
+        self.person.manager_takeover = True
+        self.person.save(update_fields=["bot_paused", "manager_takeover"])
+
+        result = self.snapshot()
+        lane = result["lanes"]["customer_revisions"]
+        self.assertTrue(result["healthy"], result)
+        self.assertEqual(lane["counts"]["manager_owned"], 1)
+        self.assertEqual(lane["attention_total"], 0)
+
+    def test_manager_owned_head_with_pending_source_remains_attention(self):
+        _source, _revision = self.revision(age=3600)
+        self.person.bot_paused = True
+        self.person.manager_takeover = True
+        self.person.save(update_fields=["bot_paused", "manager_takeover"])
+
+        result = self.snapshot()
+        lane = result["lanes"]["customer_revisions"]
+        self.assertFalse(result["healthy"], result)
+        self.assertEqual(lane["counts"]["attention"], 1)
+
+    def test_overdue_manual_resume_revision_remains_attention_on_takeover(self):
+        source, revision = self.revision(age=3600)
+        source.status = InstagramBotMessage.Status.DONE
+        source.save(update_fields=["status"])
+        IgCustomerTurnRevision.objects.filter(pk=revision.pk).update(origin="manual_resume")
+        self.person.bot_paused = True
+        self.person.manager_takeover = True
+        self.person.save(update_fields=["bot_paused", "manager_takeover"])
+
+        result = self.snapshot()
+        lane = result["lanes"]["customer_revisions"]
+        self.assertFalse(result["healthy"], result)
+        self.assertEqual(lane["counts"]["attention"], 1)
+        self.assertEqual(lane["counts"]["manager_owned"], 0)
 
     def test_unowned_old_source_is_attention_not_runnable(self):
         source = self.source()

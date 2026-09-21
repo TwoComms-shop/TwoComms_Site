@@ -20,11 +20,12 @@ from management.models import (
 from management.services.ig_typed_memory import shadow_enabled
 
 SAMPLE_LIMIT = 50
-BUCKETS = ("runnable", "processing", "manual", "deferred", "failed", "unknown", "attention")
+BUCKETS = ("runnable", "processing", "manual", "manager_owned", "deferred", "failed", "historical", "unknown", "attention")
 # Waiting age is measured from the original due/created time, not updated_at:
 # repeated deferral and unrelated daemon cycles must not erase starvation.
 REPLY_STALL_SECONDS = 300
 SERVICE_STALL_SECONDS = 900
+HISTORICAL_FAILURE_SECONDS = 24 * 60 * 60
 
 
 def _age(now, moment):
@@ -88,6 +89,11 @@ def _revision_lane(*, now, settings_row, allowed):
     due = set(due_revision_ids(now=now, limit=SAMPLE_LIMIT, cutover_at=rollout.cutover_at)) if rollout.enabled else set()
     finalizing = set(finalization_due_ids(now=now, limit=SAMPLE_LIMIT))
     effects = IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk"))
+    manager_owned_source = IgTurnRevisionSource.objects.filter(
+        revision_id=OuterRef("pk"),
+        ordinal=1,
+        message__status=InstagramBotMessage.Status.DONE,
+    )
     owner = IgFollowUpTask.objects.filter(
         client_id=OuterRef("client_id"),
         event_key=Concat(Value("ig-revision-debt:"), Cast(OuterRef("pk"), CharField())),
@@ -99,6 +105,7 @@ def _revision_lane(*, now, settings_row, allowed):
     ).annotate(
         uncertain=Exists(effects.filter(state="unknown")),
         failed_effect=Exists(effects.filter(state="definite_failed")),
+        manager_owned_source=Exists(manager_owned_source),
         manual_owner=Exists(owner),
     ).select_related("client", "turn").order_by("overall_deadline", "id")
 
@@ -112,6 +119,19 @@ def _revision_lane(*, now, settings_row, allowed):
             if execution_resume_is_current(row, now=now):
                 return "runnable", row.recovery_due_at or row.updated_at
             return ("manual", None) if _manual_owned(row) else ("attention", None)
+        # A legacy inbound head can remain collecting after its source was
+        # consumed just as the manager explicitly took over the client. That
+        # is owned work for the manager, not actionable bot attention. Manual
+        # resume heads stay visible until their own execution state resolves.
+        if (
+            row.state == "collecting"
+            and row.origin == IgCustomerTurnRevision.Origin.INBOUND
+            and row.overall_deadline <= now
+            and row.client.bot_paused
+            and row.client.manager_takeover
+            and row.manager_owned_source
+        ):
+            return "manager_owned", None
         if row.overall_deadline <= now and row.recovery_state not in {"waiting", "execution"}:
             if row.pk in finalizing:
                 return "runnable", row.updated_at
@@ -161,8 +181,15 @@ def _revision_lane(*, now, settings_row, allowed):
         # Never convert absence from its result into proof of runnable work.
         return "deferred" if not rollout.enabled else "attention", None
 
+    manager_owned = Q(
+        state="collecting", origin=IgCustomerTurnRevision.Origin.INBOUND,
+        overall_deadline__lte=now, recovery_state="",
+        client__bot_paused=True, client__manager_takeover=True,
+        manager_owned_source=True,
+    )
     bad = query.filter(Q(uncertain=True) | Q(failed_effect=True)
-                       | (Q(overall_deadline__lte=now, manual_owner=False, recovery_state="") & ~Q(pk__in=finalizing))).count()
+                       | (Q(overall_deadline__lte=now, manual_owner=False, recovery_state="")
+                          & ~Q(pk__in=finalizing) & ~manager_owned)).count()
     progress = IgCustomerTurnRevision.objects.aggregate(at=Max("processed_at"))["at"]
     return _sample(query, classify, now=now, threshold=REPLY_STALL_SECONDS, progress=progress, exact_attention=bad, progress_kind="terminal_progress")
 
@@ -311,6 +338,8 @@ def _job_lane(model, *, now, statuses, progress_field, due_field="next_attempt_a
         if row.status in {"unknown", "ambiguous"}:
             return "unknown", None
         if row.status in {"failed", "dead_letter"}:
+            if analysis and row.updated_at and row.updated_at <= now - timedelta(seconds=HISTORICAL_FAILURE_SECONDS):
+                return "historical", None
             return "failed", None
         if row.status in {"processing", "sending"}:
             lease = getattr(row, "lease_until", None)
@@ -332,6 +361,11 @@ def _job_lane(model, *, now, statuses, progress_field, due_field="next_attempt_a
         return "runnable", row.due_at if analysis else row.created_at
 
     bad_q = Q(status__in=("failed", "dead_letter", "unknown", "ambiguous"))
+    if analysis:
+        bad_q = (
+            Q(status__in=("unknown", "ambiguous"))
+            | Q(status__in=("failed", "dead_letter"), updated_at__gt=now - timedelta(seconds=HISTORICAL_FAILURE_SECONDS))
+        )
     if model is not IgBotNotification and has_lease:
         bad_q |= Q(status__in=("processing", "sending")) & (Q(lease_until__isnull=True) | Q(lease_until__lte=now))
     elif model is IgBotNotification:
