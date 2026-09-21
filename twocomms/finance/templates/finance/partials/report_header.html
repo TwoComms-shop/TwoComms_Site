@@ -19,6 +19,10 @@
             <input type="date" name="date_to" class="fin-input fin-input--sm" value="{{ request.GET.date_to }}">
             <button type="submit" class="fin-btn fin-btn--primary fin-btn--sm">OK</button>
         </span>
+        {% if kind == 'cashflow' %}
+        <label class="fin-field"><span class="sr-only">Контур обліку</span><select name="scope" class="fin-select" onchange="this.form.submit()"><option value="all" {% if scope == 'all' %}selected{% endif %}>Усі кошти</option><option value="business" {% if scope == 'business' %}selected{% endif %}>Лише бізнес</option><option value="personal" {% if scope == 'personal' %}selected{% endif %}>Лише особисті</option></select></label>
+        <label class="fin-checkbox"><input type="checkbox" name="include_grants" value="1" {% if include_grants %}checked{% endif %} onchange="this.form.submit()"><span>Враховувати грантові надходження</span></label>
+        {% endif %}
         {% if request.GET.account %}<input type="hidden" name="account" value="{{ request.GET.account }}">{% endif %}
         <a href="{% url 'finance_report_export' kind %}?{{ request.GET.urlencode }}" class="fin-btn fin-btn--ghost fin-btn--sm">Експорт XLSX</a>
     </form>

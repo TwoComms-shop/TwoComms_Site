@@ -11,6 +11,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from finance.models import Account, FundingSource, Transaction, get_default_company
+from finance.services import ledger_v2
 from finance.services import reports as rep
 from finance.services import reports_debt as repd
 from finance.services import transactions as txn_service
@@ -60,6 +61,36 @@ class ReportsTests(TestCase):
         self.assertEqual(data['cash_in'], Decimal('1000'))
         self.assertEqual(data['targeted_in'], Decimal('216000'))
         self.assertEqual(sum(bucket['in'] for bucket in data['series']), 1000.0)
+
+    def test_scope_uses_confirmed_ownership_over_legacy_flag(self):
+        personal = txn_service.create_transaction(
+            user=self.user, type=Transaction.TYPE_EXPENSE, amount=Decimal('75'),
+            account=self.acc, date_actual=timezone.now(), is_business=True,
+        )
+        ledger_v2.classify_transaction(
+            personal, ownership_scope='personal', economic_kind='operating_expense',
+        )
+        business = txn_service.create_transaction(
+            user=self.user, type=Transaction.TYPE_EXPENSE, amount=Decimal('125'),
+            account=self.acc, date_actual=timezone.now(), is_business=False,
+        )
+        ledger_v2.classify_transaction(
+            business, ownership_scope='business', economic_kind='operating_expense',
+        )
+        self.assertEqual(rep.pnl(self.company, {'period': 'all', 'scope': 'business'})['expenses'], Decimal('125'))
+        self.assertEqual(rep.pnl(self.company, {'period': 'all', 'scope': 'personal'})['expenses'], Decimal('475'))
+
+    def test_grants_can_be_added_to_operating_result_explicitly(self):
+        grant = txn_service.create_transaction(
+            user=self.user, type=Transaction.TYPE_INCOME, amount=Decimal('216000'),
+            account=self.acc, date_actual=timezone.now(), is_business=True,
+        )
+        grant.economic_kind = 'grant_inflow'
+        grant.save(update_fields=['economic_kind'])
+        excluded = rep.pnl(self.company, {'period': 'all'})
+        included = rep.pnl(self.company, {'period': 'all', 'include_grants': '1'})
+        self.assertEqual(excluded['income'], Decimal('1000'))
+        self.assertEqual(included['income'], Decimal('217000'))
 
     def test_pnl_profit(self):
         data = rep.pnl(self.company, {'period': 'year'})

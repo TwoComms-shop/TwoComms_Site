@@ -488,6 +488,7 @@ def confirm_terminal_cash_transfer(txn, *, source_cash_account_id, user=None, no
     return transfer
 
 
+@db_transaction.atomic
 def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_kind='unknown',
                          confidence=Decimal('100'), note='', source='manual', funding_source=None,
                          force_category=False, category_override=None):
@@ -520,11 +521,15 @@ def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_
     txn.ownership_scope = ownership_scope
     txn.economic_kind = economic_kind
     txn.funding_source = funding_source
+    if ownership_scope in {'business', 'personal'}:
+        txn.is_business = ownership_scope == 'business'
     semantic_category = category_override or _category_for_classification(txn, economic_kind)
     category = semantic_category if force_category else (txn.category or semantic_category)
     if category is not None:
         txn.category = category
     update_fields = ['ownership_scope', 'economic_kind', 'funding_source']
+    if ownership_scope in {'business', 'personal'}:
+        update_fields.append('is_business')
     if category is not None:
         update_fields.append('category')
     txn.save(update_fields=update_fields)

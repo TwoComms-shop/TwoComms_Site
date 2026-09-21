@@ -128,16 +128,23 @@ def _pnl_heat_color(tone, heat):
     return '#{:02x}{:02x}{:02x}'.format(*rgb)
 
 
-def _pnl_calendar(company, period, start):
+def _params_for_period(params, start, end):
+    """Preserve all report switches while replacing only the period range."""
+    out = params.copy() if hasattr(params, 'copy') else dict(params)
+    out['period'] = 'custom'
+    out['date_from'] = start.isoformat()
+    out['date_to'] = end.isoformat()
+    return out
+
+
+def _pnl_calendar(company, params, period, start):
     """Build a month grid from actual daily P&L values for the dashboard."""
     from django.utils import timezone
 
     anchor = timezone.localdate() if period == 'all' else start
     month_start = anchor.replace(day=1)
     month_end = anchor.replace(day=calendar_lib.monthrange(anchor.year, anchor.month)[1])
-    daily = rep.pnl(company, {
-        'period': 'custom', 'date_from': month_start.isoformat(), 'date_to': month_end.isoformat(),
-    })
+    daily = rep.pnl(company, _params_for_period(params, month_start, month_end))
     by_day = {row['label']: row for row in daily['series']}
     cells = [{'day': None} for _ in range(month_start.weekday())]
     for day in range(1, month_end.day + 1):
@@ -218,12 +225,16 @@ def report(request, kind):
     company = get_default_company()
     # Якщо період не заданий явно — обираємо розумний дефолт.
     period = request.GET.get('period') or _smart_default_period(company)
+    report_params = request.GET.copy()
+    report_params['period'] = period
+    scope = request.GET.get('scope') if request.GET.get('scope') in {'business', 'personal'} else 'all'
+    include_grants = str(request.GET.get('include_grants') or '').lower() in {'1', 'true', 'on', 'yes'}
     ctx = {'active_tab': 'analytics', 'kind': kind,
            'dropdowns': ser.serialize_dropdowns(company),
-           'period': period}
+           'period': period, 'scope': scope, 'include_grants': include_grants}
 
     if kind == 'cashflow':
-        data = rep.cash_flow(company, request.GET)
+        data = rep.cash_flow(company, report_params)
         bi = _breakdown(company, data['income_by_category'], data['cash_in'])
         be = _breakdown(company, data['expense_by_category'], data['cash_out'])
         net = data['net']
@@ -255,18 +266,16 @@ def report(request, kind):
         return render(request, 'finance/reports/cashflow.html', ctx)
 
     if kind == 'pnl':
-        data = rep.pnl(company, request.GET)
+        data = rep.pnl(company, report_params)
         bi = _breakdown(company, data['income_by_category'], data['income'])
         be = _breakdown(company, data['expense_by_category'], data['expenses'])
         profit = data['profit']
         start = dt.date.fromisoformat(data['period'][0])
         end = dt.date.fromisoformat(data['period'][1])
         previous_period = _pnl_previous_period(period, start, end)
-        previous_data = rep.pnl(company, {
-            'period': 'custom',
-            'date_from': previous_period[0].isoformat(),
-            'date_to': previous_period[1].isoformat(),
-        }) if previous_period else None
+        previous_data = rep.pnl(
+            company, _params_for_period(report_params, previous_period[0], previous_period[1]),
+        ) if previous_period else None
         detail_rows = _pnl_detail_rows(
             company, data['expense_by_category'],
             previous_data['expense_by_category'] if previous_data else [], start, end,
@@ -318,6 +327,7 @@ def report(request, kind):
             'income': _m(company, data['income']),
             'expenses': _m(company, data['expenses']),
             'profit': _m(company, data['profit'], signed=True),
+            'targeted_in': _m(company, data['targeted_in']),
             'margin': round(data['margin'], 1),
             'profit_positive': profit >= 0,
             'breakdown_income': bi,
@@ -330,7 +340,7 @@ def report(request, kind):
             'income_change': income_change,
             'expense_change': expense_change,
             'previous_period_label': 'попереднім місяцем' if period in ('month', 'last_month') else 'попереднім періодом',
-            'pnl_calendar': _pnl_calendar(company, period, start),
+            'pnl_calendar': _pnl_calendar(company, report_params, period, start),
             'insights': insights,
             'chart_data': json.dumps({
                 'series': data['series'],

@@ -74,6 +74,15 @@ def _csv_ids(value):
     return out
 
 
+def _scope_q(scope):
+    """Prefer a confirmed ledger scope and fall back to legacy row metadata."""
+    if scope == 'business':
+        return Q(ownership_scope='business') | Q(ownership_scope='unknown', is_business=True)
+    if scope == 'personal':
+        return Q(ownership_scope='personal') | Q(ownership_scope='unknown', is_business=False)
+    return Q()
+
+
 def filter_transactions(company, params, *, include_planned=True):
     """Будує queryset операцій за параметрами запиту (GET/dict).
 
@@ -149,10 +158,8 @@ def filter_transactions(company, params, *, include_planned=True):
 
     # Бізнес / особисте.
     scope = (params.get('scope') or '').strip()
-    if scope == 'business':
-        qs = qs.filter(is_business=True)
-    elif scope == 'personal':
-        qs = qs.filter(is_business=False)
+    if scope in {'business', 'personal'}:
+        qs = qs.filter(_scope_q(scope))
 
     # Фільтр за групою MCC (продукти, паливо, кафе...). Резолвимо у діапазони MCC.
     mcc_group = (params.get('mcc_group') or '').strip()

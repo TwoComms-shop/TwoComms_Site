@@ -85,6 +85,17 @@ class FinanceV2ServiceTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('грантову програму', response.json()['error'])
 
+    def test_expense_cannot_be_classified_as_grant_inflow(self):
+        expense = self._txn(Transaction.TYPE_EXPENSE, Decimal('1200'))
+        self.client.force_login(self.user)
+        response = self.client.post(
+            f'/api/v2/transactions/{expense.id}/classification/',
+            data=json.dumps({'economic_kind': 'grant_inflow', 'ownership_scope': 'business'}),
+            content_type='application/json', HTTP_HOST='fin.twocomms.shop',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('вхідна операція', response.json()['error'])
+
     def test_fop_sale_and_pension_quick_actions_are_account_aware(self):
         fop = Account.objects.create(company=self.company, name='monobank ФОП', currency='UAH', is_business=True)
         pension = Account.objects.create(company=self.company, name='Пенсійна', currency='UAH', is_business=False)

@@ -170,6 +170,10 @@ def classification_api(request, txn_id):
     try:
         economic_kind = data.get('economic_kind') or 'unknown'
         ownership_scope = data.get('ownership_scope') or 'unknown'
+        if economic_kind not in dict(Transaction.ECONOMIC_KIND_CHOICES):
+            raise ValueError('Оберіть коректний вид операції')
+        if ownership_scope not in dict(Transaction.OWNERSHIP_SCOPE_CHOICES):
+            raise ValueError('Оберіть коректний контур обліку')
         # Dedicated one-click actions are account-aware.  A sale shortcut is
         # only valid on the business/FOP account; a pension shortcut is only
         # valid on an account explicitly named as pension.
@@ -189,6 +193,8 @@ def classification_api(request, txn_id):
             raise ValueError('Продажі швидко підтверджуються лише на ФОП-рахунку')
         if economic_kind == 'grant_inflow' and ownership_scope == 'unknown':
             ownership_scope = 'business'
+        if economic_kind == 'grant_inflow' and txn.type != Transaction.TYPE_INCOME:
+            raise ValueError('Грантовим надходженням може бути лише вхідна операція')
         funding = (company.funding_sources.filter(id=data.get('funding_source_id')).first()
                    if data.get('funding_source_id') else None)
         if economic_kind == 'grant_inflow' and funding is None:

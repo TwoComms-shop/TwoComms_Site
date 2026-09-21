@@ -38,6 +38,33 @@ def resolve_period(params):
     return start, end
 
 
+def _scope_q(scope, *, prefix=''):
+    """Return the classification-aware business/personal predicate.
+
+    ``ownership_scope`` is the confirmed economic classification.  The older
+    ``is_business`` flag remains a fallback only for rows that have not been
+    classified yet, so historical data stays visible in the expected view.
+    """
+    ownership = f'{prefix}ownership_scope'
+    legacy = f'{prefix}is_business'
+    if scope == 'business':
+        return Q(**{ownership: 'business'}) | Q(**{ownership: 'unknown', legacy: True})
+    if scope == 'personal':
+        return Q(**{ownership: 'personal'}) | Q(**{ownership: 'unknown', legacy: False})
+    return Q()
+
+
+def _apply_scope_filter(qs, params, *, prefix=''):
+    scope = (params.get('scope') or '').strip()
+    if scope in {'business', 'personal'}:
+        return qs.filter(_scope_q(scope, prefix=prefix))
+    return qs
+
+
+def _include_grants(params):
+    return str(params.get('include_grants') or '').strip().lower() in {'1', 'true', 'on', 'yes'}
+
+
 def _apply_dim_filters(qs, params):
     if params.get('accounts'):
         ids = [i for i in str(params['accounts']).split(',') if i.isdigit()]
@@ -63,13 +90,7 @@ def _apply_dim_filters(qs, params):
         ids = [i for i in str(params['funding_source']).split(',') if i.isdigit()]
         if ids:
             qs = qs.filter(funding_source_id__in=ids)
-    # Бізнес / особисте — наскрізний зріз для всіх звітів.
-    scope = (params.get('scope') or '').strip()
-    if scope == 'business':
-        qs = qs.filter(is_business=True)
-    elif scope == 'personal':
-        qs = qs.filter(is_business=False)
-    return qs
+    return _apply_scope_filter(qs, params)
 
 
 def _actual(company):
@@ -100,7 +121,9 @@ def _unrepresented_transfer_fees(company, params, start, end, *, pnl_dates=False
         ids = [i for i in str(params['accounts']).split(',') if i.isdigit()]
         if ids:
             qs = qs.filter(source_account_id__in=ids)
-    return qs.aggregate(total=Sum('fee_amount'))['total'] or Decimal('0')
+    return _apply_scope_filter(qs, params, prefix='source_transaction__').aggregate(
+        total=Sum('fee_amount'),
+    )['total'] or Decimal('0')
 
 
 def _add_fee_category(rows, amount):
@@ -115,13 +138,16 @@ def _add_fee_category(rows, amount):
 
 def cash_flow(company, params):
     start, end = resolve_period(params)
+    include_grants = _include_grants(params)
     qs = _apply_dim_filters(_actual(company), params).filter(
         date_actual__gte=day_start(start), date_actual__lte=day_end(end))
 
     # A confirmed classification changes the management view without deleting
     # or rewriting the bank movement.  Unknown legacy rows remain visible.
     excluded_management = ['internal_transfer', 'owner_draw', 'personal_transfer',
-                            'debt_repayment', 'grant_inflow', 'pension_income', 'adjustment']
+                            'debt_repayment', 'pension_income', 'adjustment']
+    if not include_grants:
+        excluded_management.append('grant_inflow')
     management_qs = qs.exclude(economic_kind__in=excluded_management)
     transfer_fees = _unrepresented_transfer_fees(company, params, start, end)
     cash_in = management_qs.filter(type=Transaction.TYPE_INCOME).exclude(
@@ -158,6 +184,8 @@ def cash_flow(company, params):
         'internal_out': internal_out,
         'expense_refunds': refunds,
         'transfer_fees': transfer_fees,
+        'include_grants': include_grants,
+        'scope': (params.get('scope') or 'all').strip() or 'all',
         'period': (start.isoformat(), end.isoformat()),
     }
 
@@ -181,31 +209,50 @@ def _series_by_period(qs, start, end):
 
 
 def _group_by_category(qs):
-    rows = (qs.values('category_id', 'category__name')
+    rows = (qs.values('category_id', 'category__name', 'economic_kind')
             .annotate(total=Coalesce(Sum('amount_base'), Decimal('0')))
             .order_by('-total'))
-    return [{'name': r['category__name'] or 'Без категорії', 'total': float(r['total']),
-             'category_id': r['category_id']}
-            for r in rows if r['total']]
+    fallback_names = {'grant_inflow': 'Цільові гранти'}
+    grouped = OrderedDict()
+    for row in rows:
+        if not row['total']:
+            continue
+        name = row['category__name'] or fallback_names.get(row['economic_kind'], 'Без категорії')
+        key = row['category_id'] if row['category_id'] is not None else (name, row['economic_kind'])
+        if key not in grouped:
+            grouped[key] = {
+                'name': name, 'total': Decimal('0'), 'category_id': row['category_id'],
+                'economic_kind': row['economic_kind'],
+            }
+        grouped[key]['total'] += row['total']
+    return [
+        {**row, 'total': float(row['total'])}
+        for row in sorted(grouped.values(), key=lambda item: item['total'], reverse=True)
+    ]
 
 
 # ----------------------------- P&L -----------------------------
 
 def pnl(company, params):
     start, end = resolve_period(params)
+    include_grants = _include_grants(params)
     # За датою угоди; фолбек на date_actual робимо через Coalesce у фільтрі.
     qs = _apply_dim_filters(_actual(company), params).exclude(type=Transaction.TYPE_TRANSFER)
     qs = qs.filter(
         Q_or_date(start, end)
     )
     excluded_management = ['internal_transfer', 'owner_draw', 'personal_transfer',
-                           'debt_repayment', 'grant_inflow', 'pension_income', 'adjustment', 'expense_refund']
+                           'debt_repayment', 'pension_income', 'adjustment', 'expense_refund']
+    if not include_grants:
+        excluded_management.append('grant_inflow')
     management_qs = qs.exclude(economic_kind__in=excluded_management)
     transfer_fees = _unrepresented_transfer_fees(company, params, start, end, pnl_dates=True)
     income = management_qs.filter(type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
     expenses += transfer_fees
     refunds = qs.filter(type=Transaction.TYPE_INCOME, economic_kind='expense_refund').aggregate(
+        s=Sum('amount_base'))['s'] or Decimal('0')
+    targeted_in = qs.filter(type=Transaction.TYPE_INCOME, economic_kind='grant_inflow').aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = max(Decimal('0'), expenses - refunds)
     return {
@@ -219,7 +266,10 @@ def pnl(company, params):
         'transfer_fees': transfer_fees,
         'unclassified_count': qs.filter(economic_kind='unknown').count(),
         'unclassified_amount': qs.filter(economic_kind='unknown').aggregate(s=Sum('amount_base'))['s'] or Decimal('0'),
-        'series': _series_by_period(qs, start, end),
+        'series': _series_by_period(management_qs, start, end),
+        'targeted_in': targeted_in,
+        'include_grants': include_grants,
+        'scope': (params.get('scope') or 'all').strip() or 'all',
         'period': (start.isoformat(), end.isoformat()),
     }
 
