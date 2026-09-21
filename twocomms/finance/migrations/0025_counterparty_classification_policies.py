@@ -2,6 +2,34 @@
 
 import django.db.models.deletion
 from django.db import migrations, models
+from django.db.migrations.operations.base import Operation
+
+
+class SetSessionStorageEngine(Operation):
+    """Keep the new finance table compatible with legacy MyISAM references."""
+
+    reduces_to_sql = False
+    reversible = True
+
+    def __init__(self, engine):
+        self.engine = engine
+
+    def state_forwards(self, app_label, state):
+        pass
+
+    def state_backwards(self, app_label, state):
+        pass
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        if schema_editor.connection.vendor == 'mysql':
+            schema_editor.execute(f'SET SESSION default_storage_engine={self.engine}')
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        if schema_editor.connection.vendor == 'mysql':
+            schema_editor.execute('SET SESSION default_storage_engine=INNODB')
+
+    def describe(self):
+        return f'Set session storage engine to {self.engine}'
 
 
 def seed_counterparty_policies(apps, schema_editor):
@@ -98,6 +126,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        SetSessionStorageEngine('MYISAM'),
         migrations.CreateModel(
             name='CounterpartyClassificationPolicy',
             fields=[
@@ -120,4 +149,5 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.RunPython(seed_counterparty_policies, migrations.RunPython.noop),
+        SetSessionStorageEngine('INNODB'),
     ]
