@@ -287,7 +287,11 @@ def _consumer_heartbeat_lane(task_key, *, now, threshold):
     row = InstagramBotTaskHeartbeat.objects.filter(task_key=task_key).first()
     if row is None:
         return {
-            "available": True, "healthy": True, "state": "unobserved",
+            # An enabled consumer must publish at least one heartbeat before
+            # the operational endpoint can describe it as healthy.  Keeping
+            # this distinct from the disabled state prevents a never-started
+            # lane from making the whole probe look green.
+            "available": True, "healthy": False, "state": "unobserved",
             "counts": dict.fromkeys(BUCKETS, 0), "sampled": True,
             "has_more": False, "risk_coverage_complete": True,
             "progress_age_seconds": None, "progress_evidence": "unobserved",

@@ -199,6 +199,21 @@ class OperationalLaneHealthTests(TestCase):
         self.assertEqual(result["lanes"]["conversation_analysis"]["progress_evidence"], "unavailable")
         self.assertEqual(result["lanes"]["trace_refresh"]["state"], "disabled")
         self.assertEqual(result["lanes"]["typed_memory"]["state"], "disabled")
+        self.assertTrue(result["lanes"]["trace_refresh"]["healthy"])
+        self.assertTrue(result["lanes"]["typed_memory"]["healthy"])
+
+    @patch("management.services.ig_lane_health.shadow_enabled", return_value=True)
+    def test_enabled_consumer_without_heartbeat_is_unobserved_and_unhealthy(self, _shadow_enabled):
+        IgJourneyTraceRefreshControl.objects.create(pk=1, enabled=True)
+
+        result = self.snapshot()
+
+        self.assertFalse(result["healthy"])
+        for lane_name in ("typed_memory", "trace_refresh"):
+            self.assertEqual(result["lanes"][lane_name]["state"], "unobserved")
+            self.assertFalse(result["lanes"][lane_name]["healthy"])
+            self.assertIsNone(result["lanes"][lane_name]["progress_age_seconds"])
+            self.assertEqual(result["lanes"][lane_name]["progress_evidence"], "unobserved")
 
     @patch("management.services.ig_lane_health.shadow_enabled", return_value=True)
     def test_isolated_consumer_failure_is_visible_without_raw_queue_rewrite(self, _shadow_enabled):
