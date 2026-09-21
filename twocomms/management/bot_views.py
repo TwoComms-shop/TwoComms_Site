@@ -5237,6 +5237,61 @@ def bot_clients_api(request):
 
 
 @login_required(login_url="management_login")
+@require_GET
+@never_cache
+def bot_technical_debt_api(request):
+    """List bounded technical-debt cases for authenticated bot operators."""
+    blocked = _require_bot_capabilities(request, OPERATE_IG_BOT_PERMISSION)
+    if blocked:
+        return blocked
+    from management.services.ig_technical_debt import list_ig_technical_debt_cases
+
+    result = list_ig_technical_debt_cases(
+        status=request.GET.get("status"),
+        limit=request.GET.get("limit", 100),
+        offset=request.GET.get("offset", 0),
+    )
+    return JsonResponse(result, status=result.get("status", 200))
+
+
+@login_required(login_url="management_login")
+@require_POST
+def bot_technical_debt_transition_api(request, case_id):
+    """Apply one explicit, audited operator transition to a debt case."""
+    blocked = _require_bot_capabilities(request, OPERATE_IG_BOT_PERMISSION)
+    if blocked:
+        return blocked
+    from management.services.ig_technical_debt import transition_ig_technical_debt_case
+
+    payload = {}
+    if request.content_type and request.content_type.split(";", 1)[0].strip().lower() == "application/json":
+        try:
+            decoded = json.loads(request.body or b"{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return JsonResponse({"ok": False, "status": 400, "error": "invalid_json"}, status=400)
+        if not isinstance(decoded, dict):
+            return JsonResponse({"ok": False, "status": 400, "error": "invalid_payload"}, status=400)
+        payload = decoded
+    else:
+        payload = request.POST.dict()
+    evidence = payload.get("evidence")
+    if isinstance(evidence, str):
+        try:
+            evidence = json.loads(evidence)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            evidence = evidence.strip()
+    result = transition_ig_technical_debt_case(
+        case_id=case_id,
+        target_status=payload.get("status") or payload.get("target_status"),
+        actor=request.user,
+        action=payload.get("action", ""),
+        note=payload.get("note", ""),
+        evidence=evidence,
+    )
+    return JsonResponse(result, status=result.get("status", 400))
+
+
+@login_required(login_url="management_login")
 @require_POST
 def bot_client_follow_refresh_api(request, client_id):
     """Explicit manager refresh for one stale/unknown follow projection."""
@@ -5326,6 +5381,40 @@ def bot_client_followup_delivery_resolve_api(request, client_id, task_id):
                     "outcome": result.get("outcome", ""),
                     "review_id": review_id,
                 },
+                reason=str(request.POST.get("note") or "").strip()[:500],
+            )
+    return JsonResponse({"success": True, **result})
+
+
+@login_required(login_url="management_login")
+@require_POST
+def bot_client_human_reply_delivery_resolve_api(request, client_id, task_id):
+    """Record an explicit operator decision for an UNKNOWN human reply."""
+    blocked = _require_bot_write_json(request)
+    if blocked:
+        return blocked
+    from management.services.ig_human_reply import resolve_unknown_human_reply
+
+    with transaction.atomic():
+        result = resolve_unknown_human_reply(
+            task_id,
+            client_id=client_id,
+            actor=request.user,
+            outcome=request.POST.get("outcome"),
+            note=request.POST.get("note", ""),
+            now=timezone.now(),
+        )
+        if not result.get("ok"):
+            return JsonResponse({"success": False, **result}, status=result.get("status", 400))
+        if not result.get("idempotent"):
+            AdminAuditLog.objects.create(
+                actor=request.user,
+                actor_role="staff",
+                action="ig_human_reply_delivery_resolved",
+                entity_type="IgFollowUpTask",
+                entity_id=str(task_id),
+                before={"status": IgFollowUpTask.Status.SKIPPED},
+                after={"status": result.get("status"), "outcome": result.get("outcome"), "command_id": result.get("command_id")},
                 reason=str(request.POST.get("note") or "").strip()[:500],
             )
     return JsonResponse({"success": True, **result})
@@ -5542,6 +5631,7 @@ def bot_client_detail_api(request, client_id):
     delivery_review_ids = IgFollowUpTask.objects.filter(
         delivery_review_for_id=OuterRef("pk"),
     ).values("pk")[:1]
+    from management.services.ig_human_reply import HUMAN_REPLY_UNKNOWN_REASON
     followups = []
     for f in c.followup_tasks.annotate(
         delivery_review_id=Subquery(delivery_review_ids),
@@ -5600,7 +5690,12 @@ def bot_client_detail_api(request, client_id):
             "allowed_outcomes": (
                 ["delivered", "not_delivered"]
                 if f.status == IgFollowUpTask.Status.AMBIGUOUS and review_id
-                else []
+                else (
+                    ["delivered", "not_delivered", "handled"]
+                    if f.reason == HUMAN_REPLY_UNKNOWN_REASON
+                    and f.status == IgFollowUpTask.Status.SKIPPED
+                    else []
+                )
             ),
             "resolution_url": (
                 reverse(
@@ -5610,6 +5705,15 @@ def bot_client_detail_api(request, client_id):
                 if f.status == IgFollowUpTask.Status.AMBIGUOUS and review_id
                 else ""
             ),
+            "human_reply_resolution_url": (
+                reverse(
+                    "management_bot_client_human_reply_delivery_resolve_api",
+                    args=[c.pk, f.pk],
+                )
+                if f.reason == HUMAN_REPLY_UNKNOWN_REASON
+                and f.status == IgFollowUpTask.Status.SKIPPED
+                else ""
+            ),
             "continue_url": (
                 reverse(
                     "management_bot_client_followup_continue_api",
@@ -5617,6 +5721,7 @@ def bot_client_detail_api(request, client_id):
                 )
                 if f.trigger == IgFollowUpTask.Trigger.EVENT
                 and f.event_key
+                and f.reason != HUMAN_REPLY_UNKNOWN_REASON
                 and not continuation_exists
                 and f.status in {
                     IgFollowUpTask.Status.SENT,

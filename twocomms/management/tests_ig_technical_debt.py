@@ -88,6 +88,36 @@ class TechnicalDebtCollectorTests(TestCase):
         self.assertTrue(complete)
         self.assertEqual([case["reason"] for case in cases], ["media_capture_claim_expired"])
 
+    def test_empty_complete_snapshot_has_no_coverage_reason(self):
+        from management.services.ig_technical_debt import technical_debt_snapshot
+
+        with (
+            patch("management.services.ig_technical_debt._collect_db", return_value=[]),
+            patch("management.services.ig_technical_debt._collect_media", return_value=([], True)),
+        ):
+            snapshot = technical_debt_snapshot()
+
+        self.assertEqual(snapshot["case_count"], 0)
+        self.assertTrue(snapshot["coverage_complete"])
+        self.assertEqual(snapshot["coverage_reasons"], [])
+        self.assertEqual(snapshot["errors"], [])
+
+    def test_empty_incomplete_snapshot_exposes_non_pii_media_reason(self):
+        from management.services.ig_technical_debt import technical_debt_snapshot
+
+        with (
+            patch("management.services.ig_technical_debt._collect_db", return_value=[]),
+            patch("management.services.ig_technical_debt._collect_media", return_value=([], False)),
+            patch.object(settings, "IG_PRIVATE_MEDIA_ROOT", "/private/tmp/missing-media"),
+            patch("management.services.ig_technical_debt.os.path.isdir", return_value=False),
+        ):
+            snapshot = technical_debt_snapshot()
+
+        self.assertEqual(snapshot["case_count"], 0)
+        self.assertFalse(snapshot["coverage_complete"])
+        self.assertEqual(snapshot["coverage_reasons"], ["private_media_root_unavailable"])
+        self.assertEqual(snapshot["errors"], [])
+
     def test_fingerprint_changes_for_new_sampled_case_identity_but_not_age(self):
         from management.services.ig_technical_debt import technical_debt_snapshot
 

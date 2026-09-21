@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from management.ig_bot_models import HumanReplyCommand
 from management.models import (
+    AdminAuditLog,
     IgClient,
     IgFollowUpTask,
     InstagramBotMessage,
@@ -142,6 +143,93 @@ class HumanReplyCommandTests(TestCase):
         dispatch_human_reply_command(command.pk)
         self.assertEqual(send_text.call_count, 1)
         self.assertEqual(IgFollowUpTask.objects.count(), 1)
+
+    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
+    @patch("management.services.instagram_bot.send_text")
+    def test_unknown_has_explicit_resolution_without_continuation_or_provider_retry(
+        self, send_text, load
+    ):
+        load.return_value = self.settings
+        send_text.return_value = SimpleNamespace(
+            ok=False, kind="unknown", hint="timeout", provider_message_ids=()
+        )
+        command = dispatch_human_reply_command(
+            create_human_reply_command(
+                self.customer.pk, actor=self.actor, text="Готово"
+            ).command.pk
+        )
+        task = IgFollowUpTask.objects.get(event_key=f"human-reply-unknown:{command.pk}")
+        from django.urls import reverse
+
+        self.client.force_login(self.actor)
+        detail = self.client.get(
+            reverse("management_bot_client_detail_api", args=[self.customer.pk])
+        )
+        row = next(item for item in detail.json()["followups"] if item["id"] == task.pk)
+        self.assertEqual(row["continue_url"], "")
+        self.assertEqual(
+            row["allowed_outcomes"], ["delivered", "not_delivered", "handled"]
+        )
+        resolve_url = row["human_reply_resolution_url"]
+        first = self.client.post(
+            resolve_url,
+            {"outcome": "handled", "note": "Звірено оператором"},
+        )
+        second = self.client.post(
+            resolve_url,
+            {"outcome": "handled", "note": "Повтор"},
+        )
+        conflict = self.client.post(resolve_url, {"outcome": "delivered"})
+        self.assertEqual(first.status_code, 200, first.content)
+        self.assertFalse(first.json()["idempotent"])
+        self.assertEqual(second.status_code, 200, second.content)
+        self.assertTrue(second.json()["idempotent"])
+        self.assertEqual(conflict.status_code, 409)
+        send_text.assert_called_once()
+        task.refresh_from_db()
+        self.assertEqual(task.status, IgFollowUpTask.Status.COMPLETED)
+        self.assertEqual(task.manager_context["resolution"]["outcome"], "handled")
+        self.assertEqual(
+            AdminAuditLog.objects.filter(
+                action="ig_human_reply_delivery_resolved", entity_id=str(task.pk)
+            ).count(),
+            1,
+        )
+        from management.bot_views import _with_latest_interaction
+
+        projected = _with_latest_interaction(IgClient.objects.all()).get(pk=self.customer.pk)
+        self.assertFalse(projected.has_manager_action)
+
+    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
+    @patch("management.services.instagram_bot.send_text")
+    def test_unknown_resolution_requires_operator_capability(self, send_text, load):
+        load.return_value = self.settings
+        send_text.return_value = SimpleNamespace(
+            ok=False, kind="unknown", hint="timeout", provider_message_ids=()
+        )
+        command = dispatch_human_reply_command(
+            create_human_reply_command(
+                self.customer.pk, actor=self.actor, text="Готово"
+            ).command.pk
+        )
+        task = IgFollowUpTask.objects.get(event_key=f"human-reply-unknown:{command.pk}")
+        from django.urls import reverse
+
+        ordinary = get_user_model().objects.create_user(
+            username="human-reply-ordinary", password="x"
+        )
+        self.client.force_login(ordinary)
+        response = self.client.post(
+            reverse(
+                "management_bot_client_human_reply_delivery_resolve_api",
+                args=[self.customer.pk, task.pk],
+            ),
+            {"outcome": "not_delivered"},
+        )
+        self.assertEqual(response.status_code, 403)
+        task.refresh_from_db()
+        self.assertEqual(task.status, IgFollowUpTask.Status.SKIPPED)
+        send_text.assert_called_once()
 
     def test_new_inbound_invalidates_context_before_send(self):
         result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")

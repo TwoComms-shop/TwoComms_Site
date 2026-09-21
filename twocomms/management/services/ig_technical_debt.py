@@ -23,6 +23,17 @@ TRANSIENT_DEBT_GRACE = timedelta(minutes=5)
 RECONCILER_SCHEMA_VERSION = "ig-technical-debt-reconcile-v1"
 RECONCILER_DISPOSITION = "manual_review_required"
 _PRESERVED_STATUSES = {"resolved", "dismissed"}
+_LIFECYCLE_AUDIT_ACTION = "ig_technical_debt_case_transition"
+_LIFECYCLE_ENTITY = "IgTechnicalDebtCase"
+_LIFECYCLE_TRANSITIONS = {
+    "open": {"acknowledged", "claimed", "resolved", "dismissed"},
+    "unknown": {"acknowledged", "claimed", "resolved", "dismissed"},
+    "acknowledged": {"claimed", "resolved", "dismissed"},
+    "claimed": {"resolved", "dismissed"},
+    "resolved": set(),
+    "dismissed": set(),
+}
+_LIFECYCLE_STATUSES = frozenset(_LIFECYCLE_TRANSITIONS)
 
 
 def _bounded_limit(limit: int) -> int:
@@ -30,6 +41,193 @@ def _bounded_limit(limit: int) -> int:
         return max(1, min(int(limit), MAX_LIMIT))
     except (TypeError, ValueError):
         return DEFAULT_LIMIT
+
+
+def _bounded_text(value, limit=2048):
+    if value is None:
+        return ""
+    return str(value).strip()[:limit]
+
+
+def _bounded_evidence(value):
+    """Keep operator evidence JSON-compatible and bounded for durable storage."""
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        return _bounded_text(value, 4096)
+    if isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {
+            _bounded_text(key, 80): _bounded_evidence(item)
+            for key, item in list(value.items())[:40]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_bounded_evidence(item) for item in list(value)[:40]]
+    return _bounded_text(value, 512)
+
+
+def _case_payload(case):
+    """Serialize a case without exposing model internals or related objects."""
+    return {
+        "id": case.pk,
+        "case_key": case.case_key,
+        "reason": case.reason,
+        "scope": case.scope,
+        "status": case.status,
+        "first_observed_at": case.first_observed_at.isoformat() if case.first_observed_at else None,
+        "last_observed_at": case.last_observed_at.isoformat() if case.last_observed_at else None,
+        "oldest_observed_at": case.oldest_observed_at.isoformat() if case.oldest_observed_at else None,
+        "last_count": case.last_count,
+        "observation_fingerprint": case.observation_fingerprint,
+        "fingerprint": case.observation_fingerprint,
+        "sample_ids": list(case.sample_ids or []),
+        "has_more": bool(case.has_more),
+        "coverage_complete": bool(case.coverage_complete),
+        "disposition": case.disposition,
+        "operator_note": case.operator_note,
+        "owner_id": case.owner_id,
+        "acknowledged_at": case.acknowledged_at.isoformat() if case.acknowledged_at else None,
+        "resolved_at": case.resolved_at.isoformat() if case.resolved_at else None,
+        "evidence": case.evidence if isinstance(case.evidence, dict) else {},
+        "created_at": case.created_at.isoformat() if case.created_at else None,
+        "updated_at": case.updated_at.isoformat() if case.updated_at else None,
+    }
+
+
+def list_ig_technical_debt_cases(*, status=None, limit=DEFAULT_LIMIT, offset=0):
+    """Return a bounded operator inventory; this function never writes."""
+    from management.ig_bot_models import IgTechnicalDebtCase
+
+    limit = _bounded_limit(limit)
+    try:
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        offset = 0
+    queryset = IgTechnicalDebtCase.objects.all().order_by("status", "first_observed_at", "id")
+    if status:
+        status = _bounded_text(status, 16)
+        if status not in _LIFECYCLE_STATUSES:
+            return {"ok": False, "status": 400, "error": "invalid_status", "cases": []}
+        queryset = queryset.filter(status=status)
+    total = queryset.count()
+    rows = list(queryset[offset:offset + limit])
+    return {
+        "ok": True,
+        "status": 200,
+        "cases": [_case_payload(case) for case in rows],
+        "count": len(rows),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(rows) < total,
+    }
+
+
+def transition_ig_technical_debt_case(
+    case_id=None,
+    *,
+    case_key=None,
+    target_status,
+    actor=None,
+    action="",
+    evidence=None,
+    note="",
+    now=None,
+):
+    """Apply one explicit operator transition and record an audit event.
+
+    The service only mutates the durable case and its audit record. It never
+    calls Instagram/provider code or edits source/client records.
+    """
+    from management.ig_bot_models import IgTechnicalDebtCase
+    from management.models import AdminAuditLog
+
+    target_status = _bounded_text(target_status, 16).lower()
+    action = _bounded_text(action, 512)
+    note = _bounded_text(note, 4096)
+    evidence = _bounded_evidence(evidence)
+    if target_status not in _LIFECYCLE_STATUSES:
+        return {"ok": False, "status": 400, "error": "invalid_target_status"}
+    if actor is None:
+        return {"ok": False, "status": 403, "error": "actor_required"}
+    if not action:
+        return {"ok": False, "status": 400, "error": "action_required"}
+    if target_status in {"resolved", "dismissed"} and not evidence:
+        return {"ok": False, "status": 400, "error": "evidence_required"}
+    if case_id is None and not case_key:
+        return {"ok": False, "status": 400, "error": "case_identifier_required"}
+    now = now or timezone.now()
+    with transaction.atomic():
+        lookup = {"pk": case_id} if case_id is not None else {"case_key": _bounded_text(case_key, 160)}
+        case = IgTechnicalDebtCase.objects.select_for_update().filter(**lookup).first()
+        if case is None:
+            return {"ok": False, "status": 404, "error": "case_not_found"}
+        current_status = case.status
+        if current_status == target_status:
+            if target_status == "claimed" and actor is not None and case.owner_id not in (None, actor.pk):
+                return {"ok": False, "status": 409, "error": "case_claimed_by_other"}
+            return {"ok": True, "status": 200, "idempotent": True, "case": _case_payload(case)}
+        if target_status not in _LIFECYCLE_TRANSITIONS.get(current_status, set()):
+            return {"ok": False, "status": 409, "error": "invalid_transition", "current_status": current_status}
+        if target_status == "claimed" and case.owner_id not in (None, getattr(actor, "pk", None)):
+            return {"ok": False, "status": 409, "error": "case_claimed_by_other"}
+
+        before = _case_payload(case)
+        event = {
+            "at": now.isoformat(),
+            "from_status": current_status,
+            "to_status": target_status,
+            "action": action,
+            "evidence": evidence,
+            "actor_id": getattr(actor, "pk", None),
+        }
+        stored_evidence = dict(case.evidence) if isinstance(case.evidence, dict) else {}
+        events = list(stored_evidence.get("operator_events") or [])
+        events.append(event)
+        stored_evidence["operator_events"] = events[-100:]
+        stored_evidence["latest_operator_action"] = action
+        stored_evidence["latest_operator_evidence"] = evidence
+        case.status = target_status
+        case.evidence = stored_evidence
+        if note:
+            case.operator_note = note
+        if target_status == "claimed":
+            case.owner = actor
+        if target_status in {"acknowledged", "claimed"} and case.acknowledged_at is None:
+            case.acknowledged_at = now
+        if target_status in {"resolved", "dismissed"}:
+            case.resolved_at = now
+        fields = ["status", "evidence", "operator_note", "owner", "acknowledged_at", "resolved_at", "updated_at"]
+        case.save(update_fields=fields)
+        after = _case_payload(case)
+        AdminAuditLog.objects.create(
+            actor=actor,
+            actor_role="staff" if actor is not None else "",
+            action=_LIFECYCLE_AUDIT_ACTION,
+            entity_type=_LIFECYCLE_ENTITY,
+            entity_id=str(case.pk),
+            before={"status": before["status"], "owner_id": before["owner_id"]},
+            after={"status": after["status"], "owner_id": after["owner_id"], "action": action, "evidence": evidence},
+            reason=action,
+        )
+        return {"ok": True, "status": 200, "idempotent": False, "case": after}
+
+
+def acknowledge_ig_technical_debt_case(case_id=None, **kwargs):
+    return transition_ig_technical_debt_case(case_id, target_status="acknowledged", **kwargs)
+
+
+def claim_ig_technical_debt_case(case_id=None, **kwargs):
+    return transition_ig_technical_debt_case(case_id, target_status="claimed", **kwargs)
+
+
+def resolve_ig_technical_debt_case(case_id=None, **kwargs):
+    return transition_ig_technical_debt_case(case_id, target_status="resolved", **kwargs)
+
+
+def dismiss_ig_technical_debt_case(case_id=None, **kwargs):
+    return transition_ig_technical_debt_case(case_id, target_status="dismissed", **kwargs)
 
 
 def _age(now, value):
@@ -205,6 +403,14 @@ def _collect_media(now, limit):
     return cases, bool(reference_scan_complete and walked < limit * 20)
 
 
+def _media_coverage_reason():
+    """Return a bounded, non-PII reason for an incomplete media scan."""
+    root = str(getattr(settings, "IG_PRIVATE_MEDIA_ROOT", "") or "").strip()
+    if root and not os.path.isdir(root):
+        return "private_media_root_unavailable"
+    return "private_media_scan_capped"
+
+
 def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
     """Return a bounded, privacy-safe technical-debt snapshot.
 
@@ -215,19 +421,24 @@ def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
     limit = _bounded_limit(limit)
     cases = []
     errors = []
+    coverage_reasons = []
     complete = True
     try:
         cases.extend(_collect_db(now, limit))
     except Exception as exc:
         complete = False
         errors.append(type(exc).__name__[:64])
+        coverage_reasons.append("db_collector_error")
     try:
         media_cases, media_complete = _collect_media(now, limit)
         cases.extend(media_cases)
         complete = complete and media_complete
+        if not media_complete:
+            coverage_reasons.append(_media_coverage_reason())
     except Exception as exc:
         complete = False
         errors.append(type(exc).__name__[:64])
+        coverage_reasons.append("media_collector_error")
     cases = [case for case in cases if case["count"] or case["reason"].endswith("unavailable")]
     # Counts and ages are observations, not identity.  Including either value
     # made the fingerprint change on every health poll while the same debt was
@@ -242,6 +453,7 @@ def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
         "cases": cases,
         "case_count": len(cases),
         "coverage_complete": complete,
+        "coverage_reasons": coverage_reasons[:8],
         "errors": errors,
         "sample_limit": limit,
     }

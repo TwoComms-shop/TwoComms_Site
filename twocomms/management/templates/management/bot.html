@@ -2849,7 +2849,8 @@ body.bot-drawer-open{overflow:hidden;}
     }
     function renderFollowupResolution(row,item,id){
       const outcomes=Array.isArray(item.allowed_outcomes)?item.allowed_outcomes:[];
-      if(!item.resolution_url||!outcomes.length)return;
+      const resolutionUrl=item.human_reply_resolution_url||item.resolution_url;
+      if(!resolutionUrl||!outcomes.length)return;
       const actions=node('div','bot-assignment-actions');
       const feedback=node('span','bot-hint');
       const buttons=[];
@@ -2861,12 +2862,13 @@ body.bot-drawer-open{overflow:hidden;}
           if(note===null)return;
           buttons.forEach(candidate=>{candidate.disabled=true;});feedback.textContent='Зберігаємо рішення…';
           const body=new FormData();body.append('outcome',outcome);body.append('note',note.trim());
-          try{const response=await fetch(item.resolution_url,{method:'POST',headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'},body});const data=await response.json().catch(()=>({}));if(!response.ok||!data.success)throw new Error(data.error||'Не вдалося зберегти рішення.');await detail(id);}catch(error){feedback.textContent=error.message||'Не вдалося зберегти рішення.';buttons.forEach(candidate=>{candidate.disabled=false;});}
+          try{const response=await fetch(resolutionUrl,{method:'POST',headers:{'X-CSRFToken':csrf,'X-Requested-With':'XMLHttpRequest'},body});const data=await response.json().catch(()=>({}));if(!response.ok||!data.success)throw new Error(data.error||'Не вдалося зберегти рішення.');await detail(id);}catch(error){feedback.textContent=error.message||'Не вдалося зберегти рішення.';buttons.forEach(candidate=>{candidate.disabled=false;});}
         });
         buttons.push(button);actions.appendChild(button);
       };
-      addAction('delivered','Підтвердити доставку','primary');
-      addAction('not_delivered','Не доставлено','danger');
+      if(outcomes.includes('delivered'))addAction('delivered','Підтвердити доставку','primary');
+      if(outcomes.includes('not_delivered'))addAction('not_delivered','Не доставлено','danger');
+      if(outcomes.includes('handled'))addAction('handled','Опрацьовано','primary');
       if(buttons.length){actions.appendChild(feedback);row.appendChild(actions);}
     }
     function renderFollowupContinuation(row,item,id){
@@ -2884,7 +2886,7 @@ body.bot-drawer-open{overflow:hidden;}
       actions.append(button,feedback);row.appendChild(actions);
     }
     function isFollowupDeliveryReview(item){
-      return Boolean(item&&item.resolution_url&&Array.isArray(item.allowed_outcomes)&&item.allowed_outcomes.length);
+      return Boolean(item&&(item.human_reply_resolution_url||item.resolution_url)&&Array.isArray(item.allowed_outcomes)&&item.allowed_outcomes.length);
     }
     function visibleFollowups(items){
       const allFollowups=Array.isArray(items)?items:[];const deliveryReviews=[];const ordinary=[];

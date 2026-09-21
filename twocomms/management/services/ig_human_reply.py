@@ -228,6 +228,78 @@ def _ensure_unknown_reconciliation(command, *, now: datetime) -> IgFollowUpTask:
     return task
 
 
+def resolve_unknown_human_reply(
+    task_id: int,
+    *,
+    client_id: int,
+    actor,
+    outcome: str,
+    note: str = "",
+    now: datetime | None = None,
+) -> dict:
+    """Record an operator decision for an UNKNOWN reply without provider I/O."""
+    _check_actor(actor)
+    outcome = str(outcome or "").strip().lower()
+    if outcome not in {"delivered", "not_delivered", "handled"}:
+        return {"ok": False, "error": "invalid_outcome", "status": 400}
+    now = now or timezone.now()
+    with transaction.atomic():
+        task = (
+            IgFollowUpTask.objects.select_for_update()
+            .filter(
+                pk=task_id,
+                client_id=client_id,
+                kind=IgFollowUpTask.Kind.MANAGER_TASK,
+                reason=HUMAN_REPLY_UNKNOWN_REASON,
+            )
+            .first()
+        )
+        if task is None:
+            return {"ok": False, "error": "not_found", "status": 404}
+        payload = task.event_payload if isinstance(task.event_payload, dict) else {}
+        context = task.manager_context if isinstance(task.manager_context, dict) else {}
+        command_id = context.get("command_id") or payload.get("command_id")
+        command = (
+            HumanReplyCommand.objects.select_for_update()
+            .filter(pk=command_id, client_id=client_id)
+            .first()
+        )
+        if command is None or command.state != HumanReplyCommand.State.UNKNOWN:
+            return {"ok": False, "error": "command_not_unknown", "status": 409}
+        existing = context.get("resolution")
+        if task.status == IgFollowUpTask.Status.COMPLETED and isinstance(existing, dict):
+            if existing.get("outcome") == outcome:
+                return {"ok": True, "idempotent": True, "task_id": task.pk, "command_id": command.pk, "outcome": outcome}
+            return {"ok": False, "error": "resolution_conflict", "status": 409}
+        if task.status != IgFollowUpTask.Status.SKIPPED:
+            return {"ok": False, "error": "task_not_open", "status": 409}
+        resolution = {
+            "version": 1,
+            "outcome": outcome,
+            "actor_id": getattr(actor, "pk", None),
+            "at": now.isoformat(),
+            "note": str(note or "").strip()[:500],
+            "command_id": command.pk,
+            "automatic_provider_retry": False,
+        }
+        task.status = IgFollowUpTask.Status.COMPLETED
+        task.skip_reason = f"operator_confirmed_{outcome}"
+        task.manager_approval_status = (
+            IgFollowUpTask.ManagerApprovalStatus.APPROVED
+            if outcome == "delivered"
+            else IgFollowUpTask.ManagerApprovalStatus.REJECTED
+        )
+        task.manager_approval_actor = actor
+        task.manager_approval_decided_at = now
+        task.manager_context = {**context, "resolution": resolution}
+        task.save(update_fields=[
+            "status", "skip_reason", "manager_approval_status",
+            "manager_approval_actor", "manager_approval_decided_at",
+            "manager_context", "updated_at",
+        ])
+    return {"ok": True, "idempotent": False, "task_id": task_id, "command_id": command.pk, "outcome": outcome, "status": IgFollowUpTask.Status.COMPLETED, "actor_id": getattr(actor, "pk", None)}
+
+
 def create_human_reply_command(
     client_id: int,
     *,
