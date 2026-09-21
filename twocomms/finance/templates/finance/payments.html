@@ -3,6 +3,10 @@
 
 {% block title %}Платежі — TwoComms Finance{% endblock %}
 
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'css/finance-payments.css' %}?v=20260922a">
+{% endblock %}
+
 {% block content %}
 <div class="fin-page-head">
     <div>
@@ -32,7 +36,7 @@
 <form class="fin-filters" id="fin-filters" method="get" autocomplete="off" {% if not active_filter_count %}hidden{% endif %}>
     {# Зберігаємо обрану кількість на сторінці при застосуванні фільтрів. #}
     <input type="hidden" name="per_page" value="{{ per_page }}">
-    <div class="fin-filters__row">
+    <div class="fin-filters__fields">
         <label class="fin-period">
             <select name="period" class="fin-select" id="fin-period">
                 <option value="all" {% if current_filters.period == 'all' %}selected{% endif %}>За весь час</option>
@@ -73,6 +77,8 @@
             </select>
         </label>
 
+    </div>
+    <div class="fin-filters__actions">
         <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-advanced-filter-btn">
             <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16"><path d="M3 5h18v2l-7 7v5l-4-2v-3L3 7z" fill="currentColor"/></svg>
             Фільтр
