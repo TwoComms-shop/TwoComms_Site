@@ -18,6 +18,12 @@ from django.utils import timezone
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
+# Media inventory is a diagnostic read, so it must remain bounded even when a
+# caller passes a small result limit.  The setting can lower/raise the normal
+# budget, but the hard ceiling prevents an accidental full-table/filesystem
+# walk from turning health polling into an unbounded request.
+DEFAULT_MEDIA_SCAN_CAP = 5000
+MAX_MEDIA_SCAN_CAP = 10000
 STALE_CLAIM = timedelta(minutes=5)
 TRANSIENT_DEBT_GRACE = timedelta(minutes=5)
 RECONCILER_SCHEMA_VERSION = "ig-technical-debt-reconcile-v1"
@@ -41,6 +47,14 @@ def _bounded_limit(limit: int) -> int:
         return max(1, min(int(limit), MAX_LIMIT))
     except (TypeError, ValueError):
         return DEFAULT_LIMIT
+
+
+def _media_scan_cap() -> int:
+    try:
+        configured = int(getattr(settings, "IG_TECHNICAL_DEBT_MEDIA_SCAN_CAP", DEFAULT_MEDIA_SCAN_CAP))
+    except (TypeError, ValueError):
+        configured = DEFAULT_MEDIA_SCAN_CAP
+    return max(1, min(configured, MAX_MEDIA_SCAN_CAP))
 
 
 def _bounded_text(value, limit=2048):
@@ -344,12 +358,15 @@ def _collect_media(now, limit):
 
     cutoff = now - STALE_CLAIM
     rows = InstagramBotMessage.objects.filter(attachment_media__isnull=False).only("id", "attachment_media")
+    scan_cap = _media_scan_cap()
+    row_count = rows.count()
     stale_ids = set()
     referenced = set()
-    reference_scan_complete = True
-    for row_index, row in enumerate(rows.iterator(chunk_size=min(limit, 100))):
-        if row_index >= limit * 20:
-            reference_scan_complete = False
+    reference_scan_complete = row_count <= scan_cap
+    # Keep DB fetch batches independent from the caller's presentation limit;
+    # a small API page must not turn a bounded inventory into one fetch per row.
+    for row_index, row in enumerate(rows.iterator(chunk_size=min(scan_cap, 100))):
+        if row_index >= scan_cap:
             break
         for item in row.attachment_media or ():
             if not isinstance(item, dict):
@@ -373,26 +390,28 @@ def _collect_media(now, limit):
     if not root:
         # Private media is an optional capability. An intentionally unset root
         # must not manufacture a recurring technical-debt incident.
-        return cases, True
+        return cases, reference_scan_complete
     if not os.path.isdir(root):
         # A configured but unavailable root is a coverage problem, not proof of
         # orphaned customer media. Keep it in the degraded metadata path.
         return cases, False
     orphan_count = 0
     walked = 0
+    filesystem_scan_capped = False
     for base, _dirs, files in os.walk(root):
         for filename in files:
             walked += 1
+            if walked > scan_cap:
+                filesystem_scan_capped = True
+                break
             relative = os.path.relpath(os.path.join(base, filename), root).replace(os.sep, "/")
             if reference_scan_complete and relative not in referenced:
                 orphan_count += 1
-            if walked >= limit * 20:
-                break
-        if walked >= limit * 20:
+        if filesystem_scan_capped:
             break
     if orphan_count:
         cases.append(_case("orphan_private_media", "private_media", count=orphan_count,
-                           ids=(), sampled=walked >= limit * 20, has_more=walked >= limit * 20,
+                           ids=(), sampled=filesystem_scan_capped, has_more=filesystem_scan_capped,
                            oldest=None))
         # File names are intentionally omitted from the report; they can contain
         # provider/customer-derived material and are not needed for triage.
@@ -400,7 +419,7 @@ def _collect_media(now, limit):
     # An incomplete reference scan cannot distinguish an orphan from a
     # referenced file outside the row cap. Report degraded coverage and wait
     # for a complete bounded pass instead of raising a false orphan alert.
-    return cases, bool(reference_scan_complete and walked < limit * 20)
+    return cases, bool(reference_scan_complete and not filesystem_scan_capped)
 
 
 def _media_coverage_reason():

@@ -2,7 +2,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.conf import settings
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 
@@ -47,6 +47,9 @@ class TechnicalDebtCollectorTests(TestCase):
             def only(self, *fields):
                 return self
 
+            def count(self):
+                return 1
+
             def iterator(self, **kwargs):
                 started = (timezone.now() - timedelta(minutes=10)).isoformat()
                 yield type("Row", (), {
@@ -69,12 +72,60 @@ class TechnicalDebtCollectorTests(TestCase):
         self.assertEqual(cases[0]["count"], 1)
         self.assertEqual(cases[0]["sample_ids"], [42])
 
+    def test_media_scan_cap_is_independent_of_report_limit(self):
+        from management.services.ig_technical_debt import _collect_media
+
+        class Rows:
+            def only(self, *fields):
+                return self
+
+            def count(self):
+                return 2
+
+            def iterator(self, **kwargs):
+                return iter(())
+
+        with (
+            patch("management.models.InstagramBotMessage.objects.filter", return_value=Rows()),
+            patch.object(settings, "IG_PRIVATE_MEDIA_ROOT", ""),
+            override_settings(IG_TECHNICAL_DEBT_MEDIA_SCAN_CAP=2),
+        ):
+            cases, complete = _collect_media(timezone.now(), 1)
+
+        self.assertTrue(complete)
+        self.assertEqual(cases[0]["count"], 0)
+
+    def test_media_scan_reports_incomplete_metadata_when_cap_is_exceeded(self):
+        from management.services.ig_technical_debt import _collect_media
+
+        class Rows:
+            def only(self, *fields):
+                return self
+
+            def count(self):
+                return 3
+
+            def iterator(self, **kwargs):
+                return iter(())
+
+        with (
+            patch("management.models.InstagramBotMessage.objects.filter", return_value=Rows()),
+            patch.object(settings, "IG_PRIVATE_MEDIA_ROOT", ""),
+            override_settings(IG_TECHNICAL_DEBT_MEDIA_SCAN_CAP=2),
+        ):
+            _cases, complete = _collect_media(timezone.now(), 1)
+
+        self.assertFalse(complete)
+
     def test_unset_media_root_is_optional_coverage_not_debt(self):
         from management.services.ig_technical_debt import _collect_media
 
         class Rows:
             def only(self, *fields):
                 return self
+
+            def count(self):
+                return 0
 
             def iterator(self, **kwargs):
                 return iter(())

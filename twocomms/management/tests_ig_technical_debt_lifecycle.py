@@ -102,11 +102,13 @@ class TechnicalDebtLifecycleTests(TestCase):
 
         with patch("management.services.ig_technical_debt.technical_debt_snapshot", return_value={
             "cases": [{"reason": "unknown", "scope": "db", "count": 1, "sample_ids": [77]}],
-            "coverage_complete": False, "errors": ["DatabaseError"], "sample_limit": 5,
+            "coverage_complete": False, "coverage_reasons": ["private_media_scan_capped"],
+            "errors": [], "sample_limit": 5,
         }):
             result = reconcile_ig_technical_debt_once(limit=5, dry_run=False)
 
         self.assertEqual(result["writes"], 0)
+        self.assertEqual(result["coverage_reasons"], ["private_media_scan_capped"])
         self.assertEqual(self.case.__class__.objects.count(), 1)
         self.case.refresh_from_db()
         self.assertEqual(self.case.last_count, 2)
