@@ -24,6 +24,7 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
         self.assertIn("--server-mode external --suite lifecycle", self.source)
         self.assertIn("--server-mode external --suite checkout-concurrency", self.source)
         self.assertIn("--server-mode external --suite follow-ugc-concurrency", self.source)
+        self.assertIn("--server-mode external --suite lease-concurrency", self.source)
         self.assertIn("MARIADB_ADMIN_PASSWORD: gate-root-password", self.source)
         self.assertNotRegex(self.source, r"(?m)^\s+DB_PASSWORD:")
         self.assertNotIn("qlknpodo_MySQL_DB", self.source)
@@ -42,6 +43,7 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
         self.assertIn("if: always()", self.source)
         self.assertIn("mariadb-gate-evidence.txt", self.source)
         self.assertIn("mariadb-follow-ugc-evidence.txt", self.source)
+        self.assertIn("mariadb-lease-concurrency-evidence.txt", self.source)
 
     def test_installs_mysqlclient_build_headers_before_locked_dependencies(self):
         self.assertIn("sudo apt-get install --yes libmariadb-dev", self.source)

@@ -1468,6 +1468,12 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
             ("management.tests_ig_mariadb_follow_ugc",),
         )
 
+    def test_advertises_the_narrow_mariadb_lease_concurrency_suite(self):
+        self.assertEqual(
+            self.runner.SUITES["lease-concurrency"],
+            ("management.tests_ig_daemon_progress.MariaDbLeaseContractTests",),
+        )
+
     def test_follow_ugc_suite_verifies_latest_schema_before_cleanup(self):
         admin = FakeAdmin()
         evidence = io.StringIO()

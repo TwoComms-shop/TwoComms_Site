@@ -40,6 +40,9 @@ SUITES = {
     "follow-ugc-concurrency": (
         "management.tests_ig_mariadb_follow_ugc",
     ),
+    "lease-concurrency": (
+        "management.tests_ig_daemon_progress.MariaDbLeaseContractTests",
+    ),
 }
 SAFE_ENV_NAMES = {
     "PATH",
