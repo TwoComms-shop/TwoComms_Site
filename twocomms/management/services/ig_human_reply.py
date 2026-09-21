@@ -224,11 +224,13 @@ def create_human_reply_command(
         if deadline is None or deadline <= now:
             raise HumanReplyRejected("reply_window_closed")
 
+        # Keep one actor's active command as the client-level ownership fence.
+        # The context filter used here previously allowed a different manager
+        # to claim the same client after a newer inbound changed the context.
         competing = (
             HumanReplyCommand.objects.select_for_update()
             .filter(
                 client=client,
-                context_message_id=context.pk,
                 state__in=[
                     HumanReplyCommand.State.PENDING,
                     HumanReplyCommand.State.CLAIMED,
@@ -240,7 +242,10 @@ def create_human_reply_command(
             .first()
         )
         if competing:
-            raise HumanReplyRejected("competing_command")
+            if competing.actor_id != getattr(actor, "pk", None):
+                raise HumanReplyRejected("command_owned_by_other_actor")
+            if competing.context_message_id == context.pk:
+                raise HumanReplyRejected("competing_command")
 
         # Confirm takeover before exposing the send button. Manual sends are
         # allowed while bot automation is paused; the epoch fences old workers.

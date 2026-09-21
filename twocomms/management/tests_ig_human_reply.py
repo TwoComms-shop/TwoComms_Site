@@ -163,6 +163,25 @@ class HumanReplyCommandTests(TestCase):
         with self.assertRaisesRegex(HumanReplyRejected, "competing_command"):
             create_human_reply_command(self.customer.pk, actor=self.actor, text="Друге")
 
+    def test_active_command_is_owned_by_one_actor_across_context_changes(self):
+        other_actor = get_user_model().objects.create_superuser(
+            username="human-reply-other-admin",
+            email="human-other@example.test",
+            password="x",
+        )
+        create_human_reply_command(self.customer.pk, actor=self.actor, text="Перше")
+        InstagramBotMessage.objects.create(
+            sender_id=self.customer.igsid,
+            client=self.customer,
+            role=InstagramBotMessage.Role.USER,
+            text="Нове питання",
+            mid="human-inbound-ownership-race",
+            status=InstagramBotMessage.Status.DONE,
+            provider_created_at=timezone.now(),
+        )
+        with self.assertRaisesRegex(HumanReplyRejected, "command_owned_by_other_actor"):
+            create_human_reply_command(self.customer.pk, actor=other_actor, text="Друге")
+
     def test_utf8_byte_budget_requires_complete_delivery_plan(self):
         with self.assertRaisesRegex(HumanReplyRejected, "delivery_plan_incomplete"):
             create_human_reply_command(self.customer.pk, actor=self.actor, text="я" * 2000)

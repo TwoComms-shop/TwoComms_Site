@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import secrets
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -371,12 +372,53 @@ def schedule_client_truth_analysis(
     return job
 
 
+@contextmanager
+def _analysis_owner_scope(*, now=None):
+    """Bind a deliberate one-shot manual owner for direct callers.
+
+    The daemon binds its durable owner in the worker thread.  A management
+    command or a focused diagnostic may opt into one bounded manual scope at
+    this public service boundary; the context is always released on return.
+    Low-level lane admission remains bound-only.
+    """
+    from management.services.ig_analysis_lane import (
+        current_owner,
+        owner_scope,
+        release_owner,
+    )
+
+    existing = current_owner()
+    if existing is not None:
+        yield existing
+        return
+    with owner_scope(owner_kind="manual", now=now) as owner:
+        try:
+            yield owner
+        finally:
+            if owner:
+                release_owner(
+                    owner_token=owner["owner_token"],
+                    generation=owner["generation"],
+                    now=now,
+                )
+
+
 def _reclaim_stale(now) -> int:
+    from management.services.ig_analysis_lane import current_owner
+    if current_owner() is None:
+        with _analysis_owner_scope(now=now) as owner:
+            if not owner:
+                return 0
+            return _reclaim_stale_owned(now, owner=owner)
+    return _reclaim_stale_owned(now, owner=current_owner())
+
+
+def _reclaim_stale_owned(now, *, owner) -> int:
     from management.services.ig_analysis_lane import mutation_guard, owner_claim_admission
-    owner = owner_claim_admission(now=now)
-    if not owner:
+    admitted = owner_claim_admission(now=now)
+    if not admitted:
         return 0
-    with mutation_guard(owner_token=owner["owner_token"], generation=owner["generation"], now=now) as allowed:
+    with mutation_guard(owner_token=admitted["owner_token"], generation=admitted["generation"], now=now) as allowed:
         if not allowed:
             return 0
         return IgConversationAnalysisJob.objects.filter(
@@ -384,7 +426,7 @@ def _reclaim_stale(now) -> int:
             lease_until__lt=now,
             # Reclaim only leases from this or an older owner generation. A
             # newer generation can never be touched by an older recovery path.
-            claim_generation__lte=owner["generation"],
+            claim_generation__lte=admitted["generation"],
         ).update(
         status=Case(
             When(
@@ -427,7 +469,31 @@ def _reclaim_stale(now) -> int:
         )
 
 
+def recover_expired_analysis_claims(*, evidence, owner_kind="manual",
+                                    owner_token=None, limit=100, now=None):
+    """Cooperatively recover a frozen analysis lane after verified evidence."""
+    from management.services.ig_analysis_lane import recover_frozen_lane
+
+    return recover_frozen_lane(
+        evidence=evidence,
+        owner_kind=owner_kind,
+        owner_token=owner_token,
+        limit=limit,
+        now=now,
+    )
+
+
 def _claim_due(now) -> tuple[IgConversationAnalysisJob, int, int, str] | None:
+    from management.services.ig_analysis_lane import current_owner
+    if current_owner() is None:
+        with _analysis_owner_scope(now=now) as owner:
+            if not owner:
+                return None
+            return _claim_due_owned(now)
+    return _claim_due_owned(now)
+
+
+def _claim_due_owned(now) -> tuple[IgConversationAnalysisJob, int, int, str] | None:
     from management.services.ig_analysis_lane import mutation_guard, owner_claim_admission
     owner = owner_claim_admission(now=now)
     if not owner:
@@ -576,13 +642,36 @@ def _required_state_fingerprint(client: IgClient, watermark: int) -> str:
     )
 
 
-def _lease_is_owned(job: IgConversationAnalysisJob, *, token: str, now) -> bool:
+def _lease_is_owned(
+    job: IgConversationAnalysisJob,
+    *,
+    token: str,
+    now,
+    claim_generation: int | None = None,
+) -> bool:
     return bool(
         job.status == IgConversationAnalysisJob.Status.PROCESSING
         and job.lease_token == token
         and job.lease_until
         and job.lease_until > now
+        and (
+            claim_generation is None
+            or int(job.claim_generation or 0) == int(claim_generation)
+        )
     )
+
+
+def _expected_claim_generation(claim_generation: int | None) -> int | None:
+    if claim_generation is not None:
+        return int(claim_generation)
+    # Legacy direct callers do not pass the generation separately.  Bind those
+    # paths to the durable lane generation instead of making token-only writes.
+    try:
+        from management.services.ig_analysis_lane import owner_snapshot
+
+        return int(owner_snapshot()["generation"])
+    except Exception:
+        return None
 
 
 def _claim_is_current(
@@ -592,10 +681,16 @@ def _claim_is_current(
     claimed_watermark: int,
     claimed_revision: int,
     now,
+    claimed_generation: int | None = None,
 ) -> bool:
     """Return whether this exact worker still owns an unexpired claim."""
     return bool(
-        _lease_is_owned(job, token=token, now=now)
+        _lease_is_owned(
+            job,
+            token=token,
+            now=now,
+            claim_generation=claimed_generation,
+        )
         and int(job.watermark_message_id or 0) == claimed_watermark
         and int(job.revision or 0) == claimed_revision
         and int(job.claimed_watermark_message_id or 0) == claimed_watermark
@@ -1170,15 +1265,25 @@ def _finish_skip(
     claimed_revision: int,
     reason: str,
     now,
+    claim_generation: int | None = None,
 ) -> str:
+    expected_generation = _expected_claim_generation(claim_generation)
     with transaction.atomic():
-        job = IgConversationAnalysisJob.objects.select_for_update().filter(
+        query = IgConversationAnalysisJob.objects.select_for_update().filter(
             pk=job_id,
             status=IgConversationAnalysisJob.Status.PROCESSING,
             lease_token=token,
-        ).first()
+        )
+        if expected_generation is not None:
+            query = query.filter(claim_generation=expected_generation)
+        job = query.first()
         finalized_at = timezone.now()
-        if not job or not _lease_is_owned(job, token=token, now=finalized_at):
+        if not job or not _lease_is_owned(
+            job,
+            token=token,
+            now=finalized_at,
+            claim_generation=expected_generation,
+        ):
             return "superseded"
         if (
             int(job.claimed_watermark_message_id or 0) != watermark
@@ -1237,8 +1342,14 @@ def _finish_failure(
             pk=job.pk,
             status=IgConversationAnalysisJob.Status.PROCESSING,
             lease_token=token,
+            claim_generation=int(job.claim_generation or 0),
         ).first()
-        if not current or not _lease_is_owned(current, token=token, now=now):
+        if not current or not _lease_is_owned(
+            current,
+            token=token,
+            now=now,
+            claim_generation=int(job.claim_generation or 0),
+        ):
             return
         if (
             int(current.claimed_watermark_message_id or 0) != claimed_watermark
@@ -1284,7 +1395,9 @@ def _record_media_phase(
     started_at=None,
     completed_at=None,
     item_count: int = 0,
+    claim_generation: int | None = None,
 ) -> bool:
+    expected_generation = _expected_claim_generation(claim_generation)
     now = timezone.now()
     updates = {
         "media_phase": phase,
@@ -1297,14 +1410,15 @@ def _record_media_phase(
         updates["media_started_at"] = started_at
     if completed_at is not None:
         updates["media_completed_at"] = completed_at
-    return bool(
-        IgConversationAnalysisJob.objects.filter(
+    query = IgConversationAnalysisJob.objects.filter(
             pk=job_id,
             status=IgConversationAnalysisJob.Status.PROCESSING,
             lease_token=token,
             lease_until__gt=now,
-        ).update(**updates)
-    )
+        )
+    if expected_generation is not None:
+        query = query.filter(claim_generation=expected_generation)
+    return bool(query.update(**updates))
 
 
 def _process_claim(
@@ -1329,6 +1443,7 @@ def _process_claim(
             claimed_revision,
             "historical_reconcile",
             now,
+            int(job.claim_generation or 0),
         )
     reason = _skip_reason(
         client,
@@ -1336,13 +1451,17 @@ def _process_claim(
         analyzed_watermark=analyzed_watermark,
     )
     if reason:
-        return _finish_skip(job.pk, token, watermark, claimed_revision, reason, now)
+        return _finish_skip(
+            job.pk, token, watermark, claimed_revision, reason, now,
+            int(job.claim_generation or 0),
+        )
     media_started_at = timezone.now()
     if not _record_media_phase(
         job.pk,
         token,
         phase=IgConversationAnalysisJob.MediaPhase.ACQUIRING,
         started_at=media_started_at,
+        claim_generation=int(job.claim_generation or 0),
     ):
         return "superseded"
     def media_heartbeat() -> bool:
@@ -1351,6 +1470,7 @@ def _process_claim(
             token,
             phase=IgConversationAnalysisJob.MediaPhase.ACQUIRING,
             started_at=media_started_at,
+            claim_generation=int(job.claim_generation or 0),
         )
 
     try:
@@ -1367,6 +1487,7 @@ def _process_claim(
             error_kind="media_exception",
             started_at=media_started_at,
             completed_at=timezone.now(),
+            claim_generation=int(job.claim_generation or 0),
         )
         raise
     media_retry_value = next((
@@ -1383,13 +1504,15 @@ def _process_claim(
             token,
             retry_at=media_retry_at,
             now=timezone.now(),
+            claim_generation=int(job.claim_generation or 0),
         ):
             return "deferred"
         if media_retry_at:
             return "superseded"
     if not transcript:
         return _finish_skip(
-            job.pk, token, watermark, claimed_revision, "empty_conversation", now
+            job.pk, token, watermark, claimed_revision, "empty_conversation", now,
+            int(job.claim_generation or 0),
         )
     initial_truth_state = _required_truth_state(client)
     media_images = []
@@ -1457,10 +1580,17 @@ def _process_claim(
         started_at=media_started_at,
         completed_at=timezone.now(),
         item_count=len(media_sources),
+        claim_generation=int(job.claim_generation or 0),
     ):
         return "superseded"
     if _customer_reply_work_waiting() and not _aged_analysis_has_capacity(job, now=timezone.now()):
-        if _defer_claim_for_customer_reply(job.pk, token, now=timezone.now(), reason=_analysis_live_defer_reason(job, now=timezone.now())):
+        if _defer_claim_for_customer_reply(
+            job.pk,
+            token,
+            now=timezone.now(),
+            reason=_analysis_live_defer_reason(job, now=timezone.now()),
+            claim_generation=int(job.claim_generation or 0),
+        ):
             return "deferred"
         return "superseded"
     result = gemini_generate_json(
@@ -1493,6 +1623,7 @@ def _process_claim(
             current_job,
             token=token,
             now=finalized_at,
+            claim_generation=int(job.claim_generation or 0),
         ):
             return "superseded"
         if not _claim_is_current(
@@ -1501,6 +1632,7 @@ def _process_claim(
             claimed_watermark=watermark,
             claimed_revision=claimed_revision,
             now=finalized_at,
+            claimed_generation=int(job.claim_generation or 0),
         ):
             current_job.status = IgConversationAnalysisJob.Status.PENDING
             current_job.lease_token = ""
@@ -1562,6 +1694,7 @@ def _process_claim(
                 claimed_revision,
                 reason,
                 finalized_at,
+                int(job.claim_generation or 0),
             )
         final_truth_state = _required_truth_state(client)
         final_fingerprint = _fingerprint_for_truth(
@@ -1941,15 +2074,26 @@ def _record_waiting_analysis_opportunity(job, *, now, reason):
     ).update(last_error=reason, next_attempt_at=now + timedelta(seconds=ANALYSIS_REPLY_DEFER_RETRY_SECONDS))
 
 
-def _defer_claim_for_customer_reply(job_id: int, token: str, now=None, *, reason="deferred_for_live_reply") -> bool:
+def _defer_claim_for_customer_reply(
+    job_id: int,
+    token: str,
+    now=None,
+    *,
+    reason="deferred_for_live_reply",
+    claim_generation: int | None = None,
+) -> bool:
     """Return a claimed analysis job to pending without consuming an attempt."""
     now = now or timezone.now()
+    expected_generation = _expected_claim_generation(claim_generation)
     with transaction.atomic():
-        job = IgConversationAnalysisJob.objects.select_for_update().filter(
+        query = IgConversationAnalysisJob.objects.select_for_update().filter(
             pk=job_id,
             status=IgConversationAnalysisJob.Status.PROCESSING,
             lease_token=token,
-        ).first()
+        )
+        if expected_generation is not None:
+            query = query.filter(claim_generation=expected_generation)
+        job = query.first()
         if not job:
             return False
         job.status = IgConversationAnalysisJob.Status.PENDING
@@ -1977,15 +2121,20 @@ def _defer_claim_for_media_retry(
     *,
     retry_at,
     now=None,
+    claim_generation: int | None = None,
 ) -> bool:
     """Keep background analysis pending until the capture retry is due."""
     now = now or timezone.now()
+    expected_generation = _expected_claim_generation(claim_generation)
     with transaction.atomic():
-        job = IgConversationAnalysisJob.objects.select_for_update().filter(
+        query = IgConversationAnalysisJob.objects.select_for_update().filter(
             pk=job_id,
             status=IgConversationAnalysisJob.Status.PROCESSING,
             lease_token=token,
-        ).first()
+        )
+        if expected_generation is not None:
+            query = query.filter(claim_generation=expected_generation)
+        job = query.first()
         if not job:
             return False
         job.status = IgConversationAnalysisJob.Status.PENDING
@@ -2008,14 +2157,31 @@ def _defer_claim_for_media_retry(
 
 
 def process_due_analysis(*, limit: int = 2, now=None) -> dict:
+    scope_now = now or timezone.now()
+    with _analysis_owner_scope(now=scope_now) as owner:
+        if not owner:
+            return {"done": 0, "failed": 0, "skipped": 0, "superseded": 0}
+        return _process_due_analysis_owned(
+            limit=limit,
+            now=now,
+            initial_now=scope_now,
+        )
+
+
+def _process_due_analysis_owned(*, limit: int = 2, now=None, initial_now=None) -> dict:
     """Claim and analyze due jobs independently from all customer reply flags."""
     counts = {"done": 0, "failed": 0, "skipped": 0, "superseded": 0}
     from management.services.ig_analysis_lane import owner_claim_admission
-    if not owner_claim_admission(now=now or timezone.now()):
-        return counts
+    first_claim = True
     for _unused in range(max(0, min(int(limit), 10))):
         live_waiting = _customer_reply_work_waiting()
-        claim_now = now or timezone.now()
+        if now is not None:
+            claim_now = now
+        elif first_claim and initial_now is not None:
+            claim_now = initial_now
+        else:
+            claim_now = timezone.now()
+        first_claim = False
         if not owner_claim_admission(now=claim_now):
             break
         _reclaim_stale(claim_now)
@@ -2037,7 +2203,13 @@ def process_due_analysis(*, limit: int = 2, now=None) -> dict:
         job, watermark, claimed_revision, token = claimed
         if _customer_reply_work_waiting():
             if not _aged_analysis_has_capacity(job, now=claim_now):
-                _defer_claim_for_customer_reply(job.pk, token, now=claim_now, reason=_analysis_live_defer_reason(job, now=claim_now))
+                _defer_claim_for_customer_reply(
+                    job.pk,
+                    token,
+                    now=claim_now,
+                    reason=_analysis_live_defer_reason(job, now=claim_now),
+                    claim_generation=int(job.claim_generation or 0),
+                )
                 break
             fairness_slot = True
         try:
@@ -2168,6 +2340,14 @@ def report_failed_analysis_jobs(*, limit: int = 500, quota_budget: int = 0) -> d
 
 
 def reconcile_analysis_jobs(*, limit: int = 500, now=None) -> dict:
+    now = now or timezone.now()
+    with _analysis_owner_scope(now=now) as owner:
+        if not owner:
+            return {"deferred": "owner_busy", "queued": 0, "scanned": 0}
+        return _reconcile_analysis_jobs_owned(limit=limit, now=now)
+
+
+def _reconcile_analysis_jobs_owned(*, limit: int = 500, now=None) -> dict:
     """Queue changed or prompt-stale conversations without invoking Gemini."""
     now = now or timezone.now()
     from management.services.ig_analysis_lane import owner_claim_admission

@@ -20,6 +20,7 @@ from management.models import (
     IgPaymentConfirmationReview,
     IgPaymentProjection,
     IgPaymentReviewDecision,
+    IgWorkerLaneState,
     InstagramBotMessage,
     InstagramBotSettings,
 )
@@ -27,6 +28,19 @@ from management.services import bot_conversation_analysis as analysis
 
 
 class ConversationAnalysisLeasePolicyTests(SimpleTestCase):
+    databases = {"default"}
+
+    def setUp(self):
+        # The durable lane is shared across test classes in this lightweight
+        # suite.  Start each policy case from an unowned, unfrozen lane so a
+        # preceding recovery test cannot change the admission result.
+        IgWorkerLaneState.objects.all().delete()
+        from management.services.ig_analysis_lane import bind_owner
+
+        # The daemon test harness invokes the worker on the test thread and
+        # leaves its ContextVar binding behind; clear that test-only residue.
+        bind_owner(None)
+
     def test_analysis_module_has_no_direct_operational_writer_calls(self):
         source = inspect.getsource(analysis)
 
@@ -381,6 +395,7 @@ class ConversationAnalysisLeasePolicyTests(SimpleTestCase):
 
 
 class ConversationAnalysisProviderPolicyTests(SimpleTestCase):
+    databases = {"default"}
     @patch("management.services.call_ai_analysis._run_with_pool")
     def test_management_json_uses_bounded_text_timeout_and_deadline(self, run):
         from management.services import call_ai_analysis

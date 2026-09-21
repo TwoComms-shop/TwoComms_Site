@@ -34,6 +34,7 @@ from management.management.commands.run_instagram_bot import (
     SERVICE_LANE_PROFILES,
     Command,
     _INFLIGHT,
+    _analysis_worker,
     _publish_process_pulse,
     _run_work_cycle,
     daemon_supervision_verdict,
@@ -43,6 +44,7 @@ from management.management.commands.run_instagram_bot import (
     reset_service_lanes,
     service_lane_timings,
 )
+from management.models import IgWorkerLaneState
 from management.models import IgClient, InstagramBotMessage, InstagramBotSettings
 from management.services import instagram_bot as bot
 from management.services.ig_task_health import (
@@ -62,6 +64,39 @@ from management.services.ig_task_health import (
     operational_reclaim_lease_enabled,
     processing_lease_expired,
 )
+
+
+class AnalysisWorkerOwnershipTests(SimpleTestCase):
+    def test_worker_stops_terminally_after_lane_renewal_is_rejected(self):
+        class StopEvent:
+            def __init__(self):
+                self.stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+            def set(self):
+                self.stopped = True
+
+            def wait(self, _seconds):
+                self.stopped = True
+
+        stop_event = StopEvent()
+        with (
+            patch("management.management.commands.run_instagram_bot.close_old_connections"),
+            patch("management.management.commands.run_instagram_bot.require_database_ready"),
+            patch("management.services.ig_analysis_lane.renew_owner", return_value=False),
+            patch("management.management.commands.run_instagram_bot.maintenance_status", return_value={"active": False}),
+            patch("management.services.bot_conversation_analysis.process_due_analysis") as process,
+            patch("management.services.bot_conversation_analysis.reconcile_analysis_jobs") as reconcile,
+            patch("management.services.ig_analysis_events.process_due_analysis_events") as events,
+        ):
+            _analysis_worker(stop_event, "lost-owner", 7)
+
+        self.assertTrue(stop_event.stopped)
+        process.assert_not_called()
+        reconcile.assert_not_called()
+        events.assert_not_called()
 
 
 def _settings(**kwargs):
@@ -94,6 +129,8 @@ class _CycleHarness:
 
 class InCycleProgressPulseTests(SimpleTestCase):
     """ЭА.14 — операция длиннее окна живости не должна выглядеть смертью."""
+
+    databases = {"default"}
 
     def setUp(self):
         reset_inflight_operations()
@@ -469,6 +506,8 @@ class WatchdogDoesNotDuplicateLiveDaemonTests(SimpleTestCase):
 
 class CustomerLanePriorityTests(SimpleTestCase):
     """ЭА.15 — обслуживающие задачи не стоят перед обработкой входящих."""
+
+    databases = {"default"}
 
     def setUp(self):
         reset_service_lanes()
@@ -892,7 +931,15 @@ class ReclaimRaceTests(TestCase):
 class DaemonStartupObservabilityTests(SimpleTestCase):
     """ЭА.14 — окно старта наблюдаемо: демон держит lock и уже доказывает живость."""
 
+    # The daemon now acquires the durable analysis-lane owner before startup
+    # reconciliation, so these startup contract tests must permit that read.
+    databases = {"default"}
+
     def setUp(self):
+        IgWorkerLaneState.objects.update(
+            owner_kind="", owner_token="", lease_until=None,
+            claim_frozen=False, frozen_at=None, recovery_deadline_at=None,
+        )
         cache.delete(HB_KEY)
         cache.delete(MAIN_PROGRESS_KEY)
         reset_inflight_operations()

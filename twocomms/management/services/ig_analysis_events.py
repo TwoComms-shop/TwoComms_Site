@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -339,7 +340,36 @@ def _record_failure(event_id: int, exc, now):
         )
 
 
+@contextmanager
+def _analysis_event_owner_scope(*, now=None):
+    """Bind an explicit one-shot owner for direct event consumers."""
+    from management.services.ig_analysis_lane import current_owner, owner_scope, release_owner
+
+    existing = current_owner()
+    if existing is not None:
+        yield existing
+        return
+    with owner_scope(owner_kind="manual", now=now) as owner:
+        try:
+            yield owner
+        finally:
+            if owner:
+                release_owner(
+                    owner_token=owner["owner_token"],
+                    generation=owner["generation"],
+                    now=now,
+                )
+
+
 def process_due_analysis_events(*, limit: int = 2, now=None) -> dict:
+    now = now or timezone.now()
+    with _analysis_event_owner_scope(now=now) as owner:
+        if not owner:
+            return {"deferred": 1}
+        return _process_due_analysis_events_owned(limit=limit, now=now)
+
+
+def _process_due_analysis_events_owned(*, limit: int = 2, now=None) -> dict:
     """Materialize pending analysis proposals through one owned consumer."""
     from management.ig_bot_models import IgConversationAnalysisEvent
     from management.services.ig_analysis_lane import owner_claim_admission

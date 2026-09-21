@@ -18,6 +18,7 @@ from django.utils import timezone
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 STALE_CLAIM = timedelta(minutes=5)
+TRANSIENT_DEBT_GRACE = timedelta(minutes=5)
 
 
 def _bounded_limit(limit: int) -> int:
@@ -54,12 +55,33 @@ def _query_case(query, *, reason, scope, now, limit, time_field, id_field="id"):
                  has_more=total > len(rows))
 
 
+def _fingerprint_material(cases):
+    """Return stable case identity without making age-only polls noisy."""
+    material = []
+    for case in cases:
+        sample_ids = tuple(
+            sorted({
+                int(value)
+                for value in (case.get("sample_ids") or ())
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            })
+        )
+        material.append((
+            str(case.get("reason") or "")[:64],
+            str(case.get("scope") or "")[:64],
+            sample_ids,
+            bool(case.get("has_more")),
+        ))
+    return sorted(set(material))
+
+
 def _collect_db(now, limit):
     from management.models import InstagramBotMessage, IgCustomerTurn, IgCustomerTurnRevision
     from management.models import IgDeferredEcho, IgRevisionDeliveryEffect, IgWebhookInboxEvent
 
     cases = []
     cutoff = now - STALE_CLAIM
+    transient_cutoff = now - TRANSIENT_DEBT_GRACE
     cases.append(_query_case(
         InstagramBotMessage.objects.filter(status="processing", processing_started_at__lt=cutoff),
         reason="legacy_processing_claim_expired", scope="legacy_message", now=now,
@@ -73,7 +95,9 @@ def _collect_db(now, limit):
         reason="revision_claim_expired", scope="turn_revision", now=now,
         limit=limit, time_field="lease_until"))
     cases.append(_query_case(
-        IgRevisionDeliveryEffect.objects.filter(state="planned"),
+        IgRevisionDeliveryEffect.objects.filter(
+            state="planned", created_at__lt=transient_cutoff,
+        ),
         reason="unsent_delivery_intent", scope="delivery_effect", now=now,
         limit=limit, time_field="created_at"))
     cases.append(_query_case(
@@ -89,7 +113,10 @@ def _collect_db(now, limit):
         reason="legacy_send_unknown", scope="legacy_message", now=now,
         limit=limit, time_field="send_started_at"))
     cases.append(_query_case(
-        IgDeferredEcho.objects.filter(state__in=("waiting_receipt", "ambiguous")),
+        IgDeferredEcho.objects.filter(
+            state__in=("waiting_receipt", "ambiguous"),
+            observed_at__lt=transient_cutoff,
+        ),
         reason="deferred_provider_echo", scope="deferred_echo", now=now,
         limit=limit, time_field="observed_at"))
     cases.append(_query_case(
@@ -99,7 +126,11 @@ def _collect_db(now, limit):
         reason="private_media_delete_claim_expired", scope="private_media", now=now,
         limit=limit, time_field="private_media_delete_claimed_at"))
     cases.append(_query_case(
-        IgWebhookInboxEvent.objects.filter(decision="accepted", processed_at__isnull=True),
+        IgWebhookInboxEvent.objects.filter(
+            decision="accepted",
+            processed_at__isnull=True,
+            received_at__lt=transient_cutoff,
+        ),
         reason="webhook_ingress_pending", scope="webhook_inbox", now=now,
         limit=limit, time_field="received_at"))
     return cases
@@ -111,7 +142,7 @@ def _collect_media(now, limit):
 
     cutoff = now - STALE_CLAIM
     rows = InstagramBotMessage.objects.filter(attachment_media__isnull=False).only("id", "attachment_media")
-    stale_ids = []
+    stale_ids = set()
     referenced = set()
     reference_scan_complete = True
     for row_index, row in enumerate(rows.iterator(chunk_size=min(limit, 100))):
@@ -129,14 +160,21 @@ def _collect_media(now, limit):
                 try:
                     parsed = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
                     if parsed <= cutoff:
-                        stale_ids.append(row.pk)
+                        stale_ids.add(row.pk)
                 except (TypeError, ValueError):
                     continue
-    cases = [_case("media_capture_claim_expired", "private_media", count=len(stale_ids),
-                    ids=stale_ids[:limit], sampled=len(stale_ids) > limit, has_more=len(stale_ids) > limit)]
+    ordered_stale_ids = sorted(stale_ids)
+    cases = [_case("media_capture_claim_expired", "private_media", count=len(ordered_stale_ids),
+                    ids=ordered_stale_ids[:limit], sampled=len(ordered_stale_ids) > limit,
+                    has_more=len(ordered_stale_ids) > limit)]
     root = str(getattr(settings, "IG_PRIVATE_MEDIA_ROOT", "") or "").strip()
-    if not root or not os.path.isdir(root):
-        cases.append(_case("orphan_media_scan_unavailable", "private_media", count=0, sampled=False, has_more=False))
+    if not root:
+        # Private media is an optional capability. An intentionally unset root
+        # must not manufacture a recurring technical-debt incident.
+        return cases, True
+    if not os.path.isdir(root):
+        # A configured but unavailable root is a coverage problem, not proof of
+        # orphaned customer media. Keep it in the degraded metadata path.
         return cases, False
     orphan_count = 0
     walked = 0
@@ -154,9 +192,9 @@ def _collect_media(now, limit):
         cases.append(_case("orphan_private_media", "private_media", count=orphan_count,
                            ids=(), sampled=walked >= limit * 20, has_more=walked >= limit * 20,
                            oldest=None))
-    # File names are intentionally omitted from the report; they can contain
-    # provider/customer-derived material and are not needed for triage.
-    cases[-1]["sample_ids"] = []
+        # File names are intentionally omitted from the report; they can contain
+        # provider/customer-derived material and are not needed for triage.
+        cases[-1]["sample_ids"] = []
     # An incomplete reference scan cannot distinguish an orphan from a
     # referenced file outside the row cap. Report degraded coverage and wait
     # for a complete bounded pass instead of raising a false orphan alert.
@@ -192,10 +230,7 @@ def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
     # still open, defeating the hourly alert dedupe and spamming Telegram.
     # Identity is the stable set of debt classes and scopes; the alert metadata
     # still carries the current counts and ages for triage.
-    fingerprint_material = sorted({
-        (str(case.get("reason") or "")[:64], str(case.get("scope") or "")[:64])
-        for case in cases
-    })
+    fingerprint_material = _fingerprint_material(cases)
     fingerprint = hashlib.sha256(repr(fingerprint_material).encode("utf-8")).hexdigest()[:24]
     return {
         "observed_at": now.isoformat(),

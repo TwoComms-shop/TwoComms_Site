@@ -639,7 +639,7 @@ def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generati
                     # rejected, this worker must drain without touching claims,
                     # reconciliation, typed memory, or analysis events.
                     stop_event.set()
-                    continue
+                    return
                 if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
                     monotonic_now = time.monotonic()
                     if (

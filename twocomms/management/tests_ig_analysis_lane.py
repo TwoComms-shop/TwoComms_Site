@@ -3,17 +3,34 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from management.models import IgWorkerLaneState
+from management.models import IgClient, IgConversationAnalysisJob, IgWorkerLaneState
 from management.services.ig_analysis_lane import (
     acquire_owner,
     claim_admission,
     freeze_claims,
+    owner_claim_admission,
+    recover_frozen_lane,
     release_owner,
     renew_owner,
 )
 
 
 class AnalysisLaneFenceTests(TestCase):
+    def test_unscoped_admission_does_not_create_implicit_manual_owner(self):
+        self.assertIsNone(owner_claim_admission(now=timezone.now()))
+        state = IgWorkerLaneState.objects.get_or_create(lane_key="conversation_analysis")[0]
+        self.assertEqual(state.owner_kind, "")
+        self.assertEqual(state.owner_token, "")
+
+    def test_one_shot_boundary_binds_and_releases_a_manual_owner_explicitly(self):
+        from management.services.bot_conversation_analysis import _analysis_owner_scope
+        from management.services.ig_analysis_lane import current_owner
+
+        with _analysis_owner_scope(now=timezone.now()) as owner:
+            self.assertEqual(owner["owner_kind"], "manual")
+            self.assertEqual(current_owner()["owner_token"], owner["owner_token"])
+        self.assertIsNone(current_owner())
+
     def test_only_one_active_owner_and_generation_changes_on_takeover(self):
         now = timezone.now()
         first = acquire_owner(owner_kind="daemon", owner_token="a", now=now)
@@ -30,7 +47,10 @@ class AnalysisLaneFenceTests(TestCase):
         self.assertTrue(freeze_claims(owner_token="a", generation=owner["generation"], reason="stalled", now=now))
         self.assertFalse(claim_admission(owner_token="a", generation=owner["generation"], now=now))
         release_owner(owner_token="a", generation=owner["generation"], now=now)
-        replacement = acquire_owner(owner_kind="manual", owner_token="b", now=now + timedelta(seconds=91))
+        replacement = recover_frozen_lane(
+            evidence={"source": "supervisor", "state": "child_exited"},
+            owner_kind="manual", owner_token="b", now=now + timedelta(seconds=901),
+        )
         self.assertIsNotNone(replacement)
         self.assertFalse(release_owner(owner_token="a", generation=owner["generation"], now=now + timedelta(seconds=92)))
         state = IgWorkerLaneState.objects.get(lane_key="conversation_analysis")
@@ -66,12 +86,59 @@ class AnalysisLaneFenceTests(TestCase):
             now=now + timedelta(seconds=3),
         ))
 
-    def test_expired_owner_can_be_replaced_but_freeze_provenance_remains(self):
+    def test_frozen_lane_requires_cooperative_recovery_before_replacement(self):
         now = timezone.now()
         owner = acquire_owner(owner_kind="daemon", owner_token="a", lease_seconds=1, now=now)
         freeze_claims(owner_token="a", generation=owner["generation"], reason="stall", now=now)
         replacement = acquire_owner(owner_kind="manual", owner_token="b", now=now + timedelta(seconds=2))
+        self.assertIsNone(replacement)
         state = IgWorkerLaneState.objects.get(lane_key="conversation_analysis")
-        self.assertEqual(replacement["generation"], owner["generation"] + 1)
         self.assertTrue(state.claim_frozen)
         self.assertEqual(state.freeze_generation, owner["generation"])
+
+    def test_cooperative_recovery_requires_evidence_and_reclaims_only_old_generation(self):
+        now = timezone.now()
+        owner = acquire_owner(owner_kind="daemon", owner_token="old", lease_seconds=1, now=now)
+        self.assertTrue(freeze_claims(
+            owner_token=owner["owner_token"],
+            generation=owner["generation"],
+            reason="stalled",
+            now=now,
+        ))
+        client = IgClient.objects.create(igsid="analysis-lane-recovery")
+        old_job = IgConversationAnalysisJob.objects.create(
+            client=client,
+            status=IgConversationAnalysisJob.Status.PROCESSING,
+            lease_token="old-job",
+            lease_until=now - timedelta(seconds=1),
+            claim_generation=owner["generation"],
+            due_at=now,
+            next_attempt_at=now,
+        )
+        future_job = IgConversationAnalysisJob.objects.create(
+            client=IgClient.objects.create(igsid="analysis-lane-future"),
+            status=IgConversationAnalysisJob.Status.PROCESSING,
+            lease_token="future-job",
+            lease_until=now - timedelta(seconds=1),
+            claim_generation=owner["generation"] + 1,
+            due_at=now,
+            next_attempt_at=now,
+        )
+        self.assertIsNone(recover_frozen_lane(evidence=None, now=now + timedelta(seconds=901)))
+        recovered = recover_frozen_lane(
+            evidence={"source": "supervisor", "state": "stalled"},
+            owner_kind="daemon",
+            owner_token="new",
+            now=now + timedelta(seconds=901),
+        )
+        self.assertEqual(recovered["reclaimed"], 1)
+        self.assertEqual(recovered["previous_generation"], owner["generation"])
+        old_job.refresh_from_db()
+        future_job.refresh_from_db()
+        self.assertEqual(old_job.status, IgConversationAnalysisJob.Status.PENDING)
+        self.assertEqual(old_job.lease_token, "")
+        self.assertEqual(future_job.status, IgConversationAnalysisJob.Status.PROCESSING)
+        self.assertEqual(future_job.lease_token, "future-job")
+        state = IgWorkerLaneState.objects.get(lane_key="conversation_analysis")
+        self.assertFalse(state.claim_frozen)
+        self.assertEqual(state.owner_token, "new")
