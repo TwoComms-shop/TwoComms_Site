@@ -103,7 +103,10 @@ def _owner_draw_q(*, prefix=''):
     """
     p = prefix
     return (
-        Q(**{f'{p}economic_kind__in': ['owner_draw', 'personal_transfer']})
+        Q(**{
+            f'{p}economic_kind__in': ['owner_draw', 'personal_transfer'],
+            f'{p}type__in': [Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE],
+        })
         | Q(**{f'{p}ownership_scope': 'personal', f'{p}type': Transaction.TYPE_TRANSFER})
         | Q(**{f'{p}category__name': 'Вивід на особисте'})
         | Q(**{
@@ -115,9 +118,21 @@ def _owner_draw_q(*, prefix=''):
 
 
 def _owner_draw_amount(qs):
-    return qs.filter(_owner_draw_q()).filter(
-        type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE],
-    ).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    return sum(
+        (row.amount_base or row.amount for row in qs.filter(_owner_draw_q()).filter(
+            type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE],
+        ).only('amount_base', 'amount')),
+        Decimal('0'),
+    )
+
+
+def _owner_expense_rows(company, total):
+    """Expose owner distributions as one expense-structure category."""
+    if not total:
+        return []
+    category_id = company.categories.filter(name='Вивід на особисте').values_list('id', flat=True).first()
+    return [{'name': 'Вивід на особисте', 'total': float(total),
+             'category_id': category_id, 'economic_kind': 'owner_draw'}]
 
 
 def _actual(company):
@@ -190,7 +205,7 @@ def cash_flow(company, params):
                             type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
     internal_out = qs.filter(economic_kind__in=['internal_transfer', 'owner_draw', 'personal_transfer'],
                              type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
-    owner_drawn = owner_qs.aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    owner_drawn = _owner_draw_amount(owner_qs)
     owner_drawn_series = _series_by_period(owner_qs, start, end, transfers_as_out=True)
     refunds = qs.filter(economic_kind='expense_refund', type=Transaction.TYPE_INCOME).aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
@@ -198,11 +213,13 @@ def cash_flow(company, params):
     # Серія по днях/місяцях.
     # Гранти залишаються у фактичному русі рахунку, але не спотворюють
     # операційний графік: окремий targeted_in показує цільове фінансування.
-    by_period = _series_by_period(
+    by_period = _merge_series(_series_by_period(
         management_qs.exclude(type=Transaction.TYPE_TRANSFER), start, end,
-    )
+    ), _series_by_period(owner_qs, start, end, transfers_as_out=True))
     in_by_cat = _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME).exclude(economic_kind='expense_refund'))
+    cash_out += owner_drawn
     out_by_cat = _add_fee_category(_group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE)), transfer_fees)
+    out_by_cat += _owner_expense_rows(company, owner_drawn)
 
     return {
         'cash_in': cash_in,
@@ -235,13 +252,23 @@ def _series_by_period(qs, start, end, *, transfers_as_out=False):
         if key not in buckets:
             buckets[key] = {'in': Decimal('0'), 'out': Decimal('0')}
         if t.type == Transaction.TYPE_INCOME:
-            buckets[key]['in'] += t.amount_base
+            buckets[key]['in'] += (t.amount_base or t.amount)
         elif t.type == Transaction.TYPE_EXPENSE:
-            buckets[key]['out'] += t.amount_base
+            buckets[key]['out'] += (t.amount_base or t.amount)
         elif t.type == Transaction.TYPE_TRANSFER and transfers_as_out:
-            buckets[key]['out'] += t.amount_base
+            buckets[key]['out'] += (t.amount_base or t.amount)
     return [{'label': k, 'in': float(v['in']), 'out': float(v['out'])}
             for k, v in sorted(buckets.items())]
+
+
+def _merge_series(*series_list):
+    buckets = OrderedDict()
+    for series in series_list:
+        for row in series:
+            bucket = buckets.setdefault(row['label'], {'in': 0.0, 'out': 0.0})
+            bucket['in'] += float(row.get('in') or 0)
+            bucket['out'] += float(row.get('out') or 0)
+    return [{'label': label, **values} for label, values in sorted(buckets.items())]
 
 
 def _group_by_category(qs):
@@ -294,8 +321,9 @@ def pnl(company, params):
     targeted_in = qs.filter(type=Transaction.TYPE_INCOME, economic_kind='grant_inflow').aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = max(Decimal('0'), expenses - refunds)
-    owner_drawn = owner_qs.aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    owner_drawn = _owner_draw_amount(owner_qs)
     owner_drawn_series = _series_by_period(owner_qs, start, end, transfers_as_out=True)
+    expenses += owner_drawn
     return {
         'income': income,
         'expenses': expenses,
@@ -304,12 +332,12 @@ def pnl(company, params):
         'profit': income - expenses,
         'margin': (float((income - expenses) / income * 100) if income else 0.0),
         'income_by_category': _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME)),
-        'expense_by_category': _add_fee_category(_group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE)), transfer_fees),
+        'expense_by_category': _add_fee_category(_group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE)), transfer_fees) + _owner_expense_rows(company, owner_drawn),
         'expense_refunds': refunds,
         'transfer_fees': transfer_fees,
         'unclassified_count': qs.filter(economic_kind='unknown').count(),
         'unclassified_amount': qs.filter(economic_kind='unknown').aggregate(s=Sum('amount_base'))['s'] or Decimal('0'),
-        'series': _series_by_period(management_qs, start, end),
+        'series': _merge_series(_series_by_period(management_qs, start, end), owner_drawn_series),
         'owner_drawn_series': owner_drawn_series,
         'targeted_in': targeted_in,
         'include_grants': include_grants,

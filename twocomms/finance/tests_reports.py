@@ -109,7 +109,7 @@ class ReportsTests(TestCase):
             category=category, is_business=False, date_actual=timezone.now(),
         )
         data = rep.pnl(self.company, {'period': 'all'})
-        self.assertEqual(data['expenses'], Decimal('400'))
+        self.assertEqual(data['expenses'], Decimal('650'))
         self.assertEqual(data['owner_drawn'], Decimal('250'))
 
     def test_pnl_heat_palette_keeps_ranked_steps_distinct(self):

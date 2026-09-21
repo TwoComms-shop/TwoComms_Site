@@ -236,7 +236,11 @@ class OwnerDrawingsTestCase(TestCase):
         # P&L звіт
         pnl_data = reports.pnl(self.company, {'period': 'all'})
 
-        # Прибуток має бути 20000, без врахування переказу
-        self.assertEqual(pnl_data['profit'], Decimal('20000'))
+        # Вивід показується як окрема витратна категорія і входить у підсумок.
+        self.assertEqual(pnl_data['profit'], Decimal('10000'))
         self.assertEqual(pnl_data['income'], Decimal('50000'))
-        self.assertEqual(pnl_data['expenses'], Decimal('30000'))
+        self.assertEqual(pnl_data['expenses'], Decimal('40000'))
+        self.assertEqual(pnl_data['owner_drawn'], Decimal('10000'))
+        self.assertTrue(any(row['name'] == 'Вивід на особисте'
+                            and row['total'] == 10000.0
+                            for row in pnl_data['expense_by_category']))

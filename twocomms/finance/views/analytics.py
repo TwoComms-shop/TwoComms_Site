@@ -240,7 +240,7 @@ def report(request, kind):
     if kind == 'cashflow':
         data = rep.cash_flow(company, report_params)
         bi = _breakdown(company, data['income_by_category'], data['cash_in'])
-        be = _breakdown(company, data['expense_by_category'], data['cash_out'])
+        be = _breakdown(company, data['expense_by_category'], data.get('cash_out', 0))
         net = data['net']
         insights = [f"За період надійшло {_m(company, data['cash_in'])}, списано {_m(company, data['cash_out'])}."]
         if net >= 0:
@@ -331,6 +331,7 @@ def report(request, kind):
             'title': 'P&L', 'data': data,
             'income': _m(company, data['income']),
             'expenses': _m(company, data['expenses']),
+            'expense_structure_total': _m(company, data['expenses']),
             'owner_drawn': _m(company, data.get('owner_drawn', 0)),
             'profit': _m(company, data['profit'], signed=True),
             'targeted_in': _m(company, data['targeted_in']),
