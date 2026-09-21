@@ -13,6 +13,19 @@
     gap: 10px;
 }
 
+@media (min-width: 1121px) {
+    #fin-filters.fin-filters { position: relative; }
+    #fin-filters .fin-filters__fields { padding-right: 276px; }
+    #fin-filters .fin-filters__actions {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        margin-top: 0;
+        padding-top: 0;
+        border-top: 0;
+    }
+}
+
 #fin-filters .fin-filters__fields > label,
 #fin-filters .fin-filters__fields > .fin-custom-range,
 #fin-filters .fin-filters__fields > .fin-amount-range {

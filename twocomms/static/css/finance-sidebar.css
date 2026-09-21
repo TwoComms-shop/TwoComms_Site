@@ -1,32 +1,37 @@
-/* Finance desktop sidebar collapse control. The drawer remains mobile-owned by finance.css. */
+/* Desktop sidebar shell and its integrated pull-tab. Mobile keeps the drawer. */
 .fin-sidebar-toggle {
-    --toggle-size: 34px;
+    --toggle-width: 30px;
+    --toggle-height: 62px;
     position: fixed;
     z-index: 70;
-    top: calc(var(--fin-header-h) + 10px);
-    left: calc(var(--fin-sidebar-w) - 14px);
-    width: var(--toggle-size);
-    height: var(--toggle-size);
+    top: calc(var(--fin-header-h) + ((100vh - var(--fin-header-h)) / 2));
+    left: calc(var(--fin-sidebar-w) - 1px);
+    width: var(--toggle-width);
+    height: var(--toggle-height);
     display: grid;
     place-items: center;
-    padding: 0;
-    border: 1px solid rgba(255, 255, 255, .16);
-    border-radius: 50%;
+    padding: 0 5px 0 2px;
+    border: 1px solid rgba(255, 255, 255, .14);
+    border-left-color: rgba(255, 255, 255, .06);
+    border-radius: 0 31px 31px 0;
     color: var(--fin-text-2);
-    background: linear-gradient(145deg, rgba(35, 42, 56, .98), rgba(15, 20, 30, .98));
-    box-shadow: 0 7px 20px rgba(0, 0, 0, .35), 0 0 0 5px rgba(11, 14, 20, .72);
+    background: linear-gradient(145deg, rgba(27, 34, 48, .99), rgba(14, 19, 29, .99));
+    box-shadow: 9px 0 20px rgba(0, 0, 0, .22), inset 1px 0 rgba(255, 255, 255, .05);
     cursor: pointer;
+    transform: translateY(-50%);
     transition: left .38s cubic-bezier(.22, 1, .36, 1), transform .24s ease, color .2s ease, border-color .2s ease, background .2s ease, box-shadow .2s ease;
 }
 .fin-sidebar-toggle::before {
     content: '';
     position: absolute;
-    inset: -6px;
-    border: 1px solid rgba(255, 255, 255, .07);
-    border-radius: inherit;
+    left: -1px;
+    top: 9px;
+    bottom: 9px;
+    width: 2px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, transparent, rgba(243, 164, 61, .55), transparent);
     opacity: 0;
-    transform: scale(.82);
-    transition: opacity .25s ease, transform .25s ease;
+    transition: opacity .25s ease;
     pointer-events: none;
 }
 .fin-sidebar-toggle:hover,
@@ -34,71 +39,33 @@
     color: var(--fin-text);
     border-color: rgba(243, 164, 61, .72);
     background: linear-gradient(145deg, rgba(76, 60, 42, .98), rgba(27, 28, 35, .98));
-    box-shadow: 0 10px 24px rgba(0, 0, 0, .42), 0 0 0 5px rgba(243, 164, 61, .10), 0 0 22px rgba(243, 164, 61, .15);
-    transform: translateY(-1px);
+    box-shadow: 10px 0 26px rgba(0, 0, 0, .38), inset 1px 0 rgba(255, 255, 255, .08), 0 0 20px rgba(243, 164, 61, .12);
+    transform: translateY(-50%) translateX(2px);
     outline: none;
 }
-.fin-sidebar-toggle:focus-visible::before { opacity: 1; transform: scale(1); }
-.fin-sidebar-toggle:active { transform: translateY(1px) scale(.95); }
+.fin-sidebar-toggle:focus-visible::before { opacity: 1; }
+.fin-sidebar-toggle:active { transform: translateY(-50%) translateX(1px) scale(.97); }
 .fin-sidebar-toggle__icon { display: grid; place-items: center; transition: transform .38s cubic-bezier(.22, 1, .36, 1); }
-.fin-sidebar-toggle__icon svg { width: 17px; height: 17px; fill: currentColor; }
-.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle {
-    left: 14px;
-    transform: none;
-}
-.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:hover,
-.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:focus-visible { transform: translateY(-1px); }
-.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:active { transform: translateY(1px) scale(.95); }
+.fin-sidebar-toggle__icon svg { width: 16px; height: 16px; fill: currentColor; }
+/* Open panel: arrow points toward the panel (the action is to close it). */
 .fin-sidebar-toggle__icon { transform: rotate(180deg); }
+/* Closed panel: arrow points into the page (the action is to open it). */
 .fin-body.fin-sidebar-collapsed .fin-sidebar-toggle__icon { transform: rotate(0deg); }
-.fin-body.fin-sidebar-collapsed .fin-sidebar {
-    flex-basis: 0;
-    width: 0;
-    border-right-color: transparent;
-}
-.fin-body.fin-sidebar-collapsed .fin-sidebar__scroll {
-    opacity: 0;
-    transform: translateX(-12px) scale(.985);
-    pointer-events: none;
-}
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle { left: 0; transform: translateY(-50%); }
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:hover,
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:focus-visible { transform: translateY(-50%) translateX(2px); }
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:active { transform: translateY(-50%) translateX(1px) scale(.97); }
+.fin-body.fin-sidebar-collapsed .fin-sidebar { flex-basis: 0; width: 0; border-right-color: transparent; }
+.fin-body.fin-sidebar-collapsed .fin-sidebar__scroll { opacity: 0; transform: translateX(-12px) scale(.985); pointer-events: none; }
 .fin-body.fin-sidebar-collapsed .fin-sidebar__scroll,
 .fin-sidebar__scroll { transition: opacity .24s ease, transform .38s cubic-bezier(.22, 1, .36, 1); }
 .fin-body.fin-sidebar-collapsed .fin-sidebar { transition: flex-basis .38s cubic-bezier(.22, 1, .36, 1), width .38s cubic-bezier(.22, 1, .36, 1), border-color .2s ease; }
 .fin-main { transition: flex-basis .38s cubic-bezier(.22, 1, .36, 1), width .38s cubic-bezier(.22, 1, .36, 1); }
-
-@media (max-width: 900px) {
-    .fin-sidebar-toggle { display: none; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .fin-sidebar-toggle,
-    .fin-sidebar-toggle__icon,
-    .fin-sidebar,
-    .fin-sidebar__scroll,
-    .fin-main { transition-duration: .01ms !important; }
-}
-
+@media (max-width: 900px) { .fin-sidebar-toggle { display: none; } }
+@media (prefers-reduced-motion: reduce) { .fin-sidebar-toggle, .fin-sidebar-toggle__icon, .fin-sidebar, .fin-sidebar__scroll, .fin-main { transition-duration: .01ms !important; } }
 @media (min-width: 901px) {
-    .fin-workspace {
-        transition: grid-template-columns .38s cubic-bezier(.22, 1, .36, 1);
-    }
-
-    .fin-sidebar__scroll {
-        padding-top: 58px;
-    }
-
-    .fin-body.fin-sidebar-collapsed .fin-workspace {
-        grid-template-columns: 0 minmax(0, 1fr);
-    }
-
-    .fin-body.fin-sidebar-collapsed .fin-content {
-        max-width: none;
-        margin-left: 0;
-        margin-right: 0;
-        padding-left: 68px;
-    }
+    .fin-workspace { transition: grid-template-columns .38s cubic-bezier(.22, 1, .36, 1); }
+    .fin-body.fin-sidebar-collapsed .fin-workspace { grid-template-columns: 0 minmax(0, 1fr); }
+    .fin-body.fin-sidebar-collapsed .fin-content { max-width: none; margin-left: 0; margin-right: 0; padding-left: 68px; }
 }
-
-@media (min-width: 1440px) {
-    .fin-body { --fin-sidebar-w: 320px; }
-}
+@media (min-width: 1440px) { .fin-body { --fin-sidebar-w: 320px; } }
