@@ -45,6 +45,49 @@ class _Blocked(Exception):
     pass
 
 
+def _evaluation_cursor_valid(value) -> bool:
+    """Accept only complete v1 cursors on immutable receipt replay."""
+    if not isinstance(value, Mapping) or value.get("version") != CURSOR_VERSION:
+        return False
+    required = (
+        "source_message_ids", "source_anchor", "sent_effect_ids",
+        "sent_reply_anchor", "inbound_anchor", "meta_window_deadline",
+        "evaluated_at", "reason", "task_id", "due_at",
+    )
+    if any(key not in value for key in required):
+        return False
+    if not isinstance(value["source_message_ids"], list) or not all(
+        isinstance(item, int) and not isinstance(item, bool) and item > 0
+        for item in value["source_message_ids"]
+    ):
+        return False
+    if not isinstance(value["sent_effect_ids"], list) or not all(
+        isinstance(item, int) and not isinstance(item, bool) and item > 0
+        for item in value["sent_effect_ids"]
+    ):
+        return False
+    if any(not isinstance(value[key], str) for key in (
+        "source_anchor", "sent_reply_anchor", "inbound_anchor",
+        "meta_window_deadline", "evaluated_at", "reason", "due_at",
+    )):
+        return False
+    return isinstance(value["task_id"], int) and not isinstance(value["task_id"], bool) and value["task_id"] >= 0
+
+
+def _existing_receipt_replay(existing) -> RevisionFollowupResult | None:
+    """Return a replay result only when the durable cursor is verifiable."""
+    if (
+        not isinstance(existing, Mapping)
+        or not isinstance(existing.get("reason"), str)
+        or not isinstance(existing.get("task_id"), int)
+        or isinstance(existing.get("task_id"), bool)
+        or existing["task_id"] < 0
+        or not _evaluation_cursor_valid(existing.get("evaluation_cursor"))
+    ):
+        return RevisionFollowupResult(reason="followup_cursor_repair_required")
+    return RevisionFollowupResult(True, existing["reason"], existing["task_id"], dict(existing), True)
+
+
 def _locked(revision_id, client_id, settings_id):
     settings_row = InstagramBotSettings.objects.select_for_update().select_related("active_instruction_publication").filter(pk=settings_id).first()
     client = IgClient.objects.select_for_update().filter(pk=client_id).first()
@@ -376,7 +419,7 @@ def schedule_revision_normal_followups(
             if existing is not None:
                 if not isinstance(existing, Mapping) or any(existing.get(key) != value for key, value in binding.items()):
                     raise _Blocked("normal_followup_receipt_mismatch")
-                return RevisionFollowupResult(True, existing["reason"], existing["task_id"], dict(existing), True)
+                return _existing_receipt_replay(existing)
             task, reason, cursor = _schedule(client, revision, rows, anchor, now, include_cursor=True)
             receipt = {**binding, "reason": reason, "task_id": task.pk if task else 0, "due_at": task.due_at.isoformat() if task else "", "evaluation_cursor": cursor, "recorded_at": now.isoformat()}
             revision.action_receipts = {**(revision.action_receipts or {}), RECEIPT_KEY: receipt}
@@ -428,6 +471,9 @@ def settle_revision_normal_followups(revision_id, finalization_token, *, now=Non
             if existing is not None:
                 if not isinstance(existing, Mapping) or any(existing.get(key) != value for key, value in binding.items()):
                     raise _Blocked("normal_followup_receipt_mismatch")
+                replay = _existing_receipt_replay(existing)
+                if replay is not None and not replay.ready:
+                    return replay
                 withdrawn = (
                     revision.active_slot != 1 or settings_row is None or not settings_row.is_enabled
                     or client.hidden_at is not None or client.is_blocked or client.bot_paused or client.manager_takeover
@@ -437,7 +483,7 @@ def settle_revision_normal_followups(revision_id, finalization_token, *, now=Non
                 )
                 if withdrawn and existing.get("task_id"):
                     IgFollowUpTask.objects.filter(pk=existing["task_id"], client=client, status=IgFollowUpTask.Status.PENDING).exclude(kind=IgFollowUpTask.Kind.MANAGER_TASK).update(status=IgFollowUpTask.Status.CANCELLED, skip_reason="permission_changed_after_reply", updated_at=now)
-                return RevisionFollowupResult(True, existing["reason"], existing["task_id"], dict(existing), True)
+                return replay
             sources = list(revision.sources.select_related("message").order_by("ordinal", "id"))
             source_valid = len(sources) == len(source_ids) and all(
                 row.message_id == source_id and row.message.client_id == client.pk and row.role == "user"

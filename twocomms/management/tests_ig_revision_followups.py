@@ -8,6 +8,7 @@ from management import tests_ig_revision_delivery as delivery_fixtures
 from management.models import IgBotNotification, IgDeal, IgFollowUpTask, IgWebhookInboxEvent
 from management.services import bot_followups as policy
 from management.services.ig_revision_followups import (
+    CURSOR_VERSION, _evaluation_cursor_valid, _existing_receipt_replay,
     cancel_revision_sales_timers, schedule_revision_normal_followups,
 )
 from management.services.ig_revision_input import decide_revision_input
@@ -115,6 +116,28 @@ class RevisionNormalFollowupTests(TransactionTestCase):
         task.refresh_from_db()
         self.assertEqual(task.status, "pending")
         self.assertEqual(task.due_at, expected_due)
+
+    def test_cursor_replay_requires_complete_current_version(self):
+        cursor = {
+            "version": CURSOR_VERSION, "source_message_ids": [1],
+            "source_anchor": "", "sent_effect_ids": [2],
+            "sent_reply_anchor": "", "inbound_anchor": "",
+            "meta_window_deadline": "", "evaluated_at": "",
+            "reason": "normal_followup_scheduled", "task_id": 0, "due_at": "",
+        }
+        self.assertTrue(_evaluation_cursor_valid(cursor))
+        self.assertFalse(_evaluation_cursor_valid({key: value for key, value in cursor.items() if key != "source_anchor"}))
+        self.assertFalse(_evaluation_cursor_valid({**cursor, "version": "revision-followup-evaluation-v0"}))
+        self.assertFalse(_evaluation_cursor_valid({**cursor, "task_id": True}))
+
+        replay = _existing_receipt_replay({"reason": "normal_followup_scheduled", "task_id": 0, "evaluation_cursor": cursor})
+        self.assertTrue(replay.ready)
+        self.assertTrue(replay.replayed)
+        self.assertEqual(replay.reason, "normal_followup_scheduled")
+        for malformed in ({}, {"version": CURSOR_VERSION}, {"reason": "ok", "task_id": 0, "evaluation_cursor": {**cursor, "version": "old"}}):
+            rejected = _existing_receipt_replay(malformed)
+            self.assertFalse(rejected.ready)
+            self.assertEqual(rejected.reason, "followup_cursor_repair_required")
 
     def test_request_for_screenshot_does_not_start_a_price_followup(self):
         self._sent(reply_text="Надішліть, будь ласка, фото моделі, щоб я уточнив вартість.")
