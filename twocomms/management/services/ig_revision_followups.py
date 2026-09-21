@@ -56,12 +56,12 @@ def _evaluation_cursor_valid(value) -> bool:
     )
     if any(key not in value for key in required):
         return False
-    if not isinstance(value["source_message_ids"], list) or not all(
+    if not isinstance(value["source_message_ids"], list) or not value["source_message_ids"] or not all(
         isinstance(item, int) and not isinstance(item, bool) and item > 0
         for item in value["source_message_ids"]
     ):
         return False
-    if not isinstance(value["sent_effect_ids"], list) or not all(
+    if not isinstance(value["sent_effect_ids"], list) or not value["sent_effect_ids"] or not all(
         isinstance(item, int) and not isinstance(item, bool) and item > 0
         for item in value["sent_effect_ids"]
     ):
@@ -69,7 +69,7 @@ def _evaluation_cursor_valid(value) -> bool:
     if any(not isinstance(value[key], str) for key in (
         "source_anchor", "sent_reply_anchor", "inbound_anchor",
         "meta_window_deadline", "evaluated_at", "reason", "due_at",
-    )):
+    )) or not value["reason"]:
         return False
     return isinstance(value["task_id"], int) and not isinstance(value["task_id"], bool) and value["task_id"] >= 0
 
@@ -82,7 +82,15 @@ def _existing_receipt_replay(existing) -> RevisionFollowupResult | None:
         or not isinstance(existing.get("task_id"), int)
         or isinstance(existing.get("task_id"), bool)
         or existing["task_id"] < 0
+        or not isinstance(existing.get("due_at"), str)
         or not _evaluation_cursor_valid(existing.get("evaluation_cursor"))
+    ):
+        return RevisionFollowupResult(reason="followup_cursor_repair_required")
+    cursor = existing["evaluation_cursor"]
+    if (
+        cursor["reason"] != existing["reason"]
+        or cursor["task_id"] != existing["task_id"]
+        or cursor["due_at"] != existing["due_at"]
     ):
         return RevisionFollowupResult(reason="followup_cursor_repair_required")
     return RevisionFollowupResult(True, existing["reason"], existing["task_id"], dict(existing), True)

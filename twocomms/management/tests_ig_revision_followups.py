@@ -1,11 +1,12 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.db import models
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
 from management import tests_ig_revision_delivery as delivery_fixtures
-from management.models import IgBotNotification, IgDeal, IgFollowUpTask, IgWebhookInboxEvent
+from management.models import IgBotNotification, IgCustomerTurnRevision, IgDeal, IgFollowUpTask, IgWebhookInboxEvent
 from management.services import bot_followups as policy
 from management.services.ig_revision_followups import (
     CURSOR_VERSION, _evaluation_cursor_valid, _existing_receipt_replay,
@@ -129,15 +130,68 @@ class RevisionNormalFollowupTests(TransactionTestCase):
         self.assertFalse(_evaluation_cursor_valid({key: value for key, value in cursor.items() if key != "source_anchor"}))
         self.assertFalse(_evaluation_cursor_valid({**cursor, "version": "revision-followup-evaluation-v0"}))
         self.assertFalse(_evaluation_cursor_valid({**cursor, "task_id": True}))
+        self.assertFalse(_evaluation_cursor_valid({**cursor, "source_message_ids": []}))
+        self.assertFalse(_evaluation_cursor_valid({**cursor, "sent_effect_ids": []}))
+        self.assertFalse(_evaluation_cursor_valid({**cursor, "reason": ""}))
 
-        replay = _existing_receipt_replay({"reason": "normal_followup_scheduled", "task_id": 0, "evaluation_cursor": cursor})
+        replay = _existing_receipt_replay({
+            "reason": "normal_followup_scheduled", "task_id": 0,
+            "due_at": "", "evaluation_cursor": cursor,
+        })
         self.assertTrue(replay.ready)
         self.assertTrue(replay.replayed)
         self.assertEqual(replay.reason, "normal_followup_scheduled")
+        self.assertFalse(_existing_receipt_replay({
+            "reason": "different", "task_id": 0,
+            "due_at": "", "evaluation_cursor": cursor,
+        }).ready)
         for malformed in ({}, {"version": CURSOR_VERSION}, {"reason": "ok", "task_id": 0, "evaluation_cursor": {**cursor, "version": "old"}}):
             rejected = _existing_receipt_replay(malformed)
             self.assertFalse(rejected.ready)
             self.assertEqual(rejected.reason, "followup_cursor_repair_required")
+
+    def _replace_followup_cursor_for_replay_test(self, cursor):
+        """Construct a corrupt historical receipt without weakening production guards."""
+        self.revision.refresh_from_db()
+        receipts = dict(self.revision.action_receipts)
+        receipt = dict(receipts["normal_followups"])
+        if cursor is None:
+            receipt.pop("evaluation_cursor", None)
+        else:
+            receipt["evaluation_cursor"] = cursor
+        receipts["normal_followups"] = receipt
+        self.revision.action_receipts = receipts
+        models.Model.save_base(
+            self.revision,
+            using=self.revision._state.db,
+            update_fields={"action_receipts"},
+        )
+
+    def test_missing_cursor_does_not_replay_or_create_second_task(self):
+        self._sent()
+        first = self._schedule()
+        self._replace_followup_cursor_for_replay_test(None)
+        with patch("management.services.instagram_bot._provider_http") as provider:
+            replay = self._schedule()
+        provider.assert_not_called()
+        self.assertFalse(replay.ready)
+        self.assertEqual(replay.reason, "followup_cursor_repair_required")
+        self.assertEqual(IgFollowUpTask.objects.count(), 1)
+        self.assertEqual(replay.task_id, 0)
+        self.assertEqual(first.task_id, IgFollowUpTask.objects.get().pk)
+
+    def test_wrong_cursor_version_does_not_replay_or_create_second_task(self):
+        self._sent()
+        first = self._schedule()
+        cursor = dict(first.receipt["evaluation_cursor"])
+        cursor["version"] = "revision-followup-evaluation-v0"
+        self._replace_followup_cursor_for_replay_test(cursor)
+        with patch("management.services.instagram_bot._provider_http") as provider:
+            replay = self._schedule()
+        provider.assert_not_called()
+        self.assertFalse(replay.ready)
+        self.assertEqual(replay.reason, "followup_cursor_repair_required")
+        self.assertEqual(IgFollowUpTask.objects.count(), 1)
 
     def test_request_for_screenshot_does_not_start_a_price_followup(self):
         self._sent(reply_text="Надішліть, будь ласка, фото моделі, щоб я уточнив вартість.")
