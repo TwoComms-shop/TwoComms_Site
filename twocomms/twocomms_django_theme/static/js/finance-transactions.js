@@ -1304,6 +1304,67 @@
     periodSel.addEventListener('change', function () { rangeWrap.hidden = periodSel.value !== 'custom'; });
   }
 
+  // --- Швидкі фільтри журналу: застосовуються без окремої кнопки ---
+  (function () {
+    var form = document.getElementById('fin-filters');
+    if (!form) return;
+    var liveInputs = form.querySelectorAll('#fin-period, #fin-scope, input[name="date_from"], input[name="date_to"], input[name="amount_min"], input[name="amount_max"], input[name="search"]');
+    var typeChips = form.querySelectorAll('[data-fin-live-types]');
+    var statusChips = form.querySelectorAll('[data-fin-live-statuses]');
+    var timer = null;
+    var typesTouched = false;
+    var statusesTouched = false;
+
+    function selectedValues(nodes) {
+      return Array.prototype.slice.call(nodes).filter(function (node) { return node.checked; }).map(function (node) { return node.value; });
+    }
+
+    function syncQuickChips() {
+      var params = new URLSearchParams(window.location.search);
+      var selectedTypes = new Set((params.get('types') || '').split(',').filter(Boolean));
+      var selectedStatuses = new Set((params.get('statuses') || '').split(',').filter(Boolean));
+      Array.prototype.forEach.call(typeChips, function (node) { node.checked = selectedTypes.has(node.value); });
+      Array.prototype.forEach.call(statusChips, function (node) { node.checked = selectedStatuses.has(node.value); });
+    }
+
+    function applyLiveFilters() {
+      var params = new URLSearchParams(window.location.search);
+      ['period', 'date_from', 'date_to', 'search', 'amount_min', 'amount_max', 'scope'].forEach(function (name) {
+        var input = form.querySelector('[name="' + name + '"]');
+        if (!input || !input.value) params.delete(name);
+        else params.set(name, input.value);
+      });
+      if (typesTouched) {
+        var types = selectedValues(typeChips);
+        if (types.length) params.set('types', types.join(',')); else params.delete('types');
+      }
+      if (statusesTouched) {
+        var statuses = selectedValues(statusChips);
+        if (statuses.length) params.set('statuses', statuses.join(','));
+        else params.delete('statuses');
+      }
+      params.delete('page');
+      window.location.search = params.toString();
+    }
+
+    syncQuickChips();
+    Array.prototype.forEach.call(liveInputs, function (input) {
+      input.addEventListener('change', applyLiveFilters);
+      if (input.type === 'search' || input.type === 'number') {
+        input.addEventListener('input', function () {
+          window.clearTimeout(timer);
+          timer = window.setTimeout(applyLiveFilters, 420);
+        });
+      }
+    });
+    Array.prototype.forEach.call(typeChips, function (input) {
+      input.addEventListener('change', function () { typesTouched = true; applyLiveFilters(); });
+    });
+    Array.prototype.forEach.call(statusChips, function (input) {
+      input.addEventListener('change', function () { statusesTouched = true; applyLiveFilters(); });
+    });
+  })();
+
   // --- Розгортання планових ---
   var plannedToggle = document.getElementById('fin-planned-toggle');
   var plannedTable = document.getElementById('fin-planned-table') ||

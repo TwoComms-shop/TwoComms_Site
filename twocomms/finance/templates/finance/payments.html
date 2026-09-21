@@ -4,7 +4,7 @@
 {% block title %}Платежі — TwoComms Finance{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{% static 'css/finance-payments.css' %}?v=20260922a">
+<link rel="stylesheet" href="{% static 'css/finance-payments.css' %}?v=20260922b">
 {% endblock %}
 
 {% block content %}
@@ -77,6 +77,13 @@
             </select>
         </label>
 
+    </div>
+    <div class="fin-quick-filters" role="group" aria-label="Швидкі фільтри за типом операції">
+        <span class="fin-quick-filters__label">Показати</span>
+        <label class="fin-filter-chip"><input type="checkbox" value="income" data-fin-live-types><span>Доходи</span></label>
+        <label class="fin-filter-chip"><input type="checkbox" value="expense" data-fin-live-types><span>Витрати</span></label>
+        <label class="fin-filter-chip"><input type="checkbox" value="transfer" data-fin-live-types><span>Перекази</span></label>
+        <label class="fin-filter-chip fin-filter-chip--planned"><input type="checkbox" value="planned" data-fin-live-statuses><span>Планові</span></label>
     </div>
     <div class="fin-filters__actions">
         <button type="button" class="fin-btn fin-btn--ghost fin-btn--sm" id="fin-advanced-filter-btn">
