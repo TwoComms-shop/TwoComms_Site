@@ -115,6 +115,36 @@ class PresenceLifecycleTests(SimpleTestCase):
         self.assertFalse(old._action("typing_off"))
         self.assertEqual(calls, [("old", "typing_on"), ("new", "typing_on"), ("new", "typing_off")])
 
+    def test_seen_only_successor_does_not_strand_previous_typing_cleanup(self):
+        calls = []
+        old = self.manual(transport=lambda action: calls.append(("old", action)) or accepted(action))
+        self.assertTrue(old._action("typing_on"))
+        old.stop()
+
+        newer = self.manual(transport=lambda action: calls.append(("new", action)) or accepted(action))
+        self.assertTrue(newer._action("mark_seen"))
+        newer.stop()
+
+        self.assertTrue(old._action("typing_off"))
+        self.assertEqual(calls, [("old", "typing_on"), ("new", "mark_seen"), ("old", "typing_off")])
+
+    def test_definitely_rejected_successor_typing_does_not_steal_cleanup(self):
+        calls = []
+        old = self.manual(transport=lambda action: calls.append(("old", action)) or accepted(action))
+        self.assertTrue(old._action("typing_on"))
+        old.stop()
+
+        def reject(action):
+            calls.append(("new", action))
+            return presence.SenderActionResult(False, 400, "unsupported_or_denied", action)
+
+        newer = self.manual(transport=reject)
+        self.assertFalse(newer._action("typing_on"))
+        newer.stop()
+
+        self.assertTrue(old._action("typing_off"))
+        self.assertEqual(calls, [("old", "typing_on"), ("new", "typing_on"), ("old", "typing_off")])
+
     def test_late_cleanup_still_runs_if_successor_exited_without_presence(self):
         calls = []
         handle = self.manual(transport=lambda action: calls.append(action) or accepted(action))

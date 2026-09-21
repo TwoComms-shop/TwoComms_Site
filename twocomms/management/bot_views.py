@@ -4586,6 +4586,7 @@ def _client_follow_payload(c, *, settings_obj=None, now=None) -> dict:
 
 def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
     from management.services.ig_response_debt import reply_debt_payload
+    from management.services.ig_attention import attention_snapshot
 
     response_debt = reply_debt_payload(c)
     from .ig_bot_models import IgConversationAnalysisSnapshot, IgPostSaleCase
@@ -4773,6 +4774,16 @@ def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
         c,
         payment_confirmation=payment_confirmation,
     )
+    attention = attention_snapshot(
+        now=follow_now,
+        response_debt=response_debt,
+        manager_action_required=bool(getattr(c, "has_manager_action", False)) or bool(response_debt["required"]),
+        post_sale_needs_action=post_sale_needs_action,
+        next_followup_at=next_followup,
+        bot_paused=bool(c.bot_paused),
+        manager_takeover=bool(c.manager_takeover),
+        commercial_visual_state=commercial_visual_state,
+    )
     return {
         "id": c.id,
         "igsid": c.igsid,
@@ -4809,6 +4820,7 @@ def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
         "potential": potential,
         "manager_action_required": bool(getattr(c, "has_manager_action", False)) or bool(response_debt["required"]),
         "response_debt": response_debt,
+        "attention_snapshot": attention,
         "post_sale_type": post_sale_type,
         "post_sale_type_label": post_sale_type_label,
         "post_sale_status": post_sale_status,

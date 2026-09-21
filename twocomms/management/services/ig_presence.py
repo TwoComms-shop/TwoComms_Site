@@ -510,7 +510,12 @@ class PresenceSession:
             if not allowed:
                 return False
             if cleanup:
-                if state.get("generation") != self.generation:
+                # ``generation`` also tracks mark_seen ownership. Keep typing
+                # cleanup fenced by the generation that may have actually
+                # started typing, so a successor's seen-only or definitely
+                # rejected typing attempt cannot strand its predecessor.
+                typing_generation = state.get("typing_generation", state.get("generation"))
+                if typing_generation != self.generation:
                     return False
             else:
                 cooldowns = state.setdefault("action_cooldowns", {})
@@ -532,6 +537,14 @@ class PresenceSession:
                 # Timeout is ambiguous too; a late accepted on needs cleanup.
                 self.typing_attempted = True
             result = self.transport(action)
+            if action == "typing_on" and (
+                result.ok or result.kind in {"timeout", "transport", "provider"}
+            ):
+                # Definite rejection (missing credentials, unsupported action,
+                # or rate limiting) cannot have started typing and must not
+                # steal the predecessor's cleanup ownership.
+                state["typing_generation"] = self.generation
+                state["typing_watermark"] = self.source_watermark
             if action == "typing_on" and periodic and self.typing_result_callback is not None:
                 try:
                     self.typing_result_callback(result)

@@ -114,3 +114,91 @@ class TechnicalDebtCollectorTests(SimpleTestCase):
 
         self.assertEqual(first_snapshot["fingerprint"], older_snapshot["fingerprint"])
         self.assertNotEqual(first_snapshot["fingerprint"], new_case_snapshot["fingerprint"])
+
+    def test_reconciler_defaults_to_dry_run_and_returns_operator_proposal(self):
+        from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
+
+        now = timezone.now()
+        snapshot = {
+            "observed_at": now.isoformat(),
+            "cases": [{
+                "reason": "canonical_delivery_unknown",
+                "scope": "delivery_effect",
+                "count": 2,
+                "oldest_age_seconds": 90,
+                "sample_ids": [12, 12],
+                "sampled": False,
+                "has_more": False,
+            }],
+            "coverage_complete": True,
+            "errors": [],
+            "sample_limit": 100,
+        }
+        with patch(
+            "management.services.ig_technical_debt.technical_debt_snapshot",
+            return_value=snapshot,
+        ) as collect:
+            result = reconcile_ig_technical_debt_once(now=now)
+
+        collect.assert_called_once_with(now=now, limit=100)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["mode"], "proposal_only")
+        self.assertTrue(result["idempotent"])
+        self.assertEqual(result["provider_calls"], 0)
+        self.assertEqual(result["writes"], 0)
+        self.assertFalse(result["persistence"]["supported"])
+        proposal = result["proposed_cases"][0]
+        self.assertEqual(proposal["identity"], "canonical_delivery_unknown:delivery_effect")
+        self.assertEqual(proposal["source_ids"], [12])
+        self.assertEqual(proposal["sample_ids"], [12])
+        self.assertEqual(proposal["oldest_age_seconds"], 90)
+        self.assertEqual(proposal["disposition"], "manual_review_required")
+        self.assertEqual(
+            proposal["first_observed_at"],
+            (now - timedelta(seconds=90)).isoformat(),
+        )
+        self.assertEqual(proposal["last_observed_at"], now.isoformat())
+
+    def test_reconciler_identity_is_stable_when_age_and_count_change(self):
+        from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
+
+        now = timezone.now()
+        first = {
+            "reason": "legacy_send_unknown", "scope": "legacy_message",
+            "count": 1, "oldest_age_seconds": 10, "sample_ids": [7],
+            "sampled": False, "has_more": False,
+        }
+        older = {**first, "count": 9, "oldest_age_seconds": 900}
+        with patch(
+            "management.services.ig_technical_debt.technical_debt_snapshot",
+            side_effect=[
+                {"cases": [first], "coverage_complete": True, "errors": [], "sample_limit": 100},
+                {"cases": [older], "coverage_complete": True, "errors": [], "sample_limit": 100},
+            ],
+        ):
+            first_result = reconcile_ig_technical_debt_once(now=now)
+            older_result = reconcile_ig_technical_debt_once(now=now)
+
+        first_case = first_result["proposed_cases"][0]
+        older_case = older_result["proposed_cases"][0]
+        self.assertEqual(first_case["identity"], older_case["identity"])
+        self.assertEqual(first_case["case_fingerprint"], older_case["case_fingerprint"])
+        self.assertNotEqual(first_case["oldest_age_seconds"], older_case["oldest_age_seconds"])
+
+    def test_reconciler_never_persists_when_write_mode_is_requested(self):
+        from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
+
+        with patch(
+            "management.services.ig_technical_debt.technical_debt_snapshot",
+            return_value={"cases": [], "coverage_complete": True, "errors": [], "sample_limit": 5},
+        ):
+            result = reconcile_ig_technical_debt_once(limit=5, dry_run=False)
+
+        self.assertFalse(result["dry_run"])
+        self.assertEqual(result["mode"], "proposal_only")
+        self.assertEqual(result["writes"], 0)
+        self.assertEqual(result["provider_calls"], 0)
+        self.assertEqual(
+            result["persistence"]["reason"],
+            "no_dedicated_technical_debt_case_schema",
+        )

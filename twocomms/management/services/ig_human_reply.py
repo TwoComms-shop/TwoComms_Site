@@ -227,7 +227,7 @@ def create_human_reply_command(
         # Keep one actor's active command as the client-level ownership fence.
         # The context filter used here previously allowed a different manager
         # to claim the same client after a newer inbound changed the context.
-        competing = (
+        active_commands = (
             HumanReplyCommand.objects.select_for_update()
             .filter(
                 client=client,
@@ -239,8 +239,16 @@ def create_human_reply_command(
                 ],
             )
             .exclude(operation_id=op)
-            .first()
         )
+        unresolved = active_commands.filter(
+            state=HumanReplyCommand.State.UNKNOWN
+        ).first()
+        if unresolved:
+            if unresolved.actor_id != getattr(actor, "pk", None):
+                raise HumanReplyRejected("command_owned_by_other_actor")
+            raise HumanReplyRejected("competing_command")
+
+        competing = active_commands.first()
         if competing:
             if competing.actor_id != getattr(actor, "pk", None):
                 raise HumanReplyRejected("command_owned_by_other_actor")

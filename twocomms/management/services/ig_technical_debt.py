@@ -19,6 +19,8 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 STALE_CLAIM = timedelta(minutes=5)
 TRANSIENT_DEBT_GRACE = timedelta(minutes=5)
+RECONCILER_SCHEMA_VERSION = "ig-technical-debt-reconcile-v1"
+RECONCILER_DISPOSITION = "manual_review_required"
 
 
 def _bounded_limit(limit: int) -> int:
@@ -240,4 +242,79 @@ def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
         "coverage_complete": complete,
         "errors": errors,
         "sample_limit": limit,
+    }
+
+
+def _reconciler_case(case, *, now):
+    """Project one bounded observation into a deterministic operator proposal."""
+    reason = str(case.get("reason") or "unknown")[:64]
+    scope = str(case.get("scope") or "unknown")[:64]
+    sample_ids = []
+    for value in case.get("sample_ids") or ():
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            sample_ids.append(value)
+    sample_ids = sorted(set(sample_ids))
+    oldest_age = case.get("oldest_age_seconds")
+    if isinstance(oldest_age, bool) or not isinstance(oldest_age, (int, float)):
+        oldest_age = None
+    elif oldest_age < 0:
+        oldest_age = 0
+    else:
+        oldest_age = int(oldest_age)
+    first_observed = now - timedelta(seconds=oldest_age) if oldest_age is not None else None
+    identity = f"{reason}:{scope}"
+    fingerprint_material = (identity, tuple(sample_ids), bool(case.get("has_more")))
+    case_fingerprint = hashlib.sha256(
+        repr(fingerprint_material).encode("utf-8")
+    ).hexdigest()[:24]
+    return {
+        "identity": identity,
+        "case_fingerprint": case_fingerprint,
+        "reason": reason,
+        "scope": scope,
+        "count": int(case.get("count") or 0),
+        "first_observed_at": first_observed.isoformat() if first_observed else None,
+        "last_observed_at": now.isoformat(),
+        "oldest_age_seconds": oldest_age,
+        "source_ids": sample_ids,
+        "sample_ids": sample_ids,
+        "sampled": bool(case.get("sampled")),
+        "has_more": bool(case.get("has_more")),
+        "disposition": RECONCILER_DISPOSITION,
+        "action": "no_automatic_mutation",
+    }
+
+
+def reconcile_ig_technical_debt_once(*, now=None, limit=DEFAULT_LIMIT, dry_run=True):
+    """Return bounded, idempotent technical-debt proposals.
+
+    There is no dedicated technical-debt case table in the current schema.
+    Consequently this pass never writes an operator task, changes source
+    records, or contacts a provider, even when ``dry_run`` is false.  The
+    explicit persistence metadata lets callers distinguish a proposal from a
+    durable reconciliation without inventing lifecycle state.
+    """
+    now = now or timezone.now()
+    snapshot = technical_debt_snapshot(now=now, limit=limit)
+    proposals = sorted(
+        (_reconciler_case(case, now=now) for case in snapshot.get("cases") or ()),
+        key=lambda case: (case["identity"], case["case_fingerprint"]),
+    )
+    return {
+        "schema_version": RECONCILER_SCHEMA_VERSION,
+        "observed_at": now.isoformat(),
+        "dry_run": bool(dry_run),
+        "mode": "proposal_only",
+        "idempotent": True,
+        "provider_calls": 0,
+        "writes": 0,
+        "persistence": {
+            "supported": False,
+            "reason": "no_dedicated_technical_debt_case_schema",
+        },
+        "proposed_cases": proposals,
+        "case_count": len(proposals),
+        "coverage_complete": bool(snapshot.get("coverage_complete")),
+        "errors": list(snapshot.get("errors") or ()),
+        "sample_limit": snapshot.get("sample_limit", _bounded_limit(limit)),
     }

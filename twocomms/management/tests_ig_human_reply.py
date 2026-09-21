@@ -163,6 +163,26 @@ class HumanReplyCommandTests(TestCase):
         with self.assertRaisesRegex(HumanReplyRejected, "competing_command"):
             create_human_reply_command(self.customer.pk, actor=self.actor, text="Друге")
 
+    def test_unknown_command_blocks_same_actor_after_context_changes(self):
+        first = create_human_reply_command(self.customer.pk, actor=self.actor, text="Перше")
+        HumanReplyCommand.objects.filter(pk=first.command.pk).update(
+            state=HumanReplyCommand.State.UNKNOWN
+        )
+        InstagramBotMessage.objects.create(
+            sender_id=self.customer.igsid,
+            client=self.customer,
+            role=InstagramBotMessage.Role.USER,
+            text="Нове питання",
+            mid="human-inbound-after-unknown",
+            status=InstagramBotMessage.Status.DONE,
+            provider_created_at=timezone.now(),
+        )
+
+        with self.assertRaisesRegex(HumanReplyRejected, "competing_command"):
+            create_human_reply_command(self.customer.pk, actor=self.actor, text="Друге")
+
+        self.assertEqual(HumanReplyCommand.objects.count(), 1)
+
     def test_active_command_is_owned_by_one_actor_across_context_changes(self):
         other_actor = get_user_model().objects.create_superuser(
             username="human-reply-other-admin",

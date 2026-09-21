@@ -582,6 +582,18 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
             self.assertIn(contract, self.template)
         self.assertIn("row.addEventListener('keydown'", self.template)
 
+    def test_attention_snapshot_is_the_single_row_frame_owner(self):
+        for contract in (
+            'c.attention_snapshot',
+            'data-attention-frame',
+            '.bot-client-row[data-attention-frame="reply_debt"]',
+            '.bot-client-row[data-attention-frame="post_sale"]',
+            '.bot-client-row[data-attention-frame="overdue"]',
+            'const attentionLabel=attention.reason||\'\';',
+        ):
+            self.assertIn(contract, self.template)
+        self.assertIn('payment/shipment stays a badge', self.template)
+
     def test_commercial_truth_stays_visible_and_has_one_primary_row_badge(self):
         self.assertNotIn(".bot-client-tags{display:none}", self.template)
         for contract in (
