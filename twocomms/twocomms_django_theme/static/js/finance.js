@@ -364,6 +364,77 @@
             }
         }
 
+        // ── Постійне desktop-згортання бічної панелі ───────────────────────
+        // На мобільних залишається drawer-бургер вище; цей контрол активний
+        // тільки на широкому екрані й не перекриває вміст сторінки.
+        var sidebarToggle = document.getElementById('fin-sidebar-toggle');
+        var SIDEBAR_COLLAPSED_KEY = 'twocomms_finance_sidebar_collapsed';
+        var desktopSidebarQuery = window.matchMedia ? window.matchMedia('(min-width: 901px)') : null;
+
+        function isDesktopSidebarViewport() {
+            return desktopSidebarQuery ? desktopSidebarQuery.matches : window.innerWidth > 900;
+        }
+
+        function readSidebarPreference() {
+            try { return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'; } catch (err) { return false; }
+        }
+
+        function writeSidebarPreference(collapsed) {
+            try { window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (err) {}
+        }
+
+        function setDesktopSidebarCollapsed(collapsed, options) {
+            options = options || {};
+            if (!sidebarToggle || !sidebar) return;
+            if (!isDesktopSidebarViewport()) {
+                body.classList.remove('fin-sidebar-collapsed');
+                sidebarToggle.setAttribute('aria-expanded', 'true');
+                sidebarToggle.setAttribute('aria-label', 'Згорнути бічну панель');
+                sidebarToggle.setAttribute('title', 'Згорнути бічну панель');
+                sidebar.removeAttribute('aria-hidden');
+                sidebar.removeAttribute('inert');
+                return;
+            }
+            var next = !!collapsed;
+            body.classList.toggle('fin-sidebar-collapsed', next);
+            sidebarToggle.setAttribute('aria-expanded', next ? 'false' : 'true');
+            sidebarToggle.setAttribute('aria-label', next ? 'Розгорнути бічну панель' : 'Згорнути бічну панель');
+            sidebarToggle.setAttribute('title', next ? 'Розгорнути бічну панель' : 'Згорнути бічну панель');
+            if (next) {
+                sidebar.setAttribute('aria-hidden', 'true');
+                sidebar.setAttribute('inert', '');
+            } else {
+                sidebar.removeAttribute('aria-hidden');
+                sidebar.removeAttribute('inert');
+            }
+            if (!options.skipPersist) writeSidebarPreference(next);
+        }
+
+        if (sidebarToggle && sidebar) {
+            setDesktopSidebarCollapsed(readSidebarPreference(), { skipPersist: true });
+            sidebarToggle.addEventListener('click', function () {
+                var willCollapse = !body.classList.contains('fin-sidebar-collapsed');
+                setDesktopSidebarCollapsed(willCollapse);
+                if (willCollapse) hapticTick();
+                window.setTimeout(function () {
+                    if (!willCollapse && body.classList.contains('fin-sidebar-collapsed') === false) sidebarToggle.focus();
+                }, 390);
+            });
+            if (desktopSidebarQuery) {
+                var onDesktopSidebarViewportChange = function () {
+                    setDesktopSidebarCollapsed(readSidebarPreference(), { skipPersist: true });
+                };
+                if (typeof desktopSidebarQuery.addEventListener === 'function') {
+                    desktopSidebarQuery.addEventListener('change', onDesktopSidebarViewportChange);
+                } else if (typeof desktopSidebarQuery.addListener === 'function') {
+                    desktopSidebarQuery.addListener(onDesktopSidebarViewportChange);
+                }
+            }
+            window.addEventListener('resize', function () {
+                if (!isDesktopSidebarViewport()) body.classList.remove('fin-sidebar-collapsed');
+            }, { passive: true });
+        }
+
         window.FinanceSidebar = {
             open: function () { setSidebarOpen(true); },
             close: function () { setSidebarOpen(false); },

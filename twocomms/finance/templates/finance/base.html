@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="{% static 'css/finance-animations.css' %}?v=1">
     <link rel="stylesheet" href="{% static 'css/finance-filters.css' %}?v=1">
     <link rel="stylesheet" href="{% static 'css/finance-consignment.css' %}?v=1">
+    <link rel="stylesheet" href="{% static 'css/finance-sidebar.css' %}?v=20260921a">
     <meta name="theme-color" content="#0b0e14">
     <meta name="application-name" content="TwoComms Finance">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -164,6 +165,13 @@
                 </a>
             </div>
         </aside>
+
+        <button type="button" class="fin-sidebar-toggle" id="fin-sidebar-toggle" aria-controls="fin-sidebar" aria-expanded="true" aria-label="Згорнути бічну панель" title="Згорнути бічну панель">
+            <span class="fin-sidebar-toggle__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><path d="m14.7 5.3-1.4 1.4 5.3 5.3-5.3 5.3 1.4 1.4 6.7-6.7-6.7-6.7ZM4 11h12v2H4z"/></svg>
+            </span>
+        </button>
+
         <div class="fin-sidebar__backdrop" id="fin-sidebar-backdrop"></div>
 
         <!-- ===== Основний контент ===== -->

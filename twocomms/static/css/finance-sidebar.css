@@ -1,0 +1,82 @@
+/* Finance desktop sidebar collapse control. The drawer remains mobile-owned by finance.css. */
+.fin-sidebar-toggle {
+    --toggle-size: 34px;
+    position: fixed;
+    z-index: 70;
+    top: calc(var(--fin-header-h) + 18px);
+    left: calc(var(--fin-sidebar-w) - (var(--toggle-size) / 2));
+    width: var(--toggle-size);
+    height: var(--toggle-size);
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, .16);
+    border-radius: 50%;
+    color: var(--fin-text-2);
+    background: linear-gradient(145deg, rgba(35, 42, 56, .98), rgba(15, 20, 30, .98));
+    box-shadow: 0 7px 20px rgba(0, 0, 0, .35), 0 0 0 5px rgba(11, 14, 20, .72);
+    cursor: pointer;
+    transition: left .38s cubic-bezier(.22, 1, .36, 1), transform .24s ease, color .2s ease, border-color .2s ease, background .2s ease, box-shadow .2s ease;
+}
+.fin-sidebar-toggle::before {
+    content: '';
+    position: absolute;
+    inset: -6px;
+    border: 1px solid rgba(255, 255, 255, .07);
+    border-radius: inherit;
+    opacity: 0;
+    transform: scale(.82);
+    transition: opacity .25s ease, transform .25s ease;
+    pointer-events: none;
+}
+.fin-sidebar-toggle:hover,
+.fin-sidebar-toggle:focus-visible {
+    color: var(--fin-text);
+    border-color: rgba(243, 164, 61, .72);
+    background: linear-gradient(145deg, rgba(76, 60, 42, .98), rgba(27, 28, 35, .98));
+    box-shadow: 0 10px 24px rgba(0, 0, 0, .42), 0 0 0 5px rgba(243, 164, 61, .10), 0 0 22px rgba(243, 164, 61, .15);
+    transform: translateY(-1px);
+    outline: none;
+}
+.fin-sidebar-toggle:focus-visible::before { opacity: 1; transform: scale(1); }
+.fin-sidebar-toggle:active { transform: translateY(1px) scale(.95); }
+.fin-sidebar-toggle__icon { display: grid; place-items: center; transition: transform .38s cubic-bezier(.22, 1, .36, 1); }
+.fin-sidebar-toggle__icon svg { width: 17px; height: 17px; fill: currentColor; }
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle {
+    left: 14px;
+    transform: none;
+}
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:hover,
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:focus-visible { transform: translateY(-1px); }
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle:active { transform: translateY(1px) scale(.95); }
+.fin-body.fin-sidebar-collapsed .fin-sidebar-toggle__icon { transform: rotate(180deg); }
+.fin-body.fin-sidebar-collapsed .fin-sidebar {
+    flex-basis: 0;
+    width: 0;
+    border-right-color: transparent;
+}
+.fin-body.fin-sidebar-collapsed .fin-sidebar__scroll {
+    opacity: 0;
+    transform: translateX(-12px) scale(.985);
+    pointer-events: none;
+}
+.fin-body.fin-sidebar-collapsed .fin-sidebar__scroll,
+.fin-sidebar__scroll { transition: opacity .24s ease, transform .38s cubic-bezier(.22, 1, .36, 1); }
+.fin-body.fin-sidebar-collapsed .fin-sidebar { transition: flex-basis .38s cubic-bezier(.22, 1, .36, 1), width .38s cubic-bezier(.22, 1, .36, 1), border-color .2s ease; }
+.fin-main { transition: flex-basis .38s cubic-bezier(.22, 1, .36, 1), width .38s cubic-bezier(.22, 1, .36, 1); }
+
+@media (max-width: 900px) {
+    .fin-sidebar-toggle { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .fin-sidebar-toggle,
+    .fin-sidebar-toggle__icon,
+    .fin-sidebar,
+    .fin-sidebar__scroll,
+    .fin-main { transition-duration: .01ms !important; }
+}
+
+@media (min-width: 901px) {
+    .fin-body.fin-sidebar-collapsed .fin-content { padding-left: 68px; }
+}
