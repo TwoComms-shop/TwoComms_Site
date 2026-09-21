@@ -127,6 +127,7 @@ class ReportsTests(TestCase):
         data = rep.pnl(self.company, {'period': 'all'})
         self.assertEqual(data['owner_drawn'], Decimal('0'))
         self.assertEqual(data['expenses'], Decimal('650'))
+        self.assertIn('Особисті витрати', [row['name'] for row in data['expense_by_category']])
 
     def test_pnl_heat_palette_keeps_ranked_steps_distinct(self):
         positive = [_pnl_heat_color('positive', index / 30) for index in range(31)]

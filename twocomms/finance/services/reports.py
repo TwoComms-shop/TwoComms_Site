@@ -289,7 +289,7 @@ def _merge_series(*series_list):
 
 
 def _group_by_category(qs):
-    rows = (qs.values('category_id', 'category__name', 'economic_kind')
+    rows = (qs.values('category_id', 'category__name', 'economic_kind', 'account__is_business')
             .annotate(total=Coalesce(Sum('amount_base'), Decimal('0')))
             .order_by('-total'))
     fallback_names = {'grant_inflow': 'Цільові гранти'}
@@ -298,6 +298,11 @@ def _group_by_category(qs):
         if not row['total']:
             continue
         name = row['category__name'] or fallback_names.get(row['economic_kind'], 'Без категорії')
+        # Legacy imports sometimes stamped the owner category on a personal
+        # card expense. Keep that movement visible in an all-funds view, but
+        # do not present it as money withdrawn from the business.
+        if name == 'Вивід на особисте' and row['account__is_business'] is False:
+            name = 'Особисті витрати'
         key = row['category_id'] if row['category_id'] is not None else (name, row['economic_kind'])
         if key not in grouped:
             grouped[key] = {
