@@ -89,7 +89,9 @@ class OwnerDrawingsTestCase(TestCase):
         expense.refresh_from_db()
         self.assertEqual(expense.type, Transaction.TYPE_TRANSFER)
         self.assertEqual(expense.to_account, self.personal_account)
-        self.assertFalse(expense.is_business)
+        self.assertTrue(expense.is_business)
+        self.assertEqual(expense.ownership_scope, 'business')
+        self.assertEqual(expense.economic_kind, 'owner_draw')
 
         # Дохід має бути видалений
         self.assertFalse(Transaction.objects.filter(id=income.id).exists())

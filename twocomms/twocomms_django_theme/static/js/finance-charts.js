@@ -196,7 +196,14 @@
       if (!base || !row || row.grouped || !row.categoryId) return '';
       var url = new URL(base, window.location.origin);
       url.searchParams.set('categories', row.categoryId);
-      url.searchParams.set('types', side === 'expense' ? 'expense' : 'income');
+      if (side === 'expense' && row.economicKind === 'owner_draw') {
+        // Owner withdrawals can be represented by a reconciled transfer or by
+        // an older expense row. Keep both forms in the payment drill-down.
+        url.searchParams.set('types', 'transfer,expense');
+        url.searchParams.set('scope', 'business');
+      } else {
+        url.searchParams.set('types', side === 'expense' ? 'expense' : 'income');
+      }
       if (report.period && report.period.start && report.period.end) {
         url.searchParams.set('period', 'custom');
         url.searchParams.set('date_from', report.period.start);

@@ -812,7 +812,15 @@ def reconcile_internal_transfers(company, *, user, window_hours=168, tolerance_p
             is_system=True, name='Вивід на особисте'
         ).first()
 
-        update_fields = {'is_business': False}
+        # A withdrawal from a business/FOP account is a business cash movement
+        # to the owner's personal side. Keep it in business filters and let the
+        # reports classify it as an owner distribution rather than an operating
+        # expense. The destination account remains personal.
+        update_fields = {
+            'is_business': True,
+            'ownership_scope': 'business',
+            'economic_kind': 'owner_draw',
+        }
         if owner_drawings_cat:
             update_fields['category_id'] = owner_drawings_cat.id
 

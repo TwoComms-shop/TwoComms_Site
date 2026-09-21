@@ -77,9 +77,12 @@ def _csv_ids(value):
 def _scope_q(scope):
     """Prefer a confirmed ledger scope and fall back to legacy row metadata."""
     if scope == 'business':
-        return Q(ownership_scope='business') | Q(ownership_scope='unknown', is_business=True)
+        return (Q(ownership_scope='business')
+                | Q(ownership_scope='unknown', is_business=True)
+                | Q(account__is_business=True))
     if scope == 'personal':
-        return Q(ownership_scope='personal') | Q(ownership_scope='unknown', is_business=False)
+        return (Q(ownership_scope='personal')
+                | Q(ownership_scope='unknown', is_business=False, account__is_business=False))
     return Q()
 
 

@@ -48,7 +48,9 @@ def _scope_q(scope, *, prefix=''):
     ownership = f'{prefix}ownership_scope'
     legacy = f'{prefix}is_business'
     if scope == 'business':
-        return Q(**{ownership: 'business'}) | Q(**{ownership: 'unknown', legacy: True})
+        return (Q(**{ownership: 'business'})
+                | Q(**{ownership: 'unknown', legacy: True})
+                | Q(**{f'{prefix}account__is_business': True}))
     if scope == 'personal':
         return Q(**{ownership: 'personal'}) | Q(**{ownership: 'unknown', legacy: False})
     return Q()
@@ -102,7 +104,11 @@ def _owner_draw_q(*, prefix=''):
     signal, so it remains visible even when classification metadata is absent.
     """
     p = prefix
-    return (
+    # A personal pension/card transaction may carry the same legacy category,
+    # but it is not a business withdrawal.  The source account being a
+    # business account is therefore a required boundary for every legacy form.
+    business_source = Q(**{f'{p}account__is_business': True})
+    return business_source & (
         Q(**{
             f'{p}economic_kind__in': ['owner_draw', 'personal_transfer'],
             f'{p}type__in': [Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE],
@@ -111,8 +117,8 @@ def _owner_draw_q(*, prefix=''):
         | Q(**{f'{p}category__name': 'Вивід на особисте'})
         | Q(**{
             f'{p}type': Transaction.TYPE_TRANSFER,
-            f'{p}account__is_business': True,
             f'{p}to_account__is_business': False,
+            f'{p}to_account__type__in': ['card', 'bank'],
         })
     )
 
@@ -124,6 +130,15 @@ def _owner_draw_amount(qs):
         ).only('amount_base', 'amount')),
         Decimal('0'),
     )
+
+
+def _owner_scope_qs(qs, params):
+    scope = (params.get('scope') or '').strip()
+    if scope == 'personal':
+        return qs.none()
+    if scope == 'business':
+        return qs.filter(_scope_q(scope))
+    return qs
 
 
 def _owner_expense_rows(company, total):
@@ -190,10 +205,12 @@ def cash_flow(company, params):
                             'debt_repayment', 'pension_income', 'adjustment']
     if not include_grants:
         excluded_management.append('grant_inflow')
-    owner_qs = _apply_dim_filters(_actual(company), params, apply_scope=False).filter(
+    owner_qs = _owner_scope_qs(_apply_dim_filters(_actual(company), params, apply_scope=False), params).filter(
         date_actual__gte=day_start(start), date_actual__lte=day_end(end),
     ).filter(_owner_draw_q(), type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE])
-    management_qs = qs.exclude(economic_kind__in=excluded_management).exclude(_owner_draw_q())
+    management_qs = qs.exclude(economic_kind__in=excluded_management).exclude(
+        id__in=owner_qs.values('id'),
+    ).exclude(category__name='Вивід на особисте', account__is_business=True)
     transfer_fees = _unrepresented_transfer_fees(company, params, start, end)
     cash_in = management_qs.filter(type=Transaction.TYPE_INCOME).exclude(
         economic_kind='expense_refund').aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
@@ -308,10 +325,12 @@ def pnl(company, params):
                            'debt_repayment', 'pension_income', 'adjustment', 'expense_refund']
     if not include_grants:
         excluded_management.append('grant_inflow')
-    owner_qs = _apply_dim_filters(_actual(company), params, apply_scope=False).filter(
+    owner_qs = _owner_scope_qs(_apply_dim_filters(_actual(company), params, apply_scope=False), params).filter(
         Q_or_date(start, end),
     ).filter(_owner_draw_q(), type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE])
-    management_qs = qs.exclude(economic_kind__in=excluded_management).exclude(_owner_draw_q())
+    management_qs = qs.exclude(economic_kind__in=excluded_management).exclude(
+        id__in=owner_qs.values('id'),
+    ).exclude(category__name='Вивід на особисте', account__is_business=True)
     transfer_fees = _unrepresented_transfer_fees(company, params, start, end, pnl_dates=True)
     income = management_qs.filter(type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
@@ -450,7 +469,8 @@ def owner_drawings_report(company, params):
 
     # Рахуємо бізнес-прибуток за той самий період для порівняння
     business_qs = (_actual(company).filter(
-            Q(ownership_scope='business') | Q(ownership_scope='unknown', is_business=True),
+            Q(account__is_business=True) | Q(ownership_scope='business')
+            | Q(ownership_scope='unknown', is_business=True),
             date_actual__gte=day_start(start),
             date_actual__lte=day_end(end))
           .exclude(type=Transaction.TYPE_TRANSFER))

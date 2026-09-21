@@ -99,6 +99,8 @@ class ReportsTests(TestCase):
         self.assertEqual(data['profit'], Decimal('600'))
 
     def test_legacy_owner_category_is_separate_from_pnl(self):
+        self.acc.is_business = True
+        self.acc.save(update_fields=['is_business'])
         category = self.company.categories.create(
             name='Вивід на особисте', type='both', is_system=True,
         )
@@ -109,8 +111,22 @@ class ReportsTests(TestCase):
             category=category, is_business=False, date_actual=timezone.now(),
         )
         data = rep.pnl(self.company, {'period': 'all'})
+        self.assertEqual(data['expenses'], Decimal('850'))
+        self.assertEqual(data['owner_drawn'], Decimal('450'))
+
+    def test_personal_category_does_not_become_business_owner_draw(self):
+        category = self.company.categories.create(
+            name='Вивід на особисте', type='both', is_system=True,
+        )
+        Transaction.objects.create(
+            company=self.company, type=Transaction.TYPE_EXPENSE,
+            status=Transaction.STATUS_ACTUAL, amount=Decimal('250'),
+            amount_base=Decimal('250'), currency='UAH', account=self.acc,
+            category=category, is_business=False, date_actual=timezone.now(),
+        )
+        data = rep.pnl(self.company, {'period': 'all'})
+        self.assertEqual(data['owner_drawn'], Decimal('0'))
         self.assertEqual(data['expenses'], Decimal('650'))
-        self.assertEqual(data['owner_drawn'], Decimal('250'))
 
     def test_pnl_heat_palette_keeps_ranked_steps_distinct(self):
         positive = [_pnl_heat_color('positive', index / 30) for index in range(31)]
