@@ -11,12 +11,15 @@ from django.utils import timezone
 from management.models import (
     CallRecord,
     IgBotNotification,
+    IgCustomerTurn,
     IgClient,
     InstagramBotMessage,
+    IgTurnMessage,
     InstagramBotSettings,
     InstagramBotTaskHeartbeat,
 )
 from management.ig_bot_models import IgConversationAnalysisJob
+from management.services.ig_turn_revisions import create_collecting_revision
 from management.services.ig_task_health import (
     TASK_SPECS,
     check_task_health,
@@ -404,6 +407,8 @@ class BotHealthEndpointTests(TestCase):
 
         snapshot = release_queue_snapshot()
         self.assertEqual(snapshot["dangerous_backlog"], 2)
+        self.assertEqual(snapshot["legacy_inbound_pending"], 1)
+        self.assertEqual(snapshot["revision_owned_pending"], 0)
         self.assertEqual(snapshot["analysis_failed"], 1)
 
         response = self.client.get("/bot/health/", HTTP_HOST="management.twocomms.shop", secure=True)
@@ -411,6 +416,41 @@ class BotHealthEndpointTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["queues"]["dangerous_backlog"], 2)
         self.assertEqual(response.json()["queues"]["analysis_failed"], 1)
+
+    def test_release_snapshot_preserves_revision_owned_pending_as_evidence(self):
+        settings = InstagramBotSettings.load()
+        settings.is_enabled = False
+        settings.save(update_fields=["is_enabled", "updated_at"])
+        self._make_all_tasks_healthy()
+        client = IgClient.objects.create(igsid="release-health-owned-client")
+        source = InstagramBotMessage.objects.create(
+            sender_id=client.igsid,
+            client=client,
+            role=InstagramBotMessage.Role.USER,
+            status=InstagramBotMessage.Status.PENDING,
+            text="owned revision source",
+        )
+        turn = IgCustomerTurn.objects.create(
+            client=client,
+            primary_source_message=source,
+            window_started_at=timezone.now(),
+            window_deadline=timezone.now(),
+        )
+        IgTurnMessage.objects.create(turn=turn, message=source, ordinal=1, role="user")
+        revision = create_collecting_revision(turn, [source], bypass_quiet=True).revision
+        revision.sealed_at = timezone.now()
+        revision.save(update_fields=["sealed_at", "updated_at"])
+
+        snapshot = release_queue_snapshot()
+
+        self.assertEqual(snapshot["inbound_pending"], 1)
+        self.assertEqual(snapshot["legacy_inbound_pending"], 0)
+        self.assertEqual(snapshot["revision_owned_pending"], 1)
+        self.assertEqual(
+            snapshot["revision_owned_pending_reason"],
+            "preserved_revision_debt_evidence",
+        )
+        self.assertEqual(snapshot["dangerous_backlog"], 0)
 
     def test_release_snapshot_reports_sanitized_binotel_queue_categories(self):
         settings = InstagramBotSettings.load()
@@ -492,6 +532,9 @@ class BotHealthEndpointTests(TestCase):
                 "available": False,
                 "dangerous_backlog": 0,
                 "inbound_pending": 0,
+                "legacy_inbound_pending": 0,
+                "revision_owned_pending": 0,
+                "revision_owned_pending_reason": "preserved_revision_debt_evidence",
                 "reply_pending": 0,
                 "notification_unresolved": 0,
                 "analysis_pending": 0,

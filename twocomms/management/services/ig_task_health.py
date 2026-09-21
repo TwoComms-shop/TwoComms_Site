@@ -12,7 +12,7 @@ from datetime import timedelta
 from time import monotonic, time
 
 from django.db import DatabaseError, OperationalError, ProgrammingError
-from django.db.models import Case, F, Value, When
+from django.db.models import Case, F, Subquery, Value, When
 from django.utils import timezone
 
 from management.models import InstagramBotTaskHeartbeat
@@ -442,10 +442,24 @@ def release_queue_snapshot() -> dict:
 
     try:
         call_auto_analysis_enabled = _call_auto_analysis_enabled()
-        inbound_pending = InstagramBotMessage.objects.filter(
+        inbound_queue = InstagramBotMessage.objects.filter(
             role=InstagramBotMessage.Role.USER,
             status__in=(InstagramBotMessage.Status.PENDING, InstagramBotMessage.Status.PROCESSING),
+        )
+        inbound_pending = inbound_queue.count()
+        # Revision-owned sources remain pending as immutable delivery evidence.
+        # They have a separate canonical/debt owner and must not be reported as
+        # runnable legacy backlog or trigger the release-boundary alarm.
+        from management.ig_bot_models import IgTurnRevisionSource
+        from management.services.ig_revision_live import _owned_revisions
+
+        owned_source_ids = IgTurnRevisionSource.objects.filter(
+            revision_id__in=Subquery(_owned_revisions().values("id")),
+        ).values("message_id")
+        revision_owned_pending = inbound_queue.filter(
+            pk__in=Subquery(owned_source_ids),
         ).count()
+        legacy_inbound_pending = inbound_pending - revision_owned_pending
         reply_pending = InstagramBotMessage.objects.filter(
             role=InstagramBotMessage.Role.MODEL,
             status__in=(InstagramBotMessage.Status.PENDING, InstagramBotMessage.Status.PROCESSING),
@@ -511,6 +525,9 @@ def release_queue_snapshot() -> dict:
             "available": False,
             "dangerous_backlog": 0,
             "inbound_pending": 0,
+            "legacy_inbound_pending": 0,
+            "revision_owned_pending": 0,
+            "revision_owned_pending_reason": "preserved_revision_debt_evidence",
             "reply_pending": 0,
             "notification_unresolved": 0,
             "analysis_pending": 0,
@@ -525,7 +542,7 @@ def release_queue_snapshot() -> dict:
         }
 
     dangerous_backlog = (
-        inbound_pending
+        legacy_inbound_pending
         + reply_pending
         + notification_unresolved
         + analysis_pending
@@ -539,6 +556,9 @@ def release_queue_snapshot() -> dict:
         "available": True,
         "dangerous_backlog": dangerous_backlog,
         "inbound_pending": inbound_pending,
+        "legacy_inbound_pending": legacy_inbound_pending,
+        "revision_owned_pending": revision_owned_pending,
+        "revision_owned_pending_reason": "preserved_revision_debt_evidence",
         "reply_pending": reply_pending,
         "notification_unresolved": notification_unresolved,
         "analysis_pending": analysis_pending,

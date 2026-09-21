@@ -276,6 +276,97 @@ class DaemonRuntimeHealthAlertTests(TestCase):
             "oldest_age_seconds": 120,
         }])
         self.assertNotIn("sample_ids", kwargs["metadata"]["technical_debt_cases"][0])
+        self.assertTrue(kwargs["metadata"]["requires_human_review"])
+        alert_text = notify.call_args.args[0]
+        self.assertIn("доступність відповідей потребує окремої перевірки", alert_text)
+        self.assertNotIn("вважаються недоступними до відновлення progress", alert_text)
+
+    @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
+    @patch("management.services.ig_alerts.alert_dedupe_key", return_value="technical-debt-hour")
+    @patch("management.services.instagram_bot.notify_manager", return_value=True)
+    @patch(
+        "management.services.ig_daemon_health.technical_debt_snapshot",
+        return_value={
+            "fingerprint": "debt-fingerprint",
+            "cases": [{
+                "reason": "canonical_delivery_unknown", "scope": "delivery_effect",
+                "count": 2, "oldest_age_seconds": 120, "sample_ids": [99],
+                "sampled": False, "has_more": False,
+            }],
+            "case_count": 1, "coverage_complete": True, "errors": [], "sample_limit": 100,
+        },
+    )
+    def test_acknowledged_matching_debt_is_not_realerted(self, debt, notify, dedupe, _maintenance):
+        from django.utils import timezone
+        from management.ig_bot_models import IgTechnicalDebtCase
+        from management.services.ig_technical_debt import _reconciler_case
+
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.is_enabled = True
+        settings_obj.save(update_fields=["is_enabled", "updated_at"])
+        current_case = debt.return_value["cases"][0]
+        fingerprint = _reconciler_case(current_case, now=timezone.now())["case_fingerprint"]
+        IgTechnicalDebtCase.objects.create(
+            case_key="canonical_delivery_unknown:delivery_effect",
+            reason="canonical_delivery_unknown", scope="delivery_effect",
+            status=IgTechnicalDebtCase.Status.ACKNOWLEDGED,
+            observation_fingerprint=fingerprint,
+        )
+        now = time.time()
+        cache.set(PROCESS_PULSE_KEY, {"at": now}, 600)
+        cache.set(MAIN_PROGRESS_KEY, {"at": now, "state": "idle"}, 600)
+
+        from management.services.ig_daemon_health import _unhandled_technical_debt_cases
+
+        self.assertEqual(_unhandled_technical_debt_cases([current_case]), [])
+        with patch(
+            "management.services.ig_worker_progress.worker_health_snapshot",
+            return_value={"healthy": True, "lanes": {}},
+        ):
+            snapshot = alert_daemon_runtime_health()
+
+        self.assertFalse(snapshot["alerted"])
+        notify.assert_not_called()
+        dedupe.assert_not_called()
+
+    @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
+    @patch("management.services.ig_alerts.alert_dedupe_key", return_value="technical-debt-hour")
+    @patch("management.services.instagram_bot.notify_manager", return_value=True)
+    @patch(
+        "management.services.ig_daemon_health.technical_debt_snapshot",
+        return_value={
+            "fingerprint": "new-debt-fingerprint",
+            "cases": [{
+                "reason": "canonical_delivery_unknown", "scope": "delivery_effect",
+                "count": 2, "oldest_age_seconds": 120, "sample_ids": [100],
+                "sampled": False, "has_more": False,
+            }],
+            "case_count": 1, "coverage_complete": True, "errors": [], "sample_limit": 100,
+        },
+    )
+    def test_acknowledged_debt_with_changed_observation_is_alertable(self, debt, notify, dedupe, _maintenance):
+        from management.ig_bot_models import IgTechnicalDebtCase
+
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.is_enabled = True
+        settings_obj.save(update_fields=["is_enabled", "updated_at"])
+        IgTechnicalDebtCase.objects.create(
+            case_key="canonical_delivery_unknown:delivery_effect",
+            reason="canonical_delivery_unknown", scope="delivery_effect",
+            status=IgTechnicalDebtCase.Status.CLAIMED,
+            observation_fingerprint="old-observation-fingerprint",
+        )
+        now = time.time()
+        cache.set(PROCESS_PULSE_KEY, {"at": now}, 600)
+        cache.set(MAIN_PROGRESS_KEY, {"at": now, "state": "idle"}, 600)
+
+        snapshot = alert_daemon_runtime_health()
+
+        self.assertTrue(snapshot["alerted"])
+        notify.assert_called_once()
+        dedupe.assert_called_once_with(
+            "ig_technical_debt", window_minutes=60, text="new-debt-fingerprint"
+        )
 
 
 class DaemonStatusUiContractTests(SimpleTestCase):

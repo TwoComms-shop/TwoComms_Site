@@ -107,12 +107,51 @@ def daemon_runtime_health_snapshot(*, now_epoch: float | None = None) -> dict:
     }
 
 
+def _unhandled_technical_debt_cases(cases: list[dict]) -> list[dict]:
+    """Keep current debt alertable until its acknowledged observation changes."""
+    if not cases:
+        return []
+    try:
+        from django.utils import timezone
+
+        from management.ig_bot_models import IgTechnicalDebtCase
+        from management.services.ig_technical_debt import _reconciler_case
+
+        identities = {
+            f"{str(case.get('reason') or '')[:64]}:{str(case.get('scope') or '')[:64]}"
+            for case in cases
+        }
+        handled = {
+            row["case_key"]: row["observation_fingerprint"]
+            for row in IgTechnicalDebtCase.objects.filter(
+                case_key__in=identities,
+                status__in=(
+                    IgTechnicalDebtCase.Status.ACKNOWLEDGED,
+                    IgTechnicalDebtCase.Status.CLAIMED,
+                ),
+            ).values("case_key", "observation_fingerprint")
+            if row.get("observation_fingerprint")
+        }
+        if not handled:
+            return cases
+        now = timezone.now()
+        return [
+            case for case in cases
+            if handled.get(
+                f"{str(case.get('reason') or '')[:64]}:{str(case.get('scope') or '')[:64]}"
+            ) != _reconciler_case(case, now=now)["case_fingerprint"]
+        ]
+    except Exception:
+        # Alerting must remain visible if lifecycle storage is unavailable.
+        return cases
+
+
 def alert_daemon_runtime_health() -> dict:
     """Deliver one hourly technical alert for a live-but-stalled daemon."""
     snapshot = daemon_runtime_health_snapshot()
     snapshot["alerted"] = False
     technical_debt = snapshot.get("technical_debt") or {}
-    debt_cases = technical_debt.get("cases") or []
+    debt_cases = _unhandled_technical_debt_cases(technical_debt.get("cases") or [])
     if not snapshot["stalled"] and not snapshot.get("worker_stalled") and not debt_cases:
         return snapshot
     try:
@@ -151,7 +190,9 @@ def alert_daemon_runtime_health() -> dict:
                 f"Process pulse: {snapshot['process_age_seconds']} с",
                 f"Main progress: {snapshot['main_age_seconds']} с",
                 f"Lanes: {', '.join(affected_workers)[:240]}" if affected_workers else "",
-                "Клієнтські відповіді вважаються недоступними до відновлення progress.",
+                "Клієнтські відповіді вважаються недоступними до відновлення progress."
+                if not debt_alert else
+                "Цей алерт фіксує технічний борг; доступність відповідей потребує окремої перевірки.",
             ),
         )
         snapshot["alerted"] = bool(
@@ -177,7 +218,7 @@ def alert_daemon_runtime_health() -> dict:
                     "process_age_seconds": snapshot["process_age_seconds"],
                     "main_age_seconds": snapshot["main_age_seconds"],
                     "worker_lanes": affected_workers,
-                    "requires_human_review": False,
+                    "requires_human_review": bool(debt_alert),
                 },
                 deliver_immediately=True,
             )
