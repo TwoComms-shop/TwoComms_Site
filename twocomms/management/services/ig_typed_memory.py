@@ -10,8 +10,8 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
-from django.db import IntegrityError, OperationalError, connection, transaction
-from django.db.models import F, OuterRef, Subquery
+from django.db import DatabaseError, IntegrityError, OperationalError, connection, transaction
+from django.db.models import F, OuterRef, Q, Subquery
 from django.utils import timezone
 
 from management.models import (
@@ -29,13 +29,20 @@ from management.models import (
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow_compare"
+MEMORY_READ_OK = "ok"
+MEMORY_READ_UNKNOWN = "unknown"
+MEMORY_READ_STALE = "stale"
+MEMORY_READ_INVALID = "invalid"
+MEMORY_READ_EMPTY = "empty"
 SCHEMA_VERSION = "typed-memory.v1"
 PROJECTOR_VERSION = "typed-memory-projector.v1"
 RESULT_SCHEMA_VERSION = "analysis-v2.2"
 MAX_EVIDENCE = 40
 MAX_RECONCILE = 500
+MAX_READ_HEADS = 100
 MAX_CHAIN_DEPTH = IG_MEMORY_MAX_CHAIN_DEPTH
 _KEY_ID_RE = re.compile(r"^tmk_(?!.*[0-9]{7})[a-z0-9][a-z0-9_.-]{0,27}$")
+_LINE_ID_RE = re.compile(r"^line:(?!.*[0-9]{7})[a-z0-9][a-z0-9_.-]{0,79}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1073,6 +1080,254 @@ def reconcile_typed_memory(*, limit=100) -> dict:
         "expiry": expiry,
         "reset_tombstones": reset_tombstones,
     }
+
+
+def _memory_read_result(
+    status: str,
+    *,
+    client_id: int | None = None,
+    episode_id: int | None = None,
+    line_id: str = "",
+    reason: str = "",
+    facts: tuple[dict, ...] = (),
+    omitted: dict[str, int] | None = None,
+) -> dict:
+    """Build a content-safe read result shared by every reader outcome."""
+    return {
+        "status": status,
+        "client_id": int(client_id) if client_id else None,
+        "episode_id": int(episode_id) if episode_id else None,
+        "line_id": line_id,
+        "reason": reason,
+        "facts": list(facts),
+        "omitted": dict(omitted or {}),
+        "source_watermark_message_id": max(
+            (int(fact["source_watermark_message_id"]) for fact in facts),
+            default=0,
+        ),
+        "evidence_message_ids": sorted({
+            int(message_id)
+            for fact in facts
+            for message_id in fact["evidence_message_ids"]
+        }),
+    }
+
+
+def read_typed_memory(
+    client_or_id,
+    *,
+    episode_id: int | None = None,
+    line_id: str = "",
+    watermark_message_id: int | None = None,
+) -> dict:
+    """Read valid current memory without writing or invoking a provider.
+
+    Client facts are always eligible. Episode and line facts require their
+    matching scope arguments, preventing a previous recipient or episode from
+    leaking into a current response. Any integrity failure fails closed for the
+    whole read; reset/freshness mismatches are omitted as stale.
+    """
+    client_id = getattr(client_or_id, "pk", client_or_id)
+    try:
+        client_id = int(client_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        client_id = 0
+    try:
+        episode_id = int(episode_id) if episode_id is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return _memory_read_result(
+            MEMORY_READ_UNKNOWN,
+            client_id=client_id or None,
+            reason="invalid_episode_scope",
+        )
+    line_id = str(line_id or "").strip()
+    if line_id and (
+        len(line_id) > 96
+        or episode_id is None
+        or not _LINE_ID_RE.fullmatch(line_id)
+    ):
+        return _memory_read_result(
+            MEMORY_READ_UNKNOWN,
+            client_id=client_id or None,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="invalid_line_scope",
+        )
+    if episode_id is not None and episode_id <= 0:
+        return _memory_read_result(
+            MEMORY_READ_UNKNOWN,
+            client_id=client_id or None,
+            reason="invalid_episode_scope",
+        )
+    try:
+        watermark = (
+            int(watermark_message_id)
+            if watermark_message_id is not None
+            else None
+        )
+    except (TypeError, ValueError, OverflowError):
+        return _memory_read_result(
+            MEMORY_READ_UNKNOWN,
+            client_id=client_id or None,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="invalid_watermark",
+        )
+    if watermark is not None and watermark < 0:
+        return _memory_read_result(
+            MEMORY_READ_UNKNOWN,
+            client_id=client_id or None,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="invalid_watermark",
+        )
+    if not client_id:
+        return _memory_read_result(MEMORY_READ_UNKNOWN, reason="missing_client")
+
+    try:
+        client = IgClient.objects.filter(pk=client_id).first()
+    except DatabaseError:
+        return _memory_read_result(
+            MEMORY_READ_INVALID,
+            client_id=client_id,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="storage_error",
+        )
+    if client is None or client.hidden_at or client.privacy_erasure_started_at:
+        return _memory_read_result(
+            MEMORY_READ_UNKNOWN,
+            client_id=client_id,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="client_unavailable",
+        )
+
+    from management.services.ig_funnel_reset import current_message_floor
+
+    try:
+        reset_floor = int(current_message_floor(client) or 0)
+    except DatabaseError:
+        return _memory_read_result(
+            MEMORY_READ_INVALID,
+            client_id=client_id,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="storage_error",
+        )
+    client_scope = {
+        "scope": IgMemoryFact.Scope.CLIENT,
+        "commercial_episode_id__isnull": True,
+        "line_id": "",
+    }
+    scope_filter = Q(**client_scope)
+    if episode_id is not None:
+        scope_filter |= Q(
+            scope=IgMemoryFact.Scope.EPISODE,
+            commercial_episode_id=episode_id,
+            line_id="",
+        )
+        if line_id:
+            scope_filter |= Q(
+                scope=IgMemoryFact.Scope.LINE,
+                commercial_episode_id=episode_id,
+                line_id=line_id,
+            )
+    try:
+        heads = list(
+            IgMemoryHead.objects.filter(client_id=client_id)
+            .filter(scope_filter)
+            .select_related("current_fact")
+            .prefetch_related("current_fact__evidence_rows")
+            .order_by("slot_key")[:MAX_READ_HEADS]
+        )
+    except DatabaseError:
+        return _memory_read_result(
+            MEMORY_READ_INVALID,
+            client_id=client_id,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="storage_error",
+        )
+    if not heads:
+        return _memory_read_result(
+            MEMORY_READ_EMPTY,
+            client_id=client_id,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="no_matching_heads",
+        )
+
+    facts: list[dict] = []
+    omitted = {"stale": 0, "invalid": 0}
+    for head in heads:
+        try:
+            chain_valid = memory_chain_valid(head)
+        except (DatabaseError, IntegrityError, OperationalError, ValidationError, ObjectDoesNotExist):
+            chain_valid = False
+        if not chain_valid:
+            omitted["invalid"] += 1
+            continue
+        if head.state != IgMemoryHead.State.ACTIVE:
+            omitted["stale"] += 1
+            continue
+        try:
+            fact = head.current_fact
+            source_watermark = int(fact.source_watermark_message_id or 0)
+            if source_watermark < reset_floor:
+                omitted["stale"] += 1
+                continue
+            if watermark is not None and source_watermark > watermark:
+                omitted["stale"] += 1
+                continue
+            evidence_ids = tuple(sorted({
+                int(row.message_id)
+                for row in fact.evidence_rows.all()
+            }))
+            facts.append({
+                "head_id": int(head.pk),
+                "fact_id": int(fact.pk),
+                "fact_key": str(fact.fact_key),
+                "typed_value": dict(fact.typed_value or {}),
+                "scope": str(fact.scope),
+                "episode_id": int(fact.commercial_episode_id)
+                if fact.commercial_episode_id else None,
+                "line_id": str(fact.line_id or ""),
+                "revision": int(head.revision),
+                "source_result_id": int(fact.source_result_id)
+                if fact.source_result_id else None,
+                "source_watermark_message_id": source_watermark,
+                "evidence_message_ids": list(evidence_ids),
+            })
+        except (DatabaseError, IntegrityError, OperationalError, TypeError, ValueError, ObjectDoesNotExist):
+            omitted["invalid"] += 1
+
+    if omitted["invalid"]:
+        return _memory_read_result(
+            MEMORY_READ_INVALID,
+            client_id=client_id,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="integrity_failure",
+            omitted=omitted,
+        )
+    if not facts:
+        return _memory_read_result(
+            MEMORY_READ_STALE,
+            client_id=client_id,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="reset_or_freshness_floor",
+            omitted=omitted,
+        )
+    return _memory_read_result(
+        MEMORY_READ_OK,
+        client_id=client_id,
+        episode_id=episode_id,
+        line_id=line_id,
+        facts=tuple(facts),
+        omitted=omitted,
+    )
 
 
 def parity_report(*, limit=500) -> dict:

@@ -22,6 +22,10 @@ class ExtractMediaUrlsTests(SimpleTestCase):
         msg = {"attachments": [{"type": "ig_reel", "payload": {"url": "https://cdn/r.jpg"}}]}
         self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/r.jpg"])
 
+    def test_ig_post_repost_is_retained_as_media(self):
+        msg = {"attachments": [{"type": "ig_post", "payload": {"url": "https://cdn/post.jpg"}}]}
+        self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/post.jpg"])
+
     def test_story_mention(self):
         msg = {"attachments": [{"type": "story_mention", "payload": {"url": "https://cdn/sm.jpg"}}]}
         self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/sm.jpg"])
@@ -373,6 +377,27 @@ class HandleWebhookPayloadTests(TestCase):
         self.assertEqual(n, 1)
         msg = InstagramBotMessage.objects.get(mid="mm1")
         self.assertEqual(json.loads(msg.attachments), ["https://cdn/post.jpg"])
+
+    def test_enqueues_textless_ig_post_repost_with_media(self):
+        payload = {"entry": [{"messaging": [{
+            "sender": {"id": "ig-post-user"},
+            "message": {"mid": "ig-post-mid", "attachments": [{
+                "type": "ig_post",
+                "payload": {
+                    "url": "https://cdn/repost.jpg",
+                    "ig_post_media_id": "media-123",
+                    "title": "Репост",
+                },
+            }]},
+        }]}]}
+
+        self.assertEqual(bot.handle_webhook_payload(self.s, payload), 1)
+        self.assertEqual(bot.handle_webhook_payload(self.s, payload), 0)
+        msg = InstagramBotMessage.objects.get(mid="ig-post-mid")
+        self.assertEqual(msg.text, "(зображення)")
+        self.assertEqual(json.loads(msg.attachments), ["https://cdn/repost.jpg"])
+        self.assertEqual(msg.attachment_media[0]["media_type"], "ig_post")
+        self.assertEqual(msg.attachment_media[0]["provider_media_id"], "media-123")
 
     def test_story_mention_keeps_provider_native_metadata(self):
         payload = {"entry": [{"messaging": [{

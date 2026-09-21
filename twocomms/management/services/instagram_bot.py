@@ -4526,6 +4526,7 @@ def notify_manager(
             if isinstance(key, str)
         })
     from management.services.ig_alerts import alert_requires_human_review
+    needs_delivery = True
 
     payload.setdefault(
         "requires_human_review",
@@ -4599,6 +4600,7 @@ def notify_manager(
                 IgBotNotification.Status.SENT,
                 IgBotNotification.Status.RESOLVED,
             }:
+                needs_delivery = False
                 previous_payload = row.payload if isinstance(row.payload, dict) else {}
                 previous_media = previous_payload.get("media") if isinstance(previous_payload.get("media"), list) else []
                 media_by_key = {
@@ -4632,6 +4634,7 @@ def notify_manager(
                         media_by_key[key] = item
                         added = True
                 if added:
+                    needs_delivery = True
                     row.payload = {
                         **previous_payload,
                         "media": list(media_by_key.values())[:8],
@@ -4647,7 +4650,19 @@ def notify_manager(
         if raise_on_error:
             raise
         return False
-    return _deliver_manager_notification(dedupe_key) if deliver_immediately else True
+    if not deliver_immediately or not needs_delivery:
+        return True
+    # Direct producers must share the durable flow gate with the queue drain;
+    # otherwise a burst can bypass throttling before the next drain pass.
+    from management.services.ig_alerts import throttle_gate
+
+    allowed, retry_after = throttle_gate()
+    if not allowed:
+        IgBotNotification.objects.filter(dedupe_key=dedupe_key).update(
+            next_attempt_at=timezone.now() + timedelta(seconds=max(1, retry_after)),
+        )
+        return True
+    return _deliver_manager_notification(dedupe_key)
 
 
 def _rate_exceeded(s: InstagramBotSettings, sender_id: str, limit: int = 25, window: int = 3600) -> bool:
@@ -16090,7 +16105,7 @@ def record_raw_event(payload: dict):
 # Webhook payload -> черга (швидко, без важкої логіки)
 # ---------------------------------------------------------------------------
 MEDIA_ATTACH_TYPES = {
-    "image", "share", "ig_reel", "reel", "story_mention", "story", "video", "audio", "file", "link",
+    "image", "share", "ig_post", "ig_reel", "reel", "story_mention", "story", "video", "audio", "file", "link",
 }
 MEDIA_MAX = 3
 
