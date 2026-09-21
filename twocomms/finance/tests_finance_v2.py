@@ -88,6 +88,8 @@ class FinanceV2ServiceTests(TestCase):
         fop = Account.objects.create(company=self.company, name='monobank ФОП', currency='UAH', is_business=True)
         pension = Account.objects.create(company=self.company, name='Пенсійна', currency='UAH', is_business=False)
         sale = self._txn(Transaction.TYPE_INCOME, Decimal('1650'), account=fop)
+        sale.category = self.category
+        sale.save(update_fields=['category'])
         pension_income = self._txn(Transaction.TYPE_INCOME, Decimal('5000'), account=pension)
         self.client.force_login(self.user)
         response = self.client.post(
@@ -97,6 +99,8 @@ class FinanceV2ServiceTests(TestCase):
         sale.refresh_from_db()
         self.assertEqual(sale.economic_kind, 'sale')
         self.assertTrue(sale.ownership_scope == 'business')
+        self.assertIsNotNone(sale.category_id)
+        self.assertEqual(sale.category.name, 'Продажі')
         response = self.client.post(
             f'/api/v2/transactions/{pension_income.id}/classification/',
             data=json.dumps({'quick_action': 'pension'}), content_type='application/json', HTTP_HOST='fin.twocomms.shop')
@@ -104,6 +108,24 @@ class FinanceV2ServiceTests(TestCase):
         pension_income.refresh_from_db()
         self.assertEqual(pension_income.economic_kind, 'pension_income')
         self.assertEqual(pension_income.ownership_scope, 'personal')
+        self.assertIsNotNone(pension_income.category_id)
+
+    def test_known_viktor_rent_expense_uses_rent_category(self):
+        from .models import RecurrenceRule
+        from .services.ledger_v2 import classify_known_rent_expense
+        viktor = Counterparty.objects.create(company=self.company, name='Віктор Вікторович')
+        rule = RecurrenceRule.objects.create(
+            company=self.company, title='Оренда офісу', template_type=Transaction.TYPE_EXPENSE,
+            start_date=timezone.localdate(), template_counterparty=viktor,
+        )
+        txn = self._txn(Transaction.TYPE_EXPENSE, Decimal('36000'))
+        txn.counterparty = viktor
+        txn.recurrence_rule = rule
+        txn.comment = 'Оренда офіс · 09.2026'
+        txn.save(update_fields=['counterparty', 'recurrence_rule', 'comment'])
+        classify_known_rent_expense(txn, user=self.user)
+        txn.refresh_from_db()
+        self.assertEqual(txn.category.name, 'Оренда')
 
     def test_unequal_transfer_records_fee_and_is_idempotent(self):
         outgoing = self._txn(Transaction.TYPE_EXPENSE, Decimal('10050'), account=self.cash)

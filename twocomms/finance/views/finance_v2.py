@@ -182,7 +182,7 @@ def classification_api(request, txn_id):
             economic_kind=economic_kind,
             confidence=data.get('confidence') or 100,
             note=data.get('note') or '', source='manual',
-            funding_source=funding,
+            funding_source=funding, force_category=True,
         )
     except (ValueError, TypeError, InvalidOperation) as exc:
         return _error(exc)
@@ -237,6 +237,7 @@ def review_action_api(request, review_id):
                         ownership_scope=proposal.get('ownership_scope') or 'unknown',
                         economic_kind=proposal.get('economic_kind') or 'unknown',
                         confidence=review.confidence, note=review.reason, source='review',
+                        force_category=True,
                     )
                 elif kind == 'internal_transfer':
                     match = InternalTransferMatch.objects.filter(
@@ -256,6 +257,7 @@ def review_action_api(request, review_id):
                         txn, user=request.user, ownership_scope=proposal.get('ownership_scope') or 'unknown',
                         economic_kind=kind or 'unknown', confidence=review.confidence,
                         note=proposal.get('note') or review.reason, source='review', funding_source=funding,
+                        force_category=True,
                     )
                     if funding and kind == 'grant_inflow' and not funding.receipt_transaction_id:
                         funding.receipt_transaction = txn

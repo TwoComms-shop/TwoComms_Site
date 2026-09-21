@@ -137,7 +137,12 @@
     var totals = {};
     Object.keys(source).forEach(function (side) {
       source[side] = source[side].map(function (row) {
-        return { name: String(row.name || 'Без категорії'), total: Number(row.total) || 0 };
+        return {
+          name: String(row.name || 'Без категорії'),
+          total: Number(row.total) || 0,
+          categoryId: row.category_id == null ? null : String(row.category_id),
+          economicKind: row.economic_kind || ''
+        };
       });
       totals[side] = source[side].reduce(function (sum, row) { return sum + row.total; }, 0);
     });
@@ -163,6 +168,20 @@
       return rows.slice(0, 4).concat({ name: 'Інші категорії', total: rows.slice(4).reduce(function (sum, row) { return sum + row.total; }, 0), grouped: true });
     }
     function rowY(index, count) { return height / 2 + (index - (count - 1) / 2) * 62; }
+    function paymentUrl(row, side) {
+      var base = flow.dataset.paymentsUrl;
+      if (!base || !row || row.grouped || !row.categoryId) return '';
+      var url = new URL(base, window.location.origin);
+      url.searchParams.set('categories', row.categoryId);
+      url.searchParams.set('types', side === 'expense' ? 'expense' : 'income');
+      if (report.period && report.period.start && report.period.end) {
+        url.searchParams.set('period', 'custom');
+        url.searchParams.set('date_from', report.period.start);
+        url.searchParams.set('date_to', report.period.end);
+      }
+      url.searchParams.set('per_page', 'all');
+      return url.toString();
+    }
     function highlight(key) {
       flow.classList.toggle('has-highlight', !!key);
       flow.querySelectorAll('[data-flow-key]').forEach(function (element) {
@@ -236,7 +255,8 @@
           item.type = 'button';
           item.dataset.flowKey = key;
           item.style.setProperty('--flow-y', rowY(index, visible[side].length) + 'px');
-          item.title = row.name + ': ' + money.format(row.total) + ' ₴ (' + pctText + '%)';
+          var destination = paymentUrl(row, side);
+          item.title = row.name + ': ' + money.format(row.total) + ' ₴ (' + pctText + '%)' + (destination ? ' — відкрити платежі' : '');
           item.setAttribute('aria-label', item.title);
           var dot = node('i', '', null, item);
           dot.style.backgroundColor = row.total === 0 ? '#8994a6' : side === 'income' ? '#31d39b' : colors[index % colors.length];
@@ -261,7 +281,12 @@
               selected = null;
               render();
               flow.querySelector('button[data-flow-key="' + side + '-4"]').focus({ preventScroll: true });
-            } else { selected = selected === key ? null : key; highlight(selected); }
+            } else if (destination) {
+              window.location.assign(destination);
+            } else {
+              selected = selected === key ? null : key;
+              highlight(selected);
+            }
           });
         });
         if (expanded[side]) {

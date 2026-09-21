@@ -1,47 +1,47 @@
 {# Розширений фільтр (ТЗ 03 §3.4, 12 §2). Подається GET-параметрами у журнал. #}
 <div class="fin-modal-overlay" id="fin-filter-modal" hidden>
-  <div class="fin-modal-card" role="dialog" aria-modal="true" aria-labelledby="fin-filter-title">
+  <div class="fin-modal-card fin-filter-modal" role="dialog" aria-modal="true" aria-labelledby="fin-filter-title">
     <div class="fin-modal-head">
       <h3 id="fin-filter-title">Фільтр</h3>
       <button type="button" class="fin-modal-close" data-fin-close aria-label="Закрити">×</button>
     </div>
     <form class="fin-modal-body" id="fin-filter-form" method="get" action="{% url 'finance_home' %}">
-      <label class="fin-field">
+      <div class="fin-field fin-filter-field">
         <span>Рахунки</span>
-        <div class="fin-checklist" data-multi="accounts"></div>
-      </label>
-      <label class="fin-field">
+        <div class="fin-checklist" data-multi="accounts" role="group" aria-label="Рахунки"></div>
+      </div>
+      <div class="fin-field fin-filter-field">
         <span>Категорії</span>
-        <div class="fin-checklist" data-multi="categories"></div>
-      </label>
-      <label class="fin-field">
+        <div class="fin-checklist" data-multi="categories" role="group" aria-label="Категорії"></div>
+      </div>
+      <div class="fin-field fin-filter-field">
         <span>Проекти</span>
-        <div class="fin-checklist" data-multi="projects"></div>
-      </label>
-      <label class="fin-field">
+        <div class="fin-checklist" data-multi="projects" role="group" aria-label="Проекти"></div>
+      </div>
+      <div class="fin-field fin-filter-field">
         <span>Контрагенти</span>
-        <div class="fin-checklist" data-multi="counterparties"></div>
-      </label>
-      <label class="fin-field">
+        <div class="fin-checklist" data-multi="counterparties" role="group" aria-label="Контрагенти"></div>
+      </div>
+      <div class="fin-field fin-filter-field">
         <span>Теги</span>
-        <div class="fin-checklist" data-multi="tags"></div>
-      </label>
-      <div class="fin-field-row">
-        <label class="fin-field">
+        <div class="fin-checklist" data-multi="tags" role="group" aria-label="Теги"></div>
+      </div>
+      <div class="fin-field-row fin-filter-field-row">
+        <div class="fin-field">
           <span>Тип</span>
           <div class="fin-chips" data-chips="types">
             <label><input type="checkbox" value="income">Дохід</label>
             <label><input type="checkbox" value="expense">Витрата</label>
             <label><input type="checkbox" value="transfer">Переказ</label>
           </div>
-        </label>
-        <label class="fin-field">
+        </div>
+        <div class="fin-field">
           <span>Статус</span>
           <div class="fin-chips" data-chips="statuses">
             <label><input type="checkbox" value="actual">Фактична</label>
             <label><input type="checkbox" value="planned">Планова</label>
           </div>
-        </label>
+        </div>
       </div>
       <input type="hidden" name="accounts" id="flt-accounts">
       <input type="hidden" name="categories" id="flt-categories">

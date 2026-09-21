@@ -106,7 +106,8 @@ def _unrepresented_transfer_fees(company, params, start, end, *, pnl_dates=False
 def _add_fee_category(rows, amount):
     if amount:
         rows = list(rows)
-        rows.append({'name': 'Комісія за переказ', 'total': float(amount)})
+        rows.append({'name': 'Комісія за переказ', 'total': float(amount), 'category_id': None,
+                     'economic_kind': 'transfer_fee'})
     return rows
 
 
@@ -180,10 +181,11 @@ def _series_by_period(qs, start, end):
 
 
 def _group_by_category(qs):
-    rows = (qs.values('category__name')
+    rows = (qs.values('category_id', 'category__name')
             .annotate(total=Coalesce(Sum('amount_base'), Decimal('0')))
             .order_by('-total'))
-    return [{'name': r['category__name'] or 'Без категорії', 'total': float(r['total'])}
+    return [{'name': r['category__name'] or 'Без категорії', 'total': float(r['total']),
+             'category_id': r['category_id']}
             for r in rows if r['total']]
 
 

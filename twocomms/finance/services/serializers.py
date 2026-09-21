@@ -268,7 +268,9 @@ def serialize_dropdowns(company) -> dict:
     income_cats = [{'id': c.id, 'name': c.name, 'parent': c.parent_id}
                    for c in company.categories.filter(is_active=True).exclude(type='expense')]
     expense_cats = [{'id': c.id, 'name': c.name, 'parent': c.parent_id}
-                    for c in company.categories.filter(is_active=True).exclude(type='income')]
+                   for c in company.categories.filter(is_active=True).exclude(type='income')]
+    categories = [{'id': c.id, 'name': c.name, 'parent': c.parent_id, 'type': c.type}
+                  for c in company.categories.filter(is_active=True).order_by('sort_order', 'name')]
     projects = [{'id': p.id, 'name': p.name} for p in company.projects.all().order_by('sort_order')]
     counterparties = [{'id': c.id, 'name': c.name, 'group': c.group or c.get_type_display()}
                       for c in company.counterparties.all().order_by('name')]
@@ -281,6 +283,7 @@ def serialize_dropdowns(company) -> dict:
         'accounts': accounts,
         'income_categories': income_cats,
         'expense_categories': expense_cats,
+        'categories': categories,
         'projects': projects,
         'counterparties': counterparties,
         'tags': tags,

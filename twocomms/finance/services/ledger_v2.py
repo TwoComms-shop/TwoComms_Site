@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from ..models import (
     Account, BalanceReconciliation, ClassificationReview, FundingAllocation, FundingSource,
-    InternalTransferMatch, LedgerClassification, LedgerClassificationEvent,
+    Category, InternalTransferMatch, LedgerClassification, LedgerClassificationEvent,
     RefundLink, Transaction,
 )
 from . import transactions as transactions_service
@@ -28,6 +28,38 @@ TERMINAL_CASH_INCOME_KINDS = (
 PERSONAL_INCOME_KINDS = frozenset({'pension_income'})
 TRANSFER_FEE_KIND = 'transfer_fee'
 INTERNAL_TRANSFER_KINDS = frozenset({'internal_transfer', 'owner_draw', 'personal_transfer'})
+
+# Classifications describe the economic meaning of a bank row, while P&L is
+# grouped by the user-facing Category relation.  Keep the bridge in one place
+# so every confirmation path fills the same category consistently.
+_CLASSIFICATION_CATEGORY_MAP = {
+    'sale': (Category.TYPE_INCOME, ('Продажі', 'Продаж', 'Продажи')),
+    'investment': (Category.TYPE_INCOME, ('Інвестиції', 'Інвестиція', 'Инвестиции')),
+    'grant_inflow': (Category.TYPE_INCOME, ('Гранти', 'Грант', 'Інші доходи')),
+    'debt_repayment': (Category.TYPE_INCOME, ('Повернення коштів', 'Погашення боргу', 'Погашення боргів')),
+    'expense_refund': (Category.TYPE_INCOME, ('Повернення коштів', 'Повернення витрат')),
+    'pension_income': (Category.TYPE_INCOME, ('Пенсія', 'Пенсійні виплати', 'Інші доходи')),
+    'personal_transfer': (Category.TYPE_BOTH, ('Вивід на особисте', 'Особисті перекази')),
+    'adjustment': (Category.TYPE_INCOME, ('Інші доходи', 'Коригування')),
+    'transfer_fee': (Category.TYPE_EXPENSE, ('Комісії та банк', 'Комісії', 'Банківські комісії')),
+    'operating_expense': (Category.TYPE_EXPENSE, ('Інші витрати',)),
+}
+
+
+def _category_for_classification(txn, economic_kind):
+    """Return an existing matching category, creating the semantic fallback."""
+    spec = _CLASSIFICATION_CATEGORY_MAP.get(economic_kind)
+    if not spec:
+        return None
+    category_type, names = spec
+    categories = Category.objects.filter(company=txn.company, is_active=True)
+    lowered = {name.casefold(): name for name in names}
+    category = next((item for item in categories if item.name.casefold() in lowered), None)
+    if category:
+        return category
+    return Category.objects.create(
+        company=txn.company, name=names[0], type=category_type, is_system=True,
+    )
 
 
 def classification_semantics(economic_kind):
@@ -147,7 +179,42 @@ def classify_known_rent_refund(txn, *, user=None):
         txn, user=user, ownership_scope='business', economic_kind='expense_refund',
         confidence=Decimal('100'), source='rule',
         note='Автоматично визначено: повернення оренди/комунальних від Віктора Викторовича.',
+        force_category=True,
     )
+
+
+def is_known_rent_expense(txn) -> bool:
+    """Recognize the recurring Viktor office-rent expense precisely."""
+    if (txn.status != Transaction.STATUS_ACTUAL or txn.type != Transaction.TYPE_EXPENSE
+            or not txn.counterparty_id or not txn.recurrence_rule_id):
+        return False
+    counterparty = getattr(txn, 'counterparty', None)
+    rule = getattr(txn, 'recurrence_rule', None)
+    if not counterparty or not rule or not _VIKTOR_RE.search(counterparty.name or ''):
+        return False
+    if rule.template_type != Transaction.TYPE_EXPENSE:
+        return False
+    rule_text = ' '.join((rule.title or '', rule.template_comment or '', txn.comment or ''))
+    return bool(_RENT_RE.search(rule_text))
+
+
+@db_transaction.atomic
+def classify_known_rent_expense(txn, *, user=None):
+    """Assign Viktor's office-rent rows to the stable «Оренда» category."""
+    txn = Transaction.objects.select_for_update().select_related(
+        'recurrence_rule', 'counterparty', 'category', 'account',
+    ).get(pk=txn.pk)
+    if not is_known_rent_expense(txn):
+        return None
+    category = (Category.objects.filter(company=txn.company, type__in=(Category.TYPE_EXPENSE, Category.TYPE_BOTH),
+                                        name__iexact='Оренда').first())
+    if category is None:
+        category = Category.objects.create(company=txn.company, name='Оренда',
+                                           type=Category.TYPE_EXPENSE, is_system=True)
+    if txn.category_id != category.id:
+        txn.category = category
+        txn.save(update_fields=['category'])
+    return category
 
 
 def _assert_terminal_cash_transaction(txn):
@@ -310,7 +377,8 @@ def confirm_terminal_cash_transfer(txn, *, source_cash_account_id, user=None, no
 
 
 def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_kind='unknown',
-                         confidence=Decimal('100'), note='', source='manual', funding_source=None):
+                         confidence=Decimal('100'), note='', source='manual', funding_source=None,
+                         force_category=False):
     """Upsert explicit meaning without changing the original bank row."""
     if economic_kind in PERSONAL_INCOME_KINDS and ownership_scope == 'unknown':
         ownership_scope = 'personal'
@@ -340,7 +408,14 @@ def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_
     txn.ownership_scope = ownership_scope
     txn.economic_kind = economic_kind
     txn.funding_source = funding_source
-    txn.save(update_fields=['ownership_scope', 'economic_kind', 'funding_source'])
+    semantic_category = _category_for_classification(txn, economic_kind)
+    category = semantic_category if force_category else (txn.category or semantic_category)
+    if category is not None:
+        txn.category = category
+    update_fields = ['ownership_scope', 'economic_kind', 'funding_source']
+    if category is not None:
+        update_fields.append('category')
+    txn.save(update_fields=update_fields)
     LedgerClassificationEvent.objects.create(
         classification=obj, previous={} if created else previous,
         current={'ownership_scope': ownership_scope, 'economic_kind': economic_kind,

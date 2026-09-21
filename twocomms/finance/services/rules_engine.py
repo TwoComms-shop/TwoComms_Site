@@ -20,6 +20,7 @@ FIELD_CHOICES = [
     ('category', 'Категорія'),
     ('project', 'Проект'),
     ('source', 'Джерело'),
+    ('provider', 'Банк / провайдер'),
     ('currency', 'Валюта'),
     ('type', 'Тип операції'),
 ]
@@ -64,6 +65,14 @@ def _field_value(txn, field):
         return txn.project_id
     if field == 'source':
         return txn.source or ''
+    if field == 'provider':
+        external = txn.external_data or {}
+        provider = external.get('provider') or external.get('provider_name')
+        if provider:
+            return provider
+        account = getattr(txn, 'account', None)
+        integration = getattr(account, 'integration', None) if account else None
+        return integration.provider if integration else ''
     if field == 'currency':
         return txn.currency or ''
     if field == 'type':

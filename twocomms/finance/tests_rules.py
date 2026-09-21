@@ -58,6 +58,16 @@ class RulesEngineTests(TestCase):
         self.assertTrue(rules_engine.rule_matches(big, rule))
         self.assertFalse(rules_engine.rule_matches(small, rule))
 
+    def test_provider_condition_reads_import_metadata(self):
+        rule = self._rule(
+            conditions=[{'field': 'provider', 'operator': 'equals', 'value': 'novapay'}],
+        )
+        txn = txn_service.create_transaction(
+            user=self.user, type=Transaction.TYPE_EXPENSE, amount=Decimal('100'),
+            account=self.acc, comment='NovaPay', external_data={'provider': 'novapay'},
+        )
+        self.assertTrue(rules_engine.rule_matches(txn, rule))
+
     def test_apply_to_existing(self):
         rule = self._rule()
         for i in range(3):

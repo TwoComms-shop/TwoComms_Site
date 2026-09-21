@@ -1406,12 +1406,50 @@
   // --- Розширений фільтр ---
   var filterBtn = document.getElementById('fin-advanced-filter-btn');
   var filterModal = document.getElementById('fin-filter-modal');
+  var filterParamNames = ['accounts', 'categories', 'projects', 'counterparties', 'tags', 'types', 'statuses'];
+  function selectedUrlValues(name) {
+    var raw = new URLSearchParams(window.location.search).get(name) || '';
+    return new Set(raw.split(',').map(function (value) { return value.trim(); }).filter(Boolean));
+  }
   function buildChecklist(container, items) {
     container.innerHTML = '';
+    var selected = selectedUrlValues(container.dataset.multi);
     (items || []).forEach(function (it) {
       var lbl = document.createElement('label');
-      lbl.innerHTML = '<input type="checkbox" value="' + it.id + '"> ' + it.name;
+      lbl.className = 'fin-checklist__option';
+      var input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = it.id;
+      input.checked = selected.has(String(it.id));
+      var text = document.createElement('span');
+      text.textContent = it.name || 'Без назви';
+      lbl.appendChild(input);
+      lbl.appendChild(text);
       container.appendChild(lbl);
+    });
+  }
+  function syncChipValues() {
+    filterModal.querySelectorAll('[data-chips]').forEach(function (c) {
+      var selected = selectedUrlValues(c.dataset.chips);
+      c.querySelectorAll('input[type="checkbox"]').forEach(function (input) {
+        input.checked = selected.has(input.value);
+      });
+    });
+  }
+  function preserveBaseQuery(form) {
+    var current = new URLSearchParams(window.location.search);
+    var advanced = new Set(filterParamNames.concat(['page']));
+    ['period', 'date_from', 'date_to', 'search', 'amount_min', 'amount_max', 'scope', 'mcc_group', 'per_page'].forEach(function (name) {
+      if (advanced.has(name) || !current.has(name)) return;
+      var input = form.querySelector('[data-preserved-filter="' + name + '"]');
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = name;
+        input.dataset.preservedFilter = name;
+        form.appendChild(input);
+      }
+      input.value = current.get(name) || '';
     });
   }
   if (filterBtn && filterModal) {
@@ -1419,6 +1457,7 @@
       filterModal.querySelectorAll('[data-multi]').forEach(function (c) {
         buildChecklist(c, DROPDOWNS[c.dataset.multi]);
       });
+      syncChipValues();
       filterModal.hidden = false; document.body.classList.add('fin-modal-open');
     });
     filterModal.querySelectorAll('[data-fin-close]').forEach(function (b) {
@@ -1426,6 +1465,7 @@
     });
     var filterForm = document.getElementById('fin-filter-form');
     if (filterForm) filterForm.addEventListener('submit', function () {
+      preserveBaseQuery(filterForm);
       filterModal.querySelectorAll('[data-multi]').forEach(function (c) {
         var ids = Array.prototype.slice.call(c.querySelectorAll('input:checked')).map(function (i) { return i.value; });
         document.getElementById('flt-' + c.dataset.multi).value = ids.join(',');
@@ -1437,7 +1477,7 @@
     });
     var resetBtn = document.getElementById('fin-filter-reset');
     if (resetBtn) resetBtn.addEventListener('click', function () {
-      filterModal.querySelectorAll('input:checked').forEach(function (i) { i.checked = false; });
+      filterModal.querySelectorAll('input[type="checkbox"]:checked').forEach(function (i) { i.checked = false; });
     });
   }
 })();

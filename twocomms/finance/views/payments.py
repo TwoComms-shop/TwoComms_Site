@@ -166,7 +166,7 @@ def payments(request):
         active_filter_count += 1
     for _k in ('search', 'amount_min', 'amount_max', 'scope', 'mcc_group',
                'date_from', 'date_to', 'accounts', 'categories', 'counterparties',
-               'tags', 'types', 'tab'):
+               'tags', 'types', 'statuses', 'tab'):
         if gp.get(_k):
             active_filter_count += 1
 

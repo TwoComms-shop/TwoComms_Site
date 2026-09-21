@@ -27,6 +27,15 @@ def rules(request):
     company = get_default_company()
     rule_rows = []
     for r in company.automation_rules.all().order_by('priority', 'id'):
+        rule_payload = {
+            'id': r.id,
+            'name': r.name,
+            'transaction_type': r.transaction_type,
+            'priority': r.priority,
+            'is_enabled': r.is_enabled,
+            'conditions': r.conditions or [],
+            'actions': r.actions or [],
+        }
         rule_rows.append({
             'id': r.id, 'name': r.name, 'is_enabled': r.is_enabled,
             'transaction_type': r.transaction_type, 'priority': r.priority,
@@ -34,6 +43,7 @@ def rules(request):
             'actions_count': len(r.actions or []),
             'applied_count': r.applied_count,
             'conditions': r.conditions, 'actions': r.actions,
+            'rule_json': json.dumps(rule_payload, ensure_ascii=False, separators=(',', ':')),
         })
     return render(request, 'finance/rules.html', {
         'active_tab': 'rules',

@@ -19,8 +19,8 @@
     return pairs.map(function (p) { return '<option value="' + p[0] + '">' + p[1] + '</option>'; }).join('');
   }
   // Поля, значення яких — вибір із довідника.
-  var FIELD_SOURCE = { account: 'accounts', category: 'expense_categories', counterparty: 'counterparties', project: 'projects' };
-  var ACTION_SOURCE = { set_category: 'expense_categories', set_project: 'projects', set_counterparty: 'counterparties', add_tag: 'tags' };
+  var FIELD_SOURCE = { account: 'accounts', category: 'categories', counterparty: 'counterparties', project: 'projects' };
+  var ACTION_SOURCE = { set_category: 'categories', set_project: 'projects', set_counterparty: 'counterparties', add_tag: 'tags' };
 
   function ddOptions(key) {
     return (DD[key] || []).map(function (o) { return '<option value="' + o.id + '">' + o.name + '</option>'; }).join('');

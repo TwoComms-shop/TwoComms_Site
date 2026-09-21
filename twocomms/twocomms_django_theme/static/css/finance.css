@@ -1194,6 +1194,29 @@ body.fin-modal-open { overflow: hidden; }
 .fin-chips { display: flex; gap: 12px; flex-wrap: wrap; }
 .fin-chips label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fin-text); }
 
+/* Advanced payment filters: keep each option aligned and give long lists their
+   own scroll area instead of allowing nested form labels to distort layout. */
+.fin-filter-modal { max-width: 760px; max-height: min(90vh, 900px); display: flex; flex-direction: column; }
+.fin-filter-modal .fin-modal-head { flex: 0 0 auto; }
+.fin-filter-modal .fin-modal-body { min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.fin-filter-modal .fin-filter-field { min-width: 0; gap: 7px; }
+.fin-filter-modal .fin-filter-field > span { color: var(--fin-text); font-size: 14px; font-weight: 650; }
+.fin-filter-modal .fin-checklist { min-height: 48px; max-height: 180px; gap: 2px; padding: 7px 9px; border: 1px solid rgba(255,255,255,.045); }
+.fin-filter-modal .fin-checklist__option { display: flex; align-items: center; gap: 9px; min-height: 34px; padding: 4px 5px; border-radius: 6px; cursor: pointer; line-height: 1.25; }
+.fin-filter-modal .fin-checklist__option:hover { background: rgba(255,255,255,.045); }
+.fin-filter-modal .fin-checklist__option input { flex: 0 0 auto; width: 17px; height: 17px; margin: 0; accent-color: var(--fin-accent); }
+.fin-filter-modal .fin-checklist__option span { min-width: 0; overflow-wrap: anywhere; }
+.fin-filter-modal .fin-filter-field-row { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.fin-filter-modal .fin-filter-field-row > .fin-field { min-width: 0; }
+.fin-filter-modal .fin-modal-foot { grid-column: 1 / -1; position: sticky; bottom: -18px; margin: 2px 0 -18px; padding: 14px 0 18px; background: linear-gradient(180deg, rgba(17,25,38,0), var(--fin-panel-strong) 28%); }
+
+@media (max-width: 640px) {
+    .fin-filter-modal { max-height: 100dvh; }
+    .fin-filter-modal .fin-modal-body { grid-template-columns: 1fr; gap: 14px; padding: 16px; }
+    .fin-filter-modal .fin-filter-field-row { grid-column: auto; grid-template-columns: 1fr; gap: 14px; }
+    .fin-filter-modal .fin-modal-foot { grid-column: auto; bottom: -16px; margin-bottom: -16px; }
+}
+
 @media (max-width: 640px) {
     .fin-field-row { flex-direction: column; gap: 12px; }
     .fin-field--cur { max-width: none; }

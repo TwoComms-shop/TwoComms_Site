@@ -447,6 +447,9 @@ def settle_occurrence(txn: Transaction, *, user, account=None, counterparty=None
     if txn.type == Transaction.TYPE_INCOME:
         from . import ledger_v2
         ledger_v2.classify_known_rent_refund(txn, user=user)
+    elif txn.type == Transaction.TYPE_EXPENSE:
+        from . import ledger_v2
+        ledger_v2.classify_known_rent_expense(txn, user=user)
 
     # Прив'язка рахунку до контрагента (історія платежів по контрагенту).
     if (link_account_cp and counterparty is not None and txn.account_id

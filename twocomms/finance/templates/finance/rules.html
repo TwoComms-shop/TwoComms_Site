@@ -22,7 +22,7 @@
 <div class="fin-rules-list">
     {% for r in rules %}
     <div class="fin-rule-card{% if not r.is_enabled %} is-off{% endif %}" data-rule-id="{{ r.id }}"
-         data-rule='{"id":{{ r.id }},"name":"{{ r.name|escapejs }}","transaction_type":"{{ r.transaction_type }}","priority":{{ r.priority }},"is_enabled":{{ r.is_enabled|yesno:"true,false" }},"conditions":{{ r.conditions|default:"[]"|safe }},"actions":{{ r.actions|default:"[]"|safe }}}'>
+         data-rule="{{ r.rule_json }}">
         <label class="fin-switch">
             <input type="checkbox" class="fin-rule-toggle" {% if r.is_enabled %}checked{% endif %}>
             <span class="fin-switch__ui"></span>

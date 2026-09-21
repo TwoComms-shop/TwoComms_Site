@@ -50,7 +50,8 @@ def _breakdown(company, rows, total):
     for r in rows:
         amt = Decimal(str(r['total']))
         pct = round(float(amt / total * 100), 1) if total else 0.0
-        out.append({'name': r['name'], 'amount': _m(company, amt), 'pct': pct})
+        out.append({'name': r['name'], 'amount': _m(company, amt), 'pct': pct,
+                    'category_id': r.get('category_id')})
     return out
 
 
@@ -97,6 +98,7 @@ def _pnl_detail_rows(company, rows, previous_rows, start, end):
             progress = round(float(ratio))
         out.append({
             'index': index, 'name': row['name'], 'icon': icons.get(row['name'], '◌'),
+            'category_id': row.get('category_id'),
             'amount': _m(company, amount), 'amount_value': float(amount),
             'pct': round(float(amount / Decimal(str(sum(float(r['total']) for r in rows))) * 100), 1) if rows else 0,
             'change': round(float(change), 1) if change is not None else None,
@@ -335,6 +337,7 @@ def report(request, kind):
                 'previous_series': previous_data['series'] if previous_data else [],
                 'income_by_category': data['income_by_category'],
                 'expense_by_category': data['expense_by_category'],
+                'period': {'start': data['period'][0], 'end': data['period'][1]},
             }),
         })
         return render(request, 'finance/reports/pnl.html', ctx)
