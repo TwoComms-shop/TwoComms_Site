@@ -19,6 +19,7 @@ from django.db.models import Prefetch
 from django.shortcuts import render, get_object_or_404
 from django.http import Http404, HttpResponsePermanentRedirect, JsonResponse
 from django.urls import reverse
+from django.utils.translation import get_language
 from django.utils.translation import gettext_lazy as _
 
 from ..models import CatalogOption, CatalogOptionValue, Product
@@ -35,6 +36,7 @@ from ..services.locale_publication import publication_context
 from ..recommendations import ProductRecommendationEngine
 from ..utm_tracking import record_product_view
 from twocomms.db_resilience import retry_mysql_read
+from .utils import cache_page_for_anon
 
 
 logger = logging.getLogger(__name__)
@@ -358,8 +360,53 @@ def _dedupe_product_faq_items(product):
     return items
 
 
-# ВАЖНО: Не кэшируем страницу товара, так как нужен предвыбор размера/цвета из URL параметров
-# @cache_page_for_anon(600)  # Отключено для поддержки ?size=M и ?color=X
+def _pdp_cache_condition(request):
+    """Cache only canonical, query-free guest PDP requests.
+
+    Attribution and selector query strings must still execute the view so
+    analytics and canonical redirects remain accurate. Path-style variants
+    are already part of the cache key and are safe to cache independently.
+    """
+    return not request.GET
+
+
+def _pdp_cache_prefix(request, view_func):
+    """Version PDP entries by the current product and public data version.
+
+    The lookup is a single indexed projection and prevents a cached response
+    for a previous test/product row (or an edited product) from being reused
+    under the same slug.
+    """
+    segments = [segment for segment in request.path.strip("/").split("/") if segment]
+    try:
+        slug = segments[segments.index("product") + 1]
+    except (ValueError, IndexError):
+        slug = ""
+    marker = (
+        Product.objects.filter(slug=slug, status="published")
+        .values_list("pk", "updated_at")
+        .first()
+    )
+    if marker is None:
+        return "product-detail-v2:missing"
+    product_id, updated_at = marker
+    updated_token = (
+        str(int(updated_at.timestamp() * 1_000_000))
+        if updated_at is not None
+        else "0"
+    )
+    public_version = get_public_product_order_version()
+    language = (get_language() or "uk").split("-", 1)[0].lower()
+    return f"product-detail-v2:p{product_id}:u{updated_token}:l{language}:v{public_version}"
+
+
+# The PDP builds a large product/configurator graph. A short anonymous cache
+# prevents navigation bursts from making every worker render the same HTML.
+@cache_page_for_anon(
+    120,
+    key_prefix=_pdp_cache_prefix,
+    cache_condition=_pdp_cache_condition,
+)
 def product_detail(request, slug, v1=None, v2=None, v3=None):
     """
     Детальная страница товара.
