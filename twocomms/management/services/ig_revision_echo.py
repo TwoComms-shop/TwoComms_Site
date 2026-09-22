@@ -68,7 +68,11 @@ def _payload(text, attachments):
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             raise _Blocked("echo_media_invalid")
-        media.append({"url": url, "type": kind, "title": title, "role": "manager_reference"})
+        media.append({
+            "url": url, "type": kind, "title": title,
+            "provider_id": str(item.get("provider_id") or "").strip()[:255],
+            "role": "manager_reference",
+        })
     if not text and not media:
         raise _Blocked("echo_empty")
     return {"text": text, "attachments": media}
@@ -353,7 +357,12 @@ def _projection_matches(event, message, *, historical=False):
         stored_urls = json.loads(message.attachments) if message.attachments else []
     except (TypeError, ValueError):
         return False
-    texts = {expected_text} if historical or expected_text else {"", "(зображення менеджера)"}
+    if historical or expected_text:
+        texts = {expected_text}
+    elif any(item.get("type") == "story" for item in event.payload.get("attachments") or ()):
+        texts = {"(відповідь менеджера на сторіс)", "(зображення менеджера)"}
+    else:
+        texts = {"", "(зображення менеджера)"}
     return message.text in texts and stored_urls == expected_urls
 
 

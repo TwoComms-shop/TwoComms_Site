@@ -65,6 +65,21 @@ class RevisionEchoIntegrationTests(TransactionTestCase):
         self.assertEqual(IgPermissionTransitionJob.objects.filter(kind="manager_takeover").count(), 1)
         self.assertEqual(IgDeferredEcho.objects.get().state, "manager_applied")
 
+    def test_story_only_manager_echo_keeps_context_in_revision_projection(self):
+        with patch.object(bot, "client_automation_busy", return_value=True):
+            bot._handle_echo(
+                self.client_row.igsid, "", mid="real-manager-story",
+                provider_namespace=self.namespace, persistence_only=True,
+                attachments=[{
+                    "url": "https://example.test/story.jpg", "type": "story",
+                    "title": "Відповідь на сторіс", "provider_id": "story-id",
+                }],
+                reply_to_provider_message_id="story-id",
+            )
+        message = InstagramBotMessage.objects.get(mid="real-manager-story")
+        self.assertEqual(message.text, "(відповідь менеджера на сторіс)")
+        self.assertEqual(message.reply_to_provider_message_id, "story-id")
+
     def test_historical_manager_photo_never_creates_current_takeover(self):
         row = self._poll("historical-manager", image=True)
         self.assertTrue(bot._handle_polled_page_side(self.settings, row, historical=True))

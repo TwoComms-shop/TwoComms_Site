@@ -54,14 +54,21 @@ def _project_manager_event(event_id):
         if event.state != event.State.MANAGER_PENDING:
             return False
         historical = event.payload.get("historical") is True
-        urls = [item["url"] for item in event.payload.get("attachments") or []]
+        attachments = event.payload.get("attachments") or []
+        urls = [item["url"] for item in attachments]
+        story = next((item for item in attachments if item.get("type") == "story"), None)
+        reply_to_provider_message_id = str((story or {}).get("provider_id") or "").strip()[:255]
         message, _created = _stage_permission_message(
             sender_id=client.igsid, role=InstagramBotMessage.Role.MANAGER,
-            text=event.payload.get("text") or ("" if historical else "(зображення менеджера)"),
+            text=event.payload.get("text") or (
+                "(відповідь менеджера на сторіс)" if story
+                else "" if historical else "(зображення менеджера)"
+            ),
             mid=event.provider_message_id, source="poll_history" if historical else "echo",
             provider_namespace=event.provider_namespace,
             attachments=json.dumps(urls, ensure_ascii=False) if urls else "",
             provider_created_at=event.provider_created_at,
+            reply_to_provider_message_id=reply_to_provider_message_id,
         )
         if message is None:
             raise RevisionEchoDeferred("echo_message_projection_conflict")
