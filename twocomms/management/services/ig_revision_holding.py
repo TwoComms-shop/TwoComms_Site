@@ -36,7 +36,7 @@ def _sources_unchanged(revision):
 
 
 def _positive_current_request(client, revision):
-    from management.services.ig_turn_intent import build_turn_intent
+    from management.services.ig_turn_intent import _NEGATED_ORDER, build_turn_intent
     from management.services.ig_revision_intents import manager_case_reason
     from management.services.bot_sales_classifier import SUPPORT_RE
 
