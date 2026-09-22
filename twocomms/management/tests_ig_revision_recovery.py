@@ -84,6 +84,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.assertNotIn(self.source.text, str(stored))
 
     def test_cancelled_recovery_releases_original_execution_claim(self):
+        from management.services.ig_revision_execution import expired_revision_debt_ids
         from management.services.ig_revision_recovery import _set_state
 
         past = timezone.now() - timedelta(seconds=5)
@@ -102,6 +103,11 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.assertEqual(self.revision.claim_token, "")
         self.assertIsNone(self.revision.claimed_at)
         self.assertIsNone(self.revision.lease_until)
+
+        IgCustomerTurnRevision.objects.filter(pk=self.revision.pk).update(
+            overall_deadline=past,
+        )
+        self.assertNotIn(self.revision.pk, expired_revision_debt_ids(limit=100))
 
     def test_failed_request_creates_one_fresh_original_source_successor(self):
         self._admit()

@@ -647,6 +647,12 @@ def expired_revision_debt_ids(
         | ordinary
         | expired_claim
     )
+    # A permission/takeover cancellation releases the execution claim. Once
+    # that terminal recovery disposition is persisted, do not rediscover the
+    # old sealed row as expired technical debt on every worker cycle.
+    queue = queue.exclude(
+        recovery_state="cancelled", claim_token="", lease_until__isnull=True,
+    )
     if owned_only:
         from management.services.ig_revision_live import _owned_revisions
 
