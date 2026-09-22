@@ -83,6 +83,26 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.assertEqual(self._admit().reason, "existing_admission")
         self.assertNotIn(self.source.text, str(stored))
 
+    def test_cancelled_recovery_releases_original_execution_claim(self):
+        from management.services.ig_revision_recovery import _set_state
+
+        past = timezone.now() - timedelta(seconds=5)
+        IgCustomerTurnRevision.objects.filter(pk=self.revision.pk).update(
+            state=IgCustomerTurnRevision.State.CLAIMED,
+            claim_token="stale-execution-claim",
+            claimed_at=past,
+            lease_until=past,
+        )
+        self.revision.refresh_from_db()
+
+        result = _set_state(self.revision, "cancelled", "recovery_permission_changed")
+
+        self.assertEqual(result.state, "cancelled")
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.claim_token, "")
+        self.assertIsNone(self.revision.claimed_at)
+        self.assertIsNone(self.revision.lease_until)
+
     def test_failed_request_creates_one_fresh_original_source_successor(self):
         self._admit()
         self._graph()

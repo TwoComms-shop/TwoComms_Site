@@ -114,7 +114,16 @@ def _set_state(revision, state, code, *, due_at=None, child_id=0):
     revision.recovery_state = state
     revision.recovery_code = code
     revision.recovery_due_at = due_at
-    revision.save(update_fields=["recovery_state", "recovery_code", "recovery_due_at", "updated_at"])
+    update_fields = ["recovery_state", "recovery_code", "recovery_due_at", "updated_at"]
+    if state == "cancelled":
+        # A permission/takeover fence cancels execution ownership as well as
+        # the recovery branch. Leaving the old lease in place makes the normal
+        # revision queue reclaim a dead claim and emit recurring debt alerts.
+        revision.claim_token = ""
+        revision.claimed_at = None
+        revision.lease_until = None
+        update_fields.extend(["claim_token", "claimed_at", "lease_until"])
+    revision.save(update_fields=update_fields)
     if state == "manual" and code != "recovery_existing_proposal_requires_execution":
         from management.services.ig_response_debt import park_manual_revision
 
