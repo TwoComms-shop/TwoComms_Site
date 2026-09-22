@@ -1873,18 +1873,7 @@ SALES_AUTOMATION_GUARDRAILS = (
     "ввічливе закриття без тиску і без повторних follow-up. Для custom print: "
     "коротко поясни, що можливий будь-який DTF-принт, ціна залежить від крою, "
     "розміру принта і готовності файлу, фінальний прорахунок робить менеджер; "
-    "збери базове ТЗ і переведи в Telegram менеджера, не називаючи фінальну суму. "
-    "Для будь-якої пропозиції співпраці (дизайнер, creator, dropship, магазин, "
-    "партнерство, постачальник або інший формат) НЕ відмовляй автоматично і не "
-    "приймай остаточне рішення. Поясни: TwoComms переважно створює власні "
-    "дизайни і зазвичай не купує окремі принти, але може розглянути співпрацю, "
-    "якщо є готовий DTF-файл, вихідне зображення, mockup/фото для сайту та "
-    "узгоджена частка з продажу. Уточни, який формат потрібен, що саме людина "
-    "надає, її бажаний відсоток або винагороду за одиницю, референси, аудиторію, "
-    "обсяг/терміни та контакт для зв'язку. Скажи, що остаточне рішення приймає "
-    "керівник/менеджер і зацікавлені повернуться в цьому чаті. Якщо є кілька "
-    "намірів, збережи кожен окремо і постав вопросы для кожного, не стирай "
-    "попередню гілку."
+    "збери базове ТЗ і переведи в Telegram менеджера, не називаючи фінальну суму."
 )
 
 # F-CTX-002: the block above is injected unconditionally, so a customer in the
@@ -2584,7 +2573,7 @@ def _stage_permission_message(
                         "ingress" if source == "webhook" else "legacy_positional"
                     ),
                 ),
-                media_capture_eligible=(source in {"webhook", "echo"} and allow_media_capture),
+                media_capture_eligible=(source == "webhook" and allow_media_capture),
                 provider_created_at=provider_created_at,
                 reply_to_provider_message_id=reply_to_provider_message_id,
                 quick_reply_payload=quick_reply_payload,
@@ -2680,7 +2669,6 @@ def _handle_echo(
         defaults={"first_contact_at": now, "last_message_at": now},
     )
     msg = None
-    media_message_id = 0
     if text or attachments:
         has_story_reference = any(
             str(item.get("type") or "").casefold() == "story"
@@ -2710,7 +2698,6 @@ def _handle_echo(
         )
         if msg is None:
             return
-        media_message_id = msg.pk if msg.attachment_media else 0
     dedupe_key = (
         f"permission:manager_takeover:message:{msg.pk}"
         if msg is not None
@@ -2766,14 +2753,6 @@ def _handle_echo(
                 "takeover_observed",
                 f"{recipient_igsid}: менеджер продовжує вести діалог",
             )
-
-    if media_message_id:
-        try:
-            captured = InstagramBotMessage.objects.filter(pk=media_message_id).first()
-            if captured is not None:
-                _capture_message_media(captured)
-        except Exception as exc:
-            log("warning", "manager_media_capture", type(exc).__name__)
 
 
 def _match_allowed(sender_id: str, limit: int = 15, window: int = 3600) -> bool:
@@ -9987,7 +9966,7 @@ def _attachment_media_metadata(
     source: str,
     limit: int = 8,
 ) -> list[dict]:
-    live = str(source or "").strip() in {"webhook", "echo"}
+    live = str(source or "").strip() == "webhook"
     provenance = (
         MEDIA_PROVENANCE_LIVE_WEBHOOK if live else MEDIA_PROVENANCE_HISTORICAL
     )
@@ -10214,10 +10193,10 @@ def _private_media_storage():
 
 def _private_media_retention_seconds() -> int:
     try:
-        configured = int(getattr(settings, "IG_PRIVATE_MEDIA_RETENTION_SECONDS", 60 * 24 * 3600))
+        configured = int(getattr(settings, "IG_PRIVATE_MEDIA_RETENTION_SECONDS", 259200))
     except (TypeError, ValueError):
-        configured = 60 * 24 * 3600
-    return max(3600, min(configured, 60 * 24 * 3600))
+        configured = 259200
+    return max(3600, min(configured, 7 * 24 * 3600))
 
 
 def _failed_media_url_retention_seconds() -> int:
@@ -10262,13 +10241,8 @@ def _owned_media_bytes(
                     return None
             storage = _private_media_storage()
         else:
-            # Keep historical compatibility only for explicitly marked legacy
-            # rows. Provider/customer media without this marker is metadata and
-            # must never be read from public storage.
-            if item.get("legacy_private_storage") is not True and not bool(
-                getattr(settings, "DEBUG", False)
-            ):
-                return None
+            # Rolling compatibility for pre-0177 owned image rows. New live
+            # capture never writes public storage.
             from django.core.files.storage import default_storage
 
             storage = default_storage
@@ -10382,16 +10356,6 @@ def _merge_attachment_media(
                     item["source_part_id"] = tombstone_matches[0]["source_part_id"]
                     item["identity_origin"] = tombstone_matches[0]["identity_origin"]
                 elif item.get("original_index") is None:
-                    item["original_index"] = next_index
-                    next_index += 1
-                elif any(
-                    candidate.get("original_index") == item.get("original_index")
-                    for candidate in existing_normalized
-                ):
-                    # A fresh live attachment can arrive with positional index 0
-                    # while a historical import already owns that position.
-                    # Keep both parts unless the URL matched the explicit
-                    # historical upgrade path above.
                     item["original_index"] = next_index
                     next_index += 1
         prepared_incoming.append(item)
@@ -10527,13 +10491,10 @@ def _persist_media_metadata(row: InstagramBotMessage, incoming: list[dict]) -> l
 
 
 def _message_media_capture_owner_valid(locked: InstagramBotMessage) -> bool:
-    """Require live media to remain bound to its customer or manager echo."""
+    """Require the persisted live media row to remain bound to its customer."""
     if (
-        locked.role not in {
-            InstagramBotMessage.Role.USER,
-            InstagramBotMessage.Role.MANAGER,
-        }
-        or str(locked.source or "") not in {"webhook", "echo"}
+        locked.role != InstagramBotMessage.Role.USER
+        or str(locked.source or "") != "webhook"
         or not locked.client_id
         or not str(locked.sender_id or "").strip()
     ):
@@ -12416,7 +12377,7 @@ def enqueue_inbound(
                             source=source,
                             attachments=json.dumps(attachments) if attachments else "",
                             attachment_media=initial_media,
-                            media_capture_eligible=source in {"webhook", "echo"},
+                            media_capture_eligible=source == "webhook",
                             provider_created_at=received_at,
                             reply_to_provider_message_id=reply_to_provider_message_id,
                             quick_reply_payload=quick_reply_payload,
@@ -13527,31 +13488,9 @@ def _escalate_manager_for_row(row: InstagramBotMessage) -> None:
         pass
     from management.services.ig_alerts import alert_dedupe_key, format_technical_alert
 
-    brief = {}
-    try:
-        context = getattr(row.client, "sales_context", {}) or {}
-        candidate = context.get("_collaboration_brief")
-        if isinstance(candidate, dict):
-            brief = {
-                str(key): value
-                for key, value in candidate.items()
-                if key in {
-                    "schema_version", "subtypes", "primary_subtype", "assets",
-                    "requested_percentage", "requested_unit_terms",
-                    "contact_present", "contact_values", "references_present", "audience_present",
-                    "volume_or_deadline_present", "decision_owner",
-                    "multiple_intents",
-                }
-            }
-    except Exception:
-        brief = {}
-    handoff_text = "🔔 IG Direct — клієнту потрібен менеджер."
-    if brief:
-        subtype = str(brief.get("primary_subtype") or "other")
-        handoff_text += f" Співпраця ({subtype}): перевірити короткий бриф у картці."
     notify_manager(
         format_technical_alert(
-            handoff_text,
+            "🔔 IG Direct — клієнту потрібен менеджер.",
             event_type="escalation",
             client_id=row.client_id,
             message_id=row.pk,
@@ -13562,7 +13501,6 @@ def _escalate_manager_for_row(row: InstagramBotMessage) -> None:
         ),
         event_type="escalation",
         client=row.client,
-        metadata={"collaboration_brief": brief} if brief else None,
     )
     log("warning", "escalation", f"{row.sender_id}: викликано менеджера")
 

@@ -1,7 +1,6 @@
 """Authorized operator preview; images need no human approval for bot analysis."""
 from __future__ import annotations
 import hashlib
-from io import BytesIO
 from collections.abc import Mapping
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
@@ -56,10 +55,7 @@ def _safe_part(row, client, source_part_id: str, *, use_token: str) -> dict:
         row is None
         or client is None
         or row.client_id != client.pk
-        or row.role not in {
-            InstagramBotMessage.Role.USER,
-            InstagramBotMessage.Role.MANAGER,
-        }
+        or row.role != InstagramBotMessage.Role.USER
         or row.sender_id != client.igsid
         or client.privacy_erasure_started_at is not None
         or row.private_media_state in _DELETED_STATES
@@ -106,26 +102,6 @@ def _read_current_bytes(part: Mapping[str, object]) -> tuple[bytes, str]:
     return raw, hashlib.sha256(raw).hexdigest()
 
 
-def _crm_preview(raw: bytes, mime: str) -> tuple[bytes, str]:
-    """Return a bounded display copy while keeping original bytes for AI."""
-    if not mime.startswith("image/"):
-        return raw, mime
-    try:
-        from PIL import Image, ImageOps
-
-        with Image.open(BytesIO(raw)) as image:
-            image = ImageOps.exif_transpose(image).convert("RGB")
-            image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
-            output = BytesIO()
-            image.save(output, format="WEBP", quality=82, method=6)
-            preview = output.getvalue()
-        if preview and len(preview) < len(raw):
-            return preview, "image/webp"
-    except Exception:
-        pass
-    return raw, mime
-
-
 def _identity_snapshot(message_id: int) -> int:
     client_id = (
         InstagramBotMessage.objects.filter(pk=message_id)
@@ -167,8 +143,7 @@ def private_media_preview(request, message_id: int, source_part_id: str):
                 entity_id=str(row.pk), after={"source_part_id": source_part_id},
                 reason="authorized_operator_preview",
             )
-        preview, preview_mime = _crm_preview(raw, mime)
-        response = HttpResponse(preview, content_type=preview_mime)
+        response = HttpResponse(raw, content_type=mime)
         response["Content-Disposition"] = "inline; filename=private-media"
         response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response["Pragma"] = "no-cache"

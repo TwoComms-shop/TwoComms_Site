@@ -210,10 +210,10 @@ if IG_ASSISTED_CHECKOUT_V2 not in {'off', 'shadow', 'enforced'}:
 IG_PRIVATE_MEDIA_ROOT = os.environ.get('IG_PRIVATE_MEDIA_ROOT', '').strip()
 try:
     IG_PRIVATE_MEDIA_RETENTION_SECONDS = int(
-        os.environ.get('IG_PRIVATE_MEDIA_RETENTION_SECONDS', '5184000')
+        os.environ.get('IG_PRIVATE_MEDIA_RETENTION_SECONDS', '259200')
     )
 except (TypeError, ValueError):
-    IG_PRIVATE_MEDIA_RETENTION_SECONDS = 5184000
+    IG_PRIVATE_MEDIA_RETENTION_SECONDS = 259200
 
 # ЭА — аварийная стабилизация деградации провайдера Gemini для Instagram-бота.
 # Все флаги по умолчанию ВКЛЮЧЕНЫ: текущее (старое) поведение доказанно вредит

@@ -14,27 +14,6 @@ from management.ig_bot_models import IgClient, IgConversationSignal
 from management.models import InstagramBotMessage
 
 
-class CollaborationBriefTests(TestCase):
-    def test_designer_brief_captures_assets_terms_and_manager_owner(self):
-        from management.services.bot_sales_classifier import extract_collaboration_brief
-        brief = extract_collaboration_brief(
-            "Я дизайнер, дам готовий DTF файл, вихідник і mockup. Хочу 20% з продажу, @designer"
-        )
-        self.assertEqual(brief["primary_subtype"], "designer")
-        self.assertIn("dtf_ready", brief["assets"])
-        self.assertIn("source_art", brief["assets"])
-        self.assertIn("mockup_or_photo", brief["assets"])
-        self.assertEqual(brief["requested_percentage"], 20)
-        self.assertEqual(brief["decision_owner"], "manager")
-
-    def test_multiple_collaboration_intents_are_preserved(self):
-        from management.services.bot_sales_classifier import extract_collaboration_brief
-        brief = extract_collaboration_brief("Я дизайнер і хочу ще dropship для магазину")
-        self.assertTrue(brief["multiple_intents"])
-        self.assertIn("designer", brief["subtypes"])
-        self.assertIn("dropship", brief["subtypes"])
-        self.assertIn("wholesale_store", brief["subtypes"])
-
 class PatternConflictMixin:
     def _classify(self, text, *, key=None, role="user"):
         from management.services.bot_sales_classifier import classify_message

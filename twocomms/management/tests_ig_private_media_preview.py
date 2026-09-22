@@ -21,7 +21,7 @@ class PrivateMediaPreviewTests(TestCase):
         )
         self.client.force_login(self.user)
 
-    def _message(self, *, erased=False, wrong_hash=False, role=InstagramBotMessage.Role.USER):
+    def _message(self, *, erased=False, wrong_hash=False):
         client = IgClient.objects.create(
             igsid=f"preview-{InstagramBotMessage.objects.count()}",
             privacy_erasure_started_at=timezone.now() if erased else None,
@@ -34,7 +34,7 @@ class PrivateMediaPreviewTests(TestCase):
         row = InstagramBotMessage.objects.create(
             client=client,
             sender_id=client.igsid,
-            role=role,
+            role=InstagramBotMessage.Role.USER,
             private_media_state=InstagramBotMessage.PrivateMediaState.ACTIVE,
             private_media_delete_after=timezone.now() + timedelta(hours=1),
             attachment_media=[{
@@ -63,19 +63,6 @@ class PrivateMediaPreviewTests(TestCase):
         self.assertTrue(AdminAuditLog.objects.filter(
             actor=self.user, action="ig_private_media.preview", entity_id=str(row.pk),
         ).exists())
-
-    def test_manager_echo_preview_is_authorized_and_compacted(self):
-        with tempfile.TemporaryDirectory() as root, override_settings(
-            IG_PRIVATE_MEDIA_ROOT=str(Path(root).resolve()),
-        ):
-            row, part_id = self._message(role=InstagramBotMessage.Role.MANAGER)
-            response = self.client.get(reverse(
-                "management_bot_private_media_preview", args=[row.pk, part_id],
-            ))
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"].split(";")[0], "image/jpeg")
-        self.assertIn("no-store", response["Cache-Control"])
 
     def test_erasure_or_digest_change_makes_preview_unavailable(self):
         with tempfile.TemporaryDirectory() as root, override_settings(
