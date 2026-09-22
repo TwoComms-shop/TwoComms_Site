@@ -5,6 +5,7 @@
 """
 
 import hashlib
+import time
 from urllib.parse import urlencode
 from functools import wraps
 
@@ -14,6 +15,15 @@ from django.utils.encoding import iri_to_uri
 
 from base64_utils import InvalidBase64, strict_b64decode
 from twocomms.db_resilience import retry_mysql_read
+
+
+# A cold anonymous page can be requested by several browser connections at
+# once (navigation plus preload, crawler bursts, or a shared link).  Keep one
+# request rendering the page while the others wait briefly for the cache entry.
+# The lease is intentionally short so a killed worker cannot block the route.
+_ANON_PAGE_CACHE_LOCK_TTL = 30
+_ANON_PAGE_CACHE_LOCK_WAIT = 0.35
+_ANON_PAGE_CACHE_LOCK_POLL = 0.025
 
 
 def _build_query_string(querydict):
@@ -103,15 +113,44 @@ def cache_page_for_anon(timeout, key_prefix=None, *, cache_identity=None, cache_
                 # остаётся чистым от Set-Cookie.
                 return cached_response
 
-            response = view_func(request, *args, **kwargs)
+            lock_digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+            lock_key = f"anon-page-render-lock:{lock_digest}"
+            owns_render_lock = False
+            try:
+                owns_render_lock = cache.add(
+                    lock_key,
+                    True,
+                    timeout=_ANON_PAGE_CACHE_LOCK_TTL,
+                )
+                if not owns_render_lock:
+                    deadline = time.monotonic() + _ANON_PAGE_CACHE_LOCK_WAIT
+                    while time.monotonic() < deadline:
+                        time.sleep(_ANON_PAGE_CACHE_LOCK_POLL)
+                        cached_response = cache.get(cache_key)
+                        if cached_response is not None:
+                            return cached_response
+            except Exception:
+                # Cache failures are already configured to fail open in
+                # production. Rendering must remain available if the lock
+                # backend is unavailable or read-only.
+                owns_render_lock = False
 
-            if getattr(response, 'streaming', False):
-                return response
-            if response.status_code != 200:
-                return response
+            try:
+                response = view_func(request, *args, **kwargs)
 
-            cache.set(cache_key, response, timeout)
-            return response
+                if getattr(response, 'streaming', False):
+                    return response
+                if response.status_code != 200:
+                    return response
+
+                cache.set(cache_key, response, timeout)
+                return response
+            finally:
+                if owns_render_lock:
+                    try:
+                        cache.delete(lock_key)
+                    except Exception:
+                        pass
         return _wrapped_view
     return decorator
 

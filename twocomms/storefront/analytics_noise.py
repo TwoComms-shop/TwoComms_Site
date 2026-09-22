@@ -6,6 +6,7 @@ from django.db.models import Q
 TRACKING_NOISE_EXACT_PATHS = frozenset(
     {
         "/api",
+        "/csp-report/",
         "/buyme-feed.xml",
         "/buyme.xml",
         "/favicon.ico",

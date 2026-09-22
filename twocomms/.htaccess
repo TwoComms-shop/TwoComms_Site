@@ -3,6 +3,14 @@
 # Принудительный редирект HTTP -> HTTPS
 RewriteEngine On
 
+# Keep enough request capacity for normal navigation bursts.  This is a
+# deliberately conservative floor: the production DB user is capped at 20
+# connections, so higher concurrency must wait for measured host/LVE data.
+<IfModule Litespeed>
+    SetEnv LSAPI_CHILDREN 6
+    SetEnv LSAPI_EXTRA_CHILDREN 0
+</IfModule>
+
 # F-087: combat-veteran identity documents are never public media. Owners and
 # staff retrieve them through the authenticated Django endpoint instead.
 RewriteRule ^media/ubd_docs/ - [F,L,NC]
