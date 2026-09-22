@@ -3940,7 +3940,13 @@ def _deliver_manager_notification_unlocked(dedupe_key: str) -> bool:
             status=IgBotNotification.Status.SENDING,
         ).update(payload=payload, updated_at=timezone.now())
 
-    registration_transport = payload.get("transport") == "site_registration"
+    registration_transport = (
+        payload.get("transport") == "site_registration"
+        or (
+            row.event_type == "registration"
+            and payload.get("registration_user_id") is not None
+        )
+    )
     if registration_transport:
         try:
             from accounts.signals import registration_notification_text

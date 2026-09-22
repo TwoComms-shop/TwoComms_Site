@@ -466,6 +466,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "twocomms.middleware.OAuthCallbackReplayMiddleware",
     "management.middleware.ManagementOnboardingGate",  # онбординг-гейт менеджерів (за прапором)
     "django.contrib.messages.middleware.MessageMiddleware",
     "social_django.middleware.SocialAuthExceptionMiddleware",  # Redirect social-auth errors instead of leaking 500s

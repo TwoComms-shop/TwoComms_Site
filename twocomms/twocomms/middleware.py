@@ -2,7 +2,7 @@
 Дополнительные middleware для TwoComms
 """
 
-from django.http import HttpResponsePermanentRedirect, HttpResponse
+from django.http import HttpResponsePermanentRedirect, HttpResponse, HttpResponseRedirect
 from django.conf import settings
 from django.core import signing
 from django.utils.deprecation import MiddlewareMixin
@@ -21,6 +21,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     import fcntl
@@ -102,6 +103,15 @@ SOCIAL_AUTH_STATE_PATH_RE = re.compile(
 AUTH_COOKIE_CLEANUP_PATH_RE = re.compile(
     r"^/(?:oauth/(?:login|complete)/[-\w]+|social/(?:login|complete)/[-\w]+|(?:ru/|en/)?(?:login|register))/?$"
 )
+OAUTH_CALLBACK_RE = re.compile(r"^/(?:oauth|social)/complete/[-\w]+/?$")
+OAUTH_REPLAY_STATE_SESSION_KEY = "_twc_oauth_completed_state"
+OAUTH_REPLAY_AT_SESSION_KEY = "_twc_oauth_completed_at"
+OAUTH_REPLAY_WINDOW_SECONDS = 300
+OAUTH_REPLAY_COOKIE_PREFIX = "twc_oauth_done_"
+OAUTH_REPLAY_COOKIE_SALT = "twocomms.oauth-replay.v1"
+OAUTH_CALLBACK_LOCK_WAIT_SECONDS = 25
+OAUTH_CALLBACK_MARKER_TIMEOUT_SECONDS = 300
+oauth_logger = logging.getLogger("twocomms.oauth")
 
 
 def _social_auth_state_cookie_name(backend: str) -> str:
@@ -113,6 +123,18 @@ def build_social_auth_state_cookie(backend: str, state: str) -> str:
     return signing.dumps(
         {"backend": backend, "state": state},
         salt=SOCIAL_AUTH_STATE_COOKIE_SALT,
+    )
+
+
+def _oauth_replay_cookie_name(backend: str) -> str:
+    safe_backend = re.sub(r"[^A-Za-z0-9_]", "_", backend or "")
+    return f"{OAUTH_REPLAY_COOKIE_PREFIX}{safe_backend}"
+
+
+def _build_oauth_replay_cookie(backend: str, state: str, redirect: str) -> str:
+    return signing.dumps(
+        {"backend": backend, "state": state, "redirect": redirect},
+        salt=OAUTH_REPLAY_COOKIE_SALT,
     )
 
 
@@ -272,6 +294,202 @@ class LegacyAuthCookieCleanupMiddleware(MiddlewareMixin):
             samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
         )
         return response
+
+
+class OAuthCallbackReplayMiddleware(MiddlewareMixin):
+    """Make a successful OAuth callback idempotent for short browser retries.
+
+    Google authorization codes are single-use. A proxy or browser retry can
+    deliver the same callback after the first request has already logged the
+    user in; exchanging it a second time returns ``invalid_grant`` and the
+    default social-auth middleware redirects to ``/login/``. Remember the
+    completed state briefly and finish that retry locally.
+    """
+
+    @staticmethod
+    def _safe_redirect(request):
+        target = request.session.get("next") or getattr(
+            settings, "SOCIAL_AUTH_LOGIN_REDIRECT_URL", "/"
+        )
+        if not isinstance(target, str) or not target.startswith("/"):
+            return "/"
+        parsed = urlparse(target)
+        if parsed.scheme or parsed.netloc or target.startswith("//"):
+            return "/"
+        return target
+
+    @staticmethod
+    def _callback_backend(request):
+        match = OAUTH_CALLBACK_RE.match(getattr(request, "path", "") or "")
+        return match.group(0).strip("/").split("/")[-1] if match else ""
+
+    @staticmethod
+    def _marker_key(backend, state):
+        digest = hashlib.sha256(f"{backend}:{state}".encode("utf-8")).hexdigest()
+        return f"twc:oauth-complete:{digest}"
+
+    @staticmethod
+    def _lock_descriptor(backend, state):
+        if fcntl is None:
+            return None
+        lock_dir = Path(
+            getattr(settings, "OAUTH_CALLBACK_LOCK_DIR", "/tmp/twocomms-oauth-locks")
+        )
+        lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_dir.chmod(0o700)
+        digest = hashlib.sha256(f"{backend}:{state}".encode("utf-8")).hexdigest()
+        stripe = int(digest[:8], 16) % 64
+        descriptor = os.open(
+            lock_dir / f"counter-{stripe:02d}.lock", os.O_CREAT | os.O_RDWR, 0o600
+        )
+        os.fchmod(descriptor, 0o600)
+        return descriptor
+
+    @staticmethod
+    def _acquire_lock(descriptor):
+        if descriptor is None:
+            return True
+        deadline = time.monotonic() + OAUTH_CALLBACK_LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.05)
+
+    @staticmethod
+    def _close_lock(request):
+        descriptor = getattr(request, "_twc_oauth_lock_descriptor", None)
+        if descriptor is None:
+            return
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+            request._twc_oauth_lock_descriptor = None
+
+    def process_request(self, request):
+        match = OAUTH_CALLBACK_RE.match(getattr(request, "path", "") or "")
+        if not match:
+            return None
+        state = request.GET.get("state") or request.GET.get("redirect_state")
+        backend = self._callback_backend(request)
+        request._twc_oauth_started_at = time.monotonic()
+        request._twc_oauth_state_hash = hashlib.sha256(
+            str(state or "").encode("utf-8")
+        ).hexdigest()[:12]
+        if state and request.GET.get("code"):
+            descriptor = self._lock_descriptor(backend, state)
+            acquired = self._acquire_lock(descriptor)
+            if not acquired:
+                if descriptor is not None:
+                    os.close(descriptor)
+                oauth_logger.warning(
+                    "OAuth callback lock timeout host=%s backend=%s state_hash=%s",
+                    request.get_host(), backend, request._twc_oauth_state_hash,
+                )
+            else:
+                marker_key = self._marker_key(backend, state)
+                marker = None
+                try:
+                    marker = caches["default"].get(marker_key)
+                except Exception:
+                    oauth_logger.debug("OAuth callback marker cache unavailable", exc_info=True)
+                if isinstance(marker, str) and marker.startswith("/") and not marker.startswith("//"):
+                    if descriptor is not None:
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                        os.close(descriptor)
+                    oauth_logger.info(
+                        "OAuth callback replay served host=%s backend=%s state_hash=%s",
+                        request.get_host(), backend, request._twc_oauth_state_hash,
+                    )
+                    return HttpResponseRedirect(marker)
+                request._twc_oauth_lock_descriptor = descriptor
+                request._twc_oauth_marker_key = marker_key
+        replay_value = request.COOKIES.get(_oauth_replay_cookie_name(backend))
+        if replay_value and state:
+            try:
+                payload = signing.loads(
+                    replay_value,
+                    salt=OAUTH_REPLAY_COOKIE_SALT,
+                    max_age=OAUTH_REPLAY_WINDOW_SECONDS,
+                )
+            except signing.BadSignature:
+                payload = None
+            if (
+                isinstance(payload, dict)
+                and payload.get("backend") == backend
+                and payload.get("state") == state
+            ):
+                target = payload.get("redirect") or "/"
+                if isinstance(target, str) and target.startswith("/") and not target.startswith("//"):
+                    self._close_lock(request)
+                    return HttpResponseRedirect(target)
+
+        if not getattr(getattr(request, "user", None), "is_authenticated", False):
+            return None
+        completed_state = request.session.get(OAUTH_REPLAY_STATE_SESSION_KEY)
+        completed_at = request.session.get(OAUTH_REPLAY_AT_SESSION_KEY, 0)
+        try:
+            fresh = time.time() - float(completed_at) <= OAUTH_REPLAY_WINDOW_SECONDS
+        except (TypeError, ValueError):
+            fresh = False
+        if state and state == completed_state and fresh:
+            self._close_lock(request)
+            return HttpResponseRedirect(self._safe_redirect(request))
+        return None
+
+    def process_response(self, request, response):
+        if not OAUTH_CALLBACK_RE.match(getattr(request, "path", "") or ""):
+            return response
+        location = response.get("Location", "")
+        if response.status_code in {301, 302, 303, 307, 308} and location and location != "/login/":
+            if request.session.get("_auth_user_id"):
+                state = request.GET.get("state") or request.GET.get("redirect_state")
+                if state:
+                    request.session[OAUTH_REPLAY_STATE_SESSION_KEY] = state
+                    request.session[OAUTH_REPLAY_AT_SESSION_KEY] = time.time()
+                    request.session.modified = True
+                    backend = self._callback_backend(request)
+                    marker_key = getattr(request, "_twc_oauth_marker_key", "")
+                    if marker_key:
+                        try:
+                            caches["default"].set(
+                                marker_key,
+                                location,
+                                timeout=OAUTH_CALLBACK_MARKER_TIMEOUT_SECONDS,
+                            )
+                        except Exception:
+                            oauth_logger.debug("OAuth callback marker cache unavailable", exc_info=True)
+                    response.set_cookie(
+                        _oauth_replay_cookie_name(backend),
+                        _build_oauth_replay_cookie(backend, state, location),
+                        max_age=OAUTH_REPLAY_WINDOW_SECONDS,
+                        path="/",
+                        domain=getattr(settings, "SESSION_COOKIE_DOMAIN", None),
+                        secure=getattr(settings, "SESSION_COOKIE_SECURE", False),
+                        httponly=True,
+                        samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
+                    )
+        started = getattr(request, "_twc_oauth_started_at", None)
+        if started is not None:
+            oauth_logger.info(
+                "OAuth callback completed host=%s backend=%s status=%s location=%s state_hash=%s elapsed_ms=%d",
+                request.get_host(),
+                self._callback_backend(request),
+                response.status_code,
+                location or "-",
+                getattr(request, "_twc_oauth_state_hash", ""),
+                int((time.monotonic() - started) * 1000),
+            )
+        self._close_lock(request)
+        return response
+
+    def process_exception(self, request, exception):
+        self._close_lock(request)
+        return None
 
 
 class SubdomainURLRoutingMiddleware(MiddlewareMixin):

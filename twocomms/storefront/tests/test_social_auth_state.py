@@ -1,9 +1,10 @@
 from django.contrib.sessions.backends.db import SessionStore
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseRedirect
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 
 from twocomms.middleware import (
     LegacyAuthCookieCleanupMiddleware,
+    OAuthCallbackReplayMiddleware,
     SocialAuthStateCookieMiddleware,
     build_social_auth_state_cookie,
 )
@@ -20,6 +21,7 @@ class SocialAuthStateCookieMiddlewareTests(SimpleTestCase):
         self.factory = RequestFactory()
         self.middleware = SocialAuthStateCookieMiddleware(lambda request: HttpResponse("ok"))
         self.cookie_cleanup = LegacyAuthCookieCleanupMiddleware(lambda request: HttpResponse("ok"))
+        self.replay_guard = OAuthCallbackReplayMiddleware(lambda request: HttpResponse("ok"))
 
     def test_complete_restores_missing_google_state_from_signed_cookie(self):
         request = self.factory.get(
@@ -137,6 +139,51 @@ class SocialAuthStateCookieMiddlewareTests(SimpleTestCase):
         response = self.cookie_cleanup.process_response(request, response)
 
         self.assertNotIn("sessionid", response.cookies)
+
+    def test_successful_callback_retry_redirects_without_redeeming_code_again(self):
+        request = self.factory.get(
+            "/oauth/complete/google-oauth2/",
+            {"state": "completed-state", "code": "replayed-code"},
+            secure=True,
+            HTTP_HOST="twocomms.shop",
+        )
+        request.session = SessionStore()
+        request.session["_auth_user_id"] = "42"
+        request.session["_twc_oauth_completed_state"] = "completed-state"
+        request.session["_twc_oauth_completed_at"] = __import__("time").time()
+        request.user = type("User", (), {"is_authenticated": True})()
+
+        response = self.replay_guard.process_request(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/")
+
+    def test_concurrent_callback_retry_uses_completed_marker(self):
+        first = self.factory.get(
+            "/oauth/complete/google-oauth2/",
+            {"state": "marker-state", "code": "one-time-code"},
+            secure=True,
+            HTTP_HOST="twocomms.shop",
+        )
+        first.session = SessionStore()
+        first.session["_auth_user_id"] = "42"
+        first.user = type("User", (), {"is_authenticated": True})()
+        self.replay_guard.process_request(first)
+        self.replay_guard.process_response(first, HttpResponseRedirect("/"))
+
+        retry = self.factory.get(
+            "/oauth/complete/google-oauth2/",
+            {"state": "marker-state", "code": "one-time-code"},
+            secure=True,
+            HTTP_HOST="twocomms.shop",
+        )
+        retry.session = SessionStore()
+        retry.user = type("User", (), {"is_authenticated": False})()
+
+        response = self.replay_guard.process_request(retry)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/")
 
 
 @override_settings(
