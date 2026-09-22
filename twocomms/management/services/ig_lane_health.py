@@ -26,6 +26,10 @@ BUCKETS = ("runnable", "processing", "manual", "manager_owned", "deferred", "fai
 REPLY_STALL_SECONDS = 300
 SERVICE_STALL_SECONDS = 900
 HISTORICAL_FAILURE_SECONDS = 24 * 60 * 60
+_MANUAL_OWNER_ACTIVE_STATUSES = tuple(
+    status for status, _label in IgFollowUpTask.Status.choices
+    if status not in (IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)
+)
 
 
 def _age(now, moment):
@@ -72,12 +76,20 @@ def _permission_blocked(client, *, settings_row, allowed, revision=None):
 
 def _manual_owned(revision):
     # Match the existing durable case identity and owner; a bare 'manual' state
-    # without an accountable owner must remain attention.
+    # without an accountable owner must remain attention. An operator's explicit
+    # reviewed_no_reply closure is also a durable manual disposition: it closes
+    # the alert without claiming that a customer reply was delivered.
     return IgFollowUpTask.objects.filter(
         client_id=revision.client_id, event_key=f"ig-revision-debt:{revision.pk}",
         kind="manager_task", reason="revision_case:execution_debt",
         manager_context__revision_id=revision.pk, manager_context__owner="manager",
-    ).exclude(status__in=("completed", "cancelled")).exists()
+    ).filter(
+        Q(status__in=_MANUAL_OWNER_ACTIVE_STATUSES)
+        | Q(
+            status=IgFollowUpTask.Status.CANCELLED,
+            manager_context__operator_review__outcome="reviewed_no_reply",
+        )
+    ).exists()
 
 
 def _revision_lane(*, now, settings_row, allowed):
@@ -99,7 +111,13 @@ def _revision_lane(*, now, settings_row, allowed):
         event_key=Concat(Value("ig-revision-debt:"), Cast(OuterRef("pk"), CharField())),
         kind="manager_task", reason="revision_case:execution_debt",
         manager_context__owner="manager", manager_context__revision_id=OuterRef("pk"),
-    ).exclude(status__in=("completed", "cancelled"))
+    ).filter(
+        Q(status__in=_MANUAL_OWNER_ACTIVE_STATUSES)
+        | Q(
+            status=IgFollowUpTask.Status.CANCELLED,
+            manager_context__operator_review__outcome="reviewed_no_reply",
+        )
+    )
     query = IgCustomerTurnRevision.objects.filter(active_slot=1).exclude(
         state__in=("processed", "superseded"),
     ).annotate(
@@ -190,6 +208,16 @@ def _revision_lane(*, now, settings_row, allowed):
     bad = query.filter(Q(uncertain=True) | Q(failed_effect=True)
                        | (Q(overall_deadline__lte=now, manual_owner=False, recovery_state="")
                           & ~Q(pk__in=finalizing) & ~manager_owned)).count()
+    # ``recovery_state=manual`` is classified below with the same authority
+    # check as the queue worker. Keep the exact attention total in lockstep
+    # with that classifier; the old SQL predicate only covered empty recovery
+    # state and reported a false zero for an unowned manual recovery.
+    from management.services.ig_revision_recovery import execution_resume_is_current
+    for recovery in query.filter(recovery_state="manual"):
+        if recovery.uncertain or recovery.failed_effect or recovery.manual_owner:
+            continue
+        if not execution_resume_is_current(recovery, now=now):
+            bad += 1
     progress = IgCustomerTurnRevision.objects.aggregate(at=Max("processed_at"))["at"]
     return _sample(query, classify, now=now, threshold=REPLY_STALL_SECONDS, progress=progress, exact_attention=bad, progress_kind="terminal_progress")
 

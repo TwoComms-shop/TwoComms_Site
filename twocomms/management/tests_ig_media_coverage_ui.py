@@ -39,6 +39,8 @@ class MediaCoveragePayloadTests(SimpleTestCase):
             rows[0]["preview_url"],
             "/bot/private-media/44/mp1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/preview/",
         )
+        self.assertEqual(rows[0]["public_url"], rows[0]["preview_url"])
+        self.assertEqual(rows[0]["media_label"], "Зображення сертифіката")
         self.assertNotIn("url", rows[0])
         self.assertNotIn("storage_name", rows[0])
 

@@ -235,6 +235,41 @@ class TaskHeartbeatTests(TestCase):
         self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
         self.assertIn("IG operations", notify.call_args.args[0])
 
+    @patch("management.services.ig_alerts.alert_dedupe_key")
+    @patch("management.services.instagram_bot.notify_manager")
+    @patch("management.services.ig_task_health.task_health_snapshot")
+    def test_task_set_growth_keeps_one_incident_dedupe_fingerprint(self, snapshot, notify, dedupe):
+        nova = {
+            "key": "nova_poshta_tracking", "label": "Nova Poshta", "state": "stale",
+            "healthy": False, "age_seconds": 1200,
+        }
+        checkout = {
+            "key": "ig_checkout_reconcile", "label": "IG checkout", "state": "stale",
+            "healthy": False, "age_seconds": 1200,
+        }
+        base = {"available": True, "healthy": False, "unhealthy_count": 1}
+        snapshot.side_effect = [
+            {**base, "tasks": [nova]},
+            {**base, "unhealthy_count": 2, "tasks": [nova, checkout]},
+        ]
+        notify.return_value = True
+
+        first = check_task_health()
+        second = check_task_health()
+
+        self.assertFalse(first["healthy"])
+        self.assertFalse(second["healthy"])
+        self.assertEqual(notify.call_count, 2)
+        self.assertEqual(dedupe.call_count, 2)
+        self.assertEqual(
+            dedupe.call_args_list[0].kwargs["text"],
+            dedupe.call_args_list[1].kwargs["text"],
+        )
+        self.assertEqual(
+            dedupe.call_args_list[0].kwargs["text"],
+            "scheduled_task_health_unhealthy",
+        )
+
     def test_all_production_cron_tasks_have_an_explicit_specification(self):
         self.assertEqual(
             {spec.key for spec in TASK_SPECS},

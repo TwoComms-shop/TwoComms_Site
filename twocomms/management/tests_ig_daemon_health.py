@@ -329,6 +329,78 @@ class DaemonRuntimeHealthAlertTests(TestCase):
         notify.assert_not_called()
         dedupe.assert_not_called()
 
+    @patch("management.services.ig_alerts.alert_dedupe_key", return_value="terminal-debt-hour")
+    @patch("management.services.instagram_bot.notify_manager", return_value=True)
+    @patch("management.services.ig_daemon_health.technical_debt_snapshot")
+    def test_resolved_and_dismissed_matching_debt_are_not_realerted(self, debt, notify, dedupe):
+        from django.utils import timezone
+        from management.ig_bot_models import IgTechnicalDebtCase
+        from management.services.ig_technical_debt import _reconciler_case
+
+        current_case = {
+            "reason": "canonical_delivery_unknown", "scope": "delivery_effect",
+            "count": 1, "oldest_age_seconds": 120, "sample_ids": [99],
+            "sampled": False, "has_more": False,
+        }
+        debt.return_value = {
+            "fingerprint": "terminal-debt-fingerprint", "cases": [current_case],
+            "case_count": 1, "coverage_complete": True, "errors": [], "sample_limit": 100,
+        }
+        fingerprint = _reconciler_case(current_case, now=timezone.now())["case_fingerprint"]
+        for status in (IgTechnicalDebtCase.Status.RESOLVED, IgTechnicalDebtCase.Status.DISMISSED):
+            IgTechnicalDebtCase.objects.create(
+                case_key="canonical_delivery_unknown:delivery_effect",
+                reason="canonical_delivery_unknown", scope="delivery_effect",
+                status=status, observation_fingerprint=fingerprint,
+            )
+            from management.services.ig_daemon_health import _unhandled_technical_debt_cases
+
+            self.assertEqual(_unhandled_technical_debt_cases([current_case]), [])
+            IgTechnicalDebtCase.objects.filter(
+                case_key="canonical_delivery_unknown:delivery_effect",
+            ).delete()
+
+        notify.assert_not_called()
+        dedupe.assert_not_called()
+
+    @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
+    @patch("management.services.ig_alerts.alert_dedupe_key", return_value="changed-terminal-debt-hour")
+    @patch("management.services.instagram_bot.notify_manager", return_value=True)
+    @patch("management.services.ig_daemon_health.technical_debt_snapshot")
+    def test_resolved_debt_with_changed_observation_is_realertable(self, debt, notify, dedupe, _maintenance):
+        from management.ig_bot_models import IgTechnicalDebtCase
+
+        current_case = {
+            "reason": "canonical_delivery_unknown", "scope": "delivery_effect",
+            "count": 1, "oldest_age_seconds": 120, "sample_ids": [100],
+            "sampled": False, "has_more": False,
+        }
+        debt.return_value = {
+            "fingerprint": "changed-terminal-debt", "cases": [current_case],
+            "case_count": 1, "coverage_complete": True, "errors": [], "sample_limit": 100,
+        }
+        IgTechnicalDebtCase.objects.create(
+            case_key="canonical_delivery_unknown:delivery_effect",
+            reason="canonical_delivery_unknown", scope="delivery_effect",
+            status=IgTechnicalDebtCase.Status.RESOLVED,
+            observation_fingerprint="previous-observation",
+        )
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.is_enabled = True
+        settings_obj.save(update_fields=["is_enabled", "updated_at"])
+        now = time.time()
+        cache.set(PROCESS_PULSE_KEY, {"at": now}, 600)
+        cache.set(MAIN_PROGRESS_KEY, {"at": now, "state": "idle"}, 600)
+        from management.services.ig_daemon_health import alert_daemon_runtime_health
+
+        snapshot = alert_daemon_runtime_health()
+
+        self.assertTrue(snapshot["alerted"])
+        notify.assert_called_once()
+        dedupe.assert_called_once_with(
+            "ig_technical_debt", window_minutes=60, text="changed-terminal-debt",
+        )
+
     @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
     @patch("management.services.ig_alerts.alert_dedupe_key", return_value="technical-debt-hour")
     @patch("management.services.instagram_bot.notify_manager", return_value=True)

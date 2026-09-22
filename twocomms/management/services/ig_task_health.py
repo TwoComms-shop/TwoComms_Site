@@ -69,6 +69,10 @@ _SPECS_BY_KEY = {
 }
 _CALL_AUTO_ANALYSIS_TASK_KEY = "binotel_call_ai_analyses"
 _CALL_QUEUE_KEYS = ("eligible", "metadata_pending", "ineligible")
+# The alert body carries the current unhealthy task set. Keep dedupe identity at
+# the incident level so a second task joining the same outage does not create a
+# new hourly alert bucket.
+TASK_HEALTH_INCIDENT_FINGERPRINT = "scheduled_task_health_unhealthy"
 
 
 def _call_auto_analysis_enabled() -> bool:
@@ -594,13 +598,12 @@ def check_task_health(*, now=None) -> dict:
             for task in unhealthy
         ]
         text = format_alert("🚨 IG operations потребують уваги", lines=lines)
-        incident_fingerprint = ";".join(
-            f"{task['key']}:{task['state']}" for task in unhealthy
-        )
         bot.notify_manager(
             text,
             dedupe_key=alert_dedupe_key(
-                "ig_task_health", window_minutes=60, text=incident_fingerprint
+                "ig_task_health",
+                window_minutes=60,
+                text=TASK_HEALTH_INCIDENT_FINGERPRINT,
             ),
             event_type="ig_task_health",
         )

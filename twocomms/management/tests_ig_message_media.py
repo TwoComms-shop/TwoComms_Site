@@ -251,6 +251,25 @@ class MessageMediaTemplateTests(TestCase):
     def test_image_has_an_error_handler(self):
         self.assertIn("addEventListener('error'", self._template())
 
+    def test_private_preview_uses_the_thumbnail_rendering_contract(self):
+        template = self._template()
+        from pathlib import Path
+        from django.conf import settings
+
+        scroll_script = (
+            Path(settings.BASE_DIR)
+            / "management"
+            / "static"
+            / "management"
+            / "bot_conversation_scroll.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("safeHttpUrl(item.public_url)", template)
+        self.assertIn("item.media_label", template)
+        self.assertIn("bot_conversation_scroll.js", template)
+        self.assertIn("ResizeObserver", scroll_script)
+        self.assertIn("image.decode", scroll_script)
+
     def test_unavailable_placeholder_has_a_style(self):
         self.assertTrue(".bot-media-unavailable{" in self._template())
 

@@ -1895,8 +1895,21 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
                 )
             except Exception:
                 preview_url = ""
+        # ``public_url`` is the rendering contract consumed by the chat
+        # thumbnail. For customer media it may point only to the authorized,
+        # leased preview endpoint; never expose the provider URL or storage
+        # name as a substitute.
+        render_url = preview_url if preview_url else ""
         rows.append({
             **public,
+            "public_url": render_url,
+            "media_label": {
+                "receipt": "Зображення чека",
+                "payment_screenshot": "Скриншот оплати",
+                "custom_reference": "Приклад принта",
+                "certificate": "Зображення сертифіката",
+                "document": "Зображення документа",
+            }.get(str(inspection.get("type_code") or "").strip(), "Зображення"),
             "type_code": _bounded_text(inspection.get("type_code"), 32),
             "error_kind": _bounded_text(item.get("error_kind"), 64),
             "preview_url": preview_url,
@@ -1935,15 +1948,39 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
                     "effort": "unknown",
                 })
         return rows
-    for original_index, _candidate in enumerate(legacy_attachments[:_MESSAGE_MEDIA_LIMIT]):
-        rows.append({
+    evidence_by_asset = {}
+    for evidence in media_evidence or ():
+        if not isinstance(evidence, dict):
+            continue
+        evidence_url = _safe_media_url(evidence.get("url"))
+        if evidence_url:
+            evidence_by_asset.setdefault(_media_asset_key(evidence_url), evidence)
+    seen_assets = set()
+    for original_index, candidate in enumerate(legacy_attachments[:_MESSAGE_MEDIA_LIMIT]):
+        safe_url = _safe_media_url(candidate)
+        if not safe_url:
+            continue
+        asset_key = _media_asset_key(safe_url)
+        if asset_key in seen_assets:
+            continue
+        seen_assets.add(asset_key)
+        evidence = evidence_by_asset.get(asset_key, {})
+        provider_link = _is_provider_media_link(safe_url)
+        public_url = "" if provider_link else _safe_storefront_url(safe_url)
+        row = {
             "original_index": original_index,
+            "role": _bounded_text(evidence.get("role"), 64) or "other",
+            "intent": _bounded_text(evidence.get("intent"), 64) or "unknown",
+            "provider_link": provider_link,
             "capture_state": "unknown",
             "inspection_state": "uninspected",
             "inspection_outcome": "not_captured",
             "error_kind": "legacy_media_unavailable",
             "effort": "unknown",
-        })
+        }
+        if public_url:
+            row["public_url"] = public_url
+        rows.append(row)
     return rows
 
 

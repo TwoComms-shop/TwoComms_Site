@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from management.models import (
     IgBotNotification, IgClient, IgConversationAnalysisJob, IgCustomerTurn,
-    IgCustomerTurnRevision, IgTurnMessage, InstagramBotMessage, InstagramBotSettings,
+    IgCustomerTurnRevision, IgFollowUpTask, IgTurnMessage, InstagramBotMessage, InstagramBotSettings,
     IgJourneyTraceRefreshControl,
 )
 from management.services.ig_lane_health import operational_lane_snapshot, SAMPLE_LIMIT
@@ -112,6 +112,34 @@ class OperationalLaneHealthTests(TestCase):
         self.assertTrue(result["healthy"], result)
         self.assertEqual(result["lanes"]["customer_revisions"]["counts"]["manual"], 1)
 
+    def test_reviewed_no_reply_cancellation_remains_manual_owned(self):
+        _source, revision = self.revision(age=3600)
+        task = record_reply_debt(revision, "provider_candidates_exhausted", now=self.now)
+        task.manager_context = {
+            **task.manager_context,
+            "operator_review": {"outcome": "reviewed_no_reply", "reply_confirmed": False},
+        }
+        task.status = IgFollowUpTask.Status.CANCELLED
+        task.save(update_fields=["manager_context", "status", "updated_at"])
+
+        result = self.snapshot()
+        lane = result["lanes"]["customer_revisions"]
+        self.assertTrue(result["healthy"], result)
+        self.assertEqual(lane["counts"]["manual"], 1)
+        self.assertEqual(lane["counts"]["attention"], 0)
+
+    def test_cancelled_revision_without_operator_review_remains_attention(self):
+        _source, revision = self.revision(age=3600)
+        task = record_reply_debt(revision, "provider_candidates_exhausted", now=self.now)
+        task.status = IgFollowUpTask.Status.CANCELLED
+        task.save(update_fields=["status", "updated_at"])
+
+        result = self.snapshot()
+        lane = result["lanes"]["customer_revisions"]
+        self.assertFalse(result["healthy"], result)
+        self.assertEqual(lane["counts"]["attention"], 1)
+        self.assertEqual(lane["counts"]["manual"], 0)
+
     def test_overdue_manager_owned_collecting_head_is_visible_without_actionable_attention(self):
         source, revision = self.revision(age=3600)
         source.status = InstagramBotMessage.Status.DONE
@@ -136,6 +164,17 @@ class OperationalLaneHealthTests(TestCase):
         lane = result["lanes"]["customer_revisions"]
         self.assertFalse(result["healthy"], result)
         self.assertEqual(lane["counts"]["attention"], 1)
+
+    def test_unowned_manual_recovery_is_in_exact_attention_total(self):
+        _source, revision = self.revision(age=3600)
+        revision.recovery_state = "manual"
+        revision.save(update_fields=["recovery_state", "updated_at"])
+
+        lane = self.snapshot()["lanes"]["customer_revisions"]
+
+        self.assertFalse(lane["healthy"])
+        self.assertEqual(lane["counts"]["attention"], 1)
+        self.assertEqual(lane["attention_total"], 1)
 
     def test_overdue_manual_resume_revision_remains_attention_on_takeover(self):
         source, revision = self.revision(age=3600)

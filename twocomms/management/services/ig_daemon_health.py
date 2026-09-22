@@ -128,6 +128,8 @@ def _unhandled_technical_debt_cases(cases: list[dict]) -> list[dict]:
                 status__in=(
                     IgTechnicalDebtCase.Status.ACKNOWLEDGED,
                     IgTechnicalDebtCase.Status.CLAIMED,
+                    IgTechnicalDebtCase.Status.RESOLVED,
+                    IgTechnicalDebtCase.Status.DISMISSED,
                 ),
             ).values("case_key", "observation_fingerprint")
             if row.get("observation_fingerprint")
