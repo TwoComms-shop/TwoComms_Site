@@ -464,7 +464,7 @@ def _legacy_collaboration_route(client_id):
     if message_id < reset_floor:
         return {"status": "abstained", "reason": "reset_floor_changed", "coverage": {"source": "legacy_analysis_adapter"}}
     text = str(message["text"] or "").casefold()
-    designer = re.search(r"\bдизайн(?:ер|ерка)?\b|\bарт[ -]?дизайн", text)
+    designer = re.search(r"\bд(?:и|е)зайн(?:ер|ерка)?\b|\bарт[ -]?д(?:и|е)зайн", text)
     offer = re.search(r"пропон|куп(?:ити|лю)|принт", text)
     if not (designer and offer):
         return {"status": "abstained", "reason": "explicit_designer_statement_missing", "coverage": {"source": "legacy_analysis_adapter"}}

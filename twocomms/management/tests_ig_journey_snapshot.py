@@ -364,7 +364,7 @@ class JourneySnapshotTests(TestCase):
     def test_current_legacy_designer_analysis_gets_display_only_route_overlay(self):
         message = InstagramBotMessage.objects.create(
             client=self.buyer, sender_id="journey-buyer", role="user",
-            text="Доброго дня! Я арт дизайнер, пропоную купити принти.",
+            text="Доброго дня! Я арт дезайнер пропоную купити принти цікавить?",
         )
         analysis = IgConversationAnalysisSnapshot.objects.create(
             client=self.buyer, dedupe_key="legacy-designer-analysis", score_band="cold",
