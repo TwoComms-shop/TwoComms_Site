@@ -27,6 +27,7 @@ case "$1" in --check|--install) mode="$1" ;; *) usage ;; esac
 [ -x "$NICE_BIN" ] || { echo "[nova-poshta-cron] ERROR: nice is required: $NICE_BIN" >&2; exit 66; }
 
 cron_line="*/5 * * * * cd $DJANGO_ROOT && $PRODUCTION_ENV_PREFIX $FLOCK_BIN -n -E 75 $DJANGO_ROOT/tmp/twocomms_heavy_background.lock $TIMEOUT_BIN --signal=TERM --kill-after=15s 240s $NICE_BIN -n 10 $PYTHON_BIN manage.py update_tracking_statuses >> $DJANGO_ROOT/logs/nova_poshta_cron.log 2>&1"
+previous_cron_line="${cron_line/-n -E 75/-w 50 -E 75}"
 legacy_cron_line="*/5 * * * * cd $DJANGO_ROOT && /usr/bin/flock -n $DJANGO_ROOT/tmp/nova_poshta_tracking.lock /usr/bin/nice -n 10 $PYTHON_BIN manage.py update_tracking_statuses >> $DJANGO_ROOT/logs/nova_poshta_cron.log 2>&1"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/twocomms-np-cron.XXXXXX")"
 trap 'rm -rf -- "$tmp_dir"' EXIT INT TERM
@@ -95,7 +96,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     ""|\#*) continue ;;
     *"manage.py update_tracking_statuses"*)
       outside_owner_count=$((outside_owner_count + 1))
-      if [ "$line" = "$cron_line" ] || [ "$line" = "$legacy_cron_line" ]; then
+      if [ "$line" = "$cron_line" ] || [ "$line" = "$previous_cron_line" ] || [ "$line" = "$legacy_cron_line" ]; then
         supported_outside_owner_count=$((supported_outside_owner_count + 1))
       fi
       ;;
@@ -125,7 +126,7 @@ fi
 mkdir -p "$DJANGO_ROOT/tmp" "$DJANGO_ROOT/logs"
 if [ "$begin_count" -eq 0 ] && [ "$legacy_count" -eq 1 ]; then
   legacy_command="$(awk -v marker="$LEGACY_MARKER" '$0 == marker { getline; print; exit }' "$current")"
-  [ "$legacy_command" = "$cron_line" ] || [ "$legacy_command" = "$legacy_cron_line" ] || {
+  [ "$legacy_command" = "$cron_line" ] || [ "$legacy_command" = "$previous_cron_line" ] || [ "$legacy_command" = "$legacy_cron_line" ] || {
     echo "[nova-poshta-cron] ERROR: legacy marker is followed by an unknown command" >&2
     exit 65
   }

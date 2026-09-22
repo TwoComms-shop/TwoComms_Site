@@ -41,6 +41,7 @@ validate_path "timeout executable" "$TIMEOUT_BIN"
 command -v "$CRONTAB_BIN" >/dev/null 2>&1 || config_error "crontab command is unavailable"
 
 cron_line="* * * * * cd $DJANGO_ROOT && $PRODUCTION_ENV_PREFIX $FLOCK_BIN -n -E 75 $DJANGO_ROOT/tmp/twocomms_heavy_background.lock $TIMEOUT_BIN --signal=TERM --kill-after=15s 600s $PYTHON_BIN manage.py run_instagram_periodic_jobs --budget-seconds 540 >> $DJANGO_ROOT/logs/instagram_periodic_coordinator.log 2>&1"
+previous_cron_line="${cron_line/-n -E 75/-w 50 -E 75}"
 rollback_order_line="*/2 * * * * cd $DJANGO_ROOT && $PRODUCTION_ENV_PREFIX $FLOCK_BIN -n -E 75 $DJANGO_ROOT/tmp/order_telegram_reconcile.lock $TIMEOUT_BIN --signal=TERM --kill-after=15s 90s $PYTHON_BIN manage.py reconcile_order_telegram_notifications --max-age-hours 168 --min-age-seconds 60 --limit 50 >> $DJANGO_ROOT/logs/order_telegram_reconcile.log 2>&1"
 rollback_checkout_line="*/2 * * * * cd $DJANGO_ROOT && $PRODUCTION_ENV_PREFIX $FLOCK_BIN -n -E 75 $DJANGO_ROOT/tmp/ig_checkout_reconcile.lock $TIMEOUT_BIN --signal=TERM --kill-after=15s 90s $PYTHON_BIN manage.py reconcile_ig_checkout --limit 100 >> $DJANGO_ROOT/logs/ig_checkout_reconcile.log 2>&1"
 rollback_fulfillment_line="*/2 * * * * cd $DJANGO_ROOT && $PRODUCTION_ENV_PREFIX $FLOCK_BIN -n -E 75 $DJANGO_ROOT/tmp/ig_order_fulfillment.lock $TIMEOUT_BIN --signal=TERM --kill-after=15s 90s $PYTHON_BIN manage.py reconcile_ig_order_fulfillment --limit 100 >> $DJANGO_ROOT/logs/ig_order_fulfillment.log 2>&1"
@@ -142,7 +143,7 @@ if [ "$begin_count" -eq 1 ]; then
     trimmed="${line#"${line%%[![:space:]]*}"}"
     case "$trimmed" in ""|\#*) continue ;; esac
     is_owner_line "$line" || contract_error "unknown command inside managed block"
-    if [ "$line" != "$cron_line" ] && ! is_supported_legacy_line "$line"; then
+    if [ "$line" != "$cron_line" ] && [ "$line" != "$previous_cron_line" ] && ! is_supported_legacy_line "$line"; then
       contract_error "unsupported owner inside managed block"
     fi
   done <"$current"
@@ -192,7 +193,7 @@ while IFS= read -r line || [ -n "$line" ]; do
       call_analysis) call_analysis_count=$((call_analysis_count + 1)) ;;
       gemini_metadata) gemini_metadata_count=$((gemini_metadata_count + 1)) ;;
     esac
-    if [ "$line" != "$cron_line" ] && ! is_supported_legacy_line "$line"; then
+    if [ "$line" != "$cron_line" ] && [ "$line" != "$previous_cron_line" ] && ! is_supported_legacy_line "$line"; then
       unsupported_outside_count=$((unsupported_outside_count + 1))
     fi
   fi
