@@ -66,6 +66,7 @@ class RoutingDecisionContractTests(SimpleTestCase):
         self.assertEqual(
             COMPLEX_CHAIN,
             (
+                "gemini-3.8-flash",
                 "gemini-3.7-flash",
                 "gemini-3.6-flash",
                 "gemini-3.5-flash",
@@ -94,6 +95,12 @@ class RoutingDecisionContractTests(SimpleTestCase):
         self.assertEqual(ambiguous.task_class, TaskClass.COMPLEX_LIVE)
         self.assertIn("ambiguous_catalog", ambiguous.reason_codes)
 
+    def test_objection_resolution_uses_complex_chain(self):
+        decision = classify_live_turn(TurnFacts(objection_present=True))
+        self.assertEqual(decision.task_class, TaskClass.COMPLEX_LIVE)
+        self.assertIn("objection_resolution", decision.reason_codes)
+        self.assertEqual(decision.reasoning_task, "product_decision")
+
     def test_deterministic_action_never_has_a_model_chain(self):
         decision = classify_live_turn(
             TurnFacts(deterministic_action="provider_native_ugc")
@@ -101,7 +108,7 @@ class RoutingDecisionContractTests(SimpleTestCase):
         self.assertEqual(decision.task_class, TaskClass.NO_MODEL)
         self.assertEqual(decision.model_chain, ())
 
-    def test_analysis_escalation_is_one_separate_guarded_37_pass(self):
+    def test_analysis_escalation_is_one_separate_guarded_strong_pass(self):
         eligible = dict(
             schema_valid=True,
             low_confidence=True,
@@ -112,7 +119,7 @@ class RoutingDecisionContractTests(SimpleTestCase):
         )
         self.assertEqual(
             analysis_escalation_chain(**eligible),
-            ("gemini-3.7-flash",),
+            ("gemini-3.8-flash", "gemini-3.7-flash"),
         )
         for field in eligible:
             changed = dict(eligible)
@@ -1511,9 +1518,14 @@ class ManualDiagnosticsOnlyTests(TestCase):
         )
         run_hour.assert_called_once()
 
-    def test_generation_probe_requires_quota_spend_confirmation(self):
-        with self.assertRaises(CommandError):
-            call_command("probe_ig_gemini_pool", stdout=StringIO())
+    @patch("management.services.gemini_probe.probe_key")
+    @patch("management.services.gemini_probe.probe_key_metadata")
+    def test_pool_probe_is_metadata_only_without_quota_spend_confirmation(
+        self, metadata_probe, generation_probe
+    ):
+        call_command("probe_ig_gemini_pool", stdout=StringIO())
+        metadata_probe.assert_not_called()
+        generation_probe.assert_not_called()
 
 
 class DeadlinePlanEvidenceTests(TestCase):

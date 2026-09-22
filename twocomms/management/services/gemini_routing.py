@@ -16,6 +16,7 @@ from typing import Iterable
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
+from management.services import gemini_model_registry
 
 
 POLICY_VERSION = "gemini-routing-v2.1"
@@ -41,6 +42,7 @@ ORDINARY_CHAIN = (
     "gemini-3.7-flash",
 )
 COMPLEX_CHAIN = (
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
@@ -51,9 +53,12 @@ ANALYSIS_CHAIN = (
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
 )
-ANALYSIS_ESCALATION_CHAIN = ("gemini-3.7-flash",)
+ANALYSIS_ESCALATION_CHAIN = ("gemini-3.8-flash", "gemini-3.7-flash")
 
-_ALLOWED_LIVE_MODELS = frozenset(ORDINARY_CHAIN)
+_ALLOWED_LIVE_MODELS = frozenset(
+    model for model in gemini_model_registry.DISPLAY_MODELS
+    if model in (*ORDINARY_CHAIN, *COMPLEX_CHAIN)
+)
 _NO_MODEL_REASONS = frozenset({
     "authoritative_reply",
     "duplicate_reply",
@@ -119,6 +124,7 @@ class TurnFacts:
     conflicting_intent: bool = False
     ambiguous_ad_referral: bool = False
     comparison_required: bool = False
+    objection_present: bool = False
     commercial_risk: str = "low"
     reasoning_task_hint: str = ""
 
@@ -214,6 +220,7 @@ def classify_live_turn(facts: TurnFacts, *, settings_obj=None, now=None) -> Rout
         (facts.conflicting_intent, "conflicting_intent"),
         (facts.ambiguous_ad_referral, "ambiguous_referral"),
         (facts.comparison_required, "comparison"),
+        (facts.objection_present, "objection_resolution"),
     ):
         if enabled:
             complex_reasons.append(reason)
@@ -277,10 +284,11 @@ def analysis_escalation_chain(
     already_escalated: bool,
     capacity_available: bool,
 ) -> tuple[str, ...]:
-    """Return the one-pass 3.7 escalation hook for durable analysis.
+    """Return the one-pass strong-model escalation hook for durable analysis.
 
     A 3.6 outage is intentionally absent from the inputs: unavailability alone
-    must never spend scarce 3.7 analysis quota.
+    must never spend scarce strong-model analysis quota. The caller still owns
+    the one-pass budget and must record any skipped 3.8 candidate.
     """
     if all((
         schema_valid,
@@ -310,6 +318,7 @@ def recovery_decision_for(message, settings_obj, *, has_image=False, has_audio=F
         conflicting_intent="conflicting_intent" in reasons,
         ambiguous_ad_referral="ambiguous_referral" in reasons,
         comparison_required="comparison" in reasons,
+        objection_present="objection_resolution" in reasons,
         commercial_risk=str(
             getattr(message, "gemini_routing_commercial_risk", "") or "low"
         ),
@@ -333,6 +342,7 @@ def recovery_decision_for(message, settings_obj, *, has_image=False, has_audio=F
             facts.conflicting_intent,
             facts.ambiguous_ad_referral,
             facts.comparison_required,
+            facts.objection_present,
         ))
     ):
         facts = TurnFacts(

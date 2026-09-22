@@ -145,6 +145,24 @@ class GeminiProbeClassificationTests(TestCase):
         self.assertNotIn("secret-key-value", json.dumps(status))
 
 
+class GeminiMetadataProbeQuotaTests(TestCase):
+    @patch("management.services.gemini_probe.requests.post")
+    @patch("management.services.gemini_probe.requests.get")
+    def test_metadata_probe_never_calls_generation_endpoint(self, get, post):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "supportedGenerationMethods": ["generateContent"],
+        }
+        get.return_value = response
+
+        result = gemini_probe.probe_key_metadata("gemini-3.8-flash", "private-key")
+
+        self.assertEqual(result["status"], "metadata_ok")
+        get.assert_called_once()
+        post.assert_not_called()
+        self.assertIn("/models/gemini-3.8-flash", get.call_args.args[0])
+
+
 class GeminiProbeAdmissionTests(TestCase):
     @staticmethod
     def _success_response():
@@ -456,3 +474,37 @@ class GeminiProbeCommandTests(TestCase):
             GeminiKeyState.objects.filter(last_probe_status="ok", last_probe_model="gemini-3.6-flash").count(),
             6,
         )
+
+    @patch.dict("os.environ", {
+        "GEMINI_API": "secret-one",
+        "GEMINI_API2": "secret-two",
+        "GEMINI_API3": "secret-three",
+        "GEMINI_API4": "secret-four",
+        "GEMINI_API5": "secret-five",
+        "GEMINI_API6": "secret-six",
+    }, clear=False)
+    @patch("management.services.gemini_probe.probe_key_metadata")
+    @patch("management.services.gemini_probe.probe_key")
+    def test_probe_command_is_metadata_only_without_explicit_quota_flag(
+        self, probe_key, probe_key_metadata
+    ):
+        probe_key_metadata.side_effect = lambda model, key, timeout: {
+            "status": "metadata_ok",
+            "http_code": 200,
+            "finish_reason": "",
+            "latency_ms": 5,
+            "model": model,
+        }
+
+        from io import StringIO
+
+        call_command(
+            "probe_ig_gemini_pool",
+            role="chat",
+            model="gemini-3.8-flash",
+            parallel=2,
+            stdout=StringIO(),
+        )
+
+        self.assertEqual(probe_key_metadata.call_count, 6)
+        probe_key.assert_not_called()

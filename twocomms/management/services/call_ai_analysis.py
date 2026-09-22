@@ -44,7 +44,13 @@ from management.models import (
     InstagramBotSettings,
 )
 from management.models import normalize_phone as model_normalize_phone
-from management.services import gemini_hedge, gemini_keys, gemini_quota, gemini_scoreboard
+from management.services import (
+    gemini_hedge,
+    gemini_keys,
+    gemini_model_registry,
+    gemini_quota,
+    gemini_scoreboard,
+)
 from management.services.call_ai_queue import METADATA_PENDING, analysis_queue_category
 from management.services.binotel import (
     BinotelClient,
@@ -471,7 +477,26 @@ def _payload_for_model(
 ) -> dict:
     """Normalize model-specific generation settings without mutating the caller."""
     policy = reasoning_policy(reasoning_task)
+    capability = gemini_model_registry.capability_for(model)
+    if capability is None:
+        raise _GeminiModelUnavailable("model capability is not registered")
+    if policy["level"] not in capability.supported_reasoning:
+        raise _GeminiModelUnavailable("reasoning level is not supported")
     normalized = copy.deepcopy(payload)
+    media_parts = [
+        part
+        for content in (normalized.get("contents") or [])
+        if isinstance(content, dict)
+        for part in (content.get("parts") or [])
+        if isinstance(part, dict) and isinstance(part.get("inline_data"), dict)
+    ]
+    for part in media_parts:
+        mime = str(part["inline_data"].get("mime_type") or "").casefold()
+        feature = "audio" if mime.startswith("audio/") else "image"
+        if not gemini_model_registry.supports(model, feature):
+            raise _GeminiModelUnavailable(
+                f"model does not support {feature} input"
+            )
     generation = normalized.get("generationConfig")
     if not isinstance(generation, dict):
         generation = {}

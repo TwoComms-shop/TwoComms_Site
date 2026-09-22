@@ -15,6 +15,7 @@
 import datetime
 from unittest.mock import patch
 
+from django.db import DatabaseError
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
@@ -27,7 +28,10 @@ class BudgetTableTests(SimpleTestCase):
     """Числа берутся из наблюдаемой консоли, а не из документации."""
 
     def test_strong_models_have_the_scarce_daily_budget(self):
-        for model in ("gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"):
+        for model in (
+            "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+            "gemini-3.5-flash",
+        ):
             budget = quota.budget_for(model)
             self.assertEqual(budget["rpd"], 20, model)
             self.assertEqual(budget["rpm"], 5, model)
@@ -73,7 +77,7 @@ class TaskRoutingTests(SimpleTestCase):
             "payment_decision", "order_decision", "media_analysis",
         ):
             self.assertEqual(
-                quota.chain_for_task(task, role="chat")[0], "gemini-3.7-flash", task
+                quota.chain_for_task(task, role="chat")[0], "gemini-3.8-flash", task
             )
 
     def test_analysis_has_its_own_tier_and_cannot_starve_replies(self):
@@ -106,7 +110,7 @@ class TaskRoutingTests(SimpleTestCase):
     @override_settings(GEMINI_TASK_TIERS={"customer_chat": "strong"})
     def test_tier_map_is_data_so_a_correction_is_one_setting(self):
         self.assertEqual(
-            quota.chain_for_task("customer_chat", role="chat")[0], "gemini-3.7-flash"
+            quota.chain_for_task("customer_chat", role="chat")[0], "gemini-3.8-flash"
         )
 
 
@@ -116,6 +120,15 @@ class LedgerTests(TestCase):
     def setUp(self):
         self.now = timezone.now()
         self.model = "gemini-3.7-flash"
+
+    def test_database_admission_failure_does_not_open_a_scarce_call(self):
+        # The model import is local in try_reserve; patch its ORM manager at the
+        # model boundary so a database outage is treated as unavailable.
+        with patch(
+            "management.models.GeminiModelQuotaUsage.objects.get_or_create",
+            side_effect=DatabaseError("database unavailable"),
+        ):
+            self.assertFalse(quota.try_reserve("GEMINI_API", "gemini-3.8-flash"))
 
     def _spend(self, count, *, key="GEMINI_API", model=None, now=None):
         model = model or self.model

@@ -348,6 +348,12 @@ def _pair_status(
         age = (now - success_at).total_seconds()
         if 0 <= age <= RECENT_SUCCESS_SECONDS:
             return "confirmed_recent_success"
+        # A successful request after the last failure is still evidence that
+        # the pair recovered.  It may be too old for the stronger "recent"
+        # badge, but historical 503/timeout state must not keep the pair red
+        # forever when no quota block is active.
+        if age > RECENT_SUCCESS_SECONDS:
+            return "available_assumed"
     if state.accounting_status == GeminiQuotaState.AccountingStatus.DEGRADED:
         return "provider_degraded"
     return "available_assumed"

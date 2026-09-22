@@ -113,6 +113,10 @@ class GeminiV2ReadApiTests(TestCase):
             accounting_mode=GeminiRequest.AccountingMode.SHADOW,
         )
 
+    @staticmethod
+    def _model_row(payload, model="gemini-3.7-flash"):
+        return next(item for item in payload["models"] if item["model"] == model)
+
     def _attempt(
         self,
         graph,
@@ -169,7 +173,7 @@ class GeminiV2ReadApiTests(TestCase):
     def _attempts_url(self):
         return reverse("management_bot_gemini_v2_attempts_api")
 
-    def test_off_mode_returns_unknown_full_4_by_6_matrix_without_writes(self):
+    def test_off_mode_returns_unknown_full_5_by_6_matrix_without_writes(self):
         with override_settings(
             GEMINI_ACCOUNTING_V2_MODE="off",
             GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM="",
@@ -189,7 +193,7 @@ class GeminiV2ReadApiTests(TestCase):
 
         self.assertEqual(before, after)
         self.assertLessEqual(len(queries), 6)
-        self.assertEqual(len(payload["models"]), 4)
+        self.assertEqual(len(payload["models"]), 5)
         self.assertTrue(all(len(row["projects"]) == 6 for row in payload["models"]))
         for model in payload["models"]:
             self.assertIsNone(model["rpm"]["limit"])
@@ -269,7 +273,7 @@ class GeminiV2ReadApiTests(TestCase):
         ):
             payload = gemini_v2_read_model.build_quotas_payload(now=fixed_now)
 
-        row = payload["models"][0]["projects"][0]
+        row = self._model_row(payload)["projects"][0]
         self.assertEqual(payload["pacific_reset_at"], reset.isoformat())
         self.assertEqual(row["status"], "rpd_exhausted_until_reset")
         self.assertTrue(row["external_usage_suspected"])
@@ -315,7 +319,7 @@ class GeminiV2ReadApiTests(TestCase):
 
         response = self.client.get(self._quota_url())
         self.assertEqual(response.status_code, 200)
-        row = response.json()["models"][0]["projects"][0]
+        row = self._model_row(response.json())["projects"][0]
         self.assertEqual(row["status"], "accounting_unknown")
         self.assertNotEqual(row["status"], "available_assumed")
         self.assertEqual(row["provider_blocks"][0]["metric"], "unknown")
@@ -324,7 +328,7 @@ class GeminiV2ReadApiTests(TestCase):
         GeminiQuotaState.objects.filter(pk=state.pk).update(provider_blocks={})
         response = self.client.get(self._quota_url())
         self.assertEqual(response.status_code, 200)
-        row = response.json()["models"][0]["projects"][0]
+        row = self._model_row(response.json())["projects"][0]
         self.assertEqual(row["status"], "provider_degraded")
         self.assertNotEqual(row["status"], "available_assumed")
 
@@ -386,7 +390,7 @@ class GeminiV2ReadApiTests(TestCase):
                     last_success_at=None,
                 )
                 payload = gemini_v2_read_model.build_quotas_payload(now=self.now)
-                row = payload["models"][0]["projects"][0]
+                row = self._model_row(payload)["projects"][0]
                 self.assertEqual(row["status"], expected)
 
         for ambiguous_until in ("", "not-an-iso-timestamp"):
@@ -406,7 +410,7 @@ class GeminiV2ReadApiTests(TestCase):
                 )
                 payload = gemini_v2_read_model.build_quotas_payload(now=self.now)
                 self.assertEqual(
-                    payload["models"][0]["projects"][0]["status"],
+                    self._model_row(payload)["projects"][0]["status"],
                     "provider_degraded",
                 )
 
@@ -418,7 +422,7 @@ class GeminiV2ReadApiTests(TestCase):
         )
         payload = gemini_v2_read_model.build_quotas_payload(now=self.now)
         self.assertEqual(
-            payload["models"][0]["projects"][0]["status"],
+            self._model_row(payload)["projects"][0]["status"],
             "provider_degraded",
         )
 

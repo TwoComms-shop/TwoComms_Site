@@ -8,12 +8,13 @@
   }
 
   const EXPECTED_SCHEMA=Number(root.dataset.schemaVersion||0);
-  const MODEL_ORDER=['gemini-3.7-flash','gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite'];
+  const MODEL_ORDER=['gemini-3.8-flash','gemini-3.7-flash','gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite'];
   const SLOT_ORDER=['gslot_7f3a','gslot_c921','gslot_18de','gslot_a604','gslot_52bb','gslot_e17c'];
   const ROUTE_ORDER=['no_model','ordinary_live','complex_live','durable_analysis'];
   const VIEW_ORDER=['quotas','routes','attempts'];
   const MAX_RENDERED_ATTEMPTS=100;
   const MODEL_LABELS={
+    'gemini-3.8-flash':'Gemini 3.8 Flash',
     'gemini-3.7-flash':'Gemini 3.7 Flash',
     'gemini-3.6-flash':'Gemini 3.6 Flash',
     'gemini-3.5-flash':'Gemini 3.5 Flash',

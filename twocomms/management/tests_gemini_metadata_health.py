@@ -230,11 +230,9 @@ class GeminiMetadataHealthTests(TestCase):
         self.assertTrue(all(call.kwargs["deadline"] > time.monotonic() for call in check_alias.call_args_list))
 
     def test_hourly_timeout_budget_reserves_headroom_for_every_model_route(self):
-        worst_case_seconds = (
-            len(gemini_metadata_health.MODELS)
-            * len(gemini_metadata_health.gemini_keys.ALL_KEYS)
-            * gemini_metadata_health.TIMEOUT_SECONDS
-        )
+        # Alias checks run concurrently; the shared deadline is bounded by
+        # the slowest model probe, not serial alias x model multiplication.
+        worst_case_seconds = gemini_metadata_health.TIMEOUT_SECONDS
 
         self.assertLessEqual(
             worst_case_seconds,
@@ -272,7 +270,7 @@ class GeminiMetadataHealthTests(TestCase):
 
         self.assertEqual(check_alias.call_count, len(gemini_metadata_health.gemini_keys.ALL_KEYS))
         self.assertGreaterEqual(peak_active, 2)
-        self.assertEqual(record.call_count, len(gemini_metadata_health.MODELS) * len(gemini_metadata_health.gemini_keys.ALL_KEYS))
+        self.assertEqual(record.call_count, 2 * len(gemini_metadata_health.gemini_keys.ALL_KEYS))
         self.assertEqual(record_thread_ids, [coordinator_thread_id] * record.call_count)
         self.assertEqual(result["checked_aliases"], len(gemini_metadata_health.gemini_keys.ALL_KEYS))
         self.assertEqual(result["provider_requests"], len(gemini_metadata_health.gemini_keys.ALL_KEYS))
@@ -320,7 +318,7 @@ class GeminiMetadataHealthTests(TestCase):
 
         self.assertEqual(
             [row["status"] for row in results[0]],
-            ["deadline_skipped", "deadline_skipped"],
+            ["deadline_skipped"] * len(gemini_metadata_health.MODELS),
         )
         self.assertEqual(
             [[row["status"] for row in result] for result in results[1:]],

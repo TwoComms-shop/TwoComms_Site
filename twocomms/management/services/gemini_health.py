@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
 from management.models import GeminiRequestAttempt
-from management.services import gemini_keys
+from management.services import gemini_keys, gemini_model_registry
 
 
 SCHEMA_VERSION = 5
@@ -20,14 +20,9 @@ BUCKET_COUNT = 24
 ATTEMPT_QUERY_CAP = 2000
 METADATA_ATTEMPT_QUERY_CAP = 512
 FRESH_EVIDENCE_SECONDS = 7500
-DISPLAY_MODELS = (
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-)
+DISPLAY_MODELS = gemini_model_registry.DISPLAY_MODELS
 MODELS = DISPLAY_MODELS
-OTHER_GENERATION_MODELS = ("gemini-3.5-flash", "gemini-3.5-flash-lite")
+OTHER_GENERATION_MODELS = DISPLAY_MODELS
 GENERATION_MODELS = tuple(dict.fromkeys(DISPLAY_MODELS + OTHER_GENERATION_MODELS))
 METADATA_ROLES = frozenset(("health_metadata", "health_probe"))
 KEY_ALIASES = (

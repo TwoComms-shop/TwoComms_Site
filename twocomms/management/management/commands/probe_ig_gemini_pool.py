@@ -12,7 +12,7 @@ from management.services import gemini_probe
 
 
 class Command(BaseCommand):
-    help = "Quota-consuming manual generateContent diagnostic for the Gemini pool."
+    help = "Metadata-only Gemini pool check; generation diagnostics require an explicit flag."
 
     def add_arguments(self, parser):
         parser.add_argument("--role", choices=("chat", "management", "checker"), default="chat")
@@ -22,15 +22,13 @@ class Command(BaseCommand):
         parser.add_argument(
             "--confirm-quota-spend",
             action="store_true",
-            help="Explicitly acknowledge that this command consumes generation quota",
+            help=(
+                "Use a real generateContent diagnostic instead of the default "
+                "quota-free metadata check; this consumes generation quota."
+            ),
         )
 
     def handle(self, *args, **options):
-        if not options.get("confirm_quota_spend"):
-            raise CommandError(
-                "This diagnostic consumes Gemini generation quota; rerun with "
-                "--confirm-quota-spend only when explicitly authorized."
-            )
         role = options["role"]
         model = options["model"] or gemini_keys.model_chain(role)[0]
         if role == "chat":
@@ -60,9 +58,14 @@ class Command(BaseCommand):
             else:
                 busy.add(name)
         results = {}
+        probe = (
+            gemini_probe.probe_key
+            if options.get("confirm_quota_spend")
+            else gemini_probe.probe_key_metadata
+        )
         with ThreadPoolExecutor(max_workers=min(parallel, max(1, len(probeable)))) as executor:
             futures = {
-                executor.submit(gemini_probe.probe_key, model, key, (5, timeout)): name
+                executor.submit(probe, model, key, (5, timeout)): name
                 for name, key in probeable
             }
             for future in as_completed(futures):

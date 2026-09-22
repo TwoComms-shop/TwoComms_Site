@@ -6831,6 +6831,7 @@ def live_routing_decision(
     client=None,
     ad_resolution=None,
     deterministic_action: str = "",
+    current_text: str = "",
 ):
     """Build the pre-provider route from typed current-turn state."""
     from management.services.gemini_routing import TurnFacts, classify_live_turn
@@ -6891,6 +6892,23 @@ def live_routing_decision(
     comparison_required = bool(
         getattr(commerce_request, "comparison_requested", False)
     )
+    objection_present = False
+    if current_text:
+        try:
+            from management.services.ig_objections import detect_objection_types
+
+            objection_present = bool(detect_objection_types(current_text))
+        except Exception:
+            objection_present = False
+    # A currently open objection remains relevant even when its wording is
+    # short and has no local lexical signal. Resolved/refusal states are not
+    # promoted into a new scarce-model call.
+    if client is not None and str(getattr(client, "primary_objection", "") or "").casefold() not in {
+        "", "none", "no_reply", "no_buy",
+    }:
+        objection_present = True
+    if objection_present:
+        commercial_risk = "high"
     custom_print = bool(
         custom_print
         or getattr(commerce_request, "custom_print_requested", False)
@@ -6915,6 +6933,7 @@ def live_routing_decision(
             conflicting_intent=conflict,
             ambiguous_ad_referral=ambiguous_referral,
             comparison_required=comparison_required,
+            objection_present=objection_present,
             commercial_risk=commercial_risk,
             reasoning_task_hint=reasoning_hint,
         ),
@@ -7607,10 +7626,17 @@ def gemini_generate(
         classify_live_turn,
     )
 
-    routing_decision = routing_decision or classify_live_turn(
-        TurnFacts(has_image=bool(images)),
-        settings_obj=s,
-    )
+    if routing_decision is None:
+        has_audio = any(
+            str(item.get("mime") or "").casefold().startswith("audio/")
+            or str(item.get("media_type") or "").casefold() in {"audio", "voice"}
+            for item in (turn_media_context or [])
+            if isinstance(item, dict)
+        )
+        routing_decision = classify_live_turn(
+            TurnFacts(has_image=bool(images), has_audio=has_audio),
+            settings_obj=s,
+        )
     if routing_decision.task_class == TaskClass.NO_MODEL:
         if failure_context is not None:
             failure_context["kind"] = "no_model"
@@ -14252,6 +14278,7 @@ def _process_one_inside_reply_boundary(
                     commerce_request=commerce_request,
                     client=row.client if row.client_id else None,
                     ad_resolution=ad_resolution,
+                    current_text=row.text,
                 )
                 persist_decision(row, routing_decision)
 

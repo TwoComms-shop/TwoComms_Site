@@ -133,6 +133,7 @@ class GeminiV2PanelTemplateContractTests(SimpleTestCase):
 
     def test_quota_rails_are_model_first_and_exactly_six_slot_safe(self):
         for model in (
+            "gemini-3.8-flash",
             "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",

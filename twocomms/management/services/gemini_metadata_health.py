@@ -14,8 +14,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from management.services import gemini_keys
+from management.services import gemini_model_registry
 
-MODELS = ("gemini-3.7-flash", "gemini-3.6-flash")
+MODELS = gemini_model_registry.DISPLAY_MODELS
 ROLE = "health_metadata"
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 TIMEOUT_SECONDS = 5
@@ -133,34 +134,49 @@ def check_alias(
     request_id: str | None = None,
     deadline: float | None = None,
     record: bool = True,
+    model_names: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict]:
     now = now or timezone.now()
     request_id = request_id or f"meta-{now:%Y%m%d%H}-{uuid.uuid4().hex[:8]}"
     api_key = gemini_keys._key_value(alias)
+    legacy_short_probe = model_names is None
+    selected_models = tuple(model_names or MODELS[:2])
     if not api_key:
-        return [{"model": model, "status": "unconfigured", "evidence_kind": "metadata_only", "generation_quota_proven": False} for model in MODELS]
+        return [{"model": model, "status": "unconfigured", "evidence_kind": "metadata_only", "generation_quota_proven": False} for model in selected_models]
     primary = _check_model(
         alias,
         api_key,
-        MODELS[0],
+        selected_models[0],
         request_id,
         deadline=deadline,
         record=record,
     )
-    if primary["status"] == "metadata_ok":
-        secondary = {"model": MODELS[1], "status": "not_needed", "evidence_kind": "metadata_only", "generation_quota_proven": False}
+    if legacy_short_probe and primary["status"] == "metadata_ok" and len(selected_models) > 1:
+        secondary = {
+            "model": selected_models[1],
+            "status": "not_needed",
+            "evidence_kind": "metadata_only",
+            "generation_quota_proven": False,
+        }
         if record:
-            _record(request_id=request_id, alias=alias, model=MODELS[1], status="not_needed")
-    else:
-        secondary = _check_model(
+            _record(
+                request_id=request_id,
+                alias=alias,
+                model=selected_models[1],
+                status="not_needed",
+            )
+        return [primary, secondary]
+    return [primary] + [
+        _check_model(
             alias,
             api_key,
-            MODELS[1],
+            model,
             request_id,
             deadline=deadline,
             record=record,
         )
-    return [primary, secondary]
+        for model in selected_models[1:]
+    ]
 
 
 def _deadline_results() -> list[dict]:
@@ -212,6 +228,7 @@ def _run_alias_check_worker(
         request_id=request_id,
         deadline=deadline,
         record=False,
+        model_names=MODELS,
     )
     return result, time.monotonic()
 

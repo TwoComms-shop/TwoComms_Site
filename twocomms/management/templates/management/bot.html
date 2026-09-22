@@ -1344,6 +1344,7 @@ body.bot-drawer-open{overflow:hidden;}
           <div class="bot-field">
             <label>Модель для тимчасового pin</label>
             <select name="gemini_model" id="gemini_model">
+              <option value="gemini-3.8-flash" {% if settings.gemini_model == 'gemini-3.8-flash' %}selected{% endif %}>gemini-3.8-flash</option>
               <option value="gemini-3.7-flash" {% if settings.gemini_model == 'gemini-3.7-flash' %}selected{% endif %}>gemini-3.7-flash</option>
               <option value="gemini-3.6-flash" {% if settings.gemini_model == 'gemini-3.6-flash' %}selected{% endif %}>gemini-3.6-flash</option>
               <option value="gemini-3.5-flash" {% if settings.gemini_model == 'gemini-3.5-flash' %}selected{% endif %}>gemini-3.5-flash</option>
@@ -1502,6 +1503,7 @@ body.bot-drawer-open{overflow:hidden;}
             </label>
             <label>Модель
               <select id="gemini-v2-probe-model">
+                <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
                 <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
                 <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
                 <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>

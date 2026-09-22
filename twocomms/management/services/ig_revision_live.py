@@ -695,6 +695,20 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         {**part, "status": "owned" if part.get("capture_outcome") == "owned" else "unavailable"}
         for source in sources for part in source.get("media_parts") or []
     ]
+    # The revision worker is a canonical provider caller. Preserve the sealed
+    # media facts when invoking the legacy generator so an omitted optional
+    # decision cannot silently downgrade an audio/image turn to ordinary chat.
+    from management.services.gemini_routing import TurnFacts, classify_live_turn
+    has_image = any(part.mime.startswith("image/") for part in collection.parts)
+    has_audio = any(part.mime.startswith("audio/") for part in collection.parts)
+    routing_decision = classify_live_turn(
+        TurnFacts(
+            has_image=has_image,
+            has_audio=has_audio,
+            reasoning_task_hint="media_analysis" if (has_image or has_audio) else "",
+        ),
+        settings_obj=settings_row,
+    )
     coverage_note = (
         "Analyze every attached supported image conversationally. Image classification "
         "does not require manager permission. Keep each caption and do not claim to "
@@ -739,6 +753,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     ):
         response = bot.gemini_generate(
             settings_row, build_sealed_history(revision), images=images or None,
+            routing_decision=routing_decision,
             client=revision.client, turn_note=coverage_note,
             turn_candidate_set=candidate_set,
             turn_media_binding=collection.binding,

@@ -41,6 +41,7 @@ from django.conf import settings as django_settings
 from django.db import DatabaseError, transaction
 from django.db.models import F
 from django.utils import timezone
+from management.services import gemini_model_registry
 
 PT = ZoneInfo("America/Los_Angeles")
 
@@ -48,6 +49,9 @@ PT = ZoneInfo("America/Los_Angeles")
 # не из документации: у free-tier они меняются, и источником истины должен быть
 # наблюдаемый лимит. Переопределяются `GEMINI_MODEL_BUDGETS` в настройках.
 DEFAULT_MODEL_BUDGETS = {
+    # Owner-observed Google AI Studio limits. Generation success/latency is a
+    # separate runtime fact and is tracked by the attempt ledger.
+    "gemini-3.8-flash": {"rpm": 5, "tpm": 250_000, "rpd": 20},
     "gemini-3.7-flash": {"rpm": 5, "tpm": 250_000, "rpd": 20},
     "gemini-3.6-flash": {"rpm": 5, "tpm": 250_000, "rpd": 20},
     "gemini-3.5-flash": {"rpm": 5, "tpm": 250_000, "rpd": 20},
@@ -70,7 +74,7 @@ TIER_GROUNDED = "grounded"
 
 DEFAULT_TIER_CHAINS = {
     TIER_LITE: ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash"],
-    TIER_STRONG: ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
+    TIER_STRONG: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
     TIER_ANALYSIS: ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
     # Grounding бесплатен только на 2.5 — цепочка не смешивается с остальными.
     TIER_GROUNDED: ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
@@ -254,8 +258,9 @@ def try_reserve(key_name: str, model: str, *, now=None) -> bool:
     """Занять один запрос пары под ЭТОТ вызов.
 
     Атомарно, чтобы два потока демона не израсходовали один и тот же остаток:
-    строка берётся `select_for_update` внутри транзакции. При любой проблеме с
-    БД разрешаем вызов — сбой бухгалтерии не должен лишать клиента ответа.
+    строка берётся `select_for_update` внутри транзакции. При проблеме с БД
+    новый scarce-call блокируется, чтобы неизвестный расход не превратился в
+    скрытый перерасход; вызывающий код выбирает fallback или durable queue.
     """
     now = now or timezone.now()
     budget = budget_for(model)
@@ -275,7 +280,7 @@ def try_reserve(key_name: str, model: str, *, now=None) -> bool:
                 .first()
             )
             if row is None:
-                return True
+                return False
             rpd = int(budget.get("rpd") or 0)
             if rpd and int(row.requests or 0) >= rpd:
                 return False
@@ -295,7 +300,7 @@ def try_reserve(key_name: str, model: str, *, now=None) -> bool:
             row.save(update_fields=fields)
             return True
     except DatabaseError:
-        return True
+        return False
 
 
 def settle(
