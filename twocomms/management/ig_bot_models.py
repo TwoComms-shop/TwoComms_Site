@@ -8616,6 +8616,7 @@ class IgCustomerTurnRevision(models.Model):
                     "burst_budget_in", "burst_budget_out",
                     "reply_projection_admission",
                     "technical_holding", "technical_holding_delivery",
+                    "provider_safe_reply",
                 }
                 if (
                     not isinstance(self.action_receipts, dict)

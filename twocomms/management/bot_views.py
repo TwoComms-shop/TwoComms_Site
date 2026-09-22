@@ -3394,7 +3394,12 @@ def bot_client_order_link_api(request, client_id):
     )
     if blocked:
         return blocked
-    from .ig_bot_models import IgClient, IgOrderAssignment, IgOrderAssignmentEvent
+    from .ig_bot_models import (
+        IgClient,
+        IgOrderAssignment,
+        IgOrderAssignmentEvent,
+        IgPaymentConfirmationReview,
+    )
     from management.services.ig_order_assignments import (
         AssignmentConflict,
         AssignmentVersionConflict,
@@ -3420,6 +3425,72 @@ def bot_client_order_link_api(request, client_id):
             {"success": False, "error_code": "order_not_linkable", "error": "Скасоване замовлення не можна прив'язати."},
             status=409,
         )
+    # A manually entered Instagram order marked paid is payment truth, not
+    # merely an operational assignment.  Force it through the canonical
+    # review -> attribution -> episode path when a review already exists.
+    # Website orders and unpaid/manual drafts retain the lightweight
+    # assignment workflow.
+    instagram_manual_paid = (
+        str(getattr(order, "source", "") or "").casefold() == "manual"
+        and str(getattr(order, "sale_source", "") or "").casefold() == "instagram"
+        and str(getattr(order, "payment_status", "") or "").casefold()
+        in {"paid", "prepaid", "partial"}
+    )
+    if instagram_manual_paid:
+        review = (
+            IgPaymentConfirmationReview.objects
+            .filter(
+                client=client,
+                order__isnull=True,
+                status__in=[
+                    IgPaymentConfirmationReview.Status.PENDING,
+                    IgPaymentConfirmationReview.Status.CONFIRMED,
+                ],
+            )
+            .order_by("-created_at", "-pk")
+            .first()
+        )
+        if review is None:
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error_code": "payment_review_required",
+                    "error": "Спочатку створіть або відкрийте перевірку оплати за доказом із переписки.",
+                },
+                status=409,
+            )
+        if review.status != IgPaymentConfirmationReview.Status.CONFIRMED:
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error_code": "payment_review_pending",
+                    "review_id": review.pk,
+                    "error": "Замовлення з оплаченою Instagram-оплатою можна прив'язати після підтвердження менеджером.",
+                },
+                status=409,
+            )
+        from management.services.ig_order_links import link_existing_order_to_review
+
+        try:
+            linked_order = link_existing_order_to_review(
+                review,
+                order_identifier=order.order_number,
+                actor=request.user,
+            )
+        except ValueError as exc:
+            return JsonResponse(
+                {"success": False, "error_code": "payment_attribution_conflict", "error": str(exc)},
+                status=409,
+            )
+        assignment = IgOrderAssignment.objects.select_related(
+            "order", "assigned_by"
+        ).get(order_id=linked_order.pk, client_id=client.pk, unassigned_at__isnull=True)
+        return JsonResponse({
+            "success": True,
+            "assignment": _assignment_workspace_payload(assignment, client_id=client.pk),
+            "payment_review_id": review.pk,
+            "attribution": True,
+        })
     expected_version = request.POST.get("expected_version")
     try:
         expected_version = int(expected_version) if expected_version not in (None, "") else None

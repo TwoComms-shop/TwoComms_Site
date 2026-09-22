@@ -266,10 +266,12 @@ class RevisionReplyResilienceTests(TransactionTestCase):
             )
         self.assertTrue(holding.ready, holding.reason)
         self.assertEqual(holding.receipt["reply_mode"], "neutral_ack")
+        self.assertEqual(holding.receipt["purpose"], "normal_reply")
         result, generate, http = self._execute()
-        self.assertEqual(result.reasons, ("technical_holding_sent",))
+        self.assertEqual(result.reasons, ("receipt_finalized",))
         generate.assert_not_called()
         self.assertEqual(http.call_count, 1)
+        self.assertFalse(IgFollowUpTask.objects.filter(event_key=f"ig-revision-debt:{self.revision.pk}").exists())
         text = self.revision.delivery_effects.get().payload["message"]["text"]
         self.assertIn("уточню", text.casefold())
         self.assertNotIn("техніч", text.casefold())

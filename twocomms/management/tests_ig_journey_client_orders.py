@@ -18,8 +18,9 @@ class JourneyClientOrdersTests(TestCase):
     def setUp(self):
         self.buyer = IgClient.get_or_create_for_sender("journey-order-owner")
         self.other = IgClient.get_or_create_for_sender("journey-order-other")
-        self.graph = {"nodes": [{"id": "guide:selection", "state": "partial", "current": True}],
-                      "edges": [], "overview_node_ids": ["guide:selection"],
+        self.graph = {"nodes": [{"id": "client:inbound", "semantic_key": "inbound", "state": "complete", "current": False},
+                                {"id": "guide:selection", "state": "partial", "current": True}],
+                      "edges": [], "overview_node_ids": ["client:inbound", "guide:selection"],
                       "history": {"events": [], "total": 0}, "coverage": {"semantic_transitions": "missing_source"}}
 
     def assignment(self, *, client=None, source="web", audit=True, **order_values):
@@ -62,7 +63,15 @@ class JourneyClientOrdersTests(TestCase):
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") and "COUNT(" not in row["sql"].upper() for row in queries))
         self.assertEqual(before, self.graph)
         self.assertEqual(result["nodes"][0], before["nodes"][0])
-        self.assertEqual(result["edges"], [])
+        self.assertEqual(len(result["edges"]), 4)
+        self.assertTrue(all(edge["scope"] == "client" and edge["episode_id"] is None
+                            and edge["tone"] == "neutral" and "recorded_visits" not in edge
+                            for edge in result["edges"]))
+        connector = next(edge for edge in result["edges"] if edge["relation"] == "client_scope_assignment")
+        self.assertEqual(connector["from_node_id"], "client:inbound")
+        self.assertEqual(connector["contextual_binding"]["assignment_id"], assignment.pk)
+        self.assertEqual(connector["contextual_binding"]["assignment_version"], assignment.version)
+        self.assertEqual(connector["contextual_binding"]["episode_binding"], "absent")
         self.assertEqual(result["history"], before["history"])
         node = self.context_nodes(result)[0]
         self.assertEqual(node["id"], f"client-order:{assignment.order_id}")
@@ -85,6 +94,7 @@ class JourneyClientOrdersTests(TestCase):
         with self.assertNumQueries(0):
             historical = self.project(live, is_history=True)
         self.assertEqual(self.context_nodes(historical), [])
+        self.assertEqual(historical["edges"], [])
         self.assertEqual(historical["coverage"]["client_orders"]["status"], "historical_view")
         self.assertEqual(self.context_nodes(self.project(bound_order_id=assignment.order_id)), [])
 
@@ -127,7 +137,8 @@ class JourneyClientOrdersTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             result = self.project()
         self.assertEqual(len(queries), 2)
-        self.assertEqual(len(self.context_nodes(result)), 10)
+        self.assertEqual(len(self.context_nodes(result)), 40)
+        self.assertEqual(len(result["edges"]), 40)
         self.assertTrue(result["coverage"]["client_orders"]["truncated"])
         self.assertEqual(result["coverage"]["client_orders"]["audit_verified"], 10)
 
@@ -146,3 +157,35 @@ class JourneyClientOrdersTests(TestCase):
         self.assertEqual(delivered_node["state"], "complete")
         self.assertIn("Підтверджено перевізником", [fact["value"] for fact in delivered_node["facts"]])
         self.assertFalse(delivered_node["current"])
+
+    def test_delivery_continues_independently_of_missing_contact_permission(self):
+        assignment = self.assignment()
+        result = self.project()
+        nodes = {node["semantic_key"]: node for node in self.context_nodes(result)}
+        self.assertEqual(nodes["client_order_shipping"]["state"], "complete")
+        delivery = nodes["client_order_delivery"]
+        self.assertEqual(delivery["state"], "open")
+        self.assertEqual(delivery["waiting"]["kind"], "indefinite")
+        contact = nodes["client_order_contact"]
+        self.assertEqual(contact["marketing_permission"], "not_confirmed")
+        self.assertEqual(contact["implementation_status"], "planned")
+        self.assertEqual(contact["evidence_refs"], [])
+        self.assertTrue(any(edge["from_node_id"] == nodes["client_order_shipping"]["id"]
+                            and edge["to_node_id"] == delivery["id"] for edge in result["edges"]))
+        self.assertFalse(any(edge["from_node_id"] == contact["id"] for edge in result["edges"]))
+        self.assertTrue(all(not node["current"] and "recorded_visits" not in node for node in nodes.values()))
+        Order.objects.filter(pk=assignment.order_id).update(status="done", tracking_status_code=9,
+                                                          tracking_terminal_at=timezone.now())
+        result = self.project(result)
+        delivery = next(node for node in self.context_nodes(result) if node["semantic_key"] == "client_order_delivery")
+        self.assertEqual(delivery["state"], "complete")
+        self.assertNotIn("waiting", delivery)
+
+    def test_ambiguous_client_anchor_does_not_invent_assignment_connector(self):
+        self.assignment()
+        graph = deepcopy(self.graph)
+        graph["nodes"].append({"id": "another:inbound", "semantic_key": "inbound", "state": "open"})
+        result = self.project(graph)
+        self.assertEqual(result["coverage"]["client_orders"]["context_anchor"], "missing_or_ambiguous")
+        self.assertFalse(any(edge["relation"] == "client_scope_assignment" for edge in result["edges"]))
+        self.assertEqual(len(result["edges"]), 3)

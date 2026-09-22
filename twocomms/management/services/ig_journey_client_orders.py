@@ -138,15 +138,77 @@ def _node(row, event):
     }
 
 
+def _context_path(row, event, parent, inbound_id):
+    """Current order states and ownership, not reconstructed episode transitions."""
+    order_id = row["order_id"]
+    binding = {"client_id": row["client_id"], "order_id": order_id,
+               "assignment_id": row["id"], "assignment_version": row["version"],
+               "audit_event_id": event["id"] if event else None, "episode_binding": "absent"}
+    parent["contextual_binding"] = binding
+    order_ref = {"kind": "order", "id": order_id}
+    delivered = any(fact["id"].endswith(":delivery") and fact["state"] == "complete"
+                    for fact in parent["facts"])
+    shipped = row["order__status"] == "ship" or delivered
+    cancelled = row["order__status"] == "cancelled"
+    status_facts = [fact for fact in parent["facts"] if fact["id"].endswith((":status", ":tracking"))]
+    delivery_facts = [fact for fact in parent["facts"] if fact["id"].endswith((":tracking", ":delivery"))]
+
+    def node(suffix, key, label, state, summary, facts, refs):
+        return {"id": f"client-order:{order_id}:{suffix}", "semantic_key": key,
+                "producer": _PRODUCER, "scope": "client", "client_id": row["client_id"],
+                "episode_id": None, "contextual_binding": binding, "current": False,
+                "label": label, "short_label": label, "state": state, "summary": summary,
+                "facts": deepcopy(facts), "evidence_refs": refs,
+                "presentation_kind": "client_context"}
+
+    shipping = node("shipping", "client_order_shipping", "Відправлено" if shipped else "Відправлення",
+                    "complete" if shipped else "invalidated" if cancelled else "open",
+                    "Стан пов’язаного замовлення; час переходу не відновлюється з переписки.",
+                    status_facts, [order_ref] if shipped else [])
+    delivery = node("delivery", "client_order_delivery", "Отримано" if delivered else "Отримання",
+                    "complete" if delivered else "open",
+                    "Отримання підтверджене перевізником." if delivered else "Підтвердження отримання від перевізника відсутнє.",
+                    delivery_facts, [order_ref] if delivered else [])
+    if shipped and not delivered and not cancelled:
+        delivery["waiting"] = {"kind": "indefinite", "label": "Очікуємо підтвердження отримання від перевізника; строк невідомий.",
+                               "evidence_refs": [order_ref]}
+    contact = node("contact", "client_order_contact", "Дозвіл на контакт", "open",
+                   "Підтвердженого дозволу для автоматичного повідомлення після покупки немає. Доставка від цього не залежить.",
+                   [], [])
+    contact.update({"implementation_status": "planned", "marketing_permission": "not_confirmed",
+                    "implementation_note": "Планується окреме підтвердження каналу та мети повідомлення. Без нього автоматичне повідомлення не надсилається."})
+
+    def edge(source, target, relation, authority, label, refs):
+        return {"id": f"client-order-edge:{order_id}:{source}:{target}", "producer": _PRODUCER,
+                "from_node_id": source, "to_node_id": target, "relation": relation,
+                "scope": "client", "episode_id": None, "authority": authority,
+                "contextual_binding": binding, "tone": "neutral", "condition_label": label,
+                "evidence_refs": refs, "summary": "Контекст пов’язаного замовлення; не перехід вибраної покупки."}
+
+    edges = []
+    if inbound_id:
+        edges.append(edge(inbound_id, parent["id"], "client_scope_assignment", "owned_order_assignment",
+                          "Прив’язано вручну" if row["source"] == "manager_manual" else "Пов’язано з клієнтом",
+                          parent["evidence_refs"]))
+    for source, target, label in ((parent, shipping, "Відправлення замовлення"),
+                                  (shipping, delivery, "Отримання замовлення"),
+                                  (parent, contact, "Окремий дозвіл на повідомлення")):
+        edges.append(edge(source["id"], target["id"], "client_order_lifecycle", "order_state_context", label, []))
+    return [shipping, delivery, contact], edges
+
+
 def append_client_order_context(graph, *, client_id, is_history, bound_order_id=None):
     """Return a copy with current client context; never bind or complete an episode.
 
     The caller authorizes PII access and selects the purchase. These facts have
-    no journey edges, visits or focus: assignment is a client-level relation.
+    no journey visits or focus: contextual edges explain client ownership and
+    current order states, without claiming episode transition chronology.
     """
     result = deepcopy(graph)
     stale_ids = {node["id"] for node in result["nodes"] if node.get("producer") == _PRODUCER}
     result["nodes"] = [node for node in result["nodes"] if node["id"] not in stale_ids]
+    result["edges"] = [edge for edge in result["edges"] if edge.get("producer") != _PRODUCER
+                       and edge["from_node_id"] not in stale_ids and edge["to_node_id"] not in stale_ids]
     result["overview_node_ids"] = [value for value in result.get("overview_node_ids", []) if value not in stale_ids]
     coverage = {"status": "missing_source", "returned": 0, "limit": ORDER_LIMIT,
                 "truncated": False, "audit_verified": 0, "audit_missing": 0,
@@ -158,6 +220,9 @@ def append_client_order_context(graph, *, client_id, is_history, bound_order_id=
     if is_history:
         coverage["status"] = "historical_view"
         return result
+    inbound_ids = [node["id"] for node in result["nodes"] if node.get("semantic_key") == "inbound"]
+    inbound_id = inbound_ids[0] if len(inbound_ids) == 1 else None
+    coverage["context_anchor"] = "available" if inbound_id else "missing_or_ambiguous"
     try:
         rows, events = _read(client_id, bound_order_id, coverage)
     except DatabaseError:
@@ -174,6 +239,10 @@ def append_client_order_context(graph, *, client_id, is_history, bound_order_id=
             continue
         result["nodes"].append(node)
         result["overview_node_ids"].append(node["id"])
+        children, context_edges = _context_path(row, event, node, inbound_id)
+        result["nodes"].extend(children)
+        result["edges"].extend(context_edges)
+        result["overview_node_ids"].extend(child["id"] for child in children)
         coverage["returned"] += 1
     if coverage["returned"]:
         coverage["status"] = "partial"

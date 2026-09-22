@@ -13180,6 +13180,47 @@ def _skip_observed_row(row: InstagramBotMessage, *, reason: str) -> bool:
     return False
 
 
+def _analyze_manager_takeover_row(row: InstagramBotMessage) -> None:
+    """Project customer evidence while manager takeover suppresses replies.
+
+    Takeover is a send permission boundary, not a CRM observation boundary.
+    Older workers returned from ``reply_execution_boundary`` before the rules
+    classifier, so receipt media and payment claims from manager-led chats
+    never reached ``create_payment_review``.  Keep this path provider-free
+    except for the already-authorized media capture used by normal ingress.
+    """
+    if not row.client_id or row.role != InstagramBotMessage.Role.USER:
+        return
+    if row.attachments or row.source == "webhook":
+        try:
+            _capture_message_media(row)
+        except Exception as exc:
+            # Media enrichment is retryable evidence; it must not prevent the
+            # deterministic text/rules/payment projection from running.
+            log("warning", "takeover_media_capture", repr(exc))
+        try:
+            row.refresh_from_db(fields=["attachment_media"])
+        except Exception as exc:
+            log("warning", "takeover_media_refresh", repr(exc))
+    try:
+        from management.services import bot_sales_classifier
+
+        bot_sales_classifier.classify_message(
+            row.client,
+            message=row,
+            media_context=_recover_current_message_media(row),
+            operational_effects=True,
+        )
+    except Exception as exc:
+        # Observation must not strand the inbox row.  The durable analysis
+        # reconciler can retry the optional model lane on the next cycle.
+        log("warning", "takeover_observation", repr(exc))
+        try:
+            _schedule_inbound_analysis(row.client, row)
+        except Exception:
+            pass
+
+
 def _early_reply_suppression_reason(row: InstagramBotMessage) -> str:
     """Return a known no-reply reason before starting customer feedback."""
     if not row.client_id:
@@ -13588,6 +13629,17 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
 
     with reply_execution_boundary(s.pk, row.client_id) as permission:
         if not permission:
+            client = getattr(row, "client", None)
+            manager_takeover = bool(
+                getattr(client, "manager_takeover", False)
+                or str(getattr(client, "paused_reason", "") or "") == "manager_takeover"
+            )
+            if (
+                getattr(permission, "reason", "") in {"manager_takeover", "client_paused"}
+                and manager_takeover
+                and row.role == InstagramBotMessage.Role.USER
+            ):
+                _analyze_manager_takeover_row(row)
             return _skip_observed_row(
                 row,
                 reason=getattr(permission, "reason", "") or "reply_paused",

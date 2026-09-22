@@ -1,6 +1,8 @@
 """One honest holding reply with a real, still-open operator obligation."""
 from __future__ import annotations
 
+import logging
+
 from django.db import connection, transaction
 from django.utils import timezone
 
@@ -19,6 +21,9 @@ RECEIPT_KEY = "technical_holding"
 DELIVERY_KEY = "technical_holding_delivery"
 PURPOSE = "technical_holding"
 VERSION = "revision-technical-holding-v1"
+SAFE_RECEIPT_KEY = "provider_safe_reply"
+SAFE_VERSION = "revision-provider-safe-reply-v1"
+logger = logging.getLogger(__name__)
 
 
 def _sources_unchanged(revision):
@@ -116,10 +121,8 @@ def holding_receipt_valid(revision, *, text=None):
 def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=False):
     """Admit only after conclusive generation failure and before any send."""
     from management.services.ig_revision_recovery import recovery_lineage_for_authority
-    from management.services.ig_response_debt import record_reply_debt
     from management.services.ig_response_guard import ProviderResponseGuard
     from management.services.ig_reply_truth import ReplyTruthContext
-    from management.services.instagram_bot import notify_manager
 
     if connection.in_atomic_block:
         return RevisionInputDecision(reason="caller_transaction_active")
@@ -163,10 +166,31 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
             )
             if not ready.ready:
                 return RevisionInputDecision(reason=ready.reasons[0])
-            existing = (revision.action_receipts or {}).get(RECEIPT_KEY)
+            receipt_key = RECEIPT_KEY if positive_request else SAFE_RECEIPT_KEY
+            existing = (revision.action_receipts or {}).get(receipt_key)
             if existing:
-                return RevisionInputDecision(holding_receipt_valid(revision), PURPOSE,
-                    "holding_already_recorded" if holding_receipt_valid(revision) else "holding_handoff_no_longer_open", existing, True)
+                if positive_request:
+                    valid = holding_receipt_valid(revision)
+                    return RevisionInputDecision(valid, PURPOSE,
+                        "holding_already_recorded" if valid else "holding_handoff_no_longer_open", existing, True)
+                valid = (
+                    existing.get("version") == SAFE_VERSION
+                    and existing.get("origin") == "provider_safe_reply"
+                    and existing.get("purpose") == "normal_reply"
+                    and existing.get("snapshot_digest") == revision.snapshot_digest
+                    and existing.get("source_message_ids") == [
+                        row["message_id"] for row in revision.bundle_snapshot.get("sources", [])
+                    ]
+                    and existing.get("failed_request_id")
+                    and existing.get("reply_digest") == _digest(existing.get("reply_text") or "")
+                )
+                return RevisionInputDecision(
+                    valid,
+                    "normal_reply",
+                    "provider_safe_reply_already_recorded" if valid else "provider_safe_reply_invalid",
+                    existing,
+                    True,
+                )
             language = client.language if client.language in {"uk", "ru", "en"} else "uk"
             texts = ({
                 "uk": "Не вдалося надійно підготувати відповідь на ваш запит. Передав питання команді для уточнення.",
@@ -181,6 +205,25 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
             guard = ProviderResponseGuard(context_factory=lambda _control, _reply: ReplyTruthContext())
             if not guard.validate({"reply_text": text, "controls": []}).valid:
                 return RevisionInputDecision(reason="holding_local_guard_failed")
+            if neutral_request:
+                receipt = {
+                    "version": SAFE_VERSION, "origin": "provider_safe_reply", "purpose": "normal_reply",
+                    "snapshot_digest": revision.snapshot_digest,
+                    "source_message_ids": [row["message_id"] for row in revision.bundle_snapshot.get("sources", [])],
+                    "failed_request_id": graph.request_id,
+                    "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,
+                    "publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash},
+                    "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),
+                                  "offer_bindings": [], "authority_digest": authority.authority_digest},
+                    "reply_text": text, "reply_digest": _digest(text), "language": language,
+                    "recorded_at": timezone.now().isoformat(), "substantive_obligation": "none",
+                    "reply_mode": "neutral_ack",
+                }
+                revision.action_receipts = {**(revision.action_receipts or {}), SAFE_RECEIPT_KEY: receipt}
+                revision.save(update_fields=["action_receipts", "updated_at"])
+                return RevisionInputDecision(True, "normal_reply", "provider_safe_reply_admitted", receipt)
+            from management.services.ig_response_debt import record_reply_debt
+            from management.services.instagram_bot import notify_manager
             task = record_reply_debt(revision, "provider_candidates_exhausted")
             if task.status in {task.Status.COMPLETED, task.Status.CANCELLED}:
                 return RevisionInputDecision(reason="holding_handoff_no_longer_open")
@@ -210,6 +253,7 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
             revision.save(update_fields=["action_receipts", "updated_at"])
             return RevisionInputDecision(True, PURPOSE, "technical_holding_admitted", receipt)
     except Exception:
+        logger.exception("revision provider-safe/technical holding admission failed", extra={"revision_id": revision_id})
         return RevisionInputDecision(reason="holding_admission_failed")
 
 
