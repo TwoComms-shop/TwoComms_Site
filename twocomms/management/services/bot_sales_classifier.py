@@ -591,6 +591,50 @@ COLLAB_RE = re.compile(
     r"поставщик\w*|supplier\w*|sponsor\w*|influencer\w*)\b",
     re.I,
 )
+COLLABORATION_SUBTYPE_PATTERNS = (
+    ("designer", re.compile(r"\b(?:дизайнер\w*|design(?:er)?s?|artist|художник\w*|принт\w*)\b", re.I)),
+    ("dropship", re.compile(r"\b(?:дропшип\w*|dropship\w*)\b", re.I)),
+    ("wholesale_store", re.compile(r"\b(?:опт\w*|оптов\w*|wholesale|b2b|магазин\w*|бутик\w*)\b", re.I)),
+    ("creator", re.compile(r"\b(?:creator|креатор|блогер\w*|інфлюенсер\w*|инфлюенсер\w*|influencer)\b", re.I)),
+    ("partnership", re.compile(r"\b(?:партнерств\w*|співпрац\w*|сотруднич\w*|collab\w*|partnership\w*|cooperat\w*)\b", re.I)),
+)
+COLLAB_ASSET_PATTERNS = {
+    "dtf_ready": re.compile(r"\b(?:dtf|під\s*dtf|под\s*dtf|print[- ]?ready|готов(?:ий|ого)\s+файл)\b", re.I),
+    "source_art": re.compile(r"\b(?:исходн(?:ик|ый)|оригинал|вихідн(?:ик|е)|source\s+file|original\s+art)\b", re.I),
+    "mockup_or_photo": re.compile(r"\b(?:mockup|макет|маке[тт]|фото|фотограф\w*|photo)\b", re.I),
+}
+COLLAB_TERM_PERCENT_RE = re.compile(r"(?<!\w)(\d{1,3})\s*(?:%|відсот(?:ок|ки)|процент(?:а|ов)?)(?!\w)", re.I)
+COLLAB_TERM_UNIT_RE = re.compile(r"\b(?:грн|uah|usd|дол(?:лар|л)?\w*|за\s+(?:один|одну|шт|штуку|unit|piece))\b", re.I)
+COLLAB_CONTACT_RE = re.compile(r"(?:\+?\d[\d ()-]{7,}|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,})")
+
+def extract_collaboration_brief(text: str) -> dict:
+    """Return bounded, evidence-only collaboration facts for CRM/funnel use."""
+    value = str(text or "")
+    if not COLLAB_RE.search(value) and not any(pattern.search(value) for _, pattern in COLLABORATION_SUBTYPE_PATTERNS):
+        return {}
+    subtypes = [name for name, pattern in COLLABORATION_SUBTYPE_PATTERNS if pattern.search(value)]
+    if not subtypes:
+        subtypes = ["other"]
+    assets = [name for name, pattern in COLLAB_ASSET_PATTERNS.items() if pattern.search(value)]
+    percentages = [int(match) for match in COLLAB_TERM_PERCENT_RE.findall(value)][:3]
+    contacts = [match[:120] for match in COLLAB_CONTACT_RE.findall(value)][:2]
+    lowered = value.casefold()
+    return {
+        "schema_version": 1,
+        "subtypes": subtypes[:5],
+        "primary_subtype": subtypes[0],
+        "assets": assets,
+        "requested_percentage": percentages[0] if percentages else None,
+        "requested_unit_terms": bool(COLLAB_TERM_UNIT_RE.search(value)),
+        "contact_present": bool(contacts),
+        "contact_values": contacts,
+        "references_present": bool(re.search(r"\b(?:референс\w*|reference\w*)\b", lowered, re.I)),
+        "audience_present": bool(re.search(r"\b(?:аудитор\w*|followers?|підписник\w*|подписчик\w*)\b", lowered, re.I)),
+        "volume_or_deadline_present": bool(re.search(r"\b(?:тираж\w*|обсяг\w*|объём\w*|кільк\w*|количеств\w*|термін\w*|срок\w*|deadline)\b", lowered, re.I)),
+        "decision_owner": "manager",
+        "multiple_intents": len(subtypes) > 1,
+    }
+
 WHOLESALE_RE = re.compile(
     r"(?:\b(опт\w*|оптов\w*|wholesale|b2b|дропшип\w*|тираж\w*|партію|партия)\b|"
     r"\b(?:для|в)\s+(?:магазин\w*|бутик\w*))",
@@ -1502,6 +1546,9 @@ def classify_message(
         # score to zero, because the only guard read provider truth.
         verified_payment=confirmed_purchase,
     )
+    collaboration_brief = {} if is_manager else extract_collaboration_brief(text)
+    if collaboration_brief:
+        sales_context["_collaboration_brief"] = collaboration_brief
     client.language = lang
     client.intent = intent
     client.primary_objection = objection
@@ -1546,6 +1593,7 @@ def classify_message(
         "sales_context": sales_context,
         "media_context": media_context,
         "phone_contact_policy": phone_policy,
+        "collaboration_brief": collaboration_brief,
     }
     if isinstance(message, InstagramBotMessage) and not is_manager and not reaction_only:
         try:
