@@ -20,6 +20,7 @@ import datetime as dt
 import json
 from decimal import Decimal
 from importlib import import_module
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 from django.db.models import Sum
@@ -73,8 +74,25 @@ def _vapid_claims():
     return {'sub': subject} if subject else {'sub': 'mailto:admin@twocomms.shop'}
 
 
+def _finance_base_url():
+    """Return the public origin that actually serves the finance app.
+
+    ``SITE_BASE_URL`` belongs to the storefront.  Using it for finance push
+    links sends a valid payment path to the storefront and produces a 404.
+    Keep an explicit setting first, then derive the finance subdomain.
+    """
+    configured = (getattr(settings, 'FINANCE_PUBLIC_BASE', '')
+                  or getattr(settings, 'FIN_PUBLIC_BASE', '') or '').strip()
+    if configured:
+        return configured.rstrip('/')
+    host = (getattr(settings, 'FIN_HOST', '') or 'fin.twocomms.shop').strip()
+    if host.startswith(('http://', 'https://')):
+        return host.rstrip('/')
+    return f'https://{host}'
+
+
 def _abs(path):
-    base = (getattr(settings, 'SITE_BASE_URL', '') or '').rstrip('/')
+    base = _finance_base_url()
     if not path:
         return base
     if path.startswith(('http://', 'https://')):
@@ -86,6 +104,14 @@ def _with_report_param(url: str, report_id: int) -> str:
     """Додає ?fin_report=<id> до URL, щоб сторінка відкрила модалку звіту."""
     sep = '&' if '?' in url else '?'
     return f'{url}{sep}fin_report={report_id}'
+
+
+def _with_params(url: str, **params) -> str:
+    """Add query parameters without corrupting an existing deep link."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.update({key: str(value) for key, value in params.items() if value not in (None, '')})
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 # Стандартні кнопки під повідомленням: відкрити звіт + «Ознайомився».
@@ -120,7 +146,21 @@ def send_to_user(user, title: str, body: str, *, url: str = '/', tag: str = 'fin
 
     subscriptions = PushSubscription.objects.filter(user=user, is_active=True)
     icon = _abs(getattr(settings, 'WEB_PUSH_ICON_PATH', '/static/img/favicon-192x192.png'))
-    deep_url = _with_report_param(url, log.id)
+    context = report_data if isinstance(report_data, dict) else {}
+    is_transaction_notification = bool(context.get('transaction_id'))
+    # Reports open in the report modal.  Transaction notifications must retain
+    # their operation query so the payment editor can open the exact row.
+    deep_url = (_with_params(_abs(url), fin_notification=log.id)
+                if is_transaction_notification else _with_report_param(url, log.id))
+    if not is_transaction_notification:
+        deep_url = _with_report_param(_abs(url), log.id)
+    action_urls = {}
+    if is_transaction_notification:
+        action_urls = {
+            'open': deep_url,
+            'confirm': _with_params(deep_url, classification_action='confirm'),
+            'other': _with_params(deep_url, classification_action='choose'),
+        }
     payload = json.dumps({
         'title': title,
         'body': body,
@@ -128,6 +168,14 @@ def send_to_user(user, title: str, body: str, *, url: str = '/', tag: str = 'fin
         'badge': icon,
         'url': deep_url,
         'report_id': log.id,
+        'notification_id': log.id,
+        'notification_type': notification_type,
+        'kind': context.get('kind') or notification_type,
+        'transaction_id': context.get('transaction_id'),
+        'review_id': context.get('review_id'),
+        'suggested_kind': context.get('suggested_kind'),
+        'action_urls': action_urls,
+        'fallback_url': deep_url,
         'tag': tag,
         'requireInteraction': require_interaction,
         'actions': actions if actions is not None else _DEFAULT_ACTIONS,

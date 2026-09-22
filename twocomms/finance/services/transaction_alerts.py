@@ -5,6 +5,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction as db_transaction
 from django.db.models import Q
+from urllib.parse import urlencode
 
 from ..models import Transaction
 from ..models_settings import UserSettings
@@ -47,6 +48,11 @@ def _alert_content(txn) -> tuple[str, str, str]:
     )
 
 
+def _action_url(path: str, action: str) -> str:
+    separator = '&' if '?' in path else '?'
+    return f'{path}{separator}{urlencode({"classification_action": action})}'
+
+
 def _claim(channel: str, txn_id: int, recipient: str) -> bool:
     """Atomically reserve one delivery attempt without changing the transaction."""
     key = f'{_CACHE_PREFIX}:{channel}:{txn_id}:{recipient}'
@@ -79,6 +85,18 @@ def notify_new_incoming_classification(txn_id: int) -> None:
     from . import push
 
     dedup_key = f'incoming-classification:{txn.id}'
+    suggested_kind = 'sale' if txn.account and txn.account.is_business and not terminal else ''
+    context = {
+        'kind': 'classification_review',
+        'transaction_id': txn.id,
+        'suggested_kind': suggested_kind,
+    }
+    push_actions = [
+        {'action': 'open', 'title': '📄 Відкрити операцію'},
+        {'action': 'other', 'title': '↔ Обрати інше'},
+    ]
+    if suggested_kind:
+        push_actions.insert(1, {'action': 'confirm', 'title': '✓ Так, це продаж'})
     for user_settings in settings_rows:
         if not user_settings.push_enabled or not _claim('push', txn.id, str(user_settings.user_id)):
             continue
@@ -87,6 +105,7 @@ def notify_new_incoming_classification(txn_id: int) -> None:
                 user_settings.user, title, body, url=path,
                 tag=f'finance-classification-{txn.id}',
                 notification_type='custom', dedup_key=dedup_key,
+                report_data=context, actions=push_actions,
                 require_interaction=True,
             )
         except Exception:
@@ -96,10 +115,14 @@ def notify_new_incoming_classification(txn_id: int) -> None:
         return
     try:
         from management.services.notify import admin_chat_ids, send_message
-        keyboard = {'inline_keyboard': [[{
-            'text': 'Відкрити у фінансах',
-            'url': f'{_finance_base_url()}{path}',
-        }]]}
+        finance_url = f'{_finance_base_url()}{path}'
+        buttons = [{'text': 'Відкрити у фінансах', 'url': finance_url}]
+        if suggested_kind:
+            buttons.extend([
+                {'text': '✓ Так, це продаж', 'url': f'{_finance_base_url()}{_action_url(path, "confirm")}'},
+                {'text': '↔ Обрати інше', 'url': f'{_finance_base_url()}{_action_url(path, "choose")}'},
+            ])
+        keyboard = {'inline_keyboard': [buttons]}
         for chat_id in admin_chat_ids():
             if not _claim('telegram', txn.id, str(chat_id)):
                 continue

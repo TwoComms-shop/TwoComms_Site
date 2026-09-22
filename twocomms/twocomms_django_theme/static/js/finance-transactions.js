@@ -920,6 +920,34 @@
     document.body.classList.remove('fin-modal-open');
   }
 
+  function acknowledgeNotification(notificationId) {
+    if (!notificationId || !/^\d+$/.test(String(notificationId))) return;
+    fetch('/api/notifications/' + notificationId + '/ack/', {
+      method: 'POST', headers: { 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' },
+    }).catch(function () {});
+  }
+
+  function openNotificationTransaction(transactionId, notificationId, action) {
+    if (!transactionId || !/^\d+$/.test(String(transactionId))) return;
+    api('/api/transactions/' + transactionId + '/').then(function (res) {
+      if (!res.ok || !res.data || !res.data.ok) return;
+      openModal(res.data.transaction.type, res.data.transaction);
+      acknowledgeNotification(notificationId);
+      var started = Date.now();
+      (function applyAction() {
+        if (action === 'confirm' && els.quickClassify && els.quickClassifyYes && !els.quickClassify.hidden) {
+          els.quickClassifyYes.click();
+          return;
+        }
+        if (action === 'choose' && els.unclassifiedOpen && els.unclassifiedForm && els.unclassifiedForm.hidden) {
+          els.unclassifiedOpen.click();
+          return;
+        }
+        if (Date.now() - started < 4000) window.setTimeout(applyAction, 100);
+      })();
+    });
+  }
+
   // Прелоад секції повторення при редагуванні: показує реальний графік правила,
   // щоб «Зробити повторюваним» не виглядав вимкненим і зберігав поточний стан.
   function prefillRecurrence(txn) {
@@ -1293,9 +1321,20 @@
     if (!txnId || !/^\d+$/.test(txnId)) return;
     window.requestAnimationFrame(function () {
       var row = document.querySelector('.fin-row[data-txn-id="' + txnId + '"]');
-      if (row) row.click();
+      // Always use the API path so an action survives pagination/filtering and
+      // can be applied after the modal's async review controls are ready.
+      openNotificationTransaction(txnId, params.get('fin_notification'), params.get('classification_action') || 'open');
     });
   })();
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', function (event) {
+      var data = event.data || {};
+      if (data.type === 'OPEN_TRANSACTION') {
+        openNotificationTransaction(data.transactionId, data.notificationId, data.action || 'open');
+      }
+    });
+  }
 
   // --- Період: показ діапазону ---
   var periodSel = document.getElementById('fin-period');

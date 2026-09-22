@@ -1,7 +1,7 @@
 /* TwoComms Finance — Service Worker для PWA
    Кешування критичних ресурсів, offline підтримка, push-повідомлення */
 
-const CACHE_VERSION = 'twc-finance-v1.4.0';
+const CACHE_VERSION = 'twc-finance-v1.5.0';
 const CACHE_STATIC = `${CACHE_VERSION}-static`;
 const CACHE_DYNAMIC = `${CACHE_VERSION}-dynamic`;
 const CACHE_API = `${CACHE_VERSION}-api`;
@@ -212,7 +212,15 @@ self.addEventListener('push', (event) => {
     requireInteraction: data.requireInteraction || false,
     data: {
       url: data.url || '/',
+      fallbackUrl: data.fallback_url || data.url || '/',
       reportId: data.report_id || null,
+      notificationId: data.notification_id || data.report_id || null,
+      notificationType: data.notification_type || '',
+      kind: data.kind || '',
+      transactionId: data.transaction_id || null,
+      reviewId: data.review_id || null,
+      suggestedKind: data.suggested_kind || '',
+      actionUrls: data.action_urls || {},
       timestamp: Date.now()
     },
     actions: data.actions || []
@@ -229,6 +237,7 @@ self.addEventListener('notificationclick', (event) => {
 
   const data = event.notification.data || {};
   const reportId = data.reportId || data.report_id || null;
+  const action = event.action || 'open';
   event.notification.close();
 
   // Дія «Ознайомився» — позначаємо лог і не відкриваємо вікно.
@@ -242,16 +251,24 @@ self.addEventListener('notificationclick', (event) => {
     return;
   }
 
-  const urlToOpen = data.url || '/';
+  const urlToOpen = (data.actionUrls && data.actionUrls[action]) || data.url || data.fallbackUrl || '/';
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true })
       .then((clientList) => {
-        // Якщо є відкрита вкладка субдомену — фокусуємо й просимо відкрити звіт.
+        // Якщо Finance уже відкрита, передаємо контекст операції без 404 і
+        // без повного перезавантаження. Це також працює в iOS PWA fallback.
         for (const client of clientList) {
           if (client.url.indexOf(self.location.origin) === 0 && 'focus' in client) {
             client.focus();
-            if (reportId) {
+            if (data.transactionId) {
+              client.postMessage({
+                type: 'OPEN_TRANSACTION',
+                transactionId: data.transactionId,
+                notificationId: data.notificationId || reportId,
+                action,
+              });
+            } else if (reportId) {
               client.postMessage({ type: 'OPEN_REPORT', reportId: reportId });
             }
             return;

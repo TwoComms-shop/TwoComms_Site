@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import json
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -80,6 +81,23 @@ class PushServiceTests(TestCase):
         log = NotificationLog.objects.get(id=res['log_id'])
         self.assertEqual(log.dedup_key, 'daily:2026-06-08')
         self.assertTrue(log.success)
+
+    @patch('finance.services.push.webpush')
+    def test_transaction_push_uses_finance_origin_and_context(self, mocked):
+        mocked.return_value = SimpleNamespace(status_code=201)
+        result = push_service.send_to_user(
+            self.user, 'Класифікація', 'Перевірте операцію',
+            url='/payments/?transaction=42', notification_type='custom',
+            report_data={'kind': 'classification_review', 'transaction_id': 42,
+                         'suggested_kind': 'sale'},
+            actions=[{'action': 'open', 'title': 'Відкрити'}],
+        )
+        payload = json.loads(mocked.call_args.kwargs['data'])
+        self.assertEqual(result['log_id'], payload['notification_id'])
+        self.assertTrue(payload['url'].startswith('https://fin.twocomms.shop/payments/'))
+        self.assertIn('transaction=42', payload['url'])
+        self.assertEqual(payload['transaction_id'], 42)
+        self.assertEqual(payload['action_urls']['confirm'].split('classification_action=')[1], 'confirm')
 
     def test_notification_detail_and_ack_api(self):
         from django.test import Client

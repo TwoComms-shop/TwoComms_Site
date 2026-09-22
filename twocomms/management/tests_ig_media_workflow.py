@@ -1899,8 +1899,19 @@ class HistoricalAttachmentOwnershipTests(TestCase):
             patch.object(instagram_bot, "_recover_current_message_media", side_effect=lambda target: target.attachment_media),
             patch.object(
                 instagram_bot,
-                "_collect_media_images",
-                return_value=[("image/jpeg", b"owned-payment-image")],
+                "_collect_media_parts",
+                return_value=[{
+                    "url": url,
+                    "source_part_id": "payment-part",
+                    "source_message_scope": "message:%s" % row.pk,
+                    "original_index": 0,
+                    "provenance": "live_webhook",
+                    "status": "owned",
+                    "mime": "image/jpeg",
+                    "bytes": len(b"owned-payment-image"),
+                    "content_hash": hashlib.sha256(b"owned-payment-image").hexdigest(),
+                    "data": b"owned-payment-image",
+                }],
             ),
             patch.object(instagram_bot, "_persist_commerce_turn", return_value=(None, None)),
             patch(
@@ -1914,8 +1925,10 @@ class HistoricalAttachmentOwnershipTests(TestCase):
                 permission=object(),
             )
 
-        self.assertTrue(handled)
         self.assertEqual(calls[:2], ["capture", "classify"])
+        # A reaction-only classifier result is a deliberate no-reply terminal
+        # route; the regression target is capture-before-classification order.
+        self.assertFalse(handled)
 
     @patch("management.services.bot_vision.match_many")
     @patch("management.services.bot_vision.classify_media_roles")
