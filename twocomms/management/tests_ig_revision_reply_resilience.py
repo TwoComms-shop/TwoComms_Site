@@ -245,6 +245,35 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.assertEqual(result.reason, "holding_current_purpose_ineligible")
         self.assertFalse(IgFollowUpTask.objects.filter(event_key=f"ig-revision-debt:{self.revision.pk}").exists())
 
+    def test_neutral_provider_holding_is_opt_in_and_delivers_ack_for_noncommercial_turn(self):
+        from unittest.mock import patch
+        from management.services.ig_revision_holding import record_technical_holding
+
+        self._failed_nonfit_request("Добрий вечір")
+        with (
+            patch(
+                "management.services.ig_revision_holding._positive_current_request",
+                return_value=False,
+            ),
+            patch(
+                "management.services.ig_revision_holding._neutral_current_request",
+                return_value=True,
+            ),
+        ):
+            holding = record_technical_holding(
+                self.revision.pk, self.token, settings_id=self.settings.pk,
+                allow_neutral=True,
+            )
+        self.assertTrue(holding.ready, holding.reason)
+        self.assertEqual(holding.receipt["reply_mode"], "neutral_ack")
+        result, generate, http = self._execute()
+        self.assertEqual(result.reasons, ("technical_holding_sent",))
+        generate.assert_not_called()
+        self.assertEqual(http.call_count, 1)
+        text = self.revision.delivery_effects.get().payload["message"]["text"]
+        self.assertIn("уточню", text.casefold())
+        self.assertNotIn("техніч", text.casefold())
+
     def test_explicit_purchase_refusal_does_not_create_technical_handoff(self):
         from management.services.ig_revision_holding import record_technical_holding
 

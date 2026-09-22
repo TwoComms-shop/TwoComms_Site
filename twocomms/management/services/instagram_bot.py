@@ -14743,6 +14743,7 @@ def _process_one_inside_reply_boundary(
                         row,
                         provider_outage=provider_outage,
                         holding_decision=outage_gate,
+                        failure_kind=gemini_failure.get("kind", ""),
                     )
             if reply and not ugc_turn:
                 used_ai_failure_fallback = True

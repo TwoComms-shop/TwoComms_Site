@@ -2577,6 +2577,52 @@ class DeterministicReplyFallbackTests(TestCase):
         self.assertIsNotNone(job.holding_message_id)
         self.assertNotEqual(self.client.stage, IgClient.Stage.LEAD_TO_MANAGER)
 
+    def test_provider_wait_budget_defer_sends_neutral_ack_instead_of_silent_done(self):
+        from types import SimpleNamespace
+        from management.services.bot_reply_fallback import build_ai_failure_fallback
+
+        row = self._pending("Добрий вечір", "provider-wait-ack")
+        reply, handoff = build_ai_failure_fallback(
+            row,
+            provider_outage=True,
+            failure_kind="provider_wait",
+            holding_decision=SimpleNamespace(
+                should_send=False,
+                reason="budget_not_exhausted",
+            ),
+        )
+
+        self.assertFalse(handoff)
+        self.assertIn("уточнюю", reply.casefold())
+        self.assertNotIn("техніч", reply.casefold())
+
+    def test_neutral_holding_rejects_non_answerable_source_classes(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from management.services.ig_revision_holding import _neutral_current_request
+
+        with patch(
+            "management.services.ig_turn_intent.build_turn_intent",
+            return_value={"purpose": "unknown"},
+        ):
+            for text in (
+                "https://example.com",
+                "Хочу співпрацю як дизайнер",
+                "Проблема із замовленням, хочу повернення",
+                "Не хочу більше отримувати повідомлення",
+                "Не буду замовляти",
+                "I do not want to buy",
+            ):
+                revision = SimpleNamespace(bundle_snapshot={"sources": [{"role": "user", "text": text}]})
+                self.assertFalse(_neutral_current_request(object(), revision), text)
+            revision = SimpleNamespace(bundle_snapshot={"sources": [{"role": "user", "text": "Добрий вечір"}]})
+            self.assertTrue(_neutral_current_request(object(), revision))
+            self.assertFalse(
+                _neutral_current_request(
+                    SimpleNamespace(stage=IgClient.Stage.SPAM), revision,
+                )
+            )
+
     @patch("management.services.instagram_bot.send_sender_action")
     @patch("management.services.instagram_bot.gemini_generate")
     @patch("management.services.instagram_bot.send_text")

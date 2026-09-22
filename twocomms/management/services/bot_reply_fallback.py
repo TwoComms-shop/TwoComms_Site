@@ -270,6 +270,15 @@ def _outage_holding_reply(language: str) -> str:
     )
 
 
+def _provider_wait_ack_reply(language: str) -> str:
+    """A neutral acknowledgement while a bounded provider retry is pending."""
+    if language == "en":
+        return "Thanks for your message. I am checking the details and will reply here shortly."
+    if language == "ru":
+        return "Спасибо за сообщение. Я уточняю детали и скоро отвечу вам здесь."
+    return "Дякую за повідомлення. Я уточнюю деталі й невдовзі відповім вам тут."
+
+
 def is_generic_provider_outage(
     row, *, failure_kind: str = "", next_due_at=None, horizon_at=None,
 ) -> bool:
@@ -350,6 +359,7 @@ def build_ai_failure_fallback(
     *,
     provider_outage: bool = False,
     holding_decision=None,
+    failure_kind: str = "",
 ) -> tuple[str, bool]:
     """Build one useful response without inventing product, order, or payment facts.
 
@@ -386,9 +396,16 @@ def build_ai_failure_fallback(
         kind = "collaboration" if COLLAB_RE.search(row.text or "") else "generic"
     if kind == "generic" and row.client_id and provider_outage:
         if holding_decision is not None and not holding_decision.should_send:
-            # Придушено: клієнту не надсилається жодного технічного тексту.
-            # Викликаючий шар терминалізує хід і, якщо він вимагає відповіді,
-            # покладається на єдиний курсор відновлення.
+            # A provider-wait cursor can be delayed for a full recovery poll.
+            # A short neutral acknowledgement keeps the accepted inbound from
+            # becoming an invisible DONE row; the existing recovery cursor still
+            # owns the substantive answer and sends at most once.
+            if (
+                failure_kind == "provider_wait"
+                and holding_decision.reason == "budget_not_exhausted"
+            ):
+                return _provider_wait_ack_reply(language), False
+            # Other suppressed outcomes retain their no-duplicate policy.
             return "", False
         return _outage_holding_reply(language), False
     _queue_manager_handoff(row, kind=kind, reference=reference)

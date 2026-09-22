@@ -36,7 +36,7 @@ def _sources_unchanged(revision):
 
 
 def _positive_current_request(client, revision):
-    from management.services.ig_turn_intent import build_turn_intent
+    from management.services.ig_turn_intent import _NEGATED_ORDER, build_turn_intent
     from management.services.ig_revision_intents import manager_case_reason
     from management.services.bot_sales_classifier import SUPPORT_RE
 
@@ -48,6 +48,41 @@ def _positive_current_request(client, revision):
     texts = [str(row.get("text") or "") for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"]
     return bool((intent.get("purpose") == "support" and any(SUPPORT_RE.search(text) for text in texts))
                 or manager_case_reason(revision) == "customer_manager_request")
+
+
+def _neutral_current_request(client, revision):
+    """Allow a generic acknowledgement only for an unclassified clean turn."""
+    from management.services.ig_turn_intent import build_turn_intent
+    from management.services.bot_sales_classifier import (
+        COLLAB_RE, NO_BUY_RE, SUPPORT_RE, URL_RE, is_explicit_opt_out,
+    )
+
+    if (
+        getattr(client, "bot_paused", False)
+        or getattr(client, "opted_out_at", None)
+        or getattr(client, "stage", None) == IgClient.Stage.SPAM
+    ):
+        return False
+    intent = build_turn_intent(client, revision)
+    if intent.get("purpose") != "unknown":
+        return False
+    texts = [
+        str(row.get("text") or "")
+        for row in revision.bundle_snapshot.get("sources", ())
+        if row.get("role") == "user"
+    ]
+    # A link-only, service, collaboration, opt-out, or purchase-refusal source
+    # remains a non-answerable turn. Keep the existing no-handoff policy for it
+    # even when the provider is unavailable.
+    return not any(
+        URL_RE.search(text)
+        or COLLAB_RE.search(text)
+        or SUPPORT_RE.search(text)
+        or NO_BUY_RE.search(text)
+        or _NEGATED_ORDER.search(text)
+        or is_explicit_opt_out(text)
+        for text in texts
+    )
 
 
 def holding_receipt_valid(revision, *, text=None):
@@ -75,7 +110,7 @@ def holding_receipt_valid(revision, *, text=None):
     ).exists())
 
 
-def record_technical_holding(revision_id, token, *, settings_id):
+def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=False):
     """Admit only after conclusive generation failure and before any send."""
     from management.services.ig_revision_recovery import recovery_lineage_for_authority
     from management.services.ig_response_debt import record_reply_debt
@@ -109,7 +144,9 @@ def record_technical_holding(revision_id, token, *, settings_id):
                 return RevisionInputDecision(reason="holding_generation_not_failed")
             if not _sources_unchanged(revision):
                 return RevisionInputDecision(reason="holding_sources_changed")
-            if not _positive_current_request(client, revision):
+            positive_request = _positive_current_request(client, revision)
+            neutral_request = bool(allow_neutral and not positive_request and _neutral_current_request(client, revision))
+            if not positive_request and not neutral_request:
                 return RevisionInputDecision(reason="holding_current_purpose_ineligible")
             authority = build_revision_authority_bindings(client, claims=(CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=settings_row)
             if not authority.ready:
@@ -128,11 +165,15 @@ def record_technical_holding(revision_id, token, *, settings_id):
                 return RevisionInputDecision(holding_receipt_valid(revision), PURPOSE,
                     "holding_already_recorded" if holding_receipt_valid(revision) else "holding_handoff_no_longer_open", existing, True)
             language = client.language if client.language in {"uk", "ru", "en"} else "uk"
-            texts = {
+            texts = ({
                 "uk": "Не вдалося надійно підготувати відповідь на ваш запит. Передав питання команді для уточнення.",
                 "ru": "Не удалось надёжно подготовить ответ на ваш запрос. Передал вопрос команде для уточнения.",
                 "en": "I could not prepare a reliable answer to your request. I have referred your question to the team for clarification.",
-            }
+            } if positive_request else {
+                "uk": "Дякую за повідомлення. Я уточню деталі й невдовзі відповім вам тут.",
+                "ru": "Спасибо за сообщение. Я уточню детали и скоро отвечу вам здесь.",
+                "en": "Thanks for your message. I will check the details and reply here shortly.",
+            })
             text = texts[language]
             guard = ProviderResponseGuard(context_factory=lambda _control, _reply: ReplyTruthContext())
             if not guard.validate({"reply_text": text, "controls": []}).valid:
@@ -160,6 +201,7 @@ def record_technical_holding(revision_id, token, *, settings_id):
                               "offer_bindings": [], "authority_digest": authority.authority_digest},
                 "reply_text": text, "reply_digest": _digest(text), "language": language,
                 "recorded_at": timezone.now().isoformat(), "substantive_obligation": "open_manager_reply",
+                "reply_mode": "manager_handoff" if positive_request else "neutral_ack",
             }
             revision.action_receipts = {**(revision.action_receipts or {}), RECEIPT_KEY: receipt}
             revision.save(update_fields=["action_receipts", "updated_at"])

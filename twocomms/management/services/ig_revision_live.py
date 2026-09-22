@@ -1129,7 +1129,9 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
                 return _execute_deterministic_input(revision, token, settings_row, fallback.receipt)
             from management.services.ig_revision_holding import record_technical_holding
 
-            holding = record_technical_holding(revision.pk, token, settings_id=settings_row.pk)
+            holding = record_technical_holding(
+                revision.pk, token, settings_id=settings_row.pk, allow_neutral=True,
+            )
             if holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
             return RevisionLiveResult(revision_id, "blocked", ("generation_reconciliation_required",))
@@ -1156,7 +1158,9 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
                 return _execute_deterministic_input(revision, token, settings_row, fallback.receipt)
             from management.services.ig_revision_holding import record_technical_holding
 
-            holding = record_technical_holding(revision.pk, token, settings_id=settings_row.pk)
+            holding = record_technical_holding(
+                revision.pk, token, settings_id=settings_row.pk, allow_neutral=True,
+            )
             if holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
             return RevisionLiveResult(revision_id, "blocked", reasons)
