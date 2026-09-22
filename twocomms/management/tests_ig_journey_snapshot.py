@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from management.models import (
     IgClient, IgCommercialEpisode, IgCommercialEpisodeEvent, IgConversationRouteDecision,
+    IgConversationAnalysisSnapshot,
     IgFunnelResetAudit, IgFunnelStepEvent,
     IgObjection, IgObjectionAttempt, IgPaymentConfirmationReview, InstagramBotMessage,
 )
@@ -359,6 +360,51 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual(graph["interpretations"][0]["status"], "interpretation_not_route_authority")
         self.assertNotIn("semantic_key", graph["interpretations"][0])
         self.assertEqual(graph["interpretations"][0]["evidence_refs"], [{"kind": "analysis_snapshot", "id": analysis.pk}])
+
+    def test_current_legacy_designer_analysis_gets_display_only_route_overlay(self):
+        message = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user",
+            text="Доброго дня! Я арт дизайнер, пропоную купити принти.",
+        )
+        analysis = IgConversationAnalysisSnapshot.objects.create(
+            client=self.buyer, dedupe_key="legacy-designer-analysis", score_band="cold",
+            interaction_type=IgConversationAnalysisSnapshot.InteractionType.COLLABORATION,
+            confidence="0.95", last_analyzed_message=message,
+        )
+
+        snapshot = build_journey_snapshot(self.buyer)
+        route = snapshot["conversation_route"]
+        self.assertEqual(route["status"], "legacy_analysis_adapter")
+        self.assertEqual(route["focus_key"], "collaboration:designer")
+        self.assertEqual(route["coverage"]["authority"], "display_only")
+        self.assertEqual(route["source"]["analysis_snapshot"], analysis.pk)
+        self.assertEqual(route["source"]["message_id"], message.pk)
+        node = next(node for node in snapshot["graph"]["nodes"]
+                    if node["id"] == "conversation_intent:collaboration:designer")
+        self.assertEqual(node["route_kind"], "collaboration")
+        self.assertEqual(node["route_subtype"], "designer")
+        self.assertEqual(snapshot["capabilities"]["full_projection"], False)
+        self.assertFalse(IgConversationRouteDecision.objects.filter(client=self.buyer).exists())
+        from management.models import IgFunnelNodeState
+        self.assertFalse(IgFunnelNodeState.objects.filter(client=self.buyer).exists())
+
+    def test_legacy_designer_overlay_abstains_when_newer_user_message_exists(self):
+        analyzed = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user",
+            text="Я арт дизайнер, пропоную купити принти.",
+        )
+        IgConversationAnalysisSnapshot.objects.create(
+            client=self.buyer, dedupe_key="legacy-designer-stale", score_band="cold",
+            interaction_type=IgConversationAnalysisSnapshot.InteractionType.COLLABORATION,
+            confidence="0.95", last_analyzed_message=analyzed,
+        )
+        InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user", text="Ще одне питання",
+        )
+
+        snapshot = build_journey_snapshot(self.buyer)
+        self.assertEqual(snapshot["conversation_route"]["status"], "absent")
+        self.assertEqual(snapshot["graph"]["coverage"]["conversation_routes"]["scope"], "current_explicit_reset")
 
     def test_accepted_conversation_journal_is_a_current_overlay_with_only_observed_focus_edge(self):
         episode = self.episode(stage_snapshot={"stage": "paid"})

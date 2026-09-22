@@ -380,6 +380,21 @@ def _mid_namespace_state(row, namespace: str, *, require_materialized: bool = Fa
             return "ignored"
     existing = InstagramBotMessage.objects.filter(mid=mid).first()
     if existing is None:
+        if not is_echo:
+            return "blocked" if require_materialized else "ok"
+        # A page-side story reply may have no text or ordinary attachment.
+        # Only the exact current owner -> known client shape may proceed to
+        # durable materialization; unknown recipients stay quarantined.
+        owner_id = namespace.split(":", 1)[1] if ":" in namespace else ""
+        story_only = not message.get("text") and not message.get("attachments") and isinstance(
+            message.get("reply_to"), dict
+        ) and isinstance(message.get("reply_to", {}).get("story"), dict)
+        if story_only and (
+            sender != owner_id
+            or not recipient
+            or not IgClient.objects.filter(igsid=recipient).exists()
+        ):
+            return "blocked"
         return "blocked" if require_materialized else "ok"
     expected_sender = recipient if is_echo else sender
     expected_role = InstagramBotMessage.Role.MANAGER if is_echo else InstagramBotMessage.Role.USER

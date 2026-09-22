@@ -430,6 +430,71 @@ def _conversation_route(client_id):
     }
 
 
+def _legacy_collaboration_route(client_id):
+    """Expose a narrow, read-only route hint from a current legacy snapshot.
+
+    Legacy analysis is descriptive and has no route binding.  This adapter only
+    surfaces an explicit designer collaboration statement as contextual UI
+    evidence; it never writes the route journal, funnel state, or commerce data.
+    """
+    from management.models import IgConversationAnalysisSnapshot, InstagramBotMessage
+
+    row = IgConversationAnalysisSnapshot.objects.filter(
+        client_id=client_id,
+        interaction_type=IgConversationAnalysisSnapshot.InteractionType.COLLABORATION,
+    ).order_by("-analyzed_at", "-id").values(
+        "id", "confidence", "last_analyzed_message_id", "analyzed_at",
+    ).first()
+    if not row:
+        return {"status": "absent", "coverage": {"source": "legacy_analysis_adapter"}}
+    message_id = _positive_id(row["last_analyzed_message_id"])
+    if message_id is None:
+        return {"status": "abstained", "reason": "message_missing", "coverage": {"source": "legacy_analysis_adapter"}}
+    message = InstagramBotMessage.objects.filter(
+        pk=message_id, client_id=client_id, role=InstagramBotMessage.Role.USER,
+    ).values("id", "text", "created_at").first()
+    if not message:
+        return {"status": "abstained", "reason": "user_evidence_missing", "coverage": {"source": "legacy_analysis_adapter"}}
+    latest_user_id = InstagramBotMessage.objects.filter(
+        client_id=client_id, role=InstagramBotMessage.Role.USER,
+    ).order_by("-pk").values_list("pk", flat=True).first()
+    if latest_user_id != message_id:
+        return {"status": "abstained", "reason": "stale_watermark", "coverage": {"source": "legacy_analysis_adapter"}}
+    reset_floor = conversation_route_reset_floor(client_id)
+    if message_id < reset_floor:
+        return {"status": "abstained", "reason": "reset_floor_changed", "coverage": {"source": "legacy_analysis_adapter"}}
+    text = str(message["text"] or "").casefold()
+    designer = re.search(r"\bдизайн(?:ер|ерка)?\b|\bарт[ -]?дизайн", text)
+    offer = re.search(r"пропон|куп(?:ити|лю)|принт", text)
+    if not (designer and offer):
+        return {"status": "abstained", "reason": "explicit_designer_statement_missing", "coverage": {"source": "legacy_analysis_adapter"}}
+    try:
+        confidence = max(0.0, min(float(row["confidence"] or 0.0), 1.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    snapshot_ref = _ref("analysis_snapshot", row["id"])
+    message_ref = _ref("message", message_id)
+    return {
+        "status": "legacy_analysis_adapter",
+        "reset_floor": reset_floor,
+        "latest_decision_id": None,
+        "active_intents": [{"key": "collaboration:designer", "kind": "collaboration", "subtype": "designer"}],
+        "focus_key": "collaboration:designer",
+        "history": {"decisions": [], "transitions": [{
+            "operation": "open", "key": "collaboration:designer", "reason_code": "customer_intent",
+            "evidence_refs": [message_ref], "decision_id": None, "sequence": None, "index": 0,
+            "occurred_at": _iso(message["created_at"]),
+        }]},
+        "coverage": {
+            "scope": "current_user_evidence", "source": "legacy_analysis_adapter",
+            "source_refs": [snapshot_ref, message_ref], "authority": "display_only",
+            "freshness": "current", "returned_decisions": 0, "has_more": False,
+        },
+        "source": {"analysis_snapshot": row["id"], "message_id": message_id,
+                   "confidence": confidence, "analyzed_at": _iso(row["analyzed_at"])},
+    }
+
+
 ROUTE_KIND_LABELS = {"catalog": "Підбір одягу", "custom_print": "Свій принт",
     "dtf": "DTF-плівка", "information": "Запитання", "employment": "Робота в команді",
     "collaboration": "Співпраця", "support": "Допомога", "community": "Спільнота"}
@@ -443,7 +508,7 @@ ROUTE_REASON_LABELS = {"customer_intent": "Намір клієнта", "customer
 
 def _append_conversation_route_graph(graph, route):
     """Append conversational nodes and only recorded focus edges to graph v1."""
-    if route["status"] != "accepted_journal":
+    if route["status"] not in {"accepted_journal", "legacy_analysis_adapter"}:
         graph["coverage"]["conversation_routes"] = route["coverage"]
         return graph
 
@@ -924,6 +989,16 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         graph = _graph(episode, nodes, history, focus)
     else:
         graph = _graph_without_episode(client_id, nodes, focus)
+    if conversation_route is not None and conversation_route["status"] == "absent":
+        interpretations = graph.get("interpretations") or []
+        has_collaboration = any(
+            item.get("interaction_type") == "collaboration"
+            for item in interpretations if isinstance(item, dict)
+        )
+        if has_collaboration:
+            legacy_route = _legacy_collaboration_route(client_id)
+            if legacy_route["status"] == "legacy_analysis_adapter":
+                conversation_route = legacy_route
     if conversation_route is not None:
         graph = _append_conversation_route_graph(graph, conversation_route)
     if episode:
@@ -983,8 +1058,12 @@ def build_journey_snapshot(client, *, view_episode_id=None):
     }
     if conversation_route is not None:
         result["conversation_route"] = conversation_route
-        if conversation_route["status"] == "accepted_journal":
-            covered.append("accepted_conversation_route_journal")
+        if conversation_route["status"] in {"accepted_journal", "legacy_analysis_adapter"}:
+            covered.append(
+                "accepted_conversation_route_journal"
+                if conversation_route["status"] == "accepted_journal"
+                else "legacy_analysis_route_overlay"
+            )
             result["covered_sources"] = sorted(set(covered))
     result["revision"] = hashlib.sha256(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
     # Clock sync does not force a semantic rerender on every poll.

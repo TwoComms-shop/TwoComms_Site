@@ -208,6 +208,54 @@ class WebhookInboxTests(TestCase):
         self.assertEqual(IgWebhookInboxEvent.objects.get().decision, "accepted")
         self.assertIsNotNone(IgWebhookInboxEvent.objects.get().processed_at)
 
+    def test_story_only_manager_echo_is_materialized_for_known_client(self):
+        IgClient.objects.create(igsid="story-customer")
+        echo = {
+            "sender": {"id": "owner-1"},
+            "recipient": {"id": "story-customer"},
+            "message": {
+                "mid": "story-echo-mid",
+                "is_echo": True,
+                "reply_to": {
+                    "story": {
+                        "id": "story-reference-id",
+                        "url": "https://lookaside.fbsbx.com/story-reference",
+                    },
+                },
+            },
+        }
+        payload = {"object": "instagram", "entry": [{"id": "owner-1", "messaging": [echo]}]}
+
+        self.assertEqual(self._post(payload).status_code, 200)
+        self.assertEqual(drain_webhook_inbox(InstagramBotSettings.load(), limit=1), 1)
+        message = InstagramBotMessage.objects.get(mid="story-echo-mid")
+        self.assertEqual(message.role, "manager")
+        self.assertEqual(message.text, "(відповідь менеджера на сторіс)")
+        self.assertIn("https://lookaside.fbsbx.com/story-reference", message.attachments)
+        self.assertEqual(message.reply_to_provider_message_id, "story-reference-id")
+        receipt = IgWebhookInboxEvent.objects.get()
+        self.assertEqual(receipt.decision, "accepted")
+        self.assertIsNotNone(receipt.processed_at)
+
+    def test_unknown_story_only_echo_remains_quarantined(self):
+        echo = {
+            "sender": {"id": "owner-1"},
+            "recipient": {"id": "unknown-story-customer"},
+            "message": {
+                "mid": "unknown-story-echo-mid",
+                "is_echo": True,
+                "reply_to": {"story": {"id": "story-reference-id"}},
+            },
+        }
+        payload = {"object": "instagram", "entry": [{"id": "owner-1", "messaging": [echo]}]}
+
+        self.assertEqual(self._post(payload).status_code, 200)
+        self.assertEqual(drain_webhook_inbox(InstagramBotSettings.load(), limit=1), 0)
+        receipt = IgWebhookInboxEvent.objects.get()
+        self.assertEqual(receipt.decision, "blocked")
+        self.assertEqual(receipt.reason, "provider_mid_namespace_unproven")
+        self.assertFalse(InstagramBotMessage.objects.filter(mid="unknown-story-echo-mid").exists())
+
     def test_two_blocked_rows_create_one_outbox_task_and_redacted_status(self):
         namespace = "legacy_page:owner-1"
         for reason in ("provider_mid_namespace_unproven", "provider_mid_namespace_unproven"):

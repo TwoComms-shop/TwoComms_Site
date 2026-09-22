@@ -2502,6 +2502,21 @@ def _echo_media_items(msg: dict) -> list[dict]:
                 "title": title,
                 "role": "manager_reference",
             })
+    reply_to = msg.get("reply_to") if isinstance(msg, dict) else None
+    story = reply_to.get("story") if isinstance(reply_to, dict) else None
+    story_url = str(story.get("url") or "").strip() if isinstance(story, dict) else ""
+    story_id = str(story.get("id") or "").strip() if isinstance(story, dict) else ""
+    if story and not any(
+        item.get("url") == story_url and item.get("provider_id") == story_id
+        for item in result
+    ):
+        result.append({
+            "url": story_url[:1200] if story_url.startswith(("https://", "http://")) else "",
+            "type": "story",
+            "title": "Відповідь на сторіс",
+            "provider_id": story_id[:255],
+            "role": "manager_reference",
+        })
     return result[:8]
 
 
@@ -2594,6 +2609,7 @@ def _handle_echo(
     received_at=None,
     persistence_only: bool = False,
     provider_namespace: str = "",
+    reply_to_provider_message_id: str = "",
 ) -> None:
     """Echo-подія (повідомлення, надіслане сторінкою). Якщо це НЕ власне відлуння
     бота — значить відповів живий менеджер → ставимо бота на паузу для клієнта."""
@@ -2654,10 +2670,18 @@ def _handle_echo(
     )
     msg = None
     if text or attachments:
+        has_story_reference = any(
+            str(item.get("type") or "").casefold() == "story"
+            for item in (attachments or [])
+            if isinstance(item, dict)
+        )
         msg, _created = _stage_permission_message(
             sender_id=recipient_igsid,
             role=InstagramBotMessage.Role.MANAGER,
-            text=text or "(зображення менеджера)",
+            text=text or (
+                "(відповідь менеджера на сторіс)"
+                if has_story_reference else "(зображення менеджера)"
+            ),
             mid=mid,
             source="echo",
             provider_namespace=provider_namespace,
@@ -2670,6 +2694,7 @@ def _handle_echo(
                 else ""
             ),
             provider_created_at=received_at,
+            reply_to_provider_message_id=reply_to_provider_message_id,
         )
         if msg is None:
             return
@@ -16118,12 +16143,18 @@ def _reply_to_provider_message_id(msg: dict) -> str:
     reply_to = msg.get("reply_to") if isinstance(msg, dict) else None
     if not isinstance(reply_to, dict):
         return ""
-    return str(
+    direct = str(
         reply_to.get("mid")
         or reply_to.get("message_id")
         or reply_to.get("id")
         or ""
-    ).strip()[:255]
+    ).strip()
+    if direct:
+        return direct[:255]
+    story = reply_to.get("story")
+    if isinstance(story, dict):
+        return str(story.get("id") or "").strip()[:255]
+    return ""
 
 
 def _quick_reply_payload(msg: dict) -> str:
@@ -16429,6 +16460,7 @@ def handle_webhook_payload(
                     received_at=msg.get("_event_created_at"),
                     persistence_only=persistence_only,
                     provider_namespace=ingress_provider_namespace(s),
+                    reply_to_provider_message_id=_reply_to_provider_message_id(msg),
                 )
             except Exception as exc:
                 log("warning", "echo", repr(exc))
