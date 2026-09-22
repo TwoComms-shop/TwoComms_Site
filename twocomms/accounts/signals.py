@@ -13,6 +13,7 @@ is not guessed in the request.
 """
 
 from datetime import UTC, datetime, timedelta
+from html import escape
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -63,10 +64,13 @@ def registration_notification_text(user_id):
         return None
     method = _detect_method(user.pk)
     total = User.objects.count()
+    username = escape(user.username or "—")
+    email = escape(user.email or "—")
+    method = escape(method)
     return (
         "👤 <b>Нова реєстрація на сайті</b>\n"
-        f"Користувач: <b>{user.username}</b>\n"
-        f"Email: {user.email or '—'}\n"
+        f"Користувач: <b>{username}</b>\n"
+        f"Email: {email}\n"
         f"Спосіб: {method}\n"
         f"Всього акаунтів: {total}"
     )

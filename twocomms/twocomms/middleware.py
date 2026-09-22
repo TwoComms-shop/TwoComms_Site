@@ -94,8 +94,12 @@ class WWWRedirectMiddleware(MiddlewareMixin):
 SOCIAL_AUTH_STATE_COOKIE_MAX_AGE = 10 * 60
 SOCIAL_AUTH_STATE_COOKIE_SALT = "twocomms.social-auth-state.v1"
 SOCIAL_AUTH_STATE_COOKIE_PREFIX = "twc_oauth_state_"
+PRIMARY_AUTH_HOST = "twocomms.shop"
 SOCIAL_AUTH_STATE_PATH_RE = re.compile(
     r"^/(?:oauth|social)/(?P<action>login|complete)/(?P<backend>[-\w]+)/?$"
+)
+AUTH_COOKIE_CLEANUP_PATH_RE = re.compile(
+    r"^/(?:oauth/(?:login|complete)/[-\w]+|social/(?:login|complete)/[-\w]+|(?:ru/|en/)?(?:login|register))/?$"
 )
 
 
@@ -123,6 +127,38 @@ class SocialAuthStateCookieMiddleware(MiddlewareMixin):
 
     def _match_social_auth_path(self, request):
         return SOCIAL_AUTH_STATE_PATH_RE.match(getattr(request, "path", "") or "")
+
+    @staticmethod
+    def _is_primary_auth_host(request):
+        try:
+            host = request.get_host().split(":", 1)[0].lower().rstrip(".")
+        except (DisallowedHost, AttributeError):
+            return False
+        return host == PRIMARY_AUTH_HOST
+
+    def _clear_legacy_host_only_cookies(self, request, response):
+        """Remove pre-domain auth cookies before an OAuth handoff.
+
+        Older responses could create host-only ``sessionid``/state cookies.
+        Browsers send those alongside the current ``.twocomms.shop`` cookie
+        on the primary host; Django then may read the stale session. Deleting
+        only the host-only variants preserves the shared subdomain session.
+        """
+        if not self._is_primary_auth_host(request):
+            return
+        cookie_domain = getattr(settings, "SESSION_COOKIE_DOMAIN", None)
+        if not cookie_domain or not AUTH_COOKIE_CLEANUP_PATH_RE.match(
+            getattr(request, "path", "") or ""
+        ):
+            return
+        session_cookie_name = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
+        response.delete_cookie(session_cookie_name, path="/")
+        for backend in ("google-oauth2",):
+            response.delete_cookie(
+                _social_auth_state_cookie_name(backend),
+                path="/",
+                samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
+            )
 
     def process_request(self, request):
         match = self._match_social_auth_path(request)
@@ -166,6 +202,7 @@ class SocialAuthStateCookieMiddleware(MiddlewareMixin):
         return None
 
     def process_response(self, request, response):
+        self._clear_legacy_host_only_cookies(request, response)
         match = self._match_social_auth_path(request)
         if not match:
             return response

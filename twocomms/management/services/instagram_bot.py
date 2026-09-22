@@ -3983,6 +3983,10 @@ def _deliver_manager_notification_unlocked(dedupe_key: str) -> bool:
                 body = json.dumps({
                     "chat_id": target_id,
                     "text": text,
+                    # Registration notifications are deliberately rendered as
+                    # Telegram HTML. Other outbox messages remain plain text
+                    # because their payloads may contain arbitrary content.
+                    **({"parse_mode": "HTML"} if registration_transport else {}),
                     "disable_web_page_preview": True,
                     **({"reply_markup": reply_markup} if reply_markup is not None else {}),
                 }).encode("utf-8")

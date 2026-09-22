@@ -36,7 +36,7 @@ import logging
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from social_core.exceptions import AuthException
+from social_core.exceptions import AuthAlreadyAssociated, AuthException
 
 from accounts.models import UserProfile
 
@@ -240,6 +240,49 @@ def merge_with_authenticated_user(strategy, details, backend, user=None, social=
         "social": refreshed_social,
         "is_new": False,
     }
+
+
+def social_user_with_authenticated_merge(
+    strategy, details, backend, uid, user=None, *args, **kwargs
+):
+    """Resolve a Google identity without losing an already logged-in user.
+
+    ``social_core.pipeline.social_auth.social_user`` raises
+    ``AuthAlreadyAssociated`` before a later pipeline step can merge the old
+    social account. This wrapper performs the same lookup and handles that
+    conflict while the current session user is still available.
+    """
+    from social_core.pipeline.social_auth import social_user
+
+    current_user = _get_current_user(strategy)
+    try:
+        return social_user(
+            backend,
+            uid,
+            *args,
+            user=user,
+            **kwargs,
+        )
+    except AuthAlreadyAssociated:
+        if current_user is None:
+            raise
+        social = strategy.storage.user.get_social_auth(backend.name, uid)
+        if social is None or social.user_id == current_user.pk:
+            raise
+        try:
+            _merge_user_data(source=social.user, target=current_user)
+        except ValueError:
+            # Keep the provider's normal safe redirect for protected source
+            # accounts (for example, a staff account) instead of surfacing a
+            # merge guard as an unhandled callback error.
+            raise AuthAlreadyAssociated(backend) from None
+        social.refresh_from_db()
+        return {
+            "social": social,
+            "user": current_user,
+            "is_new": False,
+            "new_association": False,
+        }
 
 
 def get_avatar_url(strategy, details, backend, user=None, social=None, *args, **kwargs):
