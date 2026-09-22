@@ -1811,7 +1811,7 @@ body.bot-drawer-open{overflow:hidden;}
 {% block extra_js %}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-presentation-v1"></script>
 <script src="{% static 'management/ig_journey.js' %}?v=journey-presentation-v1"></script>
-<script src="{% static 'management/bot_conversation_scroll.js' %}?v=conversation-scroll-v2"></script>
+<script src="{{ bot_conversation_scroll_url }}"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}"></script>{% endif %}
 <script>
 (function(){

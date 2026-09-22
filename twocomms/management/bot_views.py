@@ -1009,6 +1009,15 @@ def bot_dashboard(request):
         request,
         "management/bot.html",
         {
+            # Do not resolve this optional enhancement through WhiteNoise's
+            # manifest at request time. A stale long-lived Passenger process
+            # must not turn the whole dashboard into a 500 while static files
+            # are being refreshed; the plain URL remains served by the same
+            # STATIC_ROOT and the script is non-critical to the page shell.
+            "bot_conversation_scroll_url": (
+                f"{str(getattr(settings, 'STATIC_URL', '/static/')).rstrip('/')}/"
+                "management/bot_conversation_scroll.js?v=conversation-scroll-v2"
+            ),
             "settings": settings_obj,
             "status": _reviewer_safe_status(request),
             "log_items": _log_items() if can_operate and can_view_pii else [],

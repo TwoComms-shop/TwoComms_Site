@@ -2339,6 +2339,10 @@ class ClientsPageRenderTests(TestCase):
         response = self.client.get(reverse("management_bot"))
 
         self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            '/static/management/bot_conversation_scroll.js?v=conversation-scroll-v2',
+        )
         scripts = [
             script.strip()
             for script in re.findall(
