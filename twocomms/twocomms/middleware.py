@@ -164,6 +164,39 @@ def _append_host_only_cookie_deletion(response, key, *, path="/", samesite=None)
     response.cookies[alias] = morsel
 
 
+def _append_host_only_cookie(
+    response,
+    key,
+    value,
+    *,
+    path="/",
+    secure=False,
+    httponly=True,
+    samesite=None,
+    max_age=None,
+    expires=None,
+):
+    """Append a host-only cookie without replacing a same-name domain cookie."""
+    morsel = Morsel()
+    morsel.set(key, value, value)
+    if path is not None:
+        morsel["path"] = path
+    if secure:
+        morsel["secure"] = True
+    if httponly:
+        morsel["httponly"] = True
+    if samesite:
+        morsel["samesite"] = samesite
+    if max_age is not None:
+        morsel["max-age"] = str(max_age)
+    if expires is not None:
+        morsel["expires"] = expires
+    alias = f"__twc_host_only_{key}"
+    while alias in response.cookies:
+        alias = f"_{alias}"
+    response.cookies[alias] = morsel
+
+
 class SocialAuthStateCookieMiddleware(MiddlewareMixin):
     """Short-lived double-submit cookie fallback for OAuth state.
 
@@ -286,7 +319,28 @@ class LegacyAuthCookieCleanupMiddleware(MiddlewareMixin):
         ):
             return response
         session_cookie_name = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
-        _append_host_only_cookie_deletion(response, session_cookie_name, path="/")
+        callback_success = (
+            OAUTH_CALLBACK_RE.match(getattr(request, "path", "") or "")
+            and response.status_code in {301, 302, 303, 307, 308}
+            and response.get("Location", "") != "/login/"
+            and bool(request.session.get("_auth_user_id"))
+            and getattr(request.session, "session_key", None)
+        )
+        if callback_success:
+            # Keep a stale host-only record from shadowing the freshly rotated
+            # shared-domain session when a browser sends duplicate sessionid
+            # cookies.  Both records now resolve to the authenticated session.
+            _append_host_only_cookie(
+                response,
+                session_cookie_name,
+                request.session.session_key,
+                path="/",
+                secure=getattr(settings, "SESSION_COOKIE_SECURE", False),
+                httponly=getattr(settings, "SESSION_COOKIE_HTTPONLY", True),
+                samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
+            )
+        else:
+            _append_host_only_cookie_deletion(response, session_cookie_name, path="/")
         _append_host_only_cookie_deletion(
             response,
             _social_auth_state_cookie_name("google-oauth2"),

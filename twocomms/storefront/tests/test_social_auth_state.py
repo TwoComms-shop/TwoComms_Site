@@ -127,6 +127,44 @@ class SocialAuthStateCookieMiddlewareTests(SimpleTestCase):
             any("sessionid=;" in item and "Domain=" not in item for item in emitted)
         )
 
+    def test_successful_primary_callback_syncs_legacy_host_only_session(self):
+        request = self.factory.get(
+            "/oauth/complete/google-oauth2/",
+            {"state": "oauth-state"},
+            secure=True,
+            HTTP_HOST="twocomms.shop",
+        )
+        request.session = SessionStore()
+        request.session["_auth_user_id"] = "42"
+        request.session._session_key = "fresh-session"
+        response = HttpResponseRedirect("/")
+        response.set_cookie(
+            "sessionid",
+            "shared-session",
+            domain=".twocomms.shop",
+            path="/",
+        )
+
+        response = self.cookie_cleanup.process_response(request, response)
+
+        emitted = [
+            cookie.output(header="Set-Cookie:") for cookie in response.cookies.values()
+        ]
+        self.assertTrue(
+            any(
+                f"sessionid={request.session.session_key}" in item
+                and "Domain=" not in item
+                for item in emitted
+            )
+        )
+        self.assertTrue(
+            any(
+                "sessionid=shared-session" in item
+                and "Domain=.twocomms.shop" in item
+                for item in emitted
+            )
+        )
+
     def test_subdomain_oauth_entry_does_not_clear_shared_session_cookie(self):
         request = self.factory.get(
             "/oauth/login/google-oauth2/",
