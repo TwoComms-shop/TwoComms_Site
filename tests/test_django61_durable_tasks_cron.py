@@ -130,7 +130,7 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         self.assertEqual(install.returncode, 0, install.stderr)
         manifest = json.loads(PERIODIC_OWNERS_MANIFEST.read_text(encoding="utf-8"))
         durable_job = next(job for job in manifest["jobs"] if job["id"] == "django61_durable_tasks")
-        durable_job["flock"] = f"exec {self.flock} -w 50 -E 75"
+        durable_job["flock"] = f"exec {self.flock} -n -E 75"
         durable_job["timeout"] = f"{self.timeout} --signal=TERM --kill-after=15s 240s"
         manifest["jobs"] = [durable_job]
         manifest_path = self.root / "periodic-owners.json"

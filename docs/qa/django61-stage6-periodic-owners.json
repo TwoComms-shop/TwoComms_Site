@@ -16,7 +16,7 @@
       "managed_block": "# BEGIN TWOCOMMS DJANGO61 DURABLE TASKS",
       "owner_path": "scripts/install_django61_durable_tasks_cron.sh",
       "lock_path": "tmp/twocomms_heavy_background.lock",
-      "flock": "exec /usr/bin/flock -w 50 -E 75",
+      "flock": "exec /usr/bin/flock -n -E 75",
       "timeout": "/usr/bin/timeout --signal=TERM --kill-after=15s 240s",
       "timeout_required": true,
       "environment": [
@@ -47,7 +47,7 @@
       "managed_block": "# BEGIN TWOCOMMS INSTAGRAM PERIODIC JOBS v1",
       "owner_path": "scripts/install_instagram_periodic_jobs_cron.sh",
       "lock_path": "tmp/twocomms_heavy_background.lock",
-      "flock": "/usr/bin/flock -w 50 -E 75",
+      "flock": "/usr/bin/flock -n -E 75",
       "timeout": "/usr/bin/timeout --signal=TERM --kill-after=15s 600s",
       "timeout_required": true,
       "provides_lanes": [
@@ -76,7 +76,7 @@
       "managed_block": "# BEGIN TWOCOMMS NOVA POSHTA TRACKING",
       "owner_path": "scripts/install_nova_poshta_tracking_cron.sh",
       "lock_path": "tmp/twocomms_heavy_background.lock",
-      "flock": "/usr/bin/flock -w 50 -E 75",
+      "flock": "/usr/bin/flock -n -E 75",
       "timeout": "/usr/bin/timeout --signal=TERM --kill-after=15s 240s",
       "timeout_required": true,
       "environment": [

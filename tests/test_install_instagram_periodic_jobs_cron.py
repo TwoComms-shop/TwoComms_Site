@@ -110,7 +110,7 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         ):
             self.assertNotIn(f"manage.py {legacy_command}", content)
         self.assertIn("tmp/twocomms_heavy_background.lock", content)
-        self.assertIn("flock -w 50 -E 75", content)
+        self.assertIn("flock -n -E 75", content)
         self.assertIn("--kill-after=15s 600s", content)
         self.assertIn("17 4 * * * /opt/unrelated", content)
 
@@ -250,7 +250,7 @@ exit 99
         self.assertIn("DJANGO_ENV=production", owner)
         self.assertIn("DJANGO_SETTINGS_MODULE=twocomms.production_settings", owner)
         self.assertEqual(owner.count("tmp/twocomms_heavy_background.lock"), 1)
-        self.assertLess(owner.index("flock -w 50"), owner.index("manage.py"))
+        self.assertLess(owner.index("flock -n -E 75"), owner.index("manage.py"))
 
     def test_coordinator_marker_outside_managed_block_is_rejected(self):
         self.assertEqual(self._run("--install").returncode, 0)

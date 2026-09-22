@@ -106,7 +106,7 @@ log_q="$(shell_quote "$DJANGO_ROOT/logs/django61_durable_tasks_cron.log")"
 flock_q="$(shell_quote "$FLOCK_BIN")"
 timeout_q="$(shell_quote "$TIMEOUT_BIN")"
 
-cron_line="* * * * * cd $root_q && DJANGO_ENV=production DJANGO_SETTINGS_MODULE=twocomms.production_settings exec $flock_q -w 50 -E 75 $lock_q $timeout_q --signal=TERM --kill-after=15s 240s $python_q $manage_q run_durable_tasks --limit 25 --lease-seconds 60 --worker-id=cron-no-send >> $log_q 2>&1"
+cron_line="* * * * * cd $root_q && DJANGO_ENV=production DJANGO_SETTINGS_MODULE=twocomms.production_settings exec $flock_q -n -E 75 $lock_q $timeout_q --signal=TERM --kill-after=15s 240s $python_q $manage_q run_durable_tasks --limit 25 --lease-seconds 60 --worker-id=cron-no-send >> $log_q 2>&1"
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/twocomms-django61-task-cron.XXXXXX")"
 trap 'rm -rf -- "$tmp_dir"' EXIT INT TERM

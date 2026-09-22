@@ -72,7 +72,7 @@ class Stage6PeriodicOwnerTests(unittest.TestCase):
         durable_line = next(line for line in active_crontab.splitlines() if "run_durable_tasks" in line)
         self.assertIn("# BEGIN TWOCOMMS DJANGO61 DURABLE TASKS", active_crontab)
         self.assertIn("tmp/twocomms_heavy_background.lock", durable_line)
-        self.assertIn("exec /usr/bin/flock -w 50 -E 75", durable_line)
+        self.assertIn("exec /usr/bin/flock -n -E 75", durable_line)
         self.assertIn("/usr/bin/timeout --signal=TERM --kill-after=15s 240s", durable_line)
         self.assertIn("--worker-id=cron-no-send", durable_line)
         self.assertIn("DJANGO_ENV=production", durable_line)
