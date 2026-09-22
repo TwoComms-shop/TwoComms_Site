@@ -134,11 +134,25 @@ class RegistrationNotificationSignalTests(TestCase):
         deliveries = [json.loads(call.kwargs["data"]) for call in http.call_args_list]
         self.assertEqual([item["chat_id"] for item in deliveries], ["111", "222"])
         self.assertTrue(all("Спосіб: Google" in item["text"] for item in deliveries))
+        self.assertTrue(all(item["parse_mode"] == "HTML" for item in deliveries))
+        self.assertIn("<b>Нова реєстрація на сайті</b>", deliveries[0]["text"])
 
         # A retry after confirmed delivery is idempotent and does not re-enter
         # the transport boundary.
         self.assertTrue(instagram_bot._deliver_manager_notification_unlocked(row.dedupe_key))
         self.assertEqual(http.call_count, 2)
+
+    @override_settings(TESTING=False)
+    def test_registration_notification_escapes_user_supplied_html(self):
+        user = User.objects.create_user(
+            username="angle<bracket",
+            email="person+<tag>@example.com",
+        )
+
+        text = account_signals.registration_notification_text(user.pk)
+
+        self.assertIn("Користувач: <b>angle&lt;bracket</b>", text)
+        self.assertIn("Email: person+&lt;tag&gt;@example.com", text)
 
 
 class RegistrationNotificationAutocommitTests(TransactionTestCase):

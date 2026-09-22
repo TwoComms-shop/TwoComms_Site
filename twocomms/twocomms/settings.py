@@ -459,6 +459,7 @@ MIDDLEWARE = [
     "twocomms.static_middleware.LsapiSafeWhiteNoiseMiddleware",
     "twocomms.middleware.SimpleRateLimitMiddleware",  # Rate limiting (ПОСЛЕ статики!)
     "twocomms.image_middleware.ImageOptimizationMiddleware",  # Enabled with caching
+    "twocomms.middleware.LegacyAuthCookieCleanupMiddleware",  # Clear pre-domain auth cookies after session persistence
     "django.contrib.sessions.middleware.SessionMiddleware",
     "twocomms.middleware.SocialAuthStateCookieMiddleware",  # OAuth state fallback before social-auth callback validation
     "django.middleware.locale.LocaleMiddleware",
@@ -725,8 +726,7 @@ SOCIAL_AUTH_PIPELINE = (
     'social_core.pipeline.social_auth.social_details',
     'social_core.pipeline.social_auth.social_uid',
     'social_core.pipeline.social_auth.auth_allowed',
-    'social_core.pipeline.social_auth.social_user',
-    'storefront.social_pipeline.merge_with_authenticated_user',
+    'storefront.social_pipeline.social_user_with_authenticated_merge',
     'social_core.pipeline.user.get_username',
     'storefront.social_pipeline.require_email',
     'social_core.pipeline.social_auth.associate_by_email',

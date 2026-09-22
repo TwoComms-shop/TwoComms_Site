@@ -3,6 +3,7 @@ from django.http import HttpResponse
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 
 from twocomms.middleware import (
+    LegacyAuthCookieCleanupMiddleware,
     SocialAuthStateCookieMiddleware,
     build_social_auth_state_cookie,
 )
@@ -11,13 +12,14 @@ from twocomms.middleware import (
 @override_settings(
     SOCIAL_AUTH_LOGIN_ERROR_URL="/login/",
     SOCIAL_AUTH_RAISE_EXCEPTIONS=False,
-    SESSION_COOKIE_DOMAIN=None,
+    SESSION_COOKIE_DOMAIN=".twocomms.shop",
     SESSION_COOKIE_SECURE=False,
 )
 class SocialAuthStateCookieMiddlewareTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
         self.middleware = SocialAuthStateCookieMiddleware(lambda request: HttpResponse("ok"))
+        self.cookie_cleanup = LegacyAuthCookieCleanupMiddleware(lambda request: HttpResponse("ok"))
 
     def test_complete_restores_missing_google_state_from_signed_cookie(self):
         request = self.factory.get(
@@ -69,6 +71,36 @@ class SocialAuthStateCookieMiddlewareTests(SimpleTestCase):
         self.middleware.process_request(request)
 
         self.assertNotIn("google-oauth2_state", request.session)
+
+    def test_primary_oauth_entry_clears_legacy_host_only_auth_cookies(self):
+        request = self.factory.get(
+            "/oauth/login/google-oauth2/",
+            secure=True,
+            HTTP_HOST="twocomms.shop",
+        )
+        request.session = SessionStore()
+        response = HttpResponse(status=302)
+
+        response = self.cookie_cleanup.process_response(request, response)
+
+        self.assertEqual(response.cookies["sessionid"]["domain"], "")
+        self.assertEqual(response.cookies["sessionid"]["max-age"], 0)
+        self.assertEqual(
+            response.cookies["twc_oauth_state_google_oauth2"]["domain"], ""
+        )
+
+    def test_subdomain_oauth_entry_does_not_clear_shared_session_cookie(self):
+        request = self.factory.get(
+            "/oauth/login/google-oauth2/",
+            secure=True,
+            HTTP_HOST="management.twocomms.shop",
+        )
+        request.session = SessionStore()
+        response = HttpResponse(status=302)
+
+        response = self.cookie_cleanup.process_response(request, response)
+
+        self.assertNotIn("sessionid", response.cookies)
 
 
 @override_settings(

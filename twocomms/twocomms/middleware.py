@@ -94,8 +94,12 @@ class WWWRedirectMiddleware(MiddlewareMixin):
 SOCIAL_AUTH_STATE_COOKIE_MAX_AGE = 10 * 60
 SOCIAL_AUTH_STATE_COOKIE_SALT = "twocomms.social-auth-state.v1"
 SOCIAL_AUTH_STATE_COOKIE_PREFIX = "twc_oauth_state_"
+PRIMARY_AUTH_HOST = "twocomms.shop"
 SOCIAL_AUTH_STATE_PATH_RE = re.compile(
     r"^/(?:oauth|social)/(?P<action>login|complete)/(?P<backend>[-\w]+)/?$"
+)
+AUTH_COOKIE_CLEANUP_PATH_RE = re.compile(
+    r"^/(?:oauth/(?:login|complete)/[-\w]+|social/(?:login|complete)/[-\w]+|(?:ru/|en/)?(?:login|register))/?$"
 )
 
 
@@ -197,6 +201,40 @@ class SocialAuthStateCookieMiddleware(MiddlewareMixin):
                 domain=cookie_domain,
                 samesite=cookie_samesite,
             )
+        return response
+
+
+class LegacyAuthCookieCleanupMiddleware(MiddlewareMixin):
+    """Remove stale host-only auth cookies on the canonical storefront host.
+
+    This middleware is placed before ``SessionMiddleware`` in the stack, so
+    its response runs after session persistence and its host-only deletion
+    cannot be overwritten by Django's shared-domain ``sessionid`` cookie.
+    """
+
+    @staticmethod
+    def _is_primary_auth_host(request):
+        try:
+            host = request.get_host().split(":", 1)[0].lower().rstrip(".")
+        except (DisallowedHost, AttributeError):
+            return False
+        return host == PRIMARY_AUTH_HOST
+
+    def process_response(self, request, response):
+        if not self._is_primary_auth_host(request):
+            return response
+        cookie_domain = getattr(settings, "SESSION_COOKIE_DOMAIN", None)
+        if not cookie_domain or not AUTH_COOKIE_CLEANUP_PATH_RE.match(
+            getattr(request, "path", "") or ""
+        ):
+            return response
+        session_cookie_name = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
+        response.delete_cookie(session_cookie_name, path="/")
+        response.delete_cookie(
+            _social_auth_state_cookie_name("google-oauth2"),
+            path="/",
+            samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
+        )
         return response
 
 
