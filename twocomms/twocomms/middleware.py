@@ -12,6 +12,7 @@ from django.core.exceptions import DisallowedHost
 from django.db import DatabaseError
 from django.contrib.redirects.middleware import RedirectFallbackMiddleware
 from django.utils.crypto import constant_time_compare
+from http.cookies import Morsel
 import hashlib
 import ipaddress
 import logging
@@ -115,6 +116,32 @@ def build_social_auth_state_cookie(backend: str, state: str) -> str:
     )
 
 
+def _append_host_only_cookie_deletion(response, key, *, path="/", samesite=None):
+    """Append a host-only deletion without replacing a same-name domain cookie.
+
+    ``HttpResponse.cookies`` is keyed by cookie name, while a browser keeps
+    host-only and domain cookies as distinct records.  Store the extra morsel
+    under an internal key so Django's WSGI/ASGI serializers emit both headers;
+    the morsel itself still carries the real cookie name.
+    """
+    morsel = Morsel()
+    morsel.set(key, "", "")
+    morsel["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
+    morsel["max-age"] = "0"
+    if path is not None:
+        morsel["path"] = path
+    if samesite:
+        morsel["samesite"] = samesite
+    if getattr(settings, "SESSION_COOKIE_SECURE", False):
+        morsel["secure"] = True
+    if getattr(settings, "SESSION_COOKIE_HTTPONLY", False):
+        morsel["httponly"] = True
+    alias = f"__twc_legacy_host_only_{key}"
+    while alias in response.cookies:
+        alias = f"_{alias}"
+    response.cookies[alias] = morsel
+
+
 class SocialAuthStateCookieMiddleware(MiddlewareMixin):
     """Short-lived double-submit cookie fallback for OAuth state.
 
@@ -152,9 +179,10 @@ class SocialAuthStateCookieMiddleware(MiddlewareMixin):
         ):
             return
         session_cookie_name = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
-        response.delete_cookie(session_cookie_name, path="/")
+        _append_host_only_cookie_deletion(response, session_cookie_name, path="/")
         for backend in ("google-oauth2",):
-            response.delete_cookie(
+            _append_host_only_cookie_deletion(
+                response,
                 _social_auth_state_cookie_name(backend),
                 path="/",
                 samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
@@ -262,8 +290,9 @@ class LegacyAuthCookieCleanupMiddleware(MiddlewareMixin):
         ):
             return response
         session_cookie_name = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
-        response.delete_cookie(session_cookie_name, path="/")
-        response.delete_cookie(
+        _append_host_only_cookie_deletion(response, session_cookie_name, path="/")
+        _append_host_only_cookie_deletion(
+            response,
             _social_auth_state_cookie_name("google-oauth2"),
             path="/",
             samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),

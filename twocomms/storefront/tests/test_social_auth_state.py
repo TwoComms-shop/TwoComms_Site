@@ -83,10 +83,46 @@ class SocialAuthStateCookieMiddlewareTests(SimpleTestCase):
 
         response = self.cookie_cleanup.process_response(request, response)
 
-        self.assertEqual(response.cookies["sessionid"]["domain"], "")
-        self.assertEqual(response.cookies["sessionid"]["max-age"], 0)
-        self.assertEqual(
-            response.cookies["twc_oauth_state_google_oauth2"]["domain"], ""
+        emitted = [
+            cookie.output(header="Set-Cookie:") for cookie in response.cookies.values()
+        ]
+        session_header = next(
+            item for item in emitted if item.startswith("Set-Cookie: sessionid=")
+        )
+        state_header = next(
+            item
+            for item in emitted
+            if item.startswith("Set-Cookie: twc_oauth_state_google_oauth2=")
+        )
+        self.assertIn("Max-Age=0", session_header)
+        self.assertIn("Path=/", session_header)
+        self.assertIn("Max-Age=0", state_header)
+        self.assertIn("SameSite=Lax", state_header)
+        self.assertNotIn("Domain=", session_header)
+        self.assertNotIn("Domain=", state_header)
+
+    def test_cleanup_preserves_shared_cookie_while_emitting_host_only_deletion(self):
+        request = self.factory.get(
+            "/oauth/login/google-oauth2/",
+            secure=True,
+            HTTP_HOST="twocomms.shop",
+        )
+        response = HttpResponse(status=302)
+        response.set_cookie("sessionid", "fresh", domain=".twocomms.shop", path="/")
+
+        response = self.cookie_cleanup.process_response(request, response)
+
+        emitted = [
+            cookie.output(header="Set-Cookie:") for cookie in response.cookies.values()
+        ]
+        self.assertTrue(
+            any(
+                "sessionid=fresh" in item and "Domain=.twocomms.shop" in item
+                for item in emitted
+            )
+        )
+        self.assertTrue(
+            any("sessionid=;" in item and "Domain=" not in item for item in emitted)
         )
 
     def test_subdomain_oauth_entry_does_not_clear_shared_session_cookie(self):
