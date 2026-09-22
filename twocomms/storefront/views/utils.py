@@ -22,7 +22,7 @@ from twocomms.db_resilience import retry_mysql_read
 # request rendering the page while the others wait briefly for the cache entry.
 # The lease is intentionally short so a killed worker cannot block the route.
 _ANON_PAGE_CACHE_LOCK_TTL = 30
-_ANON_PAGE_CACHE_LOCK_WAIT = 6.0
+_ANON_PAGE_CACHE_LOCK_WAIT = 1.5
 _ANON_PAGE_CACHE_LOCK_POLL = 0.025
 
 

@@ -2622,6 +2622,10 @@ class DeterministicReplyFallbackTests(TestCase):
                     SimpleNamespace(stage=IgClient.Stage.SPAM), revision,
                 )
             )
+            for state in ("manager_takeover", "is_blocked", "hidden_at"):
+                self.assertFalse(
+                    _neutral_current_request(SimpleNamespace(**{state: True}), revision),
+                )
 
     @patch("management.services.instagram_bot.send_sender_action")
     @patch("management.services.instagram_bot.gemini_generate")

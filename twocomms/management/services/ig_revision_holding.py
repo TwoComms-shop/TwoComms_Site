@@ -60,6 +60,9 @@ def _neutral_current_request(client, revision):
     if (
         getattr(client, "bot_paused", False)
         or getattr(client, "opted_out_at", None)
+        or getattr(client, "manager_takeover", False)
+        or getattr(client, "is_blocked", False)
+        or getattr(client, "hidden_at", None)
         or getattr(client, "stage", None) == IgClient.Stage.SPAM
     ):
         return False
