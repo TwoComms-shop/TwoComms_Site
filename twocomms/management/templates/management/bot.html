@@ -1814,7 +1814,7 @@ body.bot-drawer-open{overflow:hidden;}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-presentation-v1"></script>
 <script src="{% static 'management/ig_journey.js' %}?v=journey-presentation-v1"></script>
 <script src="{{ bot_conversation_scroll_url }}"></script>
-{% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}"></script>{% endif %}
+{% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=30b82e345"></script>{% endif %}
 <script>
 (function(){
   const csrf = (document.querySelector('input[name=csrfmiddlewaretoken]')||{}).value || '';
