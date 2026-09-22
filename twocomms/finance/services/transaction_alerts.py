@@ -39,12 +39,12 @@ def _alert_content(txn) -> tuple[str, str, str]:
         return (
             'Потрібна класифікація поповнення',
             f'Поповнення через термінал Mono/City24 на {amount} поки враховане як дохід і може впливати на P&L. Підтвердьте класифікацію.',
-            f'/payments/?terminal_review={txn.id}',
+            f'/?terminal_review={txn.id}',
         )
     return (
         'Потрібна класифікація надходження',
         f'Нове надходження на {amount} поки враховане як дохід і може впливати на P&L. Перевірте класифікацію.',
-        f'/payments/?transaction={txn.id}',
+        f'/?transaction={txn.id}',
     )
 
 
@@ -80,6 +80,8 @@ def notify_new_incoming_classification(txn_id: int) -> None:
         return
 
     title, body, path = _alert_content(txn)
+    from .ledger_v2 import terminal_cash_evidence
+    terminal = terminal_cash_evidence(txn)['is_candidate']
     settings_rows = list(_eligible_settings().select_related('user').order_by('user_id'))
 
     from . import push

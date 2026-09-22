@@ -87,14 +87,14 @@ class PushServiceTests(TestCase):
         mocked.return_value = SimpleNamespace(status_code=201)
         result = push_service.send_to_user(
             self.user, 'Класифікація', 'Перевірте операцію',
-            url='/payments/?transaction=42', notification_type='custom',
+            url='/?transaction=42', notification_type='custom',
             report_data={'kind': 'classification_review', 'transaction_id': 42,
                          'suggested_kind': 'sale'},
             actions=[{'action': 'open', 'title': 'Відкрити'}],
         )
         payload = json.loads(mocked.call_args.kwargs['data'])
         self.assertEqual(result['log_id'], payload['notification_id'])
-        self.assertTrue(payload['url'].startswith('https://fin.twocomms.shop/payments/'))
+        self.assertTrue(payload['url'].startswith('https://fin.twocomms.shop/?'))
         self.assertIn('transaction=42', payload['url'])
         self.assertEqual(payload['transaction_id'], 42)
         self.assertEqual(payload['action_urls']['confirm'].split('classification_action=')[1], 'confirm')

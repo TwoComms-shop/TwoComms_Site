@@ -60,11 +60,11 @@ class ImportedIncomingAlertTests(TestCase):
         self.assertEqual(push_send.call_count, 1)
         self.assertEqual(telegram_send.call_count, 1)
         self.assertIn('термінал Mono/City24', push_send.call_args.args[2])
-        self.assertEqual(push_send.call_args.kwargs['url'], f'/payments/?terminal_review={txn.id}')
+        self.assertEqual(push_send.call_args.kwargs['url'], f'/?terminal_review={txn.id}')
         keyboard = telegram_send.call_args.kwargs['reply_markup']
         self.assertEqual(
             keyboard['inline_keyboard'][0][0]['url'],
-            f'https://fin.twocomms.shop/payments/?terminal_review={txn.id}',
+            f'https://fin.twocomms.shop/?terminal_review={txn.id}',
         )
 
     @patch('finance.services.push.send_to_user', return_value={'ok': True, 'sent': 1})
@@ -79,5 +79,24 @@ class ImportedIncomingAlertTests(TestCase):
 
         txn = Transaction.objects.get(external_id='mono:incoming-1')
         self.assertEqual(push_send.call_count, 1)
-        self.assertEqual(push_send.call_args.kwargs['url'], f'/payments/?transaction={txn.id}')
+        self.assertEqual(push_send.call_args.kwargs['url'], f'/?transaction={txn.id}')
         self.assertIn('поки враховане як дохід', push_send.call_args.args[2])
+
+    @patch('finance.services.push.send_to_user', return_value={'ok': True, 'sent': 1})
+    def test_business_unclassified_income_suggests_sale(self, push_send):
+        self.account.is_business = True
+        self.account.save(update_fields=['is_business'])
+        UserSettings.objects.filter(user=self.user).update(telegram_notifications=False)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            mono.import_statement(
+                self.account, [_incoming_item('business-incoming-1', 75000)],
+                user=self.user, apply_rules=False,
+            )
+
+        txn = Transaction.objects.get(external_id='mono:business-incoming-1')
+        self.assertEqual(push_send.call_count, 1)
+        self.assertEqual(push_send.call_args.kwargs['url'], f'/?transaction={txn.id}')
+        self.assertEqual(
+            push_send.call_args.kwargs['report_data']['suggested_kind'], 'sale',
+        )
