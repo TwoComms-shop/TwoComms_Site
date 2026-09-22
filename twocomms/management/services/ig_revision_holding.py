@@ -52,7 +52,7 @@ def _positive_current_request(client, revision):
 
 def _neutral_current_request(client, revision):
     """Allow a generic acknowledgement only for an unclassified clean turn."""
-    from management.services.ig_turn_intent import build_turn_intent
+    from management.services.ig_turn_intent import _NEGATED_ORDER, build_turn_intent
     from management.services.bot_sales_classifier import (
         COLLAB_RE, NO_BUY_RE, SUPPORT_RE, URL_RE, is_explicit_opt_out,
     )
