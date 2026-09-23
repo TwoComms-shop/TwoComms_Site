@@ -141,6 +141,24 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         self.assertEqual(content.count("manage.py update_tracking_statuses"), 1)
         self.assertEqual(content.count(BEGIN_MARKER), 1)
 
+    def test_install_upgrades_bounded_shared_owner_to_nonblocking(self):
+        legacy = (
+            f"*/5 * * * * cd {self.django_root} && DJANGO_ENV=production "
+            f"DJANGO_SETTINGS_MODULE=twocomms.production_settings {self.fake_bin / 'flock'} -w 50 -E 75 "
+            f"{self.django_root}/tmp/twocomms_heavy_background.lock "
+            f"{self.fake_bin / 'timeout'} --signal=TERM --kill-after=15s 240s "
+            f"{self.fake_bin / 'nice'} -n 10 {self.python} manage.py "
+            f"update_tracking_statuses >> {self.django_root}/logs/nova_poshta_cron.log 2>&1"
+        )
+        self.crontab_file.write_text(f"{legacy}\n", encoding="utf-8")
+
+        result = self._run("--install")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = self.crontab_file.read_text(encoding="utf-8")
+        self.assertIn(f"{self.fake_bin / 'flock'} -n -E 75", content)
+        self.assertIn("tmp/twocomms_heavy_background.lock", content)
+
     def test_install_rejects_reversed_managed_markers_without_writes(self):
         self.assertEqual(self._run("--install").returncode, 0)
         installed = self.crontab_file.read_text(encoding="utf-8").splitlines()

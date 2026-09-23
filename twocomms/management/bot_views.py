@@ -1837,6 +1837,39 @@ _PROVIDER_MEDIA_HOSTS = ("lookaside.fbsbx.com", "scontent.cdninstagram.com")
 _MESSAGE_MEDIA_LIMIT = 8
 
 
+def _media_render_kind(item: dict, fallback_url: str = "") -> str:
+    """Classify one attachment for truthful operator rendering."""
+    mime = str(item.get("mime") or "").split(";", 1)[0].strip().casefold()
+    media_type = str(item.get("media_type") or item.get("type") or "").strip().casefold()
+    if mime.startswith("audio/") or media_type in {"audio", "voice"}:
+        return "audio"
+    if mime.startswith("image/") or media_type in {
+        "image", "story", "story_mention", "share", "ig_post", "ig_reel", "reel",
+    }:
+        return "image"
+    path = str(fallback_url or "").split("?", 1)[0].casefold()
+    if path.endswith((".ogg", ".oga", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", ".webm")):
+        return "audio"
+    return "attachment"
+
+
+def _media_display_label(item: dict, render_kind: str, type_code: str = "") -> str:
+    media_type = str(item.get("media_type") or item.get("type") or "").strip().casefold()
+    if render_kind == "audio":
+        return "Голосове повідомлення" if media_type in {"audio", "voice"} else "Аудіо"
+    if media_type in {"story", "story_mention"}:
+        return "Сторіс"
+    if media_type in {"share", "ig_post", "ig_reel", "reel"}:
+        return "Репост"
+    return {
+        "receipt": "Зображення чека",
+        "payment_screenshot": "Скриншот оплати",
+        "custom_reference": "Приклад принта",
+        "certificate": "Зображення сертифіката",
+        "document": "Зображення документа",
+    }.get(type_code, "Зображення" if render_kind == "image" else "Вкладення")
+
+
 def _media_asset_key(url: str) -> str:
     """Stable identity of one attachment across re-signed provider links."""
     value = str(url or "")
@@ -1891,10 +1924,11 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
     for item, public in list(zip(media, manifest, strict=True))[:_MESSAGE_MEDIA_LIMIT]:
         inspection = item.get("inspection") if isinstance(item.get("inspection"), dict) else {}
         preview_url = ""
+        render_kind = _media_render_kind(item)
         if (
             item.get("status") == "owned"
             and item.get("private_storage") is True
-            and str(item.get("mime") or "").startswith("image/")
+            and render_kind in {"image", "audio"}
         ):
             try:
                 preview_url = reverse(
@@ -1912,13 +1946,10 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
         rows.append({
             **public,
             "public_url": render_url,
-            "media_label": {
-                "receipt": "Зображення чека",
-                "payment_screenshot": "Скриншот оплати",
-                "custom_reference": "Приклад принта",
-                "certificate": "Зображення сертифіката",
-                "document": "Зображення документа",
-            }.get(str(inspection.get("type_code") or "").strip(), "Зображення"),
+            "media_kind": render_kind,
+            "media_label": _media_display_label(
+                item, render_kind, str(inspection.get("type_code") or "").strip(),
+            ),
             "type_code": _bounded_text(inspection.get("type_code"), 32),
             "error_kind": _bounded_text(item.get("error_kind"), 64),
             "preview_url": preview_url,
@@ -1987,6 +2018,11 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
             "error_kind": "legacy_media_unavailable",
             "effort": "unknown",
         }
+        row["media_kind"] = _media_render_kind(row, safe_url)
+        row["media_label"] = (
+            "Аудіо недоступне" if row["media_kind"] == "audio"
+            else "Вкладення недоступне"
+        )
         if public_url:
             row["public_url"] = public_url
         rows.append(row)

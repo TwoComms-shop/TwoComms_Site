@@ -141,7 +141,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   if [ "$skip_managed" -eq 1 ]; then [ "$line" = "$END_MARKER" ] && skip_managed=0; continue; fi
   if [ "$line" = "$BEGIN_MARKER" ]; then cat "$expected" >> "$candidate"; inserted=1; skip_managed=1; continue; fi
   if [ "$begin_count" -eq 0 ] && [ "$line" = "$LEGACY_MARKER" ]; then cat "$expected" >> "$candidate"; inserted=1; skip_legacy_command=1; continue; fi
-  if [ "$begin_count" -eq 0 ] && { [ "$line" = "$cron_line" ] || [ "$line" = "$legacy_cron_line" ]; }; then cat "$expected" >> "$candidate"; inserted=1; continue; fi
+  if [ "$begin_count" -eq 0 ] && { [ "$line" = "$cron_line" ] || [ "$line" = "$previous_cron_line" ] || [ "$line" = "$legacy_cron_line" ]; }; then cat "$expected" >> "$candidate"; inserted=1; continue; fi
   printf '%s\n' "$line" >> "$candidate"
 done < "$current"
 

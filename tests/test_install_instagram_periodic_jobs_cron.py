@@ -110,7 +110,7 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         ):
             self.assertNotIn(f"manage.py {legacy_command}", content)
         self.assertIn("tmp/twocomms_heavy_background.lock", content)
-        self.assertIn("flock -n -E 75", content)
+        self.assertIn("flock -w 50 -E 75", content)
         self.assertIn("--kill-after=15s 600s", content)
         self.assertIn("17 4 * * * /opt/unrelated", content)
 
@@ -128,6 +128,25 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         content = self.crontab_file.read_text(encoding="utf-8")
         self.assertEqual(content.count("manage.py run_instagram_periodic_jobs"), 1)
         self.assertNotIn("manage.py check_ig_gemini_metadata_health", content)
+
+    def test_install_upgrades_nonblocking_coordinator_to_bounded_wait(self):
+        self.assertEqual(self._run("--install").returncode, 0)
+        content = self.crontab_file.read_text(encoding="utf-8")
+        self.crontab_file.write_text(
+            content.replace("flock -w 50 -E 75", "flock -n -E 75"),
+            encoding="utf-8",
+        )
+
+        result = self._run("--install")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        upgraded = self.crontab_file.read_text(encoding="utf-8")
+        self.assertIn("flock -w 50 -E 75", upgraded)
+        self.assertNotIn(
+            "flock -n -E 75 "
+            + str(self.django_root / "tmp/twocomms_heavy_background.lock"),
+            upgraded,
+        )
 
     def test_check_detects_content_drift_without_writing(self):
         self.assertEqual(self._run("--install").returncode, 0)
@@ -250,7 +269,7 @@ exit 99
         self.assertIn("DJANGO_ENV=production", owner)
         self.assertIn("DJANGO_SETTINGS_MODULE=twocomms.production_settings", owner)
         self.assertEqual(owner.count("tmp/twocomms_heavy_background.lock"), 1)
-        self.assertLess(owner.index("flock -n -E 75"), owner.index("manage.py"))
+        self.assertLess(owner.index("flock -w 50 -E 75"), owner.index("manage.py"))
 
     def test_coordinator_marker_outside_managed_block_is_rejected(self):
         self.assertEqual(self._run("--install").returncode, 0)

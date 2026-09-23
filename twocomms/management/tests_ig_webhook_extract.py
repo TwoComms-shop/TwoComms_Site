@@ -34,6 +34,22 @@ class ExtractMediaUrlsTests(SimpleTestCase):
         msg = {"reply_to": {"story": {"url": "https://cdn/s.jpg", "id": "1"}}}
         self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/s.jpg"])
 
+    def test_story_permalink_is_review_context_not_capture_url(self):
+        msg = {
+            "reply_to": {
+                "story": {
+                    "url": "https://www.instagram.com/stories/example/123456/",
+                    "id": "story-1",
+                }
+            }
+        }
+        self.assertEqual(bot._extract_media_urls(msg), [])
+        metadata = bot._provider_attachment_metadata(msg)
+        self.assertEqual(metadata[0]["media_type"], "story")
+        self.assertEqual(metadata[0]["status"], bot.MEDIA_STATUS_METADATA_ONLY)
+        self.assertEqual(metadata[0]["provenance"], bot.MEDIA_PROVENANCE_HISTORICAL)
+        self.assertFalse(metadata[0].get("capture_eligible", True))
+
     def test_plain_image_still_works(self):
         msg = {"attachments": [{"type": "image", "payload": {"url": "https://cdn/i.jpg"}}]}
         self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/i.jpg"])
@@ -398,6 +414,65 @@ class HandleWebhookPayloadTests(TestCase):
         self.assertEqual(json.loads(msg.attachments), ["https://cdn/repost.jpg"])
         self.assertEqual(msg.attachment_media[0]["media_type"], "ig_post")
         self.assertEqual(msg.attachment_media[0]["provider_media_id"], "media-123")
+
+    def test_textless_story_permalink_is_persisted_as_context_only(self):
+        payload = {"entry": [{"messaging": [{
+            "sender": {"id": "story-context-user"},
+            "message": {
+                "mid": "story-context-mid",
+                "reply_to": {"story": {
+                    "url": "https://www.instagram.com/stories/example/123456/",
+                    "id": "story-1",
+                }},
+            },
+        }]}]}
+
+        self.assertEqual(bot.handle_webhook_payload(self.s, payload), 1)
+        row = InstagramBotMessage.objects.get(mid="story-context-mid")
+        self.assertEqual(row.text, "(сторіс)")
+        self.assertEqual(row.attachments, "")
+        self.assertEqual(row.attachment_media[0]["media_type"], "story")
+        self.assertEqual(row.attachment_media[0]["status"], bot.MEDIA_STATUS_METADATA_ONLY)
+        self.assertFalse(row.attachment_media[0].get("capture_eligible", True))
+
+    def test_textless_repost_without_url_keeps_provider_identity(self):
+        payload = {"entry": [{"messaging": [{
+            "sender": {"id": "repost-context-user"},
+            "message": {
+                "mid": "repost-context-mid",
+                "attachments": [{
+                    "type": "ig_post",
+                    "id": "post-object-1",
+                    "ig_post_media_id": "post-media-1",
+                }],
+            },
+        }]}]}
+
+        self.assertEqual(bot.handle_webhook_payload(self.s, payload), 1)
+        row = InstagramBotMessage.objects.get(mid="repost-context-mid")
+        self.assertEqual(row.text, "(поширений допис)")
+        self.assertEqual(row.attachment_media[0]["provider_object_key"], "ig_post:post-object-1")
+        self.assertEqual(row.attachment_media[0]["provider_media_id"], "post-media-1")
+        self.assertTrue(row.attachment_media[0]["url_metadata_expired"])
+
+    def test_manager_echo_retains_story_media_type(self):
+        bot._handle_echo(
+            "echo-story-user",
+            "",
+            attachments=[{
+                "url": "https://www.instagram.com/stories/example/123456/",
+                "type": "story",
+                "provider_object_key": "story:story-1",
+            }],
+            mid="echo-story-mid",
+            persistence_only=True,
+            provider_namespace=bot.ingress_provider_namespace(self.s),
+        )
+        row = InstagramBotMessage.objects.get(mid="echo-story-mid")
+        self.assertEqual(row.role, InstagramBotMessage.Role.MANAGER)
+        self.assertEqual(row.attachments, "[]")
+        self.assertEqual(row.attachment_media[0]["media_type"], "story")
+        self.assertEqual(row.attachment_media[0]["status"], bot.MEDIA_STATUS_METADATA_ONLY)
 
     def test_story_mention_keeps_provider_native_metadata(self):
         payload = {"entry": [{"messaging": [{

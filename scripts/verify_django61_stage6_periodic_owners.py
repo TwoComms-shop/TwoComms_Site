@@ -169,14 +169,39 @@ def validate_crontab(manifest: dict[str, Any], crontab: str, *, repo_root: Path)
         _fail(f"rollback path is absent from repository: {rollback_target}")
     jobs = manifest["jobs"]
     active_jobs = [job for job in jobs if job.get("active", True)]
+    if manifest.get("lock_policy") != "shared-heavy-lock-periodic-priority":
+        _fail("manifest must declare shared-heavy-lock-periodic-priority")
     global_lock = str(manifest.get("global_heavy_process_lock") or "")
     if not global_lock.startswith("tmp/"):
         _fail("global_heavy_process_lock must be under tmp/")
+    priority_owner = str(manifest.get("priority_owner") or "")
+    priority_wait_seconds = manifest.get("priority_wait_seconds")
+    if (
+        not priority_owner
+        or priority_wait_seconds != 50
+        or not 0 < priority_wait_seconds < 60
+    ):
+        _fail("periodic priority must declare a 50-second bounded wait")
+    if manifest.get("max_priority_waiters") != 1:
+        _fail("periodic priority must allow at most one waiter")
     django_jobs = [
         job for job in active_jobs if job.get("runtime", "django") == "django"
     ]
     if any(job["lock_path"] != global_lock for job in django_jobs):
         _fail("every active heavy Django owner must share the global admission lock")
+    priority_jobs = [job for job in django_jobs if job["id"] == priority_owner]
+    priority_declared = any(job["id"] == priority_owner for job in jobs)
+    if priority_declared and len(priority_jobs) != 1:
+        _fail("periodic priority owner must identify exactly one active Django owner")
+    if priority_jobs:
+        priority_job = priority_jobs[0]
+        if priority_job["flock"] != "/usr/bin/flock -w 50 -E 75":
+            _fail("periodic priority owner must use the bounded shared-lock wait")
+        if any(
+            job["id"] != priority_owner and "-n" not in job["flock"]
+            for job in django_jobs
+        ):
+            _fail("non-priority heavy Django owners must remain nonblocking")
     for job in jobs:
         if job.get("active", True):
             continue

@@ -21,15 +21,17 @@ class PrivateMediaPreviewTests(TestCase):
         )
         self.client.force_login(self.user)
 
-    def _message(self, *, erased=False, wrong_hash=False, role=InstagramBotMessage.Role.USER):
+    def _message(
+        self, *, erased=False, wrong_hash=False, role=InstagramBotMessage.Role.USER,
+        mime="image/jpeg", raw=b"\xff\xd8\xffprivate-preview", suffix="jpg",
+    ):
         client = IgClient.objects.create(
             igsid=f"preview-{InstagramBotMessage.objects.count()}",
             privacy_erasure_started_at=timezone.now() if erased else None,
         )
         source_part_id = "mp1_" + "a" * 32
-        raw = b"\xff\xd8\xffprivate-preview"
         storage_name = private_media_storage().save(
-            f"ig_message_media/preview/{client.pk}.jpg", ContentFile(raw),
+            f"ig_message_media/preview/{client.pk}.{suffix}", ContentFile(raw),
         )
         row = InstagramBotMessage.objects.create(
             client=client,
@@ -42,7 +44,7 @@ class PrivateMediaPreviewTests(TestCase):
                 "status": "owned",
                 "private_storage": True,
                 "storage_name": storage_name,
-                "mime": "image/jpeg",
+                "mime": mime,
                 "content_hash": "0" * 64 if wrong_hash else hashlib.sha256(raw).hexdigest(),
             }],
         )
@@ -75,6 +77,22 @@ class PrivateMediaPreviewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"].split(";")[0], "image/jpeg")
+        self.assertIn("no-store", response["Cache-Control"])
+
+    def test_authorized_audio_preview_preserves_playable_content_type(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(
+            IG_PRIVATE_MEDIA_ROOT=str(Path(root).resolve()),
+        ):
+            row, part_id = self._message(
+                mime="audio/ogg", raw=b"OggSprivate-voice", suffix="ogg",
+            )
+            response = self.client.get(reverse(
+                "management_bot_private_media_preview", args=[row.pk, part_id],
+            ))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"].split(";", 1)[0], "audio/ogg")
+        self.assertEqual(response.content, b"OggSprivate-voice")
         self.assertIn("no-store", response["Cache-Control"])
 
     def test_erasure_or_digest_change_makes_preview_unavailable(self):

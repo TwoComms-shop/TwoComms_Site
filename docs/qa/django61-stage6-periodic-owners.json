@@ -1,7 +1,11 @@
 {
   "schema_version": 1,
   "scope": "non-dtf",
+  "lock_policy": "shared-heavy-lock-periodic-priority",
   "global_heavy_process_lock": "tmp/twocomms_heavy_background.lock",
+  "priority_owner": "instagram_periodic_coordinator",
+  "priority_wait_seconds": 50,
+  "max_priority_waiters": 1,
   "rollback": {
     "owner": "TwoComms release operator",
     "path": "scripts/install_instagram_periodic_jobs_cron.sh",
@@ -47,7 +51,7 @@
       "managed_block": "# BEGIN TWOCOMMS INSTAGRAM PERIODIC JOBS v1",
       "owner_path": "scripts/install_instagram_periodic_jobs_cron.sh",
       "lock_path": "tmp/twocomms_heavy_background.lock",
-      "flock": "/usr/bin/flock -n -E 75",
+      "flock": "/usr/bin/flock -w 50 -E 75",
       "timeout": "/usr/bin/timeout --signal=TERM --kill-after=15s 600s",
       "timeout_required": true,
       "provides_lanes": [

@@ -128,6 +128,27 @@ class OperationalLaneHealthTests(TestCase):
         self.assertEqual(lane["counts"]["manual"], 1)
         self.assertEqual(lane["counts"]["attention"], 0)
 
+    def test_legacy_review_without_owner_is_visible_until_data_repair(self):
+        _source, revision = self.revision(age=3600)
+        task = record_reply_debt(revision, "provider_candidates_exhausted", now=self.now)
+        context = dict(task.manager_context)
+        context.pop("owner", None)
+        task.manager_context = {
+            **context,
+            "operator_review": {
+                "outcome": "reviewed_no_reply",
+                "reply_confirmed": False,
+                "actor_id": 1,
+                "revision_id": revision.pk,
+            },
+        }
+        task.status = IgFollowUpTask.Status.CANCELLED
+        task.save(update_fields=["manager_context", "status", "updated_at"])
+
+        lane = self.snapshot()["lanes"]["customer_revisions"]
+        self.assertEqual(lane["counts"]["attention"], 1)
+        self.assertEqual(lane["counts"]["manual"], 0)
+
     def test_cancelled_revision_without_operator_review_remains_attention(self):
         _source, revision = self.revision(age=3600)
         task = record_reply_debt(revision, "provider_candidates_exhausted", now=self.now)

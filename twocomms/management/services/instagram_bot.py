@@ -2502,16 +2502,77 @@ def _attachment_media_candidates(attachment: dict) -> list[tuple[str, str, str]]
     return result[:8]
 
 
+def _is_story_permalink(url: str) -> bool:
+    """Return whether a URL identifies an Instagram story page, not media bytes."""
+    try:
+        parsed = urlsplit(str(url or "").strip())
+    except ValueError:
+        return False
+    host = str(parsed.hostname or "").casefold().rstrip(".")
+    path = str(parsed.path or "").casefold().rstrip("/")
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and (host == "instagram.com" or host.endswith(".instagram.com"))
+        and path.startswith("/stories/")
+    )
+
+
 def _echo_media_items(msg: dict) -> list[dict]:
     """Keep bounded manager media metadata for the durable echo message."""
     result = []
+    event_id = str(msg.get("mid") or msg.get("id") or "").strip()[:255]
     for attachment in _attachment_items(msg) or []:
-        for media_type, url, title in _attachment_media_candidates(attachment):
-            result.append({
+        if not isinstance(attachment, dict):
+            continue
+        payload = attachment.get("payload") if isinstance(attachment.get("payload"), dict) else {}
+        media_type = str(attachment.get("type") or "image").strip().lower()[:32]
+        object_id = str(
+            attachment.get("object_id")
+            or attachment.get("id")
+            or payload.get("object_id")
+            or payload.get("story_id")
+            or payload.get("id")
+            or ""
+        ).strip()[:255]
+        provider_media_id = str(
+            attachment.get("media_id")
+            or attachment.get("asset_id")
+            or payload.get("media_id")
+            or payload.get("asset_id")
+            or ""
+        ).strip()[:255]
+        candidates = _attachment_media_candidates(attachment)
+        for media_type, url, title in candidates:
+            item = {
                 "url": url[:1200],
                 "type": media_type,
                 "title": title,
                 "role": "manager_reference",
+                "provider_object_key": (
+                    f"{media_type}:{object_id}" if media_type and object_id else ""
+                ),
+                "provider_media_id": provider_media_id,
+                "provider_event_id": event_id,
+            }
+            if _is_story_permalink(url):
+                item["context_only"] = True
+            result.append(item)
+        if not candidates and (
+            media_type in MEDIA_ATTACH_TYPES
+            or object_id
+            or provider_media_id
+        ):
+            result.append({
+                "url": "",
+                "type": media_type or "image",
+                "title": "",
+                "role": "manager_reference",
+                "provider_object_key": (
+                    f"{media_type}:{object_id}" if media_type and object_id else ""
+                ),
+                "provider_media_id": provider_media_id,
+                "provider_event_id": event_id,
+                "context_only": True,
             })
     reply_to = msg.get("reply_to") if isinstance(msg, dict) else None
     story = reply_to.get("story") if isinstance(reply_to, dict) else None
@@ -2526,9 +2587,73 @@ def _echo_media_items(msg: dict) -> list[dict]:
             "type": "story",
             "title": "Відповідь на сторіс",
             "provider_id": story_id[:255],
+            "provider_object_key": f"story:{story_id}" if story_id else "",
+            "provider_media_id": str(story.get("media_id") or "")[:255],
             "role": "manager_reference",
+            "provider_event_id": event_id,
+            "context_only": _is_story_permalink(story_url) or not story_url,
         })
     return result[:8]
+
+
+def _echo_media_metadata(items: list[dict] | None) -> list[dict]:
+    """Convert manager echo items into durable media metadata without capture leaks."""
+    result = []
+    for index, raw in enumerate(items or []):
+        if not isinstance(raw, dict):
+            continue
+        url = str(raw.get("url") or "").strip()
+        item = {
+            "url": url[:1200],
+            "original_index": index,
+            "provenance": MEDIA_PROVENANCE_LIVE_WEBHOOK,
+            "status": MEDIA_STATUS_PENDING,
+            "media_type": str(raw.get("media_type") or raw.get("type") or "image").strip().lower()[:32],
+            "provider_object_key": str(raw.get("provider_object_key") or "")[:255],
+            "provider_media_id": str(raw.get("provider_media_id") or "")[:255],
+            "provider_event_id": str(raw.get("provider_event_id") or "")[:255],
+            "target_username": str(raw.get("target_username") or "")[:80],
+            "provider_native_mention": bool(raw.get("provider_native_mention")),
+        }
+        if raw.get("context_only") or _is_story_permalink(url) or not url:
+            item["provenance"] = MEDIA_PROVENANCE_HISTORICAL
+            item["status"] = MEDIA_STATUS_METADATA_ONLY
+            item["capture_eligible"] = False
+            if not url:
+                item["url_metadata_expired"] = True
+        result.append(item)
+        if len(result) >= 8:
+            break
+    return result
+
+
+def _historicalize_provider_media(items: list[dict]) -> list[dict]:
+    """Keep poll/history metadata while making every part non-capturable."""
+    result = []
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        item["provenance"] = MEDIA_PROVENANCE_HISTORICAL
+        item["status"] = MEDIA_STATUS_METADATA_ONLY
+        item["capture_eligible"] = False
+        if not str(item.get("url") or "").strip():
+            item["url_metadata_expired"] = True
+        result.append(item)
+    return result[:8]
+
+
+def _media_fallback_text(metadata: list[dict] | None) -> str:
+    kinds = {
+        str(item.get("media_type") or "").casefold()
+        for item in metadata or []
+        if isinstance(item, dict)
+    }
+    if kinds & {"story", "story_mention"}:
+        return "(сторіс)"
+    if kinds & {"share", "ig_post", "ig_reel", "reel"}:
+        return "(поширений допис)"
+    return "(зображення)"
 
 
 def _stage_permission_message(
@@ -2545,6 +2670,7 @@ def _stage_permission_message(
     quick_reply_payload: str = "",
     allow_media_capture: bool = True,
     provider_namespace: str = "",
+    attachment_metadata: list[dict] | None = None,
 ) -> tuple[InstagramBotMessage | None, bool]:
     """Persist a permission-changing message without locking its client FK."""
     existing = None
@@ -2575,10 +2701,8 @@ def _stage_permission_message(
                 source=source,
                 attachments=attachments,
                 attachment_media=_normalize_message_media(
-                    _attachment_media_metadata(
-                        _attachment_urls(attachments),
-                        source=source,
-                    ),
+                    list(attachment_metadata or ())
+                    or _attachment_media_metadata(_attachment_urls(attachments), source=source),
                     message_scope=mid or synthetic_event_key,
                     identity_origin=(
                         "ingress" if source == "webhook" else "legacy_positional"
@@ -2682,6 +2806,7 @@ def _handle_echo(
     msg = None
     media_message_id = 0
     if text or attachments:
+        echo_media = _echo_media_metadata(attachments)
         has_story_reference = any(
             str(item.get("type") or "").casefold() == "story"
             for item in (attachments or [])
@@ -2699,7 +2824,11 @@ def _handle_echo(
             provider_namespace=provider_namespace,
             attachments=(
                 json.dumps(
-                    [item.get("url") for item in (attachments or []) if item.get("url")],
+                    [
+                        item.get("url")
+                        for item in (attachments or [])
+                        if item.get("url") and not _is_story_permalink(item.get("url"))
+                    ],
                     ensure_ascii=False,
                 )
                 if attachments
@@ -2707,6 +2836,7 @@ def _handle_echo(
             ),
             provider_created_at=received_at,
             reply_to_provider_message_id=reply_to_provider_message_id,
+            attachment_metadata=echo_media,
         )
         if msg is None:
             return
@@ -10047,15 +10177,13 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
     if not isinstance(msg, dict):
         return []
     result: list[dict] = []
-    message_id = str(msg.get("mid") or "").strip()[:255]
+    message_id = str(msg.get("mid") or msg.get("id") or "").strip()[:255]
     for attachment in _attachment_items(msg) or []:
         if not isinstance(attachment, dict):
             continue
         media_type = str(attachment.get("type") or "").strip().lower()[:32]
         payload = attachment.get("payload") if isinstance(attachment.get("payload"), dict) else {}
         candidates = _attachment_media_candidates(attachment)
-        if not candidates:
-            continue
         typed_post_id = str(
             attachment.get("ig_post_media_id")
             or payload.get("ig_post_media_id")
@@ -10108,11 +10236,26 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
             and (media_type == "story_mention" or typed_repost)
         )
         target_username = "twocomms" if provider_native else ""
+        if not candidates and (
+            media_type in MEDIA_ATTACH_TYPES
+            or provider_media_id
+            or object_id
+        ):
+            candidates = [(media_type or "image", "", "")]
+        if not candidates:
+            continue
         for _kind, url, _title in candidates:
+            context_only = _is_story_permalink(url) or not url
             item = {
                 "url": url[:1200],
-                "provenance": MEDIA_PROVENANCE_LIVE_WEBHOOK,
-                "status": MEDIA_STATUS_PENDING,
+                "provenance": (
+                    MEDIA_PROVENANCE_HISTORICAL
+                    if context_only else MEDIA_PROVENANCE_LIVE_WEBHOOK
+                ),
+                "status": (
+                    MEDIA_STATUS_METADATA_ONLY
+                    if context_only else MEDIA_STATUS_PENDING
+                ),
                 "media_type": media_type or "image",
                 "provider_object_key": (
                     f"{media_type}:{object_id}" if media_type and object_id else ""
@@ -10122,6 +10265,10 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
                 "target_username": target_username,
                 "provider_native_mention": provider_native,
             }
+            if context_only:
+                item["capture_eligible"] = False
+                if not url:
+                    item["url_metadata_expired"] = True
             # Assign the source position before any later transport merge. Two
             # provider parts may deliberately carry the same signed URL.
             item["original_index"] = len(result)
@@ -10131,12 +10278,22 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
         if len(result) >= 8:
             break
     reply_story = (msg.get("reply_to") or {}).get("story") or {}
-    if isinstance(reply_story, dict) and reply_story.get("url"):
+    if isinstance(reply_story, dict) and (
+        reply_story.get("url") or reply_story.get("id") or reply_story.get("story_id")
+    ):
         story_id = str(reply_story.get("id") or reply_story.get("story_id") or "").strip()
+        story_url = str(reply_story.get("url") or "").strip()
+        context_only = _is_story_permalink(story_url) or not story_url
         result.append({
-            "url": str(reply_story.get("url"))[:1200],
-            "provenance": MEDIA_PROVENANCE_LIVE_WEBHOOK,
-            "status": MEDIA_STATUS_PENDING,
+            "url": story_url[:1200],
+            "provenance": (
+                MEDIA_PROVENANCE_HISTORICAL
+                if context_only else MEDIA_PROVENANCE_LIVE_WEBHOOK
+            ),
+            "status": (
+                MEDIA_STATUS_METADATA_ONLY
+                if context_only else MEDIA_STATUS_PENDING
+            ),
             "media_type": "story",
             "provider_object_key": f"story:{story_id}" if story_id else "",
             "provider_media_id": str(reply_story.get("media_id") or "")[:255],
@@ -10148,6 +10305,10 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
             "provider_native_mention": False,
             "original_index": len(result),
         })
+        if context_only:
+            result[-1]["capture_eligible"] = False
+            if not story_url:
+                result[-1]["url_metadata_expired"] = True
     result = result[:8]
     if not result:
         return []
@@ -10526,7 +10687,11 @@ def _raw_live_media_for_row(row: InstagramBotMessage) -> list[dict]:
         return []
     result = []
     for raw in raw_items[:8]:
-        if not isinstance(raw, dict) or not raw.get("url"):
+        if (
+            not isinstance(raw, dict)
+            or not raw.get("url")
+            or _is_story_permalink(raw.get("url"))
+        ):
             continue
         item = dict(raw)
         item["provenance"] = MEDIA_PROVENANCE_LIVE_WEBHOOK
@@ -10577,6 +10742,10 @@ def _media_part_capture_pending(item: dict) -> bool:
     if not isinstance(item, dict):
         return False
     if item.get("provenance") != MEDIA_PROVENANCE_LIVE_WEBHOOK:
+        return False
+    if item.get("capture_eligible") is False:
+        return False
+    if _is_story_permalink(item.get("url")):
         return False
     if item.get("url_metadata_expired") is True:
         return False
@@ -11041,17 +11210,22 @@ def _capture_message_media(
     )
     candidates = [
         item for item in candidates
+        if not _is_story_permalink(item.get("url"))
+    ]
+    candidates = [
+        item for item in candidates
         if str(item.get("url") or "") not in historical_urls
     ]
     if not current and not getattr(row, "attachments", ""):
         candidates.extend(_raw_live_media_for_row(row))
     current = _merge_attachment_media(current, candidates, message_scope=row.pk)
     for item in current:
-        if _media_is_historical(item) or (
+        if _media_is_historical(item) or _is_story_permalink(item.get("url")) or (
             item.get("provenance") != MEDIA_PROVENANCE_LIVE_WEBHOOK
         ):
             item["provenance"] = MEDIA_PROVENANCE_HISTORICAL
             item["status"] = MEDIA_STATUS_METADATA_ONLY
+            item["capture_eligible"] = False
             for key in (
                 "storage_name", "local_url", "mime", "bytes", "content_hash",
                 "capture_token", "capture_started_at", "capture_next_attempt_at",
@@ -11977,7 +12151,7 @@ def _promote_manual_refresh_message(
     if incoming_text and incoming_text != existing.text:
         existing.text = incoming_text
         update_fields.append("text")
-    if attachments:
+    if attachments or attachment_metadata:
         try:
             stored = json.loads(existing.attachments or "[]")
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -12134,11 +12308,11 @@ def _observe_not_allowed_inbound(
             if existing is not None:
                 return False
             # An allowlist-restricted conversation is visible to the manager,
-            # but is never a live-media ingestion source.  Provider attachment
-            # metadata is deliberately not merged here because it carries
-            # ``live_webhook`` provenance and can be picked up by capture jobs.
+            # but is never a live-media ingestion source. Keep provider kind and
+            # identity as historical metadata while explicitly disabling capture.
             initial_media = _normalize_message_media(
-                _attachment_media_metadata(
+                _historicalize_provider_media(attachment_metadata)
+                or _attachment_media_metadata(
                     attachments,
                     source=f"{observation_reason}_restricted",
                 ),
@@ -12200,7 +12374,8 @@ def enqueue_inbound(
     if mid and not _valid_message_id(mid):
         return False
     if not text and not attachments:
-        return False  # ні тексту, ні зображення
+        if not attachment_metadata:
+            return False  # ні тексту, ні вкладення, ні контексту події
     synthetic_event_key = _synthetic_inbound_event_key(
         sender_id=sender_id,
         text=text,
@@ -12306,7 +12481,10 @@ def enqueue_inbound(
         msg, message_created = _stage_permission_message(
             sender_id=sender_id,
             role=InstagramBotMessage.Role.USER,
-            text=text or "(зображення)",
+            text=text or (
+                _media_fallback_text(attachment_metadata)
+                if not attachments else "(зображення)"
+            ),
             mid=mid,
             source=source,
             attachments=json.dumps(attachments) if attachments else "",
@@ -12316,6 +12494,7 @@ def enqueue_inbound(
             quick_reply_payload=quick_reply_payload,
             allow_media_capture=not bool(client.hidden_at),
             provider_namespace=ingress_provider_namespace(s),
+            attachment_metadata=attachment_metadata,
         )
         if msg is None:
             return False
@@ -12431,7 +12610,10 @@ def enqueue_inbound(
                             provider_namespace=ingress_provider_namespace(s),
                             client=client,
                             role=InstagramBotMessage.Role.USER,
-                            text=text or "(зображення)",
+                            text=text or (
+                                _media_fallback_text(attachment_metadata)
+                                if not attachments else "(зображення)"
+                            ),
                             mid=mid or None,
                             synthetic_event_key=synthetic_event_key or None,
                             status=(
@@ -16321,10 +16503,10 @@ def _extract_media_urls(msg: dict) -> list[str]:
     urls: list[str] = []
     for att in _attachment_items(msg) or []:
         for media_type, url, _title in _attachment_media_candidates(att):
-            if media_type.lower() in MEDIA_ATTACH_TYPES:
+            if media_type.lower() in MEDIA_ATTACH_TYPES and not _is_story_permalink(url):
                 urls.append(url)
     story = (msg.get("reply_to") or {}).get("story") or {}
-    if story.get("url"):
+    if story.get("url") and not _is_story_permalink(story.get("url")):
         urls.append(story["url"])
     out: list[str] = []
     for u in urls:
@@ -16379,8 +16561,11 @@ def _persist_polled_message(
         return False
     text = str(message.get("message") or "").strip()
     attachments = _extract_media_urls(message)
-    if not text and not attachments:
-        text = "(медіа)"
+    attachment_metadata = _historicalize_provider_media(
+        _provider_attachment_metadata(message)
+    )
+    if not text:
+        text = _media_fallback_text(attachment_metadata) if attachment_metadata else "(медіа)"
     is_page_side = bool(sender and sender == page_id)
     role = InstagramBotMessage.Role.USER
     if is_page_side:
@@ -16402,9 +16587,12 @@ def _persist_polled_message(
                 "status": InstagramBotMessage.Status.DONE,
                 "source": "poll_history" if observed_only else "poll",
                 "attachments": json.dumps(attachments) if attachments else "",
-                "attachment_media": _attachment_media_metadata(
-                    attachments,
-                    source="poll_history" if observed_only else "poll",
+                "attachment_media": (
+                    attachment_metadata
+                    or _attachment_media_metadata(
+                        attachments,
+                        source="poll_history" if observed_only else "poll",
+                    )
                 ),
                 "provider_created_at": _parse_ig_time(
                     message.get("created_time", "")
@@ -16421,7 +16609,7 @@ def _persist_polled_message(
                 return False
             update_fields = []
             media_enriched = False
-            if attachments:
+            if attachments or attachment_metadata:
                 stored = _attachment_urls(row.attachments)
                 merged = list(dict.fromkeys([*stored, *attachments]))[:8]
                 merged_json = json.dumps(merged, ensure_ascii=False)
@@ -16432,22 +16620,28 @@ def _persist_polled_message(
                 media = [
                     dict(item)
                     for item in (row.attachment_media or [])
-                    if isinstance(item, dict) and item.get("url")
+                    if isinstance(item, dict) and (
+                        item.get("url")
+                        or (
+                            item.get("url_metadata_expired") is True
+                            and item.get("source_part_id")
+                        )
+                    )
                 ]
                 if not media:
                     media = _attachment_media_metadata(
                         stored,
                         source="poll_history" if observed_only else "poll",
                     )
-                known_urls = {str(item.get("url") or "") for item in media}
-                for item in _attachment_media_metadata(
+                incoming_media = attachment_metadata or _attachment_media_metadata(
                     attachments,
                     source="poll_history" if observed_only else "poll",
-                ):
-                    if item["url"] not in known_urls:
-                        media.append(item)
-                        known_urls.add(item["url"])
-                media = media[:8]
+                )
+                media = _merge_attachment_media(
+                    media,
+                    incoming_media,
+                    message_scope=row.pk,
+                )[:8]
                 if media != (row.attachment_media or []):
                     row.attachment_media = media
                     update_fields.append("attachment_media")

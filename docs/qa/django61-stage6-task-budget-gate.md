@@ -17,6 +17,13 @@ database connection, 64 FDs and one process as headroom. These values are an
 admission ceiling, not proof that the host has capacity: a fresh
 CloudLinux-bound snapshot remains mandatory.
 
+The heavy-owner contract adds at most one coordinator `flock` waiter while the
+shared lock is occupied. That waiter does not start `timeout`, Python, or a
+database connection, and its 50-second bound is shorter than the coordinator's
+one-minute cadence. Capacity review for a rollout must still leave headroom for
+that one additional account process and its lock file descriptor; this static
+bound does not replace a fresh LVE/CloudLinux measurement.
+
 Every snapshot must include a timezone-aware `captured_at` no older than 24
 hours, provenance `{ "source": "cloudlinux-bound-python", "kind":
 "read-only" }`, `runtime.cloudlinux_bound=true`, and

@@ -95,6 +95,29 @@ class PollCursorTests(TestCase):
             "m-empty",
         )
 
+    def test_poll_history_preserves_repost_kind_and_provider_identity(self):
+        message = {
+            "id": "m-repost-history",
+            "message": "",
+            "from": {"id": "poll-repost-user"},
+            "to": {"data": [{"id": "page"}]},
+            "created_time": "2026-07-09T14:06:00+0000",
+            "attachments": [{
+                "type": "ig_post",
+                "ig_post_media_id": "post-media-1",
+                "id": "post-object-1",
+                "payload": {"url": "https://cdn/repost.jpg"},
+            }],
+        }
+
+        self.assertTrue(bot._persist_polled_message(self.settings, message, observed_only=True))
+        row = InstagramBotMessage.objects.get(mid="m-repost-history")
+        self.assertEqual(row.text, "(поширений допис)")
+        self.assertEqual(row.attachment_media[0]["media_type"], "ig_post")
+        self.assertEqual(row.attachment_media[0]["provider_media_id"], "post-media-1")
+        self.assertEqual(row.attachment_media[0]["provenance"], bot.MEDIA_PROVENANCE_HISTORICAL)
+        self.assertEqual(row.attachment_media[0]["status"], bot.MEDIA_STATUS_METADATA_ONLY)
+
     def test_instagram_login_attachment_envelope_is_enqueued(self):
         message = {
             **_message("m-image", 5),

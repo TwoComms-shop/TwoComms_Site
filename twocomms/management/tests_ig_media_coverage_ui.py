@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 from django.test import SimpleTestCase, override_settings
 
@@ -7,6 +8,57 @@ from management.bot_views import _message_media_rows
 
 @override_settings(ROOT_URLCONF="twocomms.urls_management")
 class MediaCoveragePayloadTests(SimpleTestCase):
+    def test_template_has_audio_player_and_non_image_fallback_contract(self):
+        template = (Path(__file__).parent / "templates" / "management" / "bot.html").read_text()
+
+        self.assertIn("media_kind", template)
+        self.assertIn("audio.controls=true", template)
+        self.assertIn("audio.preload='metadata'", template)
+        self.assertIn("label+' недоступне'", template)
+
+    def test_owned_audio_exposes_authorized_preview_and_voice_label(self):
+        message = SimpleNamespace(
+            pk=48,
+            attachment_media=[{
+                "source_part_id": "mp1_" + "b" * 32,
+                "original_index": 0,
+                "status": "owned",
+                "private_storage": True,
+                "storage_name": "ig_message_media/private.ogg",
+                "mime": "audio/ogg",
+                "media_type": "audio",
+                "content_hash": "c" * 64,
+                "inspection": {"state": "uninspected", "outcome": "not_submitted"},
+            }],
+            turn_intelligence_artifact={},
+        )
+
+        rows = _message_media_rows(message, [])
+
+        self.assertEqual(rows[0]["media_kind"], "audio")
+        self.assertEqual(rows[0]["media_label"], "Голосове повідомлення")
+        self.assertEqual(
+            rows[0]["public_url"],
+            "/bot/private-media/48/mp1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/preview/",
+        )
+
+    def test_story_and_repost_keep_non_generic_labels(self):
+        for media_type, expected in (("story_mention", "Сторіс"), ("ig_post", "Репост")):
+            with self.subTest(media_type=media_type):
+                message = SimpleNamespace(
+                    pk=49,
+                    attachment_media=[{
+                        "source_part_id": "mp1_" + "d" * 32,
+                        "original_index": 0,
+                        "status": "unavailable",
+                        "media_type": media_type,
+                        "mime": "image/jpeg",
+                        "inspection": {},
+                    }],
+                    turn_intelligence_artifact={},
+                )
+                self.assertEqual(_message_media_rows(message, [])[0]["media_label"], expected)
+
     def test_owned_part_exposes_coverage_and_authorized_preview_only(self):
         message = SimpleNamespace(
             pk=44,

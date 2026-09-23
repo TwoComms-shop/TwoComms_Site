@@ -16,6 +16,16 @@ context, что проверяет preflight (`DJANGO_ENV=production` и
 `DJANGO_SETTINGS_MODULE=twocomms.production_settings`), и `exec flock`: shell
 cron заменяется launcher-ом, поэтому budget из трёх процессов не занижен.
 
+Три активных тяжёлых Django owner-а используют один account-wide lock
+`tmp/twocomms_heavy_background.lock`. Координатор Instagram является единственным
+bounded waiter (`flock -w 50`); durable и Nova Poshta остаются non-blocking
+(`flock -n`). Поэтому одновременно может выполняться только одна Python
+цепочка (launcher `flock`, `timeout`, Python), а при занятом lock возникает не
+более одного дополнительного короткоживущего `flock` waiter: его 50-секундное
+окно меньше минутной cadence координатора. Это ограничение сохраняет
+account-wide admission и даёт координатору шанс дождаться короткого durable
+запуска без запуска второго heavy worker.
+
 `scripts/verify_django61_stage6_periodic_owners.py` принимает manifest и
 санитизированный crontab snapshot (`--crontab PATH` или `--stdin`) и завершает
 работу с ошибкой при любом из условий:
@@ -30,6 +40,17 @@ cron заменяется launcher-ом, поэтому budget из трёх п�
 
 Validator только читает файлы: он не устанавливает cron, не запускает Django,
 не выполняет SSH, migration, DDL, cleanup или worker.
+
+## Lock migration and drain safety
+
+The installers replace managed crontab text but do not terminate processes that
+were already spawned from the previous crontab. A future change of the shared
+lock path must therefore run in maintenance: stop or disable the scheduler,
+wait for every old heavy owner to exit, capture the old lock-holder/PID
+evidence, install the replacement owners, and run every installer in `--check`
+mode before re-enabling scheduling. Installing a distinct lock path while an
+old shared-lock owner is alive can admit old and new Python chains at once and
+invalidates the one-chain budget.
 
 ## Historical criteria for closing checkboxes
 

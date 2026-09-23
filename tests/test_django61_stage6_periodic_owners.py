@@ -70,9 +70,11 @@ class Stage6PeriodicOwnerTests(unittest.TestCase):
             len(active_jobs),
         )
         durable_line = next(line for line in active_crontab.splitlines() if "run_durable_tasks" in line)
+        periodic_line = next(line for line in active_crontab.splitlines() if "run_instagram_periodic_jobs" in line)
         self.assertIn("# BEGIN TWOCOMMS DJANGO61 DURABLE TASKS", active_crontab)
         self.assertIn("tmp/twocomms_heavy_background.lock", durable_line)
         self.assertIn("exec /usr/bin/flock -n -E 75", durable_line)
+        self.assertIn("/usr/bin/flock -w 50 -E 75", periodic_line)
         self.assertIn("/usr/bin/timeout --signal=TERM --kill-after=15s 240s", durable_line)
         self.assertIn("--worker-id=cron-no-send", durable_line)
         self.assertIn("DJANGO_ENV=production", durable_line)
@@ -203,7 +205,7 @@ class Stage6PeriodicOwnerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("owner script", result.stderr)
 
-    def test_every_heavy_django_owner_shares_one_account_wide_lock(self):
+    def test_heavy_owners_share_lock_and_prioritize_periodic_coordinator(self):
         heavy_jobs = [
             job
             for job in self.jobs
@@ -212,6 +214,19 @@ class Stage6PeriodicOwnerTests(unittest.TestCase):
         self.assertEqual(
             {job["lock_path"] for job in heavy_jobs},
             {self.manifest["global_heavy_process_lock"]},
+        )
+        self.assertEqual(self.manifest["priority_owner"], "instagram_periodic_coordinator")
+        self.assertEqual(self.manifest["max_priority_waiters"], 1)
+        self.assertIn(
+            "/usr/bin/flock -w 50 -E 75",
+            next(job for job in heavy_jobs if job["id"] == "instagram_periodic_coordinator")["flock"],
+        )
+        self.assertTrue(
+            all(
+                "-n" in job["flock"]
+                for job in heavy_jobs
+                if job["id"] != "instagram_periodic_coordinator"
+            )
         )
 
         broken = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -229,6 +244,22 @@ class Stage6PeriodicOwnerTests(unittest.TestCase):
             path.unlink()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("global admission lock", result.stderr)
+
+        broken = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        next(
+            job for job in broken["jobs"] if job["id"] == "instagram_periodic_coordinator"
+        )["flock"] = "/usr/bin/flock -n -E 75"
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".json", delete=False
+        ) as handle:
+            json.dump(broken, handle)
+            path = Path(handle.name)
+        try:
+            result = self.invoke_validator(self.crontab(), manifest=path)
+        finally:
+            path.unlink()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("priority owner", result.stderr)
 
     def test_coordinator_manifest_bounds_every_provided_lane(self):
         coordinator = next(
