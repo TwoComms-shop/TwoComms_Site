@@ -105,7 +105,7 @@ def _locked(revision_id, client_id, settings_id):
     return settings_row, client, revision
 
 
-def _check_source(revision, client, settings_row, token, epoch, publication, now):
+def _check_source(revision, client, settings_row, token, epoch, publication, now, *, allow_expired_holding=False):
     if not revision.snapshot_digest or _digest(revision.bundle_snapshot) != revision.snapshot_digest:
         raise _Blocked("revision_snapshot_invalid")
     snapshots = revision.bundle_snapshot.get("sources") or []
@@ -130,6 +130,7 @@ def _check_source(revision, client, settings_row, token, epoch, publication, now
         settings_permission_epoch=epoch, publication=publication,
         fact_bindings=authority.fact_bindings, fact_checker=check_fact_bindings,
         offer_checker=check_offer_bindings, now=now,
+        allow_expired_holding=allow_expired_holding,
     )
     if not readiness.ready:
         raise _Blocked(readiness.reasons[0])
@@ -150,7 +151,7 @@ def _automatic_timers(client):
 
 def cancel_revision_sales_timers(
     revision_id, token, *, settings_id, settings_permission_epoch,
-    publication: PublicationBinding, now=None,
+    publication: PublicationBinding, now=None, allow_expired_holding=False,
 ):
     """Cancel automatic sales timers only; case and parcel queues are separate."""
     if connection.in_atomic_block:
@@ -162,7 +163,10 @@ def cancel_revision_sales_timers(
     try:
         with transaction.atomic():
             settings_row, client, revision = _locked(revision_id, identity["client_id"], settings_id)
-            sources, _anchor = _check_source(revision, client, settings_row, token, settings_permission_epoch, publication, now)
+            sources, _anchor = _check_source(
+                revision, client, settings_row, token, settings_permission_epoch,
+                publication, now, allow_expired_holding=allow_expired_holding,
+            )
             if RECEIPT_KEY in (revision.action_receipts or {}):
                 return RevisionFollowupResult(True, "reply_followups_already_recorded", replayed=True)
             received_at = max(source.message.created_at for source in sources)

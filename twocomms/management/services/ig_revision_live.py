@@ -1068,6 +1068,7 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         revision.pk, token, settings_id=settings_row.pk,
         settings_permission_epoch=input_decision.receipt["settings_permission_epoch"],
         publication=PublicationBinding(input_pub["id"], input_pub["version"], input_pub["hash"]),
+        allow_expired_holding=(revision.recovery_code == "provider_dispatch_budget"),
     )
     if not cancelled_timers.ready:
         return RevisionLiveResult(revision_id, "blocked", (cancelled_timers.reason,))
