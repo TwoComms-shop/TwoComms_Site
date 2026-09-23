@@ -20,6 +20,9 @@ BUCKET_COUNT = 24
 ATTEMPT_QUERY_CAP = 2000
 METADATA_ATTEMPT_QUERY_CAP = 512
 FRESH_EVIDENCE_SECONDS = 7500
+_TRANSIENT_FAILURE_KINDS = frozenset({
+    "http_408", "http_5xx", "read_timeout", "transport",
+})
 DISPLAY_MODELS = gemini_model_registry.DISPLAY_MODELS
 MODELS = DISPLAY_MODELS
 OTHER_GENERATION_MODELS = DISPLAY_MODELS
@@ -764,6 +767,12 @@ def _runtime_live_state(
     if _attempt_succeeded(latest):
         model = str(latest.get("model") or "")
         return "LIVE", model if model in GENERATION_MODELS else None
+    # A fresh timeout/5xx is provider or transport pressure, not proof that
+    # the key/model is dead.  Keep the operator signal amber so one transient
+    # failure cannot quarantine a project that has recent successful traffic.
+    failure_kind = str(latest.get("failure_kind") or "").strip().lower()
+    if failure_kind in _TRANSIENT_FAILURE_KINDS:
+        return "DEGRADED", None
     return "OFFLINE", None
 
 

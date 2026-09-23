@@ -1839,3 +1839,69 @@ D07021eb25986 выпущен и SSH/read-only подтвердил exactSHA/daem
 
 После выпуска `cdb217cd1a78c4f1b787afee9de6df070c94f65e` read-only команда `inventory_ig_reply_debt` проверена в production на exact targets `2912,2913,2922,2929,2948` и tasks `90,91,96,100`. Результат: `coverage=0`, `transfer=0`, `manual=5`, `unsupported=4`. Источники 2912/2913/2922/2929/2948 остались `manual/exact_source_unresolved`; автоматическая отправка, recovery и закрытие не выполнялись. Tasks 90/91/96/100 имеют `unsupported/legacy_owner_unverified` с сохранёнными `task_status` и `operator_review_present`. Два одинаковых production запуска дали SHA-256 `ef55c14042fb33bd4d908029e06a194fbbebdff18521d0845232ccc38ad02c66`, что подтверждает deterministic repeatability. B03.21 остаётся `[~]`: безопасный inventory выпущен, но observed debts не закрываются без отдельного owner review и доказанного evidence.
 После B03.20 release повторный production inventory на тех же exact IDs сохранил тот же disposition: `coverage=0`, `transfer=0`, `manual=5`, `unsupported=4`; revision linkage источников: 2912→10,11; 2913→11; 2922→18; 2929→22; 2948→30. Это read-only evidence, не разрешение на отправку или массовое закрытие.
+
+### D083 · Gemini routing/health/media corrective slice · 23.09.2026
+
+**Подтверждённая причина операторского сигнала.** Read-only production audit за
+последние 24 часа показал шесть явных project mappings и успешные generation
+после ошибок для каждого ключа. Было 0 свежих `429`, 0 auth/permission failures,
+но были `http_5xx=105` и `read_timeout=66`; это совместимая с перегрузкой
+провайдера/транспортом картина, а не смерть шести проектов. 3.8 имела
+`observations=0` и `available_assumed`: отсутствие запроса нельзя показывать как
+degraded или offline. Исторические 3.7 failures старше суток оставались
+`provider_degraded`, потому что runtime записывает любой non-success как
+`DEGRADED`, а read-model не имела срока давности.
+
+**Обязательный контракт статусов.**
+
+- `available_assumed`/`insufficient_observations` означает отсутствие достаточного
+  live evidence; это не провал модели и не основание менять ключ.
+- Свежие `http_408`, `http_5xx`, `read_timeout` и `transport` дают amber
+  `DEGRADED`; они не переводят ключ в permanent quarantine и не считаются
+  quota exhaustion.
+- `invalid_key`, `permission_denied`, `model_not_found` и подтверждённый
+  `quota_429` остаются terminal/provider-blocked до отдельного доказательства
+  восстановления. Успешный generation имеет приоритет и возвращает pair в
+  `confirmed_recent_success`.
+- Если unresolved non-quota failure старше 24 часов и после него нет active
+  block, UI возвращает `available_assumed`; это предотвращает вечную красную
+  карточку без искусственного provider probe.
+
+**3.8 и шесть ключей.** 3.8 остаётся первой моделью `COMPLEX_CHAIN` и первой
+для media/objection/high-value analysis; ordinary chat сохраняет Lite-first
+цепочку. Каждый alias/project остаётся отдельным quota pool. Metadata `GET
+/models/{model}` используется для диагностики без `generateContent`; generation
+probe запрещён по умолчанию и требует явного ручного разрешения, потому что
+`countTokens` и generation тоже являются API traffic.
+
+**Media contract.** Gemini inline video допускается для небольших файлов при
+общем serialized request budget ниже 20 MB; larger media остаётся fail-closed и
+должно перейти на отдельный File API slice, когда появится безопасный lifecycle.
+Текущий bounded path принимает только validated `video/mp4` и `video/webm`, с
+per-item cap 8 MiB и общим raw cap 12 MiB; MIME/container signature проверяется
+до отправки. Registry/payload теперь различает `image`, `audio` и `video`, а
+source media manifest обязан отличать discovered metadata, owned bytes,
+inline admission и actual inspection evidence. Нельзя утверждать, что видео
+проанализировано, если bytes не captured/owned или provider response не содержит
+валидного observation.
+
+**Чек-лист D083.**
+
+- [x] health latest transient failure не отображается как `OFFLINE`;
+- [x] stale non-quota `DEGRADED` истекает после 24h без active block;
+- [x] 3.8 присутствует в registry, complex/media chain, quota matrix и UI;
+- [x] metadata-only diagnostics не делают generation call;
+- [x] video capability, MIME validation и bounded inline limits согласованы;
+- [x] unsupported/oversized/unowned media остаётся без provider call;
+- [x] focused health/quota/routing/media tests проходят;
+- [ ] production customer traffic должен накопить реальное 3.8 observation;
+- [ ] File API lifecycle для видео > inline budget остаётся отдельным slice;
+- [ ] долгосрочные retry/cooldown SLO проверяются на customer traffic, без
+  искусственного расходования квоты.
+
+**Acceptance evidence.** Приёмка должна показывать для каждого из шести slots
+последнюю попытку, failure class, age, последующий success и отсутствие
+`provider_blocks`. Любой dashboard badge обязан быть объяснимым по этим полям;
+`provider_degraded` без свежего unresolved failure считается read-model bug.
+Проверки не должны отправлять пробные сообщения или `generateContent` только
+ради health status.

@@ -17,6 +17,7 @@ class ModelCapability:
     free_quota: bool
     supports_text: bool
     supports_image: bool
+    supports_video: bool
     supports_audio: bool
     supports_structured_output: bool
     supported_reasoning: tuple[str, ...]
@@ -27,42 +28,42 @@ class ModelCapability:
 MODEL_CAPABILITIES: tuple[ModelCapability, ...] = (
     ModelCapability(
         "gemini-3.8-flash", "Gemini 3.8 Flash", "strong", True,
-        True, True, True, True, ("low", "medium", "high"),
+        True, True, True, True, True, ("low", "medium", "high"),
     ),
     ModelCapability(
         "gemini-3.7-flash", "Gemini 3.7 Flash", "strong", True,
-        True, True, True, True, ("low", "medium", "high"),
+        True, True, True, True, True, ("low", "medium", "high"),
     ),
     ModelCapability(
         "gemini-3.6-flash", "Gemini 3.6 Flash", "analysis", True,
-        True, True, True, True, ("low", "medium", "high"),
+        True, True, True, True, True, ("low", "medium", "high"),
     ),
     ModelCapability(
         "gemini-3.5-flash", "Gemini 3.5 Flash", "spillover", True,
-        True, True, True, True, ("low", "medium", "high"),
+        True, True, True, True, True, ("low", "medium", "high"),
     ),
     ModelCapability(
         "gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", "lite", True,
-        True, True, False, True, ("low", "medium", "high"),
+        True, True, True, False, True, ("low", "medium", "high"),
     ),
     # Legacy free models remain registered for grounded/checker and historical
     # fallback callers. They are intentionally omitted from DISPLAY_MODELS so
     # the operator cockpit shows the five supported chat profiles only.
     ModelCapability(
         "gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite", "legacy", True,
-        True, True, True, True, ("low", "medium", "high"),
+        True, True, True, True, True, ("low", "medium", "high"),
     ),
     ModelCapability(
         "gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash Lite Preview", "legacy", True,
-        True, True, True, True, ("low", "medium", "high"),
+        True, True, True, True, True, ("low", "medium", "high"),
     ),
     ModelCapability(
         "gemini-2.5-flash", "Gemini 2.5 Flash", "grounded", True,
-        True, True, True, True, ("low", "medium", "high"),
+        True, True, True, True, True, ("low", "medium", "high"),
     ),
     ModelCapability(
         "gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite", "grounded", True,
-        True, True, True, True, ("low", "medium", "high"),
+        True, True, True, True, True, ("low", "medium", "high"),
     ),
 )
 

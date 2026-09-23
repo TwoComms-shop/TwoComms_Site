@@ -50,6 +50,7 @@ ATTEMPTS_PER_REQUEST_CAP = 64
 QUOTA_TRAFFIC_WINDOW = dt.timedelta(hours=24)
 QUOTA_ATTEMPT_CAP = 5000
 RECENT_SUCCESS_SECONDS = gemini_health.FRESH_EVIDENCE_SECONDS
+UNRESOLVED_FAILURE_SECONDS = int(QUOTA_TRAFFIC_WINDOW.total_seconds())
 PT = ZoneInfo("America/Los_Angeles")
 
 _CURSOR_KEY_DOMAIN = b"twocomms/gemini-v2/attempt-cursor/v1\0"
@@ -355,7 +356,17 @@ def _pair_status(
         if age > RECENT_SUCCESS_SECONDS:
             return "available_assumed"
     if state.accounting_status == GeminiQuotaState.AccountingStatus.DEGRADED:
-        return "provider_degraded"
+        # DEGRADED is an observation state written for every non-success,
+        # including transient 503s and read timeouts.  It is not a durable
+        # quarantine.  Once the unresolved failure is outside the traffic
+        # window, report weak availability until fresh evidence arrives; keep
+        # recent failures visible so an active incident remains actionable.
+        if failure_at is None:
+            return "provider_degraded"
+        failure_age = (now - failure_at).total_seconds()
+        if failure_age < 0 or failure_age <= UNRESOLVED_FAILURE_SECONDS:
+            return "provider_degraded"
+        return "available_assumed"
     return "available_assumed"
 
 

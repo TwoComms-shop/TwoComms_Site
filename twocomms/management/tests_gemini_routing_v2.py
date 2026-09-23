@@ -101,6 +101,24 @@ class RoutingDecisionContractTests(SimpleTestCase):
         self.assertIn("objection_resolution", decision.reason_codes)
         self.assertEqual(decision.reasoning_task, "product_decision")
 
+    def test_video_payload_is_admitted_for_all_registered_flash_models(self):
+        payload = {
+            "contents": [{
+                "role": "user",
+                "parts": [{
+                    "inline_data": {"mime_type": "video/mp4", "data": "AAAA"},
+                }],
+            }],
+        }
+        normalized = call_ai_analysis._payload_for_model(
+            "gemini-3.8-flash", payload, reasoning_task="media_analysis"
+        )
+        self.assertIn("generationConfig", normalized)
+        lite_payload = call_ai_analysis._payload_for_model(
+            "gemini-3.5-flash-lite", payload, reasoning_task="media_analysis"
+        )
+        self.assertIn("generationConfig", lite_payload)
+
     def test_deterministic_action_never_has_a_model_chain(self):
         decision = classify_live_turn(
             TurnFacts(deterministic_action="provider_native_ugc")
@@ -387,7 +405,7 @@ class ActualInstagramGeminiRoutingTests(TestCase):
         reply = gemini_generate(
             self.settings,
             [{"role": "user", "text": "Файл"}],
-            images=[("video/mp4", b"not-inline-audio")],
+            images=[("application/octet-stream", b"unknown-file")],
             failure_context=context,
         )
 
@@ -395,6 +413,15 @@ class ActualInstagramGeminiRoutingTests(TestCase):
         self.assertEqual(context["kind"], "invalid_media")
         self.assertEqual(context["inline_media_omitted"], 1)
         generate.assert_not_called()
+
+    def test_small_video_is_admitted_under_the_shared_inline_budget(self):
+        from management.services.instagram_bot import _bounded_inline_media
+
+        raw = b"v" * 1024
+        admitted, omitted = _bounded_inline_media([("video/mp4", raw)])
+
+        self.assertEqual(admitted, [("video/mp4", raw)])
+        self.assertEqual(omitted, 0)
 
     def test_turn_intelligence_controls_pin_or_clarification_deterministically(self):
         from management.services.instagram_bot import _apply_turn_intelligence_resolution

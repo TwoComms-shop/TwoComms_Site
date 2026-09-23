@@ -492,7 +492,12 @@ def _payload_for_model(
     ]
     for part in media_parts:
         mime = str(part["inline_data"].get("mime_type") or "").casefold()
-        feature = "audio" if mime.startswith("audio/") else "image"
+        if mime.startswith("audio/"):
+            feature = "audio"
+        elif mime.startswith("video/"):
+            feature = "video"
+        else:
+            feature = "image"
         if not gemini_model_registry.supports(model, feature):
             raise _GeminiModelUnavailable(
                 f"model does not support {feature} input"

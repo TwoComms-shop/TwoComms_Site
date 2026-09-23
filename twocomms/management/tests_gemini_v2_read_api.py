@@ -230,6 +230,42 @@ class GeminiV2ReadApiTests(TestCase):
         self.assertEqual(neighbour["rpm"]["used"], 0)
         self.assertEqual(other_model["rpm"]["used"], 0)
 
+    def test_transient_degradation_expires_but_fresh_failure_stays_visible(self):
+        state = GeminiQuotaState.objects.create(
+            project_identity=self.groups["GEMINI_API"],
+            model="gemini-3.7-flash",
+            quota_profile=self.profiles["gemini-3.7-flash"],
+            pacific_day=self.now.astimezone(gemini_v2_read_model.PT).date(),
+            accounting_status=GeminiQuotaState.AccountingStatus.DEGRADED,
+            last_failure_at=self.now - dt.timedelta(hours=25),
+            last_failure_kind="http_5xx",
+            last_http_code=503,
+        )
+
+        payload = gemini_v2_read_model.build_quotas_payload(now=self.now)
+        self.assertEqual(
+            self._model_row(payload)["projects"][0]["status"],
+            "available_assumed",
+        )
+
+        GeminiQuotaState.objects.filter(pk=state.pk).update(
+            last_failure_at=self.now - dt.timedelta(minutes=2),
+        )
+        payload = gemini_v2_read_model.build_quotas_payload(now=self.now)
+        self.assertEqual(
+            self._model_row(payload)["projects"][0]["status"],
+            "provider_degraded",
+        )
+
+        GeminiQuotaState.objects.filter(pk=state.pk).update(
+            last_success_at=self.now - dt.timedelta(minutes=1),
+        )
+        payload = gemini_v2_read_model.build_quotas_payload(now=self.now)
+        self.assertEqual(
+            self._model_row(payload)["projects"][0]["status"],
+            "confirmed_recent_success",
+        )
+
     def test_provider_429_external_drift_and_dst_reset_are_explicit(self):
         fixed_now = dt.datetime(2026, 3, 8, 9, 0, tzinfo=dt.timezone.utc)
         reset = dt.datetime(2026, 3, 9, 7, 0, tzinfo=dt.timezone.utc)

@@ -100,6 +100,38 @@ class GeminiHealthSnapshotTests(TestCase):
 
         self.assertEqual(gemini_health._status_for_attempts(rows), "terminal")
 
+    def test_runtime_live_state_keeps_transient_provider_failure_degraded(self):
+        rows = [{
+            "id": 1,
+            "request_id": "fresh-503",
+            "key_name": "GEMINI_API",
+            "model": "gemini-3.7-flash",
+            "outcome": "failed",
+            "failure_kind": "http_5xx",
+            "created_at": self.now - datetime.timedelta(minutes=1),
+        }]
+
+        self.assertEqual(
+            gemini_health._runtime_live_state(rows, self.now),
+            ("DEGRADED", None),
+        )
+
+    def test_runtime_live_state_keeps_terminal_failure_offline(self):
+        rows = [{
+            "id": 1,
+            "request_id": "bad-key",
+            "key_name": "GEMINI_API",
+            "model": "gemini-3.7-flash",
+            "outcome": "failed",
+            "failure_kind": "invalid_key",
+            "created_at": self.now - datetime.timedelta(minutes=1),
+        }]
+
+        self.assertEqual(
+            gemini_health._runtime_live_state(rows, self.now),
+            ("OFFLINE", None),
+        )
+
     def test_success_then_failure_in_one_request_is_terminal(self):
         rows = [
             self._status_row(
