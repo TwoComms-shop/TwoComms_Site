@@ -325,8 +325,9 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 return RevisionInputDecision(reason="holding_authority_unavailable")
             pub = settings_row.active_instruction_publication
             publication = PublicationBinding(pub.pk, pub.version, pub.snapshot_hash)
+            holding_epoch = settings_row.reply_permission_epoch
             ready = pre_winner_readiness(
-                revision.pk, token, settings_id=settings_id, settings_permission_epoch=settings_row.reply_permission_epoch,
+                revision.pk, token, settings_id=settings_id, settings_permission_epoch=holding_epoch,
                 publication=publication, fact_bindings=authority.fact_bindings,
                 fact_checker=check_fact_bindings, offer_checker=check_offer_bindings,
                 allow_expired_holding=(revision.recovery_code == PARKED_COLLABORATION_CODE),
@@ -388,7 +389,7 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                     "snapshot_digest": revision.snapshot_digest,
                     "source_message_ids": [row["message_id"] for row in revision.bundle_snapshot.get("sources", [])],
                     "failed_request_id": graph.request_id,
-                    "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,
+                    "settings_id": settings_id, "settings_permission_epoch": holding_epoch,
                     "publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash},
                     "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),
                                   "offer_bindings": [], "authority_digest": authority.authority_digest},
@@ -420,7 +421,7 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 "failed_request_id": graph.request_id, "task_id": task.pk, "notification_id": notification.pk,
                 "collaboration_task_id": collaboration_task.pk if collaboration_task else 0,
                 "collaboration_notification_id": collaboration_notification.pk if collaboration_notification else 0,
-                "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,
+                "settings_id": settings_id, "settings_permission_epoch": holding_epoch,
                 "publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash},
                 "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),
                               "offer_bindings": [], "authority_digest": authority.authority_digest},

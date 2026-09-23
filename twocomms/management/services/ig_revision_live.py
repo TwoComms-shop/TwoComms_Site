@@ -1064,9 +1064,19 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
     from management.services.ig_revision_followups import cancel_revision_sales_timers
 
     input_pub = input_decision.receipt["publication"]
+    holding_recovery = revision.recovery_code == "provider_dispatch_budget"
+    if holding_recovery:
+        input_pub = {
+            "id": settings_row.active_instruction_publication.pk,
+            "version": settings_row.active_instruction_publication.version,
+            "hash": settings_row.active_instruction_publication.snapshot_hash,
+        }
     cancelled_timers = cancel_revision_sales_timers(
         revision.pk, token, settings_id=settings_row.pk,
-        settings_permission_epoch=input_decision.receipt["settings_permission_epoch"],
+        settings_permission_epoch=(
+            settings_row.reply_permission_epoch
+            if holding_recovery else input_decision.receipt["settings_permission_epoch"]
+        ),
         publication=PublicationBinding(input_pub["id"], input_pub["version"], input_pub["hash"]),
         allow_expired_holding=(revision.recovery_code == "provider_dispatch_budget"),
     )
@@ -1106,7 +1116,10 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             postback = postback_results[-1]
             return _execute_deterministic_input(revision, token, settings_row, postback.receipt, quick_replies=postback.quick_replies)
         revision.refresh_from_db()
-    if not settings_row.ai_enabled or input_decision.receipt["settings_permission_epoch"] != settings_row.reply_permission_epoch:
+    if not settings_row.ai_enabled or (
+        input_decision.receipt["settings_permission_epoch"] != settings_row.reply_permission_epoch
+        and not holding_recovery
+    ):
         return RevisionLiveResult(revision_id, "blocked", ("settings_permission_changed",))
     from management.services.ig_revision_commerce import reduce_revision_commerce
 
