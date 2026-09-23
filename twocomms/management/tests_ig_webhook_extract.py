@@ -410,7 +410,7 @@ class HandleWebhookPayloadTests(TestCase):
         self.assertEqual(bot.handle_webhook_payload(self.s, payload), 1)
         self.assertEqual(bot.handle_webhook_payload(self.s, payload), 0)
         msg = InstagramBotMessage.objects.get(mid="ig-post-mid")
-        self.assertEqual(msg.text, "(зображення)")
+        self.assertEqual(msg.text, "(поширений допис)")
         self.assertEqual(json.loads(msg.attachments), ["https://cdn/repost.jpg"])
         self.assertEqual(msg.attachment_media[0]["media_type"], "ig_post")
         self.assertEqual(msg.attachment_media[0]["provider_media_id"], "media-123")

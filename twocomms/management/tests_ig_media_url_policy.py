@@ -146,6 +146,14 @@ class AddressClassificationTests(SimpleTestCase):
         self.assertTrue(is_global)
         self.assertEqual(reason, "")
 
+    def test_video_mime_requires_a_matching_container_signature(self):
+        mp4 = b"\x00\x00\x00\x18ftypisom\x00\x00vide"
+        webm = b"\x1a\x45\xdf\xa3" + b"\x00" * 32
+
+        self.assertTrue(policy._signature_matches("video/mp4", mp4))
+        self.assertTrue(policy._signature_matches("video/webm", webm))
+        self.assertFalse(policy._signature_matches("video/mp4", b"not a video"))
+
 
 class HostAllowlistTests(SimpleTestCase):
     """Host allowlist must permit documented Meta CDN patterns only."""
@@ -1076,14 +1084,47 @@ class ProviderMimeSniffTests(SimpleTestCase):
         self.assertTrue(outcome.success)
         self.assertEqual(outcome.mime_type, "image/jpeg")
 
-    def test_video_mp4_without_audio_is_rejected(self):
+    def test_provider_video_mp4_is_accepted_with_video_allowlist(self):
         resolver = fake_resolver_factory({"scontent.cdninstagram.com": ["157.240.1.1"]})
         body = b"\x00\x00\x00\x18ftypisom" + b"vide"
         outcome = policy.fetch_media(
             "https://scontent.cdninstagram.com/video", resolver=resolver,
+            allowed_mime_types=(
+                policy.SUPPORTED_INLINE_IMAGE_MIMES
+                | policy.SUPPORTED_INLINE_AUDIO_MIMES
+                | policy.SUPPORTED_INLINE_VIDEO_MIMES
+            ),
+            transport=fake_transport_factory([FakeResponse(
+                status=200, headers={"Content-Type": "video/mp4"}, body=body,
+            )]),
+        )
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.mime_type, "video/mp4")
+
+    def test_video_mp4_is_rejected_when_caller_allows_images_only(self):
+        resolver = fake_resolver_factory({"scontent.cdninstagram.com": ["157.240.1.1"]})
+        body = b"\x00\x00\x00\x18ftypisom" + b"vide"
+        outcome = policy.fetch_media(
+            "https://scontent.cdninstagram.com/video",
+            allowed_mime_types=policy.SUPPORTED_INLINE_IMAGE_MIMES,
+            resolver=resolver,
             transport=fake_transport_factory([FakeResponse(
                 status=200, headers={"Content-Type": "video/mp4"}, body=body,
             )]),
         )
         self.assertFalse(outcome.success)
-        self.assertEqual(outcome.reason, policy.REASON_SIGNATURE)
+        self.assertEqual(outcome.reason, policy.REASON_CONTENT_TYPE)
+
+    def test_sniffed_audio_is_rejected_when_caller_allows_images_only(self):
+        resolver = fake_resolver_factory({"scontent.cdninstagram.com": ["157.240.1.1"]})
+        body = b"\x00\x00\x00\x18ftypisom" + b"soun"
+        outcome = policy.fetch_media(
+            "https://scontent.cdninstagram.com/audio",
+            allowed_mime_types=policy.SUPPORTED_INLINE_IMAGE_MIMES,
+            resolver=resolver,
+            transport=fake_transport_factory([FakeResponse(
+                status=200, headers={"Content-Type": "video/mp4"}, body=body,
+            )]),
+        )
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.reason, policy.REASON_CONTENT_TYPE)

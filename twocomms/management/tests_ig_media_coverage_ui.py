@@ -14,6 +14,8 @@ class MediaCoveragePayloadTests(SimpleTestCase):
         self.assertIn("media_kind", template)
         self.assertIn("audio.controls=true", template)
         self.assertIn("audio.preload='metadata'", template)
+        self.assertIn("video.controls=true", template)
+        self.assertIn("video.preload='metadata'", template)
         self.assertIn("label+' недоступне'", template)
 
     def test_owned_audio_exposes_authorized_preview_and_voice_label(self):
@@ -58,6 +60,23 @@ class MediaCoveragePayloadTests(SimpleTestCase):
                     turn_intelligence_artifact={},
                 )
                 self.assertEqual(_message_media_rows(message, [])[0]["media_label"], expected)
+
+    def test_video_has_truthful_label(self):
+        message = SimpleNamespace(
+            pk=50,
+            attachment_media=[{
+                "source_part_id": "mp1_" + "e" * 32,
+                "original_index": 0,
+                "status": "unavailable",
+                "media_type": "video",
+                "mime": "video/mp4",
+                "inspection": {},
+            }],
+            turn_intelligence_artifact={},
+        )
+        row = _message_media_rows(message, [])[0]
+        self.assertEqual(row["media_kind"], "video")
+        self.assertEqual(row["media_label"], "Відео")
 
     def test_owned_part_exposes_coverage_and_authorized_preview_only(self):
         message = SimpleNamespace(

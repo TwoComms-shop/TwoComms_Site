@@ -9609,6 +9609,7 @@ INLINE_MEDIA_RAW_BUDGET = 12 * 1024 * 1024
 INLINE_REQUEST_MAX_BYTES = 19_990_000
 INLINE_MEDIA_MAX_ITEMS = 8
 INLINE_IMAGE_MAX_BYTES = 6 * 1024 * 1024
+INLINE_VIDEO_MAX_BYTES = 8 * 1024 * 1024
 INLINE_AUDIO_MAX_BYTES = 10 * 1024 * 1024
 SUPPORTED_INLINE_IMAGE_MIMES = frozenset({
     "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
@@ -9619,6 +9620,7 @@ SUPPORTED_INLINE_AUDIO_MIMES = frozenset({
     "audio/l16", "audio/opus",
     "audio/alaw", "audio/mulaw", "audio/webm",
 })
+SUPPORTED_INLINE_VIDEO_MIMES = frozenset({"video/mp4", "video/webm"})
 _AUDIO_MIME_ALIASES = {
     "audio/x-wav": "audio/wav",
     "audio/x-aiff": "audio/aiff",
@@ -9648,12 +9650,16 @@ def _bounded_inline_media_with_indexes(
     omitted = 0
     for source_index, (mime, raw) in enumerate(media or []):
         mime = _normalized_inline_mime(mime)
-        if mime not in SUPPORTED_INLINE_IMAGE_MIMES | SUPPORTED_INLINE_AUDIO_MIMES:
+        if mime not in (
+            SUPPORTED_INLINE_IMAGE_MIMES
+            | SUPPORTED_INLINE_AUDIO_MIMES
+            | SUPPORTED_INLINE_VIDEO_MIMES
+        ):
             omitted += 1
             continue
         per_item_limit = (
-            INLINE_IMAGE_MAX_BYTES
-            if mime.startswith("image/")
+            INLINE_IMAGE_MAX_BYTES if mime.startswith("image/")
+            else INLINE_VIDEO_MAX_BYTES if mime.startswith("video/")
             else INLINE_AUDIO_MAX_BYTES
         )
         if (
@@ -9954,6 +9960,7 @@ def _fetch_inline_media(
     allowed_mimes = (
         ig_media_url_policy.SUPPORTED_INLINE_IMAGE_MIMES
         | ig_media_url_policy.SUPPORTED_INLINE_AUDIO_MIMES
+        | ig_media_url_policy.SUPPORTED_INLINE_VIDEO_MIMES
     )
     fetch_limits = {}
     if deadline_seconds is not None:
@@ -9968,14 +9975,22 @@ def _fetch_inline_media(
         url,
         profile=profile,
         allowed_mime_types=allowed_mimes,
-        max_bytes=INLINE_AUDIO_MAX_BYTES,
+        max_bytes=max(INLINE_AUDIO_MAX_BYTES, INLINE_VIDEO_MAX_BYTES),
         **fetch_limits,
     )
     if not outcome.success:
         return outcome
     mime = _normalized_inline_mime(outcome.mime_type)
-    limit = INLINE_IMAGE_MAX_BYTES if mime.startswith("image/") else INLINE_AUDIO_MAX_BYTES
-    if mime not in SUPPORTED_INLINE_IMAGE_MIMES | SUPPORTED_INLINE_AUDIO_MIMES:
+    limit = (
+        INLINE_IMAGE_MAX_BYTES if mime.startswith("image/")
+        else INLINE_VIDEO_MAX_BYTES if mime.startswith("video/")
+        else INLINE_AUDIO_MAX_BYTES
+    )
+    if mime not in (
+        SUPPORTED_INLINE_IMAGE_MIMES
+        | SUPPORTED_INLINE_AUDIO_MIMES
+        | SUPPORTED_INLINE_VIDEO_MIMES
+    ):
         return ig_media_url_policy.FetchOutcome(
             success=False,
             reason=ig_media_url_policy.REASON_CONTENT_TYPE,
@@ -10429,7 +10444,11 @@ def _owned_media_bytes(
     mime = _normalized_inline_mime(item.get("mime"))
     if (
         not storage_name
-        or mime not in SUPPORTED_INLINE_IMAGE_MIMES | SUPPORTED_INLINE_AUDIO_MIMES
+        or mime not in (
+            SUPPORTED_INLINE_IMAGE_MIMES
+            | SUPPORTED_INLINE_AUDIO_MIMES
+            | SUPPORTED_INLINE_VIDEO_MIMES
+        )
     ):
         return None
     use_token = ""
@@ -10464,8 +10483,8 @@ def _owned_media_bytes(
 
             storage = default_storage
         limit = (
-            INLINE_IMAGE_MAX_BYTES
-            if mime.startswith("image/")
+            INLINE_IMAGE_MAX_BYTES if mime.startswith("image/")
+            else INLINE_VIDEO_MAX_BYTES if mime.startswith("video/")
             else INLINE_AUDIO_MAX_BYTES
         )
         with storage.open(storage_name, "rb") as handle:

@@ -153,6 +153,7 @@ SUPPORTED_INLINE_AUDIO_MIMES = frozenset({
     "audio/wav", "audio/mpeg", "audio/mp3", "audio/aiff", "audio/aac",
     "audio/ogg", "audio/flac", "audio/m4a", "audio/opus", "audio/webm",
 })
+SUPPORTED_INLINE_VIDEO_MIMES = frozenset({"video/mp4", "video/webm"})
 UNVERIFIABLE_AUDIO_MIME_TYPES = frozenset({
     "audio/l16", "audio/alaw", "audio/mulaw",
 })
@@ -588,7 +589,13 @@ def _sniff_supported_mime(body: bytes, declared_mime: str = "") -> str:
     if len(body) >= 12 and body[:4] == b"FORM" and body[8:12] in {b"AIFF", b"AIFC"}:
         return "audio/aiff"
     if body.startswith(b"\x1a\x45\xdf\xa3"):
-        return "audio/webm"
+        return "video/webm" if b"webm" in body[:64].lower() else "audio/webm"
+    if len(body) >= 12 and body[4:8] == b"ftyp":
+        if b"vide" in body and any(
+            brand in body[8:32].lower()
+            for brand in (b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"m4v ")
+        ):
+            return "video/mp4"
     if len(body) >= 12 and body[4:8] == b"ftyp":
         if b"soun" in body and b"vide" not in body:
             return "audio/m4a"
@@ -626,6 +633,14 @@ def _signature_matches(mime_type: str, body: bytes) -> bool:
         )
     if mime_type == "audio/webm":
         return body.startswith(b"\x1a\x45\xdf\xa3")
+    if mime_type == "video/webm":
+        return body.startswith(b"\x1a\x45\xdf\xa3")
+    if mime_type == "video/mp4":
+        return (
+            len(body) >= 12
+            and body[4:8] == b"ftyp"
+            and b"vide" in body
+        )
     return False
 
 
@@ -882,6 +897,13 @@ def fetch_media(
                     return FetchOutcome(
                         success=False,
                         reason=REASON_SIGNATURE,
+                        status_code=status,
+                    )
+                if sniffed_mime not in allowed_mime_types:
+                    _bump_rejection_counter(REASON_CONTENT_TYPE)
+                    return FetchOutcome(
+                        success=False,
+                        reason=REASON_CONTENT_TYPE,
                         status_code=status,
                     )
                 mime_type = sniffed_mime

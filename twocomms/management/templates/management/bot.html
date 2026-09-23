@@ -4227,7 +4227,7 @@ body.bot-drawer-open{overflow:hidden;}
     (m.media||[]).slice(0,rows.length).forEach((item,index)=>{
       const row=rows[index];
       const kind=String(item.media_kind||'').toLowerCase();
-      const label=String(item.media_label||(kind==='audio'?'Аудіо':'Вкладення'));
+      const label=String(item.media_label||(kind==='audio'?'Аудіо':kind==='video'?'Відео':'Вкладення'));
       const publicUrl=safeHttpUrl(item.public_url);
       if(kind==='audio'&&publicUrl&&row.tagName==='A'){
         const audio=document.createElement('audio');audio.controls=true;audio.preload='metadata';audio.src=publicUrl;audio.setAttribute('aria-label',label);audio.addEventListener('error',()=>{audio.replaceWith(document.createTextNode(label+' недоступне'));});
@@ -4236,6 +4236,10 @@ body.bot-drawer-open{overflow:hidden;}
       if(kind==='audio'&&!publicUrl){
         const first=row.firstChild;
         if(first&&first.nodeType===Node.TEXT_NODE&&!String(first.nodeValue||'').startsWith(label+' · '))first.nodeValue=label+' · '+first.nodeValue;
+      }
+      if(kind==='video'&&publicUrl&&row.tagName==='A'){
+        const video=document.createElement('video');video.controls=true;video.preload='metadata';video.src=publicUrl;video.setAttribute('aria-label',label);video.style.cssText='max-width:320px;max-height:220px;border-radius:6px;';video.addEventListener('error',()=>{video.replaceWith(document.createTextNode(label+' недоступне'));});
+        const caption=node('span','bot-msg-meta',label);row.replaceChildren(video,caption);
       }
     });
   };

@@ -1843,6 +1843,8 @@ def _media_render_kind(item: dict, fallback_url: str = "") -> str:
     media_type = str(item.get("media_type") or item.get("type") or "").strip().casefold()
     if mime.startswith("audio/") or media_type in {"audio", "voice"}:
         return "audio"
+    if mime.startswith("video/") or media_type == "video":
+        return "video"
     if mime.startswith("image/") or media_type in {
         "image", "story", "story_mention", "share", "ig_post", "ig_reel", "reel",
     }:
@@ -1857,6 +1859,8 @@ def _media_display_label(item: dict, render_kind: str, type_code: str = "") -> s
     media_type = str(item.get("media_type") or item.get("type") or "").strip().casefold()
     if render_kind == "audio":
         return "Голосове повідомлення" if media_type in {"audio", "voice"} else "Аудіо"
+    if render_kind == "video":
+        return "Відео"
     if media_type in {"story", "story_mention"}:
         return "Сторіс"
     if media_type in {"share", "ig_post", "ig_reel", "reel"}:

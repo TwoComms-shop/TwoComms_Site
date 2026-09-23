@@ -85,7 +85,7 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         self.assertIn("17 4 * * * /opt/other-job", first_content.decode())
         self.assertEqual(first_content.decode().count(BEGIN_MARKER), 1)
         self.assertIn(
-            f"{self.fake_bin / 'flock'} -n -E 75",
+            f"{self.fake_bin / 'flock'} -w 50 -E 75",
             first_content.decode(),
         )
         self.assertIn("tmp/twocomms_heavy_background.lock", first_content.decode())
@@ -141,7 +141,7 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         self.assertEqual(content.count("manage.py update_tracking_statuses"), 1)
         self.assertEqual(content.count(BEGIN_MARKER), 1)
 
-    def test_install_upgrades_bounded_shared_owner_to_nonblocking(self):
+    def test_install_preserves_bounded_shared_owner(self):
         legacy = (
             f"*/5 * * * * cd {self.django_root} && DJANGO_ENV=production "
             f"DJANGO_SETTINGS_MODULE=twocomms.production_settings {self.fake_bin / 'flock'} -w 50 -E 75 "
@@ -156,7 +156,7 @@ cp "$1" "$FAKE_CRONTAB_FILE"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         content = self.crontab_file.read_text(encoding="utf-8")
-        self.assertIn(f"{self.fake_bin / 'flock'} -n -E 75", content)
+        self.assertIn(f"{self.fake_bin / 'flock'} -w 50 -E 75", content)
         self.assertIn("tmp/twocomms_heavy_background.lock", content)
 
     def test_install_rejects_reversed_managed_markers_without_writes(self):
