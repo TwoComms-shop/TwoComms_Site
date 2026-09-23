@@ -86,10 +86,15 @@ def _start_revision_presence_advisory(revision, token, settings_row, scope, *, p
 
     def current_owner():
         now = timezone.now()
-        return IgCustomerTurnRevision.objects.filter(
+        query = IgCustomerTurnRevision.objects.filter(
             pk=revision.pk, client_id=revision.client_id, active_slot=1,
             state=state, claim_token=token, lease_until__gt=now,
-        ).filter(Q(overall_deadline__gt=now) | Q(recovery_state="execution")).exists()
+        )
+        if revision.recovery_code == "provider_dispatch_budget":
+            query = query.filter(recovery_state="manual")
+        else:
+            query = query.filter(Q(overall_deadline__gt=now) | Q(recovery_state="execution"))
+        return query.exists()
 
     def completed_owner():
         from management.services.ig_revision_outbox import revision_has_newer_source
@@ -602,7 +607,7 @@ def _reclaim_execution(revision_id, *, settings_id=1):
         if revision is None:
             return None, ""
         lease_deadline = now + timedelta(seconds=EXECUTION_LEASE_SECONDS)
-        if revision.overall_deadline <= now:
+        if revision.overall_deadline <= now and revision.recovery_code != "provider_dispatch_budget":
             from management.services.ig_revision_recovery import EXECUTION_RESUME_KEY, execution_resume_is_current
 
             if (not settings_row or not settings_row.is_enabled or not settings_row.ai_enabled
