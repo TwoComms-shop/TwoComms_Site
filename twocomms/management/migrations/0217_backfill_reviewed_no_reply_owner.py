@@ -51,7 +51,7 @@ def backfill_legacy_review_owners(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    dependencies = [("management", "0215_gemini_38_quota_profile")]
+    dependencies = [("management", "0216_activate_gemini_38_profile")]
 
     operations = [
         migrations.RunPython(backfill_legacy_review_owners, migrations.RunPython.noop),

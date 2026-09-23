@@ -4,7 +4,7 @@ from unittest import TestCase
 
 
 _migration = importlib.import_module(
-    "management.migrations.0216_backfill_reviewed_no_reply_owner"
+    "management.migrations.0217_backfill_reviewed_no_reply_owner"
 )
 
 
