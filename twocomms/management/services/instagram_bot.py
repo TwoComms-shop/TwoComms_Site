@@ -2507,19 +2507,40 @@ def _attachment_media_candidates(attachment: dict) -> list[tuple[str, str, str]]
     return result[:8]
 
 
-def _is_story_permalink(url: str) -> bool:
-    """Return whether a URL identifies an Instagram story page, not media bytes."""
+def _is_instagram_permalink(url: str) -> bool:
+    """Return whether a URL is an Instagram page permalink, not media bytes."""
     try:
         parsed = urlsplit(str(url or "").strip())
     except ValueError:
         return False
     host = str(parsed.hostname or "").casefold().rstrip(".")
     path = str(parsed.path or "").casefold().rstrip("/")
+    first_segment = path.split("/", 2)[1] if path.startswith("/") else ""
     return bool(
         parsed.scheme in {"http", "https"}
-        and (host == "instagram.com" or host.endswith(".instagram.com"))
-        and path.startswith("/stories/")
+        and (
+            host == "instagram.com"
+            or host.endswith(".instagram.com")
+            or host == "instagr.am"
+            or host.endswith(".instagr.am")
+            or host == "ig.me"
+            or host.endswith(".ig.me")
+        )
+        and (
+            first_segment in {"p", "reel", "reels", "tv", "stories", "share"}
+            or host == "ig.me"
+            or host.endswith(".ig.me")
+        )
     )
+
+
+def _is_story_permalink(url: str) -> bool:
+    """Return whether a URL identifies an Instagram story page."""
+    try:
+        parsed = urlsplit(str(url or "").strip())
+    except ValueError:
+        return False
+    return _is_instagram_permalink(url) and str(parsed.path or "").casefold().startswith("/stories/")
 
 
 def _echo_media_items(msg: dict) -> list[dict]:
@@ -2559,7 +2580,7 @@ def _echo_media_items(msg: dict) -> list[dict]:
                 "provider_media_id": provider_media_id,
                 "provider_event_id": event_id,
             }
-            if _is_story_permalink(url):
+            if _is_instagram_permalink(url):
                 item["context_only"] = True
             result.append(item)
         if not candidates and (
@@ -2596,7 +2617,7 @@ def _echo_media_items(msg: dict) -> list[dict]:
             "provider_media_id": str(story.get("media_id") or "")[:255],
             "role": "manager_reference",
             "provider_event_id": event_id,
-            "context_only": _is_story_permalink(story_url) or not story_url,
+            "context_only": _is_instagram_permalink(story_url) or not story_url,
         })
     return result[:8]
 
@@ -2620,7 +2641,7 @@ def _echo_media_metadata(items: list[dict] | None) -> list[dict]:
             "target_username": str(raw.get("target_username") or "")[:80],
             "provider_native_mention": bool(raw.get("provider_native_mention")),
         }
-        if raw.get("context_only") or _is_story_permalink(url) or not url:
+        if raw.get("context_only") or _is_instagram_permalink(url) or not url:
             item["provenance"] = MEDIA_PROVENANCE_HISTORICAL
             item["status"] = MEDIA_STATUS_METADATA_ONLY
             item["capture_eligible"] = False
@@ -2663,6 +2684,28 @@ def _media_fallback_text(metadata: list[dict] | None) -> str:
     if kinds & {"video"}:
         return "(відео)"
     return "(зображення)"
+
+
+_GENERIC_MEDIA_TEXTS = frozenset({
+    "(медіа)", "(зображення)", "(зображення менеджера)",
+    "(відповідь менеджера на сторіс)", "(вкладення)",
+})
+
+
+def _project_media_text(text: str, metadata: list[dict] | None) -> str:
+    """Replace stale generic media text once provider metadata gives its type."""
+    value = str(text or "").strip()
+    if not metadata:
+        return value
+    kinds = {
+        str(item.get("media_type") or item.get("type") or "").casefold()
+        for item in metadata
+        if isinstance(item, dict)
+    }
+    typed = bool(kinds & {"audio", "voice", "story", "story_mention", "share", "ig_post", "ig_reel", "reel", "video"})
+    if typed and (not value or value.casefold() in _GENERIC_MEDIA_TEXTS):
+        return _media_fallback_text(metadata)
+    return value
 
 
 def _stage_permission_message(
@@ -2816,18 +2859,11 @@ def _handle_echo(
     media_message_id = 0
     if text or attachments:
         echo_media = _echo_media_metadata(attachments)
-        has_story_reference = any(
-            str(item.get("type") or "").casefold() == "story"
-            for item in (attachments or [])
-            if isinstance(item, dict)
-        )
+        projected_text = _project_media_text(text, echo_media)
         msg, _created = _stage_permission_message(
             sender_id=recipient_igsid,
             role=InstagramBotMessage.Role.MANAGER,
-            text=text or (
-                "(відповідь менеджера на сторіс)"
-                if has_story_reference else "(зображення менеджера)"
-            ),
+            text=projected_text or _media_fallback_text(echo_media),
             mid=mid,
             source="echo",
             provider_namespace=provider_namespace,
@@ -2836,7 +2872,7 @@ def _handle_echo(
                     [
                         item.get("url")
                         for item in (attachments or [])
-                        if item.get("url") and not _is_story_permalink(item.get("url"))
+                        if item.get("url") and not _is_instagram_permalink(item.get("url"))
                     ],
                     ensure_ascii=False,
                 )
@@ -3926,7 +3962,9 @@ def _telegram_private_media_call(
     storage_name = str(media.get("private_storage_name") or "")
     mime = _normalized_inline_mime(media.get("mime"))
     if not storage_name or mime not in (
-        SUPPORTED_INLINE_IMAGE_MIMES | SUPPORTED_INLINE_AUDIO_MIMES
+        SUPPORTED_INLINE_IMAGE_MIMES
+        | SUPPORTED_INLINE_AUDIO_MIMES
+        | SUPPORTED_INLINE_VIDEO_MIMES
     ):
         return 400, json.dumps({"ok": False, "description": "invalid_private_media"})
     from management.services.ig_private_media import (
@@ -3951,8 +3989,10 @@ def _telegram_private_media_call(
         if not storage.exists(storage_name):
             return 400, json.dumps({"ok": False, "description": "private_media_expired"})
         is_audio = mime.startswith("audio/")
-        endpoint = "sendAudio" if is_audio else "sendPhoto"
-        field = "audio" if is_audio else "photo"
+        is_video = mime.startswith("video/")
+        is_webm = mime == "video/webm"
+        endpoint = "sendAudio" if is_audio else "sendDocument" if is_webm else "sendVideo" if is_video else "sendPhoto"
+        field = "audio" if is_audio else "document" if is_webm else "video" if is_video else "photo"
         with storage.open(storage_name, "rb") as handle:
             response = requests.post(
                 f"https://api.telegram.org/bot{token}/{endpoint}",
@@ -4296,14 +4336,20 @@ def _deliver_manager_notification_unlocked(dedupe_key: str) -> bool:
                         reply_to_message_id=main_message_id,
                     )
                 else:
+                    media_kind = str(media.get("media_kind") or "").casefold()
+                    media_mime = _normalized_inline_mime(media.get("mime"))
+                    is_video = media_kind == "video" or media_mime.startswith("video/")
+                    is_webm = media_mime == "video/webm"
+                    endpoint = "sendDocument" if is_webm else "sendVideo" if is_video else "sendPhoto"
+                    field = "document" if is_webm else "video" if is_video else "photo"
                     media_body = json.dumps({
                         "chat_id": chat,
-                        "photo": media_url,
+                        field: media_url,
                         "caption": "\n".join(caption_parts)[:1000],
                         "reply_to_message_id": int(main_message_id),
                     }).encode("utf-8")
                     media_code, media_response_body = _http(
-                        f"https://api.telegram.org/bot{token}/sendPhoto",
+                        f"https://api.telegram.org/bot{token}/{endpoint}",
                         data=media_body,
                         timeout=HTTP_TIMEOUT,
                     )
@@ -10269,7 +10315,7 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
         if not candidates:
             continue
         for _kind, url, _title in candidates:
-            context_only = _is_story_permalink(url) or not url
+            context_only = _is_instagram_permalink(url) or not url
             item = {
                 "url": url[:1200],
                 "provenance": (
@@ -10307,7 +10353,7 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
     ):
         story_id = str(reply_story.get("id") or reply_story.get("story_id") or "").strip()
         story_url = str(reply_story.get("url") or "").strip()
-        context_only = _is_story_permalink(story_url) or not story_url
+        context_only = _is_instagram_permalink(story_url) or not story_url
         result.append({
             "url": story_url[:1200],
             "provenance": (
@@ -10718,7 +10764,7 @@ def _raw_live_media_for_row(row: InstagramBotMessage) -> list[dict]:
         if (
             not isinstance(raw, dict)
             or not raw.get("url")
-            or _is_story_permalink(raw.get("url"))
+            or _is_instagram_permalink(raw.get("url"))
         ):
             continue
         item = dict(raw)
@@ -10773,7 +10819,7 @@ def _media_part_capture_pending(item: dict) -> bool:
         return False
     if item.get("capture_eligible") is False:
         return False
-    if _is_story_permalink(item.get("url")):
+    if _is_instagram_permalink(item.get("url")):
         return False
     if item.get("url_metadata_expired") is True:
         return False
@@ -11238,7 +11284,7 @@ def _capture_message_media(
     )
     candidates = [
         item for item in candidates
-        if not _is_story_permalink(item.get("url"))
+        if not _is_instagram_permalink(item.get("url"))
     ]
     candidates = [
         item for item in candidates
@@ -11248,7 +11294,7 @@ def _capture_message_media(
         candidates.extend(_raw_live_media_for_row(row))
     current = _merge_attachment_media(current, candidates, message_scope=row.pk)
     for item in current:
-        if _media_is_historical(item) or _is_story_permalink(item.get("url")) or (
+        if _media_is_historical(item) or _is_instagram_permalink(item.get("url")) or (
             item.get("provenance") != MEDIA_PROVENANCE_LIVE_WEBHOOK
         ):
             item["provenance"] = MEDIA_PROVENANCE_HISTORICAL
@@ -11366,6 +11412,8 @@ def _capture_message_media(
                 "audio/mpeg": ".mp3",
                 "audio/m4a": ".m4a",
                 "audio/webm": ".webm",
+                "video/mp4": ".mp4",
+                "video/webm": ".webm",
             }.get(mime, ".bin")
             path = (
                 f"ig_message_media/{int(getattr(row, 'pk', 0) or 0)}/"
@@ -12170,9 +12218,9 @@ def _promote_manual_refresh_message(
             return False
     if current_settings.reply_after and provider_time <= current_settings.reply_after:
         return False
-    incoming_text = (text or "").strip()
+    incoming_text = _project_media_text(text, attachment_metadata)
     existing_text = (existing.text or "").strip()
-    if incoming_text and existing_text not in {"", "(медіа)", "(зображення)"}:
+    if incoming_text and existing_text not in ({""} | _GENERIC_MEDIA_TEXTS):
         if incoming_text != existing_text:
             return ""
     update_fields = []
@@ -12212,6 +12260,10 @@ def _promote_manual_refresh_message(
             incoming_media,
             message_scope=existing.pk,
         )[:8]
+        projected_existing_text = _project_media_text(existing.text, existing_media)
+        if projected_existing_text != existing.text:
+            existing.text = projected_existing_text
+            update_fields.append("text")
         if existing_media != (existing.attachment_media or []):
             existing.attachment_media = existing_media
             update_fields.append("attachment_media")
@@ -12353,7 +12405,7 @@ def _observe_not_allowed_inbound(
                         provider_namespace=ingress_provider_namespace(s),
                         client=client,
                         role=InstagramBotMessage.Role.USER,
-                        text=text or _media_fallback_text(attachment_metadata),
+                        text=_project_media_text(text, attachment_metadata) or _media_fallback_text(attachment_metadata),
                         mid=mid or None,
                         synthetic_event_key=synthetic_event_key or None,
                         status=InstagramBotMessage.Status.DONE,
@@ -12509,7 +12561,7 @@ def enqueue_inbound(
         msg, message_created = _stage_permission_message(
             sender_id=sender_id,
             role=InstagramBotMessage.Role.USER,
-            text=text or _media_fallback_text(attachment_metadata),
+            text=_project_media_text(text, attachment_metadata) or _media_fallback_text(attachment_metadata),
             mid=mid,
             source=source,
             attachments=json.dumps(attachments) if attachments else "",
@@ -12635,7 +12687,7 @@ def enqueue_inbound(
                             provider_namespace=ingress_provider_namespace(s),
                             client=client,
                             role=InstagramBotMessage.Role.USER,
-                            text=text or _media_fallback_text(attachment_metadata),
+                            text=_project_media_text(text, attachment_metadata) or _media_fallback_text(attachment_metadata),
                             mid=mid or None,
                             synthetic_event_key=synthetic_event_key or None,
                             status=(
@@ -16525,10 +16577,10 @@ def _extract_media_urls(msg: dict) -> list[str]:
     urls: list[str] = []
     for att in _attachment_items(msg) or []:
         for media_type, url, _title in _attachment_media_candidates(att):
-            if media_type.lower() in MEDIA_ATTACH_TYPES and not _is_story_permalink(url):
+            if media_type.lower() in MEDIA_ATTACH_TYPES and not _is_instagram_permalink(url):
                 urls.append(url)
     story = (msg.get("reply_to") or {}).get("story") or {}
-    if story.get("url") and not _is_story_permalink(story.get("url")):
+    if story.get("url") and not _is_instagram_permalink(story.get("url")):
         urls.append(story["url"])
     out: list[str] = []
     for u in urls:
@@ -16664,6 +16716,10 @@ def _persist_polled_message(
                     incoming_media,
                     message_scope=row.pk,
                 )[:8]
+                projected_text = _project_media_text(row.text, media)
+                if projected_text != row.text:
+                    row.text = projected_text
+                    update_fields.append("text")
                 if media != (row.attachment_media or []):
                     row.attachment_media = media
                     update_fields.append("attachment_media")

@@ -66,6 +66,19 @@ class PrivateMediaPreviewTests(TestCase):
             actor=self.user, action="ig_private_media.preview", entity_id=str(row.pk),
         ).exists())
 
+    def test_authorized_video_preview_is_inline_and_bounded(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(
+            IG_PRIVATE_MEDIA_ROOT=str(Path(root).resolve()),
+        ):
+            row, part_id = self._message(
+                mime="video/mp4", raw=b"video-preview", suffix="mp4",
+            )
+            response = self.client.get(reverse(
+                "management_bot_private_media_preview", args=[row.pk, part_id],
+            ))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"].split(";", 1)[0], "video/mp4")
+
     def test_manager_echo_preview_is_authorized_and_compacted(self):
         with tempfile.TemporaryDirectory() as root, override_settings(
             IG_PRIVATE_MEDIA_ROOT=str(Path(root).resolve()),

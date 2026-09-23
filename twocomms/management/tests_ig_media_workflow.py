@@ -856,6 +856,39 @@ class PrivateMessageMediaStorageTests(TestCase):
         self.assertEqual(observed["mime"], "audio/ogg")
         self.assertEqual(observed["raw"], b"voice")
 
+    @patch("requests.post")
+    def test_private_video_uses_send_video_directly(self, post):
+        from management.services.instagram_bot import (
+            _private_media_storage,
+            _telegram_private_media_call,
+        )
+
+        observed = {}
+        post.side_effect = lambda url, **kwargs: (
+            observed.update({"url": url, "field": next(iter(kwargs["files"]))})
+            or SimpleNamespace(status_code=200, text='{"ok":true}')
+        )
+        with tempfile.TemporaryDirectory() as private_root, override_settings(
+            IG_PRIVATE_MEDIA_ROOT=str(Path(private_root).resolve()),
+        ):
+            row = InstagramBotMessage.objects.create(
+                sender_id="private-telegram-video", role=InstagramBotMessage.Role.USER,
+                private_media_state="active",
+            )
+            storage = _private_media_storage()
+            storage_name = "ig_message_media/clip.mp4"
+            path = Path(private_root) / storage_name
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"video")
+            code, _body = _telegram_private_media_call(
+                token="redacted-token", chat="777",
+                media={"private_storage_name": storage_name, "mime": "video/mp4", "message_id": row.pk},
+                caption="Video", reply_to_message_id="10",
+            )
+        self.assertEqual(code, 200)
+        self.assertTrue(observed["url"].endswith("/sendVideo"))
+        self.assertEqual(observed["field"], "video")
+
 
 class HistoricalAttachmentOwnershipTests(TestCase):
     def setUp(self):

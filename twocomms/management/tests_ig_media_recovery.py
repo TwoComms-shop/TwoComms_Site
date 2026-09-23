@@ -150,6 +150,16 @@ class MediaFailureTaxonomyTests(SimpleTestCase):
 
 
 class PreparedBlobContractTests(SimpleTestCase):
+    def test_video_descriptor_is_accepted_for_private_preview(self):
+        raw = b"video bytes"
+        descriptor = recovery.prepared_blob_descriptor(
+            storage_name="ig_message_media/41/clip.mp4",
+            mime_type="video/mp4",
+            body_bytes=raw,
+        )
+        self.assertTrue(recovery.prepared_blob_matches(descriptor, raw))
+        self.assertEqual(recovery.prepared_part_updates(descriptor)["status"], "storing")
+
     def test_descriptor_is_json_safe_stable_and_verifies_exact_bytes(self):
         raw = b"private image bytes"
         first = recovery.prepared_blob_descriptor(

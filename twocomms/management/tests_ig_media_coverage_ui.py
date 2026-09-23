@@ -78,6 +78,21 @@ class MediaCoveragePayloadTests(SimpleTestCase):
         self.assertEqual(row["media_kind"], "video")
         self.assertEqual(row["media_label"], "Відео")
 
+    def test_owned_story_image_exposes_authorized_preview(self):
+        message = SimpleNamespace(
+            pk=51,
+            attachment_media=[{
+                "source_part_id": "mp1_" + "f" * 32,
+                "status": "owned", "private_storage": True,
+                "storage_name": "ig_message_media/story.jpg", "mime": "image/jpeg",
+                "media_type": "story", "content_hash": "f" * 64, "inspection": {},
+            }],
+            turn_intelligence_artifact={},
+        )
+        row = _message_media_rows(message, [])[0]
+        self.assertEqual(row["media_kind"], "story")
+        self.assertTrue(row["public_url"].endswith("/preview/"))
+
     def test_owned_part_exposes_coverage_and_authorized_preview_only(self):
         message = SimpleNamespace(
             pk=44,

@@ -1845,8 +1845,12 @@ def _media_render_kind(item: dict, fallback_url: str = "") -> str:
         return "audio"
     if mime.startswith("video/") or media_type == "video":
         return "video"
+    if media_type in {"story", "story_mention"}:
+        return "story"
+    if media_type in {"share", "ig_post", "ig_reel", "reel"}:
+        return "repost"
     if mime.startswith("image/") or media_type in {
-        "image", "story", "story_mention", "share", "ig_post", "ig_reel", "reel",
+        "image",
     }:
         return "image"
     path = str(fallback_url or "").split("?", 1)[0].casefold()
@@ -1861,9 +1865,9 @@ def _media_display_label(item: dict, render_kind: str, type_code: str = "") -> s
         return "Голосове повідомлення" if media_type in {"audio", "voice"} else "Аудіо"
     if render_kind == "video":
         return "Відео"
-    if media_type in {"story", "story_mention"}:
+    if render_kind == "story" or media_type in {"story", "story_mention"}:
         return "Сторіс"
-    if media_type in {"share", "ig_post", "ig_reel", "reel"}:
+    if render_kind == "repost" or media_type in {"share", "ig_post", "ig_reel", "reel"}:
         return "Репост"
     return {
         "receipt": "Зображення чека",
@@ -1932,7 +1936,13 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
         if (
             item.get("status") == "owned"
             and item.get("private_storage") is True
-            and render_kind in {"image", "audio"}
+            and (
+                render_kind in {"image", "audio", "video"}
+                or (
+                    render_kind in {"story", "repost"}
+                    and str(item.get("mime") or "").split(";", 1)[0].casefold().startswith("image/")
+                )
+            )
         ):
             try:
                 preview_url = reverse(

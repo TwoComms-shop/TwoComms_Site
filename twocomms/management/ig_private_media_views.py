@@ -16,6 +16,7 @@ from management.services.ig_private_media import acquire_blob_use, private_media
 VIEW_PII_PERMISSION = "management.view_ig_conversation_pii"
 PRIVATE_REVIEW_MAX_BYTES = 6 * 1024 * 1024
 PRIVATE_REVIEW_AUDIO_MAX_BYTES = 10 * 1024 * 1024
+PRIVATE_REVIEW_VIDEO_MAX_BYTES = 8 * 1024 * 1024
 _IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"})
 _AUDIO_MIMES = frozenset({
     "audio/wav", "audio/mpeg", "audio/mp3", "audio/aiff", "audio/aac",
@@ -28,7 +29,8 @@ _AUDIO_MIME_ALIASES = {
     "audio/x-wav": "audio/wav",
     "audio/x-aiff": "audio/aiff",
 }
-_PREVIEW_MIMES = _IMAGE_MIMES | _AUDIO_MIMES
+_VIDEO_MIMES = frozenset({"video/mp4", "video/webm"})
+_PREVIEW_MIMES = _IMAGE_MIMES | _AUDIO_MIMES | _VIDEO_MIMES
 _DELETED_STATES = frozenset({"delete_pending", "deleting", "deleted"})
 
 
@@ -111,7 +113,12 @@ def _safe_part(row, client, source_part_id: str, *, use_token: str) -> dict:
 def _read_current_bytes(part: Mapping[str, object]) -> tuple[bytes, str]:
     storage_name = str(part.get("storage_name") or "").strip()
     mime = str(part.get("mime") or "").split(";", 1)[0].strip().lower()
-    max_bytes = PRIVATE_REVIEW_AUDIO_MAX_BYTES if mime.startswith("audio/") else PRIVATE_REVIEW_MAX_BYTES
+    if mime.startswith("audio/"):
+        max_bytes = PRIVATE_REVIEW_AUDIO_MAX_BYTES
+    elif mime.startswith("video/"):
+        max_bytes = PRIVATE_REVIEW_VIDEO_MAX_BYTES
+    else:
+        max_bytes = PRIVATE_REVIEW_MAX_BYTES
     try:
         with private_media_storage().open(storage_name, "rb") as handle:
             raw = handle.read(max_bytes + 1)

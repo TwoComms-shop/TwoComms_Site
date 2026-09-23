@@ -50,6 +50,28 @@ class ExtractMediaUrlsTests(SimpleTestCase):
         self.assertEqual(metadata[0]["provenance"], bot.MEDIA_PROVENANCE_HISTORICAL)
         self.assertFalse(metadata[0].get("capture_eligible", True))
 
+    def test_repost_permalink_is_review_context_not_capture_url(self):
+        msg = {
+            "attachments": [{
+                "type": "ig_post",
+                "payload": {"url": "https://www.instagram.com/p/ABC123/"},
+            }],
+        }
+        self.assertEqual(bot._extract_media_urls(msg), [])
+        metadata = bot._provider_attachment_metadata(msg)
+        self.assertEqual(metadata[0]["media_type"], "ig_post")
+        self.assertEqual(metadata[0]["status"], bot.MEDIA_STATUS_METADATA_ONLY)
+        self.assertFalse(metadata[0].get("capture_eligible", True))
+
+    def test_reel_permalink_is_review_context_not_capture_url(self):
+        msg = {
+            "attachments": [{
+                "type": "ig_reel",
+                "payload": {"url": "https://www.instagram.com/reel/XYZ789/"},
+            }],
+        }
+        self.assertEqual(bot._extract_media_urls(msg), [])
+
     def test_plain_image_still_works(self):
         msg = {"attachments": [{"type": "image", "payload": {"url": "https://cdn/i.jpg"}}]}
         self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/i.jpg"])

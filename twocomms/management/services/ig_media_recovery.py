@@ -311,6 +311,7 @@ def prepared_blob_descriptor(
     if mime not in (
         media_policy.SUPPORTED_INLINE_IMAGE_MIMES
         | media_policy.SUPPORTED_INLINE_AUDIO_MIMES
+        | media_policy.SUPPORTED_INLINE_VIDEO_MIMES
     ):
         raise MediaRecoveryError("invalid_blob_mime")
     return {
@@ -340,6 +341,7 @@ def prepared_blob_matches(descriptor: Mapping[str, object], body_bytes: bytes) -
         and mime in (
             media_policy.SUPPORTED_INLINE_IMAGE_MIMES
             | media_policy.SUPPORTED_INLINE_AUDIO_MIMES
+            | media_policy.SUPPORTED_INLINE_VIDEO_MIMES
         )
         and byte_count == len(body_bytes)
         and hashlib.sha256(body_bytes).hexdigest() == digest
@@ -363,6 +365,7 @@ def prepared_part_updates(descriptor: Mapping[str, object]) -> dict:
         and mime in (
             media_policy.SUPPORTED_INLINE_IMAGE_MIMES
             | media_policy.SUPPORTED_INLINE_AUDIO_MIMES
+            | media_policy.SUPPORTED_INLINE_VIDEO_MIMES
         )
         and byte_count > 0
     ):

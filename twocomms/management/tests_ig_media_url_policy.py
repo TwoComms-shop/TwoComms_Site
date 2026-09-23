@@ -148,7 +148,7 @@ class AddressClassificationTests(SimpleTestCase):
 
     def test_video_mime_requires_a_matching_container_signature(self):
         mp4 = b"\x00\x00\x00\x18ftypisom\x00\x00vide"
-        webm = b"\x1a\x45\xdf\xa3" + b"\x00" * 32
+        webm = b"\x1a\x45\xdf\xa3" + b"\x00" * 16 + b"V_VP9" + b"\x00" * 16
 
         self.assertTrue(policy._signature_matches("video/mp4", mp4))
         self.assertTrue(policy._signature_matches("video/webm", webm))
@@ -1072,6 +1072,20 @@ class MalformedInputTests(SimpleTestCase):
 
 
 class ProviderMimeSniffTests(SimpleTestCase):
+    def test_meta_audio_mp4_is_accepted_with_audio_allowlist(self):
+        resolver = fake_resolver_factory({"scontent.cdninstagram.com": ["157.240.1.1"]})
+        body = b"\x00\x00\x00\x18ftypisom" + b"soun"
+        outcome = policy.fetch_media(
+            "https://scontent.cdninstagram.com/audio",
+            resolver=resolver,
+            allowed_mime_types=policy.SUPPORTED_INLINE_AUDIO_MIMES,
+            transport=fake_transport_factory([FakeResponse(
+                status=200, headers={"Content-Type": "video/mp4"}, body=body,
+            )]),
+        )
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.mime_type, "audio/m4a")
+
     def test_generic_provider_mime_with_valid_jpeg_is_accepted(self):
         resolver = fake_resolver_factory({"scontent.cdninstagram.com": ["157.240.1.1"]})
         outcome = policy.fetch_media(

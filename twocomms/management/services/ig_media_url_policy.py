@@ -589,16 +589,28 @@ def _sniff_supported_mime(body: bytes, declared_mime: str = "") -> str:
     if len(body) >= 12 and body[:4] == b"FORM" and body[8:12] in {b"AIFF", b"AIFC"}:
         return "audio/aiff"
     if body.startswith(b"\x1a\x45\xdf\xa3"):
-        return "video/webm" if b"webm" in body[:64].lower() else "audio/webm"
+        # Meta voice objects can be returned as generic/video content types.
+        # EBML's track codec IDs give us a bounded, meaningful distinction;
+        # accepting a bare EBML header would allow arbitrary bytes through.
+        ebml = body[: min(len(body), 1024 * 1024)].upper()
+        if any(codec in ebml for codec in (b"A_OPUS", b"A_VORBIS", b"A_AAC")):
+            return "audio/webm"
+        if any(codec in ebml for codec in (b"V_VP8", b"V_VP9", b"V_AV1", b"V_MPEG")):
+            return "video/webm"
+        return ""
     if len(body) >= 12 and body[4:8] == b"ftyp":
-        if b"vide" in body and any(
+        # ISO-BMFF keeps the handler type in the `hdlr` box.  Meta voice MP4
+        # and M4A payloads have been observed under both video/mp4 and
+        # application/octet-stream, so inspect the bounded body before
+        # deciding which supported MIME to expose.
+        bmff = body[: min(len(body), 1024 * 1024)].lower()
+        if b"soun" in bmff and b"vide" not in bmff:
+            return "audio/m4a"
+        if b"vide" in bmff and any(
             brand in body[8:32].lower()
             for brand in (b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"m4v ")
         ):
             return "video/mp4"
-    if len(body) >= 12 and body[4:8] == b"ftyp":
-        if b"soun" in body and b"vide" not in body:
-            return "audio/m4a"
     return ""
 
 
@@ -634,7 +646,10 @@ def _signature_matches(mime_type: str, body: bytes) -> bool:
     if mime_type == "audio/webm":
         return body.startswith(b"\x1a\x45\xdf\xa3")
     if mime_type == "video/webm":
-        return body.startswith(b"\x1a\x45\xdf\xa3")
+        if not body.startswith(b"\x1a\x45\xdf\xa3"):
+            return False
+        ebml = body[: min(len(body), 1024 * 1024)].upper()
+        return any(codec in ebml for codec in (b"V_VP8", b"V_VP9", b"V_AV1", b"V_MPEG"))
     if mime_type == "video/mp4":
         return (
             len(body) >= 12
@@ -839,7 +854,13 @@ def fetch_media(
                 )
             allow_provider_sniff = (
                 profile == PROFILE_PROVIDER
-                and mime_type in {"", "application/octet-stream", "binary/octet-stream", "video/mp4"}
+                and (
+                    mime_type in {
+                        "", "application/octet-stream", "binary/octet-stream",
+                        "video/mp4", "audio/mp4", "audio/webm", "video/webm",
+                    }
+                    or mime_type.startswith("audio/x-")
+                )
             )
             if mime_type not in allowed_mime_types and not allow_provider_sniff:
                 _bump_rejection_counter(REASON_CONTENT_TYPE)
