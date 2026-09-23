@@ -41,7 +41,7 @@ def parked_collaboration_revision_ids(*, limit=25):
     return list(IgCustomerTurnRevision.objects.filter(
         active_slot=1, state=IgCustomerTurnRevision.State.CLAIMED,
         recovery_state="manual", recovery_code=PARKED_COLLABORATION_CODE,
-        generation_proposal_digest="", delivery_effects__isnull=True,
+        generation_proposal_digest="",
     ).order_by("id").values_list("id", flat=True)[:max(0, min(int(limit), 50))])
 
 
@@ -67,13 +67,21 @@ def claim_parked_collaboration_revision(revision_id, *, settings_id=1, now=None)
         revision = IgCustomerTurnRevision.objects.select_for_update().filter(
             pk=revision_id, active_slot=1, state=IgCustomerTurnRevision.State.CLAIMED,
             recovery_state="manual", recovery_code=PARKED_COLLABORATION_CODE,
-            generation_proposal_digest="", delivery_effects__isnull=True,
+            generation_proposal_digest="",
         ).first()
         client = IgClient.objects.select_for_update().filter(
             pk=getattr(revision, "client_id", None),
         ).first()
         if settings_row is None or revision is None or client is None:
             return None, "parked_collaboration_missing"
+        effects = list(revision.delivery_effects.select_for_update().order_by("order_index", "id"))
+        if effects and not (
+            len(effects) == 1
+            and effects[0].purpose == PURPOSE
+            and effects[0].state == effects[0].State.CANCELLED
+            and effects[0].failure_code == "revision_deadline_exhausted"
+        ):
+            return None, "parked_collaboration_delivery_uncertain"
         if (
             client.reply_permission_epoch != revision.permission_epoch
             or client.hidden_at or client.is_blocked or client.bot_paused
@@ -101,6 +109,16 @@ def claim_parked_collaboration_revision(revision_id, *, settings_id=1, now=None)
         revision.claimed_at = now
         revision.lease_until = now + timedelta(seconds=90)
         revision.save(update_fields=["claim_token", "claimed_at", "lease_until", "updated_at"])
+        if effects:
+            effect = effects[0]
+            effect.state = effect.State.PLANNED
+            effect.failure_code = ""
+            effect.terminal_at = None
+            effect.claim_token = ""
+            effect.lease_until = None
+            effect.save(update_fields=[
+                "state", "failure_code", "terminal_at", "claim_token", "lease_until", "updated_at",
+            ])
         return revision, token
 
 
