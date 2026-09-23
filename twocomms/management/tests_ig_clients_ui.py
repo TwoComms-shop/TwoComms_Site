@@ -74,6 +74,19 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
             self.template.index('data-tab="orders"'),
         )
 
+    def test_journey_map_exposes_missing_path_coverage_reason(self):
+        journey = (Path(__file__).with_name("static") / "management" / "ig_journey.js").read_text(encoding="utf-8")
+        for contract in (
+            "function pathCoverageText(graph)",
+            "history_events_without_semantic_transitions",
+            "trace_current_node_omitted",
+            "trace_partial",
+            "conversation_route_history_truncated",
+            "синя лінія не будується",
+            "semantic_path",
+        ):
+            self.assertIn(contract, journey)
+
     def test_overview_is_one_runtime_surface_with_a_stable_responsive_metric_grid(self):
         overview_start = self.template.index('data-panel="overview"')
         console_start = self.template.index('id="bot-console"')

@@ -40,6 +40,26 @@ STEP_NODES = {
     "payment_confirmed": "payment", "order_created": "fulfillment",
     "ttn_created": "fulfillment", "delivered": "fulfillment",
 }
+# Client stages are authoritative facts about the commercial episode, but the
+# journey graph uses a smaller set of guide nodes.  Keep this mapping explicit
+# so a stage row can never create an endpoint from an arbitrary database value.
+STAGE_GUIDE_NODES = {
+    "new": "inquiry", "qualifying": "inquiry",
+    "product_matched": "selection", "checkout": "offer",
+    "payment_pending": "offer", "paid": "payment",
+    "order_created": "fulfillment", "done": "fulfillment",
+}
+STAGE_TRANSITION_SOURCES = frozenset({
+    "repeat_intent", "stage_fsm", "client_stage", "commercial_flow",
+    "checkout_proposal", "checkout_proposal_created", "payment_review",
+    "historical_resolution", "order_truth", "order_resolution",
+})
+STAGE_SOURCE_REASON_PREFIXES = {
+    "checkout_proposal": ("checkout_invoice_created", "checkout_proposal"),
+    "payment_review": ("payment", "payment_review_", "historical_payment_review_"),
+    "order_truth": ("instagram_checkout_paid", "order_linked"),
+    "stage_fsm": ("bot", "classifier:", "stage_fsm:"),
+}
 STEP_LABELS = dict(IgFunnelStepEvent.Type.choices)
 EPISODE_LABELS = {
     "opened": "Цикл відкрито", "review_detached": "Перевірку відв’язано",
@@ -93,7 +113,7 @@ SAFE_ACTORS = frozenset({
 })
 EVIDENCE_IDS = (
     "message_id", "product_id", "color_variant_id", "order_id", "review_id",
-    "decision_id", "projection_id", "provider_event_id", "proposal_id",
+    "decision_id", "projection_id", "provider_event_id", "proposal_id", "stage_event_id", "episode_id",
 )
 
 
@@ -213,6 +233,9 @@ def _event(row, kind):
         "recorded_at": _iso(row["created_at"]),
         "actor": actor if actor in SAFE_ACTORS else "unknown",
         "provenance": "provider_event" if verified_payment else "recorded_observation",
+        "source": (str(row.get("source") or "")
+                   if kind == "episode_event" and row.get("source") in STAGE_TRANSITION_SOURCES
+                   else ""),
         "is_backfilled": bool(row.get("is_backfilled", False)),
         "evidence_refs": [_ref(kind, row["id"])],
         "values": {
@@ -223,10 +246,99 @@ def _event(row, kind):
     if kind == "episode_event" and event_type in EPISODE_LABELS:
         result["episode_event_type"] = event_type
         from_state, to_state = str(row.get("from_state") or ""), str(row.get("to_state") or "")
+        if event_type == "stage_transition" and row.get("source") in STAGE_TRANSITION_SOURCES:
+            result["stage_states"] = {"from": from_state, "to": to_state}
+            message_ids = evidence.get("message_ids", evidence.get("evidence_message_ids"))
+            if isinstance(message_ids, list):
+                safe_message_ids = [identifier for identifier in (
+                    _positive_id(value) for value in message_ids
+                ) if identifier is not None]
+                if safe_message_ids:
+                    result["values"]["message_ids"] = safe_message_ids[:ROUTE_SOURCE_MESSAGE_LIMIT]
         if (event_type in LIFECYCLE_EDGE_TYPES and actor in LIFECYCLE_EDGE_SOURCES[event_type]
                 and from_state in EPISODE_STATES and to_state in EPISODE_STATES):
             result["episode_states"] = {"from": from_state, "to": to_state}
     return result
+
+
+def _stage_transition_edges(events, *, client_id, episode_id):
+    """Project only sourced, episode-owned stage changes into graph edges.
+
+    ``_history`` has already restricted episode events by both episode and
+    client.  The remaining checks keep arbitrary/malformed rows from becoming
+    a visual claim: the producer accepts a known writer, two known stages, a
+    real change, and at least one typed evidence identifier.
+    """
+    from management.models import IgClientStageEvent, InstagramBotMessage
+
+    stage_ids = {
+        values.get("stage_event_id") for event in events
+        for values in [event.get("values") or {}]
+        if _positive_id(values.get("stage_event_id")) is not None
+    }
+    stage_rows = {
+        row["id"]: row for row in IgClientStageEvent.objects.filter(
+            pk__in=stage_ids, client_id=client_id,
+        ).values("id", "from_stage", "to_stage", "reason")
+    } if stage_ids else {}
+    message_ids = {
+        identifier for event in events
+        for identifier in (event.get("values") or {}).get("message_ids", [])
+        if _positive_id(identifier) is not None
+    }
+    owned_message_ids = set(InstagramBotMessage.objects.filter(
+        pk__in=message_ids, client_id=client_id, role=InstagramBotMessage.Role.USER,
+    ).values_list("pk", flat=True)) if message_ids else set()
+    edges, rejected = [], 0
+    for event in events:
+        if event.get("episode_event_type") != "stage_transition":
+            continue
+        states = event.get("stage_states") or {}
+        source = event.get("source")
+        from_stage, to_stage = states.get("from"), states.get("to")
+        values = event.get("values") or {}
+        refs = list(event.get("evidence_refs") or [])
+        stage_event_id = _positive_id(values.get("stage_event_id"))
+        event_episode_id = _positive_id(values.get("episode_id"))
+        event_stage = stage_rows.get(stage_event_id) if stage_event_id else None
+        event_message_ids = {
+            identifier for identifier in values.get("message_ids", [])
+            if _positive_id(identifier) is not None
+        }
+        evidence_valid = (
+            bool(event_stage)
+            and event_episode_id == episode_id
+            and event_stage["from_stage"] == from_stage
+            and event_stage["to_stage"] == to_stage
+            and any(event_stage["reason"].startswith(prefix)
+                    for prefix in STAGE_SOURCE_REASON_PREFIXES.get(source, ()))
+            if stage_event_id is not None
+            else bool(event_message_ids) and event_message_ids.issubset(owned_message_ids)
+        )
+        if (
+            source not in STAGE_TRANSITION_SOURCES
+            or from_stage not in STAGE_GUIDE_NODES
+            or to_stage not in STAGE_GUIDE_NODES
+            or from_stage == to_stage
+            or not values
+            or not refs
+            or not evidence_valid
+        ):
+            rejected += 1
+            continue
+        from_node = f"guide:{STAGE_GUIDE_NODES[from_stage]}"
+        to_node = f"guide:{STAGE_GUIDE_NODES[to_stage]}"
+        if from_node == to_node:
+            rejected += 1
+            continue
+        edges.append({
+            "id": f"stage:{event['id']}", "from_node_id": from_node, "to_node_id": to_node,
+            "relation": "episode_stage_transition", "tone": "neutral",
+            "outcome": f"{from_stage} → {to_stage}", "reason_label": "Зафіксована зміна стадії",
+            "evidence_refs": refs, "event_ids": [event["id"]], "repeated_count": 1,
+            "last_at": event.get("occurred_at") or event.get("recorded_at") or "",
+        })
+    return edges, rejected
 
 
 def _history(episode_id, client_id):
@@ -244,20 +356,26 @@ def _history(episode_id, client_id):
     ]
     rows.extend(_event(row, "episode_event") for row in commercial.order_by(
         "-created_at", "-id",
-    ).values("id", "event_type", "from_state", "to_state", "source", "created_at", "evidence")[:EVENT_LIMIT])
+    ).values("id", "event_type", "from_state", "to_state", "stage", "source", "created_at", "evidence")[:EVENT_LIMIT])
     rows.sort(key=lambda row: (row["occurred_at"], row["id"].split(":")[0], int(row["id"].split(":")[1])), reverse=True)
     rows = list(reversed(rows[:EVENT_LIMIT]))
-    # Commercial events often mirror funnel milestones. Only the typed funnel
-    # producer supplies visits; neither stream supplies semantic transition edges.
+    # Commercial events often mirror funnel milestones. Stage transitions are
+    # projected separately and only after their episode-owned evidence checks.
     visits = [{
         "id": f"visit:{row['id']}", "node_id": row["node_id"],
         "event_id": row["id"], "occurred_at": row["occurred_at"],
         "kind": "observed_milestone",
     } for row in rows if row["node_id"]]
+    edges, rejected = _stage_transition_edges(rows, client_id=client_id, episode_id=episode_id)
     return {
         "events": rows, "total": total, "has_more": total > len(rows),
-        "coverage": "partial", "visits": visits, "edges": [],
-        "edge_coverage": "missing_source",
+        "coverage": "partial", "visits": visits, "edges": edges,
+        "edge_coverage": "partial" if edges else "missing_source",
+        "stage_transition_coverage": {
+            "status": "partial" if edges else "missing_source",
+            "verified": len(edges), "rejected": rejected,
+            "reason": "episode_owned_stage_events" if edges else "missing_authoritative_evidence",
+        },
     }
 
 
@@ -507,7 +625,7 @@ ROUTE_REASON_LABELS = {"customer_intent": "Намір клієнта", "customer
 
 
 def _append_conversation_route_graph(graph, route):
-    """Append conversational nodes and only recorded focus edges to graph v1."""
+    """Append conversational nodes and accepted, source-bound route edges."""
     if route["status"] not in {"accepted_journal", "legacy_analysis_adapter"}:
         graph["coverage"]["conversation_routes"] = route["coverage"]
         return graph
@@ -567,6 +685,21 @@ def _append_conversation_route_graph(graph, route):
 
     for transition in route["history"]["transitions"]:
         if transition["operation"] != "focus" or not transition["from_key"]:
+            if transition["operation"] != "correct":
+                continue
+            node_id = node_ids.get(transition["key"])
+            if not node_id:
+                continue
+            # ``correct`` deliberately keeps the same registered intent key.
+            # Preserve it as an event edge instead of inventing an endpoint
+            # that the acceptance contract never supplied.
+            graph["edges"].append({
+                "id": f"conversation_correction:{transition['decision_id']}:{transition['index']}",
+                "from_node_id": node_id, "to_node_id": node_id,
+                "relation": "conversation_correction", "tone": "neutral",
+                "operation": "correct", "decision_id": transition["decision_id"],
+                "evidence_refs": transition["evidence_refs"],
+            })
             continue
         from_id, to_id = node_ids.get(transition["from_key"]), node_ids.get(transition["key"])
         if not from_id or not to_id or from_id == to_id:
@@ -575,9 +708,41 @@ def _append_conversation_route_graph(graph, route):
             "id": f"conversation_focus:{transition['decision_id']}:{transition['index']}",
             "from_node_id": from_id, "to_node_id": to_id,
             "relation": "conversation_focus", "tone": "neutral",
-            "decision_id": transition["decision_id"],
+            "operation": "focus", "decision_id": transition["decision_id"],
             "evidence_refs": transition["evidence_refs"],
         })
+
+    # Only the first accepted decision has an unambiguous predecessor: the
+    # inbound conversation. Later opens have no typed source endpoint and are
+    # therefore kept as nodes until a future producer records one explicitly.
+    inquiry = next((node for node in graph["nodes"] if node["id"] == "guide:inquiry"), None)
+    first_open_edges = []
+    for transition in route["history"]["transitions"]:
+        if transition["operation"] != "open" or transition["sequence"] != 1:
+            continue
+        target_id = node_ids.get(transition["key"])
+        if target_id and transition["evidence_refs"]:
+            first_open_edges.append((transition, target_id))
+    if first_open_edges and inquiry is None:
+        inquiry = _graph_node(
+            "guide:inquiry", "Звернення", semantic_key="inbound", state="partial",
+            summary="Є прийнятий маршрут діалогу", evidence_refs=[], rank=0, lane=1,
+        )
+        graph["nodes"].append(inquiry)
+    if inquiry is not None:
+        for transition, target_id in first_open_edges:
+            for ref in transition["evidence_refs"]:
+                if ref not in inquiry["evidence_refs"]:
+                    inquiry["evidence_refs"].append(ref)
+            graph["edges"].append({
+                "id": f"conversation_open:{transition['decision_id']}:{transition['index']}",
+                "from_node_id": inquiry["id"], "to_node_id": target_id,
+                "relation": "conversation_route", "tone": "neutral",
+                "operation": "open", "decision_id": transition["decision_id"],
+                "evidence_refs": transition["evidence_refs"],
+            })
+        if first_open_edges and inquiry["id"] not in graph["overview_node_ids"]:
+            graph["overview_node_ids"].insert(0, inquiry["id"])
     active_ids = [node_ids[item["key"]] for item in route["active_intents"] if item["key"] in node_ids]
     graph["overview_node_ids"] = list(dict.fromkeys([*graph["overview_node_ids"], *active_ids]))
     graph["coverage"]["conversation_routes"] = route["coverage"]
@@ -692,6 +857,27 @@ def _graph(episode, nodes, history, focus):
 
     graph_nodes.extend(_guide_graph_nodes(nodes, milestones, focus, history_truncated=history["has_more"]))
 
+    # Stage edges are produced from episode-owned events in ``_history``. A
+    # stage can be recorded before its guide milestone is projected, so create
+    # only the two allowlisted endpoints named by that factual edge.
+    stage_edges = history.get("edges") or []
+    for edge in stage_edges:
+        for node_id in (edge["from_node_id"], edge["to_node_id"]):
+            if any(node["id"] == node_id for node in graph_nodes):
+                continue
+            key = node_id.removeprefix("guide:")
+            label = dict(GUIDE).get(key)
+            if not label:
+                continue
+            graph_nodes.append(_graph_node(
+                node_id, label, semantic_key={"inquiry": "inbound", "terms": "quoted_offer",
+                "payment": "settlement", "fulfillment": "fulfillment"}.get(key),
+                state="partial", summary="Етап названо у зафіксованій зміні стадії",
+                evidence_refs=edge.get("evidence_refs", []), rank=GUIDE.index((key, label)) + 1, lane=1,
+            ))
+        if all(any(node["id"] == edge[key] for node in graph_nodes) for key in ("from_node_id", "to_node_id")):
+            edges.append(edge)
+
     from django.db.models import Count, Q
     from management.models import IgObjection
     objection_query = IgObjection.objects.filter(episode_id=episode["id"], client_id=episode["client_id"])
@@ -738,9 +924,15 @@ def _graph(episode, nodes, history, focus):
         for event in history["events"]
     ]
     return {"schema_version": 1, "version": 1, "nodes": graph_nodes, "edges": edges,
-            "history": {"events": graph_events, "total": history["total"], "has_more": history["has_more"]}, "interpretations": interpretations,
+            "history": {"events": graph_events, "total": history["total"], "has_more": history["has_more"],
+                        "edges": history.get("edges", []),
+                        "edge_coverage": history.get("edge_coverage", "missing_source")}, "interpretations": interpretations,
             "coverage": {
                 "episode": "bounded", "milestones": "bounded", "lifecycle_edges": "allowlisted",
+                "stage_transitions": history.get("stage_transition_coverage", {
+                    "status": "missing_source", "verified": 0, "rejected": 0,
+                    "reason": "missing_authoritative_evidence",
+                }),
                 "objections": {"total": counts["total"], "returned": len(objections), "limit": 20,
                                "unresolved_total": counts["unresolved_total"],
                                "unresolved_returned": sum(item.state in unresolved_states for item in objections),
@@ -1005,7 +1197,10 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         from management.services.ig_journey_event_projection import append_offer_transitions
         graph = append_offer_transitions(graph, client_id=client_id, episode_id=episode["id"])
     graph["coverage"]["semantic_transitions"] = "partial" if any(
-        edge.get("relation") in {"conversation_focus", "semantic_transition"} for edge in graph["edges"]
+        edge.get("relation") in {
+            "conversation_route", "conversation_focus", "conversation_correction",
+            "semantic_transition", "episode_stage_transition",
+        } for edge in graph["edges"]
     ) else "missing_source"
     if episode and not is_history:
         from management.services.ig_journey_timers import invoice_timers
@@ -1029,6 +1224,38 @@ def build_journey_snapshot(client, *, view_episode_id=None):
     from management.services.ig_journey_trace_projection import append_journey_trace
     graph = append_journey_trace(graph, client_id=client_id,
         episode_id=episode["id"] if episode else None, is_history=is_history)
+    semantic_edges = [edge for edge in graph.get("edges", [])
+                      if edge.get("relation") in {
+                          "conversation_route", "conversation_focus", "conversation_correction",
+                          "semantic_transition", "episode_stage_transition",
+                      }]
+    trace_status = graph.get("coverage", {}).get("transcript_reconstruction")
+    trace = graph.get("transcript_reconstruction") or {}
+    trace_coverage = trace.get("coverage") if isinstance(trace, dict) else {}
+    trace_coverage = trace_coverage if isinstance(trace_coverage, dict) else {}
+    trace_reasons = trace_coverage.get("reasons") if isinstance(trace_coverage.get("reasons"), dict) else {}
+    route_coverage = graph.get("coverage", {}).get("conversation_routes")
+    route_truncated = isinstance(route_coverage, dict) and bool(route_coverage.get("has_more"))
+    if semantic_edges and route_truncated:
+        path_state, path_reason = "partial", "conversation_route_history_truncated"
+    elif semantic_edges:
+        path_state, path_reason = "available", "semantic_transitions_present"
+    elif trace_coverage.get("current_node_omitted"):
+        path_state, path_reason = "partial", "trace_current_node_omitted"
+    elif trace_status == "partial":
+        path_state, path_reason = "partial", "trace_partial"
+    elif history.get("events"):
+        path_state, path_reason = "missing", "history_events_without_semantic_transitions"
+    else:
+        path_state, path_reason = "missing", "no_history_events"
+    graph.setdefault("coverage", {})["semantic_path"] = {
+        "state": path_state,
+        "reason": path_reason,
+        "history_event_count": len(history.get("events", [])),
+        "semantic_edge_count": len(semantic_edges),
+        "trace_status": trace_status,
+        "trace_reasons": trace_reasons,
+    }
     if graph.get("transcript_reconstruction"):
         covered.append("source_verified_transcript_reconstruction")
     if not is_history:

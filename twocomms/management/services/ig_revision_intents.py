@@ -42,6 +42,62 @@ def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _collaboration_route_present(revision):
+    """Return true only for a collaboration route bound to this revision."""
+    proposal = getattr(revision, "generation_proposal", None) or {}
+    routes = proposal.get("customer_routes") if isinstance(proposal, dict) else None
+    intents = routes.get("intents") if isinstance(routes, dict) else ()
+    return any(
+        isinstance(item, dict)
+        and item.get("kind") == "collaboration"
+        and item.get("operation", "open") != "withdraw"
+        for item in intents or ()
+    )
+
+
+def collaboration_brief_for_revision(revision):
+    """Build a source-bound operator brief without reading mutable client state."""
+    from management.services.bot_sales_classifier import extract_collaboration_brief
+
+    proposal = getattr(revision, "generation_proposal", None) or {}
+    route = proposal.get("customer_routes") if isinstance(proposal, dict) else None
+    route_intents = [item for item in (route or {}).get("intents", ()) if isinstance(item, dict)]
+    items = []
+    for source in (getattr(revision, "bundle_snapshot", None) or {}).get("sources", ()):
+        if source.get("role") != "user":
+            continue
+        brief = extract_collaboration_brief(str(source.get("text") or ""))
+        media_parts = source.get("media_parts") or []
+        if not brief and _collaboration_route_present(revision) and media_parts:
+            kinds = {str(part.get("mime") or "").split("/", 1)[0] for part in media_parts}
+            assets = [f"{kind}_content" for kind in ("image", "video") if kind in kinds]
+            brief = {
+                "schema_version": 2, "subtypes": ["creator"], "primary_subtype": "creator",
+                "assets": assets, "requested_percentage": None, "requested_unit_terms": False,
+                "contact_present": False, "contact_values": [], "references_present": False,
+                "audience_present": False, "volume_or_deadline_present": False,
+                "decision_owner": "manager", "multiple_intents": False,
+            }
+        if brief:
+            items.append({
+                "message_id": int(source["message_id"]),
+                "source_digest": str(source.get("source_digest") or ""),
+                "brief": brief,
+                "media_parts": [
+                    {"source_part_id": str(part.get("source_part_id") or ""),
+                     "mime": str(part.get("mime") or "")[:100],
+                     "content_hash": str(part.get("content_hash") or "")}
+                    for part in media_parts if isinstance(part, dict)
+                ],
+            })
+    return {
+        "schema_version": 2,
+        "source_snapshot_digest": str(getattr(revision, "snapshot_digest", "") or ""),
+        "route_intents": route_intents,
+        "items": items[-64:],
+    }
+
+
 def manager_case_reason(revision, response=None):
     from management.services.bot_sales_classifier import (
         SUPPORT_RE,
@@ -56,7 +112,7 @@ def manager_case_reason(revision, response=None):
         and "custom" in str(revision.client.intent or "").casefold()
     ):
         return "custom_print"
-    if any(extract_collaboration_brief(text) for text in texts):
+    if any(extract_collaboration_brief(text) for text in texts) or _collaboration_route_present(revision):
         return "collaboration_review"
     if any(_MANAGER_REQUEST.search(text) for text in texts):
         return "customer_manager_request"
@@ -162,6 +218,8 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             ),
             "authority": {"price_confirmed": False, "fulfillment_started": False},
         })
+        if reason == "collaboration_review":
+            context["collaboration_brief"] = collaboration_brief_for_revision(revision)
         task.manager_context = context
         task.save(update_fields=["manager_context", "updated_at"])
         notification_key = f"ig-revision-case:{task.pk}"

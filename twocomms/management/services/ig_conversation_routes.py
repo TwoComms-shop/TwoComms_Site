@@ -102,6 +102,11 @@ def _revision_source(source, client, settings_obj, now):
     binding = proposal.get("route_binding")
     if not isinstance(binding, dict):
         return None, "source_binding_missing"
+    latest_user_id = InstagramBotMessage.objects.filter(
+        client=client, role=InstagramBotMessage.Role.USER,
+    ).order_by("-pk").values_list("pk", flat=True).first()
+    if latest_user_id != binding.get("watermark_message_id"):
+        return None, "source_watermark_stale"
     execution = proposal.get("execution_binding") or {}
     if (execution.get("settings_id") != settings_obj.pk
         or binding.get("settings_permission_epoch") != execution.get("settings_permission_epoch")

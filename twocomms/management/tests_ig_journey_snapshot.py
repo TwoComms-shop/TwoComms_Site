@@ -16,7 +16,8 @@ from management.models import (
     IgClient, IgCommercialEpisode, IgCommercialEpisodeEvent, IgConversationRouteDecision,
     IgConversationAnalysisSnapshot,
     IgFunnelResetAudit, IgFunnelStepEvent,
-    IgObjection, IgObjectionAttempt, IgPaymentConfirmationReview, InstagramBotMessage,
+    IgObjection, IgObjectionAttempt, IgPaymentConfirmationReview, IgClientStageEvent,
+    InstagramBotMessage,
 )
 from management.services.ig_journey_snapshot import build_journey_snapshot, InvalidJourneyEpisode
 from orders.models import Order
@@ -121,6 +122,11 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual(payment["recorded_visits"]["count"], 1)
         self.assertEqual(payment["state"], "open")
         self.assertEqual(snapshot["graph"]["coverage"]["semantic_transitions"], "missing_source")
+        self.assertEqual(snapshot["graph"]["coverage"]["semantic_path"], {
+            "state": "missing", "reason": "history_events_without_semantic_transitions",
+            "history_event_count": 1, "semantic_edge_count": 0,
+            "trace_status": "missing", "trace_reasons": {},
+        })
 
     def test_recorded_visits_count_only_owned_typed_events_without_mirrored_history(self):
         episode = self.episode()
@@ -137,6 +143,68 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual({ref["id"] for ref in visits["evidence_refs"]}, {first.pk, second.pk})
         self.assertEqual(offer["label"], "Посилання на оплату")
         self.assertEqual(snapshot["graph"]["edges"], [])
+
+    def test_episode_bound_stage_transition_projects_factual_edge(self):
+        episode = self.episode()
+        message = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user",
+        )
+        event = IgCommercialEpisodeEvent.objects.create(
+            episode=episode, dedupe_key="journey-bound-stage", event_type="stage_transition",
+            from_state="qualifying", to_state="checkout", stage="checkout",
+            source="repeat_intent", evidence={"message_ids": [message.pk]},
+        )
+
+        snapshot = build_journey_snapshot(self.buyer)
+        graph = snapshot["graph"]
+        edge = next(edge for edge in graph["edges"] if edge["relation"] == "episode_stage_transition")
+        self.assertEqual((edge["from_node_id"], edge["to_node_id"]), ("guide:inquiry", "guide:offer"))
+        self.assertEqual(edge["event_ids"], [f"episode_event:{event.pk}"])
+        self.assertEqual(edge["evidence_refs"], [{"kind": "episode_event", "id": event.pk}])
+        self.assertEqual(graph["history"]["edges"], [edge])
+        self.assertEqual(graph["coverage"]["stage_transitions"]["status"], "partial")
+        self.assertEqual(graph["coverage"]["semantic_transitions"], "partial")
+        self.assertEqual(graph["coverage"]["semantic_path"]["state"], "available")
+
+    def test_central_stage_mutator_binds_transition_to_current_episode(self):
+        episode = self.episode()
+        self.buyer.current_commercial_episode = episode
+        self.buyer.stage = IgClient.Stage.QUALIFYING
+        self.buyer.save(update_fields=["current_commercial_episode", "stage", "updated_at"])
+        self.buyer.set_stage(IgClient.Stage.PRODUCT_MATCHED, reason="bot:product_match")
+
+        snapshot = build_journey_snapshot(self.buyer)
+        edge = next(edge for edge in snapshot["graph"]["edges"]
+                    if edge["relation"] == "episode_stage_transition")
+        self.assertEqual((edge["from_node_id"], edge["to_node_id"]),
+                         ("guide:inquiry", "guide:selection"))
+        self.assertEqual(edge["evidence_refs"][0]["kind"], "episode_event")
+        self.assertEqual(snapshot["graph"]["coverage"]["semantic_path"]["state"], "available")
+
+    def test_client_stage_event_without_episode_binding_does_not_project_edge(self):
+        episode = self.episode()
+        IgClientStageEvent.objects.create(
+            client=self.buyer, from_stage="qualifying", to_stage="checkout",
+            reason="checkout_proposal_created",
+        )
+        snapshot = build_journey_snapshot(self.buyer)
+        graph = snapshot["graph"]
+        self.assertFalse(any(edge["relation"] == "episode_stage_transition" for edge in graph["edges"]))
+        self.assertEqual(graph["coverage"]["stage_transitions"]["status"], "missing_source")
+        self.assertEqual(graph["coverage"]["semantic_path"]["state"], "missing")
+        self.assertEqual(snapshot["viewed_episode_id"], episode.pk)
+
+    def test_stage_transition_never_invents_skipped_or_not_applicable_states(self):
+        episode = self.episode()
+        InstagramBotMessage.objects.create(client=self.buyer, sender_id="journey-buyer", role="user")
+        IgCommercialEpisodeEvent.objects.create(
+            episode=episode, dedupe_key="journey-stage-status", event_type="stage_transition",
+            from_state="qualifying", to_state="checkout", source="repeat_intent",
+            evidence={"message_id": 1},
+        )
+        nodes = self.nodes(build_journey_snapshot(self.buyer))
+        for key in ("inquiry", "offer"):
+            self.assertNotIn(nodes[key]["state"], {"skipped", "not_applicable"})
 
     def test_price_quote_is_history_and_manager_is_not_provider_truth(self):
         episode = self.episode(payment_snapshot={
@@ -450,10 +518,71 @@ class JourneySnapshotTests(TestCase):
         self.assertEqual(len(edges), 1)
         self.assertEqual((edges[0]["from_node_id"], edges[0]["to_node_id"]),
                          ("conversation_intent:collaboration:designer", "conversation_intent:employment:none"))
+        route_edges = [edge for edge in snapshot["graph"]["edges"] if edge["relation"] == "conversation_route"]
+        self.assertEqual(len(route_edges), 2)
+        self.assertEqual({(edge["from_node_id"], edge["to_node_id"]) for edge in route_edges}, {
+            ("guide:inquiry", "conversation_intent:employment:none"),
+            ("guide:inquiry", "conversation_intent:collaboration:designer"),
+        })
+        self.assertEqual(snapshot["graph"]["coverage"]["semantic_path"]["state"], "available")
         self.assertNotIn("episode", json.dumps(route))
         self.assertEqual({ref["kind"] for transition in route["history"]["transitions"]
                           for ref in transition["evidence_refs"]}, {"message"})
         self.assertEqual(snapshot["current_episode_id"], episode.pk)
+
+    def test_first_open_projects_source_bound_inquiry_to_intent_edge(self):
+        message = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user", text="Робота",
+        )
+        self.route_decision(
+            sequence=1, message=message,
+            active_intents=[{"key": "employment:none", "kind": "employment", "subtype": "none"}],
+            transitions=[{
+                "operation": "open", "key": "employment:none", "reason_code": "customer_intent",
+                "evidence_message_ids": [message.pk],
+            }],
+        )
+
+        snapshot = build_journey_snapshot(self.buyer)
+        edge = next(edge for edge in snapshot["graph"]["edges"]
+                     if edge["relation"] == "conversation_route")
+        self.assertEqual((edge["from_node_id"], edge["to_node_id"]),
+                         ("guide:inquiry", "conversation_intent:employment:none"))
+        self.assertEqual(edge["operation"], "open")
+        self.assertEqual(edge["evidence_refs"], [{"kind": "message", "id": message.pk}])
+        self.assertEqual(snapshot["graph"]["coverage"]["semantic_transitions"], "partial")
+
+    def test_correction_projects_as_source_bound_event_on_registered_intent(self):
+        first_message = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user", text="Робота",
+        )
+        self.route_decision(
+            sequence=1, message=first_message,
+            active_intents=[{"key": "employment:none", "kind": "employment", "subtype": "none"}],
+            transitions=[{
+                "operation": "open", "key": "employment:none", "reason_code": "customer_intent",
+                "evidence_message_ids": [first_message.pk],
+            }],
+        )
+        correction_message = InstagramBotMessage.objects.create(
+            client=self.buyer, sender_id="journey-buyer", role="user", text="Уточнюю вакансію",
+        )
+        previous = IgConversationRouteDecision.objects.get(sequence=1)
+        self.route_decision(
+            sequence=2, message=correction_message, previous=previous,
+            active_intents=[{"key": "employment:none", "kind": "employment", "subtype": "none"}],
+            transitions=[{
+                "operation": "correct", "key": "employment:none", "reason_code": "customer_correction",
+                "evidence_message_ids": [correction_message.pk],
+            }],
+        )
+
+        snapshot = build_journey_snapshot(self.buyer)
+        edge = next(edge for edge in snapshot["graph"]["edges"]
+                     if edge["relation"] == "conversation_correction")
+        self.assertEqual((edge["from_node_id"], edge["to_node_id"]),
+                         ("conversation_intent:employment:none", "conversation_intent:employment:none"))
+        self.assertEqual(edge["evidence_refs"], [{"kind": "message", "id": correction_message.pk}])
 
     def test_route_history_keeps_explicit_withdrawal_and_omits_current_overlay_from_old_purchase(self):
         old = self.episode(current=False)

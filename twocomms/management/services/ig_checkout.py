@@ -1029,11 +1029,16 @@ def create_or_update_proposal(
         locked_client.stage = IgClient.Stage.CHECKOUT
         locked_client.stage_updated_at = timezone.now()
         locked_client.save(update_fields=["stage", "stage_updated_at", "updated_at"])
-        IgClientStageEvent.objects.create(
+        stage_event = IgClientStageEvent.objects.create(
             client=locked_client,
             from_stage=stage_before or "",
             to_stage=IgClient.Stage.CHECKOUT,
             reason="checkout_proposal_created",
+        )
+        from management.services.ig_commercial_episodes import append_client_stage_transition_event
+        append_client_stage_transition_event(
+            locked_client, stage_event_id=stage_event.pk, from_stage=stage_before or "",
+            to_stage=IgClient.Stage.CHECKOUT, reason="checkout_proposal_created",
         )
     from management.services.bot_followups import schedule_proposal_expiry_event
 

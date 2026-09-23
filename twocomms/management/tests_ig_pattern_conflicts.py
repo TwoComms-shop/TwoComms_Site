@@ -9,9 +9,11 @@
 неправильну класифікацію.
 """
 from django.test import TestCase
+from types import SimpleNamespace
 
 from management.ig_bot_models import IgClient, IgConversationSignal
-from management.models import InstagramBotMessage
+from management.models import InstagramBotMessage, IgBotNotification
+from management.ig_bot_models import IgFollowUpTask
 
 
 class CollaborationBriefTests(TestCase):
@@ -58,6 +60,53 @@ class CollaborationBriefTests(TestCase):
         self.assertFalse(is_creator_collaboration_offer(text))
         self.assertEqual(extract_collaboration_brief(text), {})
 
+    def test_english_creator_offer_captures_roles_assets_and_contact_handles(self):
+        from management.services.bot_sales_classifier import extract_collaboration_brief
+
+        brief = extract_collaboration_brief(
+            "I am a photographer and videographer. I can create photo and video content "
+            "for your brand at my location. Telegram @photo_pro"
+        )
+        self.assertEqual(brief["primary_subtype"], "creator")
+        self.assertIn("video_content", brief["assets"])
+        self.assertIn("location", brief["assets"])
+        self.assertTrue(brief["contact_present"])
+        self.assertIn("@photo_pro", brief["contact_values"])
+
+    def test_product_print_store_and_quoted_third_party_text_are_not_creator_briefs(self):
+        from management.services.bot_sales_classifier import extract_collaboration_brief
+
+        for text in (
+            "Хочу футболку з принтом",
+            "В якому магазині ви знаходитесь?",
+            "Покажіть модель для вашого бренду",
+            "Це цитата: блогер пропонує колаб, але це не моя пропозиція",
+        ):
+            self.assertEqual(extract_collaboration_brief(text), {}, text)
+
+    def test_route_bound_media_offer_gets_manager_case_and_source_bound_brief(self):
+        from management.services.ig_revision_intents import (
+            collaboration_brief_for_revision, manager_case_reason,
+        )
+
+        revision = SimpleNamespace(
+            snapshot_digest="sealed-digest",
+            bundle_snapshot={"sources": [{
+                "message_id": 44, "role": "user", "text": "",
+                "source_digest": "source-digest",
+                "media_parts": [{"source_part_id": "p1", "mime": "video/mp4", "content_hash": "a" * 64}],
+            }]},
+            generation_proposal={"customer_routes": {"intents": [{
+                "kind": "collaboration", "subtype": "creator",
+            }]}},
+        )
+        self.assertEqual(manager_case_reason(revision), "collaboration_review")
+        brief = collaboration_brief_for_revision(revision)
+        self.assertEqual(brief["source_snapshot_digest"], "sealed-digest")
+        self.assertEqual(brief["items"][0]["message_id"], 44)
+        self.assertEqual(brief["items"][0]["brief"]["primary_subtype"], "creator")
+        self.assertEqual(brief["items"][0]["media_parts"][0]["mime"], "video/mp4")
+
     def test_designer_brief_captures_assets_terms_and_manager_owner(self):
         from management.services.bot_sales_classifier import extract_collaboration_brief
         brief = extract_collaboration_brief(
@@ -77,6 +126,122 @@ class CollaborationBriefTests(TestCase):
         self.assertIn("designer", brief["subtypes"])
         self.assertIn("dropship", brief["subtypes"])
         self.assertIn("wholesale_store", brief["subtypes"])
+
+    def test_store_and_print_questions_do_not_enter_collaboration_manager_route(self):
+        from management.services.ig_revision_intents import manager_case_reason
+
+        for text in (
+            "В якому магазині ви знаходитесь?",
+            "Хочу футболку з принтом",
+            "Покажіть модель для вашого бренду",
+        ):
+            revision = SimpleNamespace(
+                client=SimpleNamespace(intent=""),
+                bundle_snapshot={"sources": [{"role": "user", "text": text}]},
+                generation_proposal={},
+            )
+            self.assertNotEqual(manager_case_reason(revision), "collaboration_review", text)
+
+    def test_withdrawn_collaboration_route_does_not_reopen_manager_handoff(self):
+        from management.services.ig_revision_intents import manager_case_reason
+
+        revision = SimpleNamespace(
+            client=SimpleNamespace(intent=""),
+            bundle_snapshot={"sources": [{"role": "user", "text": "Більше не актуально"}]},
+            generation_proposal={"customer_routes": {"intents": [{
+                "kind": "collaboration", "subtype": "creator", "operation": "withdraw",
+            }]}},
+        )
+        self.assertNotEqual(manager_case_reason(revision), "collaboration_review")
+
+
+class CollaborationManagerCaseIntegrationTests(TestCase):
+    def setUp(self):
+        self.client = IgClient.objects.create(igsid="collaboration-case", username="creator")
+        self.revision = SimpleNamespace(
+            pk=901,
+            client_id=self.client.pk,
+            snapshot_digest="sealed-collaboration",
+            bundle_snapshot={"sources": [{
+                "message_id": 42,
+                "role": "user",
+                "text": "Я фотограф і відеограф, можу створити фото та відеоконтент для вашого бренду.",
+                "source_digest": "source-42",
+            }]},
+        )
+
+    def test_creator_offer_creates_handoff_and_holding_requests_missing_evidence(self):
+        from management.services.ig_revision_holding import (
+            _collaboration_holding_reply,
+            _ensure_collaboration_review_case,
+        )
+
+        task, notification = _ensure_collaboration_review_case(self.revision, self.client)
+
+        self.assertEqual(task.reason, "revision_case:collaboration_review")
+        self.assertEqual(task.manager_approval_status, IgFollowUpTask.ManagerApprovalStatus.PENDING)
+        self.assertEqual(notification.dedupe_key, f"ig-revision-collaboration-case:{task.pk}")
+        self.assertFalse(task.manager_context["collaboration_brief"]["items"][0]["brief"]["contact_present"])
+
+        reply = _collaboration_holding_reply("uk")
+        self.assertIn("портфоліо", reply)
+        self.assertIn("результати", reply)
+        self.assertIn("Telegram", reply)
+        self.assertIn("зацікавить", reply)
+
+    def test_holding_reply_does_not_reask_materials_already_present(self):
+        from management.services.ig_revision_holding import (
+            _collaboration_holding_inputs, _collaboration_holding_reply,
+        )
+
+        revision = SimpleNamespace(
+            snapshot_digest="sealed-complete",
+            bundle_snapshot={"sources": [{
+                "message_id": 43, "role": "user",
+                "text": (
+                    "Я фотограф, можу створити контент для вашого бренду. "
+                    "Ось моє портфоліо і результати: 2 млн переглядів, Telegram @creator"
+                ),
+            }]},
+            generation_proposal={},
+        )
+        flags = _collaboration_holding_inputs(revision)
+        self.assertEqual(flags, (True, True, True))
+        reply = _collaboration_holding_reply(
+            "uk", evidence_present=flags[0], results_present=flags[1],
+            contact_present=flags[2],
+        )
+        self.assertNotIn("портфоліо", reply)
+        self.assertNotIn("результати", reply)
+        self.assertIn("керівництву", reply)
+
+    def test_holding_reply_recognizes_brand_experience_as_existing_evidence(self):
+        from management.services.ig_revision_holding import _collaboration_holding_inputs
+
+        revision = SimpleNamespace(
+            snapshot_digest="sealed-experience",
+            bundle_snapshot={"sources": [{
+                "message_id": 44, "role": "user",
+                "text": "Я фотограф, працював з брендами 3ton.shop і Fosfor.clo, ось мої роботи.",
+            }]},
+            generation_proposal={},
+        )
+        self.assertEqual(_collaboration_holding_inputs(revision)[0], True)
+
+    def test_replayed_collaboration_audit_reuses_one_case_and_one_notification(self):
+        from management.services.ig_revision_holding import _ensure_collaboration_review_case
+
+        first_task, first_notification = _ensure_collaboration_review_case(self.revision, self.client)
+        replay_task, replay_notification = _ensure_collaboration_review_case(self.revision, self.client)
+
+        self.assertEqual(replay_task.pk, first_task.pk)
+        self.assertEqual(replay_notification.pk, first_notification.pk)
+        self.assertEqual(IgFollowUpTask.objects.filter(
+            client=self.client, reason="revision_case:collaboration_review",
+        ).count(), 1)
+        self.assertEqual(IgBotNotification.objects.filter(
+            client=self.client, dedupe_key=f"ig-revision-collaboration-case:{first_task.pk}",
+        ).count(), 1)
 
 class PatternConflictMixin:
     def _classify(self, text, *, key=None, role="user"):

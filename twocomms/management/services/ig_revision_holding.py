@@ -138,7 +138,7 @@ def _sources_unchanged(revision):
 
 def _positive_current_request(client, revision):
     from management.services.ig_turn_intent import build_turn_intent
-    from management.services.ig_revision_intents import manager_case_reason
+    from management.services.ig_revision_intents import manager_case_reason, _collaboration_route_present
     from management.services.bot_sales_classifier import SUPPORT_RE, extract_collaboration_brief
 
     intent = build_turn_intent(client, revision)
@@ -150,38 +150,85 @@ def _positive_current_request(client, revision):
     return bool(
         (intent.get("purpose") == "support" and any(SUPPORT_RE.search(text) for text in texts))
         or manager_case_reason(revision) in {"customer_manager_request", "collaboration_review"}
+        or _collaboration_route_present(revision)
         or any(extract_collaboration_brief(text) for text in texts)
     )
 
 
-def _collaboration_holding_reply(language: str) -> str:
-    """Ask for reviewable creator evidence while keeping acceptance undecided."""
-    return {
-        "uk": (
-            "Дякую за пропозицію співпраці. Я передала її керівництву на розгляд. "
-            "Будь ласка, надішліть портфоліо або приклади фото- чи відеоробіт, "
-            "результати попередніх проєктів і зручний контакт: телефон, Telegram "
-            "або інший спосіб зв'язку. Якщо пропозиція зацікавить команду, з вами зв'яжуться."
-        ),
-        "ru": (
-            "Спасибо за предложение о сотрудничестве. Я передала его руководству "
-            "на рассмотрение. Пожалуйста, пришлите портфолио или примеры фото- и "
-            "видеоработ, результаты прошлых проектов и удобный контакт: телефон, "
-            "Telegram или другой способ связи. Если предложение заинтересует команду, "
-            "с вами свяжутся."
-        ),
-        "en": (
-            "Thank you for your collaboration proposal. I have passed it to our "
-            "management for review. Please send a portfolio or photo/video work samples, "
-            "the results of previous projects, and a convenient contact such as phone or "
-            "Telegram. If the team is interested, they will contact you."
-        ),
-    }.get(language, "")
+def _collaboration_holding_reply(
+    language: str, *, evidence_present: bool = False,
+    results_present: bool = False, contact_present: bool = False,
+) -> str:
+    """Acknowledge the handoff and ask only for missing review inputs."""
+    missing = {
+        "uk": [
+            "портфоліо або приклади фото- чи відеоробіт" if not evidence_present else "",
+            "короткі результати попередніх проєктів" if not results_present else "",
+            "зручний контакт (телефон, Telegram або інший спосіб зв'язку)" if not contact_present else "",
+        ],
+        "ru": [
+            "портфолио или примеры фото- и видеоработ" if not evidence_present else "",
+            "краткие результаты прошлых проектов" if not results_present else "",
+            "удобный контакт (телефон, Telegram или другой способ связи)" if not contact_present else "",
+        ],
+        "en": [
+            "a portfolio or photo/video work samples" if not evidence_present else "",
+            "brief results from previous projects" if not results_present else "",
+            "a convenient contact such as phone or Telegram" if not contact_present else "",
+        ],
+    }.get(language, [])
+    missing = [item for item in missing if item]
+    if language == "ru":
+        prefix = "Спасибо за предложение о сотрудничестве. Я передала его руководству на рассмотрение."
+        request = " Пожалуйста, пришлите " + ", ".join(missing) + "." if missing else ""
+        suffix = " Если предложение заинтересует команду, с вами свяжутся."
+    elif language == "en":
+        prefix = "Thank you for your collaboration proposal. I have passed it to our management for review."
+        request = " Please send " + ", ".join(missing) + "." if missing else ""
+        suffix = " If the team is interested, they will contact you."
+    else:
+        prefix = "Дякую за пропозицію співпраці. Я передала її керівництву на розгляд."
+        request = " Будь ласка, надішліть " + ", ".join(missing) + "." if missing else ""
+        suffix = " Якщо пропозиція зацікавить команду, з вами зв'яжуться."
+    return prefix + request + suffix
+
+
+def _collaboration_holding_inputs(revision):
+    """Summarize only presence flags needed by the local fallback wording."""
+    import re
+    from management.services.ig_revision_intents import collaboration_brief_for_revision
+
+    summary = collaboration_brief_for_revision(revision)
+    items = summary.get("items") if isinstance(summary, dict) else []
+    source_by_id = {
+        int(row["message_id"]): str(row.get("text") or "")
+        for row in (revision.bundle_snapshot or {}).get("sources", ())
+        if isinstance(row, dict) and str(row.get("message_id", "")).isdigit()
+    }
+    evidence_present = any(
+        item.get("media_parts") or re.search(
+            r"\b(?:портфоліо|портфолио|portfolio|приклад\w*|examples?|case\s*stud\w*|"
+            r"посилання|link|робіт\w*|работ\w*|works?|досвід\w*|опыт\w*|"
+            r"працював\w*|работал\w*|бренд\w*|brand\w*)\b",
+            source_by_id.get(int(item.get("message_id")), ""), re.I,
+        ) for item in items if isinstance(item, dict)
+    )
+    results_present = any(
+        re.search(r"\b(?:результат\w*|results?|охоплення|продаж\w*|sales?|views?|перегляд\w*)\b",
+                  source_by_id.get(int(item.get("message_id")), ""), re.I)
+        for item in items if isinstance(item, dict)
+    )
+    contact_present = any(
+        bool((item.get("brief") or {}).get("contact_present"))
+        for item in items if isinstance(item, dict)
+    )
+    return evidence_present, results_present, contact_present
 
 
 def _ensure_collaboration_review_case(revision, client):
     """Create an open collaboration decision case from the sealed snapshot."""
     from management.services.instagram_bot import notify_manager
+    from management.services.ig_revision_intents import collaboration_brief_for_revision
 
     task = IgFollowUpTask.objects.select_for_update().filter(
         client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK,
@@ -214,6 +261,7 @@ def _ensure_collaboration_review_case(revision, client):
         "required_decisions": ["portfolio_review", "collaboration_terms"],
         "authority": {"price_confirmed": False, "fulfillment_started": False},
     })
+    context["collaboration_brief"] = collaboration_brief_for_revision(revision)
     task.manager_context = context
     task.save(update_fields=["manager_context", "updated_at"])
     key = f"ig-revision-collaboration-case:{task.pk}"
@@ -231,7 +279,8 @@ def _neutral_current_request(client, revision):
     """Allow a generic acknowledgement only for an unclassified clean turn."""
     from management.services.ig_turn_intent import _NEGATED_ORDER, build_turn_intent
     from management.services.bot_sales_classifier import (
-        COLLAB_RE, NO_BUY_RE, SUPPORT_RE, URL_RE, is_explicit_opt_out,
+        COLLAB_RE, NO_BUY_RE, SUPPORT_RE, URL_RE, is_creator_collaboration_offer,
+        is_explicit_opt_out,
     )
 
     if (
@@ -257,6 +306,7 @@ def _neutral_current_request(client, revision):
     return not any(
         URL_RE.search(text)
         or COLLAB_RE.search(text)
+        or is_creator_collaboration_offer(text)
         or SUPPORT_RE.search(text)
         or NO_BUY_RE.search(text)
         or _NEGATED_ORDER.search(text)
@@ -387,13 +437,18 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 "ru": "Спасибо за сообщение. Я уточню детали и скоро отвечу вам здесь.",
                 "en": "Thanks for your message. I will check the details and reply here shortly.",
             })
-            collaboration_request = any(
+            from management.services.ig_revision_intents import _collaboration_route_present
+            collaboration_request = _collaboration_route_present(revision) or any(
                 extract_collaboration_brief(str(row.get("text") or ""))
                 for row in revision.bundle_snapshot.get("sources", ())
                 if row.get("role") == "user"
             )
             if collaboration_request:
-                text = _collaboration_holding_reply(language)
+                evidence_present, results_present, contact_present = _collaboration_holding_inputs(revision)
+                text = _collaboration_holding_reply(
+                    language, evidence_present=evidence_present,
+                    results_present=results_present, contact_present=contact_present,
+                )
                 collaboration_task, collaboration_notification = _ensure_collaboration_review_case(revision, client)
             else:
                 text = texts[language]

@@ -2751,7 +2751,7 @@ def archive_historical_paid_review(
         if stage_before != client.stage:
             # Э3.2: событие пишется при ЛЮБОМ изменении стадии, а не только при
             # переходе в DONE. Раньше переход в PAID оставался без evidence.
-            IgClientStageEvent.objects.create(
+            stage_event = IgClientStageEvent.objects.create(
                 client=client,
                 from_stage=stage_before or "",
                 to_stage=client.stage,
@@ -2760,6 +2760,16 @@ def archive_historical_paid_review(
                     if transition_to_done
                     else "historical_payment_review_paid"
                 ),
+            )
+            from management.services.ig_commercial_episodes import append_client_stage_transition_event
+            append_client_stage_transition_event(
+                client, stage_event_id=stage_event.pk, from_stage=stage_before or "",
+                to_stage=client.stage,
+                reason=(
+                    "historical_payment_review_completed"
+                    if transition_to_done else "historical_payment_review_paid"
+                ),
+                episode_id=episode.pk,
             )
     IgBotNotification.objects.filter(
         dedupe_key=locked.dedupe_key,

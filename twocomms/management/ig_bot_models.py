@@ -628,11 +628,16 @@ class IgClient(models.Model):
             self.stage = new_stage
             self.stage_updated_at = stage_at
             self.save(update_fields=["stage", "stage_updated_at", "updated_at"])
-            IgClientStageEvent.objects.create(
+            stage_event = IgClientStageEvent.objects.create(
                 client=self,
                 from_stage=old or "",
                 to_stage=new_stage,
                 reason=(reason or "")[:255],
+            )
+            from management.services.ig_commercial_episodes import append_client_stage_transition_event
+            append_client_stage_transition_event(
+                self, stage_event_id=stage_event.pk, from_stage=old or "",
+                to_stage=new_stage, reason=reason or "",
             )
 
     def touch_inbound(self) -> None:

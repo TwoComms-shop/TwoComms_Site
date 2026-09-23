@@ -593,21 +593,28 @@ COLLAB_RE = re.compile(
 )
 CREATOR_ROLE_RE = re.compile(
     r"\b(?:фотограф\w*|фотограф|відеограф\w*|видеограф\w*|оператор\w*|"
-    r"модел\w*|контент[- ]?мейкер\w*|content\s+creator|ugc|stylist\w*|"
-    r"стиліст\w*|стилист\w*)\b",
+    r"модел\w*|model\w*|photographer\w*|videographer\w*|контент[- ]?мейкер\w*|"
+    r"content\s+creator|ugc|stylist\w*|стиліст\w*|стилист\w*|styling\w*)\b",
     re.I,
 )
 CREATOR_OFFER_RE = re.compile(
     r"\b(?:можу|можемо|готов(?:ий|а|і)?|пропоную|предлагаю|запропоную|"
     r"зніму|сниму|створю|сделаю|зроблю|працюю|работаю|працював\w*|"
-    r"работал\w*|співпрацюю|сотрудничаю|collaborat\w*|for\s+your\s+brand)\b",
+    r"работал\w*|співпрацюю|сотрудничаю|collaborat\w*|can|offer|provide|create|"
+    r"shoot|style|work|for\s+your\s+brand)\b",
     re.I,
 )
 CREATOR_DELIVERABLE_RE = re.compile(
     r"\b(?:контент\w*|фото\w*|фотосесі\w*|фотосесси\w*|відео\w*|видео\w*|"
     r"зйомк\w*|съемк\w*|reels?\w*|stories?\w*|ролик\w*|локаці\w*|локаци\w*|"
-    r"модель\w*|model\w*|portfolio\w*|портфоліо\w*|портфолио\w*)\b",
+    r"location\w*|photo\w*|video\w*|content\w*|styling\w*|модель\w*|model\w*|"
+    r"portfolio\w*|портфоліо\w*|портфолио\w*)\b",
     re.I,
+)
+CREATOR_SERVICE_RE = re.compile(
+    r"\b(?:контент\w*|content\w*|фото\w*|photo\w*|відео\w*|video\w*|"
+    r"зйомк\w*|shoot\w*|локаці\w*|location\w*|стиліст\w*|stylist\w*|"
+    r"styling\w*|reels?\w*|stories?\w*|portfolio\w*)\b", re.I,
 )
 COLLABORATION_SUBTYPE_PATTERNS = (
     ("designer", re.compile(r"\b(?:дизайнер\w*|design(?:er)?s?|artist|художник\w*|принт\w*)\b", re.I)),
@@ -623,24 +630,44 @@ COLLAB_ASSET_PATTERNS = {
 }
 COLLAB_TERM_PERCENT_RE = re.compile(r"(?<!\w)(\d{1,3})\s*(?:%|відсот(?:ок|ки)|процент(?:а|ов)?)(?!\w)", re.I)
 COLLAB_TERM_UNIT_RE = re.compile(r"\b(?:грн|uah|usd|дол(?:лар|л)?\w*|за\s+(?:один|одну|шт|штуку|unit|piece))\b", re.I)
-COLLAB_CONTACT_RE = re.compile(r"(?:\+?\d[\d ()-]{7,}|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,})")
+COLLAB_CONTACT_RE = re.compile(
+    r"(?:\+?\d[\d ()-]{7,}|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|"
+    r"(?:https?://)?(?:t\.me|telegram\.me|instagram\.com)/[A-Za-z0-9_.-]{2,64}|"
+    r"(?<!\w)@[A-Za-z0-9_.-]{3,32})", re.I,
+)
+NON_CURRENT_COLLAB_RE = re.compile(
+    r"(?:\b(?:це|это|this)\s+(?:цитата|quote)|\b(?:не|not)\s+(?:моя|моё|мое|my)\s+"
+    r"(?:пропозиція|предложение|offer)|\b(?:click\s+(?:this|the)\s+link|"
+    r"pay\s+(?:a\s+)?setup\s+fee|send\s+money\s+to\s+promote)\b)", re.I,
+)
 
 def extract_collaboration_brief(text: str) -> dict:
     """Return bounded, evidence-only collaboration facts for CRM/funnel use."""
     value = str(text or "")
+    if NON_CURRENT_COLLAB_RE.search(value):
+        return {}
     creator_offer = is_creator_collaboration_offer(value)
     if not COLLAB_RE.search(value) and not any(pattern.search(value) for _, pattern in COLLABORATION_SUBTYPE_PATTERNS) and not creator_offer:
         return {}
     subtypes = [name for name, pattern in COLLABORATION_SUBTYPE_PATTERNS if pattern.search(value)]
+    if "designer" in subtypes and not (
+        re.search(r"\b(?:дизайнер\w*|design(?:er)?s?|artist|художник\w*)\b", value, re.I)
+        or any(COLLAB_ASSET_PATTERNS[key].search(value) for key in ("dtf_ready", "source_art"))
+    ):
+        subtypes.remove("designer")
+    if "wholesale_store" in subtypes and not (WHOLESALE_RE.search(value) or "dropship" in subtypes or COLLAB_RE.search(value)):
+        subtypes.remove("wholesale_store")
+    if not subtypes and not creator_offer:
+        return {}
     if creator_offer and "creator" not in subtypes:
         subtypes.insert(0, "creator")
     if not subtypes:
         subtypes = ["other"]
     assets = [name for name, pattern in COLLAB_ASSET_PATTERNS.items() if pattern.search(value)]
     if creator_offer:
-        if re.search(r"\b(?:відео\w*|видео\w*|зйомк\w*|съемк\w*|reels?\w*|stories?\w*|ролик\w*)\b", value, re.I):
+        if re.search(r"\b(?:відео\w*|видео\w*|video\w*|зйомк\w*|съемк\w*|shoot\w*|reels?\w*|stories?\w*|ролик\w*)\b", value, re.I):
             assets.append("video_content")
-        if re.search(r"\b(?:локаці\w*|локаци\w*)\b", value, re.I):
+        if re.search(r"\b(?:локаці\w*|локаци\w*|location\w*)\b", value, re.I):
             assets.append("location")
         if re.search(r"\b(?:модел\w*|model\w*)\b", value, re.I):
             assets.append("model")
@@ -674,11 +701,11 @@ def is_creator_collaboration_offer(text: str) -> bool:
     must also offer work, a deliverable, or a stated production capability.
     """
     value = str(text or "")
-    if COLLAB_RE.search(value):
-        return True
+    if NON_CURRENT_COLLAB_RE.search(value):
+        return False
     return bool(
         CREATOR_ROLE_RE.search(value)
-        and (CREATOR_OFFER_RE.search(value) or CREATOR_DELIVERABLE_RE.search(value))
+        and (CREATOR_OFFER_RE.search(value) or CREATOR_SERVICE_RE.search(value))
         and re.search(r"\b(?:вам|ваш(?:а|у|ій|и)?|бренд\w*|brand\w*|для\s+(?:вас|ваш)|for\s+you|for\s+your)\b", value, re.I)
     )
 
@@ -1177,7 +1204,9 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
     # бартере, поэтому при одновременном совпадении опт важнее.
     if WHOLESALE_RE.search(text or ""):
         return types.WHOLESALE_B2B
-    if is_creator_collaboration_offer(text or ""):
+    if is_creator_collaboration_offer(text or "") or (
+        COLLAB_RE.search(text or "") and not NON_CURRENT_COLLAB_RE.search(text or "")
+    ):
         return types.COLLABORATION
     if result.get("intent") == IgClient.Intent.CUSTOM_PRINT:
         return types.CUSTOM_PRINT

@@ -588,6 +588,49 @@ def append_episode_event(
     return event
 
 
+_STAGE_EVENT_SOURCES = (
+    ("checkout_invoice_created", "checkout_proposal"),
+    ("checkout_proposal", "checkout_proposal"),
+    ("payment", "payment_review"),
+    ("payment_review_", "payment_review"),
+    ("historical_payment_review_", "payment_review"),
+    ("instagram_checkout_paid", "order_truth"),
+    ("order_linked", "order_truth"),
+    ("bot", "stage_fsm"),
+    ("classifier:", "stage_fsm"),
+    ("stage_fsm:", "stage_fsm"),
+)
+
+
+def append_client_stage_transition_event(client, *, stage_event_id: int,
+                                         from_stage: str, to_stage: str,
+                                         reason: str, episode_id: int | None = None):
+    """Bind an authoritative client-stage write to its current episode."""
+    try:
+        stage_event_id = int(stage_event_id)
+    except (TypeError, ValueError):
+        return None
+    source = next((value for prefix, value in _STAGE_EVENT_SOURCES
+                   if str(reason or "").startswith(prefix)), "")
+    if not source or not str(from_stage or "") or not str(to_stage or "") or from_stage == to_stage:
+        return None
+    episode_id = episode_id or getattr(client, "current_commercial_episode_id", None)
+    if not episode_id:
+        return None
+    from management.ig_bot_models import IgCommercialEpisode
+    episode = IgCommercialEpisode.objects.filter(pk=episode_id, client_id=client.pk).first()
+    if episode is None:
+        return None
+    return append_episode_event(
+        episode,
+        dedupe_key=f"episode:{episode.pk}:client-stage:{stage_event_id}",
+        event_type="stage_transition",
+        from_state=str(from_stage)[:32], to_state=str(to_stage)[:32],
+        stage=str(to_stage)[:32], source=source,
+        evidence={"stage_event_id": stage_event_id, "episode_id": episode.pk},
+    )
+
+
 def _next_sequence(client_id: int) -> int:
     from management.ig_bot_models import IgCommercialEpisode
 
