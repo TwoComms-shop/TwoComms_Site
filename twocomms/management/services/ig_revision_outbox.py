@@ -857,6 +857,10 @@ def mark_provider_started(
             fact_checker=fact_checker,
             offer_checker=offer_checker,
             now=now,
+            allow_expired_holding=(
+                effect.purpose == PURPOSE_TECHNICAL_HOLDING
+                and revision.recovery_code == "provider_dispatch_budget"
+            ),
         )
         if not readiness.ready:
             effect.state = (
