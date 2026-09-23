@@ -3,11 +3,18 @@ from pathlib import Path
 
 from django.test import SimpleTestCase, override_settings
 
-from management.bot_views import _message_media_rows
+from management.bot_views import _display_message_text, _message_media_rows
 
 
 @override_settings(ROOT_URLCONF="twocomms.urls_management")
 class MediaCoveragePayloadTests(SimpleTestCase):
+    def test_stale_generic_transcript_text_is_projected_from_media_type(self):
+        message = SimpleNamespace(text="(зображення)")
+        self.assertEqual(
+            _display_message_text(message, [{"media_label": "Голосове повідомлення"}]),
+            "(голосове повідомлення)",
+        )
+
     def test_template_has_audio_player_and_non_image_fallback_contract(self):
         template = (Path(__file__).parent / "templates" / "management" / "bot.html").read_text()
 

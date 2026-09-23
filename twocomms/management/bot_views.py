@@ -1835,6 +1835,24 @@ def _safe_media_url(value) -> str:
 # скачивании), поэтому ассет опознаём по `asset_id`.
 _PROVIDER_MEDIA_HOSTS = ("lookaside.fbsbx.com", "scontent.cdninstagram.com")
 _MESSAGE_MEDIA_LIMIT = 8
+_GENERIC_TRANSCRIPT_MEDIA_TEXTS = frozenset({
+    "", "(медіа)", "(зображення)", "(зображення менеджера)",
+    "(відповідь менеджера на сторіс)", "(вкладення)",
+})
+
+
+def _display_message_text(message, media_rows: list[dict]) -> str:
+    """Project stale generic attachment text without mutating the transcript."""
+    text = str(getattr(message, "text", "") or "").strip()
+    if text.casefold() not in _GENERIC_TRANSCRIPT_MEDIA_TEXTS:
+        return text
+    labels = [str(row.get("media_label") or "").strip() for row in media_rows]
+    labels = [label for label in labels if label]
+    if len(labels) == 1:
+        return f"({labels[0].casefold()})"
+    if labels:
+        return " · ".join(labels)
+    return text
 
 
 def _media_render_kind(item: dict, fallback_url: str = "") -> str:
@@ -5694,20 +5712,20 @@ def bot_client_detail_api(request, client_id):
         msg_rows = list(c.messages.order_by("-id")[:300])
         msg_rows.reverse()
     media_evidence = (c.sales_context or {}).get("_media_evidence", []) if isinstance(c.sales_context, dict) else []
-    messages = [
-        {
+    messages = []
+    for m in msg_rows:
+        media_rows = _message_media_rows(m, media_evidence)
+        messages.append({
             "id": m.id,
             "role": m.role,
-            "text": m.text,
+            "text": _display_message_text(m, media_rows),
             "gemini_model": m.gemini_model,
             "attachments": m.attachments or "",
-            "media": _message_media_rows(m, media_evidence),
+            "media": media_rows,
             "time": (m.provider_created_at or m.created_at).isoformat()
             if (m.provider_created_at or m.created_at)
             else "",
-        }
-        for m in msg_rows
-    ]
+        })
     last_message_id = msg_rows[-1].id if msg_rows else after_id
     oldest_message_id = msg_rows[0].id if msg_rows else (before_id or last_message_id)
     newest_message_id = msg_rows[-1].id if msg_rows else (after_id or oldest_message_id)
