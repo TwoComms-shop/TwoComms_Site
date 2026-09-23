@@ -1346,6 +1346,44 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
     rollout = revision_execution_rollout()
     create_new = bool(create_new and rollout.enabled)
     recover_new = create_new
+    if recover_new:
+        # Provider-budget debt normally relinquishes its lease and therefore
+        # falls out of the sealed-revision queue. Creator offers are safe to
+        # recover with the immutable local holding reply, so reclaim them in a
+        # narrow, idempotent pass before ordinary generation recovery.
+        from management.services.ig_revision_holding import (
+            claim_parked_collaboration_revision, parked_collaboration_revision_ids,
+        )
+
+        for revision_id in parked_collaboration_revision_ids(limit=limit):
+            identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+            if not identity or bot.maintenance_status()["active"]:
+                continue
+            client, lease = bot.acquire_client_automation_lease(identity["client_id"])
+            if client is None:
+                continue
+            presence_scope = {"lease": lease, "handle": None}
+            try:
+                revision, token = claim_parked_collaboration_revision(
+                    revision_id, settings_id=settings_row.pk,
+                )
+                if revision is None or not token:
+                    continue
+                outcome = execute_claimed_revision(
+                    revision_id, token, settings_row, presence_scope=presence_scope,
+                )
+                if outcome.state == "completed":
+                    handled += 1
+                elif outcome.reasons:
+                    bot.log(
+                        "warning", "revision_collaboration_recovery",
+                        f"revision={revision_id} state={outcome.state} reasons={','.join(outcome.reasons)}",
+                    )
+            except Exception as exc:
+                bot.log("error", "revision_collaboration_recovery", f"revision={revision_id} error={type(exc).__name__}")
+            finally:
+                _stop_revision_presence(presence_scope)
+                bot.release_client_automation_lease(identity["client_id"], lease)
     for revision_id in expired_revision_debt_ids(
         limit=limit,
         owned_only=not create_new,

@@ -193,8 +193,10 @@ def _handoff_reply(kind: str, language: str) -> str:
     if language == "en":
         if kind == "collaboration":
             return (
-                "Thank you for reaching out about a collaboration. I've passed your "
-                "proposal to our manager, who will review it and reply here."
+                "Thank you for your collaboration proposal. I have passed it to our "
+                "manager for review. Please send a portfolio or examples of your work, "
+                "the results you achieved, and a phone number, Telegram, or another "
+                "convenient contact. If the team is interested, they will contact you."
             )
         if kind in {"order_unverified", "order_payment_unverified"}:
             return (
@@ -214,8 +216,11 @@ def _handoff_reply(kind: str, language: str) -> str:
     if language == "ru":
         if kind == "collaboration":
             return (
-                "Спасибо за предложение о сотрудничестве. Я передала его менеджеру, "
-                "он изучит детали и ответит вам здесь."
+                "Спасибо за предложение о сотрудничестве. Я передала его руководству "
+                "на рассмотрение. Пожалуйста, пришлите портфолио или примеры работ, "
+                "результаты прошлых проектов и удобный контакт: телефон, Telegram "
+                "или другой способ связи. Если предложение заинтересует команду, "
+                "с вами свяжутся."
             )
         if kind in {"order_unverified", "order_payment_unverified"}:
             return (
@@ -233,8 +238,10 @@ def _handoff_reply(kind: str, language: str) -> str:
         )
     if kind == "collaboration":
         return (
-            "Дякую за пропозицію співпраці. Я передала її менеджеру, він перегляне "
-            "деталі та відповість вам тут."
+            "Дякую за пропозицію співпраці. Я передала її керівництву на розгляд. "
+            "Будь ласка, надішліть портфоліо або приклади робіт, результати попередніх "
+            "проєктів і зручний контакт: номер телефону, Telegram або інший спосіб "
+            "зв’язку. Якщо пропозиція зацікавить команду, з вами зв’яжуться."
         )
     if kind in {"order_unverified", "order_payment_unverified"}:
         return (

@@ -20,6 +20,7 @@ class UtcObservationNow(Now):
 DEBT_REASON = "revision_case:execution_debt"
 DEBT_KIND = "revision_execution_debt"
 REASON_LABELS = {
+    "provider_dispatch_budget": "Потрібна відповідь команди: ліміт підготовки відповіді вичерпано",
     "provider_candidates_exhausted": "Не вдалося підготувати відповідь після кількох спроб",
     "generation_failed": "Бот не зміг підготувати відповідь",
     "generation_outcome_unresolved": "Результат підготовки відповіді потребує звірки",

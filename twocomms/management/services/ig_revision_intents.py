@@ -43,7 +43,11 @@ def _digest(value):
 
 
 def manager_case_reason(revision, response=None):
-    from management.services.bot_sales_classifier import SUPPORT_RE, is_explicit_custom_print_request
+    from management.services.bot_sales_classifier import (
+        SUPPORT_RE,
+        extract_collaboration_brief,
+        is_explicit_custom_print_request,
+    )
 
     texts = [str(row.get("text") or "") for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"]
     control = response.control if response is not None else {}
@@ -52,6 +56,8 @@ def manager_case_reason(revision, response=None):
         and "custom" in str(revision.client.intent or "").casefold()
     ):
         return "custom_print"
+    if any(extract_collaboration_brief(text) for text in texts):
+        return "collaboration_review"
     if any(_MANAGER_REQUEST.search(text) for text in texts):
         return "customer_manager_request"
     if response is not None and (control.get("manager") or _MANAGER_PROMISE.search(response.reply_text)) and any(SUPPORT_RE.search(text) for text in texts):
@@ -117,7 +123,10 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         reason = manager_case_reason(revision, response)
         if not reason:
             return RevisionIntentResult(reason="manager_case_not_requested")
-        task_reason = "revision_case:custom_print" if reason == "custom_print" else "revision_case:manager_handoff"
+        task_reason = {
+            "custom_print": "revision_case:custom_print",
+            "collaboration_review": "revision_case:collaboration_review",
+        }.get(reason, "revision_case:manager_handoff")
         task = IgFollowUpTask.objects.select_for_update().filter(client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK, reason=task_reason).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)).order_by("id").first()
         now = timezone.now()
         source_refs = [{"message_id": row["message_id"], "source_digest": row["source_digest"]} for row in proposal.get("sources", ())]
@@ -127,7 +136,13 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                 kind=IgFollowUpTask.Kind.MANAGER_TASK, reason=task_reason,
                 manager_approval_status=IgFollowUpTask.ManagerApprovalStatus.PENDING,
                 manager_approval_requested_at=now,
-                message_text=("Клієнт просить власний принт: перевірити макет, можливість і вартість." if reason == "custom_print" else "Клієнту потрібна допомога команди: відкрийте поточну розмову."),
+                message_text=(
+                    "Клієнт просить власний принт: перевірити макет, можливість і вартість."
+                    if reason == "custom_print" else
+                    "Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт."
+                    if reason == "collaboration_review" else
+                    "Клієнту потрібна допомога команди: відкрийте поточну розмову."
+                ),
                 event_key=f"ig-revision-case:{client.pk}:{revision.pk}:{reason}"[:180],
                 trigger=IgFollowUpTask.Trigger.EVENT, event_occurred_at=now,
                 skip_reason="human_business_decision_required", policy_started_at=now,
@@ -140,7 +155,11 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         context.update({
             "schema_version": 1, "case_kind": reason, "sources": previous[-64:],
             "latest_revision_id": revision.pk, "generation_proposal_digest": revision.generation_proposal_digest,
-            "required_decisions": (["design_feasibility", "quote_approval"] if reason == "custom_print" else ["customer_request"]),
+            "required_decisions": (
+                ["design_feasibility", "quote_approval"] if reason == "custom_print" else
+                ["portfolio_review", "collaboration_terms"] if reason == "collaboration_review" else
+                ["customer_request"]
+            ),
             "authority": {"price_confirmed": False, "fulfillment_started": False},
         })
         task.manager_context = context

@@ -15,6 +15,49 @@ from management.models import InstagramBotMessage
 
 
 class CollaborationBriefTests(TestCase):
+    def test_collaboration_holding_reply_requests_evidence_and_contact(self):
+        from management.services.ig_revision_holding import _collaboration_holding_reply
+
+        reply = _collaboration_holding_reply("uk")
+        self.assertIn("керівництву", reply)
+        self.assertIn("портфоліо", reply)
+        self.assertIn("результати", reply)
+        self.assertIn("Telegram", reply)
+        self.assertIn("зацікавить", reply)
+
+    def test_creator_photo_video_offer_is_collaboration_without_collab_word(self):
+        from management.services.bot_sales_classifier import (
+            extract_collaboration_brief,
+            is_creator_collaboration_offer,
+        )
+
+        text = "Я фотограф и відеограф, можу створити для вашого бренду фото та відеоконтент."
+        self.assertTrue(is_creator_collaboration_offer(text))
+        brief = extract_collaboration_brief(text)
+        self.assertEqual(brief["primary_subtype"], "creator")
+        self.assertIn("video_content", brief["assets"])
+        self.assertIn("content_creation", brief["assets"])
+
+    def test_creator_offer_preserves_model_and_location_assets(self):
+        from management.services.bot_sales_classifier import extract_collaboration_brief
+
+        brief = extract_collaboration_brief(
+            "Я модель, предлагаю съёмку для вашего бренда на своей локации."
+        )
+        self.assertEqual(brief["primary_subtype"], "creator")
+        self.assertIn("model", brief["assets"])
+        self.assertIn("location", brief["assets"])
+
+    def test_product_photo_without_service_offer_is_not_collaboration(self):
+        from management.services.bot_sales_classifier import (
+            extract_collaboration_brief,
+            is_creator_collaboration_offer,
+        )
+
+        text = "Отправляю фото футболки, которую хочу заказать."
+        self.assertFalse(is_creator_collaboration_offer(text))
+        self.assertEqual(extract_collaboration_brief(text), {})
+
     def test_designer_brief_captures_assets_terms_and_manager_owner(self):
         from management.services.bot_sales_classifier import extract_collaboration_brief
         brief = extract_collaboration_brief(

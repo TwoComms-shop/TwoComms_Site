@@ -591,6 +591,24 @@ COLLAB_RE = re.compile(
     r"поставщик\w*|supplier\w*|sponsor\w*|influencer\w*)\b",
     re.I,
 )
+CREATOR_ROLE_RE = re.compile(
+    r"\b(?:фотограф\w*|фотограф|відеограф\w*|видеограф\w*|оператор\w*|"
+    r"модел\w*|контент[- ]?мейкер\w*|content\s+creator|ugc|stylist\w*|"
+    r"стиліст\w*|стилист\w*)\b",
+    re.I,
+)
+CREATOR_OFFER_RE = re.compile(
+    r"\b(?:можу|можемо|готов(?:ий|а|і)?|пропоную|предлагаю|запропоную|"
+    r"зніму|сниму|створю|сделаю|зроблю|працюю|работаю|працював\w*|"
+    r"работал\w*|співпрацюю|сотрудничаю|collaborat\w*|for\s+your\s+brand)\b",
+    re.I,
+)
+CREATOR_DELIVERABLE_RE = re.compile(
+    r"\b(?:контент\w*|фото\w*|фотосесі\w*|фотосесси\w*|відео\w*|видео\w*|"
+    r"зйомк\w*|съемк\w*|reels?\w*|stories?\w*|ролик\w*|локаці\w*|локаци\w*|"
+    r"модель\w*|model\w*|portfolio\w*|портфоліо\w*|портфолио\w*)\b",
+    re.I,
+)
 COLLABORATION_SUBTYPE_PATTERNS = (
     ("designer", re.compile(r"\b(?:дизайнер\w*|design(?:er)?s?|artist|художник\w*|принт\w*)\b", re.I)),
     ("dropship", re.compile(r"\b(?:дропшип\w*|dropship\w*)\b", re.I)),
@@ -610,12 +628,25 @@ COLLAB_CONTACT_RE = re.compile(r"(?:\+?\d[\d ()-]{7,}|[\w.+-]+@[\w.-]+\.[A-Za-z]
 def extract_collaboration_brief(text: str) -> dict:
     """Return bounded, evidence-only collaboration facts for CRM/funnel use."""
     value = str(text or "")
-    if not COLLAB_RE.search(value) and not any(pattern.search(value) for _, pattern in COLLABORATION_SUBTYPE_PATTERNS):
+    creator_offer = is_creator_collaboration_offer(value)
+    if not COLLAB_RE.search(value) and not any(pattern.search(value) for _, pattern in COLLABORATION_SUBTYPE_PATTERNS) and not creator_offer:
         return {}
     subtypes = [name for name, pattern in COLLABORATION_SUBTYPE_PATTERNS if pattern.search(value)]
+    if creator_offer and "creator" not in subtypes:
+        subtypes.insert(0, "creator")
     if not subtypes:
         subtypes = ["other"]
     assets = [name for name, pattern in COLLAB_ASSET_PATTERNS.items() if pattern.search(value)]
+    if creator_offer:
+        if re.search(r"\b(?:відео\w*|видео\w*|зйомк\w*|съемк\w*|reels?\w*|stories?\w*|ролик\w*)\b", value, re.I):
+            assets.append("video_content")
+        if re.search(r"\b(?:локаці\w*|локаци\w*)\b", value, re.I):
+            assets.append("location")
+        if re.search(r"\b(?:модел\w*|model\w*)\b", value, re.I):
+            assets.append("model")
+        if re.search(r"(?:контент\w*|ugc|content\s+creator)", value, re.I):
+            assets.append("content_creation")
+    assets = list(dict.fromkeys(assets))
     percentages = [int(match) for match in COLLAB_TERM_PERCENT_RE.findall(value)][:3]
     contacts = [match[:120] for match in COLLAB_CONTACT_RE.findall(value)][:2]
     lowered = value.casefold()
@@ -634,6 +665,22 @@ def extract_collaboration_brief(text: str) -> dict:
         "decision_owner": "manager",
         "multiple_intents": len(subtypes) > 1,
     }
+
+
+def is_creator_collaboration_offer(text: str) -> bool:
+    """Detect an explicit creator/service offer without classifying product media.
+
+    A role alone (for example, ``я модель``) is insufficient. The same message
+    must also offer work, a deliverable, or a stated production capability.
+    """
+    value = str(text or "")
+    if COLLAB_RE.search(value):
+        return True
+    return bool(
+        CREATOR_ROLE_RE.search(value)
+        and (CREATOR_OFFER_RE.search(value) or CREATOR_DELIVERABLE_RE.search(value))
+        and re.search(r"\b(?:вам|ваш(?:а|у|ій|и)?|бренд\w*|brand\w*|для\s+(?:вас|ваш)|for\s+you|for\s+your)\b", value, re.I)
+    )
 
 WHOLESALE_RE = re.compile(
     r"(?:\b(опт\w*|оптов\w*|wholesale|b2b|дропшип\w*|тираж\w*|партію|партия)\b|"
@@ -1130,7 +1177,7 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
     # бартере, поэтому при одновременном совпадении опт важнее.
     if WHOLESALE_RE.search(text or ""):
         return types.WHOLESALE_B2B
-    if COLLAB_RE.search(text or ""):
+    if is_creator_collaboration_offer(text or ""):
         return types.COLLABORATION
     if result.get("intent") == IgClient.Intent.CUSTOM_PRINT:
         return types.CUSTOM_PRINT

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import secrets
+from datetime import timedelta
 
 from django.db import connection, transaction
 from django.utils import timezone
@@ -24,6 +26,82 @@ VERSION = "revision-technical-holding-v1"
 SAFE_RECEIPT_KEY = "provider_safe_reply"
 SAFE_VERSION = "revision-provider-safe-reply-v1"
 logger = logging.getLogger(__name__)
+PARKED_COLLABORATION_CODE = "provider_dispatch_budget"
+
+
+def parked_collaboration_revision_ids(*, limit=25):
+    """Return parked creator offers that still owe their first reply.
+
+    These revisions have already exhausted provider generation and were moved
+    to manual debt, so the normal sealed-revision queue cannot reclaim them.
+    The selector is deliberately narrow: no delivery effect or proposal may
+    exist and the immutable source snapshot must still classify as a creator
+    offer when the row is claimed.
+    """
+    return list(IgCustomerTurnRevision.objects.filter(
+        active_slot=1, state=IgCustomerTurnRevision.State.CLAIMED,
+        recovery_state="manual", recovery_code=PARKED_COLLABORATION_CODE,
+        generation_proposal_digest="", delivery_effects__isnull=True,
+    ).order_by("id").values_list("id", flat=True)[:max(0, min(int(limit), 50))])
+
+
+def claim_parked_collaboration_revision(revision_id, *, settings_id=1, now=None):
+    """Reopen one parked creator offer for deterministic holding delivery.
+
+    This rotates only the execution lease. It preserves the sealed snapshot,
+    permission epoch, failed Gemini graph, and existing manager debt; no model
+    request is admitted by this path.
+    """
+    from management.services.bot_sales_classifier import extract_collaboration_brief
+    from management.services.ig_revision_outbox import revision_has_newer_source
+
+    now = now or timezone.now()
+    try:
+        revision_id = int(revision_id)
+    except (TypeError, ValueError):
+        return None, "revision_id_invalid"
+    with transaction.atomic():
+        settings_row = InstagramBotSettings.objects.select_for_update().filter(
+            pk=settings_id, is_enabled=True,
+        ).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(
+            pk=revision_id, active_slot=1, state=IgCustomerTurnRevision.State.CLAIMED,
+            recovery_state="manual", recovery_code=PARKED_COLLABORATION_CODE,
+            generation_proposal_digest="", delivery_effects__isnull=True,
+        ).first()
+        client = IgClient.objects.select_for_update().filter(
+            pk=getattr(revision, "client_id", None),
+        ).first()
+        if settings_row is None or revision is None or client is None:
+            return None, "parked_collaboration_missing"
+        if (
+            client.reply_permission_epoch != revision.permission_epoch
+            or client.hidden_at or client.is_blocked or client.bot_paused
+            or client.manager_takeover or client.privacy_erasure_started_at is not None
+            or client.stage == IgClient.Stage.SPAM
+        ):
+            return None, "parked_collaboration_ineligible"
+        if revision_has_newer_source(revision):
+            return None, "parked_collaboration_newer_source"
+        if not revision.snapshot_digest or not _sources_unchanged(revision):
+            return None, "parked_collaboration_snapshot_invalid"
+        if not any(
+            extract_collaboration_brief(str(row.get("text") or ""))
+            for row in revision.bundle_snapshot.get("sources", ())
+            if row.get("role") == "user"
+        ):
+            return None, "parked_collaboration_not_creator_offer"
+        if not GeminiRequest.objects.filter(
+            logical_turn_id=f"ig-revision:{revision.pk}", client_id=client.pk,
+            terminal_resolution="failed", winner_attempt__isnull=True,
+        ).exists():
+            return None, "parked_collaboration_generation_not_failed"
+        token = secrets.token_hex(16)
+        revision.claim_token = token
+        revision.claimed_at = now
+        revision.lease_until = now + timedelta(seconds=90)
+        revision.save(update_fields=["claim_token", "claimed_at", "lease_until", "updated_at"])
+        return revision, token
 
 
 def _sources_unchanged(revision):
@@ -43,7 +121,7 @@ def _sources_unchanged(revision):
 def _positive_current_request(client, revision):
     from management.services.ig_turn_intent import build_turn_intent
     from management.services.ig_revision_intents import manager_case_reason
-    from management.services.bot_sales_classifier import SUPPORT_RE
+    from management.services.bot_sales_classifier import SUPPORT_RE, extract_collaboration_brief
 
     intent = build_turn_intent(client, revision)
     if intent.get("purpose") == "purchase_refusal":
@@ -51,8 +129,84 @@ def _positive_current_request(client, revision):
     if intent.get("commerce_evidence_refs") and "retail_consultation" in intent.get("allowed_response_acts", ()):
         return True
     texts = [str(row.get("text") or "") for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"]
-    return bool((intent.get("purpose") == "support" and any(SUPPORT_RE.search(text) for text in texts))
-                or manager_case_reason(revision) == "customer_manager_request")
+    return bool(
+        (intent.get("purpose") == "support" and any(SUPPORT_RE.search(text) for text in texts))
+        or manager_case_reason(revision) in {"customer_manager_request", "collaboration_review"}
+        or any(extract_collaboration_brief(text) for text in texts)
+    )
+
+
+def _collaboration_holding_reply(language: str) -> str:
+    """Ask for reviewable creator evidence while keeping acceptance undecided."""
+    return {
+        "uk": (
+            "Дякую за пропозицію співпраці. Я передала її керівництву на розгляд. "
+            "Будь ласка, надішліть портфоліо або приклади фото- чи відеоробіт, "
+            "результати попередніх проєктів і зручний контакт: телефон, Telegram "
+            "або інший спосіб зв'язку. Якщо пропозиція зацікавить команду, з вами зв'яжуться."
+        ),
+        "ru": (
+            "Спасибо за предложение о сотрудничестве. Я передала его руководству "
+            "на рассмотрение. Пожалуйста, пришлите портфолио или примеры фото- и "
+            "видеоработ, результаты прошлых проектов и удобный контакт: телефон, "
+            "Telegram или другой способ связи. Если предложение заинтересует команду, "
+            "с вами свяжутся."
+        ),
+        "en": (
+            "Thank you for your collaboration proposal. I have passed it to our "
+            "management for review. Please send a portfolio or photo/video work samples, "
+            "the results of previous projects, and a convenient contact such as phone or "
+            "Telegram. If the team is interested, they will contact you."
+        ),
+    }.get(language, "")
+
+
+def _ensure_collaboration_review_case(revision, client):
+    """Create an open collaboration decision case from the sealed snapshot."""
+    from management.services.instagram_bot import notify_manager
+
+    task = IgFollowUpTask.objects.select_for_update().filter(
+        client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK,
+        reason="revision_case:collaboration_review",
+    ).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)).order_by("id").first()
+    now = timezone.now()
+    source_refs = [
+        {"message_id": row["message_id"], "source_digest": row["source_digest"]}
+        for row in revision.bundle_snapshot.get("sources", ())
+        if row.get("role") == "user"
+    ]
+    if task is None:
+        task = IgFollowUpTask.objects.create(
+            client=client, due_at=now, status=IgFollowUpTask.Status.SKIPPED,
+            kind=IgFollowUpTask.Kind.MANAGER_TASK, reason="revision_case:collaboration_review",
+            manager_approval_status=IgFollowUpTask.ManagerApprovalStatus.PENDING,
+            manager_approval_requested_at=now,
+            message_text="Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт.",
+            event_key=f"ig-revision-case:{client.pk}:{revision.pk}:collaboration_review"[:180],
+            trigger=IgFollowUpTask.Trigger.EVENT, event_occurred_at=now,
+            policy_started_at=now, policy_version="revision-case-v1",
+            skip_reason="human_business_decision_required",
+        )
+    context = dict(task.manager_context or {})
+    known = {item.get("message_id") for item in context.get("sources", ()) if isinstance(item, dict)}
+    context["sources"] = [*(context.get("sources") or ()), *[item for item in source_refs if item["message_id"] not in known]][-64:]
+    context.update({
+        "schema_version": 1, "case_kind": "collaboration_review",
+        "latest_revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
+        "required_decisions": ["portfolio_review", "collaboration_terms"],
+        "authority": {"price_confirmed": False, "fulfillment_started": False},
+    })
+    task.manager_context = context
+    task.save(update_fields=["manager_context", "updated_at"])
+    key = f"ig-revision-collaboration-case:{task.pk}"
+    notify_manager(
+        "Перевірте пропозицію creator/фото-відео співпраці клієнта.",
+        dedupe_key=key, event_type="escalation", client=client,
+        metadata={"revision_id": revision.pk, "manager_task_id": task.pk, "case_kind": "collaboration_review"},
+        deliver_immediately=False, raise_on_error=True,
+    )
+    notification = IgBotNotification.objects.filter(dedupe_key=key, client=client).first()
+    return task, notification
 
 
 def _neutral_current_request(client, revision):
@@ -112,15 +266,27 @@ def holding_receipt_valid(revision, *, text=None):
         event_key=f"ig-revision-debt:{revision.pk}", kind="manager_task",
         reason="revision_case:execution_debt",
     ).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)).first()
-    return bool(task and IgBotNotification.objects.filter(
+    if not task or not IgBotNotification.objects.filter(
         pk=receipt.get("notification_id"), client_id=revision.client_id,
         dedupe_key=f"revision-holding-case:{task.pk}",
-    ).exists())
+    ).exists():
+        return False
+    try:
+        collaboration_task_id = int(receipt.get("collaboration_task_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    if collaboration_task_id and not IgFollowUpTask.objects.filter(
+        pk=collaboration_task_id, client_id=revision.client_id,
+        reason="revision_case:collaboration_review",
+    ).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)).exists():
+        return False
+    return True
 
 
 def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=False):
     """Admit only after conclusive generation failure and before any send."""
     from management.services.ig_revision_recovery import recovery_lineage_for_authority
+    from management.services.bot_sales_classifier import extract_collaboration_brief
     from management.services.ig_response_guard import ProviderResponseGuard
     from management.services.ig_reply_truth import ReplyTruthContext
 
@@ -163,6 +329,7 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 revision.pk, token, settings_id=settings_id, settings_permission_epoch=settings_row.reply_permission_epoch,
                 publication=publication, fact_bindings=authority.fact_bindings,
                 fact_checker=check_fact_bindings, offer_checker=check_offer_bindings,
+                allow_expired_holding=(revision.recovery_code == PARKED_COLLABORATION_CODE),
             )
             if not ready.ready:
                 return RevisionInputDecision(reason=ready.reasons[0])
@@ -201,7 +368,17 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 "ru": "Спасибо за сообщение. Я уточню детали и скоро отвечу вам здесь.",
                 "en": "Thanks for your message. I will check the details and reply here shortly.",
             })
-            text = texts[language]
+            collaboration_request = any(
+                extract_collaboration_brief(str(row.get("text") or ""))
+                for row in revision.bundle_snapshot.get("sources", ())
+                if row.get("role") == "user"
+            )
+            if collaboration_request:
+                text = _collaboration_holding_reply(language)
+                collaboration_task, collaboration_notification = _ensure_collaboration_review_case(revision, client)
+            else:
+                text = texts[language]
+                collaboration_task = collaboration_notification = None
             guard = ProviderResponseGuard(context_factory=lambda _control, _reply: ReplyTruthContext())
             if not guard.validate({"reply_text": text, "controls": []}).valid:
                 return RevisionInputDecision(reason="holding_local_guard_failed")
@@ -241,6 +418,8 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 "snapshot_digest": revision.snapshot_digest,
                 "source_message_ids": [row["message_id"] for row in revision.bundle_snapshot.get("sources", [])],
                 "failed_request_id": graph.request_id, "task_id": task.pk, "notification_id": notification.pk,
+                "collaboration_task_id": collaboration_task.pk if collaboration_task else 0,
+                "collaboration_notification_id": collaboration_notification.pk if collaboration_notification else 0,
                 "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,
                 "publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash},
                 "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),

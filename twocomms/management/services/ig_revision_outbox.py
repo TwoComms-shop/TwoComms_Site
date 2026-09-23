@@ -229,6 +229,7 @@ def _cas_readiness(
     fact_checker=None,
     offer_checker=None,
     now=None,
+    allow_expired_holding=False,
 ) -> OutboxReadiness:
     now = now or timezone.now()
     reasons: list[str] = []
@@ -248,7 +249,7 @@ def _cas_readiness(
     # has not run yet. The durable USER watermark remains an independent fence.
     if revision_has_newer_source(revision):
         _append(reasons, "pending_inbound")
-    if revision.overall_deadline <= now:
+    if revision.overall_deadline <= now and not allow_expired_holding:
         from management.services.ig_revision_recovery import execution_resume_is_current
 
         if not execution_resume_is_current(revision, now=now):
@@ -345,6 +346,7 @@ def pre_winner_readiness(
     fact_checker=None,
     offer_checker=None,
     now=None,
+    allow_expired_holding=False,
 ) -> OutboxReadiness:
     """DB-only hook; caller may use failure to request one in-budget repair."""
     try:
@@ -385,6 +387,7 @@ def pre_winner_readiness(
             fact_checker=fact_checker,
             offer_checker=offer_checker,
             now=now,
+            allow_expired_holding=allow_expired_holding,
         )
 
 
@@ -571,6 +574,10 @@ def plan_revision_effects(
             fact_checker=fact_checker,
             offer_checker=offer_checker,
             now=now,
+            allow_expired_holding=(
+                purpose == PURPOSE_TECHNICAL_HOLDING
+                and revision.recovery_code == "provider_dispatch_budget"
+            ),
         )
         if not readiness.ready:
             return EffectPlanResult(reasons=readiness.reasons)
