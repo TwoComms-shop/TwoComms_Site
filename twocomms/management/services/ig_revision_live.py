@@ -1062,6 +1062,17 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         return _drain_effects(revision, token, settings_row, token_value)
     from management.services.ig_revision_input import decide_revision_input, complete_no_reply_input
 
+    # A parked creator budget debt has no model winner and may outlive the
+    # generation deadline. Admit only the local, audited holding reply; the
+    # normal input classifier must not reject it before that narrow path runs.
+    if revision.recovery_code == "provider_dispatch_budget":
+        from management.services.ig_revision_holding import record_technical_holding
+
+        holding = record_technical_holding(revision.pk, token, settings_id=settings_row.pk)
+        if holding.ready:
+            return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
+        return RevisionLiveResult(revision_id, "blocked", (holding.reason or "collaboration_holding_unavailable",))
+
     input_decision = decide_revision_input(revision.pk, token, settings_id=settings_row.pk)
     if not input_decision.ready:
         return RevisionLiveResult(revision_id, "blocked", (input_decision.reason,))
