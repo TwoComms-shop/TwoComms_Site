@@ -261,6 +261,15 @@ class Stage6PeriodicOwnerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("priority owner", result.stderr)
 
+    def test_nova_installer_matches_nonblocking_manifest_contract(self):
+        nova_job = next(job for job in self.jobs if job["id"] == "nova_poshta_tracking")
+        installer = (ROOT / nova_job["owner_path"]).read_text(encoding="utf-8")
+
+        self.assertEqual(nova_job["flock"], "/usr/bin/flock -n -E 75")
+        self.assertIn("$FLOCK_BIN -n -E 75", installer)
+        self.assertIn('previous_cron_line="${cron_line/-n -E 75/-w 50 -E 75}"', installer)
+        self.assertNotIn("$FLOCK_BIN -w 50 -E 75", installer)
+
     def test_coordinator_manifest_bounds_every_provided_lane(self):
         coordinator = next(
             job

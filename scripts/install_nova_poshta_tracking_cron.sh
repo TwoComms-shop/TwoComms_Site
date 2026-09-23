@@ -26,7 +26,7 @@ case "$1" in --check|--install) mode="$1" ;; *) usage ;; esac
 [ -x "$TIMEOUT_BIN" ] || { echo "[nova-poshta-cron] ERROR: timeout is required: $TIMEOUT_BIN" >&2; exit 66; }
 [ -x "$NICE_BIN" ] || { echo "[nova-poshta-cron] ERROR: nice is required: $NICE_BIN" >&2; exit 66; }
 
-cron_line="*/5 * * * * cd $DJANGO_ROOT && $PRODUCTION_ENV_PREFIX $FLOCK_BIN -w 50 -E 75 $DJANGO_ROOT/tmp/twocomms_heavy_background.lock $TIMEOUT_BIN --signal=TERM --kill-after=15s 240s $NICE_BIN -n 10 $PYTHON_BIN manage.py update_tracking_statuses >> $DJANGO_ROOT/logs/nova_poshta_cron.log 2>&1"
+cron_line="*/5 * * * * cd $DJANGO_ROOT && $PRODUCTION_ENV_PREFIX $FLOCK_BIN -n -E 75 $DJANGO_ROOT/tmp/twocomms_heavy_background.lock $TIMEOUT_BIN --signal=TERM --kill-after=15s 240s $NICE_BIN -n 10 $PYTHON_BIN manage.py update_tracking_statuses >> $DJANGO_ROOT/logs/nova_poshta_cron.log 2>&1"
 previous_cron_line="${cron_line/-n -E 75/-w 50 -E 75}"
 legacy_cron_line="*/5 * * * * cd $DJANGO_ROOT && /usr/bin/flock -n $DJANGO_ROOT/tmp/nova_poshta_tracking.lock /usr/bin/nice -n 10 $PYTHON_BIN manage.py update_tracking_statuses >> $DJANGO_ROOT/logs/nova_poshta_cron.log 2>&1"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/twocomms-np-cron.XXXXXX")"
