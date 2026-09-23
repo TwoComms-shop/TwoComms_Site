@@ -564,6 +564,37 @@ def _default_transport(target: MediaTarget, *, timeout_seconds: float | None = N
         raise
 
 
+def _sniff_supported_mime(body: bytes, declared_mime: str = "") -> str:
+    """Return a supported inline MIME from bounded bytes, or empty string.
+
+    Provider CDNs occasionally return generic content types; Meta voice objects
+    have also been observed as video/mp4.  Accept this fallback only for the
+    already SSRF-validated provider profile and require a strong signature.
+    """
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(body) >= 12 and body[:4] == b"RIFF" and body[8:12] == b"WEBP":
+        return "image/webp"
+    if body.startswith(b"OggS"):
+        return "audio/ogg"
+    if body.startswith(b"fLaC"):
+        return "audio/flac"
+    if body.startswith(b"ID3") or (len(body) >= 2 and body[0] == 0xff and body[1] & 0xe0 == 0xe0):
+        return "audio/mpeg"
+    if len(body) >= 12 and body[:4] == b"RIFF" and body[8:12] == b"WAVE":
+        return "audio/wav"
+    if len(body) >= 12 and body[:4] == b"FORM" and body[8:12] in {b"AIFF", b"AIFC"}:
+        return "audio/aiff"
+    if body.startswith(b"\x1a\x45\xdf\xa3"):
+        return "audio/webm"
+    if len(body) >= 12 and body[4:8] == b"ftyp":
+        if b"soun" in body and b"vide" not in body:
+            return "audio/m4a"
+    return ""
+
+
 def _signature_matches(mime_type: str, body: bytes) -> bool:
     """Confirm a declared supported MIME from file bytes, never headers alone."""
     if mime_type == "image/jpeg":
@@ -791,7 +822,11 @@ def fetch_media(
                     reason=REASON_UNVERIFIABLE_MIME,
                     status_code=status,
                 )
-            if mime_type not in allowed_mime_types:
+            allow_provider_sniff = (
+                profile == PROFILE_PROVIDER
+                and mime_type in {"", "application/octet-stream", "binary/octet-stream", "video/mp4"}
+            )
+            if mime_type not in allowed_mime_types and not allow_provider_sniff:
                 _bump_rejection_counter(REASON_CONTENT_TYPE)
                 return FetchOutcome(
                     success=False,
@@ -840,6 +875,16 @@ def fetch_media(
                     status_code=status,
                 )
 
+            if allow_provider_sniff:
+                sniffed_mime = _sniff_supported_mime(body, mime_type)
+                if not sniffed_mime:
+                    _bump_rejection_counter(REASON_SIGNATURE)
+                    return FetchOutcome(
+                        success=False,
+                        reason=REASON_SIGNATURE,
+                        status_code=status,
+                    )
+                mime_type = sniffed_mime
             if not _signature_matches(mime_type, body):
                 _bump_rejection_counter(REASON_SIGNATURE)
                 return FetchOutcome(

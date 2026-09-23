@@ -1061,3 +1061,29 @@ class MalformedInputTests(SimpleTestCase):
 
         self.assertFalse(outcome.success)
         self.assertEqual(outcome.reason, policy.REASON_TRANSPORT)
+
+
+class ProviderMimeSniffTests(SimpleTestCase):
+    def test_generic_provider_mime_with_valid_jpeg_is_accepted(self):
+        resolver = fake_resolver_factory({"scontent.cdninstagram.com": ["157.240.1.1"]})
+        outcome = policy.fetch_media(
+            "https://scontent.cdninstagram.com/photo",
+            resolver=resolver,
+            transport=fake_transport_factory([FakeResponse(
+                status=200, headers={"Content-Type": "application/octet-stream"}, body=valid_jpeg(),
+            )]),
+        )
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.mime_type, "image/jpeg")
+
+    def test_video_mp4_without_audio_is_rejected(self):
+        resolver = fake_resolver_factory({"scontent.cdninstagram.com": ["157.240.1.1"]})
+        body = b"\x00\x00\x00\x18ftypisom" + b"vide"
+        outcome = policy.fetch_media(
+            "https://scontent.cdninstagram.com/video", resolver=resolver,
+            transport=fake_transport_factory([FakeResponse(
+                status=200, headers={"Content-Type": "video/mp4"}, body=body,
+            )]),
+        )
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.reason, policy.REASON_SIGNATURE)

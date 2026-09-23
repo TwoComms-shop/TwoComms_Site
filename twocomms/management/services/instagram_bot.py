@@ -2653,6 +2653,10 @@ def _media_fallback_text(metadata: list[dict] | None) -> str:
         return "(сторіс)"
     if kinds & {"share", "ig_post", "ig_reel", "reel"}:
         return "(поширений допис)"
+    if kinds & {"audio", "voice"}:
+        return "(голосове повідомлення)"
+    if kinds & {"video"}:
+        return "(відео)"
     return "(зображення)"
 
 
@@ -12325,7 +12329,7 @@ def _observe_not_allowed_inbound(
                         provider_namespace=ingress_provider_namespace(s),
                         client=client,
                         role=InstagramBotMessage.Role.USER,
-                        text=text or "(зображення)",
+                        text=text or _media_fallback_text(attachment_metadata),
                         mid=mid or None,
                         synthetic_event_key=synthetic_event_key or None,
                         status=InstagramBotMessage.Status.DONE,
@@ -12481,10 +12485,7 @@ def enqueue_inbound(
         msg, message_created = _stage_permission_message(
             sender_id=sender_id,
             role=InstagramBotMessage.Role.USER,
-            text=text or (
-                _media_fallback_text(attachment_metadata)
-                if not attachments else "(зображення)"
-            ),
+            text=text or _media_fallback_text(attachment_metadata),
             mid=mid,
             source=source,
             attachments=json.dumps(attachments) if attachments else "",
@@ -12610,10 +12611,7 @@ def enqueue_inbound(
                             provider_namespace=ingress_provider_namespace(s),
                             client=client,
                             role=InstagramBotMessage.Role.USER,
-                            text=text or (
-                                _media_fallback_text(attachment_metadata)
-                                if not attachments else "(зображення)"
-                            ),
+                            text=text or _media_fallback_text(attachment_metadata),
                             mid=mid or None,
                             synthetic_event_key=synthetic_event_key or None,
                             status=(
