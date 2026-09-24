@@ -18,6 +18,7 @@ X-Hub-Signature-256 (IG_APP_SECRET), is_enabled-гейт.
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import hashlib
 import hmac
 import json
@@ -10248,6 +10249,33 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
         return []
     result: list[dict] = []
     message_id = str(msg.get("mid") or msg.get("id") or "").strip()[:255]
+    reply_to = msg.get("reply_to") if isinstance(msg.get("reply_to"), dict) else {}
+    reply_mid = str(
+        reply_to.get("mid") or reply_to.get("message_id") or reply_to.get("id") or ""
+    ).strip()[:255]
+    reply_story = reply_to.get("story") if isinstance(reply_to.get("story"), dict) else {}
+    reply_story_id = str(
+        reply_story.get("id") or reply_story.get("story_id") or ""
+    ).strip()[:255]
+    reply_story_url = str(reply_story.get("url") or "").strip()[:1200]
+    reply_story_media_id = str(
+        reply_story.get("media_id") or reply_story.get("asset_id") or ""
+    ).strip()[:255]
+    reply_context = {}
+    if reply_story_id or reply_story_url or reply_story_media_id:
+        reply_context = {
+            "kind": "story_reply",
+            "provider_message_id": reply_mid,
+            "story_id": reply_story_id,
+            "story_media_id": reply_story_media_id,
+            "story_url": reply_story_url,
+            "link_sticker_url": str(reply_story.get("link_sticker_url") or "").strip()[:1200],
+        }
+    elif reply_mid:
+        reply_context = {
+            "kind": "message_reply",
+            "provider_message_id": reply_mid,
+        }
     for attachment in _attachment_items(msg) or []:
         if not isinstance(attachment, dict):
             continue
@@ -10285,7 +10313,9 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
             or ""
         ).strip()[:255]
         target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
-        target_username = str(target.get("username") or "").strip().lstrip("@").casefold()
+        provider_target_username = str(
+            target.get("username") or ""
+        ).strip().lstrip("@").casefold()[:80]
         # A generic attachment can carry arbitrary ``username``/``target``
         # fields.  They are useful for manager context, but are not proof that
         # Meta delivered a native mention of our account.  Only the dedicated
@@ -10302,10 +10332,18 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
             message_id
             and provider_media_id
             and object_id
-            and target_username == "twocomms"
+            and provider_target_username == "twocomms"
             and (media_type == "story_mention" or typed_repost)
         )
         target_username = "twocomms" if provider_native else ""
+        provider_context_kind = {
+            "story_mention": "story_mention",
+            "story": "story",
+            "share": "shared_post",
+            "ig_post": "shared_post",
+            "ig_reel": "shared_reel",
+            "reel": "shared_reel",
+        }.get(media_type, media_type or "unknown")
         if not candidates and (
             media_type in MEDIA_ATTACH_TYPES
             or provider_media_id
@@ -10330,11 +10368,18 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
                 "provider_object_key": (
                     f"{media_type}:{object_id}" if media_type and object_id else ""
                 ),
+                "provider_object_id": object_id,
                 "provider_media_id": provider_media_id,
                 "provider_event_id": message_id,
+                "provider_attachment_type": media_type or "image",
+                "provider_attachment_types": [media_type or "image"],
+                "provider_context_kind": provider_context_kind,
+                "provider_target_username": provider_target_username,
                 "target_username": target_username,
                 "provider_native_mention": provider_native,
             }
+            if reply_context:
+                item["reply_context"] = reply_context
             if context_only:
                 item["capture_eligible"] = False
                 if not url:
@@ -10347,12 +10392,38 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
                 break
         if len(result) >= 8:
             break
-    reply_story = (msg.get("reply_to") or {}).get("story") or {}
-    if isinstance(reply_story, dict) and (
-        reply_story.get("url") or reply_story.get("id") or reply_story.get("story_id")
-    ):
-        story_id = str(reply_story.get("id") or reply_story.get("story_id") or "").strip()
-        story_url = str(reply_story.get("url") or "").strip()
+    # Meta can send both legacy ``share`` and new ``ig_post`` attachments for
+    # one object during the transition. Keep one capture/inspection part while
+    # retaining every provider type for the operator and classifier.
+    deduped: list[dict] = []
+    by_shared_media: dict[str, dict] = {}
+    for item in result:
+        media_id = str(item.get("provider_media_id") or "").strip()
+        media_type = str(item.get("media_type") or "").strip().lower()
+        key = media_id if media_id and media_type in {"share", "ig_post"} else ""
+        if not key or key not in by_shared_media:
+            deduped.append(item)
+            if key:
+                by_shared_media[key] = item
+            continue
+        current = by_shared_media[key]
+        types = list(current.get("provider_attachment_types") or [])
+        if media_type not in types:
+            types.append(media_type)
+        current["provider_attachment_types"] = types[:4]
+        if media_type == "ig_post" and current.get("media_type") == "share":
+            for field in (
+                "url", "media_type", "provider_attachment_type",
+                "provider_context_kind", "provider_object_key",
+            ):
+                if item.get(field):
+                    current[field] = item[field]
+    result = deduped
+    for index, item in enumerate(result):
+        item["original_index"] = index
+    if reply_story_id or reply_story_url or reply_story_media_id:
+        story_id = reply_story_id
+        story_url = reply_story_url
         context_only = _is_instagram_permalink(story_url) or not story_url
         result.append({
             "url": story_url[:1200],
@@ -10365,10 +10436,17 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
                 if context_only else MEDIA_STATUS_PENDING
             ),
             "media_type": "story",
+            "provider_object_id": story_id,
             "provider_object_key": f"story:{story_id}" if story_id else "",
-            "provider_media_id": str(reply_story.get("media_id") or "")[:255],
+            "provider_media_id": reply_story_media_id,
             "provider_event_id": message_id,
+            "provider_attachment_type": "story",
+            "provider_attachment_types": ["story"],
+            "provider_context_kind": "story",
+            "provider_target_username": "",
             "target_username": "",
+            "interaction_kind": "story_reply",
+            "reply_context": reply_context,
             # A reply-to-story identifies the referenced story, but it does
             # not prove that the customer mentioned TwoComms in a provider
             # native event.  Keep it as context for review only.
@@ -11800,8 +11878,27 @@ def _media_context_hint(media: list[dict] | None) -> str | None:
         if not isinstance(item, dict):
             continue
         role = str(item.get("role") or "other")
+        media_type = str(
+            item.get("media_type") or item.get("type") or "unknown"
+        ).strip().casefold()[:32]
+        mime = str(item.get("mime") or "").split(";", 1)[0].strip().casefold()
+        if media_type in {"audio", "voice"} or mime.startswith("audio/"):
+            media_label = "аудіо/голосове повідомлення"
+        elif media_type in {"story", "story_mention"}:
+            media_label = "сторіс"
+        elif media_type in {"share", "ig_post", "ig_reel", "reel"}:
+            media_label = "репост/поширений допис"
+        elif media_type == "video" or mime.startswith("video/"):
+            media_label = "відео"
+        elif media_type in {"image", "photo"} or mime.startswith("image/"):
+            media_label = "зображення"
+        else:
+            media_label = "вкладення"
+        mention = "yes" if item.get("provider_native_mention") is True else "no"
         rows.append(
-            f"- {labels.get(role, role)}; intent={item.get('intent') or 'unknown'}; "
+            f"- {labels.get(role, role)}; media_type={media_type}; "
+            f"media_label={media_label}; provider_native_mention={mention}; "
+            f"intent={item.get('intent') or 'unknown'}; "
             f"capture={item.get('capture_state') or item.get('status') or 'unknown'}; "
             f"catalog_match_allowed={'yes' if item.get('catalog_match_allowed') else 'no'}"
         )
@@ -16308,12 +16405,41 @@ def link_orphan_messages_to_clients() -> int:
 RAW_EVENT_KEEP_ROWS = 400
 
 
+def _merge_referral_candidates(*candidates: object) -> dict:
+    """Merge Meta referral locations without dropping provider context.
+
+    The official Instagram shape nests the referral under ``message``. Older
+    deliveries and postbacks put it on the event instead. The nested message
+    value is authoritative when the same scalar is present; the other shapes
+    fill missing fields. ``ads_context_data`` is merged the same way so a
+    ``post_id`` from one shape survives alongside campaign fields from another.
+    """
+    merged: dict = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for key, value in candidate.items():
+            if key == "ads_context_data" and isinstance(value, dict):
+                existing = merged.get(key)
+                if not isinstance(existing, dict):
+                    merged[key] = deepcopy(value)
+                    continue
+                for nested_key, nested_value in value.items():
+                    if nested_key not in existing or not existing[nested_key]:
+                        existing[nested_key] = deepcopy(nested_value)
+                continue
+            if key not in merged or not merged[key]:
+                merged[key] = deepcopy(value)
+    return merged
+
+
 def _iter_events(payload: dict):
     """Yield (sender_id, recipient_id, message_dict, referral_dict) з payload.
 
     Покриває обидва канали доставки Meta: entry[].messaging[] (Send/Receive)
     та entry[].changes[] з field=messages (деякі IG-події). Referral береться
-    і з події, і з postback.referral (перший контакт із Click-to-IG реклами).
+    з message.referral (офіційний формат), event.referral або postback.referral;
+    при конфлікті перемагає вкладений referral, а відсутні поля домержуються.
     recipient_id потрібен для echo (повідомлення сторінки/менеджера клієнту).
     """
     if not isinstance(payload, dict):
@@ -16331,6 +16457,11 @@ def _iter_events(payload: dict):
                     continue
                 raw_message = event.get("message")
                 message = dict(raw_message) if isinstance(raw_message, dict) else {}
+                message_referral = (
+                    message.get("referral")
+                    if isinstance(message.get("referral"), dict)
+                    else None
+                )
                 raw_referral = event.get("referral")
                 postback = event.get("postback")
                 postback_referral = postback.get("referral") if isinstance(postback, dict) else None
@@ -16345,8 +16476,8 @@ def _iter_events(payload: dict):
                 )
                 sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
                 recipient = event.get("recipient") if isinstance(event.get("recipient"), dict) else {}
-                ref = raw_referral if isinstance(raw_referral, dict) else (
-                    postback_referral if isinstance(postback_referral, dict) else {}
+                ref = _merge_referral_candidates(
+                    message_referral, raw_referral, postback_referral
                 )
                 yield (
                     sender.get("id", ""),
@@ -16365,12 +16496,17 @@ def _iter_events(payload: dict):
                 continue
             raw_message = value.get("message")
             message = dict(raw_message) if isinstance(raw_message, dict) else {}
+            message_referral = (
+                message.get("referral")
+                if isinstance(message.get("referral"), dict)
+                else None
+            )
             message["_event_created_at"] = _provider_event_datetime(
                 value.get("timestamp") or entry.get("time")
             )
             sender = value.get("sender") if isinstance(value.get("sender"), dict) else {}
             recipient = value.get("recipient") if isinstance(value.get("recipient"), dict) else {}
-            ref = value.get("referral") if isinstance(value.get("referral"), dict) else {}
+            ref = _merge_referral_candidates(message_referral, value.get("referral"))
             yield (sender.get("id", ""), recipient.get("id", ""), message, ref)
 
 
@@ -16833,20 +16969,36 @@ def _apply_referral(sender_id: str, ref: dict) -> None:
     ref містить ref/ad_id/source та ads_context_data (ad_title, photo_url/
     video_url). Це дає боту зрозуміти, ЩО продавала реклама, ще до питань.
     """
-    if not ref:
+    if not isinstance(ref, dict) or not ref:
         return
     client = IgClient.get_or_create_for_sender(sender_id)
     client = IgClient.objects.select_for_update().get(pk=client.pk)
     if client.privacy_erasure_started_at:
         return
-    acd = ref.get("ads_context_data") or {}
+    acd = ref.get("ads_context_data")
+    if not isinstance(acd, dict):
+        acd = {}
+    previous_payload = client.referral_payload if isinstance(client.referral_payload, dict) else {}
     client.ad_ref = (str(ref.get("ref") or ""))[:255]
     client.ad_id = (str(ref.get("ad_id") or ""))[:64]
     client.ad_source = (str(ref.get("source") or ""))[:64]
     client.ad_title = (str(acd.get("ad_title") or ""))[:255]
     client.ad_creative_url = (str(acd.get("photo_url") or acd.get("video_url") or ""))[:600]
     try:
-        client.referral_payload = ref
+        next_payload = deepcopy(ref)
+        previous_history = previous_payload.get("_touch_history")
+        if not isinstance(previous_history, list):
+            previous_history = []
+        prior_touch = {
+            key: deepcopy(value)
+            for key, value in previous_payload.items()
+            if key != "_touch_history"
+        }
+        if prior_touch and prior_touch != next_payload:
+            previous_history.append(prior_touch)
+        if previous_history:
+            next_payload["_touch_history"] = previous_history[-8:]
+        client.referral_payload = next_payload
     except Exception:
         client.referral_payload = {}
     client.save(update_fields=[

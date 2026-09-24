@@ -2038,11 +2038,16 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
         seen_assets.add(asset_key)
         evidence = evidence_by_asset.get(asset_key, {})
         provider_link = _is_provider_media_link(safe_url)
+        evidence_media_type = _bounded_text(
+            evidence.get("media_type") or evidence.get("type"), 32,
+        ).casefold()
         public_url = "" if provider_link else _safe_storefront_url(safe_url)
         row = {
             "original_index": original_index,
             "role": _bounded_text(evidence.get("role"), 64) or "other",
             "intent": _bounded_text(evidence.get("intent"), 64) or "unknown",
+            "media_type": evidence_media_type,
+            "provider_native_mention": bool(evidence.get("provider_native_mention")),
             "provider_link": provider_link,
             "capture_state": "unknown",
             "inspection_state": "uninspected",
@@ -2051,8 +2056,12 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
             "effort": "unknown",
         }
         row["media_kind"] = _media_render_kind(row, safe_url)
+        label = _media_display_label(row, row["media_kind"])
         row["media_label"] = (
-            "Аудіо недоступне" if row["media_kind"] == "audio"
+            f"{label} недоступне"
+            if row["media_kind"] in {"audio", "video", "story"}
+            else f"{label} недоступний"
+            if row["media_kind"] == "repost"
             else "Вкладення недоступне"
         )
         if public_url:

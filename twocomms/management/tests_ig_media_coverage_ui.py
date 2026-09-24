@@ -4,6 +4,7 @@ from pathlib import Path
 from django.test import SimpleTestCase, override_settings
 
 from management.bot_views import _display_message_text, _message_media_rows
+from management.services.instagram_bot import _media_context_hint
 
 
 @override_settings(ROOT_URLCONF="twocomms.urls_management")
@@ -99,6 +100,49 @@ class MediaCoveragePayloadTests(SimpleTestCase):
         row = _message_media_rows(message, [])[0]
         self.assertEqual(row["media_kind"], "story")
         self.assertTrue(row["public_url"].endswith("/preview/"))
+
+    def test_legacy_typed_media_keeps_unavailable_story_and_repost_labels(self):
+        for media_type, expected_kind, expected_label in (
+            ("story_mention", "story", "Сторіс недоступне"),
+            ("ig_post", "repost", "Репост недоступний"),
+            ("audio", "audio", "Голосове повідомлення недоступне"),
+        ):
+            with self.subTest(media_type=media_type):
+                message = SimpleNamespace(
+                    pk=52,
+                    role="user",
+                    attachments='["https://lookaside.fbsbx.com/media?asset_id=typed"]',
+                    attachment_media=[],
+                    turn_intelligence_artifact={},
+                )
+                rows = _message_media_rows(message, [{
+                    "url": "https://lookaside.fbsbx.com/media?asset_id=typed",
+                    "media_type": media_type,
+                }])
+                self.assertEqual(rows[0]["media_kind"], expected_kind)
+                self.assertEqual(rows[0]["media_label"], expected_label)
+
+    def test_prompt_media_hint_preserves_typed_kind_and_native_mention(self):
+        hint = _media_context_hint([
+            {
+                "role": "product",
+                "media_type": "story_mention",
+                "provider_native_mention": True,
+                "intent": "interest",
+                "status": "metadata_only",
+            },
+            {
+                "role": "other",
+                "media_type": "voice",
+                "mime": "audio/mp4",
+                "status": "owned",
+            },
+        ])
+        self.assertIn("media_type=story_mention", hint)
+        self.assertIn("media_label=сторіс", hint)
+        self.assertIn("provider_native_mention=yes", hint)
+        self.assertIn("media_type=voice", hint)
+        self.assertIn("media_label=аудіо/голосове повідомлення", hint)
 
     def test_owned_part_exposes_coverage_and_authorized_preview_only(self):
         message = SimpleNamespace(

@@ -287,6 +287,72 @@ class ExtractMediaUrlsTests(SimpleTestCase):
         self.assertEqual(media[0]["provider_object_key"], "share:post-media-1")
         self.assertEqual(media[0]["target_username"], "twocomms")
 
+    def test_share_and_ig_post_transition_parts_collapse_by_media_id(self):
+        msg = {
+            "mid": "dual-post-mid",
+            "attachments": [
+                {"type": "share", "payload": {
+                    "ig_post_media_id": "post-1",
+                    "url": "https://cdn.example/share.jpg",
+                }},
+                {"type": "ig_post", "payload": {
+                    "ig_post_media_id": "post-1",
+                    "url": "https://cdn.example/post.jpg",
+                }},
+            ],
+        }
+
+        media = bot._provider_attachment_metadata(msg)
+
+        self.assertEqual(len(media), 1)
+        self.assertEqual(media[0]["media_type"], "ig_post")
+        self.assertEqual(media[0]["provider_media_id"], "post-1")
+        self.assertEqual(media[0]["provider_attachment_types"], ["share", "ig_post"])
+        self.assertEqual(media[0]["provider_context_kind"], "shared_post")
+
+    def test_story_reply_context_preserves_link_sticker_and_provider_ids(self):
+        msg = {
+            "mid": "story-reply-mid",
+            "reply_to": {"story": {
+                "id": "story-1",
+                "media_id": "story-media-1",
+                "url": "https://cdn.example/story.jpg",
+                "link_sticker_url": "https://twocomms.shop/drop",
+            }},
+        }
+
+        media = bot._provider_attachment_metadata(msg)
+
+        self.assertEqual(media[0]["provider_context_kind"], "story")
+        self.assertEqual(media[0]["interaction_kind"], "story_reply")
+        self.assertEqual(media[0]["provider_object_id"], "story-1")
+        self.assertEqual(media[0]["reply_context"]["kind"], "story_reply")
+        self.assertEqual(
+            media[0]["reply_context"]["link_sticker_url"],
+            "https://twocomms.shop/drop",
+        )
+
+    def test_attachment_taxonomy_preserves_unverified_target_context(self):
+        msg = {
+            "mid": "reel-mid",
+            "attachments": [{
+                "type": "ig_reel",
+                "payload": {
+                    "reel_video_id": "reel-1",
+                    "url": "https://cdn.example/reel.mp4",
+                    "target": {"username": "other_account"},
+                },
+            }],
+        }
+
+        media = bot._provider_attachment_metadata(msg)
+
+        self.assertEqual(media[0]["provider_attachment_type"], "ig_reel")
+        self.assertEqual(media[0]["provider_context_kind"], "shared_reel")
+        self.assertEqual(media[0]["provider_object_id"], "reel-1")
+        self.assertEqual(media[0]["provider_target_username"], "other_account")
+        self.assertFalse(media[0]["provider_native_mention"])
+
     def test_story_mention_missing_target_cannot_be_inferred_from_event_type(self):
         msg = {
             "mid": "story-mid",
