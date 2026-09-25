@@ -1107,7 +1107,58 @@
 .oedit-collapse.is-open .oedit-collapse__body { display:block; animation:oedit-line-in .22s ease both; }
 .oedit-grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .oedit-grid2 .oedit-fld--full { grid-column:1/-1; }
-.oedit-delivery-note { color:#94a3b8; font-size:.7rem; font-weight:700; letter-spacing:0; margin:12px 0 6px; text-transform:uppercase; }
+.oedit-delivery-section { padding:14px; border:1px solid rgba(148,163,184,.18); border-radius:15px;
+  background:linear-gradient(145deg, rgba(22,36,53,.76), rgba(8,14,23,.72)); }
+.oedit-delivery-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+.oedit-delivery-head .oedit-sec__title { margin:0; }
+.oedit-delivery-state { color:#fcd34d; background:rgba(245,158,11,.13); border:1px solid rgba(245,158,11,.28);
+  border-radius:999px; padding:4px 9px; font-size:.72rem; font-weight:700; }
+.oedit-delivery-current { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; }
+.oedit-delivery-current .oedit-delivery { min-width:0; margin:0; }
+.oedit-delivery-current-label { color:#94a3b8; font-size:.72rem; font-weight:700; margin-bottom:6px; }
+.oedit-delivery-action, .oedit-delivery-tab, .oedit-delivery-cancel, .oedit-kind-btn { min-height:44px; cursor:pointer; font:inherit; }
+.oedit-delivery-action { border:1px solid rgba(249,115,22,.55); border-radius:11px; padding:9px 15px;
+  color:#fdba74; background:rgba(249,115,22,.12); font-size:.84rem; font-weight:800; white-space:nowrap; }
+.oedit-delivery-action:hover, .oedit-delivery-action:focus-visible { background:rgba(249,115,22,.23); }
+.oedit-delivery-editor { margin-top:14px; padding-top:14px; border-top:1px solid rgba(148,163,184,.18); }
+.oedit-delivery-tabs { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+.oedit-delivery-tab { border:1px solid rgba(148,163,184,.28); border-radius:11px; padding:9px 12px;
+  color:#cbd5e1; background:rgba(8,14,23,.6); font-size:.85rem; font-weight:700; }
+.oedit-delivery-tab.is-active { border-color:#f97316; color:#fff; background:rgba(249,115,22,.18); }
+.oedit-delivery-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.oedit-delivery-grid--np { grid-template-columns:1fr; }
+.oedit-delivery-grid .oedit-input { min-height:44px; }
+.oedit-delivery-grid .oedit-fld { min-width:0; }
+.oedit-delivery-grid .oedit-fld label { color:#cbd5e1; font-size:.78rem; font-weight:700; }
+.oedit-delivery-help { color:#94a3b8; font-size:.78rem; line-height:1.4; margin:5px 0 0; }
+.oedit-delivery-error { color:#fda4af; font-size:.8rem; margin:10px 0 0; }
+.oedit-delivery-warning { color:#fcd34d; font-size:.79rem; line-height:1.45; padding:10px 12px;
+  margin:12px 0 0; border:1px solid rgba(245,158,11,.26); border-radius:10px; background:rgba(245,158,11,.09); }
+.oedit-delivery-cancel { border:0; border-radius:10px; padding:8px 12px; margin-top:12px;
+  color:#cbd5e1; background:rgba(148,163,184,.14); font-size:.82rem; font-weight:700; }
+.oedit-delivery-cancel:hover { color:#fff; background:rgba(148,163,184,.22); }
+.oedit-delivery-selector { position:relative; }
+.oedit-delivery-selector .np-selector-results { position:absolute; z-index:35; top:calc(100% + 5px); left:0; right:0;
+  max-height:230px; overflow-y:auto; padding:5px; border:1px solid rgba(148,163,184,.34);
+  border-radius:11px; background:#172439; box-shadow:0 20px 42px rgba(2,8,23,.65); }
+.oedit-delivery-selector .np-selector-option { display:block; width:100%; min-height:44px; padding:9px 11px;
+  text-align:left; color:#f1f5f9; background:transparent; border:0; border-radius:8px; cursor:pointer; }
+.oedit-delivery-selector .np-selector-option:hover, .oedit-delivery-selector .np-selector-option:focus-visible { background:rgba(249,115,22,.19); }
+.oedit-delivery-selector .np-selector-option[aria-selected="true"] { background:rgba(249,115,22,.22); }
+.oedit-delivery-selector .np-selector-option-main { display:block; font-size:.86rem; font-weight:700; }
+.oedit-delivery-selector .np-selector-option-meta { display:block; color:#94a3b8; font-size:.74rem; }
+.oedit-delivery-selector .np-selector-status { min-height:1em; margin-top:4px; color:#94a3b8; font-size:.76rem; }
+.oedit-delivery-selector .np-selector-status.is-loading { color:#93c5fd; }
+.oedit-delivery-selector .np-selector-status.is-error { color:#fda4af; }
+.oedit-delivery-selector .np-selector-status.is-success { color:#86efac; }
+.oedit-kind-toggle { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 2px; }
+.oedit-kind-btn { border:1px solid rgba(148,163,184,.3); border-radius:999px; padding:7px 11px;
+  color:#cbd5e1; background:rgba(8,14,23,.6); font-size:.76rem; font-weight:700; }
+.oedit-kind-btn.is-active { color:#fff; border-color:#f97316; background:rgba(249,115,22,.18); }
+.oedit-delivery-editor [aria-invalid="true"] { border-color:#fb7185; }
+.oedit-delivery-editor .cart-form-input-error { border-color:#fb7185; }
+.oedit-delivery-editor .cart-form-error { color:#fda4af; font-size:.77rem; margin-top:5px; }
+.oedit-delivery-section :focus-visible { outline:2px solid #fb923c; outline-offset:2px; }
 .oedit-presets { display:flex; flex-direction:column; gap:7px; }
 .oedit-preset { display:flex; align-items:center; gap:9px; border:1px solid rgba(148,163,184,.26); border-radius:11px;
   padding:10px 12px; cursor:pointer; font-size:.86rem; font-weight:600; transition:all .15s ease; }
@@ -1149,6 +1200,9 @@
     border-radius:20px 20px 0 0; transform:translateY(100%); }
   .oedit-drawer.is-open { transform:translateY(0); }
   .oedit-head { border-radius:20px 20px 0 0; }
+  .oedit-delivery-current { grid-template-columns:1fr; }
+  .oedit-delivery-action { width:100%; }
+  .oedit-delivery-grid { grid-template-columns:1fr; }
 }
 @media (prefers-reduced-motion:reduce) {
   .oedit-drawer, .oedit-backdrop, .oedit-toast { transition:none; }
@@ -1218,6 +1272,11 @@
   var initialTotal = 0;
   var pickerTarget = null;      // uid позиції для заміни, або null = додати нову
   var pickerCategory = 'all';
+  var deliveryMode = 'keep';
+  var orderLoadSeq = 0;
+  var npSelectorModule = null;
+  var npSelectorPromise = null;
+  var closeTimer = null;
 
   function csrf() {
     var m = document.cookie.match(/csrftoken=([^;]+)/);
@@ -1311,16 +1370,22 @@
 
   // ── open / close ───────────────────────────────────────
   function openDrawer() {
+    window.clearTimeout(closeTimer);
     drawer.hidden = false; backdrop.hidden = false;
     drawer.setAttribute('aria-hidden', 'false');
     requestAnimationFrame(function () { drawer.classList.add('is-open'); backdrop.classList.add('is-open'); });
     document.body.style.overflow = 'hidden';
   }
   function closeDrawer() {
+    orderLoadSeq++;
+    submitUrl = null;
+    deliveryMode = 'keep';
+    btnSave.disabled = true;
+    btnSave.textContent = 'Зберегти зміни';
     drawer.classList.remove('is-open'); backdrop.classList.remove('is-open');
     drawer.setAttribute('aria-hidden', 'true');
     document.body.style.overflow = '';
-    window.setTimeout(function () { drawer.hidden = true; backdrop.hidden = true; }, 320);
+    closeTimer = window.setTimeout(function () { drawer.hidden = true; backdrop.hidden = true; }, 320);
   }
 
   function showToast(html, ms) {
@@ -1331,7 +1396,10 @@
   }
 
   function loadOrder(orderId, dataUrl, subUrl) {
-    submitUrl = subUrl;
+    var loadSeq = ++orderLoadSeq;
+    submitUrl = null;
+    deliveryMode = 'keep';
+    btnSave.disabled = true;
     body.innerHTML = '<div class="oedit-loading"><span class="oedit-spin"></span>Завантаження…</div>';
     elNum.textContent = '#…'; elClient.textContent = '';
     elDelta.hidden = true; elTotal.textContent = '0';
@@ -1340,6 +1408,7 @@
     fetch(dataUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.json(); })
       .then(function (d) {
+        if (loadSeq !== orderLoadSeq) return;
         if (!d || !d.success) { body.innerHTML = '<div class="oedit-empty">Не вдалося завантажити замовлення.</div>'; return; }
         products = d.products || [];
         productMap = {};
@@ -1348,8 +1417,10 @@
         presets = d.payment_presets || {};
         saleSourcePresets = d.sale_source_presets || [];
         hydrate(d.order);
+        submitUrl = subUrl;
+        btnSave.disabled = false;
       })
-      .catch(function () { body.innerHTML = '<div class="oedit-empty">Помилка мережі. Спробуйте ще раз.</div>'; });
+      .catch(function () { if (loadSeq === orderLoadSeq) body.innerHTML = '<div class="oedit-empty">Помилка мережі. Спробуйте ще раз.</div>'; });
   }
 
   function hydrate(order) {
@@ -1451,9 +1522,44 @@
             '<div class="oedit-fld oedit-fld--full"><label>Джерело продажу</label><input type="text" class="oedit-input" id="oeditSource" value="' + esc(order.sale_source) + '"></div>' +
             '<div class="oedit-fld oedit-fld--full"><label>Коментар менеджера</label><textarea class="oedit-input" id="oeditComment" rows="2">' + esc(order.manager_comment) + '</textarea></div>' +
           '</div>' +
-          '<div class="oedit-delivery-note">Доставка лишається без змін</div>' + deliveryHtml +
         '</div>' +
       '</div>' +
+      '<section class="oedit-sec oedit-delivery-section" aria-labelledby="oeditDeliveryTitle" id="oeditDeliverySection" data-np-city-search-url="{% url 'cart_np_city_search' %}" data-np-warehouse-search-url="{% url 'cart_np_warehouse_search' %}">' +
+        '<div class="oedit-delivery-head"><h3 class="oedit-sec__title" id="oeditDeliveryTitle">' +
+          '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2a3 3 0 0 0 6 0h4a3 3 0 0 0 6 0h2v-5l-3-4z"/></svg> Доставка</h3>' +
+          '<span class="oedit-delivery-state" id="oeditDeliveryState" role="status" hidden>Зміна очікує збереження</span></div>' +
+        '<div class="oedit-delivery-current"><div><div class="oedit-delivery-current-label">Поточна доставка</div>' + deliveryHtml + '</div>' +
+          '<button type="button" class="oedit-delivery-action" id="oeditDeliveryChange" aria-controls="oeditDeliveryEditor" aria-expanded="false">Змінити</button></div>' +
+        '<div class="oedit-delivery-editor" id="oeditDeliveryEditor" hidden>' +
+          '<div class="oedit-delivery-tabs" role="group" aria-label="Спосіб доставки">' +
+            '<button type="button" class="oedit-delivery-tab is-active" data-oedit-delivery-tab="np" aria-pressed="true">Нова Пошта</button>' +
+            '<button type="button" class="oedit-delivery-tab" data-oedit-delivery-tab="manual" aria-pressed="false">Ввести вручну</button></div>' +
+          '<div data-oedit-delivery-pane="np"><div data-np-form="1" id="oeditNpForm">' +
+            '<input type="hidden" data-np-settlement-ref><input type="hidden" data-np-city-ref><input type="hidden" data-np-city-token>' +
+            '<input type="hidden" data-np-warehouse-ref><input type="hidden" data-np-warehouse-token>' +
+            '<div class="oedit-delivery-grid oedit-delivery-grid--np">' +
+              '<div class="oedit-fld"><label for="oeditNpCity">Місто Нової Пошти</label><div class="oedit-delivery-selector">' +
+                '<input type="text" class="oedit-input" id="oeditNpCity" placeholder="Почніть вводити місто" autocomplete="off" data-np-city-input role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="oeditNpCityResults" aria-describedby="oeditNpCityStatus">' +
+                '<div class="np-selector-results" id="oeditNpCityResults" role="listbox" data-np-city-results hidden></div>' +
+                '<div class="np-selector-status" id="oeditNpCityStatus" role="status" aria-live="polite" data-np-city-status>Оберіть місто зі списку.</div></div></div>' +
+              '<div class="oedit-fld"><label for="oeditNpWarehouse">Відділення або поштомат</label><div class="oedit-delivery-selector">' +
+                '<input type="text" class="oedit-input" id="oeditNpWarehouse" placeholder="Оберіть пункт доставки" autocomplete="off" data-np-warehouse-input role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="oeditNpWarehouseResults" aria-describedby="oeditNpWarehouseStatus">' +
+                '<div class="np-selector-results" id="oeditNpWarehouseResults" role="listbox" data-np-warehouse-results hidden></div>' +
+                '<div class="oedit-kind-toggle" data-np-kind-toggle><button type="button" class="oedit-kind-btn is-active" data-kind="all" aria-pressed="true">Усі</button>' +
+                  '<button type="button" class="oedit-kind-btn" data-kind="branch" aria-pressed="false">Відділення</button>' +
+                  '<button type="button" class="oedit-kind-btn" data-kind="postomat" aria-pressed="false">Поштомати</button></div>' +
+                '<div class="np-selector-status" id="oeditNpWarehouseStatus" role="status" aria-live="polite" data-np-warehouse-status></div></div></div>' +
+            '</div></div></div>' +
+          '<div data-oedit-delivery-pane="manual" hidden><div class="oedit-delivery-grid">' +
+            '<div class="oedit-fld"><label for="oeditManualCity">Місто / населений пункт</label><input type="text" class="oedit-input" id="oeditManualCity" value="' + esc(order.city || '') + '" maxlength="100" autocomplete="off"></div>' +
+            '<div class="oedit-fld"><label for="oeditManualOffice">Адреса / відділення</label><input type="text" class="oedit-input" id="oeditManualOffice" value="' + esc(order.np_office || '') + '" maxlength="200" autocomplete="off"></div></div>' +
+            '<p class="oedit-delivery-help">Вкажіть повну адресу: вулицю, будинок і квартиру або назву пункту видачі.</p></div>' +
+          (order.has_tracking ? '<p class="oedit-delivery-warning" role="note">Для цього замовлення вже є ТТН або документ Нової Пошти. Зміна адреси в замовленні не змінить маршрут оформленого відправлення. Перевірте його окремо у перевізника.</p>' : '') +
+          '<p class="oedit-delivery-error" id="oeditDeliveryError" role="alert" hidden></p>' +
+          '<p class="oedit-delivery-help">Застосується після «Зберегти зміни».</p>' +
+          '<button type="button" class="oedit-delivery-cancel" id="oeditDeliveryCancel">Скасувати зміну</button>' +
+        '</div>' +
+      '</section>' +
       '<div class="oedit-collapse" id="oeditPaymentWrap">' +
         '<div class="oedit-collapse__head" data-collapse>' +
           '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>' +
@@ -1478,6 +1584,121 @@
     // add buttons
     body.querySelectorAll('[data-add]').forEach(function (btn) {
       btn.addEventListener('click', function () { openPicker(btn.dataset.add, null); });
+    });
+    initDeliveryEditor();
+  }
+
+  function showDeliveryError(message, field) {
+    var error = body.querySelector('#oeditDeliveryError');
+    if (!error) return;
+    error.textContent = message || '';
+    error.hidden = !message;
+    if (field) {
+      var input = body.querySelector(deliveryMode === 'manual'
+        ? (field === 'city' ? '#oeditManualCity' : '#oeditManualOffice')
+        : (field === 'city' ? '#oeditNpCity' : '#oeditNpWarehouse'));
+      if (input) { input.setAttribute('aria-invalid', 'true'); input.focus(); }
+    }
+  }
+
+  function ensureNpSelector(root) {
+    if (npSelectorModule) {
+      npSelectorModule.initNovaPoshtaSelectors(root);
+      return Promise.resolve(npSelectorModule);
+    }
+    if (!npSelectorPromise) {
+      npSelectorPromise = import('{% static 'js/modules/nova-poshta-selector.js' %}?v=20260801a')
+        .then(function (module) { npSelectorModule = module; return module; })
+        .catch(function (error) { npSelectorPromise = null; throw error; });
+    }
+    return npSelectorPromise.then(function (module) {
+      if (root.isConnected) module.initNovaPoshtaSelectors(root);
+      return module;
+    });
+  }
+
+  function initDeliveryEditor() {
+    var section = body.querySelector('#oeditDeliverySection');
+    var change = section.querySelector('#oeditDeliveryChange');
+    var editor = section.querySelector('#oeditDeliveryEditor');
+    var state = section.querySelector('#oeditDeliveryState');
+    var npForm = section.querySelector('#oeditNpForm');
+    var originalCity = section.querySelector('#oeditManualCity').value;
+    var originalOffice = section.querySelector('#oeditManualOffice').value;
+
+    function setMode(next) {
+      deliveryMode = next;
+      state.hidden = next === 'keep';
+      editor.hidden = next === 'keep';
+      change.setAttribute('aria-expanded', String(next !== 'keep'));
+      change.textContent = next === 'keep' ? 'Змінити' : 'Редагується';
+      section.querySelectorAll('[data-oedit-delivery-tab]').forEach(function (tab) {
+        var active = tab.dataset.oeditDeliveryTab === next;
+        tab.classList.toggle('is-active', active);
+        tab.setAttribute('aria-pressed', String(active));
+      });
+      section.querySelectorAll('[data-oedit-delivery-pane]').forEach(function (pane) {
+        pane.hidden = pane.dataset.oeditDeliveryPane !== next;
+      });
+      showDeliveryError('');
+      section.querySelectorAll('[aria-invalid="true"]').forEach(function (input) {
+        input.removeAttribute('aria-invalid');
+        input.classList.remove('cart-form-input-error');
+        input.classList.remove('is-invalid');
+      });
+      section.querySelectorAll('.cart-form-error').forEach(function (error) { error.style.display = 'none'; });
+      if (next === 'np') {
+        var status = section.querySelector('#oeditNpCityStatus');
+        var controls = npForm.querySelectorAll('[data-np-city-input], [data-np-warehouse-input], [data-np-kind-toggle] button');
+        var needsInit = npForm.dataset.npInitialized !== '1';
+        if (needsInit) {
+          controls.forEach(function (control) { control.disabled = true; });
+          status.textContent = 'Завантажуємо пошук Нової Пошти…';
+        }
+        ensureNpSelector(section).then(function () {
+          if (section.isConnected) {
+            controls.forEach(function (control) { control.disabled = false; });
+            if (status.textContent === 'Завантажуємо пошук Нової Пошти…') status.textContent = 'Оберіть місто зі списку.';
+            if (deliveryMode === 'np') section.querySelector('#oeditNpCity').focus();
+          }
+        }).catch(function () {
+          if (section.isConnected) {
+            status.textContent = 'Пошук недоступний. Спробуйте ще раз або введіть адресу вручну.';
+            showDeliveryError('Не вдалося завантажити пошук Нової Пошти. Спробуйте ще раз або введіть адресу вручну.');
+          }
+        });
+      }
+    }
+
+    change.addEventListener('click', function () {
+      if (deliveryMode === 'keep') {
+        setMode('np');
+      } else {
+        editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    });
+    section.querySelectorAll('[data-oedit-delivery-tab]').forEach(function (tab) {
+      tab.addEventListener('click', function () { setMode(tab.dataset.oeditDeliveryTab); });
+    });
+    npForm.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') event.stopPropagation();
+    });
+    section.querySelectorAll('#oeditManualCity, #oeditManualOffice').forEach(function (input) {
+      input.addEventListener('input', function () {
+        input.removeAttribute('aria-invalid');
+        showDeliveryError('');
+      });
+    });
+    section.querySelector('#oeditDeliveryCancel').addEventListener('click', function () {
+      var city = npForm.querySelector('[data-np-city-input]');
+      var warehouse = npForm.querySelector('[data-np-warehouse-input]');
+      city.value = ''; city.dispatchEvent(new Event('input', { bubbles: true }));
+      warehouse.value = ''; warehouse.dispatchEvent(new Event('input', { bubbles: true }));
+      npForm.querySelectorAll('input[type="hidden"]').forEach(function (input) { input.value = ''; });
+      section.querySelector('#oeditManualCity').value = originalCity;
+      section.querySelector('#oeditManualOffice').value = originalOffice;
+      setMode('keep');
+      change.focus();
     });
   }
 
@@ -1707,8 +1928,10 @@
   }
 
   // ── save ───────────────────────────────────────────────
-  function save() {
-    if (!submitUrl) return;
+  async function save() {
+    if (!submitUrl || btnSave.disabled) return;
+    var saveUrl = submitUrl;
+    var saveSeq = orderLoadSeq;
     var name = (document.getElementById('oeditName') || {}).value;
     var phone = (document.getElementById('oeditPhone') || {}).value;
     name = (name || '').trim(); phone = (phone || '').trim();
@@ -1718,7 +1941,7 @@
 
     var preset = (body.querySelector('#oeditPresets input[name="oeditPreset"]:checked') || {}).value || 'cod';
     var payload = {
-      full_name: name, phone: phone, delivery_method: 'keep', payment_preset: preset,
+      full_name: name, phone: phone, delivery_method: deliveryMode, payment_preset: preset,
       sale_source: ((document.getElementById('oeditSource') || {}).value || '').trim(),
       manager_comment: ((document.getElementById('oeditComment') || {}).value || '').trim(),
       items: items.map(function (it) {
@@ -1729,16 +1952,70 @@
       })
     };
 
+    if (deliveryMode === 'manual') {
+      var manualCity = body.querySelector('#oeditManualCity').value.trim();
+      var manualOffice = body.querySelector('#oeditManualOffice').value.trim();
+      if (!manualCity || !manualOffice) {
+        showDeliveryError('Вкажіть місто та адресу/відділення доставки.', manualCity ? 'np_office' : 'city');
+        return;
+      }
+      payload.city = manualCity;
+      payload.np_office = manualOffice;
+    } else if (deliveryMode === 'np') {
+      var section = body.querySelector('#oeditDeliverySection');
+      var npForm = section.querySelector('#oeditNpForm');
+      btnSave.disabled = true; btnSave.textContent = 'Перевіряємо доставку…';
+      try {
+        var selector = await ensureNpSelector(section);
+        if (saveSeq !== orderLoadSeq || saveUrl !== submitUrl) return;
+        if (deliveryMode !== 'np') { btnSave.disabled = false; btnSave.textContent = 'Зберегти зміни'; return; }
+        if (!npForm.querySelector('[data-np-city-token]').value || !npForm.querySelector('[data-np-warehouse-token]').value) {
+          showDeliveryError('Оберіть місто та відділення або поштомат зі списку Нової Пошти.');
+          btnSave.disabled = false; btnSave.textContent = 'Зберегти зміни';
+          npForm.querySelector('[data-np-city-token]').value
+            ? npForm.querySelector('[data-np-warehouse-input]').focus()
+            : npForm.querySelector('[data-np-city-input]').focus();
+          return;
+        }
+        var valid = await selector.validateNovaPoshtaSelection(npForm, { showErrors: true });
+        if (saveSeq !== orderLoadSeq || saveUrl !== submitUrl) return;
+        if (deliveryMode !== 'np') { btnSave.disabled = false; btnSave.textContent = 'Зберегти зміни'; return; }
+        if (!valid) {
+          showDeliveryError('Оберіть місто та відділення або поштомат зі списку Нової Пошти.');
+          btnSave.disabled = false; btnSave.textContent = 'Зберегти зміни';
+          return;
+        }
+      } catch (error) {
+        if (saveSeq !== orderLoadSeq || saveUrl !== submitUrl) return;
+        showDeliveryError('Не вдалося перевірити Нову Пошту. Спробуйте ще раз або введіть адресу вручну.');
+        btnSave.disabled = false; btnSave.textContent = 'Зберегти зміни';
+        return;
+      }
+      payload.city = npForm.querySelector('[data-np-city-input]').value.trim();
+      payload.np_office = npForm.querySelector('[data-np-warehouse-input]').value.trim();
+      payload.np_settlement_ref = npForm.querySelector('[data-np-settlement-ref]').value;
+      payload.np_city_ref = npForm.querySelector('[data-np-city-ref]').value;
+      payload.np_city_token = npForm.querySelector('[data-np-city-token]').value;
+      payload.np_warehouse_ref = npForm.querySelector('[data-np-warehouse-ref]').value;
+      payload.np_warehouse_token = npForm.querySelector('[data-np-warehouse-token]').value;
+    }
+
     btnSave.disabled = true; btnSave.textContent = 'Зберігаємо…';
-    fetch(submitUrl, {
+    fetch(saveUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' },
       body: JSON.stringify(payload)
     })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
       .then(function (res) {
+        if (saveSeq !== orderLoadSeq || saveUrl !== submitUrl) return;
         btnSave.disabled = false; btnSave.textContent = 'Зберегти зміни';
-        if (!res.ok || !res.data.success) { showToast((res.data && res.data.message) || 'Не вдалося зберегти.'); return; }
+        if (!res.ok || !res.data.success) {
+          if (res.data && res.data.field && deliveryMode !== 'keep') {
+            showDeliveryError(res.data.message || 'Перевірте адресу доставки.', res.data.field);
+          }
+          showToast((res.data && res.data.message) || 'Не вдалося зберегти.'); return;
+        }
         var orderNum = elNum.textContent;
         var delta = items.reduce(function (a, it) { return a + lineTotal(it); }, 0) - initialTotal;
         var deltaTxt = Math.abs(delta) < 0.005 ? 'сума без змін' : (delta > 0 ? '+' : '−') + fmt(Math.abs(delta)) + ' грн';
@@ -1755,6 +2032,7 @@
         }, 1100);
       })
       .catch(function () {
+        if (saveSeq !== orderLoadSeq || saveUrl !== submitUrl) return;
         btnSave.disabled = false; btnSave.textContent = 'Зберегти зміни';
         showToast('Помилка мережі. Спробуйте ще раз.');
       });

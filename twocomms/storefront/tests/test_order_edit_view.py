@@ -15,6 +15,7 @@ from django.urls import reverse
 
 from product_catalog.models import VariantFitRule, VariantSizeRule
 from orders.models import Order, OrderItem
+from orders.nova_poshta_checkout import build_city_choice_token, build_warehouse_choice_token
 from productcolors.models import Color, ProductColorVariant
 from storefront.models import (
     Category,
@@ -151,6 +152,129 @@ class OrderEditViewTests(TestCase):
         ) as edit_notify:
             response = self.client.post(url, data=json.dumps(payload), content_type='application/json')
         return response, edit_notify
+
+    def _delivery_edit_payload(self, **delivery_fields):
+        return {
+            'full_name': self.order.full_name,
+            'phone': self.order.phone,
+            'delivery_method': 'keep',
+            'payment_preset': 'paid_full',
+            'items': [{
+                'kind': 'catalog',
+                'item_id': self.order.items.get().id,
+                'product_id': self.product.id,
+                'color_variant_id': self.variant_mint.id,
+                'fit_option_code': 'classic',
+                'size': 'XXL',
+                'qty': 1,
+                'unit_price': 880,
+            }],
+            **delivery_fields,
+        }
+
+    def test_keep_delivery_preserves_historical_address_refs_and_tracking(self):
+        self.order.np_settlement_ref = 'historical-settlement'
+        self.order.np_city_ref = 'historical-city'
+        self.order.np_warehouse_ref = 'historical-warehouse'
+        self.order.tracking_number = '20450000000001'
+        self.order.nova_poshta_document_ref = 'existing-document'
+        self.order.save(update_fields=[
+            'np_settlement_ref', 'np_city_ref', 'np_warehouse_ref',
+            'tracking_number', 'nova_poshta_document_ref',
+        ])
+
+        response, edit_notify = self._edit(self._delivery_edit_payload(manager_comment='Уточнено'))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.order.refresh_from_db()
+        self.assertEqual((self.order.city, self.order.np_office), ('Харків', 'Відділення №4'))
+        self.assertEqual(
+            (self.order.np_settlement_ref, self.order.np_city_ref, self.order.np_warehouse_ref),
+            ('historical-settlement', 'historical-city', 'historical-warehouse'),
+        )
+        self.assertEqual(self.order.tracking_number, '20450000000001')
+        self.assertEqual(self.order.nova_poshta_document_ref, 'existing-document')
+        self.assertIsNone(edit_notify.call_args.args[1]['delivery'])
+
+    def test_signed_np_delivery_changes_address_refs_and_diff_but_preserves_tracking(self):
+        city = {'label': 'Київ', 'settlement_ref': 'settlement-kyiv', 'city_ref': 'city-kyiv'}
+        warehouse = {'label': 'Поштомат №17', 'ref': 'warehouse-17', 'kind': 'postomat', 'city_ref': 'city-kyiv'}
+        self.order.tracking_number = '20450000000001'
+        self.order.nova_poshta_document_ref = 'existing-document'
+        self.order.status = 'ship'
+        self.order.save(update_fields=['tracking_number', 'nova_poshta_document_ref', 'status'])
+        payload = self._delivery_edit_payload(
+            delivery_method='np', city=city['label'], np_office=warehouse['label'],
+            np_settlement_ref=city['settlement_ref'], np_city_ref=city['city_ref'],
+            np_city_token=build_city_choice_token(city),
+            np_warehouse_ref=warehouse['ref'],
+            np_warehouse_token=build_warehouse_choice_token(warehouse),
+        )
+
+        response, edit_notify = self._edit(payload)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.order.refresh_from_db()
+        self.assertEqual((self.order.city, self.order.np_office), ('Київ', 'Поштомат №17'))
+        self.assertEqual(
+            (self.order.np_settlement_ref, self.order.np_city_ref, self.order.np_warehouse_ref),
+            ('settlement-kyiv', 'city-kyiv', 'warehouse-17'),
+        )
+        self.assertEqual(self.order.tracking_number, '20450000000001')
+        self.assertEqual(self.order.nova_poshta_document_ref, 'existing-document')
+        self.assertEqual(self.order.status, 'ship')
+        self.assertEqual(edit_notify.call_args.args[1]['delivery'], {
+            'old': 'Харків, Відділення №4', 'new': 'Київ, Поштомат №17',
+        })
+
+    def test_manual_delivery_replaces_address_and_clears_np_refs(self):
+        self.order.np_city_ref = 'historical-city'
+        self.order.np_warehouse_ref = 'historical-warehouse'
+        self.order.save(update_fields=['np_city_ref', 'np_warehouse_ref'])
+
+        response, edit_notify = self._edit(self._delivery_edit_payload(
+            delivery_method='manual', city='Львів', np_office='вул. Шевченка, 2',
+        ))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.order.refresh_from_db()
+        self.assertEqual((self.order.city, self.order.np_office), ('Львів', 'вул. Шевченка, 2'))
+        self.assertEqual(
+            (self.order.np_settlement_ref, self.order.np_city_ref, self.order.np_warehouse_ref),
+            ('', '', ''),
+        )
+        self.assertEqual(edit_notify.call_args.args[1]['delivery']['new'], 'Львів, вул. Шевченка, 2')
+
+    def test_invalid_np_selection_leaves_order_and_items_unchanged(self):
+        before_item_id = self.order.items.get().id
+        payload = self._delivery_edit_payload(
+            delivery_method='np', city='Київ', np_office='Поштомат №17',
+            np_city_token=build_city_choice_token({
+                'label': 'Київ', 'settlement_ref': 'settlement-kyiv', 'city_ref': 'city-kyiv',
+            }),
+            np_warehouse_token='tampered', manager_comment='Має не зберегтися',
+        )
+
+        response, edit_notify = self._edit(payload)
+
+        self.assertEqual(response.status_code, 422, response.content)
+        self.assertEqual(response.json()['field'], 'np_office')
+        self.order.refresh_from_db()
+        self.assertEqual((self.order.city, self.order.np_office), ('Харків', 'Відділення №4'))
+        self.assertEqual(self.order.manager_comment, '')
+        self.assertEqual(self.order.items.get().id, before_item_id)
+        edit_notify.assert_not_called()
+
+    def test_edit_data_detects_existing_np_document_without_tracking_number(self):
+        self.order.nova_poshta_document_ref = 'existing-document'
+        self.order.save(update_fields=['nova_poshta_document_ref'])
+
+        response = self.client.get(reverse('manual_order_edit_data', args=[self.order.id]))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        order = response.json()['order']
+        self.assertEqual((order['city'], order['np_office']), ('Харків', 'Відділення №4'))
+        self.assertTrue(order['has_tracking'])
 
     def test_edit_swap_color_sends_diff_notification(self):
         payload = {

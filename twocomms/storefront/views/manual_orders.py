@@ -202,6 +202,8 @@ def _build_order_initial(order):
         'sale_source': order.sale_source or '',
         'manager_comment': order.manager_comment or '',
         'payment_preset': _preset_key_for_order(order),
+        'city': order.city or '',
+        'np_office': order.np_office or '',
         'delivery_text': ', '.join(p for p in (order.city, order.np_office) if p),
         'delivery_display': {
             'icon': delivery_display.icon,
@@ -212,7 +214,7 @@ def _build_order_initial(order):
             'city': delivery_display.city,
             'address': delivery_display.address,
         },
-        'has_tracking': bool(order.tracking_number),
+        'has_tracking': bool(order.tracking_number or order.nova_poshta_document_ref),
         'items': items,
     }
 
