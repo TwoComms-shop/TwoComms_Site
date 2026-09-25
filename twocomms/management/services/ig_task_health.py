@@ -613,7 +613,10 @@ def _alert_reason(task: dict) -> str:
         if task.get("last_error_kind") in {
             "daemon_initialization_pending", "daemon_start_pending",
         }:
-            return "watchdog_startup_delayed" if age is not None and age >= 600 else ""
+            # Last success can precede a deliberate restart by days; its age
+            # is not the duration of this startup. The watchdog owns its real
+            # startup deadline and emits daemon_startup_stale when exceeded.
+            return ""
         return "watchdog_failure"
     if key == "nova_poshta_tracking":
         if state == "failed" and task.get("last_error_kind") == "CommandError":

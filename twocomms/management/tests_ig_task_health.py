@@ -74,6 +74,7 @@ class TaskHeartbeatTests(TestCase):
 
     @patch("management.services.instagram_bot.notify_manager")
     def test_watchdog_initialization_pending_stays_diagnostic_during_startup(self, notify):
+        mark_task_succeeded("ig_daemon_watchdog", at=timezone.now() - timedelta(days=3))
         with self.assertRaises(CommandError):
             with task_heartbeat("ig_daemon_watchdog"):
                 raise CommandError(
@@ -83,6 +84,14 @@ class TaskHeartbeatTests(TestCase):
         row = InstagramBotTaskHeartbeat.objects.get(task_key="ig_daemon_watchdog")
         self.assertEqual(row.last_error_kind, "daemon_initialization_pending")
         notify.assert_not_called()
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_watchdog_actual_startup_deadline_failure_remains_immediate(self, notify):
+        mark_task_failed("ig_daemon_watchdog", CommandError(
+            "daemon startup exceeded pending window while holding singleton lock",
+        ))
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.kwargs["metadata"]["task_failure_reason"], "daemon_startup_stale")
 
     @patch("management.services.instagram_bot.notify_manager")
     def test_watchdog_lock_stale_is_immediate_and_typed(self, notify):
