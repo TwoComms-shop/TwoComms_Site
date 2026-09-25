@@ -65,6 +65,11 @@ if ! "$CRONTAB_BIN" -l >"$current" 2>"$read_error"; then
   fi
 fi
 
+if [ "$mode" = "--install" ] || [ "$mode" = "--check" ]; then
+  standalone_tracking_count="$(awk '$0 !~ /^[[:space:]]*#/ && index($0, "manage.py update_tracking_statuses") { count++ } END { print count+0 }' "$current")"
+  [ "$standalone_tracking_count" -eq 0 ] || contract_error "retire standalone Nova Poshta owner before enabling coordinator tracking"
+fi
+
 if [ "$mode" = "--rollback" ] || [ "$mode" = "--check-rollback" ]; then
 cat >"$expected" <<EOF
 $BEGIN_MARKER

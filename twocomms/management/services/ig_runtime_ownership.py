@@ -16,7 +16,6 @@ PERIODIC_OWNER = "instagram_periodic_coordinator"
 SUPERVISOR_OWNER = "instagram_stdlib_supervisor"
 MANUAL_OWNER = "manual_diagnostic"
 DURABLE_TASK_OWNER = "django61_durable_tasks_cron"
-NOVA_POSHTA_OWNER = "nova_poshta_tracking_cron"
 GLOBAL_BACKGROUND_LOCK = "tmp/twocomms_heavy_background.lock"
 
 
@@ -72,7 +71,7 @@ RUNTIME_LANE_OWNERS = (
     RuntimeLaneOwner("ig_deal_payments", PERIODIC_OWNER, "payment polling backstop"),
     RuntimeLaneOwner("binotel_call_ai_analyses", PERIODIC_OWNER, "runtime-gated call analysis"),
     RuntimeLaneOwner("django61_durable_tasks", DURABLE_TASK_OWNER, "shared global admission lock"),
-    RuntimeLaneOwner("nova_poshta_tracking", NOVA_POSHTA_OWNER, "shared global admission lock"),
+    RuntimeLaneOwner("nova_poshta_tracking", PERIODIC_OWNER, "tracking poll under the periodic admission lock"),
     RuntimeLaneOwner("gemini_metadata_diagnostic", MANUAL_OWNER, "explicit token-free diagnostic only"),
 )
 
@@ -89,6 +88,15 @@ PERIODIC_LANES = (
         120,
         30,
         (("limit", 10),),
+    ),
+    # A standalone nonblocking cron was repeatedly starved by the shared
+    # heavy-process lock. Run tracking within its priority owner instead.
+    PeriodicLane(
+        "nova_poshta_tracking",
+        "update_tracking_statuses",
+        300,
+        120,
+        (),
     ),
     PeriodicLane(
         "order_telegram_reconcile",

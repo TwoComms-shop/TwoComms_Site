@@ -26,6 +26,151 @@ MGMT = override_settings(
 )
 
 
+class TaskHealthNotificationTests(TestCase):
+    def _queued_task_incident(self):
+        from management.services.ig_task_health import (
+            check_task_health, mark_task_succeeded,
+        )
+
+        heartbeat = mark_task_succeeded(
+            "ig_deal_payments", at=timezone.now() - timedelta(hours=1),
+        )
+        check_task_health()
+        row = IgBotNotification.objects.get(
+            event_type="ig_task_health", payload__task_key=heartbeat.task_key,
+        )
+        return heartbeat, row
+
+    @patch("management.services.instagram_bot._http")
+    def test_recovered_task_summary_never_reaches_telegram(self, http):
+        from management.services.ig_task_health import mark_task_succeeded
+
+        heartbeat, row = self._queued_task_incident()
+        mark_task_succeeded(heartbeat.task_key)
+        self.assertFalse(bot._deliver_manager_notification(row.dedupe_key))
+        row.refresh_from_db()
+        self.assertEqual(row.status, IgBotNotification.Status.RESOLVED)
+        self.assertEqual(row.failure_kind, "task_auto_recovered")
+        self.assertEqual(row.attempts, 0)
+        self.assertTrue(IgBotNotificationAudit.objects.filter(
+            notification=row, action="task_auto_recovered",
+        ).exists())
+        http.assert_not_called()
+
+    @patch("management.services.instagram_bot._http")
+    def test_legacy_hourly_summary_is_retired_without_claiming_recovery(self, http):
+        row = IgBotNotification.objects.create(
+            dedupe_key="ig_task_health:old-hour", event_type="ig_task_health",
+            payload={"text": "stale (955 с)", "chat_id": "123"},
+        )
+        self.assertFalse(bot._deliver_manager_notification(row.dedupe_key))
+        row.refresh_from_db()
+        self.assertEqual(row.status, IgBotNotification.Status.RESOLVED)
+        self.assertEqual(row.failure_kind, "task_alert_policy_replaced")
+        http.assert_not_called()
+
+    @patch("management.services.instagram_bot._http")
+    def test_temporarily_ineligible_incident_defers_without_losing_identity(self, http):
+        _heartbeat, row = self._queued_task_incident()
+        with patch("management.services.ig_task_health.task_health_alert_decisions", return_value=[]):
+            self.assertFalse(bot._deliver_manager_notification(row.dedupe_key))
+        row.refresh_from_db()
+        self.assertEqual(row.status, IgBotNotification.Status.PENDING)
+        self.assertEqual(row.attempts, 0)
+        self.assertGreater(row.next_attempt_at, timezone.now())
+        self.assertTrue(bot._revalidate_task_health_notification(row.pk))
+        self.assertFalse(IgBotNotificationAudit.objects.filter(notification=row).exists())
+        http.assert_not_called()
+
+    @patch.dict("os.environ", {"MANAGEMENT_TG_BOT_TOKEN": "test-token", "MANAGEMENT_TG_ADMIN_CHAT_ID": "123"})
+    @patch("management.services.instagram_bot._http", return_value=(200, json.dumps({"ok": True, "result": {"message_id": 77}})))
+    def test_current_serious_task_incident_sends_once_across_hour_boundaries(self, http):
+        from management.services.ig_task_health import check_task_health
+
+        _heartbeat, row = self._queued_task_incident()
+        self.assertTrue(bot._deliver_manager_notification(row.dedupe_key))
+        check_task_health(now=timezone.now() + timedelta(hours=4))
+        self.assertEqual(IgBotNotification.objects.filter(
+            event_type="ig_task_health", payload__task_key="ig_deal_payments",
+        ).count(), 1)
+        self.assertTrue(bot._deliver_manager_notification(row.dedupe_key))
+        self.assertEqual(http.call_count, 1)
+
+    def test_recovery_cancels_old_episode_even_when_task_has_failed_again(self):
+        from management.services.ig_task_health import check_task_health, mark_task_succeeded
+
+        heartbeat, old = self._queued_task_incident()
+        mark_task_succeeded(heartbeat.task_key, at=timezone.now() - timedelta(minutes=30))
+        check_task_health()
+        bot.reconcile_task_health_notifications(force=True)
+        old.refresh_from_db()
+        self.assertEqual(old.status, IgBotNotification.Status.RESOLVED)
+        new = IgBotNotification.objects.filter(
+            event_type="ig_task_health", payload__task_key=heartbeat.task_key,
+        ).exclude(pk=old.pk).get()
+        self.assertEqual(new.status, IgBotNotification.Status.PENDING)
+        self.assertNotEqual(new.dedupe_key, old.dedupe_key)
+
+    @patch("management.services.instagram_bot._http")
+    def test_task_revalidation_failure_does_not_attempt_an_unverified_send(self, http):
+        _heartbeat, row = self._queued_task_incident()
+        with patch("management.services.ig_task_health.task_health_alert_decisions", side_effect=RuntimeError("unavailable")):
+            self.assertFalse(bot._deliver_manager_notification(row.dedupe_key))
+            bot.reconcile_task_health_notifications(force=True)
+        row.refresh_from_db()
+        self.assertEqual(row.status, IgBotNotification.Status.PENDING)
+        self.assertEqual(row.attempts, 0)
+        http.assert_not_called()
+
+    @patch("management.services.instagram_bot._http")
+    def test_task_revalidation_does_not_replay_an_ambiguous_send(self, http):
+        _heartbeat, row = self._queued_task_incident()
+        row.status = IgBotNotification.Status.UNKNOWN
+        row.save(update_fields=["status"])
+        bot.reconcile_task_health_notifications(force=True)
+        self.assertFalse(bot._deliver_manager_notification(row.dedupe_key))
+        row.refresh_from_db()
+        self.assertEqual(row.status, IgBotNotification.Status.UNKNOWN)
+        http.assert_not_called()
+
+    @patch("management.services.ig_task_health._nova_has_outstanding_tracking", return_value=True)
+    def test_fatal_escalation_supersedes_pending_lower_tier_without_duplicate_body(self, _outstanding):
+        from management.services.ig_task_health import check_task_health, mark_task_failed, mark_task_succeeded
+
+        heartbeat = mark_task_succeeded("nova_poshta_tracking", at=timezone.now() - timedelta(hours=3))
+        check_task_health()
+        lower = IgBotNotification.objects.get(payload__task_key=heartbeat.task_key)
+        mark_task_failed(heartbeat.task_key, CommandError("configuration failure"))
+        fatal = IgBotNotification.objects.exclude(pk=lower.pk).get(payload__task_key=heartbeat.task_key)
+        self.assertTrue(fatal.dedupe_key.endswith(":fatal"))
+        self.assertFalse(bot._revalidate_task_health_notification(lower.pk))
+        lower.refresh_from_db()
+        self.assertEqual(lower.status, IgBotNotification.Status.RESOLVED)
+        self.assertEqual(lower.failure_kind, "task_alert_superseded")
+        self.assertTrue(bot._revalidate_task_health_notification(fatal.pk))
+
+    @patch("management.services.ig_task_health._nova_has_outstanding_tracking", return_value=True)
+    def test_pending_fatal_tier_cannot_send_as_lower_tier_after_provider_changes(self, _outstanding):
+        from management.services.ig_task_health import mark_task_degraded, mark_task_failed, mark_task_succeeded
+
+        heartbeat = mark_task_succeeded("nova_poshta_tracking", at=timezone.now() - timedelta(hours=3))
+        mark_task_failed(heartbeat.task_key, CommandError("configuration failure"))
+        fatal = IgBotNotification.objects.get(payload__task_key=heartbeat.task_key)
+        mark_task_degraded(heartbeat.task_key, "nova_poshta_provider_degraded")
+        self.assertFalse(bot._revalidate_task_health_notification(fatal.pk))
+        fatal.refresh_from_db()
+        self.assertEqual(fatal.status, IgBotNotification.Status.PENDING)
+        self.assertEqual(fatal.payload["task_alert_tier"], "fatal")
+
+    def test_recovery_reconciliation_is_bounded_between_send_attempts(self):
+        _heartbeat, row = self._queued_task_incident()
+        with patch("management.services.instagram_bot._revalidate_task_health_notification") as revalidate:
+            bot.reconcile_task_health_notifications()
+            revalidate.assert_not_called()
+            IgBotNotification.objects.filter(pk=row.pk).update(updated_at=timezone.now() - timedelta(minutes=2))
+            bot.reconcile_task_health_notifications()
+            revalidate.assert_called_once_with(row.pk)
+
 class InstagramBotNotificationTests(TestCase):
     @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": True})
     @patch("management.services.instagram_bot._http")

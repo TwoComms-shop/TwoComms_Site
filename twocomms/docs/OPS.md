@@ -62,8 +62,9 @@ retention и задач из snapshot 05.07.2026 этим прогоном не 
 
 ### Единый application cron contract (DJ6-SRV-005)
 
-Четыре repository installer-а создают три тяжёлых Django owner-а и один лёгкий
-stdlib watchdog. Все тяжёлые cron-команды берут один account-wide admission
+Два тяжёлых Django owner-а и один лёгкий stdlib watchdog обслуживают периодику.
+Отдельный cron Новой Почты выведен из эксплуатации: его работа выполняется
+внутри Instagram coordinator. Все тяжёлые cron-команды берут один account-wide admission
 lock `tmp/twocomms_heavy_background.lock` **до** запуска Python/Django. Поэтому
 cron wave не может одновременно держать несколько Django runtime в CloudLinux
 LVE. Ожидание lock ограничено 50 секундами; exit `75` означает осознанный
@@ -79,32 +80,40 @@ lanes и выполняет их последовательно. Каждая bu
 | Owner | Cadence | Deadline | Ограничение и recovery |
 |---|---:|---:|---|
 | `instagram_bot_supervisor.py --ensure` | 1 мин | 20 с | stdlib-only ensure; supervisor lock + child SHA/PID/start ticks/exit attribution |
-| `run_instagram_periodic_jobs` | 1 мин | 600 с | один process; fair oldest-first lanes с hard deadlines 60/75/75/120/180 с и общим budget 540 с |
+| `run_instagram_periodic_jobs` | 1 мин | 600 с | общий budget 540 с; сначала notification backstop (30 с) и due tracking (120 с), остальные lanes oldest-first; не вместившаяся работа откладывается |
 | `run_durable_tasks` | 1 мин | 240 с | allowlisted batch, global heavy-process admission lock |
-| `update_tracking_statuses` | 5 мин | 240 с | batch до 100 ТТН, provider timeout/retry/rate limit и due filtering |
+| `update_tracking_statuses` (внутри coordinator) | 5 мин | 120 с | batch до 100 ТТН, provider timeout/retry/rate limit и due filtering; отдельного cron нет |
 
 Каждая scheduled command пишет `InstagramBotTaskHeartbeat`. Ошибка команды
-фиксирует только безопасный exception class; отсутствие свежего success даёт
-`failed/stale` health и deduplicated manager alert. Это дополняет, но не
+фиксирует только безопасный exception class/reason; отсутствие свежего success даёт
+`failed/stale` health. Telegram получает один сигнал на инцидент, когда
+превышен порог существенной задержки или повторных ошибок. Новой Почте нужен
+перерыв от двух часов и незавершённые отправления (включая retry backoff);
+ошибки конфигурации/доступа эскалируются сразу. Перед доставкой состояние
+перепроверяется, восстановившиеся инциденты закрываются без отправки. Это дополняет, но не
 заменяет бизнес-idempotency: ambiguous provider boundary нельзя повторять
 вслепую.
 
+При миграции существующего coordinator сначала выполните
+`../scripts/install_nova_poshta_tracking_cron.sh --retire`: команда требует
+наличия coordinator и удаляет только распознанную старую запись Новой Почты.
+Неизвестная или дублированная конфигурация блокирует изменение.
+На новой установке отдельную запись Новой Почты создавать не нужно.
 Установка и проверка выполняются из Django-каталога:
 
 ```bash
 ../scripts/install_django61_durable_tasks_cron.sh --install
 ../scripts/install_instagram_bot_watchdog_cron.sh --install
 ../scripts/install_instagram_periodic_jobs_cron.sh --install
-../scripts/install_nova_poshta_tracking_cron.sh --install
 
 ../scripts/install_django61_durable_tasks_cron.sh --check
 ../scripts/install_instagram_bot_watchdog_cron.sh --check
 ../scripts/install_instagram_periodic_jobs_cron.sh --check
-../scripts/install_nova_poshta_tracking_cron.sh --check
+../scripts/install_nova_poshta_tracking_cron.sh --check-retired
 ```
 
 Первый переход со старого detached daemon выполняйте через существующий
-maintenance lease: включить maintenance, установить/проверить все четыре
+maintenance lease: включить maintenance, установить/проверить три
 managed blocks, вызвать лёгкий supervisor `--ensure --reload`, дождаться
 актуального `--status` и только затем снять **свой** lease.
 Не удаляйте PID/lock-файлы вручную. Диагностика без Django:

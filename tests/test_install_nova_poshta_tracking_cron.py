@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_nova_poshta_tracking_cron.sh"
 BEGIN_MARKER = "# BEGIN TWOCOMMS NOVA POSHTA TRACKING"
@@ -13,7 +12,7 @@ END_MARKER = "# END TWOCOMMS NOVA POSHTA TRACKING"
 LEGACY_MARKER = "# codex:nova-poshta-tracking"
 
 
-class InstallNovaPoshtaTrackingCronTests(unittest.TestCase):
+class RetireNovaPoshtaTrackingCronTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
@@ -26,24 +25,16 @@ class InstallNovaPoshtaTrackingCronTests(unittest.TestCase):
         self.python = self.root / "python"
         self.python.write_text("", encoding="utf-8")
         self.python.chmod(0o700)
-        self._write_executable(
-            "crontab",
-            """#!/usr/bin/env bash
+        self._write_executable("crontab", """#!/usr/bin/env bash
 set -eu
 if [ "${1:-}" = "-l" ]; then
-  if [ -f "$FAKE_CRONTAB_FILE" ]; then
-    cat "$FAKE_CRONTAB_FILE"
-    exit 0
-  fi
-  echo 'no crontab for test' >&2
-  exit 1
+  if [ -f "$FAKE_CRONTAB_FILE" ]; then cat "$FAKE_CRONTAB_FILE"; exit 0; fi
+  echo 'no crontab for test' >&2; exit 1
 fi
 cp "$1" "$FAKE_CRONTAB_FILE"
-""",
-        )
-        self._write_executable("flock", "#!/usr/bin/env bash\nexit 0\n")
-        self._write_executable("timeout", "#!/usr/bin/env bash\nexit 0\n")
-        self._write_executable("nice", "#!/usr/bin/env bash\nexit 0\n")
+""")
+        for name in ("flock", "timeout", "nice"):
+            self._write_executable(name, "#!/usr/bin/env bash\nexit 0\n")
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -68,124 +59,84 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         return env
 
     def _run(self, mode):
-        return subprocess.run(
-            ["bash", str(INSTALL_SCRIPT), mode],
-            env=self._env(), text=True, capture_output=True, timeout=10,
+        return subprocess.run(["bash", str(INSTALL_SCRIPT), mode],
+                              env=self._env(), text=True, capture_output=True, timeout=10)
+
+    def _coordinator(self):
+        return f"* * * * * cd {self.django_root} && {self.python} manage.py run_instagram_periodic_jobs --budget-seconds 540\n"
+
+    def _tracking(self, *, wait=False):
+        lock = self.django_root / "tmp/twocomms_heavy_background.lock"
+        log = self.django_root / "logs/nova_poshta_cron.log"
+        flock_mode = "-w 50" if wait else "-n"
+        return (
+            f"*/5 * * * * cd {self.django_root} && DJANGO_ENV=production "
+            "DJANGO_SETTINGS_MODULE=twocomms.production_settings "
+            f"{self.fake_bin / 'flock'} {flock_mode} -E 75 {lock} "
+            f"{self.fake_bin / 'timeout'} --signal=TERM --kill-after=15s 240s "
+            f"{self.fake_bin / 'nice'} -n 10 {self.python} manage.py "
+            f"update_tracking_statuses >> {log} 2>&1"
         )
 
-    def test_install_is_idempotent_and_preserves_unrelated_cron(self):
-        self.crontab_file.write_text("MAILTO=ops@example.test\n17 4 * * * /opt/other-job", encoding="utf-8")
-        first = self._run("--install")
-        first_content = self.crontab_file.read_bytes()
-        second = self._run("--install")
-
+    def test_retire_managed_owner_preserves_unrelated_and_is_idempotent(self):
+        self.crontab_file.write_text(
+            "MAILTO=ops@example.test\n17 4 * * * /opt/other-job\n"
+            + self._coordinator()
+            + f"{BEGIN_MARKER}\n{LEGACY_MARKER}\n{self._tracking()}\n{END_MARKER}\n",
+            encoding="utf-8",
+        )
+        first = self._run("--retire")
+        retired = self.crontab_file.read_bytes()
+        second = self._run("--retire")
+        check = self._run("--check-retired")
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual(self.crontab_file.read_bytes(), first_content)
-        self.assertIn("17 4 * * * /opt/other-job", first_content.decode())
-        self.assertEqual(first_content.decode().count(BEGIN_MARKER), 1)
-        self.assertIn(
-            f"{self.fake_bin / 'flock'} -n -E 75",
-            first_content.decode(),
-        )
-        self.assertIn("tmp/twocomms_heavy_background.lock", first_content.decode())
-        self.assertIn("DJANGO_ENV=production", first_content.decode())
-        self.assertIn(
-            f"{self.fake_bin / 'timeout'} --signal=TERM --kill-after=15s 240s",
-            first_content.decode(),
-        )
-        self.assertIn("--kill-after=15s", first_content.decode())
+        self.assertEqual(check.returncode, 0, check.stderr)
+        self.assertEqual(self.crontab_file.read_bytes(), retired)
+        self.assertIn(b"17 4 * * * /opt/other-job", retired)
+        self.assertIn(b"run_instagram_periodic_jobs", retired)
+        self.assertNotIn(b"update_tracking_statuses", retired)
+        self.assertNotIn(BEGIN_MARKER.encode(), retired)
 
-    def test_malformed_or_duplicate_markers_are_rejected_without_writes(self):
-        for original in (
-            f"{BEGIN_MARKER}\n* * * * * /broken\n",
-            f"{END_MARKER}\n",
-            f"{BEGIN_MARKER}\n/one\n{END_MARKER}\n{BEGIN_MARKER}\n/two\n{END_MARKER}\n",
-        ):
+    def test_retire_known_loose_and_waiting_owner(self):
+        for wait in (False, True):
+            with self.subTest(wait=wait):
+                self.crontab_file.write_text(self._coordinator() + self._tracking(wait=wait) + "\n", encoding="utf-8")
+                result = self._run("--retire")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.crontab_file.read_text(), self._coordinator())
+
+    def test_retire_requires_replacement_coordinator(self):
+        self.crontab_file.write_text(
+            f"{BEGIN_MARKER}\n{LEGACY_MARKER}\n{self._tracking()}\n{END_MARKER}\n",
+            encoding="utf-8",
+        )
+        before = self.crontab_file.read_bytes()
+        result = self._run("--retire")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.crontab_file.read_bytes(), before)
+
+    def test_unknown_owner_and_malformed_block_fail_without_writes(self):
+        cases = (
+            self._coordinator() + f"{BEGIN_MARKER}\n{LEGACY_MARKER}\n/bin/unknown\n{END_MARKER}\n",
+            self._coordinator() + f"{BEGIN_MARKER}\n{LEGACY_MARKER}\n{self._tracking()}\n",
+            self._coordinator() + f"* * * * * {self.python} manage.py update_tracking_statuses\n",
+        )
+        for original in cases:
             with self.subTest(original=original):
                 self.crontab_file.write_text(original, encoding="utf-8")
                 before = self.crontab_file.read_bytes()
-                result = self._run("--install")
+                result = self._run("--retire")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.crontab_file.read_bytes(), before)
 
-    def test_check_detects_missing_block(self):
+    def test_stale_install_cannot_recreate_second_owner(self):
+        self.crontab_file.write_text(self._coordinator(), encoding="utf-8")
+        before = self.crontab_file.read_bytes()
+        self.assertNotEqual(self._run("--install").returncode, 0)
         self.assertNotEqual(self._run("--check").returncode, 0)
-
-    def test_install_rejects_unmanaged_tracking_owner_variant_without_writes(self):
-        original = (
-            f"* * * * * cd {self.django_root} && {self.python} manage.py "
-            "update_tracking_statuses >/tmp/alternate-tracking.log 2>&1\n"
-        )
-        self.crontab_file.write_text(original, encoding="utf-8")
-        before = self.crontab_file.read_bytes()
-
-        result = self._run("--install")
-
-        self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.crontab_file.read_bytes(), before)
 
-    def test_install_replaces_unmarked_supported_tracking_owner(self):
-        legacy = (
-            f"*/5 * * * * cd {self.django_root} && /usr/bin/flock -n "
-            f"{self.django_root}/tmp/nova_poshta_tracking.lock /usr/bin/nice -n 10 "
-            f"{self.python} manage.py update_tracking_statuses >> "
-            f"{self.django_root}/logs/nova_poshta_cron.log 2>&1"
-        )
-        self.crontab_file.write_text(f"{legacy}\n", encoding="utf-8")
 
-        result = self._run("--install")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        content = self.crontab_file.read_text(encoding="utf-8")
-        self.assertEqual(content.count("manage.py update_tracking_statuses"), 1)
-        self.assertEqual(content.count(BEGIN_MARKER), 1)
-
-    def test_install_replaces_bounded_shared_owner_with_nonblocking_owner(self):
-        legacy = (
-            f"*/5 * * * * cd {self.django_root} && DJANGO_ENV=production "
-            f"DJANGO_SETTINGS_MODULE=twocomms.production_settings {self.fake_bin / 'flock'} -w 50 -E 75 "
-            f"{self.django_root}/tmp/twocomms_heavy_background.lock "
-            f"{self.fake_bin / 'timeout'} --signal=TERM --kill-after=15s 240s "
-            f"{self.fake_bin / 'nice'} -n 10 {self.python} manage.py "
-            f"update_tracking_statuses >> {self.django_root}/logs/nova_poshta_cron.log 2>&1"
-        )
-        self.crontab_file.write_text(f"{legacy}\n", encoding="utf-8")
-
-        result = self._run("--install")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        content = self.crontab_file.read_text(encoding="utf-8")
-        self.assertIn(f"{self.fake_bin / 'flock'} -n -E 75", content)
-        self.assertNotIn(f"{self.fake_bin / 'flock'} -w 50 -E 75", content)
-        self.assertIn("tmp/twocomms_heavy_background.lock", content)
-
-    def test_install_rejects_reversed_managed_markers_without_writes(self):
-        self.assertEqual(self._run("--install").returncode, 0)
-        installed = self.crontab_file.read_text(encoding="utf-8").splitlines()
-        reversed_block = "\n".join(
-            [installed[-1], installed[0], *installed[1:-1]]
-        ) + "\n"
-        self.crontab_file.write_text(reversed_block, encoding="utf-8")
-        before = self.crontab_file.read_bytes()
-
-        result = self._run("--install")
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.crontab_file.read_bytes(), before)
-
-    def test_install_rejects_job_marker_outside_managed_block(self):
-        self.assertEqual(self._run("--install").returncode, 0)
-        installed = self.crontab_file.read_text(encoding="utf-8")
-        invalid = installed.replace(
-            LEGACY_MARKER,
-            "# missing managed job marker",
-            1,
-        ) + f"{LEGACY_MARKER}\n"
-        self.crontab_file.write_text(invalid, encoding="utf-8")
-        before = self.crontab_file.read_bytes()
-
-        result = self._run("--install")
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.crontab_file.read_bytes(), before)
+if __name__ == "__main__":
+    unittest.main()

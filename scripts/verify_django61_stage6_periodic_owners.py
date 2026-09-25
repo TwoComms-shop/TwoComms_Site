@@ -125,8 +125,11 @@ def load_manifest(path: Path) -> dict[str, Any]:
             if any(
                 not isinstance(value, int) or value <= 0 or value >= 600
                 for value in deadlines.values()
-            ) or sum(deadlines.values()) > 540:
-                _fail(f"jobs[{index}] lane deadlines exceed coordinator budget")
+            ) or sum(deadlines.values()) > 660:
+                # Tracking has priority after the notification backstop. The
+                # coordinator's 540s runtime budget defers any remaining lane
+                # to its next minute tick rather than dropping that work.
+                _fail(f"jobs[{index}] lane deadlines exceed bounded retry budget")
     return data
 
 

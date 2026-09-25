@@ -4111,6 +4111,16 @@ def _deliver_manager_notification_unlocked(dedupe_key: str) -> bool:
             updated_at=now,
         )
         return False
+    # Technical alerts may wait through a Telegram outage. Re-read the task
+    # before claiming a send so recovery cannot replay an obsolete alarm.
+    if row.event_type == "ig_task_health":
+        try:
+            current_incident = _revalidate_task_health_notification(row.pk, now=now)
+        except Exception as exc:
+            log("warning", "task_alert_revalidation_unavailable", type(exc).__name__)
+            return False
+        if not current_incident:
+            return False
     eligible = Q(status=IgBotNotification.Status.PENDING) | Q(
         status=IgBotNotification.Status.FAILED,
         next_attempt_at__isnull=True,
@@ -4441,6 +4451,111 @@ def _task_heartbeat_id_for_notification(row: IgBotNotification) -> int | None:
     return heartbeat_id if heartbeat_id > 0 else None
 
 
+def _revalidate_task_health_notification(notification_id: int, *, now=None) -> bool:
+    """Allow only a currently actionable task incident through the outbox.
+
+    An incident which recovered is closed with an audit record. Temporary
+    backoff/no-due work only defers it: resolving that stable identity would
+    prevent a later genuinely actionable alert in the same incident.
+    """
+    from management.models import IgBotNotificationAudit, InstagramBotTaskHeartbeat
+    from management.services.ig_task_health import (
+        task_health_alert_decisions, task_health_incident_key,
+    )
+
+    now = now or timezone.now()
+    with transaction.atomic():
+        row = IgBotNotification.objects.select_for_update().filter(
+            pk=notification_id,
+            event_type="ig_task_health",
+            status__in=(
+                IgBotNotification.Status.PENDING, IgBotNotification.Status.FAILED,
+                IgBotNotification.Status.UNKNOWN, IgBotNotification.Status.DEAD_LETTER,
+            ),
+        ).first()
+        if row is None:
+            return False
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        resolution = ""
+        if payload.get("task_alert_policy_version") != 2:
+            # Retire hourly summaries, without claiming the task recovered.
+            # The current monitor separately owns any actionable v2 incident.
+            resolution = "task_alert_policy_replaced"
+        else:
+            heartbeat = InstagramBotTaskHeartbeat.objects.filter(
+                pk=_task_heartbeat_id_for_notification(row),
+                task_key=payload.get("task_key", ""),
+            ).first()
+            if heartbeat and task_health_incident_key(heartbeat) != payload.get("task_incident_key"):
+                resolution = "task_auto_recovered"
+            elif heartbeat:
+                decisions = task_health_alert_decisions(now=now, task_key=heartbeat.task_key)
+                decision = next((
+                    item for item in decisions
+                    if item["incident_key"] == payload.get("task_incident_key")
+                ), None)
+                if decision and decision["dedupe_key"] != row.dedupe_key:
+                    # A fatal configuration error has its own escalation slot.
+                    # Never send its body through both the delayed and fatal row.
+                    if decision["metadata"].get("task_alert_tier") == "fatal" and IgBotNotification.objects.filter(
+                        dedupe_key=decision["dedupe_key"],
+                    ).exists():
+                        resolution = "task_alert_superseded"
+                elif decision and decision["metadata"].get("task_alert_tier") == "delayed" and IgBotNotification.objects.filter(
+                    dedupe_key=f"{decision['incident_key']}:fatal",
+                    status__in=(IgBotNotification.Status.SENT, IgBotNotification.Status.UNKNOWN),
+                ).exists():
+                    resolution = "task_alert_superseded"
+                elif decision:
+                    # Pending text must describe present impact, not an old
+                    # observation captured before a retry or policy escalation.
+                    row.payload = {**payload, **decision["metadata"], "text": decision["text"]}
+                    row.save(update_fields=["payload", "updated_at"])
+                    return row.status in (IgBotNotification.Status.PENDING, IgBotNotification.Status.FAILED)
+        if not resolution:
+            if row.status in (IgBotNotification.Status.PENDING, IgBotNotification.Status.FAILED):
+                row.next_attempt_at = now + timedelta(minutes=5)
+                row.save(update_fields=["next_attempt_at", "updated_at"])
+            else:
+                row.save(update_fields=["updated_at"])
+            return False
+        from_status = row.status
+        row.status = IgBotNotification.Status.RESOLVED
+        row.failure_kind = resolution
+        row.next_attempt_at = None
+        row.payload = {**payload, "review_status": resolution}
+        row.save(update_fields=["status", "failure_kind", "next_attempt_at", "payload", "updated_at"])
+        IgBotNotificationAudit.objects.create(
+            notification=row, actor=None, action=resolution,
+            from_status=from_status, to_status=IgBotNotification.Status.RESOLVED,
+            note="scheduled task alert revalidated against current heartbeat policy",
+        )
+        return False
+
+
+def reconcile_task_health_notifications(*, limit: int = 100, force: bool = False) -> None:
+    candidates = IgBotNotification.objects.filter(
+        event_type="ig_task_health",
+        status__in=(
+            IgBotNotification.Status.PENDING, IgBotNotification.Status.FAILED,
+            IgBotNotification.Status.UNKNOWN, IgBotNotification.Status.DEAD_LETTER,
+        ),
+    )
+    if not force:
+        # The daemon drains every few seconds; incident recovery does not need
+        # a full task/shipment read on every pass. Actual sends always recheck.
+        candidates = candidates.filter(updated_at__lte=timezone.now() - timedelta(minutes=1))
+    candidate_ids = list(candidates.order_by("updated_at", "id").values_list(
+        "id", flat=True,
+    )[:max(1, min(int(limit), 500))])
+    for notification_id in candidate_ids:
+        try:
+            _revalidate_task_health_notification(notification_id)
+        except Exception as exc:
+            # A diagnostic failure must not starve customer-review messages.
+            log("warning", "task_alert_revalidation_unavailable", type(exc).__name__)
+
+
 def reconcile_recovered_system_notifications(*, limit: int = 100) -> int:
     """Close system-only alert debt when durable task truth proves recovery."""
     from management.models import IgBotNotificationAudit, InstagramBotTaskHeartbeat
@@ -4615,6 +4730,7 @@ def drain_manager_notifications(*, limit: int = 20) -> int:
             type(exc).__name__,
         )
     reconcile_recovered_system_notifications(limit=limit)
+    reconcile_task_health_notifications(limit=limit)
     reconcile_obsolete_terminal_monitors(limit=limit)
     now = timezone.now()
     stale_before = now - timedelta(seconds=NOTIFICATION_STALE_SENDING_SECONDS)

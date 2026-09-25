@@ -2,7 +2,7 @@
 
 Cron itself cannot tell us that another entry disappeared.  Each scheduled
 command therefore records its last successful run here, while the long-lived
-bot daemon checks freshness and emits one bounded incident alert per hour.
+bot daemon checks freshness and alerts once per actionable task incident.
 """
 from __future__ import annotations
 
@@ -18,8 +18,11 @@ from django.utils import timezone
 from management.models import InstagramBotTaskHeartbeat
 
 
-DEGRADED_ALERT_THRESHOLD = 3
 NOVA_PROVIDER_DEGRADED = "nova_poshta_provider_degraded"
+TASK_ALERT_POLICY_VERSION = 2
+NOVA_ALERT_AFTER_SECONDS = 2 * 60 * 60
+TRACE_ALERT_AFTER_SECONDS = 60 * 60
+MEMORY_ALERT_AFTER_SECONDS = 2 * 60 * 60
 
 
 class _TaskHeartbeatState:
@@ -46,8 +49,9 @@ class TaskSpec:
     stale_after_seconds: int
 
 
-# These are durable lanes owned by the single periodic coordinator plus the
-# independent Nova Poshta owner. The stdlib daemon supervisor has filesystem
+# These are durable lanes owned by the periodic coordinator and the separate
+# Nova Poshta cron owner. They share process admission with other background
+# work. The stdlib daemon supervisor has filesystem
 # state/process locks rather than a Django DB heartbeat, and the manual Gemini
 # metadata diagnostic is intentionally not a scheduled health expectation.
 TASK_SPECS = (
@@ -69,10 +73,59 @@ _SPECS_BY_KEY = {
 }
 _CALL_AUTO_ANALYSIS_TASK_KEY = "binotel_call_ai_analyses"
 _CALL_QUEUE_KEYS = ("eligible", "metadata_pending", "ineligible")
-# The alert body carries the current unhealthy task set. Keep dedupe identity at
-# the incident level so a second task joining the same outage does not create a
-# new hourly alert bucket.
-TASK_HEALTH_INCIDENT_FINGERPRINT = "scheduled_task_health_unhealthy"
+_CRITICAL_TASK_KEYS = frozenset({
+    "ig_checkout_reconcile", "ig_order_fulfillment", "ig_deal_payments",
+    "order_telegram_reconcile",
+})
+_TASK_IMPACT_AND_ACTION = {
+    "ig_checkout_reconcile": (
+        "Підтвердження нових покупок в Instagram може затримуватися.",
+        "Перевірте незавершені замовлення й діалоги в CRM; повідомте технічного адміністратора.",
+    ),
+    "ig_order_fulfillment": (
+        "Клієнти Instagram можуть із затримкою отримувати повідомлення про замовлення.",
+        "Перевірте замовлення й діалоги в CRM; повідомте технічного адміністратора.",
+    ),
+    "ig_deal_payments": (
+        "Підтвердження оплат Instagram може затримуватися.",
+        "Звірте оплати й пов'язані діалоги в CRM; повідомте технічного адміністратора.",
+    ),
+    "order_telegram_reconcile": (
+        "Повідомлення про замовлення в Telegram можуть затримуватися.",
+        "Перевірте картки замовлень у CRM; повідомте технічного адміністратора.",
+    ),
+    "nova_poshta_tracking": (
+        "Автооновлення статусів посилок затримується понад 2 години.",
+        "Якщо клієнт чекає статус, перевірте ТТН на сайті Нової Пошти. Передайте проблему технічному адміністратору.",
+    ),
+    "ig_trace_refresh": (
+        "Історія дій клієнтів в Instagram може оновлюватися із затримкою.",
+        "Перевірте потрібний діалог у CRM; повідомте технічного адміністратора.",
+    ),
+    "ig_typed_memory_reconcile": (
+        "Збережені відомості про діалоги можуть оновлюватися із затримкою.",
+        "Перевірте потрібний діалог у CRM; повідомте технічного адміністратора.",
+    ),
+    "binotel_call_ai_analyses": (
+        "Автоматичний аналіз дзвінків затримується.",
+        "Перевірте записи дзвінків; повідомте технічного адміністратора.",
+    ),
+    "ig_daemon_watchdog": (
+        "Автоматичні відповіді в Instagram можуть не працювати.",
+        "Перевірте нові діалоги в CRM і повідомте технічного адміністратора.",
+    ),
+}
+_TASK_USER_LABELS = {
+    "ig_checkout_reconcile": "підтвердження покупок Instagram",
+    "ig_order_fulfillment": "повідомлення про замовлення Instagram",
+    "ig_deal_payments": "перевірка оплат Instagram",
+    "order_telegram_reconcile": "повідомлення про замовлення в Telegram",
+    "nova_poshta_tracking": "оновлення статусів Нової Пошти",
+    "ig_trace_refresh": "історія дій клієнтів Instagram",
+    "ig_typed_memory_reconcile": "відомості про діалоги Instagram",
+    "binotel_call_ai_analyses": "аналіз дзвінків",
+    "ig_daemon_watchdog": "автоматичні відповіді Instagram",
+}
 
 
 def _call_auto_analysis_enabled() -> bool:
@@ -189,79 +242,32 @@ def _task_failure_reason_code(exc: Exception) -> str:
     return "".join(snake)[:64] or "task_error"
 
 
-def _notify_failure(
-    row: InstagramBotTaskHeartbeat,
-    error_kind: str,
-    exc: Exception,
-) -> None:
+def task_health_incident_key(row: InstagramBotTaskHeartbeat) -> str:
+    """One identity per task and last successful run, stable across alert checks."""
+    anchor = row.last_succeeded_at or row.first_expected_at
+    if not anchor:
+        return ""
+    return f"ig_task_health:{row.task_key}:{int(anchor.timestamp() * 1_000_000)}"
+
+
+def _notify_task_health(*, task_key: str | None = None, now=None, failure_reason: str = "") -> None:
+    """Queue eligible operational incidents through the one shared policy."""
     try:
-        from management.services.ig_alerts import alert_dedupe_key, format_alert
         from management.services import instagram_bot as bot
 
-        reason_code = _task_failure_reason_code(exc)
-        text = format_alert(
-            "⚠️ Помилка IG cron-задачі",
-            lines=(
-                f"Задача: {row.label}",
-                f"Тип помилки: {error_kind}",
-                f"Причина: {reason_code}",
-                f"Очікуваний інтервал: {row.expected_interval_seconds} с",
-            ),
-        )
-        bot.notify_manager(
-            text,
-            dedupe_key=alert_dedupe_key(
-                "ig_task_failure", entity_id=row.pk, window_minutes=60
-            ),
-            event_type="ig_task_failure",
-            metadata={
-                "task_key": row.task_key,
-                "task_heartbeat_id": row.pk,
-                "task_failure_reason": reason_code,
-                "requires_human_review": False,
-            },
-            deliver_immediately=False,
-        )
+        for decision in task_health_alert_decisions(task_key=task_key, now=now):
+            metadata = dict(decision["metadata"])
+            if failure_reason and decision["task_key"] == task_key:
+                metadata["task_failure_reason"] = failure_reason
+            bot.notify_manager(
+                decision["text"],
+                dedupe_key=decision["dedupe_key"],
+                event_type="ig_task_health",
+                metadata=metadata,
+                deliver_immediately=False,
+            )
     except Exception:
-        # A notification problem must not hide the original command failure.
-        pass
-
-
-def _notify_degraded(
-    row: InstagramBotTaskHeartbeat,
-    reason_code: str,
-) -> None:
-    """Notify only after repeated recoverable provider degradation."""
-    try:
-        from management.services.ig_alerts import alert_dedupe_key, format_alert
-        from management.services import instagram_bot as bot
-
-        text = format_alert(
-            "⚠️ IG operations потребують уваги",
-            lines=(
-                f"Задача: {row.label}",
-                "Тип помилки: ProviderDegraded",
-                f"Причина: {reason_code}",
-                f"Послідовні збої: {row.consecutive_failures}",
-                f"Очікуваний інтервал: {row.expected_interval_seconds} с",
-            ),
-        )
-        bot.notify_manager(
-            text,
-            dedupe_key=alert_dedupe_key(
-                "ig_task_degraded", entity_id=row.pk, window_minutes=60
-            ),
-            event_type="ig_task_degraded",
-            metadata={
-                "task_key": row.task_key,
-                "task_heartbeat_id": row.pk,
-                "task_failure_reason": reason_code,
-                "consecutive_failures": row.consecutive_failures,
-                "requires_human_review": False,
-            },
-            deliver_immediately=False,
-        )
-    except Exception:
+        # Notification failure cannot hide a scheduled command's real outcome.
         pass
 
 
@@ -278,7 +284,7 @@ def mark_task_degraded(
     duration_ms: int = 0,
     at=None,
 ) -> InstagramBotTaskHeartbeat | None:
-    """Record a completed but degraded run and alert after three repeats."""
+    """Record a completed but degraded run; policy decides if it affects work."""
     _validate_degraded_reason(task_key, reason_code)
     try:
         row = _upsert_expectation(_spec(task_key))
@@ -301,8 +307,7 @@ def mark_task_degraded(
         row.refresh_from_db()
     except (DatabaseError, OperationalError, ProgrammingError):
         return None
-    if row.consecutive_failures >= DEGRADED_ALERT_THRESHOLD:
-        _notify_degraded(row, row.last_error_kind)
+    _notify_task_health(task_key=task_key, now=now)
     return row
 
 
@@ -317,23 +322,28 @@ def mark_task_failed(
     try:
         row = _upsert_expectation(_spec(task_key))
         now = at or timezone.now()
-        error_kind = exc.__class__.__name__[:128]
-        row.last_started_at = row.last_started_at or now
-        row.last_failed_at = now
-        row.last_duration_ms = max(0, int(duration_ms or 0))
-        row.last_error_kind = error_kind
-        row.save(update_fields=[
-            "last_started_at", "last_failed_at", "last_duration_ms",
-            "last_error_kind", "updated_at",
-        ])
+        failure_reason = _task_failure_reason_code(exc)
+        error_kind = (
+            failure_reason if task_key == "ig_daemon_watchdog"
+            else exc.__class__.__name__[:128]
+        )
+        # Compare the prior outcome before replacing it; a provider-degraded
+        # streak must not make the first application failure look repeated.
         InstagramBotTaskHeartbeat.objects.filter(pk=row.pk).update(
-            consecutive_failures=F("consecutive_failures") + 1,
+            consecutive_failures=Case(
+                When(last_error_kind=NOVA_PROVIDER_DEGRADED, then=Value(1)),
+                default=F("consecutive_failures") + 1,
+            ),
+            last_started_at=row.last_started_at or now,
+            last_failed_at=now,
+            last_duration_ms=max(0, int(duration_ms or 0)),
+            last_error_kind=error_kind,
             updated_at=now,
         )
-        row.refresh_from_db(fields=["consecutive_failures"])
+        row.refresh_from_db()
     except (DatabaseError, OperationalError, ProgrammingError):
         return None
-    _notify_failure(row, error_kind, exc)
+    _notify_task_health(task_key=task_key, now=now, failure_reason=failure_reason)
     return row
 
 
@@ -421,6 +431,8 @@ def task_health_snapshot(*, now=None) -> dict:
         tasks.append({
             "key": spec.key,
             "label": spec.label,
+            "task_heartbeat_id": row.pk if row else None,
+            "first_expected_at": row.first_expected_at.isoformat() if row else "",
             "state": state,
             "healthy": state == "healthy",
             "age_seconds": age_seconds,
@@ -576,39 +588,197 @@ def release_queue_snapshot() -> dict:
     }
 
 
-def check_task_health(*, now=None) -> dict:
-    """Alert once per hour when one or more expected operational tasks are bad."""
-    snapshot = task_health_snapshot(now=now)
-    if not snapshot["available"]:
-        return snapshot
-    # Provider degradation has its own thresholded, recoverable alert owner.
-    # It remains unhealthy in the returned snapshot; only the duplicate summary
-    # is suppressed. A vanished cron is projected as stale and still alerts.
-    unhealthy = [task for task in snapshot["tasks"]
-                 if not task["healthy"] and task["state"] != "degraded"]
-    if not unhealthy:
-        return snapshot
+def _nova_has_outstanding_tracking() -> bool:
+    """Count unfinished shipments even while provider retries are deferred."""
     try:
-        from management.services.ig_alerts import alert_dedupe_key, format_alert
-        from management.services import instagram_bot as bot
+        from orders.nova_poshta_service import NovaPoshtaService
 
-        lines = [
-            f"{task['label']}: {task['state']}"
-            + (f" ({task['age_seconds']} с)" if task["age_seconds"] is not None else "")
-            for task in unhealthy
-        ]
-        text = format_alert("🚨 IG operations потребують уваги", lines=lines)
-        bot.notify_manager(
-            text,
-            dedupe_key=alert_dedupe_key(
-                "ig_task_health",
-                window_minutes=60,
-                text=TASK_HEALTH_INCIDENT_FINGERPRINT,
-            ),
-            event_type="ig_task_health",
+        return NovaPoshtaService().get_orders_with_tracking_queryset(
+            include_deferred=True,
+        ).exists()
+    except (DatabaseError, OperationalError, ProgrammingError):
+        return False
+
+
+def _alert_reason(task: dict) -> str:
+    key = task["key"]
+    state = task["state"]
+    if state == "healthy" or state == "unobserved":
+        return ""
+    age = task.get("age_seconds")
+    failures = int(task.get("consecutive_failures") or 0)
+    if key == "ig_daemon_watchdog":
+        if state != "failed":
+            return ""
+        if task.get("last_error_kind") in {
+            "daemon_initialization_pending", "daemon_start_pending",
+        }:
+            return "watchdog_startup_delayed" if age is not None and age >= 600 else ""
+        return "watchdog_failure"
+    if key == "nova_poshta_tracking":
+        if state == "failed" and task.get("last_error_kind") == "CommandError":
+            return "tracking_command_failed"
+        if age is not None and age >= NOVA_ALERT_AFTER_SECONDS and _nova_has_outstanding_tracking():
+            return "overdue_tracking_work"
+        return ""
+    if key in _CRITICAL_TASK_KEYS:
+        if state == "failed" and failures >= 3:
+            return "repeated_failures"
+        threshold = int(task.get("stale_after_seconds") or _spec(key).stale_after_seconds)
+        if age is not None and age >= 2 * threshold:
+            return "prolonged_delay"
+        return ""
+    threshold = {
+        "ig_trace_refresh": TRACE_ALERT_AFTER_SECONDS,
+        "ig_typed_memory_reconcile": MEMORY_ALERT_AFTER_SECONDS,
+        "binotel_call_ai_analyses": 2 * 60 * 60,
+    }.get(key)
+    if key == "binotel_call_ai_analyses" and state == "failed" and failures >= 3:
+        return "repeated_failures"
+    if threshold and age is not None and age >= threshold:
+        return "prolonged_delay"
+    return ""
+
+
+def _duration_uk(seconds: int | None) -> str:
+    if seconds is None:
+        return "ще не виконувалася"
+    minutes = max(1, (seconds + 59) // 60)
+    hours, remainder = divmod(minutes, 60)
+    return f"{hours} год {remainder} хв" if hours else f"{minutes} хв"
+
+
+def task_health_alert_decisions(*, snapshot: dict | None = None, now=None,
+                                task_key: str | None = None) -> list[dict]:
+    """Return actionable alerts without writing notification state.
+
+    The stable incident key changes only after a successful task run. A missing
+    decision can be temporary (for example, no due shipment), so consumers
+    should compare that key with the current heartbeat before retiring a queue
+    row.
+    """
+    now = now or timezone.now()
+    snapshot = snapshot if snapshot is not None else task_health_snapshot(now=now)
+    if not snapshot.get("available"):
+        return []
+    tasks = list(snapshot.get("tasks") or ())
+    if task_key in {spec.key for spec in MANUAL_TASK_SPECS}:
+        try:
+            row = InstagramBotTaskHeartbeat.objects.filter(task_key=task_key).first()
+        except (DatabaseError, OperationalError, ProgrammingError):
+            row = None
+        if row is not None:
+            reference = row.last_succeeded_at or row.first_expected_at
+            age = max(0, int((now - reference).total_seconds())) if reference else None
+            failed = bool(row.last_failed_at and (
+                not row.last_succeeded_at or row.last_failed_at >= row.last_succeeded_at
+            ))
+            tasks.append({
+                "key": row.task_key,
+                "label": row.label,
+                "state": "failed" if failed else "healthy",
+                "healthy": not failed,
+                "age_seconds": age,
+                "stale_after_seconds": row.stale_after_seconds,
+                "last_error_kind": row.last_error_kind,
+                "consecutive_failures": row.consecutive_failures,
+                "last_succeeded_at": row.last_succeeded_at.isoformat() if row.last_succeeded_at else "",
+                "first_expected_at": row.first_expected_at.isoformat(),
+                "task_heartbeat_id": row.pk,
+            })
+    if task_key:
+        tasks = [task for task in tasks if task["key"] == task_key]
+
+    from management.services.ig_alerts import format_alert, management_base_url
+
+    decisions = []
+    for task in tasks:
+        heartbeat_id = task.get("task_heartbeat_id")
+        anchor = task.get("last_succeeded_at") or task.get("first_expected_at")
+        if not heartbeat_id or not anchor:
+            continue
+        reason = _alert_reason(task)
+        if not reason:
+            continue
+        # A timestamp anchor is derived from persisted task truth, not from an
+        # hourly wall-clock bucket or a changing collection of unhealthy tasks.
+        from datetime import datetime
+
+        anchor_us = int(datetime.fromisoformat(anchor).timestamp() * 1_000_000)
+        incident_key = f"ig_task_health:{task['key']}:{anchor_us}"
+        impact, action = _TASK_IMPACT_AND_ACTION[task["key"]]
+        if reason == "tracking_command_failed":
+            impact = "Автооновлення статусів посилок не може завершитися через помилку системи або доступу до Нової Пошти."
+            action = "Перевірте ТТН клієнта на сайті Нової Пошти. Попросіть технічного адміністратора відновити налаштування та доступ до API."
+        dedupe_key = (
+            f"{incident_key}:fatal"
+            if task["key"] == "nova_poshta_tracking" and reason == "tracking_command_failed"
+            else incident_key
         )
-    except Exception:
-        pass
+        state_text = {
+            "failed": "завершилася помилкою",
+            "stale": "давно не завершувалася успішно",
+            "not_observed": "ще не завершувалася успішно",
+            "degraded": "провайдер працює з перебоями",
+        }.get(task["state"], "потребує перевірки")
+        text = format_alert(
+            "🚨 IG: потрібна перевірка фонової задачі",
+            lines=(
+                f"Задача: {_TASK_USER_LABELS[task['key']]}",
+                f"Стан: {state_text}; {_duration_uk(task.get('age_seconds'))} від останнього успіху.",
+                f"Вплив: {impact}",
+                f"Дія: {action}",
+            ),
+            url=f"{management_base_url()}/bot/",
+            url_label="CRM:",
+        )
+        decisions.append({
+            "task_key": task["key"],
+            "heartbeat_id": heartbeat_id,
+            "incident_key": incident_key,
+            "dedupe_key": dedupe_key,
+            "text": text,
+            "reason": reason,
+            "metadata": {
+                "requires_human_review": False,
+                "task_alert_policy_version": TASK_ALERT_POLICY_VERSION,
+                "task_key": task["key"],
+                "task_heartbeat_id": heartbeat_id,
+                "task_incident_key": incident_key,
+                "task_alert_tier": "fatal" if dedupe_key != incident_key else "delayed",
+                "task_last_succeeded_at": task.get("last_succeeded_at") or "",
+                "task_first_expected_at": task.get("first_expected_at") or "",
+                "task_alert_reason": reason,
+            },
+        })
+    return decisions
+
+
+def check_task_health(*, now=None) -> dict:
+    """Keep the full diagnostic snapshot and queue each actionable incident once."""
+    snapshot = task_health_snapshot(now=now)
+    if snapshot["available"] and any(
+        task["state"] == "unobserved" for task in snapshot["tasks"]
+    ):
+        # A newly enabled optional lane or deleted heartbeat row needs a
+        # durable first_expected_at before it can be aged. Its first observation
+        # starts a grace period; it must never page immediately on startup.
+        if ensure_task_expectations():
+            snapshot = task_health_snapshot(now=now)
+    if snapshot["available"]:
+        try:
+            from management.services import instagram_bot as bot
+
+            for decision in task_health_alert_decisions(snapshot=snapshot, now=now):
+                bot.notify_manager(
+                    decision["text"],
+                    dedupe_key=decision["dedupe_key"],
+                    event_type="ig_task_health",
+                    metadata=decision["metadata"],
+                    deliver_immediately=False,
+                )
+        except Exception:
+            pass
     return snapshot
 
 

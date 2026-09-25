@@ -62,6 +62,17 @@ class NovaPoshtaTrackingDedupTests(TestCase):
         )
         self.service = NovaPoshtaService()
 
+    def test_health_counts_retry_backoff_without_repolling_or_reviving_terminal_orders(self):
+        self.service._defer_tracking_rows([self.order.pk])
+        self.assertFalse(self.service.get_orders_with_tracking_queryset().exists())
+        self.assertEqual(list(self.service.get_orders_with_tracking_queryset(
+            include_deferred=True,
+        ).values_list("pk", flat=True)), [self.order.pk])
+        Order.objects.filter(pk=self.order.pk).update(tracking_terminal_at=timezone.now())
+        self.assertFalse(self.service.get_orders_with_tracking_queryset(include_deferred=True).exists())
+        Order.objects.filter(pk=self.order.pk).update(tracking_terminal_at=None, status="cancelled")
+        self.assertFalse(self.service.get_orders_with_tracking_queryset(include_deferred=True).exists())
+
     def _run(self, tracking_info):
         """Прогон одного цикла обновления с заданным ответом API."""
         with (

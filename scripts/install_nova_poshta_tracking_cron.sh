@@ -16,9 +16,9 @@ TIMEOUT_BIN="${TWC_TIMEOUT_BIN:-/usr/bin/timeout}"
 NICE_BIN="${TWC_NICE_BIN:-/usr/bin/nice}"
 PRODUCTION_ENV_PREFIX="DJANGO_ENV=production DJANGO_SETTINGS_MODULE=twocomms.production_settings"
 
-usage() { echo "Usage: $0 --check|--install" >&2; exit 64; }
+usage() { echo "Usage: $0 --check-retired|--retire|--check|--install" >&2; exit 64; }
 [ "$#" -eq 1 ] || usage
-case "$1" in --check|--install) mode="$1" ;; *) usage ;; esac
+case "$1" in --check-retired|--retire|--check|--install) mode="$1" ;; *) usage ;; esac
 
 [ -d "$DJANGO_ROOT" ] || { echo "[nova-poshta-cron] ERROR: Django root does not exist: $DJANGO_ROOT" >&2; exit 66; }
 [ -x "$PYTHON_BIN" ] || { echo "[nova-poshta-cron] ERROR: Python is not executable: $PYTHON_BIN" >&2; exit 66; }
@@ -33,7 +33,6 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/twocomms-np-cron.XXXXXX")"
 trap 'rm -rf -- "$tmp_dir"' EXIT INT TERM
 current="$tmp_dir/current"
 read_error="$tmp_dir/read_error"
-expected="$tmp_dir/expected"
 candidate="$tmp_dir/candidate"
 
 if ! "$CRONTAB_BIN" -l > "$current" 2> "$read_error"; then
@@ -43,13 +42,6 @@ if ! "$CRONTAB_BIN" -l > "$current" 2> "$read_error"; then
     exit 69
   fi
 fi
-
-cat > "$expected" <<EOF
-$BEGIN_MARKER
-$LEGACY_MARKER
-$cron_line
-$END_MARKER
-EOF
 
 begin_count="$(grep -Fxc "$BEGIN_MARKER" "$current" || true)"
 end_count="$(grep -Fxc "$END_MARKER" "$current" || true)"
@@ -71,6 +63,15 @@ if [ "$begin_count" -eq 1 ]; then
   block_marker_count="$(grep -Fxc "$LEGACY_MARKER" "$managed_block" || true)"
   [ "$block_marker_count" -eq 1 ] && [ "$legacy_count" -eq "$block_marker_count" ] || {
     echo "[nova-poshta-cron] ERROR: job marker is outside the managed block" >&2
+    exit 65
+  }
+  managed_command="$(sed -n '3p' "$managed_block")"
+  [ "$(wc -l < "$managed_block")" -eq 4 ] && {
+    [ "$managed_command" = "$cron_line" ] ||
+    [ "$managed_command" = "$previous_cron_line" ] ||
+    [ "$managed_command" = "$legacy_cron_line" ];
+  } || {
+    echo "[nova-poshta-cron] ERROR: unknown managed tracking owner" >&2
     exit 65
   }
 fi
@@ -115,15 +116,18 @@ if [ "$begin_count" -eq 0 ] && [ "$outside_owner_count" -eq 1 ] && [ "$supported
   exit 65
 fi
 
-if [ "$mode" = "--check" ]; then
-  [ "$begin_count" -eq 1 ] || { echo "[nova-poshta-cron] DRIFT: managed block is missing" >&2; exit 1; }
-  awk -v begin="$BEGIN_MARKER" -v end="$END_MARKER" '$0 == begin { inside = 1 } inside { print } $0 == end { exit }' "$current" > "$candidate"
-  cmp -s "$candidate" "$expected" || { echo "[nova-poshta-cron] DRIFT: managed block differs from repository configuration" >&2; exit 1; }
-  echo "[nova-poshta-cron] OK: managed block matches"
-  exit 0
+# Ownership moved to the periodic coordinator. Retire only a fully recognized
+# old owner, and only while the replacement cron is present. This check also
+# prevents a stale invocation of --install from recreating a second owner.
+if [ "$mode" = "--install" ] || [ "$mode" = "--check" ]; then
+  echo "[nova-poshta-cron] ERROR: standalone tracking retired; use --retire and --check-retired" >&2
+  exit 65
 fi
-
-mkdir -p "$DJANGO_ROOT/tmp" "$DJANGO_ROOT/logs"
+coordinator_count="$(awk '$0 !~ /^[[:space:]]*#/ && index($0, "manage.py run_instagram_periodic_jobs") { count++ } END { print count+0 }' "$current")"
+[ "$coordinator_count" -eq 1 ] || {
+  echo "[nova-poshta-cron] ERROR: exactly one periodic coordinator is required before tracking retirement" >&2
+  exit 65
+}
 if [ "$begin_count" -eq 0 ] && [ "$legacy_count" -eq 1 ]; then
   legacy_command="$(awk -v marker="$LEGACY_MARKER" '$0 == marker { getline; print; exit }' "$current")"
   [ "$legacy_command" = "$cron_line" ] || [ "$legacy_command" = "$previous_cron_line" ] || [ "$legacy_command" = "$legacy_cron_line" ] || {
@@ -131,25 +135,27 @@ if [ "$begin_count" -eq 0 ] && [ "$legacy_count" -eq 1 ]; then
     exit 65
   }
 fi
+if [ "$mode" = "--check-retired" ]; then
+  [ "$begin_count" -eq 0 ] && [ "$legacy_count" -eq 0 ] && [ "$outside_owner_count" -eq 0 ] || {
+    echo "[nova-poshta-cron] DRIFT: standalone tracking owner remains" >&2
+    exit 1
+  }
+  echo "[nova-poshta-cron] OK: standalone tracking retired; periodic coordinator present"
+  exit 0
+fi
 
 : > "$candidate"
-inserted=0
 skip_managed=0
 skip_legacy_command=0
 while IFS= read -r line || [ -n "$line" ]; do
   if [ "$skip_legacy_command" -eq 1 ]; then skip_legacy_command=0; continue; fi
   if [ "$skip_managed" -eq 1 ]; then [ "$line" = "$END_MARKER" ] && skip_managed=0; continue; fi
-  if [ "$line" = "$BEGIN_MARKER" ]; then cat "$expected" >> "$candidate"; inserted=1; skip_managed=1; continue; fi
-  if [ "$begin_count" -eq 0 ] && [ "$line" = "$LEGACY_MARKER" ]; then cat "$expected" >> "$candidate"; inserted=1; skip_legacy_command=1; continue; fi
-  if [ "$begin_count" -eq 0 ] && { [ "$line" = "$cron_line" ] || [ "$line" = "$previous_cron_line" ] || [ "$line" = "$legacy_cron_line" ]; }; then cat "$expected" >> "$candidate"; inserted=1; continue; fi
+  if [ "$line" = "$BEGIN_MARKER" ]; then skip_managed=1; continue; fi
+  if [ "$begin_count" -eq 0 ] && [ "$line" = "$LEGACY_MARKER" ]; then skip_legacy_command=1; continue; fi
+  if [ "$line" = "$cron_line" ] || [ "$line" = "$previous_cron_line" ] || [ "$line" = "$legacy_cron_line" ]; then continue; fi
   printf '%s\n' "$line" >> "$candidate"
 done < "$current"
-
-[ "$skip_managed" -eq 0 ] || {
-  echo "[nova-poshta-cron] ERROR: managed block did not terminate" >&2
-  exit 65
-}
-if [ "$inserted" -eq 0 ]; then cat "$expected" >> "$candidate"; fi
-if cmp -s "$candidate" "$current"; then echo "[nova-poshta-cron] OK: managed block already installed"; exit 0; fi
+if cmp -s "$candidate" "$current"; then echo "[nova-poshta-cron] OK: standalone owner already retired"; exit 0; fi
 "$CRONTAB_BIN" "$candidate"
-echo "[nova-poshta-cron] OK: managed block installed; unrelated entries preserved"
+echo "[nova-poshta-cron] OK: standalone tracking owner retired; unrelated entries preserved"
+exit 0

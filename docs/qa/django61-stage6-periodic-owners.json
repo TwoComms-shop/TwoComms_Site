@@ -9,8 +9,8 @@
   "rollback": {
     "owner": "TwoComms release operator",
     "path": "scripts/install_instagram_periodic_jobs_cron.sh",
-    "action": "while maintenance is active, stop the supervisor, run periodic and watchdog installers with --rollback then --check-rollback, only then revert code",
-    "evidence_required": "pre-revert crontab with five legacy periodic owners and legacy watchdog, stopped supervisor identity, plus release SHA"
+    "action": "while maintenance is active, stop the supervisor, run periodic and watchdog installers with --rollback then --check-rollback, only then revert code, then restore the standalone Nova Poshta owner using the previous revision's installer before ending maintenance",
+    "evidence_required": "pre-revert crontab with five legacy periodic owners and legacy watchdog, stopped supervisor identity, restored previous-revision Nova Poshta owner, plus release SHA"
   },
   "jobs": [
     {
@@ -55,6 +55,8 @@
       "timeout": "/usr/bin/timeout --signal=TERM --kill-after=15s 600s",
       "timeout_required": true,
       "provides_lanes": [
+        "manager_notification_backstop",
+        "nova_poshta_tracking",
         "order_telegram_reconcile",
         "ig_checkout_reconcile",
         "ig_order_fulfillment",
@@ -62,6 +64,8 @@
         "binotel_call_ai_analyses"
       ],
       "lane_deadlines_seconds": {
+        "manager_notification_backstop": 30,
+        "nova_poshta_tracking": 120,
         "order_telegram_reconcile": 60,
         "ig_checkout_reconcile": 75,
         "ig_order_fulfillment": 75,
@@ -75,6 +79,7 @@
     },
     {
       "id": "nova_poshta_tracking",
+      "active": false,
       "cadence": "*/5 * * * *",
       "command": "manage.py update_tracking_statuses",
       "managed_block": "# BEGIN TWOCOMMS NOVA POSHTA TRACKING",

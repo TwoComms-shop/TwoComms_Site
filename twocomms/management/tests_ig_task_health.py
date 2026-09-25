@@ -28,6 +28,8 @@ from management.services.ig_task_health import (
     mark_task_degraded,
     mark_task_failed,
     task_health_snapshot,
+    task_health_alert_decisions,
+    task_health_incident_key,
     task_heartbeat,
     release_queue_snapshot,
 )
@@ -50,7 +52,7 @@ class TaskHeartbeatTests(TestCase):
         self.assertEqual(row.last_error_kind, "")
 
     @patch("management.services.instagram_bot.notify_manager")
-    def test_failure_keeps_only_exception_kind_and_raises(self, notify):
+    def test_failure_keeps_only_exception_kind_and_waits_for_repeated_failure(self, notify):
         with self.assertRaisesRegex(RuntimeError, "private customer text"):
             with task_heartbeat("ig_deal_payments"):
                 raise RuntimeError("private customer text: 0501234567")
@@ -59,45 +61,54 @@ class TaskHeartbeatTests(TestCase):
         self.assertEqual(row.last_error_kind, "RuntimeError")
         self.assertNotIn("0501234567", row.last_error_kind)
         self.assertEqual(row.consecutive_failures, 1)
+        notify.assert_not_called()
+        mark_task_failed("ig_deal_payments", RuntimeError("again"))
+        notify.assert_not_called()
+        mark_task_failed("ig_deal_payments", RuntimeError("again"))
         notify.assert_called_once()
         self.assertFalse(notify.call_args.kwargs["deliver_immediately"])
-        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_failure")
-        self.assertEqual(notify.call_args.kwargs["metadata"], {
-            "task_key": "ig_deal_payments",
-            "task_heartbeat_id": row.pk,
-            "task_failure_reason": "runtime_error",
-            "requires_human_review": False,
-        })
+        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
+        self.assertEqual(notify.call_args.kwargs["metadata"]["task_failure_reason"], "runtime_error")
+        self.assertEqual(notify.call_args.kwargs["metadata"]["task_alert_policy_version"], 2)
+        self.assertFalse(notify.call_args.kwargs["metadata"]["requires_human_review"])
 
     @patch("management.services.instagram_bot.notify_manager")
-    def test_watchdog_command_error_has_typed_operator_reason(self, notify):
+    def test_watchdog_initialization_pending_stays_diagnostic_during_startup(self, notify):
         with self.assertRaises(CommandError):
             with task_heartbeat("ig_daemon_watchdog"):
                 raise CommandError(
                     "daemon initialization pending after singleton lock"
                 )
 
-        self.assertEqual(
-            notify.call_args.kwargs["metadata"]["task_failure_reason"],
-            "daemon_initialization_pending",
-        )
-        self.assertIn(
-            "Причина: daemon_initialization_pending",
-            notify.call_args.args[0],
-        )
-
-    @patch("management.services.instagram_bot.notify_manager")
-    def test_provider_degraded_alerts_after_three_runs(self, notify):
-        for _ in range(2):
-            mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="ig_daemon_watchdog")
+        self.assertEqual(row.last_error_kind, "daemon_initialization_pending")
         notify.assert_not_called()
 
-        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_watchdog_lock_stale_is_immediate_and_typed(self, notify):
+        with self.assertRaises(CommandError):
+            with task_heartbeat("ig_daemon_watchdog"):
+                raise CommandError("daemon did not release singleton lock")
         notify.assert_called_once()
-        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_degraded")
-        self.assertEqual(
-            notify.call_args.kwargs["metadata"]["consecutive_failures"], 3
-        )
+        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
+        self.assertEqual(notify.call_args.kwargs["metadata"]["task_failure_reason"], "daemon_lock_stale")
+        self.assertIn("Instagram", notify.call_args.args[0])
+
+    @patch("management.services.instagram_bot.notify_manager")
+    @patch("management.services.ig_task_health._nova_has_outstanding_tracking", return_value=True)
+    def test_provider_degraded_alerts_only_after_two_hours_of_due_work(self, _due, notify):
+        now = timezone.now()
+        mark_task_succeeded("nova_poshta_tracking", at=now - timedelta(hours=1))
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded", at=now)
+        notify.assert_not_called()
+
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="nova_poshta_tracking")
+        row.last_succeeded_at = now - timedelta(hours=2, seconds=1)
+        row.save(update_fields=["last_succeeded_at"])
+        check_task_health(now=now)
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
+        self.assertEqual(notify.call_args.kwargs["metadata"]["task_alert_reason"], "overdue_tracking_work")
 
     def test_degraded_run_is_visible_as_degraded(self):
         mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
@@ -120,7 +131,7 @@ class TaskHeartbeatTests(TestCase):
         notify.assert_not_called()
 
     @patch("management.services.instagram_bot.notify_manager")
-    def test_summary_cannot_bypass_provider_threshold_or_duplicate_alert(self, notify):
+    def test_summary_cannot_bypass_provider_age_or_duplicate_alert(self, notify):
         self._mark_all_successful()
         for count in range(1, 4):
             with task_heartbeat("nova_poshta_tracking") as outcome:
@@ -129,22 +140,23 @@ class TaskHeartbeatTests(TestCase):
             provider = next(t for t in snapshot["tasks"] if t["key"] == "nova_poshta_tracking")
             self.assertEqual(provider["state"], "degraded")
             self.assertEqual(provider["consecutive_failures"], count)
-            self.assertEqual(notify.call_count, int(count >= 3))
-        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_degraded")
+            self.assertEqual(notify.call_count, 0)
 
     @patch("management.services.instagram_bot.notify_manager")
     def test_degraded_provider_does_not_suppress_other_task_failure(self, notify):
         self._mark_all_successful()
         mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
-        mark_task_failed("ig_deal_payments", RuntimeError("failed"))
+        for _ in range(3):
+            mark_task_failed("ig_deal_payments", RuntimeError("failed"))
         notify.reset_mock()
         check_task_health()
         notify.assert_called_once()
         self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
-        self.assertIn("failed", notify.call_args.args[0])
+        self.assertIn("оплат", notify.call_args.args[0])
 
     @patch("management.services.instagram_bot.notify_manager")
-    def test_missing_cron_after_one_provider_failure_still_alerts(self, notify):
+    @patch("management.services.ig_task_health._nova_has_outstanding_tracking", return_value=True)
+    def test_missing_cron_after_one_provider_failure_waits_for_due_impact(self, _due, notify):
         now = timezone.now()
         self._mark_all_successful(at=now)
         mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded", at=now - timedelta(seconds=901))
@@ -155,8 +167,13 @@ class TaskHeartbeatTests(TestCase):
         snapshot = check_task_health(now=now)
         provider = next(t for t in snapshot["tasks"] if t["key"] == "nova_poshta_tracking")
         self.assertEqual(provider["state"], "stale")
+        notify.assert_not_called()
+        row.last_succeeded_at = now - timedelta(hours=2, seconds=1)
+        row.last_failed_at = now - timedelta(hours=2, seconds=1)
+        row.last_started_at = now - timedelta(hours=2, seconds=1)
+        row.save(update_fields=["last_succeeded_at", "last_failed_at", "last_started_at"])
+        check_task_health(now=now)
         notify.assert_called_once()
-        self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
 
     @patch("management.services.instagram_bot.notify_manager")
     def test_application_failures_do_not_count_toward_provider_streak(self, notify):
@@ -164,6 +181,25 @@ class TaskHeartbeatTests(TestCase):
             mark_task_failed("nova_poshta_tracking", RuntimeError("db unavailable"))
         notify.reset_mock()
         row = mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        self.assertEqual(row.consecutive_failures, 1)
+        notify.assert_not_called()
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_mixed_application_failure_classes_count_as_one_critical_streak(self, notify):
+        mark_task_failed("ig_deal_payments", RuntimeError("first"))
+        mark_task_failed("ig_deal_payments", ValueError("second"))
+        notify.assert_not_called()
+        mark_task_failed("ig_deal_payments", CommandError("third"))
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="ig_deal_payments")
+        self.assertEqual(row.consecutive_failures, 3)
+        notify.assert_called_once()
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_provider_streak_does_not_accelerate_first_application_failure(self, notify):
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        mark_task_degraded("nova_poshta_tracking", "nova_poshta_provider_degraded")
+        mark_task_failed("nova_poshta_tracking", RuntimeError("application"))
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="nova_poshta_tracking")
         self.assertEqual(row.consecutive_failures, 1)
         notify.assert_not_called()
 
@@ -219,10 +255,26 @@ class TaskHeartbeatTests(TestCase):
         self.assertFalse(later["healthy"])
 
     @patch("management.services.instagram_bot.notify_manager")
-    def test_stale_tasks_are_sent_as_one_hourly_summary(self, notify):
+    def test_health_check_registers_missing_expectations_before_alerting(self, notify):
+        now = timezone.now()
+        first = check_task_health(now=now)
+        self.assertFalse(any(task["state"] == "unobserved" for task in first["tasks"]))
+        self.assertTrue(InstagramBotTaskHeartbeat.objects.filter(task_key="ig_checkout_reconcile").exists())
+        notify.assert_not_called()
+
+        later = check_task_health(now=now + timedelta(minutes=17))
+        checkout = next(task for task in later["tasks"] if task["key"] == "ig_checkout_reconcile")
+        self.assertEqual(checkout["state"], "not_observed")
+        self.assertTrue(any(
+            call.kwargs["metadata"]["task_key"] == "ig_checkout_reconcile"
+            for call in notify.call_args_list
+        ))
+
+    @patch("management.services.instagram_bot.notify_manager")
+    def test_prolonged_stale_task_gets_one_own_incident(self, notify):
         now = timezone.now()
         self._mark_all_successful(at=now)
-        stale_at = now - timedelta(minutes=13)
+        stale_at = now - timedelta(minutes=25)
         row = InstagramBotTaskHeartbeat.objects.get(task_key="ig_deal_payments")
         row.last_succeeded_at = stale_at
         row.save(update_fields=["last_succeeded_at", "updated_at"])
@@ -233,42 +285,60 @@ class TaskHeartbeatTests(TestCase):
         self.assertEqual(snapshot["unhealthy_count"], 1)
         notify.assert_called_once()
         self.assertEqual(notify.call_args.kwargs["event_type"], "ig_task_health")
-        self.assertIn("IG operations", notify.call_args.args[0])
+        self.assertIn("перевірка фонової задачі", notify.call_args.args[0])
+        self.assertEqual(notify.call_args.kwargs["dedupe_key"],
+                         task_health_incident_key(row))
 
-    @patch("management.services.ig_alerts.alert_dedupe_key")
     @patch("management.services.instagram_bot.notify_manager")
-    @patch("management.services.ig_task_health.task_health_snapshot")
-    def test_task_set_growth_keeps_one_incident_dedupe_fingerprint(self, snapshot, notify, dedupe):
-        nova = {
-            "key": "nova_poshta_tracking", "label": "Nova Poshta", "state": "stale",
-            "healthy": False, "age_seconds": 1200,
-        }
-        checkout = {
-            "key": "ig_checkout_reconcile", "label": "IG checkout", "state": "stale",
-            "healthy": False, "age_seconds": 1200,
-        }
-        base = {"available": True, "healthy": False, "unhealthy_count": 1}
-        snapshot.side_effect = [
-            {**base, "tasks": [nova]},
-            {**base, "unhealthy_count": 2, "tasks": [nova, checkout]},
-        ]
-        notify.return_value = True
+    def test_new_critical_task_has_independent_incident_key(self, notify):
+        now = timezone.now()
+        self._mark_all_successful(at=now - timedelta(hours=3))
+        with patch("management.services.ig_task_health._nova_has_outstanding_tracking", return_value=True):
+            decisions = task_health_alert_decisions(now=now)
+        keys = {decision["task_key"]: decision["incident_key"] for decision in decisions}
+        self.assertIn("nova_poshta_tracking", keys)
+        self.assertIn("ig_checkout_reconcile", keys)
+        self.assertNotEqual(keys["nova_poshta_tracking"], keys["ig_checkout_reconcile"])
+        self.assertFalse(notify.called)
 
-        first = check_task_health()
-        second = check_task_health()
+    @patch("management.services.ig_task_health._nova_has_outstanding_tracking", return_value=False)
+    def test_nova_stale_without_due_shipments_is_only_diagnostic(self, _due):
+        now = timezone.now()
+        self._mark_all_successful(at=now)
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="nova_poshta_tracking")
+        row.last_succeeded_at = now - timedelta(hours=3)
+        row.save(update_fields=["last_succeeded_at"])
+        snapshot = task_health_snapshot(now=now)
+        self.assertEqual(next(t for t in snapshot["tasks"] if t["key"] == row.task_key)["state"], "stale")
+        self.assertEqual(task_health_alert_decisions(snapshot=snapshot, now=now, task_key=row.task_key), [])
 
-        self.assertFalse(first["healthy"])
-        self.assertFalse(second["healthy"])
-        self.assertEqual(notify.call_count, 2)
-        self.assertEqual(dedupe.call_count, 2)
-        self.assertEqual(
-            dedupe.call_args_list[0].kwargs["text"],
-            dedupe.call_args_list[1].kwargs["text"],
+    @patch("orders.nova_poshta_service.NovaPoshtaService")
+    def test_nova_deferred_shipments_still_justify_prolonged_alert(self, service_cls):
+        now = timezone.now()
+        self._mark_all_successful(at=now)
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="nova_poshta_tracking")
+        row.last_succeeded_at = now - timedelta(hours=3)
+        row.save(update_fields=["last_succeeded_at"])
+        # These are outstanding shipments whose provider retry date is later;
+        # the ordinary due-only poll would currently return no rows.
+        service_cls.return_value.get_orders_with_tracking_queryset.return_value.exists.return_value = True
+
+        decisions = task_health_alert_decisions(now=now, task_key=row.task_key)
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["reason"], "overdue_tracking_work")
+        service_cls.return_value.get_orders_with_tracking_queryset.assert_called_once_with(
+            include_deferred=True,
         )
-        self.assertEqual(
-            dedupe.call_args_list[0].kwargs["text"],
-            "scheduled_task_health_unhealthy",
-        )
+
+    def test_success_changes_incident_identity(self):
+        before = timezone.now() - timedelta(hours=3)
+        mark_task_succeeded("ig_deal_payments", at=before)
+        row = InstagramBotTaskHeartbeat.objects.get(task_key="ig_deal_payments")
+        first = task_health_incident_key(row)
+        mark_task_succeeded("ig_deal_payments", at=before + timedelta(hours=1))
+        row.refresh_from_db()
+        self.assertNotEqual(first, task_health_incident_key(row))
 
     def test_all_production_cron_tasks_have_an_explicit_specification(self):
         self.assertEqual(

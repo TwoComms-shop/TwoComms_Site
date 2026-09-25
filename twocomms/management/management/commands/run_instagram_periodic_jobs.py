@@ -100,6 +100,10 @@ def due_periodic_lanes(*, now=None, selected_lane: str = "", force: bool = False
     manifest_order = {lane.task_key: index for index, lane in enumerate(PERIODIC_LANES)}
     due.sort(
         key=lambda lane: (
+            # Preserve the notification backstop and formerly starved tracking
+            # lane ahead of repair work; all other lanes remain oldest-first.
+            0 if lane.task_key == "manager_notification_backstop" else
+            1 if lane.task_key == "nova_poshta_tracking" else 2,
             rows[lane.task_key].timestamp()
             if rows.get(lane.task_key) is not None
             else float("-inf"),

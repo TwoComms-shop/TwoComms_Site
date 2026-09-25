@@ -162,6 +162,18 @@ cp "$1" "$FAKE_CRONTAB_FILE"
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.crontab_file.read_bytes(), before)
 
+    def test_install_rejects_standalone_tracking_owner_until_retired(self):
+        owner = (
+            f"*/5 * * * * cd {self.django_root} && {self.python} "
+            "manage.py update_tracking_statuses >> /tmp/tracking.log 2>&1\n"
+        )
+        self.crontab_file.write_text(owner, encoding="utf-8")
+        before = self.crontab_file.read_bytes()
+        result = self._run("--install")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("retire standalone Nova Poshta owner", result.stderr)
+        self.assertEqual(self.crontab_file.read_bytes(), before)
+
     def test_duplicate_lane_owner_is_rejected_without_writes(self):
         duplicate = self._legacy_lines()[1]
         self.crontab_file.write_text(f"{duplicate}\n{duplicate}\n", encoding="utf-8")

@@ -18,6 +18,7 @@ from management.services.ig_runtime_ownership import (
     lane_owner,
     validate_runtime_lane_owners,
 )
+from management.management.commands.run_instagram_periodic_jobs import due_periodic_lanes
 
 
 class RuntimeOwnerManifestTests(TestCase):
@@ -26,6 +27,7 @@ class RuntimeOwnerManifestTests(TestCase):
         lanes = [entry.lane for entry in RUNTIME_LANE_OWNERS]
         self.assertEqual(len(lanes), len(set(lanes)))
         self.assertEqual(lane_owner("ig_deal_payments"), PERIODIC_OWNER)
+        self.assertEqual(lane_owner("nova_poshta_tracking"), PERIODIC_OWNER)
         self.assertEqual(lane_owner("live_reply"), DAEMON_OWNER)
 
     def test_periodic_manifest_keeps_all_previous_business_lanes(self):
@@ -33,6 +35,7 @@ class RuntimeOwnerManifestTests(TestCase):
             {lane.task_key for lane in PERIODIC_LANES},
             {
                 "manager_notification_backstop",
+                "nova_poshta_tracking",
                 "order_telegram_reconcile",
                 "ig_checkout_reconcile",
                 "ig_order_fulfillment",
@@ -42,8 +45,11 @@ class RuntimeOwnerManifestTests(TestCase):
         )
         self.assertLessEqual(
             sum(lane.deadline_seconds for lane in PERIODIC_LANES),
-            540,
+            660,
         )
+        tracking = next(lane for lane in PERIODIC_LANES if lane.task_key == "nova_poshta_tracking")
+        self.assertEqual((tracking.command, tracking.interval_seconds, tracking.deadline_seconds),
+                         ("update_tracking_statuses", 300, 120))
 
     def test_notification_drain_has_an_owner_outside_the_daemon(self):
         """ЭА.16: алерт про мертвий демон не може залежати від того ж демона.
@@ -67,9 +73,35 @@ class RuntimeOwnerManifestTests(TestCase):
         """Порядок не косметичний: backstop останнім спрацював би надто пізно."""
         keys = [lane.task_key for lane in PERIODIC_LANES]
         self.assertEqual(keys[0], "manager_notification_backstop")
+        self.assertEqual(keys[1], "nova_poshta_tracking")
 
 
 class PeriodicCoordinatorTests(TestCase):
+    @patch(
+        "management.management.commands.run_instagram_periodic_jobs._call_auto_analysis_enabled",
+        return_value=False,
+    )
+    def test_tracking_is_due_after_five_minutes_and_prioritized_over_older_repairs(self, _enabled):
+        now = timezone.now()
+        InstagramBotTaskHeartbeat.objects.create(
+            task_key="nova_poshta_tracking",
+            label="tracking",
+            expected_interval_seconds=300,
+            stale_after_seconds=900,
+            last_started_at=now - timedelta(seconds=301),
+        )
+        InstagramBotTaskHeartbeat.objects.create(
+            task_key="ig_checkout_reconcile",
+            label="checkout",
+            expected_interval_seconds=120,
+            stale_after_seconds=480,
+            last_started_at=now - timedelta(hours=1),
+        )
+        due = due_periodic_lanes(now=now)
+        keys = [lane.task_key for lane in due]
+        self.assertEqual(keys[:2], ["manager_notification_backstop", "nova_poshta_tracking"])
+        self.assertIn("ig_checkout_reconcile", keys)
+
     @patch(
         "management.management.commands.run_instagram_periodic_jobs._call_auto_analysis_enabled",
         return_value=False,
@@ -84,6 +116,7 @@ class PeriodicCoordinatorTests(TestCase):
             [call.args[0] for call in child_command.call_args_list],
             [
                 "drain_ig_notifications",
+                "update_tracking_statuses",
                 "reconcile_order_telegram_notifications",
                 "reconcile_ig_checkout",
                 "reconcile_ig_order_fulfillment",
@@ -133,14 +166,14 @@ class PeriodicCoordinatorTests(TestCase):
     ):
         # Падає ПЕРША смуга, і саме її ім'я мусить бути у помилці; решта смуг
         # усе одно виконується — інакше один збій голодував би всі наступні.
-        child_command.side_effect = [RuntimeError("private"), None, None, None, None]
+        child_command.side_effect = [RuntimeError("private"), None, None, None, None, None]
 
         with self.assertRaisesMessage(
             CommandError, "manager_notification_backstop:RuntimeError"
         ):
             call_command("run_instagram_periodic_jobs", stdout=StringIO())
 
-        self.assertEqual(child_command.call_count, 5)
+        self.assertEqual(child_command.call_count, 6)
 
     def test_force_requires_an_explicit_lane(self):
         with self.assertRaisesMessage(CommandError, "--force requires --lane"):
@@ -156,7 +189,7 @@ class PeriodicCoordinatorTests(TestCase):
     ):
         call_command("run_instagram_periodic_jobs", stdout=StringIO())
 
-        self.assertEqual(child_command.call_count, 5)
+        self.assertEqual(child_command.call_count, 6)
         self.assertNotIn(
             "run_call_ai_analyses",
             [call.args[0] for call in child_command.call_args_list],

@@ -1300,8 +1300,13 @@ class NovaPoshtaService:
 
         return message
 
-    def get_orders_with_tracking_queryset(self):
-        """Return the single source of truth for scheduled tracking polls."""
+    def get_orders_with_tracking_queryset(self, *, include_deferred=False):
+        """Return eligible tracking work, optionally including retry backoff.
+
+        Polling respects the due date. Health checks include deferred work so
+        an unavailable provider cannot hide its own impact by moving retries
+        five minutes into the future after every failed attempt.
+        """
         from storefront.models import UserAction
 
         now = timezone.now()
@@ -1318,9 +1323,12 @@ class NovaPoshtaService:
         ).filter(
             created__gte=now - self.TRACKING_MAX_AGE
         ).filter(
-            Q(tracking_terminal_at__isnull=True)
-            & (Q(tracking_next_check_at__isnull=True) | Q(tracking_next_check_at__lte=now))
+            tracking_terminal_at__isnull=True
         )
+        if not include_deferred:
+            base_orders = base_orders.filter(
+                Q(tracking_next_check_at__isnull=True) | Q(tracking_next_check_at__lte=now)
+            )
         done_order = Q(status='done')
         done_received = done_order & Q(shipment_status__icontains='отримано')
         monobank_evidence = (
