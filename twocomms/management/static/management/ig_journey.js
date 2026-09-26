@@ -134,12 +134,27 @@
         let button=this.buttons.get(data.id);
         if(!button){button=el('button','twc-journey-step');button.type='button';button.dataset.nodeId=data.id;const core=el('span','twc-journey-core');core.append(el('span','twc-journey-icon'),el('span','twc-journey-status'));button.append(core,el('span','twc-journey-step-label'),el('span','twc-journey-count'));button.addEventListener('click',()=>this.toggleNode(data.id));this.buttons.set(data.id,button);const cell=el('div','twc-journey-cell');cell.append(button);this.cells.set(data.id,cell);this.grid.append(cell);}
         const key=iconFor(data);if(button.dataset.icon!==key){button.dataset.icon=key;button.querySelector('.twc-journey-icon').replaceChildren(icon(key));}
-        const state=data.presentation_kind==='possible'?'possible':STATES.has(data.state)?data.state:'open';button.dataset.state=state;button.dataset.tone=eventNode(data)?data.presentation_event.tone:toneFor(data);button.dataset.current=String(data.id===this.currentId);button.querySelector('.twc-journey-step-label').textContent=data.short_label||window.TwcJourneyGeometry?.visualFor(data)?.short_label||data.label;
+        const state=data.presentation_kind==='possible'?'possible':STATES.has(data.state)?data.state:'open';button.dataset.state=state;button.dataset.tone=eventNode(data)?data.presentation_event.tone:toneFor(data);button.dataset.current=String(data.id===this.currentId);
+        // F3-FUN-01: позначаємо заперечення, для якого немає жодного підтвердженого ребра,
+        // щоб CSS показав його як «можливе» (пунктирний контур), а не як реальний бар'єр.
+        if(data.semantic_key==='objection_case'){const confirmed=(data.evidence_refs||[]).length>0||(data.presentation_event&&(data.presentation_event.edge_ids||[]).length>0);button.dataset.objection=confirmed?'confirmed':'possible';}else delete button.dataset.objection;button.querySelector('.twc-journey-step-label').textContent=data.short_label||window.TwcJourneyGeometry?.visualFor(data)?.short_label||data.label;
         button.dataset.event=String(eventNode(data));this.cells.get(data.id).dataset.event=String(eventNode(data));
         button.dataset.recorded=String(Boolean(recorded(data)));button.dataset.interpreted=String(data.presentation_kind==='interpretation');
         const statusKey=eventNode(data)?null:planned(data)?'brief':data.tone==='danger'?'cross':state==='complete'?'check':state==='invalidated'?'return':data.tone==='manager'?'person':data.waiting?.evidence_refs?.length?'clock':null;const status=button.querySelector('.twc-journey-status');status.hidden=!statusKey;if(statusKey)status.replaceChildren(icon(statusKey));
         const progress=data.requirements;const valid=progress&&Number.isInteger(progress.completed)&&Number.isInteger(progress.total)&&progress.total>0&&progress.completed>=0&&progress.completed<=progress.total;
-        const mentions=data.semantic_key==='objection_case'?(data.facts||[]).find(f=>f.id?.endsWith(':repeat_count')):null;const eventCount=data.presentation_event?.count;const repeats=Number.isInteger(eventCount)&&eventCount>1?eventCount:Number.isInteger(mentions?.value)&&mentions.value>1?mentions.value:0;const count=button.querySelector('.twc-journey-count');count.hidden=!valid&&!repeats;count.textContent=valid?progress.completed+'/'+progress.total:repeats?'×'+repeats:'';count.title=valid?'Виконано обов’язкових умов: '+count.textContent:repeats?'Повторних згадок: '+repeats:'';
+        const mentions=data.semantic_key==='objection_case'?(data.facts||[]).find(f=>f.id?.endsWith(':repeat_count')):null;const eventCount=data.presentation_event?.count;const repeats=Number.isInteger(eventCount)&&eventCount>1?eventCount:Number.isInteger(mentions?.value)&&mentions.value>1?mentions.value:0;const count=button.querySelector('.twc-journey-count');
+        // F3-FUN-02: для заперечень показуємо розклад результатів (оброблено/не вирішено/відмова),
+        // а не саму лише кількість. Числа беруться з ig_journey_trace_projection (reason_code),
+        // тому відсутній код чесно не потрапляє в жодну з категорій.
+        const obOut=data.objection_outcomes;
+        let countText='',countTitle='';
+        if(valid){countText=progress.completed+'/'+progress.total;countTitle='Виконано обов’язкових умов: '+countText;}
+        else if(obOut&&(obOut.addressed||obOut.open||obOut.refused)){countText='×'+repeats;countTitle='Оброблено: '+obOut.addressed+' · Не вирішено: '+obOut.open+(obOut.refused?' · Відмова: '+obOut.refused:'');}
+        else if(repeats){countText='×'+repeats;countTitle='Повторних згадок: '+repeats;}
+        count.hidden=!valid&&!repeats;count.textContent=countText;count.title=countTitle;
+        // F3-FUN-02: підсвічуємо бейдж за найгіршим результатом (відмова > не вирішено > оброблено),
+        // щоб менеджер бачив стан заперечення без відкриття деталей.
+        if(obOut){const worst=obOut.refused?'refused':obOut.open?'open':obOut.addressed?'addressed':'';if(worst)count.dataset.outcomes=worst;else delete count.dataset.outcomes;}else delete count.dataset.outcomes;
         button.setAttribute('aria-expanded',String(this.selected===data.id));button.dataset.baseLabel=data.label+' — '+nodeStatusLabel(data)+(data.id===this.currentId?', поточний фокус':'')+(data.waiting?.evidence_refs?.length?', очікування: '+data.waiting.label:'')+(valid?', умов '+count.textContent:repeats?', повторних згадок '+repeats:'');button.setAttribute('aria-label',button.dataset.baseLabel);button.title=data.label+' · '+nodeStatusLabel(data);
       });
       if(this.selected)this.renderPanel();if(this.modal){this.renderAccessibleList();this.mapCoverage.textContent=pathCoverageText(this.graph);if(this.graph.transcript_reconstruction&&this.graph.coverage?.semantic_path?.state!=='available')this.mapCoverage.textContent+=' Кольоровий пунктир позначає інтерпретацію за перепискою.';}this.queueLayout();this.updateTimers();
@@ -147,14 +162,33 @@
     possibleCatalogue(catalogue){
       if(!catalogue)return catalogue;
       const key='objection_case',incoming=catalogue.transitions.filter(e=>e.target_key===key),outgoing=catalogue.transitions.filter(e=>e.source_key===key);
-      // These are conditional structural paths, not occurrences of an objection.
-      const bypass=incoming.flatMap(a=>outgoing.filter(b=>b.target_key!==a.source_key).map(b=>({id:'possible-objection:'+a.id+':'+b.id,source_key:a.source_key,target_key:b.target_key,outcome:b.outcome,via_objection:true})));
+      // F3-FUN-03 (план 3.0, P2-1.3): ці ребра — структурна можливість («якщо виникне
+      // заперечення»), а не подія клієнта. Раніше вони несли `outcome` замість
+      // `condition_label`, тож у повній карті лишалися без підпису і виглядали як
+      // справжній перехід. Тепер вони явно структурні: relation='route', tone='neutral',
+      // condition_label заданий — рендер малює їх як пунктирну можливість, не як факт.
+      const bypass=incoming.flatMap(a=>outgoing.filter(b=>b.target_key!==a.source_key).map(b=>({id:'possible-objection:'+a.id+':'+b.id,source_key:a.source_key,target_key:b.target_key,condition_label:'Якщо виникне заперечення',via_objection:true})));
       return {...catalogue,definitions:catalogue.definitions.filter(d=>d.key!==key),transitions:[...catalogue.transitions.filter(e=>e.source_key!==key&&e.target_key!==key),...bypass]};
     }
     presentEvents(graph){
-      const nodes=graph.nodes.filter(n=>n.semantic_key!=='objection_case'||(n.presentation_kind!=='possible'&&((n.evidence_refs||[]).length||graph.edges.some(e=>edgePriority(e)>0&&(e.from_node_id===n.id||e.to_node_id===n.id)))));
+      // F3-FUN-01 (план 3.0, P2-1): раніше вузли objection_case без доказів ховалися,
+      // і власник бачив «сині кружечки, які колись горіли» замість справжнього шляху.
+      // Тепер вузол завжди лишається на карті, але без доказів отримує стан `possible`:
+      // пунктирний контур + приглушення (див. ig_journey.css: [data-state=possible]).
+      // Це зберігає D022/C15.4 «ромб на кожній гілці» і при цьому не малює неіснуючий перехід:
+      // ребра до/від порожнього вузла не створюються (їх просто немає у graph.edges).
+      const isObjection=n=>n.semantic_key==='objection_case';
+      const hasEvidence=n=>(n.evidence_refs||[]).length>0||(n.presentation_event&&(n.presentation_event.edge_ids||[]).length>0);
+      const nodes=graph.nodes.map(n=>{
+        if(!isObjection(n))return n;
+        const touched=graph.edges.some(e=>edgePriority(e)>0&&(e.from_node_id===n.id||e.to_node_id===n.id));
+        if(touched||hasEvidence(n))return n;
+        // Порожнє заперечення: лишаємо видимим, але чесно показуємо як можливе.
+        return {...n,state:'possible',presentation_kind:'possible',tone:'neutral',
+          summary:n.summary||'Можливе заперечення. Подій цього клієнта тут не зафіксовано.'};
+      });
       const ids=new Set(nodes.map(n=>n.id)),edges=graph.edges.filter(e=>ids.has(e.from_node_id)&&ids.has(e.to_node_id));
-      for(const node of nodes.filter(n=>n.semantic_key==='objection_case')){
+      for(const node of nodes.filter(n=>isObjection(n))){
         const incident=edges.filter(e=>edgePriority(e)>0&&(e.from_node_id===node.id||e.to_node_id===node.id));
         if(node.presentation_schema_version==='journey-presentation.v1'&&node.presentation_kind==='interpretation'){
           node.label='Деталі переписки';node.short_label='Деталі';node.tone='recorded';
@@ -166,6 +200,12 @@
         const unambiguous=origins.length<=1&&targets.length<=1;
         const anchors=unambiguous?[...new Set([...origins,...targets])]:[];
         const count=(node.facts||[]).find(f=>f.id?.endsWith(':repeat_count'))?.value||incident.filter(e=>e.to_node_id===node.id&&e.reason_code!=='objection_addressed').reduce((sum,e)=>sum+edgeCount(e),0)||1;
+        // F3-FUN-02 (план 3.0, P2-1.2): власник просив бачити не лише «×N», а й чим закінчилось —
+        // скільки разів заперечення оброблено, скільки лишилось невирішеним і де був відмов.
+        // Розкладаємо інцидентні ребра за reason_code; невідомий код не вигадуємо, а тримаємо в «інші».
+        const outcomeOf=e=>{const r=String(e.reason_code||'');if(r==='objection_addressed'||r==='objection_resolved')return'addressed';if(r==='objection_dismissed'||r==='objection_refused'||r==='refusal')return'refused';if(r==='objection_open'||r==='objection_unresolved'||r==='objection_partial')return'open';return'other';};
+        const outcomes=incident.reduce((acc,e)=>{const k=outcomeOf(e);acc[k]=(acc[k]||0)+edgeCount(e);return acc;},{});
+        node.objection_outcomes={addressed:outcomes.addressed||0,open:outcomes.open||0,refused:outcomes.refused||0};
         node.presentation_event={edge_ids:incident.map(e=>e.id),anchor_ids:anchors,mode:anchors.length===2?'between':anchors.length===1?'attached':'unplaced',count,tone:incident.some(e=>edgeTone(e)==='danger')?'danger':'warning'};
       }
       for(const item of graph.trace_cases||[]){
@@ -395,7 +435,7 @@
       this.familySelect=el('select');this.familySelect.setAttribute('aria-label','Напрям можливих шляхів');[['inbound','Напрями звернень'],['catalog','Одяг і оплата'],['custom','Власний принт / DTF'],['collaboration','Співпраця'],['employment','Робота в команді'],['information','Інформація'],['prize','Приз'],['after','Після покупки'],['all','Усі напрями']].forEach(([value,label])=>this.familySelect.append(new Option(label,value)));this.familySelect.value=this.possibleFamily||'inbound';this.familySelect.hidden=!this.showPossible;this.familySelect.addEventListener('change',()=>{this.closePanel(false);this.possibleFamily=this.familySelect.value;this.update(this.snapshot,{force:true});this.layout();this.centerCurrent();});tools.append(this.familySelect);
       this.viewport=el('div','twc-journey-viewport');this.viewport.tabIndex=0;this.viewport.setAttribute('aria-label','Карта. Стрілки для переміщення; кнопки плюс і мінус для масштабу.');this.canvas=el('div','twc-journey-canvas');this.canvas.append(this.map);this.viewport.append(this.canvas);
       this.accessible=el('details','twc-journey-accessible');this.accessible.append(el('summary','','Етапи й переходи списком'));this.accessibleBody=el('div');this.accessible.append(this.accessibleBody);
-      const legend=el('div','twc-journey-map-legend');[['recorded','○ Є збережені події'],['recorded','━ Збережений перехід'],['recorded','┄ За перепискою'],['success','✓ Підтверджено'],['danger','× Негативний результат'],['warning','! Підтверджена перешкода'],['neutral','┄ Можливий шлях'],['neutral','— Замовлення клієнта']].forEach(([tone,label])=>{const item=el('span','',label);item.dataset.tone=tone;legend.append(item);});
+      const legend=el('div','twc-journey-map-legend');[['recorded','○ Є збережені події'],['recorded','━ Збережений перехід'],['recorded','┄ За перепискою'],['success','✓ Підтверджено'],['danger','× Негативний результат'],['warning','! Підтверджена перешкода'],['neutral','┄ Можливий шлях'],['neutral','┄ Можливе заперечення (подій немає)'],['warning','число на запереченні: оброблено / не вирішено / відмова'],['neutral','— Замовлення клієнта']].forEach(([tone,label])=>{const item=el('span','',label);item.dataset.tone=tone;legend.append(item);});
       this.mapCoverage=el('p','twc-journey-map-coverage');dialog.append(top,tools,legend,this.mapCoverage,this.viewport,this.discussionDetails,this.accessible);this.modal=dialog;document.body.append(dialog);
       dialog.addEventListener('keydown',this.escape);dialog.addEventListener('cancel',event=>{event.preventDefault();if(this.selected)this.closePanel(true);else this.closeMap();});dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)this.closeMap();}});
       this.viewport.addEventListener('wheel',event=>{if(event.ctrlKey){event.preventDefault();this.setZoom(this.zoom*Math.exp(-event.deltaY*.01));}},{passive:false});

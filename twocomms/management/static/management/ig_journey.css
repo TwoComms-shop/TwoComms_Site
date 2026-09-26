@@ -114,6 +114,16 @@
 .twc-journey-tools select{min-width:0;max-width:190px;min-height:32px;border:1px solid #405169;border-radius:8px;background:#1a2432;color:#d2deec;font-size:11px;padding:5px 8px;}
 .twc-journey-step[data-state=possible] .twc-journey-core{border-style:dashed;box-shadow:none;background:#10151e;color:#a4b1c2;}
 .twc-journey-step[data-state=possible] .twc-journey-step-label{font-weight:400;color:#a4b1c2;}
+/* F3-FUN-01 (план 3.0, P2-1.1): порожнє заперечення лишається видимим як «можливе».
+   Окремий, трохи слабший контур, щоб не плутати його з підтвердженим бар'єром. */
+.twc-journey-step[data-objection=possible] .twc-journey-core{border-style:dotted;border-color:#64748b;color:#8fa0b6;}
+.twc-journey-step[data-objection=possible] .twc-journey-step-label{font-style:italic;}
+/* F3-FUN-02 (план 3.0, P2-1.2): бейдж розкладу результатів заперечення
+   (оброблено / не вирішено / відмова). Числа приходять із reason_code у
+   ig_journey_trace_projection; колір підказує, чи лишилось щось відкритим. */
+.twc-journey-count[data-outcomes=open]{color:#fbbf24;}
+.twc-journey-count[data-outcomes=refused]{color:#fb7185;}
+.twc-journey-count[data-outcomes=addressed]{color:#34d399;}
 .twc-journey-dialog .twc-journey-step-label{max-width:100px;}
 
 .twc-journey-dialog .twc-journey-step-label{white-space:normal;max-height:28px;line-height:14px;}
