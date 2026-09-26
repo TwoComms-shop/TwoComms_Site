@@ -250,7 +250,7 @@
       if(!this.modal&&snapshot.catalogue&&!snapshot.is_history)return this.inlineGraph(source,nodes,edges,snapshot.catalogue);
       if(!this.modal||!this.showPossible||!snapshot.catalogue)return {...source,nodes,edges};
       const catalogue=snapshot.catalogue,family=this.possibleFamily||'inbound';
-      const groups=family==='catalog'?['catalog','commerce','payment']:family==='custom'?['custom','dtf','photo','commerce','payment']:family==='after'?['commerce','post_sale','consent','ugc','reward','repeat']:[family];
+      const groups=family==='catalog'?['catalog','commerce','payment','objection']:family==='custom'?['custom','dtf','photo','commerce','payment','objection']:family==='after'?['commerce','post_sale','consent','ugc','reward','repeat']:[family];
       const definitions=catalogue.definitions.filter(d=>family==='all'||(family==='inbound'?(d.semantic_kind==='entry'||d.key==='spam_confirmed'):d.key==='inbound'||d.route_keys.some(k=>groups.includes(k))));
       const anchors=new Map();
       definitions.forEach(d=>{

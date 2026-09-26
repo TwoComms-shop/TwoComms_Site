@@ -50,7 +50,7 @@ const {Journey,caseOutcome}=window.TwcJourney;
 const journey=Object.create(Journey.prototype);
 const catalogue={definitions:[
   {key:'quoted_offer',label:'Пропозиція',route_keys:['commerce']},
-  {key:'objection_case',label:'Заперечення',route_keys:['commerce']},
+  {key:'objection_case',label:'Заперечення',route_keys:['objection']},
   {key:'awaiting_payment',label:'Оплата',route_keys:['payment']}
 ],transitions:[
   {id:'raise',source_key:'quoted_offer',target_key:'objection_case'},
@@ -76,6 +76,13 @@ assert.equal(graph.edges.length,2);
 assert.ok(graph.edges.every(e=>e.relation==='route'&&e.evidence_refs.length===0));
 assert.equal(graph.edges.find(e=>e.id==='raise').condition_label,'Якщо виникне заперечення');
 assert.ok(!graph.edges.some(e=>e.id.startsWith('possible-objection:')));
+for(const family of ['catalog','custom']){
+  journey.possibleFamily=family;
+  const filtered=journey.presentEvents(journey.presentGraph(sourceGraph,snapshot));
+  assert.ok(filtered.nodes.some(n=>n.id==='possible:objection_case'),family+' must keep the cross-cutting objection fork');
+  assert.ok(filtered.edges.some(e=>e.id==='raise'));
+}
+
 const evidence={id:'edge',from_node_id:quote.id,to_node_id:'detail',relation:'transcript_interpretation',authority:'none',provenance:'transcript_reconstruction',evidence_refs:[{id:4}],reason_code:'objection_raised',presentation_schema_version:'journey-presentation.v1'};
 graph=journey.presentEvents({...sourceGraph,nodes:[quote,{id:'detail',semantic_key:'objection_case',presentation_kind:'interpretation',presentation_schema_version:'journey-presentation.v1'}],edges:[evidence],trace_cases:[
   {id:'price',topic:'price',source_node_id:quote.id,source_edge_ids:['edge'],marker_eligible:true,status:'handled',outcome:'unknown'},
