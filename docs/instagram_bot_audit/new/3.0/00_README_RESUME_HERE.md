@@ -3,7 +3,7 @@
 **Start date:** 2026-09-26 · **Code/prod base:** `c69925d566ccbe2109953644e1d1187ecd38260c` (prod HEAD verified by SSH 26.09 22:52 local)
 **Branch:** `worktree-ig-bot-audit-3` (docs only; no product code changed in phase A)
 
-> **Location note (26.09):** the canonical files live in the worktree `/Users/zainllw0w/TwoComms/site/.claude/worktrees/ig-bot-audit-3/docs/instagram_bot_audit/new/3.0/`. The owner's main checkout has a **symlink** `docs/instagram_bot_audit/new/3.0 → worktree` so the owner sees files live. Before the worktree is removed, replace the symlink with a real copy (`rm` the link, `cp -R` the folder).
+> **Location note (26.09, updated):** the files are edited in the worktree `.claude/worktrees/ig-bot-audit-3/docs/instagram_bot_audit/new/3.0/` (for Git) and **mirrored after every step** into the owner's local checkout `/Users/zainllw0w/TwoComms/site/docs/instagram_bot_audit/new/3.0/` (real folder, not a symlink) with `rsync -a <worktree>/3.0/ <local>/3.0/`. **No subagents** (owner's token limits): audit sequentially, write each finding immediately.
 
 ## Why this folder exists
 

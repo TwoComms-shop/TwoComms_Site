@@ -6,31 +6,121 @@ Every finding has an ID `F3-<AREA>-NN`, lives in its domain file, and is indexed
 |---|---|---|
 | FUN | Funnel visualisation (inline + full map) & journey data | 10_FUNNEL_VISUALIZATION_AUDIT.md |
 | OPS | Overview tab, console, alerts, cron, Telegram noise, server load | 11_OVERVIEW_OPS_ALERTS_AUDIT.md |
-| GEM | Gemini keys/quota/routing/effort/errors/latency | 12_GEMINI_ROUTING_AUDIT.md |
+| GEM | Gemini keys/quota/routing/effort/errors/latency | 12_GEMINI_ROUTING_QUOTA_AUDIT.md |
 | PRM | Prompting, published policy, brand.md, knowledge | 13_PROMPTING_KNOWLEDGE_AUDIT.md |
 | MEM | Memory, context assembly, analysis pipeline | 14_MEMORY_CONTEXT_AUDIT.md |
-| MED | Media, stories, video, voice | 15_MEDIA_STORY_AUDIT.md |
-| COM | Commerce, referral, catalog, sizing, checkout, payment, delivery, opt-in, follow-ups, points | 16_COMMERCE_FOLLOWUP_AUDIT.md |
-| COL | Collaboration, custom, creator, spam/injection, handoff/pause | 17_COLLAB_CUSTOM_SAFETY_AUDIT.md |
-| CNV | Real production conversation review | 18_PROD_CONVERSATION_REVIEW.md |
-| PLN | 2.0 plan item critique | 19_PLAN_2_0_ITEM_REVIEW.md |
+| MED | Media, stories, video, voice | 15_МЕДИА_СТОРИС_АУДИТ.md |
+| COM | Commerce, referral, catalog, sizing, checkout, payment, delivery, opt-in, follow-ups, points | 16_КОММЕРЦИЯ_АУДИТ.md |
+| COL | Collaboration, custom, creator, spam/injection, handoff/pause | 17_СПІВПРАЦЯ_КАСТОМ_АУДИТ.md |
+| CNV | Real production conversation review | 18_PROD_CONVERSATION_REVIEW.md (blocked) |
+| PLN | 2.0 plan critique | 19_КРИТИКА_ПЛАНА_2_0.md |
 | X | Cross-cutting (root agent) | this file |
 
-Severity: P0 lost reply / wrong money-order fact / harmful · P1 major conversion or admin-visibility loss · P2 quality/UX/efficiency · P3 polish.
+Severity: **P0** = клиент теряет ответ / ложный факт о деньгах-заказе / вред · **P1** = серьёзная потеря конверсии или видимости для админа · **P2** = качество/UX/эффективность · **P3** = полировка.
+Type: CODE · DOC · PROD · UI · GAP (не реализовано) · TEST.
 
-## Cross-cutting findings (root)
+## Три P0-регрессии (главное открытие аудита)
 
-### F3-X-01 · Two diverging copies of the plan and its evidence — P2 · DOC
-- **Observed:** the committed 2.0 plan is v2.5 (14.09); the main checkout has uncommitted v2.7 (26.09) plus untracked `01_IMPLEMENTATION.md`, `02_SOURCE_COVERAGE.md`, `04_GRILL_ME_300_QUESTIONS.md`, `05_OWNER_DECISIONS.md`, `06–11_*`, `evidence_d085/`. None of this is in Git, so it is one `git clean`/disk failure away from being lost, and worktrees/other agents see a stale plan.
-- **Recommendation:** Phase B must commit the 2.0 evidence set (after privacy scan) or copy the needed parts into 3.0; 3.0 itself is committed on its branch.
+Все три имеют один корень: **живой путь ответа (`ig_revision_live.py`, включён с 08.09) не получил богатую логику legacy-пути.** План 2.0 считает соответствующие пункты сделанными.
 
-### F3-X-02 · Production SSH password was pasted into the task text — P1 · security hygiene
-- **Observed:** the brief contains a literal `sshpass -p '<password>'` command. AGENTS.md forbids literal passwords; the Keychain loader works (verified 26.09).
-- **Recommendation:** rotate the hosting password; keep using the Keychain loader; never persist the literal in docs/memory.
+### F3-GEM-01 · Маршрутизация на живом пути не учитывает ничего, кроме медиа — **P0 · CODE**
+- `ig_revision_live.py:706–716` строит `TurnFacts(has_image, has_audio, hint)` — 3 поля. Богатый построитель `live_routing_decision()` (`instagram_bot.py:7127–7243`) заполняет 12 полей (возражение, смена товара/получателя, подбор размера, кастом, конфликт, неоднозначная реклама, сравнение, кандидаты каталога, коммерческий риск) и **на живом пути не вызывается**.
+- Следствие: «дорого» без фото, смена фарсона, кастом без картинки, конфликт интентов уходят на 3.5 Lite/Flash вместо 3.8/3.7. R-26 выполняется только для медиа.
+- Решение: единый `build_turn_intelligence(...)` → `(TurnFacts, блоки контекста)`, общий для обоих путей; теневой прогон 48 ч; затем включение. Задача **P0-1**.
 
-## Index (filled as domain files land)
+### F3-MEM-01 · На живом пути в промпт не попадает память и контекст рекламы — **P0 · CODE**
+- `ig_revision_live.py:759–769` вызывает генерацию без `memory_note`, `context_note`, `match_hint`, `media_hint`. Legacy-путь (`instagram_bot.py:14643–14665, 14843`) их строит.
+- Следствие: ломаются R-07 (не знает, с какой рекламы пришёл), R-28 (память не помогает модели), R-29 (возвращающийся клиент не узнаётся вне окна переписки). Админ-превью промпта память показывает → **превью врёт**.
+- Решение: тот же общий построитель. Задача **P0-2** (один релиз с P0-1: «паритет живого пути»).
 
-| ID | Sev | Title | File |
-|---|---|---|---|
-| F3-X-01 | P2 | Plan/evidence copies diverge; 2.0 evidence untracked | 03 |
-| F3-X-02 | P1 | SSH password in chat; rotate | 03 |
+### F3-PRM-01 · `brand.md` бот не читает, хотя файл это обещает — **P1 · CODE+DOC**
+- `bot_knowledge/brand.md:3–5` обещает авто-подхват; `bot_knowledge.py:1–7` прямо исключает Markdown из payload, используя только `approved_public_facts` (`2026-09-07.b02.8.1`).
+- Следствие: всё, что владелец правил в brand.md после 07.09 (тон, предоплата, обмен/возврат, FAQ), моделью не видится.
+- Решение: либо сделать brand.md живым (компиляция в публикацию с хешем и показом в админке), либо честно переименовать в архив и перенести правила в типизированные факты. Задача **P1-1**.
+
+## Остальные находки (кратко, детали в файлах областей)
+
+### Фуннель (A1 → 10_FUNNEL_VISUALIZATION_AUDIT.md)
+| ID | Sev | Суть |
+|---|---|---|
+| F3-FUN-01 | P3 | Пустые узлы возражений скрыты с `ac62e2da3` (14.09) — противоречит D022/C15 (ромб на каждой ветке) |
+| F3-FUN-02 | P3 | На узле возражения только «×N», без исходов (обработано/не решено/отказ) |
+| F3-FUN-03 | P4 | Обходные рёбра `via_objection` («Якщо виникне заперечення») косметичны |
+| F3-FUN-04 | P3 | Правило `marker_eligible` нигде не задокументировано |
+| F3-FUN-05 | P3 | Группировка параллельных рёбер (21.09) скрывает детали до клика |
+
+### Overview/ops (A2 → 11_OVERVIEW_OPS_ALERTS_AUDIT.md)
+| ID | Sev | Суть |
+|---|---|---|
+| F3-OPS-01 | P1 | «У черзі» смешивает runnable с preserved evidence (ровно вопрос владельца R-24) |
+| F3-OPS-02 | P1 | «Модель» = сэмпл последнего вызова любого назначения, не текущая политика (R-24/R-26) |
+| F3-OPS-03 | P2 | Консоль — сырой поток без фильтров/группировки/поиска по клиенту |
+| F3-OPS-04 | P2 | Контракт алертов узкий: нет квот, нет «клиент ждёт», нет медиа-ошибок |
+| F3-OPS-05 | P2 | Обнаружение стойки — раз в час; днём 10 мин простоя = потерянная продажа |
+| F3-OPS-06 | P1 | Cron всё ещё poll-driven там, где есть вебхуки (оплата, NP, входящие) |
+
+### Gemini (A3 → 12_GEMINI_ROUTING_QUOTA_AUDIT.md)
+| ID | Sev | Суть |
+|---|---|---|
+| F3-GEM-01 | **P0** | см. выше |
+| F3-GEM-02 | P1 | Квота считается, но оператору не видна |
+| F3-GEM-03 | P2 | Health = связность, не корректность маршрутизации |
+| F3-GEM-04 | P2 | Пин модели есть в коде, но нет UI |
+| F3-GEM-05 | P3 | Триггер эскалации анализа не задокументирован |
+| F3-GEM-06 | P3 | Принуждение дедлайна не проверено |
+
+### Промптинг (A4 → 13_PROMPTING_KNOWLEDGE_AUDIT.md)
+| ID | Sev | Суть |
+|---|---|---|
+| F3-PRM-01 | **P1** | см. выше |
+| F3-PRM-02 | P1 | Прод-core на 89 символов позади канонического (`1728ccc2f`), обе версии зовутся v3 |
+| F3-PRM-03 | P2 | Тон размазан по 3 местам, живёт только 1 |
+| F3-PRM-04 | P1 | Выбор инструкций усечён бюджетом; теги `collaboration`/`ugc` не выбирают модуль |
+
+### Память (A5 → 14_MEMORY_CONTEXT_AUDIT.md)
+| ID | Sev | Суть |
+|---|---|---|
+| F3-MEM-01 | **P0** | см. выше |
+| F3-MEM-02 | P1 | Превью промпта показывает не тот промпт, что в проде |
+| F3-MEM-03 | P1 | Две системы памяти, ни одна не работает на живом пути |
+
+### Медиа (A6 → 15_МЕДИА_СТОРИС_АУДИТ.md)
+| ID | Sev | Суть |
+|---|---|---|
+| F3-MED-01 | P1 | Нет таксономии сторис (распаковка/ношение/кастом/отзыв/спонсор) — R-09 не выполняется |
+| F3-MED-02 | P2 | Видео >8 MiB выпадает из анализа без плана Б |
+| F3-MED-03 | P2 | Фото→товар без порога «не уверен → карточки» |
+| F3-MED-04 | P2 | Голос транскрибируется, но правил ответа нет |
+| F3-MED-05 | P2 | 31 `attachment_limit` + 16 `signature` не разобраны (риск молчаливой потери) |
+
+### Коммерция (A7 → 16_КОММЕРЦИЯ_АУДИТ.md)
+| ID | Sev | Суть |
+|---|---|---|
+| F3-COM-01 | **P0** | Контекст рекламы не доходит до модели (то же, что F3-MEM-01) |
+| F3-COM-02 | P1 | Маппинг рекламы ручной, деградирует молча |
+| F3-COM-03 | P1 | Реакция бота на оплату не подтверждена как событийная (R-31) |
+| F3-COM-04 | P1 | Follow-up подавляется старой сделкой (D085-F1, воспроизведено) |
+| F3-COM-05 | P2 | Баллы Direct не реализованы |
+| F3-COM-06 | P1 | Нативный marketing opt-in не подтверждён |
+| F3-COM-07 | P2 | Кандидаты каталога: 200 ID + пагинация |
+| F3-COM-08 | P2 | Порог доставки/предоплата в промпте, не в типизированных фактах |
+
+### Сотрудничество/кастом (A8 → 17_СПІВПРАЦЯ_КАСТОМ_АУДИТ.md)
+| ID | Sev | Суть |
+|---|---|---|
+| F3-COL-01 | P1 | Пауза после менеджера не подтверждена явным механизмом (D046) |
+| F3-COL-02 | P1 | Кастом DTF не реализован отдельным эпизодом |
+| F3-COL-03 | P2 | Сотрудничество не выделено в отдельную категорию |
+| F3-COL-04 | P2 | Единая временная линия решений (R-48) не подтверждена |
+| F3-COL-05 | P2 | В консоли не видно «почему COMPLEX» |
+
+### Кросс-областные
+| ID | Sev | Суть |
+|---|---|---|
+| F3-X-01 | P2 | Доказательства 2.0 не в Git (риск потери) |
+| F3-X-02 | P1 | Пароль SSH был в тексте задачи — сменить |
+
+## Блокированное
+| ID | Статус | Суть |
+|---|---|---|
+| A9 / Q-CNV-01 | `[!]` | Разбор 20–30 реальных переписок запрещён защитой PII в сессии. Нужно явное разрешение владельца (правило в настройках) или выгрузка обезличенных чатов. Обходить нельзя. |
