@@ -118,12 +118,28 @@
    Окремий, трохи слабший контур, щоб не плутати його з підтвердженим бар'єром. */
 .twc-journey-step[data-objection=possible] .twc-journey-core{border-style:dotted;border-color:#64748b;color:#8fa0b6;}
 .twc-journey-step[data-objection=possible] .twc-journey-step-label{font-style:italic;}
+.twc-journey-step[data-objection] .twc-journey-core{border-radius:5px;transform:rotate(45deg);}
+.twc-journey-step[data-objection] .twc-journey-icon{transform:rotate(-45deg);}
+.twc-journey-objections{margin:8px 0;padding:10px 12px;border:1px solid #405169;border-radius:10px;background:#151e2a;}
+.twc-journey-objections-head{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;font-size:12px;line-height:18px;}
+.twc-journey-objections-head>span{font-size:11px;color:#becbdc;}
+.twc-journey-objection-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;}
+.twc-journey-objection-card{display:flex;flex-wrap:wrap;align-items:center;gap:5px 8px;min-height:38px;max-width:100%;border:1px solid #526176;border-radius:8px;padding:7px 10px;background:#101722;color:#e7edf6;text-align:left;font-size:11px;line-height:16px;}
+.twc-journey-objection-card:hover,.twc-journey-objection-card[aria-expanded=true]{border-color:var(--tone,#c7d6e9);background:#1c2a3c;}
+.twc-journey-objection-card[data-possible=true]{border-style:dashed;}
+.twc-journey-objection-diamond{color:var(--tone,#a4b1c2);font-size:20px;}
+.twc-journey-objection-name{font-weight:600;overflow-wrap:anywhere;}
+.twc-journey-objection-outcome{color:var(--tone,#a4b1c2);}
+.twc-journey-objections-note{margin:5px 0 0;font-size:11px;line-height:17px;color:#aebdd0;}
+.twc-journey-dialog>.twc-journey-objections{margin:0;max-height:22dvh;overflow:auto;flex-shrink:0;}
+.twc-journey-case-outcome{font-size:12px;line-height:18px;color:#d4dfed;}
+@media(max-width:600px){.twc-journey-objection-card{width:100%;min-height:44px;}.twc-journey-objections{padding:9px;}}
 /* F3-FUN-02 (план 3.0, P2-1.2): бейдж розкладу результатів заперечення
    (оброблено / не вирішено / відмова). Числа приходять із reason_code у
    ig_journey_trace_projection; колір підказує, чи лишилось щось відкритим. */
 .twc-journey-count[data-outcomes=open]{color:#fbbf24;}
 .twc-journey-count[data-outcomes=refused]{color:#fb7185;}
-.twc-journey-count[data-outcomes=addressed]{color:#34d399;}
+.twc-journey-count[data-outcomes=addressed]{color:#93c5fd;}
 .twc-journey-dialog .twc-journey-step-label{max-width:100px;}
 
 .twc-journey-dialog .twc-journey-step-label{white-space:normal;max-height:28px;line-height:14px;}
