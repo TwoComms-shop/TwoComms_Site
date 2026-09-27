@@ -656,7 +656,7 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
               authority="deterministic_spam_or_authorised_decision", evidence_policy=EvidencePolicy.MANAGER_DECISION, outcomes=("blocked", "corrected")),
         route("configured_line", "Підтверджений склад", join, "commerce",
               authority="canonical_line_configuration", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("quoted_offer"),)),
-        route("quoted_offer", "Актуальна пропозиція", join, "commerce",
+        route("quoted_offer", "Ціна та умови", join, "commerce",
               authority="versioned_offer_or_quote", evidence_policy=EvidencePolicy.MANAGER_DECISION, transitions=(
                   to("awaiting_payment", "payment_required"), to("objection_case"), to("configured_line", "configuration_correction"),
                   to("settlement", "verified_entitlement_covers_total"),

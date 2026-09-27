@@ -1214,6 +1214,8 @@ def build_journey_snapshot(client, *, view_episode_id=None):
                 readiness = selection_requirements(client_id=client_id, episode_id=episode["id"])
                 if readiness["requirements"] is not None:
                     selection_node["requirements"] = readiness["requirements"]
+                if readiness.get("selection_fields") is not None:
+                    selection_node["selection_fields"] = readiness["selection_fields"]
                 graph["coverage"]["selection_requirements"] = readiness["reason"] or "current_active_line"
             except Exception:
                 # An optional progress badge cannot make the customer's chat fail.

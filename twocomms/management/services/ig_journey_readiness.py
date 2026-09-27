@@ -247,5 +247,7 @@ def selection_requirements(*, client_id, episode_id, line_id=None):
              "snapshot_digest": fence[-1], "line_id": active["line_id"],
              "active_position": index + 1, "line_count": len(lines), "reset_floor": reset_floor}
     result = requirements_from_readiness(readiness, scope=scope, evidence_refs=evidence)
+    from management.services.ig_journey_selection import selection_fields
+    result["selection_fields"] = selection_fields(readiness, scope=scope, evidence_refs=evidence)
     result["catalog_reads"] = budget.reads
     return result

@@ -45,12 +45,12 @@ class JourneyRendererPresentationTests(SimpleTestCase):
         geometry = (base / "ig_journey_geometry.js").read_text()
         source = (base / "ig_journey.js").read_text().replace(
             "window.TwcJourney={create:options=>new Journey(options)};",
-            "window.TwcJourney={Journey,witnessed,contextual,consentView,invoiceCountdown,paymentView};")
+            "window.TwcJourney={Journey,witnessed,contextual,consentView,invoiceCountdown,paymentView,selectionView};")
         from management.services.ig_journey_catalogue import journey_catalogue
         import json
         program = "global.window={};\n" + geometry + source + "\nconst catalogue=" + json.dumps(journey_catalogue()) + r"""
 const assert=require('node:assert/strict');
-const {Journey,witnessed,contextual,consentView,invoiceCountdown,paymentView}=window.TwcJourney;
+const {Journey,witnessed,contextual,consentView,invoiceCountdown,paymentView,selectionView}=window.TwcJourney;
 const journey=Object.create(Journey.prototype);
 journey.modal={};journey.mapMode='all';journey.showPossible=true;journey.possibleFamily='catalog';
 const sourceGraph={nodes:[{id:'guide:inquiry',semantic_key:'inbound'}],edges:[]};
@@ -135,6 +135,11 @@ const mixed=journey.mergePayment({nodes:[{id:'possible:wait',semantic_key:'await
 assert.equal(mixed.nodes.length,1);assert.equal(mixed.nodes[0].composite_nodes.length,3);
 assert.equal(mixed.nodes[0].timers.length,1);assert.equal(mixed.nodes[0].label,'Оплата');
 const separate=journey.mergePayment({nodes:[{id:'a',semantic_key:'awaiting_payment',episode_id:1},{id:'b',semantic_key:'settlement',episode_id:2}],edges:[]});assert.equal(separate.nodes.length,2);
+const select=selectionView({schema:'journey-selection.v1',total:2,items:[{label:'Товар',required:true,status:'complete'},{label:'Розмір',required:true,status:'open'}]});
+assert.equal(select.completed,1);assert.equal(select.total,2);
+assert.equal(selectionView({schema:'journey-selection.v1',total:null,items:[{label:'Товар',required:true,status:'complete'}]}).known,false);
+assert.ok(composed.nodes.some(n=>n.selection_progress));
+assert.equal(composed.nodes.filter(n=>['catalog_discovery','configured_line'].includes(n.structural_key||n.semantic_key)).length,1);
 const geometry=window.TwcJourneyGeometry;
 
 const occupied=[{left:72,right:128,top:72,bottom:128}];

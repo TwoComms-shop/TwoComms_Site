@@ -4,7 +4,7 @@
   const rows = [
     ['inbound',0,0,'message','Звернення'],
     ['ad_resolved_product',1,-.5,'shirt','Товар відомий'],
-    ['catalog_discovery',1,0,'shirt','Потрібен підбір'],
+    ['catalog_discovery',1,0,'shirt','Підбір товару'],
     ['photo_reference',1,2,'image','Фото'],
     ['availability_question',2,2,'question','Доступність'],
     ['stock_wait',3,2,'package','Чекаємо наявність'],
@@ -29,7 +29,7 @@
     ['employment_response',3,-7,'work','Відповідь щодо роботи'],
     ['spam_confirmed',1,9,'cross','Спам'],
     ['configured_line',3,0,'brief','Комплектація'],
-    ['quoted_offer',4,0,'tag','Пропозиція'],
+    ['quoted_offer',4,0,'tag','Ціна та умови'],
     ['awaiting_payment',5,0,'money','Очікування оплати'],
     ['payment_help',5,2,'question','Допомога'],
     ['payment_reminder_consent',6,1,'clock','Згода нагадати'],
@@ -55,7 +55,7 @@
   // collaboration's two rows fan out/in only through registry transitions.
   const fullCells={
     website_order_report:[2,3],channel_contact_report:[5,3],client_order_context:[8,3],client_order_shipping:[9,3],client_order_delivery:[10,3],client_order_contact:[9,3],
-    inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[1,4],
+    inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[3,4],
     collaboration:[1,1],collaboration_designer:[2,0],collaboration_partnership:[3,0],
     collaboration_dropship:[4,0],collaboration_wholesale_store:[2,1],
     collaboration_creator:[3,1],collaboration_other:[4,1],business_decision:[5,1],
@@ -266,7 +266,7 @@
       if(!byId.has(id))continue;
       if(byId.get(id).presentation_event){boxes.push({left:p.x-7,right:p.x+7,top:p.y-7,bottom:p.y+7});continue;}
       boxes.push({left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23});
-      boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(byId.get(id).consent_progress||byId.get(id).payment_progress||(byId.get(id).timers||[]).some(t=>t.kind==='invoice_expiry')?72:full?53:39)});
+      boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(byId.get(id).selection_progress||byId.get(id).consent_progress||byId.get(id).payment_progress||(byId.get(id).timers||[]).some(t=>t.kind==='invoice_expiry')?72:full?53:39)});
     }
     let returnTrack=0;const labelBoxes=[];
     const minY=Math.min(...[...positions.values()].map(p=>p.y));

@@ -379,6 +379,7 @@ def selection_readiness(*, product_id, selection, size, fit="", quantity=1, colo
         "price_exact": False,
         "published": True,
         "slug": product.slug,
+        **({"kind": str(product.category.name)} if strict else {}),
     }
 
     fit_rows = _fit_rows(product, **({"strict": True} if strict else {}))
