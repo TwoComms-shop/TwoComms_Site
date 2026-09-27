@@ -125,7 +125,7 @@ class RegistryStaticCheckTests(SimpleTestCase):
         }
         self.assertEqual(
             transitions,
-            {"awaiting_payment", "quoted_offer", "configured_line", "objection_case"},
+            {"awaiting_payment", "quoted_offer", "configured_line", "objection_case", "payment_reminder_consent"},
         )
 
     def test_post_purchase_contact_has_distinct_consent_capability_and_ugc_offer(self):

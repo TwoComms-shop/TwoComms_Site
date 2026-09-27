@@ -395,3 +395,30 @@
 
 .twc-journey-consent-sources{grid-column:2;display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;font-size:10px;}
 .twc-journey-consent-sources:empty{display:none;}
+
+/* Purpose-scoped consent and the real payment-link lifetime. */
+.twc-journey-step[data-consent-purpose=payment_reminder]{--consent-accent:#f5c479;}
+.twc-journey-step[data-consent-purpose=restock_notification]{--consent-accent:#77cbbb;}
+.twc-journey-step[data-consent-purpose=post_purchase_marketing]{--consent-accent:#b4a1e5;}
+.twc-journey-step[data-segments=consent] .twc-journey-core{border-color:var(--consent-accent,#b4a1e5);}
+.twc-journey-ad-badge{position:absolute;left:-12px;top:-7px;padding:1px 3px;border:1px solid #8baae05c;border-radius:4px;background:#1a273c;color:#aec8ef;font:600 8px/11px system-ui;letter-spacing:.4px;}
+
+.twc-journey .twc-journey-core svg.twc-journey-fuse{position:absolute;width:56px;height:56px;left:50%;top:50%;transform:translate(-50%,-50%) rotate(-90deg);overflow:visible;pointer-events:none;stroke-width:1.7;}
+.twc-journey-fuse-track{stroke:#594630;opacity:.45;}
+.twc-journey-fuse-remaining{stroke:#eac183;stroke-linecap:round;}
+.twc-journey .twc-journey-fuse-ember{fill:#fff0d7;stroke:none;filter:drop-shadow(0 0 3px #eeb266);animation:twc-fuse-glow 1.8s ease-in-out infinite alternate;}
+.twc-journey-fuse-label{font-size:9px;line-height:11px;color:#e8bd7e;text-align:center;margin-top:4px;}
+.twc-journey-fuse[data-expired=true] .twc-journey-fuse-track{stroke:#d29198;stroke-dasharray:2 5;opacity:.8;}
+.twc-journey-fuse[data-expired=true] :is(.twc-journey-fuse-ember,.twc-journey-fuse-remaining){display:none;}
+.twc-journey-step[data-timer=expired] .twc-journey-fuse-label{color:#e8a2a9;}
+.twc-journey-step:has(.twc-journey-fuse){height:90px;}
+.twc-journey-step:has(.twc-journey-fuse) .twc-journey-step-label{margin-top:8px;}
+.twc-journey-step:has(.twc-journey-fuse) .twc-journey-core:after{display:none;}
+@keyframes twc-fuse-glow{from{opacity:.65;}to{opacity:1;}}
+@media(prefers-reduced-motion:reduce){.twc-journey-fuse-ember{animation:none;}}
+
+.twc-journey-payment-caption{font-size:9px;line-height:12px;margin-top:4px;max-width:105px;color:var(--tone,#a4b1c2);text-align:center;}
+.twc-journey-step[data-payment-state=expired] .twc-journey-core{border-color:#d29198;}
+.twc-journey-payment-step[data-state=cancelled] .twc-journey-payment-dot{background:#fb7185;border-color:#fb7185;}
+.twc-journey-step[data-segments=payment]{height:104px;}
+.twc-journey-step:has(.twc-journey-fuse) .twc-journey-payment-caption{display:none;}

@@ -57,23 +57,47 @@
   }
 
   function consentView(progress={}){
-    const scoped=progress.schema==='journey-consent.v1'&&progress.channel==='instagram'&&progress.purpose==='post_purchase_marketing';
+    const purpose=progress.purpose||'post_purchase_marketing',reminder=purpose==='payment_reminder',restock=purpose==='restock_notification';
+    const scoped=progress.schema==='journey-consent.v1'&&progress.channel==='instagram'&&['post_purchase_marketing','payment_reminder','restock_notification'].includes(progress.purpose);
     const backed=key=>scoped&&(progress[key]?.evidence_refs||[]).length>0;
     const delivered=backed('delivery')&&progress.delivery.status==='received';
     const sent=backed('invitation')&&progress.invitation.status==='sent';
     const response=backed('response')?progress.response.status:'unknown';
     const permission=backed('permission')?progress.permission.status:'unconfirmed';
-    const blocked=progress.permission?.status==='blocked'; // absence of a grant remains fail closed
-    const refused=response==='declined',accepted=response==='accepted';
-    const revoked=['revoked','expired'].includes(permission);
-    const granted=accepted&&permission==='granted'&&!blocked&&!revoked;
-    const label=blocked?'Повідомлення заборонено':refused?'Клієнт відмовився':revoked?'Дозвіл не чинний':granted?'Згоду підтверджено':accepted?'Згода · перевірка каналу':sent?'Очікуємо відповідь':delivered?'Запрошення не підтверджено':'Після отримання';
-    return {label,tone:blocked||refused?'danger':granted?'success':sent||accepted||revoked?'warning':'neutral',parts:[
-      {label:'Готовність',state:delivered?'done':'todo',note:delivered?'Замовлення отримано':'Після отримання замовлення',evidence_refs:progress.delivery?.evidence_refs},
-      {label:'Запрошення',state:sent?'done':'todo',note:sent?'Надіслано':progress.invitation?.status==='unavailable'?'Нативне джерело не підключено':'Відправку не підтверджено',evidence_refs:progress.invitation?.evidence_refs},
-      {label:'Відповідь',state:refused?'cancelled':accepted?'done':sent?'next':'todo',note:refused?'Відмовився':accepted?'Прийняв':sent?'Очікуємо відповідь':'Відповіді немає',evidence_refs:progress.response?.evidence_refs},
-      {label:'Дозвіл',state:blocked||refused?'cancelled':granted?'done':revoked?'need':'todo',note:blocked?'Загальна заборона повідомлень':granted?'Чинний для теми та каналу':revoked?'Відкликано або строк минув':'Не підтверджено',evidence_refs:progress.permission?.evidence_refs}
-    ]};
+    const blocked=progress.permission?.status==='blocked',refused=response==='declined',accepted=response==='accepted',revoked=['revoked','expired'].includes(permission);
+    const subjectReady=backed('subject')&&progress.subject.status==='confirmed';
+    const granted=accepted&&permission==='granted'&&!blocked&&!revoked&&(!(reminder||restock)||subjectReady);
+    const completed=backed('notification')&&progress.notification.status==='sent';
+    const label=blocked?'Повідомлення заборонено':refused?'Клієнт відмовився':revoked?'Дозвіл не чинний':completed?'Сповіщення надіслано':granted?(reminder?'Нагадування дозволено':restock?'Чекаємо наявність':delivered?'Згоду підтверджено':'Згода є · чекаємо отримання'):accepted?'Згода · перевірка каналу':sent?'Очікуємо відповідь':reminder?'Дата + окрема згода':restock?'На конкретний варіант':'Запит після оплати';
+    const invitation={label:'Запрошення',state:sent?'done':'todo',note:sent?'Надіслано':progress.invitation?.status==='unavailable'?'Нативне джерело не підключено':'Відправку не підтверджено',evidence_refs:progress.invitation?.evidence_refs};
+    const answer={label:'Відповідь',state:refused?'cancelled':accepted?'done':sent?'next':'todo',note:refused?'Відмовився':accepted?'Прийняв':sent?'Очікуємо відповідь':'Відповіді немає',evidence_refs:progress.response?.evidence_refs};
+    const parts=reminder||restock?[
+      {label:reminder?'Час нагадування':'Точний варіант',state:subjectReady?'done':'todo',note:subjectReady?(progress.subject.label||'Узгоджено'):reminder?'Узгодити дату з клієнтом':'Товар, розмір і колір',evidence_refs:progress.subject?.evidence_refs},
+      invitation,answer,
+      {label:reminder?'Нагадування':'Наявність → сповіщення',state:blocked||refused?'cancelled':completed?'done':granted?'next':'todo',note:completed?'Надіслано':granted?(reminder?'На узгоджену дату · нове посилання':'Після появи саме цього варіанта'):'Потрібен окремий чинний дозвіл',evidence_refs:[...(progress.permission?.evidence_refs||[]),...(progress.notification?.evidence_refs||[])]}
+    ]:[
+      invitation,answer,
+      {label:'Отримання замовлення',state:delivered?'done':'todo',note:delivered?'Підтверджено перевізником':'Маркетинг після отримання',evidence_refs:progress.delivery?.evidence_refs},
+      {label:'Дозвіл',state:blocked||refused?'cancelled':granted&&delivered?'done':revoked?'need':'todo',note:blocked?'Загальна заборона повідомлень':granted&&delivered?'Чинний для теми та каналу':revoked?'Відкликано або строк минув':'Перевірка перед кожним повідомленням',evidence_refs:progress.permission?.evidence_refs}
+    ];
+    return {label,tone:blocked||refused?'danger':granted&&(reminder||restock||delivered)?'success':sent||accepted||revoked?'warning':'neutral',parts};
+  }
+  function invoiceCountdown(timer,now){
+    if(!timer||timer.kind!=='invoice_expiry'||!(timer.evidence_refs||[]).length||!['running','expired'].includes(timer.status))return null;
+    const start=Date.parse(timer.started_at||''),due=Date.parse(timer.due_at||'');
+    if(!Number.isFinite(now)||!Number.isFinite(start)||!Number.isFinite(due)||due<=start)return null;
+    const seconds=Math.max(0,Math.ceil((due-now)/1000)),expired=timer.status==='expired'||seconds===0;
+    return {expired,remaining:expired?0:Math.max(0,Math.min(1,(due-now)/(due-start))),label:expired?'Час посилання минув':seconds<60?seconds+' с':seconds<3600?Math.ceil(seconds/60)+' хв':Math.floor(seconds/3600)+' год '+Math.floor(seconds%3600/60)+' хв'};
+  }
+  function paymentView(progress={},timers=[],now){
+    const timer=timers.find(t=>invoiceCountdown(t,now)),countdown=invoiceCountdown(timer,now);
+    const paid=progress.paid===true,expired=!paid&&Boolean(countdown?.expired),issued=Boolean(countdown);
+    const discussion=progress.discussion===true;
+    return {label:paid?'Оплачено':expired?'Строк минув · оплату не підтверджено':issued?'Очікуємо оплату':discussion?'Обговорюємо оплату':'Посилання → очікування → оплата',
+      tone:paid?'success':expired?'danger':issued?'warning':'neutral',expired,
+      items:[{label:'Посилання на оплату',state:issued?'done':discussion?'discussion':'todo',note:issued?'Рахунок створено; строк прив’язаний до його джерела.':'Потрібне підтверджене джерело платіжного посилання.'},
+        {label:'Очікування оплати',state:paid?'done':expired?'cancelled':issued||progress.current?'next':discussion?'discussion':'todo',note:expired?'Час посилання минув. З’ясовуємо причину; це ще не підтверджена відмова.':paid?'Очікування завершено.':'Таймер показує строк конкретного рахунку.'},
+        {label:expired?'Оплату не підтверджено':'Оплачено',state:paid?'done':expired?'cancelled':'todo',note:paid?'Є джерело підтвердження розрахунку.':expired?'Допомога з оплатою → повторна спроба або окрема згода нагадати.':'Лише підтвердження платежу завершує цей крок.'}]};
   }
   function hasChannelHandoff(node){return ['telegram','whatsapp'].includes(node.channel_handoff?.channel)&&(node.channel_handoff?.evidence_refs||[]).length>0;}
   function eventNode(node){return Boolean(node?.presentation_event);}
@@ -88,7 +112,7 @@
   function planned(node){return ['possible','interpretation','client_context'].includes(node.presentation_kind)&&node.implementation_status==='planned';}
   function nodeStatusLabel(node){if(node.consent_progress?.invitation?.evidence_refs?.length)return consentView(node.consent_progress).label;return node.presentation_kind==='reported'?(node.channel_report?'Зі слів клієнта · перехід не перевірено':'Зі слів клієнта · потрібно звірити замовлення'):node.presentation_kind==='interpretation'?'За перепискою'+(planned(node)?' · Заплановано':''):planned(node)?'Заплановано':node.presentation_kind==='possible'?LABELS.possible:node.state==='complete'&&node.tone==='danger'?'Завершено з негативним результатом':LABELS[node.state]||LABELS.open;}
   function recorded(node){const visits=node.recorded_visits;return visits&&Number.isInteger(visits.count)&&visits.count>0&&Array.isArray(visits.evidence_refs)&&visits.evidence_refs.length>0;}
-  const CONDITIONS={confirmed_coverage:'Коли оплату підтверджено',settlement_correction:'Якщо змінилися дані розрахунку',eligible_opt_in:'Запропонувати потрібну згоду',consent_recorded:'Коли згоду зафіксовано',send_capable:'Якщо контакт дозволено',catalog_match:'Якщо це товар каталогу',custom_reference:'Якщо потрібен власний принт',availability:'Перевірити доступність',eligible_follow_up:'Якщо потрібна допомога',wait_for_attempt:'Повторити оплату',offer_correction:'Змінити умови',configuration_correction:'Змінити склад',payment_objection:'Обговорити заперечення',new_attempt:'Нова спроба оплати',current_mockup_accepted:'Після погодження чинного макета',payment_required:'Якщо потрібна оплата',verified_entitlement_covers_total:'Якщо підтверджене право покриває суму',permission_check:'Перевірити дозвіл на контакт',new_selection:'Підібрати інший товар',current_configuration_confirmed:'Якщо чинний склад підтверджено',authorised_reward_grant:'Після дозволу на нагороду'};
+  const CONDITIONS={customer_requests_later:'Клієнт хоче оплатити пізніше',reminder_permission_and_date:'Узгоджено час та окрему згоду',new_invoice_after_reminder:'Нове посилання після нагадування',confirmed_coverage:'Коли оплату підтверджено',settlement_correction:'Якщо змінилися дані розрахунку',eligible_opt_in:'Запропонувати потрібну згоду',consent_recorded:'Коли згоду зафіксовано',send_capable:'Якщо контакт дозволено',catalog_match:'Якщо це товар каталогу',custom_reference:'Якщо потрібен власний принт',availability:'Перевірити доступність',eligible_follow_up:'Якщо потрібна допомога',wait_for_attempt:'Повторити оплату',offer_correction:'Змінити умови',configuration_correction:'Змінити склад',payment_objection:'Обговорити заперечення',new_attempt:'Нова спроба оплати',current_mockup_accepted:'Після погодження чинного макета',payment_required:'Якщо потрібна оплата',verified_entitlement_covers_total:'Якщо підтверджене право покриває суму',permission_check:'Перевірити дозвіл на контакт',new_selection:'Підібрати інший товар',current_configuration_confirmed:'Якщо чинний склад підтверджено',authorised_reward_grant:'Після дозволу на нагороду'};
   function toneFor(node){if(['success','warning','danger','manager'].includes(node.tone))return node.tone;return node.state==='complete'?'success':node.state==='invalidated'?'warning':'neutral';}
   function pathCoverageText(graph){
     const path=graph?.coverage?.semantic_path;
@@ -138,7 +162,7 @@
       this.outside=event=>{if(this.panel&&!this.panel.contains(event.target)&&!event.target.closest('.twc-journey-step,.twc-journey-edge-marker,.twc-journey-detail-link,.twc-journey-objection-card,.twc-journey-concern,.twc-journey-band-chip'))this.closePanel(false);};document.addEventListener('pointerdown',this.outside);
       this.resize=new ResizeObserver(()=>this.queueLayout());this.resize.observe(this.root);
       this.visibility=()=>{if(!document.hidden)this.updateTimers();};document.addEventListener('visibilitychange',this.visibility);
-      this.timerInterval=setInterval(()=>{if(!document.hidden)this.updateTimers();},15000);
+      this.timerInterval=setInterval(()=>{if(!document.hidden)this.updateTimers();},1000);
     }
     async selectEpisode(value){
       if(!this.options.onEpisodeChange||!this.snapshot)return;
@@ -197,6 +221,8 @@
         let badge=button.querySelector('.twc-journey-channel');
         if(channelled){if(!badge){badge=el('span','twc-journey-channel');button.querySelector('.twc-journey-core').append(badge);}badge.textContent=data.channel_handoff.channel==='whatsapp'?'WA':'TG';badge.title='Розмову продовжено в '+(data.channel_handoff.channel==='whatsapp'?'WhatsApp':'Telegram');}
         else badge?.remove();
+        let adBadge=button.querySelector('.twc-journey-ad-badge');
+        if(data.ad_entry){if(!adBadge){adBadge=el('span','twc-journey-ad-badge','AD');button.querySelector('.twc-journey-core').append(adBadge);}adBadge.title=data.ad_entry.product_id?'Реклама · товар визначено':'Реклама · товар потрібно уточнити';}else adBadge?.remove();
         button.dataset.reported=String(['website_order_report','channel_contact_report'].includes(data.producer));
         button.dataset.composite=String(Boolean(data.consent_progress||data.payment_progress||data.delivery_progress||(data.requirements&&Array.isArray(data.requirements.items)&&data.requirements.items.some(i=>i.required===true))));
         button.querySelector('.twc-journey-step-label').textContent=(this.modal&&this.mapMode==='all'?data.label:null)||data.short_label||window.TwcJourneyGeometry?.visualFor(data)?.short_label||data.label;
@@ -270,9 +296,9 @@
       const core=button.querySelector('.twc-journey-core');let ring=core.querySelector('.twc-journey-segments');
       let parts=null,title='',centre='';
       if(data.consent_progress){
-        const view=consentView(data.consent_progress);parts=view.parts;title='Маркетинг opt-in · '+view.label;centre=parts.filter(p=>p.state==='done').length+'/4';
+        const view=consentView(data.consent_progress);parts=view.parts;title=(data.label||'Дозвіл')+' · '+view.label;centre=parts.filter(p=>p.state==='done').length+'/4';
       }else if(data.payment_progress){
-        parts=data.payment_progress.items;title='Оплата · '+parts.map(p=>p.label).join(' → ');centre=parts.filter(p=>p.state==='done').length+'/'+parts.length;
+        parts=data.payment_progress.items;title='Оплата · '+parts.map(p=>p.label).join(' → ');centre=data.payment_progress.paid?'✓':parts.filter(p=>p.state==='done').length+'/'+parts.length;
       }else if(data.delivery_progress){
         const p=data.delivery_progress;
         parts=p.stages.map((label,i)=>({label,state:p.planned?'todo':p.cancelled?'cancelled':i<p.step?'done':i===p.step?'next':'todo'}));
@@ -308,6 +334,7 @@
       let count=button.querySelector('.twc-journey-segment-count');
       if(!count){count=el('span','twc-journey-segment-count');button.append(count);}
       count.textContent=centre;count.title=title;
+      button.dataset.consentPurpose=data.consent_progress?.purpose||'';
       button.dataset.segments=data.consent_progress?'consent':data.payment_progress?'payment':data.delivery_progress?'delivery':'requirements';
       button.dataset.segmentDone=String(parts.every(p=>p.state==='done'||p.state==='na'));
     }
@@ -406,18 +433,20 @@
       return result;
     }
     mergePayment(graph){
-      const awaiting=graph.nodes.filter(n=>(n.structural_key||n.semantic_key)==='awaiting_payment');
-      const settlement=graph.nodes.filter(n=>(n.structural_key||n.semantic_key)==='settlement');
-      // Multiple versions/episodes must not silently turn into one payment.
-      if(awaiting.length!==1||settlement.length!==1)return graph;
-      const members=[awaiting[0],settlement[0]];
-      if(members.every(n=>n.episode_id!=null)&&members[0].episode_id!==members[1].episode_id)return graph;
+      const members=graph.nodes.filter(n=>['awaiting_payment','settlement'].includes(n.structural_key||n.semantic_key));
+      if(!members.length)return graph;
+      // The current scoped journey may contain guide, trace and possible views
+      // of the same payment. Keep every source inside one block, never join episodes.
+      if(new Set(members.map(n=>n.episode_id).filter(id=>id!=null)).size>1)return graph;
       const parent=members.find(n=>n.current)||members.find(n=>n.presentation_kind!=='possible')||members[0];
-      const items=members.map(n=>({id:n.id,label:n===members[0]?'Очікування оплати':'Розрахунок',
-        state:n.presentation_kind==='possible'?'todo':n.presentation_kind==='interpretation'?'discussion':n.state==='complete'&&((n.evidence_refs||[]).length||(n.facts||[]).some(f=>f.state==='complete'&&f.source))?'done':n.current?'next':'todo'}));
+      const factual=n=>!['possible','interpretation'].includes(n.presentation_kind)&&n.state==='complete'&&((n.evidence_refs||[]).length||(n.facts||[]).some(f=>f.state==='complete'&&f.source));
+      const paid=members.some(n=>(n.structural_key||n.semantic_key)==='settlement'&&factual(n));
+      const progress={paid,current:members.some(n=>n.current),discussion:members.some(n=>n.presentation_kind==='interpretation')};
       graph=Journey.prototype.collapseComposition.call(this,graph,parent,members.filter(n=>n!==parent));
+      if(!parent.composite_nodes)parent.composite_nodes=[{...parent}];
       parent.label='Оплата';parent.short_label='Оплата';parent.structural_key='awaiting_payment';
-      parent.payment_progress={items};parent.summary='Очікування та розрахунок в одному блоці. Кожен крок і його джерела — нижче.';
+      parent.payment_progress={...progress,...paymentView(progress,parent.timers||[],this.serverTime)};
+      parent.summary='Посилання → очікування → оплата. Якщо строк минув без підтвердження — допомога з оплатою нижче.';
       parent.evidence_refs=members.flatMap(n=>n.evidence_refs||[]);
       return graph;
     }
@@ -431,6 +460,11 @@
         parent.label='Маркетинг opt-in';parent.short_label='Маркетинг opt-in';
       }
       for(const node of graph.nodes.filter(n=>n.semantic_key==='client_order_contact'))node.consent_progress=node.consent_progress||{};
+      const reminder=graph.nodes.filter(n=>(n.structural_key||n.semantic_key)==='payment_reminder_consent'),notify=graph.nodes.filter(n=>(n.structural_key||n.semantic_key)==='payment_reminder');
+      if(reminder.length===1&&notify.length===1){graph=Journey.prototype.collapseComposition.call(this,graph,reminder[0],[notify[0]]);reminder[0].label='Нагадати про оплату';reminder[0].short_label='Нагадування';reminder[0].consent_progress=reminder[0].consent_progress||{purpose:'payment_reminder'};}
+      for(const node of graph.nodes.filter(n=>(n.structural_key||n.semantic_key)==='restock_consent')){
+        node.consent_progress=node.consent_progress||{purpose:'restock_notification'};node.label='Сповістити про наявність';node.short_label='Наявність · opt-in';
+      }
       return graph;
     }
     presentGraph(source,snapshot){
@@ -551,7 +585,7 @@
       const branch=null;
       const observed=edge&&witnessed(edge),reconstructed=edge&&interpreted(edge);
       const assignment=!edge&&contextNode(node)?this.edges.find(e=>e.relation==='client_scope_assignment'&&e.to_node_id===node.id):null;
-      const data=edge?{...node,label:node.label+(contextual(edge)?' — ':' → ')+(this.graph.nodes.find(n=>n.id===edge.to_node_id)?.label||''),summary:(reconstructed?'За перепискою · ':'')+(edge.summary||edge.reason_label||(contextual(edge)?(edge.condition_label||'Контекст замовлення')+' · '+(edge.summary||'') :observed?'Зафіксований зв’язок':(edge.condition_label?edge.condition_label+' · ':'')+'Можливий зв’язок; не підтверджує перехід')),facts:edge.facts||[],evidence_refs:edge.evidence_refs||[]}:assignment?{...node,summary:assignment.condition_label+' · '+(node.summary||'Контекст замовлення клієнта')}:node.consent_progress?{...node,summary:node.consent_progress.note||'Після отримання замовлення · Instagram · післяпродажний маркетинг.'}:planned(node)?{...node,summary:(node.presentation_kind==='interpretation'?'За перепискою · '+(node.summary?node.summary+' · ':''):'')+'Заплановано'+(node.implementation_note?' · '+node.implementation_note:'')}:node;
+      const data=edge?{...node,label:node.label+(contextual(edge)?' — ':' → ')+(this.graph.nodes.find(n=>n.id===edge.to_node_id)?.label||''),summary:(reconstructed?'За перепискою · ':'')+(edge.summary||edge.reason_label||(contextual(edge)?(edge.condition_label||'Контекст замовлення')+' · '+(edge.summary||'') :observed?'Зафіксований зв’язок':(edge.condition_label?edge.condition_label+' · ':'')+'Можливий зв’язок; не підтверджує перехід')),facts:edge.facts||[],evidence_refs:edge.evidence_refs||[]}:assignment?{...node,summary:assignment.condition_label+' · '+(node.summary||'Контекст замовлення клієнта')}:node.consent_progress?{...node,summary:node.consent_progress.note||({payment_reminder:'Окрема згода на нагадування про цю оплату в узгоджений час.',restock_notification:'Окрема згода на сповіщення про конкретний товар, розмір і колір.'}[node.consent_progress.purpose]||'Запит згоди після оплати · маркетинг після отримання замовлення.')}:planned(node)?{...node,summary:(node.presentation_kind==='interpretation'?'За перепискою · '+(node.summary?node.summary+' · ':''):'')+'Заплановано'+(node.implementation_note?' · '+node.implementation_note:'')}:node;
       const events=((this.graph.history||this.snapshot.history||{}).events||[]).filter(item=>edge?(edge.event_ids||[]).includes(item.id):(node.composite_nodes||[node]).some(n=>n.id===item.node_id));
       const returns=!this.modal&&edge&&returnEdge(edge)?this.edges.filter(item=>returnEdge(item)&&(witnessed(item)||interpreted(item))&&this.positions?.has(item.from_node_id)&&this.positions.has(item.to_node_id)):[];
       const choices=returns.length?returns:edge&&edgePriority(edge)>0?this.parallelEdges(edge):[];
@@ -619,7 +653,7 @@
       const caption=el('p','twc-journey-consent-state',view.label);caption.dataset.tone=view.tone;section.append(caption);
       for(const part of view.parts){const row=el('div','twc-journey-consent-row');row.dataset.state=part.state;row.append(el('span','twc-journey-payment-dot'),el('strong','',part.label),el('span','twc-journey-consent-note',part.note));const sources=el('div','twc-journey-consent-sources');this.appendSources(sources,part.evidence_refs||[]);row.append(sources);section.append(row);}
       section.append(el('p','twc-journey-fact-note',node.consent_progress.note||'Потрібні нативні події запрошення, відповіді та чинного дозволу для цього каналу й мети.'));
-      section.append(el('p','twc-journey-fact-note','Instagram · післяпродажний маркетинг. Згода не скасовує перевірку доступності каналу перед відправкою.'));
+      section.append(el('p','twc-journey-fact-note',({payment_reminder:'Лише нагадування про оплату. Не підписка на акції.',restock_notification:'Лише наявність цього варіанта. Не підписка на акції.'}[node.consent_progress.purpose]||'Акції та післяпродажні пропозиції — після отримання. Чинність каналу перевіряється перед відправкою.')));
       for(const child of node.composite_nodes||[]){
         const details=el('details','twc-journey-delivery-source');details.append(el('summary','',child.label));
         for(const fact of child.facts||[])details.append(el('p','twc-journey-fact-note',fact.label+': '+valueText(fact.value)));
@@ -629,17 +663,19 @@
       body.append(section);
     }
     appendPayment(body,node){
-      const section=el('div','twc-journey-payment-steps');
+      const section=el('section','twc-journey-payment');section.append(el('h5','','Оплата · '+node.payment_progress.label));
       for(const item of node.payment_progress.items){
-        const child=node.composite_nodes.find(n=>n.id===item.id),step=el('details','twc-journey-payment-step');step.dataset.state=item.state;
-        const head=el('summary');head.append(el('span','twc-journey-payment-dot'),el('strong','',item.label),el('span','',({done:'Підтверджено',next:'Зараз',discussion:'За перепискою',todo:'Ще попереду'})[item.state]));step.append(head);
-        if(child.summary)step.append(el('p','',child.summary));
-        for(const fact of child.facts||[])step.append(el('p','',fact.label+': '+valueText(fact.value)));
-        this.appendRequirements(step,child);this.appendTimerDetails(step,child);this.appendSources(step,child.evidence_refs||[]);
-        const transitions=(node.composite_edges||[]).filter(e=>e.from_node_id===child.id);
-        transitions.forEach(e=>{step.append(el('p','twc-journey-fact-note',(e.relation==='route'?'Можливий перехід: ':'Перехід: ')+(e.condition_label||e.reason_label||'до наступного кроку')));this.appendSources(step,e.evidence_refs||[]);});
-        section.append(step);
-      }body.append(section);
+        const step=el('details','twc-journey-payment-step');step.dataset.state=item.state;
+        const head=el('summary');head.append(el('span','twc-journey-payment-dot'),el('strong','',item.label),el('span','',({done:'Підтверджено',next:'Зараз',cancelled:'Потребує уваги',discussion:'За перепискою',todo:'Ще попереду'})[item.state]));step.append(head,el('p','',item.note));section.append(step);
+      }
+      for(const child of node.composite_nodes||[]){
+        const details=el('details','twc-journey-payment-step');details.append(el('summary','',child.label+' · джерела'));
+        if(child.summary)details.append(el('p','',child.summary));
+        for(const fact of child.facts||[])details.append(el('p','',fact.label+': '+valueText(fact.value)));
+        this.appendRequirements(details,child);this.appendTimerDetails(details,child);this.appendSources(details,child.evidence_refs||[]);section.append(details);
+      }
+      for(const edge of node.composite_edges||[]){section.append(el('p','twc-journey-fact-note',(edge.relation==='route'?'Можливий внутрішній перехід: ':'Внутрішній перехід: ')+(edge.condition_label||edge.reason_label||'наступний крок')));this.appendSources(section,edge.evidence_refs||[]);}
+      body.append(section);
     }
     appendDelivery(body,node){
       const p=node.delivery_progress;if(!p)return;
@@ -690,6 +726,9 @@
     appendTimerDetails(body,node){
       if(node.waiting?.evidence_refs?.length){const waiting=el('div','twc-journey-timer-detail');waiting.append(icon('clock'),el('span','',node.waiting.label));body.append(waiting);}
       for(const timer of (node.timers||[])){
+        const countdown=invoiceCountdown(timer,Number.isFinite(this.serverTime)?this.serverTime+(performance.now()-this.serverAnchor):null);
+        if(countdown?.expired)body.append(el('p','twc-journey-report-note','Час посилання минув. Перевірте оплату та уточніть плани клієнта. Для нагадування на іншу дату потрібні окрема згода й нове посилання.'));
+
         const line=el('div','twc-journey-timer-detail');line.append(icon('clock'),el('span','',timer.label||'Очікування'));
         const state=el('span','twc-journey-timer-state',this.timerDescription(timer));state.dataset.timerState=timer.id||timer.kind||'';line.append(state);
         const due=date(timer.due_at);if(due)line.append(el('time','','До '+due));body.append(line);
@@ -760,9 +799,33 @@
       if(!this.graph)return;const serverNow=Number.isFinite(this.serverTime)?this.serverTime+(performance.now()-this.serverAnchor):null;
       this.graph.nodes.forEach(node=>{
         const button=this.buttons.get(node.id);if(!button)return;button.dataset.waiting=String(hasActiveWait(node,serverNow));
-        const timer=(node.timers||[]).find(t=>['running','scheduled','paused','expired','unknown'].includes(t.status));
+        if(node.payment_progress){
+          const view=paymentView(node.payment_progress,node.timers||[],serverNow),changed=node.payment_progress.label!==view.label;
+          node.payment_progress={...node.payment_progress,...view};this.renderSegments(button,node);
+          let caption=button.querySelector('.twc-journey-payment-caption');if(!caption){caption=el('span','twc-journey-payment-caption');button.append(caption);}caption.textContent=view.label;caption.dataset.tone=view.tone;
+          button.dataset.paymentState=view.expired?'expired':node.payment_progress.paid?'paid':'waiting';
+          if(view.expired||node.payment_progress.paid)button.dataset.tone=view.tone;
+          if(changed&&this.selected===node.id&&!this.selectedEdge){this.panelKey='';this.renderPanel();}
+        }
+        const timer=node.payment_progress?.paid?null:(node.timers||[]).find(t=>invoiceCountdown(t,serverNow))||(node.timers||[]).find(t=>['running','scheduled','paused','expired','unknown'].includes(t.status));
         let ring=button.querySelector('.twc-journey-timer');
-        if(!timer){ring?.remove();delete button.dataset.timer;return;}
+        const countdown=invoiceCountdown(timer,serverNow);let fuse=button.querySelector('.twc-journey-fuse');
+        if(countdown&&!node.payment_progress?.paid){
+          ring?.remove();
+          if(!fuse){
+            fuse=svg('svg',{viewBox:'0 0 56 56','aria-hidden':'true',focusable:'false'});fuse.classList.add('twc-journey-fuse');
+            fuse.append(svg('circle',{cx:28,cy:28,r:24,class:'twc-journey-fuse-track'}),svg('circle',{cx:28,cy:28,r:24,pathLength:100,class:'twc-journey-fuse-remaining'}),svg('circle',{cx:52,cy:28,r:2.1,class:'twc-journey-fuse-ember'}));
+            button.querySelector('.twc-journey-core').append(fuse);button.append(el('span','twc-journey-fuse-label'));
+          }
+          fuse.dataset.expired=String(countdown.expired);fuse.querySelector('.twc-journey-fuse-remaining').setAttribute('stroke-dasharray',countdown.remaining*100+' 100');
+          const angle=countdown.remaining*Math.PI*2,ember=fuse.querySelector('.twc-journey-fuse-ember');ember.setAttribute('cx',28+24*Math.cos(angle));ember.setAttribute('cy',28+24*Math.sin(angle));
+          button.querySelector('.twc-journey-fuse-label').textContent=countdown.label;
+          button.dataset.timer=countdown.expired?'expired':'running';button.title=node.label+' · '+countdown.label+' · до '+date(timer.due_at);
+          button.setAttribute('aria-label',(button.dataset.baseLabel||node.label)+' · '+countdown.label);
+          return;
+        }else{fuse?.remove();button.querySelector('.twc-journey-fuse-label')?.remove();}
+
+        if(!timer){ring?.remove();delete button.dataset.timer;if(node.payment_progress)button.setAttribute('aria-label',(button.dataset.baseLabel||node.label)+' · '+node.payment_progress.label);return;}
         button.setAttribute('aria-label',(button.dataset.baseLabel||node.label)+' · '+(timer.label||'Очікування')+' · '+this.timerDescription(timer));
         const start=Date.parse(timer.started_at||''),due=Date.parse(timer.due_at||'');
         const valid=Number.isFinite(start)&&Number.isFinite(due)&&due>start&&serverNow!==null;
@@ -853,8 +916,9 @@
         nodes.forEach(node=>{const p=this.positions.get(node.id),cell=this.cells.get(node.id);cell.style.left=p.x+'px';cell.style.top=p.y+'px';cell.style.width=p.cardWidth+'px';});
       }else if(!this.modal&&this.inlineSlots){
         const columns=Math.max(1,...[...this.inlineSlots.values()].map(p=>p.col+1)),step=width/columns;
+        const rowHeight=nodes.some(n=>n.consent_progress||n.payment_progress||(n.timers||[]).some(t=>t.kind==='invoice_expiry'))?100:70;
         const loopSpace=this.edges.some(e=>e.from_node_id===e.to_node_id&&nodes.some(n=>n.id===e.from_node_id))||this.eventVisibleIds?.length?20:16;
-        nodes.forEach(node=>{const slot=this.inlineSlots.get(node.id),x=step*(slot.col+.5),y=30+loopSpace+slot.row*70;this.positions.set(node.id,{x,y,...slot});const cell=this.cells.get(node.id);cell.style.left=x+'px';cell.style.top=y+'px';cell.style.width=Math.max(44,step-12)+'px';});
+        nodes.forEach(node=>{const slot=this.inlineSlots.get(node.id),x=step*(slot.col+.5),y=30+loopSpace+slot.row*rowHeight;this.positions.set(node.id,{x,y,...slot});const cell=this.cells.get(node.id);cell.style.left=x+'px';cell.style.top=y+'px';cell.style.width=Math.max(44,step-12)+'px';});
         this.mapWidth=width;this.mapHeight=(nodes.some(n=>this.inlineSlots.get(n.id).row)?142:68)+loopSpace;
       }else if(!narrow&&window.TwcJourneyGeometry){
         const geometry=window.TwcJourneyGeometry.layout({nodes,edges:this.edges.filter(e=>this.visibleIds.includes(e.from_node_id)&&this.visibleIds.includes(e.to_node_id)),width,full:Boolean(this.modal)});
@@ -875,6 +939,8 @@
           this.map.dataset.single='true';this.map.dataset.narrow='true';this.mapHeight=58;this.expand.textContent='Весь шлях · '+this.nodeIds.length+' ↗';
         }this.mapHeight=Math.min(192,this.mapHeight);
       }
+      // Composite captions and invoice lifetime need their own vertical space.
+      for(const node of nodes){const p=this.positions.get(node.id);if(p&&(node.consent_progress||node.payment_progress||(node.timers||[]).some(t=>t.kind==='invoice_expiry')))this.mapHeight=Math.max(this.mapHeight,p.y+78);}
       this.placeEvents();
       this.map.style.setProperty('--journey-touch-scale',String(this.modal?1/this.zoom:1));
       this.map.style.width=this.mapWidth+'px';this.map.style.height=this.mapHeight+'px';
@@ -883,7 +949,7 @@
     }
     placeEvents(){
       const events=this.graph.nodes.filter(n=>this.eventVisibleIds?.includes(n.id)),details=[];
-      const obstacles=this.graph.nodes.filter(n=>!eventNode(n)&&this.positions.has(n.id)).flatMap(n=>{const p=this.positions.get(n.id);return [{left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23},{left:p.x-50,right:p.x+50,top:p.y+21,bottom:p.y+(this.modal?53:39)}];});
+      const obstacles=this.graph.nodes.filter(n=>!eventNode(n)&&this.positions.has(n.id)).flatMap(n=>{const p=this.positions.get(n.id);return [{left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23},{left:p.x-50,right:p.x+50,top:p.y+21,bottom:p.y+(n.consent_progress||n.payment_progress||(n.timers||[]).some(t=>t.kind==='invoice_expiry')?72:this.modal?53:39)}];});
       for(const node of events){
         if(node.semantic_key==='journey_case'){this.cells.get(node.id).hidden=true;this.positions.delete(node.id);continue;}
         const info=node.presentation_event,anchors=info.anchor_ids.map(id=>this.positions.get(id)).filter(Boolean);let point;

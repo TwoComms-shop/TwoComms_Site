@@ -45,12 +45,12 @@ class JourneyRendererPresentationTests(SimpleTestCase):
         geometry = (base / "ig_journey_geometry.js").read_text()
         source = (base / "ig_journey.js").read_text().replace(
             "window.TwcJourney={create:options=>new Journey(options)};",
-            "window.TwcJourney={Journey,witnessed,contextual,consentView};")
+            "window.TwcJourney={Journey,witnessed,contextual,consentView,invoiceCountdown,paymentView};")
         from management.services.ig_journey_catalogue import journey_catalogue
         import json
         program = "global.window={};\n" + geometry + source + "\nconst catalogue=" + json.dumps(journey_catalogue()) + r"""
 const assert=require('node:assert/strict');
-const {Journey,witnessed,contextual,consentView}=window.TwcJourney;
+const {Journey,witnessed,contextual,consentView,invoiceCountdown,paymentView}=window.TwcJourney;
 const journey=Object.create(Journey.prototype);
 journey.modal={};journey.mapMode='all';journey.showPossible=true;journey.possibleFamily='catalog';
 const sourceGraph={nodes:[{id:'guide:inquiry',semantic_key:'inbound'}],edges:[]};
@@ -91,7 +91,7 @@ const composedRoutes=window.TwcJourneyGeometry.routeEdges({nodes:composed.nodes,
 for(const e of composed.edges)assert.ok(composedRoutes.has(e.id),'unrouted composition edge '+e.id);
 assert.equal(composed.nodes.find(n=>n.semantic_key==='fulfillment').delivery_progress.stages.length,4);
 const payment=composed.nodes.find(n=>n.payment_progress);
-assert.equal(payment.payment_progress.items.length,2);
+assert.equal(payment.payment_progress.items.length,3);
 assert.ok(payment.payment_progress.items.every(i=>i.state==='todo'));
 const actualGraph={nodes:[{id:'wait',semantic_key:'awaiting_payment',current:true,evidence_refs:[{kind:'message',id:1}]},{id:'paid',semantic_key:'settlement',state:'complete',evidence_refs:[{kind:'payment',id:2}]},{id:'ship',semantic_key:'fulfillment'},{id:'case',semantic_key:'journey_case',presentation_event:{anchor_ids:['paid'],edge_ids:['out']}}],
 edges:[{id:'inside',from_node_id:'wait',to_node_id:'paid',evidence_refs:[{id:2}]},{id:'out',from_node_id:'paid',to_node_id:'ship',evidence_refs:[{id:3}]}],display_focus:{node_id:'paid'}};
@@ -100,7 +100,7 @@ assert.equal(combined.edges.find(e=>e.id==='out').from_node_id,'wait');
 assert.equal(combined.display_focus.node_id,'wait');
 assert.deepEqual(combined.nodes.find(n=>n.id==='case').presentation_event.anchor_ids,['wait']);
 assert.equal(combined.nodes[0].composite_edges[0].id,'inside');
-assert.equal(combined.nodes[0].payment_progress.items[1].state,'done');
+assert.equal(combined.nodes[0].payment_progress.items[2].state,'done');
 const optin=composed.nodes.find(n=>n.consent_progress);
 assert.ok(optin);
 assert.equal(consentView(optin.consent_progress).parts.length,4);
@@ -110,7 +110,33 @@ assert.equal(consentView({...consent,response:{status:'declined',evidence_refs:[
 assert.notEqual(consentView({...consent,permission:{status:'granted',evidence_refs:[]}}).tone,'success');
 assert.notEqual(consentView({...consent,purpose:'other'}).tone,'success');
 assert.notEqual(consentView({...consent,permission:{status:'revoked',evidence_refs:[{id:5}]}}).tone,'success');
+
+assert.notEqual(consentView({...consent,purpose:undefined}).tone,'success');
+assert.notEqual(consentView({...consent,delivery:{status:'waiting'}}).tone,'success');
+for(const purpose of ['payment_reminder','restock_notification']){
+ const scoped={...consent,purpose};
+ assert.notEqual(consentView(scoped).tone,'success','needs specific date or variant');
+ assert.equal(consentView({...scoped,subject:{status:'confirmed',evidence_refs:[{id:5}]}}).tone,'success');
+ assert.notEqual(consentView({...scoped,channel:'telegram',subject:{status:'confirmed',evidence_refs:[{id:5}]}}).tone,'success');
+ assert.ok(composed.nodes.some(n=>n.consent_progress?.purpose===purpose));
+}
+const time=Date.parse('2026-09-28T10:00:00Z');
+const invoice={kind:'invoice_expiry',status:'running',started_at:'2026-09-28T09:00:00Z',due_at:'2026-09-28T11:00:00Z',evidence_refs:[{kind:'payment_attempt',id:1}]};
+assert.equal(invoiceCountdown(invoice,time).remaining,.5);
+assert.equal(invoiceCountdown(invoice,time+3600000).expired,true);
+assert.equal(invoiceCountdown({...invoice,evidence_refs:[]},time),null);
+assert.equal(invoiceCountdown({...invoice,status:'cancelled'},time),null);
+assert.equal(invoiceCountdown({...invoice,started_at:invoice.due_at},time),null);
+assert.equal(invoiceCountdown(invoice,null),null);
+assert.equal(paymentView({},[invoice],time).items[1].state,'next');
+assert.equal(paymentView({},[invoice],time+3600000).tone,'danger');
+assert.equal(paymentView({paid:true},[invoice],time+3600000).tone,'success');
+const mixed=journey.mergePayment({nodes:[{id:'possible:wait',semantic_key:'awaiting_payment',presentation_kind:'possible'},{id:'wait-real',semantic_key:'awaiting_payment',current:true,timers:[invoice]},{id:'possible:paid',semantic_key:'settlement',presentation_kind:'possible'}],edges:[]});
+assert.equal(mixed.nodes.length,1);assert.equal(mixed.nodes[0].composite_nodes.length,3);
+assert.equal(mixed.nodes[0].timers.length,1);assert.equal(mixed.nodes[0].label,'Оплата');
+const separate=journey.mergePayment({nodes:[{id:'a',semantic_key:'awaiting_payment',episode_id:1},{id:'b',semantic_key:'settlement',episode_id:2}],edges:[]});assert.equal(separate.nodes.length,2);
 const geometry=window.TwcJourneyGeometry;
+
 const occupied=[{left:72,right:128,top:72,bottom:128}];
 const annotation=geometry.annotationPoint({anchor:{x:100,y:100},occupied,width:320,height:180});
 assert.ok(annotation);

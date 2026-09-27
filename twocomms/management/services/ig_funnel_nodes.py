@@ -54,7 +54,7 @@ from management.models import IgFunnelNodeState
 
 logger = logging.getLogger(__name__)
 
-DEFINITION_VERSION = "funnel-node.v1.2"
+DEFINITION_VERSION = "funnel-node.v1.3"
 PROJECTOR_VERSION = "funnel-node-projector.v1"
 
 MODE_OFF = "off"
@@ -670,7 +670,14 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
               authority="current_payment_follow_up_and_permission", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(
                   to("awaiting_payment", "wait_for_attempt"), to("quoted_offer", "offer_correction"),
                   to("configured_line", "configuration_correction"), to("objection_case", "payment_objection"),
+                  to("payment_reminder_consent", "customer_requests_later"),
               )),
+        route("payment_reminder_consent", "Дозвіл на нагадування", cross, "payment",
+              authority="purpose_scoped_payment_reminder_consent", evidence_policy=EvidencePolicy.CONSENT_FACT,
+              transitions=(to("payment_reminder", "reminder_permission_and_date"),)),
+        route("payment_reminder", "Нагадування про оплату", decision, "payment",
+              authority="episode_bound_reminder_receipt", evidence_policy=EvidencePolicy.PROVIDER_FACT,
+              transitions=(to("awaiting_payment", "new_invoice_after_reminder"),)),
         route("settlement", "Розрахунок", join, "commerce",
               authority="payment_or_entitlement_truth", evidence_policy=EvidencePolicy.PROVIDER_FACT, transitions=(
                   to("fulfillment"), to("objection_case"), to("quoted_offer", "settlement_correction"),

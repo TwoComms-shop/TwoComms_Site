@@ -13,7 +13,7 @@ def consent_progress(*, received=False, delivery_refs=(), opted_out_at=None, opt
         "response": {"status": "unknown", "evidence_refs": []},
         "permission": {"status": "blocked" if opted_out_at else "unconfirmed", "evidence_refs": blocked_refs},
         "note": ("Клієнт заборонив повідомлення. Це загальна заборона, не відповідь на конкретне marketing opt-in."
-                 if opted_out_at else "Нативні події запрошення та відповіді ще не підключені. Отримання замовлення не надає дозволу на маркетинг."),
+                 if opted_out_at else "Запрошення — після оплати, маркетингові повідомлення — після отримання. Нативні події згоди ще не підключені; замовлення не надає дозволу на маркетинг."),
     }
 
 

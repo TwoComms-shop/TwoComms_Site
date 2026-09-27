@@ -32,6 +32,8 @@
     ['quoted_offer',4,0,'tag','Пропозиція'],
     ['awaiting_payment',5,0,'money','Очікування оплати'],
     ['payment_help',5,2,'question','Допомога'],
+    ['payment_reminder_consent',6,1,'clock','Згода нагадати'],
+    ['payment_reminder',6,2,'clock','Нагадування'],
     ['settlement',6,0,'money','Розрахунок'],
     ['fulfillment',7,0,'package','Виконання'],
     ['objection_case',4,4,'question','Заперечення'],
@@ -61,8 +63,8 @@
     configured_line:[4,4],quoted_offer:[5,4],awaiting_payment:[6,4],settlement:[7,4],fulfillment:[8,4],
     custom_print:[1,5],dtf_only:[1,6],custom_brief:[2,5],mockup_current_acceptance:[3,5],
     photo_reference:[1,7],availability_question:[2,7],stock_wait:[3,7],restock_consent:[4,7],prize_candidate:[1,8],prize_decision:[3,8],
-    payment_help:[6,6],objection_case:[5,7],post_sale_request:[1,9],post_sale_case:[9,5],
-    channel_consent:[8,6],channel_grant_checked:[9,6],post_purchase_contact_offer:[10,6],
+    payment_help:[6,6],payment_reminder_consent:[7,5],payment_reminder:[7,6],objection_case:[5,7],post_sale_request:[1,9],post_sale_case:[9,5],
+    channel_consent:[8,5],channel_grant_checked:[8,6],post_purchase_contact_offer:[10,6],
     ugc_assessment:[11,6],reward_entitlement:[11,7],reward_delivery:[10,7],reward_use:[9,7],
     repeat_interest:[9,4],new_purchase_interest:[10,4],spam_confirmed:[0,9]
   };
@@ -264,7 +266,7 @@
       if(!byId.has(id))continue;
       if(byId.get(id).presentation_event){boxes.push({left:p.x-7,right:p.x+7,top:p.y-7,bottom:p.y+7});continue;}
       boxes.push({left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23});
-      boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(full?53:39)});
+      boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(byId.get(id).consent_progress||byId.get(id).payment_progress||(byId.get(id).timers||[]).some(t=>t.kind==='invoice_expiry')?72:full?53:39)});
     }
     let returnTrack=0;const labelBoxes=[];
     const minY=Math.min(...[...positions.values()].map(p=>p.y));
@@ -359,8 +361,9 @@
     ['Від вибору до покупки',['inbound','catalog_discovery','configured_line','quoted_offer','awaiting_payment','settlement','fulfillment','repeat_interest','new_purchase_interest']],
     ['Власний принт і DTF',['custom_print','dtf_only','custom_brief','mockup_current_acceptance']],
     ['Наявність та очікування',['photo_reference','availability_question','stock_wait','restock_consent']],
+    ['Допомога з оплатою',['payment_help','payment_reminder_consent','payment_reminder']],
     ['Приз',['prize_candidate','prize_decision']],
-    ['Після покупки',['channel_consent','channel_grant_checked','post_purchase_contact_offer','ugc_assessment','reward_entitlement','reward_delivery','reward_use']],
+    ['Після покупки',['post_sale_case','channel_consent','channel_grant_checked','post_purchase_contact_offer','ugc_assessment','reward_entitlement','reward_delivery','reward_use']],
     ['Сервісне звернення',['post_sale_request']],
     ['Контекст клієнта · сайт та інші канали',['website_order_report','channel_contact_report','client_order_context','client_order_contact']]
   ];
