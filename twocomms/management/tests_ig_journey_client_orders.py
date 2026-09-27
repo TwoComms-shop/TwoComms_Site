@@ -54,6 +54,24 @@ class JourneyClientOrdersTests(TestCase):
     def context_nodes(self, graph):
         return [node for node in graph["nodes"] if node.get("scope") == "client"]
 
+    def test_delivery_progress_requires_carrier_evidence(self):
+        assignment = self.assignment(status="prep", tracking_status_code=1)
+        def step():
+            parent = next(n for n in self.project()["nodes"] if n.get("semantic_key") == "client_order_context")
+            return parent["fulfillment_progress"]["step"]
+        self.assertEqual(step(), 1)  # a tracking number alone is not dispatch
+        order = assignment.order
+        order.status = "ship"
+        order.save(update_fields=["status"])
+        self.assertEqual(step(), 2)
+        order.tracking_status_code = 7
+        order.tracking_provider_event_at = timezone.now()
+        order.save(update_fields=["tracking_status_code", "tracking_provider_event_at"])
+        self.assertEqual(step(), 3)
+        order.status = "cancelled"
+        order.save(update_fields=["status"])
+        self.assertEqual(step(), 0)
+
     def test_current_assignment_adds_context_without_changing_focus_episode_or_history(self):
         assignment = self.assignment()
         before = deepcopy(self.graph)

@@ -40,6 +40,79 @@ class JourneyDisplayFocusTests(SimpleTestCase):
 
 
 class JourneyRendererPresentationTests(SimpleTestCase):
+    def test_complete_atlas_and_short_path_preserve_sources(self):
+        base = Path(__file__).parent / "static/management"
+        geometry = (base / "ig_journey_geometry.js").read_text()
+        source = (base / "ig_journey.js").read_text().replace(
+            "window.TwcJourney={create:options=>new Journey(options)};",
+            "window.TwcJourney={Journey,witnessed,contextual};")
+        from management.services.ig_journey_catalogue import journey_catalogue
+        import json
+        program = "global.window={};\n" + geometry + source + "\nconst catalogue=" + json.dumps(journey_catalogue()) + r"""
+const assert=require('node:assert/strict');
+const {Journey,witnessed,contextual}=window.TwcJourney;
+const journey=Object.create(Journey.prototype);
+journey.modal={};journey.mapMode='all';journey.showPossible=true;journey.possibleFamily='catalog';
+const sourceGraph={nodes:[{id:'guide:inquiry',semantic_key:'inbound'}],edges:[]};
+const before=JSON.stringify(sourceGraph),snapshot={catalogue};
+const all=journey.presentGraph(sourceGraph,snapshot);
+for(const d of journey.possibleCatalogue(catalogue).definitions)assert.ok(all.nodes.some(n=>(n.structural_key||n.semantic_key)===d.key),d.key);
+assert.equal(all.edges.length,journey.possibleCatalogue(catalogue).transitions.length);
+assert.equal(JSON.stringify(sourceGraph),before);
+for(const width of [320,780,1500]){
+ const result=window.TwcJourneyGeometry.atlas({nodes:all.nodes,edges:all.edges,width});
+ const routes=window.TwcJourneyGeometry.routeEdges({nodes:all.nodes,edges:all.edges,positions:result.positions,width:result.width,height:result.height,full:true});
+ for(const edge of all.edges)assert.ok(routes.has(edge.id),'missing visible route '+edge.id);
+ assert.equal(result.positions.size,all.nodes.length);
+ const rects=[...result.positions.values()].map(p=>({x:p.cardLeft,y:p.y-22,w:p.cardWidth,h:87}));
+ for(let i=0;i<rects.length;i++)for(let j=i+1;j<rects.length;j++){
+  const a=rects[i],b=rects[j];assert.ok(a.x+a.w<=b.x||b.x+b.w<=a.x||a.y+a.h<=b.y||b.y+b.h<=a.y,'cards must not overlap');
+ }
+}
+journey.mapMode='short';const short=journey.presentGraph(sourceGraph,snapshot);
+assert.ok(short.nodes.length<all.nodes.length);
+assert.ok(!short.nodes.some(n=>n.semantic_key==='reward_delivery'));
+assert.ok(short.edges.every(e=>!['offer_correction','configuration_correction'].includes(e.outcome)));
+journey.showPossible=false;journey.mapMode='actual';
+assert.equal(journey.presentGraph(sourceGraph,snapshot).nodes.length,1);
+const claim={relation:'client_report_context',evidence_refs:[{kind:'message',id:1}]};
+assert.equal(witnessed(claim),false);assert.equal(contextual(claim),true);
+const report={id:'website',producer:'website_order_report',semantic_key:'website_order_report'};
+const traceSource={transcript_reconstruction:{},trace_node_ids:['trace'],nodes:[{id:'trace'},report],edges:[]};
+const inline=journey.inlineGraph(traceSource,traceSource.nodes,[],journey.possibleCatalogue(catalogue));
+assert.ok(inline.inline_main_ids.includes('website'));
+const composed=journey.presentEvents(all);
+const represented=new Set(composed.nodes.flatMap(n=>(n.composite_nodes||[n]).map(c=>c.structural_key||c.semantic_key)));
+for(const d of journey.possibleCatalogue(catalogue).definitions)assert.ok(represented.has(d.key),'lost definition '+d.key);
+const representedEdges=new Set([...composed.edges,...composed.nodes.flatMap(n=>n.composite_edges||[])].map(e=>e.id));
+for(const e of all.edges)assert.ok(representedEdges.has(e.id),'lost transition '+e.id);
+const boxes=window.TwcJourneyGeometry.atlas({nodes:composed.nodes,width:1500});
+const composedRoutes=window.TwcJourneyGeometry.routeEdges({nodes:composed.nodes,edges:composed.edges,positions:boxes.positions,width:boxes.width,height:boxes.height,full:true});
+for(const e of composed.edges)assert.ok(composedRoutes.has(e.id),'unrouted composition edge '+e.id);
+assert.equal(composed.nodes.find(n=>n.semantic_key==='fulfillment').delivery_progress.stages.length,4);
+const payment=composed.nodes.find(n=>n.payment_progress);
+assert.equal(payment.payment_progress.items.length,2);
+assert.ok(payment.payment_progress.items.every(i=>i.state==='todo'));
+const actualGraph={nodes:[{id:'wait',semantic_key:'awaiting_payment',current:true,evidence_refs:[{kind:'message',id:1}]},{id:'paid',semantic_key:'settlement',state:'complete',evidence_refs:[{kind:'payment',id:2}]},{id:'ship',semantic_key:'fulfillment'},{id:'case',semantic_key:'journey_case',presentation_event:{anchor_ids:['paid'],edge_ids:['out']}}],
+edges:[{id:'inside',from_node_id:'wait',to_node_id:'paid',evidence_refs:[{id:2}]},{id:'out',from_node_id:'paid',to_node_id:'ship',evidence_refs:[{id:3}]}],display_focus:{node_id:'paid'}};
+const combined=journey.mergePayment(actualGraph);
+assert.equal(combined.edges.find(e=>e.id==='out').from_node_id,'wait');
+assert.equal(combined.display_focus.node_id,'wait');
+assert.deepEqual(combined.nodes.find(n=>n.id==='case').presentation_event.anchor_ids,['wait']);
+assert.equal(combined.nodes[0].composite_edges[0].id,'inside');
+assert.equal(combined.nodes[0].payment_progress.items[1].state,'done');
+const geometry=window.TwcJourneyGeometry;
+const occupied=[{left:72,right:128,top:72,bottom:128}];
+const annotation=geometry.annotationPoint({anchor:{x:100,y:100},occupied,width:320,height:180});
+assert.ok(annotation);
+assert.ok(annotation.x-17>=128||annotation.x+17<=72||annotation.y-13>=128||annotation.y+13<=72);
+assert.equal(geometry.annotationPoint({anchor:{x:10,y:10},occupied:[{left:0,right:100,top:0,bottom:100}],width:40,height:40}),null);
+
+
+"""
+        result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_replay_and_indicators_never_promote_possible_steps_to_facts(self):
         source = (Path(__file__).parent / "static/management/ig_journey.js").read_text()
         source = source.replace("window.TwcJourney={create:options=>new Journey(options)};",
@@ -104,30 +177,32 @@ const catalogue={definitions:[
   {id:'retry',source_key:'objection_case',target_key:'awaiting_payment',outcome:'new_attempt'}
 ]};
 const fork=journey.possibleCatalogue(catalogue);
-assert.equal(fork.definitions.length,3);
-assert.deepEqual(fork.transitions.map(e=>e.id),['raise','retry']);
-assert.equal(fork.transitions[0].condition_label,'Якщо виникне заперечення');
-assert.equal(fork.transitions[1].condition_label,'Нова спроба оплати');
-assert.equal(catalogue.transitions[0].condition_label,undefined); // do not mutate snapshot
+
+assert.equal(fork.definitions.length,2);
+assert.equal(fork.transitions.length,1);
+assert.equal(fork.transitions[0].via_objection,true);
+assert.deepEqual(fork.transitions[0].source_transition_ids,['raise','retry']);
+assert.equal(fork.transitions[0].source_key,'quoted_offer');
+assert.equal(fork.transitions[0].target_key,'awaiting_payment');
+assert.equal(catalogue.definitions.length,3); // no mutation
 const quote={id:'trace:quote',semantic_key:'quoted_offer',label:'Пропозиція',presentation_kind:'interpretation',current:true};
 const sourceGraph={nodes:[quote],edges:[],trace_node_ids:[quote.id],transcript_reconstruction:{scope:'client'}};
 const snapshot={catalogue};
 let graph=journey.presentEvents(journey.presentGraph(sourceGraph,snapshot));
-assert.ok(graph.nodes.some(n=>n.id==='possible:objection_case'&&n.presentation_kind==='possible'));
-assert.equal(graph.edges.length,0); // optional node must not invent a client transition
+assert.ok(!graph.nodes.some(n=>n.id==='possible:objection_case'));
+assert.equal(graph.edges.length,0);
 assert.equal(sourceGraph.nodes.length,1);
 journey.modal={};journey.showPossible=true;journey.possibleFamily='all';
 graph=journey.presentEvents(journey.presentGraph(sourceGraph,snapshot));
-assert.ok(graph.nodes.some(n=>n.id==='possible:objection_case'));
-assert.equal(graph.edges.length,2);
+assert.ok(!graph.nodes.some(n=>n.semantic_key==='objection_case'));
+assert.equal(graph.edges.length,1);
 assert.ok(graph.edges.every(e=>e.relation==='route'&&e.evidence_refs.length===0));
-assert.equal(graph.edges.find(e=>e.id==='raise').condition_label,'Якщо виникне заперечення');
-assert.ok(!graph.edges.some(e=>e.id.startsWith('possible-objection:')));
+assert.equal(graph.edges[0].via_objection,true);
 for(const family of ['catalog','custom']){
   journey.possibleFamily=family;
   const filtered=journey.presentEvents(journey.presentGraph(sourceGraph,snapshot));
-  assert.ok(filtered.nodes.some(n=>n.id==='possible:objection_case'),family+' must keep the cross-cutting objection fork');
-  assert.ok(filtered.edges.some(e=>e.id==='raise'));
+  assert.ok(!filtered.nodes.some(n=>n.semantic_key==='objection_case'));
+  assert.ok(filtered.edges.some(e=>e.via_objection));
 }
 
 const evidence={id:'edge',from_node_id:quote.id,to_node_id:'detail',relation:'transcript_interpretation',authority:'none',provenance:'transcript_reconstruction',evidence_refs:[{id:4}],reason_code:'objection_raised',presentation_schema_version:'journey-presentation.v1'};

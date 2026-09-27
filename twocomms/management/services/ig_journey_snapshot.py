@@ -1224,6 +1224,8 @@ def build_journey_snapshot(client, *, view_episode_id=None):
     from management.services.ig_journey_trace_projection import append_journey_trace
     graph = append_journey_trace(graph, client_id=client_id,
         episode_id=episode["id"] if episode else None, is_history=is_history)
+    from management.services.ig_journey_website_orders import append_website_order_reports
+    graph = append_website_order_reports(graph, client_id=client_id, is_history=is_history)
     semantic_edges = [edge for edge in graph.get("edges", [])
                       if edge.get("relation") in {
                           "conversation_route", "conversation_focus", "conversation_correction",

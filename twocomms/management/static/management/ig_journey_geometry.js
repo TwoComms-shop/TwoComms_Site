@@ -52,7 +52,7 @@
   // Full-map presentation bands. Neighboring cells are never implicit edges:
   // collaboration's two rows fan out/in only through registry transitions.
   const fullCells={
-    client_order_context:[8,3],client_order_shipping:[9,3],client_order_delivery:[10,3],client_order_contact:[9,2],
+    website_order_report:[2,3],channel_contact_report:[5,3],client_order_context:[8,3],client_order_shipping:[9,3],client_order_delivery:[10,3],client_order_contact:[9,2],
     inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[1,4],
     collaboration:[1,1],collaboration_designer:[2,0],collaboration_partnership:[3,0],
     collaboration_dropship:[4,0],collaboration_wholesale_store:[2,1],
@@ -97,7 +97,7 @@
     const byId=new Map(nodes.map(n=>[n.id,n]));
     const main=mainIds.filter(id=>byId.has(id));
     const cap=Math.max(3,Math.min(7,Math.floor(width/80)));
-    const factual=edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle'].includes(e.relation)&&(e.evidence_refs||[]).length);
+    const factual=edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context'].includes(e.relation)&&(e.evidence_refs||[]).length);
     const neighbors=id=>{
       const incident=factual.filter(e=>e.from_node_id===id||e.to_node_id===id);
       // Trace indices are transcript order, not business-state authority. Keep
@@ -149,7 +149,7 @@
       occupied.add(col);slots.set(id,{col,row:1});
     }
     const visible=new Set(slots.keys());
-    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
+    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
     const result=edges.filter(e=>visible.has(e.from_node_id)&&visible.has(e.to_node_id)&&(!e.structural_path||(!returns.has(e.outcome)&&!factualPairs.has(e.from_node_id+'\0'+e.to_node_id))));
     // Only canonical directed paths may bridge omitted steps. No chronology or
     // coordinate adjacency is ever promoted into an observed edge.
@@ -317,8 +317,10 @@
         if(one&&two&&!blocked(left,right,boxes))path=tidy([...one,right,...two]);
         else if(full)path=findPath(start,end,boxes,width,height);
       }else if(a.col===b.col){
-        const down=b.y>a.y;
-        start={x:a.x,y:a.y+(down?(full?55:41):-25)};end={x:b.x,y:b.y+(down?-25:(full?55:41))};
+        // Connect the cores via the side rail, not the space below a label.
+        // This remains visibly attached when a compact context wraps to row 2.
+        const side=a.x+halfLabel+18<width?1:-1;
+        start={x:a.x+side*25,y:a.y};end={x:b.x+side*25,y:b.y};
         path=findPath(start,end,boxes,width,height);
       }else{
         start={x:a.x+25,y:a.y};end={x:b.x-25,y:b.y};
@@ -344,9 +346,52 @@
           conditionPosition={x,y};labelBoxes.push(box);break;
         }
       }
-      result.set(edge.id,{d:pathData(path),markerX:marker.x,markerY:marker.y,conditionPosition});
+      result.set(edge.id,{points:path,d:pathData(path),markerX:marker.x,markerY:marker.y,conditionPosition});
     }
     return result;
   }
-  window.TwcJourneyGeometry=Object.freeze({visualFor,layout,routeEdges,overview});
+
+  // Keep the established v5 branching arrangement; add breathing room and
+  // subtle semantic regions without replacing the complete connected graph.
+  const regions=[
+    ['Співпраця',['collaboration','collaboration_designer','collaboration_partnership','collaboration_dropship','collaboration_wholesale_store','collaboration_creator','collaboration_other','business_decision']],
+    ['Питання та робота',['information_question','information_resolved','employment','employment_response']],
+    ['Від вибору до покупки',['inbound','catalog_discovery','configured_line','quoted_offer','awaiting_payment','settlement','fulfillment','repeat_interest','new_purchase_interest']],
+    ['Власний принт і DTF',['custom_print','dtf_only','custom_brief','mockup_current_acceptance']],
+    ['Наявність та очікування',['photo_reference','availability_question','stock_wait','restock_consent']],
+    ['Приз',['prize_candidate','prize_decision']],
+    ['Після покупки',['channel_consent','channel_grant_checked','post_purchase_contact_offer','ugc_assessment','reward_entitlement','reward_delivery','reward_use']],
+    ['Сервісне звернення',['post_sale_request']],
+    ['Контекст клієнта · сайт та інші канали',['website_order_report','channel_contact_report','client_order_context']]
+  ];
+  function atlas({nodes,edges=[],width}){
+    const base=layout({nodes,edges,width:0,full:true}),positions=new Map();
+    for(const [id,p]of base.positions)positions.set(id,{...p,x:p.x*1.24,y:p.y*1.48+24,cardLeft:p.x*1.24-50,cardWidth:100});
+    const bands=[];
+    for(const [label,keys]of regions){
+      const members=nodes.filter(n=>keys.includes(n.structural_key||n.semantic_key)),ids=new Set(members.map(n=>n.id));
+      const points=members.map(n=>positions.get(n.id));if(!points.length)continue;
+      const x=Math.min(...points.map(p=>p.x))-62,y=Math.min(...points.map(p=>p.y))-55;
+      const right=Math.max(...points.map(p=>p.x))+62,bottom=Math.max(...points.map(p=>p.y))+65;
+      // Distinct scopes can spill into a neighbour's lane. Never shade an
+      // unrelated node as part of a business region.
+      if(nodes.some(n=>!ids.has(n.id)&&positions.get(n.id).x>x&&positions.get(n.id).x<right&&positions.get(n.id).y>y&&positions.get(n.id).y<bottom))continue;
+      bands.push({label,count:members.length,x,y,width:right-x,height:bottom-y});
+    }
+    return {positions,bands,width:Math.max(width,base.width*1.24),height:base.height*1.48+50};
+  }
+
+  function annotationPoint({anchor,route,occupied=[],width,height}){
+    const clear=p=>p.x>=18&&p.x<=width-18&&p.y>=14&&p.y<=height-14&&!occupied.some(r=>p.x-17<r.right&&p.x+17>r.left&&p.y-13<r.bottom&&p.y+13>r.top);
+    const candidates=[];
+    if(route?.points)for(let i=1;i<route.points.length;i++){
+      const a=route.points[i-1],b=route.points[i];
+      if(Math.hypot(b.x-a.x,b.y-a.y)<38)continue;
+      for(const t of [.5,.3,.7])candidates.push({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,onRoute:true});
+    }
+    candidates.sort((a,b)=>Math.hypot(a.x-anchor.x,a.y-anchor.y)-Math.hypot(b.x-anchor.x,b.y-anchor.y));
+    for(const [dx,dy]of [[43,-15],[-43,-15],[43,-35],[-43,-35],[0,-45],[58,0],[-58,0]])candidates.push({x:anchor.x+dx,y:anchor.y+dy,onRoute:false});
+    return candidates.find(clear)||null;
+  }
+  window.TwcJourneyGeometry=Object.freeze({visualFor,layout,routeEdges,overview,atlas,annotationPoint});
 })();
