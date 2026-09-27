@@ -71,6 +71,18 @@ assert.equal(hasChannelHandoff({channel_handoff:{channel:'telegram',evidence_ref
 assert.ok(POST_SALE_TAIL.includes('channel_grant_checked'));
 assert.ok(POST_SALE_TAIL.includes('reward_delivery'));
 assert.ok(POST_SALE_TAIL.includes('new_purchase_interest'));
+function delivery(status,tracking,delivered=false){
+ const parent={id:'client-order:1',semantic_key:'client_order_context',facts:[{id:'1:status',value:status},...(tracking?[{id:'1:tracking',value:'123'}]:[]),...(delivered?[{id:'1:delivery',state:'complete'}]:[])]};
+ const graph={nodes:[parent,{id:'client-order:1:shipping',semantic_key:'client_order_shipping',state:status==='Відправлено'?'complete':'open'}],edges:[]};
+ return replay.mergeDelivery(graph);
+}
+assert.equal(delivery('Готується',true).nodes[0].delivery_progress.step,1);
+assert.equal(delivery('Завершено',true).nodes[0].delivery_progress.step,1);
+assert.equal(delivery('Відправлено',true).nodes[0].delivery_progress.step,2);
+assert.equal(delivery('Завершено',true,true).nodes[0].delivery_progress.step,4);
+assert.equal(delivery('Скасовано',true).nodes[0].delivery_progress.step,0);
+assert.equal(delivery('Відправлено',true).nodes.length,1);
+
 """
         result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -140,14 +152,13 @@ journey.graph=graph;journey.objections=element('section');journey.objectionButto
 journey.renderObjections();
 function text(n){return n.textContent+n.children.map(text).join(' ')}
 assert.equal(journey.objections.hidden,false);
-assert.match(text(journey.objections),/Обговорено: 1/);
-assert.match(text(journey.objections),/Не вирішено: 1/);
-assert.match(text(journey.objections),/Згода клієнта та вирішення не підтверджені/);
+assert.match(text(journey.objections),/1 обговорено/);
+assert.match(text(journey.objections),/1 не вирішено/);
+assert.match(text(journey.objections),/згоду клієнта не підтверджено/);
 assert.equal(journey.objectionButtons.size,2);
 journey.graph={nodes:[{id:'possible:objection_case',semantic_key:'objection_case',label:'Заперечення',presentation_kind:'possible'}]};
 journey.renderObjections();
-assert.equal(journey.objections.hidden,false);
-assert.match(text(journey.objections),/Можливе · подій немає/);
+assert.equal(journey.objections.hidden,true);
 journey.graph={nodes:[quote]};journey.renderObjections();
 assert.equal(journey.objections.hidden,true);
 """

@@ -260,3 +260,43 @@
 .twc-journey-slots{position:absolute;top:60px;left:0;width:100%;margin:0;pointer-events:auto;}
 .twc-journey-dialog .twc-journey-slots{top:72px;}
 .twc-journey-step[data-waiting=true] .twc-journey-core:after{left:-3px;top:-3px;width:auto;height:auto;background:none;box-shadow:none;}
+
+/* v6: composite stages, compact objections and explicit replay. */
+.twc-journey-segments{position:absolute;inset:-9px;width:44px;height:44px;overflow:visible;pointer-events:none;}
+.twc-journey-segment{fill:none;stroke:#475569;stroke-width:3;stroke-linecap:round;}
+.twc-journey-segment[data-state=done]{stroke:#34d399;animation:journey-segment-in .5s both;}
+.twc-journey-segment[data-state=need],.twc-journey-segment[data-state=next]{stroke:#fbbf24;}
+.twc-journey-segment[data-state=cancelled]{stroke:#fb7185;}
+.twc-journey-segment[data-state=na]{stroke:#334155;}
+.twc-journey-segment-count{position:absolute;right:-8px;top:24px;background:#111827;border:1px solid #475569;border-radius:8px;padding:1px 4px;font-size:9px;color:#e2e8f0;}
+.twc-journey-now{position:absolute;top:-22px;left:50%;transform:translateX(-50%);font-size:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#93c5fd;}
+.twc-journey-step[data-current=true] .twc-journey-core:before{content:'';position:absolute;inset:-7px;border:1px solid #60a5fa;border-radius:50%;animation:journey-beacon 2.4s ease-out infinite;pointer-events:none;}
+.twc-journey-channel{position:absolute;right:-14px;top:-9px;font-size:8px;background:#402968;color:#e9d5ff;border:1px solid #a78bfa;border-radius:5px;padding:1px 3px;}
+.twc-journey-step[data-channel=true] .twc-journey-step-label:after{content:none;}
+.twc-journey-trail{fill:none;stroke:#e0f2fe;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;opacity:.55;pointer-events:none;}
+.twc-journey-walker{width:10px;height:10px;box-shadow:0 0 12px 3px #dbeafeaa;}
+.twc-journey-objection-band{fill:none;stroke:#fbbf24;stroke-width:7;opacity:.32;pointer-events:stroke;cursor:pointer;}
+.twc-journey-objection-band[data-tone=danger]{stroke:#fb7185;}
+.twc-journey-objection-band[data-tone=success]{stroke:#34d399;}
+.twc-journey-objection-band[data-tone=recorded]{stroke:#60a5fa;}
+.twc-journey-band-chip{position:absolute;transform:translate(-50%,-50%);border:1px solid #c39128;border-radius:9px;background:#222b39;color:#fbbf24;min-width:24px;min-height:24px;padding:2px 5px;font-size:10px;cursor:pointer;pointer-events:auto;}
+.twc-journey-band-chip[data-tone=recorded]{color:#93c5fd;border-color:#6084ad;}
+.twc-journey-band-chip[data-tone=success]{color:#34d399;border-color:#268769;}
+.twc-journey-band-chip[data-tone=danger]{color:#fb7185;border-color:#b24659;}
+.twc-journey-objections{padding:8px 10px;}
+.twc-journey-objections-head,.twc-journey-objection-list{display:flex;flex-wrap:wrap;align-items:center;gap:6px;}
+.twc-journey-objection-card{display:flex;flex-wrap:wrap;gap:5px;align-items:center;padding:5px 8px;min-height:30px;width:auto;}
+.twc-journey-objections-note{margin:5px 0 0;font-size:10px;}
+.twc-journey-delivery-track{list-style:none;padding:0;border-left:2px solid #475569;margin-left:6px;}
+.twc-journey-delivery-track li{padding:6px 12px;color:#94a3b8;}
+.twc-journey-delivery-track li[data-state=done]{color:#34d399;}
+.twc-journey-delivery-track li[data-state=next]{color:#fbbf24;}
+.twc-journey-delivery-track li[data-state=cancelled]{color:#fb7185;}
+.twc-journey-delivery-contact{font-size:11px;color:#c4b5fd;}
+.twc-journey-flash .twc-journey-core,.twc-journey-arrive .twc-journey-core{animation:journey-stage-flash .8s ease-out;}
+@keyframes journey-beacon{0%{transform:scale(.9);opacity:.65}100%{transform:scale(1.6);opacity:0}}
+@keyframes journey-stage-flash{0%{box-shadow:0 0 0 7px #93c5fd99}100%{box-shadow:0 0 0 0 #93c5fd00}}
+@keyframes journey-segment-in{from{opacity:.2}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.twc-journey-segment,.twc-journey-step[data-current=true] .twc-journey-core:before,.twc-journey-flash .twc-journey-core,.twc-journey-arrive .twc-journey-core{animation:none;}}
+.twc-journey-step[data-segments=requirements] .twc-journey-segment-count{display:none;}
+.twc-journey-step[data-segments=delivery] .twc-journey-segment-count{right:auto;left:calc(50% + 12px);}

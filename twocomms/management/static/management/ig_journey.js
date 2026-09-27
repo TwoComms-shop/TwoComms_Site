@@ -156,40 +156,34 @@
       this.select.value=snapshot.viewed_episode_id?String(snapshot.viewed_episode_id):'';this.select.hidden=this.select.options.length<2;
       this.graph.nodes.forEach(data=>{
         let button=this.buttons.get(data.id);
-        if(!button){button=el('button','twc-journey-step');button.type='button';button.dataset.nodeId=data.id;const core=el('span','twc-journey-core');core.append(el('span','twc-journey-icon'),el('span','twc-journey-status'),el('span','twc-journey-quarters'));button.append(core,el('span','twc-journey-step-label'),el('span','twc-journey-count'));button.addEventListener('click',()=>this.toggleNode(data.id));this.buttons.set(data.id,button);const cell=el('div','twc-journey-cell');cell.append(button);this.cells.set(data.id,cell);this.grid.append(cell);}
+        if(!button){button=el('button','twc-journey-step');button.type='button';button.dataset.nodeId=data.id;const core=el('span','twc-journey-core');core.append(el('span','twc-journey-icon'),el('span','twc-journey-status'));button.append(core,el('span','twc-journey-step-label'),el('span','twc-journey-count'));button.addEventListener('click',()=>this.toggleNode(data.id));this.buttons.set(data.id,button);const cell=el('div','twc-journey-cell');cell.append(button);this.cells.set(data.id,cell);this.grid.append(cell);}
         const key=iconFor(data);if(button.dataset.icon!==key){button.dataset.icon=key;button.querySelector('.twc-journey-icon').replaceChildren(icon(key));}
         const state=data.presentation_kind==='possible'?'possible':STATES.has(data.state)?data.state:'open';button.dataset.state=state;button.dataset.tone=eventNode(data)?data.presentation_event.tone:toneFor(data);button.dataset.current=String(data.id===this.currentId);
         // F3-FUN-01: позначаємо заперечення, для якого немає жодного підтвердженого ребра,
         // щоб CSS показав його як «можливе» (пунктирний контур), а не як реальний бар'єр.
         if(['objection_case','journey_case'].includes(data.semantic_key)){button.dataset.objection=data.presentation_kind==='possible'?'possible':'confirmed';}else delete button.dataset.objection;
-        // F3-FUN-07 (план 3.0, P2-1.7): доставка показується одним елементом із «четвертями»
-        // (оформлено → відправлено → доставлено → отримано), а не трьома окремими кружками.
-        // Джерело — реальні факти замовлення; якщо їх немає, шкала не малюється (не вигадуємо).
-        const fulfill=data.fulfillment_progress;
-        if(data.semantic_key==='fulfillment'&&fulfill&&Number.isInteger(fulfill.step)&&fulfill.step>=0&&fulfill.step<=4&&(fulfill.evidence_refs||[]).length){
-          const ring=button.querySelector('.twc-journey-quarters');
-          if(ring){ring.hidden=false;ring.dataset.step=String(Math.max(0,Math.min(4,fulfill.step)));ring.setAttribute('aria-label',fulfill.label||'Прогрес доставки');ring.title=fulfill.label||'';}
-        }else{const ring=button.querySelector('.twc-journey-quarters');if(ring)ring.hidden=true;}
+        // v6 · Сегментне кільце — одна мова для складених етапів.
+        // Доставка: 4 сегменти (оформлено → відправлено → у дорозі → отримано), заповнюються по кроку.
+        // Підбір: по сегменту на кожну обов'язкову умову (товар, посадка, колір, розмір, кількість).
+        // Заповнено = зелений; треба заповнити = світлий янтар; не застосовується = тьмяний.
+        this.renderSegments(button,data);
         // F3-FUN-11: вузол, на якому зараз чогось чекають (клієнт/менеджер/оплата),
         // отримує м'яку пульсацію — видно, де саме «стоїть» розмова.
         const waiting=hasActiveWait(data,this.serverTime);
         button.dataset.waiting=String(waiting);
-        // F3-FUN-12: розмова, перенесена в Telegram/WhatsApp, позначається стрілкою біля назви.
+        // F3-FUN-12: розмова, перенесена в Telegram/WhatsApp, отримує бейдж каналу.
         const channelled=hasChannelHandoff(data);
         button.dataset.channel=String(channelled);
-        // F3-FUN-10: сегменти обов'язкових блоків підбору — видно, чого бракує до оплати.
-        const req=data.requirements;
-        let slots=button.parentElement?.querySelector('.twc-journey-slots');
-        if(req&&Array.isArray(req.items)&&req.items.length){
-          if(!slots){slots=el('div','twc-journey-slots');slots.setAttribute('role','group');slots.setAttribute('aria-label','Обов’язкові умови підбору');button.insertAdjacentElement('afterend',slots);}
-          const list=req.items.filter(i=>i.required===true).slice(0,8);
-          const signature=JSON.stringify(list.map(i=>[i.label,i.status]));
-          if(slots.dataset.signature!==signature){
-            slots.dataset.signature=signature;slots.replaceChildren();
-            list.forEach(i=>{const dot=el('span','twc-journey-slot');dot.dataset.filled=String(i.status==='complete');dot.dataset.open=String(i.status!=='complete'&&i.status!=='not_applicable');dot.title=i.label+(i.status==='complete'?' · заповнено':i.status==='not_applicable'?' · не застосовується':' · бракує');dot.setAttribute('aria-label',dot.title);slots.append(dot);});
-          }
-        }else if(slots){slots.remove();}button.querySelector('.twc-journey-step-label').textContent=data.short_label||window.TwcJourneyGeometry?.visualFor(data)?.short_label||data.label;
+        let badge=button.querySelector('.twc-journey-channel');
+        if(channelled){if(!badge){badge=el('span','twc-journey-channel');button.querySelector('.twc-journey-core').append(badge);}badge.textContent=data.channel_handoff.channel==='whatsapp'?'WA':'TG';badge.title='Розмову продовжено в '+(data.channel_handoff.channel==='whatsapp'?'WhatsApp':'Telegram');}
+        else badge?.remove();
+        button.dataset.composite=String(Boolean(data.delivery_progress||(data.requirements&&Array.isArray(data.requirements.items)&&data.requirements.items.some(i=>i.required===true))));
+        button.querySelector('.twc-journey-step-label').textContent=data.short_label||window.TwcJourneyGeometry?.visualFor(data)?.short_label||data.label;
         button.dataset.event=String(eventNode(data));this.cells.get(data.id).dataset.event=String(eventNode(data));
+        // v6 · Маяк поточного етапу: мітка «ЗАРАЗ» над вузлом + хвиля-кільце (CSS). Лише для
+        // справжнього фокуса — не для можливого етапу, щоб маяк не брехав про місце клієнта.
+        let now=button.querySelector('.twc-journey-now');
+        if(data.id===this.currentId&&data.presentation_kind!=='possible'&&!eventNode(data)){if(!now){now=el('span','twc-journey-now','зараз');button.prepend(now);}}else now?.remove();
         button.dataset.recorded=String(Boolean(recorded(data)));button.dataset.interpreted=String(data.presentation_kind==='interpretation');
         const statusKey=eventNode(data)?null:planned(data)?'brief':data.tone==='danger'?'cross':state==='complete'?'check':state==='invalidated'?'return':data.tone==='manager'?'person':data.waiting?.evidence_refs?.length?'clock':null;const status=button.querySelector('.twc-journey-status');status.hidden=!statusKey;if(statusKey)status.replaceChildren(icon(statusKey));
         const progress=data.requirements;const valid=progress&&Number.isInteger(progress.completed)&&Number.isInteger(progress.total)&&progress.total>0&&progress.completed>=0&&progress.completed<=progress.total;
@@ -218,23 +212,67 @@
       return {...catalogue,transitions:catalogue.transitions.map(e=>({...e,condition_label:e.target_key==='objection_case'?'Якщо виникне заперечення':e.condition_label||CONDITIONS[e.outcome]||''}))};
     }
     renderObjections(){
+      // v6 · Секція заперечень — лише коли є СПРАВЖНІ заперечення. Порожня «можливість» більше не
+      // займає пів екрана: вона не є подією клієнта, а заперечення тепер видно на самій лінії.
+      // Картки стали компактними чіпами в один рядок — деталі відкриваються кліком.
       const cases=this.graph.nodes.filter(n=>n.semantic_key==='journey_case');
-      const possible=this.graph.nodes.find(n=>n.semantic_key==='objection_case'&&n.presentation_kind==='possible');
       const legacy=cases.length?[]:this.graph.nodes.filter(n=>n.semantic_key==='objection_case'&&n.presentation_kind!=='possible'&&n.presentation_event?.mode!=='detail');
-      const items=[...cases,...legacy];this.objections.hidden=!items.length&&!possible;this.objections.replaceChildren();this.objectionButtons.clear();
+      const items=[...cases,...legacy];this.objections.hidden=!items.length;this.objections.replaceChildren();this.objectionButtons.clear();
       if(this.objections.hidden)return;
-      const head=el('div','twc-journey-objections-head');head.append(el('strong','',items.length?'Заперечення та перешкоди · '+items.length:'Можливе заперечення'));
-      if(cases.length){const counts={};for(const item of cases){const key=caseOutcome(item).key;counts[key]=(counts[key]||0)+1;}head.append(el('span','',Object.entries({open:'Не вирішено',addressed:'Обговорено',resolved:'Вирішено',refused:'Відмова',unknown:'Результат невідомий'}).filter(([key])=>counts[key]).map(([key,label])=>label+': '+counts[key]).join(' · ')));}
-      this.objections.append(head);
-      if(!items.length)this.objections.append(el('p','twc-journey-objections-note','Подій заперечень на цій карті немає. Пунктирний ромб показує можливість, а не перешкоду клієнта.'));
+      const head=el('div','twc-journey-objections-head');head.append(el('strong','','Заперечення · '+items.length));
+      if(cases.length){const counts={};for(const item of cases){const key=caseOutcome(item).key;counts[key]=(counts[key]||0)+1;}head.append(el('span','',Object.entries({open:'не вирішено',addressed:'обговорено',resolved:'вирішено',refused:'відмова',unknown:'невідомо'}).filter(([key])=>counts[key]).map(([key,label])=>counts[key]+' '+label).join(' · ')));}
       const list=el('div','twc-journey-objection-list');
-      for(const item of items.length?items:[possible]){
-        const outcome=caseOutcome(item),card=el('button','twc-journey-objection-card');card.type='button';card.dataset.tone=outcome?.tone||'neutral';card.dataset.possible=String(item.presentation_kind==='possible');
-        card.append(el('span','twc-journey-objection-diamond','◇'),el('span','twc-journey-objection-name',item.label),el('span','twc-journey-objection-outcome',outcome?.label||(item.presentation_kind==='possible'?'Можливе · подій немає':'Є збережені події')));
+      for(const item of items){
+        const outcome=caseOutcome(item),card=el('button','twc-journey-objection-card');card.type='button';card.dataset.tone=outcome?.tone||'warning';
+        card.append(el('span','twc-journey-objection-diamond','◆'),el('span','twc-journey-objection-name',item.label),el('span','twc-journey-objection-outcome',outcome?.label||'Є збережені події'));
         card.setAttribute('aria-expanded',String(this.selected===item.id));card.addEventListener('click',()=>this.toggleNode(item.id));this.objectionButtons.set(item.id,card);list.append(card);
       }
-      this.objections.append(list);
-      if(cases.some(n=>n.status==='handled'))this.objections.append(el('p','twc-journey-objections-note','За перепискою: є відповідь на заперечення. Згода клієнта та вирішення не підтверджені.'));
+      head.append(list);this.objections.append(head);
+      if(cases.some(n=>n.status==='handled'))this.objections.append(el('p','twc-journey-objections-note','Обговорено ≠ вирішено: згоду клієнта не підтверджено.'));
+    }
+    // v6 · Малює сегментне кільце навколо ядра вузла. SVG-дуги масштабуються без втрати чіткості
+    // і однаково читаються в компактній карті й у повній. Сегменти розділені зазорами, тож видно
+    // КОЖЕН крок окремо — власник просив «в одному елементі, але щоб кожен був зрозумілий».
+    renderSegments(button,data){
+      const core=button.querySelector('.twc-journey-core');let ring=core.querySelector('.twc-journey-segments');
+      let parts=null,title='',centre='';
+      if(data.delivery_progress){
+        const p=data.delivery_progress;
+        parts=p.stages.map((label,i)=>({label,state:p.cancelled?'cancelled':i<p.step?'done':i===p.step?'next':'todo'}));
+        title=p.cancelled?'Замовлення скасовано':'Доставка · '+p.label+' ('+p.step+'/4)';
+        centre=p.cancelled?'×':p.step+'/4';
+      }else{
+        const req=data.requirements;
+        const list=req&&Array.isArray(req.items)?req.items.filter(i=>i.required===true).slice(0,8):[];
+        if(list.length){
+          parts=list.map(i=>({label:i.label,state:i.status==='complete'?'done':i.status==='not_applicable'?'na':'need'}));
+          const done=parts.filter(p=>p.state==='done').length,need=parts.filter(p=>p.state==='need').length;
+          title='Обов’язкові умови: '+done+' з '+parts.length+(need?' · бракує: '+parts.filter(p=>p.state==='need').map(p=>p.label).join(', '):' · ці умови заповнено');
+          centre=done+'/'+parts.length;
+        }
+      }
+      if(!parts){ring?.remove();button.querySelector('.twc-journey-segment-count')?.remove();delete button.dataset.segments;delete button.dataset.segmentDone;return;}
+      const signature=JSON.stringify(parts);
+      if(!ring){ring=svg('svg',{viewBox:'0 0 44 44','aria-hidden':'true',focusable:'false'});ring.classList.add('twc-journey-segments');core.append(ring);}
+      if(ring.dataset.signature!==signature){
+        const first=!ring.dataset.signature;ring.dataset.signature=signature;ring.replaceChildren();
+        const n=parts.length,gap=n>1?10:0,span=n===1?359.99:(360-gap*n)/n,r=20,cx=22,cy=22;
+        const point=deg=>{const a=(deg-90)*Math.PI/180;return (cx+r*Math.cos(a)).toFixed(2)+' '+(cy+r*Math.sin(a)).toFixed(2);};
+        parts.forEach((part,i)=>{
+          const start=i*(span+gap)+gap/2,end=start+span;
+          const arc=svg('path',{d:'M'+point(start)+' A'+r+' '+r+' 0 '+(span>180?1:0)+' 1 '+point(end)});
+          arc.classList.add('twc-journey-segment');arc.dataset.state=part.state;
+          // Послідовне «запалювання» при першому показі — посилка ніби рухається по кроках.
+          if(first&&part.state==='done')arc.style.animationDelay=(i*120)+'ms';
+          const t=svg('title');t.textContent=part.label+' · '+({done:'готово',next:'наступний крок',todo:'ще попереду',need:'треба заповнити',na:'не застосовується',cancelled:'скасовано'})[part.state];arc.append(t);
+          ring.append(arc);
+        });
+      }
+      let count=button.querySelector('.twc-journey-segment-count');
+      if(!count){count=el('span','twc-journey-segment-count');button.append(count);}
+      count.textContent=centre;count.title=title;
+      button.dataset.segments=data.delivery_progress?'delivery':'requirements';
+      button.dataset.segmentDone=String(parts.every(p=>p.state==='done'||p.state==='na'));
     }
     presentEvents(graph){
       // F3-FUN-01 (план 3.0, P2-1): раніше вузли objection_case без доказів ховалися,
@@ -282,7 +320,42 @@
           presentation_event:{edge_ids:[...new Set([...(item.source_edge_ids||[]),...(item.attempt_edge_ids||[])])],anchor_ids:[item.source_node_id],mode:'attached',count:1,tone:outcome.key==='addressed'?'recorded':outcome.key==='resolved'?'success':item.materiality==='technical_failure'||outcome.key==='refused'?'danger':'warning'}});
       }
       const processIds=new Set(nodes.filter(n=>!eventNode(n)).map(n=>n.id));
-      return {...graph,nodes,edges,inline_main_ids:graph.inline_main_ids?.filter(id=>processIds.has(id)),inline_alternative_ids:graph.inline_alternative_ids?.filter(id=>processIds.has(id))};
+      return Journey.prototype.mergeDelivery.call(this,{...graph,nodes,edges,inline_main_ids:graph.inline_main_ids?.filter(id=>processIds.has(id)),inline_alternative_ids:graph.inline_alternative_ids?.filter(id=>processIds.has(id))});
+    }
+    // v6 · Доставка — ОДИН вузол замість трьох («Замовлення · отримано», «Відправлено», «Отримано»).
+    // Сервер (ig_journey_client_orders._context_path) віддає 3 окремі контекстні вузли, які раніше
+    // малювались окремим рядом без зв'язку зі шляхом. Тут вони згортаються в батьківський вузол
+    // замовлення: діти ховаються, їхні факти лишаються в панелі, а крок обчислюється з реальних
+    // фактів замовлення (статус, ТТН, підтвердження перевізника). Нічого не вигадується.
+    mergeDelivery(graph){
+      const parents=graph.nodes.filter(n=>n.semantic_key==='client_order_context');
+      if(!parents.length)return graph;
+      const hidden=new Set();
+      for(const parent of parents){
+        const orderId=parent.contextual_binding?.order_id??parent.id.split(':')[1];
+        const children=graph.nodes.filter(n=>['client_order_shipping','client_order_delivery','client_order_contact'].includes(n.semantic_key)&&String(n.contextual_binding?.order_id??n.id.split(':')[1])===String(orderId));
+        children.forEach(c=>hidden.add(c.id));
+        const fact=suffix=>(parent.facts||[]).find(f=>f.id?.endsWith(':'+suffix));
+        const status=String(fact('status')?.value||'');
+        const delivered=fact('delivery')?.state==='complete';
+        const tracking=Boolean(fact('tracking')?.value);
+        const cancelled=parent.state==='invalidated'||/Скасовано/.test(status);
+        // Крок 1 — оформлено (замовлення існує), 2 — відправлено (є ТТН або статус «Відправлено»),
+        // 3 — у дорозі / в перевізника (відправлено й ще не отримано), 4 — отримано перевізником.
+        const shipped=/^Відправлено$/.test(status)||children.some(c=>c.semantic_key==='client_order_shipping'&&c.state==='complete');
+        const step=cancelled?0:delivered?4:shipped?2:1;
+        const labels=['Скасовано','Оформлено','Відправлено','У дорозі','Отримано'];
+        parent.delivery_progress={step,cancelled,label:labels[step],stages:['Оформлено','Відправлено','У дорозі','Отримано']};
+        parent.short_label=cancelled?'Скасовано':step===4?'Отримано':step===2?'Відправлено':'Замовлення';
+        parent.label=(parent.label||'Замовлення')+' · '+labels[step].toLowerCase();
+        parent.delivery_facts=children.flatMap(c=>c.facts||[]);
+        const contact=children.find(c=>c.semantic_key==='client_order_contact');
+        if(contact)parent.contact_permission={status:contact.marketing_permission||'not_confirmed',note:contact.implementation_note||contact.summary||''};
+        if(children.some(c=>c.waiting))parent.waiting=children.find(c=>c.waiting).waiting;
+      }
+      const nodes=graph.nodes.filter(n=>!hidden.has(n.id));
+      const edges=graph.edges.filter(e=>!hidden.has(e.from_node_id)&&!hidden.has(e.to_node_id));
+      return {...graph,nodes,edges};
     }
     presentGraph(source,snapshot){
       snapshot={...snapshot,catalogue:this.possibleCatalogue(snapshot.catalogue)};
@@ -358,13 +431,20 @@
         if(width<560){const before=direct.find(e=>e.to_node_id===current),after=direct.find(e=>e.from_node_id===current);const ids=width<330?[current]:[before?.from_node_id,current,after?.to_node_id].filter(Boolean);nodes=nodes.filter(n=>ids.includes(n.id));}
         else{const cap=Math.max(3,Math.min(8,Math.floor(width/72)));const priorityNodes=nodes.filter(n=>n.waiting?.evidence_refs?.length||(n.semantic_key==='objection_case'&&n.state==='partial')).map(n=>n.id);const priorities=[current,...priorityNodes,...direct.flatMap(e=>[e.from_node_id,e.to_node_id]),...(this.graph.overview_node_ids||[])];const ids=[...new Set(priorities.filter(Boolean))].slice(0,cap);nodes=nodes.filter(n=>ids.includes(n.id));const lanes=[...new Set(nodes.map(n=>n.layout?.lane||0))].sort((a,b)=>a-b);if(lanes.length>3){const activeLane=nodes.find(n=>n.id===current)?.layout?.lane||0;const allowed=[activeLane,...lanes.filter(l=>l!==activeLane)].slice(0,3);nodes=nodes.filter(n=>allowed.includes(n.layout?.lane||0));}}
       }
-      // Website order facts occupy their own compact row, never the discussion sequence.
+      // v6 · Доставка стоїть у тому ж ряду, що й шлях, — у кінці, як завершення покупки, а не окремим
+      // «другим рядом». Зв'язок зі зверненням малюється лише як чесна ручна прив'язка (пунктир),
+      // бо сервер прямо каже: ця прив'язка не є переходом у розмові (episode_binding: absent).
       if(!this.modal&&contextNodes.length){
         const parent=contextNodes.find(n=>n.id===assignment?.to_node_id)||contextNodes.find(n=>n.semantic_key==='client_order_context');
-        const chain=parent?[parent,...contextNodes.filter(n=>n.contextual_binding?.order_id===parent.contextual_binding?.order_id&&['client_order_shipping','client_order_delivery'].includes(n.semantic_key))]:[];
-        if(!this.inlineSlots)this.inlineSlots=new Map(nodes.map((n,col)=>[n.id,{col,row:0}]));
-        nodes=nodes.filter(n=>this.inlineSlots.get(n.id)?.row===0);this.inlineSlots=new Map([...this.inlineSlots].filter(([id])=>nodes.some(n=>n.id===id)));
-        chain.slice(0,3).forEach((n,col)=>{nodes.push(n);this.inlineSlots.set(n.id,{col,row:1});});
+        if(parent){
+          if(!this.inlineSlots)this.inlineSlots=new Map(nodes.map((n,col)=>[n.id,{col,row:0}]));
+          nodes=nodes.filter(n=>this.inlineSlots.get(n.id)?.row===0);this.inlineSlots=new Map([...this.inlineSlots].filter(([id])=>nodes.some(n=>n.id===id)));
+          const cap=Math.max(3,Math.min(7,Math.floor(width/80)));
+          // Якщо ряд уже повний — стискаємо найменш важливі можливі етапи, щоб доставка влізла.
+          while(nodes.length>=cap){const drop=[...nodes].reverse().find(n=>n.presentation_kind==='possible'&&n.id!==this.currentId);if(!drop)break;nodes=nodes.filter(n=>n.id!==drop.id);this.inlineSlots.delete(drop.id);}
+          [...nodes].sort((a,b)=>this.inlineSlots.get(a.id).col-this.inlineSlots.get(b.id).col).forEach((n,col)=>this.inlineSlots.set(n.id,{col,row:0}));
+          nodes.push(parent);this.inlineSlots.set(parent.id,{col:nodes.length-1,row:0});
+        }
       }
       this.visibleIds=nodes.map(n=>n.id);
       this.eventVisibleIds=eventNodes.filter(n=>!n.presentation_event.anchor_ids.length||n.presentation_event.anchor_ids.some(id=>this.visibleIds.includes(id))).map(n=>n.id);
@@ -412,6 +492,7 @@
       if(reconstructed||(!edge&&node.transcript_interpretation&&!eventNode(node))){const note=el('div','twc-journey-trace-note');note.append(el('p','','За перепискою. Підтвердження оплати й дозволів перевіряються окремо.'));if(!edge)this.appendSources(note,node.transcript_interpretation.evidence_refs||[],64);note.append(el('p','','Частина текстової переписки; давніші повідомлення й медіа можуть бути відсутні.'));body.append(note);}
       if(!edge&&recorded(node)){const visits=node.recorded_visits;const heading=(visits.has_backfilled?'Є відновлені записи подій':'Є збережені події')+' · '+(visits.history_truncated?'≥':'')+visits.count;body.append(el('p','twc-journey-visit-note',heading));if(visits.last_at)body.append(el('p','twc-journey-fact-note','Остання подія: '+date(visits.last_at)));}
       if(!edge)this.appendRequirements(body,node);
+      if(!edge)this.appendDelivery(body,node);
       if(!edge&&this.modal){const options=this.edges.filter(e=>e.from_node_id===node.id&&e.relation==='route');if(options.length){const section=el('div','twc-journey-options');section.append(el('h5','','Можливі продовження'));options.forEach(e=>{const target=this.graph.nodes.find(n=>n.id===e.to_node_id),button=el('button','', (e.condition_label?e.condition_label+' → ':'→ ')+(target?.label||''));button.type='button';button.addEventListener('click',()=>this.selectEdge(e.id));section.append(button);});body.append(section);}}
       (data.facts||[]).filter(fact=>!branch||branch.facts.includes(fact.id)).forEach(fact=>{const row=el('div','twc-journey-fact');row.dataset.factId=fact.id;row.dataset.tone=['success','warning'].includes(fact.tone)?fact.tone:'neutral';row.dataset.state=STATES.has(fact.state)?fact.state:'partial';const label=el('div','twc-journey-fact-label');label.append(el('i','twc-journey-fact-mark'),el('span','',fact.label));const value=el('div','twc-journey-fact-value',fact.format==='datetime'?(date(fact.value)||'Час не зафіксовано'):valueText(fact.value));if(fact.captured_at)value.append(el('div','twc-journey-fact-note',date(fact.captured_at)));row.append(label,value);facts.append(row);});
       if(!facts.children.length&&!eventNode(node))facts.append(el('p','twc-journey-empty','Підтверджених даних цього етапу ще немає.'));body.append(facts);if(!edge)this.appendTimerDetails(body,node);
@@ -438,6 +519,20 @@
       body.append(section);
     }
     appendSources(root,refs,limit=8){const seen=new Set();refs.slice(0,limit).forEach(ref=>{const key=ref.kind+':'+ref.id;if(seen.has(key)||!ref.id)return;seen.add(key);const labels={message:'Повідомлення',source_message:'Повідомлення',order:'Замовлення',funnel_event:'Подія',episode_event:'Подія',episode:'Покупка',payment_projection:'Оплата',payment_review:'Перевірка оплати'};const label=(labels[ref.kind]||'Джерело')+' №'+ref.id;const actionable=this.options.onEvidence&&['message','source_message'].includes(ref.kind);const link=el(actionable?'button':'span','twc-journey-source',label);if(actionable){link.type='button';link.addEventListener('click',()=>{if(this.modal)this.closeMap();this.closePanel(false);this.options.onEvidence(ref,link);});}root.append(link);});}
+    // v6 · Панель вузла доставки: чотири кроки вертикальною стрічкою (як трекінг посилки),
+    // ТТН, дата отримання та дозвіл на подальший контакт — усе з фактів замовлення.
+    appendDelivery(body,node){
+      const p=node.delivery_progress;if(!p)return;
+      const section=el('section','twc-journey-delivery');section.append(el('h5','','Доставка · '+p.label));
+      const track=el('ol','twc-journey-delivery-track');
+      p.stages.forEach((label,i)=>{const item=el('li','',label);item.dataset.state=p.cancelled?'cancelled':i<p.step?'done':i===p.step?'next':'todo';track.append(item);});
+      section.append(track);
+      const facts=[...(node.facts||[]),...(node.delivery_facts||[])];
+      const ttn=facts.find(f=>f.id?.endsWith(':tracking'));if(ttn)section.append(el('p','twc-journey-fact-note','ТТН: '+valueText(ttn.value)));
+      const got=facts.find(f=>f.id?.endsWith(':delivery'));if(got)section.append(el('p','twc-journey-fact-note','Отримання: '+valueText(got.value)+(got.captured_at?' · '+date(got.captured_at):'')));
+      if(node.contact_permission){const c=el('p','twc-journey-delivery-contact');c.dataset.state=node.contact_permission.status==='confirmed'?'confirmed':'pending';c.textContent=node.contact_permission.status==='confirmed'?'🔔 Дозвіл на повідомлення після покупки підтверджено':'🔔 Дозволу на повідомлення після покупки ще немає — потрібне окреме підтвердження каналу й мети контакту';section.append(c);}
+      body.append(section);
+    }
     appendRequirements(body,node){
       const progress=node.requirements;if(!progress||!Number.isInteger(progress.completed)||!Number.isInteger(progress.total)||progress.total<=0||progress.completed<0||progress.completed>progress.total||!Array.isArray(progress.items))return;
       const section=el('section','twc-journey-requirements');section.append(el('h5','',(progress.label||'Обов’язкові умови')+' · '+progress.completed+'/'+progress.total));
@@ -482,40 +577,56 @@
         return 0;
       });
     }
+    // v6 · «Комета» — хід клієнта як історія. Точка з хвостом-слідом проходить лише реальні
+    // (з джерелами) намальовані переходи. На кожному вузлі — коротка пауза-«вдих» і спалах ядра;
+    // на вузлі із запереченнями — стільки обертів, скільки заперечень (1 заперечення = 1 оберт).
+    // Фінал — сплеск на поточному вузлі, щоб око зупинилося там, де клієнт зараз.
     toggleWalk(){
       if(this.walking){this.stopWalk();return;}
       if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
       const edges=this.walkEdges();if(!edges.length)return;
       const paths=new Map([...this.svg.querySelectorAll('.twc-journey-edge')].map(p=>[p.dataset.edgeId,p]));
-      this.walking=true;this.play.setAttribute('aria-pressed','true');this.play.textContent='⏸ Зупинити';
+      this.walking=true;this.play.setAttribute('aria-pressed','true');this.play.textContent='⏸ Зупинити';this.root.dataset.walking='true';this.modal?.setAttribute('data-walking','true');
+      // Слід: полілінія, що «тягнеться» за кометою й поступово згасає.
+      this.trail?.remove();this.trail=svg('polyline',{points:''});this.trail.classList.add('twc-journey-trail');this.svg.append(this.trail);
+      const trailPoints=[];
       let index=0;
-      const move=(point)=>{this.walker.style.left=point.x+'px';this.walker.style.top=point.y+'px';this.walker.dataset.active='true';};
+      const ease=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+      const move=point=>{this.walker.style.left=point.x+'px';this.walker.style.top=point.y+'px';this.walker.dataset.active='true';trailPoints.push(point.x.toFixed(1)+','+point.y.toFixed(1));if(trailPoints.length>26)trailPoints.shift();this.trail.setAttribute('points',trailPoints.join(' '));};
+      const flash=id=>{const b=this.buttons.get(id);if(!b)return;b.dataset.visited='true';b.classList.remove('twc-journey-flash');void b.offsetWidth;b.classList.add('twc-journey-flash');};
+      const finish=()=>{const id=this.currentId;if(id){const b=this.buttons.get(id);b?.classList.add('twc-journey-arrive');this.arriveTimer=setTimeout(()=>b?.classList.remove('twc-journey-arrive'),1400);}this.walkTimer=setTimeout(()=>this.stopWalk(),900);};
       const step=()=>{
         if(!this.walking||this.destroyed)return;
-        if(index>=edges.length){this.stopWalk();return;}
-        const edge=edges[index++],path=paths.get(edge.id);if(!path?.isConnected){this.stopWalk();return;}
-        const length=path.getTotalLength(),start=performance.now();
+        if(index>=edges.length){finish();return;}
+        trailPoints.length=0;const edge=edges[index++],path=paths.get(edge.id);if(!path?.isConnected){finish();return;}
+        if(index===1)flash(edge.from_node_id);
+        const length=path.getTotalLength(),start=performance.now(),duration=Math.max(520,Math.min(1100,length*4.5));
         const frame=now=>{
           if(!this.walking||this.destroyed)return;
-          const progress=Math.min(1,(now-start)/620);move(path.getPointAtLength(length*progress));
+          const progress=Math.min(1,(now-start)/duration);move(path.getPointAtLength(length*ease(progress)));
           if(progress<1){this.walkFrame=requestAnimationFrame(frame);return;}
-          const cases=this.graph.nodes.filter(n=>n.semantic_key==='journey_case'&&n.presentation_event?.anchor_ids.includes(edge.to_node_id));
+          flash(edge.to_node_id);
+          const cases=this.graph.nodes.filter(n=>n.semantic_key==='journey_case'&&(n.presentation_event?.anchor_ids||[]).includes(edge.to_node_id));
+          const onEdge=edge.objection_band?.count||0;
+          const turns=cases.length||onEdge;
           const center=this.positions.get(edge.to_node_id);
-          if(cases.length&&center){
-            const orbitStart=performance.now(),duration=cases.length*900;this.walker.dataset.orbit='true';
+          if(turns&&center){
+            const orbitStart=performance.now(),duration=turns*700;this.walker.dataset.orbit='true';this.walker.dataset.tone=edge.objection_band?.tone||'warning';
             const orbit=now=>{
               if(!this.walking||this.destroyed)return;
-              const angle=(now-orbitStart)/900*Math.PI*2;move({x:center.x+18*Math.cos(angle),y:center.y+18*Math.sin(angle)});
+              const angle=(now-orbitStart)/700*Math.PI*2-Math.PI/2;move({x:center.x+19*Math.cos(angle),y:center.y+19*Math.sin(angle)});
               if(now-orbitStart<duration){this.walkFrame=requestAnimationFrame(orbit);return;}
-              this.walker.dataset.orbit='false';this.walkTimer=setTimeout(step,200);
+              this.walker.dataset.orbit='false';delete this.walker.dataset.tone;this.walkTimer=setTimeout(step,260);
             };this.walkFrame=requestAnimationFrame(orbit);
-          }else this.walkTimer=setTimeout(step,200);
+          }else this.walkTimer=setTimeout(step,260);
         };this.walkFrame=requestAnimationFrame(frame);
       };step();
     }
     stopWalk(){
-      this.walking=false;clearTimeout(this.walkTimer);cancelAnimationFrame(this.walkFrame);
+      this.walking=false;clearTimeout(this.walkTimer);clearTimeout(this.arriveTimer);cancelAnimationFrame(this.walkFrame);
       if(this.walker){this.walker.dataset.active='false';this.walker.dataset.orbit='false';}
+      this.trail?.remove();this.trail=null;if(this.root)delete this.root.dataset.walking;this.modal?.removeAttribute('data-walking');
+      this.buttons?.forEach(b=>{delete b.dataset.visited;b.classList.remove('twc-journey-flash','twc-journey-arrive');});
       if(this.play){this.play.setAttribute('aria-pressed','false');this.play.textContent='▶ Показати хід';}
     }
     updateTimers(){
@@ -539,9 +650,13 @@
       });
       if(this.panel&&!this.selectedEdge){const node=this.graph.nodes.find(n=>n.id===this.selected);for(const state of this.panel.querySelectorAll('[data-timer-state]')){const timer=node?.timers?.find(t=>(t.id||t.kind||'')===state.dataset.timerState);if(timer)state.textContent=this.timerDescription(timer);}}
     }
-    openMap(family='all'){
+    openMap(family=null){
       if(this.modal||!this.snapshot)return;this.closePanel(false);
-      this.showPossible=true;this.possibleFamily=family;
+      // v6 · За замовчуванням — ЛИШЕ шлях клієнта. Раніше відкривався весь каталог (~45 вузлів і ~80
+      // пунктирних ребер) — «стіна ліній», де губився реальний маршрут. Можливі шляхи — явний перемикач,
+      // і напрям за замовчуванням — сімейство самого клієнта, а не «усі напрями».
+      const own=this.graph?.inline_family&&this.graph.inline_family!=='transcript'?this.graph.inline_family:'inbound';
+      this.showPossible=Boolean(family);this.possibleFamily=family||({catalog:'catalog',custom:'custom',dtf:'custom',collaboration:'collaboration',employment:'employment',information:'information',support:'after'}[own]||'inbound');
       const dialog=el('dialog','twc-journey twc-journey-dialog');dialog.setAttribute('aria-label','Повний шлях клієнта');
       const top=el('header','twc-journey-dialog-head'),copy=el('div');copy.append(el('h3','','Шлях клієнта'),el('p','',this.title.textContent+this.mode.textContent));
       const close=el('button','twc-journey-close','×');close.type='button';close.setAttribute('aria-label','Закрити повну карту');close.addEventListener('click',()=>this.closeMap());top.append(copy,close);
@@ -551,7 +666,7 @@
       this.familySelect=el('select');this.familySelect.setAttribute('aria-label','Напрям можливих шляхів');[['inbound','Напрями звернень'],['catalog','Одяг і оплата'],['custom','Власний принт / DTF'],['collaboration','Співпраця'],['employment','Робота в команді'],['information','Інформація'],['prize','Приз'],['after','Після покупки'],['all','Усі напрями']].forEach(([value,label])=>this.familySelect.append(new Option(label,value)));this.familySelect.value=this.possibleFamily||'inbound';this.familySelect.hidden=!this.showPossible;this.familySelect.addEventListener('change',()=>{this.closePanel(false);this.possibleFamily=this.familySelect.value;this.update(this.snapshot,{force:true});this.layout();this.centerCurrent();});tools.append(this.familySelect);
       this.viewport=el('div','twc-journey-viewport');this.viewport.tabIndex=0;this.viewport.setAttribute('aria-label','Карта. Стрілки для переміщення; кнопки плюс і мінус для масштабу.');this.canvas=el('div','twc-journey-canvas');this.canvas.append(this.map);this.viewport.append(this.canvas);
       this.accessible=el('details','twc-journey-accessible');this.accessible.append(el('summary','','Етапи й переходи списком'));this.accessibleBody=el('div');this.accessible.append(this.accessibleBody);
-      const legend=el('div','twc-journey-map-legend');[['recorded','○ Є збережені події'],['recorded','━ Збережений перехід'],['recorded','┄ За перепискою'],['success','✓ Підтверджено'],['danger','× Негативний результат'],['warning','! Підтверджена перешкода'],['neutral','┄ Можливий шлях'],['neutral','┄ Можливе заперечення (подій немає)'],['recorded','↩ Обговорено ≠ вирішено'],['neutral','— Замовлення клієнта']].forEach(([tone,label])=>{const item=el('span','',label);item.dataset.tone=tone;legend.append(item);});
+      const legend=el('div','twc-journey-map-legend');[['recorded','━ Перехід'],['recorded','┄ За перепискою'],['success','● Підтверджено'],['warning','▬ Заперечення на відрізку'],['manager','┄ Інший канал / вручну'],['neutral','◌ Можливий етап']].forEach(([tone,label])=>{const item=el('span','',label);item.dataset.tone=tone;legend.append(item);});
       this.mapCoverage=el('p','twc-journey-map-coverage');dialog.append(top,tools,legend,this.mapCoverage,this.objections,this.viewport,this.discussionDetails,this.accessible);this.modal=dialog;document.body.append(dialog);
       dialog.addEventListener('keydown',this.escape);dialog.addEventListener('cancel',event=>{event.preventDefault();if(this.selected)this.closePanel(true);else this.closeMap();});dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)this.closeMap();}});
       this.viewport.addEventListener('wheel',event=>{if(event.ctrlKey){event.preventDefault();this.setZoom(this.zoom*Math.exp(-event.deltaY*.01));}},{passive:false});
@@ -648,17 +763,38 @@
       const candidates=this.displayEdges||this.edges,representedPairs=new Set(candidates.filter(e=>edgePriority(e)>0).map(edgePair));
       const unplaced=new Set(this.graph.nodes.filter(n=>eventNode(n)&&(n.presentation_event.mode==='unplaced'||n.presentation_event.unplaced)).map(n=>n.id));
       const drawingEdges=candidates.filter(e=>!unplaced.has(e.from_node_id)&&!unplaced.has(e.to_node_id)&&!(e.relation==='route'&&representedPairs.has(edgePair(e))));
+      drawingEdges.forEach(e=>{delete e.objection_band;});
       const geometryRoutes=window.TwcJourneyGeometry?.routeEdges({nodes:visibleNodes,edges:drawingEdges,positions:this.positions,width:this.mapWidth,height:this.mapHeight,full:Boolean(this.modal)});
       [...drawingEdges].sort((a,b)=>edgePriority(a)-edgePriority(b)).forEach(edge=>{
         const a=this.positions.get(edge.from_node_id),b=this.positions.get(edge.to_node_id);if(!a||!b)return;
         const observed=witnessed(edge),reconstructed=interpreted(edge),tone=edgeTone(edge);
         const route=geometryRoutes?.get(edge.id);if(!route)return;
         const d=route.d,mx=route.markerX,my=route.markerY;
-        const path=svg('path',{d,stroke:tones[tone],...(contextual(edge)?{}:{'marker-end':'url(#'+prefix+'-'+tone+')'})});path.classList.add('twc-journey-edge');path.dataset.edgeId=edge.id;path.dataset.observed=String(observed);path.dataset.interpreted=String(reconstructed);path.dataset.contextual=String(contextual(edge));path.dataset.selected=String(this.selectedEdge===edge.id);this.svg.append(path);
+        const path=svg('path',{d,stroke:tones[tone],...(contextual(edge)?{}:{'marker-end':'url(#'+prefix+'-'+tone+')'})});path.classList.add('twc-journey-edge');path.dataset.edgeId=edge.id;path.dataset.observed=String(observed);path.dataset.interpreted=String(reconstructed);path.dataset.contextual=String(contextual(edge));path.dataset.selected=String(this.selectedEdge===edge.id);
+        // v6 · Заперечення НА САМІЙ ЛІНІЇ. Під ребром, на якому було заперечення, лягає широка
+        // напівпрозора «накладка» кольору результату: відрізок «звідки → куди» видно одразу,
+        // без окремої картки. Колір: янтар — не вирішено, синій — обговорено, зелений — вирішено,
+        // червоний — відмова. Кількість заперечень — бейдж посередині відрізка.
+        const objectionCases=this.graph.nodes.filter(n=>n.semantic_key==='journey_case'&&(n.presentation_event?.edge_ids||[]).includes(edge.id));
+        if(objectionCases.length&&(observed||reconstructed)){
+          const worst=objectionCases.map(caseOutcome).sort((a,b)=>['refused','open','unknown','addressed','resolved'].indexOf(a.key)-['refused','open','unknown','addressed','resolved'].indexOf(b.key))[0];
+          const band=svg('path',{d});band.classList.add('twc-journey-objection-band');band.dataset.tone=worst.tone;band.dataset.edgeId=edge.id;
+          const t=svg('title');t.textContent='Заперечення на цьому переході · '+objectionCases.length+' · '+worst.label;band.append(t);
+          band.addEventListener('click',()=>this.toggleNode(objectionCases[0].id));
+          this.svg.append(band);edge.objection_band={tone:worst.tone,count:objectionCases.length,label:worst.label,caseId:objectionCases[0].id};
+        }
+        this.svg.append(path);
         path.append(svg('title'));path.lastChild.textContent=contextual(edge)?'Пов’язано з '+(this.graph.nodes.find(n=>n.id===edge.to_node_id)?.label||'контекстом замовлення'):edge.condition_label||edge.reason_label||(observed?'Збережений перехід':'Можливий шлях');
         if(route.conditionPosition){const p=route.conditionPosition,label=svg('text',{x:p.x,y:p.y,'text-anchor':'middle','dominant-baseline':'middle'});label.classList.add('twc-journey-condition');label.textContent=edge.outcome==='wait_for_attempt'?'Нова спроба':'Допомога';this.svg.append(label);}
         if(this.newEdges?.has(edge.id)&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const dot=svg('circle',{r:2,fill:tones[tone]});const motion=svg('animateMotion',{dur:'.6s',path:d,repeatCount:1,fill:'freeze'});dot.append(motion);this.svg.append(dot);motion.addEventListener('endEvent',()=>dot.remove(),{once:true});}
         const count=Number.isInteger(edge.repeated_count)&&edge.repeated_count>1?edge.repeated_count:0;
+        // v6 · бейдж заперечення посередині відрізка з накладкою.
+        if(edge.objection_band){
+          const band=edge.objection_band;shown.add('band:'+edge.id);let chip=this.edgeButtons.get('band:'+edge.id);
+          if(!chip){chip=el('button','twc-journey-band-chip');chip.type='button';chip.addEventListener('click',()=>this.toggleNode(chip.dataset.caseId));this.edgeButtons.set('band:'+edge.id,chip);this.edgeLayer.append(chip);}
+          chip.replaceChildren(el('span','twc-journey-band-diamond','◆'),el('span','',band.count>1?'×'+band.count:'!'));
+          chip.dataset.caseId=band.caseId;chip.dataset.tone=band.tone;chip.style.left=mx+'px';chip.style.top=my+'px';chip.title='Заперечення · '+band.label;chip.setAttribute('aria-label','Заперечення на переході · '+band.count+' · '+band.label);
+        }
         if(eventNode(this.graph.nodes.find(n=>n.id===edge.from_node_id))||eventNode(this.graph.nodes.find(n=>n.id===edge.to_node_id)))return;
         if(!exceptional(edge)||this.graph.nodes.some(n=>n.id===edge.case_id&&eventNode(n)))return;
         if(!this.modal&&this.inlineSlots&&(observed||reconstructed)&&returnEdge(edge)){
