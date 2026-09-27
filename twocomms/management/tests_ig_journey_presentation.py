@@ -40,6 +40,41 @@ class JourneyDisplayFocusTests(SimpleTestCase):
 
 
 class JourneyRendererPresentationTests(SimpleTestCase):
+    def test_replay_and_indicators_never_promote_possible_steps_to_facts(self):
+        source = (Path(__file__).parent / "static/management/ig_journey.js").read_text()
+        source = source.replace("window.TwcJourney={create:options=>new Journey(options)};",
+                                "window.TwcJourney={Journey,hasActiveWait,hasChannelHandoff,POST_SALE_TAIL};")
+        program = "global.window={};\n" + source + r"""
+const assert=require('node:assert/strict');
+const {Journey,hasActiveWait,hasChannelHandoff,POST_SALE_TAIL}=window.TwcJourney;
+const replay=Object.create(Journey.prototype);
+const trace={id:'trace',relation:'transcript_interpretation',authority:'none',provenance:'transcript_reconstruction',evidence_refs:[{id:1}],last_step_index:2};
+replay.edges=[trace,{...trace,id:'earlier',last_step_index:1},{...trace,id:'hidden'},
+  {id:'future',relation:'route',evidence_refs:[]},
+  {id:'order',relation:'client_order_lifecycle',evidence_refs:[{id:3}]},
+  {...trace,id:'uncited',evidence_refs:[]}];
+replay.svg={querySelectorAll:()=>['trace','earlier','future','order','uncited'].map(id=>({dataset:{edgeId:id}}))};
+assert.deepEqual(replay.walkEdges().map(e=>e.id),['earlier','trace']);
+global.matchMedia=()=>({matches:true});replay.toggleWalk();assert.notEqual(replay.walking,true);
+let cancelled=null;global.cancelAnimationFrame=id=>{cancelled=id};
+replay.walkFrame=42;replay.walking=true;replay.walker={dataset:{active:'true',orbit:'true'}};
+replay.play={setAttribute(){},textContent:''};replay.stopWalk();
+assert.equal(cancelled,42);assert.equal(replay.walking,false);assert.equal(replay.walker.dataset.active,'false');
+const now=Date.parse('2026-09-27T10:00:00Z');
+const timer={status:'running',due_at:'2026-09-27T11:00:00Z',evidence_refs:[{id:1}]};
+assert.equal(hasActiveWait({timers:[timer]},now),true);
+assert.equal(hasActiveWait({timers:[timer]},now+7200000),false);
+assert.equal(hasActiveWait({timers:[{...timer,evidence_refs:[]}]},now),false);
+assert.equal(hasChannelHandoff({semantic_key:'channel_consent',tone:'consent'}),false);
+assert.equal(hasChannelHandoff({channel_handoff:{channel:'telegram'}}),false);
+assert.equal(hasChannelHandoff({channel_handoff:{channel:'telegram',evidence_refs:[{id:1}]}}),true);
+assert.ok(POST_SALE_TAIL.includes('channel_grant_checked'));
+assert.ok(POST_SALE_TAIL.includes('reward_delivery'));
+assert.ok(POST_SALE_TAIL.includes('new_purchase_interest'));
+"""
+        result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_objection_fork_and_visible_case_results_survive_live_projection(self):
         source = (Path(__file__).parent / "static/management/ig_journey.js").read_text()
         source = source.replace("window.TwcJourney={create:options=>new Journey(options)};",

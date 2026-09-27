@@ -140,6 +140,58 @@
 .twc-journey-count[data-outcomes=open]{color:#fbbf24;}
 .twc-journey-count[data-outcomes=refused]{color:#fb7185;}
 .twc-journey-count[data-outcomes=addressed]{color:#93c5fd;}
+
+
+/* F3-FUN-07 (план 3.0, P2-1.7): доставка — один елемент із чотирма «четвертями»
+   (оформлено → відправлено → доставлено → отримано) замість трьох окремих кружків.
+   Шкала малюється конічним градієнтом навколо ядра вузла: заповнена частина — зелений,
+   порожня — тьмяний контур. Заповнення читається без легенди. */
+.twc-journey-quarters{position:absolute;inset:-4px;border-radius:50%;pointer-events:none;}
+.twc-journey-quarters[hidden]{display:none;}
+.twc-journey-quarters::before{content:'';position:absolute;inset:0;border-radius:50%;
+  background:conic-gradient(from -90deg,#34d399 0 var(--quarters-fill,0%),#334155 var(--quarters-fill,0%) 100%);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 3px));
+          mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 3px));
+  transition:--quarters-fill 220ms linear;}
+.twc-journey-quarters[data-step="0"]{--quarters-fill:0%;}
+.twc-journey-quarters[data-step="1"]{--quarters-fill:25%;}
+.twc-journey-quarters[data-step="2"]{--quarters-fill:50%;}
+.twc-journey-quarters[data-step="3"]{--quarters-fill:75%;}
+.twc-journey-quarters[data-step="4"]{--quarters-fill:100%;}
+/* Отримано — замовлення виконане: елемент трохи більший і світліший, це головна точка. */
+.twc-journey-step[data-node-id] .twc-journey-quarters[data-step="4"]::before{box-shadow:0 0 0 2px #34d39955;}
+@media(prefers-reduced-motion:reduce){.twc-journey-quarters::before{transition:none;}}
+
+/* F3-FUN-08 (план 3.0, P2-1.8): біла точка-хідник показує, ЯК клієнт ішов шляхом.
+   На кожному пройденому вузлі точка зупиняється й обводить ядро — один оберт на одне
+   заперечення. Запускається лише за явною дією (кнопка «Показати хід»), не сама,
+   щоб не відволікати при звичайному перегляді. */
+.twc-journey-play{min-height:28px;border:1px solid #405169;border-radius:8px;background:#1a2432;color:#d2deec;font-size:11px;padding:4px 10px;cursor:pointer;}
+.twc-journey-play[aria-pressed=true]{border-color:#a4b1c2;background:#29394c;color:#f1f5f9;}
+.twc-journey-walker{position:absolute;width:8px;height:8px;border-radius:50%;background:#f8fafc;
+  box-shadow:0 0 8px 2px #f8fafc99;pointer-events:none;opacity:0;transition:opacity 160ms linear;z-index:3;}
+.twc-journey-walker[data-active=true]{opacity:1;}
+.twc-journey-walker::after{content:'';position:absolute;inset:-6px;border-radius:50%;border:1px dashed #f8fafc66;opacity:0;}
+.twc-journey-walker[data-orbit=true]::after{opacity:1;animation:journey-orbit 900ms linear infinite;}
+@keyframes journey-orbit{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+/* F3-FUN-10 (план 3.0, P2-1.10): обов'язкові блоки підбору (товар/колір/посадка/
+   розмір/кількість) показуються сегментами під вузлом: порожні — тьмяні, заповнені —
+   зелені. Так видно, чого саме бракує, щоб сформувати посилання на оплату. */
+.twc-journey-slots{display:flex;gap:3px;margin-top:4px;justify-content:center;}
+.twc-journey-slot{width:12px;height:3px;border-radius:2px;background:#334155;}
+.twc-journey-slot[data-filled=true]{background:#34d399;}
+.twc-journey-slot[data-open=true]{background:#fbbf24;}
+.twc-journey-slots-label{font-size:9px;line-height:12px;color:#a4b1c2;text-align:center;margin-top:2px;}
+/* F3-FUN-11: очікування оплати/відповіді — м'яка пульсація кільця, а не окремий таймер,
+   щоб око чіплялось за «тут зараз щось чекає» без візуального шуму. */
+.twc-journey-step[data-waiting=true] .twc-journey-core{box-shadow:0 0 0 3px #fbbf2433;}
+.twc-journey-step[data-waiting=true] .twc-journey-core:after{content:'';position:absolute;inset:-3px;border-radius:50%;border:1px solid #fbbf2466;animation:journey-wait 2.2s ease-in-out infinite;}
+@keyframes journey-wait{0%,100%{opacity:.25}50%{opacity:.9}}
+/* F3-FUN-12: перехід у Telegram/WhatsApp як окремий спокійний маркер — не ще один етап,
+   а позначка каналу, куди пішла розмова. Так видно, чому подальші кроки не в Direct. */
+.twc-journey-step[data-channel=true] .twc-journey-step-label:after{content:' ↗';color:#a78bfa;font-size:10px;}
+@media(prefers-reduced-motion:reduce){.twc-journey-step[data-waiting=true] .twc-journey-core:after{animation:none;opacity:.6;}}
+@media(prefers-reduced-motion:reduce){.twc-journey-walker{display:none;}}
 .twc-journey-dialog .twc-journey-step-label{max-width:100px;}
 
 .twc-journey-dialog .twc-journey-step-label{white-space:normal;max-height:28px;line-height:14px;}
@@ -200,3 +252,11 @@
 .twc-journey-detail-link{appearance:none;border:0;background:none;color:var(--tone,#94a3b8);font:inherit;font-size:11px;text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:5px 0;}
 .twc-journey-detail-link:focus-visible{outline:2px solid #93c5fd;outline-offset:3px;}
 .twc-journey-step[data-event=true][data-tone=recorded]{--tone:#94a3b8;}
+
+/* Keep new controls and readiness bars within the compact chat width. */
+.twc-journey-inline-key{flex-wrap:wrap;}
+.twc-journey-play{flex-shrink:0;}
+.twc-journey-walker{transform:translate(-50%,-50%);}
+.twc-journey-slots{position:absolute;top:60px;left:0;width:100%;margin:0;pointer-events:auto;}
+.twc-journey-dialog .twc-journey-slots{top:72px;}
+.twc-journey-step[data-waiting=true] .twc-journey-core:after{left:-3px;top:-3px;width:auto;height:auto;background:none;box-shadow:none;}
