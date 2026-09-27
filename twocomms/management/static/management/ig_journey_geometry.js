@@ -52,7 +52,7 @@
   // Full-map presentation bands. Neighboring cells are never implicit edges:
   // collaboration's two rows fan out/in only through registry transitions.
   const fullCells={
-    website_order_report:[2,3],channel_contact_report:[5,3],client_order_context:[8,3],client_order_shipping:[9,3],client_order_delivery:[10,3],client_order_contact:[9,2],
+    website_order_report:[2,3],channel_contact_report:[5,3],client_order_context:[8,3],client_order_shipping:[9,3],client_order_delivery:[10,3],client_order_contact:[9,3],
     inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[1,4],
     collaboration:[1,1],collaboration_designer:[2,0],collaboration_partnership:[3,0],
     collaboration_dropship:[4,0],collaboration_wholesale_store:[2,1],
@@ -362,7 +362,7 @@
     ['Приз',['prize_candidate','prize_decision']],
     ['Після покупки',['channel_consent','channel_grant_checked','post_purchase_contact_offer','ugc_assessment','reward_entitlement','reward_delivery','reward_use']],
     ['Сервісне звернення',['post_sale_request']],
-    ['Контекст клієнта · сайт та інші канали',['website_order_report','channel_contact_report','client_order_context']]
+    ['Контекст клієнта · сайт та інші канали',['website_order_report','channel_contact_report','client_order_context','client_order_contact']]
   ];
   function atlas({nodes,edges=[],width}){
     const base=layout({nodes,edges,width:0,full:true}),positions=new Map();

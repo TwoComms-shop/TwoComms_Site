@@ -373,3 +373,25 @@
 .twc-journey-payment-step[data-state=discussion] .twc-journey-payment-dot{border-color:#93b8e8;border-style:dashed;}
 .twc-journey-payment-step>p{font-size:11px;line-height:1.6;color:#aabbd0;}
 .twc-journey-concern{display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;line-height:1;min-width:28px;}
+/* Purpose-specific marketing opt-in: one four-step block after delivery. */
+.twc-journey-step[data-segments=consent] .twc-journey-segment-count{right:auto;left:calc(50% + 12px);}
+.twc-journey-consent-caption{display:block;max-width:112px;font-size:9px;line-height:12px;color:#91a0b5;margin-top:3px;white-space:normal;}
+.twc-journey-consent-caption[data-tone=warning]{color:#edc373;}
+.twc-journey-consent-caption[data-tone=success]{color:#70d3b0;}
+.twc-journey-consent-caption[data-tone=danger]{color:#ee94a6;}
+.twc-journey-consent-steps{border:1px solid #37475e;border-radius:12px;margin:10px 0;padding:12px;background:#141d2a;}
+.twc-journey-consent-state{font-size:12px;font-weight:600;margin:0 0 12px;color:#b8c8de;}
+.twc-journey-consent-state[data-tone=danger]{color:#ee94a6;}
+.twc-journey-consent-state[data-tone=success]{color:#70d3b0;}
+.twc-journey-consent-state[data-tone=warning]{color:#edc373;}
+.twc-journey-consent-row{display:grid;grid-template-columns:10px 1fr;align-items:center;column-gap:10px;padding:9px 0;position:relative;font-size:11px;}
+.twc-journey-consent-row+div{border-top:1px solid #27364a;}
+.twc-journey-consent-note{grid-column:2;color:#9cabc0;font-size:10px;line-height:1.5;margin-top:3px;}
+.twc-journey-consent-row[data-state=done] .twc-journey-payment-dot{background:#34d399;border-color:#34d399;}
+.twc-journey-consent-row[data-state=next] .twc-journey-payment-dot{background:#fbbf24;border-color:#fbbf24;}
+.twc-journey-consent-row[data-state=cancelled] .twc-journey-payment-dot{background:#fb7185;border-color:#fb7185;}
+.twc-journey-map[data-atlas=true] .twc-journey-step[data-segments=consent]{height:92px;}
+.twc-journey:not(.twc-journey-dialog) .twc-journey-consent-caption{max-height:24px;overflow:hidden;}
+
+.twc-journey-consent-sources{grid-column:2;display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;font-size:10px;}
+.twc-journey-consent-sources:empty{display:none;}

@@ -45,12 +45,12 @@ class JourneyRendererPresentationTests(SimpleTestCase):
         geometry = (base / "ig_journey_geometry.js").read_text()
         source = (base / "ig_journey.js").read_text().replace(
             "window.TwcJourney={create:options=>new Journey(options)};",
-            "window.TwcJourney={Journey,witnessed,contextual};")
+            "window.TwcJourney={Journey,witnessed,contextual,consentView};")
         from management.services.ig_journey_catalogue import journey_catalogue
         import json
         program = "global.window={};\n" + geometry + source + "\nconst catalogue=" + json.dumps(journey_catalogue()) + r"""
 const assert=require('node:assert/strict');
-const {Journey,witnessed,contextual}=window.TwcJourney;
+const {Journey,witnessed,contextual,consentView}=window.TwcJourney;
 const journey=Object.create(Journey.prototype);
 journey.modal={};journey.mapMode='all';journey.showPossible=true;journey.possibleFamily='catalog';
 const sourceGraph={nodes:[{id:'guide:inquiry',semantic_key:'inbound'}],edges:[]};
@@ -101,6 +101,15 @@ assert.equal(combined.display_focus.node_id,'wait');
 assert.deepEqual(combined.nodes.find(n=>n.id==='case').presentation_event.anchor_ids,['wait']);
 assert.equal(combined.nodes[0].composite_edges[0].id,'inside');
 assert.equal(combined.nodes[0].payment_progress.items[1].state,'done');
+const optin=composed.nodes.find(n=>n.consent_progress);
+assert.ok(optin);
+assert.equal(consentView(optin.consent_progress).parts.length,4);
+const consent={schema:'journey-consent.v1',channel:'instagram',purpose:'post_purchase_marketing',delivery:{status:'received',evidence_refs:[{id:1}]},invitation:{status:'sent',evidence_refs:[{id:2}]},response:{status:'accepted',evidence_refs:[{id:3}]},permission:{status:'granted',evidence_refs:[{id:4}]}};
+assert.equal(consentView(consent).tone,'success');
+assert.equal(consentView({...consent,response:{status:'declined',evidence_refs:[{id:3}]}}).tone,'danger');
+assert.notEqual(consentView({...consent,permission:{status:'granted',evidence_refs:[]}}).tone,'success');
+assert.notEqual(consentView({...consent,purpose:'other'}).tone,'success');
+assert.notEqual(consentView({...consent,permission:{status:'revoked',evidence_refs:[{id:5}]}}).tone,'success');
 const geometry=window.TwcJourneyGeometry;
 const occupied=[{left:72,right:128,top:72,bottom:128}];
 const annotation=geometry.annotationPoint({anchor:{x:100,y:100},occupied,width:320,height:180});
