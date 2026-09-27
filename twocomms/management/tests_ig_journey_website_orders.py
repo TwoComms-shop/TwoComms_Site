@@ -14,6 +14,8 @@ class WebsiteOrderStatementTests(SimpleTestCase):
             "Я заказывал с сайта и хочу уточнить что по моему заказу",
             "Я замовила на вашому сайті, хочу уточнити доставку",
             "Я заказал на сайте, но не получил заказ",
+            "Я зробила замовлення на сайті, оплату зробила",
+            "Я сделал заказ на сайте",
             "I ordered on your website. Where is my order?",
         ]:
             self.assertTrue(is_website_order_statement(text), text)

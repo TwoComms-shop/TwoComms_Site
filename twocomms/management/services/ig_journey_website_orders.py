@@ -12,7 +12,7 @@ LIMIT = 200
 PRODUCER = "website_order_report"
 CHANNEL_PRODUCER = "channel_contact_report"
 _SITE = re.compile(r"(?:на|з|с|через)\s+(?:ваш\w*\s+)?сайт\w*|(?:on|through|from)\s+(?:your\s+|the\s+)?website", re.I)
-_PURCHASE = re.compile(r"\b(?:я\s+(?:вже\s+|уже\s+)?(?:замовив|замовила|замовляв|замовляла|заказал|заказала|заказывал|заказывала|купив|купила|купил|оформив|оформила|оформил)|i\s+(?:already\s+)?(?:ordered|bought|placed\s+an?\s+order))\b", re.I)
+_PURCHASE = re.compile(r"\b(?:я\s+(?:вже\s+|уже\s+)?(?:замовив|замовила|замовляв|замовляла|заказал|заказала|заказывал|заказывала|купив|купила|купил|(?:зробив|зробила|зробили)\s+замовлення|(?:сделал|сделала|сделали)\s+заказ|оформив|оформила|оформил)|i\s+(?:already\s+)?(?:ordered|bought|placed\s+an?\s+order))\b", re.I)
 _NEGATIVE = re.compile(r"\b(?:не|not|never|якщо|если|if)\b", re.I)
 
 
