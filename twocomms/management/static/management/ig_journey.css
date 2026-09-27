@@ -300,3 +300,4 @@
 @media(prefers-reduced-motion:reduce){.twc-journey-segment,.twc-journey-step[data-current=true] .twc-journey-core:before,.twc-journey-flash .twc-journey-core,.twc-journey-arrive .twc-journey-core{animation:none;}}
 .twc-journey-step[data-segments=requirements] .twc-journey-segment-count{display:none;}
 .twc-journey-step[data-segments=delivery] .twc-journey-segment-count{right:auto;left:calc(50% + 12px);}
+.twc-journey .twc-journey-core svg.twc-journey-segments{width:44px;height:44px;left:50%;top:50%;right:auto;bottom:auto;transform:translate(-50%,-50%);}
