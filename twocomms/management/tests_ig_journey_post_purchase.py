@@ -80,6 +80,8 @@ class AfterPurchaseTests(SimpleTestCase):
         base=Path(__file__).parent/'static/management'
         js=(base/'ig_journey.js').read_text().replace('window.TwcJourney={create:options=>new Journey(options)};', 'window.TwcJourney={Journey,witnessed};')
         source=graph();source['nodes']+=graph(2,order=8)['nodes']
+        source['nodes'].append({'id':'client-order:7:contact','semantic_key':'client_order_contact','scope':'client','episode_id':None,'producer':'client_order_assignments','contextual_binding':{'order_id':7},'consent_progress':consent_progress()})
+        source['edges'].append({'id':'existing-contact','from_node_id':'client-order:7','to_node_id':'client-order:7:contact','relation':'client_order_lifecycle','evidence_refs':[]})
         data=append_post_purchase_context(source)
         program='global.window={};\n'+(base/'ig_journey_geometry.js').read_text()+js+'\nconst source='+json.dumps(data)+';const snapshot='+json.dumps({'catalogue':journey_catalogue()})+r'''
 const assert=require('node:assert/strict');const {Journey,witnessed}=window.TwcJourney;
