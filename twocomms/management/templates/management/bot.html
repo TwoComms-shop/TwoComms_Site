@@ -1845,6 +1845,8 @@ body.bot-drawer-open{overflow:hidden;}
       return (url.protocol==='http:'||url.protocol==='https:')?url.href:'';
     }catch(_){return '';}
   }
+  const avatarSegmenter=typeof Intl.Segmenter==='function'?new Intl.Segmenter('uk',{granularity:'grapheme'}):null;
+  function avatarInitial(value){const label=String(value||'?').trim()||'?';const first=avatarSegmenter?avatarSegmenter.segment(label)[Symbol.iterator]().next().value.segment:Array.from(label)[0];return first.toLocaleUpperCase('uk-UA');}
   function bindAvatarFallback(root,name){
     const image=root.querySelector('img[data-avatar]');
     if(!image) return;
@@ -2497,8 +2499,6 @@ body.bot-drawer-open{overflow:hidden;}
       filterActiveLabel.textContent=label;filterActiveLabel.hidden=!advancedActive;filterToggle.classList.toggle('has-active-filter',advancedActive);
       filterToggle.setAttribute('aria-label',advancedActive?('Додаткові фільтри, активний: '+label):'Додаткові фільтри');
     }
-    const avatarSegmenter=typeof Intl.Segmenter==='function'?new Intl.Segmenter('uk',{granularity:'grapheme'}):null;
-    function avatarInitial(value){const label=String(value||'?').trim()||'?';const first=avatarSegmenter?avatarSegmenter.segment(label)[Symbol.iterator]().next().value.segment:Array.from(label)[0];return first.toLocaleUpperCase('uk-UA');}
     function avatar(c,size){
       const url=safeHttpUrl(c.avatar);const label=c.name||c.username||c.igsid||'?';
       if(url){const image=node('img','bot-client-ava');image.src=url;image.alt='';image.setAttribute('data-avatar','');if(size){image.style.width=size+'px';image.style.height=size+'px';}return image;}
@@ -3141,6 +3141,39 @@ body.bot-drawer-open{overflow:hidden;}
     document.addEventListener('visibilitychange',()=>{if(document.hidden){if(listPollTimer)window.clearTimeout(listPollTimer);listPollTimer=null;return;}if(loaded.clients)scheduleClientsPoll();});
     scheduleClientsPoll();
     async function refreshClient(id){if(!id||Number(id)!==Number(activeId))return;await detail(id);await load(currentQuery());}
+    // The media payload is deliberately rendered after the shared message path:
+    // audio must never become an <img>, while unavailable non-image media keeps
+    // a truthful label instead of inheriting the image placeholder.
+    const renderMessageBase=appendMessage;
+    appendMessage=function(root,m){
+      renderMessageBase(root,m);
+      const message=root&&root.lastElementChild;
+      if(!message)return;
+      const rows=Array.from(message.querySelectorAll('.bot-media-coverage > *'));
+      (m.media||[]).slice(0,rows.length).forEach((item,index)=>{
+        const row=rows[index];
+        const kind=String(item.media_kind||'').toLowerCase();
+        const label=String(item.media_label||(kind==='audio'?'Аудіо':kind==='video'?'Відео':'Вкладення'));
+        const publicUrl=safeHttpUrl(item.public_url);
+        if(kind==='audio'&&publicUrl&&(row.tagName==='A'||row.tagName==='DIV')){
+          const audio=document.createElement('audio');audio.controls=true;audio.preload='metadata';audio.src=publicUrl;audio.setAttribute('aria-label',label);audio.addEventListener('error',()=>{audio.replaceWith(document.createTextNode(label+' недоступне'));});
+          const caption=node('span','bot-msg-meta',label);row.replaceChildren(audio,caption);return;
+        }
+        if((kind==='story'||kind==='repost')&&publicUrl&&row.tagName==='DIV'){
+          const link=document.createElement('a');link.href=publicUrl;link.target='_blank';link.rel='noopener noreferrer';link.style.cssText='display:inline-flex;flex-direction:column;gap:3px;margin:2px 0;color:inherit;text-decoration:none;';
+          const image=document.createElement('img');image.src=publicUrl;image.alt=label;image.loading='lazy';image.style.cssText='width:86px;height:66px;object-fit:cover;border-radius:6px;border:1px solid rgba(148,163,184,.35);';
+          link.append(image,node('span','bot-msg-meta',label));row.replaceWith(link);return;
+        }
+        if(kind==='audio'&&!publicUrl){
+          const first=row.firstChild;
+          if(first&&first.nodeType===Node.TEXT_NODE&&!String(first.nodeValue||'').startsWith(label+' · '))first.nodeValue=label+' · '+first.nodeValue;
+        }
+        if(kind==='video'&&publicUrl&&(row.tagName==='A'||row.tagName==='DIV')){
+          const video=document.createElement('video');video.controls=true;video.preload='metadata';video.src=publicUrl;video.setAttribute('aria-label',label);video.style.cssText='max-width:320px;max-height:220px;border-radius:6px;';video.addEventListener('error',()=>{video.replaceWith(document.createTextNode(label+' недоступне'));});
+          const caption=node('span','bot-msg-meta',label);row.replaceChildren(video,caption);
+        }
+      });
+    };
     return {load:load,detail:detail,refreshClient:refreshClient};
   })();
 
@@ -4216,39 +4249,6 @@ body.bot-drawer-open{overflow:hidden;}
     return {load:load};
   })();
 
-  // The media payload is deliberately rendered after the shared message path:
-  // audio must never become an <img>, while unavailable non-image media keeps
-  // a truthful label instead of inheriting the image placeholder.
-  const renderMessageBase=appendMessage;
-  appendMessage=function(root,m){
-    renderMessageBase(root,m);
-    const message=root&&root.lastElementChild;
-    if(!message)return;
-    const rows=Array.from(message.querySelectorAll('.bot-media-coverage > *'));
-    (m.media||[]).slice(0,rows.length).forEach((item,index)=>{
-      const row=rows[index];
-      const kind=String(item.media_kind||'').toLowerCase();
-      const label=String(item.media_label||(kind==='audio'?'Аудіо':kind==='video'?'Відео':'Вкладення'));
-      const publicUrl=safeHttpUrl(item.public_url);
-      if(kind==='audio'&&publicUrl&&(row.tagName==='A'||row.tagName==='DIV')){
-        const audio=document.createElement('audio');audio.controls=true;audio.preload='metadata';audio.src=publicUrl;audio.setAttribute('aria-label',label);audio.addEventListener('error',()=>{audio.replaceWith(document.createTextNode(label+' недоступне'));});
-        const caption=node('span','bot-msg-meta',label);row.replaceChildren(audio,caption);return;
-      }
-      if((kind==='story'||kind==='repost')&&publicUrl&&row.tagName==='DIV'){
-        const link=document.createElement('a');link.href=publicUrl;link.target='_blank';link.rel='noopener noreferrer';link.style.cssText='display:inline-flex;flex-direction:column;gap:3px;margin:2px 0;color:inherit;text-decoration:none;';
-        const image=document.createElement('img');image.src=publicUrl;image.alt=label;image.loading='lazy';image.style.cssText='width:86px;height:66px;object-fit:cover;border-radius:6px;border:1px solid rgba(148,163,184,.35);';
-        link.append(image,node('span','bot-msg-meta',label));row.replaceWith(link);return;
-      }
-      if(kind==='audio'&&!publicUrl){
-        const first=row.firstChild;
-        if(first&&first.nodeType===Node.TEXT_NODE&&!String(first.nodeValue||'').startsWith(label+' · '))first.nodeValue=label+' · '+first.nodeValue;
-      }
-      if(kind==='video'&&publicUrl&&(row.tagName==='A'||row.tagName==='DIV')){
-        const video=document.createElement('video');video.controls=true;video.preload='metadata';video.src=publicUrl;video.setAttribute('aria-label',label);video.style.cssText='max-width:320px;max-height:220px;border-radius:6px;';video.addEventListener('error',()=>{video.replaceWith(document.createTextNode(label+' недоступне'));});
-        const caption=node('span','bot-msg-meta',label);row.replaceChildren(video,caption);
-      }
-    });
-  };
   let initialTab='overview';
   try{ initialTab=localStorage.getItem('bot_tab')||'overview'; }catch(e){}
   const initialQuery=new URLSearchParams(window.location.search);
