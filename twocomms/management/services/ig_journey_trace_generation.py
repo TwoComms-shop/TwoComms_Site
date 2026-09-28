@@ -28,7 +28,7 @@ from management.services.ig_journey_trace_store import (
 from management.services.ig_turn_lineage import turn_lineage
 
 
-PROMPT_VERSION = "journey-trace.text.v2.medium"
+PROMPT_VERSION = "journey-trace.text.v3.medium"
 MAX_CLIENTS = 6
 _ROLES = {"user", "manager", "model"}
 
@@ -59,6 +59,14 @@ Do not infer image contents: media bytes are unavailable. A media placeholder al
 does not establish a certificate, receipt, print or payment. Persisted message text
 can support a discussion about those topics; unsupported media facts must be omitted.
 Preserve returns, retries, negative reactions, objections, waits and real handoffs.
+A cited request or promise to clarify with management is a waiting discussion:
+use reason_code manager_discussion and kind waiting at the affected current node
+(from_node and to_node may be equal). Cite the customer's question together with
+the clarification reply. Do not turn this promise into a confirmed handoff or a
+business_decision. Ordinary manager replies do not imply escalation.
+Keep concerns at their affected stage, including delivery/carrier delays during
+fulfillment, rather than moving every concern to selection or payment. Separate
+concerns at different stages; do not declare resolution from a promise alone.
 Business meanings of easily confused nodes:
 - prize_candidate is a competition/giveaway winner, prize certificate, or a free
   prize request. prize_decision is discussion of the team's prize conditions.

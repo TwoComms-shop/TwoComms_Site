@@ -76,6 +76,7 @@ assert.ok(short.edges.every(e=>!['offer_correction','configuration_correction'].
 journey.showPossible=false;journey.mapMode='actual';
 assert.equal(journey.presentGraph(sourceGraph,snapshot).nodes.length,1);
 const claim={relation:'client_report_context',evidence_refs:[{kind:'message',id:1}]};
+assert.equal(witnessed({...claim,relation:'advertising_attribution'}),false);assert.equal(contextual({...claim,relation:'advertising_attribution'}),true);
 assert.equal(witnessed(claim),false);assert.equal(contextual(claim),true);
 const report={id:'website',producer:'website_order_report',semantic_key:'website_order_report'};
 const traceSource={transcript_reconstruction:{},trace_node_ids:['trace'],nodes:[{id:'trace'},report],edges:[]};
@@ -138,6 +139,7 @@ const separate=journey.mergePayment({nodes:[{id:'a',semantic_key:'awaiting_payme
 const select=selectionView({schema:'journey-selection.v1',total:2,items:[{label:'Товар',required:true,status:'complete'},{label:'Розмір',required:true,status:'open'}]});
 assert.equal(select.completed,1);assert.equal(select.total,2);
 assert.equal(selectionView({schema:'journey-selection.v1',total:null,items:[{label:'Товар',required:true,status:'complete'}]}).known,false);
+assert.ok(composed.nodes.some(n=>n.semantic_key==='advertising_entry'));
 assert.ok(composed.nodes.some(n=>n.selection_progress));
 assert.equal(composed.nodes.filter(n=>['catalog_discovery','configured_line'].includes(n.structural_key||n.semantic_key)).length,1);
 const geometry=window.TwcJourneyGeometry;
@@ -303,4 +305,18 @@ assert.equal(presented.nodes.filter(n=>n.presentation_event?.tone==='warning').l
 assert.equal(presented.edges.length,1); // no invented causal bypass
 """
         result = subprocess.run([node, "-e", program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cart_presentation_preserves_lines_and_original_edges(self):
+        source = (Path(__file__).parent / "static/management/ig_journey.js").read_text().replace("window.TwcJourney={create:options=>new Journey(options)};", "window.TwcJourney={Journey,cartView};")
+        program = "global.window={};\n" + source + r"""
+const assert=require('node:assert/strict');const {Journey,cartView}=window.TwcJourney;
+Journey.prototype.closePanel.call({selected:null,selectedEdge:null,buttons:new Map(),edgeButtons:new Map(),detailButtons:new Map(),objectionButtons:new Map(),queueLayout(){}},false);
+const cart={schema:'journey-cart.v1',line_count:2,item_count:3,ready_count:1,lines:[{line_id:'a',quantity:2,fields:{total:1,completed:1,items:[{required:true,label:'Size',status:'complete'}]}},{line_id:'b',quantity:1,fields:{total:1,completed:0,items:[{required:true,label:'Size',status:'open'}]}}]};
+const view=cartView(cart);assert.equal(view.completed,1);assert.equal(view.total,2);assert.match(view.label,/2 поз. · 3 шт./);
+const graph={nodes:[{id:'pick',semantic_key:'catalog_discovery',selection_cart:cart},{id:'configured',semantic_key:'configured_line'},{id:'quote',semantic_key:'quoted_offer'}],edges:[{id:'inside',from_node_id:'pick',to_node_id:'configured'},{id:'out',from_node_id:'configured',to_node_id:'quote'}],inline_main_ids:['pick','configured','quote']};
+const result=Journey.prototype.mergeSelection.call({},graph),pick=result.nodes.find(n=>n.id==='pick');
+assert.equal(pick.selection_cart.lines.length,2);assert.equal(pick.composite_edges[0].id,'inside');assert.equal(result.edges[0].from_node_id,'pick');assert.equal(result.edges[0].id,'out');
+"""
+        result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

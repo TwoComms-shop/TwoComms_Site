@@ -376,3 +376,22 @@ class ContextNoteInjectionTests(TestCase):
             sysi.index("ІСТОРИЧНА-ПАМЯТЬ-950"),
             sysi.index("ПОТОЧНА-ІСТИНА-2680"),
         )
+
+
+class UnresolvedAdvertisingContextTests(TestCase):
+    def test_ad_identifier_without_mapping_does_not_invent_product_or_price(self):
+        client = IgClient.get_or_create_for_sender('unmapped-ad-price')
+        client.ad_id = 'new-ad'
+        note = bot_memory.client_context_note(client)
+        self.assertIn('конкретний товар не підтверджено', note)
+        self.assertIn('Не вгадуй товар чи ціну', note)
+
+    def test_ambiguous_mapping_requires_clarification(self):
+        from management.models import BotAdCampaign
+        client = IgClient.get_or_create_for_sender('ambiguous-ad-price')
+        client.ad_id = 'duplicate'
+        for theme in ('hoodie', 'tshirt'):
+            BotAdCampaign.objects.create(ad_id='duplicate', theme=theme)
+        note = bot_memory.client_context_note(client)
+        self.assertIn('не підтверджено однозначним мапінгом', note)
+        self.assertNotIn('найімовірніше цікавить', note)

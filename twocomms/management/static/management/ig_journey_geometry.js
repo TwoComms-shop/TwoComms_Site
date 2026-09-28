@@ -3,6 +3,7 @@
   'use strict';
   const rows = [
     ['inbound',0,0,'message','Звернення'],
+    ['advertising_entry',.5,-1,'megaphone','З реклами'],
     ['ad_resolved_product',1,-.5,'shirt','Товар відомий'],
     ['catalog_discovery',1,0,'shirt','Підбір товару'],
     ['photo_reference',1,2,'image','Фото'],
@@ -55,7 +56,7 @@
   // collaboration's two rows fan out/in only through registry transitions.
   const fullCells={
     website_order_report:[2,3],channel_contact_report:[5,3],client_order_context:[8,3],client_order_shipping:[9,3],client_order_delivery:[10,3],client_order_contact:[9,3],
-    inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[3,4],
+    advertising_entry:[0,3],inbound:[0,4],ad_resolved_product:[1,3],catalog_discovery:[3,4],
     collaboration:[1,1],collaboration_designer:[2,0],collaboration_partnership:[3,0],
     collaboration_dropship:[4,0],collaboration_wholesale_store:[2,1],
     collaboration_creator:[3,1],collaboration_other:[4,1],business_decision:[5,1],
@@ -99,7 +100,7 @@
     const byId=new Map(nodes.map(n=>[n.id,n]));
     const main=mainIds.filter(id=>byId.has(id));
     const cap=Math.max(3,Math.min(7,Math.floor(width/80)));
-    const factual=edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context'].includes(e.relation)&&(e.evidence_refs||[]).length);
+    const factual=edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context','advertising_attribution','moderation_context'].includes(e.relation)&&(e.evidence_refs||[]).length);
     const neighbors=id=>{
       const incident=factual.filter(e=>e.from_node_id===id||e.to_node_id===id);
       // Trace indices are transcript order, not business-state authority. Keep
@@ -151,7 +152,7 @@
       occupied.add(col);slots.set(id,{col,row:1});
     }
     const visible=new Set(slots.keys());
-    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
+    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context','advertising_attribution','moderation_context'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
     const result=edges.filter(e=>visible.has(e.from_node_id)&&visible.has(e.to_node_id)&&(!e.structural_path||(!returns.has(e.outcome)&&!factualPairs.has(e.from_node_id+'\0'+e.to_node_id))));
     // Only canonical directed paths may bridge omitted steps. No chronology or
     // coordinate adjacency is ever promoted into an observed edge.
@@ -266,7 +267,7 @@
       if(!byId.has(id))continue;
       if(byId.get(id).presentation_event){boxes.push({left:p.x-7,right:p.x+7,top:p.y-7,bottom:p.y+7});continue;}
       boxes.push({left:p.x-23,right:p.x+23,top:p.y-23,bottom:p.y+23});
-      boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(byId.get(id).selection_progress||byId.get(id).consent_progress||byId.get(id).payment_progress||(byId.get(id).timers||[]).some(t=>t.kind==='invoice_expiry')?72:full?53:39)});
+      boxes.push({left:p.x-halfLabel-1,right:p.x+halfLabel+1,top:p.y+21,bottom:p.y+(byId.get(id).semantic_key==='advertising_entry'||byId.get(id).selection_progress||byId.get(id).consent_progress||byId.get(id).payment_progress||(byId.get(id).timers||[]).some(t=>t.kind==='invoice_expiry')?72:full?53:39)});
     }
     let returnTrack=0;const labelBoxes=[];
     const minY=Math.min(...[...positions.values()].map(p=>p.y));
@@ -356,6 +357,7 @@
   // Keep the established v5 branching arrangement; add breathing room and
   // subtle semantic regions without replacing the complete connected graph.
   const regions=[
+    ['Рекламний вхід',['advertising_entry','ad_resolved_product']],
     ['Співпраця',['collaboration','collaboration_designer','collaboration_partnership','collaboration_dropship','collaboration_wholesale_store','collaboration_creator','collaboration_other','business_decision']],
     ['Питання та робота',['information_question','information_resolved','employment','employment_response']],
     ['Від вибору до покупки',['inbound','catalog_discovery','configured_line','quoted_offer','awaiting_payment','settlement','fulfillment','repeat_interest','new_purchase_interest']],

@@ -422,8 +422,12 @@ def client_context_note(client, *, ad_resolution=None) -> str | None:
             )
         elif camp and camp.theme:
             parts.append(f"клієнт з реклами «{camp.title or client.ad_title}», тема: {camp.theme}")
-        elif client.ad_title:
-            parts.append(f"клієнт прийшов з реклами: «{client.ad_title}»")
+        elif client.ad_title or client.ad_id or str(client.ad_source or "").upper() == "ADS":
+            parts.append(
+                f"є рекламний контекст: «{client.ad_title or client.ad_id or 'оголошення без назви'}»; "
+                "конкретний товар не підтверджено однозначним мапінгом. Не вгадуй товар чи ціну "
+                "за загальним заголовком: уточни, про яку річ запитує клієнт."
+            )
     except Exception:
         pass
     if (client.purchases_count or 0) > 0:

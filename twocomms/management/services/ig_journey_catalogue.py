@@ -1,5 +1,6 @@
 """Static possible paths from the canonical registry, never client history."""
 from functools import lru_cache
+from storefront.services.fact_registry import free_shipping_threshold
 from management.services.ig_funnel_nodes import DEFINITION_VERSION, semantic_definitions, structural_transitions
 
 PLANNED_AUTOMATIONS = {
@@ -19,6 +20,7 @@ PLANNED_AUTOMATIONS = {
 def journey_catalogue():
     return {
         "version": DEFINITION_VERSION,
+        "free_shipping_threshold": str(free_shipping_threshold()),
         "definitions": [{"key": item.key, "label": item.ui_label,
             "route_keys": list(item.route_keys), "semantic_kind": item.semantic_kind,
             **({"implementation_status": "planned", "implementation_note": PLANNED_AUTOMATIONS[item.key]}

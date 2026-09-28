@@ -343,3 +343,38 @@ class JourneyTraceProjectionTests(TestCase):
         self.assertEqual(graph["trace_cases"][0]["outcome"], "unknown")
         self.assertEqual(graph["trace_cases"][0]["attempt_edge_ids"], [graph["edges"][-1]["id"]])
         self.assertFalse(graph["edges"][-1]["marker_eligible"])
+
+
+class StageAttentionProjectionTests(TestCase):
+    def test_manager_question_is_anchored_to_stage_before_handoff(self):
+        from types import SimpleNamespace
+        from management.services.ig_journey_trace_projection import _step_presentation
+        row = SimpleNamespace(trace_source_texts={1: 'Чи будуть бежеві худі?', 2: 'Зараз уточнимо у керівництва.'})
+        step = {'from_node': 'availability_question', 'to_node': 'information_question', 'kind': 'handoff', 'reason_code': 'manager_discussion', 'evidence': [{'message_id': 1, 'role': 'user'}, {'message_id': 2, 'role': 'model'}]}
+        data = _step_presentation(step, row, node_id='availability', edge_id='handoff')
+        self.assertEqual(data['topic'], 'manager')
+        self.assertEqual(data['affected_action'], 'availability_question')
+        self.assertEqual(data['owner'], 'manager')
+        self.assertTrue(data['marker_eligible'])
+        self.assertEqual(data['outcome'], 'unknown')
+
+    def test_carrier_delay_and_price_objection_keep_distinct_stage_owners(self):
+        from types import SimpleNamespace
+        from management.services.ig_journey_trace_projection import _step_presentation
+        row = SimpleNamespace(trace_source_texts={1: 'Нова пошта довго доставляє посилку', 2: 'Дуже дорого'})
+        cases = []
+        for key, stage in [(1, 'fulfillment'), (2, 'quoted_offer')]:
+            step = {'from_node': stage, 'to_node': 'objection_case', 'kind': 'objection', 'reason_code': 'objection_raised', 'evidence': [{'message_id': key, 'role': 'user'}]}
+            cases.append(_step_presentation(step, row, node_id=stage, edge_id=str(key)))
+        self.assertEqual([c['affected_action'] for c in cases], ['fulfillment', 'quoted_offer'])
+        self.assertEqual(cases[0]['owner'], 'carrier')
+        self.assertEqual(cases[0]['topic'], 'delivery')
+        self.assertEqual(cases[1]['topic'], 'price')
+        self.assertTrue(all(c['marker_eligible'] for c in cases))
+
+    def test_routine_manager_conversation_is_not_escalation(self):
+        from types import SimpleNamespace
+        from management.services.ig_journey_trace_projection import _step_presentation
+        row = SimpleNamespace(trace_source_texts={1: 'Менеджер відповів: є в наявності'})
+        step = {'from_node': 'availability_question', 'to_node': 'information_question', 'kind': 'handoff', 'reason_code': 'manager_discussion', 'evidence': [{'message_id': 1, 'role': 'manager'}]}
+        self.assertFalse(_step_presentation(step, row, node_id='a')['marker_eligible'])

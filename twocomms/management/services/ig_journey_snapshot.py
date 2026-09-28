@@ -1220,6 +1220,18 @@ def build_journey_snapshot(client, *, view_episode_id=None):
             except Exception:
                 # An optional progress badge cannot make the customer's chat fail.
                 graph["coverage"]["selection_requirements"] = "projection_unavailable"
+    if episode and not is_history:
+        selection_node = next((node for node in graph["nodes"] if node["id"] == "guide:selection"), None)
+        if selection_node is not None:
+            from management.services.ig_journey_cart import selection_cart
+            try:
+                cart = selection_cart(client_id=client_id, episode_id=episode["id"])
+                if cart is not None:
+                    selection_node["selection_cart"] = cart
+            except Exception:
+                graph["coverage"]["selection_cart"] = "projection_unavailable"
+    from management.services.ig_journey_moderation import append_moderation
+    graph = append_moderation(graph, client_id=client_id, is_history=is_history)
     from management.services.ig_journey_client_orders import append_client_order_context
     graph = append_client_order_context(graph, client_id=client_id, is_history=is_history,
         bound_order_id=episode["intended_order_id"] if episode else None)

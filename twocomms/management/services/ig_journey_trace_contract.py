@@ -12,7 +12,7 @@ from collections import Counter
 
 
 SEMANTIC_NODE_KEYS = frozenset({
-    "inbound", "ad_resolved_product", "catalog_discovery", "photo_reference",
+    "inbound", "advertising_entry", "ad_resolved_product", "catalog_discovery", "photo_reference",
     "availability_question", "stock_wait", "restock_consent", "custom_print",
     "dtf_only", "custom_brief", "mockup_current_acceptance", "prize_candidate",
     "prize_decision", "information_question", "information_resolved",
@@ -24,7 +24,7 @@ SEMANTIC_NODE_KEYS = frozenset({
     "fulfillment", "objection_case", "channel_consent", "channel_grant_checked",
     "post_purchase_contact_offer", "post_sale_request", "post_sale_case",
     "ugc_assessment", "reward_entitlement", "reward_delivery", "reward_use",
-    "repeat_interest", "new_purchase_interest",
+    "repeat_interest", "new_purchase_interest", "payment_reminder_consent", "payment_reminder",
 })
 KINDS = frozenset({"progress", "return", "retry", "objection", "negative", "waiting", "handoff"})
 REASON_CODES = frozenset({

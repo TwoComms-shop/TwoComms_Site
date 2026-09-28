@@ -95,8 +95,8 @@ def _transition_snapshot(snapshot):
     return value
 
 
-def _selected_values(line):
-    values = {(key,): line[key] for key in _SELECTION_KEYS if key != "option_values"
+def _selected_values(line, *, include_quantity=False):
+    values = {(key,): line[key] for key in (*_SELECTION_KEYS, *(("quantity",) if include_quantity else ())) if key != "option_values"
               and line.get(key) not in (None, "", {}, [])}
     options = line.get("option_values")
     if isinstance(options, dict):
@@ -105,20 +105,20 @@ def _selected_values(line):
     return values
 
 
-def _owned_evidence(session, snapshot, active_line, reset_floor):
+def _owned_evidence(session, snapshot, active_line, reset_floor, *, rows=None, include_quantity=False):
     """Trace every selected value to an owned post-reset change, not a carryover.
 
     A new unrelated turn cannot rehabilitate a legacy/bootstrap selection or a
     pre-reset value. Each current selected field must occur in a continuous
     bounded transition chain at the change that established its current value.
     """
-    rows = list(IgCommerceSelectionTransition.objects.filter(
+    rows = rows if rows is not None else list(IgCommerceSelectionTransition.objects.filter(
         session_id=session.pk, to_revision__lte=session.revision,
     ).order_by("-to_revision").values(
         "id", "from_revision", "to_revision", "previous_snapshot", "next_snapshot",
         "source_message_id", "source_message__client_id", "source_message__role",
     )[:TRANSITION_LIMIT])
-    selected = _selected_values(active_line)
+    selected = _selected_values(active_line, include_quantity=include_quantity)
     needed = set(selected)
     if not needed or ("product_id",) not in needed:
         return None
@@ -136,7 +136,7 @@ def _owned_evidence(session, snapshot, active_line, reset_floor):
         before = _line(row["previous_snapshot"], active_line["line_id"]) or {}
         if after is None:
             return None
-        after_values, before_values = _selected_values(after), _selected_values(before)
+        after_values, before_values = _selected_values(after, include_quantity=include_quantity), _selected_values(before, include_quantity=include_quantity)
         proven = {key for key in needed
                   if after_values.get(key) == selected[key] and before_values.get(key) != after_values.get(key)}
         if proven:

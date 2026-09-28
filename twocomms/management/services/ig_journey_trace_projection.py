@@ -49,10 +49,20 @@ _FORCED_CORRECTION = re.compile(r"(?:не той|неправильний|неп
 _ROUTINE_QUESTION = re.compile(r"(?:який|які|какой|какие|what) (?:розмір|заміри|размер|замеры|size|measurements)|(?:є|есть) (?:в наявності|в наличии)", re.I)
 
 
+_MANAGER_CLARIFY = re.compile(r"(?:уточн|спита|запита|дізна|уточн|спрош|узна).{0,65}(?:менеджер|керівниц|начальств|виробниц|руковод|manager)|(?:переда|підключ|подключ).{0,35}(?:менеджер|manager)|(?:поклич|позов|connect me).{0,25}(?:менеджер|manager)", re.I)
+_DELIVERY_ISSUE = re.compile(r"(?:достав|посилк|посылк|відправ|отправ|нова пошта|новая почта|перевізник|перевозчик).{0,65}(?:затрим|задерж|довго|долго|загуб|потер|не (?:прийш|прийшла|приїх|приш|пришла))|(?:затрим|задерж|загуб|потер).{0,45}(?:достав|посилк|посылк|пошт|почт)", re.I)
+_CARRIER = re.compile(r"нова пошта|новая почта|\bНП\b|перевізник|перевозчик|carrier", re.I)
+
+
 def _materiality(step, row):
     sources = getattr(row, "trace_source_texts", {})
     texts = [sources.get(ref["message_id"], "") for ref in step["evidence"] if ref["role"] == "user"]
     reason = step["reason_code"]
+    all_texts = [sources.get(ref["message_id"], "") for ref in step["evidence"]]
+    if (step["kind"] == "handoff" or reason == "manager_discussion") and any(_MANAGER_CLARIFY.search(text) and not re.search(r"не (?:треба|потрібно|будемо|буду|нужно|будем).{0,30}(?:уточн|спита|спрош|переда)", text, re.I) for text in all_texts):
+        return "manager_question", "manager", "cited_manager_clarification"
+    if any(_DELIVERY_ISSUE.search(text) and not re.search(r"без (?:затрим|задерж)|затримки немає|задержек нет|не (?:затрим|задерж)", text, re.I) for text in texts):
+        return "external_delay" if any(_CARRIER.search(text) for text in texts) else "material_concern", "delivery", "cited_customer_delivery_difficulty"
     if reason in {"objection_raised", "payment_problem", "changed_request"}:
         if reason == "payment_problem" and any(_PAYMENT_FAILURE.search(text) for text in texts):
             return "active_blocker", "payment", "cited_customer_payment_difficulty"
@@ -77,11 +87,12 @@ def _materiality(step, row):
 
 def _step_presentation(step, row, *, node_id, edge_id=None):
     materiality, topic, basis = _materiality(step, row)
-    action = step["from_node"] if step["to_node"] == "objection_case" else step["to_node"]
+    action = step["from_node"] if step["to_node"] == "objection_case" or topic == "manager" else step["to_node"]
     if action == "objection_case" or not action:
         action = None
     proven_impact = basis in {"cited_customer_payment_difficulty", "cited_customer_purchase_condition",
-                              "cited_customer_price_concern", "cited_customer_configuration_problem"}
+                              "cited_customer_price_concern", "cited_customer_configuration_problem",
+                              "cited_manager_clarification", "cited_customer_delivery_difficulty"}
     anchored = bool(action and node_id)
     return {
         "presentation_schema_version": PRESENTATION_SCHEMA_VERSION,
@@ -92,7 +103,7 @@ def _step_presentation(step, row, *, node_id, edge_id=None):
         "source_edge_id": edge_id if anchored else None,
         "source_node_id": node_id if anchored else None,
         "affected_action": action, "status": "unresolved" if proven_impact else "recorded",
-        "outcome": "unknown", "owner": None,
+        "outcome": "unknown", "owner": "manager" if topic == "manager" else "carrier" if materiality == "external_delay" else None,
     }
 
 
@@ -246,7 +257,7 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
                 "tone": "recorded",
                 "authority": "none", "provenance": "transcript_reconstruction", "evidence_refs": refs, "repeated_count": 1})
             edge = result["edges"][-1]
-        action_node = anchors[step["from_node"]] if step["to_node"] == "objection_case" else target
+        action_node = anchors[step["from_node"]] if step["to_node"] == "objection_case" or _materiality(step, row)[1] == "manager" else target
         presentation = _step_presentation(step, row, node_id=action_node["id"], edge_id=identifier)
         edge.update(presentation)
         edge["connection_kind"] = "interpreted_transition"
@@ -278,7 +289,7 @@ def append_journey_trace(graph, *, client_id, episode_id=None, is_history=False)
                 case["last_step_index"] = step_index
             edge["case_id"] = case["id"]
             edge["marker_eligible"] = presentation["marker_eligible"] and case["source_edge_id"] == identifier
-            edge["tone"] = "warning" if edge["marker_eligible"] else "recorded"
+            edge["tone"] = ("manager" if presentation["topic"] == "manager" else "warning") if edge["marker_eligible"] else "recorded"
         if step["to_node"] == "objection_case" and target.get("presentation_kind") == "interpretation":
             target.update({"display_role": "anchored_case" if presentation["source_edge_id"] else "unattributed_detail",
                 "marker_eligible": False, "presentation_schema_version": PRESENTATION_SCHEMA_VERSION})

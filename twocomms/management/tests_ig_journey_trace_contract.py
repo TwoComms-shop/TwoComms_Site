@@ -158,7 +158,7 @@ class JourneyTraceContractTests(unittest.TestCase):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
             and node.func.id == "route" and node.args and isinstance(node.args[0], ast.Constant)
         }
-        self.assertEqual(len(keys), 44)
+        self.assertEqual(len(keys), 47)
         self.assertEqual(SEMANTIC_NODE_KEYS, keys)
 
     def test_normalized_schema_rejects_extra_text_authority_and_invalid_coverage(self):

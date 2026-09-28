@@ -54,7 +54,7 @@ from management.models import IgFunnelNodeState
 
 logger = logging.getLogger(__name__)
 
-DEFINITION_VERSION = "funnel-node.v1.3"
+DEFINITION_VERSION = "funnel-node.v1.4"
 PROJECTOR_VERSION = "funnel-node-projector.v1"
 
 MODE_OFF = "off"
@@ -581,13 +581,16 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
     return (
         route("inbound", "Вхідне звернення", entry, "inbound",
               authority="owned_inbound_message", evidence_policy=EvidencePolicy.MESSAGE_OBSERVATION, transitions=(
-                  to("ad_resolved_product"), to("catalog_discovery"), to("photo_reference"),
+                  to("advertising_entry", "advertising_referral"), to("ad_resolved_product"), to("catalog_discovery"), to("photo_reference"),
                   to("custom_print"), to("dtf_only"), to("prize_candidate"),
                   to("information_question"), to("collaboration"), to("employment"),
                   to("spam_confirmed"), to("post_sale_request"),
               )),
+        route("advertising_entry", "З реклами", entry, "inbound",
+              authority="owned_provider_referral_or_ad_mapping", evidence_policy=EvidencePolicy.MESSAGE_OBSERVATION,
+              transitions=(to("ad_resolved_product", "ad_product_matched"), to("catalog_discovery", "ad_product_needs_clarification"))),
         route("ad_resolved_product", "Відомий товар", entry, "catalog",
-              authority="resolved_ad_or_product_reference", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("configured_line"), to("availability_question", "check_selected_availability"))),
+              authority="resolved_ad_or_product_reference", evidence_policy=EvidencePolicy.CATALOG_FACT, transitions=(to("configured_line"), to("quoted_offer", "ad_price_question"), to("availability_question", "check_selected_availability"))),
         route("catalog_discovery", "Підбір товару", entry, "catalog",
               authority="customer_need_or_catalog_selection", evidence_policy=EvidencePolicy.CUSTOMER_STATEMENT, transitions=(to("configured_line"), to("availability_question", "check_selected_availability"))),
         route("photo_reference", "Фото-референс", entry, "photo",
