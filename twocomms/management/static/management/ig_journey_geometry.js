@@ -43,6 +43,7 @@
     ['post_purchase_contact_offer',9,7,'message','Після покупки'],
     ['post_sale_request',1,5,'return','Сервісний запит'],
     ['post_sale_case',8,5,'return','Сервіс'],
+    ['story_interactions',1,7,'image','Сторис'],
     ['ugc_assessment',10,7,'image','Перевірка UGC'],
     ['reward_entitlement',11,7,'gift','Право на нагороду'],
     ['reward_delivery',12,7,'gift','Видача нагороди'],
@@ -66,7 +67,7 @@
     photo_reference:[1,7],availability_question:[2,7],stock_wait:[3,7],restock_consent:[4,7],prize_candidate:[1,8],prize_decision:[3,8],
     payment_help:[6,6],payment_reminder_consent:[7,5],payment_reminder:[7,6],objection_case:[5,7],post_sale_request:[1,9],post_sale_case:[9,5],
     channel_consent:[8,5],channel_grant_checked:[8,6],post_purchase_contact_offer:[10,6],
-    ugc_assessment:[11,6],reward_entitlement:[11,7],reward_delivery:[10,7],reward_use:[9,7],
+    story_interactions:[1,10],ugc_assessment:[11,6],reward_entitlement:[11,7],reward_delivery:[10,7],reward_use:[9,7],
     repeat_interest:[9,4],new_purchase_interest:[10,4],spam_confirmed:[0,9]
   };
   const intentKeys = {catalog:'catalog_discovery',custom_print:'custom_print',dtf:'dtf_only',
@@ -100,7 +101,7 @@
     const byId=new Map(nodes.map(n=>[n.id,n]));
     const main=mainIds.filter(id=>byId.has(id));
     const cap=Math.max(3,Math.min(7,Math.floor(width/80)));
-    const factual=edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context','advertising_attribution','moderation_context'].includes(e.relation)&&(e.evidence_refs||[]).length);
+    const factual=edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context','advertising_attribution','moderation_context','story_context'].includes(e.relation)&&(e.evidence_refs||[]).length);
     const neighbors=id=>{
       const incident=factual.filter(e=>e.from_node_id===id||e.to_node_id===id);
       // Trace indices are transcript order, not business-state authority. Keep
@@ -152,7 +153,7 @@
       occupied.add(col);slots.set(id,{col,row:1});
     }
     const visible=new Set(slots.keys());
-    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context','advertising_attribution','moderation_context'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
+    const factualPairs=new Set(edges.filter(e=>!['route','prerequisite','client_scope_assignment','client_order_lifecycle','client_report_context','advertising_attribution','moderation_context','story_context'].includes(e.relation)&&(e.evidence_refs||[]).length).map(e=>e.from_node_id+'\0'+e.to_node_id));
     const result=edges.filter(e=>visible.has(e.from_node_id)&&visible.has(e.to_node_id)&&(!e.structural_path||(!returns.has(e.outcome)&&!factualPairs.has(e.from_node_id+'\0'+e.to_node_id))));
     // Only canonical directed paths may bridge omitted steps. No chronology or
     // coordinate adjacency is ever promoted into an observed edge.
@@ -367,6 +368,7 @@
     ['Приз',['prize_candidate','prize_decision']],
     ['Після покупки',['post_sale_case','channel_consent','channel_grant_checked','post_purchase_contact_offer','ugc_assessment','reward_entitlement','reward_delivery','reward_use']],
     ['Сервісне звернення',['post_sale_request']],
+    ['Сторис та спільнота',['story_interactions']],
     ['Контекст клієнта · сайт та інші канали',['website_order_report','channel_contact_report','client_order_context','client_order_contact']]
   ];
   function atlas({nodes,edges=[],width}){

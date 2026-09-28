@@ -320,3 +320,46 @@ assert.equal(pick.selection_cart.lines.length,2);assert.equal(pick.composite_edg
 """
         result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class CompletedClientJourneyFocusTests(SimpleTestCase):
+    def graph(self):
+        return {'nodes': [
+            {'id': 'trace:fulfillment', 'semantic_key': 'fulfillment', 'current': True, 'interpreted_focus': True},
+            {'id': 'client-order:321', 'semantic_key': 'client_order_context', 'state': 'complete',
+             'fulfillment_progress': {'step': 4}, 'facts': [{'source': 'order.current'}]},
+        ]}
+
+    def test_completed_client_uses_carrier_result_without_binding_order_to_episode(self):
+        graph = self.graph()
+        focus = finalize_display_focus(graph, client_stage='done')
+        self.assertEqual(focus['node_id'], 'client-order:321')
+        self.assertEqual(focus['scope'], 'client_order_context')
+        self.assertEqual(focus['authority'], 'order_record')
+        self.assertEqual(graph['last_dialogue_focus_id'], 'trace:fulfillment')
+        self.assertFalse(graph['nodes'][0]['current'])
+
+    def test_new_purchase_history_multiple_orders_and_unknown_delivery_do_not_advance(self):
+        for stage, history, extra, step in [('checkout',False,False,4), ('done',True,False,4), ('done',False,True,4), ('done',False,False,1)]:
+            graph=self.graph();graph['nodes'][1]['fulfillment_progress']['step']=step
+            if extra:graph['nodes'].append({**graph['nodes'][1], 'id':'client-order:other'})
+            self.assertEqual(finalize_display_focus(graph,client_stage=stage,is_history=history)['node_id'],'trace:fulfillment')
+
+
+class DeliveryProgressContractTests(SimpleTestCase):
+    def test_done_without_carrier_and_created_waybill_are_explicit(self):
+        from types import SimpleNamespace
+        from management.services.ig_journey_delivery import delivery_progress
+        from django.utils import timezone
+        order=SimpleNamespace(status='done',tracking_number='123',tracking_status_code=None,tracking_terminal_at=None,tracking_provider_event_at=None)
+        p=delivery_progress(order,{'kind':'order','id':1})
+        self.assertEqual(p['step'],1)
+        self.assertTrue(p['completion_unverified'])
+        order.status='ship';order.tracking_status_code=1
+        self.assertTrue(delivery_progress(order,{})['carrier_pending_while_shipped'])
+        order.tracking_status_code=7;order.tracking_provider_event_at=timezone.now()
+        self.assertEqual(delivery_progress(order,{})['step'],3)
+        order.status='done';order.tracking_status_code=9;order.tracking_terminal_at=timezone.now()
+        self.assertEqual(delivery_progress(order,{})['step'],4)
+        order.status='cancelled'
+        self.assertEqual(delivery_progress(order,{})['step'],0)

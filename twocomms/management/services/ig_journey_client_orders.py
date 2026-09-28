@@ -7,6 +7,7 @@ from django.db.models import Q
 
 from management.models import IgOrderAssignment, IgOrderAssignmentEvent
 from orders.fulfillment_truth import nova_poshta_delivery_confirmed_at
+from management.services.ig_journey_delivery import delivery_progress
 
 
 ORDER_LIMIT = 10
@@ -126,17 +127,8 @@ def _node(row, event):
         refs.append(event_ref)
         fact("linked", "Прив’язку зафіксовано", _iso(event["created_at"]), evidence=[assignment_ref, event_ref],
              captured_at=event["created_at"], source="order_assignment_event", format="datetime")
-    cancelled = order.status == "cancelled"
-    try:
-        carrier_code = int(order.tracking_status_code or 0)
-    except (TypeError, ValueError):
-        carrier_code = 0
-    in_transit = bool(order.tracking_number and order.tracking_provider_event_at
-                      and carrier_code == 7)
-    step = 0 if cancelled else 4 if delivery_at else 3 if in_transit else 2 if order.status == "ship" else 1
     return {
-        "fulfillment_progress": {"step": step, "cancelled": cancelled,
-                                "evidence_refs": [order_ref]},
+        "fulfillment_progress": delivery_progress(order, order_ref),
         "id": f"client-order:{order.id}", "semantic_key": "client_order_context", "producer": _PRODUCER,
         "scope": "client", "client_id": row["client_id"], "episode_id": None,
         "label": "Замовлення з сайту" if order.source == "web" else "Пов’язане замовлення",

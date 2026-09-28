@@ -1,7 +1,7 @@
 """Choose one display focus after read-only journey enrichers have completed."""
 
 
-def finalize_display_focus(graph, *, is_history=False):
+def finalize_display_focus(graph, *, is_history=False, client_stage=None):
     nodes = graph.get("nodes", [])
     candidates = [node for node in nodes if node.get("route_focus")]
     provenance, authority = "accepted_conversation_route", "accepted_route"
@@ -13,6 +13,18 @@ def finalize_display_focus(graph, *, is_history=False):
         candidates = [node for node in nodes if node.get("current")]
         provenance, authority = "recorded_history" if is_history else "recorded_event", "display_only"
     chosen = candidates[0] if len(candidates) == 1 else None
+    # A completed client may have finished in another channel. The unique
+    # carrier-confirmed linked order is a client fact, not an episode binding.
+    # Never advance a new active purchase or overwrite an accepted route.
+    if (not is_history and client_stage == "done" and chosen
+            and chosen.get("interpreted_focus") and chosen.get("semantic_key") == "fulfillment"
+            and not any(n.get("route_focus") for n in nodes)):
+        orders = [n for n in nodes if n.get("semantic_key") == "client_order_context"]
+        if (len(orders) == 1 and orders[0].get("state") == "complete"
+                and orders[0].get("fulfillment_progress", {}).get("step") == 4):
+            graph["last_dialogue_focus_id"] = chosen["id"]
+            chosen = orders[0]
+            provenance, authority = "linked_order_state", "order_record"
     if chosen and chosen.get("interpreted_focus"):
         provenance, authority = "transcript_reconstruction", "none"
     if chosen and chosen.get("semantic_key") == "objection_case" and chosen.get("presentation_kind") == "interpretation":
@@ -31,7 +43,7 @@ def finalize_display_focus(graph, *, is_history=False):
         "authority": authority if chosen else "none", "display_only": True,
         "freshness": (graph.get("transcript_reconstruction") or {}).get("freshness", "unknown")
             if provenance == "transcript_reconstruction" else "historical" if is_history else "current",
-        "scope": "viewed_history" if is_history else "current_dialogue",
+        "scope": "viewed_history" if is_history else "client_order_context" if provenance == "linked_order_state" else "current_dialogue",
     }
     graph["display_focus"] = focus
     for node in nodes:

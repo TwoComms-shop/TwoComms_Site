@@ -58,6 +58,16 @@ class JourneySnapshotTests(TestCase):
     def nodes(snapshot):
         return {node["id"]: node for node in snapshot["nodes"]}
 
+    def test_bound_order_exports_four_stage_progress_to_graph(self):
+        order=Order.objects.create(order_number='BOUND-DELIVERY', full_name='Test', phone='0', total_sum='0',
+            status='done',payment_status='paid',tracking_number='123',tracking_status_code=9,
+            tracking_terminal_at=timezone.now(),shipment_status='Отримано',shipment_status_updated=timezone.now())
+        self.episode(intended_order=order)
+        graph=build_journey_snapshot(self.buyer)['graph']
+        node=next(n for n in graph['nodes'] if n['id']=='guide:fulfillment')
+        self.assertEqual(node['fulfillment_progress']['step'],4)
+        self.assertEqual(node['fulfillment_progress']['evidence_refs'],[{'kind':'order','id':order.pk}])
+
     def test_no_episode_is_read_only_and_uses_only_actual_inbound(self):
         self.buyer.stage = "paid"
         self.buyer.save(update_fields=["stage"])
@@ -70,7 +80,7 @@ class JourneySnapshotTests(TestCase):
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
         # Fixed-cost privacy/trace reads plus one optional refresh-state read.
-        self.assertLessEqual(len(queries), 13)  # website report + fresh moderation-state read
+        self.assertLessEqual(len(queries), 16)  # includes bounded story candidates, owner and reset fence
         self.assertEqual(snapshot["graph"]["coverage"]["transcript_refresh"], {"status": "missing_source"})
         self.assertFalse(IgCommercialEpisode.objects.filter(client=self.buyer).exists())
         self.assertIsNone(snapshot["viewed_episode_id"])
@@ -371,7 +381,7 @@ class JourneySnapshotTests(TestCase):
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
         # Privacy, episode ownership, trace and refresh are fixed-cost optional reads.
-        self.assertLessEqual(len(queries), 21)  # website report + fresh moderation-state read
+        self.assertLessEqual(len(queries), 24)  # includes bounded story candidates, owner and reset fence
         graph = snapshot["graph"]
         self.assertEqual((graph["schema_version"], graph["version"]), (1, 1))
         self.assertEqual(len(graph["edges"]), 1)

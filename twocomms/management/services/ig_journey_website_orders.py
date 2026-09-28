@@ -28,7 +28,7 @@ def is_website_order_statement(text):
 
 _CHANNEL = re.compile(r"\b(?:telegram|телеграм\w*|тг)\b", re.I)
 _CHANNEL_PAST = re.compile(r"\b(?:я\s+(?:вже\s+|уже\s+)?(?:написав|написала|написал|перейшов|перейшла|перешел|перешла)|i\s+(?:already\s+)?(?:messaged|wrote))\b", re.I)
-_CHANNEL_REQUEST = re.compile(r"\b(?:давайте|напишіть|напишите|можна\s+(?:вам\s+)?написати|можно\s+(?:вам\s+)?написать)\b", re.I)
+_CHANNEL_REQUEST = re.compile(r"\b(?:давайте|напишіть|напишите|(?:зможете|можете)\s+(?:файлом\s+)?(?:скинути|скинуть|відправити|отправить)|можна\s+(?:вам\s+)?написати|можно\s+(?:вам\s+)?написать)\b", re.I)
 
 
 def channel_statement(text):
@@ -48,10 +48,11 @@ def _append_channel_context(result, rows, client_id):
     if not reports:
         return
     row, kind = reports[0]
+    speaker = "Менеджер" if row.get("role") == "manager" else "Клієнт"
     refs = [{"kind": "message", "id": r["id"]} for r, _ in reports[:8]]
     node_id = f"channel-contact-report:{client_id}"
-    summary = ("Клієнт повідомив, що написав у Telegram. Повідомлення в іншому каналі не перевірено."
-               if kind == "reported" else "Клієнт попросив продовжити у Telegram. Фактичний перехід ще не підтверджено.")
+    summary = (speaker + " повідомив, що написав у Telegram. Повідомлення в іншому каналі не перевірено."
+               if kind == "reported" else speaker + " запропонував продовжити у Telegram. Фактичний перехід ще не підтверджено.")
     result["nodes"].append({
         "id": node_id, "semantic_key": CHANNEL_PRODUCER, "producer": CHANNEL_PRODUCER,
         "scope": "client", "episode_id": None, "current": False, "state": "partial",
@@ -60,8 +61,8 @@ def _append_channel_context(result, rows, client_id):
         "summary": summary, "evidence_refs": refs,
         "channel_report": {"channel": "telegram", "status": kind},
         "verification": "needs_channel_check",
-        "facts": [{"id": node_id + ":message", "label": "Зі слів клієнта",
-                   "value": row["excerpt"][:700], "state": "partial", "source": "client_message",
+        "facts": [{"id": node_id + ":message", "label": "Зі слів менеджера" if row.get("role") == "manager" else "Зі слів клієнта",
+                   "value": row["excerpt"][:700], "state": "partial", "source": "manager_message" if row.get("role") == "manager" else "client_message",
                    "captured_at": row["event_at"].isoformat(), "evidence_refs": refs[:1]}],
         "layout": {"rank": 3, "lane": 2},
     })
@@ -70,8 +71,8 @@ def _append_channel_context(result, rows, client_id):
     if len(inbound) == 1:
         result["edges"].append({
             "id": node_id + ":context", "from_node_id": inbound[0]["id"], "to_node_id": node_id,
-            "relation": "client_report_context", "authority": "customer_statement",
-            "condition_label": "Зі слів клієнта · Telegram", "summary": summary,
+            "relation": "client_report_context", "authority": "manager_statement" if row.get("role") == "manager" else "customer_statement",
+            "condition_label": speaker + " · Telegram", "summary": summary,
             "evidence_refs": refs, "tone": "manager",
         })
     result["coverage"]["channel_reports"] = {"status": kind, "returned": len(reports), "displayed": 1}
@@ -91,10 +92,10 @@ def append_website_order_reports(graph, *, client_id, is_history):
     try:
         reset = IgFunnelResetAudit.objects.filter(client_id=client_id).order_by("-pk").values("reset_after_message_id")[:1]
         floor = Coalesce(Subquery(reset, output_field=BigIntegerField()), Value(0), output_field=BigIntegerField()) + 1
-        rows = list(InstagramBotMessage.objects.filter(client_id=client_id, role="user", id__gte=floor)
+        rows = list(InstagramBotMessage.objects.filter(client_id=client_id, role__in=["user", "manager"], id__gte=floor)
                     .exclude(status=InstagramBotMessage.Status.FAILED)
                     .annotate(event_at=Coalesce("provider_created_at", "created_at"), excerpt=Substr("text", 1, 4000))
-                    .order_by("-event_at", "-id").values("id", "excerpt", "event_at")[:LIMIT + 1])
+                    .order_by("-event_at", "-id").values("id", "role", "excerpt", "event_at")[:LIMIT + 1])
     except DatabaseError:
         coverage["status"] = "unavailable"
         result["coverage"]["channel_reports"]["status"] = "unavailable"
@@ -102,7 +103,7 @@ def append_website_order_reports(graph, *, client_id, is_history):
     coverage["truncated"] = len(rows) > LIMIT
     result["coverage"]["channel_reports"]["truncated"] = coverage["truncated"]
     _append_channel_context(result, rows[:LIMIT], client_id)
-    reports = [r for r in rows[:LIMIT] if is_website_order_statement(r["excerpt"])]
+    reports = [r for r in rows[:LIMIT] if r["role"] == "user" and is_website_order_statement(r["excerpt"])]
     if not reports:
         return result
     # One card summarises statements, without pretending repeated mentions are orders.

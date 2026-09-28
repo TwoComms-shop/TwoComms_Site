@@ -984,6 +984,7 @@ def _log_items(limit: int = 80):
 
 
 @login_required(login_url="management_login")
+@never_cache
 def bot_dashboard(request):
     if not _can_use_bot(request.user):
         return redirect("management_home")

@@ -95,3 +95,17 @@ class WebsiteOrderProjectionTests(TestCase):
         self.assertEqual(len(self.project(is_history=True)["nodes"]), 1)
         IgFunnelResetAudit.objects.create(client=self.client, reset_after_message_id=msg.pk)
         self.assertEqual(len(self.project()["nodes"]), 1)
+
+
+class ManagerChannelContextTests(TestCase):
+    def test_manager_invitation_is_visible_without_fabricating_transfer_or_website_order(self):
+        client=IgClient.get_or_create_for_sender('manager-channel-journey')
+        message=InstagramBotMessage.objects.create(client=client,sender_id=client.igsid,role='manager',text='Зможете файлом скинути в телеграм?')
+        InstagramBotMessage.objects.create(client=client,sender_id=client.igsid,role='manager',text='Я замовив на сайті')
+        graph={'nodes':[{'id':'entry','semantic_key':'inbound'}],'edges':[],'coverage':{},'overview_node_ids':[]}
+        result=append_website_order_reports(graph,client_id=client.pk,is_history=False)
+        channel=next(n for n in result['nodes'] if n.get('channel_report'))
+        self.assertEqual(channel['channel_report']['status'],'requested')
+        self.assertIn('Менеджер',channel['summary'])
+        self.assertEqual(channel['evidence_refs'],[{'kind':'message','id':message.pk}])
+        self.assertFalse(any(n.get('producer')=='website_order_report' for n in result['nodes']))

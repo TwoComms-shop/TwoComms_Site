@@ -803,6 +803,8 @@ def _guide_graph_nodes(nodes, milestones, focus, *, history_truncated=False):
         ))
         if node.get("waiting"):
             result[-1]["waiting"] = node["waiting"]
+        if node.get("fulfillment_progress"):
+            result[-1]["fulfillment_progress"] = node["fulfillment_progress"]
         events = milestone.get("events", [])
         if events:
             dates = sorted(event["occurred_at"] for event in events if event["occurred_at"])
@@ -1082,6 +1084,8 @@ def _bound_records(episode, nodes):
         if order:
             ref = _ref("order", order.pk)
             delivered = bool(nova_poshta_delivery_confirmed_at(order))
+            from management.services.ig_journey_delivery import delivery_progress
+            nodes["fulfillment"]["fulfillment_progress"] = delivery_progress(order, ref)
             _fact(nodes["fulfillment"], "order", "Замовлення", str(dict(Order.STATUS_CHOICES).get(order.status, "Невідомо")),
                   source="intended_order.current", ref=ref, captured_at=_iso(order.updated),
                   state="complete" if delivered else "invalidated" if order.status == "cancelled" else "partial",
@@ -1230,6 +1234,8 @@ def build_journey_snapshot(client, *, view_episode_id=None):
                     selection_node["selection_cart"] = cart
             except Exception:
                 graph["coverage"]["selection_cart"] = "projection_unavailable"
+    from management.services.ig_journey_stories import append_stories
+    graph = append_stories(graph, client_id=client_id, is_history=is_history)
     from management.services.ig_journey_moderation import append_moderation
     graph = append_moderation(graph, client_id=client_id, is_history=is_history)
     from management.services.ig_journey_client_orders import append_client_order_context
@@ -1282,7 +1288,7 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         from management.services.ig_journey_trace_refresh import read_refresh_coverage
         graph.setdefault("coverage", {})["transcript_refresh"] = read_refresh_coverage(client_id)
     from management.services.ig_journey_presentation import finalize_display_focus
-    display_focus = finalize_display_focus(graph, is_history=is_history)
+    display_focus = finalize_display_focus(graph, is_history=is_history, client_stage=getattr(client, "stage", None))
     for node in nodes.values():
         node["current"] = "guide:" + node["id"] == display_focus["node_id"]
     from management.services.ig_journey_catalogue import journey_catalogue

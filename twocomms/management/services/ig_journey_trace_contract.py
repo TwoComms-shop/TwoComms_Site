@@ -23,7 +23,7 @@ SEMANTIC_NODE_KEYS = frozenset({
     "quoted_offer", "awaiting_payment", "payment_help", "settlement",
     "fulfillment", "objection_case", "channel_consent", "channel_grant_checked",
     "post_purchase_contact_offer", "post_sale_request", "post_sale_case",
-    "ugc_assessment", "reward_entitlement", "reward_delivery", "reward_use",
+    "story_interactions", "ugc_assessment", "reward_entitlement", "reward_delivery", "reward_use",
     "repeat_interest", "new_purchase_interest", "payment_reminder_consent", "payment_reminder",
 })
 KINDS = frozenset({"progress", "return", "retry", "objection", "negative", "waiting", "handoff"})

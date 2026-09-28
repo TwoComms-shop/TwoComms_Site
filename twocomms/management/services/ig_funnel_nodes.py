@@ -54,7 +54,7 @@ from management.models import IgFunnelNodeState
 
 logger = logging.getLogger(__name__)
 
-DEFINITION_VERSION = "funnel-node.v1.4"
+DEFINITION_VERSION = "funnel-node.v1.5"
 PROJECTOR_VERSION = "funnel-node-projector.v1"
 
 MODE_OFF = "off"
@@ -581,7 +581,7 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
     return (
         route("inbound", "Вхідне звернення", entry, "inbound",
               authority="owned_inbound_message", evidence_policy=EvidencePolicy.MESSAGE_OBSERVATION, transitions=(
-                  to("advertising_entry", "advertising_referral"), to("ad_resolved_product"), to("catalog_discovery"), to("photo_reference"),
+                  to("story_interactions", "story_or_mention_received"), to("advertising_entry", "advertising_referral"), to("ad_resolved_product"), to("catalog_discovery"), to("photo_reference"),
                   to("custom_print"), to("dtf_only"), to("prize_candidate"),
                   to("information_question"), to("collaboration"), to("employment"),
                   to("spam_confirmed"), to("post_sale_request"),
@@ -701,6 +701,9 @@ def _semantic_definitions() -> tuple[FunnelNodeDefinition, ...]:
         route("post_sale_case", "Сервісний випадок", cross, "post_sale",
               authority="post_sale_case_and_shipment_truth", evidence_policy=EvidencePolicy.ORDER_FACT, outcomes=("resolved", "rejected", "cancelled"),
               transitions=(to("configured_line", "new_need"),)),
+        route("story_interactions", "Сторис та відмітки", cross, "ugc",
+              authority="source_bound_story_interaction", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION,
+              transitions=(to("ugc_assessment", "reward_assessment_if_eligible"), to("catalog_discovery", "new_selection"))),
         route("ugc_assessment", "Перевірка UGC", cross, "ugc",
               authority="ugc_evidence_assessment", evidence_policy=EvidencePolicy.MEDIA_OBSERVATION, transitions=(to("reward_entitlement", "authorised_reward_grant"),)),
         route("reward_entitlement", "Право на нагороду", cross, "reward",
