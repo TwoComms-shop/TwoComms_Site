@@ -491,3 +491,16 @@
 @media(max-width:600px){.twc-journey-tools .twc-journey-play:disabled{display:none}.twc-journey-story-progress li{font-size:10px}}
 
 .twc-journey-order-outcomes{display:flex;gap:6px;overflow-x:auto;max-width:100%;padding:5px 0;flex-shrink:0;scrollbar-width:thin}.twc-journey-order-outcomes[hidden]{display:none}.twc-journey-order-outcomes button{flex:0 0 auto;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:32px;padding:6px 10px;border:1px solid #3d5675;border-radius:8px;background:#142339;color:#bcd3ee;font-size:11px;text-align:left}.twc-journey-order-outcomes [data-tone=success]{border-color:#276749;background:#102b20;color:#bbf7d0}.twc-journey-order-outcomes [data-tone=warning]{border-color:#86662d;background:#342b17;color:#f8d28b}.twc-journey-order-outcomes [data-tone=danger]{border-color:#873d4b;color:#fda4af}
+
+/* Delivery opens a scoped aftercare route, never a completed marketing action. */
+.twc-journey-aftercare-link{color:#bbd7ff!important;border-color:#365173!important;background:#152238!important}
+.twc-journey-step[data-post-purchase=available] .twc-journey-core{border-color:#5c9c93;box-shadow:0 0 0 3px rgba(92,156,147,.08)}
+.twc-journey-step[data-post-purchase=waiting]{opacity:.62}
+.twc-journey-step[data-post-purchase=blocked] .twc-journey-core{border-color:#b97777}
+.twc-journey-aftercare-note{padding:12px 14px;margin:10px 0;border:1px solid #344a60;border-radius:12px;background:linear-gradient(125deg,#142331,#151c2a);font-size:12px;line-height:1.55}
+.twc-journey-aftercare-note strong{color:#b8ddd8}.twc-journey-aftercare-note p{margin:6px 0;color:#bfccdc}.twc-journey-aftercare-note small{color:#91a3b8}
+.twc-journey-aftercare-note[data-readiness=blocked]{border-color:#83555e}
+
+.twc-journey-dialog .twc-journey-step[data-post-purchase=available],.twc-journey-dialog .twc-journey-step[data-post-purchase=conditional]{opacity:1}
+.twc-journey-aftercare-caption{display:block;margin-top:3px;color:#93adaf;font-size:9px;line-height:1.35;text-align:center;max-width:110px}
+.twc-journey-step[data-post-purchase=available] .twc-journey-step-label{color:#c2ddd8}

@@ -1250,6 +1250,8 @@ def build_journey_snapshot(client, *, view_episode_id=None):
     graph = append_ad_entry(graph, client=client, is_history=is_history)
     from management.services.ig_journey_consent import append_consent_context
     graph = append_consent_context(graph, client=client, is_history=is_history)
+    from management.services.ig_journey_post_purchase import append_post_purchase_context
+    graph = append_post_purchase_context(graph, is_history=is_history)
     semantic_edges = [edge for edge in graph.get("edges", [])
                       if edge.get("relation") in {
                           "conversation_route", "conversation_focus", "conversation_correction",

@@ -400,5 +400,12 @@
     for(const [dx,dy]of [[43,-15],[-43,-15],[43,-35],[-43,-35],[0,-45],[58,0],[-58,0]])candidates.push({x:anchor.x+dx,y:anchor.y+dy,onRoute:false});
     return candidates.find(clear)||null;
   }
-  window.TwcJourneyGeometry=Object.freeze({visualFor,layout,routeEdges,overview,atlas,annotationPoint});
+  function aftercare({nodes,width=390}){
+    const w=Math.max(360,Math.min(720,width)),positions=new Map();
+    const slots={post_sale_case:[0,1],channel_consent:[1,1],channel_grant_checked:[1,2],post_purchase_contact_offer:[1,2],ugc_assessment:[1,3],reward_entitlement:[1,4],reward_delivery:[1,5],reward_use:[1,6],repeat_interest:[2,1],new_purchase_interest:[2,6]};
+    const occupied=new Set();
+    for(const node of nodes){let [col,row]=slots[node.structural_key||node.semantic_key]||[1,0];while(occupied.has(col+':'+row))row++;occupied.add(col+':'+row);positions.set(node.id,{x:w*(col+.5)/3,y:55+row*132,col,row,cardWidth:104});}
+    return {positions,width:w,height:130+Math.max(0,...[...positions.values()].map(p=>p.row))*132};
+  }
+  window.TwcJourneyGeometry=Object.freeze({visualFor,layout,routeEdges,overview,atlas,aftercare,annotationPoint});
 })();
