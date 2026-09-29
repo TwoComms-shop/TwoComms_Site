@@ -190,6 +190,12 @@ def create_order(request):
         messages.error(request, _("Оберіть коректний тип оплати."))
         return redirect('cart')
 
+    from storefront.services.brigade_commerce import products_require_full_payment, brigade_payment_error
+    policy_products = Product.objects.select_related('category').filter(pk__in=[item['product_id'] for item in cart.values()])
+    if pay_type != 'online_full' and products_require_full_payment(policy_products):
+        messages.error(request, brigade_payment_error())
+        return redirect('cart')
+
     if pay_type == 'cod':
         messages.error(
             request,
@@ -585,6 +591,10 @@ def update_payment_method(request):
             'success': False,
             'error': _('Спосіб оплати не можна змінити після оплати або під час перевірки.')
         }, status=409)
+
+    from storefront.services.brigade_commerce import products_require_full_payment, brigade_payment_error
+    if canonical_pay_type != 'online_full' and products_require_full_payment([item.product for item in order.items.select_related('product__category') if item.product_id]):
+        return JsonResponse({'success': False, 'error_code': 'brigade_full_payment_required', 'error': brigade_payment_error()}, status=400)
 
     order.pay_type = canonical_pay_type
     order.save(update_fields=['pay_type'])

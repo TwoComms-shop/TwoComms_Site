@@ -159,7 +159,7 @@
     if (!fbp) {
       // Format: fb.1.timestamp.random
       var timestamp = Date.now();
-      var random = Math.random().toString(36).substring(2, 15);
+      var random = Math.floor(Math.random() * 2147483647);
       fbp = 'fb.1.' + timestamp + '.' + random;
       setCookieValue('_fbp', fbp, 90); // 90 дней
     }
@@ -169,36 +169,31 @@
   function ensureFbcCookie() {
     // Создает _fbc cookie из fbclid параметра URL (Meta Pixel Click ID)
     var fbc = getCookieValue('_fbc');
-    if (fbc) {
-      return fbc; // Уже есть
-    }
-    
-    // Парсим fbclid из URL
+    var fbclid = null;
+
+    // A later ad click must replace the old click ID. Retain the original
+    // timestamp when this is the same click (reload/navigation).
     try {
       var params = new URLSearchParams(win.location.search);
-      var fbclid = params.get('fbclid');
-      if (fbclid) {
-        // Format: fb.1.timestamp.fbclid
-        var timestamp = Date.now();
-        fbc = 'fb.1.' + timestamp + '.' + fbclid;
-        setCookieValue('_fbc', fbc, 90); // 90 дней
-        return fbc;
-      }
+      fbclid = params.get('fbclid');
     } catch (e) {
       // Fallback для старых браузеров
-      var search = win.location.search;
-      if (search) {
-        var match = search.match(/[?&]fbclid=([^&]+)/);
-        if (match && match[1]) {
-          var timestamp = Date.now();
-          fbc = 'fb.1.' + timestamp + '.' + match[1];
-          setCookieValue('_fbc', fbc, 90);
-          return fbc;
-        }
+      var match = String(win.location.search || '').match(/[?&]fbclid=([^&]+)/);
+      if (match && match[1]) {
+        try { fbclid = decodeURIComponent(match[1].replace(/\+/g, ' ')); }
+        catch (_) { fbclid = null; }
       }
     }
-    
-    return null;
+
+    if (fbclid) {
+      var existing = /^fb\.\d+\.\d+\.([^.]+)(?:\..*)?$/.exec(fbc);
+      if (!existing || existing[1] !== fbclid) {
+        fbc = 'fb.1.' + Date.now() + '.' + fbclid;
+        setCookieValue('_fbc', fbc, 90);
+      }
+    }
+
+    return fbc || null;
   }
 
   // Экспортируем функции для использования в других скриптах

@@ -1327,8 +1327,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       const price = card.querySelector('[data-option-price]');
       if (price) {
         const delta = Number(choice && choice.option_price_delta || 0);
-        price.textContent = delta ? `${delta > 0 ? '+' : ''}${formatVariantPrice(delta)} грн` : '';
-        price.hidden = !enabled || !delta;
+        const total = Number(choice && choice.unit_price);
+        const showTotal = price.hasAttribute('data-option-total-price') && Number.isFinite(total) && total > 0;
+        price.textContent = showTotal ? `${formatVariantPrice(total)} грн` : delta ? `${delta > 0 ? '+' : ''}${formatVariantPrice(delta)} грн` : '';
+        price.hidden = !enabled || (!showTotal && !delta);
       }
       const status = card.querySelector('[data-option-status]');
       if (status) {
@@ -1376,6 +1378,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (card) {
           card.classList.toggle('active', input.checked);
           syncCard(card, choice, enabled);
+          if (axis.code === 'fit' && enabled) {
+            const candidate = configurations[buildOptionKey(Object.assign({}, resolution.selectedValues, { fit: input.value }))];
+            const price = card.querySelector('[data-option-total-price]');
+            if (price && candidate && Number.isFinite(Number(candidate.final_price))) {
+              price.textContent = `${formatVariantPrice(candidate.final_price)} грн`;
+              price.hidden = false;
+            }
+          }
         }
       });
     });

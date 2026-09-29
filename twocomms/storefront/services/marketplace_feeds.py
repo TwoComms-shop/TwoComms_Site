@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_HALF_UP
+from itertools import product as option_product
 import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
@@ -13,7 +14,7 @@ from django.utils.html import strip_tags
 from django.utils.text import slugify
 
 from storefront.models import Category, Product
-from storefront.services.catalog_helpers import apply_public_product_order
+from storefront.services.catalog_helpers import apply_public_product_order, get_active_fit_options
 from storefront.services.public_products import public_products_queryset
 from storefront.services.size_guides import resolve_product_sizes
 from storefront.utils.analytics_helpers import FEED_DEFAULT_COLOR, get_item_group_id, get_offer_id
@@ -571,21 +572,6 @@ def _material_pair(product: Product) -> tuple[str, str]:
     return "", ""
 
 
-def _sale_price(product: Product, base_price: int) -> int:
-    discount = int(getattr(product, "discount_percent", 0) or 0)
-    if discount <= 0:
-        return int(base_price or 0)
-    return max(
-        1,
-        int(
-            (Decimal(base_price) * Decimal(100 - discount) / Decimal(100)).quantize(
-                Decimal("1"),
-                rounding=ROUND_HALF_UP,
-            )
-        ),
-    )
-
-
 def _old_price(product: Product, base_price: int, sale_price: int) -> int | None:
     recommended = int(getattr(product, "recommended_price", 0) or 0)
     if recommended > sale_price:
@@ -734,11 +720,68 @@ def published_products_queryset():
             "images",
             "color_variants__color",
             "color_variants__images",
+            "fit_options",
+            "product_catalog_fit_notes",
+            "product_catalog_option_profiles",
+            "product_catalog_axis_presentations",
+            "category__product_catalog_flows",
+            "color_variants__product_catalog_details",
+            "color_variants__product_catalog_fit_rules",
+            "color_variants__product_catalog_combinations",
+            "color_variants__color__product_catalog_profile",
         )
     )
 
 
+def _feed_variant_configuration(product, variant):
+    """Resolve the default PDP combination without creating fits or new SKU IDs."""
+    from product_catalog.services import (
+        product_option_context,
+        variant_allows_options,
+        variant_public_context,
+    )
+
+    fits = get_active_fit_options(product) if product.fit_selector_enabled else []
+    default_fit = next((option for option in fits if option.is_default), fits[0] if fits else None)
+    seed = {"fit": default_fit.code} if default_fit else {}
+    context = product_option_context(product, variant=variant, option_values=seed)
+    selected = context["selected_values"]
+    axes = context["axes"]
+    choice_groups = [axis["choices"] for axis in axes]
+    combination_count = 1
+    for choices in choice_groups:
+        combination_count *= len(choices)
+    # PDP caps the same matrix at 128. An unavailable/invalid configuration
+    # must not become an advertised in-stock offer via the marketplace floor.
+    available = (
+        combination_count <= 128
+        and all(any(choice["is_enabled"] for choice in choices) for choices in choice_groups)
+    ) if axes else True
+    if available and not variant_allows_options(variant, selected):
+        candidates = []
+        for choices in option_product(*choice_groups):
+            values = {axis["code"]: choice["code"] for axis, choice in zip(axes, choices)}
+            if variant_allows_options(variant, values):
+                candidates.append(values)
+        if candidates:
+            # Match the PDP fallback: preserve as many default axis choices
+            # as possible, with the existing axis/choice order as the tie-break.
+            selected = max(candidates, key=lambda values: sum(
+                values.get(axis["code"]) == selected.get(axis["code"]) for axis in axes
+            ))
+        else:
+            available = False
+    resolved = variant_public_context(variant, option_values=selected)
+    price = int(resolved["final_price"])
+    # Variant override is already the final base on PDP. Discounts apply only
+    # to Product.price, before material/option deltas, never to an override.
+    base_price = price if variant.price_override is not None else int(product.price + resolved["price_delta"])
+    return selected, base_price, price, available
+
+
 def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOffer]:
+    from product_catalog.services import variant_allows_purchase
+
     base_url = resolve_base_url(base_url)
     products = list(products if products is not None else published_products_queryset())
     offers: list[FeedOffer] = []
@@ -760,7 +803,7 @@ def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOff
             image_urls = base_images or [_absolute_url(base_url, getattr(settings, "FEED_PLACEHOLDER_IMAGE_URL", PLACEHOLDER_IMAGE_PATH))]
             stock = 100 if getattr(product, "is_dropship_available", True) else 0
             base_price = int(getattr(product, "price", 0) or 0)
-            price = _sale_price(product, base_price)
+            price = int(product.final_price)
             old_price = _old_price(product, base_price, price)
 
             for size in sizes:
@@ -817,12 +860,17 @@ def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOff
             stock = int(getattr(variant, "stock", 0) or 0)
             sku = _clean_xml_text(getattr(variant, "sku", ""))
             barcode = _clean_xml_text(getattr(variant, "barcode", ""))
-            base_price = int(getattr(variant, "price_override", None) or getattr(product, "price", 0) or 0)
-            price = _sale_price(product, base_price)
+            selected_values, base_price, price, configuration_available = _feed_variant_configuration(product, variant)
             old_price = _old_price(product, base_price, price)
             article = _article_for_offer(product.id, variant.id, sku, color_ua)
 
             for size in sizes:
+                size_available = configuration_available and variant_allows_purchase(
+                    product, variant,
+                    fit_code=selected_values.get("fit", ""),
+                    size=str(size),
+                    option_values=selected_values,
+                )
                 google_offer_id = get_offer_id(product.id, variant.id, size, color_ua)
                 context = {
                     "title": product.title,
@@ -866,6 +914,8 @@ def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOff
                         description_ru=_description_html_ru(product, context),
                         google_description=_google_description(product, context),
                         video_link=video_link,
+                        availability_override=None if size_available else False,
+                        quantity_override=None if size_available else 0,
                     )
                 )
 
@@ -1031,6 +1081,11 @@ def build_profile_offers(feed, base_url: str | None = None) -> list[FeedOffer]:
                 availability_override = False
             if product_rule.quantity is not None:
                 quantity_override = product_rule.quantity
+        # Profile stock rules may hide a purchasable offer, but cannot make a
+        # disabled fit/combination/size purchasable on its linked PDP.
+        if not offer.available:
+            availability_override = False
+            quantity_override = 0
         if availability_override is False and quantity_override is None:
             quantity_override = 0
         result.append(

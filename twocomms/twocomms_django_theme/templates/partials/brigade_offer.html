@@ -1,0 +1,17 @@
+{% if brigade_offer %}
+<aside class="brigade-offer {{ placement }}" aria-label="{{ brigade_copy.cart_title }}">
+  <div class="brigade-offer__top"><span class="brigade-offer__eyebrow">{{ brigade_copy.eyebrow }}</span><span class="brigade-offer__saving">−225 <small>{{ brigade_copy.currency }}</small></span></div>
+  <h2 class="brigade-offer__title">{{ brigade_copy.title }}</h2>
+  <p class="brigade-offer__intro">{{ brigade_copy.intro }}</p>
+  <div class="brigade-offer__pair">
+    <span class="brigade-offer__piece">{% if brigade_offer.tee.main_image %}<img src="{{ brigade_offer.tee.main_image.url }}" alt="" width="72" height="86" loading="lazy">{% endif %}<span>{{ brigade_copy.tee }}<strong>−80 {{ brigade_copy.currency }}</strong></span></span>
+    <span class="brigade-offer__plus">+</span>
+    <span class="brigade-offer__piece">{% if brigade_offer.hoodie.main_image %}<img src="{{ brigade_offer.hoodie.main_image.url }}" alt="" width="72" height="86" loading="lazy">{% endif %}<span>{{ brigade_copy.hoodie }}<strong>−145 {{ brigade_copy.currency }}</strong></span></span>
+  </div>
+  <div class="brigade-offer__total"><span>{{ brigade_copy.set_price }}<strong>{{ brigade_copy.from }} {{ brigade_offer.set_offer_price|floatformat:0 }} <small>{{ brigade_copy.currency }}</small></strong></span><span>{{ brigade_copy.separate }}<del>{{ brigade_copy.from }} {{ brigade_offer.set_regular_price|floatformat:0 }} {{ brigade_copy.currency }}</del></span></div>
+  <a class="brigade-offer__cta" href="{{ brigade_offer.url }}">{{ brigade_offer.cta }} <span aria-hidden="true">↗</span></a>
+  <p class="brigade-offer__automatic">{{ brigade_copy.automatic }}</p>
+  <p class="brigade-offer__rules">{{ brigade_copy.rules }}</p>
+  <p class="brigade-offer__terms">{{ brigade_copy.no_stack }}</p>
+</aside>
+{% endif %}

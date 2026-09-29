@@ -1,0 +1,11 @@
+<aside class="brigade-offer brigade-cart-offer" data-brigade-cart-offer{% if not has_225_items %} hidden{% endif %} aria-label="{{ brigade_copy.cart_title }}">
+  <div class="brigade-offer__top"><span class="brigade-offer__eyebrow">{{ brigade_copy.eyebrow }}</span><span class="brigade-offer__saving" data-brigade-savings{% if not brigade_discount_total %} hidden{% endif %}>−<span data-brigade-saving-value>{{ brigade_discount_total|floatformat:0 }}</span> <small>{{ brigade_copy.currency }}</small></span></div>
+  <h2 class="brigade-offer__title" data-brigade-cart-title>{% if brigade_discount_total %}{{ brigade_copy.applied }}{% else %}{{ brigade_copy.cart_title }}{% endif %}</h2>
+  <p class="brigade-offer__intro" data-brigade-cart-intro>{% if brigade_discount_total %}{{ brigade_copy.automatic }}{% elif brigade_hoodie_qty and not brigade_tee_qty %}{{ brigade_copy.add_tee }}{% elif brigade_tee_qty and not brigade_hoodie_qty %}{{ brigade_copy.add_hoodie }}{% else %}{{ brigade_copy.automatic }}{% endif %}</p>
+  <div class="brigade-cart-offer__links">
+    <a class="brigade-offer__cta" data-brigade-choose-tee href="{% url 'product' slug='225-tshirt' %}"{% if brigade_tee_qty and not brigade_hoodie_qty %} hidden{% endif %}>{{ brigade_copy.choose_tee }} <span aria-hidden="true">↗</span></a>
+    <a class="brigade-offer__cta" data-brigade-choose-hoodie href="{% url 'product' slug='225-hoodie' %}"{% if brigade_hoodie_qty and not brigade_tee_qty %} hidden{% endif %}>{{ brigade_copy.choose_hoodie }} <span aria-hidden="true">↗</span></a>
+  </div>
+  <p class="brigade-offer__rules">{{ brigade_copy.rules }}</p>
+  <p class="brigade-offer__terms">{{ brigade_copy.no_stack }}</p>
+</aside>

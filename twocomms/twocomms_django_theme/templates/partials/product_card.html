@@ -1,3 +1,6 @@
+{% load brigade_tags %}
+{% brigade_words as brigade_copy %}
+{% brigade_policy p as brigade_card_policy %}
 {% load static %}
 {% load responsive_images %}
 {% load i18n %}
@@ -97,6 +100,7 @@
   <div class="home-product-content">
     <a href="{{ product_url }}" class="home-product-title" data-product-card-link>{{ p.title }}</a>
 
+    {% if brigade_card_policy.is_225 %}<span class="brigade-card-note">{{ brigade_copy.card }}</span>{% endif %}
     <div class="home-product-price-row">
       <span class="home-product-price" data-card-price>
         {% if p.card_has_variant_prices %}{% trans 'Від' %} {{ p.card_price_min }}{% else %}{{ p.card_price_min|default:p.final_price }}{% endif %} {% trans 'грн' %}
@@ -197,6 +201,7 @@
     <div class="small text-secondary">{{ p.category.name }}</div>
     <a href="{% url 'product' p.slug %}"
       class="stretched-link text-decoration-none fw-semibold text-body product-title">{{ p.title }}</a>
+    {% if brigade_card_policy.is_225 %}<span class="brigade-card-note">{{ brigade_copy.card }}</span>{% endif %}
     <div class="d-flex align-items-center gap-2 price-row">
       <div class="fw-semibold price-text" data-price="{{ p.final_price }} {% trans 'грн' %}">{{ p.final_price }} {% trans 'грн' %}</div>
       {% if p.has_discount %}

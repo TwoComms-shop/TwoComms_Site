@@ -11,7 +11,7 @@ from django.utils.deprecation import MiddlewareMixin
 
 from .analytics_exclusions import is_request_excluded
 from .analytics_noise import is_analytics_noise_path
-from .models import PageView, SiteSession
+from .models import PageView, SiteSession, UTMSession
 from .utm_utils import (
     ATTRIBUTION_QUERY_PARAMS,
     CLICK_ID_PARAMS,
@@ -255,6 +255,15 @@ class SimpleAnalyticsMiddleware(MiddlewareMixin):
                 sess.pageviews = (sess.pageviews or 0) + 1
                 sess.is_bot = sess.is_bot or bot
                 sess.save(update_fields=['visitor_id', 'user', 'ip_address', 'last_seen', 'last_path', 'pageviews', 'is_bot', 'first_touch_data'])
+
+                # UTMTrackingMiddleware runs first, so a new ad landing can
+                # create UTMSession before this SiteSession exists. Complete
+                # that join here, including older unlinked rows; dashboard
+                # source/campaign/device filters use the reverse relation.
+                # Never move an attribution row that already has a session.
+                UTMSession.objects.filter(
+                    session_key=session_key, session__isnull=True,
+                ).update(session=sess)
 
                 PageView.objects.create(
                     session=sess,

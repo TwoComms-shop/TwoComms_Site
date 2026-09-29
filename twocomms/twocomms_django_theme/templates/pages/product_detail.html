@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% load i18n %}{% load static %}{% load cache %}{% load seo_tags %}{% load responsive_images %}{% load storefront_filters %}{% load color_filters %}
+{% load i18n %}{% load static %}
+{% load brigade_tags %}{% load cache %}{% load seo_tags %}{% load responsive_images %}{% load storefront_filters %}{% load color_filters %}
 
 {% comment %}
   Phase 7.3 — variant-aware SEO meta. When the URL carries path
@@ -143,6 +144,8 @@ CSS rules на mobile FCP/LCP window.
 {% endblock %}
 
 {% block content %}
+{% brigade_words as brigade_copy %}
+{% brigade_product_offer product as brigade_offer %}
 <div class="tc-pdp-shell" data-pdp
      data-gallery-status-template="{% trans 'Фото {position} з {total}' %}"
      data-gallery-thumbnail-template="{% trans 'Фото товару {position}' %}">
@@ -215,6 +218,8 @@ CSS rules на mobile FCP/LCP window.
           <span><strong>{% trans 'Обмін розміру' %}</strong><small>{% trans '14 днів на обмін' %}</small></span>
         </div>
       </div>
+
+      {% include "partials/brigade_offer.html" with placement="brigade-offer--desktop" %}
 
       <a class="tc-custom-print-card" href="{% url 'custom_print' %}?source=pdp&amp;product={{ product.slug }}">
         <span class="tc-custom-print-mark" aria-hidden="true">
@@ -509,7 +514,7 @@ CSS rules на mobile FCP/LCP window.
                   </span>
                   <span class="tc-option-card__copy"><strong>{{ option.label }}</strong>{% if option.description %}<small>{{ option.description }}</small>{% endif %}</span>
                   <span class="tc-option-card__meta">
-                    <span class="tc-option-card__price" data-option-price{% if not option.option_price_delta or not option.is_enabled %} hidden{% endif %}>{% if option.option_price_delta and option.is_enabled %}{% if option.option_price_delta > 0 %}+{% endif %}{{ option.option_price_delta }} грн{% endif %}</span>
+                    <span class="tc-option-card__price" data-option-price{% if axis.code == 'fit' %} data-option-total-price{% endif %}{% if not option.is_enabled %} hidden{% elif axis.code != 'fit' and not option.option_price_delta %} hidden{% endif %}>{% if option.is_enabled %}{% if axis.code == 'fit' %}{{ option.unit_price }}{% else %}{% if option.option_price_delta > 0 %}+{% endif %}{{ option.option_price_delta }}{% endif %} {% trans 'грн' %}{% endif %}</span>
                     <span class="tc-option-card__check" data-option-check aria-hidden="true"{% if not option.is_enabled %} hidden{% endif %}></span>
                   </span>
                   <span class="tc-option-card__status" data-option-status{% if option.is_enabled %} hidden{% endif %}>{{ option.reason|default:_('Незабаром') }}</span>
@@ -770,6 +775,8 @@ CSS rules на mobile FCP/LCP window.
         </div>
       </div>
 
+      {% include "partials/brigade_offer.html" with placement="brigade-offer--mobile" %}
+
       {# Phase 21+ (2026-05-11) — points line moved next to price as a compact pill (.tc-points-pill). #}
       {% if False %}
         <button type="button" class="tc-points-line" data-bs-toggle="modal" data-bs-target="#pointsInfoModal" data-product-title="{{ product.title }}" data-points-amount="{{ product.points_reward }}">
@@ -881,7 +888,7 @@ CSS rules на mobile FCP/LCP window.
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/product-detail.js' %}?v=20260813-gallery-i18n-v1" defer></script>
+<script src="{% static 'js/product-detail.js' %}?v=20260930-fit-price-v1" defer></script>
 <script src="{% static 'js/product-media-fit.js' %}?v=20260808-merch-v1" defer></script>
 <script src="{% static 'js/product-variant-history.js' %}?v=20260509-phase8-v1" defer></script>
 {% endblock %}

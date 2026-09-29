@@ -703,6 +703,11 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
     locked = IgCheckoutProposal.objects.select_for_update().select_related(
         "client", "commercial_episode"
     ).get(pk=proposal.pk, deal_id=deal.pk)
+    from storefront.services.brigade_commerce import brigade_payment_error
+    from management.services.ig_checkout_payment import _proposal_brigade_policy
+    brigade_full_only, _eligible = _proposal_brigade_policy(locked)
+    if brigade_full_only and str(payload.get("payment_choice") or "online_full").strip().casefold() == "prepay_200_cod":
+        raise CheckoutPaymentError("brigade_full_payment_required", brigade_payment_error(), field="payment_choice")
     if not locked.assisted_checkout_v2:
         raise CheckoutPaymentError("unavailable", "V2 checkout is unavailable.")
     now = timezone.now()
@@ -726,11 +731,18 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
     def lock_attempt(row):
         if row is None or not row.payment_attempt_id:
             return None
-        return (
+        attempt = (
             PaymentAttempt.objects.select_for_update()
             .select_related("promo_code")
             .get(pk=row.payment_attempt_id)
         )
+        if (
+            brigade_full_only
+            and attempt.pay_type != PaymentAttempt.PayType.ONLINE_FULL
+            and attempt.status not in {PaymentAttempt.Status.PAID, PaymentAttempt.Status.PREPAID}
+        ):
+            raise CheckoutPaymentError("brigade_full_payment_required", brigade_payment_error(), field="payment_choice")
+        return attempt
 
     if locked.winner_invoice_generation_id:
         winner = next(
@@ -933,6 +945,8 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
             "Оберіть доступний спосіб оплати.",
             field="payment_choice",
         ) from exc
+    if brigade_full_only and payment_choice != IgCheckoutInvoiceGeneration.PaymentChoice.FULL:
+        raise CheckoutPaymentError("brigade_full_payment_required", brigade_payment_error(), field="payment_choice")
     if recipient_source_attempt is not None:
         values = _validate_payload(
             locked,

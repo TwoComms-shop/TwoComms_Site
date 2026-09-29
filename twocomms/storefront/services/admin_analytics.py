@@ -12,8 +12,8 @@ from decimal import Decimal
 from typing import Any
 
 from django.core.cache import cache
-from django.db.models import Avg, Case, CharField, Count, DurationField, Exists, ExpressionWrapper, F, Min, OuterRef, Q, Subquery, Sum, Value, When
-from django.db.models.functions import Coalesce, NullIf
+from django.db.models import Avg, Case, CharField, Count, DecimalField, DurationField, Exists, ExpressionWrapper, F, Min, OuterRef, Q, Subquery, Sum, Value, When
+from django.db.models.functions import Coalesce, Greatest, NullIf
 from django.db.models.lookups import IsNull
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -515,7 +515,15 @@ def _resolve_scope(filters: AnalyticsFilters) -> AnalyticsScope:
 
 
 def _orders_queryset(filters: AnalyticsFilters, scope: AnalyticsScope):
-    qs = Order.objects.select_related("utm_session", "user").prefetch_related("items", "items__product")
+    # Match Order.final_total / Meta Purchase value. total_sum is the order
+    # subtotal before its promo discount, so summing it overstates revenue.
+    qs = Order.objects.select_related("utm_session", "user").prefetch_related("items", "items__product").annotate(
+        analytics_order_value=Greatest(
+            F("total_sum") - F("discount_amount"),
+            Value(Decimal("0.00")),
+            output_field=DecimalField(max_digits=12, decimal_places=2),
+        ),
+    )
     qs = _apply_range(qs, "created", filters)
     order_exclusion = order_exclusion_q()
     if order_exclusion:
@@ -748,10 +756,10 @@ def _build_overview_cards(filters: AnalyticsFilters) -> dict[str, Any]:
     paid_orders = orders_qs.filter(payment_status="paid")
     sessions_count = site_qs.count()
     unique_visitors = _count_distinct_visitors(site_qs)
-    revenue = _as_float(paid_orders.aggregate(total=Sum("total_sum"))["total"])
+    revenue = _as_float(paid_orders.aggregate(total=Sum("analytics_order_value"))["total"])
     paid_orders_count = paid_orders.count()
     all_orders_count = orders_qs.count()
-    aov = _as_float(paid_orders.aggregate(avg=Avg("total_sum"))["avg"])
+    aov = _as_float(paid_orders.aggregate(avg=Avg("analytics_order_value"))["avg"])
     avg_duration = _average_session_seconds(site_qs)
     bounce_sessions = site_qs.annotate(
         clean_pageviews=Count("views", filter=~analytics_noise_q("views__path"))
@@ -780,7 +788,7 @@ def _build_overview_cards(filters: AnalyticsFilters) -> dict[str, Any]:
                 "sessions": _comparison_summary(sessions_count, compare_site_qs.count()),
                 "revenue": _comparison_summary(
                     revenue,
-                    _as_float(compare_orders.aggregate(total=Sum("total_sum"))["total"]),
+                    _as_float(compare_orders.aggregate(total=Sum("analytics_order_value"))["total"]),
                 ),
             "orders": _comparison_summary(all_orders_count, compare_all_orders.count()),
                 "checkout_starts": _comparison_summary(
@@ -856,7 +864,7 @@ def _timeseries_data(filters: AnalyticsFilters) -> dict[str, Any]:
     revenue_bucket = _sum_queryset_by_local_day(
         _orders_queryset(filters, scope).filter(payment_status="paid"),
         "created",
-        "total_sum",
+        "analytics_order_value",
     )
     actions_qs = _actions_queryset(filters, scope)
     cart_bucket = _count_queryset_by_local_day(actions_qs.filter(action_type="add_to_cart"), "timestamp")
@@ -885,7 +893,7 @@ def _timeseries_data(filters: AnalyticsFilters) -> dict[str, Any]:
         compare_revenue_bucket = _sum_queryset_by_local_day(
             _orders_queryset(compare_filters, compare_scope).filter(payment_status="paid"),
             "created",
-            "total_sum",
+            "analytics_order_value",
         )
         comparison = {
             "label": "Попередній період" if filters.compare_to == "previous_period" else "Рік до року",
@@ -1088,13 +1096,13 @@ def _sales_data(filters: AnalyticsFilters) -> dict[str, Any]:
         source_class = classify_order_source(order)
         bucket = source_ltv_map[source_class]
         bucket["orders"] += 1
-        bucket["revenue"] += _as_float(order.total_sum)
+        bucket["revenue"] += _as_float(order.analytics_order_value)
 
     for session in scope.site_qs.iterator(chunk_size=500):
         source_class, _ = classify_session_source(session)
         source_ltv_map[source_class]["sessions"] += 1
 
-    daily_revenue = _sum_queryset_by_local_day(paid_orders, "created", "total_sum")
+    daily_revenue = _sum_queryset_by_local_day(paid_orders, "created", "analytics_order_value")
     daily_orders = _count_queryset_by_local_day(paid_orders, "created")
     daily_labels = sorted(set(daily_revenue.keys()) | set(daily_orders.keys()))
 
@@ -1108,8 +1116,8 @@ def _sales_data(filters: AnalyticsFilters) -> dict[str, Any]:
         "summary": {
             "paid_orders": paid_orders.count(),
             "paid_or_prepay_orders": paid_or_prepay.count(),
-            "revenue": _as_float(paid_orders.aggregate(total=Sum("total_sum"))["total"]),
-            "aov": _as_float(paid_orders.aggregate(avg=Avg("total_sum"))["avg"]),
+            "revenue": _as_float(paid_orders.aggregate(total=Sum("analytics_order_value"))["total"]),
+            "aov": _as_float(paid_orders.aggregate(avg=Avg("analytics_order_value"))["avg"]),
             "items_sold": _as_int(order_items.aggregate(total=Sum("qty"))["total"]),
             "repeat_purchase_rate": round((repeat_customers / total_customers) * 100, 2) if total_customers else 0,
             "total_customers": total_customers,

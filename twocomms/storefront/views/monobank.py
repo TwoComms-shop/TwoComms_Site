@@ -213,6 +213,7 @@ def _build_checkout_idempotency_key(
     city,
     np_office,
     pay_type,
+    pricing_snapshot=None,
 ):
     """Stable identity for one logical Monobank checkout attempt."""
     if request.user.is_authenticated:
@@ -240,6 +241,7 @@ def _build_checkout_idempotency_key(
         },
         'pay_type': pay_type,
         'promo_code_id': request.session.get('promo_code_id'),
+        'pricing_snapshot': pricing_snapshot,
     }
     serialized = json.dumps(state, sort_keys=True, separators=(',', ':'), default=str)
     return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
@@ -665,6 +667,18 @@ def _create_payment_attempt_invoice(request):
             'field': 'pay_type',
             'error': _('Оберіть коректний тип оплати.'),
         }, status=400)
+    if pay_type != 'online_full':
+        from storefront.services.brigade_commerce import products_require_full_payment, brigade_payment_error
+        policy_products = Product.objects.select_related('category').filter(
+            pk__in=[item['product_id'] for item in cart.values()]
+        )
+        if products_require_full_payment(policy_products):
+            return JsonResponse({
+                'success': False,
+                'error_code': 'brigade_full_payment_required',
+                'field': 'pay_type',
+                'error': brigade_payment_error(),
+            }, status=400)
     if pay_type == 'cod':
         return JsonResponse({
             'success': False,
@@ -710,7 +724,7 @@ def _create_payment_attempt_invoice(request):
             normalized_email = ''
 
     ids = [int(item['product_id']) for item in cart.values()]
-    products = Product.objects.in_bulk(ids)
+    products = Product.objects.select_related('category').in_bulk(ids)
     if any(not products.get(item['product_id']) for item in cart.values()):
         return JsonResponse({
             'success': False,
@@ -722,9 +736,13 @@ def _create_payment_attempt_invoice(request):
     from product_catalog.services import effective_cart_unit_price, variant_allows_purchase
     variant_ids = [item.get('color_variant_id') for item in cart.values() if item.get('color_variant_id')]
     variants = ProductColorVariant.objects.in_bulk(variant_ids)
+    from storefront.services.brigade_commerce import calculate_brigade_cart_pricing, brigade_payment_error
+    brigade_pricing = calculate_brigade_cart_pricing(cart, products, variants)
+    if brigade_pricing.full_payment_only and pay_type != 'online_full':
+        return JsonResponse({'success': False, 'error_code': 'brigade_full_payment_required', 'field': 'pay_type', 'error': brigade_payment_error()}, status=400)
     snapshot_items = []
-    gross = Decimal('0.00')
-    for item in cart.values():
+    gross = brigade_pricing.subtotal
+    for item_key, item in cart.items():
         product = products[int(item['product_id'])]
         variant = variants.get(int(item['color_variant_id'])) if item.get('color_variant_id') else None
         if item.get('color_variant_id') and (
@@ -738,26 +756,22 @@ def _create_payment_attempt_invoice(request):
                 'error_code': 'variant_unavailable',
                 'error': _('Обраний варіант товару більше недоступний.'),
             }, status=400)
-        qty = int(item.get('qty') or 1)
-        unit = effective_cart_unit_price(
-            product, variant, fit_code=item.get('fit_option_code') or item.get('fit') or '',
-            option_values=item.get('option_values') or {},
-        )
-        line_total = unit * qty
-        gross += line_total
-        snapshot_items.append({
-            'product_id': product.pk,
-            'title': product.title,
-            'qty': qty,
-            'size': item.get('size', ''),
-            'fit_option_code': item.get('fit_option_code') or item.get('fit') or '',
-            'fit_option_label': item.get('fit_option_label') or item.get('fit_label') or '',
-            'color_variant_id': variant.pk if variant else None,
-            'option_values': item.get('option_values') or {},
-            'option_labels': item.get('option_labels') or {},
-            'unit_price': str(unit),
-            'line_total': str(line_total),
-        })
+        line_price = brigade_pricing.lines[item_key]
+        for qty, unit in line_price.snapshot_parts():
+            snapshot_items.append({
+                'product_id': product.pk,
+                'title': product.title,
+                'qty': qty,
+                'size': item.get('size', ''),
+                'fit_option_code': item.get('fit_option_code') or item.get('fit') or '',
+                'fit_option_label': item.get('fit_option_label') or item.get('fit_label') or '',
+                'color_variant_id': variant.pk if variant else None,
+                'option_values': item.get('option_values') or {},
+                'option_labels': item.get('option_labels') or {},
+                'unit_price': str(unit),
+                'line_total': str(unit * qty),
+                'brigade_pricing': line_price.public_metadata(),
+            })
     gross += sum((Decimal(str(lead.final_price_value)) for lead in approved_leads), Decimal('0.00'))
     if gross <= 0:
         return JsonResponse({
@@ -776,6 +790,7 @@ def _create_payment_attempt_invoice(request):
         request, cart=cart, approved_custom_leads=approved_leads, full_name=full_name,
         phone=phone, email=normalized_email, delivery_refs=delivery_refs,
         city=delivery.city, np_office=delivery.np_office, pay_type=pay_type,
+        pricing_snapshot=snapshot_items,
     )
     try:
         with transaction.atomic():
@@ -810,11 +825,11 @@ def _create_payment_attempt_invoice(request):
             promo = None
             discount = Decimal('0.00')
             promo_event_state = {}
-            if promo_id:
+            if promo_id and brigade_pricing.promo_eligible_subtotal > 0:
                 reservation = reserve_promo_for_checkout(
                     promo_id=promo_id,
                     user=request.user,
-                    total_amount=gross,
+                    total_amount=brigade_pricing.promo_eligible_subtotal,
                 )
                 promo = reservation.promo
                 discount = reservation.discount
@@ -838,6 +853,7 @@ def _create_payment_attempt_invoice(request):
                 pay_type=pay_type,
                 cart_snapshot={
                     'cart': snapshot_items,
+                    'brigade_commerce': brigade_pricing.public_metadata(),
                     'custom_print_lead_ids': [lead.pk for lead in approved_leads],
                     'custom_print_leads': [
                         {'lead_number': lead.lead_number, 'price': str(lead.final_price_value), 'qty': int(getattr(lead, 'quantity', 0) or 1)}

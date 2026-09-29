@@ -13,8 +13,11 @@ from django.utils import timezone
 from orders.models import Order, OrderItem
 from storefront.models import Category, PageView, Product, SiteSession, UserAction, UTMSession
 from storefront.services.admin_analytics import (
+    _build_overview_cards,
     _products_data,
+    _sales_data,
     _survey_data,
+    _timeseries_data,
     build_integration_status_widget,
     build_product_admin_metrics,
     parse_analytics_filters,
@@ -58,6 +61,49 @@ class AdminAnalyticsApiTests(TestCase):
         )
         self.staff = User.objects.create_user(username="staff", password="pass1234", is_staff=True)
         self.user = User.objects.create_user(username="user", password="pass1234")
+
+    def _revenue_order(self, total, discount, payment_status="paid"):
+        return Order.objects.create(
+            full_name="Revenue Buyer", phone="+380501112233", city="Kyiv", np_office="1",
+            pay_type="online_full", payment_status=payment_status,
+            total_sum=Decimal(total), discount_amount=Decimal(discount),
+            utm_source="instagram", utm_medium="paid_social",
+        )
+
+    def test_order_revenue_widgets_use_discounted_values_and_paid_population(self):
+        self._revenue_order("1200.00", "200.00")
+        self._revenue_order("800.00", "100.00")
+        self._revenue_order("900.00", "100.00", "prepaid")
+        self._revenue_order("900.00", "100.00", "unpaid")
+        filters = parse_analytics_filters({"period": "today"})
+
+        headline = _build_overview_cards(filters)["headline"]
+        self.assertEqual(headline["revenue"], 1700.0)
+        self.assertEqual(headline["aov"], 850.0)
+        self.assertEqual(headline["paid_orders"], 2)
+        self.assertEqual(_timeseries_data(filters)["series"]["revenue"], [1700.0])
+        sales = _sales_data(filters)
+        self.assertEqual(sales["summary"]["revenue"], 1700.0)
+        self.assertEqual(sales["summary"]["aov"], 850.0)
+        self.assertEqual(sales["summary"]["paid_or_prepay_orders"], 3)
+        self.assertEqual(sales["daily_series"]["revenue"], [1700.0])
+        self.assertEqual(sales["source_ltv"][0]["revenue"], 1700.0)
+
+    def test_order_revenue_clamps_invalid_overdiscount_to_zero(self):
+        self._revenue_order("100.00", "120.00")
+        self._revenue_order("800.00", "0.00")
+        headline = _build_overview_cards(parse_analytics_filters({"period": "today"}))["headline"]
+        self.assertEqual(headline["revenue"], 800.0)
+        self.assertEqual(headline["aov"], 400.0)
+
+    def test_revenue_comparison_uses_discounted_values_in_both_periods(self):
+        self._revenue_order("1200.00", "200.00")
+        previous = self._revenue_order("800.00", "100.00")
+        Order.objects.filter(pk=previous.pk).update(created=timezone.now() - timedelta(days=1))
+        filters = parse_analytics_filters({"period": "today", "compare_to": "previous_period"})
+        revenue = _build_overview_cards(filters)["comparison"]["revenue"]
+        self.assertEqual(revenue["previous"], 700.0)
+        self.assertEqual(_timeseries_data(filters)["comparison"]["series"]["revenue"], [700.0])
 
     def test_requires_staff_permissions(self):
         self.client.force_login(self.user)

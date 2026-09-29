@@ -1,4 +1,8 @@
+import json
+import shutil
+import subprocess
 from pathlib import Path
+from unittest import skipUnless
 
 from django.test import SimpleTestCase
 
@@ -14,6 +18,91 @@ class AnalyticsLoaderRegressionTests(SimpleTestCase):
             / "analytics-loader.js"
         )
         return loader_path.read_text(encoding="utf-8")
+
+    def _run_loader_runtime(self, search="", cookies=None, legacy=False):
+        # Execute the actual loader in an offline browser-shaped VM. All timers
+        # and external pixel IDs are disabled; no conversion/network is sent.
+        harness = r"""
+const fs = require('fs');
+const vm = require('vm');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const cookies = new Map(Object.entries(input.cookies));
+const writes = [];
+const doc = {
+  documentElement: {
+    getAttribute: name => name === 'data-tiktok-test-event-code' ? 'offline-harness' : '',
+    dataset: {},
+  },
+  readyState: 'complete',
+  getElementById: () => null,
+  addEventListener: () => {},
+};
+Object.defineProperty(doc, 'cookie', {
+  get: () => Array.from(cookies, ([key, value]) => key + '=' + encodeURIComponent(value)).join('; '),
+  set: value => {
+    const pair = value.split(';', 1)[0];
+    const split = pair.indexOf('=');
+    const key = pair.slice(0, split);
+    cookies.set(key, decodeURIComponent(pair.slice(split + 1)));
+    writes.push(key);
+  },
+});
+const win = {
+  location: { search: input.search, protocol: 'https:' },
+  navigator: {},
+  addEventListener: () => {},
+  removeEventListener: () => {},
+};
+class Clock extends Date { static now() { return 1800000000000; } }
+vm.runInNewContext(input.source, {
+  window: win, document: doc, Date: Clock,
+  URLSearchParams: input.legacy ? undefined : URLSearchParams,
+  setTimeout: () => 0, clearTimeout: () => {},
+  console: { log: () => {}, debug: () => {}, warn: () => {} },
+});
+const context = win.getTrackingContext();
+process.stdout.write(JSON.stringify({ fbc: context.fbc, fbp: context.fbp, writes }));
+"""
+        result = subprocess.run(
+            [shutil.which("node"), "-e", harness],
+            input=json.dumps({
+                "source": self._loader_source(), "search": search,
+                "cookies": cookies or {}, "legacy": legacy,
+            }),
+            text=True, capture_output=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    @skipUnless(shutil.which("node"), "Node.js is required for analytics browser runtime checks")
+    def test_fbp_new_fallback_is_numeric_and_existing_identifier_is_preserved(self):
+        fresh = self._run_loader_runtime()
+        self.assertRegex(fresh["fbp"], r"^fb\.1\.1800000000000\.\d+$")
+        self.assertEqual(fresh["writes"].count("_fbp"), 1)
+        existing_fbp = "fb.1.1700000000000.retained-browser-id"
+        existing = self._run_loader_runtime(cookies={"_fbp": existing_fbp})
+        self.assertEqual(existing["fbp"], existing_fbp)
+        self.assertNotIn("_fbp", existing["writes"])
+
+    @skipUnless(shutil.which("node"), "Node.js is required for analytics browser runtime checks")
+    def test_fbc_tracks_latest_click_without_refreshing_same_click_timestamp(self):
+        old_fbc = "fb.1.1700000000000.old-click"
+        cases = (
+            ("new click replaces old cookie", "?fbclid=new-click", old_fbc, False, "fb.1.1800000000000.new-click", 1),
+            ("same click preserves timestamp", "?fbclid=old-click", old_fbc, False, old_fbc, 0),
+            ("same click preserves Meta appendix", "?fbclid=old-click", old_fbc + ".AQQ", False, old_fbc + ".AQQ", 0),
+            ("ordinary navigation preserves cookie", "", old_fbc, False, old_fbc, 0),
+            ("no click does not invent cookie", "", "", False, None, 0),
+            ("first click creates cookie", "?fbclid=first-click", "", False, "fb.1.1800000000000.first-click", 1),
+            ("legacy parser decodes click", "?fbclid=new%2Dclick", old_fbc, True, "fb.1.1800000000000.new-click", 1),
+        )
+        for label, search, fbc, legacy, expected, expected_writes in cases:
+            with self.subTest(label=label):
+                output = self._run_loader_runtime(
+                    search=search, cookies={"_fbc": fbc} if fbc else {}, legacy=legacy,
+                )
+                self.assertEqual(output["fbc"], expected)
+                self.assertEqual(output["writes"].count("_fbc"), expected_writes)
 
     def test_bfcache_restore_uses_defined_pixel_initializer(self):
         source = self._loader_source()
@@ -69,7 +158,7 @@ class AnalyticsLoaderRegressionTests(SimpleTestCase):
         )
         source = template_path.read_text(encoding="utf-8")
 
-        self.assertIn("analytics-loader.js' %}?v=12", source)
+        self.assertIn("analytics-loader.js' %}?v=13", source)
 
     def test_non_standard_meta_events_use_track_custom_and_keep_buffer_type(self):
         source = self._loader_source()

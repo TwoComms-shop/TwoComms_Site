@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -490,6 +490,21 @@ def validate_checkout_items(
             missing_fields=missing_fields,
         )
 
+    from storefront.services.brigade_commerce import calculate_brigade_cart_pricing
+    pricing_cart = {
+        str(index): {**item.digest_payload(), "qty": item.quantity, "fit_option_code": item.fit_code}
+        for index, item in enumerate(normalized)
+    }
+    brigade_pricing = calculate_brigade_cart_pricing(
+        pricing_cart,
+        {item.product.pk: item.product for item in normalized},
+        {item.color_variant.pk: item.color_variant for item in normalized if item.color_variant},
+    )
+    normalized = [
+        replace(item, catalog_unit_price=brigade_pricing.lines[str(index)].unit_price,
+                catalog_line_total=brigade_pricing.lines[str(index)].line_total)
+        for index, item in enumerate(normalized)
+    ]
     catalog_total = sum((item.catalog_line_total for item in normalized), Decimal("0.00"))
     if catalog_total <= 0 or catalog_total > MAX_CHECKOUT_VALUE:
         raise CheckoutConfigurationError("invalid_catalog_total")
@@ -498,6 +513,8 @@ def validate_checkout_items(
         quoted_total = _money(negotiated_total, code="invalid_negotiated_total")
         if quoted_total > catalog_total:
             raise CheckoutConfigurationError("invalid_negotiated_total")
+        if brigade_pricing.full_payment_only and catalog_total - quoted_total > brigade_pricing.promo_eligible_subtotal:
+            raise CheckoutConfigurationError("brigade_discount_unavailable")
         if quoted_total != catalog_total:
             if not evidence_ids:
                 raise CheckoutConfigurationError("missing_price_evidence")
@@ -515,6 +532,8 @@ def validate_checkout_items(
         normalized_pay_type = "prepayment"
     else:
         raise CheckoutConfigurationError("invalid_pay_type")
+    if brigade_pricing.full_payment_only and normalized_pay_type != "online_full":
+        raise CheckoutConfigurationError("brigade_full_payment_required")
     payment_amount = (
         quoted_total
         if normalized_pay_type == "online_full" and requested_payment_amount is None
@@ -786,6 +805,10 @@ def create_or_update_proposal(
                 or bool(getattr(proposal, "custom_print_full_only", False))
             ),
         )
+    if activate_v2 and payment_policy is not None:
+        from storefront.services.brigade_commerce import products_require_full_payment
+        if products_require_full_payment([item.product for item in quote.items]):
+            payment_policy = replace(payment_policy, policy=IgCheckoutProposal.PaymentPolicy.FULL_ONLY)
     if proposal is not None:
         local_terminal = {}
         if proposal.payment_attempt_id:

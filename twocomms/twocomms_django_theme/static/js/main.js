@@ -2357,7 +2357,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   scheduleIdle(() => {
     if (document.querySelector('.cart-page-container') || document.getElementById('promo-code-input')) {
-      import('./modules/cart.js?v=20260819-cart-locale-v1')
+      import('./modules/cart.js?v=20260930-brigade-v1')
         .then(({ initCartInteractions }) => initCartInteractions())
         .catch(() => { });
     }

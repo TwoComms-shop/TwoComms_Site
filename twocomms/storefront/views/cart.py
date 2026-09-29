@@ -52,6 +52,7 @@ from storefront.custom_print_config import (
 )
 from storefront.custom_print_notifications import notify_custom_print_moderation_request
 from storefront.services.size_guides import normalize_requested_size
+from storefront.services.brigade_commerce import calculate_brigade_cart_pricing
 from .utils import (
     get_validated_cart_from_session,
     save_cart_to_session,
@@ -93,7 +94,7 @@ def _normalize_cart_color_hex(value):
 def _load_cart_products(product_ids, *, include_images=False):
     """Load cart products in one reconnect-safe, read-only operation."""
     def operation():
-        queryset = Product.objects
+        queryset = Product.objects.select_related('category')
         if include_images:
             queryset = queryset.select_related('category').prefetch_related(
                 'color_variants__images'
@@ -101,6 +102,10 @@ def _load_cart_products(product_ids, *, include_images=False):
         return queryset.in_bulk(product_ids)
 
     return retry_mysql_read(operation)
+
+
+def _cart_brigade_pricing(cart, products=None, variants=None):
+    return retry_mysql_read(lambda: calculate_brigade_cart_pricing(cart, products, variants))
 
 
 def _load_cart_variants(variant_ids, *, include_images=False):
@@ -673,6 +678,8 @@ def view_cart(request):
         request.session['cart'] = cart
         request.session.modified = True
 
+    brigade_pricing = _cart_brigade_pricing(cart, products_map, color_variants_map)
+
     for item_key, item_data in cart.items():
         try:
             product_id = item_data.get('product_id')
@@ -682,15 +689,18 @@ def view_cart(request):
             if not product:
                 continue
 
-            original_price = Decimal(product.price)
+            line_price = brigade_pricing.lines.get(item_key)
+            if line_price is None:
+                continue
+            original_price = line_price.original_unit_price
             qty = int(item_data.get('qty', 1))
 
             # Информация о цвете из color_variant_id
             # color_variant = _get_color_variant_safe(item_data.get('color_variant_id')) # OLD N+1 risk
             color_variant_id = item_data.get('color_variant_id')
             color_variant = color_variants_map.get(int(color_variant_id)) if color_variant_id else None
-            price = _effective_item_price(product, item_data, color_variant)
-            line_total = price * qty
+            price = line_price.unit_price
+            line_total = line_price.line_total
             original_line_total = original_price * qty
             site_line_discount = original_line_total - line_total
             if site_line_discount < 0:
@@ -721,6 +731,7 @@ def view_cart(request):
 
             cart_items.append({
                 'key': item_key,
+                'brigade_pricing': line_price.public_metadata(),
                 'product': product,
                 'price': price,  # Для совместимости
                 'unit_price': price,  # Шаблон ожидает unit_price!
@@ -754,7 +765,7 @@ def view_cart(request):
         try:
             promo_code = _load_promo_code(promo_code_id)
             if promo_code.can_be_used():
-                discount = promo_code.calculate_discount(subtotal)
+                discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
             else:
                 # Промокод больше не валиден
                 del request.session['promo_code_id']
@@ -833,7 +844,7 @@ def view_cart(request):
         prepay_allowed = False
     else:
         payment_allowed = True
-        prepay_allowed = True
+        prepay_allowed = not brigade_pricing.full_payment_only
 
     combined_total = (total + custom_items_total).quantize(Decimal('0.01'))
     has_payable_items = approved_total > 0
@@ -846,6 +857,7 @@ def view_cart(request):
     # Если передплата недоступна (у кошику є кастомний друк) — не лишаємо її обраною.
     if not prepay_allowed and selected_pay_type == 'prepay_200':
         selected_pay_type = 'online_full'
+        pay_now_amount = approved_total
 
     return render(
         request,
@@ -868,6 +880,7 @@ def view_cart(request):
             'has_draft_items': has_draft_items,
             'payment_allowed': payment_allowed,
             'prepay_allowed': prepay_allowed,
+            **brigade_pricing.public_metadata(),
             'selected_pay_type': selected_pay_type,
             'subtotal': subtotal,
             'discount': discount,
@@ -1061,21 +1074,11 @@ def add_to_cart(request):
     ids = [i['product_id'] for i in cart.values()]
     prods = _load_cart_products(ids)
     total_qty = sum(i['qty'] for i in cart.values())
-    total_sum = Decimal('0')
-    variant_ids = [i.get('color_variant_id') for i in cart.values() if i.get('color_variant_id')]
-    cart_variants = _load_cart_variants(variant_ids)
-    for i in cart.values():
-        p = prods.get(i['product_id'])
-        if p:
-            raw_variant_id = i.get('color_variant_id')
-            try:
-                line_variant = cart_variants.get(int(raw_variant_id)) if raw_variant_id else None
-            except (TypeError, ValueError):
-                line_variant = None
-            price_decimal = _effective_item_price(p, i, line_variant)
-            total_sum += Decimal(i['qty']) * price_decimal
-
-    cart_total = total_sum.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    brigade_pricing = _cart_brigade_pricing(cart, prods)
+    cart_total = brigade_pricing.subtotal
+    if key in brigade_pricing.lines:
+        price = brigade_pricing.lines[key].unit_price
+        item_value = (price * qty).quantize(Decimal('0.01'))
 
     # UTM Tracking: записываем добавление в корзину
     try:
@@ -1093,6 +1096,7 @@ def add_to_cart(request):
         'count': total_qty,
         'total': float(cart_total),
         'cart_total': float(cart_total),
+        **brigade_pricing.public_metadata(),
         'item': {
             'product_id': product.id,
             'offer_id': offer_id,
@@ -1151,22 +1155,12 @@ def update_cart(request):
         save_cart_to_session(request, cart)
         _reset_monobank_session(request, drop_pending=True)
 
-        # ИСПРАВЛЕНО: Получаем цену из Product, а не из сессии (в сессии нет поля 'price')
-        product_id = cart[cart_key]['product_id']
-        try:
-            product = retry_mysql_read(
-                lambda: Product.objects.get(id=product_id)
-            )
-            price = _effective_item_price(product, cart[cart_key])
-        except Product.DoesNotExist:
-            return JsonResponse({
-                'success': False,
-                'error': _('Товар не знайдено')
-            }, status=404)
-
-        # Рассчитываем новые суммы
-        line_total = price * qty
-        subtotal = calculate_cart_total(cart)
+        brigade_pricing = _cart_brigade_pricing(cart)
+        line_price = brigade_pricing.lines.get(cart_key)
+        if line_price is None:
+            return JsonResponse({'success': False, 'error': _('Товар не знайдено')}, status=404)
+        line_total = line_price.line_total
+        subtotal = brigade_pricing.subtotal
 
         # Учитываем промокод
         discount = Decimal('0')
@@ -1175,7 +1169,7 @@ def update_cart(request):
             try:
                 promo_code = _load_promo_code(promo_code_id)
                 if promo_code.can_be_used():
-                    discount = promo_code.calculate_discount(subtotal)
+                    discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
             except PromoCode.DoesNotExist:
                 pass
 
@@ -1184,6 +1178,8 @@ def update_cart(request):
         return JsonResponse({
             'ok': True,
             'line_total': float(line_total),
+            'brigade_pricing': line_price.public_metadata(),
+            **brigade_pricing.public_metadata(),
             'subtotal': float(subtotal),
             'discount': float(discount),
             'total': float(total)
@@ -1252,26 +1248,17 @@ def remove_from_cart(request):
     if removed:
         _reset_monobank_session(request, drop_pending=True)
 
-    # Пересчёт сводки с использованием Decimal и учетом промокодов
-    ids = [i['product_id'] for i in cart.values()]
-    prods = _load_cart_products(ids)
+    # Reprice the whole cart: removing a unit can change every 225 offer.
     total_qty = sum(i['qty'] for i in cart.values())
-    total_sum = Decimal('0')
-    for i in cart.values():
-        p = prods.get(i['product_id'])
-        if p:
-            price_decimal = _effective_item_price(p, i)
-            total_sum += Decimal(i['qty']) * price_decimal
-
-    # Учитываем промокод при расчете итоговой суммы
-    subtotal = total_sum.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    brigade_pricing = _cart_brigade_pricing(cart)
+    subtotal = brigade_pricing.subtotal
     discount = Decimal('0')
     promo_code_id = request.session.get('promo_code_id')
     if promo_code_id:
         try:
             promo_code = _load_promo_code(promo_code_id)
             if promo_code.can_be_used():
-                discount = promo_code.calculate_discount(subtotal)
+                discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
         except PromoCode.DoesNotExist:
             pass
 
@@ -1304,6 +1291,7 @@ def remove_from_cart(request):
     return JsonResponse({
         'ok': True,
         'count': total_qty,
+        **brigade_pricing.public_metadata(),
         'subtotal': float(subtotal),
         'discount': float(discount),
         'total': float(total),
@@ -1438,9 +1426,10 @@ def apply_promo_code(request):
 
         # Рассчитываем скидку
         cart = get_validated_cart_from_session(request)
-        subtotal = calculate_cart_total(cart)
-        original_subtotal = _calculate_original_subtotal(cart)
-        discount = promo_code.calculate_discount(subtotal)
+        brigade_pricing = _cart_brigade_pricing(cart)
+        subtotal = brigade_pricing.subtotal
+        original_subtotal = brigade_pricing.original_subtotal
+        discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
 
         if discount <= 0:
             # Проверяем причину
@@ -1506,6 +1495,7 @@ def apply_promo_code(request):
             'message': message,
             'promo_code': promo_code.code,
             'subtotal': float(subtotal),
+            **brigade_pricing.public_metadata(),
             'original_subtotal': float(original_subtotal),
             'site_discount_total': float(site_discount_total),
             'total_savings': float(total_savings),
@@ -1545,7 +1535,8 @@ def remove_promo_code(request):
             request.session.modified = True
 
         cart = get_validated_cart_from_session(request)
-        subtotal = calculate_cart_total(cart)
+        brigade_pricing = _cart_brigade_pricing(cart)
+        subtotal = brigade_pricing.subtotal
         # После удаления промокода скидка = 0
         total = subtotal
 
@@ -1553,6 +1544,7 @@ def remove_promo_code(request):
             'ok': True,
             'success': True,
             'subtotal': float(subtotal),
+            **brigade_pricing.public_metadata(),
             'discount': 0.0,
             'total': float(total),
             'message': _('Промокод видалено')
@@ -1634,25 +1626,13 @@ def cart_summary(request):
 
     # Пересчитываем с очищенной корзиной
     total_qty = sum(i['qty'] for i in cart.values())
-    total_sum = Decimal('0')
-    for i in cart.values():
-        p = prods.get(i['product_id'])
-        if p:
-            raw_variant_id = i.get('color_variant_id')
-            try:
-                variant = variants.get(int(raw_variant_id)) if raw_variant_id else None
-            except (TypeError, ValueError):
-                variant = None
-            total_sum += Decimal(str(i['qty'])) * _effective_item_price(
-                p,
-                i,
-                variant,
-            )
+    brigade_pricing = _cart_brigade_pricing(cart, prods, variants)
+    total_sum = brigade_pricing.subtotal
 
     total_sum += custom_total
     total_qty += custom_qty
 
-    return JsonResponse({'ok': True, 'count': total_qty, 'total': float(total_sum)})
+    return JsonResponse({'ok': True, 'count': total_qty, 'total': float(total_sum), **brigade_pricing.public_metadata()})
 
 
 def cart_mini(request):
@@ -1694,6 +1674,8 @@ def cart_mini(request):
     total = 0
     total_points = 0
 
+    brigade_pricing = _cart_brigade_pricing(cart_sess, prods, variants_map)
+
     for key, it in cart_sess.items():
         p = prods.get(it['product_id'])
         if not p:
@@ -1704,8 +1686,11 @@ def cart_mini(request):
         variant_id = it.get('color_variant_id')
         color_variant = variants_map.get(int(variant_id)) if variant_id else None
 
-        unit = _effective_item_price(p, it, color_variant)
-        line = unit * it['qty']
+        line_price = brigade_pricing.lines.get(key)
+        if line_price is None:
+            continue
+        unit = line_price.unit_price
+        line = line_price.line_total
         total += line
 
         # Баллы за товар, если предусмотрены
@@ -1722,6 +1707,7 @@ def cart_mini(request):
 
         items.append({
             'key': key,
+            'brigade_pricing': line_price.public_metadata(),
             'product': p,
             'size': size_value,
             'fit_option_code': fit_option_code,
@@ -1755,6 +1741,7 @@ def cart_mini(request):
 
     return render(request, 'partials/mini_cart.html', {
         'items': items,
+        **brigade_pricing.public_metadata(),
         'total': total,
         'total_points': total_points,
         'custom_items': custom_items,
@@ -1836,6 +1823,7 @@ def contact_manager(request):
 
         message += "\n\n🛒 <b>КОШИК:</b>\n"
 
+        brigade_pricing = _cart_brigade_pricing(cart, products)
         total_sum = Decimal('0')
 
         # Добавляем товары
@@ -1845,8 +1833,10 @@ def contact_manager(request):
                 continue
 
             qty = item_data.get('qty', 1)
-            unit_price = _effective_item_price(product, item_data)
-            line_total = unit_price * qty
+            line_price = brigade_pricing.lines.get(key)
+            if line_price is None:
+                continue
+            line_total = line_price.line_total
             total_sum += line_total
 
             # Информация о размере и цвете
@@ -1922,6 +1912,8 @@ def cart_items_api(request):
     color_variant_ids = [item.get('color_variant_id') for item in cart.values() if item.get('color_variant_id')]
     variants_map = _load_cart_variants(color_variant_ids, include_images=True)
 
+    brigade_pricing = _cart_brigade_pricing(cart, products_map, variants_map)
+
     for item_key, item_data in cart.items():
         try:
             product_id = item_data.get('product_id')
@@ -1929,14 +1921,17 @@ def cart_items_api(request):
             if not product:
                 continue
 
-            original_price = Decimal(product.price)
+            line_price = brigade_pricing.lines.get(item_key)
+            if line_price is None:
+                continue
+            original_price = line_price.original_unit_price
             qty = int(item_data.get('qty', 1))
             total_quantity += qty
 
             variant_id = item_data.get('color_variant_id')
             color_variant = variants_map.get(int(variant_id)) if variant_id else None
-            price = _effective_item_price(product, item_data, color_variant)
-            line_total = price * qty
+            price = line_price.unit_price
+            line_total = line_price.line_total
             original_line_total = original_price * qty
             site_line_discount = original_line_total - line_total
             if site_line_discount < 0:
@@ -1966,6 +1961,7 @@ def cart_items_api(request):
 
             cart_items.append({
                 'key': item_key,
+                'brigade_pricing': line_price.public_metadata(),
                 'product_id': product.id,
                 'product_title': product.title,
                 'product_slug': product.slug,
@@ -2005,7 +2001,7 @@ def cart_items_api(request):
         try:
             promo_code = _load_promo_code(promo_code_id)
             if promo_code.can_be_used():
-                discount = promo_code.calculate_discount(subtotal)
+                discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
             else:
                 del request.session['promo_code_id']
                 promo_code = None
@@ -2050,7 +2046,8 @@ def cart_items_api(request):
         'all_approved': all_approved,
         'combined_total': float(combined_total),
         'approved_total': float(approved_total),
-        'prepay_allowed': not has_custom_items,
+        'prepay_allowed': not has_custom_items and not brigade_pricing.full_payment_only,
+        **brigade_pricing.public_metadata(),
         'payment_allowed': (not has_custom_items) or all_approved,
         'subtotal': float(subtotal),
         'original_subtotal': float(original_subtotal),

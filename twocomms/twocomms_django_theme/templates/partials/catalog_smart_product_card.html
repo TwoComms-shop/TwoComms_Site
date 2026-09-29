@@ -1,3 +1,6 @@
+{% load brigade_tags %}
+{% brigade_words as brigade_copy %}
+{% brigade_policy p as brigade_card_policy %}
 {% load i18n %}
 {% load static %}
 {% load responsive_images %}
@@ -113,6 +116,7 @@
     </div>
 
     <div class="smart-product-card__body">
+      {% if brigade_card_policy.is_225 %}<span class="brigade-card-note">{{ brigade_copy.card }}</span>{% endif %}
       <a href="{{ product_url }}" class="smart-product-card__title" data-product-card-link>{{ p.title }}</a>
 
       <div class="smart-product-card__price-row">

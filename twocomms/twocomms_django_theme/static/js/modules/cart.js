@@ -306,8 +306,44 @@ class CartPageController {
     }
   }
 
+  updateBrigadeState(data) {
+    let words = {};
+    try { words = JSON.parse(document.getElementById('brigade-copy')?.textContent || '{}'); } catch (_) {}
+    const hasBrigade = Boolean(data.has_brigade_items);
+    const hasCustom = Boolean(data.has_custom_items || data.custom_items?.length);
+    const prepayAllowed = data.prepay_allowed !== undefined ? Boolean(data.prepay_allowed) : !hasBrigade && !hasCustom;
+    this.root.querySelectorAll('[data-brigade-payment-note]').forEach(el => { el.hidden = !hasBrigade; });
+    this.root.querySelectorAll('.pay-method-native').forEach(select => {
+      const option = select.querySelector('option[value="prepay_200"]');
+      if (option) option.disabled = !prepayAllowed;
+      if (!prepayAllowed && select.value === 'prepay_200') {
+        select.value = 'online_full';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      const tile = select.closest('.cart-form-group')?.querySelector('[data-pay-tile="prepay_200"]');
+      if (tile) {
+        tile.classList.toggle('is-disabled', !prepayAllowed);
+        tile.setAttribute('aria-disabled', String(!prepayAllowed));
+        if (prepayAllowed) delete tile.dataset.payDisabled;
+        else tile.dataset.payDisabled = '1';
+      }
+    });
+    const offer = this.root.querySelector('[data-brigade-cart-offer]');
+    if (!offer) return;
+    offer.hidden = !data.has_225_items;
+    const savings = parseNumber(data.brigade_discount_total);
+    offer.querySelector('[data-brigade-savings]').hidden = savings <= 0;
+    offer.querySelector('[data-brigade-saving-value]').textContent = String(savings);
+    offer.querySelector('[data-brigade-cart-title]').textContent = savings > 0 ? words.applied : words.cart_title;
+    const tees = Number(data.brigade_tee_qty || 0), hoodies = Number(data.brigade_hoodie_qty || 0);
+    offer.querySelector('[data-brigade-cart-intro]').textContent = Number(data.brigade_discount_total) > 0 ? words.automatic : hoodies && !tees ? words.add_tee : tees && !hoodies ? words.add_hoodie : words.automatic;
+    offer.querySelector('[data-brigade-choose-tee]').hidden = Boolean(tees && !hoodies);
+    offer.querySelector('[data-brigade-choose-hoodie]').hidden = Boolean(hoodies && !tees);
+  }
+
   applyState(data) {
     this.state = data;
+    this.updateBrigadeState(data);
 
     this.renderItems(
       Array.isArray(data.items) ? data.items : [],
@@ -513,9 +549,16 @@ class CartPageController {
     const hasColor = Boolean(item.color_variant_id);
     const colorSwatch = hasColor ? renderCartSwatch(item, colorLabel) : '';
     const fitLabel = item.fit_option_label || item.fit_label || '';
-    const priceHtml = hasSiteDiscount
+    let priceHtml = hasSiteDiscount
       ? `<span class="cart-item-price-old">${formatUAH(originalUnitPrice)}</span><span class="cart-item-price-current">${formatUAH(unitPrice)}</span>`
       : `<span class="cart-item-price-current">${formatUAH(unitPrice)}</span>`;
+
+    const bp = item.brigade_pricing;
+    if (bp && Number(bp.discounted_qty) > 0) {
+      priceHtml = `<span class="cart-item-price-current">${Number(bp.discounted_qty)} × ${formatUAH(parseNumber(bp.offer_unit_price))}</span>`;
+      if (Number(bp.regular_qty) > 0) priceHtml += `<span class="brigade-line-offer">+ ${Number(bp.regular_qty)} × ${formatUAH(parseNumber(bp.standalone_unit_price))}</span>`;
+      priceHtml += `<span class="brigade-line-offer">225 · −${formatUAH(parseNumber(bp.discount_amount))}</span>`;
+    }
 
     return `
       <div class="cart-item" data-cart-row data-key="${escapeHtml(item.key)}" data-offer-id="${escapeHtml(item.offer_id || '')}">

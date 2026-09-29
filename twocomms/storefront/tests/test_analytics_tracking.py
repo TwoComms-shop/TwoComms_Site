@@ -3,12 +3,76 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.db import DatabaseError
-from django.test import Client, TestCase
+from django.contrib.auth.models import AnonymousUser
+from django.contrib.sessions.middleware import SessionMiddleware
+from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
 
 from orders.models import Order
-from storefront.models import Category, PageView, Product, SiteSession, UserAction
+from storefront.models import Category, PageView, Product, SiteSession, UserAction, UTMSession
+from storefront.services.admin_analytics import _resolve_scope, parse_analytics_filters
+from storefront.tracking import AnalyticsIdentityMiddleware, SimpleAnalyticsMiddleware
+from storefront.utm_middleware import UTMTrackingMiddleware
 from storefront.views.monobank import _apply_monobank_status
+
+
+class FirstLandingAttributionTests(TestCase):
+    def _request(self, query=""):
+        request = RequestFactory().get(
+            "/catalog/" + query,
+            HTTP_HOST="twocomms.shop",
+            HTTP_USER_AGENT="Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+            HTTP_ACCEPT="text/html",
+            HTTP_SEC_FETCH_MODE="navigate",
+        )
+        request.user = AnonymousUser()
+        SessionMiddleware(lambda req: None).process_request(request)
+        return request
+
+    @patch("storefront.utm_middleware.get_geolocation", return_value={})
+    def test_first_tagged_landing_is_joined_and_visible_to_dashboard_filters(self, _geo):
+        request = self._request("?utm_source=instagram&utm_medium=paid_social&utm_campaign=launch")
+        AnalyticsIdentityMiddleware(lambda req: None).process_request(request)
+        UTMTrackingMiddleware(lambda req: None).process_request(request)
+        utm = UTMSession.objects.get()
+        self.assertIsNone(utm.session_id)
+
+        SimpleAnalyticsMiddleware(lambda req: None).process_request(request)
+
+        utm.refresh_from_db()
+        site_session = SiteSession.objects.get(session_key=request.session.session_key)
+        self.assertEqual(utm.session_id, site_session.pk)
+        self.assertTrue(PageView.objects.filter(session=site_session).exists())
+        for params in (
+            {"utm_source": "instagram"},
+            {"campaign": "launch"},
+            {"device_type": utm.device_type},
+        ):
+            with self.subTest(params=params):
+                scope = _resolve_scope(parse_analytics_filters({"period": "all_time", **params}))
+                self.assertEqual(list(scope.site_qs.values_list("pk", flat=True)), [site_session.pk])
+
+    def test_ordinary_navigation_repairs_existing_unlinked_utm_row(self):
+        request = self._request()
+        request.session.create()
+        site_session = SiteSession.objects.create(session_key=request.session.session_key)
+        utm = UTMSession.objects.create(
+            session_key=request.session.session_key, utm_source="instagram",
+        )
+        SimpleAnalyticsMiddleware(lambda req: None).process_request(request)
+        utm.refresh_from_db()
+        self.assertEqual(utm.session_id, site_session.pk)
+
+    def test_existing_attribution_link_is_not_reassigned(self):
+        request = self._request()
+        request.session.create()
+        original = SiteSession.objects.create(session_key="original-attribution-session")
+        utm = UTMSession.objects.create(
+            session_key=request.session.session_key, session=original,
+        )
+        SimpleAnalyticsMiddleware(lambda req: None).process_request(request)
+        utm.refresh_from_db()
+        self.assertEqual(utm.session_id, original.pk)
 
 
 class AnalyticsTrackingTests(TestCase):

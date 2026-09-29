@@ -397,7 +397,7 @@ def calculate_cart_total(cart):
     from decimal import Decimal
     from ..models import Product
     from productcolors.models import ProductColorVariant
-    from product_catalog.services import effective_cart_unit_price
+    from storefront.services.brigade_commerce import calculate_brigade_cart_pricing
 
     cart, _ = normalize_cart_session(cart)
     if not cart:
@@ -408,33 +408,15 @@ def calculate_cart_total(cart):
     variant_ids = [item.get('color_variant_id') for item in cart.values() if item.get('color_variant_id')]
     products, variants = retry_mysql_read(
         lambda: (
-            Product.objects.in_bulk(ids),
+            Product.objects.select_related('category').in_bulk(ids),
             ProductColorVariant.objects.in_bulk(variant_ids),
         )
     )
     cart, _ = filter_cart_variant_ownership(cart, variants)
 
-    total = Decimal('0')
-    for item in cart.values():
-        product = products.get(item['product_id'])
-        if product:
-            qty = item['qty']
-            variant_id = item.get('color_variant_id')
-            try:
-                variant = variants.get(int(variant_id)) if variant_id else None
-            except (TypeError, ValueError):
-                variant = None
-            fit_code = str(
-                item.get('fit_option_code') or item.get('fit') or ''
-            ).strip().lower()
-            total += effective_cart_unit_price(
-                product,
-                variant,
-                fit_code=fit_code,
-                option_values=item.get('option_values') or {},
-            ) * qty
-
-    return total
+    return retry_mysql_read(
+        lambda: calculate_brigade_cart_pricing(cart, products, variants).subtotal
+    )
 
 
 def get_favorites_from_session(request):

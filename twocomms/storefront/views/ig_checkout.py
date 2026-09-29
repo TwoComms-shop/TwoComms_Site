@@ -556,6 +556,9 @@ def _localized_proposal_url(request, proposal, language):
 
 
 def _localized_error(language, code, fallback):
+    if code == "brigade_full_payment_required":
+        from storefront.services.brigade_presentation import brigade_text
+        return brigade_text("full_payment", language)
     return CHECKOUT_ERROR_COPY.get(language, CHECKOUT_ERROR_COPY["uk"]).get(code, fallback)
 
 
@@ -740,6 +743,16 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
         if generation is not None and generation.payment_attempt_id
         else proposal.payment_attempt
     )
+    from management.services.ig_checkout_payment import _proposal_brigade_policy
+    brigade_full_only, _promo_eligible = _proposal_brigade_policy(proposal)
+    brigade_partial_blocked = bool(
+        brigade_full_only
+        and state != "paid"
+        and (
+            proposal.pay_type != proposal.PayType.ONLINE_FULL
+            or (attempt is not None and attempt.pay_type != attempt.PayType.ONLINE_FULL)
+        )
+    )
     locked_retry_states = {
         "generation_expired_reissuable",
         "generation_retryable",
@@ -750,21 +763,23 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
         "paid",
         *locked_retry_states,
     }
-    payable = state == "ready" and not delivery_locked
+    payable = state == "ready" and not delivery_locked and not brigade_partial_blocked
     reissue_allowed = bool(
         state in locked_retry_states
         and generation is not None
         and attempt is not None
+        and not brigade_partial_blocked
     )
     share_allowed = state in {
         "ready", "locked", "pending", *locked_retry_states,
-    }
+    } and not brigade_partial_blocked
     payment_url = ""
     if (
         attempt is not None
         and state in {"locked", "pending"}
         and attempt.invoice_url
         and not (attempt.event_state or {}).get("invoice_creation_ambiguous")
+        and not brigade_partial_blocked
     ):
         payment_url = attempt.invoice_url
     masked_delivery = None
@@ -805,6 +820,8 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
     selected_payment_choice = str(
         form_values.get("payment_choice") or "online_full"
     )
+    if brigade_full_only:
+        selected_payment_choice = "online_full"
     payment_options = [
         {
             "value": "online_full",
@@ -818,6 +835,7 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
         and proposal.payment_policy
         == proposal.PaymentPolicy.FULL_OR_200_COD
         and not proposal.custom_print_full_only
+        and not brigade_full_only
     ):
         payment_options.append({
             "value": "prepay_200_cod",
@@ -825,6 +843,10 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
             "selected": selected_payment_choice == "prepay_200_cod",
             "amount": "200.00",
         })
+    state_body = copy[f"state_{state}_body"]
+    if brigade_partial_blocked:
+        from storefront.services.brigade_presentation import brigade_text
+        state_body = brigade_text("full_payment", language)
     return {
         "copy": copy,
         "approved_policy": approved_policy["text"],
@@ -834,7 +856,8 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
         "language_options": language_options,
         "checkout_state": state,
         "state_title": copy[f"state_{state}_title"],
-        "state_body": copy[f"state_{state}_body"],
+        "state_body": state_body,
+        "brigade_full_payment_only": brigade_full_only,
         "customer_name": (
             ""
             if state in locked_retry_states

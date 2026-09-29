@@ -4,11 +4,14 @@
 {% load math_filters %}
 {% load responsive_images %}
 {% load color_filters %}
+{% load brigade_tags %}
 
 {% block title %}{% trans 'Кошик' %} — TwoComms{% endblock %}
 {% block robots %}noindex, nofollow{% endblock %}
 
 {% block content %}
+{% brigade_words as brigade_copy %}
+{{ brigade_copy|json_script:"brigade-copy" }}
 {% csrf_token %}
 
 <!-- Анимация искр для всей страницы -->
@@ -84,6 +87,7 @@
   <div class="cart-page-content">
     <!-- Основная часть корзины -->
     <div class="cart-main-section">
+      {% include "partials/brigade_cart_offer.html" %}
       {% if has_any_items %}
         <div class="cart-items-background">
           <div class="cart-items-pattern"></div>
@@ -494,7 +498,7 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
                   </span>
                 </label>
-                <label class="pay-method-option {% if selected_pay_type == 'prepay_200' %}is-active{% endif %} {% if not prepay_allowed %}is-disabled{% endif %}" data-pay-tile="prepay_200" {% if not prepay_allowed %}data-pay-disabled="1"{% endif %}>
+                <label class="pay-method-option {% if selected_pay_type == 'prepay_200' %}is-active{% endif %} {% if not prepay_allowed %}is-disabled{% endif %}" data-pay-tile="prepay_200" {% if not prepay_allowed %}data-pay-disabled="1" aria-disabled="true"{% endif %}>
                   <span class="pay-method-icon" aria-hidden="true">
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/>
@@ -514,6 +518,7 @@
                 <option value="online_full" {% if selected_pay_type == 'online_full' %}selected{% endif %}>{% trans 'Онлайн оплата (повна сума)' %}</option>
                 <option value="prepay_200" {% if selected_pay_type == 'prepay_200' %}selected{% endif %} {% if not prepay_allowed %}disabled{% endif %}>{% trans 'Передплата 200 грн (решта при отриманні)' %}</option>
               </select>
+              <div class="brigade-payment-note" data-brigade-payment-note{% if not has_brigade_items %} hidden{% endif %}><strong>{{ brigade_copy.payment_title }}</strong>{{ brigade_copy.payment_short }}</div>
               {% if has_custom_items %}
               <div class="cart-form-hint text-secondary small mt-2">
                 {% trans 'У кошику є кастомний принт, тому передплата 200 грн тимчасово недоступна — менеджер узгодить фінальну ціну.' %}
@@ -677,7 +682,7 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
                   </span>
                 </label>
-                <label class="pay-method-option {% if selected_pay_type == 'prepay_200' %}is-active{% endif %} {% if not prepay_allowed %}is-disabled{% endif %}" data-pay-tile="prepay_200" {% if not prepay_allowed %}data-pay-disabled="1"{% endif %}>
+                <label class="pay-method-option {% if selected_pay_type == 'prepay_200' %}is-active{% endif %} {% if not prepay_allowed %}is-disabled{% endif %}" data-pay-tile="prepay_200" {% if not prepay_allowed %}data-pay-disabled="1" aria-disabled="true"{% endif %}>
                   <span class="pay-method-icon" aria-hidden="true">
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/>
@@ -697,6 +702,7 @@
                 <option value="online_full" {% if selected_pay_type == 'online_full' %}selected{% endif %}>{% trans 'Онлайн оплата (повна сума)' %}</option>
                 <option value="prepay_200" {% if selected_pay_type == 'prepay_200' %}selected{% endif %} {% if not prepay_allowed %}disabled{% endif %}>{% trans 'Передплата 200 грн (решта при отриманні)' %}</option>
               </select>
+              <div class="brigade-payment-note" data-brigade-payment-note{% if not has_brigade_items %} hidden{% endif %}><strong>{{ brigade_copy.payment_title }}</strong>{{ brigade_copy.payment_short }}</div>
               {% if has_custom_items %}
               <div class="cart-form-hint text-secondary small mt-2">
                 {% trans 'У кошику є кастомний принт, тому передплата 200 грн тимчасово недоступна — менеджер узгодить фінальну ціну.' %}

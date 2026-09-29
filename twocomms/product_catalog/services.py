@@ -405,6 +405,22 @@ def product_option_context(
                     breakdown["combination_override"]
                     - breakdown["material_delta"]
                 )
+            fit_unit_price = None
+            if axis_code == "fit":
+                selected_breakdown = _price_breakdown(
+                    product=product,
+                    variant=variant,
+                    details=variant_details,
+                    option_values={**selected, **values},
+                    profiles=profiles,
+                    combinations=combinations,
+                )
+                base_price = (
+                    variant.price_override
+                    if variant is not None and variant.price_override is not None
+                    else product.final_price
+                )
+                fit_unit_price = int(_decimal(base_price) + selected_breakdown["total_delta"])
             choices.append({
                 "code": choice_code,
                 "label": _public_option_label(
@@ -420,6 +436,7 @@ def product_option_context(
                 "reason": reason,
                 "price_delta": int(merchandising.get("price_delta") or 0),
                 "option_price_delta": int(option_price_delta),
+                "unit_price": fit_unit_price,
                 "price_delta_reason": str(
                     merchandising.get("price_delta_reason") or ""
                 ),
@@ -510,10 +527,19 @@ def variant_allows_options(variant, option_values) -> bool:
 
     combination_key = build_combination_key(normalized)
     if combination_key:
-        combination = VariantCombinationProfile.objects.filter(
-            variant=variant,
-            combination_key=combination_key,
-        ).only("is_active").first()
+        prefetched = getattr(variant, "_prefetched_objects_cache", {}).get(
+            "product_catalog_combinations"
+        )
+        if prefetched is not None:
+            combination = next(
+                (row for row in prefetched if row.combination_key == combination_key),
+                None,
+            )
+        else:
+            combination = VariantCombinationProfile.objects.filter(
+                variant=variant,
+                combination_key=combination_key,
+            ).only("is_active").first()
         if combination is not None and not combination.is_active:
             return False
     return True

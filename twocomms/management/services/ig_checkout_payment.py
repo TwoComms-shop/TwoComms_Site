@@ -179,7 +179,28 @@ def _invoice_payload(request, attempt, proposal, *, payment_amount, promo_discou
     }
 
 
+def _proposal_brigade_policy(proposal):
+    """Use frozen line totals for promotions, live taxonomy for payment safety."""
+    from storefront.services.brigade_commerce import get_product_brigade_policy
+    full_only = False
+    eligible = Decimal("0.00")
+    for item in proposal.items.select_related("product__category"):
+        if item.product_id and get_product_brigade_policy(item.product)["is_brigade"]:
+            full_only = True
+        else:
+            eligible += Decimal(item.quoted_line_total or 0)
+    if full_only:
+        eligible = max(eligible - Decimal(proposal.negotiated_discount or 0), Decimal("0.00"))
+    else:
+        eligible = Decimal(proposal.quoted_total)
+    return full_only, eligible
+
+
 def _validate_payload(proposal, payload, *, user=None):
+    from storefront.services.brigade_commerce import brigade_payment_error
+    brigade_full_only, promo_eligible_total = _proposal_brigade_policy(proposal)
+    if brigade_full_only and proposal.pay_type != proposal.PayType.ONLINE_FULL:
+        raise CheckoutPaymentError("brigade_full_payment_required", brigade_payment_error(), field="pay_type")
     full_name = _clean(payload.get("full_name"), 200)
     if len(full_name.split()) < 2:
         raise CheckoutPaymentError("full_name", "Вкажіть ім'я та прізвище.", field="full_name")
@@ -223,7 +244,7 @@ def _validate_payload(proposal, payload, *, user=None):
                     # A prepayment is only the amount collected now. Promo value
                     # belongs to the full eligible merchandise total and therefore
                     # reduces the later balance, not the agreed deposit itself.
-                    total_amount=proposal.quoted_total,
+                    total_amount=promo_eligible_total,
                 )
                 if (
                     Decimal(str(proposal.negotiated_discount or 0)) > 0
@@ -539,6 +560,10 @@ def lock_proposal_details(proposal, *, payload, request, grant_id=""):
             pk=locked.payment_attempt_id
         )
         locked._state.fields_cache["payment_attempt"] = locked_attempt
+    from storefront.services.brigade_commerce import brigade_payment_error
+    full_only, _eligible = _proposal_brigade_policy(locked)
+    if full_only and (locked.pay_type != locked.PayType.ONLINE_FULL or (locked_attempt is not None and locked_attempt.pay_type != PaymentAttempt.PayType.ONLINE_FULL)):
+        raise CheckoutPaymentError("brigade_full_payment_required", brigade_payment_error(), field="pay_type")
     now = timezone.now()
     if locked.expires_at <= now:
         raise CheckoutPaymentError("expired", "Срок действия предложения истек.")
