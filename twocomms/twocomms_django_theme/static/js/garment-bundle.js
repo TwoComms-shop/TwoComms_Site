@@ -1,16 +1,22 @@
-/* A brief, one-time cue when the shipping condition enters the viewport. */
+/* Animate only the small delivery icon while its notice is in view. */
 (() => {
   const notices = document.querySelectorAll('[data-shipping-attention]');
-  if (!notices.length || !('IntersectionObserver' in window) ||
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (!notices.length || !('IntersectionObserver' in window)) return;
+  const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const visible = new Set();
+  const refresh = () => notices.forEach(notice => {
+    notice.classList.toggle('is-animating', visible.has(notice) && !motion.matches && !document.hidden);
+  });
   const observer = new IntersectionObserver(entries => {
     entries.forEach(entry => {
-      if (!entry.isIntersecting || entry.intersectionRatio < .6) return;
-      entry.target.classList.add('is-highlighted');
-      observer.unobserve(entry.target);
+      if (entry.isIntersecting && entry.intersectionRatio >= .6) visible.add(entry.target);
+      else visible.delete(entry.target);
     });
-  }, {threshold: .6});
+    refresh();
+  }, {threshold: [0, .6]});
   notices.forEach(notice => observer.observe(notice));
+  motion.addEventListener('change', refresh);
+  document.addEventListener('visibilitychange', refresh);
 })();
 
 /* A separate chooser keeps the tee's size and fit independent of the hoodie. */

@@ -168,9 +168,9 @@ COPY['uk'].update({'pdp_eyebrow':'ДОДАЙ ДО ЗАМОВЛЕННЯ', 'pdp_te
 COPY['ru'].update({'pdp_eyebrow':'ДОБАВЬ К ЗАКАЗУ', 'pdp_tee_title':'Добавь худи — сэкономь', 'pdp_hoodie_title':'Добавь футболку — сэкономь', 'pdp_same_intro':'Тот же принт — больше выгоды. Другой — тоже со скидкой.', 'pdp_other_intro':'Добавь футболку с другим принтом: скидка будет на обе вещи.', 'pdp_tee_intro':'Футболка и худи — выгоднее вместе. Принты можно сочетать.', 'hoodie_in_pair':'Цена худи с футболкой', 'your_tee_in_pair':'Цена твоей футболки с худи', 'other_offer_action':'Другой принт — тоже со скидкой', 'same_price_note':'Цена для принта на фото'})
 COPY['en'].update({'pdp_eyebrow':'ADD TO YOUR ORDER', 'pdp_tee_title':'Add a hoodie and save', 'pdp_hoodie_title':'Add a tee and save', 'pdp_same_intro':'Matching prints save more. Different prints get a discount too.', 'pdp_other_intro':'Add a tee with a different print and save on both items.', 'pdp_tee_intro':'A tee and hoodie cost less together. Mix your favourite prints.', 'hoodie_in_pair':'Hoodie price with a tee', 'your_tee_in_pair':'Your tee price with a hoodie', 'other_offer_action':'Different print, still a discount', 'same_price_note':'Price for the pictured print'})
 
-COPY['uk'].update(shipping_threshold='Безкоштовна доставка від 3000 грн', shipping_threshold_note='Сума замовлення після знижок')
-COPY['ru'].update(shipping_threshold='Бесплатная доставка от 3000 грн', shipping_threshold_note='Сумма заказа после скидок')
-COPY['en'].update(shipping_threshold='Free shipping from 3000 UAH', shipping_threshold_note='Order total after discounts')
+COPY['uk'].update(shipping_threshold='Безкоштовна доставка від 3000\u00a0грн', shipping_threshold_note='Сума замовлення після знижок')
+COPY['ru'].update(shipping_threshold='Бесплатная доставка от 3000\u00a0грн', shipping_threshold_note='Сумма заказа после скидок')
+COPY['en'].update(shipping_threshold='Free shipping from 3000\u00a0UAH', shipping_threshold_note='Order total after discounts')
 
 # Category discovery uses bounded savings, not the price of an arbitrary partner.
 COPY['uk'].update(category_title='Худі + футболка — вигідніше', category_hoodie_intro='Обери худі до своєї футболки.', category_tee_intro='Додай футболку до свого худі.', category_mix_intro='Поєднуй різні принти й отримуй знижку на обидві речі.', all_hoodies='Переглянути всі худі', all_tees='Переглянути всі футболки', up_to='до', category_automatic='Додай обидві речі в кошик — знижка застосовується автоматично.')

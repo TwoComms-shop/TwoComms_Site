@@ -74,9 +74,7 @@
 
 .garment-offer__shipping{display:flex;align-items:center;gap:11px;margin-top:12px;padding:11px 12px;color:#ffd394;border:1px solid rgba(232,180,108,.34);border-radius:10px;background:linear-gradient(110deg,rgba(214,147,58,.14),rgba(214,147,58,.04))}
 .garment-offer__shipping svg{flex-shrink:0}.garment-offer__shipping strong{display:block;font-size:13px;line-height:1.4;font-weight:650;color:#ffe1b6}.garment-offer__shipping small{display:block;font-size:11px;line-height:1.4;color:#d8c4a9;margin-top:3px}
-@keyframes garment-shipping-cue{0%,100%{box-shadow:0 0 0 rgba(236,170,77,0)}50%{box-shadow:0 0 16px rgba(236,170,77,.2);border-color:rgba(249,197,117,.7)}}
-.garment-offer__shipping.is-highlighted{animation:garment-shipping-cue 1.4s ease-in-out 2}
-@media(prefers-reduced-motion:reduce){.garment-offer__shipping.is-highlighted{animation:none}}
+
 
 /* Real collection imagery makes the category destination clear. */
 .garment-offer--category .garment-offer__copy p{margin-bottom:12px}
@@ -102,3 +100,29 @@
 .garment-discount-terms__row strong{color:#f1d094;white-space:nowrap;font-weight:650}
 .garment-discount-terms>a{display:inline-block;color:#f1d094;text-underline-offset:3px;margin-top:5px}
 .garment-discount-terms p{margin:7px 0 0}
+
+/* A small delivery story. All movement stays within the fixed icon canvas. */
+.garment-shipping-icon{display:block;flex:0 0 40px;width:40px;height:40px;overflow:hidden;color:#f2ca91}
+.garment-shipping-icon__parcel,.garment-shipping-icon__sparkles{opacity:0}
+.garment-shipping-icon__truck{transform-origin:32px 36px}
+.garment-shipping-icon__parcel{transform-origin:32px 39px}
+.garment-shipping-icon__shirt{transform-origin:34px 34px}
+.garment-shipping-icon__flap-left{transform-origin:18px 31px}
+.garment-shipping-icon__flap-right{transform-origin:46px 31px}
+.is-animating .garment-shipping-icon__truck{animation:shipping-truck 8s ease-in-out infinite}
+.is-animating .garment-shipping-icon__speed{animation:shipping-speed 8s ease-in-out infinite}
+.is-animating .garment-shipping-icon__road{animation:shipping-road 8s ease-in-out infinite}
+.is-animating .garment-shipping-icon__parcel{animation:shipping-parcel 8s ease-in-out infinite}
+.is-animating .garment-shipping-icon__shirt{animation:shipping-shirt 8s cubic-bezier(.22,.7,.3,1) infinite}
+.is-animating .garment-shipping-icon__flap-left{animation:shipping-flap-left 8s ease-in-out infinite}
+.is-animating .garment-shipping-icon__flap-right{animation:shipping-flap-right 8s ease-in-out infinite}
+.is-animating .garment-shipping-icon__sparkles{animation:shipping-sparkles 8s ease-in-out infinite}
+@keyframes shipping-truck{0%,5%{opacity:1;transform:translateX(-9px)}12%{transform:translate(1px,-1px)}17%{transform:translate(0,0)}22%{opacity:1;transform:translate(0,0) scale(1)}29%,72%{opacity:0;transform:translate(-3px,2px) scale(.72)}79%,100%{opacity:1;transform:translate(-9px,0) scale(1)}}
+@keyframes shipping-speed{0%,5%{opacity:0}10%,18%{opacity:.7}24%,100%{opacity:0}}
+@keyframes shipping-road{0%,20%,80%,100%{opacity:.45}29%,72%{opacity:0}}
+@keyframes shipping-parcel{0%,21%{opacity:0;transform:translate(-3px,2px) scale(.72)}29%,64%{opacity:1;transform:translate(0,0) scale(1)}72%,100%{opacity:0;transform:translateY(3px) scale(.8)}}
+@keyframes shipping-shirt{0%,35%{opacity:0;transform:translateY(18px) scale(.45)}47%{opacity:1;transform:translateY(-6px) scale(1.03)}52%,60%{opacity:1;transform:translateY(-4px) scale(1)}68%,100%{opacity:0;transform:translateY(6px) scale(.7)}}
+@keyframes shipping-flap-left{0%,30%{transform:rotate(-35deg) scaleY(.5)}40%,64%{transform:rotate(0) scaleY(1)}72%,100%{transform:rotate(-35deg) scaleY(.5)}}
+@keyframes shipping-flap-right{0%,30%{transform:rotate(35deg) scaleY(.5)}40%,64%{transform:rotate(0) scaleY(1)}72%,100%{transform:rotate(35deg) scaleY(.5)}}
+@keyframes shipping-sparkles{0%,44%{opacity:0;transform:translateY(3px)}50%{opacity:.9;transform:translateY(0)}60%,100%{opacity:0;transform:translateY(-2px)}}
+@media(prefers-reduced-motion:reduce){.garment-shipping-icon *{animation:none!important}.garment-shipping-icon__parcel,.garment-shipping-icon__sparkles{opacity:0}.garment-shipping-icon__truck{opacity:1;transform:none}}
