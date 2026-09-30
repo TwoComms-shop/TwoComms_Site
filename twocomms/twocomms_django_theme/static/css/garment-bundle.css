@@ -84,14 +84,12 @@
 .garment-offer__gallery:focus-visible{outline:3px solid #edd2ad;outline-offset:3px}
 .garment-offer__gallery-arrow{position:absolute;right:13px;bottom:13px;display:grid;place-items:center;width:26px;height:26px;border:1px solid #b18b55;border-radius:50%;background:#30261de8;color:#f5ddb8;font-size:16px}
 .garment-offer__category-link{width:100%;min-height:44px;font-size:12px}
-.garment-offer__auto-note{font-size:10px;line-height:1.5;color:#d1bfa6;margin:8px 0 0}
+.garment-offer__auto-note{font-size:11px;line-height:1.5;color:#d1bfa6;margin:8px 0 0}
 .garment-recommend-note a{background:none;border:0;border-bottom:1px solid #9e8d77;padding:9px 0;color:#dfd5c7;font-size:12px;white-space:nowrap;text-decoration:none}
 @media(max-width:575px){.garment-offer__preview img{height:108px}.garment-offer__gallery{gap:6px;padding:6px}.garment-offer--category .garment-offer__copy h2{font-size:20px}.garment-offer--category .garment-offer__copy p{font-size:11px}}
 @media(prefers-reduced-motion:reduce){.garment-offer__preview img{transition:none}}
 
-.garment-offer__category-heading{display:flex;gap:16px;align-items:center;justify-content:space-between;margin-bottom:9px}
-.garment-offer__category-heading h2{font-size:21px;font-weight:700;line-height:1.2;letter-spacing:-.025em;color:#fff1dc;margin:0;max-width:340px}
-.garment-offer__category-heading .garment-offer__saving{flex-shrink:0;font-weight:700;font-size:23px}
-.garment-offer__category-heading .garment-offer__saving>span{margin:4px 0 0;font-size:10px;font-weight:400}
-.garment-offer__category-intro{font-size:12px;line-height:1.5;color:#dccab2;margin:0 0 12px}
-@media(max-width:575px){.garment-offer__category-heading{gap:10px}.garment-offer__category-heading h2{font-size:19px}.garment-offer__category-heading .garment-offer__saving{font-size:21px}.garment-offer__category-intro{font-size:12px}}
+.garment-offer__category-heading{margin-bottom:8px}
+.garment-offer__category-heading h2{font-size:25px;font-weight:700;line-height:1.2;letter-spacing:-.025em;color:#fff1dc;margin:0}
+.garment-offer__category-intro{font-size:13px;line-height:1.5;color:#dccab2;margin:0 0 12px;max-width:440px}
+@media(max-width:575px){.garment-offer__category-heading h2{font-size:23px}}

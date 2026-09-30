@@ -184,3 +184,8 @@ COPY['en'].update(category_hoodie_title='Add a hoodie to your tee', category_tee
 COPY['uk']['print_terms'] = 'Ціна футболки залежить від того, чи збігається її принт із худі. Точну знижку видно в кошику.'
 COPY['ru']['print_terms'] = 'Цена футболки зависит от того, совпадает ли её принт с худи. Точная скидка видна в корзине.'
 COPY['en']['print_terms'] = 'The tee price depends on whether its print matches the hoodie. Your cart shows the exact discount.'
+
+# One benefit headline, with the purchase condition immediately below it.
+COPY['uk'].update(category_discount_heading='Знижка до', category_order_condition='Замов худі й футболку разом. Принти можуть бути різними.', category_automatic='Знижка застосовується в кошику автоматично.')
+COPY['ru'].update(category_discount_heading='Скидка до', category_order_condition='Закажи худи и футболку вместе. Принты могут отличаться.', category_automatic='Скидка применяется в корзине автоматически.')
+COPY['en'].update(category_discount_heading='Save up to', category_order_condition='Order a hoodie and tee together. Choose matching or different prints.', category_automatic='Savings apply automatically in your cart.')

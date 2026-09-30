@@ -1,10 +1,9 @@
 {% if garment_offer %}
 <aside class="garment-offer garment-offer--category {{ placement }}" aria-label="{{ bundle_copy.category_title }}">
   <div class="garment-offer__category-heading">
-    <h2>{% if garment_offer.kind == 'tee' %}{{ bundle_copy.category_hoodie_title }}{% else %}{{ bundle_copy.category_tee_title }}{% endif %}</h2>
-    {% if garment_offer.total_saving %}<span class="garment-offer__saving"><small>{{ bundle_copy.up_to }}</small> {{ garment_offer.total_saving|floatformat:0 }} <small>{{ bundle_copy.currency }}</small><span>{{ bundle_copy.category_saving }}</span></span>{% endif %}
+    <h2>{% if garment_offer.total_saving %}{{ bundle_copy.category_discount_heading }} {{ garment_offer.total_saving|floatformat:0 }}&nbsp;{{ bundle_copy.currency }}{% else %}{{ bundle_copy.category_title }}{% endif %}</h2>
   </div>
-  <p class="garment-offer__category-intro">{% if garment_offer.is_same_design %}{{ bundle_copy.category_same_short }}{% else %}{{ bundle_copy.category_other_short }}{% endif %}</p>
+  <p class="garment-offer__category-intro">{{ bundle_copy.category_order_condition }}</p>
   {% if garment_offer.category_previews %}
     <a class="garment-offer__gallery" href="{{ garment_offer.category_url }}" aria-label="{% if garment_offer.kind == 'tee' %}{{ bundle_copy.all_hoodies }}{% else %}{{ bundle_copy.all_tees }}{% endif %}">
       {% for preview in garment_offer.category_previews %}<span class="garment-offer__preview"><img src="{{ preview.image }}" alt="{{ preview.title }}" width="160" height="180" loading="lazy" decoding="async"></span>{% endfor %}
