@@ -77,7 +77,9 @@
       offerKind = data.kind === '225' ? '225' : 'ordinary';
       setDialogKind();
       products = (data.products || data.catalog?.products || []).filter(p=>p.variants?.some(v=>v.fits?.length));
-      chooseProduct(products[0]?.id);
+      const preferredTee = new URLSearchParams(location.search).get('bundle_tee');
+      chooseProduct(products.find(p => String(p.id) === preferredTee)?.id || products[0]?.id);
+      if (opener?.dataset.bundleStart === 'picker' && offerKind !== '225' && products.length) renderPicker();
     } catch (error) {
       if (token !== generation) return;
       body.innerHTML = `<button type="button" class="garment-dialog__submit" data-bundle-retry>${esc(copy.retry)}</button>`;

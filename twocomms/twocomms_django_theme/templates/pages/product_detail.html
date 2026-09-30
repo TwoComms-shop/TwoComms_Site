@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load i18n %}{% load static %}
+{% load i18n product_rich_text %}{% load static %}
 {% load brigade_tags garment_bundle_tags %}{% load cache %}{% load seo_tags %}{% load responsive_images %}{% load storefront_filters %}{% load color_filters %}
 
 {% comment %}
@@ -598,20 +598,20 @@ CSS rules на mobile FCP/LCP window.
                   <p class="tc-lead-copy">{% blocktrans with title=product.title %}{{ title }} — це не просто одяг. Це стан.{% endblocktrans %}</p>
                   <p class="tc-muted-copy">{% trans 'Створений для тих, хто йде своїм шляхом, навіть коли все навколо летить під три чорти.' %}</p>
                   {% if product.full_description %}
-                    <div class="tc-rich-copy tc-rich-copy--compact">{{ product.full_description|linebreaksbr }}</div>
+                    <div class="tc-rich-copy tc-rich-copy--compact">{{ product.full_description|product_rich_text }}</div>
                   {% elif product.description %}
-                    <div class="tc-rich-copy tc-rich-copy--compact">{{ product.description|linebreaksbr }}</div>
+                    <div class="tc-rich-copy tc-rich-copy--compact">{{ product.description|product_rich_text }}</div>
                   {% endif %}
                   {% if product.details_text %}
                     <div class="tc-desc-section">
                       <h2>{% trans 'Деталі' %}</h2>
-                      <div class="tc-rich-copy tc-rich-copy--compact">{{ product.details_text|linebreaksbr }}</div>
+                      <div class="tc-rich-copy tc-rich-copy--compact">{{ product.details_text|product_rich_text }}</div>
                     </div>
                   {% endif %}
                   {% if product.target_audience %}
                     <div class="tc-desc-section">
                       <h2>{% trans 'Кому підійде' %}</h2>
-                      <div class="tc-rich-copy tc-rich-copy--compact">{{ product.target_audience|linebreaksbr }}</div>
+                      <div class="tc-rich-copy tc-rich-copy--compact">{{ product.target_audience|product_rich_text }}</div>
                     </div>
                   {% endif %}
                 </div>
@@ -897,7 +897,7 @@ CSS rules на mobile FCP/LCP window.
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/product-detail.js' %}?v=20260930-bundles-v2" defer></script>
+<script src="{% static 'js/product-detail.js' %}?v=20260930-description-v3" defer></script>
 <script src="{% static 'js/product-media-fit.js' %}?v=20260808-merch-v1" defer></script>
 <script src="{% static 'js/product-variant-history.js' %}?v=20260509-phase8-v1" defer></script>
 {% endblock %}

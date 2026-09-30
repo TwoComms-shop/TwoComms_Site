@@ -2096,7 +2096,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     if (!content || !toggle) return;
 
     let measureRaf = null;
-    let wasDesktop = false;
+    let wasDesktop = window.matchMedia('(min-width: 1200px)').matches;
+    const mediaPanel = root.querySelector('.tc-media-panel');
+    const productPanel = root.querySelector('.tc-product-panel');
 
     const collapsedHeight = () => {
       const value = window.getComputedStyle(collapse).getPropertyValue('--tc-desc-collapsed-height');
@@ -2117,17 +2119,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     };
 
     const updateState = () => {
-      // Wide two-column layouts have room for the full description.
-      if (window.matchMedia('(min-width: 1200px)').matches) {
-        wasDesktop = true;
-        collapse.classList.remove('is-collapsible', 'is-collapsed');
-        collapse.classList.add('is-expanded');
-        toggle.hidden = true;
-        toggle.setAttribute('aria-expanded', 'true');
-        content.style.removeProperty('max-height');
-        return;
+      if (!content.getClientRects().length) return;
+      const isDesktop = window.matchMedia('(min-width: 1200px)').matches;
+      if (isDesktop !== wasDesktop) collapse.classList.remove('is-expanded');
+      wasDesktop = isDesktop;
+      if (isDesktop && mediaPanel && productPanel && content.getClientRects().length) {
+        // Sum natural child heights: the stretched grid and auto margin must not
+        // feed the right column's height back into its own collapsed limit.
+        const children = Array.from(mediaPanel.children).filter((child) => child.getClientRects().length);
+        const mediaStyle = window.getComputedStyle(mediaPanel);
+        const gap = Number.parseFloat(mediaStyle.rowGap) || 0;
+        const naturalHeight = children.reduce((sum, child) => sum + child.getBoundingClientRect().height, 0)
+          + gap * Math.max(0, children.length - 1);
+        const targetBottom = mediaPanel.getBoundingClientRect().top + naturalHeight;
+        const contentRect = content.getBoundingClientRect();
+        const toggleStyle = window.getComputedStyle(toggle);
+        let tailHeight = Math.max(50, toggle.getBoundingClientRect().height)
+          + (Number.parseFloat(toggleStyle.marginTop) || 14);
+        let ancestor = collapse;
+        while (ancestor && productPanel.contains(ancestor)) {
+          const style = window.getComputedStyle(ancestor);
+          tailHeight += (Number.parseFloat(style.paddingBottom) || 0)
+            + (Number.parseFloat(style.borderBottomWidth) || 0);
+          if (ancestor === productPanel) break;
+          ancestor = ancestor.parentElement;
+        }
+        const available = Math.floor(targetBottom - contentRect.top - tailHeight);
+        collapse.style.setProperty('--tc-desc-collapsed-height', `${Math.max(196, available)}px`);
+      } else {
+        collapse.style.removeProperty('--tc-desc-collapsed-height');
       }
-      if (wasDesktop) { collapse.classList.remove("is-expanded"); wasDesktop = false; }
       const limit = collapsedHeight();
       const fullHeight = content.scrollHeight;
       const isCollapsible = fullHeight > limit + 18;
@@ -2172,7 +2193,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     if (window.ResizeObserver) {
       const observer = new ResizeObserver(scheduleUpdate);
       observer.observe(content);
+      if (mediaPanel) Array.from(mediaPanel.children).forEach((child) => observer.observe(child));
     }
+    if (document.fonts) document.fonts.ready.then(scheduleUpdate);
     if (!prefersReducedMotion) {
       window.setTimeout(scheduleUpdate, 180);
     }
