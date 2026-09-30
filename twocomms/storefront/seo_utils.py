@@ -1017,11 +1017,10 @@ class StructuredDataGenerator:
                 # ``aggregateRating`` and feed the rich-result snippet.
                 try:
                     from reviews.models import Review as _Review, ReviewStatus as _RS
-                    top_reviews = list(
-                        _Review.objects
-                        .filter(product=product, status=_RS.APPROVED)
-                        .order_by("-helpful_count", "-created_at")[:5]
-                    )
+                    visible_reviews = getattr(product, "_visible_community_reviews", None)
+                    if visible_reviews is None:
+                        visible_reviews = list(_Review.objects.filter(product=product, status=_RS.APPROVED).order_by("-created_at", "-pk")[:10])
+                    top_reviews = [row for row in visible_reviews if row.kind == "review" and row.rating is not None][:5]
                 except Exception:
                     top_reviews = []
                 review_blocks = []

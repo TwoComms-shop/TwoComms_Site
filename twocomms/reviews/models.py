@@ -43,6 +43,18 @@ class ReviewStatus(models.TextChoices):
     REJECTED = "rejected", "Відхилено"
 
 
+class ReviewCampaign(models.Model):
+    title = models.CharField(max_length=120, default="Твоя ідея. Наш кастом.")
+    rules_url = models.URLField(blank=True)
+    enabled = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.enabled and not self.rules_url.startswith("https://"):
+            raise ValidationError({"rules_url": "Для запуску потрібне HTTPS-посилання на опубліковані правила."})
+
+
 class Review(models.Model):
     """A user-submitted review for one product."""
 
@@ -83,7 +95,20 @@ class Review(models.Model):
         help_text="Хеш cookie / IP. Дозволяє обмежувати спам гостей.",
     )
 
+    kind = models.CharField(max_length=12, default="review", choices=[("review", "Відгук"), ("comment", "Коментар")])
+    city = models.CharField(max_length=80, blank=True)
+    pros = models.CharField(max_length=600, blank=True)
+    cons = models.CharField(max_length=600, blank=True)
+    # Nullable for legacy rows; all new submissions carry a server-derived identity.
+    submission_identity = models.CharField(max_length=64, null=True, blank=True, editable=False)
+    is_incentivized_review = models.BooleanField(default=False)
+    campaign = models.ForeignKey(ReviewCampaign, null=True, blank=True, on_delete=models.PROTECT)
+    campaign_opt_in = models.BooleanField(default=False)
+    campaign_rules_url = models.URLField(blank=True)
+    story_confirmed = models.BooleanField(default=False)
+
     rating = models.PositiveSmallIntegerField(
+        null=True, blank=True,
         validators=[MinValueValidator(1), MaxValueValidator(5)],
         verbose_name="Оцінка",
         help_text="Ціле число 1-5.",
@@ -149,6 +174,10 @@ class Review(models.Model):
         verbose_name = "Відгук"
         verbose_name_plural = "Відгуки"
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["product", "submission_identity", "kind"], name="review_product_identity_uniq"),
+            models.CheckConstraint(condition=models.Q(rating__isnull=True) | models.Q(rating__gte=1, rating__lte=5), name="review_rating_range"),
+        ]
         indexes = [
             # Hot path: PDP renders ``approved`` reviews for a single
             # product newest-first. The composite index makes that a
@@ -167,6 +196,12 @@ class Review(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover — admin display
         return f"#{self.pk} {self.product_id} {self.rating}★ {self.status}"
+
+    @property
+    def campaign_entries(self):
+        if self.campaign_opt_in and self.is_verified_purchase and self.status == ReviewStatus.APPROVED and self.kind == "review":
+            return 2 if self.story_confirmed else 1
+        return 0
 
     def mark_approved(self, *, by=None, note: str = "") -> None:
         """Transition to ``approved`` and stamp moderator metadata."""
@@ -279,3 +314,10 @@ class ReviewVote(models.Model):
                 name="rev_vote_user_or_anon_required",
             ),
         ]
+
+
+class ReviewSubmissionWindow(models.Model):
+    """Short-lived, hashed, cross-worker abuse counters; cleaned on intake."""
+    key = models.CharField(max_length=64, unique=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)

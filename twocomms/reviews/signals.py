@@ -147,3 +147,11 @@ def _submit_indexnow_for_product(product) -> None:
     base = _site_base_url()
     submit_indexnow_urls([f"{base}/product/{product.slug}/"])
 
+
+
+@receiver(post_save, sender=Review)
+def invalidate_public_review_cache(sender, instance, **kwargs):
+    from django.db import transaction
+    from storefront.services.catalog_helpers import bump_public_product_order_version
+    if instance.status == ReviewStatus.APPROVED or getattr(instance, _STATUS_CHANGED_ATTR, None) == ReviewStatus.APPROVED:
+        transaction.on_commit(bump_public_product_order_version)

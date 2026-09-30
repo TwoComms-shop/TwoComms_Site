@@ -5,10 +5,10 @@ view layer (``InMemoryUploadedFile`` list); the form only validates
 text + rating + honeypot + length floors.
 
 Validation contract:
-    * rating ∈ {1, 2, 3, 4, 5}
+    * optional rating ∈ {1, 2, 3, 4, 5}
     * body length ≥ 20 visible characters (whitespace-stripped)
     * author_name 1–80 chars
-    * email optional but RFC-validated when provided
+    * email required for guests; validated and kept private
     * honeypot field ``website`` MUST be empty (bot trap)
 """
 
@@ -16,17 +16,30 @@ from __future__ import annotations
 
 from django import forms
 from django.core.exceptions import ValidationError
+from django.utils.translation import gettext_lazy as _
+from .services.content import has_contact_or_markup
 
 
 _MIN_BODY_LEN = 20
 
 
 class ReviewForm(forms.Form):
+    def __init__(self, *args, guest=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["email"].required = guest
+        self.fields["email"].error_messages["required"] = _("Залиш email для зв’язку. Він не публікується.")
+
+    campaign_opt_in = forms.BooleanField(required=False)
+    kind = forms.ChoiceField(required=False, choices=[("review", "Відгук"), ("comment", "Коментар")])
+    city = forms.CharField(required=False, max_length=80)
+    pros = forms.CharField(required=False, max_length=600)
+    cons = forms.CharField(required=False, max_length=600)
     rating = forms.TypedChoiceField(
+        required=False,
         choices=[(str(n), f"{n}★") for n in range(1, 6)],
         coerce=int,
         empty_value=0,
-        error_messages={"required": "Оберіть оцінку від 1 до 5."},
+        error_messages={"required": _("Оберіть оцінку від 1 до 5.")},
     )
     title = forms.CharField(
         required=False,
@@ -37,12 +50,12 @@ class ReviewForm(forms.Form):
         widget=forms.Textarea,
         max_length=4000,
         strip=True,
-        error_messages={"required": "Розкажіть про свій досвід — мінімум 20 символів."},
+        error_messages={"required": _("Розкажіть про свій досвід — мінімум 20 символів.")},
     )
     author_name = forms.CharField(
         max_length=80,
         strip=True,
-        error_messages={"required": "Як вас підписати?"},
+        error_messages={"required": _("Як вас підписати?")},
     )
     email = forms.EmailField(
         required=False,
@@ -55,7 +68,7 @@ class ReviewForm(forms.Form):
 
     def clean_rating(self) -> int:
         value = int(self.cleaned_data.get("rating") or 0)
-        if value < 1 or value > 5:
+        if value and (value < 1 or value > 5):
             raise ValidationError("Оцінка має бути цілим числом 1-5.")
         return value
 
@@ -63,17 +76,25 @@ class ReviewForm(forms.Form):
         body = (self.cleaned_data.get("body") or "").strip()
         if len(body) < _MIN_BODY_LEN:
             raise ValidationError(
-                f"Текст відгуку має містити щонайменше {_MIN_BODY_LEN} символів."
+                _("Текст відгуку має містити щонайменше 20 символів.")
             )
         return body
 
     def clean_author_name(self) -> str:
         name = (self.cleaned_data.get("author_name") or "").strip()
         if not name:
-            raise ValidationError("Введіть ім'я для публікації.")
+            raise ValidationError(_("Введіть ім'я для публікації."))
         return name
 
     def clean(self):
         cleaned = super().clean()
+        cleaned["kind"] = cleaned.get("kind") or ("review" if cleaned.get("rating") else "comment")
+        if cleaned["kind"] == "comment":
+            cleaned["rating"] = None
+        elif not cleaned.get("rating"):
+            self.add_error("rating", _("Оберіть оцінку від 1 до 5."))
+        for field in ("author_name", "city", "title", "body", "pros", "cons"):
+            if has_contact_or_markup(cleaned.get(field) or ""):
+                self.add_error(field, _("Приберіть посилання, контакти та HTML. Тут ділимося власним досвідом."))
         cleaned["_is_bot"] = bool((cleaned.get("website") or "").strip())
         return cleaned

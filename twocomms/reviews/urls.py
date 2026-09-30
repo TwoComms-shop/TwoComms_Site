@@ -14,6 +14,9 @@ app_name = "reviews"
 
 
 urlpatterns = [
+    path("merchant.xml", views.merchant_feed, name="merchant_feed"),
+    path("campaign-settings/", views.campaign_settings, name="campaign_settings"),
+    path("state/<slug:product_slug>/", views.review_state, name="state"),
     path(
         "submit/<slug:product_slug>/",
         views.submit_review,

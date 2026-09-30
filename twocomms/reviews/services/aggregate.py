@@ -80,6 +80,7 @@ def aggregate_rating_for_product(product) -> ProductReviewSummary:
     qs = Review.objects.filter(
         product=product,
         status=ReviewStatus.APPROVED,
+        kind="review", rating__isnull=False,
     )
 
     agg = qs.aggregate(count=Count("id"), avg=Avg("rating"))

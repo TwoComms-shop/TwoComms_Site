@@ -1,237 +1,35 @@
-{% comment %}
-Phase 21 (PR-A1) — review moderation section for the custom admin.
-
-Inputs from ``storefront.services.admin_reviews.build_reviews_context``:
-  reviews_pending  — list of dicts (full queue, oldest first)
-  reviews_approved — list of dicts (recent, newest first)
-  reviews_rejected — list of dicts (recent, newest first)
-  reviews_counters — {pending, approved, rejected, total}
-  reviews_recent_limit — int, used in tab labels for clarity
-
-Endpoints (all POST, JSON):
-  ``admin_review_action``  /admin-panel/reviews/<id>/action/  (action=approve|reject, optional note)
-  ``admin_review_bulk``    /admin-panel/reviews/bulk/         (action=approve|reject, ids=...)
-{% endcomment %}
-{% load static %}
-
+<section class="arev" data-admin-reviews>
+  <header class="arev-header"><div><span class="arev-kicker">TWOCOMMS / COMMUNITY</span><h1>Коментарі</h1><p>Відгуки та запитання. Перевіряємо зміст — не відбираємо зручні оцінки.</p></div><a href="{% url 'reviews:merchant_feed' %}" target="_blank" rel="noopener">XML для Google ↗</a></header>
+  {% csrf_token %}
+  <div class="arev-stats"><a href="?section=reviews&review_status=pending"><strong>{{ reviews_counters.pending }}</strong>На модерації</a><a href="?section=reviews&review_status=approved"><strong>{{ reviews_counters.approved }}</strong>Опубліковано</a><a href="?section=reviews&review_status=rejected"><strong>{{ reviews_counters.rejected }}</strong>Відхилено</a><div><strong>{{ review_milestone }} <small>/ 100</small></strong>Відгуків до старту програми</div></div>
+  <details class="arev-program"><summary>Майбутні подарунки для спільноти <span>{% if review_campaign_config.enabled %}Програма активна{% else %}Збір відгуків · ще не запущено{% endif %}</span></summary><p>Орієнтир — 100 опублікованих відгуків на різних товарах. До запуску не обіцяємо участь, подарунки або подвоєння шансів. Досягнення порогу не вмикає програму автоматично. Підготуйте правила: учасники, строки, приз, вибір переможця, зв’язок та перевірка сторіс. Старі відгуки не стають заявками без згоди авторів.</p><form action="{% url 'reviews:campaign_settings' %}" method="post">{% csrf_token %}<label>Опубліковані правила<input type="url" name="rules_url" placeholder="https://…" value="{{ review_campaign_config.rules_url }}"></label><label class="arev-check"><input type="checkbox" name="enabled" {% if review_campaign_config.enabled %}checked{% endif %}>Увімкнути програму після публікації правил</label><button type="submit">Зберегти налаштування</button></form><p>Google Merchant потребує окремого підключення Product Ratings. XML містить опубліковані товарні відгуки, усі оцінки, походження та ознаки заохочення. Коментарі без оцінки не експортуються.</p></details>
+  <nav class="arev-tabs" aria-label="Статус коментарів"><a class="{% if review_status == 'pending' %}is-active{% endif %}" href="?section=reviews&review_status=pending">На модерації</a><a class="{% if review_status == 'approved' %}is-active{% endif %}" href="?section=reviews&review_status=approved">Опубліковані</a><a class="{% if review_status == 'rejected' %}is-active{% endif %}" href="?section=reviews&review_status=rejected">Відхилені</a></nav>
+  <form class="arev-search" method="get"><input type="hidden" name="section" value="reviews"><input type="hidden" name="review_status" value="{{ review_status }}"><input name="review_q" value="{{ review_q }}" placeholder="Товар, автор або текст" aria-label="Пошук коментарів"><button>Знайти</button></form>
+  <p class="arev-guidance">Публікуйте чесну критику так само, як позитивні враження. Перевіряйте фото, контакти, рекламу, образи та відповідність товару. Нотатки нижче — внутрішні.</p>
+  <div class="arev-feedback" role="status" data-admin-review-feedback></div>
+  {% for r in reviews_rows %}{% include 'partials/admin_reviews_card.html' %}{% empty %}<div class="arev-empty">Тут поки немає коментарів. Нові повідомлення з’являтимуться на модерації.</div>{% endfor %}
+  <nav class="arev-pagination" aria-label="Сторінки модерації">{% if reviews_page.has_previous %}<a href="?section=reviews&review_status={{ review_status }}&review_q={{ review_q|urlencode }}&review_page={{ reviews_page.previous_page_number }}">← Назад</a>{% endif %}<span>{{ reviews_page.number }} / {{ reviews_page.paginator.num_pages }}</span>{% if reviews_page.has_next %}<a href="?section=reviews&review_status={{ review_status }}&review_q={{ review_q|urlencode }}&review_page={{ reviews_page.next_page_number }}">Далі →</a>{% endif %}</nav>
+</section>
 <style>
-  .arev { display: flex; flex-direction: column; gap: 1.1rem; }
-  .arev-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
-  .arev-kpi__tile { padding: 14px 16px; border-radius: 14px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07); }
-  .arev-kpi__tile.is-pending { border-color: rgba(255, 196, 102, .4); background: linear-gradient(135deg, rgba(255,196,102,.16), rgba(255,151,40,.08)); }
-  .arev-kpi__count { font-size: 1.6rem; font-weight: 800; line-height: 1.05; }
-  .arev-kpi__label { font-size: .8rem; color: rgba(255,255,255,.55); text-transform: uppercase; letter-spacing: .04em; margin-top: 4px; }
-
-  .arev-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-  .arev-tab {
-    appearance: none; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
-    color: #fff; padding: 8px 14px; border-radius: 999px; cursor: pointer; font-weight: 600;
-    font-size: .88rem;
-  }
-  .arev-tab.is-active { background: #ffd24d; color: #111; border-color: #ffd24d; }
-  .arev-panel { display: none; flex-direction: column; gap: .8rem; }
-  .arev-panel.is-active { display: flex; }
-  .arev-panel.is-empty { color: rgba(255,255,255,.5); padding: 18px; text-align: center; border: 1px dashed rgba(255,255,255,.1); border-radius: 12px; }
-
-  .arev-bulkbar { display: flex; gap: 8px; align-items: center; padding: 10px 12px; background: rgba(255,255,255,.03); border-radius: 12px; border: 1px solid rgba(255,255,255,.06); }
-  .arev-bulkbar button { padding: 6px 12px; border-radius: 8px; border: 0; cursor: pointer; font-weight: 600; font-size: .85rem; }
-  .arev-bulkbar .bb-approve { background: #5dd47e; color: #102a16; }
-  .arev-bulkbar .bb-reject { background: #ff7a7a; color: #2a0d0d; }
-  .arev-bulkbar [data-bulk-count] { color: rgba(255,255,255,.55); font-size: .85rem; }
-
-  .arev-card { display: grid; grid-template-columns: auto 1fr auto; gap: 14px; padding: 14px 16px; border-radius: 14px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.06); }
-  .arev-card__check { display: flex; align-items: flex-start; padding-top: 4px; }
-  .arev-card__main { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-  .arev-card__head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
-  .arev-card__stars { color: #ffd24d; letter-spacing: .04em; }
-  .arev-card__title { font-weight: 700; }
-  .arev-card__verified {
-    display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px;
-    background: rgba(110,220,130,.15); color: #b6f3c4; border-radius: 999px; font-size: .72rem;
-  }
-  .arev-card__product { font-size: .82rem; color: rgba(255,255,255,.6); }
-  .arev-card__product a { color: rgba(255,255,255,.85); }
-  .arev-card__body { color: rgba(255,255,255,.85); white-space: pre-wrap; line-height: 1.5; font-size: .92rem; }
-  .arev-card__meta { font-size: .75rem; color: rgba(255,255,255,.45); display: flex; gap: 8px; flex-wrap: wrap; }
-  .arev-card__actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; min-width: 110px; }
-  .arev-card__actions button {
-    padding: 7px 12px; border-radius: 8px; border: 0; cursor: pointer; font-weight: 600;
-    font-size: .82rem; min-width: 110px; text-align: center;
-  }
-  .arev-card__actions .ac-approve { background: #5dd47e; color: #102a16; }
-  .arev-card__actions .ac-reject { background: #ff7a7a; color: #2a0d0d; }
-  .arev-card__actions .ac-edit { background: rgba(255,255,255,.06); color: #fff; border: 1px solid rgba(255,255,255,.1); }
-  @media (max-width: 720px) {
-    .arev-card { grid-template-columns: auto 1fr; }
-    .arev-card__actions { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: stretch; }
-  }
+.arev{color:#eeebf4;max-width:1200px;margin:auto}.arev *{box-sizing:border-box}.arev a{color:#d3bdfa;text-underline-offset:4px}.arev-header{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px}.arev-header h1{font-size:30px;margin:8px 0}.arev-header p,.arev-guidance,.arev-program p{color:#b2acbf;font-size:13px;line-height:1.7}.arev-kicker{color:#b7a0d6;font-size:10px;letter-spacing:2px}.arev-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:24px 0}.arev-stats>*{padding:20px;border:1px solid #ffffff18;border-radius:14px;background:#ffffff04;color:#bdb5cd;font-size:12px;text-decoration:none}.arev-stats strong{display:block;font-size:30px;color:#f0eaf7}.arev-stats small{font-size:16px;color:#93899f}.arev-program{padding:18px;border:1px solid #ac8fe32e;border-radius:12px;background:#a780de08;margin-bottom:24px}.arev-program summary{cursor:pointer;font-size:14px}.arev-program summary span{font-size:11px;color:#b0a4c2;margin-left:16px}.arev-program p{margin-top:16px}.arev-program form{display:grid;gap:14px;max-width:700px}.arev label{display:grid;gap:8px;font-size:12px}.arev input:not([type=checkbox]),.arev textarea{width:100%;background:#151219;border:1px solid #ffffff25;border-radius:9px;padding:11px 12px;color:#eee;font:inherit}.arev button{border:1px solid #c2a2eb55;border-radius:9px;background:#bc9ce916;color:#dfcef8;padding:10px 16px;font:inherit;font-size:12px;cursor:pointer;min-height:42px}.arev button:disabled{opacity:.5;cursor:wait}.arev .arev-check{display:flex;align-items:center;gap:10px}.arev-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.arev-tabs a{padding:10px 16px;border:1px solid #ffffff15;border-radius:9px;text-decoration:none;font-size:13px;color:#b4a9c4}.arev-tabs .is-active{background:#b99bdf18;border-color:#b49ada70;color:#e5d6fa}.arev-search{display:flex;gap:10px;margin-bottom:16px}.arev-guidance{border-left:2px solid #b09cce;padding-left:14px}.arev-card{padding:24px;border:1px solid #ffffff1a;border-radius:14px;background:#ffffff03;margin:16px 0;overflow-wrap:anywhere}.arev-card header{display:flex;flex-wrap:wrap;gap:12px;align-items:center}.arev-card__stars{color:#ebc580}.arev-card__badge{font-size:11px;border:1px solid #abd5bd30;color:#b1d6c0;border-radius:6px;padding:3px 8px}.arev-card h3{font-size:16px;margin:16px 0 8px}.arev-card__body{white-space:pre-wrap;font-size:14px;color:#dbd5e3;line-height:1.8}.arev-card__meta{font-size:12px;color:#b6acc4;margin:14px 0}.arev-card__photos{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}.arev-card__photos img{width:100px;height:100px;object-fit:cover;border-radius:8px}.arev-card__actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.arev-card__actions .ac-approve{background:#6bc89915;color:#c1ead6;border-color:#75c39755}.arev-card__actions .ac-reject{color:#e5b1ad;border-color:#d8989240}.arev-pagination{display:flex;gap:20px;justify-content:center;margin:22px 0;font-size:13px}.arev-feedback:empty{display:none}.arev-feedback{padding:12px;color:#ecc3b8}.arev-empty{padding:40px 20px;color:#b5adbf;border:1px dashed #ffffff25;border-radius:14px}.arev :focus-visible{outline:2px solid #c7a7ee;outline-offset:3px}@media(max-width:700px){.arev-stats{grid-template-columns:1fr 1fr}.arev-stats>*{padding:14px}.arev-header{display:block}.arev-header>a{display:inline-block;margin-top:12px;font-size:12px}.arev-card{padding:16px}.arev-program summary span{display:block;margin:8px 0 0}.arev input:not([type=checkbox]),.arev textarea{font-size:16px}}
 </style>
-
-<div class="arev" data-admin-reviews>
-  <div class="arev-kpi">
-    <div class="arev-kpi__tile is-pending">
-      <div class="arev-kpi__count">{{ reviews_counters.pending|default:0 }}</div>
-      <div class="arev-kpi__label">На модерації</div>
-    </div>
-    <div class="arev-kpi__tile">
-      <div class="arev-kpi__count">{{ reviews_counters.approved|default:0 }}</div>
-      <div class="arev-kpi__label">Опубліковано</div>
-    </div>
-    <div class="arev-kpi__tile">
-      <div class="arev-kpi__count">{{ reviews_counters.rejected|default:0 }}</div>
-      <div class="arev-kpi__label">Відхилено</div>
-    </div>
-    <div class="arev-kpi__tile">
-      <div class="arev-kpi__count">{{ reviews_counters.total|default:0 }}</div>
-      <div class="arev-kpi__label">Всього</div>
-    </div>
-  </div>
-
-  <div class="arev-tabs" role="tablist">
-    <button type="button" class="arev-tab is-active" data-arev-tab="pending">Очікують ({{ reviews_counters.pending|default:0 }})</button>
-    <button type="button" class="arev-tab" data-arev-tab="approved">Опубліковані (останні {{ reviews_recent_limit }})</button>
-    <button type="button" class="arev-tab" data-arev-tab="rejected">Відхилені (останні {{ reviews_recent_limit }})</button>
-  </div>
-
-  {% for tab in 'pending,approved,rejected'|cut:' ' %}{% endfor %}
-
-  {# ----- PENDING ----- #}
-  <div class="arev-panel is-active" data-arev-panel="pending">
-    {% if reviews_pending %}
-      <div class="arev-bulkbar">
-        <label style="display:inline-flex;gap:6px;align-items:center;">
-          <input type="checkbox" data-arev-toggle-all="pending"> Виділити всі
-        </label>
-        <span data-bulk-count>0 виділено</span>
-        <span style="flex:1"></span>
-        <button type="button" class="bb-approve" data-arev-bulk="approve" data-arev-source="pending">Опублікувати виділені</button>
-        <button type="button" class="bb-reject" data-arev-bulk="reject" data-arev-source="pending">Відхилити виділені</button>
-      </div>
-      {% for r in reviews_pending %}
-        {% include 'partials/admin_reviews_card.html' with r=r is_pending=True %}
-      {% endfor %}
-    {% else %}
-      <div class="arev-panel is-empty">Черга порожня — нічого модерувати ✅</div>
-    {% endif %}
-  </div>
-
-  {# ----- APPROVED ----- #}
-  <div class="arev-panel" data-arev-panel="approved">
-    {% if reviews_approved %}
-      {% for r in reviews_approved %}
-        {% include 'partials/admin_reviews_card.html' with r=r is_pending=False %}
-      {% endfor %}
-    {% else %}
-      <div class="arev-panel is-empty">Поки що немає опублікованих відгуків.</div>
-    {% endif %}
-  </div>
-
-  {# ----- REJECTED ----- #}
-  <div class="arev-panel" data-arev-panel="rejected">
-    {% if reviews_rejected %}
-      {% for r in reviews_rejected %}
-        {% include 'partials/admin_reviews_card.html' with r=r is_pending=False %}
-      {% endfor %}
-    {% else %}
-      <div class="arev-panel is-empty">Жодних відхилених відгуків.</div>
-    {% endif %}
-  </div>
-</div>
-
 <script>
-(function() {
+(() => {
   const root = document.querySelector('[data-admin-reviews]');
   if (!root) return;
-
-  const csrf = (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '';
-
-  // ---- tab switching ----
-  root.querySelectorAll('[data-arev-tab]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const target = btn.dataset.arevTab;
-      root.querySelectorAll('[data-arev-tab]').forEach(b =>
-        b.classList.toggle('is-active', b === btn)
-      );
-      root.querySelectorAll('[data-arev-panel]').forEach(p =>
-        p.classList.toggle('is-active', p.dataset.arevPanel === target)
-      );
-    });
-  });
-
-  // ---- bulk-bar checkbox state ----
-  function refreshBulkCount() {
-    const panel = root.querySelector('[data-arev-panel="pending"]');
-    if (!panel) return;
-    const sel = panel.querySelectorAll('[data-arev-id]:checked').length;
-    const lbl = panel.querySelector('[data-bulk-count]');
-    if (lbl) lbl.textContent = `${sel} виділено`;
-  }
-  root.addEventListener('change', e => {
-    if (e.target.matches('[data-arev-id]')) refreshBulkCount();
-    if (e.target.matches('[data-arev-toggle-all]')) {
-      const panel = root.querySelector('[data-arev-panel="pending"]');
-      panel.querySelectorAll('[data-arev-id]').forEach(cb => cb.checked = e.target.checked);
-      refreshBulkCount();
-    }
-  });
-
-  async function postForm(url, body) {
-    const fd = new FormData();
-    Object.keys(body || {}).forEach(k => fd.append(k, body[k]));
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
-      body: fd,
-      credentials: 'same-origin',
-    });
-    return r.json().catch(() => ({ ok: false }));
-  }
-
-  // ---- single-row action ----
-  root.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-arev-action]');
-    if (!btn) return;
-    e.preventDefault();
-    const card = btn.closest('[data-arev-card]');
-    const id = card?.dataset.arevCard;
-    const action = btn.dataset.arevAction;
-    if (!id || !action) return;
-    btn.disabled = true;
-    const result = await postForm(`/admin-panel/reviews/${id}/action/`, { action });
-    if (result && result.ok) {
-      // Soft-remove from pending; full reload keeps lists in sync.
-      window.location.reload();
-    } else {
-      alert('Не вдалося оновити статус. Спробуйте оновити сторінку.');
-      btn.disabled = false;
-    }
-  });
-
-  // ---- bulk action ----
-  root.querySelectorAll('[data-arev-bulk]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const action = btn.dataset.arevBulk;
-      const source = btn.dataset.arevSource || 'pending';
-      const panel = root.querySelector(`[data-arev-panel="${source}"]`);
-      const ids = Array.from(panel.querySelectorAll('[data-arev-id]:checked'))
-        .map(cb => cb.dataset.arevId)
-        .filter(Boolean);
-      if (!ids.length) {
-        alert('Спочатку виділіть хоча б один відгук.');
-        return;
-      }
-      btn.disabled = true;
-      const result = await postForm('/admin-panel/reviews/bulk/', {
-        action,
-        ids: ids.join(','),
-      });
-      if (result && result.ok) {
-        window.location.reload();
-      } else {
-        alert('Не вдалося виконати операцію.');
-        btn.disabled = false;
-      }
-    });
+  const feedback = root.querySelector('[data-admin-review-feedback]');
+  root.addEventListener('click', async event => {
+    const button = event.target.closest('[data-arev-action]');
+    if (!button) return;
+    const card = button.closest('[data-arev-card]');
+    button.disabled = true;
+    const body = new FormData(); body.append('action', button.dataset.arevAction); body.append('note', card.querySelector('[data-moderation-note]').value);
+    try {
+      const response = await fetch(card.dataset.actionUrl, {method:'POST', body, credentials:'same-origin', headers:{'X-CSRFToken':root.querySelector('[name=csrfmiddlewaretoken]').value}});
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Не вдалося оновити статус.');
+      location.reload();
+    } catch(error) { feedback.textContent = error.message || 'Помилка з’єднання. Спробуйте ще раз.'; button.disabled=false; }
   });
 })();
 </script>

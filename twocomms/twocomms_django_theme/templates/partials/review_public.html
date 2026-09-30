@@ -1,0 +1,8 @@
+{% load i18n %}
+<li class="rv-review" id="review-{{ r.pk }}"><article>
+  <header><div class="rv-review__author"><strong>{{ r.author_name }}</strong><small>{% if r.city %}{{ r.city }} · {% endif %}<time datetime="{{ r.created_at|date:'c' }}">{{ r.created_at|date:'d.m.Y' }}</time>{% if not r.user_id %} · {% trans 'Гість' %}{% endif %}{% if r.is_verified_purchase %}<span class="rv-verified">✓ {% trans 'Покупку підтверджено' %}</span>{% endif %}</small></div>{% if r.rating %}<span class="rv-stars" aria-label="{{ r.rating }} / 5">{% for i in '12345' %}{% if forloop.counter <= r.rating %}★{% else %}☆{% endif %}{% endfor %}</span>{% endif %}</header>
+  {% if r.is_incentivized_review %}<small class="rv-muted">{% trans 'Відгук у межах програми заохочення' %}</small>{% endif %}
+  {% if r.title %}<h4>{{ r.title }}</h4>{% endif %}<p class="rv-body">{{ r.body|linebreaksbr }}</p>
+  {% if r.pros or r.cons %}<dl class="rv-details">{% if r.pros %}<div><dt>{% trans 'Сподобалось' %}</dt><dd>{{ r.pros }}</dd></div>{% endif %}{% if r.cons %}<div><dt>{% trans 'Можна покращити' %}</dt><dd>{{ r.cons }}</dd></div>{% endif %}</dl>{% endif %}
+  {% if r.images.all %}<div class="rv-photos">{% for img in r.images.all %}<a href="{{ img.image.url }}" target="_blank" rel="noopener"><img src="{{ img.image.url }}" alt="{% trans 'Фото до відгуку' %} — {{ r.author_name }}" loading="lazy" width="100" height="100"></a>{% endfor %}</div>{% endif %}
+</article></li>

@@ -1,238 +1,35 @@
 {% load static i18n %}
-{% comment %}
-Phase 21+ — product reviews block.
-
-Context contract (from ``storefront.views.product.product_detail``):
-  - ``product``                         — Product instance
-  - ``product_review_summary``          — reviews.services.aggregate.ProductReviewSummary
-  - ``approved_reviews``                — top approved Review rows, prefetched images
-  - ``product_customer_has_paid_order`` — current user has paid order for this product
-  - ``request.user``                    — auth-aware identity copy and prefilled fields
-
-SEO contract: public markup mirrors visible, moderator-approved reviews only.
-Aggregate rating is surfaced only when ``product_review_summary.show_rating`` is true.
-{% endcomment %}
-<section id="product-reviews" class="tc-reviews" aria-labelledby="tc-reviews-title">
-  <div class="tc-reviews__ambient" aria-hidden="true"></div>
-
-  <div class="tc-reviews__topline">
-    <div class="tc-reviews__headline">
-      <span class="tc-reviews__eyebrow">{% trans 'Досвід клієнтів' %}</span>
-      <h2 id="tc-reviews-title" class="tc-reviews__title">{% trans 'Відгуки про товар' %}</h2>
-    </div>
-    <div class="tc-reviews__counter" aria-label="{% trans 'Кількість опублікованих відгуків' %}">
-      <strong>{{ product_review_summary.count|default:0 }}</strong>
-      <span>{% trans 'відгуків' %}</span>
-    </div>
-  </div>
-
-  <div class="tc-reviews__insight-grid">
-    {% if product_review_summary.show_rating %}
-      <div class="tc-reviews__summary" role="group" aria-label="{% trans 'Зведений рейтинг' %}">
-        <div class="tc-reviews__avg">
-          <strong>{{ product_review_summary.average|floatformat:1 }}</strong>
-          <span aria-hidden="true" class="tc-reviews__avg-stars">
-            {% with avg=product_review_summary.avg %}
-              {% for i in "12345" %}{% if forloop.counter <= avg %}★{% else %}☆{% endif %}{% endfor %}
-            {% endwith %}
-          </span>
-          <span class="tc-reviews__avg-count">{% blocktrans count counter=product_review_summary.count %}на основі {{ counter }} відгуку{% plural %}на основі {{ counter }} відгуків{% endblocktrans %}</span>
-        </div>
-        <ul class="tc-reviews__histogram" aria-label="{% trans 'Розподіл оцінок' %}">
-          {% for row in product_review_summary.histogram_rows %}
-            <li class="tc-reviews__bar-row">
-              <span class="tc-reviews__bar-label">{{ row.star }}★</span>
-              <span class="tc-reviews__bar" aria-hidden="true">
-                {% if product_review_summary.count %}
-                  <span class="tc-reviews__bar-fill"
-                        style="width: {% widthratio row.count product_review_summary.count 100 %}%"></span>
-                {% endif %}
-              </span>
-              <span class="tc-reviews__bar-count">{{ row.count }}</span>
-            </li>
-          {% endfor %}
-        </ul>
-      </div>
-    {% else %}
-      <div class="tc-reviews__summary tc-reviews__summary--quiet" role="group" aria-label="{% trans 'Статус рейтингу' %}">
-        <div class="tc-reviews__status">
-          <span class="tc-reviews__status-mark" aria-hidden="true"></span>
-          <div class="tc-reviews__status-copy">
-            <strong>{% if product_review_summary.count %}{% trans 'Рейтинг скоро' %}{% else %}{% trans 'Поки без відгуків' %}{% endif %}</strong>
-            <span>{% if product_review_summary.count %}{% trans 'Після 3 перевірених публікацій.' %}{% else %}{% trans 'Перший відгук сформує рейтинг.' %}{% endif %}</span>
-          </div>
-        </div>
-      </div>
-    {% endif %}
-
-    <aside class="tc-reviews__identity" aria-label="{% trans 'Ваш статус для відгуку' %}">
-      {% if request.user.is_authenticated %}
-        <div class="tc-reviews__identity-copy">
-          <span class="tc-reviews__identity-kicker">{% trans 'Підпис відгуку' %}</span>
-          <strong>{{ request.user.get_full_name|default:request.user.username }}</strong>
-        </div>
-        {% if product_customer_has_paid_order %}
-          <span class="tc-reviews__identity-pill tc-reviews__identity-pill--ok">{% trans 'Покупка підтверджена' %}</span>
-        {% else %}
-          <span class="tc-reviews__identity-pill">{% trans 'Гостьовий статус' %}</span>
-        {% endif %}
-      {% else %}
-        <div class="tc-reviews__identity-copy">
-          <span class="tc-reviews__identity-kicker">{% trans 'Гостьовий відгук' %}</span>
-          <strong>{% trans 'Увійдіть для профілю' %}</strong>
-        </div>
-        <a href="{% url 'login' %}?next={{ request.path }}#product-reviews" class="tc-reviews__identity-link">{% trans 'Увійти' %}</a>
-      {% endif %}
-    </aside>
-  </div>
-
-  {# Phase 21+ — surface messages ABOVE the <details> so submit status is always visible. #}
-  {% if messages %}
-    <div class="tc-reviews__messages" role="status" data-pdp-review-flash>
-      {% for m in messages %}
-        <p class="tc-reviews__message tc-reviews__message--{{ m.tags|default:'info' }}">{{ m }}</p>
-      {% endfor %}
-    </div>
-  {% endif %}
-
-  <details class="tc-reviews__form-wrap"{% if messages %} open{% endif %}>
-    <summary class="tc-reviews__form-toggle">
-      <span class="tc-reviews__form-plus" aria-hidden="true"></span>
-      <span class="tc-reviews__form-toggle-label">{% trans 'Залишити відгук' %}</span>
-      <span class="tc-reviews__form-toggle-hint">{% trans 'Поділіться досвідом — модерація 1–2 дні' %}</span>
-      <span class="tc-reviews__form-toggle-chev" aria-hidden="true">
-        <svg width="16" height="16" viewBox="0 0 24 24"><path d="M7.4 5.6 6 7l5 5-5 5 1.4 1.4L13.8 12 7.4 5.6Z" fill="currentColor"/></svg>
-      </span>
-    </summary>
-    <form method="post"
-          enctype="multipart/form-data"
-          action="{% url 'reviews:submit' product_slug=product.slug %}"
-          class="tc-reviews__form"
-          novalidate>
+<section id="product-reviews" class="rv tc-reviews" aria-labelledby="rv-title" data-review-root data-product="{{ product.pk }}" data-user="{{ request.user.pk|default:'guest' }}" data-state-url="{% url 'reviews:state' product_slug=product.slug %}">
+  <header class="rv-heading">
+    <div><h2 id="rv-title">{% trans 'Відгуки' %}{% if product_review_summary.show_rating %}<span class="rv-summary"><span aria-hidden="true">★</span> {{ product_review_summary.average|floatformat:1 }} <small>· {{ product_review_summary.count }}</small></span>{% endif %}</h2><p>{% trans 'Твоя думка допоможе іншим обрати.' %}</p></div>
+    <a class="rv-button" href="#review-compose" data-compose-open>{% trans 'Написати відгук' %}</a>
+  </header>
+  {% if messages %}<div class="rv-feedback" role="status">{% for message in messages %}<p>{{ message }}</p>{% endfor %}</div>{% endif %}
+  <div data-private-reviews>{% include 'partials/review_private.html' %}</div>
+  <details id="review-compose" class="rv-compose" {% if review_draft %}open{% endif %} {% if review_form_complete %}hidden{% endif %}>
+    <summary>{% trans 'Написати відгук' %}</summary>
+    <form class="rv-form" action="{% url 'reviews:submit' product_slug=product.slug %}" method="post" enctype="multipart/form-data" data-review-form>
       {% csrf_token %}
-
-      <fieldset class="tc-reviews__rating-field">
-        <legend>{% trans 'Ваша оцінка' %}</legend>
-        <div class="tc-reviews__rating-stars" role="radiogroup">
-          {% for v in "54321" %}
-            <label class="tc-reviews__rating-star">
-              <input type="radio" name="rating" value="{{ v }}" required>
-              <span aria-label="{% blocktrans count counter=v|add:0 %}{{ counter }} зірка{% plural %}{{ counter }} зірок{% endblocktrans %}">★</span>
-            </label>
-          {% endfor %}
-        </div>
-      </fieldset>
-
-      <div class="tc-reviews__row">
-        <label class="tc-reviews__field">
-          <span>{% trans 'Заголовок' %}</span>
-          <input type="text" name="title" maxlength="120" autocomplete="off"
-                 placeholder="{% trans 'Наприклад: сіла краще, ніж очікував' %}">
-        </label>
-        <label class="tc-reviews__field">
-          <span>{% trans 'Фото до відгуку' %}</span>
-          <input type="file" name="images" accept="image/jpeg,image/png,image/webp" multiple>
-        </label>
+      {% if request.user.is_authenticated %}<p class="rv-identity">{{ request.user.first_name|default:request.user.username }}{% if product_customer_has_paid_order %}<span>✓ {% trans 'Покупку підтверджено' %}</span>{% endif %}</p>{% endif %}
+      <fieldset class="rv-rating" aria-describedby="rv-rating-hint rv-error-rating"><legend>{% trans 'Оцінка' %} <small data-rating-optional>{% trans 'за бажанням' %}</small></legend><div class="rv-rating__line"><div class="rv-rating__stars">{% for v in '12345' %}<label><input type="radio" name="rating" value="{{ v }}" {% if review_draft.rating == v %}checked{% endif %}><span aria-hidden="true">★</span><span class="rv-sr">{{ v }} / 5</span></label>{% endfor %}</div><button type="button" class="rv-text-button" data-clear-rating hidden>{% trans 'Без оцінки' %}</button></div><small class="rv-muted" id="rv-rating-hint" data-rating-hint data-default="{% trans 'Зірки — якщо вже маєш досвід із цією річчю.' %}" data-followup="{% trans 'Оціни товар, щоб доповнити свій попередній коментар.' %}">{% trans 'Зірки — якщо вже маєш досвід із цією річчю.' %}</small><span class="rv-error" id="rv-error-rating" data-error="rating" aria-live="polite"></span></fieldset>
+      <label class="rv-field"><span>{% trans 'Твій відгук' %}</span><textarea name="body" rows="3" minlength="20" maxlength="4000" required placeholder="{% trans 'Що думаєш про цю річ?' %}" aria-describedby="rv-body-hint rv-error-body">{{ review_draft.body }}</textarea><span class="rv-field__hint" id="rv-body-hint"><span>{% trans 'Від 20 символів · без посилань і контактів' %}</span><span data-body-count>0 / 4000</span></span><span class="rv-error" id="rv-error-body" data-error="body" aria-live="polite"></span></label>
+      <div class="rv-row">
+        <label class="rv-field"><span>{% trans 'Ім’я' %}</span><input name="author_name" maxlength="80" autocomplete="nickname" required aria-describedby="rv-error-author_name" value="{% if review_draft.author_name %}{{ review_draft.author_name }}{% elif request.user.is_authenticated %}{{ request.user.first_name|default:request.user.username }}{% endif %}"><span class="rv-error" id="rv-error-author_name" data-error="author_name" aria-live="polite"></span></label>
+        <label class="rv-field"><span>Email <small>{% trans 'не публікується' %}{% if request.user.is_authenticated %} · {% trans 'за бажанням' %}{% endif %}</small></span><input type="email" name="email" maxlength="254" autocomplete="email" {% if not request.user.is_authenticated %}required{% endif %} aria-describedby="rv-error-email" value="{% if review_draft.email %}{{ review_draft.email }}{% elif request.user.is_authenticated %}{{ request.user.email }}{% endif %}"><span class="rv-error" id="rv-error-email" data-error="email" aria-live="polite"></span></label>
       </div>
-
-      <label class="tc-reviews__field">
-        <span>{% trans 'Ваш досвід *' %}</span>
-        <textarea name="body" rows="4" minlength="20" maxlength="4000" required
-                  placeholder="{% trans 'Посадка, тканина, друк, доставка, що сподобалось або що варто знати іншим покупцям' %}"></textarea>
-      </label>
-
-      <div class="tc-reviews__row">
-        <label class="tc-reviews__field">
-          <span>{% trans 'Імʼя для публікації *' %}</span>
-          {% if request.user.is_authenticated %}
-            <input type="text" name="author_name" maxlength="80" required
-                   value="{{ request.user.get_full_name|default:request.user.username }}">
-          {% else %}
-            <input type="text" name="author_name" maxlength="80" required>
-          {% endif %}
-        </label>
-        <label class="tc-reviews__field">
-          <span>Email{% if request.user.is_authenticated %} {% trans 'з профілю' %}{% else %} {% trans 'для звʼязку' %}{% endif %}</span>
-          <input type="email" name="email"
-                 {% if request.user.is_authenticated %}value="{{ request.user.email|default:'' }}"{% endif %}>
-        </label>
-      </div>
-
-      <label class="tc-reviews-honeypot" aria-hidden="true">
-        Website
-        <input type="text" name="website" tabindex="-1" autocomplete="off">
-      </label>
-
-      <div class="tc-reviews__submit-row">
-        <button type="submit" class="tc-reviews__submit">{% trans 'Надіслати на модерацію' %}</button>
-        <p class="tc-reviews__form-hint">
-          {% trans 'Після перевірки відгук зʼявиться на сторінці. Для зареєстрованих покупців статус покупки підтягується автоматично.' %}
-        </p>
-      </div>
+      <details class="rv-extras"><summary>{% trans 'Додати фото' %}</summary><div class="rv-extras__body"><label class="rv-upload"><small>{% trans 'До 5 фото · JPG, PNG, WebP · до 5 МБ кожне' %}</small><input type="file" name="images" accept="image/jpeg,image/png,image/webp" multiple></label><div class="rv-previews" data-photo-previews></div></div></details>
+      {% if review_campaign and product_customer_has_paid_order %}<label class="rv-optin"><input type="checkbox" name="campaign_opt_in" value="1"><span>{% trans 'Хочу взяти участь у розіграші кастомного одягу. Погоджуюся з' %} <a href="{{ review_campaign.rules_url }}" target="_blank" rel="noopener">{% trans 'правилами' %}</a>.</span></label>{% endif %}
+      <label class="rv-honeypot" aria-hidden="true">Website<input name="website" tabindex="-1" autocomplete="off"></label>
+      <div class="rv-feedback" role="status" tabindex="-1" data-review-feedback></div>
+      <div class="rv-submit-row"><button type="submit" class="rv-button rv-button--submit" data-idle="{% trans 'Надіслати' %}" data-busy="{% trans 'Надсилаємо…' %}">{% trans 'Надіслати' %}</button><p>{% trans 'Відгук з’явиться після модерації.' %}</p></div>
+      <p class="rv-form__foot">{% trans 'Надсилаючи, ти дозволяєш публікацію імені, тексту та фото. Email залишається приватним.' %}</p>
+      <div class="rv-draft-row"><span data-draft-status>{% trans 'Чернетку збережено в цій вкладці.' %}</span><button class="rv-text-button" type="button" data-clear-draft>{% trans 'Очистити' %}</button></div>
+      <span hidden data-network-error>{% trans 'Не вдалося надіслати. Текст збережено — перевір з’єднання та спробуй ще раз.' %}</span><span hidden data-photo-error>{% trans 'Обери до 5 фото JPEG, PNG або WebP, не більше 5 МБ кожне.' %}</span><span hidden data-success-message>{% trans 'Дякуємо! Текст збережено та передано на модерацію.' %}</span>
     </form>
   </details>
-
-  {% if approved_reviews %}
-    <ol class="tc-reviews__list" aria-label="{% trans 'Список відгуків' %}">
-      {% for r in approved_reviews %}
-        <li class="tc-review" id="review-{{ r.pk }}">
-          <div class="tc-review__avatar" aria-hidden="true">{{ r.author_name|slice:":1"|upper }}</div>
-          <article class="tc-review__card">
-            <header class="tc-review__head">
-              <div class="tc-review__author-block">
-                <strong class="tc-review__author">{{ r.author_name }}</strong>
-                <span class="tc-review__meta">
-                  <time datetime="{{ r.created_at|date:'c' }}">{{ r.created_at|date:'d.m.Y' }}</time>
-                  {% if r.user %}
-                    <span>{% trans 'Зареєстрований користувач' %}</span>
-                  {% else %}
-                    <span>{% trans 'Гостьовий відгук' %}</span>
-                  {% endif %}
-                </span>
-              </div>
-              <span class="tc-review__stars" aria-label="{% blocktrans with rating=r.rating %}{{ rating }} з 5{% endblocktrans %}">
-                {% for i in "12345" %}{% if forloop.counter <= r.rating %}★{% else %}☆{% endif %}{% endfor %}
-              </span>
-            </header>
-
-            <div class="tc-review__badges" aria-label="{% trans 'Статуси відгуку' %}">
-              {% if r.user %}
-                <span class="tc-review__badge tc-review__badge--account">{% trans 'Зареєстрований' %}</span>
-              {% else %}
-                <span class="tc-review__badge">{% trans 'Гість' %}</span>
-              {% endif %}
-              {% if r.is_verified_purchase %}
-                <span class="tc-review__badge tc-review__badge--verified">{% trans 'Купив товар' %}</span>
-              {% else %}
-                <span class="tc-review__badge tc-review__badge--neutral">{% trans 'Покупка не підтверджена' %}</span>
-              {% endif %}
-            </div>
-
-            {% if r.title %}
-              <h3 class="tc-review__title">{{ r.title }}</h3>
-            {% endif %}
-            <p class="tc-review__body">{{ r.body|linebreaksbr }}</p>
-
-            {% if r.images.all %}
-              <ul class="tc-review__photos" aria-label="{% trans 'Фото відгуку' %}">
-                {% for img in r.images.all %}
-                  <li>
-                    <a href="{{ img.image.url }}" target="_blank" rel="noopener">
-                      <img src="{{ img.image.url }}" alt="{% blocktrans with author=r.author_name %}Фото відгуку {{ author }}{% endblocktrans %}" loading="lazy" decoding="async" width="120" height="120">
-                    </a>
-                  </li>
-                {% endfor %}
-              </ul>
-            {% endif %}
-
-            {% if r.helpful_count or r.unhelpful_count %}
-              <footer class="tc-review__foot">
-                <span>{% blocktrans with count=r.helpful_count %}Корисно: {{ count }}{% endblocktrans %}</span>
-              </footer>
-            {% endif %}
-          </article>
-        </li>
-      {% endfor %}
-    </ol>
-  {% endif %}
+  {% if approved_reviews %}<ol class="rv-list">{% for r in approved_reviews %}{% include 'partials/review_public.html' %}{% endfor %}</ol>{% else %}<p class="rv-empty">{% trans 'Ще немає відгуків. Будемо раді твоїй думці.' %}</p>{% endif %}
+  {% if review_page.has_other_pages %}<nav class="rv-pagination" aria-label="{% trans 'Сторінки відгуків' %}">{% if review_page.has_previous %}<a href="?reviews_page={{ review_page.previous_page_number }}#product-reviews">← {% trans 'Попередні' %}</a>{% endif %}<span>{{ review_page.number }} / {{ review_page.paginator.num_pages }}</span>{% if review_page.has_next %}<a href="?reviews_page={{ review_page.next_page_number }}#product-reviews">{% trans 'Наступні' %} →</a>{% endif %}</nav>{% endif %}
+  {% if review_campaign %}<details class="rv-policy"><summary>{% trans 'Твоя ідея. Наш кастом.' %}</summary><p>{% trans 'Поділися досвідом після покупки — долучайся до розіграшу одягу з твоїм принтом і розробкою дизайну від TwoComms.' %}</p><a href="{{ review_campaign.rules_url }}" target="_blank" rel="noopener">{% trans 'Умови та спосіб надіслати сторіс' %} ↗</a></details>{% endif %}
+  <details class="rv-policy"><summary>{% trans 'Про відгуки' %}</summary><p>{% trans 'Публікуємо чесні відгуки незалежно від оцінки. Прибираємо спам, рекламу й образи. Позначку покупки додаємо за оплаченим замовленням у профілі. Email гостя не є підтвердженням покупки.' %}</p></details>
 </section>
+<script src="{% static 'js/product-reviews.js' %}?v=20260930-simple-v2" defer></script>

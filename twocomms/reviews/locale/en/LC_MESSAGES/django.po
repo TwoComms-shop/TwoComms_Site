@@ -1,0 +1,363 @@
+# Product community strings; separate from the storefront translation work.
+msgid ""
+msgstr "Project-Id-Version: TwoComms Community\nLanguage: en\nContent-Type: text/plain; charset=UTF-8\nPlural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "Ім’я або нікнейм"
+msgstr "Name or nickname"
+
+msgid "Акаунт не потрібен. Ім’я обираєш ти."
+msgstr "No account needed. Choose your display name."
+
+msgid "Без реєстрації. Достатньо кількох речень."
+msgstr "No sign-up. A few sentences are enough."
+
+msgid "Будь-яка чесна оцінка. Сторіс перевіряємо вручну. Участь добровільна, подарунок не гарантований."
+msgstr "Any honest rating. Stories are checked by our team. Entry is optional; a gift is not guaranteed."
+
+msgid "Більше, ніж відгук"
+msgstr "More than a review"
+
+msgid "Ваш відгук опубліковано"
+msgstr "Your review is published"
+
+msgid "Ваш досвід уже допомагає іншим обрати."
+msgstr "Your experience is already helping others choose."
+
+msgid "Ваш запис доступний у цьому браузері, поки зберігаються cookies. На спільному пристрої його можуть побачити інші користувачі."
+msgstr "Your submission is available in this browser while its cookies are kept. Others using this device may see it."
+
+msgid "Від 20 символів · без посилань і контактів"
+msgstr "At least 20 characters · no links or contact details"
+
+msgid "Відгук + сторіс з відміткою TwoComms = 2 заявки"
+msgstr "Review + a story tagging TwoComms = 2 entries"
+
+msgid "Відгук про товар"
+msgstr "Product review"
+
+msgid "Відгук у межах програми заохочення"
+msgstr "Incentivized review"
+
+msgid "Відгуки та коментарі"
+msgstr "Reviews & comments"
+
+msgid "Гість · покупку не підтверджено"
+msgstr "Guest · purchase not verified"
+
+msgid "Деталі мають значення"
+msgstr "The details matter"
+
+msgid "Для зв’язку залишаю email. Оцінка не впливає на участь."
+msgstr "I provide my email for contact. My rating does not affect entry."
+
+msgid "До 5 фото · JPG, PNG, WebP · до 5 МБ кожне"
+msgstr "Up to 5 photos · JPG, PNG, WebP · up to 5 MB each"
+
+msgid "Додати деталі або фото"
+msgstr "Add details or photos"
+
+msgid "Досвід з товаром"
+msgstr "My experience"
+
+msgid "Дякуємо! Текст збережено та передано на модерацію."
+msgstr "Thank you! Your text is saved and awaiting moderation."
+
+msgid "Дякуємо, що поділилися. Після перевірки текст стане видимим для всіх. Публікуємо і позитивний, і критичний досвід."
+msgstr "Thanks for sharing. After moderation, everyone can see your post. We publish both positive and critical experiences."
+
+msgid "За бажанням"
+msgstr "Optional"
+
+msgid "Заявку на участь збережено. Вона активується після публікації відгуку."
+msgstr "Your entry is saved. It becomes active when your review is published."
+
+msgid "Кожен може написати відгук або коментар. Позначку «Покупку підтверджено» додаємо автоматично лише за оплаченим замовленням цього товару в акаунті. Гостям її не присвоюємо за введеним ім’ям чи email. Прибираємо спам, рекламу, контакти та образи — критична оцінка не є причиною відмови. Коментарі без оцінки не впливають на рейтинг."
+msgstr "Anyone can post a review or comment. The verified purchase badge requires a paid order for this product in your account. A guest name or email does not verify a purchase. We remove spam, advertising, contact details and abuse; a critical rating is not a reason for rejection. Unrated comments do not affect the score."
+
+msgid "Коментар"
+msgstr "Comment"
+
+msgid "Коментар / запитання"
+msgstr "Comment / question"
+
+msgid "Коментар не пройшов правила публікації. Зв’яжіться з нами, якщо потрібне уточнення."
+msgstr "Your comment did not meet our publishing guidelines. Contact us if you need clarification."
+
+msgid "Комусь — саме те, що треба."
+msgstr "Someone else’s missing detail."
+
+msgid "Користувач · покупку не підтверджено"
+msgstr "Member · purchase not verified"
+
+msgid "Короткий заголовок"
+msgstr "Short headline"
+
+msgid "Лише для уточнень щодо відгуку. Без рекламних розсилок."
+msgstr "Only for questions about your review. No marketing emails."
+
+msgid "Можна покращити"
+msgstr "Could be better"
+
+msgid "Місто"
+msgstr "City"
+
+msgid "На модерації · видно тільки вам"
+msgstr "Awaiting moderation · only you can see this"
+
+msgid "Надсилаємо…"
+msgstr "Sending…"
+
+msgid "Надіслати відгук"
+msgstr "Send review"
+
+msgid "Наприклад, Київ"
+msgstr "For example, Kyiv"
+
+msgid "Наступні"
+msgstr "Next"
+
+msgid "Не вдалося надіслати. Текст збережено — перевір з’єднання та спробуй ще раз."
+msgstr "Could not send. Your text is saved — check your connection and try again."
+
+msgid "Не опубліковано · видно тільки вам"
+msgstr "Not published · only you can see this"
+
+msgid "Не публікується · за бажанням"
+msgstr "Private · optional"
+
+msgid "Нові спочатку"
+msgstr "Newest first"
+
+msgid "Обери від 1 до 5"
+msgstr "Choose from 1 to 5"
+
+msgid "Обери до 5 фото JPEG, PNG або WebP, не більше 5 МБ кожне."
+msgstr "Choose up to 5 JPEG, PNG or WebP photos, up to 5 MB each."
+
+msgid "Обов’язково"
+msgstr "Required"
+
+msgid "Оцінок від відвідувачів:"
+msgstr "Visitor ratings:"
+
+msgid "Оцінюй, якщо вже маєш власний досвід із товаром. Для запитання обери коментар — без зірок."
+msgstr "Rate only if you have personal experience with this item. For a question, choose an unrated comment."
+
+msgid "Очистити чернетку"
+msgstr "Clear draft"
+
+msgid "Першим завжди трохи особливо."
+msgstr "There’s something about being first."
+
+msgid "Пиши як гість"
+msgstr "Post as a guest"
+
+msgid "Поділися досвідом після покупки — долучайся до розіграшу одягу з твоїм принтом і розробкою дизайну від TwoComms."
+msgstr "Share your experience after a purchase and enter to win clothing with your own print, designed by TwoComms."
+
+msgid "Поділитися досвідом"
+msgstr "Share your experience"
+
+msgid "Покажи річ у житті"
+msgstr "Show it in real life"
+
+msgid "Покупку підтверджено"
+msgstr "Verified purchase"
+
+msgid "Попередні"
+msgstr "Previous"
+
+msgid "Посадка"
+msgstr "Fit"
+
+msgid "Посадка на твоєму зрості. Тканина на дотик. Принт після прання. Саме це допомагає обирати."
+msgstr "The fit on your height. The feel of the fabric. The print after washing. These are the details that help."
+
+msgid "Принт"
+msgstr "Print"
+
+msgid "Розкажи своїми словами"
+msgstr "Tell it in your own words"
+
+msgid "Розподіл оцінок"
+msgstr "Rating distribution"
+
+msgid "Сподобалось"
+msgstr "What I liked"
+
+msgid "Спочатку текст бачиш лише ти та модератор. Публікуємо після перевірки — незалежно від оцінки. Надсилаючи, ти дозволяєш публікацію тексту, імені, міста й доданих фото."
+msgstr "At first, only you and the moderator can see your text. We publish after review, regardless of your rating. By sending, you allow us to publish your text, display name, city and attached photos."
+
+msgid "Справжні враження. Без готових відповідей і зірок за замовчуванням."
+msgstr "Real impressions. No suggested answers or preselected stars."
+
+msgid "Сторінки відгуків"
+msgstr "Review pages"
+
+msgid "Твоя думка важлива"
+msgstr "Your opinion matters"
+
+msgid "Твоя ідея. Наш кастом."
+msgstr "Your idea. Our craft."
+
+msgid "Твій досвід."
+msgstr "Your experience."
+
+msgid "Те, чого не видно на фото."
+msgstr "What a photo can’t tell you."
+
+msgid "Тканина"
+msgstr "Fabric"
+
+msgid "Тут буде живий досвід людей, які обирають TwoComms. Почни розмову — ми уважно читаємо кожне повідомлення."
+msgstr "A place for real experiences from people who choose TwoComms. Start the conversation — we read every message."
+
+msgid "Тут починається розмова"
+msgstr "The conversation starts here"
+
+msgid "У профілі · покупку цього товару не підтверджено"
+msgstr "Signed in · purchase of this item not verified"
+
+msgid "Увійти"
+msgstr "Sign in"
+
+msgid "Умови та спосіб надіслати сторіс"
+msgstr "Rules and how to submit a story"
+
+msgid "Участь підтверджена. Кількість заявок:"
+msgstr "Entry confirmed. Number of entries:"
+
+msgid "Фото до відгуку"
+msgstr "Review photo"
+
+msgid "Хочу взяти участь у розіграші кастомного одягу. Погоджуюся з"
+msgstr "I want to enter the custom clothing giveaway. I agree to the"
+
+msgid "Чернетка — у цій вкладці на 24 години. Фото після оновлення обери знову."
+msgstr "Draft saved in this tab for 24 hours. Select photos again after reloading."
+
+msgid "Чим хочеш поділитися?"
+msgstr "What would you like to share?"
+
+msgid "Ще немає оцінок. Твій чесний відгук може стати першим."
+msgstr "No ratings yet. Your honest review could be the first."
+
+msgid "Що сподобалось? Що хотілося б покращити? Які деталі варто знати іншим?"
+msgstr "What did you like? What could be better? What details would help someone else?"
+
+msgid "Як ми перевіряємо відгуки?"
+msgstr "How do we moderate reviews?"
+
+msgid "Як сидить, відчувається й носиться? Розкажи своїми словами — допоможи комусь знайти свою річ."
+msgstr "How does it fit, feel and wear? Tell it in your own words — help someone find their next favourite."
+
+msgid "Як тебе підписати?"
+msgstr "How should we display your name?"
+
+msgid "Як тобі ця річ?"
+msgstr "How do you like this item?"
+
+msgid "правилами"
+msgstr "rules"
+
+msgid "✓ Покупку цього товару підтверджено"
+msgstr "✓ Purchase of this item verified"
+
+msgid "Оберіть оцінку від 1 до 5."
+msgstr "Choose a rating from 1 to 5."
+
+msgid "Приберіть посилання, контакти та HTML. Тут ділимося власним досвідом."
+msgstr "Remove links, contact details and HTML. Share your own experience here."
+
+msgid "Обов’язково · не публікується"
+msgstr "Required · never published"
+
+msgid "Залиш email для зв’язку. Він не публікується."
+msgstr "Leave your email for contact. It is never published."
+
+msgid "Розкажіть про свій досвід — мінімум 20 символів."
+msgstr "Tell us about your experience — at least 20 characters."
+
+msgid "Як вас підписати?"
+msgstr "What name should we display?"
+
+msgid "Текст відгуку має містити щонайменше 20 символів."
+msgstr "Your review needs at least 20 characters."
+
+msgid "Введіть ім'я для публікації."
+msgstr "Enter a display name."
+
+msgid "Забагато спроб. Спробуйте через годину."
+msgstr "Too many attempts. Try again in an hour."
+
+msgid "Ви вже залишили відгук або коментар до цього товару."
+msgstr "You have already submitted this type of post for this product."
+
+msgid "Ваш відгук або коментар уже збережено."
+msgstr "Your review or comment is already saved."
+
+msgid "Ваш відгук уже збережено."
+msgstr "Your review is already saved."
+
+msgid "Не вдалося прочитати фото. Оберіть JPEG, PNG або WebP."
+msgstr "Could not read the photo. Choose JPEG, PNG or WebP."
+
+msgid "Завелике або непідтримуване фото."
+msgstr "The image is too large or unsupported."
+
+msgid "Відгуки"
+msgstr "Reviews"
+
+msgid "Твоя думка допоможе іншим обрати."
+msgstr "Your opinion helps others choose."
+
+msgid "Написати відгук"
+msgstr "Write a review"
+
+msgid "Оцінка"
+msgstr "Rating"
+
+msgid "за бажанням"
+msgstr "optional"
+
+msgid "Без оцінки"
+msgstr "No rating"
+
+msgid "Зірки — якщо вже маєш досвід із цією річчю."
+msgstr "Add stars if you have tried this item."
+
+msgid "Оціни товар, щоб доповнити свій попередній коментар."
+msgstr "Rate the item to follow up on your earlier comment."
+
+msgid "Твій відгук"
+msgstr "Your review"
+
+msgid "Що думаєш про цю річ?"
+msgstr "What do you think of this item?"
+
+msgid "не публікується"
+msgstr "kept private"
+
+msgid "Додати фото"
+msgstr "Add photos"
+
+msgid "Надіслати"
+msgstr "Submit"
+
+msgid "Відгук з’явиться після модерації."
+msgstr "Your review will appear after moderation."
+
+msgid "Надсилаючи, ти дозволяєш публікацію імені, тексту та фото. Email залишається приватним."
+msgstr "By submitting, you allow us to publish your name, text and photos. Your email stays private."
+
+msgid "Ще немає відгуків. Будемо раді твоїй думці."
+msgstr "No reviews yet. We would love to hear your thoughts."
+
+msgid "Про відгуки"
+msgstr "About reviews"
+
+msgid "Публікуємо чесні відгуки незалежно від оцінки. Прибираємо спам, рекламу й образи. Позначку покупки додаємо за оплаченим замовленням у профілі. Email гостя не є підтвердженням покупки."
+msgstr "We publish honest reviews at every rating. Spam, ads and abuse are removed. The purchase badge is based on a paid order in your account. A guest email does not verify a purchase."
+
+msgid "Ім’я"
+msgstr "Name"

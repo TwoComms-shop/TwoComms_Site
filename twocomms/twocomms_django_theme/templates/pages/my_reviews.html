@@ -127,12 +127,13 @@
       <article class="my-review-card" aria-label="{% blocktrans with t=r.product.title %}Відгук про {{ t }}{% endblocktrans %}">
         <div class="my-review-card__top">
           <div class="my-review-card__product">
-            <a href="{% url 'product' r.product.slug %}#reviews">{{ r.product.title }}</a>
+            <a href="{% url 'product' r.product.slug %}#product-reviews">{{ r.product.title }}</a>
           </div>
           <div class="my-review-card__meta">
-            <span class="my-review-card__stars" aria-label="{% blocktrans with n=r.rating %}Оцінка {{ n }} з 5{% endblocktrans %}">
+            {% if r.rating %}<span class="my-review-card__stars" aria-label="{% blocktrans with n=r.rating %}Оцінка {{ n }} з 5{% endblocktrans %}">
               {% for _ in '12345'|make_list %}{% if forloop.counter <= r.rating %}★{% else %}☆{% endif %}{% endfor %}
             </span>
+            {% else %}<span>{% trans "Коментар" %}</span>{% endif %}
             <span class="my-review-card__status status-{{ r.status }}">
               {% if r.status == 'approved' %}{% trans 'Опубліковано' %}{% elif r.status == 'pending' %}{% trans 'На модерації' %}{% else %}{% trans 'Відхилено' %}{% endif %}
             </span>
@@ -147,9 +148,9 @@
             {% endfor %}
           </div>
         {% endif %}
-        {% if r.status == 'rejected' and r.moderation_note %}
+        {% if r.status == 'rejected' %}
           <div class="my-review-card__mod-note">
-            <strong>{% trans 'Причина відхилення:' %}</strong> {{ r.moderation_note }}
+            {% trans 'Коментар не пройшов правила публікації. Зв’яжіться з нами, якщо потрібне уточнення.' %}
           </div>
         {% endif %}
       </article>

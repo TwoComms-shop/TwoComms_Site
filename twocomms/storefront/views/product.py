@@ -367,7 +367,7 @@ def _pdp_cache_condition(request):
     analytics and canonical redirects remain accurate. Path-style variants
     are already part of the cache key and are safe to cache independently.
     """
-    return not request.GET
+    return not request.GET and not request.session.get("product_review_identity") and not request.session.get("review_draft")
 
 
 def _pdp_cache_prefix(request, view_func):
@@ -1272,14 +1272,27 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
     from reviews.services.aggregate import aggregate_rating_for_product as _aggregate
     from reviews.services.permissions import has_paid_order_with_product as _has_paid_order
     product_review_summary = _aggregate(product)
-    approved_reviews = list(
-        _Review.objects
-        .filter(product=product, status=_RS.APPROVED)
-        .select_related("user")
-        .prefetch_related("images")
-        .order_by("-helpful_count", "-created_at")[:10]
-    )
+    from django.core.paginator import Paginator
+    public_reviews = _Review.objects.filter(product=product, status=_RS.APPROVED).select_related("user").prefetch_related("images").order_by("-created_at", "-pk")
+    review_page_number = request.GET.get("reviews_page")
+    review_anchor = request.GET.get("review", "")
+    if review_anchor.isascii() and review_anchor.isdigit() and len(review_anchor) <= 18:
+        anchor_row = public_reviews.filter(pk=int(review_anchor)).first()
+        if anchor_row:
+            from django.db.models import Q
+            preceding = public_reviews.filter(Q(created_at__gt=anchor_row.created_at) | Q(created_at=anchor_row.created_at, pk__gt=anchor_row.pk)).count()
+            review_page_number = preceding // 10 + 1
+    review_page = Paginator(public_reviews, 10).get_page(review_page_number)
+    approved_reviews = list(review_page.object_list)
+    product._visible_community_reviews = approved_reviews
     product_customer_has_paid_order = _has_paid_order(request.user, product)
+    from reviews.services.identity import owned_reviews
+    from reviews.models import ReviewCampaign
+    own_reviews = list(owned_reviews(request, product).order_by("-created_at")[:5])
+    review_draft = request.session.get("review_draft", {})
+    if review_draft.get("product_id") != product.pk:
+        review_draft = {}
+
 
     # Phase 21 (2026-05-10) — resolve the actual ProductColorVariant
     # instance for the active colour so Product schema / OG / Twitter
@@ -1339,7 +1352,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             social_image_alt = initial_hero_image_alt
             social_image_is_fallback = False
 
-    return render(
+    response = render(
         request,
         'pages/product_detail.html',
         {
@@ -1402,6 +1415,13 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             # threshold from 3 to 1.
             'product_review_summary': product_review_summary,
             'approved_reviews': approved_reviews,
+            'review_page': review_page,
+            'own_reviews': own_reviews,
+            'review_form_complete': any(row.kind == 'review' for row in own_reviews),
+            'has_own_review': any(row.kind == 'review' for row in own_reviews),
+            'has_own_comment': any(row.kind == 'comment' for row in own_reviews),
+            'review_campaign': ReviewCampaign.objects.filter(enabled=True).order_by('-pk').first(),
+            'review_draft': review_draft.get('data', {}),
             'product_customer_has_paid_order': product_customer_has_paid_order,
             # Phase 15 — per-product SEO landing block.
             'product_seo_landing': product_seo_landing,
@@ -1417,6 +1437,10 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             'product_in_stock_for_og': _resolve_og_availability_flag(product),
         }
     )
+
+    if own_reviews or review_draft or request.user.is_authenticated:
+        response["Cache-Control"] = "private, no-store, max-age=0"
+    return response
 
 
 def get_product_images(request, product_id):

@@ -105,15 +105,15 @@ class GuestSubmissionTests(_ReviewTestBase):
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(Review.objects.count(), 0)
 
-    def test_rate_limit_blocks_third_guest_submission(self):
+    def test_repeated_guest_submission_does_not_duplicate_review(self):
         for _ in range(2):
             resp = self._submit(follow=False)
             self.assertEqual(resp.status_code, 302)
-        self.assertEqual(Review.objects.count(), 2)
-        # 3rd attempt — rate-limited; redirect, no row created.
+        self.assertEqual(Review.objects.count(), 1)
+        # Repeat attempts keep the same saved submission.
         resp = self._submit(follow=False)
         self.assertEqual(resp.status_code, 302)
-        self.assertEqual(Review.objects.count(), 2)
+        self.assertEqual(Review.objects.count(), 1)
 
 
 class AuthSubmissionTests(_ReviewTestBase):

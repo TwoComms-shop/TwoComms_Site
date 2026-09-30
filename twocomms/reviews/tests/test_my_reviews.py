@@ -77,8 +77,8 @@ class MyReviewsViewTests(TestCase):
         self.assertEqual(counts["pending"], 1)
         self.assertEqual(counts["rejected"], 1)
 
-    def test_rejected_review_shows_moderation_note(self):
+    def test_rejected_review_keeps_internal_moderation_note_private(self):
         client = Client()
         client.force_login(self.user)
         response = client.get(reverse("reviews:my_reviews"))
-        self.assertContains(response, "off-topic")
+        self.assertNotContains(response, "off-topic")

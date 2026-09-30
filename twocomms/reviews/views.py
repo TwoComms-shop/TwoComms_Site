@@ -1,22 +1,30 @@
 """Phase 21 (PR-4c) — review submission + voting endpoints.
 
-All routes are POST-only and CSRF-protected via Django's default
-middleware. Rate-limiting is intentionally lightweight (cache-backed
-counter keyed by IP+product) so we don't take a hard dependency on
-django-ratelimit for one endpoint; the moderation queue is the real
-backstop against spam.
+Mutations are POST-only and CSRF-protected. Submission limits use hashed
+database counters across workers. Private state is fetched without caching;
+public content passes through the moderation queue.
 """
 
 from __future__ import annotations
 
-import hashlib
-import logging
-from typing import Optional
+import io
+import warnings
+from uuid import uuid4
 
-from django.conf import settings
+from PIL import Image, ImageOps
+from django.core.files.base import ContentFile
+from django.db import IntegrityError, transaction
+from django.middleware.csrf import get_token
+from django.template.loader import render_to_string
+from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_GET
+from django.utils.crypto import salted_hmac
+from django.utils.translation import gettext as _
+from django.contrib.admin.views.decorators import staff_member_required
+import logging
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.cache import cache
 from django.http import HttpRequest, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -25,9 +33,10 @@ from django.views.decorators.http import require_POST
 from storefront.models import Product
 
 from .forms import ReviewForm
-from .models import Review, ReviewImage, ReviewStatus, ReviewVote
+from .models import Review, ReviewImage, ReviewStatus, ReviewVote, ReviewCampaign
 from .services.permissions import has_paid_order_with_product
 from .write_freeze import review_writes_frozen
+from .services.identity import guest_key, owned_reviews, submission_identity
 
 
 log = logging.getLogger(__name__)
@@ -39,35 +48,39 @@ _MAX_IMAGES_PER_REVIEW = 5
 _MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 _ALLOWED_IMAGE_CT = {"image/jpeg", "image/png", "image/webp"}
 
-# Guest rate-limit — at most ``_GUEST_RATE_LIMIT`` review submissions
-# per ``_GUEST_RATE_WINDOW`` seconds per (IP, product) tuple. Auth
-# users are not rate-limited here (admin can ban abusers manually).
-_GUEST_RATE_LIMIT = 2
+# Global fixed-hour limits: 20/IP, 5/guest session, 8/authenticated account.
 _GUEST_RATE_WINDOW = 60 * 60  # 1 hour
 
 
 def _client_ip(request: HttpRequest) -> str:
-    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "") or ""
+    # Forwarded headers are client-controlled unless the deployment explicitly
+    # establishes a trusted proxy. REMOTE_ADDR is the safe default.
+    return request.META.get("REMOTE_ADDR", "") or "unknown"
 
 
 def _anon_key(request: HttpRequest) -> str:
-    """Stable per-session-ish guest identity. Hashed so we never store
-    raw IPs alongside review content."""
-    raw = f"{_client_ip(request)}|{request.session.session_key or ''}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
+    return guest_key(request, create=True)
 
 
 def _is_rate_limited(request: HttpRequest, product_id: int) -> bool:
+    from .models import ReviewSubmissionWindow
+    from django.utils import timezone
+    from django.db.models import F
+    window = int(timezone.now().timestamp()) // _GUEST_RATE_WINDOW
+    identities = [("ip", _client_ip(request), 20)]
     if request.user.is_authenticated:
-        return False
-    key = f"reviews:rl:{_client_ip(request)}:{product_id}"
-    current = cache.get(key, 0) or 0
-    if current >= _GUEST_RATE_LIMIT:
-        return True
-    cache.set(key, current + 1, _GUEST_RATE_WINDOW)
+        identities.append(("user", str(request.user.pk), 8))
+    else:
+        identities.append(("guest", guest_key(request, create=True), 5))
+    # Database counters work across processes and do not depend on cache atomicity.
+    for scope, identity, limit in identities:
+        key = salted_hmac("reviews.throttle", f"{scope}:{identity}:{window}", algorithm="sha256").hexdigest()
+        with transaction.atomic():
+            row, _ = ReviewSubmissionWindow.objects.get_or_create(key=key)
+            updated = ReviewSubmissionWindow.objects.filter(pk=row.pk, attempts__lt=limit).update(attempts=F("attempts") + 1)
+        if not updated:
+            return True
+    ReviewSubmissionWindow.objects.filter(created_at__lt=timezone.now() - timezone.timedelta(days=2)).delete()
     return False
 
 
@@ -89,7 +102,20 @@ def _validate_uploaded_images(files):
             raise ValueError(
                 f"Фото «{f.name}»: дозволені формати JPEG, PNG, WebP."
             )
-        cleaned.append(f)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(f) as source:
+                    if source.format not in {"JPEG", "PNG", "WEBP"} or source.width * source.height > 20_000_000:
+                        raise ValueError(_("Завелике або непідтримуване фото."))
+                    source.load()
+                    picture = ImageOps.exif_transpose(source).convert("RGB")
+                    picture.thumbnail((2000, 2000))
+                    output = io.BytesIO()
+                    picture.save(output, format="JPEG", quality=88)
+            cleaned.append(ContentFile(output.getvalue(), name=f"{uuid4().hex}.jpg"))
+        except (OSError, SyntaxError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            raise ValueError(_("Не вдалося прочитати фото. Оберіть JPEG, PNG або WebP.")) from exc
     return cleaned
 
 
@@ -137,13 +163,20 @@ def submit_review(request: HttpRequest, product_slug: str):
     is_ajax = request.headers.get("X-Requested-With", "") == "XMLHttpRequest"
 
     if _is_rate_limited(request, product.id):
-        msg = "Забагато спроб. Спробуйте через годину."
+        msg = _("Забагато спроб. Спробуйте через годину.")
         if is_ajax:
             return JsonResponse({"ok": False, "error": msg}, status=429)
         messages.error(request, msg)
         return _redirect_back(request, product)
 
-    form = ReviewForm(request.POST)
+    # Keep only bounded text for a progressive (non-JS) retry; no upload data.
+    if not is_ajax:
+        request.session["review_draft"] = {
+            "product_id": product.pk,
+            "data": {key: request.POST.get(key, "")[:4000] for key in
+                     ("kind", "rating", "title", "body", "author_name", "email", "city", "pros", "cons")},
+        }
+    form = ReviewForm(request.POST, guest=not request.user.is_authenticated)
     if not form.is_valid():
         # Compact error format for AJAX, message-bus for traditional POST.
         if is_ajax:
@@ -157,13 +190,24 @@ def submit_review(request: HttpRequest, product_slug: str):
 
     cleaned = form.cleaned_data
     if cleaned.get("_is_bot"):
-        # Honeypot tripped — pretend success, drop silently. Logging
-        # the IP so abuse-watch dashboards can see the rate.
-        log.info("reviews.honeypot.tripped ip=%s product=%s", _client_ip(request), product.id)
+        # Honeypot tripped: drop silently without recording raw network data.
+        log.info("reviews.honeypot.tripped product=%s", product.id)
         if is_ajax:
             return JsonResponse({"ok": True, "status": "pending"})
         messages.success(request, "Дякуємо! Ваш відгук на модерації.")
         return _redirect_back(request, product)
+
+    existing = owned_reviews(request, product).filter(kind=cleaned["kind"]).first()
+    if existing:
+        if is_ajax:
+            return JsonResponse({"ok": False, "error": _("Ви вже залишили відгук або коментар до цього товару."), "duplicate": True}, status=409)
+        messages.info(request, _("Ваш відгук або коментар уже збережено."))
+        return _redirect_back(request, product)
+
+    campaign = ReviewCampaign.objects.filter(enabled=True).order_by("-pk").first()
+    verified = has_paid_order_with_product(request.user, product)
+    if cleaned.get("campaign_opt_in") and (not campaign or not verified or cleaned["kind"] != "review" or not cleaned.get("email")):
+        return JsonResponse({"ok": False, "error": "Для участі потрібні підтверджена покупка, відгук і email для зв’язку."}, status=400)
 
     # Photos (optional).
     try:
@@ -178,20 +222,34 @@ def submit_review(request: HttpRequest, product_slug: str):
     anon_key = "" if user else _anon_key(request)
     is_verified = has_paid_order_with_product(user, product) if user else False
 
-    review = Review.objects.create(
-        product=product,
-        user=user,
-        author_name=cleaned["author_name"],
-        email=cleaned.get("email") or "",
-        anon_key=anon_key,
-        rating=cleaned["rating"],
-        title=cleaned.get("title") or "",
-        body=cleaned["body"],
-        is_verified_purchase=is_verified,
-        status=ReviewStatus.PENDING,
-    )
-    for idx, f in enumerate(images):
-        ReviewImage.objects.create(review=review, image=f, order=idx)
+    try:
+        with transaction.atomic():
+            review = Review.objects.create(
+                product=product,
+                submission_identity=submission_identity(request),
+                campaign=campaign,
+                is_incentivized_review=bool(campaign),
+                campaign_opt_in=bool(cleaned.get("campaign_opt_in")),
+                campaign_rules_url=campaign.rules_url if campaign else "",
+                kind=cleaned["kind"], city=cleaned.get("city", ""),
+                pros=cleaned.get("pros", ""), cons=cleaned.get("cons", ""),
+                user=user,
+                author_name=cleaned["author_name"],
+                email=cleaned.get("email") or "",
+                anon_key=anon_key,
+                rating=cleaned["rating"],
+                title=cleaned.get("title") or "",
+                body=cleaned["body"],
+                is_verified_purchase=is_verified,
+                status=ReviewStatus.PENDING,
+            )
+            for idx, f in enumerate(images):
+                ReviewImage.objects.create(review=review, image=f, order=idx)
+    except IntegrityError:
+        if not owned_reviews(request, product).filter(kind=cleaned["kind"]).exists():
+            raise
+        return JsonResponse({"ok": False, "error": _("Ваш відгук уже збережено."), "duplicate": True}, status=409)
+    request.session.pop("review_draft", None)
 
     if is_ajax:
         return JsonResponse({"ok": True, "status": "pending", "review_id": review.id})
@@ -286,3 +344,44 @@ def my_reviews(request: HttpRequest):
             "total_reviews": sum(counts.values()),
         },
     )
+
+
+@never_cache
+@require_GET
+def review_state(request, product_slug):
+    """Private ownership and fresh CSRF, never stored in the shared PDP cache."""
+    product = get_object_or_404(Product, slug=product_slug, status="published")
+    rows = list(owned_reviews(request, product).order_by("-created_at")[:5])
+    html = render_to_string("partials/review_private.html", {"own_reviews": rows}, request=request)
+    kinds = sorted({row.kind for row in rows})
+    return JsonResponse({"csrf": get_token(request), "html": html, "has_review": bool(rows), "form_complete": "review" in kinds, "submitted_kinds": kinds})
+
+
+@require_GET
+def merchant_feed(request):
+    from django.http import HttpResponse
+    from .services.merchant import build_product_review_feed
+    return HttpResponse(build_product_review_feed(), content_type="application/xml; charset=utf-8")
+
+
+@staff_member_required
+@require_POST
+def campaign_settings(request):
+    from django.core.exceptions import ValidationError
+    if review_writes_frozen():
+        return _write_freeze_response()
+    with transaction.atomic():
+        campaign, _ = ReviewCampaign.objects.get_or_create(pk=1)
+        campaign = ReviewCampaign.objects.select_for_update().get(pk=campaign.pk)
+        campaign.rules_url = (request.POST.get("rules_url") or "").strip()
+        campaign.enabled = request.POST.get("enabled") == "on"
+        try:
+            campaign.full_clean()
+        except ValidationError as exc:
+            messages.error(request, " ".join(exc.messages))
+        else:
+            campaign.save()
+            from storefront.services.catalog_helpers import bump_public_product_order_version
+            transaction.on_commit(bump_public_product_order_version)
+            messages.success(request, "Налаштування програми збережено.")
+    return HttpResponseRedirect(reverse("admin_panel") + "?section=reviews")

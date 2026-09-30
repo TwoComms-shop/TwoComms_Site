@@ -34,6 +34,7 @@ def has_paid_order_with_product(user, product) -> bool:
             payment_status="paid",
             items__product=product,
         )
+        .exclude(status="cancelled")
         .exists()
     )
 

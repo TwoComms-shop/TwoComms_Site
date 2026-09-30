@@ -85,7 +85,7 @@ class ReviewAdmin(ReviewWriteFreezeAdminMixin, admin.ModelAdmin):
     fieldsets = (
         ("Контент", {
             "fields": (
-                "product", "rating", "title", "body",
+                "product", "kind", "rating", "title", "body", "city", "pros", "cons",
                 ("author_name", "user"),
                 ("email", "anon_key"),
             ),
@@ -113,6 +113,8 @@ class ReviewAdmin(ReviewWriteFreezeAdminMixin, admin.ModelAdmin):
 
     @admin.display(description="Оцінка", ordering="rating")
     def rating_stars(self, obj: Review) -> str:
+        if obj.rating is None:
+            return "Коментар"
         full = "★" * int(obj.rating)
         empty = "☆" * (5 - int(obj.rating))
         return f"{full}{empty}"
@@ -120,23 +122,19 @@ class ReviewAdmin(ReviewWriteFreezeAdminMixin, admin.ModelAdmin):
     @admin.action(description="Опублікувати вибрані відгуки")
     def approve_selected(self, request, queryset):
         self._require_writable()
-        now = timezone.now()
-        updated = queryset.exclude(status=ReviewStatus.APPROVED).update(
-            status=ReviewStatus.APPROVED,
-            moderated_at=now,
-            moderated_by=request.user if request.user.is_authenticated else None,
-        )
+        updated = 0
+        for review in queryset.exclude(status=ReviewStatus.APPROVED):
+            review.mark_approved(by=request.user)
+            updated += 1
         self.message_user(request, f"Опубліковано: {updated}.")
 
     @admin.action(description="Відхилити вибрані відгуки")
     def reject_selected(self, request, queryset):
         self._require_writable()
-        now = timezone.now()
-        updated = queryset.exclude(status=ReviewStatus.REJECTED).update(
-            status=ReviewStatus.REJECTED,
-            moderated_at=now,
-            moderated_by=request.user if request.user.is_authenticated else None,
-        )
+        updated = 0
+        for review in queryset.exclude(status=ReviewStatus.REJECTED):
+            review.mark_rejected(by=request.user)
+            updated += 1
         self.message_user(request, f"Відхилено: {updated}.")
 
 

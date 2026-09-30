@@ -1,0 +1,14 @@
+{% load i18n %}
+{% for r in own_reviews %}
+<article class="rv-private" data-private-review tabindex="-1">
+  <div class="rv-private__head"><span class="rv-status">{% if r.status == 'pending' %}{% trans 'На модерації · видно тільки вам' %}{% elif r.status == 'approved' %}{% trans 'Ваш відгук опубліковано' %}{% else %}{% trans 'Не опубліковано · видно тільки вам' %}{% endif %}</span>{% if r.rating %}<span class="rv-stars" aria-label="{{ r.rating }} / 5">{% for i in '12345' %}{% if forloop.counter <= r.rating %}★{% else %}☆{% endif %}{% endfor %}</span>{% endif %}</div>
+  <h3>{{ r.author_name }}{% if r.city %} · {{ r.city }}{% endif %}</h3>
+  {% if r.title %}<strong>{{ r.title }}</strong>{% endif %}
+  <p class="rv-body">{{ r.body|linebreaksbr }}</p>
+  {% if r.pros %}<p><strong>{% trans 'Сподобалось' %}:</strong> {{ r.pros }}</p>{% endif %}
+  {% if r.cons %}<p><strong>{% trans 'Можна покращити' %}:</strong> {{ r.cons }}</p>{% endif %}
+  <p class="rv-muted">{% if r.status == 'pending' %}{% trans 'Дякуємо, що поділилися. Після перевірки текст стане видимим для всіх. Публікуємо і позитивний, і критичний досвід.' %}{% elif r.status == 'rejected' %}{% trans 'Коментар не пройшов правила публікації. Зв’яжіться з нами, якщо потрібне уточнення.' %}{% else %}{% trans 'Ваш досвід уже допомагає іншим обрати.' %}{% endif %}</p>
+  {% if not request.user.is_authenticated %}<small class="rv-muted">{% trans 'Ваш запис доступний у цьому браузері, поки зберігаються cookies. На спільному пристрої його можуть побачити інші користувачі.' %}</small>{% endif %}
+  {% if r.campaign_opt_in %}<p class="rv-muted">{% if r.campaign_entries %}{% trans 'Участь підтверджена. Кількість заявок:' %} {{ r.campaign_entries }}.{% else %}{% trans 'Заявку на участь збережено. Вона активується після публікації відгуку.' %}{% endif %}</p>{% endif %}
+</article>
+{% endfor %}

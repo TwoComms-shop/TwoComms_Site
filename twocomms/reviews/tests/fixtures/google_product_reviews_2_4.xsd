@@ -1,0 +1,700 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning"
+    elementFormDefault="qualified"
+    vc:minVersion="1.0">
+    <xs:annotation>
+        <xs:documentation>
+            Google Product Review Feeds allow content providers to
+            provide product reviews to Google Shopping.
+            An XML file can be validated with this schema by running:
+            xmllint --schema http://www.google.com/shopping/reviews/schema/product/2.4/product_reviews.xsd --noout file.xml
+        </xs:documentation>
+    </xs:annotation>
+    <xs:element name="feed">
+        <xs:annotation>
+            <xs:documentation>
+                The top-level element of a feed is the &lt;feed/&gt; element.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="version" type="xs:string" fixed="2.4" >
+                  <xs:annotation>
+                        <xs:documentation>
+                            Google Product Review Feed specification version.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+                <xs:element name="aggregator" type="aggregatorType"
+                    minOccurs="0">
+                    <xs:annotation>
+                        <xs:documentation>
+                            A publisher may use a reviews aggregator to manage
+                            reviews and provide the feeds. This element
+                            indicates the use of an aggregator and contains
+                            information about the aggregator.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+                <xs:element name="publisher" type="publisherType">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The information about the publisher, which may
+                            be a retailer, manufacturer, reviews service
+                            company, or any entity that publishes product
+                            reviews.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+                <xs:element name="reviews" minOccurs="0">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Contains the product reviews.
+                        </xs:documentation>
+                    </xs:annotation>
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="review" type="reviewType"
+                                maxOccurs="unbounded">
+                                <xs:annotation>
+                                    <xs:documentation>
+                                        An individual unique product review.
+                                        If a review pertains to multiple
+                                        products in the publisher's inventory,
+                                        then specify the review once, and
+                                        include multiple &lt;product&gt;
+                                        elements in the &lt;products&gt;
+                                        element.
+                                    </xs:documentation>
+                                </xs:annotation>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+            </xs:sequence>
+        </xs:complexType>
+        <xs:unique name="uniqueReview">
+            <xs:annotation>
+                <xs:documentation>
+                    Uniqueness constraint on the review ID.
+                </xs:documentation>
+            </xs:annotation>
+            <xs:selector xpath="reviews/review"></xs:selector>
+            <xs:field xpath="review_id"></xs:field>
+        </xs:unique>
+    </xs:element>
+    <xs:complexType name="aggregatorType">
+        <xs:annotation>
+            <xs:documentation>
+                The aggregator entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="name" type="nonEmptyStringType">
+                <xs:annotation>
+                    <xs:documentation>
+                        The name of the aggregator of the product reviews.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="publisherType">
+        <xs:annotation>
+            <xs:documentation>
+                The publisher entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="name" type="nonEmptyStringType">
+                <xs:annotation>
+                    <xs:documentation>
+                        The name of the publisher of the product reviews.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="favicon" type="httpUrlType" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        A link to the company favicon of the publisher.
+                        The image dimensions should be favicon size:
+                        16x16 pixels. The image format should be GIF,
+                        JPG or PNG.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="reviewType">
+        <xs:annotation>
+            <xs:documentation>
+                The review entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="review_id" type="nonEmptyStringType"
+                minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        The permanent, unique identifier for the product
+                        review in the publisher's system.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="reviewer" type="reviewerType">
+                <xs:annotation>
+                    <xs:documentation>
+                        The author of the product review.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="review_language" type = "xs:language"
+                        minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        The language of the review (BCP 47).
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="review_country" type = "xs:string" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        The country code (ISO 3166-1) of the reviewer.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="review_timestamp" type="xs:dateTime">
+                <xs:annotation>
+                    <xs:documentation>
+                        The timestamp indicating when the review was written.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="title" type="nonEmptyStringType" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        The title of the review.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="content" type="nonEmptyStringType">
+                <xs:annotation>
+                    <xs:documentation>
+                        The content of the review.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="pros" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains the pros based on the opinion of the reviewer.
+                        Omit boilerplate text like "pro:" unless it was
+                        written by the reviewer.
+                    </xs:documentation>
+                </xs:annotation>
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="pro" type="nonEmptyStringType"
+                            maxOccurs="unbounded">
+                            <xs:annotation>
+                                <xs:documentation>
+                                    An individual pro based on the opinion of
+                                    the reviewer. The pros should be listed in
+                                    the same order as they are displayed. Omit
+                                    boilerplate text like "pro:" unless it was
+                                    written by the reviewer.
+                                </xs:documentation>
+                            </xs:annotation>
+                        </xs:element>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+            <xs:element name="cons" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains the cons based on the opinion of the reviewer.
+                        Omit boilerplate text like "con:" unless it was written
+                        by the reviewer.
+                    </xs:documentation>
+                </xs:annotation>
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="con" type="nonEmptyStringType"
+                            maxOccurs="unbounded">
+                            <xs:annotation>
+                                <xs:documentation>
+                                    An individual con based on the opinion of
+                                    the reviewer. The cons should be listed in
+                                    the same order as they are displayed. Omit
+                                    boilerplate text like "con:" unless it was
+                                    written by the reviewer.
+                                </xs:documentation>
+                            </xs:annotation>
+                        </xs:element>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+            <xs:element name="review_url" type="reviewUrlType">
+                <xs:annotation>
+                    <xs:documentation>
+                        The URL of the review landing page.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="reviewer_images" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains links to images of the product supplied by
+                        the reviewer.
+                    </xs:documentation>
+                </xs:annotation>
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="reviewer_image" type="reviewImageType"
+                            maxOccurs="unbounded">
+                            <xs:annotation>
+                                <xs:documentation>
+                                  An image of the reviewed product created by
+                                  the review author.
+                                </xs:documentation>
+                            </xs:annotation>
+                        </xs:element>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+            <xs:element name="ratings">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains the ratings associated with the review.
+                    </xs:documentation>
+                </xs:annotation>
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="overall" type="ratingType">
+                            <xs:annotation>
+                                <xs:documentation>
+                                    The reviewer's overall rating of the
+                                    product.
+                                </xs:documentation>
+                            </xs:annotation>
+                        </xs:element>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+            <xs:element name="products">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains the products associated with the review.
+                    </xs:documentation>
+                </xs:annotation>
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="product" type="productType"
+                            maxOccurs="unbounded">
+                            <xs:annotation>
+                                <xs:documentation>
+                                    A product associated with the review.
+                                </xs:documentation>
+                            </xs:annotation>
+                        </xs:element>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+            <xs:element name="is_spam" type="xs:boolean" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Indicates whether the review is marked as spam in the
+                        publisher's system.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="is_verified_purchase" type="xs:boolean"
+                        minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Indicates whether or not it was verified that the
+                        reviewer purchased the product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="is_incentivized_review" type="xs:boolean"
+                        minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Indicates whether or not the reviewer was incentivized
+                        to review the product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="collection_method" type="collectionMethodType"
+                minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        The method used to collect the review. The value must
+                        be one of the following:
+                        unsolicited - The user was not responding to a specific
+                        solicitation when they submitted the review.
+                        post_fulfillment - The user submitted the review in
+                        response to a solicitation after fulfillment of the
+                        user's order.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="transaction_id" type="nonEmptyStringType"
+                minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        A permanent, unique identifier for the transaction
+                        associated with the review in the publisher's system.
+                        This ID can be used to indicate that multiple reviews
+                        are associated with the same transaction.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="reviewerType">
+        <xs:annotation>
+            <xs:documentation>
+                The reviewer entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="name" type="reviewerNameType">
+                <xs:annotation>
+                    <xs:documentation>
+                        The name of the author of the review.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="reviewer_id" type="nonEmptyStringType"
+                minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        A permanent, unique identifier for the author of the
+                        review in the publisher's system.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="reviewerNameType">
+        <xs:annotation>
+            <xs:documentation>
+                The reviewer name entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:simpleContent>
+            <xs:extension base="nonEmptyStringType">
+                <xs:attribute name="is_anonymous" type="xs:boolean"
+                    use="optional">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Indicates whether the reviewer is anonymous.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:attribute>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="reviewUrlType">
+        <xs:annotation>
+            <xs:documentation>
+                The reviewer URL entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:simpleContent>
+            <xs:extension base="httpUrlType">
+                <xs:attribute name="type" use="required">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The type must be one of the following:
+                            singleton - The review page contains only
+                            this single review.
+                            group - The review page contains a group of
+                            reviews including this review.
+                        </xs:documentation>
+                    </xs:annotation>
+                    <xs:simpleType>
+                        <xs:restriction base="xs:string">
+                            <xs:enumeration value="singleton"/>
+                            <xs:enumeration value="group"/>
+                        </xs:restriction>
+                    </xs:simpleType>
+                </xs:attribute>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="ratingType">
+        <xs:annotation>
+            <xs:documentation>
+                The rating entity. It extends an xs:decimal simpleType and
+                captures the rating assigned by the reviewer. The value
+                should be within the inclusive range defined by the min and
+                max attributes.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:simpleContent>
+            <xs:extension base="xs:decimal">
+                <xs:attribute name="min" type="xs:integer" use="required">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The minimum possible number for the rating. This
+                            should be the worst possible rating and should
+                            not be a value for no rating.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:attribute>
+                <xs:attribute name="max" type="xs:integer" use="required">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The maximum possible number for the rating. The
+                            value of the max attribute must be greater than
+                            the value of the min attribute.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:attribute>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="productType">
+        <xs:annotation>
+            <xs:documentation>
+                The product entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="product_ids" type="productIdsType" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        The identifiers associated with a product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="product_name" type="nonEmptyStringType"
+                minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Descriptive name of a product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="product_url" type="httpUrlType">
+                <xs:annotation>
+                    <xs:documentation>
+                        The URL of the product. This URL can have the same
+                        value as the &lt;review_url&gt; element, if the review
+                        URL and the product URL are the same.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="reviewImageType">
+        <xs:annotation>
+            <xs:documentation>
+                The review image entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="url" type="httpUrlType">
+                <xs:annotation>
+                    <xs:documentation>
+                        A URL to an image of the reviewed product created by the
+                        review author.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="productIdsType">
+        <xs:annotation>
+            <xs:documentation>
+                The product identifier entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="gtins" type="gtinsType" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains GTINs (global trade item numbers) associated
+                        with a product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="mpns" type="mpnsType" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains MPNs (manufacturer part numbers) associated
+                        with a product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="skus" type="skusType" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains SKUs (stock keeping units) associated with a
+                        product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="brands" type="brandsType" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains brand names associated with a product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name="asins" type="asinsType" minOccurs="0">
+                <xs:annotation>
+                    <xs:documentation>
+                        Contains Amazon Standard Identification Numbers
+                        associated with a product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="gtinsType">
+        <xs:annotation>
+            <xs:documentation>
+                The GTIN container entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="gtin" maxOccurs="unbounded">
+                <xs:annotation>
+                    <xs:documentation>
+                        The product's global trade item number.
+                    </xs:documentation>
+                </xs:annotation>
+                <xs:simpleType>
+                    <xs:restriction base="xs:string">
+                        <xs:pattern value="[\d -xX]{7,}"/>
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="mpnsType">
+        <xs:annotation>
+            <xs:documentation>
+                The MPN container entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="mpn" type="nonEmptyStringType"
+                maxOccurs="unbounded">
+                <xs:annotation>
+                    <xs:documentation>
+                        The product's manufacturer part number.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="skusType">
+        <xs:annotation>
+            <xs:documentation>
+                The SKU container entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="sku" type="nonEmptyStringType"
+                maxOccurs="unbounded">
+                <xs:annotation>
+                    <xs:documentation>
+                        The product's stock keeping unit in the
+                        publisher's inventory.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="brandsType">
+        <xs:annotation>
+            <xs:documentation>
+                The brand container entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="brand" type="nonEmptyStringType"
+                maxOccurs="unbounded">
+                <xs:annotation>
+                    <xs:documentation>
+                        The brand name of the product.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="asinsType">
+        <xs:annotation>
+            <xs:documentation>
+                The ASIN container entity.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="asin" maxOccurs="unbounded">
+                <xs:annotation>
+                    <xs:documentation>
+                        ASINs are product-unique blocks of 10 letters
+                        and/or numbers.
+                    </xs:documentation>
+                </xs:annotation>
+                <xs:simpleType>
+                    <xs:restriction base="xs:string">
+                        <xs:pattern value="[0-9A-Za-z]{10}"/>
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+    <xs:simpleType name="nonEmptyStringType">
+        <xs:annotation>
+            <xs:documentation>
+                A string that has at least one non-whitespace character.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:pattern value="\s*\S+[\s\S]*"/>
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="httpUrlType">
+        <xs:annotation>
+            <xs:documentation>
+                A valid HTTP/HTTPS URL.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:anyURI">
+            <xs:pattern value="(https?://)?\S+\.\S+"/>
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="collectionMethodType">
+        <xs:annotation>
+            <xs:documentation>
+                The method that was used to collect the review.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="unsolicited">
+                <xs:annotation>
+                    <xs:documentation>
+                        The user was not responding to a specific
+                        solicitation when they submitted the review.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:enumeration>
+            <xs:enumeration value="post_fulfillment">
+                <xs:annotation>
+                    <xs:documentation>
+                        The user submitted the review in response
+                        to a solicitation after fulfillment of the
+                        user's order.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:enumeration>
+        </xs:restriction>
+    </xs:simpleType>
+</xs:schema>

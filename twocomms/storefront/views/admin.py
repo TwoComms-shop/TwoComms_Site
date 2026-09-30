@@ -1450,7 +1450,7 @@ def admin_panel(request):
         # day-to-day approve/reject flow. Heavy edits (raw text /
         # photo attachments) still link out via ``admin_url``.
         from storefront.services.admin_reviews import build_reviews_context
-        context.update(build_reviews_context())
+        context.update(build_reviews_context(request))
 
     html_content = render_to_string('pages/admin_panel.html', context, request=request)
     response = HttpResponse(html_content)
@@ -2910,9 +2910,12 @@ def admin_review_action(request, review_id: int):
         return JsonResponse({"ok": False, "error": "POST required"}, status=405)
 
     from reviews.models import Review
+    from reviews.write_freeze import review_writes_frozen
+    if review_writes_frozen():
+        return JsonResponse({"ok": False, "error": "Запис тимчасово призупинено."}, status=503)
 
     action = (request.POST.get("action") or "").strip().lower()
-    if action not in {"approve", "reject"}:
+    if action not in {"approve", "reject", "pending", "story_confirm", "story_revoke"}:
         return JsonResponse({"ok": False, "error": "invalid action"}, status=400)
 
     review = get_object_or_404(Review, pk=review_id)
@@ -2920,9 +2923,22 @@ def admin_review_action(request, review_id: int):
 
     if action == "approve":
         review.mark_approved(by=request.user, note=note)
-    else:
+    elif action == "reject":
         review.mark_rejected(by=request.user, note=note)
 
+    elif action == "pending":
+        from django.utils import timezone
+        review.status = "pending"
+        review.moderated_by = request.user
+        review.moderated_at = timezone.now()
+        review.moderation_note = note[:2000]
+        review.save()
+    else:
+        if not review.campaign_opt_in or not review.is_verified_purchase:
+            return JsonResponse({"ok": False, "error": "Немає заявки на участь."}, status=400)
+        review.story_confirmed = action == "story_confirm"
+        review.moderation_note = note[:2000]
+        review.save(update_fields=["story_confirmed", "moderation_note", "updated_at"])
     return JsonResponse({"ok": True, "id": review.pk, "status": review.status})
 
 
@@ -2935,6 +2951,9 @@ def admin_review_bulk(request):
         return JsonResponse({"ok": False, "error": "POST required"}, status=405)
 
     from reviews.models import Review, ReviewStatus
+    from reviews.write_freeze import review_writes_frozen
+    if review_writes_frozen():
+        return JsonResponse({"ok": False}, status=503)
 
     action = (request.POST.get("action") or "").strip().lower()
     raw_ids = (request.POST.get("ids") or "").strip()
