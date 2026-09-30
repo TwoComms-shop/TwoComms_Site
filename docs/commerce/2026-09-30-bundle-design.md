@@ -40,3 +40,5 @@ Mini-cart prioritizes readable size/fit12px and40px quantity controls. Generic b
 Keep actual after-discount free-shipping threshold3000. Never describe the300/250goods discount as guaranteed identical savings including delivery. No timer, false scarcity, silent size choice, compulsory upsell, or fabricated conversion uplift is added.
 
 Финальный цветовой выбор владельца: менее яркая оранжевая кнопка оформления с тёмным текстом, яркая исходная оранжевая полоска доставки, графитовые вторичные поверхности. Приоритет создаёт ограниченное использование цвета; универсальный прирост конверсии от оранжевого не предполагается.
+
+225 сохраняет military olive и в карточке, и во всех состояниях окна выбора. Для обычных комплектов по уточнению владельца бордовая палитра заменена графитом со стальными синими оттенками; она применяется к карточке, выбору, рекомендациям и обычной корзине. Цвет checkout в мини-корзине остаётся ранее выбранным мягким оранжевым. Палитры проверены в локальном браузере на390px.
