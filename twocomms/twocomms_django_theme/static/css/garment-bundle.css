@@ -94,4 +94,4 @@
 .garment-offer__category-heading .garment-offer__saving{flex-shrink:0;font-weight:700;font-size:23px}
 .garment-offer__category-heading .garment-offer__saving>span{margin:4px 0 0;font-size:10px;font-weight:400}
 .garment-offer__category-intro{font-size:12px;line-height:1.5;color:#dccab2;margin:0 0 12px}
-@media(max-width:575px){.garment-offer__category-heading{gap:10px}.garment-offer__category-heading h2{font-size:19px}.garment-offer__category-heading .garment-offer__saving{font-size:21px}.garment-offer__category-intro{font-size:11px}}
+@media(max-width:575px){.garment-offer__category-heading{gap:10px}.garment-offer__category-heading h2{font-size:19px}.garment-offer__category-heading .garment-offer__saving{font-size:21px}.garment-offer__category-intro{font-size:12px}}

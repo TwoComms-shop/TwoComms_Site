@@ -14,6 +14,6 @@
   <a class="garment-offer__button garment-offer__category-link" href="{{ garment_offer.category_url }}">{% if garment_offer.kind == 'tee' %}{{ bundle_copy.all_hoodies }}{% else %}{{ bundle_copy.all_tees }}{% endif %}<span aria-hidden="true">↗</span></a>
   <p class="garment-offer__auto-note">{{ bundle_copy.category_automatic }}</p>
   <div class="garment-offer__shipping"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5h11v12H3zM14 9h4l3 4v4h-7"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></svg><span><strong>{{ bundle_copy.shipping_threshold }}</strong><small>{{ bundle_copy.shipping_threshold_note }}</small></span></div>
-  <details class="garment-offer__terms"><summary>{{ bundle_copy.rules_title }}</summary><p>{{ bundle_copy.terms }} {{ bundle_copy.terms_more }} {{ bundle_copy.shipping_separate }}</p></details>
+  <details class="garment-offer__terms"><summary>{{ bundle_copy.rules_title }}</summary><p>{{ bundle_copy.print_terms }}</p><p>{{ bundle_copy.terms }} {{ bundle_copy.terms_more }} {{ bundle_copy.shipping_separate }}</p></details>
 </aside>
 {% endif %}
