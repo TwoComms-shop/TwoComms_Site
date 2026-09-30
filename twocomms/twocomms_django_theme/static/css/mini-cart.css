@@ -1307,37 +1307,61 @@
   #mini-cart-panel .mini-cart-benefits small { font-size: 8px; line-height: 1.05; }
 }
 
-/* A calm checkout hierarchy: one burgundy action, neutral supporting surfaces. */
-:is(#mini-cart-panel,#mini-cart-panel-mobile){--mini-cart-accent:#c2a0ad;--mini-cart-accent-rgb:194,160,173}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-primary-cta{
- background:linear-gradient(120deg,#743d53,#61394e)!important;border:1px solid #a96b85!important;
- box-shadow:0 4px 12px rgba(0,0,0,.18)!important;color:#fff!important;min-height:58px!important;
+/* Warm accents guide checkout and delivery progress; product surfaces stay quiet. */
+:is(#mini-cart-panel, #mini-cart-panel-mobile) {
+  --mini-cart-accent: #dfa56c;
+  --mini-cart-accent-rgb: 223, 165, 108;
 }
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-primary-cta:hover{background:#825068!important;border-color:#cb93aa!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-primary-cta:focus-visible{outline:3px solid #d7bfdc;outline-offset:3px}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-primary-cta__label{font-weight:700;text-shadow:none!important;font-size:17px!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-primary-cta__hint{color:#e2d4dc!important;text-shadow:none!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-primary-cta__arrow{background:none!important;box-shadow:none!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-secondary-action{border-color:#47444b!important;color:#c6c1ca!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shipping{border:1px solid #45414a!important;background:#19191d!important;box-shadow:none!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shipping__icon,
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shipping__remaining-value,
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shipping__threshold,
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-summary__icon,
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-benefits__icon{color:#c2abb7!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shipping__bar{background:linear-gradient(90deg,#77657f,#b28ba1)!important;box-shadow:none!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shipping__success{background:#26382e!important;border-color:#4f6656!important;color:#c2d6bf!important;box-shadow:none!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shell__header .cart-header-icon,
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shell__header .close-btn{color:#cfbdce!important;border-color:#544858!important;background:#27222b!important;box-shadow:none!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shell__header .cart-title strong{color:#f1ebf2!important}
-
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-shipping__copy b,
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-summary__currency{color:#c2abb7!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-summary__icon{border-color:#625160!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) :is(a,button):focus-visible{outline-color:#d4b8d2!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-empty__action{background:#674657!important;color:#fff!important;border-color:#a87b94!important}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-benefits b{font-size:9.5px;line-height:1.25;white-space:normal}
-:is(#mini-cart-panel,#mini-cart-panel-mobile) .mini-cart-benefits small{font-size:9px;line-height:1.3}
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta {
+  background: linear-gradient(115deg, #ef8734, #e17424) !important;
+  border: 1px solid #f5a35f !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .22), inset 0 1px 0 rgba(255, 255, 255, .15) !important;
+  color: #21170f !important;
+  min-height: 58px !important;
+}
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta:hover {
+  background: linear-gradient(115deg, #f79445, #ea8232) !important;
+  border-color: #f0b680 !important;
+}
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__label,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__hint,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__arrow {
+  color: #21170f !important;
+  text-shadow: none !important;
+}
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__label { font-weight: 800; font-size: 17px !important; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__arrow { background: none !important; box-shadow: none !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-secondary-action { border-color: #494743 !important; color: #d3cec6 !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping {
+  border: 1px solid #65503b !important;
+  background: linear-gradient(120deg, #242019, #1d1c1a) !important;
+  box-shadow: none !important;
+}
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping__icon,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping__remaining-value,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping__threshold,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping__copy b { color: #e6ad75 !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping__bar {
+  background: #ff650c !important;
+  box-shadow: none !important;
+}
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping--complete { border-color: #536746 !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping--complete .mini-cart-shipping__bar { background: #ff650c !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping__success { background: #26382e !important; border-color: #4f6656 !important; color: #c2d6bf !important; box-shadow: none !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-summary__icon,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-benefits__icon,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-summary__currency { color: #c6bfb4 !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-summary__icon { border-color: #555049 !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shell__header .cart-header-icon,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shell__header .close-btn { color: #d6cec3 !important; border-color: #494640 !important; background: #252420 !important; box-shadow: none !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shell__header .cart-title strong { color: #f3f0eb !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) :is(a, button):focus-visible { outline: 3px solid #f0b680 !important; outline-offset: 3px; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-empty__action { background: #da8542 !important; color: #21170f !important; border-color: #e9a369 !important; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .garment-cart-note { background: #221f1b; border-color: #524332; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .garment-cart-note__applied strong { color: #e9bd8e; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .garment-cart-note__suggest button { background: #342c23; border-color: #8b6a47; color: #f0d6b8; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-benefits b { font-size: 9.5px; line-height: 1.25; white-space: normal; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-benefits small { font-size: 9px; line-height: 1.3; }
 
 /* Make the selected configuration easier to verify than generic reassurance. */
 .mini-cart-row__meta{font-size:12px!important;line-height:1.45!important;flex-wrap:wrap}.mini-cart-row__title[href]{color:inherit;text-decoration:none;display:block}.mini-cart-row__title[href]:hover{text-decoration:underline}.mini-cart-quantity__button{width:40px!important;min-width:40px!important;height:40px!important;min-height:40px!important}.mini-cart-quantity{min-height:40px}.mini-cart-benefits small{display:none}.mini-cart-benefits b{font-size:10px!important;line-height:1.4}.mini-cart-shipping__copy>strong{font-size:12px!important}
