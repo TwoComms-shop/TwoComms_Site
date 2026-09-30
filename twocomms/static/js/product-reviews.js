@@ -11,7 +11,6 @@
   const privateBox = root.querySelector('[data-private-reviews]');
   const key = `twocomms.review.v1.${root.dataset.user}.${root.dataset.product}`;
   const fields = ['body', 'rating', 'author_name'];
-  let owned = !compose.hidden ? false : true;
   let csrf = '';
   let needsRating = false;
   let previewURLs = [];
@@ -32,7 +31,6 @@
     const saved = JSON.parse(sessionStorage.getItem(key) || 'null');
     if (saved && Date.now() - saved.time < 24 * 60 * 60 * 1000) {
       fields.forEach(name => { if (typeof saved[name] === 'string') form.elements[name].value = saved[name]; });
-      if (saved.body) compose.open = true;
     }
   } catch (_) { root.querySelector('[data-draft-status]').hidden = true; }
   refreshForm();
@@ -57,13 +55,6 @@
     try { sessionStorage.removeItem(key); } catch (_) {}
     refreshForm();
   });
-  root.querySelector('[data-compose-open]').addEventListener('click', event => {
-    event.preventDefault();
-    if (owned) { privateBox.scrollIntoView({block: 'center'}); privateBox.querySelector('article')?.focus({preventScroll: true}); return; }
-    compose.open = true;
-    compose.scrollIntoView({block: 'start'});
-    form.elements.body.focus({preventScroll: true});
-  });
   form.elements.images.addEventListener('change', () => {
     previewURLs.forEach(URL.revokeObjectURL); previewURLs = [];
     const preview = root.querySelector('[data-photo-previews]'); preview.replaceChildren();
@@ -82,8 +73,7 @@
     form.elements.csrfmiddlewaretoken.value = csrf;
     privateBox.innerHTML = data.html; // server-rendered, escaped Django template
     root.dataset.stateReady = "1";
-    owned = data.form_complete;
-    compose.hidden = owned;
+    compose.hidden = data.form_complete;
     needsRating = data.submitted_kinds.includes('comment');
     refreshForm();
     return data;
@@ -119,7 +109,7 @@
       try { sessionStorage.removeItem(key); } catch (_) {}
       form.reset(); refreshForm();
       // A failed follow-up GET must never turn a successful POST into a resend.
-      owned = true; compose.hidden = true; compose.open = false;
+      compose.hidden = true;
       privateBox.textContent = root.querySelector('[data-success-message]').textContent;
       try { await state(); } catch (_) {}
       privateBox.querySelector('article')?.focus();

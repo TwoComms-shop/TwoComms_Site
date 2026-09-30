@@ -2,34 +2,39 @@
 <section id="product-reviews" class="rv tc-reviews" aria-labelledby="rv-title" data-review-root data-product="{{ product.pk }}" data-user="{{ request.user.pk|default:'guest' }}" data-state-url="{% url 'reviews:state' product_slug=product.slug %}">
   <header class="rv-heading">
     <div><h2 id="rv-title">{% trans 'Відгуки' %}{% if product_review_summary.show_rating %}<span class="rv-summary"><span aria-hidden="true">★</span> {{ product_review_summary.average|floatformat:1 }} <small>· {{ product_review_summary.count }}</small></span>{% endif %}</h2><p>{% trans 'Твоя думка допоможе іншим обрати.' %}</p></div>
-    <a class="rv-button" href="#review-compose" data-compose-open>{% trans 'Написати відгук' %}</a>
   </header>
   {% if messages %}<div class="rv-feedback" role="status">{% for message in messages %}<p>{{ message }}</p>{% endfor %}</div>{% endif %}
   <div data-private-reviews>{% include 'partials/review_private.html' %}</div>
-  <details id="review-compose" class="rv-compose" {% if review_draft %}open{% endif %} {% if review_form_complete %}hidden{% endif %}>
-    <summary>{% trans 'Написати відгук' %}</summary>
+  <div id="review-compose" class="rv-compose" {% if review_form_complete %}hidden{% endif %}>
     <form class="rv-form" action="{% url 'reviews:submit' product_slug=product.slug %}" method="post" enctype="multipart/form-data" data-review-form>
       {% csrf_token %}
       {% if request.user.is_authenticated %}<p class="rv-identity">{{ request.user.first_name|default:request.user.username }}{% if product_customer_has_paid_order %}<span>✓ {% trans 'Покупку підтверджено' %}</span>{% endif %}</p>{% endif %}
-      <fieldset class="rv-rating" aria-describedby="rv-rating-hint rv-error-rating"><legend>{% trans 'Оцінка' %} <small data-rating-optional>{% trans 'за бажанням' %}</small></legend><div class="rv-rating__line"><div class="rv-rating__stars">{% for v in '12345' %}<label><input type="radio" name="rating" value="{{ v }}" {% if review_draft.rating == v %}checked{% endif %}><span aria-hidden="true">★</span><span class="rv-sr">{{ v }} / 5</span></label>{% endfor %}</div><button type="button" class="rv-text-button" data-clear-rating hidden>{% trans 'Без оцінки' %}</button></div><small class="rv-muted" id="rv-rating-hint" data-rating-hint data-default="{% trans 'Зірки — якщо вже маєш досвід із цією річчю.' %}" data-followup="{% trans 'Оціни товар, щоб доповнити свій попередній коментар.' %}">{% trans 'Зірки — якщо вже маєш досвід із цією річчю.' %}</small><span class="rv-error" id="rv-error-rating" data-error="rating" aria-live="polite"></span></fieldset>
+      <fieldset class="rv-rating" aria-describedby="rv-rating-hint rv-error-rating">
+        <legend class="rv-sr">{% trans 'Оцінка' %}</legend>
+        <div class="rv-rating__copy"><span aria-hidden="true">{% trans 'Оцінка' %} <small data-rating-optional>{% trans 'за бажанням' %}</small></span><small class="rv-muted" id="rv-rating-hint" data-rating-hint data-default="{% trans 'Зірки — якщо вже маєш досвід із цією річчю.' %}" data-followup="{% trans 'Оціни товар, щоб доповнити свій попередній коментар.' %}">{% trans 'Зірки — якщо вже маєш досвід із цією річчю.' %}</small></div>
+        <div class="rv-rating__line"><div class="rv-rating__stars">{% for v in '12345' %}<label><input type="radio" name="rating" value="{{ v }}" {% if review_draft.rating == v %}checked{% endif %}><span aria-hidden="true">★</span><span class="rv-sr">{{ v }} / 5</span></label>{% endfor %}</div><button type="button" class="rv-text-button" data-clear-rating hidden>{% trans 'Без оцінки' %}</button></div>
+        <span class="rv-error" id="rv-error-rating" data-error="rating" aria-live="polite"></span>
+      </fieldset>
       <label class="rv-field"><span>{% trans 'Твій відгук' %}</span><textarea name="body" rows="3" minlength="20" maxlength="4000" required placeholder="{% trans 'Що думаєш про цю річ?' %}" aria-describedby="rv-body-hint rv-error-body">{{ review_draft.body }}</textarea><span class="rv-field__hint" id="rv-body-hint"><span>{% trans 'Від 20 символів · без посилань і контактів' %}</span><span data-body-count>0 / 4000</span></span><span class="rv-error" id="rv-error-body" data-error="body" aria-live="polite"></span></label>
       <div class="rv-row">
         <label class="rv-field"><span>{% trans 'Ім’я' %}</span><input name="author_name" maxlength="80" autocomplete="nickname" required aria-describedby="rv-error-author_name" value="{% if review_draft.author_name %}{{ review_draft.author_name }}{% elif request.user.is_authenticated %}{{ request.user.first_name|default:request.user.username }}{% endif %}"><span class="rv-error" id="rv-error-author_name" data-error="author_name" aria-live="polite"></span></label>
         <label class="rv-field"><span>Email <small>{% trans 'не публікується' %}{% if request.user.is_authenticated %} · {% trans 'за бажанням' %}{% endif %}</small></span><input type="email" name="email" maxlength="254" autocomplete="email" {% if not request.user.is_authenticated %}required{% endif %} aria-describedby="rv-error-email" value="{% if review_draft.email %}{{ review_draft.email }}{% elif request.user.is_authenticated %}{{ request.user.email }}{% endif %}"><span class="rv-error" id="rv-error-email" data-error="email" aria-live="polite"></span></label>
       </div>
-      <details class="rv-extras"><summary>{% trans 'Додати фото' %}</summary><div class="rv-extras__body"><label class="rv-upload"><small>{% trans 'До 5 фото · JPG, PNG, WebP · до 5 МБ кожне' %}</small><input type="file" name="images" accept="image/jpeg,image/png,image/webp" multiple></label><div class="rv-previews" data-photo-previews></div></div></details>
       {% if review_campaign and product_customer_has_paid_order %}<label class="rv-optin"><input type="checkbox" name="campaign_opt_in" value="1"><span>{% trans 'Хочу взяти участь у розіграші кастомного одягу. Погоджуюся з' %} <a href="{{ review_campaign.rules_url }}" target="_blank" rel="noopener">{% trans 'правилами' %}</a>.</span></label>{% endif %}
       <label class="rv-honeypot" aria-hidden="true">Website<input name="website" tabindex="-1" autocomplete="off"></label>
       <div class="rv-feedback" role="status" tabindex="-1" data-review-feedback></div>
+      <div class="rv-actions">
+      <details class="rv-extras"><summary>{% trans 'Додати фото' %}</summary><div class="rv-extras__body"><label class="rv-upload"><small>{% trans 'До 5 фото · JPG, PNG, WebP · до 5 МБ кожне' %}</small><input type="file" name="images" accept="image/jpeg,image/png,image/webp" multiple></label><div class="rv-previews" data-photo-previews></div></div></details>
       <div class="rv-submit-row"><button type="submit" class="rv-button rv-button--submit" data-idle="{% trans 'Надіслати' %}" data-busy="{% trans 'Надсилаємо…' %}">{% trans 'Надіслати' %}</button><p>{% trans 'Відгук з’явиться після модерації.' %}</p></div>
+      </div>
       <p class="rv-form__foot">{% trans 'Надсилаючи, ти дозволяєш публікацію імені, тексту та фото. Email залишається приватним.' %}</p>
       <div class="rv-draft-row"><span data-draft-status>{% trans 'Чернетку збережено в цій вкладці.' %}</span><button class="rv-text-button" type="button" data-clear-draft>{% trans 'Очистити' %}</button></div>
       <span hidden data-network-error>{% trans 'Не вдалося надіслати. Текст збережено — перевір з’єднання та спробуй ще раз.' %}</span><span hidden data-photo-error>{% trans 'Обери до 5 фото JPEG, PNG або WebP, не більше 5 МБ кожне.' %}</span><span hidden data-success-message>{% trans 'Дякуємо! Текст збережено та передано на модерацію.' %}</span>
     </form>
-  </details>
+  </div>
   {% if approved_reviews %}<ol class="rv-list">{% for r in approved_reviews %}{% include 'partials/review_public.html' %}{% endfor %}</ol>{% else %}<p class="rv-empty">{% trans 'Ще немає відгуків. Будемо раді твоїй думці.' %}</p>{% endif %}
   {% if review_page.has_other_pages %}<nav class="rv-pagination" aria-label="{% trans 'Сторінки відгуків' %}">{% if review_page.has_previous %}<a href="?reviews_page={{ review_page.previous_page_number }}#product-reviews">← {% trans 'Попередні' %}</a>{% endif %}<span>{{ review_page.number }} / {{ review_page.paginator.num_pages }}</span>{% if review_page.has_next %}<a href="?reviews_page={{ review_page.next_page_number }}#product-reviews">{% trans 'Наступні' %} →</a>{% endif %}</nav>{% endif %}
   {% if review_campaign %}<details class="rv-policy"><summary>{% trans 'Твоя ідея. Наш кастом.' %}</summary><p>{% trans 'Поділися досвідом після покупки — долучайся до розіграшу одягу з твоїм принтом і розробкою дизайну від TwoComms.' %}</p><a href="{{ review_campaign.rules_url }}" target="_blank" rel="noopener">{% trans 'Умови та спосіб надіслати сторіс' %} ↗</a></details>{% endif %}
   <details class="rv-policy"><summary>{% trans 'Про відгуки' %}</summary><p>{% trans 'Публікуємо чесні відгуки незалежно від оцінки. Прибираємо спам, рекламу й образи. Позначку покупки додаємо за оплаченим замовленням у профілі. Email гостя не є підтвердженням покупки.' %}</p></details>
 </section>
-<script src="{% static 'js/product-reviews.js' %}?v=20260930-simple-v2" defer></script>
+<script src="{% static 'js/product-reviews.js' %}?v=20260930-open-v3" defer></script>
