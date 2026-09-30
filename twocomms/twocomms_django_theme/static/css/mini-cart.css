@@ -1312,12 +1312,25 @@
   --mini-cart-accent: #dfa56c;
   --mini-cart-accent-rgb: 223, 165, 108;
 }
-/* Keep the original orange checkout button requested by the owner. */
-:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__label {
-  white-space: normal;
-  overflow: visible;
-  text-overflow: clip;
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta {
+  background: linear-gradient(115deg, #ef8734, #e17424) !important;
+  border: 1px solid #f5a35f !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .22), inset 0 1px 0 rgba(255, 255, 255, .15) !important;
+  color: #21170f !important;
+  min-height: 58px !important;
 }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta:hover {
+  background: linear-gradient(115deg, #f79445, #ea8232) !important;
+  border-color: #f0b680 !important;
+}
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__label,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__hint,
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__arrow {
+  color: #21170f !important;
+  text-shadow: none !important;
+}
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__label { font-weight: 800; font-size: 17px !important; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
+:is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-primary-cta__arrow { background: none !important; box-shadow: none !important; }
 :is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-secondary-action { border-color: #494743 !important; color: #d3cec6 !important; }
 :is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-shipping {
   border: 1px solid #65503b !important;
