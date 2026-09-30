@@ -796,7 +796,7 @@ CSS rules на mobile FCP/LCP window.
   {% include "partials/product_reviews.html" %}
 
   {% if garment_offer.kind == 'hoodie' %}
-    <div class="garment-recommend-note"><span><strong>{{ bundle_copy.recommend }}</strong><small>{% if garment_offer.classic_price %}{{ bundle_copy.classic }} {{ garment_offer.classic_price|floatformat:0 }}{% endif %}{% if garment_offer.oversize_price %} · {{ bundle_copy.oversize }} {{ garment_offer.oversize_price|floatformat:0 }}{% endif %} {{ bundle_copy.currency }} · {% if garment_offer.is_same_design %}{{ bundle_copy.same }}{% else %}{{ bundle_copy.other }}{% endif %}</small></span><button type="button" data-bundle-open data-hoodie-id="{{ garment_offer.hoodie_id }}" data-bundle-mode="pair">{{ bundle_copy.view }} ↗</button></div>
+    <div class="garment-recommend-note"><span><strong>{{ bundle_copy.recommend }}</strong><small>{% if garment_offer.is_same_design %}{{ bundle_copy.pdp_same_intro }}{% else %}{{ bundle_copy.category_mix_intro }}{% endif %}</small></span><a href="{{ garment_offer.category_url }}">{{ bundle_copy.all_tees }} ↗</a></div>
   {% endif %}
   {% if recommended_products %}
     {% cache 3600 product_detail_recommendations_i18n LANGUAGE_CODE product.id public_product_order_version recommended_product_ids using="fragments" %}

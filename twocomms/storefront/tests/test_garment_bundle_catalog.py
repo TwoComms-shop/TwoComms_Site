@@ -15,7 +15,7 @@ from product_catalog.models import (
     VariantDetails, VariantFitRule, VariantOptionSizeGrid, VariantSizeRule,
 )
 from productcolors.models import Color, ProductColorImage, ProductColorVariant
-from storefront.models import Catalog, Category, Product, ProductFitOption, SizeGrid
+from storefront.models import Catalog, Category, Product, ProductFitOption, ProductImage, SizeGrid
 from storefront.services.catalog_helpers import bump_public_product_order_version
 from storefront.services.garment_bundle_catalog import (
     VERIFIED_SAME_PRINT_PAIRS, garment_bundle_offer_summary,
@@ -301,7 +301,8 @@ class GarmentBundleCatalogTests(TestCase):
     def test_cheap_summary_forward_reverse_actual_price_and_locale(self):
         with CaptureQueriesContext(connection) as queries:
             summary = garment_bundle_offer_summary(self.hoodie, language="en")
-        self.assertLessEqual(len(queries), 20, [re.findall(r'FROM "([^"]+)"', row["sql"]) for row in queries])
+        # Real category photos add one bounded query; image fallbacks stay in SQL.
+        self.assertLessEqual(len(queries), 21, [re.findall(r'FROM "([^"]+)"', row["sql"]) for row in queries])
         self.assertEqual(summary["kind"], "hoodie")
         self.assertEqual(summary["tee_id"], 4)
         self.assertEqual(summary["title"], "Matching tee EN")
@@ -313,3 +314,78 @@ class GarmentBundleCatalogTests(TestCase):
         reverse = garment_bundle_offer_summary(tee)
         self.assertEqual((reverse["kind"], reverse["hoodie_id"]), ("tee", 5))
         self.assertFalse(garment_bundle_offer_summary(Product.objects.select_related("category").get(pk=110))["eligible"])
+
+    def test_summary_links_entire_opposite_category_in_each_language(self):
+        tee = Product.objects.select_related("category").get(pk=4)
+        for language, prefix in (("uk", ""), ("ru", "/ru"), ("en", "/en")):
+            for product, category in ((tee, "hoodie"), (self.hoodie, "tshirts")):
+                with self.subTest(language=language, category=category):
+                    summary = garment_bundle_offer_summary(product, language=language)
+                    self.assertEqual(summary["category_url"], f"{prefix}/catalog/{category}/")
+                    self.assertEqual(summary["total_saving"], 300)
+                    if category == "tshirts":
+                        self.assertEqual(summary["category_previews"][0]["title"],
+                                         "Matching tee EN" if language == "en" else "Matching tee")
+        with self.assertNumQueries(0):
+            garment_bundle_offer_summary(tee, language="en")
+
+    def test_category_previews_prefer_reviewed_prints_and_exclude_bare_and_ineligible(self):
+        from storefront.services.garment_bundle_catalog import _category_previews
+
+        Product.objects.bulk_create([
+            Product(pk=13, slug="business-money", title="Money", category=self.tee_category,
+                    status="published", price=1100, main_image="products/money.webp"),
+            Product(pk=16, slug="last-breath", title="Breath", category=self.tee_category,
+                    status="published", price=1100, main_image="products/breath.webp"),
+            Product(pk=22, slug="pokrovsk-girl", title="Girl", category=self.tee_category,
+                    status="published", price=1100, main_image="products/girl.webp"),
+        ])
+        Product.objects.filter(pk__in=(91, 110, 113, 120)).update(main_image="products/excluded.webp")
+        with CaptureQueriesContext(connection) as queries:
+            previews = _category_previews("tshirts", (4,), "uk")
+        self.assertEqual(len(queries), 1)
+        self.assertEqual([row["id"] for row in previews], [4, 13, 16])
+        self.assertEqual([row["is_same_design"] for row in previews], [True, False, False])
+        self.assertTrue(all(row["image"] and row["title"] and row["url"] for row in previews))
+        self.assertTrue(all({"id", "title", "image"} <= row.keys() for row in previews))
+
+    def test_category_previews_deduplicate_images_and_use_real_variant_gallery_fallbacks(self):
+        from storefront.services.garment_bundle_catalog import _category_previews
+
+        Product.objects.bulk_create([
+            Product(pk=2, slug="hoodie-classic", title="Bare", category=self.hoodie_category,
+                    status="published", price=1995, main_image="products/bare.webp"),
+            Product(pk=14, slug="business-money-hd", title="Duplicate", category=self.hoodie_category,
+                    status="published", price=1995, main_image="products/shared.webp"),
+            Product(pk=17, slug="last-breath-hd", title="Gallery", category=self.hoodie_category,
+                    status="published", price=1995),
+            Product(pk=23, slug="pokrovsk-girl-hd", title="Other", category=self.hoodie_category,
+                    status="published", price=1995, main_image="products/other.webp"),
+        ])
+        variant = ProductColorVariant.objects.create(product_id=5, color=self.color, slug="black", is_default=True)
+        ProductColorImage.objects.create(variant=variant, image="products/shared.webp")
+        ProductImage.objects.create(product_id=17, image="products/gallery.webp")
+        with self.assertNumQueries(1):
+            previews = _category_previews("hoodie", (5,), "en")
+        self.assertEqual([row["id"] for row in previews], [5, 17, 23])
+        self.assertEqual([row["image"] for row in previews], [
+            "/media/products/shared.webp", "/media/products/gallery.webp", "/media/products/other.webp",
+        ])
+        self.assertTrue(all(row["url"].startswith("/en/") for row in previews))
+
+    def test_category_previews_exact_identity_and_only_actual_image_fallback(self):
+        from storefront.services.garment_bundle_catalog import _category_previews
+
+        Product.objects.bulk_create([
+            Product(pk=2, slug="hoodie-classic", title="Bare", category=self.hoodie_category,
+                    status="published", price=1995, main_image="products/bare.webp"),
+            Product(pk=14, slug="changed-money-hd", title="Renamed", category=self.hoodie_category,
+                    status="published", price=1995, main_image="products/renamed.webp"),
+        ])
+        previews = _category_previews("hoodie", (14,), "uk")
+        self.assertEqual([row["id"] for row in previews], [14])
+        self.assertFalse(previews[0]["is_same_design"])
+        Product.objects.filter(pk=14).update(main_image="")
+        self.assertEqual([row["id"] for row in _category_previews("hoodie", (), "uk")], [2])
+        Product.objects.filter(pk=2).update(main_image="")
+        self.assertEqual(_category_previews("hoodie", (), "uk"), [])

@@ -1,22 +1,19 @@
 {% if garment_offer %}
-<aside class="garment-offer {{ placement }}" aria-label="{% if garment_offer.kind == 'tee' %}{{ bundle_copy.pdp_tee_title }}{% else %}{{ bundle_copy.pdp_hoodie_title }}{% endif %}">
- <div class="garment-offer__top"><span class="garment-eyebrow">{{ bundle_copy.pdp_eyebrow }}</span>{% if garment_offer.total_saving %}<strong class="garment-offer__saving"><span>{{ bundle_copy.goods_saving }}</span>−{{ garment_offer.total_saving|floatformat:0 }} <small>{{ bundle_copy.currency }}</small></strong>{% endif %}</div>
- <div class="garment-offer__body">
-  {% if garment_offer.image %}<img class="garment-offer__image" src="{{ garment_offer.image }}" alt="{{ garment_offer.title }}" width="76" height="96" loading="lazy">{% endif %}
-  <div class="garment-offer__copy">
-   <h2>{% if garment_offer.kind == 'tee' %}{{ bundle_copy.pdp_tee_title }}{% else %}{{ bundle_copy.pdp_hoodie_title }}{% endif %}</h2>
-   <p>{% if garment_offer.kind == 'tee' %}{{ bundle_copy.pdp_tee_intro }}{% elif garment_offer.is_same_design %}{{ bundle_copy.pdp_same_intro }}{% else %}{{ bundle_copy.pdp_other_intro }}{% endif %}</p>
-   {% if garment_offer.kind == 'tee' %}<div class="garment-offer__partner-price"><span>{{ bundle_copy.hoodie_in_pair }}</span><strong>{{ garment_offer.hoodie_offer_price|floatformat:0 }} {{ bundle_copy.currency }}</strong></div>{% endif %}
-   <span class="garment-offer__price-label">{% if garment_offer.kind == 'tee' %}{{ bundle_copy.your_tee_in_pair }}{% else %}{{ bundle_copy.tee_in_pair }}{% endif %}</span>
-   <div class="garment-offer__prices">{% if garment_offer.classic_price %}<span>{{ bundle_copy.classic }} <strong>{{ garment_offer.classic_price|floatformat:0 }} {{ bundle_copy.currency }}</strong></span>{% endif %}{% if garment_offer.oversize_price %}<span>{{ bundle_copy.oversize }} <strong>{{ garment_offer.oversize_price|floatformat:0 }} {{ bundle_copy.currency }}</strong></span>{% endif %}</div>
+<aside class="garment-offer garment-offer--category {{ placement }}" aria-label="{{ bundle_copy.category_title }}">
+  <div class="garment-offer__category-heading">
+    <h2>{% if garment_offer.kind == 'tee' %}{{ bundle_copy.category_hoodie_title }}{% else %}{{ bundle_copy.category_tee_title }}{% endif %}</h2>
+    {% if garment_offer.total_saving %}<span class="garment-offer__saving"><small>{{ bundle_copy.up_to }}</small> {{ garment_offer.total_saving|floatformat:0 }} <small>{{ bundle_copy.currency }}</small><span>{{ bundle_copy.category_saving }}</span></span>{% endif %}
   </div>
- </div>
- <div class="garment-offer__bottom">
- {% if garment_offer.kind == 'tee' %}<a class="garment-offer__button" href="{{ garment_offer.url }}?bundle_tee={{ garment_offer.tee_id }}">{{ bundle_copy.choose_hoodie }} <span aria-hidden="true">↗</span></a>
- {% else %}<button type="button" class="garment-offer__button" data-bundle-open data-hoodie-id="{{ garment_offer.hoodie_id }}" data-bundle-mode="pair">{{ bundle_copy.choose }} <span aria-hidden="true">＋</span></button>{% endif %}
- <small><strong>{{ bundle_copy.hoodie_discount }} −{{ garment_offer.hoodie_unit_discount|floatformat:0 }} {{ bundle_copy.currency }}</strong>{{ bundle_copy.automatic }}</small></div>
- {% if garment_offer.kind == 'hoodie' %}<button type="button" class="garment-offer__other" data-bundle-open data-hoodie-id="{{ garment_offer.hoodie_id }}" data-bundle-mode="pair" data-bundle-start="picker">{{ bundle_copy.other_offer_action }} <span aria-hidden="true">↗</span></button>{% endif %}
- <div class="garment-offer__shipping"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5h11v12H3zM14 9h4l3 4v4h-7"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></svg><span><strong>{{ bundle_copy.shipping_threshold }}</strong><small>{{ bundle_copy.shipping_threshold_note }}</small></span></div>
- <details class="garment-offer__terms"><summary>{{ bundle_copy.rules_title }}</summary><p>{{ bundle_copy.terms }} {{ bundle_copy.terms_more }} {{ bundle_copy.shipping_separate }}</p>{% if garment_offer.is_same_design %}<p>{{ bundle_copy.recommend_sub }}</p>{% endif %}</details>
+  <p class="garment-offer__category-intro">{% if garment_offer.is_same_design %}{{ bundle_copy.category_same_short }}{% else %}{{ bundle_copy.category_other_short }}{% endif %}</p>
+  {% if garment_offer.category_previews %}
+    <a class="garment-offer__gallery" href="{{ garment_offer.category_url }}" aria-label="{% if garment_offer.kind == 'tee' %}{{ bundle_copy.all_hoodies }}{% else %}{{ bundle_copy.all_tees }}{% endif %}">
+      {% for preview in garment_offer.category_previews %}<span class="garment-offer__preview"><img src="{{ preview.image }}" alt="{{ preview.title }}" width="160" height="180" loading="lazy" decoding="async"></span>{% endfor %}
+      <span class="garment-offer__gallery-arrow" aria-hidden="true">↗</span>
+    </a>
+  {% endif %}
+  <a class="garment-offer__button garment-offer__category-link" href="{{ garment_offer.category_url }}">{% if garment_offer.kind == 'tee' %}{{ bundle_copy.all_hoodies }}{% else %}{{ bundle_copy.all_tees }}{% endif %}<span aria-hidden="true">↗</span></a>
+  <p class="garment-offer__auto-note">{{ bundle_copy.category_automatic }}</p>
+  <div class="garment-offer__shipping"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5h11v12H3zM14 9h4l3 4v4h-7"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></svg><span><strong>{{ bundle_copy.shipping_threshold }}</strong><small>{{ bundle_copy.shipping_threshold_note }}</small></span></div>
+  <details class="garment-offer__terms"><summary>{{ bundle_copy.rules_title }}</summary><p>{{ bundle_copy.terms }} {{ bundle_copy.terms_more }} {{ bundle_copy.shipping_separate }}</p></details>
 </aside>
 {% endif %}

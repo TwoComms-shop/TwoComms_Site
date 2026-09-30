@@ -127,6 +127,52 @@ def _225_tee_products():
     ).distinct()
 
 
+def _category_previews(category, preferred, language):
+    """Up to three real category photos, with reviewed printed pairs first."""
+    from django.db.models import Case, CharField, IntegerField, OuterRef, Q, Subquery, Value, When
+    from django.db.models.functions import Coalesce, NullIf
+    from django.urls import reverse
+    from django.utils.translation import override
+    from productcolors.models import ProductColorImage
+    from storefront.models import ProductImage
+
+    identities = {(pair.tee_id, pair.tee_slug) if category == 'tshirts' else (pair.hoodie_id, pair.hoodie_slug)
+                  for pair in VERIFIED_SAME_PRINT_PAIRS}
+    printed = Q(pk__in=[])
+    for product_id, slug in sorted(identities):
+        printed |= Q(pk=product_id, slug=slug)
+    matching = printed & Q(pk__in=preferred)
+    bare_slugs = ('classic-tshirt', 'hoodie-classic')
+    variant_photo = ProductColorImage.objects.filter(variant__product_id=OuterRef('pk')).exclude(image='').order_by(
+        '-variant__is_default', 'variant__order', 'variant_id', 'order', 'pk',
+    ).values('image')[:1]
+    product_photo = ProductImage.objects.filter(product_id=OuterRef('pk')).exclude(image='').order_by('order', 'pk').values('image')[:1]
+    candidates = _eligible_products(category).annotate(
+        bundle_preview_image=Coalesce(NullIf('main_image', Value('')), Subquery(variant_photo),
+                                      Subquery(product_photo), output_field=CharField()),
+        bundle_preview_rank=Case(When(matching, then=Value(0)), When(printed, then=Value(1)),
+                                 When(slug__in=bare_slugs, then=Value(3)), default=Value(2), output_field=IntegerField()),
+    ).exclude(bundle_preview_image__isnull=True).exclude(bundle_preview_image='').order_by('bundle_preview_rank', 'pk')
+    # A small bounded scan avoids showing a repeated shared campaign photo
+    # without loading the category or querying image relations per product.
+    rows = list(candidates[:12])
+    if any(row.slug not in bare_slugs for row in rows):
+        rows = [row for row in rows if row.slug not in bare_slugs]
+    with override(language):
+        previews, seen_images = [], set()
+        for row in rows:
+            image = row.main_image.storage.url(row.bundle_preview_image)
+            if image in seen_images:
+                continue
+            seen_images.add(image)
+            previews.append({'id': row.pk, 'title': row.title, 'image': image,
+                             'url': reverse('product', kwargs={'slug': row.slug}),
+                             'is_same_design': (row.pk, row.slug) in identities and row.pk in preferred})
+            if len(previews) == 3:
+                break
+        return previews
+
+
 def garment_bundle_offer_summary(product, language=None):
     """Cheap PDP hint. Full colour/fit/size choices load only on chooser open."""
     from django.core.cache import cache
@@ -139,7 +185,7 @@ def garment_bundle_offer_summary(product, language=None):
     if product.status != "published" or category not in {"hoodie", "tshirts"} or is_bundle_excluded(product):
         return {"eligible": False}
     language = _language(language)
-    cache_key = f"garment-bundle-summary-v2:{get_public_product_order_version()}:{language}:{product.pk}:{product.slug}"
+    cache_key = f"garment-bundle-summary-v4:{get_public_product_order_version()}:{language}:{product.pk}:{product.slug}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -188,6 +234,8 @@ def garment_bundle_offer_summary(product, language=None):
             "title": partner.title,
             "image": choice["image"] if hoodie_view else _field_url(partner.main_image),
             "url": reverse("product", kwargs={"slug": partner.slug}),
+            "category_url": reverse('catalog_by_cat', kwargs={'cat_slug': 'tshirts' if hoodie_view else 'hoodie'}),
+            "category_previews": _category_previews('tshirts' if hoodie_view else 'hoodie', preferred, language),
             "is_same_design": same,
             "classic_price": fits["classic"]["offer_unit_price"] if fits["classic"] else None,
             "oversize_price": fits["oversize"]["offer_unit_price"] if fits["oversize"] else None,
