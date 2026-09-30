@@ -46,3 +46,5 @@ Keep actual after-discount free-shipping threshold3000. Never describe the300/25
 Описание по умолчанию свёрнуто. На десктопе высота рассчитывается из естественной высоты левого блока без обратной зависимости от растянутой сетки; на телефоне применяется компактная высота. Кнопка раскрытия сохраняет выбор при переключении вкладок. Полный текст остаётся в HTML. Rich text проходит явный allowlist; обычные переносы строк сохраняются, legacy HTML больше не виден как текстовые теги.
 
 Проверка: 13 тестов rich text/security и 14 каталога комплектов; браузер на 320/390/1440 px, раскрытие и сворачивание, направление предложения и выбор другого принта.
+
+Ordinary offers now lead with adding a garment and saving, rather than a predefined set. Direction-specific headings, exact server savings and both print tiers remain explicit. A compact visible shipping row states 3000 UAH after discounts; it does not imply that every hoodie + tee reaches that threshold (1945 + 850 = 2795). The 225 collection keeps its separate identity and eligibility.

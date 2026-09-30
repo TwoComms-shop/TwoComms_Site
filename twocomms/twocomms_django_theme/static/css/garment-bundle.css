@@ -71,3 +71,6 @@
 .garment-dialog[data-bundle-kind="ordinary"]{background:#241e18;border-color:#8c6d45}.garment-dialog[data-bundle-kind="ordinary"] .garment-dialog__header{background:#30261c;border-color:#604c34}
 .garment-dialog[data-bundle-kind="ordinary"] .garment-option[aria-pressed=true]{background:#57452e;border-color:#d8b17a;box-shadow:inset 0 0 0 1px #d8b17a}
 .garment-dialog[data-bundle-kind="ordinary"] .garment-dialog__submit:not(:disabled){background:#dab480;border-color:#e7c79c;color:#251a0d}.garment-dialog[data-bundle-kind="ordinary"] .garment-dialog__submit:not(:disabled):hover{background:#edcca0}
+
+.garment-offer__shipping{display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px 0 7px;color:#dcbc8f;border-top:1px solid rgba(220,188,143,.2)}
+.garment-offer__shipping svg{flex-shrink:0}.garment-offer__shipping strong{display:block;font-size:12px;line-height:1.4;font-weight:650;color:#f0d9b7}.garment-offer__shipping small{display:block;font-size:10px;line-height:1.4;color:#cbb79c;margin-top:2px}
