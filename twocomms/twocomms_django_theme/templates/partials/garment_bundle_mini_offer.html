@@ -1,0 +1,8 @@
+{% load garment_bundle_tags %}{% garment_mini_cart_offer as mini_offer %}
+{% if mini_offer %}
+  <aside class="mini-cart-offer" aria-label="{{ bundle_copy.category_title }}">
+    <strong>{{ bundle_copy.category_discount_heading }} {{ mini_offer.total_saving|floatformat:0 }}&nbsp;{{ bundle_copy.currency }}</strong>{{ bundle_copy.mini_offer_condition }} <a href="{{ mini_offer.category_url }}">{% if mini_offer.kind == 'tee' %}{{ bundle_copy.mini_choose_hoodie }}{% else %}{{ bundle_copy.mini_choose_tee }}{% endif %}<span aria-hidden="true"> ↗</span></a>
+  </aside>
+{% elif bundle_discount_total %}
+  <div class="mini-cart-offer mini-cart-offer--applied"><span>{{ bundle_copy.included }}</span><strong>−{{ bundle_discount_total|floatformat:0 }}&nbsp;{{ bundle_copy.currency }}</strong></div>
+{% endif %}

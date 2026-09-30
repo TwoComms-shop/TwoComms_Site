@@ -23,7 +23,7 @@
           <article class="mini-cart-row mini-cart-row--custom mini-cart-custom-row" role="listitem" data-custom-key="{{ ci.key }}" data-lead-id="{{ ci.lead_id }}">
             <div class="mini-cart-row__media mini-cart-row__media--custom" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2l2.4 4.86 5.37.78-3.88 3.78.91 5.35L12 14.9l-4.8 2.52.91-5.35L4.23 8.3l5.37-.78L12 2z"/><path d="M9 14h6"/></svg></div>
             <div class="mini-cart-row__copy"><div class="mini-cart-row__title mini-cart-row__title--custom">{% trans 'Кастомний друк' %}{% if ci.lead_number %} · №{{ ci.lead_number }}{% endif %}</div><div class="mini-cart-row__meta" title="{{ ci.label }}">{{ ci.label }} · ×{{ ci.quantity }}{% if ci.moderation_status_label %} · {{ ci.moderation_status_label }}{% endif %}</div></div>
-            <div class="mini-cart-row__actions"><div class="mini-cart-row__price">{{ ci.line_total }} {% trans 'грн' %}</div><button type="button" class="mini-cart-row__remove" data-custom-remove data-key="{{ ci.key }}" data-lead-id="{{ ci.lead_id }}" onclick="if (window.CustomCartRemove) { window.CustomCartRemove(this); } return false;" aria-label="{% trans 'Видалити кастомну позицію' %}"><span aria-hidden="true">×</span></button></div>
+            <div class="mini-cart-row__actions"><div class="mini-cart-row__price">{{ ci.line_total|floatformat:'-2' }}&nbsp;{% trans 'грн' %}</div><button type="button" class="mini-cart-row__remove" data-custom-remove data-key="{{ ci.key }}" data-lead-id="{{ ci.lead_id }}" onclick="if (window.CustomCartRemove) { window.CustomCartRemove(this); } return false;" aria-label="{% trans 'Видалити кастомну позицію' %}"><span aria-hidden="true">×</span></button></div>
           </article>
         {% endfor %}
       {% endif %}
@@ -36,26 +36,28 @@
             {% else %}{% static 'img/placeholder.jpg' as ph_url %}<img src="{{ ph_url }}" class="mini-cart-row__image" alt="{{ it.product.title }}" width="56" height="56" decoding="async">{% endif %}
           </div>
           <div class="mini-cart-row__copy">
-            <a class="mini-cart-row__title" href="{% url 'product' slug=it.product.slug %}">{{ it.product.title }}</a>
+            <a class="mini-cart-row__title" href="{% url 'product' slug=it.product.slug %}" title="{{ it.product.title }}">{{ it.product.title }}</a>
             <div class="mini-cart-row__meta">
-              <span>{% trans 'Розмір' %}: {{ it.size }}</span><span aria-hidden="true">•</span>
-              {% if it.fit_label %}<span>{% trans 'Посадка' %}: {{ it.fit_label }}</span><span aria-hidden="true">•</span>{% endif %}
-              {% if it.color_variant %}{% with p=it.color_variant.color.primary_hex s=it.color_variant.color.secondary_hex %}<span class="mini-cart-row__color" role="img" aria-label="{{ it.color_label|default:_('Колір') }}"><span class="swatch" data-primary="{{ p }}" data-secondary="{{ s|default:'' }}" aria-hidden="true"></span></span>{% endwith %}{% endif %}
+              <span>{% trans 'Розмір' %}: {{ it.size }}</span>
+              {% if it.fit_label %}<span aria-hidden="true">·</span><span>{{ it.fit_label }}</span>{% endif %}
+              {% if it.color_variant %}<span aria-hidden="true">·</span>{% with p=it.color_variant.color.primary_hex s=it.color_variant.color.secondary_hex %}<span class="mini-cart-row__color" role="img" aria-label="{{ it.color_label|default:_('Колір') }}"><span class="swatch" data-primary="{{ p }}" data-secondary="{{ s|default:'' }}" aria-hidden="true"></span></span>{% endwith %}{% endif %}
             </div>
-            {% if it.bundle_pricing.discount_amount %}<span class="garment-line-note">−{{ it.bundle_pricing.discount_amount|floatformat:0 }} {% trans 'грн' %} · {% load garment_bundle_tags %}{% bundle_words as mini_bundle_copy %}{{ mini_bundle_copy.saving }}</span>{% elif it.brigade_pricing.is_225 and it.brigade_pricing.discount_amount %}<span class="brigade-line-offer">225 · −{{ it.brigade_pricing.discount_amount|floatformat:0 }} {% trans 'грн' %}</span>{% endif %}
+            {% if it.bundle_pricing.discount_amount %}<span class="garment-line-note">{{ bundle_copy.mini_line_discount }} −{{ it.bundle_pricing.discount_amount|floatformat:0 }}&nbsp;{% trans 'грн' %}</span>{% elif it.brigade_pricing.is_225 and it.brigade_pricing.discount_amount %}<span class="brigade-line-offer">225 · −{{ it.brigade_pricing.discount_amount|floatformat:0 }}&nbsp;{% trans 'грн' %}</span>{% endif %}
             <div class="mini-cart-quantity" role="group" aria-label="{% trans 'Кількість' %}"><button type="button" class="mini-cart-quantity__button mini-cart-quantity__decrease" data-mini-cart-qty="decrease" aria-label="{% trans 'Зменшити кількість' %}">−</button><output class="mini-cart-quantity__value" data-mini-cart-qty-value>{{ it.qty }}</output><button type="button" class="mini-cart-quantity__button mini-cart-quantity__increase" data-mini-cart-qty="increase" aria-label="{% trans 'Збільшити кількість' %}">+</button></div>
           </div>
-          <div class="mini-cart-row__actions"><div class="mini-cart-row__price">{{ it.line_total }} {% trans 'грн' %}</div><button type="button" class="mini-cart-row__remove" onclick="CartRemoveKey('{{ it.key }}', this); return false;" aria-label="{% trans 'Видалити' %}"><span aria-hidden="true">×</span></button></div>
+          <div class="mini-cart-row__actions"><div class="mini-cart-row__price">{{ it.line_total|floatformat:'-2' }}&nbsp;{% trans 'грн' %}</div><button type="button" class="mini-cart-row__remove" onclick="CartRemoveKey('{{ it.key }}', this); return false;" aria-label="{% trans 'Видалити' %}"><span aria-hidden="true">×</span></button></div>
         </article>
       {% endfor %}
     </div>
 
-    {% include "partials/garment_bundle_cart_offer.html" with compact=True %}
     <div class="mini-cart-footer">
+      {% include "partials/garment_bundle_mini_offer.html" %}
       <div class="mini-cart-summary"><span class="mini-cart-summary__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m20 13-7 7-9-9V4h7l9 9Z"/><circle cx="8" cy="8" r="1.5"/></svg></span><span class="mini-cart-summary__label">{{ bundle_copy.payable }}</span><div class="mini-cart-summary__amount"><span class="mini-cart-summary__value">{{ approved_total|floatformat:2 }}</span><span class="mini-cart-summary__currency">{% trans 'грн' %}</span></div></div>
-      {% if discount %}<div class="mini-cart-custom-note">{{ bundle_copy.promo_included }}: −{{ discount|floatformat:2 }} {% trans 'грн' %}</div>{% endif %}
+      <div class="mini-cart-status">
+        {% if discount %}<span class="mini-cart-status__promo">{{ bundle_copy.promo_included }} <b>−{{ discount|floatformat:'-2' }}&nbsp;{% trans 'грн' %}</b></span>{% endif %}
+        <span class="mini-cart-status__shipping{% if shipping_free %} mini-cart-status__shipping--free{% endif %}">{% if shipping_free %}{{ bundle_copy.shipping_free }}{% else %}{{ bundle_copy.mini_shipping_paid }}{% endif %}</span>
+      </div>
       {% if pending_custom_total %}<div class="mini-cart-custom-note">{{ bundle_copy.pending_estimate }}: {{ pending_custom_total|floatformat:2 }} {% trans 'грн' %}</div>{% endif %}
-      {% if not shipping_free %}<div class="mini-cart-custom-note">{{ bundle_copy.shipping_paid }}</div>{% endif %}
       <a href="{% url 'cart' %}" class="mini-cart-primary-cta"><span class="mini-cart-primary-cta__body"><span class="mini-cart-primary-cta__label">{% load garment_bundle_tags %}{% bundle_words as bundle_copy %}{{ bundle_copy.checkout }}</span></span><span class="mini-cart-primary-cta__arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h16m-7-7 7 7-7 7"/></svg></span></a>
       <button type="button" class="mini-cart-secondary-action" data-mini-cart-continue><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 12H5m7 7-7-7 7-7"/></svg><span>{% trans 'Продовжити покупки' %}</span></button>
       <div class="mini-cart-benefits">

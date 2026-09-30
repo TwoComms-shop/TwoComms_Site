@@ -189,3 +189,7 @@ COPY['en']['print_terms'] = 'The tee price depends on whether its print matches 
 COPY['uk'].update(category_discount_heading='Знижка до', category_order_condition='Замов худі й футболку разом. Принти можуть бути різними.', category_automatic='Знижка застосовується в кошику автоматично.')
 COPY['ru'].update(category_discount_heading='Скидка до', category_order_condition='Закажи худи и футболку вместе. Принты могут отличаться.', category_automatic='Скидка применяется в корзине автоматически.')
 COPY['en'].update(category_discount_heading='Save up to', category_order_condition='Order a hoodie and tee together. Choose matching or different prints.', category_automatic='Savings apply automatically in your cart.')
+
+COPY['uk'].update(mini_offer_condition=', якщо', mini_choose_tee='обереш ще футболку', mini_choose_hoodie='обереш ще худі', mini_shipping_paid='Доставка за тарифами перевізника', mini_line_discount='Знижка')
+COPY['ru'].update(mini_offer_condition=', если', mini_choose_tee='выберешь ещё футболку', mini_choose_hoodie='выберешь ещё худи', mini_shipping_paid='Доставка по тарифам перевозчика', mini_line_discount='Скидка')
+COPY['en'].update(mini_offer_condition=' when you', mini_choose_tee='choose a tee', mini_choose_hoodie='choose a hoodie', mini_shipping_paid='Shipping at carrier rates', mini_line_discount='Discount')
