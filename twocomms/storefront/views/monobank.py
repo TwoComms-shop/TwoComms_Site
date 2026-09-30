@@ -757,7 +757,8 @@ def _create_payment_attempt_invoice(request):
                 'error': _('Обраний варіант товару більше недоступний.'),
             }, status=400)
         line_price = brigade_pricing.lines[item_key]
-        for qty, unit in line_price.snapshot_parts():
+        for part in line_price.frozen_price_parts():
+            qty, unit = part['qty'], Decimal(part['unit_price'])
             snapshot_items.append({
                 'product_id': product.pk,
                 'title': product.title,
@@ -771,6 +772,9 @@ def _create_payment_attempt_invoice(request):
                 'unit_price': str(unit),
                 'line_total': str(unit * qty),
                 'brigade_pricing': line_price.public_metadata(),
+                'bundle_pricing': line_price.bundle_metadata(),
+                'pricing_rule': part['rule'],
+                'promo_eligible': part['promo_eligible'],
             })
     gross += sum((Decimal(str(lead.final_price_value)) for lead in approved_leads), Decimal('0.00'))
     if gross <= 0:
@@ -892,13 +896,15 @@ def _create_payment_attempt_invoice(request):
     )
     basket = [
         {'name': item['title'], 'qty': item['qty'], 'sum': int(Decimal(item['line_total']) * 100), 'unit': 'шт'}
-        for item in snapshot_items[:10]
+        for item in snapshot_items
     ]
     for lead in approved_leads:
         basket.append({'name': f'Кастомний виріб {lead.lead_number}', 'qty': int(getattr(lead, 'quantity', 0) or 1), 'sum': int(Decimal(str(lead.final_price_value)) * 100), 'unit': 'шт'})
     if discount > 0:
         basket.append({'name': f'Знижка по промокоду {promo.code}', 'qty': 1, 'sum': -int(discount * 100), 'unit': 'шт'})
     if pay_type == 'prepay_200':
+        basket = [{'name': description, 'qty': 1, 'sum': int(payment_amount * 100), 'unit': 'шт'}]
+    elif len(basket) > 30:
         basket = [{'name': description, 'qty': 1, 'sum': int(payment_amount * 100), 'unit': 'шт'}]
     payload = {
         'amount': int(payment_amount * 100), 'ccy': 980,

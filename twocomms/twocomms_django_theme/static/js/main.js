@@ -1382,6 +1382,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Закрытие по клику снаружи
   document.addEventListener('pointerdown', (e) => {
+    if (document.getElementById('garment-bundle-dialog')?.open) return;
     const id = nextEvt();
     const supNext = Date.now() < suppressNextDocPointerdownUntil;
     if (supNext) { return; }
@@ -1401,7 +1402,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, { passive: true });
   // Закрытие по ESC
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMiniCart(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.getElementById('garment-bundle-dialog')?.open) closeMiniCart(); });
 
   // Адаптация при ресайзе
   window.addEventListener('resize', debounce(() => {
@@ -2357,7 +2358,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   scheduleIdle(() => {
     if (document.querySelector('.cart-page-container') || document.getElementById('promo-code-input')) {
-      import('./modules/cart.js?v=20260930-brigade-v1')
+      import('./modules/cart.js?v=20260930-bundles-v2')
         .then(({ initCartInteractions }) => initCartInteractions())
         .catch(() => { });
     }

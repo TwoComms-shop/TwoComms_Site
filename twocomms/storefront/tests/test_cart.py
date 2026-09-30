@@ -389,7 +389,7 @@ class MiniCartViewTests(CartViewTestCase):
         self.assertEqual(response.context["shipping_remaining"], Decimal("0"))
         self.assertEqual(response.context["shipping_progress"], 100)
         self.assertTrue(response.context["shipping_free"])
-        self.assertContains(response, "Ви молодець!")
+        self.assertContains(response, "Доставка безкоштовна")
 
 
 class AddToCartTests(CartViewTestCase):

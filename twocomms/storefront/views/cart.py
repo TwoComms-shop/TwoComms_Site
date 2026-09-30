@@ -53,12 +53,14 @@ from storefront.custom_print_config import (
 from storefront.custom_print_notifications import notify_custom_print_moderation_request
 from storefront.services.size_guides import normalize_requested_size
 from storefront.services.brigade_commerce import calculate_brigade_cart_pricing
+from storefront.services.garment_bundle_presentation import garment_bundle_text
 from .utils import (
     get_validated_cart_from_session,
     save_cart_to_session,
     calculate_cart_total,
     filter_cart_variant_ownership,
     MAX_CART_ITEMS,
+    normalize_cart_session,
     _reset_monobank_session,
     _color_label_from_variant,
 )
@@ -96,7 +98,7 @@ def _load_cart_products(product_ids, *, include_images=False):
     def operation():
         queryset = Product.objects.select_related('category')
         if include_images:
-            queryset = queryset.select_related('category').prefetch_related(
+            queryset = queryset.prefetch_related(
                 'color_variants__images'
             )
         return queryset.in_bulk(product_ids)
@@ -106,6 +108,16 @@ def _load_cart_products(product_ids, *, include_images=False):
 
 def _cart_brigade_pricing(cart, products=None, variants=None):
     return retry_mysql_read(lambda: calculate_brigade_cart_pricing(cart, products, variants))
+
+
+def _cart_shipping_metadata(approved_total, *, json_safe=False):
+    total = Decimal(approved_total).quantize(Decimal('0.01'))
+    threshold = Decimal(str(getattr(settings, 'FREE_SHIPPING_THRESHOLD', '3000')))
+    remaining = max(threshold - total, Decimal('0.00'))
+    convert = float if json_safe else lambda value: value
+    return {'shipping_total': convert(total), 'shipping_threshold': convert(threshold),
+            'shipping_remaining': convert(remaining), 'shipping_free': total >= threshold,
+            'shipping_progress': min(100, max(0, int((total / threshold * 100).quantize(Decimal('1'))))) if threshold > 0 else 100}
 
 
 def _load_cart_variants(variant_ids, *, include_images=False):
@@ -250,6 +262,228 @@ def _resolve_option_selection(product, color_variant, requested):
                 choice.get('label') or choice_code
             )
     return selected, labels
+
+
+def _bundle_item(spec, garment, *, offer_kind='ordinary'):
+    """Validate one explicit chooser selection without touching the session."""
+    from product_catalog.services import variant_allows_purchase
+    from product_catalog.size_grid_services import normalize_size_value, resolve_effective_sizes, resolve_option_size_grid
+    from storefront.services.size_guides import resolve_product_sizes
+    from storefront.services.brigade_commerce import get_product_brigade_policy
+    from storefront.services.garment_bundle import is_bundle_product_eligible
+    if not isinstance(spec, dict) or type(spec.get('qty', 1)) is not int or spec.get('qty', 1) != 1:
+        raise ValueError(garment_bundle_text('select_one'))
+    try:
+        product = Product.objects.select_related('category').get(pk=int(spec.get('product_id')), status='published')
+    except (Product.DoesNotExist, TypeError, ValueError, OverflowError):
+        raise ValueError(_('Товар недоступний'))
+    policy = get_product_brigade_policy(product)
+    eligible = policy['is_225'] if offer_kind == '225' else (is_bundle_product_eligible(product, policy) or (offer_kind == 'infer' and policy['is_225']))
+    if policy['garment'] != garment or not eligible:
+        raise ValueError(garment_bundle_text('excluded'))
+    variant_id = spec.get('variant_id') or spec.get('color_variant_id')
+    variant = None
+    if variant_id:
+        try:
+            variant = ProductColorVariant.objects.select_related('color').get(pk=int(variant_id), product=product)
+        except (ProductColorVariant.DoesNotExist, TypeError, ValueError, OverflowError):
+            raise ValueError(_('Обраний колір недоступний для цього товару'))
+    elif product.color_variants.exists():
+        raise ValueError(_('Оберіть колір'))
+    requested = _parse_product_option_values(spec.get('option_values'))
+    fit = str(spec.get('fit_option') or requested.get('fit') or '').strip().lower()
+    if fit:
+        if requested.get('fit') and requested['fit'] != fit:
+            raise ValueError(_('Некоректні параметри товару'))
+        requested['fit'] = fit
+    options, labels = _resolve_option_selection(product, variant, requested)
+    if any(options.get(key) != value for key, value in requested.items()):
+        raise ValueError(_('Обрана конфігурація товару недоступна'))
+    fits = list(product.fit_options.filter(is_active=True))
+    selected_fit = options.get('fit', fit)
+    if fits and selected_fit not in {row.code for row in fits}:
+        if len(fits) != 1 or selected_fit:
+            raise ValueError(_('Оберіть посадку'))
+        selected_fit = fits[0].code
+    fit_code, fit_label = _resolve_product_fit_payload(product, selected_fit)
+    size = normalize_size_value(spec.get('size'))
+    sizes = set(resolve_product_sizes(product))
+    if fit_code and resolve_option_size_grid(product, f'fit={fit_code}', variant=variant):
+        sizes = {normalize_size_value(row.get('size')) for row in resolve_effective_sizes(product, f'fit={fit_code}', variant=variant)}
+    if not size or size not in sizes:
+        raise ValueError(_('Оберіть доступний розмір'))
+    if not variant_allows_purchase(product, variant, fit_code=fit_code, size=size, option_values=options):
+        raise ValueError(_('Обрана конфігурація товару недоступна'))
+    row = {'product_id': product.pk, 'size': size, 'color_variant_id': variant.pk if variant else None,
+           'fit_option_code': fit_code, 'fit_option_label': fit_label,
+           'option_values': options, 'option_labels': labels, 'qty': 1}
+    key = f"{product.pk}:{size}:{variant.pk if variant else 'default'}"
+    if fit_code:
+        key += f':{fit_code}'
+    option_key = json.dumps(options, ensure_ascii=True, sort_keys=True, separators=(',', ':'))
+    if option_key != '{}':
+        key += f':{option_key}'
+    return key, row, product, variant
+
+
+@require_GET
+@never_cache
+def garment_bundle_options(request):
+    from storefront.services.garment_bundle_catalog import garment_bundle_tee_catalog
+    try:
+        hoodie = Product.objects.select_related('category').get(pk=int(request.GET.get('hoodie_id')), status='published')
+    except (Product.DoesNotExist, TypeError, ValueError, OverflowError):
+        return JsonResponse({'ok': False, 'error': _('Товар недоступний')}, status=400)
+    payload = garment_bundle_tee_catalog(hoodie)
+    if payload.get('eligible') and request.GET.get('mode') == 'tee_only':
+        cart, _changed = normalize_cart_session(request.session.get('cart', {}))
+        quote = _cart_brigade_pricing(cart)
+        hoodie_key = str(request.GET.get('hoodie_key') or '')
+        line = quote.lines.get(hoodie_key)
+        if line is None or cart[hoodie_key]['product_id'] != hoodie.pk or line.policy['garment'] != 'hoodie':
+            return JsonResponse({'ok': False, 'error': garment_bundle_text('add_hoodie')}, status=400)
+        if line.policy['is_225']:
+            from storefront.services.brigade_commerce import brigade_225_offer_price
+            row = cart[hoodie_key]
+            variant = _load_cart_variants([row['color_variant_id']]).get(row['color_variant_id']) if row.get('color_variant_id') else None
+            offered = brigade_225_offer_price(hoodie, variant, fit_code=row.get('fit_option_code') or '', option_values=row.get('option_values') or {})
+            extra_discount = (line.standalone_unit_price - offered) if line.discounted_qty < line.qty else Decimal('0.00')
+        else:
+            from storefront.services.garment_bundle import hoodie_offer_price
+            if dict(quote.bundle_hoodie_capacity).get(hoodie_key, 0) < 1:
+                return JsonResponse({'ok': False, 'error': garment_bundle_text('add_hoodie')}, status=400)
+            extra_discount = line.standalone_unit_price - hoodie_offer_price(line.standalone_unit_price)
+        # The cached catalog describes a new pair. Existing cart units may
+        # already qualify, so only this response receives incremental savings.
+        payload = {**payload, 'hoodie_unit_discount': float(max(extra_discount, Decimal('0.00')))}
+    if payload.get('eligible') and not request.session.session_key:
+        request.session.create()
+    return JsonResponse({'ok': bool(payload.get('eligible')), **payload}, status=200 if payload.get('eligible') else 400)
+
+
+@require_POST
+@never_cache
+def add_bundle_to_cart(request):
+    from django.contrib.sessions.models import Session
+    from django.db import transaction
+    from accounts.cart_sync import hydrate_session_from_db, persist_session_to_db
+    from accounts.models import UserCart
+    if not request.session.session_key:
+        return JsonResponse({'ok': False, 'error': garment_bundle_text('refresh_selection')}, status=409)
+    # The shared session row serializes all bundle requests, including distinct
+    # request IDs. Reload from the locked authoritative row, rather than the
+    # session cache that authentication middleware may already have read.
+    with transaction.atomic():
+        session = Session.objects.select_for_update().filter(session_key=request.session.session_key).first()
+        if session is None:
+            return JsonResponse({'ok': False, 'error': garment_bundle_text('refresh_selection')}, status=409)
+        request.session._session_cache = session.get_decoded()
+        if getattr(getattr(request, 'user', None), 'is_authenticated', False):
+            # Hydration before the view may have read an old Session row. Lock
+            # the account cart and repeat the ordinary cross-device sync using
+            # the freshly loaded session; this preserves a newer UserCart.
+            UserCart.objects.select_for_update().get_or_create(user=request.user)
+            hydrate_session_from_db(request, strict=True)
+        response = _add_bundle_to_cart_locked(request)
+        if response.status_code == 200:
+            persist_session_to_db(request, strict=True)
+            # Refresh CartSyncMiddleware's comparison snapshot so its response
+            # pass remains read-only and cannot re-mark this session modified.
+            hydrate_session_from_db(request, strict=True)
+            request.session.save()
+            # Saved while the row lock was held; a later middleware save could
+            # overwrite another request that acquires the lock after us.
+            request.session.modified = False
+        return response
+
+
+def _add_bundle_to_cart_locked(request):
+    import hashlib
+    from django.db import transaction
+    try:
+        payload = json.loads(request.body)
+        if not isinstance(payload, dict) or payload.get('mode') not in {'pair', 'tee_only'}:
+            raise ValueError(garment_bundle_text('invalid_bundle'))
+        request_id = payload.get('request_id')
+        if not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,80}', request_id):
+            raise ValueError(garment_bundle_text('refresh_selection'))
+        fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        receipts = request.session.get('garment_bundle_requests') or []
+        previous = next((row for row in receipts if row['id'] == request_id), None)
+        if previous:
+            if previous['fingerprint'] != fingerprint:
+                return JsonResponse({'ok': False, 'error': garment_bundle_text('refresh_selection')}, status=409)
+            return JsonResponse({**previous['response'], 'replayed': True})
+        cart, _changed = normalize_cart_session(request.session.get('cart', {}))
+        before = _cart_brigade_pricing(cart)
+        if payload['mode'] == 'pair':
+            from storefront.services.brigade_commerce import get_product_brigade_policy
+            hoodie = _bundle_item(payload.get('hoodie'), 'hoodie', offer_kind='infer')
+            hoodie_key = hoodie[0]
+            offer_kind = '225' if get_product_brigade_policy(hoodie[2])['is_225'] else 'ordinary'
+        else:
+            hoodie_key = str(payload.get('hoodie_key') or '')
+            hoodie_line = before.lines.get(hoodie_key)
+            if hoodie_line is None or hoodie_line.policy['garment'] != 'hoodie':
+                raise ValueError(garment_bundle_text('add_hoodie'))
+            offer_kind = '225' if hoodie_line.policy['is_225'] else 'ordinary'
+            if offer_kind == 'ordinary' and dict(before.bundle_hoodie_capacity).get(hoodie_key, 0) < 1:
+                raise ValueError(garment_bundle_text('add_hoodie'))
+            stored_hoodie = cart[hoodie_key]
+            _bundle_item({**stored_hoodie, 'qty': 1, 'fit_option': stored_hoodie.get('fit_option_code') or ''},
+                         'hoodie', offer_kind=offer_kind)
+        tee = _bundle_item(payload.get('tee'), 'tee', offer_kind=offer_kind)
+        additions = [hoodie, tee] if payload['mode'] == 'pair' else [tee]
+        candidate = {key: dict(row) for key, row in cart.items()}
+        for key, row, _product, variant in additions:
+            quantity = int(candidate.get(key, {}).get('qty', 0)) + 1
+            if quantity > MAX_CART_ITEM_QTY:
+                raise ValueError(garment_bundle_text('line_limit'))
+            candidate[key] = {**row, 'qty': quantity}
+            if variant and variant.stock:
+                variant_qty = sum(item['qty'] for item in candidate.values() if item.get('color_variant_id') == variant.pk)
+                if variant_qty > variant.stock:
+                    raise ValueError(_('Обрана кількість недоступна'))
+        if len(candidate) > MAX_CART_ITEMS:
+            raise ValueError(_('Кошик містить забагато окремих позицій'))
+        after = _cart_brigade_pricing(candidate)
+        tee_key = tee[0]
+        previous_paired = sum(row.qty for row in before.bundle_allocations if row.tee_key == tee_key)
+        new_pairs = [row for row in after.bundle_allocations if row.tee_key == tee_key]
+        paired = sum(row.qty for row in after.bundle_allocations if row.tee_key == tee_key)
+        if offer_kind == '225':
+            qualifies = (after.lines[tee_key].policy['is_225'] and after.lines[hoodie_key].policy['is_225']
+                         and after.offer_discount_total > before.offer_discount_total)
+        else:
+            qualifies = (new_pairs and paired > previous_paired
+                         and sum(row.qty for row in after.bundle_allocations) > sum(row.qty for row in before.bundle_allocations))
+        if not qualifies:
+            raise ValueError(garment_bundle_text('offer_unavailable'))
+        added_items = []
+        for key, row, product, variant in additions:
+            previous_line = before.lines.get(key)
+            price = after.lines[key].line_total - (previous_line.line_total if previous_line else Decimal('0.00'))
+            added_items.append({'key': key, 'product_id': product.pk, 'offer_id': product.get_offer_id(variant.pk if variant else None, row['size']),
+                                'quantity': 1, 'item_price': float(price), 'value': float(price), 'currency': 'UAH',
+                                'size': row['size'], 'color_variant_id': row['color_variant_id'], 'fit_option_code': row['fit_option_code'],
+                                'option_values': row['option_values']})
+        response = {'ok': True, 'count': sum(row['qty'] for row in candidate.values()), 'total': float(after.subtotal),
+                    'cart_total': float(after.subtotal), 'added_items': added_items, 'replayed': False, 'offer_kind': offer_kind, **after.public_metadata()}
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
+    request.session['cart'] = candidate
+    request.session['garment_bundle_requests'] = (receipts + [{'id': request_id, 'fingerprint': fingerprint, 'response': response}])[-20:]
+    _reset_monobank_session(request, drop_pending=True)
+    request.session.modified = True
+    for _key, _row, product, _variant in additions:
+        def track_added(product_id=product.pk, product_name=product.title):
+            try:
+                record_add_to_cart(request, product_id=product_id, product_name=product_name, cart_value=float(after.subtotal))
+            except Exception:
+                cart_logger.exception('Could not record bundle add to cart')
+        # A swallowed analytics IntegrityError must never roll back the cart.
+        transaction.on_commit(track_added)
+    return JsonResponse(response)
 
 
 def _fit_display_from_cart_item(item_data):
@@ -445,7 +679,7 @@ def _build_custom_cart_entry_payload(key: str, item: dict, lead=None) -> tuple[d
         'lead_number': payload['lead_number'],
         'label': payload['label'],
         'product_type': payload['product_type'],
-        'product_label': payload['product_label'],
+        'product_label': str(payload['product_label']),
         'fit': fit_value,
         'fabric': fabric_value,
         'color': color_value,
@@ -732,6 +966,7 @@ def view_cart(request):
             cart_items.append({
                 'key': item_key,
                 'brigade_pricing': line_price.public_metadata(),
+                'bundle_pricing': line_price.bundle_metadata(),
                 'product': product,
                 'price': price,  # Для совместимости
                 'unit_price': price,  # Шаблон ожидает unit_price!
@@ -870,6 +1105,8 @@ def view_cart(request):
             'custom_items_qty': custom_items_qty,
             'combined_total': combined_total,
             'approved_total': approved_total,
+            'pending_custom_total': max(custom_items_total - custom_cart_state['approved_custom_total'], Decimal('0.00')),
+            **_cart_shipping_metadata(approved_total),
             'has_any_items': bool(cart_items) or bool(custom_items),
             'has_payable_items': has_payable_items,
             'has_custom_items': has_custom_items,
@@ -1179,6 +1416,7 @@ def update_cart(request):
             'ok': True,
             'line_total': float(line_total),
             'brigade_pricing': line_price.public_metadata(),
+                'bundle_pricing': line_price.bundle_metadata(),
             **brigade_pricing.public_metadata(),
             'subtotal': float(subtotal),
             'discount': float(discount),
@@ -1708,6 +1946,7 @@ def cart_mini(request):
         items.append({
             'key': key,
             'brigade_pricing': line_price.public_metadata(),
+                'bundle_pricing': line_price.bundle_metadata(),
             'product': p,
             'size': size_value,
             'fit_option_code': fit_option_code,
@@ -1725,36 +1964,48 @@ def cart_mini(request):
     custom_items = custom_cart_state['custom_items']
     custom_items_total = custom_cart_state['custom_items_total']
     custom_items_qty = custom_cart_state['custom_items_qty']
-
+    subtotal = Decimal(total)
+    discount = Decimal('0.00')
+    promo_code = None
+    promo_code_id = request.session.get('promo_code_id')
+    if promo_code_id:
+        try:
+            promo_code = _load_promo_code(promo_code_id)
+            if promo_code.can_be_used():
+                discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
+            else:
+                request.session.pop('promo_code_id', None)
+                promo_code = None
+        except PromoCode.DoesNotExist:
+            request.session.pop('promo_code_id', None)
+    total = max(subtotal - discount, Decimal('0.00')).quantize(Decimal('0.01'))
     combined_total = (Decimal(total) + custom_items_total).quantize(Decimal('0.01'))
     # Pending/draft custom-print prices are provisional and cannot be paid
     # yet, so they must not unlock the free-shipping promise.
-    shipping_total = (Decimal(total) + custom_cart_state['approved_custom_total']).quantize(Decimal('0.01'))
-    shipping_threshold = Decimal(str(getattr(settings, 'FREE_SHIPPING_THRESHOLD', '3000')))
-    shipping_remaining = max(shipping_threshold - shipping_total, Decimal('0'))
-    shipping_progress = min(
-        100,
-        int((shipping_total / shipping_threshold * 100).quantize(Decimal('1')))
-        if shipping_threshold > 0 else 100,
-    )
+    approved_total = (total + custom_cart_state['approved_custom_total']).quantize(Decimal('0.01'))
     cart_count = sum(int(item.get('qty') or 0) for item in cart_sess.values()) + int(custom_items_qty or 0)
 
     return render(request, 'partials/mini_cart.html', {
         'items': items,
         **brigade_pricing.public_metadata(),
         'total': total,
+        'subtotal': subtotal,
+        'discount': discount,
+        'applied_promo': promo_code.code if promo_code else None,
         'total_points': total_points,
         'custom_items': custom_items,
         'custom_items_total': custom_items_total,
         'custom_items_qty': custom_items_qty,
         'combined_total': combined_total,
-        'shipping_total': shipping_total,
+        'approved_total': approved_total,
+        'all_approved': custom_cart_state['all_approved'],
+        'has_custom_items': custom_cart_state['has_custom_items'],
+        'any_awaiting_review': custom_cart_state['any_awaiting_review'],
+        'pending_estimate_total': max(custom_items_total - custom_cart_state['approved_custom_total'], Decimal('0.00')),
+        'pending_custom_total': max(custom_items_total - custom_cart_state['approved_custom_total'], Decimal('0.00')),
+        **_cart_shipping_metadata(approved_total),
         'has_any_items': bool(items) or bool(custom_items),
         'cart_count': cart_count,
-        'shipping_threshold': shipping_threshold,
-        'shipping_remaining': shipping_remaining,
-        'shipping_progress': shipping_progress,
-        'shipping_free': shipping_total >= shipping_threshold,
     })
 
 
@@ -1962,6 +2213,7 @@ def cart_items_api(request):
             cart_items.append({
                 'key': item_key,
                 'brigade_pricing': line_price.public_metadata(),
+                'bundle_pricing': line_price.bundle_metadata(),
                 'product_id': product.id,
                 'product_title': product.title,
                 'product_slug': product.slug,
@@ -2046,6 +2298,9 @@ def cart_items_api(request):
         'all_approved': all_approved,
         'combined_total': float(combined_total),
         'approved_total': float(approved_total),
+        'pending_estimate_total': float(max(custom_items_total - custom_cart_state['approved_custom_total'], Decimal('0.00'))),
+        'pending_custom_total': float(max(custom_items_total - custom_cart_state['approved_custom_total'], Decimal('0.00'))),
+        **_cart_shipping_metadata(approved_total, json_safe=True),
         'prepay_allowed': not has_custom_items and not brigade_pricing.full_payment_only,
         **brigade_pricing.public_metadata(),
         'payment_allowed': (not has_custom_items) or all_approved,

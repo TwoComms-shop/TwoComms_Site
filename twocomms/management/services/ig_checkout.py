@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -51,9 +51,11 @@ class ValidatedCheckoutItem:
     color_code: str
     color_label: str
     evidence_message_ids: tuple[int, ...]
+    price_parts: tuple = ()
+    bundle_pricing: dict = field(default_factory=dict)
 
     def digest_payload(self):
-        return {
+        payload = {
             "product_id": self.product.pk,
             "color_variant_id": self.color_variant.pk if self.color_variant else None,
             "quantity": self.quantity,
@@ -63,6 +65,9 @@ class ValidatedCheckoutItem:
             "catalog_unit_price": str(self.catalog_unit_price),
             "catalog_line_total": str(self.catalog_line_total),
         }
+        if self.price_parts:
+            payload["price_parts"] = list(self.price_parts)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -502,7 +507,11 @@ def validate_checkout_items(
     )
     normalized = [
         replace(item, catalog_unit_price=brigade_pricing.lines[str(index)].unit_price,
-                catalog_line_total=brigade_pricing.lines[str(index)].line_total)
+                catalog_line_total=brigade_pricing.lines[str(index)].line_total,
+                price_parts=tuple(brigade_pricing.lines[str(index)].frozen_price_parts())
+                    if brigade_pricing.lines[str(index)].bundle_allocations else (),
+                bundle_pricing=brigade_pricing.lines[str(index)].bundle_metadata()
+                    if brigade_pricing.lines[str(index)].bundle_allocations else {})
         for index, item in enumerate(normalized)
     ]
     catalog_total = sum((item.catalog_line_total for item in normalized), Decimal("0.00"))
@@ -513,8 +522,8 @@ def validate_checkout_items(
         quoted_total = _money(negotiated_total, code="invalid_negotiated_total")
         if quoted_total > catalog_total:
             raise CheckoutConfigurationError("invalid_negotiated_total")
-        if brigade_pricing.full_payment_only and catalog_total - quoted_total > brigade_pricing.promo_eligible_subtotal:
-            raise CheckoutConfigurationError("brigade_discount_unavailable")
+        if catalog_total - quoted_total > brigade_pricing.promo_eligible_subtotal:
+            raise CheckoutConfigurationError("brigade_discount_unavailable" if brigade_pricing.full_payment_only else "bundle_discount_unavailable")
         if quoted_total != catalog_total:
             if not evidence_ids:
                 raise CheckoutConfigurationError("missing_price_evidence")
@@ -586,6 +595,7 @@ def _deal_item_snapshot(item):
         "qty": item.quantity,
         "unit_price": str(item.catalog_unit_price),
         "line_total": str(item.catalog_line_total),
+        **({"price_parts": list(item.price_parts), "bundle_pricing": item.bundle_pricing} if item.price_parts else {}),
         "price_source": (
             "catalog_with_order_discount" if item.evidence_message_ids else "catalog"
         ),

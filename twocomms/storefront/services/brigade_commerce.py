@@ -15,6 +15,23 @@ HOODIE_OFFER_DISCOUNT = Decimal("145.00")
 LEGACY_225_SLUGS = {"225-tshirt", "225-hoodie"}
 
 
+def brigade_225_unit_offer_price(standalone, retail, garment):
+    delta = TEE_OFFER_DISCOUNT if garment == 'tee' else HOODIE_OFFER_DISCOUNT if garment == 'hoodie' else Decimal('0.00')
+    return min(Decimal(standalone), max(Decimal('0.00'), Decimal(retail) - delta)).quantize(MONEY)
+
+
+def brigade_225_offer_price(product, variant=None, *, fit_code='', option_values=None):
+    """The per-unit 225 offer for a qualifying pair/quantity selection."""
+    policy = get_product_brigade_policy(product)
+    standalone = Decimal(effective_cart_unit_price(product, variant, fit_code=fit_code, option_values=option_values or {})).quantize(MONEY)
+    if not policy['is_225']:
+        return standalone
+    retail = standalone
+    if variant is None or variant.price_override is None:
+        retail += Decimal(product.price) - Decimal(product.final_price)
+    return brigade_225_unit_offer_price(standalone, retail, policy['garment'])
+
+
 def _policy(product, assignments):
     collections = [assignment.collection for assignment in assignments]
     collection_225 = next((collection for collection in collections if collection.slug == "225"), None)
@@ -80,6 +97,8 @@ class BrigadeLinePrice:
     original_unit_price: Decimal
     policy: dict
     rule: str = ""
+    tiers: tuple = ()
+    bundle_allocations: tuple = ()
 
     @property
     def unit_price(self):
@@ -100,6 +119,8 @@ class BrigadeLinePrice:
 
     def snapshot_parts(self):
         """Exact unit-price groups; no rounded weighted price in paid snapshots."""
+        if self.tiers:
+            return [(qty, unit) for qty, unit, _rule, _eligible in self.tiers]
         parts = []
         if self.discounted_qty:
             parts.append((self.discounted_qty, self.offer_unit_price))
@@ -107,6 +128,24 @@ class BrigadeLinePrice:
         if regular_qty:
             parts.append((regular_qty, self.standalone_unit_price))
         return parts
+
+    def frozen_price_parts(self):
+        if not self.tiers:
+            return []
+        return [{"qty": qty, "unit_price": str(unit), "rule": rule, "promo_eligible": eligible}
+                for qty, unit, rule, eligible in self.tiers]
+
+    def bundle_metadata(self):
+        paired = sum(allocation.qty for allocation in self.bundle_allocations)
+        return {
+            "paired_qty": paired,
+            "same_design_qty": sum(allocation.qty for allocation in self.bundle_allocations if allocation.kind == "same_design"),
+            "other_design_qty": sum(allocation.qty for allocation in self.bundle_allocations if allocation.kind == "other_design"),
+            "discount_amount": float(self.discount_amount) if self.bundle_allocations else 0.0,
+            "tiers": [{"qty": qty, "unit_price": float(unit), "rule": rule, "promo_eligible": eligible}
+                      for qty, unit, rule, eligible in self.tiers],
+            "pairs": [allocation.public_metadata() for allocation in self.bundle_allocations],
+        }
 
 
 @dataclass(frozen=True)
@@ -119,6 +158,8 @@ class BrigadeCartPrice:
     full_payment_only: bool
     tee_qty: int
     hoodie_qty: int
+    bundle_allocations: tuple = ()
+    bundle_hoodie_capacity: tuple = ()
 
     def public_metadata(self):
         return {
@@ -130,6 +171,13 @@ class BrigadeCartPrice:
             "brigade_pair_qty": min(self.tee_qty, self.hoodie_qty),
             "promo_eligible_subtotal": float(self.promo_eligible_subtotal),
             "promo_excludes_brigade": True,
+            "bundle_discount_total": float(sum((allocation.discount_amount for allocation in self.bundle_allocations), Decimal("0.00"))),
+            "bundle_paired_tee_qty": sum(allocation.qty for allocation in self.bundle_allocations),
+            "bundle_same_design_qty": sum(allocation.qty for allocation in self.bundle_allocations if allocation.kind == "same_design"),
+            "bundle_other_design_qty": sum(allocation.qty for allocation in self.bundle_allocations if allocation.kind == "other_design"),
+            "bundle_available_hoodie_qty": sum(qty for _key, qty in self.bundle_hoodie_capacity),
+            "bundle_available_hoodies": [{"key": key, "qty": qty} for key, qty in self.bundle_hoodie_capacity if qty > 0],
+            "bundle_pairs": [allocation.public_metadata() for allocation in self.bundle_allocations],
         }
 
 
@@ -170,6 +218,17 @@ def calculate_brigade_cart_pricing(cart, products=None, variants=None):
                 tee_qty += qty
             elif policy["garment"] == "hoodie":
                 hoodie_qty += qty
+    from storefront.services.garment_bundle import allocate_garment_bundles, is_bundle_product_eligible
+    bundle_allocations = allocate_garment_bundles(cart, prepared, variants)
+    paired_by_key = {}
+    for allocation in bundle_allocations:
+        paired_by_key.setdefault(allocation.tee_key, []).append(allocation)
+        paired_by_key.setdefault(allocation.hoodie_key, []).append(allocation)
+    hoodie_capacity = tuple(
+        (key, qty - sum(allocation.qty for allocation in paired_by_key.get(key, ())))
+        for key, (product, policy, qty, _unit, _retail) in prepared.items()
+        if policy["garment"] == "hoodie" and is_bundle_product_eligible(product, policy)
+    )
     pairs = min(tee_qty, hoodie_qty)
     budgets = {"tee": tee_qty if tee_qty >= 2 else pairs, "hoodie": hoodie_qty if hoodie_qty >= 2 else pairs}
     lines = {}
@@ -181,15 +240,37 @@ def calculate_brigade_cart_pricing(cart, products=None, variants=None):
             budgets[garment] -= eligible
         delta = TEE_OFFER_DISCOUNT if garment == "tee" else HOODIE_OFFER_DISCOUNT if garment == "hoodie" else Decimal("0.00")
         # Choose the better site price or offer; never apply both discounts.
-        discounted = min(unit, max(Decimal("0.00"), retail_unit - delta)) if eligible else unit
+        discounted = brigade_225_unit_offer_price(unit, retail_unit, garment) if eligible else unit
         total = (discounted * eligible + unit * (qty - eligible)).quantize(MONEY)
-        original_unit = max(unit, retail_unit) if policy["is_brigade"] else max(unit, Decimal(product.price))
+        original_unit = max(unit, retail_unit)
         rule = ("tee_quantity" if garment == "tee" and tee_qty >= 2 else "hoodie_quantity" if garment == "hoodie" and hoodie_qty >= 2 else "tee_hoodie_pair") if eligible else ""
-        line = BrigadeLinePrice(unit, discounted, qty, eligible, total, original_unit, policy, rule)
+        allocations = tuple(paired_by_key.get(key, ()))
+        tiers = []
+        if allocations:
+            paired_qty = sum(allocation.qty for allocation in allocations)
+            tier_counts = {}
+            for allocation in allocations:
+                tier_unit = allocation.tee_unit_price if garment == "tee" else allocation.hoodie_unit_price
+                tier_key = (tier_unit, allocation.kind)
+                tier_counts[tier_key] = tier_counts.get(tier_key, 0) + allocation.qty
+            tiers = [(count, tier_unit, f"bundle_{kind}", False)
+                     for (tier_unit, kind), count in sorted(tier_counts.items())]
+            if qty > paired_qty:
+                tiers.append((qty - paired_qty, unit, "", True))
+            total = sum((count * tier_unit for count, tier_unit, _kind, _promo in tiers), Decimal("0.00"))
+            eligible = paired_qty
+            discounted = min(tier_unit for _count, tier_unit, _kind, _promo in tiers)
+            rule = "garment_bundle"
+        else:
+            if eligible:
+                tiers.append((eligible, discounted, rule, not policy["is_brigade"]))
+            if qty > eligible:
+                tiers.append((qty - eligible, unit, "", not policy["is_brigade"]))
+        line = BrigadeLinePrice(unit, discounted, qty, eligible, total, original_unit, policy, rule, tuple(tiers), allocations)
         lines[key] = line
         subtotal += total
         original += original_unit * qty
-        offer_discount += line.discount_amount
-        if not policy["is_brigade"]:
-            promo_eligible += total
-    return BrigadeCartPrice(lines, subtotal, original, offer_discount, promo_eligible, any(line.policy["is_brigade"] for line in lines.values()), tee_qty, hoodie_qty)
+        if policy["is_brigade"]:
+            offer_discount += line.discount_amount
+        promo_eligible += sum((count * tier_unit for count, tier_unit, _kind, allowed in tiers if allowed), Decimal("0.00"))
+    return BrigadeCartPrice(lines, subtotal, original, offer_discount, promo_eligible, any(line.policy["is_brigade"] for line in lines.values()), tee_qty, hoodie_qty, bundle_allocations, hoodie_capacity)

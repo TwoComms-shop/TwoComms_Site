@@ -187,7 +187,7 @@ def get_user_cart(user) -> UserCart:
     return cart
 
 
-def hydrate_session_from_db(request) -> None:
+def hydrate_session_from_db(request, *, strict=False) -> None:
     """
     На входе запроса:
     - читаем DB-кошик и сравниваем его ревизию с той, что сессия видела последний раз
@@ -211,6 +211,8 @@ def hydrate_session_from_db(request) -> None:
         db_cart = get_user_cart(user)
     except Exception:
         logger.warning('Failed to load UserCart for user=%s', getattr(user, 'pk', None), exc_info=True)
+        if strict:
+            raise
         return
 
     db_revision = _db_revision(db_cart)
@@ -230,7 +232,7 @@ def hydrate_session_from_db(request) -> None:
     setattr(request, REQUEST_SNAPSHOT_ATTR, _make_snapshot(cart, custom_cart, promo))
 
 
-def persist_session_to_db(request) -> None:
+def persist_session_to_db(request, *, strict=False) -> None:
     """
     На выходе запроса:
     - если view ничего не менял (текущая сессия равна снапшоту в начале запроса),
@@ -272,6 +274,8 @@ def persist_session_to_db(request) -> None:
             db_cart.save(update_fields=['cart_data', 'custom_cart_data', 'promo_code_id', 'updated_at'])
     except Exception:
         logger.warning('Failed to persist cart for user=%s', getattr(user, 'pk', None), exc_info=True)
+        if strict:
+            raise
         return
 
     # Обновляем ревизию в сессии, чтобы следующий запрос с этого же устройства

@@ -2096,6 +2096,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     if (!content || !toggle) return;
 
     let measureRaf = null;
+    let wasDesktop = false;
 
     const collapsedHeight = () => {
       const value = window.getComputedStyle(collapse).getPropertyValue('--tc-desc-collapsed-height');
@@ -2116,6 +2117,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     };
 
     const updateState = () => {
+      // Wide two-column layouts have room for the full description.
+      if (window.matchMedia('(min-width: 1200px)').matches) {
+        wasDesktop = true;
+        collapse.classList.remove('is-collapsible', 'is-collapsed');
+        collapse.classList.add('is-expanded');
+        toggle.hidden = true;
+        toggle.setAttribute('aria-expanded', 'true');
+        content.style.removeProperty('max-height');
+        return;
+      }
+      if (wasDesktop) { collapse.classList.remove("is-expanded"); wasDesktop = false; }
       const limit = collapsedHeight();
       const fullHeight = content.scrollHeight;
       const isCollapsible = fullHeight > limit + 18;
@@ -2613,12 +2625,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     if (!panel || !state.container) return;
 
     const storageKey = 'twc_recent_products_v1';
+    const pricingVersion = String(document.querySelector('[data-pdp]')?.dataset.pricingVersion || 'october-2026-v1');
     const canonical = document.querySelector('link[rel="canonical"]');
     const url = canonical && canonical.href ? canonical.href : window.location.href.split('#')[0];
     const productId = String(state.container.dataset.productId || '');
     const currentImage = normalizeImage(mainImagePayload(state.mainImage));
     const current = {
       id: productId,
+      pricingVersion,
       title: decodeDataValue(state.container.getAttribute('data-product-title')) || cleanDocumentTitle(),
       category: decodeDataValue(state.container.getAttribute('data-product-category')) || '',
       price: (document.getElementById('product-analytics-payload') && document.getElementById('product-analytics-payload').dataset.price) || '',
@@ -2633,7 +2647,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       items = [];
     }
 
-    const previous = items.filter((item) => item && String(item.id) !== productId && item.url && item.title).slice(0, 4);
+    const previous = (Array.isArray(items) ? items : []).filter((item) => item && String(item.id) !== productId && item.url && item.title).slice(0, 4)
+      .map(item => ({ ...item, price: item.pricingVersion === pricingVersion ? item.price : '' }));
     renderRecentViewed(panel, previous);
 
     if (productId && current.url && current.title) {

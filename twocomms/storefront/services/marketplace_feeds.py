@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_HALF_UP
+from html import escape
 from itertools import product as option_product
 import re
 import xml.etree.ElementTree as ET
@@ -673,7 +674,7 @@ def _video_link(product: Product) -> str:
     return ""
 
 
-def _product_url(base_url: str, product: Product, *, size: str, color_slug: str = "") -> str:
+def _product_url(base_url: str, product: Product, *, size: str, color_slug: str = "", fit_code: str = "") -> str:
     """Return the canonical PDP URL for the exact feed variant.
 
     Product redirects only understand a numeric ``?color=<variant_id>`` while
@@ -682,7 +683,7 @@ def _product_url(base_url: str, product: Product, *, size: str, color_slug: str 
     handling and use the same colour/size path contract as PDP canonicals.
     """
     slug = getattr(product, "slug", "") or f"product-{product.id}"
-    segments = [str(value).strip().lower() for value in (color_slug, size) if str(value).strip()]
+    segments = [str(value).strip().lower() for value in (color_slug, size, fit_code) if str(value).strip()]
     variant_path = "/".join(segments)
     path = f"/product/{slug}/{variant_path}/" if variant_path else f"/product/{slug}/"
     return iri_to_uri(urljoin(base_url, path))
@@ -723,17 +724,19 @@ def published_products_queryset():
             "fit_options",
             "product_catalog_fit_notes",
             "product_catalog_option_profiles",
+            "product_catalog_option_profiles__i18n",
             "product_catalog_axis_presentations",
             "category__product_catalog_flows",
             "color_variants__product_catalog_details",
             "color_variants__product_catalog_fit_rules",
             "color_variants__product_catalog_combinations",
+            "color_variants__product_catalog_combinations__i18n",
             "color_variants__color__product_catalog_profile",
         )
     )
 
 
-def _feed_variant_configuration(product, variant):
+def _feed_variant_configuration(product, variant, *, fit_code=""):
     """Resolve the default PDP combination without creating fits or new SKU IDs."""
     from product_catalog.services import (
         product_option_context,
@@ -743,7 +746,7 @@ def _feed_variant_configuration(product, variant):
 
     fits = get_active_fit_options(product) if product.fit_selector_enabled else []
     default_fit = next((option for option in fits if option.is_default), fits[0] if fits else None)
-    seed = {"fit": default_fit.code} if default_fit else {}
+    seed = {"fit": fit_code or default_fit.code} if fit_code or default_fit else {}
     context = product_option_context(product, variant=variant, option_values=seed)
     selected = context["selected_values"]
     axes = context["axes"]
@@ -779,7 +782,100 @@ def _feed_variant_configuration(product, variant):
     return selected, base_price, price, available
 
 
-def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOffer]:
+def _bezzet_fit_choices(offer):
+    """Only purchasable tee fits for this exact color/size, with live prices."""
+    from product_catalog.services import resolve_merchandising_context, variant_allows_purchase
+
+    if _product_kind(offer.product) != "tshirt" or not offer.product.fit_selector_enabled:
+        return []
+    variant = next((row for row in offer.product.color_variants.all() if row.pk == offer.variant_id), None)
+    if variant is None:
+        return []
+    configurations = getattr(variant, "_bezzet_fit_configurations", None)
+    if configurations is None:
+        configurations = []
+        fits = sorted(
+            (row for row in get_active_fit_options(offer.product) if row.code in {"classic", "oversize"}),
+            key=lambda row: row.code != "classic",
+        )
+        for fit in fits:
+            values, base_price, price, available = _feed_variant_configuration(
+                offer.product, variant, fit_code=fit.code,
+            )
+            if not available or values.get("fit") != fit.code:
+                continue
+            copy = {}
+            for lang in ("uk", "ru"):
+                content = resolve_merchandising_context(
+                    offer.product, variant=variant, option_values=values, lang=lang,
+                )
+                source = content["sources"].get("marketing_text", "")
+                # Only an explicitly localized fit owner or exact selected
+                # combination can provide fit-specific fabric facts. Generic
+                # product prose/color fallbacks are not evidence of a difference.
+                if source in {f"option:fit={fit.code}:{lang}", f"combination:{lang}"}:
+                    copy[lang] = _collapse_plain_text(content.get("marketing_text"))
+            configurations.append({
+                "code": fit.code, "label": "Classic" if fit.code == "classic" else "Oversize",
+                "values": values, "base_price": base_price, "price": price, "copy": copy,
+            })
+        variant._bezzet_fit_configurations = configurations
+    return [
+        choice for choice in configurations
+        if variant_allows_purchase(
+            offer.product, variant, fit_code=choice["code"], size=offer.size,
+            option_values=choice["values"],
+        )
+    ]
+
+
+def _bezzet_description(offer, choices, *, lang):
+    from storefront.services.brigade_commerce import get_product_brigade_policy
+    from storefront.services.brigade_presentation import brigade_text
+
+    description = offer.description_ru if lang == "ru" else offer.description_ua
+    if choices:
+        heading = "Доступные посадки для этого цвета и размера:" if lang == "ru" else "Доступні посадки для цього кольору й розміру:"
+        rows = []
+        for choice in choices:
+            text = f'{choice["label"]} — {choice["price"]} грн'
+            if choice["copy"].get(lang):
+                text += f'. {choice["copy"][lang]}'
+            rows.append(f"<li>{escape(text)}</li>")
+        description += f"<p>{heading}</p><ul>{''.join(rows)}</ul>"
+    confirmation = (
+        "Оформление заказа — заявка, а не автоматическое списание средств. "
+        "Менеджер свяжется с вами, чтобы подтвердить посадку, размер, окончательную сумму и условия оплаты."
+        if lang == "ru" else
+        "Оформлення замовлення — заявка, а не автоматичне списання коштів. "
+        "Менеджер зв'яжеться з вами, щоб підтвердити посадку, розмір, остаточну суму та умови оплати."
+    )
+    description += f"<p>{escape(confirmation)}</p>"
+    if get_product_brigade_policy(offer.product)["full_payment_only"]:
+        description += f"<p>{escape(brigade_text('full_payment', lang))}</p>"
+    return description
+
+
+def _bezzet_priced_offer(offer, base_url):
+    choices = _bezzet_fit_choices(offer)
+    if not choices:
+        return offer
+    selected = choices[0]  # Classic first, only when purchasable.
+    variant = next(row for row in offer.product.color_variants.all() if row.pk == offer.variant_id)
+    return replace(
+        offer, base_price=selected["base_price"], price=selected["price"],
+        old_price=_old_price(offer.product, selected["base_price"], selected["price"]),
+        product_url=_product_url(
+            base_url, offer.product, size=offer.size, color_slug=variant.slug,
+            fit_code=selected["code"],
+        ),
+        # This runs before profile overrides, so a requested staff sold-out
+        # rule is retained while an available alternate fit can be offered.
+        availability_override=None, quantity_override=None,
+    )
+
+
+def iter_feed_offers(base_url: str | None = None, products=None, *, bezzet_mode=False) -> list[FeedOffer]:
     from product_catalog.services import variant_allows_purchase
 
     base_url = resolve_base_url(base_url)
@@ -919,7 +1015,7 @@ def iter_feed_offers(base_url: str | None = None, products=None) -> list[FeedOff
                     )
                 )
 
-    return offers
+    return [_bezzet_priced_offer(offer, base_url) for offer in offers] if bezzet_mode else offers
 
 
 def _feed_profile_chain(feed) -> list[object]:
@@ -997,7 +1093,7 @@ def _matches_feed_filters(offer: FeedOffer, filters: dict[str, object]) -> bool:
     return True
 
 
-def build_profile_offers(feed, base_url: str | None = None) -> list[FeedOffer]:
+def build_profile_offers(feed, base_url: str | None = None, *, bezzet_mode=False) -> list[FeedOffer]:
     """Build offers once, then apply the bounded profile and per-product rules."""
     from storefront.models import MarketplaceFeedProductRule
     from storefront.services.feed_profiles import resolve_feed_rules
@@ -1036,7 +1132,7 @@ def build_profile_offers(feed, base_url: str | None = None) -> list[FeedOffer]:
             )
 
     result = []
-    for offer in iter_feed_offers(base_url):
+    for offer in iter_feed_offers(base_url, bezzet_mode=bezzet_mode):
         product_rule = rule_by_product.get(offer.product.pk)
         if product_rule and product_rule.inclusion == "exclude":
             continue
@@ -1561,7 +1657,10 @@ def build_meta_catalog_feed_xml(base_url: str | None = None, feed=None) -> bytes
 
 def _build_yml_feed_xml(*, base_url: str | None, bezzet_mode: bool = False, feed=None) -> bytes:
     base_url = resolve_base_url(base_url)
-    offers = build_profile_offers(feed, base_url) if feed is not None else iter_feed_offers(base_url)
+    offers = (
+        build_profile_offers(feed, base_url, bezzet_mode=bezzet_mode)
+        if feed is not None else iter_feed_offers(base_url, bezzet_mode=bezzet_mode)
+    )
 
     catalog = ET.Element("yml_catalog", {"date": timezone.now().strftime("%Y-%m-%d %H:%M")})
     shop = ET.SubElement(catalog, "shop")
@@ -1577,6 +1676,7 @@ def _build_yml_feed_xml(*, base_url: str | None, bezzet_mode: bool = False, feed
     offers_el = ET.SubElement(shop, "offers")
     for offer in offers:
         product = offer.product
+        fit_choices = _bezzet_fit_choices(offer) if bezzet_mode else []
         stock_quantity = _bezzet_quantity(offer) if bezzet_mode else offer.export_quantity
         group_id = _bezzet_group_id(offer) if bezzet_mode else str(product.id)
         offer_el = ET.SubElement(
@@ -1596,15 +1696,23 @@ def _build_yml_feed_xml(*, base_url: str | None, bezzet_mode: bool = False, feed
         ET.SubElement(offer_el, "categoryId").text = str(product.category_id)
         for image_url in offer.image_urls[:10]:
             ET.SubElement(offer_el, "picture").text = image_url
-        ET.SubElement(offer_el, "name").text = _truncate(f"{product.title} {offer.color_ua} {offer.size}", 255)
-        ET.SubElement(offer_el, "name_ua").text = _truncate(f"{product.title} {offer.color_ua} {offer.size}", 255)
+        title = f"{product.title} {offer.color_ua} {offer.size}"
+        suffix = f" [{' / '.join(choice['label'] for choice in fit_choices)}]" if fit_choices else ""
+        ET.SubElement(offer_el, "name").text = _truncate(title, 255 - len(suffix)) + suffix
+        ET.SubElement(offer_el, "name_ua").text = _truncate(title, 255 - len(suffix)) + suffix
+        if bezzet_mode:
+            title_ru = f"{_localized_product_text(product, 'title', 'ru')} {offer.color_ru} {offer.size}"
+            ET.SubElement(offer_el, "name_ru").text = _truncate(title_ru, 255 - len(suffix)) + suffix
         ET.SubElement(offer_el, "vendor").text = SHOP_NAME
         ET.SubElement(offer_el, "vendorCode").text = offer.article
         ET.SubElement(offer_el, "stock_quantity").text = str(stock_quantity)
         if bezzet_mode:
             ET.SubElement(offer_el, "quantity_in_stock").text = str(stock_quantity)
-        _append_cdata(offer_el, "description", offer.description_ua)
-        _append_cdata(offer_el, "description_ua", offer.description_ua)
+        description_ua = _bezzet_description(offer, fit_choices, lang="uk") if bezzet_mode else offer.description_ua
+        _append_cdata(offer_el, "description", description_ua)
+        _append_cdata(offer_el, "description_ua", description_ua)
+        if bezzet_mode:
+            _append_cdata(offer_el, "description_ru", _bezzet_description(offer, fit_choices, lang="ru"))
         params = [("Розмір", offer.size), ("Колір", offer.color_ua)]
         if offer.gender:
             params.append(("Стать", offer.gender))

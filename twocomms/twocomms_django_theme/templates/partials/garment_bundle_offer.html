@@ -1,0 +1,16 @@
+{% if garment_offer %}
+<aside class="garment-offer {{ placement }}" aria-label="{{ bundle_copy.title }}">
+ <div class="garment-offer__top"><span class="garment-eyebrow">{{ bundle_copy.eyebrow }}</span>{% if garment_offer.total_saving %}<strong class="garment-offer__saving"><span>{{ bundle_copy.goods_saving }}</span>−{{ garment_offer.total_saving|floatformat:0 }} <small>{{ bundle_copy.currency }}</small></strong>{% endif %}</div>
+ <div class="garment-offer__body">
+  {% if garment_offer.image %}<img class="garment-offer__image" src="{{ garment_offer.image }}" alt="" width="76" height="96" loading="lazy">{% endif %}
+  <div class="garment-offer__copy"><h2>{{ bundle_copy.title }}</h2><p>{% if garment_offer.is_same_design %}{{ bundle_copy.intro }}{% else %}{{ bundle_copy.other_intro }}{% endif %}</p>
+   <span class="garment-offer__price-label">{{ bundle_copy.tee_in_pair }}</span><div class="garment-offer__prices">{% if garment_offer.classic_price %}<span>{{ bundle_copy.classic }} <strong>{{ garment_offer.classic_price|floatformat:0 }} {{ bundle_copy.currency }}</strong></span>{% endif %}{% if garment_offer.oversize_price %}<span>{{ bundle_copy.oversize }} <strong>{{ garment_offer.oversize_price|floatformat:0 }} {{ bundle_copy.currency }}</strong></span>{% endif %}</div>
+  </div>
+ </div>
+ <div class="garment-offer__bottom">
+ {% if garment_offer.kind == 'tee' %}<a class="garment-offer__button" href="{{ garment_offer.url }}">{{ bundle_copy.choose_hoodie }} <span aria-hidden="true">↗</span></a>
+ {% else %}<button type="button" class="garment-offer__button" data-bundle-open data-hoodie-id="{{ garment_offer.hoodie_id }}" data-bundle-mode="pair">{{ bundle_copy.choose }} <span aria-hidden="true">＋</span></button>{% endif %}
+ <small><strong>{{ bundle_copy.hoodie_discount }} −{{ garment_offer.hoodie_unit_discount|floatformat:0 }} {{ bundle_copy.currency }}</strong>{{ bundle_copy.automatic }}</small></div>
+ <details class="garment-offer__terms"><summary>{{ bundle_copy.rules_title }}</summary><p>{{ bundle_copy.terms }} {{ bundle_copy.terms_more }} {{ bundle_copy.shipping_separate }}</p>{% if garment_offer.is_same_design %}<p>{{ bundle_copy.recommend_sub }}</p>{% endif %}</details>
+</aside>
+{% endif %}

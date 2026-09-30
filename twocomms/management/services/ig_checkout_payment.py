@@ -118,11 +118,11 @@ def _fingerprint(proposal, *, full_name, phone, email, delivery, promo_code):
 
 def _proposal_basket(proposal, *, promo_discount=Decimal("0.00")):
     basket = []
-    for item in proposal.items.all():
+    for item in _snapshot(proposal)["cart"]:
         basket.append({
-            "name": _clean(item.product_title, 128),
-            "qty": int(item.quantity or 1),
-            "sum": int((Decimal(item.quoted_line_total) * 100).to_integral_value()),
+            "name": _clean(item["title"], 128),
+            "qty": item["qty"],
+            "sum": int((Decimal(item["line_total"]) * 100).to_integral_value()),
             "unit": "шт",
         })
     total_discount = Decimal(proposal.negotiated_discount or 0) + promo_discount
@@ -133,7 +133,9 @@ def _proposal_basket(proposal, *, promo_discount=Decimal("0.00")):
             "sum": -int((total_discount * 100).to_integral_value()),
             "unit": "шт",
         })
-    return basket[:30]
+    if len(basket) > 30:
+        return [{"name": "Замовлення", "qty": 1, "sum": sum(row["sum"] for row in basket), "unit": "шт"}]
+    return basket
 
 
 def _invoice_payload(request, attempt, proposal, *, payment_amount, promo_discount):
@@ -184,15 +186,27 @@ def _proposal_brigade_policy(proposal):
     from storefront.services.brigade_commerce import get_product_brigade_policy
     full_only = False
     eligible = Decimal("0.00")
-    for item in proposal.items.select_related("product__category"):
+    frozen_items = _frozen_proposal_items(proposal)
+    for index, item in enumerate(proposal.items.select_related("product__category").order_by('position', 'id')):
         if item.product_id and get_product_brigade_policy(item.product)["is_brigade"]:
             full_only = True
         else:
-            eligible += Decimal(item.quoted_line_total or 0)
-    if full_only:
-        eligible = max(eligible - Decimal(proposal.negotiated_discount or 0), Decimal("0.00"))
-    else:
-        eligible = Decimal(proposal.quoted_total)
+            frozen = frozen_items[index] if index < len(frozen_items) else {}
+            parts = frozen.get('price_parts') or []
+            if parts:
+                # Public presentation also uses this policy, including paid
+                # historical proposals whose catalog product may be deleted.
+                # Invalid frozen parts never unlock a promotional subtotal.
+                try:
+                    if (frozen.get('product_id') == item.product_id
+                            and sum(int(part['qty']) for part in parts) == item.quantity
+                            and sum((int(part['qty']) * Decimal(part['unit_price']) for part in parts), Decimal('0.00')) == item.quoted_line_total):
+                        eligible += sum((int(part['qty']) * Decimal(part['unit_price']) for part in parts if part.get('promo_eligible', False)), Decimal('0.00'))
+                except (KeyError, TypeError, ValueError, ArithmeticError):
+                    pass
+            else:
+                eligible += Decimal(item.quoted_line_total or 0)
+    eligible = max(eligible - Decimal(proposal.negotiated_discount or 0), Decimal("0.00"))
     return full_only, eligible
 
 
@@ -299,12 +313,19 @@ def release_attempt_promo(attempt, *, reason="payment_terminal"):
     return release_payment_attempt_promo(attempt, reason=reason)
 
 
+def _frozen_proposal_items(proposal):
+    from management.models import IgCheckoutRevision
+    revision = IgCheckoutRevision.objects.filter(proposal=proposal, revision=proposal.revision).order_by("-id").first()
+    return (revision.snapshot or {}).get("items", []) if revision else []
+
+
 def _snapshot(proposal):
+    frozen = _frozen_proposal_items(proposal)
     items = []
-    for item in proposal.items.all():
+    for index, item in enumerate(proposal.items.order_by("position", "id")):
         if not item.product_id:
             raise CheckoutPaymentError("item_unavailable", "Один из товаров больше недоступен.")
-        items.append({
+        base = {
             "product_id": item.product_id,
             "title": item.product_title,
             "qty": int(item.quantity or 1),
@@ -316,7 +337,28 @@ def _snapshot(proposal):
             "option_labels": item.option_labels or {},
             "unit_price": str(item.quoted_unit_price),
             "line_total": str(item.quoted_line_total),
-        })
+            "proposal_item_id": item.pk,
+        }
+        frozen_item = frozen[index] if index < len(frozen) else {}
+        parts = frozen_item.get("price_parts") or []
+        if parts:
+            try:
+                valid = (frozen_item.get("product_id") == item.product_id
+                         and sum(int(part["qty"]) for part in parts) == item.quantity
+                         and all(int(part["qty"]) > 0 and Decimal(part["unit_price"]) >= 0 for part in parts)
+                         and sum((int(part["qty"]) * Decimal(part["unit_price"]) for part in parts), Decimal("0.00")) == item.quoted_line_total)
+            except (KeyError, TypeError, ValueError, ArithmeticError):
+                valid = False
+            if not valid:
+                raise CheckoutPaymentError("catalog_changed", "Умови комплекту змінилися. Оновіть пропозицію.")
+            for part in parts:
+                qty = int(part["qty"])
+                unit = Decimal(part["unit_price"])
+                items.append({**base, "qty": qty, "unit_price": str(unit), "line_total": str(unit * qty),
+                              "pricing_rule": part.get("rule", ""), "promo_eligible": bool(part.get("promo_eligible", False)),
+                              "bundle_pricing": frozen_item.get("bundle_pricing") or {}})
+        else:
+            items.append(base)
     if not items:
         raise CheckoutPaymentError("empty_items", "В предложении нет товаров.")
     # This metadata is server-owned and travels with the frozen attempt.  The

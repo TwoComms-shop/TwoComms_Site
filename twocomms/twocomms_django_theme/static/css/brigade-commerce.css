@@ -8,3 +8,42 @@
 .brigade-cart-offer__links [hidden]{display:none!important}
 .brigade-offer__total{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;padding:13px 0 17px;border-top:1px solid #38402f}.brigade-offer__total>span{display:flex;flex-direction:column;gap:3px;font-size:11px;color:#b9c3a8}.brigade-offer__total strong{font-size:25px;font-weight:750;letter-spacing:-.04em;color:#f0f4e7;line-height:1.2}.brigade-offer__total strong small{font-size:12px;letter-spacing:0}.brigade-offer__total>span:last-child{text-align:right}.brigade-offer__total del{font-size:13px;color:#9eaa8d}.brigade-offer__piece{padding:10px;background:rgba(4,9,3,.17);border:1px solid rgba(172,190,139,.1);border-radius:12px}.brigade-offer__eyebrow{font-size:9px;letter-spacing:.11em}.brigade-offer__pair{gap:9px}.brigade-offer__piece img{width:56px;height:70px}.brigade-offer__piece>span{line-height:1.45}
 @media(max-width:767px){.brigade-offer__piece{padding:7px;gap:7px}.brigade-offer__piece img{width:43px;height:56px}.brigade-offer__piece strong{font-size:12px}.brigade-offer__piece>span{font-size:10px}.brigade-offer__top{gap:12px}.brigade-offer__total strong{font-size:24px}.brigade-offer__eyebrow{max-width:150px;line-height:1.55}.brigade-offer__saving{white-space:nowrap}}
+
+/* Compact unit-specific offer: secondary to the garment configurator. */
+.brigade-offer:not(.brigade-cart-offer){padding:18px;border-radius:16px;background:linear-gradient(115deg,#1a201b,#20271e)}
+.brigade-offer:not(.brigade-cart-offer) .brigade-offer__top{margin-bottom:7px}
+.brigade-offer:not(.brigade-cart-offer) .brigade-offer__saving{font-size:21px}
+.brigade-offer:not(.brigade-cart-offer) .brigade-offer__title{font-size:21px;letter-spacing:-.025em;margin-bottom:5px}
+.brigade-offer:not(.brigade-cart-offer) .brigade-offer__intro{max-width:none;font-size:12px;line-height:1.5;margin-bottom:13px}
+.brigade-offer__body{display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,.8fr);gap:17px;align-items:center}
+.brigade-offer__body .brigade-offer__pair{margin:0;gap:6px}
+.brigade-offer__body .brigade-offer__piece{padding:7px;gap:7px;background:rgba(0,0,0,.1)}
+.brigade-offer__body .brigade-offer__piece img{width:36px;height:48px;border-radius:6px}
+.brigade-offer__body .brigade-offer__piece strong{font-size:12px;white-space:nowrap}
+.brigade-offer__body .brigade-offer__piece>span{font-size:10px}
+.brigade-offer__body .brigade-offer__plus{font-size:16px}
+.brigade-offer__action{min-width:0}
+.brigade-offer__action .brigade-offer__total{padding:0 0 9px;border:0;gap:8px}
+.brigade-offer__action .brigade-offer__total strong{font-size:21px;white-space:nowrap}
+.brigade-offer__action .brigade-offer__total>span{font-size:10px}
+.brigade-offer__action .brigade-offer__total del{font-size:11px;white-space:nowrap}
+.brigade-offer__action .brigade-offer__cta{min-height:40px;padding:8px 11px;background:#a8b78b;border-color:#a8b78b;font-size:12px}
+.brigade-offer__details{margin-top:9px;padding-top:7px;border-top:1px solid #3b4433}
+.brigade-offer__details summary{font-size:11px;color:#c6d0b6;cursor:pointer;min-height:28px;align-content:center}
+.brigade-offer__details summary:focus-visible{outline:2px solid #d2dda9;outline-offset:3px}
+.brigade-offer__details .brigade-offer__rules{margin:5px 0 0;padding:0;border:0}
+@media(min-width:768px) and (max-width:1199.98px){.brigade-offer--desktop{display:none}.brigade-offer--mobile{display:block;margin-top:16px}}
+@media(max-width:575px){
+ .brigade-offer:not(.brigade-cart-offer){padding:15px}
+ .brigade-offer__body{grid-template-columns:1fr;gap:12px}
+ .brigade-offer__action{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:center}
+ .brigade-offer__action .brigade-offer__total{padding:0;display:block}
+ .brigade-offer__action .brigade-offer__total>span:last-child{display:none}
+ .brigade-offer__action .brigade-offer__cta{min-height:44px}
+ .brigade-offer__body .brigade-offer__piece img{width:34px;height:43px}
+ .brigade-offer__body .brigade-offer__piece{padding:5px 8px}
+ .brigade-offer:not(.brigade-cart-offer) .brigade-offer__title{font-size:20px}
+ .brigade-offer__automatic{font-size:10px}
+}
+
+.brigade-offer__saving-label{display:block;font-size:10px;font-weight:500;letter-spacing:0;color:#b7c3a3;margin-bottom:3px}.brigade-offer__saving{text-align:right}

@@ -702,7 +702,7 @@ def _checkout_state(proposal, generation=_GENERATION_UNSET):
     return "ready"
 
 
-def _item_context(item):
+def _item_context(item, frozen=None):
     option_values = item.option_values or {}
     option_labels = item.option_labels or {}
     return {
@@ -726,10 +726,15 @@ def _item_context(item):
         "quantity": item.quantity,
         "unit_price": _money(item.quoted_unit_price),
         "line_total": _money(item.quoted_line_total),
+        "price_parts": (frozen or {}).get("price_parts") or [],
+        "bundle_pricing": (frozen or {}).get("bundle_pricing") or {},
     }
 
 
 def _proposal_context(proposal, *, request, grant_id="", form_error="", form_error_field="", form_values=None):
+    from management.models import IgCheckoutRevision
+    revision = IgCheckoutRevision.objects.filter(proposal=proposal, revision=proposal.revision).order_by('-id').first()
+    frozen_items = (revision.snapshot or {}).get('items') or [] if revision else []
     language = _checkout_language(request, proposal)
     copy = dict(CHECKOUT_COPY[language])
     approved_policy = approved_policy_copy(language)
@@ -880,7 +885,8 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
             "expires_at_iso": proposal.expires_at.isoformat(),
             "created_at_iso": proposal.created_at.isoformat(),
         },
-        "items": [_item_context(item) for item in proposal.items.all()],
+        "items": [_item_context(item, frozen_items[index] if index < len(frozen_items) else {})
+                  for index, item in enumerate(proposal.items.order_by('position', 'id'))],
         "expires_explanation": (
             copy["expires_explanation_v2"]
             if proposal.assisted_checkout_v2

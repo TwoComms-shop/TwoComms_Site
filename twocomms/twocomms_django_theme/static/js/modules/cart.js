@@ -341,9 +341,23 @@ class CartPageController {
     offer.querySelector('[data-brigade-choose-hoodie]').hidden = Boolean(hoodies && !tees);
   }
 
+  updateBundleState(data) {
+    const note = document.querySelector('[data-garment-cart-note]');
+    if (!note) return;
+    let words = {};
+    try { words = JSON.parse(document.getElementById('garment-bundle-copy')?.textContent || '{}'); } catch (_) {}
+    const savings = Number(data.bundle_discount_total || 0);
+    const available = (data.bundle_available_hoodies || []).find(h => Number(h.qty) > 0);
+    const hoodie = available && (data.items || []).find(item => item.key === available.key);
+    note.hidden = !savings && !hoodie;
+    note.innerHTML = (savings > 0 ? `<div class="garment-cart-note__applied"><span>${escapeHtml(words.included || '')}</span><strong>−${formatUAH(savings)}</strong></div>` : '') +
+      (hoodie ? `<div class="garment-cart-note__suggest"><span>${escapeHtml(words.cart_title || '')}<small>${escapeHtml(words.remaining || '')}</small></span><button type="button" data-bundle-open data-hoodie-id="${Number(hoodie.product_id)}" data-hoodie-key="${escapeHtml(hoodie.key)}" data-bundle-mode="tee_only">${escapeHtml(words.choose || '')} ↗</button></div>` : '');
+  }
+
   applyState(data) {
     this.state = data;
     this.updateBrigadeState(data);
+    this.updateBundleState(data);
 
     this.renderItems(
       Array.isArray(data.items) ? data.items : [],
@@ -554,10 +568,18 @@ class CartPageController {
       : `<span class="cart-item-price-current">${formatUAH(unitPrice)}</span>`;
 
     const bp = item.brigade_pricing;
-    if (bp && Number(bp.discounted_qty) > 0) {
+    if (bp && bp.is_225 && Number(bp.discounted_qty) > 0) {
       priceHtml = `<span class="cart-item-price-current">${Number(bp.discounted_qty)} × ${formatUAH(parseNumber(bp.offer_unit_price))}</span>`;
       if (Number(bp.regular_qty) > 0) priceHtml += `<span class="brigade-line-offer">+ ${Number(bp.regular_qty)} × ${formatUAH(parseNumber(bp.standalone_unit_price))}</span>`;
       priceHtml += `<span class="brigade-line-offer">225 · −${formatUAH(parseNumber(bp.discount_amount))}</span>`;
+    }
+
+    const bundle = item.bundle_pricing;
+    if (bundle && Number(bundle.discount_amount) > 0 && bundle.tiers?.length) {
+      let words = {};
+      try { words = JSON.parse(document.getElementById('garment-bundle-copy')?.textContent || '{}'); } catch (_) {}
+      priceHtml = bundle.tiers.map(tier => `<span class="cart-item-price-current">${Number(tier.qty)} × ${formatUAH(Number(tier.unit_price))}</span>`).join('');
+      priceHtml += `<span class="garment-line-note">${escapeHtml(words.saving || '')} · −${formatUAH(Number(bundle.discount_amount))}</span>`;
     }
 
     return `
@@ -704,6 +726,11 @@ class CartPageController {
   }
 
   updatePaymentSummary(payType, state = this.state) {
+    const delivery = document.querySelector('[data-cart-delivery-status]');
+    const bundleWords = document.getElementById('garment-bundle-copy');
+    if (delivery && bundleWords && state && typeof state.shipping_free === 'boolean') {
+      try {const words = JSON.parse(bundleWords.textContent);delivery.textContent = state.shipping_free ? words.shipping_free : words.shipping_paid;} catch (_) {}
+    }
     if (!this.payNowAmountEl || !state) {
       return;
     }

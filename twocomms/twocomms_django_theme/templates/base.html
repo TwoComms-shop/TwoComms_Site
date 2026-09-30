@@ -958,10 +958,11 @@
   Экономия: ~4 KB inline HTML per page, те же правила применяются на html.perf-lite.
   {% endcomment %}
 
-  <link rel="stylesheet" href="{% static 'css/brigade-commerce.css' %}?v=20260930-1">
+  <link rel="stylesheet" href="{% static 'css/brigade-commerce.css' %}?v=20260930-2">
+  <link rel="stylesheet" href="{% static 'css/garment-bundle.css' %}?v=20260930-1">
   {% block extra_css %}{% endblock %}
   <link rel="stylesheet" href="{% static 'css/mobile-shell.css' %}?v=20260812-mobile-bottom-nav-v1">
-  <link rel="stylesheet" href="{% static 'css/mini-cart.css' %}?v=20260812-reference-mini-cart-v4">
+  <link rel="stylesheet" href="{% static 'css/mini-cart.css' %}?v=20260930-calm-cart-v5">
   <style>{% inline_static "fable5/thermo-dot.css" %}</style>
 
   <link rel="stylesheet" href="{% static 'css/telegram-verify.css' %}"
@@ -1381,7 +1382,7 @@
   {% elif request.resolver_match.url_name == 'product_detail' %}
   <link rel="modulepreload" href="{% static 'js/modules/product-media.js' %}?v=20260715-fable5-v1" crossorigin="anonymous">
   {% endif %}
-  <script type="module" src="{% static 'js/main.js' %}?v=20260930-brigade-v1" onload="this.classList.add('script-loaded')"
+  <script type="module" src="{% static 'js/main.js' %}?v=20260930-bundles-v2" onload="this.classList.add('script-loaded')"
     onerror="this.classList.add('script-error')" crossorigin="anonymous"></script>
   <script defer src="{% static 'js/mobile-shell.js' %}?v=20260809-shell-stability"></script>
 
@@ -1573,6 +1574,8 @@
   </script>
   <script defer src="{% static 'js/language-suggestion.js' %}?v=20260814-locale-gate"></script>
 
+{% include 'partials/garment_bundle_dialog.html' %}
+<script defer src="{% static 'js/garment-bundle.js' %}?v=20260930-1"></script>
 </body>
 
 </html>

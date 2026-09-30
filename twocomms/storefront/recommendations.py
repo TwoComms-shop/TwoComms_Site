@@ -39,9 +39,23 @@ class ProductRecommendationEngine:
             else:
                 recommendations = self._get_home_recommendations(limit)
 
+            recommendations = self._unique_recommendations(recommendations, product, limit)
             self.cache.set(cache_key, recommendations, self.cache_timeout)
 
-        return recommendations
+        # Older cache entries can contain overlaps between the category,
+        # co-purchase and popularity sources, including the current product.
+        return self._unique_recommendations(recommendations, product, limit)
+
+    @staticmethod
+    def _unique_recommendations(recommendations, product, limit):
+        seen = {product.pk} if product is not None else set()
+        unique = []
+        for candidate in recommendations:
+            if candidate.pk in seen:
+                continue
+            seen.add(candidate.pk)
+            unique.append(candidate)
+        return unique[:limit]
 
     def _get_product_recommendations(self, product, limit):
         """

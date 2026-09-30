@@ -7,7 +7,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 
 from product_catalog.models import (
-    GarmentFlow, GarmentFlowCategory, ProductOptionProfile,
+    GarmentFlow, GarmentFlowCategory, ProductOptionProfile, ProductOptionProfileI18n,
     VariantCombinationProfile, VariantDetails, VariantFitRule, VariantSizeRule,
 )
 from productcolors.models import Color, ProductColorVariant
@@ -17,7 +17,8 @@ from storefront.models import (
 )
 from storefront.services.marketplace_feeds import (
     build_google_merchant_feed_xml, build_meta_catalog_feed_xml,
-    build_profile_offers, iter_feed_offers,
+    build_profile_offers, iter_feed_offers, build_uaprom_products_feed_xml,
+    build_prom_feed_xml, build_kasta_feed_xml,
 )
 from storefront.utils.analytics_helpers import get_offer_id
 
@@ -188,3 +189,132 @@ class MarketplaceFeedConfigurationTests(TestCase):
         offer = self.offers()[0]
         self.assertEqual(offer.price, 1245)
         self.assert_pdp_price(offer)
+
+    def bezzet(self, *, feed=None):
+        return ET.fromstring(build_uaprom_products_feed_xml(feed=feed)).findall("shop/offers/offer")
+
+    def use_current_tee_prices(self):
+        self.product.price = 1100
+        self.product.save(update_fields=["price"])
+        ProductOptionProfile.objects.filter(product=self.product, option_key="fit=oversize").update(price_delta=150)
+
+    def test_bezzet_both_fits_have_live_uk_ru_prices_and_request_confirmation(self):
+        self.use_current_tee_prices()
+        first = self.bezzet()[0]
+        self.assertTrue(first.findtext("name").endswith("[Classic / Oversize]"))
+        self.assertTrue(first.findtext("name_ru").endswith("[Classic / Oversize]"))
+        self.assertEqual(first.findtext("price"), "1100")
+        self.assertEqual(first.attrib["id"], f"{self.product.pk}-{self.variant.pk}-S")
+        self.assertEqual(first.attrib["group_id"], f"{self.product.pk}-{self.variant.pk}")
+        for field in ("description_ua", "description_ru"):
+            description = first.findtext(field)
+            self.assertIn("Classic — 1100 грн", description)
+            self.assertIn("Oversize — 1250 грн", description)
+            self.assertIn("Менеджер", description)
+            self.assertIn("заявка", description)
+            self.assertNotIn("г/м", description)
+            self.assertNotIn("175", description)
+        response = self.client.get(urlsplit(first.findtext("url")).path)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["selected_variant_price"], Decimal("1100"))
+
+    def test_bezzet_oversize_only_does_not_advertise_unavailable_classic(self):
+        self.use_current_tee_prices()
+        VariantFitRule.objects.create(variant=self.variant, fit_code="classic", is_enabled=False)
+        first = self.bezzet()[0]
+        self.assertTrue(first.findtext("name").endswith("[Oversize]"))
+        self.assertEqual(first.findtext("price"), "1250")
+        for field in ("description_ua", "description_ru"):
+            self.assertIn("Oversize — 1250 грн", first.findtext(field))
+            self.assertNotIn("Classic", first.findtext(field))
+            self.assertNotIn("1100", first.findtext(field))
+        self.assertTrue(first.findtext("url").endswith("/oversize/"))
+
+    def test_bezzet_classic_price_link_can_differ_from_merchant_default_without_changing_merchant(self):
+        self.use_current_tee_prices()
+        self.oversize.is_default = True
+        self.oversize.save()
+        first = self.bezzet()[0]
+        self.assertEqual(first.findtext("price"), "1100")
+        self.assertTrue(first.findtext("url").endswith("/classic/"))
+        response = self.client.get(urlsplit(first.findtext("url")).path)
+        self.assertEqual(response.context["selected_variant_price"], Decimal("1100"))
+        self.assertEqual(self.offers()[0].price, 1250)
+        for builder in (build_google_merchant_feed_xml, build_meta_catalog_feed_xml):
+            item = ET.fromstring(builder()).find("channel/item")
+            self.assertEqual(item.findtext("g:price", namespaces=G), "1250.00 UAH")
+
+    def test_bezzet_size_specific_alternate_fit_and_staff_sold_out_rules(self):
+        self.use_current_tee_prices()
+        VariantSizeRule.objects.create(variant=self.variant, size="S", fit_code="classic", is_enabled=False)
+        VariantSizeRule.objects.create(variant=self.variant, size="M", is_enabled=False)
+        offers = self.bezzet()
+        first = offers[0]
+        self.assertTrue(first.findtext("name").endswith("[Oversize]"))
+        self.assertEqual(first.findtext("price"), "1250")
+        self.assertEqual(first.attrib["available"], "true")
+        self.assertEqual(first.findtext("stock_quantity"), "100")
+        unavailable = next(offer for offer in offers if offer.attrib["id"].endswith("-M"))
+        self.assertEqual(unavailable.attrib["available"], "false")
+        self.assertEqual(unavailable.findtext("stock_quantity"), "0")
+        feed = MarketplaceFeed.objects.create(
+            name="BZ sold out", slug="bz-sold-out", adapter="bezzet",
+            rules={"availability": {"mode": "force_out_of_stock"}},
+        )
+        forced = self.bezzet(feed=feed)[0]
+        self.assertEqual(forced.attrib["available"], "false")
+        self.assertEqual(forced.findtext("stock_quantity"), "0")
+        feed.rules = {"availability": {"mode": "force_in_stock", "quantity": 999}}
+        feed.save(update_fields=["rules"])
+        forced_unavailable = next(offer for offer in self.bezzet(feed=feed) if offer.attrib["id"].endswith("-M"))
+        self.assertEqual(forced_unavailable.attrib["available"], "false")
+        self.assertEqual(forced_unavailable.findtext("stock_quantity"), "0")
+
+    def test_bezzet_fit_fabric_copy_uses_only_localized_fit_owner_metadata(self):
+        self.use_current_tee_prices()
+        profile = ProductOptionProfile.objects.get(product=self.product, option_key="fit=oversize")
+        ProductOptionProfileI18n.objects.create(
+            profile=profile, lang="uk", marketing_text="Перевірена тканина: 190 г/м².",
+        )
+        ProductOptionProfileI18n.objects.create(
+            profile=profile, lang="ru", marketing_text="Проверенная ткань: 190 г/м².",
+        )
+        first = self.bezzet()[0]
+        self.assertIn("Перевірена тканина: 190 г/м²", first.findtext("description_ua"))
+        self.assertIn("Проверенная ткань: 190 г/м²", first.findtext("description_ru"))
+        self.assertNotIn("Перевірена", first.findtext("description_ru"))
+        self.assertNotIn("160 г", first.findtext("description_ua"))
+
+    def test_bezzet_225_prices_and_full_payment_terms_are_from_current_contract(self):
+        self.use_current_tee_prices()
+        self.product.slug = "225-tshirt"
+        self.product.save(update_fields=["slug"])
+        self.variant.price_override = 880
+        self.variant.save(update_fields=["price_override"])
+        first = self.bezzet()[0]
+        self.assertEqual(first.findtext("price"), "880")
+        for field in ("description_ua", "description_ru"):
+            self.assertIn("Classic — 880 грн", first.findtext(field))
+            self.assertIn("Oversize — 1030 грн", first.findtext(field))
+            self.assertNotIn("175", first.findtext(field))
+            self.assertNotIn("передоплат", first.findtext(field))
+        self.assertIn("повною оплатою", first.findtext("description_ua"))
+        self.assertIn("полной оплате", first.findtext("description_ru"))
+
+    def test_bezzet_presentation_does_not_leak_into_prom_or_kasta(self):
+        self.use_current_tee_prices()
+        for builder in (build_prom_feed_xml, build_kasta_feed_xml):
+            first = ET.fromstring(builder()).find("shop/offers/offer")
+            self.assertEqual(first.findtext("price"), "1100")
+            self.assertNotIn("Classic / Oversize", first.findtext("name"))
+            self.assertNotIn("Менеджер", first.findtext("description"))
+        self.assertEqual(ProductFitOption.objects.filter(product=self.product).count(), 2)
+
+    def test_bezzet_dynamic_endpoint_returns_updated_xml_without_snapshot_command(self):
+        self.use_current_tee_prices()
+        response = self.client.get("/products_feed.xml", secure=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("no-store", response["Cache-Control"])
+        first = ET.fromstring(response.content).find("shop/offers/offer")
+        self.assertEqual(first.findtext("price"), "1100")
+        self.assertTrue(first.findtext("name").endswith("[Classic / Oversize]"))

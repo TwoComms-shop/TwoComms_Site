@@ -1,0 +1,7 @@
+{% load garment_bundle_tags %}{% bundle_words as bundle_copy %}
+{{ bundle_copy|json_script:"garment-bundle-copy" }}
+<dialog class="garment-dialog" id="garment-bundle-dialog" aria-labelledby="garment-bundle-title" data-size-guide-url="{% url 'size_guide' %}" data-options-url="{% url 'cart_bundle_options' %}" data-add-url="{% url 'cart_bundle_add' %}">
+ <div class="garment-dialog__header"><div><span class="garment-eyebrow">{{ bundle_copy.eyebrow }}</span><h2 id="garment-bundle-title">{{ bundle_copy.title }}</h2></div><button type="button" class="garment-dialog__close" data-bundle-close aria-label="{{ bundle_copy.close }}">×</button></div>
+ <div class="garment-dialog__content" data-bundle-content></div>
+ <p class="garment-dialog__status" data-bundle-status role="status" aria-live="polite"></p>
+</dialog>

@@ -88,6 +88,7 @@
     <!-- Основная часть корзины -->
     <div class="cart-main-section">
       {% include "partials/brigade_cart_offer.html" %}
+      {% include "partials/garment_bundle_cart_offer.html" %}
       {% if has_any_items %}
         <div class="cart-items-background">
           <div class="cart-items-pattern"></div>
@@ -337,7 +338,11 @@
                     {% if it.original_unit_price and it.original_unit_price > it.unit_price %}
                       <span class="cart-item-price-old">{{ it.original_unit_price|floatformat:2 }} {% trans 'грн' %}</span>
                     {% endif %}
-                    <span class="cart-item-price-current">{{ it.unit_price|floatformat:2 }} {% trans 'грн' %}</span>
+                    {% if it.bundle_pricing.discount_amount and it.bundle_pricing.tiers %}
+                      {% for tier in it.bundle_pricing.tiers %}<span class="cart-item-price-current">{{ tier.qty }} × {{ tier.unit_price|floatformat:2 }} {% trans 'грн' %}</span>{% endfor %}
+                    {% else %}
+                      <span class="cart-item-price-current">{{ it.unit_price|floatformat:2 }} {% trans 'грн' %}</span>
+                    {% endif %}
                   </span>
                 </div>
                 <!-- Информация о баллах -->
@@ -923,7 +928,7 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
           </svg>
-          {% trans 'Доставка оплачується згідно тарифів перевізника.' %}
+          {% load garment_bundle_tags %}{% bundle_words as delivery_copy %}<span data-cart-delivery-status>{% if shipping_free %}{{ delivery_copy.shipping_free }}{% else %}{{ delivery_copy.shipping_paid }}{% endif %}</span>
         </div>
 
 <div class="cart-checkout-actions"
