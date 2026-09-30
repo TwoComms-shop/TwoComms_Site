@@ -83,3 +83,41 @@
 Для этих вариантов скидки на товары тоже равны 300 / 250 грн от отдельных цен 2950 / 3100. Полный oversize-комплект 3100 пересекает порог доставки; полный classic 2950 — нет. Условия перевозки показываются отдельно, без обещания безусловного уменьшения полной оплаты на сумму товарной скидки.
 
 В реализации нужно сохранить обычный выбор размера, цвета и посадки обеих вещей, корректно вернуть **обе одиночные цены** при удалении одной вещи и не менять историю оплаченных заказов. Подтверждение реализации и выпуска ведётся отдельно в release.md.
+
+
+## Clarified discount tiers and shipping presentation
+
+Retain 300 UAH total pair saving for a verified matching print and 250 UAH
+for different prints. A universal 300 UAH offer is not justified by measured
+conversion data: the additional 50 UAH discount consumes 46 UAH of contribution
+under the existing 8% reserve assumption. No matching-print production saving
+has been established. These remain merchandise discounts, not shipping savings.
+
+For the standard 1995 UAH hoodie, the discounted pair totals are:
+
+| Tee | Matching print | Different prints | Gap to free shipping |
+| --- | ---: | ---: | --- |
+| Classic | 2795 | 2845 | 205 / 155 |
+| Oversize | 2945 | 2995 | 55 / 5 |
+
+Two standard hoodies total 3990 UAH and qualify for free shipping. At CPA
+7–10 USD and 44.8624 UAH/USD, their contribution is approximately 1057–922 UAH
+before the actual outbound shipping tariff and fixed costs. Do not describe
+this as net profit. A customer should see the exact remaining shipping gap;
+we should not imply that an expensive extra item is necessarily worth buying
+just to bridge a 5 UAH gap. Shipping qualification uses all payable goods in
+the order after discounts.
+
+PDP and mini-cart now expose the same server-derived design tiers. If there
+is no verified available matching partner, the headline stays at the actual
+250 UAH bound. Mini-cart identifies the cart item whose remaining unpaired
+quantity generated its offer; it can differ from the product currently being
+viewed. Selected cart prices can only reduce the advertised bound. The
+expanded terms show both amounts and a direct matching-product link.
+
+The shipping threshold is visible next to its benefit in a bordered warm-gold
+panel. A stationary border/glow cue runs twice over 2.8 seconds on first
+visibility, stops afterward, and is disabled for reduced-motion preferences.
+This is a design hypothesis, not a measured heat map or conversion lift.
+Supporting UX research: https://baymard.com/research-articles/avoid-banners-only-free-shipping
+and https://www.nngroup.com/articles/animation-usability/ .

@@ -50,6 +50,7 @@ def garment_mini_cart_offer(context):
     so its net benefit cannot be promised by this category invitation.
     """
     from decimal import Decimal, ROUND_FLOOR
+    from django.urls import reverse
     from storefront.services.brigade_commerce import get_product_brigade_policy
     from storefront.services.garment_bundle import is_bundle_product_eligible, hoodie_offer_price, tee_offer_price
 
@@ -96,18 +97,26 @@ def garment_mini_cart_offer(context):
             )
         standalone = Decimal(str(standalone))
         hoodie_discount = Decimal(str(offer.get('hoodie_unit_discount') or 0))
-        nominal_saving = Decimal(str(offer.get('total_saving') or 0))
-        if policy['garment'] == 'tee':
-            variant_base = variant.price_override if variant else None
-            retail = standalone + (Decimal(product.price) - Decimal(product.final_price) if variant_base is None else 0)
-            selected_offer = tee_offer_price(product, standalone, retail,
-                                            same_design=offer.get('is_same_design', False), variant_base=variant_base)
-            saving = standalone - selected_offer + hoodie_discount
-        else:
-            saving = nominal_saving - hoodie_discount + standalone - hoodie_offer_price(standalone)
-        # The inline copy renders whole UAH; rounding must never overpromise.
-        saving = min(nominal_saving, saving).quantize(Decimal('1'), rounding=ROUND_FLOOR)
+        savings = {}
+        for field, same_design in (('same_print_saving', True), ('other_print_saving', False)):
+            nominal = Decimal(str(offer.get(field) or 0))
+            if nominal <= 0:
+                savings[field] = 0
+                continue
+            if policy['garment'] == 'tee':
+                variant_base = variant.price_override if variant else None
+                retail = standalone + (Decimal(product.price) - Decimal(product.final_price) if variant_base is None else 0)
+                selected_offer = tee_offer_price(product, standalone, retail,
+                                                same_design=same_design, variant_base=variant_base)
+                saving = standalone - selected_offer + hoodie_discount
+            else:
+                saving = nominal - hoodie_discount + standalone - hoodie_offer_price(standalone)
+            # The inline copy renders whole UAH; rounding must never overpromise.
+            savings[field] = max(0, int(min(nominal, saving).quantize(Decimal('1'), rounding=ROUND_FLOOR)))
+        saving = max(savings.values())
         if saving <= 0:
             continue
-        return {**offer, 'kind': policy['garment'], 'total_saving': int(saving)}
+        return {**offer, **savings, 'kind': policy['garment'], 'total_saving': saving,
+                'source_product_id': product.pk, 'source_title': product.title,
+                'source_product_url': reverse('product', kwargs={'slug': product.slug})}
     return None

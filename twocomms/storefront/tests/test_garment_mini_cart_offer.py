@@ -85,7 +85,13 @@ class GarmentMiniCartOfferTests(TestCase):
                 offer = garment_mini_cart_offer(self.context({'source': self.row(product_id)}))
                 self.assertEqual((offer['kind'], offer['category_url'], offer['total_saving']),
                                  (kind, f'/catalog/{category}/', 300))
+                self.assertEqual((offer['same_print_saving'], offer['other_print_saving']), (300, 250))
+                self.assertEqual(offer['source_product_id'], product_id)
+                self.assertEqual(offer['source_title'], self.products[product_id].title)
+                self.assertEqual(offer['source_product_url'], f'/product/{self.products[product_id].slug}/')
         with override('en'):
+            offer = garment_mini_cart_offer(self.context({'tee': self.row(4)}))
+            self.assertEqual(offer['source_product_url'], '/en/product/my-little-baby/')
             rendered = Template('{% load garment_bundle_tags %}{% garment_mini_cart_offer as offer %}{{ offer.category_url }}').render(
                 self.context({'tee': self.row(4)}))
         self.assertEqual(rendered, '/en/catalog/hoodie/')
@@ -133,10 +139,24 @@ class GarmentMiniCartOfferTests(TestCase):
         self.sale_variants()
         offer = garment_mini_cart_offer(self.context({'t': self.row(4, color_variant_id=2004)}))
         self.assertEqual(offer['total_saving'], 50)
+        self.assertEqual((offer['same_print_saving'], offer['other_print_saving']), (50, 50))
         ProductColorVariant.objects.filter(pk=2004).delete()
         cache.clear()
         offer = garment_mini_cart_offer(self.context({'h': self.row(5, color_variant_id=2005)}))
         self.assertEqual(offer['total_saving'], 289)
+        self.assertEqual(offer['other_print_saving'], 239)
+
+    def test_different_pdp_and_cart_source_explains_different_savings(self):
+        from storefront.templatetags.garment_bundle_tags import garment_product_offer
+
+        Product.objects.filter(pk=14).update(status='draft')
+        pdp = garment_product_offer(self.products[13])
+        self.assertEqual((pdp['same_print_saving'], pdp['other_print_saving'], pdp['total_saving']), (0, 250, 250))
+        mini = garment_mini_cart_offer(self.context({'earlier': self.row(4), 'current': self.row(13)}))
+        self.assertEqual(mini['source_product_id'], 4)
+        # Only Baby hoodie remains published, so this source has no real
+        # different-print hoodie candidate; the matching invitation is300.
+        self.assertEqual((mini['same_print_saving'], mini['other_print_saving'], mini['total_saving']), (300, 0, 300))
 
     def test_selected_fit_and_option_delta_uses_actual_unpaired_unit(self):
         self.sale_variants()

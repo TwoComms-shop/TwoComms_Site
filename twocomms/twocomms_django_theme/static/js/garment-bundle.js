@@ -1,3 +1,18 @@
+/* A brief, one-time cue when the shipping condition enters the viewport. */
+(() => {
+  const notices = document.querySelectorAll('[data-shipping-attention]');
+  if (!notices.length || !('IntersectionObserver' in window) ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting || entry.intersectionRatio < .6) return;
+      entry.target.classList.add('is-highlighted');
+      observer.unobserve(entry.target);
+    });
+  }, {threshold: .6});
+  notices.forEach(notice => observer.observe(notice));
+})();
+
 /* A separate chooser keeps the tee's size and fit independent of the hoodie. */
 (() => {
   'use strict';

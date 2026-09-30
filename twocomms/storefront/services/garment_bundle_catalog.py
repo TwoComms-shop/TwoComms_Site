@@ -176,7 +176,8 @@ def _category_previews(category, preferred, language):
 def garment_bundle_offer_summary(product, language=None):
     """Cheap PDP hint. Full colour/fit/size choices load only on chooser open."""
     from django.core.cache import cache
-    from django.db.models import Case, IntegerField, Value, When
+    from decimal import Decimal, ROUND_FLOOR
+    from django.db.models import Case, Exists, IntegerField, Q, Value, When
     from django.urls import reverse
     from django.utils.translation import override
     from storefront.services.catalog_helpers import get_public_product_order_version
@@ -185,7 +186,7 @@ def garment_bundle_offer_summary(product, language=None):
     if product.status != "published" or category not in {"hoodie", "tshirts"} or is_bundle_excluded(product):
         return {"eligible": False}
     language = _language(language)
-    cache_key = f"garment-bundle-summary-v4:{get_public_product_order_version()}:{language}:{product.pk}:{product.slug}"
+    cache_key = f"garment-bundle-summary-v5:{get_public_product_order_version()}:{language}:{product.pk}:{product.slug}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -194,8 +195,15 @@ def garment_bundle_offer_summary(product, language=None):
     candidates = _eligible_products("tshirts" if hoodie_view else "hoodie")
     if hoodie_view:
         candidates = candidates.filter(fit_options__code="classic", fit_options__is_active=True)
+    matching = Q(pk__in=[])
+    for pair in VERIFIED_SAME_PRINT_PAIRS:
+        candidate_id, candidate_slug = ((pair.tee_id, pair.tee_slug) if hoodie_view else
+                                        (pair.hoodie_id, pair.hoodie_slug))
+        if candidate_id in preferred:
+            matching |= Q(pk=candidate_id, slug=candidate_slug)
     partner = candidates.annotate(
-        bundle_rank=Case(When(pk__in=preferred, then=Value(0)), default=Value(1), output_field=IntegerField())
+        bundle_rank=Case(When(pk__in=preferred, then=Value(0)), default=Value(1), output_field=IntegerField()),
+        bundle_other_available=Exists(candidates.exclude(matching)),
     ).order_by("bundle_rank", "pk").first()
     if partner is None:
         return {"eligible": False}
@@ -226,6 +234,12 @@ def garment_bundle_offer_summary(product, language=None):
     default_fit = fits["classic"] or fits["oversize"]
     if default_fit is None:
         return {"eligible": False}
+    # Keep the existing purchasable default choice. Expose both design tiers
+    # from its central quote, without inventing an unavailable matching print.
+    savings = {key: int(Decimal(str(default_fit.get(key) or 0)).quantize(Decimal('1'), rounding=ROUND_FLOOR))
+               for key in ('same_print_saving', 'other_print_saving')}
+    if not partner.bundle_other_available:
+        savings['other_print_saving'] = 0
     with override(language):
         result = {
             "eligible": True,
@@ -243,7 +257,8 @@ def garment_bundle_offer_summary(product, language=None):
             "oversize_saving": fits["oversize"]["total_saving"] if fits["oversize"] else None,
             "classic_pair_total": fits["classic"]["pair_total"] if fits["classic"] else None,
             "oversize_pair_total": fits["oversize"]["pair_total"] if fits["oversize"] else None,
-            "total_saving": default_fit["total_saving"],
+            **savings,
+            "total_saving": max(savings.values()),
             "pair_total": default_fit["pair_total"],
             **_hoodie_offer_context(hoodie),
             "lazy_choices": True,
@@ -442,13 +457,22 @@ def _build_product_choices(hoodie, products, language, kind="ordinary"):
                             offered = garment_bundle_tee_offer_price(
                                 product, variant, fit_code=fit["code"], option_values=options, same_design=same,
                             )
-                        fits.append({
+                        fit_payload = {
                             "code": fit["code"], "label": fit["label"], "sizes": list(sizes),
                             "option_values": options, "available": True,
                             "standalone_unit_price": float(standalone), "offer_unit_price": float(offered),
                             "pair_total": float(hoodie_offer + offered),
                             "total_saving": float(hoodie_discount + standalone - offered),
-                        })
+                        }
+                        if kind == 'ordinary':
+                            other_offered = garment_bundle_tee_offer_price(
+                                product, variant, fit_code=fit['code'], option_values=options, same_design=False,
+                            )
+                            fit_payload.update(
+                                same_print_saving=float(hoodie_discount + standalone - offered) if same else 0,
+                                other_print_saving=float(hoodie_discount + standalone - other_offered),
+                            )
+                        fits.append(fit_payload)
                     if not fits:
                         continue
                     images = list(variant.images.all())

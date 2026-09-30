@@ -1424,3 +1424,13 @@
   :is(#mini-cart-panel, #mini-cart-panel-mobile) :is(.mini-cart-row__media, .mini-cart-row__image) { width: 50px !important; max-width: 50px !important; }
   :is(#mini-cart-panel, #mini-cart-panel-mobile) .mini-cart-row__price { font-size: 12px; }
 }
+
+.mini-cart-offer__terms{margin-top:3px}
+.mini-cart-offer__terms summary{display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:24px;cursor:pointer;font-size:10px;color:#c5b6a3;list-style:none}
+.mini-cart-offer__terms summary::-webkit-details-marker{display:none}
+.mini-cart-offer__terms summary>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.mini-cart-offer__terms summary>span:last-child{flex-shrink:0;color:#e2c08f}
+.mini-cart-offer__terms summary i{display:inline-block;font-style:normal;margin-left:3px}
+.mini-cart-offer__terms[open] summary i{transform:rotate(180deg)}
+.mini-cart-offer__terms summary:focus-visible{outline:2px solid #f1d094;outline-offset:2px;border-radius:3px}
+.mini-cart-offer__terms .garment-discount-terms{border-top:1px solid rgba(239,163,75,.18);margin-top:3px}

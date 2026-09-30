@@ -309,11 +309,33 @@ class GarmentBundleCatalogTests(TestCase):
         self.assertEqual((summary["classic_price"], summary["oversize_price"]), (850, 1000))
         self.assertEqual((summary["hoodie_price"], summary["hoodie_offer_price"], summary["hoodie_unit_discount"]), (1995, 1945, 50))
         self.assertEqual((summary["classic_saving"], summary["oversize_saving"], summary["total_saving"]), (300, 300, 300))
+        self.assertEqual((summary['same_print_saving'], summary['other_print_saving']), (300, 250))
         self.assertEqual((summary["classic_pair_total"], summary["oversize_pair_total"], summary["pair_total"]), (2795, 2945, 2795))
         tee = Product.objects.select_related("category").get(pk=4)
         reverse = garment_bundle_offer_summary(tee)
         self.assertEqual((reverse["kind"], reverse["hoodie_id"]), ("tee", 5))
         self.assertFalse(garment_bundle_offer_summary(Product.objects.select_related("category").get(pk=110))["eligible"])
+
+    def test_summary_does_not_claim_matching_tier_when_matching_partner_is_unavailable(self):
+        Product.objects.filter(pk=5).update(status='draft')
+        tee = Product.objects.select_related('category').get(pk=4)
+        summary = garment_bundle_offer_summary(tee)
+        self.assertEqual(summary['hoodie_id'], 11)
+        self.assertEqual((summary['same_print_saving'], summary['other_print_saving'], summary['total_saving']), (0, 250, 250))
+        self.assertFalse(summary['is_same_design'])
+
+    def test_summary_savings_are_floored_and_ordinary_fit_tiers_share_central_prices(self):
+        self.hoodie.price = 40
+        summary = garment_bundle_offer_summary(self.hoodie)
+        self.assertEqual((summary['same_print_saving'], summary['other_print_saving'], summary['total_saving']), (289, 239, 289))
+        fits = self.matching_row(garment_bundle_tee_catalog(self.hoodie))['variants'][0]['fits']
+        self.assertEqual([(fit['same_print_saving'], fit['other_print_saving']) for fit in fits], [(289.99, 239.99), (289.99, 239.99)])
+
+    def test_summary_other_tier_requires_real_published_other_partner(self):
+        Product.objects.filter(pk=11).update(status='draft')
+        tee = Product.objects.select_related('category').get(pk=4)
+        summary = garment_bundle_offer_summary(tee)
+        self.assertEqual((summary['same_print_saving'], summary['other_print_saving'], summary['total_saving']), (300, 0, 300))
 
     def test_summary_links_entire_opposite_category_in_each_language(self):
         tee = Product.objects.select_related("category").get(pk=4)

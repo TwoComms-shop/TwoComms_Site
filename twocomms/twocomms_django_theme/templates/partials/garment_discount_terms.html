@@ -1,0 +1,6 @@
+<div class="garment-discount-terms">
+  {% if discount_offer.same_print_saving %}<div class="garment-discount-terms__row"><span>{{ bundle_copy.same_print_saving }}</span><strong>{{ bundle_copy.up_to }} {{ discount_offer.same_print_saving|floatformat:0 }}&nbsp;{{ bundle_copy.currency }}</strong></div>{% endif %}
+  {% if discount_offer.other_print_saving %}<div class="garment-discount-terms__row"><span>{{ bundle_copy.other_print_saving }}</span><strong>{{ bundle_copy.up_to }} {{ discount_offer.other_print_saving|floatformat:0 }}&nbsp;{{ bundle_copy.currency }}</strong></div>{% endif %}
+  {% if discount_offer.same_print_saving and discount_offer.is_same_design %}<a href="{{ discount_offer.url }}">{{ bundle_copy.matching_product }} ↗</a>{% else %}<p>{{ bundle_copy.no_matching_print }}</p>{% endif %}
+  <p>{{ bundle_copy.tier_note }} {{ bundle_copy.terms_more }}</p>
+</div>

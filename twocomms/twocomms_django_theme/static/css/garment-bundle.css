@@ -72,8 +72,11 @@
 .garment-dialog[data-bundle-kind="ordinary"] .garment-option[aria-pressed=true]{background:#57452e;border-color:#d8b17a;box-shadow:inset 0 0 0 1px #d8b17a}
 .garment-dialog[data-bundle-kind="ordinary"] .garment-dialog__submit:not(:disabled){background:#dab480;border-color:#e7c79c;color:#251a0d}.garment-dialog[data-bundle-kind="ordinary"] .garment-dialog__submit:not(:disabled):hover{background:#edcca0}
 
-.garment-offer__shipping{display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px 0 7px;color:#dcbc8f;border-top:1px solid rgba(220,188,143,.2)}
-.garment-offer__shipping svg{flex-shrink:0}.garment-offer__shipping strong{display:block;font-size:12px;line-height:1.4;font-weight:650;color:#f0d9b7}.garment-offer__shipping small{display:block;font-size:10px;line-height:1.4;color:#cbb79c;margin-top:2px}
+.garment-offer__shipping{display:flex;align-items:center;gap:11px;margin-top:12px;padding:11px 12px;color:#ffd394;border:1px solid rgba(232,180,108,.34);border-radius:10px;background:linear-gradient(110deg,rgba(214,147,58,.14),rgba(214,147,58,.04))}
+.garment-offer__shipping svg{flex-shrink:0}.garment-offer__shipping strong{display:block;font-size:13px;line-height:1.4;font-weight:650;color:#ffe1b6}.garment-offer__shipping small{display:block;font-size:11px;line-height:1.4;color:#d8c4a9;margin-top:3px}
+@keyframes garment-shipping-cue{0%,100%{box-shadow:0 0 0 rgba(236,170,77,0)}50%{box-shadow:0 0 16px rgba(236,170,77,.2);border-color:rgba(249,197,117,.7)}}
+.garment-offer__shipping.is-highlighted{animation:garment-shipping-cue 1.4s ease-in-out 2}
+@media(prefers-reduced-motion:reduce){.garment-offer__shipping.is-highlighted{animation:none}}
 
 /* Real collection imagery makes the category destination clear. */
 .garment-offer--category .garment-offer__copy p{margin-bottom:12px}
@@ -93,3 +96,9 @@
 .garment-offer__category-heading h2{font-size:25px;font-weight:700;line-height:1.2;letter-spacing:-.025em;color:#fff1dc;margin:0}
 .garment-offer__category-intro{font-size:13px;line-height:1.5;color:#dccab2;margin:0 0 12px;max-width:440px}
 @media(max-width:575px){.garment-offer__category-heading h2{font-size:23px}}
+
+.garment-discount-terms{padding-top:8px;font-size:11px;line-height:1.6;color:#d3c5b3}
+.garment-discount-terms__row{display:flex;justify-content:space-between;gap:12px;padding:3px 0}
+.garment-discount-terms__row strong{color:#f1d094;white-space:nowrap;font-weight:650}
+.garment-discount-terms>a{display:inline-block;color:#f1d094;text-underline-offset:3px;margin-top:5px}
+.garment-discount-terms p{margin:7px 0 0}
