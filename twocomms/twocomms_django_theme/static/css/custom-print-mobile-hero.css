@@ -33,7 +33,7 @@
 }
 .cp-mobile-hero { display: none; }
 
-@media (max-width: 760px) {
+@media (max-width: 991.98px) {
   html:has(.cp-page), body:has(.cp-page) { min-width: 0; }
   html, body, #main-content { background: #030303 !important; }
   body main#main-content.container-xxl {
@@ -51,6 +51,10 @@
     display: block;
     position: relative;
     isolation: isolate;
+    container-type: inline-size;
+    width: 100%;
+    max-width: 560px;
+    margin-inline: auto;
     overflow: hidden;
     padding: 15px 0 48px;
     color: #efefef;
@@ -63,7 +67,7 @@
   .cp-mobile-hero__eyebrow {
     margin: 0 0 8px;
     color: #e9b648;
-    font-size: clamp(9px, 2.28vw, 15px);
+    font-size: clamp(9px, 2.37cqw, 15px);
     font-weight: 400;
     line-height: 1.5;
     letter-spacing: .34em;
@@ -72,7 +76,7 @@
   .cp-mobile-hero__title {
     margin: 0;
     font-family: Montserrat, Inter, sans-serif;
-    font-size: clamp(40px, 13.2vw, 89px);
+    font-size: clamp(40px, 13.73cqw, 89px);
     font-weight: 900;
     line-height: 1.04;
     letter-spacing: -.035em;
@@ -99,7 +103,7 @@
     max-width: 34em;
     margin: 9px auto 0;
     color: #c4c3c3;
-    font-size: clamp(12px, 3.15vw, 19px);
+    font-size: clamp(12px, 3.28cqw, 19px);
     font-weight: 400;
     line-height: 1.24;
     text-wrap: pretty;
@@ -125,15 +129,15 @@
     background: #060606b3;
     color: #bbb;
     font: inherit;
-    font-size: clamp(9px, 2.35vw, 15px);
+    font-size: clamp(9px, 2.44cqw, 15px);
     white-space: nowrap;
     cursor: pointer;
     transition: border-color .2s, color .2s, box-shadow .2s;
   }
   .cp-mobile-hero__choice svg {
     flex: 0 0 auto;
-    width: clamp(16px, 4.3vw, 27px);
-    height: clamp(16px, 4.3vw, 27px);
+    width: clamp(16px, 4.47cqw, 27px);
+    height: clamp(16px, 4.47cqw, 27px);
     fill: none;
     stroke: #92918f;
     stroke-width: 1.45;
@@ -150,7 +154,21 @@
   .cp-mobile-hero__choice[aria-busy="true"] { border-color: #b09050; }
   .cp-mobile-hero :is(button, a):focus-visible { outline: 2px solid #ffe09a; outline-offset: 4px; }
 
-  .cp-mobile-hero__scene { position: relative; z-index: 1; height: 91vw; margin-top: 4px; }
+  .cp-mobile-hero__scene { position: relative; z-index: 1; height: 104cqw; margin-top: 8px; }
+  .cp-mobile-hero__scene::after {
+    content: "";
+    position: absolute;
+    z-index: 2;
+    right: 8%;
+    bottom: -3%;
+    left: 8%;
+    height: 24%;
+    background: radial-gradient(ellipse at 27% 65%, #cfa15b55, transparent 49%), radial-gradient(ellipse at 72% 54%, #efd6a044, transparent 46%);
+    filter: blur(9px);
+    opacity: .2;
+    pointer-events: none;
+    animation: cp-hero-mist 9s ease-in-out infinite alternate;
+  }
   .cp-mobile-hero__art { position: absolute; inset: 0 0 -160px; pointer-events: none; }
   .cp-mobile-hero__art picture {
     position: absolute;
@@ -164,13 +182,15 @@
   .cp-mobile-hero__art picture.is-active { opacity: 1; }
   .cp-mobile-hero__art img {
     position: absolute;
-    top: -25vw;
-    left: 0;
+    top: -14.56cqw;
+    left: 5%;
     display: block;
-    width: 100%;
+    width: 90%;
     max-width: none;
     height: auto;
     content-visibility: visible;
+    mask-image: linear-gradient(90deg, transparent, #000 8% 92%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8% 92%, transparent);
   }
   .cp-mobile-hero__art::after {
     content: "";
@@ -178,28 +198,39 @@
     inset: 0;
     background: linear-gradient(90deg, #03030399, transparent 15% 85%, #03030399);
   }
+  .cp-mobile-hero__annotations {
+    position: relative;
+    z-index: 3;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 0 5% 0 8%;
+  }
   .cp-mobile-hero__handwriting {
-    position: absolute;
-    top: 0;
-    left: 7%;
-    width: 19%;
+    position: relative;
+    flex: 0 0 auto;
+    width: max-content;
     color: #f2d285;
     font-family: "Bad Script", cursive;
-    font-size: clamp(16px, 4.9vw, 33px);
+    font-size: clamp(16px, 5.1cqw, 33px);
     font-weight: 400;
-    line-height: 1.02;
-    transform: rotate(-12deg);
-    text-shadow: 0 1px 10px #000;
+    line-height: 1.65;
+    text-align: left;
+    transform: rotate(-7deg);
+    transform-origin: center;
+    text-shadow: 0 1px 10px #000, 0 0 8px #dca84926;
+    animation: cp-hero-ink-breathe 4.8s ease-in-out infinite;
   }
-  .cp-mobile-hero__handwriting svg { position: absolute; right: -38%; bottom: -5px; width: 60%; height: auto; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .cp-mobile-hero__handwriting span { display: block; white-space: nowrap; }
+  .cp-mobile-hero__handwriting span + span { padding-left: 20%; }
+  .cp-mobile-hero__handwriting svg { position: absolute; left: 58%; bottom: 0; width: 53%; height: auto; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   .cp-mobile-hero__identity {
-    position: absolute;
-    top: 2px;
-    right: 4%;
-    width: 39%;
-    margin: 0;
+    flex: 0 1 45%;
+    min-width: 0;
+    margin: 5px 0 0;
     color: #bcb8b1;
-    font-size: clamp(6px, 1.7vw, 10px);
+    font-size: clamp(6px, 1.77cqw, 10px);
     line-height: 1.6;
     letter-spacing: .15em;
     text-align: right;
@@ -215,7 +246,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: clamp(10px, 3.2vw, 22px);
+    gap: clamp(10px, 3.33cqw, 22px);
     width: 100%;
     min-height: 49px;
     padding: 14px 12px;
@@ -226,7 +257,7 @@
     color: #130d04;
     box-shadow: inset 0 1px 2px #fff7dca6, inset 0 -1px 3px #ffe8a34d, 0 0 28px #b8771a30, 0 8px 18px #0006;
     font: inherit;
-    font-size: clamp(14px, 3.7vw, 24px);
+    font-size: clamp(14px, 3.85cqw, 24px);
     font-weight: 700;
     line-height: 1.15;
     cursor: pointer;
@@ -246,7 +277,7 @@
     border-radius: 999px;
     background: linear-gradient(115deg, #171613ed, #0b0b0ce8);
     color: #e7e7e7;
-    font-size: clamp(9px, 2.35vw, 15px);
+    font-size: clamp(9px, 2.44cqw, 15px);
     font-weight: 500;
     line-height: 1.2;
     text-decoration: none;
@@ -266,23 +297,34 @@
     list-style: none;
     text-align: left;
   }
-  .cp-mobile-hero__benefits li { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 8px; color: #d3d3d3; font-size: clamp(8px, 2vw, 13px); line-height: 1.4; }
+  .cp-mobile-hero__benefits li { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 8px; color: #d3d3d3; font-size: clamp(8px, 2.08cqw, 13px); line-height: 1.4; }
   .cp-mobile-hero__benefits li:first-child { padding-left: 0; }
   .cp-mobile-hero__benefits li:last-child { padding-right: 0; }
   .cp-mobile-hero__benefits li + li { border-left: 1px solid #ffffff2b; }
-  .cp-mobile-hero__benefits svg { width: clamp(21px, 5.5vw, 35px); height: clamp(21px, 5.5vw, 35px); flex: 0 0 auto; fill: none; stroke: #f3c15c; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 5px #eca92635); }
+  .cp-mobile-hero__benefits svg { width: clamp(21px, 5.72cqw, 35px); height: clamp(21px, 5.72cqw, 35px); flex: 0 0 auto; fill: none; stroke: #f3c15c; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 5px #eca92635); }
 }
 
 @media (max-width: 359px) {
   .cp-mobile-hero__intro { padding-inline: 13px; }
   .cp-mobile-hero__choices { margin-inline: 12px; gap: 4px; }
   .cp-mobile-hero__actions { margin-inline: 7%; }
-  .cp-mobile-hero__benefits { margin-inline: 10px; }
-  .cp-mobile-hero__benefits li { gap: 4px; padding-inline: 5px; }
-  .cp-mobile-hero__benefits li:nth-child(3) { padding-right: 3px; }
+  .cp-mobile-hero__benefits { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 0; margin-inline: 22px; }
+  .cp-mobile-hero__benefits li { min-height: 44px; gap: 9px; padding: 4px 10px; font-size: 10px; }
+  .cp-mobile-hero__benefits li:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .cp-mobile-hero__benefits li:nth-child(even) { padding-right: 0; }
+  .cp-mobile-hero__benefits svg { width: 24px; height: 24px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .cp-mobile-hero *, .cp-mobile-hero *::after { animation: none !important; transition: none !important; }
+  .cp-mobile-hero__scene::after { display: none; }
+}
+@keyframes cp-hero-ink-breathe {
+  0%, 100% { opacity: .8; }
+  50% { opacity: 1; }
+}
+@keyframes cp-hero-mist {
+  from { transform: translate3d(-7px, 4px, 0); opacity: .14; }
+  to { transform: translate3d(9px, -9px, 0); opacity: .3; }
 }
 @keyframes cp-hero-gold-sheen {
   0%, 78% { transform: translateX(-150%); }

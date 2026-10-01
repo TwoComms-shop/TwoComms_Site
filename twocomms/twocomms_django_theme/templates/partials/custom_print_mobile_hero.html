@@ -24,24 +24,26 @@
   <div class="cp-mobile-hero__scene" id="cp-mobile-hero-scene">
     <div class="cp-mobile-hero__art">
       <picture class="is-active" data-hero-picture="hoodie">
-        <source media="(max-width: 760px)" srcset="{% static 'img/configurator/hero/mobile/hoodie-600.webp' %} 600w, {% static 'img/configurator/hero/mobile/hoodie-1000.webp' %} 1000w" sizes="100vw">
+        <source media="(max-width: 991.98px)" srcset="{% static 'img/configurator/hero/mobile/hoodie-600.webp' %} 600w, {% static 'img/configurator/hero/mobile/hoodie-1000.webp' %} 1000w" sizes="(max-width: 560px) 90vw, 504px">
         <img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" width="1000" height="1777" alt="{% trans 'Чорне худі: твій принт спереду та на спині, вибір кольорів' %}" decoding="async" fetchpriority="high">
       </picture>
       <picture data-hero-picture="tshirt" aria-hidden="true">
-        <source media="(max-width: 760px)" data-srcset="{% static 'img/configurator/hero/mobile/tshirt-600.webp' %} 600w, {% static 'img/configurator/hero/mobile/tshirt-1000.webp' %} 1000w" sizes="100vw">
+        <source media="(max-width: 991.98px)" data-srcset="{% static 'img/configurator/hero/mobile/tshirt-600.webp' %} 600w, {% static 'img/configurator/hero/mobile/tshirt-1000.webp' %} 1000w" sizes="(max-width: 560px) 90vw, 504px">
         <img width="1000" height="1777" alt="{% trans 'Футболка з місцями для твого принта та палітрою кольорів' %}" decoding="async">
       </picture>
       <picture data-hero-picture="longsleeve" aria-hidden="true">
-        <source media="(max-width: 760px)" data-srcset="{% static 'img/configurator/hero/mobile/longsleeve-600.webp' %} 600w, {% static 'img/configurator/hero/mobile/longsleeve-1000.webp' %} 1000w" sizes="100vw">
+        <source media="(max-width: 991.98px)" data-srcset="{% static 'img/configurator/hero/mobile/longsleeve-600.webp' %} 600w, {% static 'img/configurator/hero/mobile/longsleeve-1000.webp' %} 1000w" sizes="(max-width: 560px) 90vw, 504px">
         <img width="1000" height="1777" alt="{% trans 'Лонгслів з принтами на грудях, спині та рукавах' %}" decoding="async">
       </picture>
       <picture data-hero-picture="all" aria-hidden="true">
-        <source media="(max-width: 760px)" data-srcset="{% static 'img/configurator/hero/mobile/all-600.webp' %} 600w, {% static 'img/configurator/hero/mobile/all-1000.webp' %} 1000w" sizes="100vw">
+        <source media="(max-width: 991.98px)" data-srcset="{% static 'img/configurator/hero/mobile/all-600.webp' %} 600w, {% static 'img/configurator/hero/mobile/all-1000.webp' %} 1000w" sizes="(max-width: 560px) 90vw, 504px">
         <img width="1000" height="1777" alt="{% trans 'Твій дизайн на худі, футболках, лонгслівах, кепках та шоперах' %}" decoding="async">
       </picture>
     </div>
-    <div class="cp-mobile-hero__handwriting" aria-hidden="true">{% trans 'Твій дизайн тут' %}<svg viewBox="0 0 64 33"><path d="M2 4c23 1 32 9 54 23M44 27l15 2-4-15"/></svg></div>
-    <p class="cp-mobile-hero__identity"><span>{% trans 'Більше ніж одяг.' %}</span> <span>{% trans 'Це твоя ідентичність.' %}</span></p>
+    <div class="cp-mobile-hero__annotations">
+      <div class="cp-mobile-hero__handwriting" aria-hidden="true"><span>{% trans 'Твій дизайн' %}</span> <span>{% trans 'тут' %}</span><svg viewBox="0 0 64 33"><path d="M2 4c23 1 32 9 54 23M44 27l15 2-4-15"/></svg></div>
+      <p class="cp-mobile-hero__identity"><span>{% trans 'Більше ніж одяг.' %}</span> <span>{% trans 'Це твоя ідентичність.' %}</span></p>
+    </div>
   </div>
   <p class="visually-hidden" role="status" data-hero-status data-error-message="{% trans 'Не вдалося завантажити зображення. Спробуйте ще раз.' %}"></p>
 
