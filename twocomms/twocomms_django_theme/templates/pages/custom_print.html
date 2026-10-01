@@ -41,6 +41,7 @@
 {% block extra_css %}
   {{ block.super }}
   <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260729-color-fallback-v1">
+  <link rel="stylesheet" href="{% static 'css/custom-print-mobile-hero.css' %}?v=20261002-mobile-hero-v1">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -68,6 +69,7 @@
       <a class="cp-context-banner-link" href="{% url 'product' prefill_product.slug %}">{% trans 'Повернутись до товару' %}</a>
     </div>
     {% endif %}
+    {% include 'partials/custom_print_mobile_hero.html' %}
     <header class="cp-hero cp-hero--premium cp-hero--reference" data-hero data-custom-print-hero>
       <div class="cp-hero-copy">
         <div class="cp-animate-in cp-delay-1">
@@ -1183,6 +1185,7 @@
   <script src="{% static 'js/custom-print-preview.js' %}?v=20260729-color-fallback-v1" defer></script>
   <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260719-responsive-v2" defer></script>
   <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260726-dialog-focus-v3" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20260813-render-plan-v1" defer></script>
+  <script src="{% static 'js/custom-print-mobile-hero.js' %}?v=20261002-mobile-hero-v1" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261002-mobile-hero-v1" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

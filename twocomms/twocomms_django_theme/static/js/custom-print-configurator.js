@@ -203,7 +203,7 @@
     addToCartBtn: root.querySelector("[data-action-add-to-cart]"),
     submitLeadBtn: root.querySelector("[data-action-submit-lead]"),
     safeExitButtons: root.querySelectorAll("[data-safe-exit-trigger]"),
-    startFlow: root.querySelector("[data-start-flow]"),
+    startFlowButtons: root.querySelectorAll("[data-start-flow]"),
     cartActionHint: root.querySelector("[data-cart-action-hint]"),
     leadActionHint: root.querySelector("[data-lead-action-hint]"),
     stepEditButtons: root.querySelectorAll("[data-step-edit]"),
@@ -3224,8 +3224,8 @@
       });
     });
     bindNote(dom.brandDeadline, "brand_deadline");
-    dom.startFlow?.addEventListener("click", () => {
-      enterStudio("start_button");
+    dom.startFlowButtons.forEach((button) => {
+      button.addEventListener("click", () => enterStudio("start_button"));
     });
   }
 
