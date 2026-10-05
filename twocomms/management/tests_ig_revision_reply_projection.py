@@ -320,9 +320,11 @@ class RevisionReplyProjectionTests(TransactionTestCase):
         fallback = self._fit_fixture()
         self.assertTrue(fallback.ready, fallback.reason)
         result, generate, _ = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual(result.state, "delivery_pending", result.reasons)
+        self.assertEqual(result.reasons, ("waiting_on_customer",))
         generate.assert_not_called()
         self.revision.refresh_from_db()
+        self.assertTrue(all(item.endswith(":purchase_requested") for item in self.revision.action_receipts["response_coverage"]["remaining"]))
         receipt = self.revision.action_receipts[RECEIPT_KEY]
         self.assertEqual(receipt["origin"], "source_preference_fallback")
         self.assertEqual(receipt["count_delta"], 1)

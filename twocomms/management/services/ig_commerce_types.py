@@ -119,6 +119,9 @@ class CommerceTurnRequest:
     pending_clarification: str = ""
     info_topics: tuple[str, ...] = ()
     checkout_requested: bool = False
+    purchase_requested: bool = False
+    source_binding: Mapping[str, object] = field(default_factory=dict)
+    recipient_id: str = ""
     reset_requested: bool = False
     support_requested: bool = False
     new_purchase_requested: bool = False
@@ -134,6 +137,7 @@ class CommerceTurnRequest:
             "preferences",
             "preference_withdrawals",
             "semantic_constraints",
+            "source_binding",
         ):
             object.__setattr__(self, field_name, immutable_mapping(getattr(self, field_name)))
 

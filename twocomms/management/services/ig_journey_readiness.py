@@ -27,6 +27,13 @@ LINE_LIMIT = 32
 REQUIREMENT_KEYS = ("product", "fit", "color", "size_named", "size_available", "option_axes")
 _SELECTION_KEYS = ("product_id", "fit_option_code", "size", "color_variant_id", "option_values")
 _CLIENT_FIELDS = ("id", "current_commercial_episode_id", "reply_permission_epoch", "privacy_erasure_started_at")
+_SOURCE_TRANSITION_FIELDS = (
+    "id", "from_revision", "to_revision", "previous_snapshot", "next_snapshot",
+    "source_message_id", "source_message__client_id", "source_message__role",
+    "source_message__text", "source_message__sender_id", "source_message__source",
+    "session__client__igsid", "source_message__commerce_turn_decision__request_payload",
+    "source_message__commerce_turn_decision__result_payload",
+)
 
 
 class _CatalogBudgetExceeded(Exception):
@@ -105,6 +112,51 @@ def _selected_values(line, *, include_quantity=False):
     return values
 
 
+def _valid_transition_source(row, session, active_line, proven, selected):
+    """A changed/erased source cannot continue to authorize its old snapshot."""
+    text = str(row.get("source_message__text") or "")
+    source_digest = hashlib.sha256(text.encode()).hexdigest()
+    request = row.get("source_message__commerce_turn_decision__request_payload") or {}
+    result = row.get("source_message__commerce_turn_decision__result_payload") or {}
+    if not isinstance(request, dict) or not isinstance(result, dict):
+        return None
+    binding = request.get("source_binding") or {}
+    facts = result.get("source_facts") or {}
+    if not isinstance(binding, dict) or not isinstance(facts, dict):
+        return None
+    if binding and (binding.get("source_message_id") != row["source_message_id"]
+                    or binding.get("source_digest") != source_digest):
+        return None
+    if facts and (facts.get("source_message_id") != row["source_message_id"]
+                  or facts.get("source_digest") != source_digest
+                  or facts.get("episode_id") != session.commercial_episode_id
+                  or (proven and facts.get("line_id") != active_line["line_id"])):
+        return None
+    if row.get("source_message__sender_id") != row.get("session__client__igsid") or row.get("source_message__source") != "webhook":
+        return None
+    if not facts and not binding:
+        # Pre-canonical transitions have no immutable text digest. Still
+        # require the source to affirm the human choices it established.
+        from management.services.ig_commerce_turns import parse_turn
+        parsed = parse_turn(text)
+        for key in proven:
+            if key in {("size",), ("fit_option_code",)}:
+                source_key = "fit" if key == ("fit_option_code",) else key[0]
+                if str(parsed.field_updates.get(source_key)) != str(selected[key]):
+                    return None
+    return source_digest
+
+
+def _evidence_sources_current(evidence, *, client_id, reset_floor):
+    expected = {ref["id"]: ref["source_digest"] for ref in evidence}
+    rows = InstagramBotMessage.objects.filter(
+        pk__in=expected, pk__gte=reset_floor, client_id=client_id,
+        role=InstagramBotMessage.Role.USER, source="webhook", sender_id__exact=IgClient.objects.filter(pk=client_id).values("igsid")[:1],
+    ).values("pk", "text")
+    actual = {row["pk"]: hashlib.sha256(str(row["text"] or "").encode()).hexdigest() for row in rows}
+    return actual == expected
+
+
 def _owned_evidence(session, snapshot, active_line, reset_floor, *, rows=None, include_quantity=False):
     """Trace every selected value to an owned post-reset change, not a carryover.
 
@@ -114,10 +166,7 @@ def _owned_evidence(session, snapshot, active_line, reset_floor, *, rows=None, i
     """
     rows = rows if rows is not None else list(IgCommerceSelectionTransition.objects.filter(
         session_id=session.pk, to_revision__lte=session.revision,
-    ).order_by("-to_revision").values(
-        "id", "from_revision", "to_revision", "previous_snapshot", "next_snapshot",
-        "source_message_id", "source_message__client_id", "source_message__role",
-    )[:TRANSITION_LIMIT])
+    ).order_by("-to_revision").values(*_SOURCE_TRANSITION_FIELDS)[:TRANSITION_LIMIT])
     selected = _selected_values(active_line, include_quantity=include_quantity)
     needed = set(selected)
     if not needed or ("product_id",) not in needed:
@@ -139,8 +188,11 @@ def _owned_evidence(session, snapshot, active_line, reset_floor, *, rows=None, i
         after_values, before_values = _selected_values(after, include_quantity=include_quantity), _selected_values(before, include_quantity=include_quantity)
         proven = {key for key in needed
                   if after_values.get(key) == selected[key] and before_values.get(key) != after_values.get(key)}
+        source_digest = _valid_transition_source(row, session, active_line, proven, selected)
+        if source_digest is None:
+            return None
         if proven:
-            refs.append({"kind": "message", "id": row["source_message_id"]})
+            refs.append({"kind": "message", "id": row["source_message_id"], "source_digest": source_digest})
             needed -= proven
         if not needed:
             return refs
@@ -178,7 +230,7 @@ def requirements_from_readiness(readiness, *, scope, evidence_refs):
     }, "reason": "", "catalog_reads": 0}
 
 
-def selection_requirements(*, client_id, episode_id, line_id=None):
+def selection_requirements(*, client_id, episode_id, line_id=None, source_selection=None):
     """Fresh projection for exactly the displayed current episode and active line.
 
     Explicit episode_id is mandatory: a historical journey must never receive
@@ -211,9 +263,23 @@ def selection_requirements(*, client_id, episode_id, line_id=None):
     for key, expected in (("client_id", client_id), ("commercial_episode_id", episode_id), ("session_id", session.pk)):
         if key in active and active[key] != expected:
             return _absent("foreign_line")
+    # A captured choice is optional display evidence. It cannot authorize the
+    # strict product/configuration chain or change a readiness denominator.
+    if source_selection:
+        source_scope = source_selection.get("scope") or {}
+        if any(source_scope.get(key) != value for key, value in (
+            ("client_id", client_id), ("episode_id", episode_id), ("session_id", session.pk),
+            ("revision", session.revision), ("line_id", active["line_id"]), ("reset_floor", reset_floor),
+        )):
+            source_selection = None
     evidence = _owned_evidence(session, snapshot, active, reset_floor)
     if not evidence:
-        return _absent("no_owned_current_source")
+        result = _absent("no_owned_current_source")
+        if source_selection:
+            from management.services.ig_journey_selection import source_selection_fields
+            result["selection_fields"] = source_selection_fields(source_selection)
+            result["reason"] = "source_choice_only"
+        return result
     budget = _ReadBudget()
     try:
         with connection.execute_wrapper(budget):
@@ -234,12 +300,7 @@ def selection_requirements(*, client_id, episode_id, line_id=None):
             or last_session is None or _session_fence(last_session) != fence):
         return _absent("scope_changed", budget.reads)
     # Recheck owned messages: source erasure can occur while catalog is read.
-    ids = {ref["id"] for ref in evidence}
-    owned = set(InstagramBotMessage.objects.filter(
-        pk__in=ids, pk__gte=reset_floor, client_id=client_id,
-        role=InstagramBotMessage.Role.USER,
-    ).values_list("pk", flat=True))
-    if owned != ids:
+    if not _evidence_sources_current(evidence, client_id=client_id, reset_floor=reset_floor):
         return _absent("source_changed", budget.reads)
     scope = {"kind": "active_selection_line", "action": "pay_link_issue_configuration",
              "client_id": client_id, "episode_id": episode_id, "session_id": session.pk,
@@ -248,6 +309,7 @@ def selection_requirements(*, client_id, episode_id, line_id=None):
              "active_position": index + 1, "line_count": len(lines), "reset_floor": reset_floor}
     result = requirements_from_readiness(readiness, scope=scope, evidence_refs=evidence)
     from management.services.ig_journey_selection import selection_fields
-    result["selection_fields"] = selection_fields(readiness, scope=scope, evidence_refs=evidence)
+    result["selection_fields"] = selection_fields(readiness, scope=scope, evidence_refs=evidence,
+                                                   source_selection=source_selection)
     result["catalog_reads"] = budget.reads
     return result

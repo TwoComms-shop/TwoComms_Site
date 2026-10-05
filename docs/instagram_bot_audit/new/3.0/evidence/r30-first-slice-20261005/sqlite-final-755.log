@@ -1,0 +1,30 @@
+Creating test database for alias 'default'...
+Destroying old test database for alias 'default'...
+.......................ig_bot event=commerce_delivery_unknown level=error detail=commerce-worker-test_existing_sending_decision_requires_one_revi: decision=1; automatic retry disabled
+.ig_bot event=commerce_delivery_unknown level=error detail=commerce-worker-test_missing_receipt_becomes_unknown_with_one_re: decision=1; automatic retry disabled
+....ig_bot event=send_unknown level=error detail=commerce-worker-test_stale_sending_reclaim_marks_decision_for_re: stale row crossed Meta send boundary; automatic retry disabled
+.ig_bot event=commerce_delivery_unknown level=error detail=commerce-worker-test_transport_exception_is_terminal_unknown_wit: decision=1; automatic retry disabled
+............................................Forbidden (CSRF cookie not set.): /bot/api/clients/1/reply-debts/1/review/
+.......................................................................................................................................ig_bot event=send level=error detail=HTTP 503 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send_unknown level=error detail=w12-persisted-evidence: partial delivery; automatic retry disabled
+......................................ig_bot event=webhook_inbox_unavailable level=error detail=len=173
+....ig_bot event=webhook_rejected level=error detail=len=181 code=invalid_participant
+.ig_bot event=webhook_rejected level=error detail=len=146 code=invalid_message_shape
+............................................................................................................................................................................................ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.............ig_bot event=gemini level=error detail=(0.0с) http_5xx
+............ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) http_5xx
+........ig_bot event=gemini level=error detail=(0.0с) http_5xx
+.........................................................................................................................................................................................s.................ssss.........s..........ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.......................ss...........................
+----------------------------------------------------------------------
+Ran 755 tests in 131.767s
+
+OK (skipped=8)
+Destroying test database for alias 'default'...
+Found 755 test(s).
+System check identified no issues (0 silenced).
+journey readiness simple catalog: 16 actual SELECTs; budget_exceeded=False
+journey readiness two-fit catalog: 24 actual SELECTs; budget_exceeded=True

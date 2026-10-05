@@ -42,27 +42,32 @@ class RevisionConversationContextTests(SimpleTestCase):
             with self.subTest(prefix=prefix):
                 self.assertEqual(normalize_response_delay_apology(prefix + " Чим можу допомогти?", revision),
                                  "Чим можу допомогти?")
-        for draft in ("Вибачте за затримку.", "Вибачте за помилку з розміром. Підкажіть номер замовлення.",
+        for draft in ("Вибачте за помилку з розміром. Підкажіть номер замовлення.",
                       "Вибачте за затримку доставки. Перевірмо замовлення.",
                       "Вибачте. Перевірмо, що сталося з товаром.",
-                      "Вітаю! Вибачте за затримку. Чим можу допомогти?",
                       'Ви написали: "Вибачте за затримку!"'):
             with self.subTest(draft=draft):
                 self.assertEqual(normalize_response_delay_apology(draft, revision), draft)
+        self.assertEqual(normalize_response_delay_apology("Вітаю! Вибачте за затримку. Чим можу допомогти?", revision),
+                         "Вітаю! Чим можу допомогти?")
+        with self.assertRaises(ValueError):
+            normalize_response_delay_apology("Вибачте за затримку.", revision)
 
-    def test_current_response_and_shipping_complaints_keep_legitimate_apology(self):
+    def test_complaint_alone_cannot_claim_response_delay_but_error_apology_survives(self):
         draft = "Вибачте за затримку! Перевірмо ваше звернення."
         for text in ("Почему вы не отвечаете?", "Чекаю на відповідь уже довго.", "Моє замовлення не прийшло."):
             with self.subTest(text=text):
                 revision = self.revision(text)
-                self.assertTrue(response_delay_apology_allowed(revision))
-                self.assertEqual(normalize_response_delay_apology(draft, revision), draft)
+                self.assertFalse(response_delay_apology_allowed(revision))
+                self.assertEqual(normalize_response_delay_apology(draft, revision), "Перевірмо ваше звернення.")
+                error = "Вибачте за помилку з товаром. Перевірмо ваше звернення."
+                self.assertEqual(normalize_response_delay_apology(error, revision), error)
 
-    def test_recovery_requires_current_same_source_lineage_not_an_old_incident(self):
+    def test_recovery_lineage_alone_does_not_establish_timing_and_importance(self):
         draft = "Вибачте за технічну затримку. Чим можу допомогти?"
         revision = self.revision(origin="outage_recovery")
         with patch("management.services.ig_revision_recovery.recovery_lineage_for_authority", return_value=([revision], "")):
-            self.assertEqual(normalize_response_delay_apology(draft, revision), draft)
+            self.assertEqual(normalize_response_delay_apology(draft, revision), "Чим можу допомогти?")
         with patch("management.services.ig_revision_recovery.recovery_lineage_for_authority", return_value=([], "recovery_lineage_invalid")):
             self.assertEqual(normalize_response_delay_apology(draft, revision), "Чим можу допомогти?")
 

@@ -639,11 +639,11 @@ def _current_offer_binding(client, episode, proposal, control=None):
     ), ""
 
 
-def _business_fact_binding(claim, client, episode, order, order_gap):
+def _business_fact_projection(claim, client, episode, order, order_gap):
     if episode is None:
-        return None, "current_episode_unavailable"
+        return None, {}, "current_episode_unavailable"
     if order_gap:
-        return None, order_gap
+        return None, {}, order_gap
     from management.models import IgOrderShipment
     from management.services.ig_reply_authority import build_reply_truth_context
 
@@ -685,7 +685,7 @@ def _business_fact_binding(claim, client, episode, order, order_gap):
                 [: MAX_SHIPMENTS + 1]
             )
             if len(shipment_rows) > MAX_SHIPMENTS:
-                return None, "authority_row_limit"
+                return None, {}, "authority_row_limit"
         projection = {
             "episode": _episode_projection(episode),
             "shipment_state": context.shipment_state,
@@ -697,9 +697,67 @@ def _business_fact_binding(claim, client, episode, order, order_gap):
             "tracking_status_code": getattr(order, "tracking_status_code", None),
             "shipment_rows": shipment_rows,
         }
-    return _base_binding(
-        claim, client, episode, {}, projection, **subjects
-    ), ""
+    return projection, subjects, ""
+
+
+
+def _business_fact_binding(claim, client, episode, order, order_gap):
+    projection, subjects, reason = _business_fact_projection(claim, client, episode, order, order_gap)
+    if reason:
+        return None, reason
+    return _base_binding(claim, client, episode, {}, projection, **subjects), ""
+
+
+def capture_checkout_business_facts(client):
+    """Read the same canonical projections before/after an owned checkout effect."""
+    fresh = _fresh_client(client)
+    if fresh is None:
+        return {}
+    episode, _proposal, order, gap = _episode_and_offer(fresh)
+    result = {}
+    for claim in (CLAIM_PAYMENT, CLAIM_ORDER, CLAIM_SHIPMENT):
+        projection, _subjects, reason = _business_fact_projection(claim, fresh, episode, order, gap)
+        if not reason:
+            result[claim] = projection
+    return result
+
+
+def owned_checkout_business_rebind(old, fresh, *, before, after, checkout, prior_deal_watermark):
+    """Allow only this checkout producer's zero→own deal attachment.
+
+    All payment/order/shipment semantics, source scope and other episode fields
+    must remain identical. An independent producer cannot use this exception.
+    The caller must have verified sealed source, proposal authority and effect
+    composition, and run the owned checkout creation inside its transaction.
+    """
+    claim = old.get("claim")
+    if claim not in (CLAIM_PAYMENT, CLAIM_ORDER, CLAIM_SHIPMENT) or not before or not after:
+        return False
+    if (_digest(before) != old.get("authority_digest") or _digest(after) != fresh.get("authority_digest")
+        or {key: value for key, value in old.items() if key != "authority_digest"}
+        != {key: value for key, value in fresh.items() if key != "authority_digest"}):
+        return False
+    prior_episode, next_episode = before.get("episode") or {}, after.get("episode") or {}
+    if (not prior_episode or prior_episode.get("id") != next_episode.get("id")
+        or prior_episode.get("id") != checkout.commercial_episode_id
+        or prior_episode.get("client_id") != checkout.client_id
+        or prior_episode.get("deal_id") is not None
+        or not checkout.deal_id or checkout.deal_id <= prior_deal_watermark
+        or next_episode.get("deal_id") != checkout.deal_id):
+        return False
+    if (before.get("payment_confirmed") is True or after.get("payment_confirmed") is True
+        or before.get("order_created") is True or after.get("order_created") is True
+        or before.get("order_id") or after.get("order_id")
+        or before.get("shipment_state", "unknown") != "unknown"
+        or after.get("shipment_state", "unknown") != "unknown"):
+        return False
+    normalized = dict(after)
+    normalized["episode"] = {**next_episode, "deal_id": prior_episode.get("deal_id")}
+    if "deal_id" in normalized:
+        if before.get("deal_id") != 0 or normalized["deal_id"] != checkout.deal_id:
+            return False
+        normalized["deal_id"] = 0
+    return _canonical(normalized) == _canonical(before)
 
 
 def build_revision_authority_bindings(

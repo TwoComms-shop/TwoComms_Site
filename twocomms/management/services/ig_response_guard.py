@@ -267,6 +267,10 @@ def build_source_preference_fallback(client, *, revision=None):
     from management.services.ig_commerce_projection import source_preferences_for
     from management.services.ig_reply_truth import ReplyTruthContext
 
+    if revision is not None:
+        planned, proof = _planned_source_fallback(client, revision)
+        if planned is not None:
+            return planned, proof
     withdrawal = _current_fit_withdrawal(client, revision) if revision is not None else {}
     direct = withdrawal or (_current_revision_fit_preference(client, revision) if revision is not None and client.current_product_id else {})
     projection = source_preferences_for(client)
@@ -317,3 +321,69 @@ def build_source_preference_fallback(client, *, revision=None):
     if direct:
         proof["current_source_preference"] = direct
     return guard.response, proof
+
+
+def _planned_source_fallback(client, revision):
+    from management.services.ig_response_plan import capture_response_plan
+    from management.services.ig_commerce_replies import missing_selector_question
+    from management.services.ig_reply_truth import ReplyTruthContext
+
+    plan = capture_response_plan(client, revision=revision)
+    sources = {row["message_id"] for row in revision.bundle_snapshot.get("sources", [])}
+    withdrawal = _current_fit_withdrawal(client, revision)
+    current = next((proof for key, proof in plan.evidence.items()
+                    if key in {"size", "fit_option_code", "purchase_requested"} and proof.get("source_message_id") in sources), None)
+    if withdrawal:
+        current = withdrawal
+    if current is None or not plan.next_selector or not plan.choices:
+        return None, {"reason": "fallback_no_source_choice_or_missing_selector"}
+    language = client.language if client.language in {"uk", "ru", "en"} else "uk"
+    size = plan.choices.get("size")
+    fit = plan.choices.get("fit_option_code")
+    if size:
+        acknowledgements = {"uk": f"Ви обрали розмір {size}.", "ru": f"Вы выбрали размер {size}.", "en": f"You selected size {size}."}
+    elif fit in {"oversize", "classic"}:
+        labels = {"uk": {"oversize": "оверсайз", "classic": "класична"},
+                  "ru": {"oversize": "оверсайз", "classic": "классическая"}}
+        acknowledgements = {"uk": f"Врахую ваше побажання: {labels['uk'][fit]}.",
+                            "ru": f"Учту ваше пожелание: {labels['ru'][fit]}.", "en": f"I will use your preference: {fit}."}
+    elif withdrawal:
+        acknowledgements = {"uk": "Зрозуміло.", "ru": "Понял.", "en": "Understood."}
+    else:
+        return None, {}
+    if size and fit in {"oversize", "classic"}:
+        fit_labels = {"uk": {"oversize": "оверсайз", "classic": "класична"},
+                      "ru": {"oversize": "оверсайз", "classic": "классическая"},
+                      "en": {"oversize": "oversize", "classic": "classic"}}
+        label = fit_labels[language][fit]
+        acknowledgements[language] += {"uk": f" Ваше побажання щодо посадки — {label}.",
+                                       "ru": f" Ваше пожелание по посадке — {label}.",
+                                       "en": f" Your preference is {label}."}[language]
+    if plan.choices.get("color"):
+        color = str(plan.choices["color"])
+        label = {"uk": {"black": "чорний", "white": "білий", "blue": "синій", "pink": "рожевий", "grey": "сірий", "green": "зелений"},
+                 "ru": {"black": "чёрный", "white": "белый", "blue": "синий", "pink": "розовый", "grey": "серый", "green": "зелёный"}}.get(language, {}).get(color, color)
+        acknowledgements[language] += {"uk": f" Ви обрали колір {label}.",
+            "ru": f" Вы выбрали цвет {label}.", "en": f" You selected color {label}."}[language]
+    if plan.choices.get("garment_type"):
+        garment = str(plan.choices["garment_type"])
+        label = {"uk": {"tshirt": "футболку", "hoodie": "худі"},
+                 "ru": {"tshirt": "футболку", "hoodie": "худи"},
+                 "en": {"tshirt": "t-shirt", "hoodie": "hoodie"}}.get(language, {}).get(garment, garment)
+        acknowledgements[language] += {"uk": f" Ви обрали {label}.",
+            "ru": f" Вы выбрали {label}.", "en": f" You selected a {label}."}[language]
+    question = missing_selector_question(plan.next_selector, language=language, label=plan.configuration.get("next_selector_label"))
+    if not question:
+        return None, {"reason": "fallback_selector_unavailable"}
+    model = plan.configuration.get("product_title")
+    if model and plan.choices.get("product_id") == plan.configuration.get("product_id"):
+        prefix = {"uk": f"Для моделі «{model}» ", "ru": f"Для модели «{model}» ", "en": f"For “{model}”, "}
+        acknowledgements[language] = prefix[language] + acknowledgements[language][0].lower() + acknowledgements[language][1:]
+    payload = {"reply_text": acknowledgements[language] + " " + question, "controls": []}
+    guard = ProviderResponseGuard(context_factory=lambda _control, _reply: plan.truth_context(ReplyTruthContext()))
+    if not guard.validate(payload).valid:
+        return None, {"reason": "fallback_truth_rejected"}
+    return guard.response, {"kind": "source_preference_fallback", "version": 2,
+                            "template": "choice_then_missing_selector", "language": language,
+                            "current_source_preference": current, "response_plan": plan.as_dict(),
+                            "response_plan_digest": plan.digest, "coverage": plan.coverage(guard.response, local=True)}

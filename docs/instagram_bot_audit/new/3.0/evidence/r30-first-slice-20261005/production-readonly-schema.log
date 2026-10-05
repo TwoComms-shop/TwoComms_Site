@@ -1,0 +1,6 @@
+375 objects imported automatically (use -v 2 for details).
+
+{"database_runtime": ["11.4.13-MariaDB-cll-lve", "InnoDB", "utf8mb4"]}
+{"table": "management_igcommerceselectiontransition", "constraints": [{"columns": ["id"], "unique": true, "foreign_key": null}, {"columns": ["session_id", "to_revision"], "unique": true, "foreign_key": null}, {"columns": ["source_message_id"], "unique": true, "foreign_key": null}, {"columns": ["session_id"], "unique": false, "foreign_key": ["management_igcommerceselectionsession", "id"]}]}
+{"table": "management_igcommerceturndecision", "constraints": [{"columns": ["id"], "unique": true, "foreign_key": null}, {"columns": ["session_id"], "unique": false, "foreign_key": ["management_igcommerceselectionsession", "id"]}, {"columns": ["source_message_id"], "unique": true, "foreign_key": null}, {"columns": ["transition_id"], "unique": false, "foreign_key": ["management_igcommerceselectiontransition", "id"]}]}
+{"fit_generated_identity": [["default_product_identity", "STORED GENERATED"]]}

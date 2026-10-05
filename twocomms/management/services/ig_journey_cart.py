@@ -7,7 +7,7 @@ from copy import deepcopy
 from decimal import Decimal
 
 from django.db import connection
-from management.models import IgCommerceSelectionTransition, InstagramBotMessage
+from management.models import IgCommerceSelectionTransition
 from management.services import ig_journey_readiness as scope_reader
 from management.services.ig_journey_selection import selection_fields
 from storefront.services.fact_registry import free_shipping_threshold
@@ -76,8 +76,7 @@ def selection_cart(*, client_id, episode_id):
     if any(not isinstance(line, dict) or not line.get('line_id') for line in lines) or len({line['line_id'] for line in lines}) != len(lines):
         return None
     rows = list(IgCommerceSelectionTransition.objects.filter(session_id=session.pk, to_revision__lte=session.revision)
-                .order_by('-to_revision').values('id', 'from_revision', 'to_revision', 'previous_snapshot', 'next_snapshot',
-                    'source_message_id', 'source_message__client_id', 'source_message__role')[:scope_reader.TRANSITION_LIMIT])
+                .order_by('-to_revision').values(*scope_reader._SOURCE_TRANSITION_FIELDS)[:scope_reader.TRANSITION_LIMIT])
     budget, cache, output, refs = _CartBudget(), {}, [], []
     for position, line in enumerate(lines):
         if any(key in line and line[key] != expected for key, expected in (('client_id', client_id), ('commercial_episode_id', episode_id), ('session_id', session.pk))):
@@ -115,9 +114,7 @@ def selection_cart(*, client_id, episode_id):
     last_session = scope_reader._session(client_id, episode_id)
     if scope_reader._client_fence(client_id) != first or scope_reader.conversation_route_reset_floor(client_id) != floor or last_session is None or scope_reader._session_fence(last_session) != fence:
         return None
-    ids = {ref['id'] for ref in refs}
-    owned = set(InstagramBotMessage.objects.filter(pk__in=ids, pk__gte=floor, client_id=client_id, role='user').values_list('pk', flat=True))
-    if owned != ids or not refs:
+    if not refs or not scope_reader._evidence_sources_current(refs, client_id=client_id, reset_floor=floor):
         return None
     return summarize_cart(output, scope={'client_id': client_id, 'episode_id': episode_id,
         'session_id': session.pk, 'revision': session.revision, 'snapshot_digest': fence[-1]})

@@ -1,0 +1,9 @@
+...............ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.
+----------------------------------------------------------------------
+Ran 17 tests in 14.539s
+
+OK
+Found 17 test(s).
+System check identified no issues (0 silenced).

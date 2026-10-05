@@ -11,6 +11,7 @@ from typing import Mapping
 
 from django.conf import settings
 from django.db import connection, transaction
+from django.db.models import Max
 from django.urls import reverse
 from django.utils import timezone
 
@@ -20,6 +21,7 @@ from management.services.ig_revision_actions import _authority_projection
 from management.services.ig_revision_authority import (
     CLAIM_CATALOG_CONFIGURATION, CLAIM_CURRENT_OFFER, RevisionAuthorityBindingSet,
     build_revision_authority_bindings, check_fact_bindings, check_offer_bindings,
+    capture_checkout_business_facts, owned_checkout_business_rebind,
 )
 from management.services.ig_revision_outbox import (
     PublicationBinding, _digest, plan_revision_effects, pre_winner_readiness,
@@ -289,6 +291,8 @@ def prepare_revision_checkout(
                 if reasons:
                     raise _Rollback(",".join(reasons))
                 evidence_ids = [payment_decision.evidence_message_id]
+            business_before = capture_checkout_business_facts(client)
+            prior_deal_watermark = client.deals.aggregate(value=Max("pk"))["value"] or 0
             checkout = create_or_update_proposal(
                 client=client, pay_type="online_full", item_specs=control["items"],
                 negotiated_total=None, requested_payment_amount=None, allow_promo=True,
@@ -322,10 +326,18 @@ def prepare_revision_checkout(
             client.refresh_from_db()
             # Offer creation can create an episode; all bindings must reflect the
             # committed candidate, without rewriting immutable generation input.
+            business_after = capture_checkout_business_facts(client)
             facts = []
             for old in authority.fact_bindings:
                 fresh = build_revision_authority_bindings(client, claims=(old["claim"],), control=old["selector"], settings_obj=settings_obj)
-                if not fresh.ready or fresh.fact_bindings[0]["authority_digest"] != old["authority_digest"]:
+                if not fresh.ready or not fresh.fact_bindings:
+                    raise _Rollback("checkout_post_fact_unavailable")
+                current = fresh.fact_bindings[0]
+                if current["authority_digest"] != old["authority_digest"] and not owned_checkout_business_rebind(
+                    old, current, before=business_before.get(old["claim"]),
+                    after=business_after.get(old["claim"]), checkout=checkout,
+                    prior_deal_watermark=prior_deal_watermark,
+                ):
                     raise _Rollback("checkout_post_fact_unavailable")
                 facts.extend(fresh.fact_bindings)
             # Asset authority is plan-only: never alter the saved generation

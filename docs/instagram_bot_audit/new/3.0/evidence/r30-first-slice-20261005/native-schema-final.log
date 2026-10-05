@@ -1,0 +1,4 @@
+{"runtime": ["11.4.12-MariaDB", "InnoDB", "utf8mb4"]}
+{"table": "management_igcommerceselectiontransition", "uniques": [["id"], ["session_id", "to_revision"]]}
+{"table": "management_igcommerceturndecision", "uniques": [["id"], ["source_message_id"]]}
+{"management_0218_applied": true}

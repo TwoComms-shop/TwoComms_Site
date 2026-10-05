@@ -25,6 +25,7 @@ class RevisionReplyResilienceTests(TransactionTestCase):
     _generate = fallback_fixtures.RevisionPreferenceFallbackIntegrationTests._generate
     _fit_fixture = fallback_fixtures.RevisionPreferenceFallbackIntegrationTests._fit_fixture
     _record = fallback_fixtures.RevisionPreferenceFallbackIntegrationTests._record
+    _assert_waiting_purchase = fallback_fixtures.RevisionPreferenceFallbackIntegrationTests._assert_waiting_purchase
 
     def _selected_product(self, *, size=""):
         from productcolors.models import Color, ProductColorVariant
@@ -62,7 +63,7 @@ class RevisionReplyResilienceTests(TransactionTestCase):
     def _assert_safe_delivered_fit(self, fallback, *, missing_model):
         self.assertTrue(fallback.ready, fallback.reason)
         result, generate, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self._assert_waiting_purchase(result)
         generate.assert_not_called()
         self.assertEqual(http.call_count, 1)
         self.failed_graph.refresh_from_db()
@@ -86,8 +87,8 @@ class RevisionReplyResilienceTests(TransactionTestCase):
     def test_original_height_weight_black_tee_oversize_failure_gets_actual_reply(self):
         effect = self._assert_safe_delivered_fit(self._fit_fixture(), missing_model=True)
         text = effect.payload["message"]["text"]
-        self.assertIn("ассортимента", text)
-        self.assertIn("свой дизайн", text)
+        self.assertIn("модель", text)
+        self.assertIn("принт", text)
         self.assertNotIn("команде", text)
         self.assertFalse(IgFollowUpTask.objects.filter(reason="revision_case:execution_debt").exists())
 
@@ -98,9 +99,9 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.current_product_id, product.pk)
         self.assertEqual(self.customer.current_size, "")
-        self.assertEqual(fallback.receipt["proof"]["template"], "preference_then_usual_size")
+        self.assertEqual(fallback.receipt["proof"]["template"], "choice_then_missing_selector")
         self.assertEqual(fallback.receipt["proof"]["current_source_preference"]["source_message_id"], self.source.pk)
-        self.assertEqual({binding["claim"] for binding in effect.fact_bindings}, {"public_policy_inputs"})
+        self.assertEqual({binding["claim"] for binding in effect.fact_bindings}, {"public_policy_inputs", "source_preferences"})
 
     def test_known_product_fallback_unknown_delivery_never_resends_or_mints_winner(self):
         self._selected_product()
@@ -131,13 +132,14 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         fallback = self._fit_fixture(fit_text="Не хочу оверсайз")
         self.assertTrue(fallback.ready, fallback.reason)
         result, generate, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self._assert_waiting_purchase(result)
         generate.assert_not_called()
         self.assertEqual(http.call_count, 1)
         self.assertEqual(self.revision.delivery_effects.get().purpose, "normal_reply")
         self.assertIn("какую посадку", self.revision.delivery_effects.get().payload["message"]["text"].casefold())
         self.assertNotIn("оверсайз", self.revision.delivery_effects.get().payload["message"]["text"].casefold())
-        self.assertEqual(fallback.receipt["proof"]["template"], "withdrawal_then_fit_preference")
+        self.assertEqual(fallback.receipt["proof"]["template"], "choice_then_missing_selector")
+        self.assertIn(f"{self.source.pk}:withdrawal:fit", self.revision.action_receipts["response_coverage"]["covered"])
 
     def test_existing_checkout_missing_size_can_clarify_without_rewriting_offer(self):
         self._selected_product()
@@ -149,6 +151,7 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.assertEqual(proposal.status, "ready")
         self.assertEqual(IgCheckoutProposal.objects.count(), 1)
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_complete_checkout_requires_real_next_action_not_false_completion_ack(self):
         self._selected_product(size="M")
         proposal = self._checkout()
@@ -181,13 +184,16 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.assertIn("usual size if product is known", guidance)
         self.assertIn("Remove the unverified price", guidance)
 
-    def _failed_nonfit_request(self, text):
+    def _failed_nonfit_request(self, text, *, no_action=False):
         original = self._message
         def message(value, mid):
-            return original(text if mid == "fit-order" else "", mid)
+            # A true no-action bundle contains actual greetings/thanks; blank
+            # synthetic purchase/fit sources cannot certify that disposition.
+            return original(text if no_action or mid == "fit-order" else "", mid)
         with patch.object(self, "_message", side_effect=message):
             return self._fit_fixture(fit_text="")
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_holding_case_exists_before_http_and_remains_open_after_sent_and_restart(self):
         import json
         from management.services.ig_revision_execution import finalization_due_ids, finalize_sent_revision_effects
@@ -226,6 +232,7 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.assertEqual(IgFollowUpTask.objects.get(pk=receipt["task_id"]).status, "skipped")
         self.assertEqual(IgBotNotification.objects.filter(pk=receipt["notification_id"]).count(), 1)
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_positive_price_request_without_fit_gets_honest_holding_not_silence(self):
         self.assertFalse(self._failed_nonfit_request("Сколько стоит эта футболка?").ready)
         result, generate, http = self._execute()
@@ -245,25 +252,15 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.assertEqual(result.reason, "holding_current_purpose_ineligible")
         self.assertFalse(IgFollowUpTask.objects.filter(event_key=f"ig-revision-debt:{self.revision.pk}").exists())
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_neutral_provider_holding_is_opt_in_and_delivers_ack_for_noncommercial_turn(self):
-        from unittest.mock import patch
         from management.services.ig_revision_holding import record_technical_holding
 
-        self._failed_nonfit_request("Добрий вечір")
-        with (
-            patch(
-                "management.services.ig_revision_holding._positive_current_request",
-                return_value=False,
-            ),
-            patch(
-                "management.services.ig_revision_holding._neutral_current_request",
-                return_value=True,
-            ),
-        ):
-            holding = record_technical_holding(
-                self.revision.pk, self.token, settings_id=self.settings.pk,
-                allow_neutral=True,
-            )
+        self._failed_nonfit_request("Дякую!", no_action=True)
+        holding = record_technical_holding(
+            self.revision.pk, self.token, settings_id=self.settings.pk,
+            allow_neutral=True,
+        )
         self.assertTrue(holding.ready, holding.reason)
         self.assertEqual(holding.receipt["reply_mode"], "neutral_ack")
         self.assertEqual(holding.receipt["purpose"], "normal_reply")
@@ -273,7 +270,8 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.assertEqual(http.call_count, 1)
         self.assertFalse(IgFollowUpTask.objects.filter(event_key=f"ig-revision-debt:{self.revision.pk}").exists())
         text = self.revision.delivery_effects.get().payload["message"]["text"]
-        self.assertIn("уточню", text.casefold())
+        self.assertEqual(text, "Дякую за повідомлення.")
+        self.assertNotRegex(text.casefold(), r"уточню|скоро|невдовзі|shortly|reply|відповім|отвечу")
         self.assertNotIn("техніч", text.casefold())
 
     def test_explicit_purchase_refusal_does_not_create_technical_handoff(self):
@@ -284,6 +282,7 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.assertFalse(result.ready)
         self.assertEqual(result.reason, "holding_current_purpose_ineligible")
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_review_after_plan_before_provider_start_suppresses_handoff_promise(self):
         from management.services.ig_revision_holding import record_technical_holding
         from management.services.ig_revision_outbox import PublicationBinding, plan_revision_effects
@@ -311,6 +310,7 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         http.assert_not_called()
         self.assertEqual(self.revision.delivery_effects.get().state, "cancelled")
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_unknown_holding_does_not_resend_or_close_case(self):
         self._selected_product(size="M")
         self._fit_fixture()
@@ -326,6 +326,7 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         task = IgFollowUpTask.objects.get(pk=self.revision.action_receipts["technical_holding"]["task_id"])
         self.assertEqual(task.status, "skipped")
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_confirmed_holding_remains_eligible_for_explicit_audited_manual_resume(self):
         from django.contrib.auth import get_user_model
         from management.models import AdminAuditLog
@@ -353,6 +354,7 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.source.refresh_from_db()
         self.assertEqual(self.source.status, "pending")
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_review_after_provider_started_is_rechecked_before_physical_http(self):
         from management.services import ig_revision_outbox
 

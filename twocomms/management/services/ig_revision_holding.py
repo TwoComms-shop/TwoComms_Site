@@ -276,7 +276,7 @@ def _ensure_collaboration_review_case(revision, client):
 
 
 def _neutral_current_request(client, revision):
-    """Allow a generic acknowledgement only for an unclassified clean turn."""
+    """Only explicit no-action greetings/thanks can end without an answer."""
     from management.services.ig_turn_intent import _NEGATED_ORDER, build_turn_intent
     from management.services.bot_sales_classifier import (
         COLLAB_RE, NO_BUY_RE, SUPPORT_RE, URL_RE, is_creator_collaboration_offer,
@@ -303,7 +303,8 @@ def _neutral_current_request(client, revision):
     # A link-only, service, collaboration, opt-out, or purchase-refusal source
     # remains a non-answerable turn. Keep the existing no-handoff policy for it
     # even when the provider is unavailable.
-    return not any(
+    from management.services.ig_turn_intent import _NONACTION_GREETING
+    return bool(texts) and all(_NONACTION_GREETING.fullmatch(text.strip()) for text in texts) and not any(
         URL_RE.search(text)
         or COLLAB_RE.search(text)
         or is_creator_collaboration_offer(text)
@@ -348,6 +349,9 @@ def holding_receipt_valid(revision, *, text=None):
         reason="revision_case:collaboration_review",
     ).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)).exists():
         return False
+    from management.services.ig_revision_recovery import wait_notification_receipts
+    if any(item["notification"] for item in wait_notification_receipts(revision, exclude_revision_id=revision.pk)):
+        return False
     return True
 
 
@@ -384,6 +388,9 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 return RevisionInputDecision(reason="holding_generation_not_failed")
             if not _sources_unchanged(revision):
                 return RevisionInputDecision(reason="holding_sources_changed")
+            from management.services.ig_revision_recovery import wait_notification_receipts
+            if any(item["notification"] for item in wait_notification_receipts(revision, exclude_revision_id=revision.pk)):
+                return RevisionInputDecision(reason="holding_continuous_wait_already_notified")
             positive_request = _positive_current_request(client, revision)
             neutral_request = bool(allow_neutral and not positive_request and _neutral_current_request(client, revision))
             if not positive_request and not neutral_request:
@@ -433,9 +440,9 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 "ru": "Не удалось надёжно подготовить ответ на ваш запрос. Передал вопрос команде для уточнения.",
                 "en": "I could not prepare a reliable answer to your request. I have referred your question to the team for clarification.",
             } if positive_request else {
-                "uk": "Дякую за повідомлення. Я уточню деталі й невдовзі відповім вам тут.",
-                "ru": "Спасибо за сообщение. Я уточню детали и скоро отвечу вам здесь.",
-                "en": "Thanks for your message. I will check the details and reply here shortly.",
+                "uk": "Дякую за повідомлення.",
+                "ru": "Спасибо за сообщение.",
+                "en": "Thanks for your message.",
             })
             from management.services.ig_revision_intents import _collaboration_route_present
             collaboration_request = _collaboration_route_present(revision) or any(

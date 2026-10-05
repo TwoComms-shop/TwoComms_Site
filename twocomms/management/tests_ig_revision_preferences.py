@@ -45,7 +45,7 @@ class RevisionPreferenceTests(TestCase):
         source, decision = self.fit_sequence()
         self.assertTrue(decision.accepted)
         projection = source_preferences_for(self.client)
-        self.assertEqual(projection["values"], {"fit_option_code": "oversize", "color": "black", "garment_type": "tshirt"})
+        self.assertEqual(projection["values"], {"fit_option_code": "oversize", "color": "black", "garment_type": "tshirt", "purchase_requested": True})
         self.assertEqual(projection["evidence"]["fit_option_code"]["source_message_id"], source.pk)
         self.assertIsNone(self.client.current_product_id)
         binding = build_revision_authority_bindings(self.client, claims=(CLAIM_SOURCE_PREFERENCES,))

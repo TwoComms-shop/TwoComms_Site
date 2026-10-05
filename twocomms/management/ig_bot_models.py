@@ -7683,10 +7683,10 @@ class IgCommerceSelectionTransition(models.Model):
         on_delete=models.CASCADE,
         related_name="transitions",
     )
-    source_message = models.OneToOneField(
+    source_message = models.ForeignKey(
         "management.InstagramBotMessage",
         on_delete=models.DO_NOTHING,
-        related_name="commerce_selection_transition",
+        related_name="commerce_selection_transitions",
         db_constraint=False,
     )
     action = models.CharField(max_length=80, db_index=True)
@@ -8622,6 +8622,7 @@ class IgCustomerTurnRevision(models.Model):
                     "reply_projection_admission",
                     "technical_holding", "technical_holding_delivery",
                     "provider_safe_reply",
+                    "response_coverage", "semantic_delivery_finalized",
                 }
                 if (
                     not isinstance(self.action_receipts, dict)

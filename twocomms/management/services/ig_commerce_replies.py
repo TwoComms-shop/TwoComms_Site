@@ -60,3 +60,24 @@ def build_durable_reply_payload(
             "Зафіксувала цей варіант. Підкажіть, будь ласка, розмір, колір і кількість."
         )
     return {}
+
+
+def missing_selector_question(selector, *, language="uk", label=""):
+    """One question for the captured missing selector; no stock/effect claims."""
+    copy = {
+        "product": {"uk": "Яку саме модель або принт ви хочете? Можете надіслати посилання.",
+                    "ru": "Какую именно модель или принт вы хотите? Можете прислать ссылку.",
+                    "en": "Which model or print would you like? You can send its link."},
+        "size": {"uk": "Який розмір ви обираєте?", "ru": "Какой размер вы выбираете?", "en": "Which size would you like?"},
+        "fit": {"uk": "Яку посадку ви обираєте?", "ru": "Какую посадку вы выбираете?", "en": "Which fit would you like?"},
+        "color": {"uk": "Який колір ви обираєте?", "ru": "Какой цвет вы выбираете?", "en": "Which colour would you like?"},
+        "quantity": {"uk": "Яка кількість вам потрібна?", "ru": "Какое количество вам нужно?", "en": "How many would you like?"},
+        "option": {"uk": "Який варіант цієї опції ви обираєте?", "ru": "Какой вариант этой опции вы выбираете?", "en": "Which option would you like?"},
+    }
+    key = str(selector).split(":", 1)[0]
+    if key == "option" and label:
+        name = " ".join(str(label).split())[:80]
+        return {"uk": f"Який варіант опції «{name}» ви обираєте?",
+                "ru": f"Какой вариант опции «{name}» вы выбираете?",
+                "en": f"Which variant of “{name}” would you like?"}.get(language, f"Який варіант опції «{name}» ви обираєте?")
+    return copy.get(key, {}).get(language, copy.get(key, {}).get("uk", ""))

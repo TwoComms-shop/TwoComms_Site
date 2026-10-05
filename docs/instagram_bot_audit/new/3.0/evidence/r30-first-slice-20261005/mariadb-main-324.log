@@ -1,0 +1,14 @@
+......................................................................ig_bot event=send level=error detail=HTTP 503 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+...........................................ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.............ig_bot event=gemini level=error detail=(0.0с) http_5xx
+............ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) http_5xx
+........ig_bot event=gemini level=error detail=(0.0с) http_5xx
+................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 324 tests in 213.045s
+
+OK
+Found 324 test(s).
+System check identified no issues (0 silenced).

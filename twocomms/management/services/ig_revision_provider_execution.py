@@ -24,6 +24,7 @@ from management.services.ig_revision_burst_budget import economic_root, economic
 MANIFEST_KEY = "provider_execution_manifest"
 REFERENCE_KEY = "provider_execution_reference"
 REPAIR_KEY = "_provider_repair_reservation"
+REPAIR_DIAGNOSTIC_KEY = "_provider_repair_preparation"
 SALVAGE_KEY = "_provider_semantic_salvage"
 STOCHASTIC_RESPONSE_REASONS = frozenset({"unauthorized_url", "unnecessary_manager_handoff"})
 
@@ -51,7 +52,7 @@ def _response_recovery_proof(kind, candidate, attempts, *, reasoning_task):
     if kind == "semantic_salvage":
         if any(row.project_identity == candidate["project_identity"] for row in model_attempts):
             return 0
-        failed = [row for row in model_attempts if row.failure_kind == "invalid_response"]
+        failed = [row for row in model_attempts if row.failure_kind in {"invalid_response", "local_semantic_rejection"}]
         return latest.pk if latest in failed and failed and all(
             row.http_code == 200 and row.fsm_state == "failed" and bool(row.error_detail)
             and set(row.error_detail.split(",")) <= STOCHASTIC_RESPONSE_REASONS for row in failed) else 0
@@ -77,6 +78,39 @@ class ProviderContinuation:
     last_scarce_empty_model: str = ""
     last_scarce_empty_attempt_id: int = 0
     next_due_at: object = None
+    repair_diagnostics: dict = field(default_factory=dict)
+
+
+def record_provider_repair_preparation(observer, *, key_name, model, candidate_index, state, reason=""):
+    """Redacted preparation evidence; never grants or returns a dispatch slot."""
+    if not getattr(observer, "source_execution_key", ""):
+        return
+    if state not in {"eligible", "preparation_refused", "preparation_failed"}:
+        return
+    with transaction.atomic():
+        graph, _message = observer._lock_canonical_graph()
+        if graph is None:
+            return
+        previous = (graph.candidate_outcomes or {}).get(REPAIR_DIAGNOSTIC_KEY) or {}
+        if previous.get("state") in {"reserved", "http_started"}:
+            return
+        graph.candidate_outcomes = {**(graph.candidate_outcomes or {}), REPAIR_DIAGNOSTIC_KEY: {
+            "state": state, "reason": str(reason)[:64], "candidate_index": candidate_index,
+            "key_name": key_name, "model": model,
+        }}
+        graph.save(update_fields=["candidate_outcomes", "updated_at"])
+
+
+def _repair_diagnostics(graphs, attempts):
+    diagnostic = next(((graph.candidate_outcomes or {}).get(REPAIR_DIAGNOSTIC_KEY)
+                       for graph in graphs if (graph.candidate_outcomes or {}).get(REPAIR_DIAGNOSTIC_KEY)), {})
+    result = dict(diagnostic)
+    if result.get("state") == "http_started":
+        started = [row for row in attempts if row.request_id == result.get("request_id")
+                   and row.candidate_index == result.get("candidate_index")
+                   and row.provider_started_at.isoformat() >= result.get("reserved_at", "")]
+        result["unresolved"] = not started or any(row.fsm_state in {"reserved", "provider_started"} for row in started)
+    return result
 
 
 def _digest(value):
@@ -224,6 +258,7 @@ def inspect_revision_provider_execution(revision, *, now=None, lock_ledger=False
     base = {"root_revision_id": root.pk, "manifest": manifest, "http_remaining": remaining,
             "scarce_remaining": scarce_remaining, "repair_remaining": not bool(repair),
             "empty_response_count": sum(row.failure_kind == "empty" and row.http_code == 200 for row in attempts),
+            "repair_diagnostics": _repair_diagnostics(graphs, attempts),
             **_last_scarce_empty_proof(attempts, by_key)}
     if not remaining:
         return ProviderContinuation(reason="provider_dispatch_budget", **base)
@@ -346,6 +381,15 @@ def admit_provider_dispatch_locked(graph, boundary, *, now):
         reserved = next((value for key in (REPAIR_KEY, SALVAGE_KEY)
                          if isinstance(value := (anchor.candidate_outcomes or {}).get(key), dict)
                          and value.get("token") == repair_token), {})
+        def mark_started():
+            diagnostic = dict((anchor.candidate_outcomes or {}).get(REPAIR_DIAGNOSTIC_KEY) or {})
+            diagnostic.setdefault("candidate_index", boundary.candidate_index)
+            diagnostic.setdefault("key_name", boundary.key_name)
+            diagnostic.setdefault("model", boundary.model)
+            diagnostic.setdefault("reserved_at", now.isoformat())
+            diagnostic.update(state="http_started", request_id=graph.request_id)
+            anchor.candidate_outcomes = {**(anchor.candidate_outcomes or {}), REPAIR_DIAGNOSTIC_KEY: diagnostic}
+            anchor.save(update_fields=["candidate_outcomes", "updated_at"])
         recovery_kind = reserved.get("recovery_kind", "")
         if recovery_kind:
             if recovery_kind == "output_cap" and getattr(boundary, "response_generation", {}) != {"max_output_tokens": 4096, "thinking_level": "low"}:
@@ -357,15 +401,21 @@ def admit_provider_dispatch_locked(graph, boundary, *, now):
                         "failure_attempt_id": proof}
             if not proof or reserved != expected:
                 return "provider_repair_identity_invalid"
-            return "" if candidate["skip_reason"] in {"provider_model_schema_rejected", "provider_candidate_wait"} else candidate["skip_reason"]
+            reason = "" if candidate["skip_reason"] in {"", "provider_model_schema_rejected", "provider_candidate_wait"} else candidate["skip_reason"]
+            if not reason:
+                mark_started()
+            return reason
         if reserved != {"token": repair_token, "request_id": graph.request_id, "candidate_index": boundary.candidate_index, "key_name": boundary.key_name, "model": boundary.model}:
             return "provider_repair_identity_invalid"
-        return "" if candidate["skip_reason"] in {"", "provider_model_schema_rejected"} else candidate["skip_reason"]
+        reason = "" if candidate["skip_reason"] in {"", "provider_model_schema_rejected"} else candidate["skip_reason"]
+        if not reason:
+            mark_started()
+        return reason
     return candidate["skip_reason"] or ("" if continuation.ready else continuation.reason)
 
 
 def reserve_provider_repair(observer, *, key_name, model, candidate_index=0, recovery_kind=""):
-    """Reserve once even if payload repair or pre-HTTP preparation later fails."""
+    """Reserve a prepared correction once; crashes/denials never refund it."""
     if not observer.source_execution_key:
         return True
     with transaction.atomic():
@@ -375,27 +425,40 @@ def reserve_provider_repair(observer, *, key_name, model, candidate_index=0, rec
         revision = IgCustomerTurnRevision.objects.filter(pk=observer._revision_execution.revision_id).first()
         if revision is None:
             return False
+        from management.services.gemini_accounting_runtime import _revision_execution_valid
+        if not _revision_execution_valid(observer._revision_execution, source_message_id=graph.source_message_id,
+                client_id=graph.client_id, lane="live", logical_turn_id=graph.source_execution_key):
+            return False
         continuation = inspect_revision_provider_execution(revision)
         if not continuation.http_remaining or (not continuation.repair_remaining and recovery_kind != "semantic_salvage"):
             return False
         candidate_index = candidate_index or observer.candidate_index(key_name, model)
         candidate = next((row for row in continuation.candidate_plan if row["candidate_index"] == candidate_index and row["key_name"] == key_name and row["model"] == model), None)
-        if not candidate or (not recovery_kind and candidate["skip_reason"] != "provider_model_schema_rejected") or (candidate["scarce"] and not continuation.scarce_remaining):
+        if not candidate or (candidate["scarce"] and not continuation.scarce_remaining):
             return False
         root = economic_root(revision)
         anchor = _graphs(root, economic_family(root)).select_for_update().first()
+        attempts = list(GeminiRequestAttempt.objects.filter(request_graph__in=_graphs(root, economic_family(root)), provider_started_at__isnull=False).order_by("pk"))
+        latest = attempts[-1] if attempts else None
+        if not recovery_kind and (candidate["skip_reason"] not in {"", "provider_model_schema_rejected"}
+            or latest is None or latest.fsm_state != "failed" or latest.http_code != 200
+            or latest.failure_kind not in {"invalid_response", "local_semantic_rejection"}
+            or (latest.key_name, latest.model, latest.candidate_index) != (key_name, model, candidate_index)):
+            return False
         marker_key = SALVAGE_KEY if recovery_kind == "semantic_salvage" else REPAIR_KEY
         if (anchor.candidate_outcomes or {}).get(marker_key):
             return False
         marker = {"token": secrets.token_hex(16), "request_id": graph.request_id, "candidate_index": candidate_index, "key_name": key_name, "model": model}
         if recovery_kind:
             original = next((row for row in continuation.manifest["candidates"] if row["candidate_index"] == candidate_index), {})
-            attempts = list(GeminiRequestAttempt.objects.filter(request_graph__in=_graphs(root, economic_family(root)), provider_started_at__isnull=False).order_by("pk"))
             proof = _response_recovery_proof(recovery_kind, candidate, attempts, reasoning_task=graph.reasoning_task)
-            if not proof or original.get("skip_reason") or candidate["skip_reason"] not in {"provider_model_schema_rejected", "provider_candidate_wait"} or (recovery_kind == "semantic_salvage" and continuation.repair_remaining):
+            if not proof or original.get("skip_reason") or candidate["skip_reason"] not in {"", "provider_model_schema_rejected", "provider_candidate_wait"} or (recovery_kind == "semantic_salvage" and continuation.repair_remaining):
                 return False
             marker.update(recovery_kind=recovery_kind, failure_attempt_id=proof)
-        anchor.candidate_outcomes = {**(anchor.candidate_outcomes or {}), marker_key: marker}
+        anchor.candidate_outcomes = {**(anchor.candidate_outcomes or {}), marker_key: marker,
+            REPAIR_DIAGNOSTIC_KEY: {"state": "reserved", "request_id": graph.request_id,
+                "candidate_index": candidate_index, "key_name": key_name, "model": model,
+                "reserved_at": timezone.now().isoformat()}}
         anchor.save(update_fields=["candidate_outcomes", "updated_at"])
         observer._pending_provider_repair = marker
         return True

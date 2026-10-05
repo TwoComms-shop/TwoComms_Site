@@ -1111,31 +1111,36 @@ def _bound_records(episode, nodes):
     return return_focus
 
 
-def build_journey_snapshot(client, *, view_episode_id=None):
+def build_journey_snapshot(client, *, view_episode_id=None, source_selection=None):
     """Return JSON-safe v1; ownership is checked before any selected data read."""
     now = timezone.now()
     client_id = _positive_id(getattr(client, "pk", None))
     if client_id is None:
         raise ValueError("A persisted client is required")
     from django.db.models import Exists, OuterRef
+    from management.models import IgCommerceSelectionSession
     commercial_steps = IgFunnelStepEvent.objects.filter(episode_id=OuterRef("pk"), event_type__in=(
         "product_pinned", "variant_selected", "price_quoted", "paylink_issued", "paylink_viewed",
         "payment_confirmed", "order_created", "ttn_created", "delivered",
     ))
+    source_sessions = IgCommerceSelectionSession.objects.filter(
+        client_id=client_id, commercial_episode_id=OuterRef("pk"), open_slot=1,
+        state=IgCommerceSelectionSession.State.OPEN,
+    )
     queryset = IgCommercialEpisode.objects.filter(client_id=client_id).annotate(
-        picker_has_commerce=Exists(commercial_steps))
+        picker_has_commerce=Exists(commercial_steps), source_selection_exists=Exists(source_sessions))
     total = queryset.count()
-    recent = list(queryset.order_by("-sequence", "-id").values(*EPISODE_FIELDS, "picker_has_commerce")[:EPISODE_LIMIT])
+    recent = list(queryset.order_by("-sequence", "-id").values(*EPISODE_FIELDS, "picker_has_commerce", "source_selection_exists")[:EPISODE_LIMIT])
     current = next((row for row in recent if row["open_slot"] == 1), None)
     if current is None:
-        current = queryset.filter(open_slot=1).values(*EPISODE_FIELDS).first()
+        current = queryset.filter(open_slot=1).values(*EPISODE_FIELDS, "source_selection_exists").first()
     if view_episode_id is not None:
         requested = _positive_id(view_episode_id)
         if requested is None:
             raise InvalidJourneyEpisode("Недоступний цикл покупки")
         episode = next((row for row in recent if row["id"] == requested), None)
         if episode is None:
-            episode = queryset.filter(pk=requested).values(*EPISODE_FIELDS).first()
+            episode = queryset.filter(pk=requested).values(*EPISODE_FIELDS, "source_selection_exists").first()
         if episode is None:
             raise InvalidJourneyEpisode("Недоступний цикл покупки")
     else:
@@ -1172,7 +1177,12 @@ def build_journey_snapshot(client, *, view_episode_id=None):
             covered.extend(fact["source"] for fact in node["facts"] if fact["source"].endswith(".current"))
     else:
         from management.models import InstagramBotMessage
-        first = InstagramBotMessage.objects.filter(client_id=client_id, role="user").order_by("id").values("id", "created_at").first()
+        first = InstagramBotMessage.objects.filter(client_id=client_id, role="user").annotate(
+            source_selection_exists=Exists(IgCommerceSelectionSession.objects.filter(
+                client_id=client_id, commercial_episode_id=None, open_slot=1,
+                state=IgCommerceSelectionSession.State.OPEN,
+            )),
+        ).order_by("id").values("id", "created_at", "source_selection_exists").first()
         if first:
             _fact(nodes["inquiry"], "dialogue", "Діалог", "Є вхідне повідомлення",
                   source="client_message", ref=_ref("message", first["id"]), captured_at=_iso(first["created_at"]))
@@ -1181,6 +1191,21 @@ def build_journey_snapshot(client, *, view_episode_id=None):
             covered.append("client_message")
     if focus:
         nodes[focus]["current"] = True
+    if not is_history:
+        from management.services.ig_commerce_projection import captured_selection_for
+        from management.services.ig_journey_selection import source_selection_fields
+        if source_selection is None:
+            has_source_session = episode.get("source_selection_exists") if episode else bool(first and first["source_selection_exists"])
+            source_selection = captured_selection_for(client, episode_id=episode["id"] if episode else None) if has_source_session else {}
+        if (source_selection.get("scope") or {}).get("episode_id") != (episode["id"] if episode else None):
+            source_selection = {}
+        partial_fields = source_selection_fields(source_selection)
+        if partial_fields:
+            for row in partial_fields["items"]:
+                _fact(nodes["selection"], "source:" + row["key"], row["label"], row["value"],
+                      source="commerce.source_choice", ref=row["evidence_refs"][0],
+                      captured_at=row["source"].get("observed_at", ""))
+            nodes["selection"]["summary"] = "Є підтверджені побажання клієнта; застосовність і наявність перевіряються окремо"
     if episode:
         graph = _graph(episode, nodes, history, focus)
     else:
@@ -1215,7 +1240,17 @@ def build_journey_snapshot(client, *, view_episode_id=None):
         if selection_node is not None:
             from management.services.ig_journey_readiness import selection_requirements
             try:
-                readiness = selection_requirements(client_id=client_id, episode_id=episode["id"])
+                from management.services.ig_commerce_projection import captured_selection_for
+                if source_selection is None:
+                    source_selection = captured_selection_for(client, episode_id=episode["id"])
+                if (source_selection.get("scope") or {}).get("episode_id") != episode["id"]:
+                    source_selection = {}
+                if source_selection:
+                    selection_node["source_selection"] = source_selection
+                readiness = selection_requirements(client_id=client_id, episode_id=episode["id"],
+                                                   source_selection=source_selection)
+                if readiness["reason"] in {"scope_changed", "source_changed", "client_unavailable", "not_current_episode"}:
+                    selection_node.pop("source_selection", None)
                 if readiness["requirements"] is not None:
                     selection_node["requirements"] = readiness["requirements"]
                 if readiness.get("selection_fields") is not None:
@@ -1224,6 +1259,17 @@ def build_journey_snapshot(client, *, view_episode_id=None):
             except Exception:
                 # An optional progress badge cannot make the customer's chat fail.
                 graph["coverage"]["selection_requirements"] = "projection_unavailable"
+    elif not is_history:
+        selection_node = next((node for node in graph["nodes"] if node["id"] == "guide:selection"), None)
+        if selection_node is not None:
+            from management.services.ig_commerce_projection import captured_selection_for
+            from management.services.ig_journey_selection import source_selection_fields
+            if source_selection is None:
+                source_selection = captured_selection_for(client)
+            if source_selection and (source_selection.get("scope") or {}).get("episode_id") is None:
+                selection_node["source_selection"] = source_selection
+                selection_node["selection_fields"] = source_selection_fields(source_selection)
+                graph["coverage"]["selection_requirements"] = "source_choice_only"
     if episode and not is_history:
         selection_node = next((node for node in graph["nodes"] if node["id"] == "guide:selection"), None)
         if selection_node is not None:

@@ -16,6 +16,7 @@ import json
 import logging
 import secrets
 
+from django.conf import settings as django_settings
 from django.db import connection, transaction
 from django.db.models import Q, Subquery
 from django.utils import timezone
@@ -153,6 +154,7 @@ def revision_execution_enabled() -> bool:
 
 def _owned_revisions():
     from management.services.ig_revision_source_coverage import source_transfer_owned_q
+    from management.services.ig_revision_commerce import source_producer_owned_q
 
     # media_prepare_deadline is written only by an explicit preparation claim,
     # and survives supersession. A plain ingress shadow has none of these.
@@ -163,6 +165,7 @@ def _owned_revisions():
         | Q(generation_proposal_digest__gt="")
         | Q(delivery_effects__isnull=False)
         | source_transfer_owned_q()
+        | source_producer_owned_q()
     )
 
 
@@ -283,6 +286,8 @@ class RevisionGenerationBoundary:
         self.settings_epoch = settings_row.reply_permission_epoch
         self.publication = publication
         self.has_images = has_images
+        from management.services.ig_response_plan import capture_response_plan
+        self.response_plan = capture_response_plan(IgClient.objects.get(pk=revision.client_id), revision=revision)
         self.baseline = self._baseline()
         self.authority = None
         self.last_reasons = ()
@@ -310,7 +315,9 @@ class RevisionGenerationBoundary:
         if source_preferences_for(client):
             claims.append(CLAIM_SOURCE_PREFERENCES)
         if client.current_product_id:
-            claims.append(CLAIM_CATALOG_CONFIGURATION)
+            catalog = build_revision_authority_bindings(client, claims=(CLAIM_CATALOG_CONFIGURATION,), settings_obj=self.settings)
+            if catalog.ready:
+                claims.append(CLAIM_CATALOG_CONFIGURATION)
         if client.current_commercial_episode_id:
             claims.extend((CLAIM_PAYMENT, CLAIM_ORDER, CLAIM_SHIPMENT))
             offer = build_revision_authority_bindings(
@@ -321,6 +328,14 @@ class RevisionGenerationBoundary:
         return build_revision_authority_bindings(
             client, claims=claims, settings_obj=self.settings,
         )
+
+    @property
+    def provider_control_kinds(self):
+        from management.services.ig_response_plan import REVISION_PROVIDER_CONTROL_KINDS
+        return REVISION_PROVIDER_CONTROL_KINDS
+
+    def truth_context(self, context):
+        return self.response_plan.truth_context(context)
 
     def check(self, authority=None):
         authority = authority or self.baseline
@@ -367,7 +382,7 @@ class RevisionGenerationBoundary:
         preferences = source_preferences_for(client).get("values") or {}
         preference_keys = SELECTION_KEYS.intersection(control)
         preference_acknowledgement = bool(
-            not client.current_product_id and preference_keys
+            preference_keys
             and preference_keys.issubset({"fit", "size", "qty"})
             and not checkout_requested and "price_quoted" not in control
             and all(str(control[key]) == str(preferences.get({"fit": "fit_option_code", "qty": "quantity"}.get(key, key)))
@@ -422,6 +437,9 @@ class RevisionGenerationBoundary:
         lineage. This method fences this revision and its current sealed source.
         """
         from management.services.ig_response_guard import build_source_preference_fallback
+        if not hasattr(self, "response_plan"):
+            from management.services.ig_response_plan import capture_response_plan
+            self.response_plan = capture_response_plan(IgClient.objects.get(pk=self.revision.client_id), revision=self.revision)
         client = IgClient.objects.get(pk=self.revision.client_id)
         response, proof = build_source_preference_fallback(client, revision=self.revision)
         if response is None:
@@ -447,12 +465,13 @@ class RevisionGenerationBoundary:
             # price, availability or checkout claim. Do not require an exact
             # catalog configuration merely because a product is already set.
             self.baseline = build_revision_authority_bindings(
-                client, claims=(CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=self.settings,
+                client, claims=(CLAIM_PUBLIC_POLICY_INPUTS, CLAIM_SOURCE_PREFERENCES) if projection else (CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=self.settings,
             )
         decision = self.validate(response, policy_manifest=policy_manifest)
         if not decision.valid:
             return None, {}
-        proof = {**proof, "revision_id": self.revision.pk,
+        proof = {**proof, "coverage": proof.get("coverage") or self.response_plan.coverage(response, local=True),
+                 "revision_id": self.revision.pk,
                  "snapshot_digest": self.revision.snapshot_digest,
                  "authority_digest": self.authority.authority_digest}
         return response, proof
@@ -497,6 +516,10 @@ class RevisionGenerationBoundary:
             if intent_reason:
                 self.last_reasons = (intent_reason,)
                 return ValidationDecision(False, self.last_reasons)
+        plan_reason = self.response_plan.validate(response)
+        if plan_reason:
+            self.last_reasons = (plan_reason,)
+            return ValidationDecision(False, self.last_reasons)
         case_reason = manager_case_reason(self.revision, response)
         if manager_handoff_promised(response) and not case_reason:
             self.last_reasons = ("unnecessary_manager_handoff",)
@@ -505,7 +528,7 @@ class RevisionGenerationBoundary:
             from management.services.instagram_bot import _provider_reply_truth_context
             from management.services.ig_reply_truth import validate_reply_truth
 
-            context = _provider_reply_truth_context(self.revision.client, response.control, response.reply_text)
+            context = self.truth_context(_provider_reply_truth_context(self.revision.client, response.control, response.reply_text))
             custom_truth = validate_reply_truth(response.reply_text, context=replace(
                 context, authorized_prices=(), authorized_price_ranges=(),
                 approved_timing_claims=(), explicitly_qualified_standard_dispatch_days=None,
@@ -523,7 +546,7 @@ class RevisionGenerationBoundary:
         return ValidationDecision(True)
 
     def repair(self, payload, parsed, reasons, *, base_repair):
-        if self.repaired or "revision_domain_action_unsupported" in reasons or any(
+        if self.repaired or set(reasons).intersection({"revision_domain_action_unsupported", "revision_cart_selection_unsupported"}) or any(
             str(reason).startswith(("checkout", "custom_confirmation")) for reason in reasons
         ):
             return None
@@ -552,6 +575,7 @@ class RevisionGenerationBoundary:
             "role": "user", "parts": [{"text": (
                 "[SERVER FACTS FOR THE SAME SEALED CUSTOMER BUNDLE]\n"
                 + json.dumps(facts, ensure_ascii=False, default=list, separators=(",", ":"))
+                + "\n" + self.response_plan.prompt_guidance()
             )}],
         })
         self.repaired = True
@@ -747,6 +771,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     coverage_note += "\n" + intent_generation_guidance(build_turn_intent(revision.client, revision))
     from management.services.ig_revision_conversation_context import conversation_timing_guidance
     coverage_note += "\n" + conversation_timing_guidance(revision)
+    coverage_note += "\n" + boundary.response_plan.prompt_guidance()
     from management.services.gemini_accounting_runtime import revision_request_execution
 
     with revision_request_execution(
@@ -814,11 +839,14 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         return None, boundary, readiness.reasons
     from management.services.ig_reply_truth import validate_reply_truth
 
-    truth = validate_reply_truth(response.reply_text, context=bot._provider_reply_truth_context(
+    truth = validate_reply_truth(response.reply_text, context=boundary.truth_context(bot._provider_reply_truth_context(
         IgClient.objects.get(pk=revision.client_id), response.control, response.reply_text,
-    ))
+    )))
     if not truth.valid:
         return None, boundary, truth.reasons
+    from management.services.ig_response_debt import record_response_coverage
+    if not record_response_coverage(revision.pk, token, boundary.response_plan.coverage(response)):
+        return None, boundary, ("response_coverage_cas_failed",)
     stored = store_revision_generation_proposal(
         revision.pk, token, source_message_ids=[source["message_id"] for source in sources],
         settings_id=settings_row.pk, settings_permission_epoch=boundary.settings_epoch,
@@ -870,9 +898,12 @@ def _prepare_effects(revision, response, settings_row):
     effects = list(prior)
     from management.services.ig_reply_truth import validate_reply_truth
 
-    truth = validate_reply_truth(reply, context=bot._provider_reply_truth_context(
-        IgClient.objects.get(pk=revision.client_id), response.control, reply,
-    ))
+    from management.services.ig_response_plan import capture_response_plan
+    client = IgClient.objects.get(pk=revision.client_id)
+    response_plan = capture_response_plan(client, revision=revision)
+    truth = validate_reply_truth(reply, context=response_plan.truth_context(bot._provider_reply_truth_context(
+        client, response.control, reply,
+    )))
     if not truth.valid:
         return (), truth.reasons
     prepared_text = prepare_text_effects(
@@ -1005,9 +1036,26 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     pub = receipt["publication"]
     publication = PublicationBinding(pub["id"], pub["version"], pub["hash"])
     reply = receipt.get("static_reply_text") or receipt.get("reply_text") or ""
-    truth = validate_reply_truth(reply, context=bot._provider_reply_truth_context(revision.client, {}, reply))
+    from management.services.ig_response_plan import capture_response_plan
+    plan = capture_response_plan(revision.client, revision=revision)
+    truth = validate_reply_truth(reply, context=plan.truth_context(bot._provider_reply_truth_context(revision.client, {}, reply)))
     if not truth.valid:
         return RevisionLiveResult(revision.pk, "blocked", truth.reasons)
+    if receipt.get("origin") == "source_preference_fallback" or (receipt.get("origin") == "static_reply" and plan.obligations):
+        from management.services.ig_response_debt import record_response_coverage
+        coverage = (receipt.get("proof") or {}).get("coverage")
+        if receipt.get("origin") == "static_reply":
+            coverage = plan.coverage(ValidatedResponse(reply_text=reply), local=True)
+            # The verified static trigger is a handled control source. It does
+            # not discharge additional size/purchase/information requests.
+            trigger_ids = {f"{row['message_id']}:unclassified" for row in revision.bundle_snapshot.get("sources", [])
+                           if row.get("text") == settings_row.trigger_text}
+            handled = [item for item in coverage["remaining"] if item in trigger_ids]
+            coverage["remaining"] = [item for item in coverage["remaining"] if item not in trigger_ids]
+            coverage["covered"].extend(handled)
+            coverage["disposition"] = "recovery" if coverage["remaining"] else "complete"
+        if not coverage or not record_response_coverage(revision.pk, token, coverage):
+            return RevisionLiveResult(revision.pk, "blocked", ("response_coverage_cas_failed",))
     prepared = prepare_text_effects(
         revision.client.igsid, reply, quick_replies=quick_replies,
         provider_namespace=revision.bundle_snapshot["sources"][0]["source_namespace"],
@@ -1060,6 +1108,17 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         if not token_value:
             return RevisionLiveResult(revision_id, "blocked", ("provider_not_configured",))
         return _drain_effects(revision, token, settings_row, token_value)
+    # Incoming source facts have their own recipient/reset/privacy admission.
+    # Output policy (no reply, static, disabled AI or manager pause) cannot erase
+    # a customer's accepted choice or create send/effect authority from it.
+    from management.services.ig_revision_commerce import reduce_revision_commerce
+    commerce = reduce_revision_commerce(
+        revision.pk, token, settings_id=settings_row.pk,
+        settings_permission_epoch=settings_row.reply_permission_epoch, publication=None,
+    )
+    if not commerce.ready:
+        return RevisionLiveResult(revision_id, "blocked", (commerce.reason,))
+    revision.refresh_from_db()
     from management.services.ig_revision_input import decide_revision_input, complete_no_reply_input
 
     # A parked creator budget debt has no model winner and may outlive the
@@ -1137,16 +1196,6 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         and not holding_recovery
     ):
         return RevisionLiveResult(revision_id, "blocked", ("settings_permission_changed",))
-    from management.services.ig_revision_commerce import reduce_revision_commerce
-
-    commerce = reduce_revision_commerce(
-        revision.pk, token, settings_id=settings_row.pk,
-        settings_permission_epoch=input_decision.receipt["settings_permission_epoch"],
-        publication=PublicationBinding(input_pub["id"], input_pub["version"], input_pub["hash"]),
-    )
-    if not commerce.ready:
-        return RevisionLiveResult(revision_id, "blocked", (commerce.reason,))
-    revision.refresh_from_db()
     publication = _publication(settings_row)
     if revision.generation_proposal_digest:
         if _digest(revision.generation_proposal) != revision.generation_proposal_digest:
@@ -1176,8 +1225,8 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
 
             holding = record_technical_holding(
                 revision.pk, token, settings_id=settings_row.pk, allow_neutral=True,
-            )
-            if holding.ready:
+            ) if getattr(django_settings, "IG_REVISION_OPTIONAL_HOLDING_ENABLED", False) else None
+            if holding is not None and holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
             return RevisionLiveResult(revision_id, "blocked", ("generation_reconciliation_required",))
         from management.services.ig_revision_media import collect_revision_media
@@ -1205,8 +1254,8 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
 
             holding = record_technical_holding(
                 revision.pk, token, settings_id=settings_row.pk, allow_neutral=True,
-            )
-            if holding.ready:
+            ) if getattr(django_settings, "IG_REVISION_OPTIONAL_HOLDING_ENABLED", False) else None
+            if holding is not None and holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
             return RevisionLiveResult(revision_id, "blocked", reasons)
     # Both fresh generation and execution-only continuation use the same sealed
@@ -1439,14 +1488,21 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
                     revision_id,
                     cutover_at=rollout.cutover_at if create_new else None,
                 )
+    from management.services.ig_revision_commerce import source_producer_owned_q
+
     candidates = list(IgCustomerTurnRevision.objects.filter(
         state=IgCustomerTurnRevision.State.CLAIMED, lease_until__lte=timezone.now(),
     ).filter(Q(overall_deadline__gt=timezone.now()) | Q(recovery_state="execution"))
         .exclude(claim_token__startswith="finalize:").exclude(claim_token__startswith="debt:")
-        .filter(Q(delivery_effects__isnull=False) | (Q(active_slot=1) if create_new else Q(pk__in=[])))
+        .filter(Q(delivery_effects__isnull=False) | (Q(active_slot=1) if create_new else (
+            Q(active_slot=1) & source_producer_owned_q())))
         .order_by("lease_until", "id").values_list("id", flat=True).distinct()[:limit])
     if create_new:
         candidates.extend(due_revision_ids(limit=limit, cutover_at=rollout.cutover_at))
+    else:
+        # Intake already admitted these sources to the revision reducer. Finish
+        # that owner across rollback even when preparation has not started yet.
+        candidates.extend(due_revision_ids(limit=limit, source_producer_only=True))
     for revision_id in list(dict.fromkeys(candidates))[:max(0, limit - handled)]:
         if bot.maintenance_status()["active"]:
             break

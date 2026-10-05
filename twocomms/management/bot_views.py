@@ -4791,7 +4791,7 @@ def _client_follow_payload(c, *, settings_obj=None, now=None) -> dict:
     return payload
 
 
-def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
+def _client_card(c, *, follow_settings=None, follow_now=None, source_selection=None) -> dict:
     from management.services.ig_response_debt import reply_debt_payload
     from management.services.ig_attention import attention_snapshot
 
@@ -4991,6 +4991,17 @@ def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
         manager_takeover=bool(c.manager_takeover),
         commercial_visual_state=commercial_visual_state,
     )
+    if source_selection is None:
+        from management.services.ig_commerce_projection import captured_selection_for
+        source_selection = captured_selection_for(c)
+    source_values = source_selection.get("values") or {}
+    from management.services.ig_journey_selection import source_selection_fields
+    source_display = source_selection_fields(source_selection)
+    source_product = product if product and source_values.get("product_id") == product.pk else None
+    if source_display and source_product:
+        for field in source_display["items"]:
+            if field["key"] == "product":
+                field["value"] = source_product.title
     return {
         "id": c.id,
         "igsid": c.igsid,
@@ -5048,12 +5059,19 @@ def _client_card(c, *, follow_settings=None, follow_now=None) -> dict:
         "lost_reason": c.lost_reason,
         "hidden": bool(c.hidden_at),
         "hidden_reason": c.hidden_reason,
-        "current_product_id": c.current_product_id,
-        "current_product_title": getattr(product, "title", "") if product else "",
-        "current_size": c.current_size,
-        "current_color": c.current_color,
-        "current_qty": c.current_qty,
+        "current_product_id": source_values.get("product_id"),
+        "current_product_title": getattr(source_product, "title", "") if source_product else str(source_values.get("model_query") or ""),
+        "current_size": source_values.get("size") or "",
+        "current_color": source_values.get("color") or "",
+        "current_qty": source_values.get("quantity"),
         "product_confidence": str(c.current_product_confidence),
+        "source_selection": source_selection,
+        "source_selection_display": source_display,
+        "unverified_selection_snapshot": {
+            "product_id": c.current_product_id, "product_title": getattr(product, "title", "") if product else "", "size": c.current_size,
+            "color": c.current_color, "quantity": c.current_qty,
+            "status": "unverified", "authority": "legacy_configuration_snapshot",
+        },
         "next_followup_at": next_followup.isoformat() if next_followup else "",
         "followup_level": c.followup_level,
         "discount_offered_percent": c.discount_offered_percent,
@@ -5684,6 +5702,8 @@ def bot_client_detail_api(request, client_id):
     if not c:
         return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
     observation_now = timezone.now()
+    from management.services.ig_commerce_projection import captured_selection_for
+    source_selection = captured_selection_for(c)
 
     from management.services.ig_journey_snapshot import (
         InvalidJourneyEpisode, build_journey_snapshot,
@@ -5693,7 +5713,8 @@ def bot_client_detail_api(request, client_id):
     journey = None
     if request.GET.get("journey_only") == "1" or not request.GET.get("before_id"):
         try:
-            journey = build_journey_snapshot(c, view_episode_id=viewed_episode_id)
+            journey = build_journey_snapshot(c, view_episode_id=viewed_episode_id,
+                                             source_selection=source_selection)
         except InvalidJourneyEpisode:
             return JsonResponse(
                 {"success": False, "error": "Покупку не знайдено."}, status=404,
@@ -6107,7 +6128,7 @@ def bot_client_detail_api(request, client_id):
         for row in ugc_assessment_rows
     ]
     manual_order_url = _manual_order_url_for_client(c.pk)
-    card = _client_card(c, follow_now=observation_now)
+    card = _client_card(c, follow_now=observation_now, source_selection=source_selection)
     card.update({
         "memory": c.memory_summary,
         "phone": c.phone,

@@ -282,16 +282,27 @@ class RevisionSourceCoverageTests(TransactionTestCase):
         case.revision.refresh_from_db()
         self.assertTrue(validate_source_transfer(case.revision))
         result, generation, http = case._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        # Physical delivery preserves the union; the generic style question
+        # does not answer either the original advice request or fresh price.
+        self.assertEqual(result.state, "delivery_pending", result.reasons)
+        self.assertEqual(result.reasons, ("semantic_reply_incomplete",))
         self.assertEqual(generation.call_count, 1)
         self.assertEqual(http.call_count, 1)
         case.revision.refresh_from_db()
         proposal_sources = case.revision.generation_proposal["sources"]
         self.assertEqual([row["message_id"] for row in proposal_sources], [case.source.pk, fresh.pk])
         self.assertEqual(proposal_sources[0]["source_digest"], original_digest)
+        coverage = case.revision.action_receipts["response_coverage"]
+        self.assertEqual(coverage["source_message_ids"], [case.source.pk, fresh.pk])
+        self.assertEqual(coverage["remaining"], [f"{case.source.pk}:info:question",
+            f"{fresh.pk}:garment_type", f"{fresh.pk}:info:price"])
+        self.assertEqual(coverage["disposition"], "recovery")
+        effect = case.revision.delivery_effects.get()
+        self.assertEqual(effect.state, "sent")
+        self.assertEqual(effect.payload["message"]["text"], case.parsed["reply_text"])
         case.source.refresh_from_db()
         fresh.refresh_from_db()
-        self.assertEqual(case.source.status, "done")
-        self.assertEqual(fresh.status, "done")
+        self.assertEqual(case.source.status, "pending")
+        self.assertEqual(fresh.status, "pending")
         predecessor.refresh_from_db()
         self.assertEqual(predecessor.state, "superseded")

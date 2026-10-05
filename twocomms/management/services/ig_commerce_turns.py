@@ -26,7 +26,77 @@ _GARMENT_WORDS = {
     "футболк": "tshirt", "t-shirt": "tshirt", "tshirt": "tshirt",
     "худі": "hoodie", "худи": "hoodie", "hoodie": "hoodie",
 }
-_SIZE_RE = re.compile(r"\b(?:xxxs|xxl|xxxl|2xl|3xl|4xl|5xl|xs|s|m|l|xl)\b", re.I)
+_SIZE_RE = re.compile(r"(?<!\w)(?:xxxs|xxs|xs|[xх]{1,3}[lл]|[2-5][xх][lл]|s|m|l|л|м|с|ес|эм|ем|ель|эль|ікс\s*ель|икс\s*эль)(?!\w)", re.I)
+_SIZE_ALIASES = {"л": "L", "м": "M", "с": "S", "ес": "S", "эм": "M", "ем": "M", "ель": "L", "эль": "L", "іксель": "XL", "иксэль": "XL", "2XL": "XXL", "3XL": "XXXL"}
+
+
+def _canonical_source_size(token):
+    token = re.sub(r"\s+", "", token).casefold()
+    if token in _SIZE_ALIASES:
+        return _SIZE_ALIASES[token]
+    token = token.translate(str.maketrans({"х": "x", "л": "l"})).upper()
+    return _SIZE_ALIASES.get(token, token)
+
+
+def _contracted_size_negation(before):
+    """Distinguish a rejected choice from a report that never affirmed one."""
+    if re.search(r"\b(?:do|does|did)n['’]t\s+(?:want|need|choose|select|order|buy)(?:\s+(?:a|the|size)){0,2}\s*$", before, re.I):
+        return "rejected"
+    if re.search(r"\b(?:have|has|had)n['’]t\s+(?:requested|chosen|selected|ordered|said|asked\s+for)(?:\s+(?:a|the|size)){0,2}\s*$", before, re.I):
+        return "unaffirmed"
+    return ""
+
+
+def _source_size(text: str) -> str:
+    """A chosen size, with explicit corrections winning over rejected mentions."""
+    candidates = list(_SIZE_RE.finditer(text))
+    selected = []
+    for match in candidates:
+        start, end = _preference_segment(text, match.start())
+        segment = text[start:end].casefold()
+        if "?" in segment or _is_quoted_preference(text, match.start(), match.end()):
+            continue
+        if re.search(r"\b(?:який|какой|which|what)\b|\b(?:є|есть|available|have)\b", segment):
+            continue
+        if re.search(r"розмірн\w*|размерн\w*|size\s+(?:guide|chart)|опис[аі]\w*|description|карточк", segment):
+            continue
+        before = text[start:match.start()].casefold()
+        after = text[match.end():end].casefold()
+        if _contracted_size_negation(before):
+            continue
+        if re.search(r"\b(?:не|ні|not|no)\s+(?:(?:хочу|потрібен|треба|want|size|розмір|размер)\s+){0,2}$", before):
+            continue
+        if re.match(r"\s*(?:не\s+(?:хочу|треба|потрібен)|not\s+wanted)\b", after):
+            continue
+        token = re.sub(r"\s+", "", match.group()).casefold()
+        if token in {"с", "м"} and text.strip(" .!").casefold() != token and not re.search(r"(?:розмір|размер|size)\s*$", before):
+            continue
+        selected.append(_canonical_source_size(token))
+    if re.search(r"\b(?:или|або|чи|or)\b|/", text) and len(candidates) > 1:
+        return ""
+    return selected[-1] if len(set(selected)) == 1 else ""
+
+
+def _source_purchase(text: str) -> bool:
+    for match in re.finditer(r"(?:хочу|хочемо|хотів\s+би|хотел\s+бы|жел[ао]ю|(?:i\s+)?want\s+to|i(?:'d|\s+would)\s+like\s+to)\s+(?:замовити|заказать|купити|купить|order|buy|purchase|оформити\s+замовлення|оформить\s+заказ)|\b(?:замовляю|заказываю|купую|беру)\b", text, re.I):
+        start, end = _preference_segment(text, match.start())
+        if not _is_quoted_preference(text, match.start(), match.end()) and "?" not in text[start:end] and not re.search(r"\b(?:не|ні|not|don['’]t)\s*$", text[start:match.start()].casefold()):
+            return True
+    return False
+
+
+def _withdrawn_size(text: str) -> str:
+    rejected = set()
+    for match in _SIZE_RE.finditer(text):
+        start, end = _preference_segment(text, match.start())
+        segment = text[start:end].casefold()
+        if "?" in segment or _is_quoted_preference(text, match.start(), match.end()) or re.search(r"розмірн\w*|размерн\w*|size\s+(?:guide|chart)|опис[аі]\w*|description|карточк", segment):
+            continue
+        before = text[start:match.start()].casefold()
+        if _contracted_size_negation(before) == "rejected" or re.search(r"\b(?:не|ні|not|no)\s+(?:(?:хочу|потрібен|треба|want|size|розмір|размер)\s+){0,2}$", before):
+            token = re.sub(r"\s+", "", match.group()).casefold()
+            rejected.add(_canonical_source_size(token))
+    return next(iter(rejected)) if len(rejected) == 1 else ""
 
 
 def _find_prefix_value(text: str, words: dict[str, str]) -> str:
@@ -87,9 +157,14 @@ def _preference_segment(text: str, position: int) -> tuple[int, int]:
     return start, min(ends) + 1 if ends else len(text)
 
 
+def _quoted_preference_spans(text: str):
+    """Bounded quotation spans, retaining apostrophes inside words."""
+    return re.finditer(r'''"[^"\n]{0,240}"|«[^»\n]{0,240}»|“[^”\n]{0,240}”|‘(?:[^’\n]|(?<=\w)’(?=\w)){0,240}’|(?<!\w)'(?:[^'\n]|(?<=\w)'(?=\w)){0,240}'(?!\w)''', text)
+
+
 def _is_quoted_preference(text: str, start: int, end: int) -> bool:
     """Quotes often repeat card or product-description text rather than select it."""
-    for match in re.finditer(r'"[^"\n]{0,240}"|«[^»\n]{0,240}»|“[^”\n]{0,240}”', text):
+    for match in _quoted_preference_spans(text):
         if match.start() <= start and end <= match.end():
             return True
     return False
@@ -187,13 +262,13 @@ def parse_turn(text: str | None, *, media_evidence=None) -> CommerceTurnRequest:
     field_updates: dict[str, str] = {}
     color = _find_prefix_value(raw, _COLOR_WORDS)
     fit = _find_prefix_value(raw, _FIT_WORDS)
-    size_match = _SIZE_RE.search(raw)
+    size = _source_size(raw)
     if color:
         field_updates["color"] = color
     if fit:
         field_updates["fit"] = fit
-    if size_match and not re.search(r"(?:розмірн\w*|размерн\w*|size\s+guide)", lowered):
-        field_updates["size"] = size_match.group(0).upper()
+    if size:
+        field_updates["size"] = size
 
     hard: dict[str, str] = {}
     if re.search(r"логотип\s+(?:спереди|спереду|на\s+груд|front)|logo\s+front", lowered):
@@ -231,9 +306,11 @@ def parse_turn(text: str | None, *, media_evidence=None) -> CommerceTurnRequest:
             lowered.strip(" .!?"),
         )
     )
-    new_purchase_requested = bool(
-        re.search(r"(?:еще\s+одну|ще\s+одну|another\s+one|new\s+order)", lowered)
-    )
+    new_purchase_requested = False
+    for match in re.finditer(r"(?:ещ[её]\s+одну|ще\s+одну|another\s+one|new\s+order)", lowered):
+        start, end = _preference_segment(raw, match.start())
+        if "?" not in raw[start:end] and not _is_quoted_preference(raw, match.start(), match.end()) and not re.search(r"\b(?:не|ні|not|no)(?:\s+(?:хочу|want))?\s*$", lowered[start:match.start()]):
+            new_purchase_requested = True
     exchange_requested = bool(
         re.search(r"(?:поменять|обмен|обмін|exchange|change\s+size)", lowered)
     )
@@ -265,11 +342,19 @@ def parse_turn(text: str | None, *, media_evidence=None) -> CommerceTurnRequest:
         pending = pending or "new_purchase_or_exchange"
 
     garment_type = _find_prefix_value(raw, _GARMENT_WORDS)
+    recipient = ""
+    recipient_words = {"себя": "self", "себе": "self", "myself": "self", "друга": "friend", "другу": "friend", "friend": "friend", "подруги": "friend_female", "подругу": "friend_female", "мами": "mother", "мамы": "mother", "mother": "mother", "тата": "father", "папы": "father", "father": "father"}
+    for match in re.finditer(r"\b(?:для|for)\s+(?:мого\s+|моего\s+|my\s+)?(\w+)\b", lowered):
+        start, end = _preference_segment(raw, match.start())
+        if "?" not in raw[start:end] and not _is_quoted_preference(raw, match.start(), match.end()):
+            recipient = recipient_words.get(match.group(1), recipient)
     withdrawals = {
         key: value
         for key, words in (("fit", _FIT_WORDS), ("color", _COLOR_WORDS), ("garment_type", _GARMENT_WORDS))
         if (value := _withdrawn_preference(raw, words))
     }
+    if (withdrawn_size := _withdrawn_size(raw)):
+        withdrawals["size"] = withdrawn_size
 
     return CommerceTurnRequest(
         exact_product_id=exact_product_id,
@@ -284,6 +369,8 @@ def parse_turn(text: str | None, *, media_evidence=None) -> CommerceTurnRequest:
         pending_clarification=pending,
         info_topics=tuple(info_topics),
         checkout_requested=checkout_requested,
+        purchase_requested=_source_purchase(raw) or new_purchase_requested,
+        recipient_id=recipient,
         reset_requested=reset_requested,
         support_requested=bool(re.search(r"(?:помог|вопрос|support|help)", lowered)),
         new_purchase_requested=new_purchase_requested,
@@ -299,11 +386,15 @@ def understand_turn(text: str | None, *, model_payload=None, media_evidence=None
     deterministic = parse_turn(text, media_evidence=media_evidence)
     model = _parse_model_payload(model_payload)
     if model_payload is not None and not model:
-        return CommerceTurnRequest(pending_clarification="which_product")
+        return CommerceTurnRequest(**{**deterministic.__dict__, "pending_clarification": deterministic.pending_clarification or "which_product"})
     updates = dict(deterministic.field_updates)
     words_by_key = {"color": _COLOR_WORDS, "fit": _FIT_WORDS, "garment_type": _GARMENT_WORDS}
     for key in ("color", "fit", "size", "garment_type"):
         if key not in updates and key in model:
+            # Source abstention is authoritative, including text with no size.
+            # A model may interpret a question but cannot manufacture a choice.
+            if key == "size":
+                continue
             if key in words_by_key and _has_unaffirmed_preference_mention(text or "", words_by_key[key]):
                 continue
             updates[key] = model[key]

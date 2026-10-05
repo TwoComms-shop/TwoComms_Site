@@ -425,10 +425,14 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(self.customer.current_product_id, product.pk)
         self.assertEqual(self.customer.current_qty, 2)
         result, generation, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual(result.state, "delivery_pending", result.reasons)
+        self.assertEqual(result.reasons, ("semantic_reply_incomplete",))
         generation.assert_not_called()
         self.assertEqual(http.call_count, 1)
         self.revision.refresh_from_db()
+        coverage = self.revision.action_receipts["response_coverage"]
+        self.assertTrue(any(row.endswith(":purchase_requested") for row in coverage["remaining"]))
+        self.assertEqual(self.revision.delivery_effects.get().state, "sent")
         for key, value in json.loads(receipt).items():
             self.assertEqual(self.revision.action_receipts[key], value)
 
@@ -624,6 +628,40 @@ class RevisionLiveTests(TransactionTestCase):
         http.assert_not_called()
         self.assertEqual(IgCheckoutAccessToken.objects.count(), 1)
 
+    def test_checkout_rejects_independent_payment_scope_drift_and_rolls_back(self):
+        from management.models import IgCheckoutAccessToken, IgCheckoutProposal, IgCommercialEpisode
+        from management.services import ig_revision_checkout
+        self._checkout_bundle()
+        original = ig_revision_checkout.create_or_update_proposal
+        def mutate_scope(**kwargs):
+            checkout = original(**kwargs)
+            IgCommercialEpisode.objects.filter(pk=checkout.commercial_episode_id).update(primary_payment_review_id=991)
+            return checkout
+        with patch.object(ig_revision_checkout, "create_or_update_proposal", side_effect=mutate_scope):
+            result, _generation, http = self._execute()
+        self.assertEqual(result.reasons, ("checkout_post_fact_unavailable",))
+        http.assert_not_called()
+        self.assertEqual(IgCheckoutAccessToken.objects.count(), 0)
+        self.assertEqual(IgCheckoutProposal.objects.count(), 0)
+        self.assertFalse(self.revision.delivery_effects.exists())
+
+    def test_checkout_rejects_independent_source_change_and_rolls_back(self):
+        from management.models import IgCheckoutAccessToken, IgCheckoutProposal
+        from management.services import ig_revision_checkout
+        self._checkout_bundle()
+        original = ig_revision_checkout.create_or_update_proposal
+        def mutate_source(**kwargs):
+            checkout = original(**kwargs)
+            InstagramBotMessage.objects.filter(pk=self.source.pk).update(text="Не хочу замовляти")
+            return checkout
+        with patch.object(ig_revision_checkout, "create_or_update_proposal", side_effect=mutate_source):
+            result, _generation, http = self._execute()
+        self.assertEqual(result.reasons, ("checkout_post_fact_unavailable",))
+        http.assert_not_called()
+        self.assertEqual(IgCheckoutAccessToken.objects.count(), 0)
+        self.assertEqual(IgCheckoutProposal.objects.count(), 0)
+        self.assertFalse(self.revision.delivery_effects.exists())
+
     def test_shown_product_projection_uses_only_frozen_sent_effect_metadata(self):
         from management.services.ig_revision_live import _project_sent_history
         from storefront.models import Category, Product
@@ -778,7 +816,10 @@ class RevisionLiveTests(TransactionTestCase):
         product_id, variant_id = int(item[0]), int(item[4])
         self.parsed["controls"] = [{"kind": "product", "value": str(product_id)}, {"kind": "color_variant_id", "value": str(variant_id)}, {"kind": "qty", "value": "2"}]
         result, _generation, _http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual(result.state, "delivery_pending", result.reasons)
+        self.assertEqual(result.reasons, ("semantic_reply_incomplete",))
+        self.revision.refresh_from_db()
+        self.assertTrue(any(row.endswith(":purchase_requested") for row in self.revision.action_receipts["response_coverage"]["remaining"]))
         session = IgCommerceSelectionSession.objects.get(client=self.customer, open_slot=1)
         self.assertEqual(session.lines[session.active_index]["product_id"], product_id)
         old_transitions = list(IgCommerceSelectionTransition.objects.values_list("pk", "to_revision"))
@@ -1117,3 +1158,55 @@ class RevisionLiveTests(TransactionTestCase):
         self.revision.refresh_from_db()
         self.assertNotIn("media_unavailable_reply", self.revision.action_receipts)
         self.assertIn("Підкажіть, які є розміри?", json.dumps(self.generation_calls[0], ensure_ascii=False))
+
+
+from copy import deepcopy
+from types import SimpleNamespace
+from django.test import SimpleTestCase
+
+
+class OwnedCheckoutBusinessRebindTests(SimpleTestCase):
+    def proof(self, claim="payment"):
+        from management.services.ig_revision_authority import _digest
+        before = {"episode": {"id": 8, "client_id": 7, "deal_id": None, "state": "active", "open_slot": 1},
+                  "deal_id": 0, "order_id": 0, "payment_confirmed": False, "evidence": []}
+        after = {**deepcopy(before), "deal_id": 9}
+        after["episode"]["deal_id"] = 9
+        old = {"claim": claim, "client_id": 7, "episode_id": 8, "selector": {}, "subjects": {"order_id": 0}, "authority_digest": _digest(before)}
+        fresh = {**old, "authority_digest": _digest(after)}
+        checkout = SimpleNamespace(commercial_episode_id=8, client_id=7, deal_id=9)
+        return old, fresh, before, after, checkout
+
+    def allowed(self, old, fresh, before, after, checkout):
+        from management.services.ig_revision_authority import owned_checkout_business_rebind
+        return owned_checkout_business_rebind(old, fresh, before=before, after=after, checkout=checkout, prior_deal_watermark=0)
+
+    def test_only_owned_unconfirmed_deal_attachment_is_admitted(self):
+        old, fresh, before, after, checkout = self.proof()
+        self.assertTrue(self.allowed(old, fresh, before, after, checkout))
+        from management.services.ig_revision_authority import owned_checkout_business_rebind
+        self.assertFalse(owned_checkout_business_rebind(old, fresh, before=before, after=after,
+            checkout=checkout, prior_deal_watermark=checkout.deal_id))
+        for field, value in (("commercial_episode_id", 99), ("client_id", 99), ("deal_id", 99)):
+            foreign = SimpleNamespace(**vars(checkout))
+            setattr(foreign, field, value)
+            self.assertFalse(self.allowed(old, fresh, before, after, foreign))
+
+    def test_independent_payment_order_shipment_changes_are_rejected(self):
+        from management.services.ig_revision_authority import _digest
+        for claim, field, value in (("payment", "payment_confirmed", True), ("payment", "evidence", ["provider_payment"]),
+                                    ("order", "order_created", True), ("order", "order_id", 19),
+                                    ("shipment", "shipment_state", "shipped")):
+            old, fresh, before, after, checkout = self.proof(claim)
+            after[field] = value
+            fresh["authority_digest"] = _digest(after)
+            self.assertFalse(self.allowed(old, fresh, before, after, checkout))
+
+    def test_independent_offer_source_or_binding_drift_is_never_rebound(self):
+        for claim in ("current_offer", "source_preferences", "catalog_configuration"):
+            self.assertFalse(self.allowed(*self.proof(claim)))
+        old, fresh, before, after, checkout = self.proof()
+        for field, value in (("episode_id", 99), ("selector", {"product": 99}), ("subjects", {"order_id": 99}),
+                              ("authority_digest", "a" * 64)):
+            candidate = {**fresh, field: value}
+            self.assertFalse(self.allowed(old, candidate, before, after, checkout))

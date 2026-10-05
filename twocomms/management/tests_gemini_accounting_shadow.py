@@ -1912,7 +1912,7 @@ class GeminiShadowRuntimeTests(TestCase):
         self.assertEqual(attempts[0].candidate_index, attempts[1].candidate_index)
         self.assertLess(attempts[0].attempt_index, attempts[1].attempt_index)
         self.assertEqual(attempts[0].fsm_state, GeminiRequestAttempt.FsmState.FAILED)
-        self.assertEqual(attempts[0].failure_kind, "invalid_response")
+        self.assertEqual(attempts[0].failure_kind, "local_semantic_rejection")
         self.assertEqual(attempts[0].prompt_tokens, 17)
         self.assertEqual(attempts[0].candidates_tokens, 5)
         self.assertEqual(attempts[0].total_tokens, 22)

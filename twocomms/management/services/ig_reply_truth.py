@@ -19,6 +19,7 @@ REASON_CODES = (
     "unverified_timing",
     "unverified_recruitment",
     "configuration_mismatch",
+    "unverified_availability",
     "unauthorized_action",
 )
 
@@ -52,6 +53,9 @@ class ReplyTruthContext:
     allowed_sizes: tuple[str, ...] = ()
     allowed_fits: tuple[str, ...] = ()
     allowed_colors: tuple[str, ...] = ()
+    source_chosen_sizes: tuple[str, ...] = ()
+    source_chosen_fits: tuple[str, ...] = ()
+    source_chosen_colors: tuple[str, ...] = ()
     authorized_actions: tuple[AuthorizedAction, ...] = ()
     quoted_data: tuple[str, ...] = ()
     # Future recruitment-policy integration must supply explicit source-backed
@@ -260,6 +264,22 @@ _COLOR_RE = re.compile(
     r"(?P<value>[\w-]{2,40})\b",
     re.I,
 )
+_CUSTOMER_CHOICE_RE = re.compile(
+    r"(?:ви|вы|you)\s+(?:обрали|вибрали|выбрали|chose|have\s+chosen|selected)"
+    r"|(?:ваш\w*|your)\s+(?:вибір|выбор|choice|побажан\w*|пожелан\w*|preference)"
+    r"|(?:враху\w*|учту|зафікс\w*|запис\w*|сохран\w*|noted|recorded|requested|preference)", re.I,
+)
+_AVAILABILITY_RE = re.compile(
+    r"(?:\bє\b|\bесть\b|\bмаємо\b|\bимеем\b|\bесть\b|we\s+have(?!\s+(?:chosen|selected|requested))|\bhave\b(?!\s+(?:chosen|selected|requested))|\bдоступн\w*|\bнаявн\w*|\bavailable\b|in\s+stock)\s+[^.!?\n]{0,30}"
+    r"(?:розмір|размер|size|\b(?:XS|S|M|L|XL|XXL|XXXL)\b)"
+    r"|(?:розмір|размер|size|\b(?:XS|S|M|L|XL|XXL|XXXL)\b)[^.!?\n]{0,35}"
+    r"(?:\bє\b|\bесть\b|\bмаємо\b|\bимеем\b|we\s+have(?!\s+(?:chosen|selected|requested))|\bhave\b(?!\s+(?:chosen|selected|requested))|\bдоступн\w*|\bнаявн\w*|\bavailable\b|in\s+stock)", re.I,
+)
+_CONFIGURATION_STOCK_RE = re.compile(
+    r"\b(?:маємо|имеем|доступн\w*|наявн\w*|available)\b|in\s+stock|"
+    r"\b(?:є|есть)\b|\bhave\b(?!\s+(?:chosen|selected|requested))", re.I,
+)
+
 _NON_CONFIGURATION_VALUES = frozenset({
     "depends", "залежить", "зависит", "впливає", "влияет", "varies",
     "chart", "таблиця", "таблица", "на", "on",
@@ -497,10 +517,13 @@ def validate_reply_truth(
                 ):
                     _add(reasons, "unverified_timing")
 
-        for pattern, allowed in (
-            (_SIZE_RE, context.allowed_sizes),
-            (_FIT_RE, context.allowed_fits),
-            (_COLOR_RE, context.allowed_colors),
+        availability_claim = _has_positive_claim(_AVAILABILITY_RE, sentence)
+        if availability_claim and not context.allowed_sizes:
+            _add(reasons, "unverified_availability")
+        for pattern, allowed, source_choices in (
+            (_SIZE_RE, context.allowed_sizes, context.source_chosen_sizes),
+            (_FIT_RE, context.allowed_fits, context.source_chosen_fits),
+            (_COLOR_RE, context.allowed_colors, context.source_chosen_colors),
         ):
             allowed_values = {_normalize(value) for value in allowed}
             for match in pattern.finditer(sentence):
@@ -509,7 +532,21 @@ def validate_reply_truth(
                 claimed = _positive_configuration_value(sentence, match)
                 if not claimed:
                     continue
-                if _normalize(claimed) not in allowed_values:
+                # A wish belongs to its own clause, never to another stock or
+                # configuration assertion in the same model sentence.
+                clause_start = 0
+                clause_end = len(sentence)
+                for boundary in re.finditer(r"[,;]|\b(?:але|но|but|and\s+we|і\s+ми|и\s+мы)\b", sentence, re.I):
+                    if boundary.end() <= match.start():
+                        clause_start = boundary.end()
+                    elif boundary.start() >= match.end():
+                        clause_end = boundary.start()
+                        break
+                clause = sentence[clause_start:clause_end]
+                effective = set(allowed_values)
+                if not _has_positive_claim(_AVAILABILITY_RE, clause) and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause) and _CUSTOMER_CHOICE_RE.search(clause):
+                    effective.update(_normalize(value) for value in source_choices)
+                if _normalize(claimed) not in effective:
                     _add(reasons, "configuration_mismatch")
 
     return ReplyTruthResult(valid=not reasons, reasons=tuple(reasons))

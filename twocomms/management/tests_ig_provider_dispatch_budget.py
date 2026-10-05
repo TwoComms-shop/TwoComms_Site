@@ -220,7 +220,7 @@ class ValidatedChatDispatchTests(SimpleTestCase):
         self.assertEqual(observer.boundaries[0].succeeded_calls, 0)
         self.assertEqual(observer.boundaries[0].failed_calls, 1)
         self.assertEqual(observer.boundaries[0].failed_usage["totalTokenCount"], 8)
-        self.assertEqual(observer.boundaries[0].failure_kind, "invalid_response")
+        self.assertEqual(observer.boundaries[0].failure_kind, "local_semantic_rejection")
         self.assertEqual(observer.boundaries[1].succeeded_calls, 1)
 
     def test_fallback_consumes_second_http_and_leaves_no_repair_dispatch(self):

@@ -166,6 +166,94 @@ def recovery_lineage_for_authority(head):
     return _lineage(head, lock=False)
 
 
+def continuous_wait_revisions(revision, *, limit=64):
+    """Bounded source-scoped history for notification policy, never send authority.
+
+    Missing route scope cannot grant another holding. A reset, proven disjoint
+    episode/request or delivered substantive answer bounds the unresolved wait.
+    Unknown/started receipts remain part of the wait after a worker restart.
+    """
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_response_debt import response_coverage
+    from management.services.ig_turn_intent import _scope_for_sources, _disjoint_scopes, confirmed_substantive_reply
+
+    client = revision.client
+    if client.privacy_erasure_started_at or revision.erasure_started_at_snapshot:
+        return []
+    floor = conversation_route_reset_floor(client.pk)
+    current_ids = {row.get("message_id") for row in (revision.bundle_snapshot or {}).get("sources", ())}
+    current_reply_refs = {row.get("reply_to_provider_message_id")
+                          for row in (revision.bundle_snapshot or {}).get("sources", ())} - {None, ""}
+    if not current_ids or any(not isinstance(pk, int) or pk < floor for pk in current_ids):
+        return []
+    scope = _scope_for_sources(client, current_ids)
+    rows = list(IgCustomerTurnRevision.objects.filter(
+        client_id=client.pk,
+        revision__lte=revision.revision,
+    ).order_by("-revision")[:limit])
+    linked = []
+    for row in rows:
+        ids = {source.get("message_id") for source in (row.bundle_snapshot or {}).get("sources", ())}
+        if (not ids or any(not isinstance(pk, int) or pk < floor for pk in ids)
+            or not row.snapshot_digest or _digest(row.bundle_snapshot) != row.snapshot_digest
+            or row.erasure_started_at_snapshot):
+            continue
+        old_scope = _scope_for_sources(client, ids)
+        if _disjoint_scopes(scope, old_scope) or _disjoint_scopes(old_scope, scope):
+            continue
+        # A true complete answer closes the wait, but an ack/partial fallback
+        # and an operator's reviewed-no-reply alert never become an answer.
+        safe = (row.action_receipts or {}).get("provider_safe_reply") or {}
+        same_request = bool(current_ids.intersection(ids) or any(
+            source.get("provider_message_id") in current_reply_refs
+            for source in row.bundle_snapshot.get("sources", ())))
+        if (row.pk != revision.pk and same_request and not response_coverage(row).get("remaining")
+            and safe.get("reply_mode") != "neutral_ack" and confirmed_substantive_reply(row)):
+            break
+        linked.append(row)
+    return linked
+
+
+def wait_notification_receipts(revision, *, exclude_revision_id=None):
+    """Existing physical effects/reservations suppress repeat optional notices."""
+    from management.services.ig_revision_holding import RECEIPT_KEY, SAFE_RECEIPT_KEY
+
+    receipts = []
+    history = continuous_wait_revisions(revision)
+    if len(history) >= 64:
+        receipts.append({"revision_id": revision.pk, "state": "history_bound_unknown",
+                         "notification": True, "text": "", "snapshot_digest": revision.snapshot_digest})
+    for row in history:
+        if row.pk == exclude_revision_id:
+            continue
+        ids = {source["message_id"] for source in row.bundle_snapshot.get("sources", ())}
+        effects = list(row.delivery_effects.order_by("order_index", "id"))
+        for effect in effects:
+            if (effect.actor != "bot" or effect.source_message_id not in ids
+                or effect.recipient_igsid != revision.client.igsid
+                or effect.provider_namespace != _revision_namespace(row)
+                or effect.client_permission_epoch != row.permission_epoch
+                or effect.revision_snapshot_digest != row.snapshot_digest
+                or _digest(effect.payload) != effect.payload_digest
+                or effect.state not in {"sent", "unknown", "provider_started", "planned", "claimed"}):
+                continue
+            admission = (row.action_receipts or {}).get(RECEIPT_KEY) or {}
+            neutral = (row.action_receipts or {}).get(SAFE_RECEIPT_KEY) or {}
+            text = str((effect.payload.get("message") or {}).get("text") or "")
+            receipts.append({"revision_id": row.pk, "effect_id": effect.pk, "state": effect.state,
+                             "text": text, "notification": effect.purpose == "technical_holding"
+                             or bool(neutral.get("reply_mode") == "neutral_ack"),
+                             "snapshot_digest": row.snapshot_digest})
+        # Reserve under the existing client lock before effects are planned.
+        # A definite failure/cancellation permits retry; SENT/UNKNOWN do not.
+        admission = (row.action_receipts or {}).get(RECEIPT_KEY) or {}
+        if (not effects and admission.get("snapshot_digest") == row.snapshot_digest
+            and admission.get("reply_digest") == _digest(admission.get("reply_text") or "")):
+            receipts.append({"revision_id": row.pk, "state": "reserved", "notification": True,
+                             "text": admission.get("reply_text") or "", "snapshot_digest": row.snapshot_digest})
+    return receipts
+
+
 def _eligibility(revision, client, rows, now):
     if revision.active_slot != 1 or revision.state not in {"sealed", "claimed"}:
         return "cancelled", "recovery_head_changed"

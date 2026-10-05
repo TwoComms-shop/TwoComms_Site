@@ -56,6 +56,7 @@ class RevisionCompletionResult:
 
 def _owned_revision_q() -> Q:
     from management.services.ig_revision_source_coverage import source_transfer_owned_q
+    from management.services.ig_revision_commerce import source_producer_owned_q
 
     return (
         Q(media_prepare_deadline__isnull=False)
@@ -64,6 +65,7 @@ def _owned_revision_q() -> Q:
         | Q(generation_proposal_digest__gt="")
         | Q(has_delivery_effect=True)
         | source_transfer_owned_q()
+        | source_producer_owned_q()
     )
 
 
@@ -76,11 +78,12 @@ def _rollout_eligible_q(cutover_at) -> Q:
     return sticky | Q(origin="inbound", created_at__gte=cutover_at)
 
 
-def due_revision_ids(*, now=None, limit: int = 25, cutover_at=None) -> list[int]:
+def due_revision_ids(*, now=None, limit: int = 25, cutover_at=None, source_producer_only=False) -> list[int]:
     """Bounded DB-only selector for quiet-due or reclaimable preparation heads."""
     now = now or timezone.now()
     bounded = max(1, min(int(limit), MAX_DUE_SCAN))
     from django.db.models import F
+    from management.services.ig_revision_commerce import source_producer_owned_q
 
     active_opt_out = Q(client__opted_out_at__isnull=False) & (
         Q(client__opted_in_at__isnull=True)
@@ -122,6 +125,7 @@ def due_revision_ids(*, now=None, limit: int = 25, cutover_at=None) -> list[int]
         )
         .exclude(active_opt_out)
         .filter(_rollout_eligible_q(cutover_at))
+        .filter(source_producer_owned_q() if source_producer_only else Q())
         .order_by("quiet_deadline", "revision", "id")
         .values_list("id", flat=True)[:bounded]
     )
@@ -407,6 +411,12 @@ def complete_revision_from_effects(
                 revision.pk, False, False, "effects_missing", states
             )
         completed, debt, reason = _completion_decision(effects)
+        from management.services.ig_response_debt import response_coverage
+
+        if completed and response_coverage(revision).get("remaining"):
+            return RevisionCompletionResult(
+                revision.pk, False, True, "semantic_reply_incomplete", states
+            )
         if revision.state == revision.State.PROCESSED:
             return RevisionCompletionResult(
                 revision.pk, completed, debt, reason, states
@@ -555,7 +565,9 @@ def finalization_due_ids(*, now=None, limit=25):
         state__in=(IgCustomerTurnRevision.State.CLAIMED, IgCustomerTurnRevision.State.PROCESSED),
         client__privacy_erasure_started_at__isnull=True,
         delivery_effects__state=IgRevisionDeliveryEffect.State.SENT,
-    ).exclude(action_receipts__has_key="technical_holding_delivery").annotate(owed_parts=Exists(owed)).filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now)).filter(
+    ).exclude(action_receipts__has_key="technical_holding_delivery").exclude(
+        action_receipts__has_key="semantic_delivery_finalized",
+    ).annotate(owed_parts=Exists(owed)).filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now)).filter(
         (~Q(claim_token__startswith=DEBT_PREFIX) & ~Q(action_receipts__has_key="response_debt"))
         | Q(owed_parts=False)
     ).filter(
@@ -594,6 +606,18 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
                 return RevisionFinalizationResult(revision_id, reason=reason)
             if revision.state not in {revision.State.CLAIMED, revision.State.PROCESSED}:
                 return RevisionFinalizationResult(revision_id, reason="revision_not_finalizable")
+            semantic_receipt = (revision.action_receipts or {}).get("semantic_delivery_finalized")
+            if semantic_receipt:
+                from management.services.ig_response_debt import response_coverage
+
+                coverage = response_coverage(revision)
+                if coverage.get("remaining"):
+                    return RevisionFinalizationResult(
+                        revision_id,
+                        reason=("waiting_on_customer" if semantic_receipt.get("disposition") == "waiting_on_customer"
+                                else "semantic_reply_incomplete"),
+                        sent_parts=sum(row.state == row.State.SENT for row in effects),
+                    )
             owned = bool(execution_token and revision.claim_token == execution_token)
             if revision.lease_until and revision.lease_until > now and not owned:
                 return RevisionFinalizationResult(revision_id, retryable=True, reason="finalization_lease_active")
@@ -628,6 +652,38 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
                 locked = IgCustomerTurnRevision.objects.select_for_update().get(pk=revision_id, claim_token=finalization_token)
                 park_manual_revision(locked, aggregate_reason, now=now)
             return RevisionFinalizationResult(revision_id, reason=aggregate_reason, sent_parts=sum(row.state == row.State.SENT for row in effects))
+        from management.services.ig_response_debt import (
+            delivered_selector_wait, park_manual_revision, response_coverage,
+        )
+
+        with transaction.atomic():
+            IgClient.objects.select_for_update().get(pk=identity["client_id"])
+            locked = IgCustomerTurnRevision.objects.select_for_update().get(
+                pk=revision_id, claim_token=finalization_token,
+            )
+            coverage = response_coverage(locked)
+            if coverage.get("remaining"):
+                waiting_on_customer = delivered_selector_wait(locked, effects=effects)
+                # A conclusive transport receipt proves the delivered parts,
+                # not that every source question received a useful answer.
+                # Record a bounded disposition once, retaining pending sources
+                # and their original revision for a customer/manager successor.
+                locked.action_receipts = {
+                    **(locked.action_receipts or {}),
+                    "semantic_delivery_finalized": {
+                        "coverage_digest": coverage.get("digest", ""),
+                        "disposition": "waiting_on_customer" if waiting_on_customer else "manual",
+                        "recorded_at": now.isoformat(),
+                    },
+                }
+                locked.save(update_fields=["action_receipts", "updated_at"])
+                park_manual_revision(locked, "semantic_reply_incomplete", now=now)
+                return RevisionFinalizationResult(
+                    revision_id,
+                    reason=("waiting_on_customer" if waiting_on_customer
+                            else "semantic_reply_incomplete"),
+                    sent_parts=sum(row.state == row.State.SENT for row in effects),
+                )
         original_input = (revision.action_receipts or {}).get("input_decision") or {}
         if revision.generation_proposal_digest or original_input.get("origin") == "static_reply":
             followup = settle_revision_normal_followups(revision_id, finalization_token, now=timezone.now())

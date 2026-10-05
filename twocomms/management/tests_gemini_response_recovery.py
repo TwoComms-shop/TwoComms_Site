@@ -191,11 +191,15 @@ class DurableResponseRecoveryTests(TransactionTestCase):
         self.assertEqual(graph.candidate_outcomes["_provider_semantic_salvage"]["failure_attempt_id"], attempts[1].pk)
         self.assertEqual(graph.winner_attempt_id, attempts[2].pk)
 
-    def test_price_authority_violation_cannot_use_fresh_cheap_salvage(self):
-        _result, calls = self.run_reply([response(finish="STOP", text="invalid"), response(finish="STOP", text="invalid"), response(finish="STOP", text="valid")], reason="unverified_price")
-        self.assertEqual(len(calls), 3)
+    def test_price_authority_violation_cannot_salvage_or_rotate_original_prompt(self):
+        with self.assertRaises(ai.CallAIAnalysisError) as error:
+            self.run_reply([response(finish="STOP", text="invalid"), response(finish="STOP", text="invalid"), response(finish="STOP", text="valid")], reason="unverified_price")
+        self.assertEqual(error.exception.failure_kind, "local_semantic_rejection")
         attempts = list(GeminiRequestAttempt.objects.filter(provider_started_at__isnull=False).order_by("pk"))
-        self.assertEqual(attempts[-1].model, "gemini-3.6-flash")
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual({row.model for row in attempts}, {"gemini-3.5-flash-lite"})
+        self.assertTrue(all(row.failure_kind == "local_semantic_rejection" for row in attempts))
+        self.assertIsNone(GeminiRequest.objects.get().winner_attempt_id)
         self.assertNotIn("_provider_semantic_salvage", GeminiRequest.objects.get().candidate_outcomes)
 
     def test_unknown_empty_does_not_speculatively_raise_output_cap(self):

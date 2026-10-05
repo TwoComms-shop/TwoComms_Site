@@ -8046,7 +8046,9 @@ def gemini_generate(
     )
 
     sys_text = (
-        sys_text + "\n\n" + structured_response_instruction()
+        sys_text + "\n\n" + structured_response_instruction(
+            allowed_kinds=getattr(generation_boundary, "provider_control_kinds", None),
+        )
     ).strip()
     if generation_boundary is not None and customer_route_context:
         # Constructed solely from sealed USER text and safe media indexes. No claim
@@ -8186,12 +8188,13 @@ def gemini_generate(
 
     from management.services.ig_response_guard import ProviderResponseGuard
 
+    def reply_truth_context(control, reply_text):
+        context = _provider_reply_truth_context(client, control, reply_text)
+        captured_context = getattr(generation_boundary, "truth_context", None)
+        return captured_context(context) if callable(captured_context) else context
+
     response_guard = ProviderResponseGuard(
-        context_factory=lambda control, reply_text: _provider_reply_truth_context(
-            client,
-            control,
-            reply_text,
-        ),
+        context_factory=reply_truth_context,
         image_mimes=tuple(mime for mime, _raw in images),
         expected_content_hashes=tuple(hashlib.sha256(raw).hexdigest() for _mime, raw in images),
         require_intelligence=(
@@ -13010,6 +13013,24 @@ def enqueue_inbound(
                     log("warning", "customer_turn", type(exc).__name__)
                     if persistence_only:
                         raise
+                if source == "webhook":
+                    from management.services.ig_revision_live import revision_execution_enabled, revision_owned_turn_ids
+
+                    # Inbox persistence_only is independent of execution rollout.
+                    # Legacy sources retain their durable reply-builder owner;
+                    # already revision-owned turns keep that owner on rollback.
+                    revision_source_owned = revision_execution_enabled() or msg.revision_sources.filter(
+                        revision__turn__in=revision_owned_turn_ids()).exists()
+                    if revision_source_owned:
+                        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
+
+                        # Accepted facts survive AI, pause, static and no-reply gates.
+                        source_reduction = reduce_inbound_commerce_source(
+                            client, msg,
+                            expected_provider_namespace=ingress_provider_namespace(current_settings),
+                        )
+                        if not source_reduction.ready:
+                            log("warning", "commerce_source_admission", source_reduction.reason)
                 from management.services.ig_funnel_analytics import (
                     record_client_step_event_in_transaction,
                 )

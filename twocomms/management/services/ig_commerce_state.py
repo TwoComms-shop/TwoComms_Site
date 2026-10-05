@@ -81,10 +81,15 @@ def _set_active_line(snapshot: dict, product_id: int) -> None:
         # A product switch replaces the commercial identity atomically. Build
         # a fresh line so newly added price, allocation, payment, or proposal
         # fields cannot leak from the previous product.
+        partial = {
+            key: line[key] for key in ("size", "color", "fit_option_code", "recipient_id", "garment_type")
+            if not line.get("product_id") and line.get(key) not in (None, "")
+        }
         line = {
             "line_id": line["line_id"],
             "product_id": int(product_id),
             "quantity": 1,
+            **partial,
         }
     else:
         line["product_id"] = int(product_id)
@@ -199,7 +204,7 @@ def _apply_preference_withdrawals(snapshot, request, source, client) -> dict:
     withdrawn = {}
     line = _active_line(snapshot) or {}
     for key, value in request.preference_withdrawals.items():
-        if key not in {"fit", "color", "garment_type"} or original.get(key) != value:
+        if key not in {"fit", "color", "garment_type", "size"} or original.get(key) != value:
             continue
         line_key = "fit_option_code" if key == "fit" else key
         changed = False
@@ -388,6 +393,29 @@ def apply_turn(
     )
     if existing is not None:
         return existing
+    # Episode materialization and selection binding share the client lock.
+    # A NULL legacy session may bind once; another episode starts clean.
+    from management.services.ig_commercial_episodes import ensure_open_episode_for_locked_client, start_repeat_episode
+    from management.services.ig_commerce_projection import start_new_session_for_episode
+    episode = ensure_open_episode_for_locked_client(locked_client, materialization_prefix="commerce-source")
+    if request.new_purchase_requested and not request.exchange_requested:
+        from management.services.ig_commerce_turns import parse_turn
+        event_at, event_id = _event_key(source)
+        last_at = session.last_provider_event_at
+        event_is_new = last_at is None or (event_at, event_id) > (last_at, str(session.last_provider_message_id or ""))
+        if (event_is_new and source.client_id == locked_client.pk and source.sender_id == locked_client.igsid
+            and source.role == "user" and source.source == "webhook" and parse_turn(source.text).new_purchase_requested):
+            episode = start_repeat_episode(locked_client, repeat_kind="explicit_more",
+                evidence_message_ids=[source.pk], confidence=1,
+                analysis_model="deterministic_source", analysis_prompt_version="commerce-source-v1",
+                _lock_held=True, preserve_client_stage=True)
+            locked_client.refresh_from_db()
+            session = IgCommerceSelectionSession.objects.select_for_update().get(client=locked_client, open_slot=1)
+    if session.commercial_episode_id is None:
+        session.commercial_episode_id = episode.pk
+        session.save(update_fields=["commercial_episode", "updated_at"])
+    elif session.commercial_episode_id != episode.pk:
+        session = start_new_session_for_episode(locked_client, episode)
     current_revision = int(session.revision or 0)
     if expected_revision is not None and int(expected_revision) != current_revision:
         raise CommerceRevisionConflict(
@@ -430,6 +458,24 @@ def apply_turn(
         action = "candidate_prompt_replaced"
         reasons.append("candidate_prompt_replaced")
 
+    if request.recipient_id:
+        line = _active_line(after) or {}
+        if line and line.get("recipient_id", "self") != request.recipient_id:
+            _clear_active_line(after)
+            after["selection_constraints"] = {}
+            after["query_constraints"] = {}
+            _clear_candidate_anchor(after)
+            reasons.append("recipient_scope_changed")
+            action = "recipient_scope_changed"
+        if _active_line(after) is None:
+            after["lines"] = [{"line_id": "line:0"}]
+            after["active_index"] = 0
+        _active_line(after)["recipient_id"] = request.recipient_id
+
+    if (request.garment_type or request.purchase_requested or request.query) and _active_line(after) is None:
+        after["lines"] = [{"line_id": "line:0", "quantity": 1}]
+        after["active_index"] = 0
+
     selection_constraints = dict(after.get("selection_constraints") or {})
     incoming_selection_constraints = {
         **dict(request.semantic_constraints or {}),
@@ -447,6 +493,8 @@ def apply_turn(
         incoming_query_constraints["garment_type"] = request.garment_type
     if request.query:
         incoming_query_constraints["query"] = request.query
+    if request.purchase_requested:
+        incoming_query_constraints["purchase_requested"] = True
     if incoming_query_constraints:
         query_constraints.update(incoming_query_constraints)
         after["query_constraints"] = query_constraints
@@ -520,7 +568,7 @@ def apply_turn(
         reasons.append("customer_rejected_product")
         if _apply_field_updates(after, request):
             reasons.append("explicit_field_update")
-    elif request.reset_requested:
+    elif request.reset_requested and not request.new_purchase_requested:
         after["lines"] = []
         after["active_index"] = 0
         after["selection_constraints"] = {}
@@ -528,10 +576,11 @@ def apply_turn(
         action = "selection_reset"
         reasons.append("explicit_reset")
     elif request.exact_product_id:
+        initial_identity = not active_product_id and not request.reset_requested
         _set_active_line(after, int(request.exact_product_id))
         _clear_candidate_anchor(after)
-        after["selection_constraints"] = dict(incoming_selection_constraints)
-        after["query_constraints"] = dict(incoming_query_constraints)
+        after["selection_constraints"] = {**(selection_constraints if initial_identity else {}), **incoming_selection_constraints}
+        after["query_constraints"] = {**(query_constraints if initial_identity else {}), **incoming_query_constraints}
         after["pending_field"] = ""
         after["pending_clarification"] = ""
         action = "product_selected"
@@ -555,6 +604,19 @@ def apply_turn(
         accepted = False
         action = "turn_unresolved"
         reasons.append("no_state_change")
+
+    # Identity replacement discards prior product-scoped values. Reapply the
+    # recipient explicitly stated by this source after that replacement, so
+    # the current request cannot silently become a selection for oneself.
+    if request.recipient_id:
+        if _active_line(after) is None:
+            after["lines"] = [{"line_id": "line:0"}]
+            after["active_index"] = 0
+        _active_line(after)["recipient_id"] = request.recipient_id
+
+    # A size and unresolved model can arrive together. Keep both partial facts.
+    if request.pending_clarification and not candidate_rejected:
+        after["pending_clarification"] = str(request.pending_clarification)[:120]
 
     after["revision"] = current_revision + 1
     after["last_provider_message_id"] = event_id
@@ -590,6 +652,18 @@ def apply_turn(
         result_payload={
             "reason": reasons[-1] if reasons else action,
             "candidate_generation": session.candidate_generation,
+            "source_facts": {
+                "values": {**dict(request.field_updates),
+                           **({"recipient_id": request.recipient_id} if request.recipient_id else {}),
+                           **({"garment_type": request.garment_type} if request.garment_type else {}),
+                           **({"purchase_requested": True} if request.purchase_requested else {}),
+                           **({"model_query": request.query} if request.query and request.source_binding.get("source_digest") == hashlib.sha256(str(source.text or "").encode()).hexdigest() and request.source_binding.get("product_resolution") == "ambiguous" else {})},
+                "source_message_id": source.pk,
+                "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest(),
+                "episode_id": session.commercial_episode_id,
+                "line_id": str((_active_line(after) or {}).get("line_id") or ""),
+                "binding": dict(request.source_binding),
+            },
             **({"preference_withdrawal": {
                 "values": withdrawn,
                 "source_message_id": source.pk,

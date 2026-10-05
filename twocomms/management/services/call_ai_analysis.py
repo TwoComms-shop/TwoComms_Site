@@ -1723,23 +1723,50 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             _audit_skip(planned["key_name"], planned["model"], reason, index)
 
     def _reserve_same_candidate_repair(key_name, model, candidate_index, *, recovery_kind=""):
-        if dispatch_budget is None or not dispatch_budget.consume_repair():
+        if dispatch_budget is None or dispatch_budget.repair_consumed or dispatch_budget.remaining_dispatches <= 0:
             return False
         reserve = getattr(accounting_observer, "reserve_provider_repair", None)
         if callable(reserve):
             kwargs = {"key_name": key_name, "model": model, "candidate_index": candidate_index}
             if recovery_kind:
                 kwargs["recovery_kind"] = recovery_kind
-            return bool(reserve(**kwargs))
-        return provider_continuation is None
+            if not reserve(**kwargs):
+                return False
+        elif provider_continuation is not None:
+            return False
+        return dispatch_budget.consume_repair()
 
-    def _build_repair_payload(parsed, reasons):
+    def _prepare_repair_payload(parsed, reasons, *, key_name, model, candidate_index):
+        """Construct and serialize the correction before spending its slot."""
+        def evidence(state, reason=""):
+            try:
+                from management.services.ig_revision_provider_execution import record_provider_repair_preparation
+                record_provider_repair_preparation(accounting_observer, key_name=key_name, model=model,
+                    candidate_index=candidate_index, state=state, reason=reason)
+            except Exception:
+                logger.debug("Gemini repair preparation evidence unavailable", exc_info=True)
+        if dispatch_budget is None or dispatch_budget.repair_consumed or dispatch_budget.remaining_dispatches <= 0:
+            return None
+        if repair_payload_factory is None:
+            evidence("preparation_refused", "repair_factory_missing")
+            return None
         repair_source = copy.deepcopy(working_payload)
         repair_source.pop("_reasoning_task", None)
         try:
-            return repair_payload_factory(repair_source, parsed, reasons)
+            repaired = repair_payload_factory(repair_source, parsed, reasons)
+            if not isinstance(repaired, dict) or not repaired.get("contents"):
+                evidence("preparation_refused", "repair_factory_refused")
+                return None
+            # Model-specific restrictions/serialization are predictable local
+            # preparation failures. The final provider boundary still owns
+            # freshness, permission, project quota and actual dispatch.
+            prepared = _payload_for_model(model, repaired, reasoning_task=policy["task"])
+            json.dumps(prepared, ensure_ascii=False, allow_nan=False)
+            evidence("eligible")
+            return repaired
         except Exception:
             logger.warning("Gemini repair payload factory failed closed")
+            evidence("preparation_failed", "repair_preparation_error")
             return None
 
     def _run_same_candidate_repair(repaired_payload, key_name, key_value, model, *, preserve_fallback,
@@ -2073,11 +2100,9 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     preserve_fallback=preserve_fallback, candidate_index=candidate_index,
                     candidate_scarce=candidate_scarce, response_output_tokens=4096)
             if isinstance(exc, _GeminiMalformedResponse):
-                repaired_payload = None
-                if (exc.provider_reason == "MALFORMED_JSON" and repair_payload_factory is not None
-                    and _reserve_same_candidate_repair(key_name, model, candidate_index)):
-                    repaired_payload = _build_repair_payload(None, ("schema_invalid_json", "invalid_response_schema"))
-                if isinstance(repaired_payload, dict):
+                repaired_payload = _prepare_repair_payload(None, ("schema_invalid_json", "invalid_response_schema"),
+                    key_name=key_name, model=model, candidate_index=candidate_index) if exc.provider_reason == "MALFORMED_JSON" else None
+                if isinstance(repaired_payload, dict) and _reserve_same_candidate_repair(key_name, model, candidate_index):
                     _audit("failed", failure_kind="invalid_response", http_code=200,
                            provider_reason=exc.provider_reason, usage=exc.usage,
                            error_detail=exc.response_diagnostic, decision="repair_parser")
@@ -2252,7 +2277,9 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     reason_codes=("validator_error",),
                 )
             if not validation.valid:
-                last_actual_failure_kind = "invalid_response"
+                schema_rejection = any(code.startswith("schema_") or code == "invalid_response_schema" for code in validation.reason_codes)
+                failure_kind = "invalid_response" if schema_rejection else "local_semantic_rejection"
+                last_actual_failure_kind = failure_kind
                 error = _GeminiResultInvalid(
                     ",".join(validation.reason_codes)
                 )
@@ -2260,15 +2287,18 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     attempt_boundary.failed(
                         error,
                         usage=usage,
-                        failure_kind="invalid_response",
+                        failure_kind=failure_kind,
                     )
                 _release()
-                repaired_payload = None
-                repair_ready = bool(repair_payload_factory is not None
-                                    and _reserve_same_candidate_repair(key_name, model, candidate_index))
-                if repair_ready:
-                    repaired_payload = _build_repair_payload(parsed, validation.reason_codes)
+                repaired_payload = _prepare_repair_payload(parsed, validation.reason_codes,
+                    key_name=key_name, model=model, candidate_index=candidate_index)
+                if isinstance(repaired_payload, dict) and not _reserve_same_candidate_repair(key_name, model, candidate_index):
+                    repaired_payload = None
+                from management.services.ig_revision_provider_execution import STOCHASTIC_RESPONSE_REASONS
+                stochastic_rejection = bool(validation.reason_codes) and set(validation.reason_codes) <= STOCHASTIC_RESPONSE_REASONS
                 rotate_model_ready = bool(
+                    (schema_rejection or (stochastic_rejection and dispatch_budget is not None and dispatch_budget.repair_consumed))
+                    and
                     not isinstance(repaired_payload, dict)
                     and dispatch_budget is not None
                     and dispatch_budget.remaining_dispatches > 0
@@ -2276,8 +2306,8 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 )
                 _audit(
                     "failed",
-                    failure_kind="invalid_response",
-                    provider_reason="result_validation_failed",
+                    failure_kind=failure_kind,
+                    provider_reason="result_validation_failed" if schema_rejection else "local_semantic_rejection",
                     decision=(
                         "repair_result"
                         if isinstance(repaired_payload, dict)
@@ -2287,20 +2317,20 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     ),
                     error_detail=",".join(validation.reason_codes)[:120],
                 )
-                attempts.append(f"{key_name}/{model}: invalid_response")
+                attempts.append(f"{key_name}/{model}: {failure_kind}")
                 _emit(f"{key_name}/{model}: result validation failed")
                 if isinstance(repaired_payload, dict):
                     return _run_same_candidate_repair(repaired_payload, key_name, key_value, model,
                         preserve_fallback=preserve_fallback, candidate_index=candidate_index,
                         candidate_scarce=candidate_scarce)
                 working_payload = copy.deepcopy(original_payload)
-                from management.services.ig_revision_provider_execution import STOCHASTIC_RESPONSE_REASONS
-                if (rotate_model_ready and policy["task"] == "customer_chat"
+                if (dispatch_budget is not None and dispatch_budget.repair_consumed
+                    and dispatch_budget.remaining_dispatches > 0 and extended_dispatch_route and policy["task"] == "customer_chat"
                     and candidate_scarce is False and not cheap_salvage_used
                     and bool(validation.reason_codes) and set(validation.reason_codes) <= STOCHASTIC_RESPONSE_REASONS):
                     cheap_salvage_used = True
                     pending_cheap_salvage_model = model
-                    _audit("failed", failure_kind="invalid_response", provider_reason="result_validation_failed",
+                    _audit("failed", failure_kind=failure_kind, provider_reason="local_semantic_rejection",
                            decision="salvage_fresh_cheap_project", error_detail=",".join(validation.reason_codes)[:120])
                     return None, "validation_rotate_project"
                 if rotate_model_ready:
@@ -2308,14 +2338,14 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                         "result_validation_failed", model=model
                     )
                     return None, "invalid_response_model"
-                _audit_remaining("result_validation_failed")
+                _audit_remaining("result_validation_failed" if schema_rejection else "local_semantic_rejection")
                 if accounting_observer is not None:
                     accounting_observer.resolve_failure(
-                        "result_validation_failed"
+                        "result_validation_failed" if schema_rejection else "local_semantic_rejection"
                     )
-                raise CallAIAnalysisError(
-                    "Gemini reply failed deterministic result validation."
-                )
+                error = CallAIAnalysisError("Gemini reply failed deterministic result validation.")
+                error.failure_kind = failure_kind
+                raise error
             if attempt_boundary is not None:
                 attempt_boundary.succeeded(usage)
 

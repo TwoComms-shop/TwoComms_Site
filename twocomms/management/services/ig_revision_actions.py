@@ -371,15 +371,12 @@ def apply_revision_selection_actions(
             from management.services.ig_revision_commerce import synchronize_selected_session
 
             client.refresh_from_db()
-            session_receipt = synchronize_selected_session(client)
+            session_receipt = synchronize_selected_session(
+                client, source_message_id=source_message_id,
+            )
             client.refresh_from_db()
             if not _selection_matches(client, control):
                 raise _ActionRollback("selection_persist_failed")
-            after_authority = _rebuild_authority(
-                client, authority, control, settings_obj
-            )
-            if not after_authority.ready:
-                raise _ActionRollback("post_action_authority_unavailable")
             receipt = {
                 "schema_version": 1,
                 "action": ACTION_CLIENT_CONFIGURATION_UPDATE,
@@ -390,9 +387,18 @@ def apply_revision_selection_actions(
                 "changed_fields": list(changed),
                 "selection_session": session_receipt,
                 "before_authority": before_projection,
-                "after_authority": _authority_projection(after_authority),
                 "recorded_at": now.isoformat(),
             }
+            from management.services.ig_commerce_projection import _selection_action_projection
+            # Rebuilding source authority sees the candidate through the same
+            # complete source/proposal/CAS proof as a durable receipt. The
+            # private context exists only in this atomic action; GET readers
+            # cannot observe a provisional or later-edited receipt.
+            with _selection_action_projection(revision, receipt):
+                after_authority = _rebuild_authority(client, authority, control, settings_obj)
+            if not after_authority.ready:
+                raise _ActionRollback("post_action_authority_unavailable")
+            receipt["after_authority"] = _authority_projection(after_authority)
             if len(_canonical(receipt)) > MAX_ACTION_RECEIPT_BYTES:
                 raise _ActionRollback("action_receipt_too_large")
             revision.action_receipts = {

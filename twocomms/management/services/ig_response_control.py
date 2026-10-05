@@ -295,9 +295,13 @@ STRUCTURED_RESPONSE_SCHEMA["properties"]["customer_routes"] = {
 def structured_response_schema(
     *,
     prize_programme: PrizeProgramme | None = None,
+    allowed_kinds=None,
 ) -> dict[str, Any]:
     """Return a caller-owned schema with prize output explicitly opted in."""
     schema = deepcopy(STRUCTURED_RESPONSE_SCHEMA)
+    if allowed_kinds is not None:
+        schema["properties"]["controls"]["items"]["properties"]["kind"]["enum"] = sorted(
+            PROVIDER_CONTROL_KINDS.intersection(allowed_kinds))
     if not isinstance(prize_programme, PrizeProgramme):
         observation_properties = (
             schema["properties"]["turn_intelligence"]["properties"]
@@ -307,8 +311,9 @@ def structured_response_schema(
     return schema
 
 
-def structured_response_instruction() -> str:
+def structured_response_instruction(*, allowed_kinds=None) -> str:
     """Bounded semantic contract for MIME-only JSON generation."""
+    kinds = PROVIDER_CONTROL_KINDS if allowed_kinds is None else PROVIDER_CONTROL_KINDS.intersection(allowed_kinds)
     return (
         "[RESPONSE JSON CONTRACT — REQUIRED]\n"
         "Return exactly one JSON object, without Markdown or surrounding text. "
@@ -316,7 +321,7 @@ def structured_response_instruction() -> str:
         "reply_text is a non-empty customer reply of at most 4000 characters. "
         "controls is required and is an array of at most 32 objects; every object "
         "has exactly kind and value. Allowed kind values: "
-        + ", ".join(sorted(PROVIDER_CONTROL_KINDS))
+        + ", ".join(sorted(kinds))
         + '. If no authorized action is needed, use controls: [], for example '
         '{"reply_text":"Дякую за повідомлення.","controls":[]}. '
         "Ordinary questions, vacancy inquiries and thanks do not require a control. "
@@ -324,7 +329,7 @@ def structured_response_instruction() -> str:
         "represent an authorized action only in controls. "
         "manager, spam, order and catalog_link accept only JSON true. Omit an action "
         "that does not apply; never use false, null or a string boolean for it. "
-        "Do not repeat a kind, except item and option. stage accepts only: "
+        "Do not repeat a kind, except " + ", ".join(sorted(kinds.intersection(_REPEATED_KINDS))) + ". stage accepts only: "
         + ", ".join(sorted(_STAGES - _HARD_STAGES))
         + ". paid, order_created and done are server-owned stages. "
         "paylink accepts only full or prepay. product and color_variant_id accept a "
@@ -335,12 +340,13 @@ def structured_response_instruction() -> str:
         "authorized by supplied facts. size and fit are strings matching respectively "
         + _SIZE_RE.pattern + " and " + _FIT_RE.pattern
         + ". option is a string matching " + _OPTION_RE.pattern
-        + ". item is a string product_id|qty|size|fit, optionally followed by "
-        "|color_variant_id and then |option1;option2, using the same value rules; "
-        "size is required, fit may be empty. show_products is a non-empty array "
+        + (". item is a string product_id|qty|size|fit, optionally followed by "
+           "|color_variant_id and then |option1;option2, using the same value rules; "
+           "size is required, fit may be empty. " if "item" in kinds else ". ")
+        + "show_products is a non-empty array "
         "of at most 12 positive integer catalog IDs (or their comma-separated string). "
-        "objhandle is a lowercase string matching " + _OBJHANDLE_RE.pattern + ". "
-        "Never emit the legacy price control. For an exact current catalog quote, "
+        + ("objhandle is a lowercase string matching " + _OBJHANDLE_RE.pattern + ". " if "objhandle" in kinds else "")
+        + "Never emit the legacy price control. For an exact current catalog quote, "
         "use price_quoted and include product plus every known size, fit, "
         "color_variant_id, and option value that determines that configuration. "
         "A price from an existing published offer remains server-owned; do not "

@@ -11,6 +11,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.db import close_old_connections, connection, transaction
 from django.test import (
     RequestFactory,
@@ -161,6 +162,14 @@ class AllowlistReplyBoundaryTests(TestCase):
             password="x",
             is_staff=True,
         )
+        request.user.user_permissions.add(*(
+            Permission.objects.get(
+                content_type__app_label="management",
+                content_type__model="instagrambotsettings",
+                codename=codename,
+            )
+            for codename in ("operate_ig_bot", "view_ig_conversation_pii")
+        ))
 
         response = bot_settings_save_api(request)
 
@@ -563,6 +572,14 @@ with customer_send_boundary(None, None, lock_path=sys.argv[1]):
 class ManualClientPauseTransitionTests(TestCase):
     def setUp(self):
         self.admin = User.objects.create_user("w11-pause-admin", password="x", is_staff=True)
+        self.admin.user_permissions.add(*(
+            Permission.objects.get(
+                content_type__app_label="management",
+                content_type__model="instagrambotsettings",
+                codename=codename,
+            )
+            for codename in ("operate_ig_bot", "view_ig_conversation_pii")
+        ))
         self.client.force_login(self.admin)
         self.settings = InstagramBotSettings.load()
         self.settings.is_enabled = True

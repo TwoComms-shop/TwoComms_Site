@@ -89,6 +89,15 @@ class RevisionPreferenceFallbackIntegrationTests(TransactionTestCase):
     def _record(self):
         return record_source_preference_fallback(self.revision.pk, self.token, settings_id=self.settings.pk)
 
+    def _assert_waiting_purchase(self, result):
+        self.assertEqual(result.state, "delivery_pending", result.reasons)
+        self.assertEqual(result.reasons, ("waiting_on_customer",))
+        self.revision.refresh_from_db()
+        coverage = self.revision.action_receipts["response_coverage"]
+        self.assertEqual(coverage["disposition"], "waiting_on_customer")
+        self.assertEqual(coverage["remaining"], [f"{self.fit_sources[0].pk}:purchase_requested"])
+        self.assertFalse(any(value.endswith(":unclassified") for value in coverage["remaining"]))
+
     def test_failed_actual_request_produces_source_bound_text_sent_without_model_winner(self):
         fallback = self._fit_fixture()
         self.assertTrue(fallback.ready, fallback.reason)
@@ -98,7 +107,7 @@ class RevisionPreferenceFallbackIntegrationTests(TransactionTestCase):
         fit_decision = IgCommerceTurnDecision.objects.get(source_message=self.source)
         self.assertTrue(fit_decision.accepted)
         result, generate, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self._assert_waiting_purchase(result)
         generate.assert_not_called()
         self.assertEqual(http.call_count, 1)
         self.customer.refresh_from_db()
@@ -120,7 +129,11 @@ class RevisionPreferenceFallbackIntegrationTests(TransactionTestCase):
         self.assertNotRegex(text, r"\b(?:XL|XXL)\b|\d+\s*(?:грн|UAH)")
         self.assertEqual(text.count("?"), 1)
         self.assertEqual(InstagramBotMessage.objects.filter(role="model", source="revision_reply").count(), 1)
-        self.assertEqual(set(InstagramBotMessage.objects.filter(pk__in=[source.pk for source in self.fit_sources]).values_list("status", flat=True)), {"done"})
+        self.fit_sources[0].refresh_from_db()
+        self.assertEqual(self.fit_sources[0].status, "pending")
+        # The whole sealed bundle stays owned until its purchase obligation is
+        # answered; per-source coverage records which wishes were acknowledged.
+        self.assertEqual(set(InstagramBotMessage.objects.filter(pk__in=[source.pk for source in self.fit_sources]).values_list("status", flat=True)), {"pending"})
 
     def test_fallback_receipt_replay_and_completed_execution_never_duplicate_send(self):
         first = self._fit_fixture()
@@ -130,7 +143,7 @@ class RevisionPreferenceFallbackIntegrationTests(TransactionTestCase):
         self.assertTrue(replay.replayed)
         self.assertEqual(replay.receipt, first.receipt)
         result, _generate, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self._assert_waiting_purchase(result)
         self.assertEqual(http.call_count, 1)
         again, generate, second_http = self._execute()
         generate.assert_not_called()
@@ -180,6 +193,7 @@ class RevisionPreferenceFallbackIntegrationTests(TransactionTestCase):
         self.source.refresh_from_db()
         self.assertEqual(self.source.status, "pending")
 
+    @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_media_source_cannot_be_covered_by_text_only_preference_fallback(self):
         fallback = self._fit_fixture(media=True)
         self.assertFalse(fallback.ready)
@@ -196,7 +210,7 @@ class RevisionPreferenceFallbackIntegrationTests(TransactionTestCase):
         fallback = self._fit_fixture(fit_text="не хочу оверсайз")
         self.assertTrue(fallback.ready, fallback.reason)
         result, generate, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self._assert_waiting_purchase(result)
         generate.assert_not_called()
         self.assertEqual(http.call_count, 1)
         self.assertEqual(self.revision.delivery_effects.get().purpose, "normal_reply")
