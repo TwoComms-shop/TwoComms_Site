@@ -442,6 +442,67 @@ FINALIZATION_PREFIX = "finalize:"
 DEBT_PREFIX = "debt:"
 
 
+def incomplete_revision_deliveries():
+    """Conclusive partial/failed delivery, distinct from ambiguous HTTP debt."""
+    parts = IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk"))
+    return IgCustomerTurnRevision.objects.annotate(
+        has_sent_part=Exists(parts.filter(state="sent")),
+        has_failed_part=Exists(parts.filter(state="definite_failed")),
+        has_cancelled_reply_part=Exists(parts.filter(
+            state__in=("cancelled", "superseded"),
+        ).exclude(group="template_fallback")),
+        has_unsettled_part=Exists(parts.filter(
+            state__in=("planned", "claimed", "provider_started", "unknown"),
+        )),
+    ).filter(has_unsettled_part=False).filter(
+        Q(has_failed_part=True)
+        | Q(has_sent_part=True, has_cancelled_reply_part=True)
+    )
+
+
+def reconcile_incomplete_revision_deliveries(*, now=None, limit=100, dry_run=True):
+    """Give stranded delivery a durable operator owner; never retry transport.
+
+    Terminal receipts are authoritative even after a newer head replaces the
+    revision. A stale execution lease cannot make that reply debt disappear.
+    """
+    from management.services.ig_response_debt import park_manual_revision
+    from management.services.ig_revision_outbox import project_legacy_message
+
+    now = now or timezone.now()
+    bounded = max(1, min(int(limit), 500))
+    candidates = incomplete_revision_deliveries().filter(
+        state="claimed", client__privacy_erasure_started_at__isnull=True,
+    ).exclude(action_receipts__has_key="response_debt").filter(
+        Q(lease_until__isnull=True) | Q(lease_until__lte=now)
+    )
+    ids = list(candidates.order_by("id").values_list("id", flat=True)[:bounded])
+    entries = []
+    for revision_id in ids:
+        identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+        if identity is None:
+            continue
+        with transaction.atomic():
+            client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+            revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
+            if (client is None or revision is None or client.privacy_erasure_started_at
+                or revision.state != "claimed" or (revision.action_receipts or {}).get("response_debt")
+                or (revision.lease_until and revision.lease_until > now)):
+                continue
+            effects = list(revision.delivery_effects.select_for_update().order_by("order_index", "id"))
+            complete, debt, reason = _completion_decision(effects)
+            if complete or not debt or reason not in {"partial_cancelled_delivery", "partial_definite_failure", "definite_failure"}:
+                continue
+            task = None
+            if not dry_run:
+                task = park_manual_revision(revision, reason, now=now)
+                project_legacy_message(revision.pk)
+            entries.append({"revision_id": revision.pk, "client_id": client.pk,
+                            "reason": reason, "task_id": getattr(task, "pk", None)})
+    return {"dry_run": bool(dry_run), "scanned": len(ids), "entries": entries,
+            "writes": len(entries) if not dry_run else 0, "provider_calls": 0}
+
+
 @dataclass(frozen=True)
 class RevisionFinalizationResult:
     revision_id: int
@@ -495,7 +556,8 @@ def finalization_due_ids(*, now=None, limit=25):
         client__privacy_erasure_started_at__isnull=True,
         delivery_effects__state=IgRevisionDeliveryEffect.State.SENT,
     ).exclude(action_receipts__has_key="technical_holding_delivery").annotate(owed_parts=Exists(owed)).filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now)).filter(
-        ~Q(claim_token__startswith=DEBT_PREFIX) | Q(owed_parts=False)
+        (~Q(claim_token__startswith=DEBT_PREFIX) & ~Q(action_receipts__has_key="response_debt"))
+        | Q(owed_parts=False)
     ).filter(
         Q(state=IgCustomerTurnRevision.State.CLAIMED)
         | Q(sources__message__status__in=("pending", "processing"))
@@ -559,9 +621,12 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
         if not complete or aggregate_reason != "delivered":
             # Known SENT parts become visible even when another part is
             # unresolved. Keep owed state and stop reprojecting unchanged debt.
-            IgCustomerTurnRevision.objects.filter(pk=revision_id, claim_token=finalization_token).update(
-                claim_token=DEBT_PREFIX + secrets.token_hex(16), claimed_at=None, lease_until=None, updated_at=timezone.now(),
-            )
+            from management.services.ig_response_debt import park_manual_revision
+
+            with transaction.atomic():
+                IgClient.objects.select_for_update().get(pk=identity["client_id"])
+                locked = IgCustomerTurnRevision.objects.select_for_update().get(pk=revision_id, claim_token=finalization_token)
+                park_manual_revision(locked, aggregate_reason, now=now)
             return RevisionFinalizationResult(revision_id, reason=aggregate_reason, sent_parts=sum(row.state == row.State.SENT for row in effects))
         original_input = (revision.action_receipts or {}).get("input_decision") or {}
         if revision.generation_proposal_digest or original_input.get("origin") == "static_reply":

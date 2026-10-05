@@ -164,3 +164,35 @@ class TechnicalDebtCommandOutputTests(TestCase):
                     "reconcile_ig_technical_debt", *extra, stdout=stdout,
                 )
                 self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+
+class TechnicalDebtHandledObservationTests(TestCase):
+    setUp = TechnicalDebtLifecycleTests.setUp
+
+    def test_observation_refresh_cannot_silently_acknowledge_new_source_ids(self):
+        from management.services.ig_technical_debt import acknowledge_ig_technical_debt_case, reconcile_ig_technical_debt_once
+        from management.services.ig_daemon_health import _unhandled_technical_debt_cases
+
+        acknowledged = acknowledge_ig_technical_debt_case(self.case.pk, actor=self.actor, action="triage")
+        self.assertTrue(acknowledged["ok"])
+        changed = {"reason": self.case.reason, "scope": self.case.scope,
+                   "count": 1, "sample_ids": [999], "has_more": False}
+        snapshot = {"cases": [changed], "coverage_complete": True, "errors": []}
+        reconcile_ig_technical_debt_once(dry_run=False, snapshot=snapshot)
+        self.assertEqual(_unhandled_technical_debt_cases([changed]), [changed])
+        refreshed = acknowledge_ig_technical_debt_case(self.case.pk, actor=self.actor, action="triage_new_observation")
+        self.assertFalse(refreshed["idempotent"])
+        self.assertEqual(_unhandled_technical_debt_cases([changed]), [])
+
+    def test_historical_handled_fingerprint_is_pinned_before_refresh(self):
+        from management.services.ig_technical_debt import reconcile_ig_technical_debt_once
+        from management.services.ig_daemon_health import _unhandled_technical_debt_cases
+
+        self.case.status = "resolved"
+        self.case.save(update_fields=["status", "updated_at"])
+        changed = {"reason": self.case.reason, "scope": self.case.scope,
+                   "count": 1, "sample_ids": [999], "has_more": False}
+        reconcile_ig_technical_debt_once(dry_run=False, snapshot={"cases": [changed], "coverage_complete": True})
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.evidence["handled_observation_fingerprint"], "fingerprint-123")
+        self.assertEqual(_unhandled_technical_debt_cases([changed]), [changed])

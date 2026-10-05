@@ -15,6 +15,7 @@ from django.utils import timezone
 DEFAULT_MAX_BODY_BYTES = 256 * 1024
 DEFAULT_MAX_ENTRIES = 50
 DEFAULT_MAX_EVENTS = 200
+MAX_FENCE_RECEIPTS = 64
 _ID_RE = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")
 
 
@@ -185,6 +186,7 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
     """Consume one namespace under a short DB transaction; root wires daemon."""
     from management.models import IgWebhookInboxEvent
     from management.services import instagram_bot as bot
+    from management.services.ig_revision_echo_integration import RevisionEchoDeferred
     from management.services.ig_db_circuit import (
         DbActiveCapacityError, DbCircuitOpen, db_active_slot, record_db_failure, release_idle_connection,
     )
@@ -241,8 +243,21 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
                 raise DbCircuitOpen("webhook database materialization deferred") from exc
             if row is None:
                 raise
+            error_code = exc.reason if isinstance(exc, RevisionEchoDeferred) else type(exc).__name__[:64]
+            retry_exhausted = int(row.attempts) + 1 >= _limit("IG_WEBHOOK_MAX_MATERIALIZATION_ATTEMPTS", 24, 3, 100)
+            if (isinstance(exc, RevisionEchoDeferred) and not exc.retryable) or retry_exhausted:
+                # Keep the source and its send fence for operator review. A
+                # deterministic refusal cannot heal by retrying the same bytes.
+                # The technical-debt inventory includes blocked receipts too.
+                IgWebhookInboxEvent.objects.filter(pk=row.pk, processed_at__isnull=True).update(
+                    decision=IgWebhookInboxEvent.Decision.BLOCKED,
+                    reason="materialization_retry_exhausted" if retry_exhausted else error_code,
+                    attempts=models.F("attempts") + 1,
+                    last_error=error_code, next_attempt_at=None,
+                )
+                continue
             retry_at = timezone.now() + timedelta(seconds=min(300, 15 * (2 ** min(int(row.attempts), 4))))
-            IgWebhookInboxEvent.objects.filter(pk=row.pk, processed_at__isnull=True).update(attempts=models.F("attempts") + 1, last_error=type(exc).__name__[:64], next_attempt_at=retry_at)
+            IgWebhookInboxEvent.objects.filter(pk=row.pk, processed_at__isnull=True).update(attempts=models.F("attempts") + 1, last_error=error_code, next_attempt_at=retry_at)
             continue
         processed += 1
     return processed
@@ -250,16 +265,55 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
 
 def has_pending_ingress(settings_obj, customer_igsid: str) -> bool:
     """Fence one customer's effects until accepted or blocked receipts resolve."""
-    from management.models import IgWebhookInboxEvent
-
     namespace, _owner = _namespace(settings_obj)
+    return pending_ingress_blocks(namespace, customer_igsid)
+
+
+def pending_ingress_blocks(namespace: str, customer_igsid: str) -> bool:
+    """Ignore only an owner echo backed by an exact committed bot receipt.
+
+    This read-only fence also runs inside final outbox CAS. Materialization may
+    lag between physical parts; our first photo's echo must not cancel the rest
+    of our answer. An unproven echo or inbound USER still blocks immediately.
+    """
+    from management.models import IgWebhookInboxEvent, IgRevisionDeliveryEffect
+
     customer_igsid = str(customer_igsid or "").strip()
-    return bool(customer_igsid and IgWebhookInboxEvent.objects.filter(
+    if not namespace or not customer_igsid:
+        return False
+    rows = list(IgWebhookInboxEvent.objects.filter(
         namespace=namespace,
         customer_igsid=customer_igsid,
         decision__in=[IgWebhookInboxEvent.Decision.ACCEPTED, IgWebhookInboxEvent.Decision.BLOCKED],
         processed_at__isnull=True,
-    ).exists())
+    ).order_by("id").values("decision", "owner_id", "payload")[:MAX_FENCE_RECEIPTS + 1])
+    if not rows:
+        return False
+    if len(rows) > MAX_FENCE_RECEIPTS:
+        return True
+    owner_id = namespace.split(":", 1)[1] if ":" in namespace else ""
+    mids = set()
+    for row in rows:
+        if row["decision"] != IgWebhookInboxEvent.Decision.ACCEPTED or row["owner_id"] != owner_id:
+            return True
+        event = _row_event(row["payload"])
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+        recipient = event.get("recipient") if isinstance(event.get("recipient"), dict) else {}
+        mid = message.get("mid")
+        if (
+            message.get("is_echo") is not True
+            or sender.get("id") != owner_id or recipient.get("id") != customer_igsid
+            or not isinstance(mid, str) or not mid
+        ):
+            return True
+        mids.add(mid)
+    proven = set(IgRevisionDeliveryEffect.objects.filter(
+        provider_namespace=namespace, recipient_igsid=customer_igsid,
+        revision__client__igsid=customer_igsid, actor="bot", state="sent",
+        provider_message_id__in=mids,
+    ).values_list("provider_message_id", flat=True))
+    return not mids.issubset(proven)
 
 
 def inbox_status(settings_obj) -> dict:

@@ -204,6 +204,19 @@ class RevisionEchoTests(TransactionTestCase):
         event.refresh_from_db()
         self.assertEqual(event.payload["text"], "Echo text")
 
+    def test_missing_url_needs_explicit_context_and_provider_media_identity(self):
+        for media in (
+            {"url": "", "type": "story", "provider_id": "story-42"},
+            {"url": "", "type": "story", "context_only": True, "provider_event_id": "echo-mid"},
+            {"url": "https://[invalid", "type": "story", "provider_id": "story-42"},
+        ):
+            with self.subTest(media=media):
+                result = self._observe(text="", attachments=[media])
+                self.assertFalse(result.accepted)
+                self.assertFalse(result.retryable)
+                self.assertEqual(result.reason, "echo_media_invalid")
+        self.assertFalse(IgDeferredEcho.objects.exists())
+
 
     def test_historical_echo_waits_for_receipts_then_records_context_without_takeover(self):
         claim = self._start()

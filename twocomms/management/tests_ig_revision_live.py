@@ -869,7 +869,12 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(result.state, "delivery_pending")
         self.assertEqual(self.revision.delivery_effects.count(), 2)
         self.revision.refresh_from_db()
-        self.assertTrue(self.revision.claim_token.startswith("debt:"))
+        self.assertEqual(self.revision.claim_token, "")
+        self.assertIn("response_debt", self.revision.action_receipts)
+        from management.models import IgFollowUpTask
+
+        task = IgFollowUpTask.objects.get(pk=self.revision.action_receipts["response_debt"]["task_id"])
+        self.assertEqual(task.status, "skipped")
         self.assertNotIn(self.revision.pk, finalization_due_ids())
         unknown = self.revision.delivery_effects.get(state="unknown")
         # Stand in for independently verified exact-MID reconciliation; this
@@ -881,6 +886,8 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertTrue(settled.completed, settled.reason)
         send.assert_not_called()
         self.assertEqual(InstagramBotMessage.objects.filter(source="revision_reply").count(), 2)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "completed")
 
     def test_delivered_manager_history_is_labeled_and_unconfirmed_command_is_excluded(self):
         manager = InstagramBotMessage.objects.create(pk=100, client=self.customer, sender_id=self.customer.igsid, role="manager", source="echo", text="Підготували варіант у синьому кольорі.", mid="human-received", status="done")

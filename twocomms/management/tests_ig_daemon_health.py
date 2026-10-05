@@ -1,8 +1,9 @@
 import time
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from management.models import InstagramBotSettings
 from management.services.ig_daemon_health import (
@@ -166,6 +167,14 @@ class TechnicalDebtFingerprintTests(TestCase):
 
 
 class DaemonRuntimeHealthAlertTests(TestCase):
+    def setUp(self):
+        super().setUp()
+        media_root = TemporaryDirectory(prefix="twc-health-test-")
+        self.addCleanup(media_root.cleanup)
+        media_settings = override_settings(IG_PRIVATE_MEDIA_ROOT=media_root.name)
+        media_settings.enable()
+        self.addCleanup(media_settings.disable)
+
     def tearDown(self):
         cache.delete(PROCESS_PULSE_KEY)
         cache.delete(MAIN_PROGRESS_KEY)
@@ -226,6 +235,7 @@ class DaemonRuntimeHealthAlertTests(TestCase):
         dedupe.assert_called_once_with("ig_worker_lane_stalled", window_minutes=60, text="worker_lane_stalled")
         self.assertIn("analysis", notify.call_args.kwargs["metadata"]["worker_lanes"])
 
+    @patch("management.services.ig_worker_progress.worker_health_snapshot", return_value={"healthy": True, "lanes": {}})
     @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
     @patch("management.services.ig_alerts.alert_dedupe_key", return_value="technical-debt-hour")
     @patch("management.services.instagram_bot.notify_manager", return_value=True)
@@ -250,7 +260,7 @@ class DaemonRuntimeHealthAlertTests(TestCase):
         },
     )
     def test_technical_debt_alert_is_bounded_and_fingerprint_deduplicated(
-        self, debt, notify, dedupe, _maintenance
+        self, debt, notify, dedupe, _maintenance, _workers
     ):
         settings_obj = InstagramBotSettings.load()
         settings_obj.is_enabled = True
@@ -262,13 +272,14 @@ class DaemonRuntimeHealthAlertTests(TestCase):
         snapshot = alert_daemon_runtime_health()
 
         self.assertTrue(snapshot["alerted"])
-        dedupe.assert_called_once_with(
-            "ig_technical_debt", window_minutes=60, text="debt-fingerprint"
-        )
+        dedupe.assert_not_called()
+        from management.services.ig_technical_debt import technical_debt_fingerprint
+        fingerprint = technical_debt_fingerprint(debt.return_value["cases"])
         notify.assert_called_once()
         kwargs = notify.call_args.kwargs
         self.assertEqual(kwargs["event_type"], "ig_technical_debt")
-        self.assertEqual(kwargs["metadata"]["technical_debt_fingerprint"], "debt-fingerprint")
+        self.assertEqual(kwargs["metadata"]["technical_debt_fingerprint"], fingerprint)
+        self.assertEqual(kwargs["dedupe_key"], f"ig_technical_debt:{fingerprint}")
         self.assertEqual(kwargs["metadata"]["technical_debt_cases"], [{
             "reason": "canonical_delivery_unknown",
             "scope": "delivery_effect",
@@ -278,7 +289,7 @@ class DaemonRuntimeHealthAlertTests(TestCase):
         self.assertNotIn("sample_ids", kwargs["metadata"]["technical_debt_cases"][0])
         self.assertTrue(kwargs["metadata"]["requires_human_review"])
         alert_text = notify.call_args.args[0]
-        self.assertIn("доступність відповідей потребує окремої перевірки", alert_text)
+        self.assertIn("CRM:", alert_text)
         self.assertNotIn("вважаються недоступними до відновлення progress", alert_text)
 
     @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
@@ -363,11 +374,12 @@ class DaemonRuntimeHealthAlertTests(TestCase):
         notify.assert_not_called()
         dedupe.assert_not_called()
 
+    @patch("management.services.ig_worker_progress.worker_health_snapshot", return_value={"healthy": True, "lanes": {}})
     @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
     @patch("management.services.ig_alerts.alert_dedupe_key", return_value="changed-terminal-debt-hour")
     @patch("management.services.instagram_bot.notify_manager", return_value=True)
     @patch("management.services.ig_daemon_health.technical_debt_snapshot")
-    def test_resolved_debt_with_changed_observation_is_realertable(self, debt, notify, dedupe, _maintenance):
+    def test_resolved_debt_with_changed_observation_is_realertable(self, debt, notify, dedupe, _maintenance, _workers):
         from management.ig_bot_models import IgTechnicalDebtCase
 
         current_case = {
@@ -397,10 +409,9 @@ class DaemonRuntimeHealthAlertTests(TestCase):
 
         self.assertTrue(snapshot["alerted"])
         notify.assert_called_once()
-        dedupe.assert_called_once_with(
-            "ig_technical_debt", window_minutes=60, text="changed-terminal-debt",
-        )
+        dedupe.assert_not_called()
 
+    @patch("management.services.ig_worker_progress.worker_health_snapshot", return_value={"healthy": True, "lanes": {}})
     @patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False})
     @patch("management.services.ig_alerts.alert_dedupe_key", return_value="technical-debt-hour")
     @patch("management.services.instagram_bot.notify_manager", return_value=True)
@@ -416,7 +427,7 @@ class DaemonRuntimeHealthAlertTests(TestCase):
             "case_count": 1, "coverage_complete": True, "errors": [], "sample_limit": 100,
         },
     )
-    def test_acknowledged_debt_with_changed_observation_is_alertable(self, debt, notify, dedupe, _maintenance):
+    def test_acknowledged_debt_with_changed_observation_is_alertable(self, debt, notify, dedupe, _maintenance, _workers):
         from management.ig_bot_models import IgTechnicalDebtCase
 
         settings_obj = InstagramBotSettings.load()
@@ -436,9 +447,7 @@ class DaemonRuntimeHealthAlertTests(TestCase):
 
         self.assertTrue(snapshot["alerted"])
         notify.assert_called_once()
-        dedupe.assert_called_once_with(
-            "ig_technical_debt", window_minutes=60, text="new-debt-fingerprint"
-        )
+        dedupe.assert_not_called()
 
 
 class DaemonStatusUiContractTests(SimpleTestCase):
@@ -455,3 +464,109 @@ class DaemonStatusUiContractTests(SimpleTestCase):
         self.assertIn("Обробник потребує уваги", template[stalled:green])
         self.assertIn("аналіз діалогів", template[stalled:green])
         self.assertIn("відповіді не підтверджені", template[stalled:green])
+
+
+class TechnicalDebtNotificationRecoveryTests(TestCase):
+    def _snapshot(self, ids=(10,)):
+        return {"coverage_complete": True, "cases": [{
+            "reason": "canonical_delivery_unknown", "scope": "delivery_effect",
+            "count": len(ids), "sample_ids": list(ids), "has_more": False,
+            "oldest_age_seconds": 600,
+        }]}
+
+    def _notification(self, snapshot=None, status="pending"):
+        from management.models import IgBotNotification
+        from management.services.ig_daemon_health import technical_debt_alert_decision
+
+        decision = technical_debt_alert_decision(snapshot or self._snapshot())
+        return IgBotNotification.objects.create(dedupe_key=decision["dedupe_key"],
+            event_type="ig_technical_debt", status=status,
+            payload={**decision["metadata"], "text": decision["text"]})
+
+    def test_same_observation_survives_hour_boundaries_without_new_outbox_rows(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from management.models import IgBotNotification
+        from management.services.ig_daemon_health import technical_debt_alert_decision
+        from management.services.instagram_bot import notify_manager
+
+        first = technical_debt_alert_decision(self._snapshot())
+        older = self._snapshot()
+        older["cases"][0]["oldest_age_seconds"] += 3600
+        with patch("django.utils.timezone.now", return_value=timezone.now()+timedelta(hours=1)):
+            second = technical_debt_alert_decision(older)
+        self.assertEqual(first["dedupe_key"], second["dedupe_key"])
+        for decision in (first, second):
+            notify_manager(decision["text"], dedupe_key=decision["dedupe_key"],
+                event_type="ig_technical_debt", metadata=decision["metadata"], deliver_immediately=False)
+        self.assertEqual(IgBotNotification.objects.count(), 1)
+        self.assertNotEqual(first["dedupe_key"], technical_debt_alert_decision(self._snapshot((11,)))["dedupe_key"])
+
+    def test_recovered_alarm_is_retired_with_audit(self):
+        from management.services.ig_daemon_health import revalidate_technical_debt_notification
+
+        row = self._notification()
+        result = revalidate_technical_debt_notification(row.pk, snapshot={"coverage_complete": True, "cases": []})
+        self.assertFalse(result)
+        row.refresh_from_db()
+        self.assertEqual(row.status, "resolved")
+        self.assertEqual(row.failure_kind, "debt_alert_recovered")
+        self.assertEqual(row.audit_events.count(), 1)
+
+    def test_changed_or_legacy_hourly_alarm_is_retired(self):
+        from management.services.ig_daemon_health import revalidate_technical_debt_notification
+
+        row = self._notification()
+        self.assertFalse(revalidate_technical_debt_notification(row.pk, snapshot=self._snapshot((11,))))
+        row.refresh_from_db()
+        self.assertEqual(row.failure_kind, "debt_alert_obsolete")
+        row = self._notification(self._snapshot((11,)))
+        row.payload.pop("technical_debt_alert_policy_version")
+        row.save(update_fields=["payload"])
+        self.assertFalse(revalidate_technical_debt_notification(row.pk, snapshot=self._snapshot((11,))))
+        row.refresh_from_db()
+        self.assertEqual(row.status, "resolved")
+
+    def test_incomplete_inventory_defers_without_claiming_recovery(self):
+        from management.services.ig_daemon_health import revalidate_technical_debt_notification
+
+        row = self._notification()
+        self.assertFalse(revalidate_technical_debt_notification(row.pk, snapshot={"coverage_complete": False, "cases": []}))
+        row.refresh_from_db()
+        self.assertEqual(row.status, "pending")
+        self.assertIsNotNone(row.next_attempt_at)
+        self.assertEqual(row.audit_events.count(), 0)
+
+    def test_unknown_telegram_send_is_never_replayed(self):
+        from management.services.ig_daemon_health import revalidate_technical_debt_notification
+
+        row = self._notification(status="unknown")
+        self.assertFalse(revalidate_technical_debt_notification(row.pk, snapshot=self._snapshot()))
+        row.refresh_from_db()
+        self.assertEqual(row.status, "unknown")
+
+    def test_obsolete_alarm_is_blocked_at_actual_delivery_boundary(self):
+        from management.services.instagram_bot import _deliver_manager_notification_unlocked
+
+        row = self._notification()
+        with (patch("management.services.ig_daemon_health.technical_debt_snapshot",
+                    return_value={"coverage_complete": True, "cases": []}),
+              patch("management.services.instagram_bot._http") as send):
+            self.assertFalse(_deliver_manager_notification_unlocked(row.dedupe_key))
+        send.assert_not_called()
+        row.refresh_from_db()
+        self.assertEqual(row.attempts, 0)
+
+    def test_runtime_stall_is_reported_even_with_unresolved_debt(self):
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.is_enabled = True
+        settings_obj.save(update_fields=["is_enabled", "updated_at"])
+        snapshot = {"stalled": True, "worker_stalled": False, "stalled_reason": "main_progress_stale",
+                    "process_age_seconds": 1, "main_age_seconds": 1000, "worker_lanes": {},
+                    "technical_debt": self._snapshot()}
+        with (patch("management.services.ig_daemon_health.daemon_runtime_health_snapshot", return_value=snapshot),
+              patch("management.services.ig_maintenance.maintenance_status", return_value={"active": False}),
+              patch("management.services.instagram_bot.notify_manager", return_value=True) as notify):
+            self.assertTrue(alert_daemon_runtime_health()["alerted"])
+        self.assertEqual([call.kwargs["event_type"] for call in notify.call_args_list],
+                         ["ig_daemon_stalled", "ig_technical_debt"])

@@ -65,14 +65,38 @@ def _payload(text, attachments):
         title = item.get("title") or ""
         if not isinstance(url, str) or len(url) > 1200 or not isinstance(title, str) or len(title) > 700 or not _CODE.fullmatch(kind):
             raise _Blocked("echo_media_invalid")
-        parsed = urlsplit(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        identity = {}
+        for key in ("provider_id", "provider_object_key", "provider_media_id", "provider_event_id"):
+            value = item.get(key) or ""
+            if not isinstance(value, str) or len(value) > 255 or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+                raise _Blocked("echo_media_invalid")
+            if value:
+                identity[key] = value
+        context_kind = item.get("context_kind") or ""
+        if context_kind not in {"", "shared_story", "story_reply"}:
             raise _Blocked("echo_media_invalid")
-        media.append({
+        if url:
+            try:
+                parsed = urlsplit(url)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+                    raise _Blocked("echo_media_invalid")
+            except ValueError as exc:
+                raise _Blocked("echo_media_invalid") from exc
+        elif item.get("context_only") is not True or not any(identity.get(key) for key in ("provider_id", "provider_object_key", "provider_media_id")):
+            # A missing/expired URL does not erase a provider-native reference.
+            # The webhook MID alone cannot make an empty attachment meaningful.
+            raise _Blocked("echo_media_invalid")
+        normalized = {
             "url": url, "type": kind, "title": title,
-            "provider_id": str(item.get("provider_id") or "").strip()[:255],
+            "provider_id": identity.get("provider_id", ""),
             "role": "manager_reference",
-        })
+            **identity,
+        }
+        if context_kind:
+            normalized["context_kind"] = context_kind
+        if item.get("context_only") is True:
+            normalized["context_only"] = True
+        media.append(normalized)
     if not text and not media:
         raise _Blocked("echo_empty")
     return {"text": text, "attachments": media}
@@ -352,7 +376,7 @@ def _projection_matches(event, message, *, historical=False):
     import json
 
     expected_text = event.payload.get("text") or ""
-    expected_urls = [item["url"] for item in event.payload.get("attachments") or ()]
+    expected_urls = [item["url"] for item in event.payload.get("attachments") or () if item.get("url")]
     try:
         stored_urls = json.loads(message.attachments) if message.attachments else []
     except (TypeError, ValueError):
@@ -360,7 +384,7 @@ def _projection_matches(event, message, *, historical=False):
     if historical or expected_text:
         texts = {expected_text}
     elif any(item.get("type") == "story" for item in event.payload.get("attachments") or ()):
-        texts = {"(відповідь менеджера на сторіс)", "(зображення менеджера)"}
+        texts = {"(відповідь менеджера на сторіс)", "(сторіс менеджера)", "(зображення менеджера)"}
     else:
         texts = {"", "(зображення менеджера)"}
     return message.text in texts and stored_urls == expected_urls

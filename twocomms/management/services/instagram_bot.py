@@ -2482,15 +2482,24 @@ def _attachment_items(msg: dict) -> list[dict] | None:
     return items
 
 
+def _attachment_media_type(attachment: dict) -> str:
+    kind = str(attachment.get("type") or "").strip().casefold()[:32]
+    return "story" if kind == "ig_story" else kind
+
+
 def _attachment_media_candidates(attachment: dict) -> list[tuple[str, str, str]]:
     """Return bounded (type, url, title) candidates without trusting unknown fields."""
     result: list[tuple[str, str, str]] = []
     legacy_payload = attachment.get("payload")
     if isinstance(legacy_payload, dict):
-        url = str(legacy_payload.get("url") or "").strip()
+        url = str(
+            legacy_payload.get("url")
+            or (legacy_payload.get("story_media_url") if _attachment_media_type(attachment) == "story" else "")
+            or ""
+        ).strip()
         if url.startswith(("https://", "http://")):
             result.append((
-                str(attachment.get("type") or "image")[:32],
+                _attachment_media_type(attachment) or "image",
                 url,
                 str(legacy_payload.get("title") or "")[:700],
             ))
@@ -2504,7 +2513,7 @@ def _attachment_media_candidates(attachment: dict) -> list[tuple[str, str, str]]
         result.append((media_type[:32] or "image", url, str(value.get("title") or "")[:700]))
     direct_url = str(attachment.get("file_url") or attachment.get("url") or "").strip()
     if direct_url.startswith(("https://", "http://")):
-        result.append((str(attachment.get("type") or "file")[:32], direct_url, ""))
+        result.append((_attachment_media_type(attachment) or "file", direct_url, ""))
     return result[:8]
 
 
@@ -2552,12 +2561,13 @@ def _echo_media_items(msg: dict) -> list[dict]:
         if not isinstance(attachment, dict):
             continue
         payload = attachment.get("payload") if isinstance(attachment.get("payload"), dict) else {}
-        media_type = str(attachment.get("type") or "image").strip().lower()[:32]
+        media_type = _attachment_media_type(attachment) or "image"
         object_id = str(
             attachment.get("object_id")
             or attachment.get("id")
             or payload.get("object_id")
             or payload.get("story_id")
+            or (payload.get("story_media_id") if media_type == "story" else "")
             or payload.get("id")
             or ""
         ).strip()[:255]
@@ -2566,6 +2576,7 @@ def _echo_media_items(msg: dict) -> list[dict]:
             or attachment.get("asset_id")
             or payload.get("media_id")
             or payload.get("asset_id")
+            or (payload.get("story_media_id") if media_type == "story" else "")
             or ""
         ).strip()[:255]
         candidates = _attachment_media_candidates(attachment)
@@ -2581,6 +2592,9 @@ def _echo_media_items(msg: dict) -> list[dict]:
                 "provider_media_id": provider_media_id,
                 "provider_event_id": event_id,
             }
+            if media_type == "story":
+                item["provider_id"] = object_id
+                item["context_kind"] = "shared_story"
             if _is_instagram_permalink(url):
                 item["context_only"] = True
             result.append(item)
@@ -2600,6 +2614,8 @@ def _echo_media_items(msg: dict) -> list[dict]:
                 "provider_media_id": provider_media_id,
                 "provider_event_id": event_id,
                 "context_only": True,
+                "provider_id": object_id,
+                "context_kind": "shared_story" if media_type == "story" else "",
             })
     reply_to = msg.get("reply_to") if isinstance(msg, dict) else None
     story = reply_to.get("story") if isinstance(reply_to, dict) else None
@@ -2614,6 +2630,7 @@ def _echo_media_items(msg: dict) -> list[dict]:
             "type": "story",
             "title": "Відповідь на сторіс",
             "provider_id": story_id[:255],
+            "context_kind": "story_reply",
             "provider_object_key": f"story:{story_id}" if story_id else "",
             "provider_media_id": str(story.get("media_id") or "")[:255],
             "role": "manager_reference",
@@ -2861,6 +2878,12 @@ def _handle_echo(
     if text or attachments:
         echo_media = _echo_media_metadata(attachments)
         projected_text = _project_media_text(text, echo_media)
+        if not text and any(item.get("type") == "story" for item in attachments or []):
+            projected_text = (
+                "(відповідь менеджера на сторіс)"
+                if reply_to_provider_message_id or any(item.get("context_kind") == "story_reply" for item in attachments or [])
+                else "(сторіс менеджера)"
+            )
         msg, _created = _stage_permission_message(
             sender_id=recipient_igsid,
             role=InstagramBotMessage.Role.MANAGER,
@@ -4121,6 +4144,15 @@ def _deliver_manager_notification_unlocked(dedupe_key: str) -> bool:
             return False
         if not current_incident:
             return False
+    if row.event_type == "ig_technical_debt":
+        try:
+            from management.services.ig_daemon_health import revalidate_technical_debt_notification
+
+            if not revalidate_technical_debt_notification(row.pk, now=now):
+                return False
+        except Exception as exc:
+            log("warning", "debt_alert_revalidation_unavailable", type(exc).__name__)
+            return False
     eligible = Q(status=IgBotNotification.Status.PENDING) | Q(
         status=IgBotNotification.Status.FAILED,
         next_attempt_at__isnull=True,
@@ -4731,6 +4763,12 @@ def drain_manager_notifications(*, limit: int = 20) -> int:
         )
     reconcile_recovered_system_notifications(limit=limit)
     reconcile_task_health_notifications(limit=limit)
+    try:
+        from management.services.ig_daemon_health import reconcile_technical_debt_notifications
+
+        reconcile_technical_debt_notifications(limit=limit)
+    except Exception as exc:
+        log("warning", "debt_alert_revalidation_unavailable", type(exc).__name__)
     reconcile_obsolete_terminal_monitors(limit=limit)
     now = timezone.now()
     stale_before = now - timedelta(seconds=NOTIFICATION_STALE_SENDING_SECONDS)
@@ -10395,7 +10433,7 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
     for attachment in _attachment_items(msg) or []:
         if not isinstance(attachment, dict):
             continue
-        media_type = str(attachment.get("type") or "").strip().lower()[:32]
+        media_type = _attachment_media_type(attachment)
         payload = attachment.get("payload") if isinstance(attachment.get("payload"), dict) else {}
         candidates = _attachment_media_candidates(attachment)
         typed_post_id = str(
@@ -10414,6 +10452,7 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
             or attachment.get("asset_id")
             or payload.get("media_id")
             or payload.get("asset_id")
+            or (payload.get("story_media_id") if media_type == "story" else "")
             or typed_post_id
             or typed_reel_id
             or ""
@@ -10423,6 +10462,7 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
             or attachment.get("id")
             or payload.get("object_id")
             or payload.get("story_id")
+            or (payload.get("story_media_id") if media_type == "story" else "")
             or typed_post_id
             or typed_reel_id
             or payload.get("id")
@@ -10487,8 +10527,8 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
                 "provider_object_id": object_id,
                 "provider_media_id": provider_media_id,
                 "provider_event_id": message_id,
-                "provider_attachment_type": media_type or "image",
-                "provider_attachment_types": [media_type or "image"],
+                "provider_attachment_type": str(attachment.get("type") or media_type or "image").strip().lower()[:32],
+                "provider_attachment_types": [str(attachment.get("type") or media_type or "image").strip().lower()[:32]],
                 "provider_context_kind": provider_context_kind,
                 "provider_target_username": provider_target_username,
                 "target_username": target_username,

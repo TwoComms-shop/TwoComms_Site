@@ -1,8 +1,9 @@
 import hashlib
 import json
+from datetime import timedelta
 
 from django.db import connection, transaction
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
 from management.models import (
@@ -268,3 +269,109 @@ class RevisionExecutionTests(TransactionTestCase):
         revision.refresh_from_db()
         self.assertEqual(revision.state, revision.State.CLAIMED)
         self.assertEqual(revision.claim_token, token)
+
+    def _stranded_partial(self, sender="stranded-partial"):
+        source, revision, _token = self._ready_revision(sender)
+        sent = self._effect(revision, source, index=0, state="sent")
+        cancelled = self._effect(revision, source, index=1, state="cancelled")
+        IgRevisionDeliveryEffect.objects.filter(pk=sent.pk).update(
+            provider_message_id=f"receipt-{sent.pk}", provider_started_at=timezone.now(), terminal_at=timezone.now(),
+        )
+        IgRevisionDeliveryEffect.objects.filter(pk=cancelled.pk).update(
+            failure_code="pending_inbound", terminal_at=timezone.now(),
+        )
+        type(revision).objects.filter(pk=revision.pk).update(active_slot=None, lease_until=None)
+        InstagramBotMessage.objects.filter(pk=source.pk).update(send_state="unknown")
+        return source, revision
+
+    def test_stranded_partial_is_owned_once_without_acknowledging_or_resending_sources(self):
+        from unittest.mock import patch
+        from management.models import IgFollowUpTask
+        from management.services.ig_revision_execution import reconcile_incomplete_revision_deliveries, finalization_due_ids
+
+        source, revision = self._stranded_partial()
+        before = list(revision.delivery_effects.values("id", "state", "provider_message_id"))
+        with patch("management.services.instagram_bot._provider_http") as http:
+            first = reconcile_incomplete_revision_deliveries(dry_run=False)
+            second = reconcile_incomplete_revision_deliveries(dry_run=False)
+        http.assert_not_called()
+        self.assertEqual(first["writes"], 1)
+        self.assertEqual(second["writes"], 0)
+        task = IgFollowUpTask.objects.get(event_key=f"ig-revision-debt:{revision.pk}")
+        self.assertEqual(task.status, "skipped")
+        self.assertFalse(task.manager_context["automatic_http_retry"])
+        self.assertEqual(task.manager_context["reason"], "partial_cancelled_delivery")
+        source.refresh_from_db()
+        revision.refresh_from_db()
+        self.assertEqual(source.status, "pending")
+        self.assertIsNone(source.processed_at)
+        self.assertIsNone(source.send_started_at)
+        self.assertEqual(revision.state, "claimed")
+        self.assertIsNone(revision.active_slot)
+        self.assertEqual(revision.action_receipts["response_debt"]["task_id"], task.pk)
+        self.assertEqual(list(revision.delivery_effects.values("id", "state", "provider_message_id")), before)
+        self.assertNotIn(revision.pk, finalization_due_ids())
+
+    def test_stranded_partial_dry_run_has_no_writes(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from management.models import IgFollowUpTask
+        from management.services.ig_revision_execution import reconcile_incomplete_revision_deliveries
+
+        _source, revision = self._stranded_partial()
+        result = reconcile_incomplete_revision_deliveries()
+        stdout = StringIO()
+        call_command("reconcile_ig_revision_delivery_debt", stdout=stdout)
+        self.assertTrue(json.loads(stdout.getvalue())["dry_run"])
+        self.assertEqual(result["entries"][0]["revision_id"], revision.pk)
+        self.assertEqual(result["writes"], 0)
+        self.assertEqual(result["provider_calls"], 0)
+        self.assertFalse(IgFollowUpTask.objects.exists())
+        revision.refresh_from_db()
+        self.assertNotIn("response_debt", revision.action_receipts)
+
+    def test_inventory_uses_canonical_partial_receipts_instead_of_legacy_projection(self):
+        from management.services.ig_technical_debt import technical_debt_snapshot
+
+        source, revision = self._stranded_partial()
+        cases = technical_debt_snapshot()["cases"]
+        self.assertFalse(any(c["reason"] == "legacy_send_unknown" for c in cases))
+        partial = next(c for c in cases if c["reason"] == "canonical_delivery_incomplete")
+        self.assertEqual(partial["sample_ids"], [revision.pk])
+        source.refresh_from_db()
+        self.assertEqual(source.send_state, "unknown")
+
+    @override_settings(IG_PRIVATE_MEDIA_ROOT="")
+    def test_canonical_unknown_is_reported_once_and_is_not_classified_as_conclusive_partial(self):
+        from management.services.ig_technical_debt import technical_debt_snapshot
+
+        source, revision = self._stranded_partial()
+        revision.delivery_effects.filter(state="cancelled").update(state="unknown")
+        cases = technical_debt_snapshot()["cases"]
+        self.assertEqual([c["reason"] for c in cases], ["canonical_delivery_unknown"])
+        self.assertEqual(cases[0]["count"], 1)
+
+    def test_active_delivery_lease_and_privacy_erasure_are_not_repaired(self):
+        from management.services.ig_revision_execution import reconcile_incomplete_revision_deliveries
+
+        source, revision = self._stranded_partial()
+        type(revision).objects.filter(pk=revision.pk).update(lease_until=timezone.now()+timedelta(minutes=1))
+        self.assertEqual(reconcile_incomplete_revision_deliveries(dry_run=False)["writes"], 0)
+        type(revision).objects.filter(pk=revision.pk).update(lease_until=None)
+        type(source.client).objects.filter(pk=source.client_id).update(privacy_erasure_started_at=timezone.now())
+        self.assertEqual(reconcile_incomplete_revision_deliveries(dry_run=False)["writes"], 0)
+
+    def test_unused_template_fallback_is_not_reply_debt(self):
+        from management.services.ig_revision_execution import incomplete_revision_deliveries
+
+        source, revision, _token = self._ready_revision("unused-fallback")
+        self._effect(revision, source, index=0, state="sent")
+        self._effect(revision, source, index=1, state="cancelled", group="template_fallback")
+        self.assertFalse(incomplete_revision_deliveries().filter(pk=revision.pk).exists())
+
+    def test_inflight_parts_remain_in_the_delivery_queue(self):
+        from management.services.ig_revision_execution import reconcile_incomplete_revision_deliveries
+
+        _source, revision = self._stranded_partial()
+        revision.delivery_effects.filter(state="cancelled").update(state="planned")
+        self.assertEqual(reconcile_incomplete_revision_deliveries(dry_run=False)["writes"], 0)

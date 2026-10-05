@@ -16,7 +16,6 @@ from management.models import (
     IgClient,
     IgCustomerTurnRevision,
     IgRevisionDeliveryEffect,
-    IgWebhookInboxEvent,
     InstagramBotMessage,
     InstagramBotSettings,
 )
@@ -293,16 +292,11 @@ def _cas_readiness(
     namespace = _revision_namespace(revision)
     if not namespace:
         _append(reasons, "revision_namespace_unavailable")
-    elif client is not None and IgWebhookInboxEvent.objects.filter(
-        namespace=namespace,
-        customer_igsid=client.igsid,
-        decision__in=(
-            IgWebhookInboxEvent.Decision.ACCEPTED,
-            IgWebhookInboxEvent.Decision.BLOCKED,
-        ),
-        processed_at__isnull=True,
-    ).exists():
-        _append(reasons, "pending_inbound")
+    elif client is not None:
+        from management.services.ig_webhook_inbox import pending_ingress_blocks
+
+        if pending_ingress_blocks(namespace, client.igsid):
+            _append(reasons, "pending_inbound")
     if client is not None and settings_obj is not None:
         from management.services.ig_permission_transitions import permission_transition_blocks
         from management.services.ig_revision_echo import revision_echo_blocks

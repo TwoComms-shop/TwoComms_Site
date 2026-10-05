@@ -179,11 +179,13 @@ def transition_ig_technical_debt_case(
         if case is None:
             return {"ok": False, "status": 404, "error": "case_not_found"}
         current_status = case.status
-        if current_status == target_status:
+        stored_evidence = dict(case.evidence) if isinstance(case.evidence, dict) else {}
+        handled_fingerprint = stored_evidence.get("handled_observation_fingerprint", case.observation_fingerprint)
+        if current_status == target_status and handled_fingerprint == case.observation_fingerprint:
             if target_status == "claimed" and actor is not None and case.owner_id not in (None, actor.pk):
                 return {"ok": False, "status": 409, "error": "case_claimed_by_other"}
             return {"ok": True, "status": 200, "idempotent": True, "case": _case_payload(case)}
-        if target_status not in _LIFECYCLE_TRANSITIONS.get(current_status, set()):
+        if current_status != target_status and target_status not in _LIFECYCLE_TRANSITIONS.get(current_status, set()):
             return {"ok": False, "status": 409, "error": "invalid_transition", "current_status": current_status}
         if target_status == "claimed" and case.owner_id not in (None, getattr(actor, "pk", None)):
             return {"ok": False, "status": 409, "error": "case_claimed_by_other"}
@@ -197,12 +199,12 @@ def transition_ig_technical_debt_case(
             "evidence": evidence,
             "actor_id": getattr(actor, "pk", None),
         }
-        stored_evidence = dict(case.evidence) if isinstance(case.evidence, dict) else {}
         events = list(stored_evidence.get("operator_events") or [])
         events.append(event)
         stored_evidence["operator_events"] = events[-100:]
         stored_evidence["latest_operator_action"] = action
         stored_evidence["latest_operator_evidence"] = evidence
+        stored_evidence["handled_observation_fingerprint"] = case.observation_fingerprint
         case.status = target_status
         case.evidence = stored_evidence
         if note:
@@ -292,11 +294,16 @@ def _fingerprint_material(cases):
     return sorted(set(material))
 
 
+def technical_debt_fingerprint(cases):
+    return hashlib.sha256(repr(_fingerprint_material(cases)).encode("utf-8")).hexdigest()[:24]
+
+
 def _collect_db(now, limit):
     from management.models import InstagramBotMessage, IgCustomerTurn, IgCustomerTurnRevision
     from management.models import IgDeferredEcho, IgRevisionDeliveryEffect, IgWebhookInboxEvent
     from management.ig_bot_models import IgTurnRevisionSource
     from management.services.ig_revision_live import _owned_revisions
+    from management.services.ig_revision_execution import incomplete_revision_deliveries
 
     cases = []
     cutoff = now - STALE_CLAIM
@@ -338,9 +345,18 @@ def _collect_db(now, limit):
         reason="canonical_delivery_unknown", scope="delivery_effect", now=now,
         limit=limit, time_field="updated_at"))
     cases.append(_query_case(
-        InstagramBotMessage.objects.filter(send_state="unknown"),
+        # These rows are UI projections, not a second transport ledger.
+        # Canonical UNKNOWN and conclusive partial delivery are inventoried
+        # independently below/above, including detached historical revisions.
+        InstagramBotMessage.objects.filter(send_state="unknown").exclude(
+            pk__in=Subquery(IgRevisionDeliveryEffect.objects.order_by().values("source_message_id")),
+        ),
         reason="legacy_send_unknown", scope="legacy_message", now=now,
         limit=limit, time_field="send_started_at"))
+    cases.append(_query_case(
+        incomplete_revision_deliveries(),
+        reason="canonical_delivery_incomplete", scope="turn_revision", now=now,
+        limit=limit, time_field="created_at"))
     cases.append(_query_case(
         IgDeferredEcho.objects.filter(
             state__in=("waiting_receipt", "ambiguous"),
@@ -361,6 +377,10 @@ def _collect_db(now, limit):
             received_at__lt=transient_cutoff,
         ),
         reason="webhook_ingress_pending", scope="webhook_inbox", now=now,
+        limit=limit, time_field="received_at"))
+    cases.append(_query_case(
+        IgWebhookInboxEvent.objects.filter(decision="blocked", processed_at__isnull=True),
+        reason="webhook_ingress_blocked", scope="webhook_inbox", now=now,
         limit=limit, time_field="received_at"))
     return cases
 
@@ -477,8 +497,7 @@ def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
     # still open, defeating the hourly alert dedupe and spamming Telegram.
     # Identity is the stable set of debt classes and scopes; the alert metadata
     # still carries the current counts and ages for triage.
-    fingerprint_material = _fingerprint_material(cases)
-    fingerprint = hashlib.sha256(repr(fingerprint_material).encode("utf-8")).hexdigest()[:24]
+    fingerprint = technical_debt_fingerprint(cases)
     return {
         "observed_at": now.isoformat(),
         "fingerprint": fingerprint,
@@ -531,10 +550,10 @@ def _reconciler_case(case, *, now):
     }
 
 
-def reconcile_ig_technical_debt_once(*, now=None, limit=DEFAULT_LIMIT, dry_run=True):
+def reconcile_ig_technical_debt_once(*, now=None, limit=DEFAULT_LIMIT, dry_run=True, snapshot=None):
     """Return bounded proposals, optionally persisting operator observations."""
     now = now or timezone.now()
-    snapshot = technical_debt_snapshot(now=now, limit=limit)
+    snapshot = technical_debt_snapshot(now=now, limit=limit) if snapshot is None else snapshot
     proposals = sorted(
         (_reconciler_case(case, now=now) for case in snapshot.get("cases") or ()),
         key=lambda case: (case["identity"], case["case_fingerprint"]),
@@ -581,6 +600,14 @@ def reconcile_ig_technical_debt_once(*, now=None, limit=DEFAULT_LIMIT, dry_run=T
                     "coverage_complete": True,
                     "disposition": proposal["disposition"],
                 }
+                if case.status not in {"open", "unknown"}:
+                    evidence = dict(case.evidence) if isinstance(case.evidence, dict) else {}
+                    # Observation refresh must not silently acknowledge new
+                    # source IDs on an already handled class/scope row.
+                    if ("handled_observation_fingerprint" not in evidence
+                        and case.observation_fingerprint != proposal["case_fingerprint"]):
+                        evidence["handled_observation_fingerprint"] = case.observation_fingerprint
+                        updates["evidence"] = evidence
                 if case.status not in _PRESERVED_STATUSES:
                     updates["status"] = case.status or IgTechnicalDebtCase.Status.OPEN
                 changed = {

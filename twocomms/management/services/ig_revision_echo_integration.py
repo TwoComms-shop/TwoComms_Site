@@ -13,7 +13,12 @@ from management.models import (
 
 
 class RevisionEchoDeferred(RuntimeError):
-    """The ingress event was not durably accepted and must remain retryable."""
+    """Carry a safe reason and whether retry can repair the observation."""
+
+    def __init__(self, reason, *, retryable=True):
+        self.reason = str(reason)[:64]
+        self.retryable = bool(retryable)
+        super().__init__(self.reason)
 
 
 def uses_revision_echo_scope(namespace, recipient=None):
@@ -36,7 +41,10 @@ def _project_manager_event(event_id):
         acknowledge_historical_manager_echo, acknowledge_manager_echo,
     )
     from management.services.ig_permission_transitions import create_permission_transition
-    from management.services.instagram_bot import _stage_permission_message, ingress_provider_namespace
+    from management.services.instagram_bot import (
+        _echo_media_metadata, _historicalize_provider_media,
+        _stage_permission_message, ingress_provider_namespace,
+    )
 
     identity = IgDeferredEcho.objects.filter(pk=event_id).values("client_id", "settings_id_snapshot").first()
     if identity is None:
@@ -55,20 +63,28 @@ def _project_manager_event(event_id):
             return False
         historical = event.payload.get("historical") is True
         attachments = event.payload.get("attachments") or []
-        urls = [item["url"] for item in attachments]
+        urls = [item["url"] for item in attachments if item.get("url")]
         story = next((item for item in attachments if item.get("type") == "story"), None)
-        reply_to_provider_message_id = str((story or {}).get("provider_id") or "").strip()[:255]
+        story_reply = story and story.get("context_kind") != "shared_story"
+        reply_to_provider_message_id = str((story or {}).get("provider_id") or "").strip()[:255] if story_reply else ""
+        metadata = _echo_media_metadata(attachments)
+        if historical:
+            metadata = _historicalize_provider_media(metadata)
+        fallback_text = (
+            "" if historical else
+            "(відповідь менеджера на сторіс)" if story_reply else
+            "(сторіс менеджера)" if story else "(зображення менеджера)"
+        )
         message, _created = _stage_permission_message(
             sender_id=client.igsid, role=InstagramBotMessage.Role.MANAGER,
-            text=event.payload.get("text") or (
-                "(відповідь менеджера на сторіс)" if story
-                else "" if historical else "(зображення менеджера)"
-            ),
+            text=event.payload.get("text") or fallback_text,
             mid=event.provider_message_id, source="poll_history" if historical else "echo",
             provider_namespace=event.provider_namespace,
             attachments=json.dumps(urls, ensure_ascii=False) if urls else "",
             provider_created_at=event.provider_created_at,
             reply_to_provider_message_id=reply_to_provider_message_id,
+            attachment_metadata=metadata,
+            allow_media_capture=not historical,
         )
         if message is None:
             raise RevisionEchoDeferred("echo_message_projection_conflict")
@@ -98,7 +114,7 @@ def _project_attribution(result):
     if not result.accepted:
         if result.reason == "echo_erasure_active":
             return True
-        raise RevisionEchoDeferred(result.reason)
+        raise RevisionEchoDeferred(result.reason, retryable=result.retryable)
     if result.classification == "manager_pending":
         _project_manager_event(result.event_id)
     elif result.classification == "own" and result.effect_id:
@@ -153,7 +169,7 @@ def _project_legacy_receipt_history(namespace, recipient, mid, text, attachments
             if existing.client_id != client.pk or existing.role != "model" or existing.provider_namespace != namespace:
                 raise RevisionEchoDeferred("legacy_receipt_history_conflict")
             return
-        urls = [item["url"] for item in payload["attachments"]]
+        urls = [item["url"] for item in payload["attachments"] if item.get("url")]
         InstagramBotMessage.objects.create(
             client=client, sender_id=recipient, mid=mid, provider_message_id=mid,
             provider_namespace=namespace, role="model", source="poll_history",

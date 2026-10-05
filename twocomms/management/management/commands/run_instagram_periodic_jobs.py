@@ -150,6 +150,10 @@ class Command(BaseCommand):
             raise CommandError(
                 f"--budget-seconds must be between 1 and {MAX_BUDGET_SECONDS}"
             )
+        if options.get("dry_run"):
+            due = due_periodic_lanes(selected_lane=selected_lane, force=force)
+            self.stdout.write("due=" + ",".join(lane.task_key for lane in due))
+            return
         from management.services.ig_db_circuit import (
             DbCircuitOpen, require_database_ready, record_db_failure,
         )
@@ -164,6 +168,16 @@ class Command(BaseCommand):
             )
 
             with periodic_lane_deadline(min(15, budget)):
+                from management.services.ig_revision_execution import reconcile_incomplete_revision_deliveries
+
+                try:
+                    reconcile_incomplete_revision_deliveries(limit=25, dry_run=False)
+                except Exception as exc:
+                    if record_db_failure(exc, lane="periodic_delivery_debt"):
+                        close_old_connections()
+                        self.stdout.write("completed=- deferred=db_circuit failed=- timed_out=-")
+                        return
+                    self.stderr.write(f"revision_delivery_debt_reconcile_failed={type(exc).__name__}")
                 alert_daemon_runtime_health()
         except (PeriodicLaneTimeout, Exception) as exc:
             # Runtime-health delivery is important but must never starve the
@@ -179,9 +193,6 @@ class Command(BaseCommand):
                 raise
             close_old_connections()
             self.stdout.write("completed=- deferred=db_circuit failed=- timed_out=-")
-            return
-        if options.get("dry_run"):
-            self.stdout.write("due=" + ",".join(lane.task_key for lane in due))
             return
 
         started = time.monotonic()

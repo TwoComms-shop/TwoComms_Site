@@ -253,3 +253,14 @@ class PeriodicCoordinatorTests(TestCase):
             task_key="ig_checkout_reconcile"
         )
         self.assertEqual(heartbeat.last_error_kind, "PeriodicLaneTimeout")
+
+
+class PeriodicDiagnosticPurityTests(TestCase):
+    def test_dry_run_never_repairs_debt_or_notifies_managers(self):
+        with (patch("management.services.ig_revision_execution.reconcile_incomplete_revision_deliveries") as repair,
+              patch("management.services.ig_daemon_health.alert_daemon_runtime_health") as alert,
+              patch("management.management.commands.run_instagram_periodic_jobs.call_command") as lane):
+            call_command("run_instagram_periodic_jobs", dry_run=True, stdout=StringIO())
+        repair.assert_not_called()
+        alert.assert_not_called()
+        lane.assert_not_called()
