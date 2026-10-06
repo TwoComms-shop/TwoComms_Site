@@ -12,6 +12,11 @@ import django
 
 django.setup()
 
+from django.test import override_settings
+from django.utils import translation
+from django.utils.functional import Promise
+
+from storefront.custom_print_config import ZONE_LABELS
 from storefront.custom_print_notifications import (
     _build_message,
     _build_safe_exit_message,
@@ -138,6 +143,12 @@ class FakeNotifier:
 
 
 class CustomPrintNotificationUnitTests(unittest.TestCase):
+    def setUp(self):
+        # Fake leads exercise message delivery without claiming a database row.
+        slot_patch = patch("storefront.custom_print_notifications._claim_notification_slot", return_value=True)
+        slot_patch.start()
+        self.addCleanup(slot_patch.stop)
+
     def test_telegram_keyboards_only_use_http_urls(self):
         lead = FakeLead()
         lead.contact_channel = "phone"
@@ -247,6 +258,115 @@ class CustomPrintNotificationUnitTests(unittest.TestCase):
         self.assertIn("🎁", message)
         self.assertIn("Текст для подарунка", message)
         self.assertIn("<blockquote>З днем народження!</blockquote>", message)
+
+    def test_submitted_gift_lead_reports_intent_when_packaging_disabled(self):
+        lead = FakeLead()
+        lead.client_kind = "personal"
+        lead.config_draft_json = {
+            "mode": "personal",
+            "order_purpose": "gift",
+            "order": {"gift": {"enabled": False, "text": "Старий текст"}},
+        }
+        notifier = FakeNotifier()
+
+        with patch("storefront.custom_print_notifications._build_notifier", return_value=notifier):
+            result = notify_new_custom_print_lead(lead)
+
+        self.assertTrue(result)
+        message = notifier.calls[0][1]
+        self.assertIn("<b>Призначення замовлення:</b> На подарунок", message)
+        self.assertIn("<b>Подарункова упаковка:</b> ні", message)
+        self.assertNotIn("<b>Подарункова упаковка:</b> так", message)
+        self.assertNotIn("Старий текст", message)
+
+    def test_packaging_addon_does_not_imply_gift_order_intent(self):
+        lead = FakeLead()
+        lead.client_kind = "personal"
+        lead.config_draft_json = {
+            "mode": "personal",
+            "order": {"gift": True},
+        }
+
+        message = _build_message(lead)
+
+        self.assertIn("<b>Призначення замовлення:</b> Для себе", message)
+        self.assertIn("<b>Подарункова упаковка:</b> так", message)
+        self.assertNotIn("<b>Призначення замовлення:</b> На подарунок", message)
+
+    def test_legacy_organization_lead_derives_order_purpose_from_client_kind(self):
+        message = _build_message(FakeLead())
+
+        self.assertIn("<b>Призначення замовлення:</b> Для команди чи організації", message)
+
+    def test_safe_exit_gift_intent_is_independent_from_disabled_packaging_dict(self):
+        message = _build_safe_exit_message({
+            "mode": "personal",
+            "order_purpose": "gift",
+            "order": {"gift": {"enabled": False}},
+        })
+
+        self.assertIn("<b>Призначення замовлення:</b> На подарунок", message)
+        self.assertIn("<b>Подарункова упаковка:</b> ні", message)
+        self.assertNotIn("<b>Подарункова упаковка:</b> так", message)
+
+    def test_safe_exit_personal_order_with_disabled_packaging_dict_is_not_a_gift(self):
+        message = _build_safe_exit_message({
+            "mode": "personal",
+            "order": {"gift": {"enabled": False, "text": "Зі святом"}},
+        })
+
+        self.assertIn("<b>Призначення замовлення:</b> Для себе", message)
+        self.assertNotIn("<b>Подарункова упаковка:</b> так", message)
+
+    def test_safe_exit_enabled_packaging_dict_is_reported(self):
+        message = _build_safe_exit_message({
+            "mode": "personal",
+            "order_purpose": "gift",
+            "order": {"gift": {"enabled": True}},
+        })
+
+        self.assertIn("<b>Призначення замовлення:</b> На подарунок", message)
+        self.assertIn("<b>Подарункова упаковка:</b> так", message)
+
+    @override_settings(USE_I18N=True)
+    def test_safe_exit_materializes_lazy_zone_labels_without_size_presets(self):
+        self.assertIsInstance(ZONE_LABELS["front"], Promise)
+        with translation.override("uk"):
+            message = _build_safe_exit_message({
+                "mode": "personal",
+                "order_purpose": "gift",
+                "print": {"zones": ["front", "custom"]},
+                "order": {"gift": False},
+            })
+
+        self.assertIn("<b>Зони:</b> Спереду, Інша зона", message)
+        self.assertIn("<b>Призначення замовлення:</b> На подарунок", message)
+
+    @override_settings(USE_I18N=True)
+    def test_safe_exit_materializes_fallback_zone_label_for_incomplete_placement(self):
+        self.assertIsInstance(ZONE_LABELS["hem"], Promise)
+        with translation.override("uk"):
+            message = _build_safe_exit_message({
+                "mode": "personal",
+                "order_purpose": "gift",
+                "print": {"zones": ["hem"], "zone_options": {"hem": {"side": ""}}},
+            })
+
+        self.assertIn("<b>Зони:</b> Низ виробу", message)
+
+    @override_settings(USE_I18N=True)
+    def test_submitted_message_formats_stored_lazy_placement_labels(self):
+        lead = FakeLead(placement_specs=[{
+            "zone": "front",
+            "placement_key": "front",
+            "label": ZONE_LABELS["front"],
+            "requires_artwork_file": True,
+        }])
+
+        with translation.override("uk"):
+            message = _build_message(lead)
+
+        self.assertIn("<b>Спереду</b>", message)
 
     def test_notify_new_custom_print_lead_sends_summary_then_captioned_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:

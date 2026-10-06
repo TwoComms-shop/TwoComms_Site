@@ -65,6 +65,9 @@
   const studioShellQuery = globalThis.matchMedia ? globalThis.matchMedia("(max-width: 1100px)") : null;
 
   const STATE = createState();
+  const purposeTools = globalThis.CustomPrintPurpose;
+  const giftReveal = purposeTools?.createReveal(document.querySelector("[data-gift-reveal]"));
+  let purposeSelectionPending = false;
   const filesByPlacement = new Map(); // placement_key -> File[]
   let garmentPhotoFile = null;
   const analyticsState = {
@@ -249,6 +252,7 @@
   function createState() {
     return {
       mode: null, // "personal" | "brand"
+      order_purpose: "personal", // "personal" | "gift" | "organization"
       product: {
         type: null, // "hoodie" | "tshirt" | "longsleeve" | "customer_garment"
         fit: null,
@@ -309,6 +313,7 @@
     return {
       current_step: STATE.ui.current_step || "mode",
       mode: STATE.mode || "",
+      order_purpose: STATE.order_purpose,
       product_type: STATE.product.type || "",
       service_kind: STATE.artwork.service_kind || "",
       quantity: STATE.order.quantity || 0,
@@ -439,6 +444,7 @@
     bindStudioBoundary();
     setupDraftResume();
     window.addEventListener("pagehide", () => {
+      giftReveal?.cancel();
       flushPersistDraft();
       flushAnalyticsQueue();
     }, { capture: true });
@@ -454,6 +460,7 @@
   }
 
   function exitStudio() {
+    giftReveal?.cancel();
     studioManuallyExited = true;
     flushPersistDraft();
     mobileShell?.setActive(false);
@@ -467,12 +474,14 @@
   }
 
   function openPreviewDialog(event) {
+    giftReveal?.cancel();
     previewController?.render();
     sendAnalyticsEvent("preview_open", buildAnalyticsMetadata({ studio_step: stateTools?.fromInternal(STATE.ui.current_step) }));
     dialogFlow?.openPreviewDialog(event?.currentTarget || event?.target);
   }
 
   function openManagerDialog(event) {
+    giftReveal?.cancel();
     flushPersistDraft();
     sendAnalyticsEvent("manager_open", buildAnalyticsMetadata({ studio_step: stateTools?.fromInternal(STATE.ui.current_step) }));
     dialogFlow?.openManagerDialog({
@@ -525,7 +534,7 @@
       ui("manager_greeting", "Привіт! Хочу обговорити кастомний принт TwoComms."),
       "",
       "КОНФІГУРАЦІЯ",
-      `• Формат: ${STATE.mode === "brand" ? "команда / бренд" : "для себе"}`,
+      `• Формат: ${STATE.mode === "brand" ? "команда / організація" : STATE.order_purpose === "gift" ? "на подарунок" : "для себе"}`,
       `• Виріб: ${cfg.label || "—"}`,
       `• Посадка: ${fit} · тканина: ${fabric} · колір: ${color}`,
       previewFallback,
@@ -900,6 +909,8 @@
   }
 
   function normalizeClientState() {
+    STATE.order_purpose = purposeTools?.normalize(STATE.order_purpose, STATE.mode)
+      || (STATE.mode === "brand" ? "organization" : STATE.order_purpose === "gift" ? "gift" : "personal");
     if (!STATE.print.zone_options || typeof STATE.print.zone_options !== "object") {
       STATE.print.zone_options = {};
     }
@@ -1196,18 +1207,39 @@
     const container = dom.modeList;
     if (!container) return;
     container.querySelectorAll("[data-choice-value]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const previousMode = STATE.mode;
-        if (previousMode && previousMode !== btn.dataset.choiceValue) {
-          resetConfigurationForModeChange();
-        }
-        STATE.mode = btn.dataset.choiceValue;
+      btn.addEventListener("click", async () => {
+        if (purposeSelectionPending) return;
+        const choice = btn.dataset.choiceValue;
+        const nextMode = choice === "brand" ? "brand" : "personal";
+        const previousPurpose = STATE.order_purpose;
+        if (STATE.mode && STATE.mode !== nextMode) resetConfigurationForModeChange();
+        STATE.mode = nextMode;
+        STATE.order_purpose = purposeTools?.fromChoice(choice) || (choice === "brand" ? "organization" : choice === "gift" ? "gift" : "personal");
+        if (choice === "gift") STATE.order.gift_enabled = true;
+        else if (previousPurpose === "gift") STATE.order.gift_enabled = false;
+        syncGiftUi();
         normalizeClientState();
+        renderModeChipsActive();
         updateBrandFieldsVisibility();
         if (STATE.mode === "brand") {
           setActiveStep("mode", { silent: true });
           schedulePersistDraft();
           return;
+        }
+        if (choice === "gift" && giftReveal) {
+          purposeSelectionPending = true;
+          container.setAttribute("aria-busy", "true");
+          container.querySelectorAll("[data-choice-value]").forEach((item) => { item.disabled = true; });
+          schedulePersistDraft();
+          let completed;
+          try {
+            completed = await giftReveal.play();
+          } finally {
+            purposeSelectionPending = false;
+            container.removeAttribute("aria-busy");
+            container.querySelectorAll("[data-choice-value]").forEach((item) => { item.disabled = false; });
+          }
+          if (!completed) return;
         }
         afterChoice("mode");
       });
@@ -1257,7 +1289,10 @@
 
   function renderModeChipsActive() {
     dom.modeList?.querySelectorAll("[data-choice-value]").forEach((btn) => {
-      btn.classList.toggle("is-active", btn.dataset.choiceValue === STATE.mode);
+      const selected = STATE.order_purpose === "gift" ? "gift" : STATE.mode;
+      const active = btn.dataset.choiceValue === selected;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-pressed", String(active));
     });
   }
 
@@ -3143,10 +3178,7 @@
   function bindGiftToggle() {
     dom.giftToggle?.addEventListener("click", () => {
       STATE.order.gift_enabled = !STATE.order.gift_enabled;
-      dom.giftToggle.classList.toggle("is-active", STATE.order.gift_enabled);
-      dom.giftToggle.setAttribute("aria-pressed", String(STATE.order.gift_enabled));
-      if (dom.giftToggleState) dom.giftToggleState.textContent = STATE.order.gift_enabled ? "Увімкнено" : "Вимкнено";
-      if (dom.giftTextWrap) dom.giftTextWrap.hidden = !STATE.order.gift_enabled;
+      syncGiftUi();
       updateGiftContinueLabel();
       refreshAll();
       persistDraft();
@@ -3156,6 +3188,20 @@
       persistDraft();
     });
     updateGiftContinueLabel();
+  }
+
+  function syncGiftUi() {
+    const enabled = !!STATE.order.gift_enabled;
+    dom.giftToggle?.classList.toggle("is-active", enabled);
+    dom.giftToggle?.setAttribute("aria-pressed", String(enabled));
+    if (dom.giftToggleState) dom.giftToggleState.textContent = enabled ? "Увімкнено" : "Вимкнено";
+    if (dom.giftTextWrap) dom.giftTextWrap.hidden = !enabled;
+    const note = root.querySelector("[data-gift-intent-note]");
+    if (note) {
+      note.hidden = STATE.order_purpose !== "gift";
+      if (!note.dataset.enabledText) note.dataset.enabledText = note.textContent;
+      note.textContent = enabled ? note.dataset.enabledText : (note.dataset.disabledText || "Створюємо на подарунок. Додаткову подарункову упаковку вимкнено.");
+    }
   }
 
   function getGiftContinueLabel() {
@@ -3267,6 +3313,7 @@
   }
 
   function setActiveStep(key, opts = {}) {
+    if (purposeSelectionPending) giftReveal?.cancel();
     if (!STEPS.includes(key)) return;
     if (!opts.silent) {
       resetStatus();
@@ -3385,7 +3432,7 @@
 
   function getStepProblem(stepKey) {
     const problems = {
-      mode: ["Оберіть: для себе чи для команди / бренду.", "[data-mode-list] button"],
+      mode: ["Оберіть: для себе, на подарунок або для організації.", "[data-mode-list] button"],
       product: ["Оберіть виріб для друку.", "[data-product-list] button"],
       config: ["Завершіть вибір посадки, тканини та кольору.", "[data-fit-list], [data-fabric-list], [data-color-list]"],
       zones: ["Оберіть хоча б одну зону та формат принта.", "[data-zone-list]"],
@@ -3520,6 +3567,7 @@
         current_step: STATE.ui.current_step,
         done_steps: Array.from(STATE.ui.done_steps || []).sort(),
         mode: STATE.mode,
+        order_purpose: STATE.order_purpose,
       },
       content: {
         product: STATE.product,
@@ -3566,6 +3614,7 @@
     const navigationDirty = !lastRenderSignature || nextSignature.navigation !== lastRenderSignature.navigation;
     lastRenderSignature = nextSignature;
     if (!dirty.size) return;
+    syncGiftUi();
     if (previewDirty) syncPreviewRender();
     if (dom.statusBox?.classList.contains("is-warning") && canAdvance(STATE.ui.current_step)) {
       resetStatus();
@@ -3796,7 +3845,7 @@
   function renderFinalChecklist(actionPolicy) {
     if (!dom.finalChecklist) return;
     const items = [
-      { step: "mode", label: "Формат", ready: !!STATE.mode, detail: "Для себе або для команди" },
+      { step: "mode", label: "Формат", ready: !!STATE.mode, detail: "Для себе, на подарунок або для організації" },
       { step: "product", label: "Виріб", ready: !!STATE.product.type, detail: "Основа і посадка" },
       { step: "config", label: "Налаштування", ready: canAdvance("config"), detail: "Посадка, тканина і колір" },
       { step: "zones", label: "Зони", ready: canAdvance("zones"), detail: "Розташування та формат" },
@@ -3820,7 +3869,7 @@
   }
 
   function updateSummaries() {
-    setStepSummary("mode", STATE.mode === "brand" ? "Для команди / бренду" : STATE.mode === "personal" ? "Для себе" : "—");
+    setStepSummary("mode", STATE.mode === "brand" ? "Для команди / організації" : STATE.order_purpose === "gift" ? "На подарунок" : STATE.mode === "personal" ? "Для себе" : "—");
 
     const cfg = getProductConfig();
     setStepSummary("product", cfg ? cfg.label : "—");
@@ -4246,6 +4295,7 @@
       submission_type: submissionType,
       quick_start_mode: "start_blank",
       mode: STATE.mode || "personal",
+      order_purpose: STATE.order_purpose,
       starter_style: "",
       product: { ...STATE.product },
       print: {
@@ -4736,6 +4786,7 @@
         v: 2,
         ts: Date.now(),
         mode: STATE.mode,
+        order_purpose: STATE.order_purpose,
         product: STATE.product,
         print: STATE.print,
         artwork: STATE.artwork,
@@ -4824,6 +4875,7 @@
       const draft = draftOverride || readDraft();
       if (!draft) return;
       if (draft.mode) STATE.mode = draft.mode;
+      STATE.order_purpose = purposeTools?.normalize(draft.order_purpose, STATE.mode) || (STATE.mode === "brand" ? "organization" : "personal");
       if (draft.product) Object.assign(STATE.product, draft.product);
       if (draft.print) Object.assign(STATE.print, draft.print);
       if (draft.artwork) Object.assign(STATE.artwork, draft.artwork);

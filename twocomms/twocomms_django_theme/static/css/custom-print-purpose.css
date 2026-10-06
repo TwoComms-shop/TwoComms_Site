@@ -1,0 +1,83 @@
+/* The desktop chooser retains its existing card layout. */
+.cp-purpose-icon, .cp-purpose-arrow, .cp-purpose-caption { display: none; }
+.cp-purpose-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cp-purpose-grid .cp-purpose-copy { display: grid; gap: 7px; color: inherit; }
+.cp-gift-intent-note { margin: 0 0 16px; padding: 12px 14px; border-left: 2px solid #e8bf6c; color: #e9dcc2; font-size: 13px; line-height: 1.55; }
+.cp-gift-intent-note[hidden] { display: none; }
+
+@media (max-width: 991.98px) {
+  .cp-step--mode .cp-step-head { margin-bottom: 22px; }
+  .cp-step--mode .cp-step-head h2 { font-size: clamp(25px, 6.7vw, 34px); letter-spacing: -.045em; line-height: 1.12; }
+  .cp-step--mode .cp-step-head p { max-width: 35ch; margin-top: 10px; font-size: 13px; line-height: 1.6; color: #b9b5bd; }
+  .cp-purpose-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .cp-purpose-grid .cp-purpose-card {
+    display: grid; grid-template-columns: 60px minmax(0, 1fr) 18px; gap: 14px;
+    align-items: center; min-height: 108px; padding: 18px 16px;
+    border-radius: 22px; border-color: rgba(255,255,255,.13);
+    background: linear-gradient(125deg, #222128, #17171d);
+    box-shadow: 0 10px 24px rgba(0,0,0,.16); isolation: isolate;
+  }
+  .cp-purpose-grid .cp-purpose-card::after { display: none; }
+  .cp-purpose-grid .cp-purpose-card:focus-visible { outline: 2px solid #f3d798; outline-offset: 4px; }
+  .cp-purpose-grid .cp-purpose-card:active { transform: scale(.985); }
+  .cp-purpose-grid .cp-purpose-card.is-active { border-color: #e8bf6c; box-shadow: 0 0 0 1px rgba(232,191,108,.18); }
+  .cp-purpose-grid .cp-purpose-copy { display: grid; gap: 6px; color: inherit; }
+  .cp-purpose-grid .cp-purpose-copy small { color: #cbbfa8; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+  .cp-purpose-grid .cp-purpose-copy strong { font-size: clamp(17px, 4.6vw, 20px); font-weight: 750; letter-spacing: -.025em; line-height: 1.2; }
+  .cp-purpose-grid .cp-purpose-copy > span { color: #beb9c3; font-size: 12px; line-height: 1.45; }
+  .cp-purpose-grid .cp-purpose-copy .cp-purpose-pack { color: #dfc697; font-size: 10px; line-height: 1.5; }
+  .cp-purpose-grid .cp-purpose-icon { display: grid; place-items: center; width: 60px; height: 64px; border-radius: 17px; color: #e9d3a7; background: linear-gradient(145deg, rgba(244,220,174,.1), rgba(244,220,174,.025)); }
+  .cp-purpose-icon svg { width: 32px; height: 32px; stroke-width: 1.5; }
+  .cp-purpose-grid .cp-purpose-arrow { display: block; font-size: 23px; line-height: 1; color: #d2c4aa; }
+  .cp-purpose-grid .cp-purpose-card--gift { border-color: rgba(232,191,108,.36); background: radial-gradient(ellipse at 4% 50%, rgba(204,143,64,.14), transparent 65%), linear-gradient(125deg, #29231f, #1c191c); }
+  .cp-purpose-card--gift .cp-purpose-icon { background: transparent; overflow: visible; }
+  .cp-purpose-grid .cp-purpose-card--brand { margin-top: 14px; padding-top: 18px; border-color: rgba(172,167,193,.18); background: linear-gradient(125deg, #211f29, #17171d); }
+  .cp-purpose-grid .cp-purpose-card--brand strong { font-size: clamp(16px, 4.2vw, 19px); }
+  .cp-purpose-grid .cp-purpose-card--brand small { color: #b9b0cf; }
+  .cp-purpose-caption { display: block; margin: 15px 4px 0; color: #9e98a5; font-size: 11px; line-height: 1.6; }
+  .cp-purpose-grid .cp-purpose-card[disabled] { cursor: default; }
+}
+@media (max-width: 359px) {
+  .cp-purpose-grid .cp-purpose-card { grid-template-columns: 48px minmax(0, 1fr) 14px; gap: 10px; padding: 15px 12px; }
+  .cp-purpose-grid .cp-purpose-icon { width: 48px; }
+}
+
+/* A small sculpted, ribboned box is also the idle gift-card illustration. */
+.cp-gift-box { position: relative; display: block; width: 58px; height: 58px; perspective: 500px; }
+.cp-gift-box-body { position: absolute; z-index: 3; left: 7%; right: 7%; bottom: 4%; height: 60%; border: 1px solid #bf8647; border-radius: 3px 3px 7px 7px; background: linear-gradient(115deg, #ddbc89, #b9864d 65%, #986234); box-shadow: inset -7px 0 12px #80501c33, 0 8px 12px #0003; }
+.cp-gift-box-body::after, .cp-gift-box-lid::after { content: ""; position: absolute; top: 0; bottom: 0; left: 42%; width: 17%; background: linear-gradient(90deg, #302739, #514159 55%, #29222f); border-inline: 1px solid #79668280; }
+.cp-gift-box-lid { position: absolute; z-index: 5; left: 2%; right: 2%; top: 28%; height: 17%; border: 1px solid #f2d3a6; border-radius: 3px; background: linear-gradient(110deg, #f0d7ae, #c59660); box-shadow: 0 3px 3px #58371940; transform-origin: 75% 75%; }
+.cp-gift-box-bow { position: absolute; left: 24%; top: -115%; width: 53%; height: 125%; }
+.cp-gift-box-bow::before, .cp-gift-box-bow::after { content: ""; position: absolute; bottom: 0; width: 53%; height: 90%; border: 3px solid #685375; border-radius: 70% 85% 20% 70%; transform: rotate(20deg); }
+.cp-gift-box-bow::after { right: 0; transform: scaleX(-1) rotate(20deg); }
+
+/* Portal escapes the studio scroller; the close button remains usable. */
+.cp-gift-reveal { position: fixed; inset: 0; z-index: 205; display: grid; place-items: center; overflow: hidden; background: radial-gradient(ellipse at 50% 47%, #34281eef, #100f16f7 65%); }
+.cp-gift-reveal[hidden] { display: none; }
+.cp-gift-reveal-scene { position: relative; width: 280px; height: 310px; display: grid; place-items: center; }
+.cp-gift-reveal .cp-gift-box { width: 154px; height: 154px; margin-top: 80px; }
+.cp-gift-reveal .cp-gift-box-bow::before, .cp-gift-reveal .cp-gift-box-bow::after { border-width: 7px; }
+.cp-gift-reveal-logo { position: absolute; z-index: 2; width: 74px; height: 81px; top: 32%; left: calc(50% - 37px); opacity: 0; transform: translateY(60px) scale(.5); filter: drop-shadow(0 0 18px #ecc58166); }
+.cp-gift-reveal-glow { position: absolute; z-index: 1; width: 200px; height: 200px; top: 17%; left: calc(50% - 100px); border-radius: 50%; background: radial-gradient(circle, #e9c98d33, #e9c98d00 66%); opacity: 0; }
+.cp-gift-reveal-spark { position: absolute; z-index: 4; left: 50%; top: 49%; width: 5px; height: 13px; border-radius: 3px; background: #e4c695; opacity: 0; --spark-x: -85px; --spark-y: -74px; --spark-r: -35deg; }
+.cp-gift-reveal-spark:nth-of-type(2) { --spark-x: 82px; --spark-y: -96px; --spark-r: 32deg; }
+.cp-gift-reveal-spark:nth-of-type(3) { --spark-x: -45px; --spark-y: -136px; --spark-r: 55deg; width: 4px; height: 4px; }
+.cp-gift-reveal-spark:nth-of-type(4) { --spark-x: 52px; --spark-y: -37px; --spark-r: -50deg; }
+.cp-gift-reveal-caption { position: absolute; top: calc(50% + 150px); left: 20px; right: 20px; margin: 0; text-align: center; color: #ebdfc9; font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+.cp-gift-reveal.is-playing { animation: cp-gift-scene 1080ms linear both; }
+.is-playing .cp-gift-box { animation: cp-gift-pop 920ms cubic-bezier(.2,.8,.2,1) both; }
+.is-playing .cp-gift-box-lid { animation: cp-gift-lid 780ms cubic-bezier(.22,.85,.25,1) 100ms both; }
+.is-playing .cp-gift-reveal-logo { animation: cp-gift-logo 710ms cubic-bezier(.18,.85,.25,1) 210ms both; }
+.is-playing .cp-gift-reveal-glow { animation: cp-gift-glow 760ms ease-out 150ms both; }
+.is-playing .cp-gift-reveal-spark { animation: cp-gift-spark 510ms ease-out 270ms both; }
+@keyframes cp-gift-scene { 0% { opacity: 0; } 12%, 83% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes cp-gift-pop { 0% { transform: scale(.94); } 14% { transform: translateY(4px) scale(1.02,.94); } 38% { transform: translateY(-5px) scale(1); } 65%, 100% { transform: none; } }
+@keyframes cp-gift-lid { 0%, 12% { transform: none; opacity: 1; } 55% { transform: translate3d(34px,-106px,0) rotate(22deg); opacity: 1; } 100% { transform: translate3d(56px,-126px,0) rotate(27deg); opacity: 0; } }
+@keyframes cp-gift-logo { 0% { opacity: 0; transform: translateY(60px) scale(.5) rotate(-9deg); } 30% { opacity: 1; } 72% { opacity: 1; transform: translateY(-29px) scale(1.08) rotate(3deg); } 100% { opacity: 1; transform: translateY(-24px) scale(1); } }
+@keyframes cp-gift-glow { 0% { opacity: 0; transform: scale(.5); } 55%, 100% { opacity: 1; transform: scale(1.2); } }
+@keyframes cp-gift-spark { 0% { opacity: 0; transform: translate(0,0); } 20% { opacity: .85; } 100% { opacity: 0; transform: translate(var(--spark-x),var(--spark-y)) rotate(var(--spark-r)); } }
+@media (prefers-reduced-motion: reduce) {
+  .cp-purpose-grid .cp-purpose-card { transition: none; }
+  .cp-purpose-grid .cp-purpose-card:hover, .cp-purpose-grid .cp-purpose-card:active { transform: none; }
+  .cp-gift-reveal, .cp-gift-reveal * { animation: none !important; }
+}

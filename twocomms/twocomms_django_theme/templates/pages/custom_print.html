@@ -42,6 +42,7 @@
   {{ block.super }}
   <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260729-color-fallback-v1">
   <link rel="stylesheet" href="{% static 'css/custom-print-mobile-hero.css' %}?v=20261002-mobile-hero-v2">
+  <link rel="stylesheet" href="{% static 'css/custom-print-purpose.css' %}?v=20261007-gift-v1">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -276,25 +277,39 @@
             <div class="cp-step-body">
               <div class="cp-step-head">
                 <span class="cp-card-eyebrow">{% trans '1. Формат' %}</span>
-                <h2>{% trans 'Для кого збираємо?' %}</h2>
-                <p>{% trans 'Один виріб для себе чи партія для команди/бренду — від цього залежить ціна, розміри й наступні кроки.' %}</p>
+                <h2>{% trans 'Для кого створюємо?' %}</h2>
+                <p>{% trans 'Ваша ідея — особлива річ. Оберіть, для кого її створимо.' %}</p>
               </div>
-              <div class="cp-option-grid cp-option-grid--two" data-mode-list>
+              <div class="cp-option-grid cp-purpose-grid" data-mode-list role="group" aria-label="{% trans 'Для кого створюємо?' %}">
                 {% for item in custom_print_config.modes %}
-                  <button type="button" class="cp-option-card" data-choice-value="{{ item.value }}">
-                    <small>{% trans 'Формат' %}</small>
-                    <strong>{{ item.label }}</strong>
-                    <span>{{ item.hint }}</span>
+                  <button type="button" class="cp-option-card cp-purpose-card cp-purpose-card--{{ item.value }}" data-choice-value="{{ item.value }}" aria-pressed="false">
+                    <span class="cp-purpose-icon" aria-hidden="true">
+                      {% if item.value == 'gift' %}
+                        <span class="cp-gift-box"><span class="cp-gift-box-body"></span><span class="cp-gift-box-lid"><span class="cp-gift-box-bow"></span></span></span>
+                      {% elif item.value == 'brand' %}
+                        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor"><circle cx="16" cy="9" r="4"/><path d="M9 27v-5a7 7 0 0 1 14 0v5M6 12a3 3 0 1 0 0-6M26 12a3 3 0 1 1 0-6M3 24v-5a5 5 0 0 1 4-5M29 24v-5a5 5 0 0 0-4-5" stroke-linecap="round"/></svg>
+                      {% else %}
+                        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor"><path d="m10 5-7 4 3 7 4-2v13h12V14l4 2 3-7-7-4c-2 4-10 4-12 0Z" stroke-linejoin="round"/><path d="m13 16 2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      {% endif %}
+                    </span>
+                    <span class="cp-purpose-copy">
+                      <small>{% if item.value == 'gift' %}{% trans 'Комусь особливому' %}{% elif item.value == 'brand' %}{% trans 'Спільна ідея. Більший масштаб.' %}{% else %}{% trans 'Мій стиль. Моя ідея.' %}{% endif %}</small>
+                      <strong>{{ item.label }}</strong>
+                      <span>{{ item.hint }}</span>
+                      {% if item.value == 'gift' %}<span class="cp-purpose-pack">{% trans 'Упаковка' %} +{{ custom_print_config.gift_service.price }} {% trans 'грн' %} · {% trans 'можна вимкнути' %}</span>{% endif %}
+                    </span>
+                    <span class="cp-purpose-arrow" aria-hidden="true">›</span>
                   </button>
                 {% endfor %}
               </div>
+              <p class="cp-purpose-caption">{% trans 'Для подарунка: упаковка' %} +{{ custom_print_config.gift_service.price }} {% trans 'грн' %}. {% trans 'Можна вимкнути перед оформленням.' %}</p>
               <div class="cp-brand-brief" data-brand-brief hidden>
                 <div class="cp-brand-brief-head">
                   <strong>{% trans 'Один бриф — і менеджер підхопить далі' %}</strong>
                   <span>{% trans 'Ціни, типи виробів і кількість для брендів узгоджуються індивідуально. Заповніть головне — решту менеджер уточнить у розмові.' %}</span>
                 </div>
                 <div class="cp-brand-field-grid">
-                  <label class="cp-field"><span>{% trans 'Бренд / компанія / магазин' %} <b aria-hidden="true">*</b></span><input type="text" data-brand-intro-name placeholder="{% trans 'Например, Northline Studio' %}"></label>
+                  <label class="cp-field"><span>{% trans 'Команда / підрозділ / організація' %} <b aria-hidden="true">*</b></span><input type="text" data-brand-intro-name placeholder="{% trans 'Например, Northline Studio' %}"></label>
                   <label class="cp-field"><span>{% trans 'Хто буде на звʼязку' %} <b aria-hidden="true">*</b></span><input type="text" data-brand-contact-person placeholder="{% trans 'Імʼя та прізвище' %}"></label>
                 </div>
                 <div class="cp-brand-field-grid cp-brand-field-grid--contact">
@@ -309,7 +324,7 @@
                   <label class="cp-field"><span>{% trans 'Контакт' %} <b aria-hidden="true">*</b></span><input type="text" data-brand-contact-value placeholder="{% trans '@username або +380...' %}"></label>
                 </div>
                 <div class="cp-brand-field-grid">
-                  <label class="cp-field"><span>{% trans 'Сфера / формат' %}</span><select data-brand-business-type><option value="brand">Бренд одягу</option><option value="team">Команда або подія</option><option value="store">Магазин</option><option value="drop_shipper">Дропшипінг</option><option value="other">Інше</option></select></label>
+                  <label class="cp-field"><span>{% trans 'Сфера / формат' %}</span><select data-brand-business-type><option value="brand">Бренд одягу</option><option value="team">Команда / бригада / підрозділ</option><option value="company">Компанія / корпоративний мерч</option><option value="partner">Партнерство / спільний тираж</option><option value="store">Магазин</option><option value="drop_shipper">Дропшипінг</option><option value="other">Інше</option></select></label>
                   <label class="cp-field"><span>{% trans 'Орієнтовний тираж' %}</span><input type="number" min="1" inputmode="numeric" data-brand-quantity placeholder="{% trans 'Наприклад, 32' %}"></label>
                 </div>
                 <div class="cp-field">
@@ -726,6 +741,7 @@
                 <p>{% trans 'Додамо крафт-пакування, листівку й приберемо цінники.' %}</p>
               </div>
 
+              <p class="cp-gift-intent-note" data-gift-intent-note data-disabled-text="{% trans 'Створюємо на подарунок. Додаткову подарункову упаковку вимкнено.' %}" hidden>{% trans 'Створюємо на подарунок. Упаковку вже додано до розрахунку; ви можете вимкнути її нижче.' %}</p>
               <button type="button" class="cp-addon-card cp-addon-card--gift" data-gift-toggle data-price-modifier="{{ custom_print_config.gift_service.price }}" aria-pressed="false">
                 <span class="cp-addon-card-icon" aria-hidden="true">
                   <svg viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1175,6 +1191,15 @@
     </div>
   </div>
 </div>
+<div class="cp-gift-reveal" data-gift-reveal hidden aria-hidden="true">
+  <div class="cp-gift-reveal-scene">
+    <span class="cp-gift-reveal-glow"></span>
+    <img class="cp-gift-reveal-logo" src="{% static 'img/logo.svg' %}" alt="" width="74" height="81" loading="eager" decoding="async">
+    <span class="cp-gift-box"><span class="cp-gift-box-body"></span><span class="cp-gift-box-lid"><span class="cp-gift-box-bow"></span></span></span>
+    <i class="cp-gift-reveal-spark"></i><i class="cp-gift-reveal-spark"></i><i class="cp-gift-reveal-spark"></i><i class="cp-gift-reveal-spark"></i>
+  </div>
+  <p class="cp-gift-reveal-caption">{% trans 'Особливий подарунок починається з ідеї' %}</p>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -1186,6 +1211,7 @@
   <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20260719-responsive-v2" defer></script>
   <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260726-dialog-focus-v3" defer></script>
   <script src="{% static 'js/custom-print-mobile-hero.js' %}?v=20261002-mobile-hero-v1" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261002-mobile-hero-v1" defer></script>
+  <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-gift-v1" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-gift-v1" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

@@ -13,6 +13,7 @@ from storefront.custom_print_config import (
     ADDON_LABELS,
     FABRIC_LABELS,
     FIT_LABELS,
+    ORDER_PURPOSE_LABELS,
     PRODUCT_LABELS,
     SERVICE_LABELS,
     SIZE_GRID,
@@ -20,6 +21,7 @@ from storefront.custom_print_config import (
     TRIAGE_LABELS,
     ZONE_LABELS,
     build_placement_specs,
+    normalize_order_purpose,
     resolve_color_label,
     resolve_fabric_badge,
     resolve_fabric_label,
@@ -98,7 +100,7 @@ def _format_placement_descriptor(spec: dict, *, include_text: bool) -> str:
         parts.append("текст" if spec.get("mode") == "full_text" else "A6")
     if include_text and spec.get("text"):
         parts.append(str(spec["text"]))
-    return " · ".join(part for part in parts if part)
+    return " · ".join(str(part) for part in parts if part)
 
 
 def _placement_descriptor_by_key(lead) -> dict[str, str]:
@@ -490,6 +492,22 @@ def _sizes_display(lead) -> str:
     return ""
 
 
+def _lead_order_purpose(lead) -> str:
+    draft = getattr(lead, "config_draft_json", None) or {}
+    draft = draft if isinstance(draft, dict) else {}
+    return normalize_order_purpose(
+        draft.get("order_purpose"),
+        mode=draft.get("mode") or getattr(lead, "client_kind", "personal"),
+    )
+
+
+def _gift_details(order: dict) -> tuple[bool, str]:
+    gift_payload = order.get("gift")
+    if isinstance(gift_payload, dict):
+        return bool(gift_payload.get("enabled")), str(gift_payload.get("text") or "").strip()
+    return bool(gift_payload), str(order.get("gift_text") or "").strip()
+
+
 def _format_quantity_sizes_block(lead) -> list[str]:
     rows = [_bold("Кількість", f"{lead.quantity} шт")]
     if getattr(lead, "product_type", "") == "customer_garment":
@@ -514,19 +532,15 @@ def _format_quantity_sizes_block(lead) -> list[str]:
     draft = getattr(lead, "config_draft_json", None) or {}
     order = draft.get("order") if isinstance(draft, dict) else {}
     order = order if isinstance(order, dict) else {}
-    gift_payload = order.get("gift")
-    if isinstance(gift_payload, dict):
-        gift_enabled = bool(gift_payload.get("enabled"))
-        gift_text = str(gift_payload.get("text") or "").strip()
-    else:
-        gift_enabled = bool(gift_payload)
-        gift_text = str(order.get("gift_text") or "").strip()
+    gift_enabled, gift_text = _gift_details(order)
     if gift_enabled:
-        rows.append("• 🎁 <b>Подарунок:</b> так")
+        rows.append("• 🎁 <b>Подарункова упаковка:</b> так")
         if gift_text:
             rows.append(f"• <b>Текст для подарунка:</b>\n<blockquote>{escape(gift_text[:1000])}</blockquote>")
         else:
             rows.append("• <b>Текст для подарунка:</b> не вказано")
+    elif _lead_order_purpose(lead) == "gift":
+        rows.append("• <b>Подарункова упаковка:</b> ні")
     return rows
 
 
@@ -598,7 +612,7 @@ def _format_product_block(lead) -> list[str]:
         )
 
     if getattr(lead, "add_ons", None):
-        mapped_addons = [ADDON_LABELS.get(a, a) for a in lead.add_ons]
+        mapped_addons = [str(ADDON_LABELS.get(a, a)) for a in lead.add_ons]
         if mapped_addons:
             rows.append(_bold("Доповнення", ", ".join(mapped_addons)))
     if getattr(lead, "garment_note", ""):
@@ -744,6 +758,7 @@ def _build_lead_message(lead, *, header_emoji: str, header_title: str, intro_lin
         SECTION_DIVIDER,
         _section_header("👤", "Клієнт"),
         *_format_contact_block(lead),
+        _bold("Призначення замовлення", ORDER_PURPOSE_LABELS[_lead_order_purpose(lead)]),
         SECTION_DIVIDER,
         _section_header("👕", "Виріб"),
         *_format_product_block(lead),
@@ -812,6 +827,7 @@ def _build_safe_exit_message(snapshot: dict, lead=None) -> str:
     order = snapshot.get("order") or {}
     ui = snapshot.get("ui") or {}
     contact = snapshot.get("contact") or {}
+    order_purpose = normalize_order_purpose(snapshot.get("order_purpose"), mode=snapshot.get("mode"))
     channel = (contact.get("channel") or "").strip()
     channel_label = {
         "telegram": "Telegram",
@@ -833,6 +849,7 @@ def _build_safe_exit_message(snapshot: dict, lead=None) -> str:
         _bold("Контакт", (contact.get("value") or "").strip() or "—"),
         "",
         _section_header("👕", "Замовлення"),
+        _bold("Призначення замовлення", ORDER_PURPOSE_LABELS[order_purpose]),
         _bold("Виріб", _snapshot_product_label(snapshot)),
         _bold("Послуга", SERVICE_LABELS.get(artwork.get("service_kind"), artwork.get("service_kind") or "—")),
         _bold("Зони", _snapshot_placements_text(snapshot)),
@@ -851,9 +868,12 @@ def _build_safe_exit_message(snapshot: dict, lead=None) -> str:
         preview_label = _preview_render_color_label(preview_value)
         parts.append(_bold("На сцені показано", preview_label))
 
-    if order.get("gift"):
+    gift_enabled, _ = _gift_details(order)
+    if gift_enabled:
         parts.append("")
-        parts.append("🎁 <b>Подарунок:</b> так")
+        parts.append("🎁 <b>Подарункова упаковка:</b> так")
+    elif order_purpose == "gift":
+        parts.append(_bold("Подарункова упаковка", "ні"))
 
     if lead is not None:
         parts.append("")
@@ -873,7 +893,7 @@ def _build_safe_exit_message(snapshot: dict, lead=None) -> str:
 def _snapshot_product_label(snapshot: dict) -> str:
     product = snapshot.get("product") or {}
     product_type = product.get("type") or "hoodie"
-    base = PRODUCT_LABELS.get(product_type, product_type)
+    base = str(PRODUCT_LABELS.get(product_type, product_type))
     details = []
     fit = (product.get("fit") or "").strip()
     fabric = (product.get("fabric") or "").strip()
@@ -888,7 +908,7 @@ def _snapshot_product_label(snapshot: dict) -> str:
             details.append(color_info["label"])
     if not details:
         return base
-    return f"{base} · {' / '.join(filter(None, details))}"
+    return f"{base} · {' / '.join(str(detail) for detail in details if detail)}"
 
 
 def _snapshot_placements_text(snapshot: dict) -> str:
@@ -908,17 +928,17 @@ def _snapshot_placements_text(snapshot: dict) -> str:
                 label = f"{label} · {'текст' if spec.get('mode') == 'full_text' else 'A6'}"
             if spec.get("text"):
                 label = f"{label} ({spec['text']})"
-            items.append(label)
+            items.append(str(label))
         parts.append(", ".join(items))
     else:
-        zones = [ZONE_LABELS.get(zone, zone) for zone in (print_payload.get("zones") or [])]
+        zones = [str(ZONE_LABELS.get(zone, zone)) for zone in (print_payload.get("zones") or [])]
         if zones:
             parts.append(", ".join(zones))
     placement_note = (print_payload.get("placement_note") or "").strip()
     if placement_note:
         parts.append(f"Примітка: {placement_note}")
 
-    mapped_addons = [ADDON_LABELS.get(a, a) for a in add_ons]
+    mapped_addons = [str(ADDON_LABELS.get(a, a)) for a in add_ons]
     if mapped_addons:
         parts.append(f"Add-ons: {', '.join(mapped_addons)}")
     return " | ".join(parts) or "—"

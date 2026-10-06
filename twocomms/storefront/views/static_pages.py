@@ -1670,7 +1670,7 @@ def _build_custom_cart_session_item(lead) -> dict:
     raw_add_ons = list(print_payload.get("add_ons") or [])
     add_on_labels = []
     for add_on in raw_add_ons:
-        label = ADDON_LABELS.get(add_on, add_on)
+        label = str(ADDON_LABELS.get(add_on, add_on))
         if label and label not in add_on_labels:
             add_on_labels.append(label)
 
@@ -1680,12 +1680,12 @@ def _build_custom_cart_session_item(lead) -> dict:
             if not isinstance(spec, dict):
                 continue
             placement_key = spec.get("placement_key") or spec.get("zone")
-            label = spec.get("label") or ZONE_LABELS.get(placement_key, placement_key or "")
+            label = str(spec.get("label") or ZONE_LABELS.get(placement_key, placement_key or ""))
             if label and label not in zone_labels:
                 zone_labels.append(label)
     else:
         for zone in (print_payload.get("zones") or lead.placements or []):
-            label = ZONE_LABELS.get(zone, zone)
+            label = str(ZONE_LABELS.get(zone, zone))
             if label and label not in zone_labels:
                 zone_labels.append(label)
 
@@ -1694,7 +1694,7 @@ def _build_custom_cart_session_item(lead) -> dict:
         "lead_number": getattr(lead, "lead_number", "") or f"CP-{lead.pk}",
         "label": compute_cart_label(snapshot),
         "product_type": product_payload.get("type") or lead.product_type,
-        "product_label": PRODUCT_LABELS.get(product_payload.get("type") or lead.product_type, ""),
+        "product_label": str(PRODUCT_LABELS.get(product_payload.get("type") or lead.product_type, "")),
         "fit": product_payload.get("fit") or lead.fit or "",
         "fabric": product_payload.get("fabric") or lead.fabric or "",
         "color": product_payload.get("color") or lead.color_choice or "",
@@ -1711,6 +1711,7 @@ def _build_custom_cart_session_item(lead) -> dict:
         "final_total": str(final_total.quantize(Decimal("0.01"))),
         "b2b_discount_per_unit": pricing.get("b2b_discount_per_unit") or 0,
         "mode": snapshot.get("mode") or lead.client_kind or "personal",
+        "order_purpose": snapshot.get("order_purpose") or ("organization" if lead.client_kind == "brand" else "personal"),
         "service_kind": artwork_payload.get("service_kind") or lead.service_kind or "",
         "file_triage_status": artwork_payload.get("triage_status") or lead.file_triage_status or "",
         "add_ons": raw_add_ons,

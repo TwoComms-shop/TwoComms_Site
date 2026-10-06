@@ -192,17 +192,29 @@ QUICK_START_MODES = [
     },
 ]
 
+ORDER_PURPOSE_LABELS = {
+    "personal": _("Для себе"),
+    "gift": _("На подарунок"),
+    "organization": _("Для команди чи організації"),
+}
+
 CLIENT_MODES = [
     {
         "value": "personal",
-        "label": _("Для себе"),
-        "hint": _("Один виріб або невелика серія без зайвої бюрократії."),
+        "label": ORDER_PURPOSE_LABELS["personal"],
+        "hint": _("Ваш стиль, улюблений принт і річ, якої більше ні в кого немає."),
         "icon": "user",
     },
     {
+        "value": "gift",
+        "label": ORDER_PURPOSE_LABELS["gift"],
+        "hint": _("Особлива річ для особливої людини. Створіть щось зі змістом."),
+        "icon": "gift",
+    },
+    {
         "value": "brand",
-        "label": _("Для команди / бренду"),
-        "hint": _("Від 8 штук — кожен наступний рівень вигідніший. Фінальні умови менеджер прорахує індивідуально."),
+        "label": ORDER_PURPOSE_LABELS["organization"],
+        "hint": _("Бригади й підрозділи, бренди, компанії, корпоративний мерч і партнери."),
         "icon": "brand",
     },
 ]
@@ -825,7 +837,7 @@ def resolve_fabric_label(product_type: str, fit_value: str, fabric_value: str) -
             label = str(fabric_def.get("label") or "").strip()
             if label:
                 return label
-    return FABRIC_LABELS.get(fabric_value, fabric_value)
+    return str(FABRIC_LABELS.get(fabric_value, fabric_value))
 
 
 def resolve_fit_label(product_type: str, fit_value: str) -> str:
@@ -838,7 +850,7 @@ def resolve_fit_label(product_type: str, fit_value: str) -> str:
             label = str(fit_def.get("label") or "").strip()
             if label:
                 return label
-    return FIT_LABELS.get(fit_value, fit_value)
+    return str(FIT_LABELS.get(fit_value, fit_value))
 
 
 def resolve_lead_display_labels(lead) -> dict:
@@ -1632,7 +1644,7 @@ def build_placement_specs(snapshot: dict) -> list[dict]:
         spec = {
             "zone": zone,
             "placement_key": entry.get("placement_key") or zone,
-            "label": entry.get("label") or ZONE_LABELS.get(zone, zone),
+            "label": str(entry.get("label") or ZONE_LABELS.get(zone, zone)),
             "variant": "standard" if expanded_index == 0 and zone in {"front", "back"} else "estimate",
             "is_free": expanded_index == 0,
             "format": "standard" if zone in {"front", "back"} else "custom",
@@ -1676,6 +1688,13 @@ def build_placement_specs(snapshot: dict) -> list[dict]:
     return specs
 
 
+def normalize_order_purpose(raw_purpose, *, mode: str = "personal") -> str:
+    purpose = str(raw_purpose or "").strip()
+    if purpose in ORDER_PURPOSE_LABELS:
+        return purpose
+    return "organization" if mode == "brand" else "personal"
+
+
 def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
     raw_snapshot = raw_snapshot or {}
 
@@ -1686,6 +1705,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
     mode = (raw_snapshot.get("mode") or "personal").strip()
     if mode not in {"personal", "brand"}:
         mode = "personal"
+    order_purpose = normalize_order_purpose(raw_snapshot.get("order_purpose"), mode=mode)
 
     product_payload = raw_snapshot.get("product") or {}
     product_type = (product_payload.get("type") or "hoodie").strip()
@@ -1766,8 +1786,8 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             elif zone == "hem":
                 side = str(raw_options.get("side") or "").strip()
                 normalized_options["side"] = side if side in SPECIAL_PLACEMENTS["hem"]["sides"] else ""
-                mode = str(raw_options.get("mode") or "A6").strip()
-                normalized_options["mode"] = mode if mode in SPECIAL_PLACEMENTS["hem"]["modes"] else "A6"
+                placement_mode = str(raw_options.get("mode") or "A6").strip()
+                normalized_options["mode"] = placement_mode if placement_mode in SPECIAL_PLACEMENTS["hem"]["modes"] else "A6"
                 normalized_options["text"] = (
                     str(raw_options.get("text") or "").strip()[:120]
                     if normalized_options["mode"] == "text"
@@ -1788,10 +1808,10 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
                 normalized_options["left_enabled"] = left_enabled
                 normalized_options["right_enabled"] = right_enabled
                 for side in ("left", "right"):
-                    mode = str(raw_options.get(f"{side}_mode") or SLEEVE_MODE_DEFAULT).strip()
-                    if mode not in allowed_sleeve_modes:
-                        mode = SLEEVE_MODE_DEFAULT
-                    normalized_options[f"{side}_mode"] = mode
+                    placement_mode = str(raw_options.get(f"{side}_mode") or SLEEVE_MODE_DEFAULT).strip()
+                    if placement_mode not in allowed_sleeve_modes:
+                        placement_mode = SLEEVE_MODE_DEFAULT
+                    normalized_options[f"{side}_mode"] = placement_mode
                     normalized_options[f"{side}_text"] = str(raw_options.get(f"{side}_text") or "").strip()[:120]
                     scene_preview = raw_options.get(f"{side}_scene_preview")
                     if isinstance(scene_preview, dict) and scene_preview:
@@ -1912,6 +1932,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
         "submission_type": submission_type,
         "quick_start_mode": quick_start_mode,
         "mode": mode,
+        "order_purpose": order_purpose,
         "starter_style": str(raw_snapshot.get("starter_style") or "").strip(),
         "product": {
             "type": product_type,
@@ -1984,7 +2005,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
 
 def compute_cart_label(snapshot: dict) -> str:
     product_type = ((snapshot.get("product") or {}).get("type") or "hoodie").strip()
-    label = PRODUCT_LABELS.get(product_type, product_type or "Кастом")
-    zones = [ZONE_LABELS.get(z, z) for z in ((snapshot.get("print") or {}).get("zones") or [])]
+    label = str(PRODUCT_LABELS.get(product_type, product_type or "Кастом"))
+    zones = [str(ZONE_LABELS.get(z, z)) for z in ((snapshot.get("print") or {}).get("zones") or [])]
     suffix = f" · {', '.join(zones)}" if zones else ""
     return f"Кастом · {label}{suffix}"
