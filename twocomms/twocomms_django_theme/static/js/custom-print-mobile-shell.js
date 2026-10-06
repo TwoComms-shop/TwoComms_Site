@@ -1,5 +1,5 @@
 (function (global) {
-  function create({ root, mobileBar, onExit, onBack, onManager, onPreview }) {
+  function create({ root, mobileBar, onExit, onBack, onManager, onPreview, showMobileBar = () => true }) {
     const appbar = root.querySelector("[data-studio-appbar]");
     const exitButton = root.querySelector("[data-studio-exit]");
     const backButton = root.querySelector("[data-studio-back]");
@@ -19,7 +19,7 @@
       root.classList.toggle("is-studio-active", active);
       document.body.classList.toggle("cp-studio-active", active);
       if (appbar) appbar.hidden = !active;
-      if (mobileBar) mobileBar.hidden = !active;
+      if (mobileBar) mobileBar.hidden = !active || !showMobileBar();
     }
 
     function update(index, total = 8) {

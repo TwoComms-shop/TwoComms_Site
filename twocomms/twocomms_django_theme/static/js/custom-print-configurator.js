@@ -66,7 +66,7 @@
 
   const STATE = createState();
   const purposeTools = globalThis.CustomPrintPurpose;
-  const giftReveal = purposeTools?.createReveal(document.querySelector("[data-gift-reveal]"));
+  const giftReveal = purposeTools?.createReveal(root.querySelector('[data-mode-list] [data-choice-value="gift"]'));
   let purposeSelectionPending = false;
   const filesByPlacement = new Map(); // placement_key -> File[]
   let garmentPhotoFile = null;
@@ -237,6 +237,7 @@
   const mobileShell = globalThis.CustomPrintMobileShell?.create({
     root,
     mobileBar: dom.mobileBar,
+    showMobileBar: () => STATE.ui.current_step !== "mode",
     onExit: exitStudio,
     onBack: navigateBack,
     onManager: openManagerDialog,
@@ -300,6 +301,7 @@
         value: "",
       },
       ui: {
+        brand_brief_open: false,
         current_step: "mode",
         done_steps: new Set(),
         stage_view: "front",
@@ -455,7 +457,8 @@
     studioManuallyExited = false;
     ensureFlowStarted(trigger);
     mobileShell?.setActive(true);
-    setActiveStep(STATE.ui.current_step || "mode", { silent: true });
+    if (trigger === "start_button") STATE.ui.brand_brief_open = false;
+    setActiveStep(trigger === "start_button" ? "mode" : (STATE.ui.current_step || "mode"), { silent: true });
     scrollToStudioTarget(document.getElementById(`cp-step-${STATE.ui.current_step || "mode"}`));
   }
 
@@ -464,6 +467,7 @@
     studioManuallyExited = true;
     flushPersistDraft();
     mobileShell?.setActive(false);
+    updateFlowPhase();
     // Removing app mode restores the global nav and changes the page height.
     // Wait for that reflow before returning to the page entry point; otherwise
     // iOS-sized viewports can stop halfway through the hero.
@@ -494,6 +498,11 @@
   function navigateBack() {
     const index = getStepIndex(STATE.ui.current_step);
     if (index <= 0) {
+      if (STATE.ui.brand_brief_open) {
+        STATE.ui.brand_brief_open = false;
+        setActiveStep("mode", { silent: true });
+        return;
+      }
       exitStudio();
       return;
     }
@@ -657,7 +666,7 @@
   }
 
   function isLobbyPhase() {
-    return !STATE.mode && STATE.ui.current_step === "mode";
+    return STATE.ui.current_step === "mode";
   }
 
   function getStepIndex(stepKey) {
@@ -1219,8 +1228,11 @@
         else if (previousPurpose === "gift") STATE.order.gift_enabled = false;
         syncGiftUi();
         normalizeClientState();
+        STATE.ui.brand_brief_open = STATE.mode === "brand";
         renderModeChipsActive();
         updateBrandFieldsVisibility();
+        const selectionStatus = root.querySelector("[data-purpose-selection-status]");
+        if (selectionStatus) selectionStatus.textContent = btn.dataset.selectionMessage || "";
         if (STATE.mode === "brand") {
           setActiveStep("mode", { silent: true });
           schedulePersistDraft();
@@ -3319,7 +3331,12 @@
       resetStatus();
       clearValidationTargets();
     }
+    if (key !== "mode" || !opts.silent) STATE.ui.brand_brief_open = false;
     STATE.ui.current_step = key;
+    if (key === "mode") {
+      const viewport = root.querySelector("[data-step-viewport]");
+      if (viewport) viewport.scrollTop = 0;
+    }
     const currentIndex = getStepIndex(key);
     document.querySelectorAll("[data-step]").forEach((section) => {
       const stepKey = section.dataset.step;
@@ -3568,6 +3585,7 @@
         done_steps: Array.from(STATE.ui.done_steps || []).sort(),
         mode: STATE.mode,
         order_purpose: STATE.order_purpose,
+        brand_brief_open: STATE.ui.brand_brief_open,
       },
       content: {
         product: STATE.product,
@@ -3613,6 +3631,9 @@
     const contentDirty = !lastRenderSignature || nextSignature.content !== lastRenderSignature.content;
     const navigationDirty = !lastRenderSignature || nextSignature.navigation !== lastRenderSignature.navigation;
     lastRenderSignature = nextSignature;
+    // Shell visibility must be synchronized even when cached content is unchanged.
+    updateFlowPhase();
+    renderMobileBottomBar();
     if (!dirty.size) return;
     syncGiftUi();
     if (previewDirty) syncPreviewRender();
@@ -3650,6 +3671,10 @@
     const lobby = isLobbyPhase();
     const stageVisible = !lobby && STAGE_VISIBLE_AFTER.has(STATE.ui.current_step);
     root.dataset.flowPhase = lobby ? "lobby" : "studio";
+    root.dataset.purposeView = lobby ? (STATE.ui.brand_brief_open ? "brief" : "chooser") : "";
+    const active = root.classList.contains("is-studio-active");
+    document.body.classList.toggle("cp-purpose-step", active && lobby);
+    document.body.classList.toggle("cp-purpose-active", active && lobby && !STATE.ui.brand_brief_open);
     if (dom.shell) dom.shell.dataset.flowPhase = lobby ? "lobby" : "studio";
     if (dom.progressShell) dom.progressShell.hidden = lobby;
     if (dom.workbench) dom.workbench.classList.toggle("is-lobby-mode", !stageVisible);
@@ -3793,8 +3818,8 @@
 
   function updateBrandFieldsVisibility() {
     if (dom.brandFields) dom.brandFields.hidden = STATE.mode !== "brand";
-    if (dom.brandBrief) dom.brandBrief.hidden = STATE.mode !== "brand";
-    if (dom.personalManagerCta) dom.personalManagerCta.hidden = STATE.mode === "brand";
+    if (dom.brandBrief) dom.brandBrief.hidden = STATE.mode !== "brand" || !STATE.ui.brand_brief_open;
+    if (dom.personalManagerCta) dom.personalManagerCta.hidden = !!STATE.ui.brand_brief_open;
     if (STATE.mode === "brand" && dom.brandIntroName && !dom.brandIntroName.value && STATE.notes.brand_name) {
       dom.brandIntroName.value = STATE.notes.brand_name;
     }
@@ -4168,7 +4193,7 @@
     const lobby = isLobbyPhase();
     const stageVisible = !lobby && STAGE_VISIBLE_AFTER.has(stepKey);
     // Bar показуємо тільки після того як обрано режим (вийшли з lobby).
-    if (lobby && !STATE.product.type) {
+    if (stepKey === "mode" || !root.classList.contains("is-studio-active")) {
       dom.mobileBar.hidden = true;
       return;
     }
@@ -4795,6 +4820,7 @@
         contact: STATE.contact,
         ui: {
           current_step: STATE.ui.current_step,
+          brand_brief_open: STATE.ui.brand_brief_open,
           done_steps: Array.from(STATE.ui.done_steps),
           stage_view: STATE.ui.stage_view,
           preview_render: STATE.ui.preview_render,
@@ -4884,6 +4910,7 @@
       if (draft.contact) Object.assign(STATE.contact, draft.contact);
       if (draft.ui) {
         STATE.ui.current_step = draft.ui.current_step || "mode";
+        STATE.ui.brand_brief_open = draft.ui.brand_brief_open ?? (STATE.mode === "brand" && STATE.ui.current_step === "mode");
         STATE.ui.done_steps = new Set(draft.ui.done_steps || []);
         STATE.ui.stage_view = draft.ui.stage_view || "front";
         STATE.ui.preview_render = draft.ui.preview_render || null;

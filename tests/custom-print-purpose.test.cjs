@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const timers = new Map();
 let nextTimer = 0, reduced = false, motionChange, pagehide;
-const context = { document: { body: { appendChild(el) { el.portaled = true; } } },
+const context = {
  setTimeout(fn, ms) { const id = ++nextTimer; timers.set(id, {fn, ms}); return id; },
  clearTimeout(id) { timers.delete(id); },
  matchMedia() { return { matches: reduced, addEventListener(_, fn) { motionChange = fn; } }; },
@@ -19,26 +19,29 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '../twocomms/twocomms_djang
  assert.equal(tools.normalize('gift','personal'),'gift');
  assert.equal(tools.normalize('gift','brand'),'organization');
  const classes=new Set();
- const el={hidden:true,offsetWidth:200,classList:{add:x=>classes.add(x),remove:x=>classes.delete(x)}};
+ const el={hidden:false,offsetWidth:200,classList:{add:x=>classes.add(x),remove:x=>classes.delete(x)}};
  const reveal=tools.createReveal(el);
- assert.ok(el.portaled,'reveal must escape clipped studio');
+ assert.equal(el.portaled,undefined,'gift must stay on its button');
  const first=reveal.play();
- assert.equal(el.hidden,false);
- assert.equal([...timers.values()][0].ms,1080);
+ assert.ok(classes.has('is-gift-opening'));
+ assert.equal([...timers.values()][0].ms,2400);
  reveal.cancel();
  assert.equal(await first,false,'exit cancels transition');
- assert.equal(el.hidden,true);
+ assert.equal(el.hidden,false,'the purpose card must remain visible');
+ assert.equal(classes.has('is-gift-opening'),false);
  assert.equal(timers.size,0);
  const repeat=reveal.play();
  const newest=reveal.play();
  assert.equal(await repeat,false,'only latest reveal may advance');
  [...timers.values()][0].fn();
  assert.equal(await newest,true);
- assert.equal(el.hidden,true);
+ assert.equal(el.hidden,false,'the purpose card must remain visible');
+ assert.equal(classes.has('is-gift-opening'),false);
  reduced=true;
  assert.equal(await reveal.play(),true);
  assert.equal(timers.size,0,'reduced motion never waits');
- assert.equal(el.hidden,true);
+ assert.equal(el.hidden,false,'the purpose card must remain visible');
+ assert.equal(classes.has('is-gift-opening'),false);
  reduced=false;
  const preference=reveal.play();
  motionChange({matches:true});

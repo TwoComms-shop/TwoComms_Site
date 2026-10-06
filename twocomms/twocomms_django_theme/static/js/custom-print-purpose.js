@@ -11,16 +11,14 @@
 
   function createReveal(element) {
     let pending = null;
-    const duration = 1080;
-    if (element) document.body.appendChild(element);
+    const duration = 2400;
 
     function finish(completed) {
       if (!pending) return;
       const { resolve, timer } = pending;
       pending = null;
       global.clearTimeout(timer);
-      element.hidden = true;
-      element.classList.remove("is-playing");
+      element.classList.remove("is-gift-opening");
       resolve(completed);
     }
 
@@ -29,10 +27,9 @@
       if (!element || global.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
         return Promise.resolve(true);
       }
-      element.hidden = false;
       // Restart the CSS timeline only on an explicit gift selection.
       void element.offsetWidth;
-      element.classList.add("is-playing");
+      element.classList.add("is-gift-opening");
       return new Promise((resolve) => {
         pending = { resolve, timer: global.setTimeout(() => finish(true), duration) };
       });

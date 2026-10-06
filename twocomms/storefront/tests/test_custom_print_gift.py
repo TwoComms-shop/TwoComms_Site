@@ -34,10 +34,15 @@ class CustomPrintGiftFlowTests(TestCase):
         html = response.content.decode()
         self.assertLess(html.index('cp-purpose-card--personal'), html.index('cp-purpose-card--gift'))
         self.assertLess(html.index('cp-purpose-card--gift'), html.index('cp-purpose-card--brand'))
-        self.assertIn('custom-print-purpose.js?v=20261007-gift-v1', html)
-        self.assertIn('custom-print-purpose.css?v=20261007-gift-v1', html)
-        self.assertIn('data-gift-reveal', html)
-        self.assertIn('Бригади й підрозділи', html)
+        self.assertIn('custom-print-purpose.js?v=20261007-gift-card-v2', html)
+        self.assertIn('custom-print-purpose.css?v=20261007-gift-card-v2', html)
+        self.assertNotIn('data-gift-reveal', html)
+        self.assertIn('cp-gift-box-heart', html)
+        mode = html.split('id="cp-step-mode"', 1)[1].split('</section>', 1)[0]
+        self.assertNotIn('cp-purpose-pack', mode)
+        self.assertNotIn('cp-purpose-caption', mode)
+        self.assertNotIn('+100', mode)
+        self.assertIn('Бригади, підрозділи', html)
 
     @patch('storefront.views.static_pages.notify_new_custom_print_lead')
     def test_submitted_gift_reaches_manager_with_packaging_enabled(self, notify):

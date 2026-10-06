@@ -51,9 +51,11 @@ vm.createContext(context);
 const source = fs.readFileSync(path.join(__dirname, "../twocomms/twocomms_django_theme/static/js/custom-print-mobile-shell.js"), "utf8");
 vm.runInContext(source, context);
 
+let currentStep = "mode";
 const shell = context.CustomPrintMobileShell.create({
   root,
   mobileBar,
+  showMobileBar: () => currentStep !== "mode",
   onExit() {},
   onManager() {},
   onPreview() {},
@@ -63,10 +65,18 @@ assert.equal(appbar.parentNode, body, "top app bar must escape the page scroll c
 assert.equal(mobileBar.parentNode, body, "bottom action bar must escape the page scroll container");
 shell.setActive(true);
 assert.equal(appbar.hidden, false);
+assert.equal(mobileBar.hidden, true, "purpose selection must never show the bottom action");
+currentStep = "product";
+shell.setActive(true);
 assert.equal(mobileBar.hidden, false);
+currentStep = "mode";
+shell.setActive(true);
+assert.equal(mobileBar.hidden, true, "back to purpose hides the bar even with existing state");
 assert.equal(body.classList.contains("cp-studio-active"), true);
 shell.setActive(false);
 assert.equal(appbar.hidden, true);
 assert.equal(mobileBar.hidden, true);
 
+shell.setActive(true);
+assert.equal(mobileBar.hidden, true, "re-entry cannot resurrect the purpose CTA");
 console.log("custom print mobile shell contract: ok");
