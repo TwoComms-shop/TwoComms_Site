@@ -880,11 +880,22 @@
           <p class="tg-waybill-panel-caption">
             Якщо в замовленні є залишок до сплати, поле післяплати вже буде підготовлене автоматично.
           </p>
+          <div class="tg-waybill-meta-card" data-shipping-payment-ui="v1" style="margin-bottom:16px;">
+            <span>Умови доставки в замовленні</span>
+            <strong data-delivery-payment-label>{% if payment_snapshot.delivery_payment_requires_manual %}Умови доставки потребують звірки{% else %}{{ payment_snapshot.delivery_payment_label|default:'Доставку оплачує клієнт перевізнику' }}{% endif %}</strong>
+            <span data-delivery-payment-detail>{% if payment_snapshot.delivery_payment_requires_manual %}Перед створенням ТТН перевірте й збережіть умови доставки в замовленні.{% elif payment_snapshot.delivery_payment_mode == 'customer_prepaid' %}В оплату магазину включено {{ payment_snapshot.delivery_charge_amount }} грн за доставку. {% if payment_snapshot.delivery_prepaid %}Оплату доставки підтверджено.{% else %}Фактична оплата потребує перевірки.{% endif %}{% elif payment_snapshot.delivery_payment_mode == 'merchant_free' %}Для клієнта доставка безкоштовна. Витрати бере на себе TwoComms.{% else %}Клієнт оплачує перевізнику окремо; доставка не входить у платіж магазину.{% endif %}</span>
+          </div>
 
           <div class="tg-waybill-fields">
             <div class="tg-waybill-field">
               <label class="tg-waybill-label" for="id_payer_type">{{ form.payer_type.label }}</label>
-              {{ form.payer_type }}
+              <select id="id_payer_type" class="tg-waybill-select" disabled aria-describedby="deliveryPayerPolicyHelp" data-delivery-payer-display>
+                <option value=""{% if payment_snapshot.delivery_payment_requires_manual %} selected{% endif %}>Потребує звірки в замовленні</option>
+                <option value="Recipient"{% if not payment_snapshot.delivery_payment_requires_manual and payment_snapshot.delivery_payer_type != 'Sender' %} selected{% endif %}>Клієнт (одержувач)</option>
+                <option value="Sender"{% if payment_snapshot.delivery_payer_type == 'Sender' %} selected{% endif %}>TwoComms (відправник)</option>
+              </select>
+              <input type="hidden" name="payer_type" value="{% if not payment_snapshot.delivery_payment_requires_manual %}{{ payment_snapshot.delivery_payer_type|default:'Recipient' }}{% endif %}" data-delivery-payer-posted>
+              <p class="tg-waybill-panel-caption" id="deliveryPayerPolicyHelp">Платника визначено умовами замовлення. Щоб змінити його, спочатку збережіть і перевірте умови доставки в замовленні.</p>
               {% if form.payer_type.errors %}
                 <ul class="tg-waybill-errors">
                   {% for error in form.payer_type.errors %}
@@ -1007,6 +1018,18 @@
     if (lastStatus) {
       lastStatus.textContent = snapshot.payment_last_status || 'немає даних';
     }
+
+    const shippingLabel = document.querySelector('[data-delivery-payment-label]');
+    if (shippingLabel) shippingLabel.textContent = snapshot.delivery_payment_requires_manual ? 'Умови доставки потребують звірки' : snapshot.delivery_payment_label || 'Доставку оплачує клієнт перевізнику';
+    const shippingDetail = document.querySelector('[data-delivery-payment-detail]');
+    if (shippingDetail) shippingDetail.textContent = snapshot.delivery_payment_requires_manual ? 'Перед створенням ТТН перевірте й збережіть умови доставки в замовленні.' : snapshot.delivery_payment_mode === 'customer_prepaid'
+      ? `В оплату магазину включено ${snapshot.delivery_charge_amount || '0.00'} грн за доставку. ${snapshot.delivery_prepaid ? 'Оплату доставки підтверджено.' : 'Фактична оплата потребує перевірки.'}`
+      : snapshot.delivery_payment_mode === 'merchant_free' ? 'Для клієнта доставка безкоштовна. Витрати бере на себе TwoComms.'
+        : 'Клієнт оплачує перевізнику окремо; доставка не входить у платіж магазину.';
+    const shippingPayer = snapshot.delivery_payment_requires_manual ? '' : snapshot.delivery_payer_type === 'Sender' ? 'Sender' : 'Recipient';
+    [document.querySelector('[data-delivery-payer-display]'), document.querySelector('[data-delivery-payer-posted]')].forEach((field) => {
+      if (field) field.value = shippingPayer;
+    });
 
     maybeAutofill(declaredField, snapshot.declared_cost || '0.00');
     maybeAutofill(codField, snapshot.cod_amount || '0.00');

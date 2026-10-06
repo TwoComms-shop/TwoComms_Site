@@ -26,6 +26,12 @@ MIN_CONFIDENCE = 0.75
 FACT_KEYS = ("amount", "currency", "recipient_name", "recipient_iban", "payment_status",
              "date", "transaction_reference")
 ROLES = frozenset({"receipt", "product", "custom_reference", "other"})
+_SOURCE_FENCE_REASONS = frozenset({
+    "receipt_source_unavailable", "receipt_owner_unavailable", "receipt_reset_changed",
+    "receipt_episode_changed", "receipt_media_unavailable", "receipt_media_expired",
+    "receipt_media_lease_changed", "receipt_part_changed", "receipt_namespace_changed",
+    "receipt_source_changed", "receipt_inspection_not_persisted",
+})
 _DIAGNOSTIC_EXCEPTION_TYPES = frozenset({
     "CallAIAnalysisError", "TypeError", "ValueError", "KeyError", "AttributeError",
     "RuntimeError", "OSError", "TimeoutError", "ImportError", "ModuleNotFoundError",
@@ -382,7 +388,7 @@ def _parse_items(value, count):
 
 
 def _share_same_source_results(items):
-    """Repeated transport projections of one source use one observation."""
+    """Share exact observations without reviving a source that failed a fence."""
     by_source = {}
     for item in items:
         inspection = item.get("receipt_inspection")
@@ -395,7 +401,17 @@ def _share_same_source_results(items):
             continue
         key = tuple(binding.values())
         previous = by_source.get(key)
-        if previous is None or inspection.get("state") == "inspected":
+        failed_fence = (inspection.get("state") != "inspected"
+                        and isinstance(inspection.get("reason"), str)
+                        and inspection.get("reason") in _SOURCE_FENCE_REASONS)
+        previous_failed_fence = (previous is not None and previous.get("state") != "inspected"
+                                 and isinstance(previous.get("reason"), str)
+                                 and previous.get("reason") in _SOURCE_FENCE_REASONS)
+        # A failed reset/privacy/retention/binding check is monotonic for this
+        # consumer result, regardless of duplicate transport order. Successful
+        # cached OCR cannot overwrite it while results are being coalesced.
+        if (previous is None or failed_fence
+                or inspection.get("state") == "inspected" and not previous_failed_fence):
             by_source[key] = inspection
     for item in items:
         binding = _binding(item)

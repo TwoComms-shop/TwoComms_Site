@@ -153,6 +153,23 @@ class ReceiptInspectionTests(SimpleTestCase):
         self.assertEqual([item["receipt_facts"]["amount"] for item in result], ["970.00", "970.00"])
         self.assertEqual(result[0]["receipt_inspection"], result[1]["receipt_inspection"])
 
+    def test_cached_duplicate_source_fences_cannot_be_overwritten_by_inspected_sibling(self):
+        cached, _provider, _release = self.inspect()
+        for reason in ("receipt_media_expired", "receipt_reset_changed", "receipt_owner_unavailable",
+                       "receipt_namespace_changed"):
+            for ordering in ((True, reason), (reason, True)):
+                with self.subTest(reason=reason, ordering=ordering):
+                    duplicates = [deepcopy(cached[0]), deepcopy(cached[0])]
+                    with patch.object(receipts, "_source_allowed", side_effect=ordering), \
+                         patch("management.services.call_ai_analysis.gemini_generate_text") as provider:
+                        result = receipts.inspect_receipt_media(duplicates, allow_provider=False)
+                    provider.assert_not_called()
+                    for item in result:
+                        self.assertEqual(item["receipt_inspection"]["state"], "deferred")
+                        self.assertEqual(item["receipt_inspection"]["reason"], reason)
+                        self.assertNotIn("receipt_facts", item)
+                        self.assertIsNone(receipts.bound_receipt_inspection(item))
+
     def test_ineligible_changed_hash_cannot_restore_stale_cached_facts(self):
         result, _provider, _release = self.inspect()
         stale = {**result[0], "content_hash": "f" * 64, "inspection_eligible": False}

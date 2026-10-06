@@ -50,12 +50,14 @@ def _current_agreement_error(client, draft):
     recorded = draft.get('agreement')
     if not isinstance(recorded, dict):
         return 'conversation_agreement_draft_unproven'
-    for key in ('items', 'amounts', 'shipping', 'payment_instruction', 'packaging', 'evidence'):
+    for key in ('items', 'amounts', 'shipping', 'shipping_payment', 'payment_instruction', 'packaging', 'evidence'):
         if recorded.get(key) != agreement.get(key):
             return 'conversation_agreement_draft_changed'
     for key in ('items', 'merchandise_total', 'delivery_amount', 'payable_total'):
         if draft.get(key) != agreement.get(key):
             return 'conversation_agreement_draft_changed'
+    if 'shipping_payment' in draft and draft['shipping_payment'] != agreement.get('shipping_payment'):
+        return 'conversation_agreement_draft_changed'
     shipping = agreement.get('shipping') or {}
     delivery = draft.get('delivery') or {}
     from orders.nova_poshta_documents import normalize_checkout_phone
@@ -88,7 +90,7 @@ def _current_agreement_error(client, draft):
         *retained_rows,
         *[{**_row(source), 'provider_namespace': namespaces[source.pk]} for source in new_sources],
     ])
-    for key in ('items', 'amounts', 'shipping', 'payment_instruction', 'packaging'):
+    for key in ('items', 'amounts', 'shipping', 'shipping_payment', 'payment_instruction', 'packaging'):
         if reproduced.get(key) != agreement.get(key):
             return 'conversation_agreement_current_sources_changed'
     return ''
@@ -216,7 +218,7 @@ def _review_order_operation(review, *, actor=None, create=True):
     from orders.models import Order, OrderItem
     from orders.nova_poshta_documents import normalize_checkout_phone
     from orders.services.order_builder import assert_order_matches_commercial_contract
-    from storefront.views.manual_orders import _build_order_item, _collect_items, _review_delivery_contract
+    from storefront.views.manual_orders import _build_order_item, _collect_items, _review_delivery_contract, _review_shipping_policy, _legacy_delivery_alias, _assert_delivery_contract_compatible
 
     if create:
         from management.services.ig_payment_review import _lock_payment_review
@@ -253,6 +255,9 @@ def _review_order_operation(review, *, actor=None, create=True):
     agreement_error = _current_agreement_error(locked.client, draft)
     if agreement_error:
         return _completion(agreement_error)
+    shipping_policy = _review_shipping_policy(locked)
+    if shipping_policy.get('mode') == 'unknown':
+        return _completion('shipping_payment')
     delivery = draft.get('delivery') if isinstance(draft.get('delivery'), dict) else {}
     missing = []
     name = str(delivery.get('full_name') or '').strip()
@@ -264,7 +269,7 @@ def _review_order_operation(review, *, actor=None, create=True):
             missing.append(field)
     merchandise = _money(draft.get('merchandise_total') or draft.get('quoted_total'))
     payable = _money(draft.get('payable_total') or draft.get('quoted_total'))
-    raw_delivery = draft.get('delivery_amount') or draft.get('delivery_total') or '0'
+    raw_delivery = shipping_policy.get('customer_charge_amount') if shipping_policy else draft.get('delivery_amount') or draft.get('delivery_total') or '0'
     try:
         delivery_amount = Decimal(str(raw_delivery))
         if not delivery_amount.is_finite() or delivery_amount < 0:
@@ -379,7 +384,7 @@ def _review_order_operation(review, *, actor=None, create=True):
         return _completion('manager_actor_identity')
     audited_actor = actor or decision.actor or SimpleNamespace(pk=int(decision.actor_external_id))
     try:
-        shipping = _review_delivery_contract(locked, merchandise_total=merchandise, actor=audited_actor)
+        shipping = _review_delivery_contract(locked, merchandise_total=merchandise, actor=audited_actor, item_rows=items, agreement_verified=True)
     except ValueError:
         return _completion('delivery_amount_source')
     if locked.deal_id:
@@ -410,7 +415,8 @@ def _review_order_operation(review, *, actor=None, create=True):
         'manager_payment_currency': decision.currency,
         'effective_confirmed_amount': f'{Decimal(decision.confirmed_amount):.2f}',
         'negotiated_order_total': f'{payable:.2f}',
-        **({'instagram_delivery_contract': shipping} if shipping else {}),
+        **({'delivery_payment': shipping} if shipping else {}),
+        **({'instagram_delivery_contract': _legacy_delivery_alias(shipping)} if shipping and shipping.get('mode') == 'customer_prepaid' else {}),
     }
     fields = {'full_name': name[:200], 'phone': phone, 'city': city[:100], 'np_office': office[:200]}
     order, created = Order.objects.get_or_create(
@@ -426,8 +432,9 @@ def _review_order_operation(review, *, actor=None, create=True):
         try:
             assert_order_matches_commercial_contract(
                 order, expected_fields=fields, expected_items=items,
-                declared_total=merchandise, expected_delivery_contract=shipping,
+                declared_total=merchandise,
             )
+            _assert_delivery_contract_compatible(order, shipping)
         except ValueError:
             return _completion('episode_order_contract')
     else:

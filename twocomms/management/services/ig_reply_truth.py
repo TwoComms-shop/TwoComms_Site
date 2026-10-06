@@ -63,6 +63,10 @@ class ReplyTruthContext:
     audited_chosen_sizes: tuple[str, ...] = ()
     authorized_actions: tuple[AuthorizedAction, ...] = ()
     quoted_data: tuple[str, ...] = ()
+    # Seller agreement components authorize attributed conversation statements,
+    # never catalogue prices or payment settlement. Tuple: kind, amount,
+    # currency, source message ID, agreement authority.
+    conversation_amounts: tuple[tuple[str, str, str, int, str], ...] = ()
     # Future recruitment-policy integration must supply explicit source-backed
     # authority. Missing policy, customer text and model controls leave unknown.
     recruitment_status: Literal["unknown", "open", "closed"] = "unknown"
@@ -75,6 +79,38 @@ class ReplyTruthResult:
 
 
 _URL_RE = re.compile(r"https?://[^\s<>]+", re.I)
+_AGREEMENT_ATTRIBUTION_RE = re.compile(
+    r"домов\w*|узгод\w*|погод\w*|соглас\w*|договор\w*|\bagreed\b|\bagreement\b|as\s+quoted", re.I)
+_SELLER_QUOTE_ATTRIBUTION_RE = re.compile(
+    r"за\s+розрахун\w*\s+менеджер\w*|по\s+расч[её]т\w*\s+менеджер\w*|"
+    r"менеджер\w*\s+(?:порах\w*|розрах\w*|указ\w*|напис\w*)|"
+    r"(?:manager|seller)\s+(?:quoted|calculated)|as\s+quoted", re.I)
+_AGREEMENT_COMPONENT_RE = re.compile(
+    r"(?P<payable>разом|всього|итого|загалом|total|до\s+сплати|к\s+оплате|payable)|"
+    r"(?P<delivery>достав\w*|shipping|delivery)|"
+    r"(?P<merchandise>футбол\w*|худі|худи|товар\w*|t[- ]?shirt\w*|hoodie\w*|merchandise|goods|product\w*|item\w*)", re.I)
+
+
+def _agreed_amount_allowed(sentence, match, context):
+    agreed = bool(_AGREEMENT_ATTRIBUTION_RE.search(sentence))
+    quoted = bool(_SELLER_QUOTE_ATTRIBUTION_RE.search(sentence))
+    if not agreed and not quoted:
+        return False
+    prefix = sentence[:match.start()]
+    terms = list(_AGREEMENT_COMPONENT_RE.finditer(prefix))
+    kind = terms[-1].lastgroup if terms else "payable"
+    if re.search(r"=\s*$", prefix):
+        kind = "payable"
+    for row in context.conversation_amounts[:80]:
+        if (not isinstance(row, (tuple, list)) or len(row) != 5
+                or row[0] != kind or row[2] != _currency_code(match.group("currency"))
+                or type(row[3]) is not int or row[3] <= 0
+                or row[4] not in {"conversation_agreement", "seller_instruction"}
+                or row[4] == "seller_instruction" and not quoted):
+            continue
+        if _decimal(row[1]) == _decimal(match.group("amount")):
+            return True
+    return False
 _SENTENCE_BOUNDARY_RE = re.compile(
     r"(?<=[!?])\s+|(?<!\d)\.(?=\s|$)|\n+",
     re.U,
@@ -479,7 +515,7 @@ def validate_reply_truth(
                     _add(reasons, "unverified_discount")
             elif discount_negated:
                 continue
-            elif amount not in prices:
+            elif amount not in prices and not _agreed_amount_allowed(sentence, match, context):
                 _add(reasons, "unverified_price")
         for token in _CURRENCY_TOKEN_RE.findall(sentence):
             if _currency_code(token) not in allowed_currencies:

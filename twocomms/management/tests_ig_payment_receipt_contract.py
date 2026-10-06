@@ -722,6 +722,32 @@ class PaymentNotificationMaterialRevisionTests(_HumanStoreFixture):
             locked = _lock_payment_review(review)
             self.assertFalse(_payment_notification_scope_current(locked, _payment_notification_material(locked), strict_sources=True))
 
+    def test_native_sent_legacy_product_photo_keeps_source_proof_and_report_revision(self):
+        from management.models import InstagramBotMessage
+        from management.services.ig_conversation_agreement import _proof, _row
+        from management.services.ig_payment_review import _payment_notification_material, _payment_notification_scope_current, _payment_review_mutation, _lock_payment_review
+        legacy = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+            provider_namespace=self.namespace, role="model", source="revision_reply", status="done", send_state="sent",
+            text="Футболка біла L oversize TWOCOMMS SamplePrint42", mid="legacy-product-sent", provider_message_id="legacy-product-sent",
+            attachments=json.dumps(["https://twocomms.shop/media/products/synthetic-legacy.jpg"]), attachment_media=[])
+        InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+            provider_namespace=self.namespace, role="manager", source="echo", status="done",
+            text="1 футболка біла L oversize TWOCOMMS 1654", mid="legacy-product-offer", provider_message_id="legacy-product-offer")
+        self.inbound("Так")
+        review = self.observe()
+        self.assertEqual(review.evidence["order_draft"]["agreement"]["evidence"][str(legacy.pk)], _proof(_row(legacy)))
+        legacy_media = [item for item in review.evidence["media"] if item["message_id"] == legacy.pk]
+        self.assertTrue(legacy_media)
+        self.assertTrue(all(item["role"] not in {"receipt", "payment_candidate"} for item in legacy_media))
+        self.finish()
+        self.price(160)
+        review = self.observe()
+        self.assertEqual(self.notification().status, "pending")
+        self.assertTrue(self.notification().audit_events.filter(action="payment_material_revision").exists())
+        with _payment_review_mutation(review):
+            locked = _lock_payment_review(review)
+            self.assertTrue(_payment_notification_scope_current(locked, _payment_notification_material(locked), strict_sources=True))
+
     def test_unknown_sending_payloads_unchanged_and_latest_material_marked(self):
         for index, state in enumerate(("unknown", "sending")):
             with self.subTest(state=state):

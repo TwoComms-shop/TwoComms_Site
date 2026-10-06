@@ -800,6 +800,13 @@ def admin_order_payment_snapshots(request):
         'discount_amount',
         'payment_payload',
     )
+    orders = list(orders)
+    bound_delivery_orders = [order for order in orders if isinstance(order.payment_payload, dict)
+        and isinstance(order.payment_payload.get('delivery_payment'), dict)
+        and order.payment_payload['delivery_payment'].get('items_digest')]
+    if bound_delivery_orders:
+        from django.db.models import prefetch_related_objects
+        prefetch_related_objects(bound_delivery_orders, 'items')
     payload = {}
     for order in orders:
         snapshot = build_order_payment_snapshot(order)

@@ -116,6 +116,13 @@
     const timer=timers.find(t=>invoiceCountdown(t,now)),countdown=invoiceCountdown(timer,now);
     const paid=progress.paid===true,expired=!paid&&Boolean(countdown?.expired),issued=Boolean(countdown);
     const discussion=progress.discussion===true;
+    if(!paid&&progress.manager_review_pending===true){
+      const receipt=progress.receipt_received===true;
+      return {label:'Очікує перевірки менеджером',tone:'warning',expired,counts_known:receipt,
+        items:[{label:'Квитанція',state:receipt?'done':'todo',note:receipt?'Є квитанція з підтвердженого джерела; зарахування ще не перевірено.':'Наявність квитанції не підтверджено поточним джерелом.',evidence_refs:progress.receipt_evidence_refs||[]},
+          {label:'Перевірка менеджером',state:'next',note:'Менеджер має звірити доказ і прийняти рішення.',evidence_refs:progress.review_evidence_refs||[]},
+          {label:'Оплачено',state:'todo',note:'Квитанція та очікування перевірки не підтверджують зарахування.'}]};
+    }
     return {label:paid?'Оплачено':expired?'Строк минув · оплату не підтверджено':issued?'Очікуємо оплату':discussion?'Обговорюємо оплату':'Посилання → очікування → оплата',
       tone:paid?'success':expired?'danger':issued?'warning':'neutral',expired,
       items:[{label:'Посилання на оплату',state:issued?'done':discussion?'discussion':'todo',note:issued?'Рахунок створено; строк прив’язаний до його джерела.':'Потрібне підтверджене джерело платіжного посилання.'},
@@ -357,7 +364,7 @@
       }else if(data.selection_progress){
         const view=data.selection_progress;parts=view.parts;title='Підбір товару · '+view.label;centre=view.known?view.completed+'/'+view.total:'?';
       }else if(data.payment_progress){
-        parts=data.payment_progress.items;title='Оплата · '+parts.map(p=>p.label).join(' → ');centre=data.payment_progress.paid?'✓':parts.filter(p=>p.state==='done').length+'/'+parts.length;
+        parts=data.payment_progress.items;title='Оплата · '+parts.map(p=>p.label).join(' → ');centre=data.payment_progress.paid?'✓':data.payment_progress.counts_known===false?'?':parts.filter(p=>p.state==='done').length+'/'+parts.length;
       }else if(data.delivery_progress){
         const p=data.delivery_progress;
         parts=p.stages.map((label,i)=>({label,state:p.planned?'todo':p.cancelled?'cancelled':i<p.step?'done':i===p.step?'next':'todo'}));
@@ -519,12 +526,21 @@
       const parent=members.find(n=>n.current)||members.find(n=>n.presentation_kind!=='possible')||members[0];
       const factual=n=>!['possible','interpretation'].includes(n.presentation_kind)&&n.state==='complete'&&((n.evidence_refs||[]).length||(n.facts||[]).some(f=>f.state==='complete'&&f.source));
       const paid=members.some(n=>(n.structural_key||n.semantic_key)==='settlement'&&factual(n));
-      const progress={paid,current:members.some(n=>n.current),discussion:members.some(n=>n.presentation_kind==='interpretation')};
+      const pending=members.filter(n=>!['possible','interpretation'].includes(n.presentation_kind)
+        &&n.waiting?.kind==='manager_review'&&(n.waiting.evidence_refs||[]).some(ref=>ref.kind==='payment_review'&&Number.isInteger(ref.id)&&ref.id>0
+          &&(n.facts||[]).some(f=>f.source==='payment_review.current'&&f.state==='open'
+            &&(f.evidence_refs||[]).some(source=>source.kind==='payment_review'&&source.id===ref.id))));
+      const reviewIds=new Set(pending.flatMap(n=>(n.waiting.evidence_refs||[]).filter(ref=>ref.kind==='payment_review'&&Number.isInteger(ref.id)&&ref.id>0).map(ref=>ref.id)));
+      const waiting=reviewIds.size===1?pending[0]?.waiting:null;
+      const receiptRefs=(Array.isArray(waiting?.receipt_evidence_refs)?waiting.receipt_evidence_refs:[]).filter(ref=>['message','source_message'].includes(ref.kind)&&Number.isInteger(ref.id)&&ref.id>0);
+      const progress={paid,current:members.some(n=>n.current),discussion:members.some(n=>n.presentation_kind==='interpretation'),
+        manager_review_pending:Boolean(waiting),review_evidence_refs:waiting?.evidence_refs||[],
+        receipt_received:waiting?.receipt_received===true&&receiptRefs.length>0,receipt_evidence_refs:receiptRefs};
       graph=Journey.prototype.collapseComposition.call(this,graph,parent,members.filter(n=>n!==parent));
       if(!parent.composite_nodes)parent.composite_nodes=[{...parent}];
       parent.label='Оплата';parent.short_label='Оплата';parent.structural_key='awaiting_payment';
       parent.payment_progress={...progress,...paymentView(progress,parent.timers||[],this.serverTime)};
-      parent.summary='Посилання → очікування → оплата. Якщо строк минув без підтвердження — допомога з оплатою нижче.';
+      parent.summary=!paid&&waiting?'Очікує перевірки менеджером; зарахування оплати ще не підтверджено.':'Посилання → очікування → оплата. Якщо строк минув без підтвердження — допомога з оплатою нижче.';
       parent.evidence_refs=members.flatMap(n=>n.evidence_refs||[]);
       return graph;
     }
@@ -768,7 +784,7 @@
       const section=el('section','twc-journey-payment');section.append(el('h5','','Оплата · '+node.payment_progress.label));
       for(const item of node.payment_progress.items){
         const step=el('details','twc-journey-payment-step');step.dataset.state=item.state;
-        const head=el('summary');head.append(el('span','twc-journey-payment-dot'),el('strong','',item.label),el('span','',({done:'Підтверджено',next:'Зараз',cancelled:'Потребує уваги',discussion:'За перепискою',todo:'Ще попереду'})[item.state]));step.append(head,el('p','',item.note));section.append(step);
+        const head=el('summary');head.append(el('span','twc-journey-payment-dot'),el('strong','',item.label),el('span','',({done:'Підтверджено',next:'Зараз',cancelled:'Потребує уваги',discussion:'За перепискою',todo:'Ще попереду'})[item.state]));step.append(head,el('p','',item.note));this.appendSources(step,item.evidence_refs||[]);section.append(step);
       }
       for(const child of node.composite_nodes||[]){
         const details=el('details','twc-journey-payment-step');details.append(el('summary','',child.label+' · джерела'));

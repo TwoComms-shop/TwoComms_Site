@@ -416,7 +416,7 @@ def classify_media_items(
     reviewable instead of becoming invented products.
     """
     normalized_text = " ".join(str(text or "").split())
-    manager_source = source_role == "manager"
+    manager_source = source_role in {"manager", "model", "assistant", "bot"}
     if explicit_claim is None:
         explicit_claim = _is_explicit_payment_claim(normalized_text)
     intent = _media_intent(
@@ -507,6 +507,13 @@ def _augment_messages_with_raw_media(client, messages) -> list[dict]:
         if not isinstance(raw, dict):
             continue
         item = dict(raw)
+        # Analysis may normalize legacy URLs or synthesize a display attachment.
+        # Preserve the actual retained source fields for source-proof hashing.
+        if "attachments" in raw or "attachment_media" in raw:
+            item["_source_media_binding"] = {
+                "attachments": raw.get("attachments") or "",
+                "attachment_media": raw.get("attachment_media") or [],
+            }
         media = list(item.get("media") or []) if isinstance(item.get("media"), list) else []
         attachment_media = item.get("attachment_media")
         if isinstance(attachment_media, list) and attachment_media:
@@ -1327,7 +1334,7 @@ def extract_payment_review_evidence(messages) -> dict:
         office_match = _OFFICE_RE.search(quote)
         if office_match and not delivery["office"]:
             delivery["office"] = f"{office_match.group('kind').capitalize()} {office_match.group('number')}"
-        if "," in quote and not delivery["city"]:
+        if "," in quote and office_match and not delivery["city"]:
             candidate = quote.split(",", 1)[0].strip()
             if 2 <= len(candidate) <= 100 and not any(char.isdigit() for char in candidate):
                 delivery["city"] = candidate
@@ -1377,6 +1384,7 @@ def extract_payment_review_evidence(messages) -> dict:
     if agreement.get("merchandise_total"):
         order_draft["quoted_total"] = agreement["merchandise_total"]
     order_draft["agreement"] = agreement
+    order_draft["shipping_payment"] = dict(agreement.get("shipping_payment") or {})
     shipping = agreement.get("shipping") or {}
     for key in ("full_name", "phone", "city", "office"):
         if shipping.get(key):
@@ -1529,6 +1537,16 @@ def _alert_text(review, client) -> str:
             f"\nТовар: {merchandise:.2f} грн\nДоставка: {delivery:.2f} грн\nСтатус:",
             1,
         )
+    arrangement = agreement.get("shipping_payment") or {}
+    if (arrangement.get("authority") == "seller_instruction"
+        and arrangement.get("source_message_id") in (agreement.get("source_message_ids") or [])):
+        labels = {
+            "customer_prepaid": "Доставка включена в суму переказу; платник ТТН — відправник після звірки оплати.",
+            "merchant_free": "Доставка безкоштовна для клієнта; платник ТТН — відправник.",
+            "carrier_recipient": "Клієнт оплачує перевізнику доставку окремо; платник ТТН — одержувач.",
+        }
+        if arrangement.get("mode") in labels:
+            alert += "\n" + labels[arrangement["mode"]]
     return alert
 
 
@@ -2367,6 +2385,17 @@ def _payment_notification_material(review) -> dict:
                      "amount": str(_positive_money(row.get("amount")) or ""),
                      "currency": str(row.get("currency") or "")[:8]}
                     for row in evidence.get("manager_confirmation_observations") or [] if isinstance(row, dict)]
+    arrangement = ((draft.get("agreement") or {}).get("shipping_payment") or {})
+    arrangement = arrangement if isinstance(arrangement, dict) else {}
+    shipping_payment = {
+        "mode": str(arrangement.get("mode") or "unknown")[:32],
+        "customer_charge_amount": str(arrangement.get("customer_charge_amount") or "")[:32],
+        "included_in_payable_total": arrangement.get("included_in_payable_total") if type(arrangement.get("included_in_payable_total")) is bool else None,
+        "payer_type": str(arrangement.get("payer_type") or "")[:16],
+        "source_message_id": source(arrangement.get("source_message_id")),
+        "customer_request_message_id": source(arrangement.get("customer_request_message_id")),
+        "evidence_message_ids": sorted({source(value) for value in arrangement.get("evidence_message_ids") or []}),
+    }
     if len(receipts) > 256 or len(accepted) > 50 or len(sources) > 512 or len(observations) > 80:
         return {}
     payload = {
@@ -2376,7 +2405,7 @@ def _payment_notification_material(review) -> dict:
         "amounts": {key: str(_positive_money(draft.get(key)) or "")
                     for key in ("quoted_total", "merchandise_total", "delivery_amount", "delivery_total", "payable_total")},
         "amount_source_message_id": amount_source,
-        "manager_observations": observations,
+        "manager_observations": observations, "shipping_payment": shipping_payment,
     }
     return {"schema": "payment-notification-material.v1",
             "material_digest": hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True,

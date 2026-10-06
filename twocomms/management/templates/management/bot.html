@@ -1875,7 +1875,7 @@ body.bot-drawer-open{overflow:hidden;}
 
 {% block extra_js %}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-presentation-v14"></script>
-<script src="{% static 'management/ig_journey.js' %}?v=journey-presentation-v15"></script>
+<script src="{% static 'management/ig_journey.js' %}?v=journey-pending-payment-v16"></script>
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_human_documents.js' %}?v=human-documents-v2"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=selection-corrections-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
@@ -2560,6 +2560,37 @@ body.bot-drawer-open{overflow:hidden;}
     }
     function updateFollowIndicator(follow,clientId=activeId){const id=clientId||activeId;const current=document.querySelector('.bot-follow-wrap[data-follow-client-id="'+String(id)+'"]');if(!current)return;const currentIndicator=current.querySelector('.bot-follow-indicator');const incomingSignature=followIndicatorSignature(follow);if(currentIndicator&&currentIndicator.dataset.followSignature===incomingSignature)return;current.replaceWith(renderFollowIndicator(follow,id));}
     function stageCls(s){ return 'st-'+(s||'new'); }
+    function conversationStageLabel(payload){
+      const client=payload.client||payload;
+      const fallback=client.stage_label||'Новий';
+      const journey=payload.journey;
+      const current=journey&&journey.current_episode_id;
+      if(!journey||journey.is_history||!Number.isInteger(current)||current<=0||journey.viewed_episode_id!==current)return fallback;
+      if(client.commercially_confirmed===true||['paid','order_created','done'].includes(client.stage))return fallback;
+      const payment=payload.payment||{};
+      const ownedPayment=payment.scope==='current_episode'&&payment.episode_id===current;
+      if(ownedPayment&&(payment.authoritative_for_fulfillment===true||payment.needs_reconciliation===true
+        ||['confirmed','partially_refunded','refunded','reversed'].includes(payment.provider_truth)))return fallback;
+      const fulfillment=payload.fulfillment||{};
+      if(fulfillment.current_episode_source==='current_episode'&&Number.isInteger(fulfillment.order_id)&&fulfillment.order_id>0)return fallback;
+      const nodes=(Array.isArray(journey.graph?.nodes)?journey.graph.nodes:[]).filter(n=>n
+        &&!['possible','interpretation'].includes(n.presentation_kind)&&(n.episode_id==null||n.episode_id===current));
+      // Poll responses carry source-bound current facts, without the full payment workspace.
+      const facts=nodes.flatMap(n=>Array.isArray(n.facts)?n.facts:[]);
+      if(facts.some(f=>f.source==='intended_order.current'
+        &&(f.evidence_refs||[]).some(ref=>ref.kind==='order'&&Number.isInteger(ref.id)&&ref.id>0)))return fallback;
+      if(facts.some(f=>f.source==='episode.payment_snapshot'
+        &&(f.evidence_refs||[]).some(ref=>ref.kind==='episode'&&ref.id===current)
+        &&(f.id==='payment:reconciliation'||f.id==='payment:provider_truth'&&f.state!=='open'
+          ||f.id==='payment:manager_decision'&&f.state==='complete')))return fallback;
+      const pending=nodes.filter(n=>['awaiting_payment','settlement'].includes(n.structural_key||n.semantic_key)
+        &&n.waiting?.kind==='manager_review');
+      const reviewIds=new Set(pending.flatMap(n=>(n.waiting.evidence_refs||[]).filter(ref=>ref.kind==='payment_review'
+        &&Number.isInteger(ref.id)&&ref.id>0&&(n.facts||[]).some(f=>f.source==='payment_review.current'&&f.state==='open'
+          &&(f.evidence_refs||[]).some(source=>source.kind==='payment_review'&&source.id===ref.id))).map(ref=>ref.id)));
+      if(reviewIds.size!==1||ownedPayment&&Number.isInteger(payment.review_id)&&!reviewIds.has(payment.review_id))return fallback;
+      return 'Оплата потребує перевірки';
+    }
     function linkedOrderContextBadge(client,compact=false){
       const context=client&&client.linked_order_payment_context;
       if(!context||context.scope!=='client'||client.commercially_confirmed||!Number.isInteger(context.order_id)||context.order_id<=0||!['paid','prepaid'].includes(context.payment_status))return null;
@@ -2954,7 +2985,7 @@ body.bot-drawer-open{overflow:hidden;}
       const status=node('div','bot-attention-status',text);status.dataset.mode=attention.mode||'bot';status.setAttribute('role','status');status.setAttribute('aria-label','Стан уваги: '+text);conversationEl.appendChild(status);
     }
     function renderConversation(d){
-      const c=d.client;const active=d.review&&d.review.active;conversationEl.replaceChildren();const head=node('header','bot-conversation-head');const meta=node('div','bot-conversation-meta');const titleRow=node('div','bot-conversation-title-row');titleRow.append(node('div','bot-conversation-title',c.name||c.username||c.igsid||'Клієнт'),renderFollowIndicator(c.follow||d.follow||{},c.id));meta.append(titleRow,node('div','bot-conversation-sub',[c.username?('@'+c.username):c.igsid,c.phone,c.ad_title?('Реклама: '+c.ad_title):''].filter(Boolean).join(' · ')));const linkedOrderBadge=linkedOrderContextBadge(c);if(linkedOrderBadge)meta.append(linkedOrderBadge);const actions=node('div','bot-conversation-actions');const back=node('button','bot-head-action bot-mobile-back','‹ Клієнти');back.type='button';back.addEventListener('click',()=>{setMobilePane('list');const activeRow=listEl.querySelector('.bot-client-row.active');if(activeRow){activeRow.scrollIntoView({block:'center'});activeRow.focus({preventScroll:true});}});const sections=node('button','bot-head-action bot-mobile-sections','Розділи');sections.type='button';sections.addEventListener('click',()=>{setMobilePane('list');tabsEl.scrollIntoView({block:'start'});tabsEl.querySelector('[aria-selected=true]')?.focus({preventScroll:true});});actions.append(back,sections);if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-head-action needs-action',active.approval.state==='needs_order_resolution'?'Прив’язати замовлення':'Перевірити оплату');review.type='button';review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));actions.appendChild(review);}const assignments=d.orders&&d.orders.assignments||[];const assignmentAction=node('button','bot-head-action icon','⇄');assignmentAction.type='button';assignmentAction.title='Прив’язати або відв’язати замовлення';assignmentAction.setAttribute('aria-label','Відкрити прив’язку замовлень');assignmentAction.addEventListener('click',()=>OrderAssignmentDrawer.open(d,assignmentAction));actions.appendChild(assignmentAction);const advanced=node('button','bot-head-action icon','⚙');advanced.type='button';advanced.title='Показати або приховати контекст клієнта';advanced.setAttribute('aria-label','Показати або приховати контекст клієнта');advanced.setAttribute('aria-controls','bot-client-drawer');advanced.setAttribute('data-client-context-toggle','');advanced.setAttribute('aria-expanded',String(ClientContextDrawer.isOpen()));advanced.addEventListener('click',()=>ClientContextDrawer.toggle(advanced));actions.appendChild(advanced);head.append(avatar(c,46),meta,node('span','bot-stage-chip '+stageCls(c.stage),c.stage_label||'Новий'),actions);conversationEl.appendChild(head);
+      const c=d.client;const active=d.review&&d.review.active;conversationEl.replaceChildren();const head=node('header','bot-conversation-head');const meta=node('div','bot-conversation-meta');const titleRow=node('div','bot-conversation-title-row');titleRow.append(node('div','bot-conversation-title',c.name||c.username||c.igsid||'Клієнт'),renderFollowIndicator(c.follow||d.follow||{},c.id));meta.append(titleRow,node('div','bot-conversation-sub',[c.username?('@'+c.username):c.igsid,c.phone,c.ad_title?('Реклама: '+c.ad_title):''].filter(Boolean).join(' · ')));const linkedOrderBadge=linkedOrderContextBadge(c);if(linkedOrderBadge)meta.append(linkedOrderBadge);const actions=node('div','bot-conversation-actions');const back=node('button','bot-head-action bot-mobile-back','‹ Клієнти');back.type='button';back.addEventListener('click',()=>{setMobilePane('list');const activeRow=listEl.querySelector('.bot-client-row.active');if(activeRow){activeRow.scrollIntoView({block:'center'});activeRow.focus({preventScroll:true});}});const sections=node('button','bot-head-action bot-mobile-sections','Розділи');sections.type='button';sections.addEventListener('click',()=>{setMobilePane('list');tabsEl.scrollIntoView({block:'start'});tabsEl.querySelector('[aria-selected=true]')?.focus({preventScroll:true});});actions.append(back,sections);if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-head-action needs-action',active.approval.state==='needs_order_resolution'?'Прив’язати замовлення':'Перевірити оплату');review.type='button';review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));actions.appendChild(review);}const assignments=d.orders&&d.orders.assignments||[];const assignmentAction=node('button','bot-head-action icon','⇄');assignmentAction.type='button';assignmentAction.title='Прив’язати або відв’язати замовлення';assignmentAction.setAttribute('aria-label','Відкрити прив’язку замовлень');assignmentAction.addEventListener('click',()=>OrderAssignmentDrawer.open(d,assignmentAction));actions.appendChild(assignmentAction);const advanced=node('button','bot-head-action icon','⚙');advanced.type='button';advanced.title='Показати або приховати контекст клієнта';advanced.setAttribute('aria-label','Показати або приховати контекст клієнта');advanced.setAttribute('aria-controls','bot-client-drawer');advanced.setAttribute('data-client-context-toggle','');advanced.setAttribute('aria-expanded',String(ClientContextDrawer.isOpen()));advanced.addEventListener('click',()=>ClientContextDrawer.toggle(advanced));actions.appendChild(advanced);head.append(avatar(c,46),meta,node('span','bot-stage-chip '+stageCls(c.stage),conversationStageLabel(d)),actions);conversationEl.appendChild(head);
       renderReplyDebt(c.response_debt,c.id);
       renderAttentionStatus(c.attention_snapshot);
       const summary=node('div','bot-chat-summary');mountJourney(summary,d);const secondary=node('details','bot-journey-secondary');secondary.append(node('summary','','Оцінка та платіжні дані'));
@@ -3237,7 +3268,7 @@ body.bot-drawer-open{overflow:hidden;}
       if(d.response_debt)renderReplyDebt(d.response_debt);
       if(d.stage){
         const stageChip=conversationEl.querySelector('.bot-conversation-head .bot-stage-chip');
-        if(stageChip){stageChip.className='bot-stage-chip '+stageCls(d.stage);stageChip.textContent=d.stage_label||'Новий';}
+        if(stageChip){stageChip.className='bot-stage-chip '+stageCls(d.stage);stageChip.textContent=conversationStageLabel(d);}
       }
       if(d.journey&&journeyView)journeyView.update(d.journey);
     }
@@ -3507,6 +3538,7 @@ body.bot-drawer-open{overflow:hidden;}
         if(url){const link=node('a','bot-order-product-link','Відкрити товар на сайті');link.href=url;link.target='_blank';link.rel='noopener noreferrer';copy.appendChild(link);}
         const price=node('div','bot-order-item-price',line.line_total?line.line_total+' грн':(line.unit_price?line.unit_price+' грн / шт.':'—'));row.append(copy,price);section.appendChild(row);
       });
+      if(item.draft&&item.draft.custom_agreed)section.appendChild(node('div','bot-hint','Погоджений товар поза каталогом. Після перевірки оплати його можна створити як кастомний принт із цими параметрами.'));
       if(item.draft&&item.draft.packaging_preference)section.appendChild(node('div','bot-hint','Пакування: '+item.draft.packaging_preference));
       if(item.draft&&item.draft.uncertainty_reasons&&item.draft.uncertainty_reasons.length){const warning=node('div','bot-note','Потрібно уточнити: '+item.draft.uncertainty_reasons.map(evidenceReasonLabel).join('; '));warning.style.margin='9px 0 0';section.appendChild(warning);}
     }
@@ -3664,6 +3696,7 @@ body.bot-drawer-open{overflow:hidden;}
       const findings=(payment.receipt_review_findings||[]).filter(row=>(row.reason_codes||[]).length);if(findings.length){const section=addSection(inner,'Що потрібно звірити у чеках');findings.forEach(row=>{section.appendChild(node('div','bot-note',(row.reason_codes||[]).map(evidenceReasonLabel).join('; ')));if(row.message_id){const source=node('a','bot-order-product-link','Повідомлення #'+row.message_id);source.href=clientEvidenceUrl(item,row.message_id);section.appendChild(source);}});}
       if((payment.manager_confirmation_observations||[]).length){const section=addSection(inner,'Повідомлення менеджера про оплату');section.appendChild(node('div','bot-hint','У переписці є повідомлення менеджера про отримання оплати. Воно потребує окремого рішення у перевірці й не підміняє платіжний журнал.'));payment.manager_confirmation_observations.forEach(row=>{const source=node('a','bot-order-product-link','Повідомлення #'+row.message_id+(row.amount?' · '+row.amount+' '+row.currency:''));source.href=clientEvidenceUrl(item,row.message_id);section.appendChild(source);});}
       if(state==='needs_order_resolution'&&canResolveOrder)renderActions(inner,item,options||{});
+      const shippingPayment=payment.shipping_payment||{};if(shippingPayment.label){const section=addSection(inner,'Доставка: хто сплачує перевізнику');section.appendChild(node('div','bot-note',shippingPayment.label));section.appendChild(node('div','bot-hint','Це умови доставки з переписки. Отримання платежу підтверджує менеджер окремо.'));if(shippingPayment.source_message_id){const link=node('a','bot-order-product-link','Повідомлення #'+shippingPayment.source_message_id);link.href=clientEvidenceUrl(item,shippingPayment.source_message_id);section.appendChild(link);}}
       renderItems(inner,item);renderWorkspaceMedia(inner,item);
       const delivery=item.draft&&item.draft.delivery||{};if(Object.keys(delivery).length){const section=addSection(inner,'Дані доставки');section.appendChild(node('div','bot-hint',[delivery.full_name,delivery.phone,delivery.city,delivery.office,delivery.address].filter(Boolean).join(' · ')));}
       renderNotification(inner,item);renderDecisionHistory(inner,item);if(state!=='needs_order_resolution'&&state!=='payment_reconciliation')renderActions(inner,item,options||{});inner.appendChild(node('div','bot-order-feedback',''));

@@ -21,9 +21,11 @@ _SELLERS = {"manager", "human_manager", "operator", "admin"}
 _CUSTOMERS = {"user", "customer", "client"}
 _BOTS = {"model", "assistant", "bot"}
 _CURRENCY = r"(?:грн\.?|uah|₴|usd|\$|eur|€)"
-_NUMBER = r"\d{2,6}(?:[.,]\d{1,2})?"
+_NUMBER = r"\d{1,6}(?:[.,]\d{1,2})?"
 _AMOUNT = re.compile(r"(?<!\d)(?P<value>" + _NUMBER + r")\s*(?P<currency>" + _CURRENCY + r")", re.I)
 _DELIVERY = r"(?:доставк\w*|shipping|delivery)"
+_MERCHANT_SHIPPING = (r"\b(?:безкоштов\w*|бесплат\w*|безоплат\w*|free|за\s+(?:наш\w*\s+(?:рахун\w*|сч[её]т)|рахунок\s+магазину)|"
+    r"(?:оплачуємо|оплачиваем)\s+(?:ми|мы)|(?:ми|мы|we|seller)\s+(?:оплачу\w*|оплачива\w*|сплачу\w*|pay|covers?))\b")
 _SPLIT = re.compile(
     r"(?P<merch>" + _NUMBER + r")\s*(?:" + _CURRENCY + r")?\s*\+\s*"
     r"(?:" + _DELIVERY + r"\s*[:=-]?\s*)?(?P<delivery>" + _NUMBER + r")\s*"
@@ -72,8 +74,16 @@ def _proof(row):
         "provider_namespace": str(row.get("provider_namespace") or ""),
         "provider_message_id": str(row.get("provider_message_id") or row.get("mid") or ""),
         "observed_at": str(stamp or ""), "time_origin": "provider_event" if row.get("provider_created_at") else "local_observation"}
-    media = _media_parts(row)
-    if media or row.get("attachments"):
+    # Render/provider augmentation is not immutable source identity. Even an
+    # empty durable manifest owns this boundary; decode raw attachments then.
+    binding_source = row.get("_source_media_binding")
+    binding_source = binding_source if isinstance(binding_source, dict) else row
+    if "attachment_media" in binding_source or "attachments" in binding_source:
+        media = _media_parts({"attachment_media": binding_source.get("attachment_media"), "attachments": binding_source.get("attachments")})
+    else:
+        media = _media_parts(row)
+    source_attachments = binding_source.get("attachments") or ""
+    if media or source_attachments:
         # Classification/OCR/capture bookkeeping is mutable analysis. Bind
         # the source attachment identities and bytes, and export only a digest.
         parts = []
@@ -86,7 +96,7 @@ def _proof(row):
                 if isinstance(part.get(key), str) and part[key]:
                     material[key + "_digest"] = hashlib.sha256(part[key].encode()).hexdigest()
             parts.append(material)
-        binding = {"attachments_digest": hashlib.sha256(str(row.get("attachments") or "").encode()).hexdigest(), "parts": parts}
+        binding = {"attachments_digest": hashlib.sha256(str(source_attachments).encode()).hexdigest(), "parts": parts}
         proof["media_binding_digest"] = hashlib.sha256(json.dumps(binding, ensure_ascii=False, sort_keys=True,
             separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     return proof
@@ -100,12 +110,12 @@ def _seller(row):
     return row["role"] in _BOTS and row.get("status") == "done" and row.get("send_state") == "sent" and bool(row.get("provider_message_id"))
 
 
-def _money(value):
+def _money(value, *, allow_zero=False):
     try:
         result = Decimal(str(value).replace(",", ".")).quantize(Decimal("0.01"))
     except (ValueError, InvalidOperation):
         return ""
-    return str(result) if 0 < result <= Decimal("1000000") else ""
+    return str(result) if (0 <= result if allow_zero else 0 < result) and result <= Decimal("1000000") else ""
 
 
 def _currency(raw):
@@ -166,7 +176,10 @@ def _title(text):
 
 
 def _offer_item(row, references):
-    text = row["text"]
+    # A trailing seller confirmation question is not a question about any
+    # selection axis. Ambiguous alternatives and other questions still abstain.
+    text = re.sub(r"[\s.,;]+(?:все\s+вірно|усе\s+вірно|все\s+правильно|всё\s+верно|все\s+верно|"
+        r"правильно|вірно|is\s+that\s+correct|is\s+everything\s+correct|correct)\s*\?\s*$", "", row["text"], flags=re.I)
     config, reasons = _configuration(text)
     title = _title(text)
     if reasons or not config or not (title or config.get("garment_type")):
@@ -270,40 +283,189 @@ def _withdraws_agreement(row):
 
 
 def _quoted_amounts(row):
+    from management.services.ig_commerce_turns import _is_quoted_preference
+
     text = row["text"]
-    if "?" in text or _NEGATIVE.search(text):
-        return {}, []
+    first_amount = _AMOUNT.search(text)
+    if first_amount and re.search(r"(?:раніше|раньше|previously)[^.!?]{0,30}(?:пис\w*|напис\w*|said|wrote)|"
+            r"(?:він|вона|он|она|they|he|she)\s+(?:пис\w*|напис\w*|сказ\w*|said|wrote)", text[:first_amount.start()], re.I):
+        return {}, ["amount_not_affirmed"]
     split = _SPLIT.search(text) if re.search(_DELIVERY, text, re.I) else None
-    if split:
+    if split and not ("?" in text or _NEGATIVE.search(text) or _is_quoted_preference(text, split.start(), split.end())):
         if len({_currency(match.group("currency")) for match in _AMOUNT.finditer(split.group())}) != 1:
             return {}, ["amount_currency_conflict"]
-        values = [_money(split.group(key)) for key in ("merch", "delivery", "total")]
+        values = [_money(split.group(key), allow_zero=key == "delivery") for key in ("merch", "delivery", "total")]
         if not all(values) or Decimal(values[0]) + Decimal(values[1]) != Decimal(values[2]):
             return {}, ["amount_arithmetic_mismatch"]
         return {"merchandise_total": values[0], "delivery_amount": values[1], "payable_total": values[2],
             "currency": _currency(split.group("currency")), "authority": "seller_instruction", "source_message_id": row["id"],
             "acceptance_message_id": None, "arithmetic_verified": True}, []
-    matches = list(_AMOUNT.finditer(text))
+    clauses = list(_amount_clauses(text))
+    conditional = _conditional_shipping_rule(row)
+    threshold_span = conditional[1] if conditional else None
+    matches = [(match, clause) for match in _AMOUNT.finditer(text)
+        for start, end, clause in clauses if start <= match.start() < end and "?" not in clause and not _NEGATIVE.search(clause)
+        and not _is_quoted_preference(text, match.start(), match.end())
+        and not (threshold_span and threshold_span[0] <= match.start() < threshold_span[1])]
     if not matches:
         return {}, []
-    if len(matches) != 1:
-        return {}, ["amount_allocation_required"]
-    match = matches[0]
-    amount = _money(match.group("value"))
-    if not amount:
-        return {}, ["amount_invalid"]
-    if re.search(r"передоплат\w*|аванс\w*|deposit|prepay", text, re.I):
-        return {"requested_payment_amount": amount, "currency": _currency(match.group("currency")),
-            "authority": "seller_instruction", "source_message_id": row["id"], "acceptance_message_id": None}, []
-    price = bool(re.search(r"\b(?:ціна|цена|вартість|стоимость|за|price|cost)\b", text, re.I))
-    payable = bool(re.search(r"\b(?:сума|сумма|разом|итого|всього|всего|total|iban|оплат\w*|сплат\w*)\b|UA\d{27}", text, re.I))
-    delivery = bool(re.search(_DELIVERY, text, re.I))
-    if not (price or payable or delivery):
-        return {}, ["amount_purpose_unknown"]
-    values = {"currency": _currency(match.group("currency")), "authority": "seller_instruction",
+    if len({_currency(match.group("currency")) for match, _clause in matches}) != 1:
+        return {}, ["amount_currency_conflict"]
+    values = {"currency": _currency(matches[0][0].group("currency")), "authority": "seller_instruction",
         "source_message_id": row["id"], "acceptance_message_id": None}
-    values["delivery_amount" if delivery else "merchandise_total" if price else "payable_total"] = amount
-    return values, []
+    reasons = []
+    for match, clause in matches:
+        price = bool(re.search(r"\b(?:ціна|цена|вартість|стоимость|за|price|cost)\b", clause, re.I) or _GARMENT.search(clause))
+        payable = bool(re.search(r"\b(?:сума|сумма|разом|итого|всього|всего|total|iban|оплат\w*|сплат\w*)\b|UA\d{27}", clause, re.I))
+        delivery = bool(re.search(_DELIVERY, clause, re.I))
+        deposit = bool(re.search(r"передоплат\w*|аванс\w*|deposit|prepay", clause, re.I))
+        if deposit:
+            key = "requested_payment_amount"
+        elif payable:
+            key = "payable_total"
+            if delivery:
+                reasons.append("delivery_allocation_required")
+        elif delivery and not _GARMENT.search(clause):
+            key = "delivery_amount"
+        elif price:
+            key = "merchandise_total"
+        else:
+            return {}, ["amount_purpose_unknown"]
+        amount = _money(match.group("value"), allow_zero=key == "delivery_amount")
+        if not amount:
+            return {}, ["amount_invalid"]
+        if key in values:
+            return {}, ["amount_allocation_required"]
+        values[key] = amount
+    if values.get("merchandise_total") and "delivery_amount" in values:
+        total = str((Decimal(values["merchandise_total"]) + Decimal(values["delivery_amount"])).quantize(Decimal("0.01")))
+        if values.get("payable_total", total) != total:
+            return {}, ["amount_arithmetic_mismatch"]
+        values.update(payable_total=total, arithmetic_verified=True)
+        reasons = []
+    return values, reasons
+
+
+def _amount_clauses(text):
+    """Clause scope retaining decimals and trailing question delimiters."""
+    start = 0
+    for boundary in re.finditer(r"(?<!\d)[,.]|[,.;](?!\d)|[!?\n]|\b(?:але|но|but)\b", text, re.I):
+        end = boundary.end() if boundary.group() == "?" else boundary.start()
+        yield start, end, text[start:end]
+        start = boundary.end()
+    yield start, len(text), text[start:]
+
+
+def _unknown_shipping_payment():
+    return {"mode": "unknown", "customer_charge_amount": "", "included_in_payable_total": None,
+        "payer_type": "", "source_message_id": None, "evidence_message_ids": [],
+        "customer_request_message_id": None, "authority": "seller_instruction"}
+
+
+def _conditional_shipping_rule(row):
+    """Extract a bounded monetary condition, never a quoted delivery fee."""
+    text = row["text"]
+    if not re.search(_DELIVERY, text, re.I) or not re.search(_MERCHANT_SHIPPING, text, re.I):
+        return None
+    number = r"(?:\d{1,3}(?:[ \u00a0]\d{3})+|" + _NUMBER + r")"
+    prefix = r"(?:>=|>|від|от|from|понад|свыше|вище|выше|over|above|більше|больше|более|more\s+than|at\s+least)"
+    pattern = re.compile(r"(?<!\w)(?P<operator>" + prefix + r")\s*(?P<amount>" + number
+        + r")\s*(?P<currency>" + _CURRENCY + r")?(?!\w)", re.I)
+    matches = list(pattern.finditer(text))
+    suffix = list(re.finditer(r"(?<!\d)(?P<amount>" + number + r")\s*(?P<currency>" + _CURRENCY
+        + r")\s*(?:or\s+more|і\s+більше|и\s+более)(?!\w)", text, re.I))
+    for match in suffix:
+        if not any(start.start() <= match.start() < start.end() for start in matches):
+            matches.append(match)
+    if not matches:
+        # A conditional promise with an unsupported condition abstains rather
+        # than turning the words "free delivery" into unconditional coverage.
+        if re.search(r"\b(?:якщо|если|if|при\s+(?:замов\w*|заказ\w*)|(?:for|on)\s+orders|для\s+(?:замов\w*|заказ\w*))\b", text, re.I):
+            return ({"kind": "merchandise_total_threshold", "operator": "", "threshold_amount": "",
+                "currency": "", "source_message_id": row["id"]}, (re.search(_DELIVERY, text, re.I).start(), len(text)))
+        return None
+    if len(matches) != 1:
+        return ({"kind": "merchandise_total_threshold", "operator": "", "threshold_amount": "",
+            "currency": "", "source_message_id": row["id"]}, (0, len(text)))
+    match = matches[0]
+    operator = " ".join((match.groupdict().get("operator") or "or more").casefold().split())
+    strict = operator in {">", "понад", "свыше", "вище", "выше", "over", "above", "більше", "больше", "более", "more than"}
+    value = _money(re.sub(r"[ \u00a0]", "", match.group("amount")))
+    return ({"kind": "merchandise_total_threshold", "operator": ">" if strict else ">=",
+        "threshold_amount": value, "currency": _currency(match.group("currency")) if match.group("currency") else "",
+        "source_message_id": row["id"]}, (match.start(), match.end()))
+
+
+def _evaluate_shipping_condition(payment, amount):
+    value = deepcopy(payment)
+    condition = deepcopy(value["condition"])
+    merchandise = amount.get("merchandise_total") or ""
+    currency = amount.get("currency") or ""
+    if not condition.get("operator") or not condition.get("threshold_amount") or not condition.get("currency"):
+        status, reason = "unknown", "shipping_condition_unknown"
+    elif not merchandise:
+        status, reason = "unknown", "shipping_condition_amount_unknown"
+    elif currency != condition["currency"]:
+        status, reason = "currency_mismatch", "shipping_condition_currency_mismatch"
+    else:
+        met = (Decimal(merchandise) > Decimal(condition["threshold_amount"]) if condition["operator"] == ">"
+            else Decimal(merchandise) >= Decimal(condition["threshold_amount"]))
+        status, reason = ("met", "") if met else ("not_met", "shipping_condition_not_met")
+    condition.update(status=status, evaluated_merchandise_total=merchandise, evaluated_currency=currency,
+        amount_source_message_id=amount.get("source_message_id"))
+    value.update(condition=condition, mode="merchant_free" if status == "met" else "unknown",
+        customer_charge_amount="0.00" if status == "met" else "", included_in_payable_total=False if status == "met" else None,
+        payer_type="Sender" if status == "met" else "")
+    ids = [condition["source_message_id"], amount.get("source_message_id"), value.get("customer_request_message_id")]
+    value["evidence_message_ids"] = sorted({source_id for source_id in ids if isinstance(source_id, int)})
+    return value, [reason] if reason else []
+
+
+def _shipping_payment(row, amount):
+    """A seller arrangement, never evidence of money received or carrier paid."""
+    modes = set()
+    unaffirmed = False
+    conditional = _conditional_shipping_rule(row)
+    delivery_anchor = re.search(_DELIVERY, row["text"], re.I)
+    if delivery_anchor and re.search(r"(?:раніше|раньше|previously)[^.!?]{0,30}(?:пис\w*|напис\w*|said|wrote)|"
+            r"(?:він|вона|он|она|they|he|she)\s+(?:пис\w*|напис\w*|сказ\w*|said|wrote)", row["text"][:delivery_anchor.start()], re.I):
+        unknown = _unknown_shipping_payment()
+        unknown.update(source_message_id=row["id"], evidence_message_ids=[row["id"]])
+        return unknown, ["shipping_payment_not_affirmed"]
+    for start, end, clause in _amount_clauses(row["text"]):
+        delivery = re.search(_DELIVERY, clause, re.I)
+        if not delivery:
+            continue
+        from management.services.ig_commerce_turns import _is_quoted_preference
+        alternatives = re.sub(r"\bor\s+more\b", "", clause, flags=re.I) if conditional else clause
+        if ("?" in clause or _NEGATIVE.search(clause) or re.search(r"\b(?:небезкоштов\w*|небесплат\w*|або|или|or)\b", alternatives, re.I)
+                or _is_quoted_preference(row["text"], start + delivery.start(), start + delivery.end())):
+            unaffirmed = True
+            continue
+        if re.search(_MERCHANT_SHIPPING, clause, re.I):
+            modes.add("merchant_free")
+        if re.search(r"(?:отримувач\w*|одержувач\w*|получател\w*|recipient|customer)\s+(?:оплачу\w*|оплачива\w*|сплачу\w*|плат\w*|pays?)|(?:оплачу\w*|оплачива\w*|сплачу\w*)\s+(?:отримувач\w*|одержувач\w*|получател\w*)|(?:paid|payable)\s+by\s+(?:recipient|customer)|(?:оплат\w*|сплат\w*|pay\w*)[^.!?]{0,20}(?:при\s+отриман\w*|при\s+получен\w*|на\s+пошті|на\s+почте|carrier|upon\s+receipt)", clause, re.I):
+            modes.add("carrier_recipient")
+    unknown = _unknown_shipping_payment()
+    unknown.update(source_message_id=row["id"], evidence_message_ids=[row["id"]])
+    if unaffirmed:
+        return unknown, ["shipping_payment_not_affirmed"]
+    if len(modes) > 1:
+        return unknown, ["shipping_payment_conflict"]
+    if conditional and modes == {"merchant_free"}:
+        unknown["condition"] = conditional[0]
+        return _evaluate_shipping_condition(unknown, amount)
+    charge = amount.get("delivery_amount", "")
+    if modes and charge and Decimal(charge) > 0:
+        return unknown, ["shipping_payment_conflict"]
+    mode = next(iter(modes)) if modes else ("merchant_free" if charge == "0.00" else "customer_prepaid" if charge and amount.get("payable_total") and amount.get("merchandise_total") else "unknown")
+    if mode == "unknown":
+        return None, []
+    value = _unknown_shipping_payment()
+    value.update(mode=mode, customer_charge_amount=charge if mode == "customer_prepaid" else "0.00",
+        included_in_payable_total=mode == "customer_prepaid", payer_type="Recipient" if mode == "carrier_recipient" else "Sender",
+        source_message_id=row["id"], evidence_message_ids=[row["id"]])
+    return value, []
 
 
 def _quote_expiry(text):
@@ -332,6 +494,15 @@ def _instruction(row):
 
 def _shipping(row):
     text, result = row["text"], {}
+    word = r"[A-Za-zА-Яа-яІіЇїЄєҐґЁё][A-Za-zА-Яа-яІіЇїЄєҐґЁё'’\-]*"
+    blocked = (r"пош\w*|поч\w*|відділен\w*|отделен\w*|област\w*|район\w*|футбол\w*|"
+        r"оплат\w*|подар\w*|так|добре|вітаю|привіт|здравствуйте|привет|hello|hi|thanks|дякую|спасибо|"
+        r"добрий|добрый|доброго|доброе|день|ранок|вечір|хочу|want|please|будь|ласка|телефон|номер|phone|не|ні|нет|not|no|або|или|or")
+    def address_phrase(value, maximum=6):
+        return bool(value.casefold() not in {"місто", "город", "city"}
+            and re.fullmatch(word + r"(?:\s+" + word + r"){0," + str(maximum - 1) + r"}", value)
+            and not re.search(r"\b(?:" + blocked + r")\b", value, re.I))
+
     labels = {"full_name": r"ПІБ|ПИБ|ФІО|ФИО|отримувач|получатель|recipient", "city": r"місто|город|city",
         "office": r"відділен\w*|отделен\w*|поштомат|office"}
     for key, label in labels.items():
@@ -344,27 +515,45 @@ def _shipping(row):
     office = re.search(r"\b(відділен\w*|отделен\w*|поштомат|office|НП)\s*[:№=-]?\s*(\d{1,8})\b", text, re.I)
     if office:
         result["office"] = ("Відділення" if office.group(1).casefold() == "нп" else office.group(1)) + " №" + office.group(2)
+    office_suffix = r"\b(?:НП|нова\s+пошта|новая\s+почта|відділен\w*|отделен\w*|поштомат|office)\s*[:№#=-]?\s*\d+\b"
+    if result.get("city"):
+        result["city"] = re.split(office_suffix, result["city"], maxsplit=1, flags=re.I)[0].strip(" .,:;")
+        if not address_phrase(result["city"]):
+            result.pop("city")
     city = re.search(r"(?:^|[\n/;,])\s*(?:м\.|г\.|(?:місто|город|city)\s*[:=-])\s*([^\n/;,]{2,100})", text, re.I)
     if city and "city" not in result:
-        result["city"] = re.split(r"\b(?:відділен\w*|отделен\w*|поштомат|office)\b", city.group(1), maxsplit=1, flags=re.I)[0].strip(" .,:;")
+        value = re.split(office_suffix, city.group(1), maxsplit=1, flags=re.I)[0].strip(" .,:;")
+        if address_phrase(value):
+            result["city"] = value
     comma_city = re.search(r"(?:^|[\n/;])\s*([^\n/;,\d]{2,100})\s*,\s*(?:НП|нова\s+пошта|новая\s+почта|відділен\w*|отделен\w*|поштомат)\b", text, re.I)
-    if comma_city and "city" not in result:
+    if comma_city and "city" not in result and address_phrase(comma_city.group(1).strip()):
         result["city"] = comma_city.group(1).strip()
     # Unlabelled name/city lines are accepted only inside the customer's
     # structured contact message containing a phone, never from follow-ups.
     if phone:
         lines = [line.strip(" .,:;") for line in re.split(r"[\n/;]+", text) if line.strip()]
         lines = [re.sub(r"(?:\+?380|0)\d{9}(?!\d)", " ", line).strip(" .,:;") for line in lines]
-        word = r"[A-Za-zА-Яа-яІіЇїЄєҐґЁё][A-Za-zА-Яа-яІіЇїЄєҐґЁё'’\-]*"
-        blocked = r"пош\w*|поч\w*|відділен\w*|отделен\w*|місто|город|city|област\w*|район\w*|футбол\w*|оплат\w*|подар\w*|нов\w*|так|добре"
         name_candidates = [line for line in lines if re.fullmatch(word + r"(?:\s+" + word + r"){1,3}", line)
-            and not re.search(r"\b(?:" + blocked + r")\b", line, re.I)]
+            and address_phrase(line, maximum=4)]
         if len(name_candidates) == 1 and "full_name" not in result:
             result["full_name"] = name_candidates[0]
         city_candidates = [line for line in lines if re.fullmatch(word, line)
-            and not re.search(r"\b(?:" + blocked + r")\b", line, re.I)]
+            and address_phrase(line)]
         if len(city_candidates) == 1 and "city" not in result:
             result["city"] = city_candidates[0]
+        # A customer may omit the comma before the carrier marker. The phone
+        # message and an explicit office suffix bind this prefix as address
+        # data; greeting/ordinary chat and alternatives never become a city.
+        inline_candidates = []
+        for line in lines:
+            suffix = re.search(office_suffix, line, re.I)
+            if suffix and not line[suffix.end():].strip(" .,:;"):
+                prefix = line[:suffix.start()].strip(" .,:;")
+                prefix = re.sub(r"^(?:м\.|г\.|(?:місто|город|city)\s*[:=-])\s*", "", prefix, flags=re.I)
+                if address_phrase(prefix):
+                    inline_candidates.append(prefix)
+        if len(set(inline_candidates)) == 1 and "city" not in result:
+            result["city"] = inline_candidates[0]
     if result:
         result["field_evidence"] = {key: {"source_message_id": row["id"]} for key in result}
         result.update(source_message_id=row["id"], authority="customer_source")
@@ -413,6 +602,7 @@ def extract_conversation_agreement(messages):
     reasons = ["transcript_truncated"] if len(raw) > MAX_MESSAGES else []
     rows = [_row(row) for row in raw[-MAX_MESSAGES:]]
     result = {"schema": SCHEMA, "items": [], "amounts": {}, "payment_instruction": {}, "shipping": {}, "packaging": {},
+        "shipping_payment": _unknown_shipping_payment(),
         "source_message_ids": [], "evidence_message_ids": [], "evidence": {}, "uncertainty_reasons": reasons,
         "watermark_message_id": max((row["id"] for row in rows), default=0)}
     if any(not row["id"] for row in rows) or len({row["id"] for row in rows}) != len(rows) or any(a["id"] >= b["id"] for a, b in zip(rows, rows[1:])):
@@ -421,25 +611,41 @@ def extract_conversation_agreement(messages):
     pending, pending_at, references = None, None, []
     pending_money, money_at = {}, None
     customer_requirement = {}
+    customer_shipping_request_id = None
+    additive_pending = False
+    additive_source_id = None
     proofs = {}
     for index, row in enumerate(rows):
         if row.get("status") == "failed":
             continue
         customer = row["role"] in _CUSTOMERS
-        if customer and _RESET.search(row["text"]):
+        additive = bool(customer and result["items"] and _GARMENT.search(row["text"])
+            and re.search(r"\b(?:дода[йт]\w*|добав\w*|add)\b[^.!?]{0,60}\b(?:ще|ещ[её]|another|more|additional)\b", row["text"], re.I)
+            and "?" not in row["text"] and not _NEGATIVE.search(row["text"]))
+        if additive:
+            additive_pending = True
+            additive_source_id = row["id"]
+            proofs[row["id"]] = _proof(row)
+            reasons.append("additional_item_pending")
+        if customer and _RESET.search(row["text"]) and not additive:
             pending, pending_money, references, customer_requirement = None, {}, [], {}
-            result.update(items=[], amounts={}, payment_instruction={}, shipping={}, packaging={})
+            additive_pending = False
+            result.update(items=[], amounts={}, payment_instruction={}, shipping={}, packaging={}, shipping_payment=_unknown_shipping_payment())
+            customer_shipping_request_id = None
             proofs = {}
             reasons.append("customer_selection_reset")
             continue
         if customer and _counteroffer(row):
             pending, pending_money = None, {}
-            result.update(items=[], amounts={})
+            additive_pending = False
+            result.update(items=[], amounts={}, shipping_payment=_unknown_shipping_payment())
+            customer_shipping_request_id = None
             reasons.append("customer_counteroffer_pending")
             continue
         requirement = _customer_garment_requirement(row) if customer else {}
         if customer and _NEGATIVE.search(row["text"]) and not _packaging(row).get("exclude_receipt") and not requirement:
             pending, pending_money = None, {}
+            additive_pending = False
             # A direct withdrawal invalidates the current agreement. It must
             # not revive an older offer on the next short "yes".
             if _withdraws_agreement(row):
@@ -447,9 +653,20 @@ def extract_conversation_agreement(messages):
                 if result["items"]:
                     result["items"] = []
                     result["amounts"] = {}
+                    result["shipping_payment"] = _unknown_shipping_payment()
+                    customer_shipping_request_id = None
                     reasons.append("customer_configuration_withdrawn")
             continue
         if customer:
+            if (re.search(_DELIVERY, row["text"], re.I)
+                    and re.search(r"пораху\w*|розраху\w*|посчита\w*|рассчита\w*|calculat\w*|include\w*", row["text"], re.I)
+                    and not _NEGATIVE.search(row["text"])
+                    and not re.search(r"[«»“”\"]", row["text"])):
+                customer_shipping_request_id = row["id"]
+                result["shipping_payment"]["customer_request_message_id"] = row["id"]
+                result["shipping_payment"]["evidence_message_ids"] = sorted(set([
+                    *result["shipping_payment"]["evidence_message_ids"], row["id"]]))
+                proofs[row["id"]] = _proof(row)
             if requirement:
                 customer_requirement = requirement
                 proofs[row["id"]] = _proof(row)
@@ -475,7 +692,11 @@ def extract_conversation_agreement(messages):
             if pending and fresh and accepts:
                 pending.update(acceptance_message_id=row["id"], authority="conversation_agreement", configuration_authority="customer_confirmed_seller_offer")
                 pending["identity_status"] = "customer_confirmed_source"
-                result["items"] = [deepcopy(pending)]
+                if additive_pending:
+                    pending["addition_source_message_id"] = additive_source_id
+                result["items"] = [*result["items"], deepcopy(pending)] if additive_pending else [deepcopy(pending)]
+                additive_pending = False
+                reasons[:] = [reason for reason in reasons if reason != "additional_item_pending"]
                 proofs[row["id"]] = _proof(row)
                 # Later captionless receipt/media cannot silently alter the
                 # print the customer already confirmed. A new design needs a
@@ -516,6 +737,14 @@ def extract_conversation_agreement(messages):
             proofs[row["id"]] = _proof(row)
         amount, amount_reasons = _quoted_amounts(row)
         if amount:
+            prior_amount = result["amounts"]
+            if ("delivery_amount" in amount and not amount.get("merchandise_total") and not amount.get("payable_total")
+                    and prior_amount.get("merchandise_total") and amount["currency"] == prior_amount.get("currency")):
+                amount.update(merchandise_total=prior_amount["merchandise_total"],
+                    merchandise_source_message_id=prior_amount.get("merchandise_source_message_id") or prior_amount["source_message_id"],
+                    payable_total=str((Decimal(prior_amount["merchandise_total"]) + Decimal(amount["delivery_amount"])).quantize(Decimal("0.01"))),
+                    arithmetic_verified=True,
+                    evidence_message_ids=sorted(set([*(prior_amount.get("evidence_message_ids") or []), prior_amount["source_message_id"], row["id"]])))
             expires_at, expiry_reason = _quote_expiry(row["text"])
             if expires_at:
                 amount["expires_at"] = expires_at
@@ -524,11 +753,51 @@ def extract_conversation_agreement(messages):
             pending_money, money_at = amount, index
             result["amounts"] = deepcopy(amount)
             proofs[row["id"]] = _proof(row)
-        elif amount_reasons:
+        if amount_reasons:
             pending_money = {}
             reasons.extend(amount_reasons)
             if "amount_arithmetic_mismatch" in amount_reasons:
                 result["amounts"] = {}
+                result["shipping_payment"] = _unknown_shipping_payment()
+        shipping_payment, shipping_reasons = _shipping_payment(row, amount)
+        if shipping_payment is not None and shipping_payment.get("condition"):
+            shipping_payment, shipping_reasons = _evaluate_shipping_condition(shipping_payment, result["amounts"])
+        elif shipping_payment is None and result["shipping_payment"].get("condition") and (amount or amount_reasons):
+            shipping_payment, shipping_reasons = _evaluate_shipping_condition(result["shipping_payment"], result["amounts"])
+        if shipping_payment is not None:
+            shipping_payment["customer_request_message_id"] = customer_shipping_request_id
+            if customer_shipping_request_id:
+                shipping_payment["evidence_message_ids"] = sorted(set([
+                    *shipping_payment["evidence_message_ids"], customer_shipping_request_id]))
+            result["shipping_payment"] = shipping_payment
+            proofs[row["id"]] = _proof(row)
+            # The free/carrier arrangement supplies a zero customer charge;
+            # it does not alter the value of the merchandise or claim payment.
+            if shipping_payment["mode"] in {"merchant_free", "carrier_recipient"}:
+                current_amounts = result["amounts"]
+                merchandise = current_amounts.get("merchandise_total")
+                if not merchandise and "delivery_allocation_required" in amount_reasons:
+                    merchandise = current_amounts.get("payable_total")
+                if merchandise:
+                    current_amounts.update(merchandise_total=merchandise, delivery_amount="0.00", payable_total=merchandise,
+                        delivery_source_message_id=shipping_payment["source_message_id"])
+                    pending_money = deepcopy(current_amounts)
+            elif shipping_payment.get("condition") and result["amounts"].get("delivery_source_message_id"):
+                current_amounts = result["amounts"]
+                current_amounts.pop("delivery_amount", None)
+                current_amounts.pop("delivery_source_message_id", None)
+                if current_amounts.get("payable_total") == current_amounts.get("merchandise_total"):
+                    current_amounts.pop("payable_total", None)
+                pending_money = deepcopy(current_amounts)
+            if shipping_payment.get("condition"):
+                reasons[:] = [reason for reason in reasons if not reason.startswith("shipping_condition_")]
+            if shipping_payment["mode"] != "unknown":
+                reasons[:] = [reason for reason in reasons if reason not in {"delivery_allocation_required", "shipping_payment_conflict", "shipping_payment_not_affirmed"}]
+        elif amount.get("payable_total") and "delivery_allocation_required" in amount_reasons:
+            result["shipping_payment"] = _unknown_shipping_payment()
+            result["shipping_payment"].update(source_message_id=row["id"], customer_request_message_id=customer_shipping_request_id,
+                evidence_message_ids=sorted({row["id"]} | ({customer_shipping_request_id} if customer_shipping_request_id else set())))
+        reasons.extend(shipping_reasons)
         instruction = _instruction(row)
         if instruction:
             result["payment_instruction"] = instruction
@@ -539,9 +808,14 @@ def extract_conversation_agreement(messages):
         for item in result["items"]:
             if item["qty"] is None:
                 reasons.append("quantity_not_explicit")
-            if amounts.get("merchandise_total") and item["qty"] == 1:
+            if len(result["items"]) > 1:
+                item["unit_price"] = None
+                item["price_evidence_message_ids"] = []
+                item.pop("price_authority", None)
+                reasons.append("multi_item_price_allocation_required")
+            elif amounts.get("merchandise_total") and item["qty"] == 1:
                 item["unit_price"] = amounts["merchandise_total"]
-                item["price_evidence_message_ids"] = [amounts["source_message_id"]]
+                item["price_evidence_message_ids"] = amounts.get("evidence_message_ids") or [amounts["source_message_id"]]
                 item["price_authority"] = amounts["authority"]
             elif amounts.get("merchandise_total"):
                 reasons.append("conversation_price_allocation_required")
@@ -565,14 +839,17 @@ def _retained_material_rows(agreement, rows):
     """Compact old context only when its material facts reproduce exactly."""
     ids = set()
     for item in agreement.get("items") or []:
-        ids.update(item.get(key) for key in ("source_message_id", "acceptance_message_id", "garment_source_message_id", "quantity_source_message_id"))
+        ids.update(item.get(key) for key in ("source_message_id", "acceptance_message_id", "garment_source_message_id", "quantity_source_message_id", "addition_source_message_id"))
         ids.update(item.get("reference_message_ids") or [])
         ids.update(item.get("price_evidence_message_ids") or [])
-    for key in ("amounts", "payment_instruction", "shipping", "packaging"):
+    for key in ("amounts", "payment_instruction", "shipping", "packaging", "shipping_payment"):
         component = agreement.get(key) or {}
         ids.update(component.get(field) for field in ("source_message_id", "acceptance_message_id"))
         for proof in (component.get("field_evidence") or {}).values():
             ids.add(proof.get("source_message_id"))
+        ids.update(component.get("evidence_message_ids") or [])
+        condition = component.get("condition") or {}
+        ids.update(condition.get(field) for field in ("source_message_id", "amount_source_message_id"))
     # Keep terminating/counteroffer/invalid-quote evidence and recent spacing;
     # removing either could make an old pending offer look freshly accepted.
     ids.update(row["id"] for row in rows if (row["role"] in _CUSTOMERS and (_NEGATIVE.search(row["text"]) or _RESET.search(row["text"]) or _counteroffer(row)))
@@ -580,7 +857,7 @@ def _retained_material_rows(agreement, rows):
     ids.update(row["id"] for row in rows[-3:])
     retained = [row for row in rows if row["id"] in ids]
     reproduced = extract_conversation_agreement(retained)
-    critical = ("items", "amounts", "payment_instruction", "shipping", "packaging")
+    critical = ("items", "amounts", "payment_instruction", "shipping", "packaging", "shipping_payment")
     if all(reproduced.get(key) == agreement.get(key) for key in critical):
         return retained
     return rows

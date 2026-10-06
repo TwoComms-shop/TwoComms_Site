@@ -1749,12 +1749,36 @@ def _payment_review_truth_payload(review, decision=None, *, media_groups=None) -
             for row in evidence.get("receipt_review_findings", []) or [] if isinstance(row, dict)
             and (_bounded_int(row.get("message_id")), row.get("source_part_id")) in current_receipts
         ],
+        "shipping_payment": _workspace_shipping_payment(draft, client_id=review.client_id),
         "manager_confirmation_observations": [
             {"message_id": _bounded_int(row.get("message_id")), "amount": _workspace_money(row.get("amount")), "currency": _bounded_text(row.get("currency"), 8) or "UAH", "authoritative_for_fulfillment": False}
             for row in evidence.get("manager_confirmation_observations", []) or [] if isinstance(row, dict)
         ],
     })
     return payload
+
+
+def _workspace_shipping_payment(draft, *, client_id=None) -> dict:
+    agreement = draft.get("agreement") if isinstance(draft.get("agreement"), dict) else {}
+    arrangement = agreement.get("shipping_payment")
+    if not isinstance(arrangement, dict) or arrangement.get("authority") != "seller_instruction":
+        return {}
+    source_id = _bounded_int(arrangement.get("source_message_id"))
+    if not source_id or source_id not in _bounded_int_list(agreement.get("source_message_ids"), limit=160):
+        return {}
+    if not _workspace_agreement({}, draft, client_id=client_id).get("sources_verified"):
+        return {}
+    labels = {
+        "customer_prepaid": "Доставка включена в переказ; перевізнику сплачує TwoComms після звірки оплати.",
+        "merchant_free": "Доставка безкоштовна для клієнта; перевізнику сплачує TwoComms.",
+        "carrier_recipient": "Клієнт оплачує доставку перевізнику окремо.",
+    }
+    mode = arrangement.get("mode")
+    if mode not in labels:
+        return {}
+    return {"mode": mode, "customer_charge_amount": _workspace_money(arrangement.get("customer_charge_amount")),
+        "payer_type": "Recipient" if mode == "carrier_recipient" else "Sender",
+        "source_message_id": source_id, "label": labels[mode], "payment_verified": False}
 
 
 def _workspace_money(value) -> str:
@@ -1790,17 +1814,21 @@ def _workspace_agreement(evidence, draft, *, client_id=None) -> dict:
     ids = _bounded_int_list(raw.get("evidence_message_ids"), limit=160)
     accepted = []
     confirmed = False
+    verified = False
     if raw.get("schema") == "conversation-agreement.v1" and client_id and ids:
         from management.models import InstagramBotMessage
         from management.services.ig_conversation_agreement import _proof, _row, _seller
 
+        from management.services.ig_memory_producer import _namespaces, _source_allowed as source_allowed
         proofs = raw.get("evidence") if isinstance(raw.get("evidence"), dict) else {}
         sources = {row.pk: row for row in InstagramBotMessage.objects.filter(pk__in=ids, client_id=client_id).select_related("client")}
+        namespaces = _namespaces(sources.values())
         verified = len(sources) == len(ids) and all(
             source.status != "failed" and source.sender_id == source.client.igsid
             and source.client.privacy_erasure_started_at is None
-            and (source.role == "user" or _seller(_row(source)))
-            and proofs.get(str(source.pk)) == _proof(_row(source))
+            and source_allowed(source) and (source.role == "user" or _seller(_row(source)))
+            and bool(namespaces.get(source.pk))
+            and proofs.get(str(source.pk)) == _proof({**_row(source), "provider_namespace": namespaces[source.pk]})
             for source in sources.values()
         )
         items = raw.get("items") if isinstance(raw.get("items"), list) else []
@@ -1817,6 +1845,7 @@ def _workspace_agreement(evidence, draft, *, client_id=None) -> dict:
         "evidence_message_ids": ids,
         "acceptance_message_ids": sorted(set(accepted)) if confirmed else [],
         "customer_confirmed": confirmed,
+        "sources_verified": verified,
     }
 
 
@@ -1877,20 +1906,56 @@ def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
     from management.ig_private_media_views import _retention_current
 
     groups = {"receipts": [], "agreed_products": [], "products": [], "custom_print": [], "unknown": []}
-    rows = list(evidence.get("media", []) or []) if isinstance(evidence, dict) else []
+    evidence = evidence if isinstance(evidence, dict) else {}
+    source_limit, group_limit = 160, 20
+    media = evidence.get("media")
+    media = media if isinstance(media, list) else []
+    rows = list(media[:source_limit])
     # Older reviews truncated the top-level mixed-media list. The immutable
     # source contexts can still identify a later receipt without guessing it.
     draft = evidence.get("order_draft", {}) if isinstance(evidence, dict) else {}
     draft = draft if isinstance(draft, dict) else {}
-    for context in [*(evidence.get("messages", []) or []), *(draft.get("context_messages", []) or [])]:
+    agreement = draft.get("agreement") if isinstance(draft.get("agreement"), dict) else {}
+    agreement_items = agreement.get("items") if isinstance(agreement.get("items"), list) else []
+    accepted_ids = {_bounded_int(identifier) for line in agreement_items[:50] if isinstance(line, dict)
+        for identifier in _bounded_int_list(line.get("accepted_reference_message_ids"), limit=source_limit)}
+    accepted_ids.discard(None)
+    accepted_ids = set(sorted(accepted_ids, reverse=True)[:source_limit])
+    if client_id:
+        # A recent owned receipt has priority over old examples; unowned legacy
+        # URL lists retain the original finite scan and cannot invent a source.
+        rows.extend(row for row in media[-source_limit:] if isinstance(row, dict)
+            and _bounded_int(row.get("message_id") or row.get("source_message_id")))
+    contexts = []
+    for values in (draft.get("context_messages"), evidence.get("messages")):
+        if isinstance(values, list):
+            contexts.extend(values[-source_limit:])
+    for context in contexts[-source_limit:]:
         if isinstance(context, dict):
-            for part in context.get("media", []) or []:
+            parts = context.get("media")
+            parts = parts if isinstance(parts, list) else []
+            for part in parts[-group_limit:]:
                 if isinstance(part, dict):
                     rows.append({"message_id": context.get("message_id"), **part})
-    source_ids = {_bounded_int(row.get("message_id") or row.get("source_message_id")) for row in rows if isinstance(row, dict)}
+    if client_id:
+        def source_priority(row):
+            if not isinstance(row, dict):
+                return (3, 0)
+            identifier = _bounded_int(row.get("message_id") or row.get("source_message_id"))
+            priority = 0 if identifier in accepted_ids else 1 if identifier and _bounded_text(row.get("role"), 32).lower() in {"receipt", "payment_candidate"} else 2
+            return (priority, -(identifier or 0))
+        rows.sort(key=source_priority)
+    source_ids = list(sorted(accepted_ids, reverse=True))
+    source_ids_seen = set(source_ids)
+    for row in rows:
+        identifier = _bounded_int(row.get("message_id") or row.get("source_message_id")) if isinstance(row, dict) else None
+        if identifier and identifier not in source_ids_seen and len(source_ids) < source_limit:
+            source_ids.append(identifier)
+            source_ids_seen.add(identifier)
+    source_ids = source_ids[:source_limit]
     sources = {
         row.pk: row for row in InstagramBotMessage.objects.filter(
-            pk__in=[value for value in source_ids if value], client_id=client_id,
+            pk__in=source_ids, client_id=client_id,
         ).select_related("client", "client__current_commercial_episode")
     } if client_id else {}
     bot_settings = InstagramBotSettings.objects.filter(pk=1).first() if sources else None
@@ -1898,12 +1963,20 @@ def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
     reset_floor = _query_latest_reset_after_message_id(client_id) if sources else 0
     from management.services.ig_conversation_agreement import _proof, _row
     from management.services.ig_memory_producer import _namespaces, _source_allowed as agreement_source_allowed
-    agreement = draft.get("agreement") if isinstance(draft.get("agreement"), dict) else {}
-    accepted_ids = {_bounded_int(identifier) for line in (agreement.get("items") or []) if isinstance(line, dict)
-        for identifier in _bounded_int_list(line.get("accepted_reference_message_ids"))}
-    accepted_ids.discard(None)
     proofs = agreement.get("evidence") if isinstance(agreement.get("evidence"), dict) else {}
     namespaces = _namespaces(sources.values()) if accepted_ids else {}
+    normalized_parts = {}
+    for source_id in accepted_ids:
+        source = sources.get(source_id)
+        if source is None:
+            continue
+        try:
+            parts = normalize_attachment_media(source.attachment_media or [], message_scope=source.pk)
+            normalized_parts[source_id] = parts
+            rows[0:0] = [{"message_id": source_id, "source_part_id": part.get("source_part_id"),
+                "content_hash": part.get("content_hash"), "role": "unknown"} for part in parts[:group_limit]]
+        except MediaManifestError:
+            normalized_parts[source_id] = []
     seen = set()
     for position, raw in enumerate(rows):
         if not isinstance(raw, dict):
@@ -1932,7 +2005,9 @@ def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
         part = None
         if source is not None:
             try:
-                parts = normalize_attachment_media(source.attachment_media or [], message_scope=source.pk)
+                if source_id not in normalized_parts:
+                    normalized_parts[source_id] = normalize_attachment_media(source.attachment_media or [], message_scope=source.pk)
+                parts = normalized_parts[source_id]
                 matches = [candidate for candidate in parts if (
                     candidate.get("source_part_id") == part_id if part_id else
                     _media_asset_key(str(candidate.get("url") or "")) == _media_asset_key(str(raw.get("url") or "")) and bool(raw.get("url"))
@@ -2013,15 +2088,17 @@ def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
         if accepted:
             item["role"] = "agreed_reference"
             item["accepted_order_reference"] = True
-            groups["agreed_products"].append(item)
+            target = "agreed_products"
         elif group_role in {"receipt", "payment_candidate"}:
-            groups["receipts"].append(item)
+            target = "receipts"
         elif group_role in {"product", "purchase_candidate", "interest"}:
-            groups["products"].append(item)
+            target = "products"
         elif group_role in {"custom_reference", "custom_print", "custom_candidate"}:
-            groups["custom_print"].append(item)
+            target = "custom_print"
         else:
-            groups["unknown"].append(item)
+            target = "unknown"
+        if len(groups[target]) < group_limit:
+            groups[target].append(item)
     return groups
 
 
@@ -2870,6 +2947,17 @@ def _payment_review_workspace_payload(review) -> dict:
     decisions = _payment_review_decisions(review)
     decision = decisions[0] if decisions else None
     media_groups = _review_media_groups(evidence, client_id=review.client_id)
+    agreement_workspace = _workspace_agreement(evidence, draft, client_id=review.client_id)
+    draft_reasons = _draft_workspace_reasons(draft.get("uncertainty_reasons"))
+    agreed_items = draft.get("items") if isinstance(draft.get("items"), list) else []
+    custom_agreed = bool(agreement_workspace.get("customer_confirmed") and agreed_items and all(
+        isinstance(line, dict) and line.get("identity_kind") == "offsite_named"
+        and line.get("identity_status") == "customer_confirmed_source"
+        and all(line.get(key) for key in ("garment_type", "size", "color", "fit", "qty", "unit_price"))
+        for line in agreed_items))
+    if custom_agreed:
+        draft_reasons = [reason for reason in draft_reasons if reason not in {
+            "catalog_product_not_identified", "reference_identity_unverified", "configuration_not_affirmed"}]
     payment = _payment_review_truth_payload(review, decision, media_groups=media_groups)
     order = getattr(review, "order", None) if review.order_id else None
     deal = getattr(review, "deal", None) if review.deal_id else None
@@ -3000,7 +3088,8 @@ def _payment_review_workspace_payload(review) -> dict:
         "draft": {
             "items": _draft_workspace_items(draft.get("items")),
             "quoted_total": _bounded_text(draft.get("quoted_total"), 40),
-            "agreement": _workspace_agreement(evidence, draft, client_id=review.client_id),
+            "agreement": agreement_workspace,
+            "custom_agreed": custom_agreed,
             "merchandise_total": _workspace_money(draft.get("merchandise_total") or draft.get("quoted_total")),
             "delivery_total": _workspace_money(draft.get("delivery_total") or draft.get("delivery_amount")),
             "payable_total": _workspace_money(draft.get("payable_total")),
@@ -3008,9 +3097,7 @@ def _payment_review_workspace_payload(review) -> dict:
                 draft.get("packaging_preference"), 160,
             ),
             "delivery": _draft_workspace_delivery(draft.get("delivery")),
-            "uncertainty_reasons": _draft_workspace_reasons(
-                draft.get("uncertainty_reasons"),
-            ),
+            "uncertainty_reasons": draft_reasons,
             "catalog_candidates": _catalog_workspace_candidates(evidence),
             "amount_evidence": _amount_workspace_evidence(evidence),
         },

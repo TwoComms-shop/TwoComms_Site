@@ -46,6 +46,7 @@ EVIDENCE_CODES = frozenset({
     "current_order_shipped",
     "exact_catalog_quote",
     "explicit_server_timing",
+    "source_proved_conversation_amounts",
 })
 
 
@@ -415,6 +416,63 @@ def _shipment_truth(order) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     return "unknown", tuple(tracking), ()
 
 
+def _conversation_amounts(client):
+    context = client.sales_context if isinstance(client.sales_context, dict) else {}
+    stored = context.get("conversation_agreement")
+    if not isinstance(stored, dict):
+        return ()
+    from management.models import InstagramBotSettings, InstagramBotMessage
+    from management.services.instagram_bot import ingress_provider_namespace
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_conversation_agreement import MAX_MESSAGES, _row, extract_conversation_agreement, read_conversation_agreement
+    from management.services.ig_memory_producer import _namespaces, _source_allowed
+    settings_row = InstagramBotSettings.objects.filter(pk=1).first()
+    if settings_row is None:
+        return ()
+    captured = read_conversation_agreement(client,
+        episode_id=client.current_commercial_episode_id,
+        source_namespace=ingress_provider_namespace(settings_row),
+        reset_floor=conversation_route_reset_floor(client.pk))
+    agreement = captured.get("agreement") or {}
+    if not agreement:
+        return ()
+    new_sources = list(InstagramBotMessage.objects.filter(client_id=client.pk,
+        pk__gt=agreement["watermark_message_id"], status="done").order_by("pk")[:MAX_MESSAGES + 1])
+    if new_sources:
+        retained = captured.get("source_rows") or []
+        if len(retained) + len(new_sources) > MAX_MESSAGES:
+            return ()
+        namespace = ingress_provider_namespace(settings_row)
+        namespaces = _namespaces(new_sources)
+        if any(source.sender_id != client.igsid or namespaces.get(source.pk) != namespace
+                or not _source_allowed(source) or (source.provider_created_at or source.created_at) > timezone.now()
+                for source in new_sources):
+            return ()
+        reproduced = extract_conversation_agreement([*retained,
+            *[{**_row(source), "provider_namespace": namespaces[source.pk]} for source in new_sources]])
+        if any(reproduced.get(key) != agreement.get(key) for key in ("items", "amounts", "shipping_payment")):
+            return ()
+    amounts = agreement.get("amounts") or {}
+    if amounts.get("authority") not in {"conversation_agreement", "seller_instruction"}:
+        return ()
+    if any(reason in (agreement.get("uncertainty_reasons") or []) for reason in (
+        "amount_arithmetic_mismatch", "multi_item_price_allocation_required", "conversation_price_allocation_required")):
+        return ()
+    ids = agreement.get("source_message_ids") or []
+    result = []
+    currency = amounts.get("currency")
+    if currency not in {"UAH", "USD", "EUR"}:
+        return ()
+    for kind, key in (("merchandise", "merchandise_total"), ("delivery", "delivery_amount"), ("payable", "payable_total")):
+        value = amounts.get(key)
+        source_id = amounts.get("delivery_source_message_id") if kind == "delivery" else amounts.get("source_message_id")
+        source_id = source_id or amounts.get("source_message_id")
+        amount = _money(value) if value not in (None, "") else None
+        if amount is not None and amount.is_finite() and type(source_id) is int and source_id in ids:
+            result.append((kind, f"{amount:.2f}", currency, source_id, amounts["authority"]))
+    return tuple(result)
+
+
 def build_reply_truth_context(
     client,
     *,
@@ -557,6 +615,9 @@ def build_reply_truth_context(
             _append_unique(timing, normalized)
     if timing:
         _append_unique(evidence, "explicit_server_timing")
+    conversation_amounts = _conversation_amounts(client)
+    if conversation_amounts:
+        _append_unique(evidence, "source_proved_conversation_amounts")
 
     return AuthorityReplyTruthContext(
         authorized_prices=tuple(prices),
@@ -576,6 +637,7 @@ def build_reply_truth_context(
         allowed_fits=tuple(fits),
         allowed_colors=tuple(colors),
         authorized_actions=(),
+        conversation_amounts=conversation_amounts,
         readiness_gaps=tuple(gaps),
         evidence_codes=tuple(evidence),
     )

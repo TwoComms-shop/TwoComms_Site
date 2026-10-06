@@ -146,6 +146,9 @@
 .oadm .oadm-shipping .delivery-item::before,
 .oadm .oadm-shipping .delivery-item:hover::before { content:none; display:none; }
 .oadm-shipping__label { flex:0 0 auto; color:var(--o-muted); font-size:.7rem; font-weight:800; text-transform:uppercase; }
+.oadm-shipping-policy { display:flex; flex-direction:column; gap:4px; padding:9px 11px; border:1px solid rgba(148,163,184,.22); border-radius:10px; font-size:.76rem; line-height:1.45; overflow-wrap:anywhere; background:rgba(148,163,184,.06); }
+.oadm-shipping-policy strong { color:var(--o-text); }
+.oadm-shipping-policy--sender { border-color:rgba(249,115,22,.35); background:rgba(249,115,22,.07); }
 .ttn-info { display:inline-flex; align-items:center; flex-wrap:wrap; gap:5px; min-width:0; font-weight:700; }
 .ttn-info a { color:#fff; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums;
   text-decoration:none; overflow-wrap:anywhere; user-select:all; }
@@ -645,6 +648,14 @@
                     <span class="order-delivery__address">{{ o.delivery_display.address|default:'Адреса не вказана' }}</span>
                   </div>
                   <div class="oadm-shipping__tracking">
+                    <div class="oadm-shipping-policy{% if o.payment_snapshot.delivery_payer_type == 'Sender' %} oadm-shipping-policy--sender{% endif %}" data-shipping-payment-ui="v1" data-delivery-payment-mode="{{ o.payment_snapshot.delivery_payment_mode }}">
+                      <strong>{% if o.payment_snapshot.delivery_payment_requires_manual %}Умови доставки потребують звірки{% else %}{{ o.payment_snapshot.delivery_payment_label|default:'Доставку оплачує клієнт перевізнику' }}{% endif %}</strong>
+                      {% if o.payment_snapshot.delivery_payment_mode == 'customer_prepaid' %}
+                        <span>У платіж магазину включено {{ o.payment_snapshot.delivery_charge_amount }} грн за доставку.</span>
+                        <span>{% if o.payment_snapshot.delivery_prepaid %}Оплату доставки підтверджено.{% else %}Умова розрахунку; перевірте фактичну оплату окремо.{% endif %}</span>
+                      {% endif %}
+                      {% if o.payment_snapshot.delivery_payment_requires_manual %}<span>Перед оформленням ТТН перевірте умови доставки в замовленні.</span>{% else %}<span>Платник у ТТН: {% if o.payment_snapshot.delivery_payer_type == 'Sender' %}TwoComms (відправник){% else %}клієнт (одержувач){% endif %}.</span>{% endif %}
+                    </div>
                     <div class="delivery-item" data-field="ttn">
                       <span class="oadm-shipping__label">ТТН</span>
                       <span class="ttn-info">
@@ -685,6 +696,9 @@
                 </select>
 
                 <div class="oadm-pay-facts">
+                  {% if o.payment_snapshot.delivery_payment_mode == 'customer_prepaid' %}
+                    <div class="oadm-fact"><span>Товари: <b>{{ o.payment_snapshot.merchandise_total }} грн</b> · Доставка: <b>{{ o.payment_snapshot.delivery_charge_amount }} грн</b></span></div>
+                  {% endif %}
                   {% if o.payment_status_canonical == 'paid' %}
                     <div class="oadm-fact oadm-fact--paid">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -1164,6 +1178,17 @@
   padding:10px 12px; cursor:pointer; font-size:.86rem; font-weight:600; transition:all .15s ease; }
 .oedit-preset.is-active { border-color:#f97316; background:rgba(249,115,22,.14); }
 .oedit-preset input { accent-color:#f97316; }
+.oedit-shipping-payment { margin-top:16px; padding-top:14px; border-top:1px solid rgba(148,163,184,.18); }
+.oedit-shipping-payment fieldset { border:0; padding:0; margin:0; min-width:0; }
+.oedit-shipping-payment legend { color:#e2e8f0; font-size:.85rem; font-weight:800; margin-bottom:10px; }
+.oedit-shipping-options { display:grid; grid-template-columns:1fr; gap:8px; }
+.oedit-shipping-options .oedit-preset { align-items:flex-start; min-height:54px; }
+.oedit-shipping-options small { display:block; color:#94a3b8; font-size:.75rem; font-weight:400; line-height:1.4; margin-top:4px; }
+.oedit-shipping-options input { margin-top:3px; flex-shrink:0; }
+.oedit-shipping-charge { max-width:300px; margin-top:12px; }
+.oedit-shipping-charge .oedit-input { width:100%; }
+.oedit-shipping-payment [hidden] { display:none !important; }
+#oeditShippingBreakdown { margin-top:5px; display:block; font-size:.74rem; color:#94a3b8; line-height:1.45; }
 
 /* footer */
 .oedit-foot { flex:0 0 auto; display:flex; align-items:center; gap:14px; padding:15px 20px;
@@ -1213,7 +1238,7 @@
 </style>
 
 <div class="oedit-backdrop" id="oeditBackdrop" hidden></div>
-<aside class="oedit-drawer" id="oeditDrawer" role="dialog" aria-modal="true" aria-label="Редагування замовлення" aria-hidden="true" hidden>
+<aside class="oedit-drawer" id="oeditDrawer" data-shipping-payment-ui="v1" role="dialog" aria-modal="true" aria-label="Редагування замовлення" aria-hidden="true" hidden>
   <header class="oedit-head">
     <div style="min-width:0;">
       <div class="oedit-head__eyebrow">Редагування замовлення</div>
@@ -1229,6 +1254,7 @@
     <div class="oedit-total">
       <span class="oedit-total__label">Разом до сплати</span>
       <div><span class="oedit-total__val"><span id="oeditTotal">0</span> грн</span><span class="oedit-delta" id="oeditDelta" hidden></span></div>
+      <span id="oeditShippingBreakdown" aria-live="polite"></span>
     </div>
     <button type="button" class="oedit-save" id="oeditSave">Зберегти зміни</button>
   </footer>
@@ -1270,6 +1296,7 @@
   var items = [];
   var uidSeq = 1;
   var initialTotal = 0;
+  var retainedDiscount = 0;
   var pickerTarget = null;      // uid позиції для заміни, або null = додати нову
   var pickerCategory = 'all';
   var deliveryMode = 'keep';
@@ -1450,7 +1477,8 @@
       };
       return prod ? normalizeCatalogItem(item, prod, false, true) : item;
     });
-    initialTotal = items.reduce(function (a, it) { return a + lineTotal(it); }, 0);
+    retainedDiscount = Math.max(0, Number(order.discount_amount) || 0);
+    initialTotal = Math.max(0, items.reduce(function (a, it) { return a + lineTotal(it); }, 0) - retainedDiscount) + (order.delivery_payment_mode === 'customer_prepaid' ? Math.max(0, Number(order.delivery_charge_amount) || 0) : 0);
     buildBody(order);
     renderItems();
   }
@@ -1495,6 +1523,20 @@
         '<input type="radio" name="oeditPreset" value="' + key + '"' + checked + '>' +
         '<span>' + esc(presets[key]) + '</span></label>';
     }).join('');
+    var shippingMode = order.delivery_payment_mode || 'carrier_recipient';
+    var shippingLocked = Boolean(order.delivery_payment_locked);
+    var shippingChoices = [
+      ['carrier_recipient', 'Клієнт перевізнику', 'Окремо при отриманні; доставка не входить у платіж магазину.'],
+      ['customer_prepaid', 'Доставка в оплаті магазину', 'Клієнт платить за доставку TwoComms. Перевізнику платить TwoComms.'],
+      ['merchant_free', 'Безкоштовна для клієнта', 'Витрати доставки бере на себе TwoComms.']
+    ];
+    var shippingHtml = '<div class="oedit-shipping-payment" data-shipping-payment-ui="v1"><fieldset><legend>Хто оплачує доставку</legend><div class="oedit-shipping-options">' + shippingChoices.map(function (choice) {
+      return '<label class="oedit-preset"><input type="radio" name="oeditShippingMode" value="' + choice[0] + '"' + (shippingMode === choice[0] ? ' checked' : '') + (shippingLocked ? ' disabled' : '') + '><span>' + esc(choice[1]) + '<small>' + esc(choice[2]) + '</small></span></label>';
+    }).join('') + '</div></fieldset>' +
+      '<div class="oedit-fld oedit-shipping-charge" id="oeditShippingChargeWrap"' + (shippingMode === 'customer_prepaid' ? '' : ' hidden') + '><label for="oeditShippingCharge">Доставка в оплаті клієнта, грн</label><input type="number" class="oedit-input" id="oeditShippingCharge" min="0.01" step="0.01" inputmode="decimal" value="' + esc(order.delivery_charge_amount || '') + '"' + (shippingLocked ? ' disabled' : '') + '></div>' +
+      '<p class="oedit-delivery-help" id="oeditShippingPolicyNote" aria-live="polite"></p>' +
+      (shippingLocked ? '<p class="oedit-delivery-warning">Умови доставки прив’язані до погоджених умов із переписки. Для зміни потрібна повторна звірка умов та оплати.</p>' : '') +
+      (order.has_tracking ? '<p class="oedit-delivery-warning">Зміна умов у замовленні не змінює платника в уже створеній ТТН. Перевірте накладну окремо.</p>' : '') + '</div>';
 
     body.innerHTML =
       '<div class="oedit-sec">' +
@@ -1559,6 +1601,7 @@
           '<p class="oedit-delivery-help">Застосується після «Зберегти зміни».</p>' +
           '<button type="button" class="oedit-delivery-cancel" id="oeditDeliveryCancel">Скасувати зміну</button>' +
         '</div>' +
+        shippingHtml +
       '</section>' +
       '<div class="oedit-collapse" id="oeditPaymentWrap">' +
         '<div class="oedit-collapse__head" data-collapse>' +
@@ -1586,6 +1629,8 @@
       btn.addEventListener('click', function () { openPicker(btn.dataset.add, null); });
     });
     initDeliveryEditor();
+    body.querySelectorAll('input[name="oeditShippingMode"]').forEach(function (radio) { radio.addEventListener('change', updateTotal); });
+    body.querySelector('#oeditShippingCharge').addEventListener('input', updateTotal);
   }
 
   function showDeliveryError(message, field) {
@@ -1801,13 +1846,32 @@
   }
 
   function updateTotal() {
-    var total = items.reduce(function (a, it) { return a + lineTotal(it); }, 0);
+    var goods = items.reduce(function (a, it) { return a + lineTotal(it); }, 0);
+    var mode = shippingPaymentMode();
+    var charge = shippingCharge();
+    var total = Math.max(0, goods - retainedDiscount) + charge;
     elTotal.textContent = fmt(total);
+    document.getElementById('oeditShippingBreakdown').textContent = 'Товари: ' + fmt(goods) + ' грн' + (retainedDiscount > 0 ? ' · Знижка: ' + fmt(retainedDiscount) + ' грн' : '') + ' · Доставка в оплаті магазину: ' + fmt(charge) + ' грн';
+    body.querySelector('#oeditShippingChargeWrap').hidden = mode !== 'customer_prepaid';
+    body.querySelectorAll('.oedit-shipping-options .oedit-preset').forEach(function (label) { label.classList.toggle('is-active', label.querySelector('input').checked); });
+    body.querySelector('#oeditShippingPolicyNote').textContent = !mode ? 'Умови доставки потребують звірки. Оберіть, хто оплачує перевізнику і чи включено доставку в платіж магазину.' : mode === 'customer_prepaid'
+      ? 'Доставка включена в платіж клієнта. Спочатку підтвердьте оплату або передплату, що покриває доставку. Платник у ТТН — TwoComms (відправник).'
+      : mode === 'merchant_free' ? 'Для клієнта доставка безкоштовна. Платник у ТТН — TwoComms (відправник).'
+        : 'Доставка сплачується окремо перевізнику. Платник у ТТН — клієнт (одержувач).';
     var delta = total - initialTotal;
     if (Math.abs(delta) < 0.005) { elDelta.hidden = true; return; }
     elDelta.hidden = false;
     elDelta.className = 'oedit-delta ' + (delta > 0 ? 'is-up' : 'is-down');
     elDelta.textContent = (delta > 0 ? '+' : '−') + fmt(Math.abs(delta)) + ' грн';
+  }
+
+  function shippingPaymentMode() {
+    return (body.querySelector('input[name="oeditShippingMode"]:checked') || {}).value || '';
+  }
+
+  function shippingCharge() {
+    var field = body.querySelector('#oeditShippingCharge');
+    return shippingPaymentMode() === 'customer_prepaid' && field ? Math.max(0, Number(field.value) || 0) : 0;
   }
 
   // ── picker (catalog / custom) ──────────────────────────
@@ -1938,10 +2002,17 @@
     if (!name) { showToast('Вкажіть ПІБ клієнта.'); openCollapse('oeditCustomerWrap'); return; }
     if (!phone) { showToast('Вкажіть телефон клієнта.'); openCollapse('oeditCustomerWrap'); return; }
     if (!items.length) { showToast('Додайте хоча б одну позицію.'); return; }
+    if (!shippingPaymentMode()) { showToast('Оберіть умови оплати доставки.'); return; }
+    if (shippingPaymentMode() === 'customer_prepaid' && shippingCharge() <= 0) {
+      showToast('Вкажіть суму доставки, включену в оплату клієнта.');
+      body.querySelector('#oeditShippingCharge').focus();
+      return;
+    }
 
     var preset = (body.querySelector('#oeditPresets input[name="oeditPreset"]:checked') || {}).value || 'cod';
     var payload = {
       full_name: name, phone: phone, delivery_method: deliveryMode, payment_preset: preset,
+      delivery_payment_mode: shippingPaymentMode(), delivery_charge_amount: shippingCharge().toFixed(2),
       sale_source: ((document.getElementById('oeditSource') || {}).value || '').trim(),
       manager_comment: ((document.getElementById('oeditComment') || {}).value || '').trim(),
       items: items.map(function (it) {
@@ -2017,7 +2088,7 @@
           showToast((res.data && res.data.message) || 'Не вдалося зберегти.'); return;
         }
         var orderNum = elNum.textContent;
-        var delta = items.reduce(function (a, it) { return a + lineTotal(it); }, 0) - initialTotal;
+        var delta = Math.max(0, items.reduce(function (a, it) { return a + lineTotal(it); }, 0) - retainedDiscount) + shippingCharge() - initialTotal;
         var deltaTxt = Math.abs(delta) < 0.005 ? 'сума без змін' : (delta > 0 ? '+' : '−') + fmt(Math.abs(delta)) + ' грн';
         try {
           sessionStorage.setItem('oeditFlash', JSON.stringify({ num: orderNum, delta: deltaTxt }));

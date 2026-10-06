@@ -23,6 +23,42 @@ from orders.models import Order
 
 @override_settings(SITE_BASE_URL="https://twocomms.test")
 class ReplyAuthorityContextTests(TestCase):
+    def test_source_proved_seller_components_are_attributed_not_catalogue_or_payment_authority(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from management.models import InstagramBotMessage, InstagramBotSettings
+        from management.services.ig_conversation_agreement import persist_conversation_agreement
+        from management.services.instagram_bot import ingress_provider_namespace
+        with patch.dict("os.environ", {"IG_PROVIDER_TRANSPORT": "instagram_login"}):
+            settings_row, _ = InstagramBotSettings.objects.update_or_create(pk=1,
+                defaults={"ig_user_id": "reply-agreement-owner", "page_id": "reply-agreement-owner"})
+            namespace = ingress_provider_namespace(settings_row)
+            client, _, _ = self._current_episode("authority-source-agreement")
+            rows = [InstagramBotMessage.objects.create(client=client, sender_id=client.igsid,
+                role=role, source="echo" if role == "manager" else "webhook", status="done",
+                provider_namespace=namespace, text=text, mid=f"authority-agreement-{index}")
+                for index, (role, text) in enumerate((
+                    ("manager", "Футболка SamplePrint42 біла L oversize, 1 шт."), ("user", "Так"),
+                    ("manager", "850 грн + 120 доставка = 970 грн")))]
+            self.assertTrue(persist_conversation_agreement(client, rows, watermark=rows[-1].pk)["persisted"])
+            client.refresh_from_db()
+            with CaptureQueriesContext(connection) as queries:
+                context = build_reply_truth_context(client)
+            self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
+            self.assertEqual([(kind, amount) for kind, amount, *_ in context.conversation_amounts],
+                [("merchandise", "850.00"), ("delivery", "120.00"), ("payable", "970.00")])
+            self.assertNotIn(Decimal("970"), context.authorized_prices)
+            self.assertFalse(context.payment_confirmed)
+            self.assertTrue(validate_reply_truth("За розрахунком менеджера: футболка 850 грн, доставка 120 грн, разом 970 грн.", context=context).valid)
+            rows[-1].text = "Інша ціна"
+            rows[-1].save(update_fields=["text"])
+            self.assertEqual(build_reply_truth_context(client).conversation_amounts, ())
+            rows[-1].text = "850 грн + 120 доставка = 970 грн"
+            rows[-1].save(update_fields=["text"])
+            InstagramBotMessage.objects.create(client=client, sender_id=client.igsid, role="user",
+                source="webhook", status="done", provider_namespace=namespace, text="Пропоную за 700 грн", mid="authority-counteroffer")
+            self.assertEqual(build_reply_truth_context(client).conversation_amounts, ())
+
     def _catalog_product(self, *, suffix, status="published"):
         from storefront.models import Category, Product
 

@@ -1295,3 +1295,153 @@ class ManualOrderCreateTests(TestCase):
         self.assertEqual(audit['source'], 'management_user')
         self.assertEqual(audit['payment_status'], 'paid')
         self.assertTrue(audit['recorded_at'])
+
+    def _shipping_choice_payload(self, mode, amount='0', preset='paid_full'):
+        payload = self._receipt_contract_payload(type('Review', (), {'pk': ''})())
+        payload.update(delivery_payment_mode=mode, delivery_charge_amount=amount, payment_preset=preset)
+        return payload
+
+    def test_manual_shipping_modes_keep_goods_charge_and_payer_separate(self):
+        from orders.nova_poshta_documents import build_order_payment_snapshot
+        cases = [('merchant_free', '0', '850.00', 'Sender'),
+                 ('carrier_recipient', '0', '850.00', 'Recipient'),
+                 ('customer_prepaid', '120', '970.00', 'Sender')]
+        for mode, fee, payable, payer in cases:
+            with self.subTest(mode=mode):
+                response, _notify = self._post(self._shipping_choice_payload(mode, fee))
+                self.assertEqual(response.status_code, 200, response.content)
+                order = Order.objects.get(pk=response.json()['order_id'])
+                self.assertEqual(order.items.get().unit_price, Decimal('850.00'))
+                contract = order.payment_payload['delivery_payment']
+                self.assertEqual(contract['authority'], 'manual_manager')
+                self.assertEqual(contract['actor_id'], self.admin.pk)
+                snapshot = build_order_payment_snapshot(order)
+                self.assertEqual(snapshot['declared_cost'], '850.00')
+                self.assertEqual(snapshot['payable_total'], payable)
+                self.assertEqual(snapshot['delivery_payer_type'], payer)
+                self.assertEqual(snapshot['cod_amount'], '0.00')
+
+    def test_explicit_staff_shipping_allocation_does_not_double_collect_partial_payment(self):
+        from orders.nova_poshta_documents import build_order_payment_snapshot
+        response, _notify = self._post(self._shipping_choice_payload('customer_prepaid', '120', 'prepaid_200'))
+        self.assertEqual(response.status_code, 200, response.content)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        snapshot = build_order_payment_snapshot(order)
+        self.assertEqual(snapshot['paid_amount'], '200.00')
+        self.assertEqual(snapshot['cod_amount'], '770.00')
+        self.assertEqual(snapshot['delivery_payer_type'], 'Sender')
+        self.assertEqual(order.payment_payload['delivery_payment']['payment_confirmation']['basis'], 'explicit_allocation')
+
+    def test_unpaid_order_cannot_claim_customer_already_paid_shipping(self):
+        response, _notify = self._post(self._shipping_choice_payload('customer_prepaid', '120', 'cod'))
+        self.assertEqual(response.status_code, 422, response.content)
+        self.assertFalse(Order.objects.exists())
+
+    def test_manual_shipping_edit_preserves_omitted_contract_and_requires_reaudit_after_reprice(self):
+        from orders.services.delivery_payment import delivery_payment_snapshot
+        payload = self._shipping_choice_payload('merchant_free')
+        response, _notify = self._post(payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        original = order.payment_payload['delivery_payment']
+        edit = dict(payload)
+        edit.pop('delivery_payment_mode')
+        edit.pop('delivery_charge_amount')
+        url = reverse('manual_order_edit', args=[order.pk])
+        with mock.patch('storefront.views.manual_orders.telegram_notifier.update_order_notification_message'), mock.patch(
+            'storefront.views.manual_orders.telegram_notifier.send_order_edit_notification',
+        ):
+            response = self.client.post(url, data=json.dumps(edit), content_type='application/json')
+            self.assertEqual(response.status_code, 200, response.content)
+            order.refresh_from_db()
+            self.assertEqual(order.payment_payload['delivery_payment'], original)
+            edit['items'][0]['unit_price'] = '900'
+            response = self.client.post(url, data=json.dumps(edit), content_type='application/json')
+            self.assertEqual(response.status_code, 200, response.content)
+            order.refresh_from_db()
+            self.assertTrue(delivery_payment_snapshot(order, item_rows=list(order.items.all()))['requires_manual'])
+            edit.update(delivery_payment_mode='carrier_recipient', delivery_charge_amount='0')
+            response = self.client.post(url, data=json.dumps(edit), content_type='application/json')
+            self.assertEqual(response.status_code, 200, response.content)
+        order.refresh_from_db()
+        self.assertFalse(delivery_payment_snapshot(order, item_rows=list(order.items.all()))['requires_manual'])
+        self.assertEqual(order.payment_payload['delivery_payment']['mode'], 'carrier_recipient')
+
+    def test_waybill_payer_override_is_rejected_before_provider_calls(self):
+        from orders.nova_poshta_documents import NovaPoshtaDocumentService, NovaPoshtaDocumentError
+        from storefront.views.order_actions import _fallback_waybill_initial
+        response, _notify = self._post(self._shipping_choice_payload('merchant_free'))
+        order = Order.objects.get(pk=response.json()['order_id'])
+        service = NovaPoshtaDocumentService()
+        self.assertEqual(_fallback_waybill_initial(service, order)['payer_type'], 'Sender')
+        with mock.patch.object(service, '_resolve_sender_profile') as provider:
+            with self.assertRaises(NovaPoshtaDocumentError):
+                service.create_waybill(order, {'payer_type': 'Recipient'})
+        provider.assert_not_called()
+
+    def test_waybill_http_rejects_payer_override_with_conflict(self):
+        from django.test import RequestFactory
+        from orders.nova_poshta_documents import NovaPoshtaDocumentService, TELEGRAM_CREATE_NP_WAYBILL_ACTION
+        from orders.telegram_status_links import build_order_action_token
+        from storefront.views.order_actions import _fallback_waybill_initial, telegram_order_np_waybill_action
+        response, _notify = self._post(self._shipping_choice_payload('merchant_free'))
+        order = Order.objects.get(pk=response.json()['order_id'])
+        payload = _fallback_waybill_initial(NovaPoshtaDocumentService(), order)
+        payload.update(
+            token=build_order_action_token(order.pk, TELEGRAM_CREATE_NP_WAYBILL_ACTION),
+            payer_type='Recipient', recipient_city_ref='city-ref', recipient_settlement_ref='settlement-ref',
+            recipient_warehouse_ref='warehouse-ref', sender_city='Харків', sender_city_ref='sender-city',
+            sender_settlement_ref='sender-settlement', sender_warehouse='Відділення №138', sender_warehouse_ref='sender-warehouse',
+        )
+        request = RequestFactory().post('/order-waybill/', data=payload, HTTP_X_REQUESTED_WITH='XMLHttpRequest')
+        request.user = self.admin
+        with mock.patch('storefront.views.order_actions.NovaPoshtaDocumentService') as service:
+            service.return_value.is_configured.return_value = True
+            response = telegram_order_np_waybill_action(request, order.pk, TELEGRAM_CREATE_NP_WAYBILL_ACTION)
+        self.assertEqual(response.status_code, 409, response.content)
+        service.return_value.create_waybill.assert_not_called()
+
+    def test_authenticated_shipping_snapshot_batch_has_constant_queries_and_detects_item_drift(self):
+        cases = [('customer_prepaid', '120', '970.00', 'Sender'),
+                 ('merchant_free', '0', '850.00', 'Sender'),
+                 ('carrier_recipient', '0', '850.00', 'Recipient'),
+                 ('customer_prepaid', '130', '980.00', 'Sender')]
+        orders = []
+        for mode, fee, _payable, _payer in cases:
+            response, _notify = self._post(self._shipping_choice_payload(mode, fee))
+            self.assertEqual(response.status_code, 200, response.content)
+            orders.append(Order.objects.get(pk=response.json()['order_id']))
+        url = reverse('admin_order_payment_snapshots')
+        counts = []
+        for count in (1, 4):
+            with CaptureQueriesContext(connection) as queries:
+                response = self.client.get(url, {'ids': ','.join(str(order.pk) for order in orders[:count])})
+            self.assertEqual(response.status_code, 200, response.content)
+            counts.append(len(queries))
+            self.assertEqual(sum('orders_orderitem' in query['sql'] for query in queries), 1)
+            self.assertEqual(sum('orders_order' in query['sql'] and 'orders_orderitem' not in query['sql'] for query in queries), 1)
+            # One order read and one batched item read, plus fixed session/user
+            # authentication and cart middleware reads through the staff endpoint.
+            self.assertLessEqual(len(queries), 5)
+            snapshots = response.json()['orders']
+            self.assertEqual(len(snapshots), count)
+            for order, (_mode, _fee, payable, payer) in zip(orders[:count], cases[:count]):
+                snapshot = snapshots[str(order.pk)]
+                self.assertEqual(snapshot['payable_total'], payable)
+                self.assertEqual(snapshot['delivery_payer_type'], payer)
+                self.assertFalse(snapshot['delivery_payment_requires_manual'])
+        self.assertEqual(counts[0], counts[1])
+
+        item = orders[0].items.get()
+        item.qty = 2
+        item.unit_price = Decimal('425.00')
+        item.save(update_fields=['qty', 'unit_price'])
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(url, {'ids': ','.join(str(order.pk) for order in orders)})
+        self.assertEqual(len(queries), counts[1])
+        snapshots = response.json()['orders']
+        changed = snapshots[str(orders[0].pk)]
+        self.assertTrue(changed['delivery_payment_requires_manual'])
+        self.assertTrue(changed['automatic_fulfillment_blocked'])
+        for order in orders[1:]:
+            self.assertFalse(snapshots[str(order.pk)]['delivery_payment_requires_manual'])

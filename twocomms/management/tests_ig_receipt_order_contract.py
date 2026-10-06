@@ -69,7 +69,7 @@ class ApprovedReceiptAutoOrderTests(TestCase):
         self.manager = get_user_model().objects.create_user('receipt-auto-manager', is_staff=True)
         self.customer = IgClient.get_or_create_for_sender('receipt-auto-customer')
 
-    def _review(self, *, incomplete=None, canonical=False, earlier_examples=False, photo_role='manager', private_photo=None):
+    def _review(self, *, incomplete=None, canonical=False, earlier_examples=False, photo_role='manager', private_photo=None, shipping_quote='850 грн + 120 доставка = 970 грн'):
         from copy import deepcopy
         from django.utils import timezone
         from management.models import InstagramBotMessage
@@ -92,7 +92,7 @@ class ApprovedReceiptAutoOrderTests(TestCase):
             ('manager', 'L білу оверсайз TWOCOMMS 1654'),
             (photo_role, ''),
             ('user', 'Так'),
-            ('manager', '850 грн + 120 доставка = 970 грн'),
+            ('manager', shipping_quote),
             ('user', 'ПІБ: Іван Іванов\nТелефон: 0931112233\nМісто: Київ\nВідділення: Відділення №4'),
         ]
         self.source_rows = []
@@ -149,11 +149,11 @@ class ApprovedReceiptAutoOrderTests(TestCase):
             evidence={'order_draft': draft}, watermark_message_id=self.source_rows[-1].pk,
         )
 
-    def _approve(self, review):
+    def _approve(self, review, *, confirmed_amount='970.00', verification_scope='full_payment'):
         from management.services.ig_payment_review import record_review_decision
         return record_review_decision(
             review, actor=self.manager, decision='manager_verified',
-            verification_scope='full_payment', confirmed_amount='970.00',
+            verification_scope=verification_scope, confirmed_amount=confirmed_amount,
         )
 
     def test_complete_accepted_custom_order_is_created_by_approval_once(self):
@@ -287,6 +287,92 @@ class ApprovedReceiptAutoOrderTests(TestCase):
         approved = self._approve(review)
         self.assertEqual(approved.order_creation_result['status'], 'needs_manual_completion')
         self.assertIn('conversation_agreement_draft_changed', approved.order_creation_result['missing_fields'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_source_verified_free_shipping_creates_sender_order_without_zeroing_goods(self):
+        from orders.models import Order
+        from orders.nova_poshta_documents import build_order_payment_snapshot
+        review = self._review(shipping_quote='Ціна футболки 850 грн. Доставка безкоштовна за наш рахунок.')
+        approved = self._approve(review, confirmed_amount='850.00')
+        self.assertEqual(approved.order_creation_result['status'], 'created', approved.order_creation_result)
+        order = Order.objects.get()
+        self.assertEqual(order.items.get().unit_price, Decimal('850.00'))
+        self.assertEqual(order.payment_payload['delivery_payment']['mode'], 'merchant_free')
+        self.assertEqual(order.payment_payload['delivery_payment']['authority'], 'payment_review')
+        snapshot = build_order_payment_snapshot(order)
+        self.assertEqual(snapshot['payable_total'], '850.00')
+        self.assertEqual(snapshot['declared_cost'], '850.00')
+        self.assertEqual(snapshot['delivery_payer_type'], 'Sender')
+        self.assertFalse(snapshot['delivery_prepaid'])
+
+    def test_source_verified_recipient_carriage_is_not_collected_by_seller(self):
+        from orders.models import Order
+        from orders.nova_poshta_documents import build_order_payment_snapshot
+        review = self._review(shipping_quote='Ціна футболки 850 грн. Доставку оплачує одержувач при отриманні.')
+        approved = self._approve(review, confirmed_amount='850.00')
+        self.assertEqual(approved.order_creation_result['status'], 'created', approved.order_creation_result)
+        snapshot = build_order_payment_snapshot(Order.objects.get())
+        self.assertEqual(snapshot['payable_total'], '850.00')
+        self.assertEqual(snapshot['delivery_payer_type'], 'Recipient')
+        self.assertEqual(snapshot['delivery_charge_amount'], '0.00')
+
+    def test_unbound_free_shipping_cannot_replace_captured_recipient_policy(self):
+        from copy import deepcopy
+        from orders.models import Order
+        review = self._review(shipping_quote='Ціна футболки 850 грн. Доставку оплачує одержувач при отриманні.')
+        evidence = deepcopy(review.evidence)
+        policy = deepcopy(evidence['order_draft']['agreement']['shipping_payment'])
+        policy.update(mode='merchant_free', payer_type='Sender')
+        evidence['order_draft']['shipping_payment'] = policy
+        review.evidence = evidence
+        review.save(update_fields=['evidence', 'updated_at'])
+        approved = self._approve(review, confirmed_amount='850.00')
+        self.assertEqual(approved.order_creation_result['missing_fields'], ['conversation_agreement_draft_changed'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_reviewed_shipping_edit_is_locked_and_reprice_invalidates_original_binding(self):
+        import json
+        from django.urls import reverse
+        from orders.models import Order
+        from orders.services.delivery_payment import delivery_payment_snapshot
+        from storefront.views.manual_orders import _build_order_initial
+        review = self._review(shipping_quote='Ціна футболки 850 грн. Доставка безкоштовна за наш рахунок.')
+        self._approve(review, confirmed_amount='850.00')
+        order = Order.objects.get()
+        initial = _build_order_initial(order)
+        self.assertTrue(initial['delivery_payment_locked'])
+        payload = {key: initial[key] for key in ('full_name', 'phone', 'city', 'np_office', 'items', 'sale_source', 'manager_comment')}
+        payload.update(delivery_method='keep', payment_preset='unpaid_full',
+            delivery_payment_mode='carrier_recipient', delivery_charge_amount='0')
+        self.client.force_login(self.manager)
+        url = reverse('manual_order_edit', args=[order.pk])
+        with patch('storefront.views.manual_orders.telegram_notifier.update_order_notification_message'), patch(
+            'storefront.views.manual_orders.telegram_notifier.send_order_edit_notification',
+        ):
+            response = self.client.post(url, data=json.dumps(payload), content_type='application/json')
+            self.assertEqual(response.status_code, 422, response.content)
+            payload.update(delivery_payment_mode='merchant_free')
+            payload['items'][0]['unit_price'] = '900'
+            response = self.client.post(url, data=json.dumps(payload), content_type='application/json')
+            self.assertEqual(response.status_code, 200, response.content)
+        order.refresh_from_db()
+        self.assertEqual(order.payment_payload['delivery_payment']['merchandise_total'], '850.00')
+        self.assertTrue(delivery_payment_snapshot(order, item_rows=list(order.items.all()))['requires_manual'])
+
+    def test_inclusive_total_without_shipping_allocation_requires_manual_completion(self):
+        from orders.models import Order
+        review = self._review(shipping_quote='Разом з доставкою 970 грн')
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['status'], 'needs_manual_completion')
+        self.assertIn('shipping_payment', approved.order_creation_result['missing_fields'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_partial_review_cannot_assume_shipping_was_paid(self):
+        from orders.models import Order
+        review = self._review()
+        approved = self._approve(review, confirmed_amount='200.00', verification_scope='prepayment')
+        self.assertEqual(approved.order_creation_result['status'], 'needs_manual_completion')
+        self.assertIn('delivery_amount_source', approved.order_creation_result['missing_fields'])
         self.assertFalse(Order.objects.exists())
 
     def test_receipt_without_manager_decision_never_creates_order(self):
