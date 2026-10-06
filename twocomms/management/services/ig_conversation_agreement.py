@@ -752,6 +752,10 @@ def extract_conversation_agreement(messages):
                 reasons.append(expiry_reason)
             pending_money, money_at = amount, index
             result["amounts"] = deepcopy(amount)
+            if amount.get("merchandise_total") and not amount_reasons:
+                # A current explicit seller quote resolves an earlier number
+                # whose purpose was unknown (e.g. a discarded print option).
+                reasons[:] = [reason for reason in reasons if reason != "amount_purpose_unknown"]
             proofs[row["id"]] = _proof(row)
         if amount_reasons:
             pending_money = {}

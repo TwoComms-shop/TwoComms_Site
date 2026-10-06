@@ -17,6 +17,17 @@ def message(pk, role, text, **extra):
 
 
 class ConversationAgreementTests(SimpleTestCase):
+    def test_current_explicit_quote_resolves_old_unknown_amount_purpose(self):
+        rows = [message(1, "manager", "Додаткова вишивка коштує 200 грн"),
+            message(2, "user", "Без вишивки"),
+            message(3, "manager", "850 грн + 120 доставка = 970 грн")]
+        result = extract_conversation_agreement(rows)
+        self.assertEqual(result["payable_total"], "970.00")
+        self.assertEqual(result["merchandise_total"], "850.00")
+        self.assertNotIn("amount_purpose_unknown", result["uncertainty_reasons"])
+        unresolved = extract_conversation_agreement(rows[:2])
+        self.assertIn("amount_purpose_unknown", unresolved["uncertainty_reasons"])
+
     def extract(self, offer, answer="Так", **seller):
         return extract_conversation_agreement([
             message(10, "manager", offer, **seller), message(11, "user", answer),

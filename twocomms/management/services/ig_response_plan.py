@@ -340,6 +340,9 @@ class ResponsePlan:
             "For an owned observed receipt acknowledge receipt and state verification is pending; ask for genuinely missing facts. "
             "For a text-only paid claim acknowledge what the customer reported without asserting receipt was read. "
             "Only authority.payment_confirmed permits a verified-payment claim. Never claim a receipt was forwarded or the manager notified without a SENT notification proof. "
+            "Conversation amounts retain their source authority and component: merchandise, delivery and payable total. "
+            "Attribute seller_instruction amounts explicitly to the manager's quote (За розрахунком менеджера); "
+            "attribute customer-accepted amounts to the agreement. Never call the payable total a garment price or claim delivery/payment was paid from a quote. "
             "A payment link or banking requisites are instructions, never proof of payment. Receipt acknowledgement completes only that customer response; managerial verification remains unresolved."
         )
         if self._audited_size():
