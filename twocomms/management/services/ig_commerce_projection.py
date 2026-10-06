@@ -755,6 +755,10 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
         "order_id": first["episode"]["intended_order_id"] if first["episode"] else None,
         "reset_id": (first["reset"] or {}).get("pk"), "reset_floor": reset_floor, "source_namespace": namespace}
     watermark = _source_watermark(scope, namespace, owner["igsid"], now, customer_only=True)
+    if watermark["message_id"] is None:
+        # A reset can leave an old session with no source inside the current
+        # scope. It supplies no cart authority or valid capture watermark.
+        return unavailable("selection_source_unavailable")
     transitions = list(IgCommerceSelectionTransition.objects.filter(session=session,
         to_revision__lte=session.revision, source_message_id__gte=reset_floor)
         .select_related("session", "source_message__commerce_turn_decision").order_by("-to_revision")[:64])

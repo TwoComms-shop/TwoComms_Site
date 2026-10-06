@@ -13,6 +13,8 @@ from . import bot_views
 from . import bot_request_preview_views
 from . import bot_state_views
 from . import bot_commerce_scope_views
+from . import bot_decision_trace_views
+from . import bot_quality_observation_views
 from . import bot_human_document_views
 from . import ig_private_media_views
 from . import binotel_views
@@ -97,10 +99,14 @@ urlpatterns = [
     path('bot/api/checkout-proposals/<uuid:proposal_id>/action/', bot_views.bot_checkout_proposal_action_api, name='management_bot_checkout_proposal_action_api'),
     path('bot/api/settings/', bot_views.bot_settings_save_api, name='management_bot_settings_api'),
     path('bot/api/stats/', bot_views.bot_stats_api, name='management_bot_stats_api'),
+    path('bot/api/quality-observations/', bot_quality_observation_views.bot_quality_observations_api, name='management_bot_quality_observations_api'),
+    path('bot/api/quality-observations/export/', bot_quality_observation_views.bot_quality_observations_export_api, name='management_bot_quality_observations_export_api'),
     path('bot/api/technical-debt/', bot_views.bot_technical_debt_api, name='management_bot_technical_debt_api'),
     path('bot/api/technical-debt/<int:case_id>/transition/', bot_views.bot_technical_debt_transition_api, name='management_bot_technical_debt_transition_api'),
     path('bot/api/clients/', bot_views.bot_clients_api, name='management_bot_clients_api'),
     path('bot/api/clients/<int:client_id>/', bot_views.bot_client_detail_api, name='management_bot_client_detail_api'),
+    path('bot/api/clients/<int:client_id>/decision-traces/', bot_decision_trace_views.bot_decision_trace_index_api, name='management_bot_decision_trace_index_api'),
+    path('bot/api/clients/<int:client_id>/turn-revisions/<int:revision_id>/decision-trace/', bot_decision_trace_views.bot_decision_trace_api, name='management_bot_decision_trace_api'),
     path('bot/api/clients/<int:client_id>/state/', bot_state_views.bot_client_state_api, name='management_bot_client_state_api'),
     path('bot/api/clients/<int:client_id>/commerce-scope/', bot_commerce_scope_views.bot_client_commerce_scope_api, name='management_bot_client_commerce_scope_api'),
     path('bot/api/clients/<int:client_id>/state/size/', bot_state_views.bot_client_size_correction_api, name='management_bot_client_size_correction_api'),

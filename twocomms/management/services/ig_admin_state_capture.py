@@ -265,6 +265,10 @@ def _current_capture(client_id, expected_selection_revision, now):
             raise AdminStateReadError("selection_line_scope_unknown")
     namespace = _namespace()
     cart = capture_current_selection_lines(client_id, now=now, _owner_snapshot=first)
+    if cart.get("status") == "conflict":
+        # A conflict found inside the all-position reader cannot be downgraded
+        # into missing legacy data while the enclosing read continues.
+        raise AdminStateReadError("current_state_changed")
     canonical_cart = cart.get("status") == "captured"
     selection = {}
     if canonical_cart:
@@ -274,6 +278,8 @@ def _current_capture(client_id, expected_selection_revision, now):
         try:
             cart = validate_source_cart_capture(cart, head_boundary)
         except TurnContextError as exc:
+            if exc.reason == "source_cart_line_scope_changed":
+                raise AdminStateReadError("current_selection_scope_changed") from None
             raise AdminStateReadError(exc.reason) from None
         active = cart["lines"][cart["active_index"]] if cart["lines"] else {}
         selection = deepcopy(active.get("source_selection") or {})

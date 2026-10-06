@@ -267,7 +267,7 @@ class CurrentAdminStateTests(TestCase):
         for key, changed in (("recipient_id", "friend"), ("line_id", "second-line")):
             forged = deepcopy(original)
             forged["scope"][key] = changed
-            with patch("management.services.ig_commerce_projection.captured_selection_for", return_value=forged):
+            with patch("management.services.ig_commerce_projection.captured_selection_from_preferences", return_value=forged):
                 result = self.result()
             self.assertEqual((result.status, result.reason), ("conflict", "current_selection_scope_changed"))
             self.assertFalse(result.state.as_dict()["slots"])
@@ -337,9 +337,9 @@ class CurrentAdminStateTests(TestCase):
         self.partial()
         original = capture._payment_capture
         calls = 0
-        def changed(*args):
+        def changed(*args, **kwargs):
             nonlocal calls
-            value, reason = original(*args)
+            value, reason = original(*args, **kwargs)
             calls += 1
             return (value, "payment_changed_during_read") if calls == 2 else (value, reason)
         with patch.object(capture, "_payment_capture", side_effect=changed):

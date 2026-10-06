@@ -1,0 +1,10 @@
+................/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+.............Forbidden (CSRF cookie not set.): /bot/api/clients/32/reply-debts/14/review/
+.....................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 210 tests in 63.821s
+
+OK
+Found 210 test(s).
+System check identified no issues (0 silenced).
