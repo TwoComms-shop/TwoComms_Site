@@ -1274,7 +1274,7 @@
     const selectedProducts = (STATE.notes.brand_product_types || []).map((value) => productLabels[value] || value).join(", ") || "Не вказано";
     const lines = [
       "B2B-бриф",
-      `Бренд / компанія: ${STATE.notes.brand_name || "—"}`,
+      `Команда / організація: ${STATE.notes.brand_name || "—"}`,
       `Контактна особа: ${STATE.notes.brand_contact_person || "—"}`,
       `Канал: ${STATE.notes.brand_contact_channel || "—"} · ${STATE.notes.brand_contact_value || "—"}`,
       `Формат: ${STATE.notes.brand_business_type || "—"}`,
