@@ -1,0 +1,67 @@
+Unable to repair hosted settlement projection 1
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/services/ig_checkout_payment.py", line 1348, in _repair_hosted_settlement
+    reconcile_payment_projection(projection_id)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: worker lost
+....Assisted attempt 5 provider identity/currency mismatch -> checking
+Assisted attempt 5 provider identity/currency mismatch -> checking
+Assisted attempt 5 provider identity/currency mismatch -> checking
+Assisted attempt 5 provider identity/currency mismatch -> checking
+.................................................Assisted attempt 66 provider identity/currency mismatch -> checking
+Assisted attempt 66 provider identity/currency mismatch -> checking
+..........................................................................ig_bot event=send level=error detail=provider receipt checkpoint failed
+................ig_bot event=send level=error detail=HTTP 503 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.............ig_bot event=send level=error detail=HTTP 503 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 2
+...ig_bot event=send level=error detail=HTTP 429 [retryable] ліміт частоти (retry пізніше)
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+..........ig_bot event=reply_truncated_before_send level=error detail=ig-lifecycle-test: empty_reply (0B → 0B)
+..................Assisted attempt 167 provider identity/currency mismatch -> checking
+Assisted attempt 167 provider identity/currency mismatch -> checking
+Assisted attempt 167 provider identity/currency mismatch -> checking
+...............FF....
+======================================================================
+FAIL: test_initial_conversion_commits_before_waiting_partial_refund_dispatch (management.tests_ig_hosted_settlement.NativeHostedSettlementTests.test_initial_conversion_commits_before_waiting_partial_refund_dispatch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_hosted_settlement.py", line 582, in test_initial_conversion_commits_before_waiting_partial_refund_dispatch
+    self._initial_conversion_race(status="success", net=65000)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_hosted_settlement.py", line 573, in _initial_conversion_race
+    self.workers([initial_conversion, newer_observation])
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_hosted_settlement.py", line 396, in workers
+    self.assertTrue(success, repr(value))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : AssertionError("None != Decimal('0')")
+
+======================================================================
+FAIL: test_initial_conversion_commits_before_waiting_reversal_dispatch (management.tests_ig_hosted_settlement.NativeHostedSettlementTests.test_initial_conversion_commits_before_waiting_reversal_dispatch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_hosted_settlement.py", line 585, in test_initial_conversion_commits_before_waiting_reversal_dispatch
+    self._initial_conversion_race(status="reversed", net=0)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_hosted_settlement.py", line 573, in _initial_conversion_race
+    self.workers([initial_conversion, newer_observation])
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_hosted_settlement.py", line 396, in workers
+    self.assertTrue(success, repr(value))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : AssertionError("None != Decimal('0')")
+
+----------------------------------------------------------------------
+Ran 210 tests in 30.520s
+
+FAILED (failures=2)
+Found 210 test(s).
+System check identified no issues (0 silenced).

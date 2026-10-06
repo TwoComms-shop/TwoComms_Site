@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 import secrets
-from datetime import timedelta
+from datetime import timedelta, timezone as datetime_timezone
 from decimal import Decimal
 
 from django.conf import settings
@@ -1230,6 +1230,227 @@ def record_late_local_payment_for_review(
     return True
 
 
+def _explicit_provider_time(payload):
+    try:
+        parsed = parse_datetime(str(payload.get("modifiedDate") or "")) if isinstance(payload, dict) else None
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(datetime_timezone.utc) if parsed is not None and timezone.is_aware(parsed) else None
+
+
+def _attempt_success_provider_time(attempt):
+    for observation in reversed(list(attempt.payment_history or [])):
+        if isinstance(observation, dict) and observation.get("status") == "success":
+            return _explicit_provider_time(observation.get("payload"))
+    return None
+
+
+def _settlement_minor(value):
+    # Same exact minor-unit forms admitted by the existing hosted success gate.
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 18 and (value == "0" or not value.startswith("0")):
+        return int(value)
+    return None
+
+
+def _provider_aliases_match(attempt, payload, *, status, require_complete=True):
+    """Every supplied provider alias must attest the same exact receipt."""
+    if not isinstance(payload, dict):
+        return False
+    merchant = payload.get("merchantPaymInfo")
+    if merchant is not None and not isinstance(merchant, dict):
+        return False
+    merchant = merchant or {}
+    invoices = [payload[key] for key in ("invoiceId", "invoice_id") if key in payload]
+    references = [payload["reference"]] if "reference" in payload else []
+    if "reference" in merchant:
+        references.append(merchant["reference"])
+    currencies = [payload[key] for key in ("ccy", "currencyCode") if key in payload]
+    statuses = [payload[key] for key in ("status", "statusCode") if key in payload]
+    if require_complete and not (attempt.monobank_invoice_id and attempt.reference and invoices
+            and references and currencies and statuses):
+        return False
+    return bool(all(str(value) == str(attempt.monobank_invoice_id) for value in invoices)
+        and all(str(value) == str(attempt.reference) for value in references)
+        and all(str(value) in {"980", "UAH"} for value in currencies)
+        and all(str(value).lower() == status for value in statuses))
+
+
+def _initial_hosted_payment_reason(attempt, payload, *, status="success"):
+    if not _provider_aliases_match(attempt, payload, status=status, require_complete=False):
+        return "identity_currency_mismatch"
+    values = [_settlement_minor(payload[key]) for key in ("paidAmount", "finalAmount", "amount")
+        if payload.get(key) is not None]
+    if not values:
+        return "amount_missing"
+    if any(value is None for value in values):
+        return "amount_malformed"
+    if len(set(values)) != 1:
+        return "amount_conflict"
+    return "" if values[0] == int(Decimal(str(attempt.payment_amount)) * 100) else "amount_mismatch"
+
+
+def normalize_attempt_settlement(attempt, *, status, payload, source):
+    """Validate a post-payment observation using existing provider fields.
+
+    The initial invoice/winner amount gate is unchanged. Missing financial or
+    provider-version evidence never manufactures a refund or cancellation.
+    """
+    canonical_source = {"webhook": "provider_webhook", "signed_webhook": "signed_webhook",
+        "provider_webhook": "provider_webhook", "return": "provider_pull", "ig_reconcile": "provider_pull",
+        "provider_pull": "provider_pull", "provider": "provider", "poll": "provider_pull"}.get(source)
+    normalized = str(status or "").lower()
+    if canonical_source is None or normalized not in {"success", "reversed"}:
+        return {"reason": "settlement_source_or_status_unknown"}
+    if not isinstance(payload, dict):
+        return {"reason": "settlement_payload_missing"}
+    if not _provider_aliases_match(attempt, payload, status=normalized):
+        return {"reason": "settlement_identity_currency_mismatch"}
+    invoice, reference = str(attempt.monobank_invoice_id), str(attempt.reference)
+    provider_time = _explicit_provider_time(payload)
+    if provider_time is None:
+        return {"reason": "settlement_provider_version_unknown"}
+    gross, final = _settlement_minor(payload.get("amount")), _settlement_minor(payload.get("finalAmount"))
+    expected = int(Decimal(str(attempt.payment_amount)) * 100)
+    if gross is None or final is None:
+        return {"reason": "settlement_amount_missing_or_malformed"}
+    if gross != expected or gross <= 0 or not 0 <= final <= gross:
+        return {"reason": "settlement_amount_mismatch"}
+    if payload.get("paidAmount") is not None and _settlement_minor(payload["paidAmount"]) != gross:
+        return {"reason": "settlement_amount_conflict"}
+    if normalized == "reversed" and final != 0:
+        return {"reason": "settlement_reversal_amount_unknown"}
+    evidence = {"attempt_id": attempt.pk, "attempt_reference": reference, "invoice_id": invoice,
+        "status": normalized, "ccy": "980", "amount": gross, "finalAmount": final,
+        "modifiedDate": provider_time.isoformat()}
+    return {"reason": "", "source": canonical_source, "provider_time": provider_time,
+        "gross": Decimal(gross) / 100, "final": Decimal(final) / 100, "evidence": evidence}
+
+
+def _settlement_review(attempt, deal, reason):
+    from management.models import IgBotNotification
+    marker = {"reason": reason, "attempt_id": attempt.pk, "invoice_id": attempt.monobank_invoice_id}
+    state = dict(attempt.event_state or {})
+    state["payment_settlement_review"] = marker
+    attempt.event_state = state
+    attempt.save(update_fields=["event_state", "updated"])
+    IgBotNotification.objects.get_or_create(
+        dedupe_key=f"hosted-settlement:{attempt.pk}:{reason}", defaults={
+            "client_id": deal.client_id, "event_type": "hosted_settlement_review",
+            "payload": {"text": f"IG payment requires review: attempt {attempt.pk}; {reason}.", "chat_id": "", **marker},
+            "status": IgBotNotification.Status.PENDING})
+
+
+def _repair_hosted_settlement(projection_id):
+    try:
+        from management.services.bot_payments import reconcile_payment_projection
+        reconcile_payment_projection(projection_id)
+    except Exception:
+        # The committed needs_reconciliation flag remains the durable backstop.
+        logger.exception("Unable to repair hosted settlement projection %s", projection_id)
+
+
+def _owned_settlement_projection(projection, attempt, deal):
+    from secrets import compare_digest
+    from management.models import provider_evidence_signature
+    event = projection.last_event
+    if (event is None or event.deal_id != deal.pk or event.client_id != deal.client_id
+            or event.provider != "monobank" or event.invoice_id != attempt.monobank_invoice_id
+            or event.currency != "UAH" or event.amount_valid is not True):
+        return False
+    expected = provider_evidence_signature(deal_id=deal.pk, client_id=deal.client_id,
+        provider=event.provider, source=event.source, invoice_id=event.invoice_id,
+        provider_status=event.provider_status, payload_digest=event.payload_digest)
+    return compare_digest(str((event.evidence or {}).get("signature") or ""), expected)
+
+
+@transaction.atomic
+def project_attempt_settlement(attempt_id, *, status, payload, source):
+    """Project one proved hosted settlement; reuse the existing payment ledger."""
+    from management.models import IgPaymentEvent, IgPaymentProjection, IgCheckoutInvoiceGeneration, provider_evidence_signature
+    attempt, deal, proposal = _lock_attempt_proposal_graph(attempt_id)
+    if deal is None or proposal is None:
+        return {"handled": False, "applied": False, "reason": "not_hosted_checkout"}
+    if proposal.client_id != deal.client_id or str(proposal.currency or "UAH") != "UAH" or str(deal.currency or "UAH") != "UAH":
+        _settlement_review(attempt, deal, "settlement_owner_currency_mismatch")
+        return {"handled": True, "applied": False, "reason": "settlement_owner_currency_mismatch"}
+    observation = normalize_attempt_settlement(attempt, status=status, payload=payload, source=source)
+    if observation["reason"]:
+        _settlement_review(attempt, deal, observation["reason"])
+        return {"handled": True, "applied": False, "reason": observation["reason"]}
+    evidence = observation["evidence"]
+    projection = IgPaymentProjection.objects.select_for_update().filter(deal=deal, client_id=deal.client_id).first()
+    if (projection is not None and projection.last_event_id
+            and _owned_settlement_projection(projection, attempt, deal)
+            and proposal.payment_attempt_id == attempt.pk
+            and _explicit_provider_time(projection.last_event.evidence) == observation["provider_time"]
+            and projection.provider_modified_at == observation["provider_time"]
+            and projection.last_event.provider_status == evidence["status"]
+            and projection.gross_amount == observation["gross"] and projection.net_paid_amount == observation["final"]):
+        return {"handled": True, "applied": False, "reason": "settlement_receipt_replay", "event_id": projection.last_event_id}
+    digest = hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    evidence = {**evidence, "signature": provider_evidence_signature(deal_id=deal.pk, client_id=deal.client_id,
+        provider="monobank", source=observation["source"], invoice_id=attempt.monobank_invoice_id,
+        provider_status=evidence["status"], payload_digest=digest)}
+    event, _created = IgPaymentEvent.objects.get_or_create(event_key=hashlib.sha256(
+        f"hosted-settlement:{attempt.pk}:{digest}".encode()).hexdigest(), defaults={
+            "deal": deal, "client_id": deal.client_id, "provider": "monobank", "source": observation["source"],
+            "invoice_id": attempt.monobank_invoice_id, "provider_status": evidence["status"],
+            "provider_modified_at": observation["provider_time"], "gross_amount": observation["gross"],
+            "final_amount": observation["final"], "refunded_amount": observation["gross"] - observation["final"],
+            "amount_valid": True, "currency": "UAH", "evidence": evidence, "payload_digest": digest})
+    winner = (IgCheckoutInvoiceGeneration.objects.filter(pk=proposal.winner_invoice_generation_id)
+        .values_list("payment_attempt_id", flat=True).first()) if proposal.winner_invoice_generation_id else None
+    if (winner is not None and winner != attempt.pk) or (projection is not None and projection.last_event_id
+            and projection.last_event.invoice_id != attempt.monobank_invoice_id):
+        reason = "settlement_non_winner_receipt_review"
+    elif projection is None or not projection.last_event_id:
+        reason = "settlement_paid_receipt_binding_unknown"
+    elif proposal.payment_attempt_id != attempt.pk or deal.order_id != attempt.order_id:
+        reason = "settlement_order_binding_mismatch"
+    elif not _owned_settlement_projection(projection, attempt, deal):
+        reason = "settlement_prior_receipt_unknown"
+    elif projection.gross_amount != observation["gross"]:
+        reason = "settlement_prior_amount_conflict"
+    elif (not projection.provider_modified_at or not _explicit_provider_time(projection.last_event.evidence)
+            or _explicit_provider_time(projection.last_event.evidence) != projection.provider_modified_at):
+        reason = "settlement_prior_version_unknown"
+    elif observation["provider_time"] < projection.provider_modified_at:
+        return {"handled": True, "applied": False, "reason": "settlement_stale_provider_version", "event_id": event.pk}
+    elif observation["provider_time"] == projection.provider_modified_at:
+        if projection.gross_amount == observation["gross"] and projection.net_paid_amount == observation["final"]:
+            return {"handled": True, "applied": False, "reason": "settlement_receipt_replay", "event_id": event.pk}
+        reason = "settlement_provider_version_conflict"
+    elif observation["final"] > projection.net_paid_amount:
+        reason = "settlement_net_increase_review"
+    else:
+        reason = ""
+    if reason:
+        _settlement_review(attempt, deal, reason)
+        return {"handled": True, "applied": False, "reason": reason, "event_id": event.pk}
+    projection.truth = (deal.PaymentTruth.REVERSED if evidence["status"] == "reversed"
+        else deal.PaymentTruth.REFUNDED if observation["final"] == 0
+        else deal.PaymentTruth.PARTIALLY_REFUNDED if observation["final"] < observation["gross"]
+        else deal.PaymentTruth.CONFIRMED)
+    projection.gross_amount = observation["gross"]
+    projection.refunded_amount = observation["gross"] - observation["final"]
+    projection.provider_modified_at = observation["provider_time"]
+    projection.last_event = event
+    projection.needs_reconciliation = True
+    projection.reconciled_at = None
+    projection.save()
+    if projection.truth in {deal.PaymentTruth.REVERSED, deal.PaymentTruth.REFUNDED}:
+        from management.services.bot_payments import _reconcile_reversed_order, _ensure_reversal_review_outbox
+        _reconcile_reversed_order(deal, truth=projection.truth)
+        _ensure_reversal_review_outbox(deal, projection.truth)
+    elif projection.truth == deal.PaymentTruth.PARTIALLY_REFUNDED:
+        _settlement_review(attempt, deal, "settlement_partial_refund_review")
+    transaction.on_commit(lambda projection_id=projection.pk: _repair_hosted_settlement(projection_id))
+    return {"handled": True, "applied": True, "reason": "settlement_projected", "event_id": event.pk, "projection_id": projection.pk}
+
+
+@transaction.atomic
 def project_verified_payment_without_order(
     *,
     attempt,
@@ -1243,7 +1464,14 @@ def project_verified_payment_without_order(
         IgPaymentProjection,
         provider_evidence_signature,
     )
+    current_attempt, current_deal, current_proposal = _lock_attempt_proposal_graph(attempt.pk)
+    if (current_deal is None or current_proposal is None or current_deal.pk != deal.pk
+            or current_proposal.pk != proposal.pk or current_deal.client_id != deal.client_id
+            or current_proposal.client_id != current_deal.client_id):
+        raise ValueError("hosted_payment_scope_changed")
+    attempt, deal, proposal = current_attempt, current_deal, current_proposal
     now = timezone.now()
+    provider_time = _attempt_success_provider_time(attempt)
     verified_at = verified_at or _verified_payment_at(attempt, fallback=now)
     paid_amount = Decimal(attempt.paid_amount or attempt.payment_amount or 0).quantize(Decimal("0.01"))
     evidence_payload = {
@@ -1252,6 +1480,7 @@ def project_verified_payment_without_order(
         "invoice_id": attempt.monobank_invoice_id,
         "status": "success",
         "amount": str(paid_amount),
+        "modifiedDate": provider_time.isoformat() if provider_time else "",
     }
     payload_digest = hashlib.sha256(
         json.dumps(evidence_payload, sort_keys=True, separators=(",", ":")).encode()
@@ -1276,7 +1505,7 @@ def project_verified_payment_without_order(
             "source": source,
             "invoice_id": attempt.monobank_invoice_id[:128],
             "provider_status": "success",
-            "provider_modified_at": verified_at,
+            "provider_modified_at": provider_time or verified_at,
             "gross_amount": paid_amount,
             "final_amount": paid_amount,
             "refunded_amount": Decimal("0.00"),
@@ -1286,16 +1515,31 @@ def project_verified_payment_without_order(
             "payload_digest": payload_digest,
         },
     )
-    projection, _ = IgPaymentProjection.objects.get_or_create(
+    projection, projection_created = IgPaymentProjection.objects.select_for_update().get_or_create(
         deal=deal,
         defaults={"client": deal.client},
     )
+    # A late losing receipt remains append-only evidence; it does not become
+    # the winner order's payment provenance. Duplicate binding also cannot
+    # erase an admitted refund/reversal or a later provider version.
+    winner = proposal.winner_invoice_generation_id
+    if winner:
+        from management.models import IgCheckoutInvoiceGeneration
+        winner_attempt = IgCheckoutInvoiceGeneration.objects.filter(pk=winner).values_list("payment_attempt_id", flat=True).first()
+        if winner_attempt != attempt.pk:
+            return payment_event, projection
+    if not projection_created and projection.last_event_id:
+        if (projection.truth in {deal.PaymentTruth.REFUNDED, deal.PaymentTruth.REVERSED}
+                or projection.refunded_amount > 0
+                or (projection.provider_modified_at and verified_at < projection.provider_modified_at)
+                or projection.last_event_id == payment_event.pk):
+            return payment_event, projection
     projection.client = deal.client
     projection.truth = deal.PaymentTruth.CONFIRMED
     projection.gross_amount = paid_amount
     projection.refunded_amount = Decimal("0.00")
     projection.paid_at = projection.paid_at or deal.paid_at or verified_at
-    projection.provider_modified_at = verified_at
+    projection.provider_modified_at = provider_time or verified_at
     projection.last_event = payment_event
     projection.needs_reconciliation = False
     projection.reconciled_at = now
@@ -1328,6 +1572,9 @@ def bind_verified_payment(attempt_id, order):
         proposal=proposal,
         verified_at=verified_at,
     )
+    if (_projection.truth != deal.PaymentTruth.CONFIRMED or _projection.refunded_amount > 0
+            or not _projection.last_event_id or _projection.last_event.invoice_id != attempt.monobank_invoice_id):
+        return None
 
     try:
         generation = attempt.instagram_checkout_generation

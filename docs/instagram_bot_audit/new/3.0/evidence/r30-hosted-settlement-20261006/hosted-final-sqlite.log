@@ -1,0 +1,258 @@
+Creating test database for alias 'default'...
+Destroying old test database for alias 'default'...
+Unable to repair hosted settlement projection 1
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/services/ig_checkout_payment.py", line 1347, in _repair_hosted_settlement
+    reconcile_payment_projection(projection_id)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: worker lost
+.....................FFFF..FF..........FFF...FF......FFFFFFFFF........................................................................ig_bot event=send level=error detail=provider receipt checkpoint failed
+................ig_bot event=send level=error detail=HTTP 503 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.............ig_bot event=send level=error detail=HTTP 503 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 2
+...ig_bot event=send level=error detail=HTTP 429 [retryable] ліміт частоти (retry пізніше)
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+..........ig_bot event=reply_truncated_before_send level=error detail=ig-lifecycle-test: empty_reply (0B → 0B)
+..................F..............ssssss
+======================================================================
+FAIL: test_ambiguity_then_manager_order_late_success_never_creates_second_order (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_ambiguity_then_manager_order_late_success_never_creates_second_order)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 2539, in test_ambiguity_then_manager_order_late_success_never_creates_second_order
+    self.assertEqual(generation.state, generation.State.LATE_PAID_REVIEW)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'ambiguity_review' != IgCheckoutInvoiceGeneration.State.LATE_PAID_REVIEW
+
+======================================================================
+FAIL: test_authenticated_stale_promo_generation_enters_resource_review (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_authenticated_stale_promo_generation_enters_resource_review)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 2452, in test_authenticated_stale_promo_generation_enters_resource_review
+    self.assertEqual(first.state, first.State.RESOURCE_REVIEW)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'failed' != IgCheckoutInvoiceGeneration.State.RESOURCE_REVIEW
+
+======================================================================
+FAIL: test_authenticated_v2_promo_repeated_failure_enters_manual_review (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_authenticated_v2_promo_repeated_failure_enters_manual_review)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 2238, in test_authenticated_v2_promo_repeated_failure_enters_manual_review
+    self.assertFalse(
+    ~~~~~~~~~~~~~~~~^
+        (attempt.event_state or {}).get("promo_consumption_pending")
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_authenticated_v2_promo_transient_reconciles_once_without_webhook (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_authenticated_v2_promo_transient_reconciles_once_without_webhook)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 2130, in test_authenticated_v2_promo_transient_reconciles_once_without_webhook
+    self.assertTrue(
+    ~~~~~~~~~~~~~~~^
+        (attempt.event_state or {}).get("promo_consumption_pending")
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+AssertionError: None is not true
+
+======================================================================
+FAIL: test_create_response_after_webhook_winner_only_settles_identity (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_create_response_after_webhook_winner_only_settles_identity)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 339, in test_create_response_after_webhook_winner_only_settles_identity
+    self._provider_create_with_webhook_winner(timeout_after_webhook=False)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 259, in _provider_create_with_webhook_winner
+    self.assertEqual(proposal.status, proposal.Status.PAID)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'details_locked' != IgCheckoutProposal.Status.PAID
+
+======================================================================
+FAIL: test_create_timeout_after_webhook_winner_is_ignored_transport (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_create_timeout_after_webhook_winner_is_ignored_transport)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 342, in test_create_timeout_after_webhook_winner_is_ignored_transport
+    self._provider_create_with_webhook_winner(timeout_after_webhook=True)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 259, in _provider_create_with_webhook_winner
+    self.assertEqual(proposal.status, proposal.Status.PAID)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'details_locked' != IgCheckoutProposal.Status.PAID
+
+======================================================================
+FAIL: test_late_old_success_with_released_stock_enters_review_not_order (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_late_old_success_with_released_stock_enters_review_not_order)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 1470, in test_late_old_success_with_released_stock_enters_review_not_order
+    self.assertEqual(first.state, first.State.RESOURCE_REVIEW)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'failed' != IgCheckoutInvoiceGeneration.State.RESOURCE_REVIEW
+
+======================================================================
+FAIL: test_late_paid_loser_never_creates_second_order_or_downgrades_winner (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_late_paid_loser_never_creates_second_order_or_downgrades_winner)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 1374, in test_late_paid_loser_never_creates_second_order_or_downgrades_winner
+    self.assertEqual(first.state, first.State.LATE_PAID_REVIEW)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'failed' != IgCheckoutInvoiceGeneration.State.LATE_PAID_REVIEW
+
+======================================================================
+FAIL: test_late_pending_status_cannot_downgrade_winner (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_late_pending_status_cannot_downgrade_winner)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 2304, in test_late_pending_status_cannot_downgrade_winner
+    self.assertEqual(generation.payment_attempt.status, PaymentAttempt.Status.CONVERTED)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'processing' != PaymentAttempt.Status.CONVERTED
+
+======================================================================
+FAIL: test_old_create_settlement_after_newer_winner_never_mutates_paid_proposal (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_old_create_settlement_after_newer_winner_never_mutates_paid_proposal)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 429, in test_old_create_settlement_after_newer_winner_never_mutates_paid_proposal
+    self.assertEqual(proposal.status, proposal.Status.PAID)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'manager_review' != IgCheckoutProposal.Status.PAID
+
+======================================================================
+FAIL: test_old_negative_callback_cannot_downgrade_paid_winner (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_old_negative_callback_cannot_downgrade_paid_winner)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 1408, in test_old_negative_callback_cannot_downgrade_paid_winner
+    self.assertEqual(proposal.status, proposal.Status.PAID)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'manager_review' != IgCheckoutProposal.Status.PAID
+
+======================================================================
+FAIL: test_success_status_requires_exact_explicit_provider_amount (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_success_status_requires_exact_explicit_provider_amount) (payload={'status': 'success', 'invoiceId': 'v2-exact-amount', 'merchantPaymInfo': {'reference': 'PA-5B7F4E4F25644F729327'}, 'ccy': 980})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 578, in test_success_status_requires_exact_explicit_provider_amount
+    self.assertEqual(status, "processing")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'success' != 'processing'
+- success
++ processing
+
+
+======================================================================
+FAIL: test_success_status_requires_exact_explicit_provider_amount (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_success_status_requires_exact_explicit_provider_amount) (payload={'status': 'success', 'invoiceId': 'v2-exact-amount', 'merchantPaymInfo': {'reference': 'PA-5B7F4E4F25644F729327'}, 'ccy': 980, 'paidAmount': '90000.0'})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 578, in test_success_status_requires_exact_explicit_provider_amount
+    self.assertEqual(status, "processing")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'success' != 'processing'
+- success
++ processing
+
+
+======================================================================
+FAIL: test_success_status_requires_exact_explicit_provider_amount (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_success_status_requires_exact_explicit_provider_amount) (payload={'status': 'success', 'invoiceId': 'v2-exact-amount', 'merchantPaymInfo': {'reference': 'PA-5B7F4E4F25644F729327'}, 'ccy': 980, 'paidAmount': '9999999999999999999'})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 578, in test_success_status_requires_exact_explicit_provider_amount
+    self.assertEqual(status, "processing")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'success' != 'processing'
+- success
++ processing
+
+
+======================================================================
+FAIL: test_success_status_requires_exact_explicit_provider_amount (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_success_status_requires_exact_explicit_provider_amount) (payload={'status': 'success', 'invoiceId': 'v2-exact-amount', 'merchantPaymInfo': {'reference': 'PA-5B7F4E4F25644F729327'}, 'ccy': 980, 'paidAmount': 89999})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 578, in test_success_status_requires_exact_explicit_provider_amount
+    self.assertEqual(status, "processing")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'success' != 'processing'
+- success
++ processing
+
+
+======================================================================
+FAIL: test_success_status_requires_exact_explicit_provider_amount (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_success_status_requires_exact_explicit_provider_amount) (payload={'status': 'success', 'invoiceId': 'v2-exact-amount', 'merchantPaymInfo': {'reference': 'PA-5B7F4E4F25644F729327'}, 'ccy': 980, 'paidAmount': 90000, 'finalAmount': 89999})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 578, in test_success_status_requires_exact_explicit_provider_amount
+    self.assertEqual(status, "processing")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'success' != 'processing'
+- success
++ processing
+
+
+======================================================================
+FAIL: test_success_status_requires_exact_explicit_provider_amount (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_success_status_requires_exact_explicit_provider_amount) (payload={'status': 'success', 'invoiceId': 'v2-exact-amount', 'merchantPaymInfo': {'reference': 'PA-5B7F4E4F25644F729327'}, 'ccy': 840, 'paidAmount': 90000})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 578, in test_success_status_requires_exact_explicit_provider_amount
+    self.assertEqual(status, "processing")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'success' != 'processing'
+- success
++ processing
+
+
+======================================================================
+FAIL: test_success_status_requires_exact_explicit_provider_amount (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_success_status_requires_exact_explicit_provider_amount) (payload={'status': 'success', 'invoiceId': 'v2-exact-amount', 'merchantPaymInfo': {'reference': 'wrong-reference'}, 'ccy': 980, 'paidAmount': 90000})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 578, in test_success_status_requires_exact_explicit_provider_amount
+    self.assertEqual(status, "processing")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'success' != 'processing'
+- success
++ processing
+
+
+======================================================================
+FAIL: test_success_status_requires_exact_explicit_provider_amount (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_success_status_requires_exact_explicit_provider_amount)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 613, in test_success_status_requires_exact_explicit_provider_amount
+    self.assertTrue(valid_created)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_verified_winner_materializes_one_idempotent_order (management.tests_ig_checkout_generation_runtime.CheckoutGenerationRuntimeTests.test_verified_winner_materializes_one_idempotent_order)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_checkout_generation_runtime.py", line 1321, in test_verified_winner_materializes_one_idempotent_order
+    self.assertTrue(created)
+    ~~~~~~~~~~~~~~~^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_assisted_success_requires_matching_provider_identity_and_currency (orders.tests.test_payment_attempts.PaymentAttemptLifecycleTests.test_assisted_success_requires_matching_provider_identity_and_currency)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/orders/tests/test_payment_attempts.py", line 340, in test_assisted_success_requires_matching_provider_identity_and_currency
+    self.assertEqual(status, 'processing')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'success' != 'processing'
+- success
++ processing
+
+
+----------------------------------------------------------------------
+Ran 210 tests in 12.620s
+
+FAILED (failures=21, skipped=6)
+Destroying test database for alias 'default'...
+Found 210 test(s).
+System check identified no issues (0 silenced).

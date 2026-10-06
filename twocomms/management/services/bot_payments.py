@@ -803,14 +803,34 @@ def reconcile_payment_projection(projection_id: int) -> bool:
     """Repair one projection's order/outbox and legacy mirrors idempotently."""
     from django.db import transaction
     from management.models import IgPaymentProjection
+    locator = IgPaymentProjection.objects.filter(pk=projection_id).values("deal_id").first()
+    hosted_attempt = None
+    if locator is not None:
+        from management.models import IgCheckoutProposal
+        hosted_attempt = IgCheckoutProposal.objects.filter(deal_id=locator["deal_id"],
+            payment_attempt_id__isnull=False).order_by("-pk").values_list("payment_attempt_id", flat=True).first()
 
     with transaction.atomic():
-        projection = (
-            IgPaymentProjection.objects.select_related("deal__client")
-            .select_for_update()
-            .filter(pk=projection_id)
-            .first()
-        )
+        if hosted_attempt is not None:
+            # Hosted ingestion holds Deal→Proposal→Generation→Attempt before
+            # Projection. A joined Projection FOR UPDATE would reverse this
+            # prefix and also lock unrelated client rows during repair.
+            from management.services.ig_checkout_payment import _lock_attempt_proposal_graph
+            _attempt, deal, _proposal = _lock_attempt_proposal_graph(hosted_attempt)
+            if deal is None or deal.pk != locator["deal_id"]:
+                return False
+            projection = IgPaymentProjection.objects.select_for_update().filter(
+                pk=projection_id, deal_id=deal.pk).first()
+            if projection is not None:
+                projection._state.fields_cache["deal"] = deal
+        else:
+            # Preserve the established non-hosted settlement path.
+            projection = (
+                IgPaymentProjection.objects.select_related("deal__client")
+                .select_for_update()
+                .filter(pk=projection_id)
+                .first()
+            )
         if not projection:
             return False
         if projection.truth in {
@@ -819,6 +839,13 @@ def reconcile_payment_projection(projection_id: int) -> bool:
         }:
             _reconcile_reversed_order(projection.deal, truth=projection.truth)
             _ensure_reversal_review_outbox(projection.deal, projection.truth)
+        if hosted_attempt is not None:
+            # Keep the current receipt locked through every mirror write and
+            # dirty-flag acknowledgement. No stale projection may escape this
+            # prefix and overwrite a newer worker's completed repair.
+            _sync_legacy_payment_mirror(projection)
+            _mark_projection_reconciled(projection.pk)
+            return True
     _sync_legacy_payment_mirror(projection)
     _mark_projection_reconciled(projection.pk)
     return True

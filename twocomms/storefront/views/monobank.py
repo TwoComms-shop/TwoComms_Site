@@ -2197,18 +2197,19 @@ def _resolve_attempt_invoice_status(attempt, invoice_id, fallback_status=None):
         fallback = (fallback_status or '').lower()
         return (fallback if fallback in MONOBANK_PENDING_STATUSES | MONOBANK_FAILURE_STATUSES else None), status_payload
     status_lower = str(status_value).lower()
+    snapshot = attempt.cart_snapshot if isinstance(attempt.cart_snapshot, dict) else {}
+    if (snapshot.get('checkout_surface') == 'instagram_proposal'
+            and (attempt.order_id or Decimal(attempt.paid_amount or 0) > 0)
+            and status_lower in {'success', 'reversed'}):
+        # Paid receipts use the canonical gross/net gate. An initial preview
+        # may be stale; its unmodified receipt fields survive below for locked
+        # dispatch to recheck whether conversion committed while it waited.
+        return status_lower, status_payload
     if status_lower in MONOBANK_SUCCESS_STATUSES:
         snapshot = attempt.cart_snapshot if isinstance(attempt.cart_snapshot, dict) else {}
         if snapshot.get('checkout_surface') == 'instagram_proposal':
-            response_invoice_id = status_payload.get('invoiceId') or status_payload.get('invoice_id')
-            merchant_info = status_payload.get('merchantPaymInfo') or {}
-            response_reference = status_payload.get('reference') or merchant_info.get('reference')
-            response_currency = status_payload.get('ccy') or status_payload.get('currencyCode')
-            if (
-                str(response_invoice_id or '') != str(attempt.monobank_invoice_id or invoice_id or '')
-                or str(response_reference or '') != str(attempt.reference)
-                or str(response_currency or '') not in {'980', 'UAH'}
-            ):
+            from management.services.ig_checkout_payment import _provider_aliases_match
+            if not _provider_aliases_match(attempt, status_payload, status=status_lower):
                 monobank_logger.error(
                     'Assisted attempt %s provider identity/currency mismatch -> checking',
                     attempt.pk,
@@ -2225,21 +2226,12 @@ def _resolve_attempt_invoice_status(attempt, invoice_id, fallback_status=None):
                 paid = status_payload.get(field)
                 if paid is None:
                     continue
-                if isinstance(paid, bool):
+                from management.services.ig_checkout_payment import _settlement_minor
+                paid_minor = _settlement_minor(paid)
+                if paid_minor is None:
                     observed_amounts = None
                     break
-                if isinstance(paid, int):
-                    observed_amounts.append(paid)
-                elif (
-                    isinstance(paid, str)
-                    and paid.isdigit()
-                    and len(paid) <= 18
-                    and (paid == '0' or not paid.startswith('0'))
-                ):
-                    observed_amounts.append(int(paid))
-                else:
-                    observed_amounts = None
-                    break
+                observed_amounts.append(paid_minor)
         if observed_amounts == []:
             status_payload = {
                 **status_payload,
@@ -2296,6 +2288,28 @@ def _apply_payment_attempt_status(attempt, status, payload=None, source='webhook
     )
 
     attempt, _deal, _proposal = _lock_attempt_proposal_graph(attempt.pk)
+    if (_proposal is not None and status == 'processing' and isinstance(payload, dict)
+            and payload.get("_twc_reconciliation_reason")
+            and (attempt.order_id or Decimal(attempt.paid_amount or 0) > 0)):
+        raw_status = str(payload.get('status') or payload.get('statusCode') or '').lower()
+        if raw_status in {'success', 'reversed'}:
+            status = raw_status
+    if (_proposal is not None and status in {'success', 'reversed'}
+            and (attempt.order_id or Decimal(attempt.paid_amount or 0) > 0)):
+        from management.services.ig_checkout_payment import project_attempt_settlement
+        project_attempt_settlement(attempt.pk, status=status, payload=payload, source=source)
+        return (attempt.order if status == 'success' and attempt.order_id else None), False
+    if _proposal is not None and status == 'reversed':
+        from management.services.ig_checkout_payment import _provider_aliases_match
+        if not _provider_aliases_match(attempt, payload, status=status, require_complete=False):
+            payload = {**(payload or {}), "_twc_reconciliation_reason": "identity_currency_mismatch"}
+            status = 'processing'
+    if _proposal is not None and status in MONOBANK_SUCCESS_STATUSES:
+        from management.services.ig_checkout_payment import _initial_hosted_payment_reason
+        reason = _initial_hosted_payment_reason(attempt, payload, status=status)
+        if reason:
+            payload = {**(payload or {}), "_twc_reconciliation_reason": reason}
+            status = 'processing'
     if status in MONOBANK_SUCCESS_STATUSES:
         local_terminal = dict(
             (attempt.event_state or {}).get("local_terminalization") or {}
@@ -2420,6 +2434,10 @@ def _apply_payment_attempt_status(attempt, status, payload=None, source='webhook
                 attempt.pk,
             )
     elif status in MONOBANK_PENDING_STATUSES:
+        if attempt.order_id or attempt.status in {
+            PaymentAttempt.Status.PAID, PaymentAttempt.Status.PREPAID, PaymentAttempt.Status.CONVERTED,
+        }:
+            return None, False
         PaymentAttempt.objects.filter(pk=attempt.pk).update(
             status=PaymentAttempt.Status.PROCESSING,
             last_status_at=timezone.now(),

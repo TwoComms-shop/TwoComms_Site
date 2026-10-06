@@ -1,0 +1,102 @@
+maintenance active lease_id=r30-fe98c174c-release expires_at=1791283725
+From https://github.com/zainllw0w/TwoComms_Site
+   cbf159d0f..fe98c174c  main       -> origin/main
+Updating cbf159d0f..fe98c174c
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   6 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   6 +-
+ .../PRODUCTION_RELEASE_2026-10-06.md               |   7 +
+ .../human-production-health-recheck.log            |   3 +
+ .../human-production-postpull.log                  |  56 +++
+ .../r30-unified-context-20261006/README.md         |  18 +
+ .../p0-final-boundary-fixes.log                    |  10 +
+ .../unified-final-native.log                       |  25 +
+ .../unified-final-sqlite.log                       |  28 ++
+ twocomms/management/bot_request_preview_views.py   |  96 ++++
+ twocomms/management/bot_state_views.py             |  41 ++
+ twocomms/management/bot_views.py                   |  13 +
+ .../0221_gemini_attempt_dispatch_manifest.py       |  13 +
+ twocomms/management/models.py                      |   1 +
+ .../management/services/bot_instruction_routing.py |  15 +-
+ twocomms/management/services/bot_playbooks.py      |   8 +-
+ twocomms/management/services/call_ai_analysis.py   |  28 +-
+ .../services/gemini_accounting_contract.py         | 115 ++++-
+ .../services/gemini_accounting_runtime.py          |  69 +++
+ twocomms/management/services/gemini_routing.py     |  13 +-
+ .../management/services/ig_accounting_privacy.py   | 101 ++++
+ .../management/services/ig_admin_state_capture.py  | 283 ++++++++++++
+ .../services/ig_captured_policy_inputs.py          | 214 +++++++++
+ .../management/services/ig_client_state_card.py    | 434 +++++++++++++++++
+ .../management/services/ig_commerce_projection.py  |   7 +-
+ twocomms/management/services/ig_policy_compiler.py |   8 +-
+ .../management/services/ig_request_manifest.py     | 363 +++++++++++++++
+ twocomms/management/services/ig_response_plan.py   |  11 +-
+ twocomms/management/services/ig_revision_live.py   |  52 ++-
+ twocomms/management/services/ig_turn_capture.py    | 458 ++++++++++++++++++
+ .../management/services/ig_turn_integration.py     | 119 +++++
+ .../management/services/ig_turn_intelligence.py    | 481 +++++++++++++++++++
+ twocomms/management/services/ig_turn_revisions.py  |   1 +
+ twocomms/management/services/instagram_bot.py      | 261 ++++++-----
+ twocomms/management/templates/management/bot.html  |  50 ++
+ twocomms/management/tests_ig_accounting_privacy.py | 213 +++++++++
+ .../management/tests_ig_admin_state_capture.py     | 432 +++++++++++++++++
+ .../management/tests_ig_captured_policy_inputs.py  | 243 ++++++++++
+ twocomms/management/tests_ig_client_state_card.py  | 290 ++++++++++++
+ twocomms/management/tests_ig_dispatch_manifest.py  | 186 ++++++++
+ .../management/tests_ig_instruction_routing.py     |  36 ++
+ .../tests_ig_request_context_manifest.py           | 203 ++++++++
+ .../management/tests_ig_request_policy_manifest.py |  88 ++--
+ .../management/tests_ig_request_preview_api.py     | 196 ++++++++
+ .../management/tests_ig_request_revision_index.py  |  68 +++
+ twocomms/management/tests_ig_turn_capture.py       | 514 +++++++++++++++++++++
+ .../tests_ig_turn_context_integration.py           | 327 +++++++++++++
+ twocomms/management/tests_ig_turn_intelligence.py  | 318 +++++++++++++
+ twocomms/management/urls.py                        |   5 +
+ twocomms/twocomms/settings.py                      |   7 +
+ 50 files changed, 6367 insertions(+), 173 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-takeover-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-takeover-20261006/human-production-health-recheck.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-takeover-20261006/human-production-postpull.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-unified-context-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-unified-context-20261006/p0-final-boundary-fixes.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-unified-context-20261006/unified-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-unified-context-20261006/unified-final-sqlite.log
+ create mode 100644 twocomms/management/bot_request_preview_views.py
+ create mode 100644 twocomms/management/bot_state_views.py
+ create mode 100644 twocomms/management/migrations/0221_gemini_attempt_dispatch_manifest.py
+ create mode 100644 twocomms/management/services/ig_accounting_privacy.py
+ create mode 100644 twocomms/management/services/ig_admin_state_capture.py
+ create mode 100644 twocomms/management/services/ig_captured_policy_inputs.py
+ create mode 100644 twocomms/management/services/ig_client_state_card.py
+ create mode 100644 twocomms/management/services/ig_request_manifest.py
+ create mode 100644 twocomms/management/services/ig_turn_capture.py
+ create mode 100644 twocomms/management/services/ig_turn_integration.py
+ create mode 100644 twocomms/management/services/ig_turn_intelligence.py
+ create mode 100644 twocomms/management/tests_ig_accounting_privacy.py
+ create mode 100644 twocomms/management/tests_ig_admin_state_capture.py
+ create mode 100644 twocomms/management/tests_ig_captured_policy_inputs.py
+ create mode 100644 twocomms/management/tests_ig_client_state_card.py
+ create mode 100644 twocomms/management/tests_ig_dispatch_manifest.py
+ create mode 100644 twocomms/management/tests_ig_request_context_manifest.py
+ create mode 100644 twocomms/management/tests_ig_request_preview_api.py
+ create mode 100644 twocomms/management/tests_ig_request_revision_index.py
+ create mode 100644 twocomms/management/tests_ig_turn_capture.py
+ create mode 100644 twocomms/management/tests_ig_turn_context_integration.py
+ create mode 100644 twocomms/management/tests_ig_turn_intelligence.py
+Operations to perform:
+  Target specific migration: 0221_gemini_attempt_dispatch_manifest, from management
+Running migrations:
+  Applying management.0221_gemini_attempt_dispatch_manifest... OK
+System check identified no issues (0 silenced).
+Running DTF asset minification before collectstatic...
+DTF minification complete: 3 files, 0 updated, saved 66648 bytes
+
+0 static files copied to '/home/qlknpodo/TWC/TwoComms_Site/twocomms/staticfiles', 734 unmodified, 1074 post-processed.
+Compressing... done
+Compressed 4 block(s) from 60 template(s) for 1 context(s).
+maintenance disabled
+ig_bot event=daemon_spawn level=info
+daemon spawned
+375 objects imported automatically (use -v 2 for details).
+
+{"choice": {"choice.garment_type": {"source_ids": [3247], "status": "confirmed", "value": "tshirt"}, "choice.size": {"source_ids": [3259], "status": "confirmed", "value": "L"}}, "dispatch_column": true, "health": {"alive_window_seconds": 119, "main_age_seconds": 1.6, "main_available": true, "main_cycle": 2, "main_healthy": true, "main_state": "idle", "process_age_seconds": 1.5, "process_online": true, "process_pid": 1376702, "release_generation": 1791282842.7610986, "stalled": false, "stalled_reason": "", "supervisor": {"available": true, "child_pid": null, "child_pid_matches_expected": false, "child_release_sha": null, "last_ensure_seen_at": 1791282842.87, "observed_at": 1791282843.437, "restart_count": 1, "status": "mismatch", "supervisor_release_sha": "cbf159d0fe8d426e01b1c47191aa8c0b518c557f"}, "technical_debt": {"case_count": 2, "cases": [{"count": 2, "has_more": false, "oldest_age_seconds": 369271, "reason": "canonical_delivery_incomplete", "sample_ids": [141, 162], "sampled": false, "scope": "turn_revision"}, {"count": 7, "has_more": false, "oldest_age_seconds": 1781397, "reason": "webhook_ingress_blocked", "sample_ids": [175, 238, 380, 407, 448, 466, 614], "sampled": false, "scope": "webhook_inbox"}], "coverage_complete": true, "coverage_reasons": [], "errors": [], "fingerprint": "01d1271dd0250d528c952c1c", "observed_at": "2026-10-06T10:34:26.079116+00:00", "sample_limit": 100}, "worker_lanes": {"analysis": {"completed_age_seconds": null, "deadline_at": 1791283461.6452837, "healthy": true, "iteration_age_seconds": 4.418316125869751, "observation_limit_seconds": 600.0, "progress_age_seconds": 4.418316125869751, "progress_evidence": "worker_iteration", "state": "running"}, "checkout_lifecycle": {"completed_age_seconds": 4.39865779876709, "deadline_at": 1791283161.664942, "healthy": true, "iteration_age_seconds": null, "observation_limit_seconds": 300.0, "progress_age_seconds": 4.39865779876709, "progress_evidence": "worker_iteration", "state": "idle"}, "conversation_refresh": {"completed_age_seconds": 4.42483925819397, "deadline_at": 1791283161.6387606, "healthy": true, "iteration_age_seconds": null, "observation_limit_seconds": 300.0, "progress_age_seconds": 4.42483925819397, "progress_evidence": "worker_iteration", "state": "idle"}, "follow_intelligence": {"completed_age_seconds": 4.321720361709595, "deadline_at": 1791283461.7418795, "healthy": true, "iteration_age_seconds": null, "observation_limit_seconds": 600.0, "progress_age_seconds": 4.321720361709595, "progress_evidence": "worker_iteration", "state": "idle"}, "inbox_refresh": {"completed_age_seconds": 2.2132344245910645, "deadline_at": 1791283463.8503654, "healthy": true, "iteration_age_seconds": null, "observation_limit_seconds": 600.0, "progress_age_seconds": 2.2132344245910645, "progress_evidence": "worker_iteration", "state": "idle"}, "journey_trace_refresh": {"completed_age_seconds": 4.368824005126953, "deadline_at": 1791283161.6947758, "healthy": true, "iteration_age_seconds": null, "observation_limit_seconds": 300.0, "progress_age_seconds": 4.368824005126953, "progress_evidence": "worker_iteration", "state": "idle"}, "permission_transition": {"completed_age_seconds": 2.298445701599121, "deadline_at": 1791283163.7651541, "healthy": true, "iteration_age_seconds": null, "observation_limit_seconds": 300.0, "progress_age_seconds": 2.298445701599121, "progress_evidence": "worker_iteration", "state": "idle"}, "reply_recovery": {"completed_age_seconds": 2.3118720054626465, "deadline_at": 1791283463.7517278, "healthy": true, "iteration_age_seconds": null, "observation_limit_seconds": 600.0, "progress_age_seconds": 2.3118720054626465, "progress_evidence": "worker_iteration", "state": "idle"}}, "worker_stalled": false, "workers_healthy": true}, "memory_admission_accepted": false, "memory_generation_enabled": false, "migration0221": true, "mode": "unified", "release_sha": "fe98c174caf93becf6ab6dbc58e3977de6bef802", "state_read_queries": 24, "state_reason": "payment_source_unavailable", "state_status": "captured"}

@@ -64,23 +64,14 @@ def _event(generation, kind, suffix, *, payload=None):
 def _exact_provider_paid_amount(attempt, payload):
     if not isinstance(payload, dict):
         return False, "amount_payload_missing"
+    from management.services.ig_checkout_payment import _settlement_minor
     observed = []
     for field in ("paidAmount", "finalAmount", "amount"):
         raw = payload.get(field)
         if raw is None:
             continue
-        if isinstance(raw, bool):
-            return False, "amount_malformed"
-        if isinstance(raw, int):
-            paid_minor = raw
-        elif (
-            isinstance(raw, str)
-            and raw.isdigit()
-            and len(raw) <= 18
-            and (raw == "0" or not raw.startswith("0"))
-        ):
-            paid_minor = int(raw)
-        else:
+        paid_minor = _settlement_minor(raw)
+        if paid_minor is None:
             return False, "amount_malformed"
         observed.append((field, paid_minor))
     if not observed:
@@ -2075,7 +2066,10 @@ def apply_verified_generation_payment(
         deal, proposal, generation, attempt = graph
         if attempt.order_id:
             return attempt.order, False
+        from management.services.ig_checkout_payment import _provider_aliases_match
         amount_valid, amount_reason = _exact_provider_paid_amount(attempt, payload)
+        if not _provider_aliases_match(attempt, payload, status="success", require_complete=False):
+            amount_valid, amount_reason = False, "identity_currency_mismatch"
         if not amount_valid:
             _record_amount_reconciliation(
                 generation,
@@ -2272,6 +2266,7 @@ def apply_verified_generation_payment(
         return order, created
 
 
+@transaction.atomic
 def apply_generation_provider_status(
     attempt_id,
     status,
@@ -2280,6 +2275,25 @@ def apply_generation_provider_status(
     source="provider_pull",
 ):
     normalized = str(status or "").strip().casefold()
+    previewed_success = (normalized == "processing" and isinstance(payload, dict)
+        and payload.get("_twc_reconciliation_reason")
+        and str(payload.get("status") or payload.get("statusCode") or "").lower() in {"success", "reversed"})
+    if normalized in {"success", "reversed"} or previewed_success:
+        graph = _lock_generation_graph(attempt_id)
+        if graph is None:
+            return None, False
+        _deal, _proposal, _generation, paid_attempt = graph
+        if paid_attempt.order_id or Decimal(paid_attempt.paid_amount or 0) > 0:
+            if previewed_success:
+                normalized = str(payload.get("status") or payload.get("statusCode")).lower()
+            from management.services.ig_checkout_payment import project_attempt_settlement
+            project_attempt_settlement(attempt_id, status=normalized, payload=payload, source=source)
+            return (paid_attempt.order if normalized == "success" and paid_attempt.order_id else None), False
+        if normalized == "reversed":
+            from management.services.ig_checkout_payment import _provider_aliases_match
+            if not _provider_aliases_match(paid_attempt, payload, status=normalized, require_complete=False):
+                _record_amount_reconciliation(_generation, paid_attempt, reason="identity_currency_mismatch")
+                return None, False
     if normalized == "success":
         return apply_verified_generation_payment(
             attempt_id,

@@ -1,0 +1,6 @@
+maintenance active lease_id=r30-fe98c174c-supervisor expires_at=1791283940
+maintenance disabled
+daemon ready under supervisor — ok
+375 objects imported automatically (use -v 2 for details).
+
+{"health": {"main_healthy": true, "process_online": true, "process_pid": 1387061, "stalled": false, "supervisor": {"available": true, "child_pid": 1387061, "child_pid_matches_expected": true, "child_release_sha": "fe98c174caf93becf6ab6dbc58e3977de6bef802", "last_ensure_seen_at": 1791283043.951, "observed_at": 1791283045.365, "restart_count": 0, "status": "current", "supervisor_release_sha": "fe98c174caf93becf6ab6dbc58e3977de6bef802"}, "workers_healthy": true}, "maintenance_active": false, "release_sha": "fe98c174caf93becf6ab6dbc58e3977de6bef802"}
