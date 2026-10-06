@@ -6737,9 +6737,10 @@ def bot_client_human_reply_api(request, client_id):
         command = dispatch_human_reply_command(result.command.pk)
     except (ValueError, TypeError, HumanReplyRejected) as exc:
         code = getattr(exc, "code", "invalid_request")
+        retryable = code in {"takeover_boundary_busy", "takeover_cleanup_failed", "takeover_transition_failed"}
         return JsonResponse(
-            {"success": False, "code": code},
-            status=409 if code in {"newer_inbound", "permission_epoch_changed", "reply_window_closed", "operation_conflict"} else 400,
+            {"success": False, "code": code, **({"retryable": True} if retryable else {})},
+            status=503 if retryable else (409 if code in {"newer_inbound", "permission_epoch_changed", "reply_window_closed", "operation_conflict"} else 400),
         )
     return JsonResponse({
         "success": command.state == command.State.SENT,

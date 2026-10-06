@@ -177,6 +177,13 @@ class ManualResumeTests(TestCase):
         self.assertEqual(InstagramBotMessage.objects.filter(pk=source.pk).count(), 1)
 
     def test_resume_boolean_never_records_consent(self):
+        # Exercise the opt-out contract as an explicitly authorized operator.
+        # A generic staff principal correctly stops at the capability boundary.
+        from django.contrib.auth.models import Permission
+        self.user.user_permissions.add(*(
+            Permission.objects.get(content_type__app_label="management", codename=code)
+            for code in ("operate_ig_bot", "view_ig_conversation_pii")
+        ))
         client = self.paused_client("optout")
         client.opted_out_at = timezone.now()
         client.save(update_fields=["opted_out_at", "updated_at"])

@@ -1,0 +1,19 @@
+Creating test database for alias 'default'...
+Destroying old test database for alias 'default'...
+F
+======================================================================
+FAIL: test_resume_boolean_never_records_consent (management.tests_ig_manual_resume.ManualResumeTests.test_resume_boolean_never_records_consent)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_manual_resume.py", line 191, in test_resume_boolean_never_records_consent
+    self.assertEqual(response.status_code, 409)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 403 != 409
+
+----------------------------------------------------------------------
+Ran 1 test in 0.118s
+
+FAILED (failures=1)
+Destroying test database for alias 'default'...
+Found 1 test(s).
+System check identified no issues (0 silenced).

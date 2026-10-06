@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
-from django.db import IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 from django.utils import timezone
 
 from management.models import (
@@ -28,6 +28,26 @@ class HumanReplyRejected(ValueError):
     def __init__(self, code: str):
         self.code = code
         super().__init__(code)
+
+
+@contextmanager
+def _human_takeover_transition():
+    """Serialize takeover with the existing physical bot-send edge.
+
+    The barrier precedes database locks and ends before human transport. A
+    rejected transition has no accepted command, pause/epoch advance or audit.
+    """
+    from management.services.ig_permission_transitions import WEB_LOCK_TIMEOUT_SECONDS
+    from management.services.ig_reply_boundary import pause_reply_boundary, ReplyBoundaryTimeout
+
+    try:
+        with pause_reply_boundary(timeout_seconds=WEB_LOCK_TIMEOUT_SECONDS):
+            with transaction.atomic():
+                yield
+    except ReplyBoundaryTimeout:
+        raise HumanReplyRejected("takeover_boundary_busy") from None
+    except DatabaseError:
+        raise HumanReplyRejected("takeover_transition_failed") from None
 
 
 @dataclass(frozen=True)
@@ -321,7 +341,6 @@ def create_human_reply_command(
         op = uuid.UUID(str(operation_id)) if operation_id else uuid.uuid4()
     except (TypeError, ValueError, AttributeError):
         raise HumanReplyRejected("invalid_operation_id")
-    now = now or timezone.now()
     settings_obj = InstagramBotSettings.load()
     from management.services.instagram_bot import ingress_provider_namespace
     namespace = str(ingress_provider_namespace(settings_obj) or "")[:128]
@@ -330,10 +349,22 @@ def create_human_reply_command(
     if not build_delivery_plan(text).complete:
         raise HumanReplyRejected("delivery_plan_incomplete")
 
-    with transaction.atomic():
+    # A replay recovers its immutable existing operation without changing
+    # ownership or waiting for a new permission transition. The locked lookup
+    # below still handles concurrent first creation.
+    existing = HumanReplyCommand.objects.filter(operation_id=op).first()
+    if existing is not None:
+        _validate_existing_operation(existing, client_id=client_id, actor=actor,
+                                     text=text, context_message_id=context_message_id)
+        return HumanReplyResult(existing, idempotent=True)
+
+    with _human_takeover_transition():
         client = IgClient.objects.select_for_update().filter(pk=client_id).first()
         if not client:
             raise HumanReplyRejected("client_not_found")
+        # Lock/barrier waiting consumes the reply window. Tests may supply an
+        # explicit clock; normal callers use the fresh clock after acquisition.
+        now = now or timezone.now()
 
         # The client lock serializes operation lookup, competing commands, and
         # takeover.  A nested savepoint below handles the unique operation race
@@ -408,6 +439,9 @@ def create_human_reply_command(
 
         # Confirm takeover before exposing the send button. Manual sends are
         # allowed while bot automation is paused; the epoch fences old workers.
+        before = {"bot_paused": bool(client.bot_paused),
+                  "manager_takeover": bool(client.manager_takeover),
+                  "permission_epoch": int(client.reply_permission_epoch or 0)}
         if not client.manager_takeover or not client.bot_paused:
             client.manager_takeover = True
             client.bot_paused = True
@@ -418,11 +452,16 @@ def create_human_reply_command(
                 "manager_takeover", "bot_paused", "paused_reason", "paused_at",
                 "reply_permission_epoch", "updated_at",
             ])
-            try:
-                from management.services.ig_permission_transitions import cancel_client_unstarted_automation
-                cancel_client_unstarted_automation(client.pk, reason="human_reply_takeover")
-            except Exception:
-                pass
+        # Cleanup is part of the accepted transition, including an already
+        # paused client. Started/ambiguous sends remain receipt-owned. A failed
+        # cleanup rolls back this whole transition instead of claiming success.
+        try:
+            from management.services.ig_permission_transitions import cancel_client_unstarted_automation
+            cancel_client_unstarted_automation(
+                client, reason="human_reply_takeover", now=now, nowait=False,
+            )
+        except Exception:
+            raise HumanReplyRejected("takeover_cleanup_failed") from None
         epoch = int(client.reply_permission_epoch or 0)
         try:
             with transaction.atomic():
@@ -453,13 +492,17 @@ def create_human_reply_command(
                     action="ig_bot.human_reply_command_created",
                     entity_type="HumanReplyCommand",
                     entity_id=str(command.pk),
-                    before={"bot_paused": False, "manager_takeover": False},
+                    before=before,
                     after={"bot_paused": True, "manager_takeover": True, "permission_epoch": epoch},
                     reason="authenticated_manual_reply",
                 )
-        except IntegrityError:
+        except IntegrityError as exc:
             with transaction.atomic():
-                command = HumanReplyCommand.objects.select_for_update().get(operation_id=op)
+                command = HumanReplyCommand.objects.select_for_update().filter(operation_id=op).first()
+            if command is None:
+                # An unrelated command/audit failure is not a duplicate click.
+                # Propagate through the outer rollback and finite DB failure.
+                raise exc
             _validate_existing_operation(
                 command,
                 client_id=client.pk,
