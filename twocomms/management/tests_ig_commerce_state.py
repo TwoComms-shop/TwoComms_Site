@@ -853,7 +853,7 @@ class CommerceStateTests(CommerceStateFixture, TransactionTestCase):
             delivery_state=IgCommerceTurnDecision.DeliveryState.NOT_REQUIRED,
         )
 
-        with patch.object(
+        with transaction.atomic(), patch.object(
             IgCommerceTurnDecision.objects,
             "create",
             side_effect=IntegrityError("unique source race"),

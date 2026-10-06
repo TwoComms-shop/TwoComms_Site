@@ -329,6 +329,14 @@ class ResponsePlanSourceTests(TransactionTestCase):
     def _assert_mixed_delivery(self, question, topic):
         self._replace_bundle(["L. " + question])
         self.parsed = {"reply_text": "Ви обрали розмір L.", "controls": []}
+        if topic == "service":
+            # Unified routing recognizes this current custom-print request.
+            # Supply its required structured evidence while still omitting the
+            # service answer, whose delivery debt remains asserted below.
+            self.parsed["turn_intelligence"] = {
+                "catalog_candidates": [], "intent": "custom_print", "confidence": 0.9,
+                "audio_status": "not_applicable", "transcript": "",
+            }
         result, generation, http = self._execute()
         self.assertEqual(http.call_count, 1, result.reasons)
         self.assertEqual(result.state, "delivery_pending", result.reasons)

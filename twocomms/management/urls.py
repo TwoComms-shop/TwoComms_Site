@@ -101,6 +101,7 @@ urlpatterns = [
     path('bot/api/clients/', bot_views.bot_clients_api, name='management_bot_clients_api'),
     path('bot/api/clients/<int:client_id>/', bot_views.bot_client_detail_api, name='management_bot_client_detail_api'),
     path('bot/api/clients/<int:client_id>/state/', bot_state_views.bot_client_state_api, name='management_bot_client_state_api'),
+    path('bot/api/clients/<int:client_id>/state/size/', bot_state_views.bot_client_size_correction_api, name='management_bot_client_size_correction_api'),
     path('bot/api/clients/<int:client_id>/request-revisions/', bot_request_preview_views.bot_request_revision_index_api, name='management_bot_request_revision_index_api'),
     path('bot/api/clients/<int:client_id>/turn-revisions/<int:revision_id>/request-preview/', bot_request_preview_views.bot_request_preview_api, name='management_bot_request_preview_api'),
     path('bot/api/clients/<int:client_id>/followups/<int:task_id>/delivery-resolve/', bot_views.bot_client_followup_delivery_resolve_api, name='management_bot_client_followup_delivery_resolve_api'),

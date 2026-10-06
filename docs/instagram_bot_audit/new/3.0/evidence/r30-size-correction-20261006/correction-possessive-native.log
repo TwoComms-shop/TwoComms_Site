@@ -1,0 +1,124 @@
+E........E.....
+======================================================================
+ERROR: CommerceCandidateActionTests (unittest.loader._FailedTest.CommerceCandidateActionTests)
+----------------------------------------------------------------------
+AttributeError: module 'management.tests_ig_commerce_state' has no attribute 'CommerceCandidateActionTests'. Did you mean: 'CommerceProjectionTests'?
+
+======================================================================
+ERROR: test_possessive_customer_choice_cannot_attribute_manager_correction (management.tests_ig_selection_correction_response_plan.AuditedSizeResponsePlanTests.test_possessive_customer_choice_cannot_attribute_manager_correction)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/backends/utils.py", line 105, in _execute
+    return self.cursor.execute(sql, params)
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/backends/mysql/base.py", line 78, in execute
+    return self.cursor.execute(query, args)
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/MySQLdb/cursors.py", line 179, in execute
+    res = self._query(mogrified_query)
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/MySQLdb/cursors.py", line 331, in _query
+    self._do_get_result(db)
+    ~~~~~~~~~~~~~~~~~~~^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/MySQLdb/cursors.py", line 136, in _do_get_result
+    self._result = result = self._get_result()
+                            ~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/MySQLdb/cursors.py", line 363, in _get_result
+    return self._get_db().store_result()
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+MySQLdb.IntegrityError: (1062, "Duplicate entry '10' for key 'primary_source_message_id'")
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_selection_correction_response_plan.py", line 243, in test_possessive_customer_choice_cannot_attribute_manager_correction
+    _, plan = self.audited(clear=clear)
+              ~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_selection_correction_response_plan.py", line 59, in audited
+    revision = self.seal()
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_selection_correction_response_plan.py", line 32, in seal
+    turn = IgCustomerTurn.objects.create(client=self.row, primary_source_message=source,
+        window_started_at=self.now, window_deadline=self.now)
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/manager.py", line 87, in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/query.py", line 713, in create
+    obj.save(force_insert=True, using=self.db)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/base.py", line 904, in save
+    self.save_base(
+    ~~~~~~~~~~~~~~^
+        using=using,
+        ^^^^^^^^^^^^
+    ...<2 lines>...
+        update_fields=update_fields,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/base.py", line 996, in save_base
+    updated = self._save_table(
+        raw,
+    ...<4 lines>...
+        update_fields,
+    )
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/base.py", line 1201, in _save_table
+    results = self._do_insert(
+        cls._base_manager, using, insert_fields, returning_fields, raw
+    )
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/base.py", line 1253, in _do_insert
+    return manager._insert(
+           ~~~~~~~~~~~~~~~^
+        [self],
+        ^^^^^^^
+    ...<3 lines>...
+        raw=raw,
+        ^^^^^^^^
+    )
+    ^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/manager.py", line 87, in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/query.py", line 2118, in _insert
+    return query.get_compiler(using=using).execute_sql(returning_fields)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/sql/compiler.py", line 1935, in execute_sql
+    cursor.execute(sql, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/backends/utils.py", line 79, in execute
+    return self._execute_with_wrappers(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        sql, params, many=False, executor=self._execute
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/backends/utils.py", line 92, in _execute_with_wrappers
+    return executor(sql, params, many, context)
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/backends/utils.py", line 100, in _execute
+    with self.db.wrap_database_errors:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/utils.py", line 94, in __exit__
+    raise dj_exc_value.with_traceback(traceback) from exc_value
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/backends/utils.py", line 105, in _execute
+    return self.cursor.execute(sql, params)
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/backends/mysql/base.py", line 78, in execute
+    return self.cursor.execute(query, args)
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/MySQLdb/cursors.py", line 179, in execute
+    res = self._query(mogrified_query)
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/MySQLdb/cursors.py", line 331, in _query
+    self._do_get_result(db)
+    ~~~~~~~~~~~~~~~~~~~^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/MySQLdb/cursors.py", line 136, in _do_get_result
+    self._result = result = self._get_result()
+                            ~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/MySQLdb/cursors.py", line 363, in _get_result
+    return self._get_db().store_result()
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+django.db.utils.IntegrityError: (1062, "Duplicate entry '10' for key 'primary_source_message_id'")
+
+----------------------------------------------------------------------
+Ran 15 tests in 1.242s
+
+FAILED (errors=2)
+Found 15 test(s).
+System check identified no issues (0 silenced).

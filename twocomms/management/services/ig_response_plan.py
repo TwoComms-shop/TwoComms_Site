@@ -4,6 +4,7 @@ No ledger, provider, or mutation lives here. Customer choice is deliberately
 separate from applicable configuration and from any checkout effect.
 """
 from __future__ import annotations
+from copy import deepcopy
 
 from dataclasses import dataclass, field, replace
 import hashlib
@@ -58,8 +59,8 @@ def _unquoted_text(text):
     )
 
 
-def _acknowledges_choice(kind, value, text, authority):
-    from management.services.ig_reply_truth import _claim_sentences, _CUSTOMER_CHOICE_RE, _locally_negated
+def _acknowledges_choice(kind, value, text, authority, *, audited=False):
+    from management.services.ig_reply_truth import _claim_sentences, _CUSTOMER_CHOICE_RE, _locally_negated, CORRECTED_REQUIREMENT_RE
     aliases = CHOICE_ALIASES.get(value, (value,))
     unquoted = _unquoted_text(text)
     for sentence in _claim_sentences(unquoted, ()):
@@ -72,7 +73,9 @@ def _acknowledges_choice(kind, value, text, authority):
                     continue
                 if _NEGATED_CHOICE_RE.search(clause[:match.end()]):
                     continue
-                if choice and not _locally_negated(clause, choice.start()):
+                if audited and CORRECTED_REQUIREMENT_RE.search(clause):
+                    return True
+                if not audited and choice and not _locally_negated(clause, choice.start()):
                     return True
                 canonical = authority.get({"size": "sizes", "fit_option_code": "fits", "color": "colors"}.get(kind, ""), ())
                 if value.casefold() in {str(item).casefold() for item in canonical} and re.search(
@@ -218,22 +221,72 @@ class ResponsePlan:
         # Source preferences authorize only acknowledgement of a wish. They
         # never widen the old catalog/proposal size/fit/color allowlists.
         return replace(context,
-                       source_chosen_sizes=(str(self.choices["size"]),) if self.choices.get("size") else (),
+                       source_chosen_sizes=(str(self.choices["size"]),) if self.choices.get("size") and not self._audited_size() else (),
+                       audited_chosen_sizes=(str(self.choices["size"]),) if self.choices.get("size") and self._audited_size() else (),
                        source_chosen_fits=(str(self.choices["fit_option_code"]),) if self.choices.get("fit_option_code") else (),
                        source_chosen_colors=CHOICE_ALIASES.get(str(self.choices["color"]), (str(self.choices["color"]),)) if self.choices.get("color") else ())
 
     def prompt_guidance(self):
-        return (
+        guidance = (
             "[SERVER RESPONSE PLAN]\n" + json.dumps(self.as_dict(), ensure_ascii=False, separators=(",", ":"))
-            + "\nchoices are source-backed customer wishes, never stock, price, payment or order authority. "
-            "Acknowledge accepted choices; do not ask for them or repeat their controls again. Ask only next_selector when needed. "
+            + ("\nchoices retain their evidence authority; an audited size is a corrected requirement, never a literal customer statement. "
+               if self._audited_size() else "\nchoices are source-backed customer wishes, never stock, price, payment or order authority. ")
+            + "Acknowledge accepted choices; do not ask for them or repeat their controls again. Ask only next_selector when needed. "
             "If applicability is unknown, do not assert that a requested size/fit/color is available. "
             "Ordinary selection uses product/size/fit/option/qty controls and never requires paylink/payment. "
             "item and objhandle controls are unsupported. Never promise an unsupported effect. "
             "Answer each current request; a size acknowledgement alone does not complete purchase."
         )
+        if self._audited_size():
+            guidance += (
+                "\nSize authority is an audited manager correction. The original customer source remains unchanged. "
+                "Use a neutral corrected requirement acknowledgement, never say the customer said/chose/requested the corrected value. "
+                "An audited requirement proves neither stock nor an already updated checkout configuration."
+            )
+        return guidance
+
+    def _audited_size(self):
+        proof = self.evidence.get("size") or {}
+        receipt = (proof.get("correction") or {}).get("receipt") or {}
+        return bool(proof.get("authority") == "audited_correction"
+                    and receipt.get("schema") == "manager-correction.v1"
+                    and receipt.get("field") == "size"
+                    and receipt.get("after") == self.choices.get("size"))
 
     def validate(self, response):
+        if self._audited_size():
+            from management.services.ig_reply_truth import _claim_sentences, _SIZE_RE, _locally_negated, CORRECTED_REQUIREMENT_RE
+            chosen = self.choices.get("size")
+            control = response.control.get("size")
+            if control and (not chosen or str(control).casefold() != str(chosen).casefold()):
+                return "response_plan_audited_size_conflict"
+            if (response.control.get("paylink") or response.control.get("payment")) and not self.authority.get("audited_size_configuration_matches"):
+                return "response_plan_audited_configuration_unready"
+            for sentence in _claim_sentences(response.reply_text, ()):
+                for clause in re.split(r"[,;]|\b(?:але|но|but)\b", sentence, flags=re.I):
+                    unquoted = _unquoted_text(clause)
+                    # Catalog eligibility cannot authorize a different current
+                    # requirement. Quoted whole statements remain data, while
+                    # a quoted size token in an assertion remains a claim.
+                    values = [match.group("value") for match in _SIZE_RE.finditer(clause)
+                        if not _locally_negated(clause, match.start())
+                        and not _NEGATED_CHOICE_RE.fullmatch(match.group("value"))]
+                    corrected = CORRECTED_REQUIREMENT_RE.search(unquoted)
+                    if corrected and _locally_negated(unquoted, corrected.start()):
+                        corrected = None
+                    if corrected and any(not chosen or value.casefold() != str(chosen).casefold() for value in values):
+                        return "response_plan_audited_size_conflict"
+                    choice = re.search(r"\b(?:ви|вы|you)\s+(?:(?:have|had)\s+)?(?:обрали|вибрали|просили|сказали|написали|уточнили|попросили|выбрали|хотели|chose|chosen|selected|said|wrote|clarified|requested)\b|\b(?:ваш\w*|your)\s+(?:вибір|выбор|choice|побажан\w*|пожелан\w*|запит\w*|запрос\w*|request|preference)\b", unquoted, re.I)
+                    if not choice:
+                        continue
+                    if _locally_negated(unquoted, choice.start()):
+                        continue
+                    historical = re.search(r"\b(?:earlier|previously|originally|formerly|раніше|раньше|попередньо|прежде)\b", unquoted[:choice.start()], re.I)
+                    if historical:
+                        continue
+                    bare_size = re.search(r"\b(?:XS|S|M|L|XL|XXL|XXXL|XXXXL|[5-8]XL)\b", clause, re.I)
+                    if values or bare_size or (chosen and re.search(r"\b" + re.escape(str(chosen)) + r"\b", clause, re.I)):
+                        return "response_plan_audited_choice_misattributed"
         for field, selector in (("size", "size"), ("fit_option_code", "fit"), ("color", "color")):
             if not self.choices.get(field) or self.next_selector == selector:
                 continue
@@ -253,7 +306,7 @@ class ResponsePlan:
         for obligation in self.obligations:
             kind = obligation["kind"]
             value = str(self.choices.get(kind) or "")
-            acknowledged = kind in {"size", "fit_option_code", "color", "quantity", "garment_type"} and value and _acknowledges_choice(kind, value, text, self.authority)
+            acknowledged = kind in {"size", "fit_option_code", "color", "quantity", "garment_type"} and value and _acknowledges_choice(kind, value, text, self.authority, audited=kind == "size" and self._audited_size())
             product_acknowledged = kind == "product_id" and self.choices.get("product_id") and (
                 str(response.control.get("product") or "") == str(self.choices["product_id"])
                 or (self.configuration.get("product_title") and _acknowledges_product(self.configuration["product_title"], text)))
@@ -284,8 +337,10 @@ def build_response_plan(*, preferences, readiness, context, sources=()):
                and original_evidence[key].get("source_message_id")
                and (not watermark or int(original_evidence[key]["source_message_id"]) <= watermark)}
     evidence = {key: {name: original_evidence[key][name] for name in
-                     ("source_message_id", "source_digest", "decision_id", "transition_id", "product_resolution", "presentation_effect_ids")
+                     ("source_message_id", "source_digest", "decision_id", "transition_id", "product_resolution", "presentation_effect_ids", "authority", "correction")
                      if name in original_evidence[key]} for key in choices}
+    if "size" in (preferences.get("cleared") or {}):
+        evidence["size"] = deepcopy(preferences["cleared"]["size"])
     missing = [str(item) for item in readiness.get("missing") or []][:16]
     # A chosen but unavailable size requires availability resolution, not the
     # same size question. It is never silently recast as absent customer choice.
@@ -395,7 +450,17 @@ def capture_response_plan(client, *, revision=None):
     else:
         context = build_reply_truth_context(client)
     from management.services.ig_commerce_projection import captured_selection_from_preferences
-    return replace(build_response_plan(preferences=preferences, readiness=readiness,
-                                      context=context, sources=sources),
+    plan = build_response_plan(preferences=preferences, readiness=readiness, context=context, sources=sources)
+    if plan._audited_size():
+        from management.services.ig_commerce_projection import _matching_legacy_selection
+        legacy = _matching_legacy_selection(client)
+        chosen = plan.choices.get("size")
+        matches = bool(chosen and line.get("product_id") and readiness.get("has_product")
+                       and readiness.get("applicability_known") and not readiness.get("missing")
+                       and client.current_product_id == line.get("product_id")
+                       and str(client.current_size or "").casefold() == str(chosen).casefold()
+                       and (not legacy.get("size") or str(legacy["size"]).casefold() == str(chosen).casefold()))
+        plan = replace(plan, authority={**plan.authority, "audited_size_configuration_matches": matches})
+    return replace(plan,
                    source_selection=captured_selection_from_preferences(client.pk, preferences),
                    readiness_snapshot=readiness)

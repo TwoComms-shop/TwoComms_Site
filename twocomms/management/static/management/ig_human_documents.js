@@ -59,14 +59,14 @@
     };
     const panel = el('section', 'ig-human-documents');
     panel.setAttribute('aria-label', 'Мої приватні чернетки та нотатки');
-    panel.append(el('h3', 'ig-hd-title', 'Мої чернетки та нотатки'));
     panel.append(el('p', 'ig-hd-help', 'Документи бачите лише ви. Збереження не надсилає текст клієнту.'));
-    const layout = el('div', 'ig-hd-layout'), library = el('div', 'ig-hd-library'), editor = el('div', 'ig-hd-editor');
+    const layout = el('div', 'ig-hd-layout'), library = el('details', 'ig-hd-library'), editor = el('div', 'ig-hd-editor');
+    const libraryHeading = el('summary', 'ig-hd-library-heading', 'Мої збережені документи');
     const load = button('load', 'Завантажити мої документи', () => loadList(false));
     const list = el('ul', 'ig-hd-list');
     list.setAttribute('aria-label', 'Збережені приватні документи');
     const more = button('more', 'Ще документи', () => loadList(true)); more.hidden = true;
-    library.append(load, list, more);
+    library.append(libraryHeading, load, list, more);
     const label = el('label', 'ig-hd-label', 'Тип документа');
     const kind = el('select', 'ig-hd-kind'); kind.setAttribute('aria-label', 'Тип документа');
     Object.entries(kinds).forEach(([value, title]) => { const item = el('option', '', title); item.value = value; kind.append(item); });

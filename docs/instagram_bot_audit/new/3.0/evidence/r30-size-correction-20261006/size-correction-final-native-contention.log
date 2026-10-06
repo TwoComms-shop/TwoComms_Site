@@ -1,0 +1,18 @@
+..F.
+======================================================================
+FAIL: test_erasure_committed_while_correction_waits_for_client_lock_blocks_append (management.tests_ig_selection_correction_native.NativeSizeCorrectionContentionTests.test_erasure_committed_while_correction_waits_for_client_lock_blocks_append)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_selection_correction_native.py", line 139, in test_erasure_committed_while_correction_waits_for_client_lock_blocks_append
+    self.assertEqual(self.row.current_size, "M")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '' != 'M'
++ M
+
+
+----------------------------------------------------------------------
+Ran 4 tests in 1.461s
+
+FAILED (failures=1)
+Found 4 test(s).
+System check identified no issues (0 silenced).

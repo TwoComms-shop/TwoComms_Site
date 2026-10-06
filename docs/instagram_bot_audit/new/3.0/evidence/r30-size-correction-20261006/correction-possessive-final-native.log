@@ -1,0 +1,19 @@
+.........F......
+======================================================================
+FAIL: test_possessive_customer_choice_cannot_revive_cleared_requirement (management.tests_ig_selection_correction_response_plan.AuditedSizeResponsePlanTests.test_possessive_customer_choice_cannot_revive_cleared_requirement) (text='Your choice is corrected size M.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_selection_correction_response_plan.py", line 248, in assert_possessive_claims_denied
+    self.assertEqual(reason, "response_plan_audited_choice_misattributed")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'response_plan_audited_size_conflict' != 'response_plan_audited_choice_misattributed'
+- response_plan_audited_size_conflict
++ response_plan_audited_choice_misattributed
+
+
+----------------------------------------------------------------------
+Ran 16 tests in 1.711s
+
+FAILED (failures=1)
+Found 16 test(s).
+System check identified no issues (0 silenced).

@@ -241,9 +241,16 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
                     reason = "choice_source_unknown"
                     break
                 source = field.get("source") or {}
+                correction = None
+                if field.get("authority") == "audited_correction" and isinstance(source, dict):
+                    from management.services.ig_selection_corrections import validated_correction_capture
+                    correction = validated_correction_capture(source, field=key, value=field.get("value"),
+                        scope=scope, boundary=boundary)
+                cleared = correction is not None and correction["operation"] == "clear"
                 if (not isinstance(source, dict)
-                        or field.get("status") not in {"confirmed", "ambiguous"}
-                        or field.get("authority") not in {"customer_source", "validated_selection_action"}
+                        or (field.get("status") not in {"confirmed", "ambiguous"} and not (cleared and field.get("status") == "unknown"))
+                        or (field.get("authority") not in {"customer_source", "validated_selection_action"} and correction is None)
+                        or field.get("authority") != (source.get("authority") or "customer_source")
                         or field.get("value") != (selection.get("values") or {}).get(key)
                         or source != (selection.get("evidence") or {}).get(key)
                         or not isinstance(source.get("source_digest"), str)
@@ -270,23 +277,41 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
                  "digest": source.get("source_digest"), "decision_id": source.get("decision_id"),
                  "transition_id": source.get("transition_id"), "event_at": source.get("observed_at")}]
         field_reason = reason or _source_reason(refs, watermark, scope.get("reset_floor"))
+        correction = None
+        if field.get("authority") == "audited_correction":
+            from management.services.ig_selection_corrections import validated_correction_capture
+            correction = validated_correction_capture(source, field=key, value=field.get("value"), scope=scope, boundary=boundary)
+            if correction is not None:
+                refs.append({"kind": "commerce_transition", "id": source["transition_id"],
+                    "authority": "audited_correction", "actor_id": correction["actor_id"],
+                    "operation_id": correction["operation_id"], "event_at": correction["recorded_at"],
+                    "input_digest": correction["input_digest"]})
         status = field.get("status") if field.get("status") in STATUSES else "unknown"
-        authority = field.get("authority") if field.get("authority") in {"customer_source", "validated_selection_action"} else "none"
+        authority = field.get("authority") if field.get("authority") in {"customer_source", "validated_selection_action"} or correction is not None else "none"
+        cleared = correction is not None and correction["operation"] == "clear"
+        if not field_reason and cleared:
+            field_reason = "requirement_explicitly_cleared"
         if not field_reason and (authority == "none" or status not in {"confirmed", "ambiguous"}):
             field_reason = "choice_authority_unknown"
         if field_reason:
             status = "stale" if field_reason in {"source_scope_mismatch", "source_after_capture", "source_before_reset", "selection_revision_mismatch"} else "unknown"
         slots["choice." + key] = _slot(field.get("value"), status=status, authority=authority, refs=refs,
-            scope=selection.get("scope"), observed_at=source.get("observed_at"),
+            scope=selection.get("scope"), observed_at=correction["recorded_at"] if correction else source.get("observed_at"),
             watermark={"message_id": source.get("source_message_id"), "event_at": source.get("observed_at")},
             reason=field_reason, mandatory=not field_reason, validity="valid" if not field_reason else "unverified")
+        if correction is not None:
+            slots["choice." + key]["supersedes"] = {"kind": "commerce_transition", "id": correction["supersedes_transition_id"]}
+            slots["choice." + key]["conflict"] = {"kind": "audited_requirement_override",
+                "previous_value": correction["before"], "resolved_by": source["transition_id"]}
+        elif source.get("supersedes_transition_id"):
+            slots["choice." + key]["supersedes"] = {"kind": "commerce_transition", "id": source["supersedes_transition_id"]}
         source_scope = selection.get("scope") if isinstance(selection.get("scope"), dict) else {}
         source_order = source_scope.get("order_id")
         slots["choice." + key]["scope_status"] = {"order_id": "unknown" if source_order in (None, 0)
             else "matched" if source_order == scope.get("order_id") else "mismatch"}
         if binding is not None and not _selection_binding_reason(binding, boundary):
             slots["choice." + key]["capture_scope"] = binding
-        if field_reason:
+        if field_reason and not (cleared and field_reason == "requirement_explicitly_cleared"):
             payload["source_selection"] = {}
     explicit = components.get("slots") or {}
     if isinstance(explicit, dict):

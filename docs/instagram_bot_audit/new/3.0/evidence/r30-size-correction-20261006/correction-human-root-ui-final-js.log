@@ -1,0 +1,136 @@
+TAP version 13
+# Subtest: mount has zero I/O; notes save privately and never expose send
+ok 1 - mount has zero I/O; notes save privately and never expose send
+  ---
+  duration_ms: 1.989167
+  type: 'test'
+  ...
+# Subtest: draft save and CAS update require explicit actions; submit never contains browser text
+ok 2 - draft save and CAS update require explicit actions; submit never contains browser text
+  ---
+  duration_ms: 1.457125
+  type: 'test'
+  ...
+# Subtest: 503 and lost response retain original operation/CAS and accepted identity on retries
+ok 3 - 503 and lost response retain original operation/CAS and accepted identity on retries
+  ---
+  duration_ms: 0.659291
+  type: 'test'
+  ...
+# Subtest: UNKNOWN and provider-started outcomes disable resend and never silently send again
+ok 4 - UNKNOWN and provider-started outcomes disable resend and never silently send again
+  ---
+  duration_ms: 2.585584
+  type: 'test'
+  ...
+# Subtest: list is explicit, bounded and escaped; clicking detail cannot replace unsaved text
+ok 5 - list is explicit, bounded and escaped; clicking detail cannot replace unsaved text
+  ---
+  duration_ms: 0.586708
+  type: 'test'
+  ...
+# Subtest: editing during GET detail or server refresh never overwrites text
+ok 6 - editing during GET detail or server refresh never overwrites text
+  ---
+  duration_ms: 0.5555
+  type: 'test'
+  ...
+# Subtest: client switch aborts stale GET and never renders old client documents
+ok 7 - client switch aborts stale GET and never renders old client documents
+  ---
+  duration_ms: 0.316041
+  type: 'test'
+  ...
+# Subtest: ambiguous create save uses same UUID/body; explicit server check resolves without duplicate
+ok 8 - ambiguous create save uses same UUID/body; explicit server check resolves without duplicate
+  ---
+  duration_ms: 0.377209
+  type: 'test'
+  ...
+# Subtest: CAS conflict preserves local text and cannot submit stale text; explicit discard then reload
+ok 9 - CAS conflict preserves local text and cannot submit stale text; explicit discard then reload
+  ---
+  duration_ms: 0.521417
+  type: 'test'
+  ...
+# Subtest: finite access errors never echo response text, unsafe base never sends, text limit uses Unicode characters
+ok 10 - finite access errors never echo response text, unsafe base never sends, text limit uses Unicode characters
+  ---
+  duration_ms: 1.2415
+  type: 'test'
+  ...
+# Subtest: unexpected document identity on success preserves pending body and cannot enable sending
+ok 11 - unexpected document identity on success preserves pending body and cannot enable sending
+  ---
+  duration_ms: 0.529791
+  type: 'test'
+  ...
+# Subtest: explicit pagination bounds DOM at 100 documents and refresh restarts the list
+ok 12 - explicit pagination bounds DOM at 100 documents and refresh restarts the list
+  ---
+  duration_ms: 1.338625
+  type: 'test'
+  ...
+# Subtest: create and supplied current render are passive; explicit normalized save binds CAS and safe body
+ok 13 - create and supplied current render are passive; explicit normalized save binds CAS and safe body
+  ---
+  duration_ms: 2.399167
+  type: 'test'
+  ...
+# Subtest: historical, unavailable, bare state and cross-client proof deny editing without I/O
+ok 14 - historical, unavailable, bare state and cross-client proof deny editing without I/O
+  ---
+  duration_ms: 1.917125
+  type: 'test'
+  ...
+# Subtest: canonical set whitelist and explicit clear preserve source provenance and audit actor label
+ok 15 - canonical set whitelist and explicit clear preserve source provenance and audit actor label
+  ---
+  duration_ms: 0.70725
+  type: 'test'
+  ...
+# Subtest: 503, lost response and malformed success retain same UUID/input and prevent switching or discard
+ok 16 - 503, lost response and malformed success retain same UUID/input and prevent switching or discard
+  ---
+  duration_ms: 1.086625
+  type: 'test'
+  ...
+# Subtest: in-flight request disables duplicate save and cannot be hidden by client switch
+ok 17 - in-flight request disables duplicate save and cannot be hidden by client switch
+  ---
+  duration_ms: 0.52025
+  type: 'test'
+  ...
+# Subtest: 409 keeps edits and requires explicit supplied new-context acceptance before a new UUID
+ok 18 - 409 keeps edits and requires explicit supplied new-context acceptance before a new UUID
+  ---
+  duration_ms: 0.466042
+  type: 'test'
+  ...
+# Subtest: dirty same-client refresh never silently rebinds and explicit discard permits switching
+ok 19 - dirty same-client refresh never silently rebinds and explicit discard permits switching
+  ---
+  duration_ms: 0.376375
+  type: 'test'
+  ...
+# Subtest: ambiguous operation is disabled in historical view and resumes only same-operation retry on current view
+ok 20 - ambiguous operation is disabled in historical view and resumes only same-operation retry on current view
+  ---
+  duration_ms: 0.33825
+  type: 'test'
+  ...
+# Subtest: noop is a proven result and unavailable fresh card never grants editing
+ok 21 - noop is a proven result and unavailable fresh card never grants editing
+  ---
+  duration_ms: 0.493916
+  type: 'test'
+  ...
+1..21
+# tests 21
+# suites 0
+# pass 21
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 52.315417

@@ -341,7 +341,9 @@ def _planned_source_fallback(client, revision):
     size = plan.choices.get("size")
     fit = plan.choices.get("fit_option_code")
     if size:
-        acknowledgements = {"uk": f"Ви обрали розмір {size}.", "ru": f"Вы выбрали размер {size}.", "en": f"You selected size {size}."}
+        acknowledgements = ({"uk": f"Уточнений розмір — {size}.", "ru": f"Уточнённый размер — {size}.", "en": f"The corrected size requirement is {size}."}
+                            if plan._audited_size() else
+                            {"uk": f"Ви обрали розмір {size}.", "ru": f"Вы выбрали размер {size}.", "en": f"You selected size {size}."})
     elif fit in {"oversize", "classic"}:
         labels = {"uk": {"oversize": "оверсайз", "classic": "класична"},
                   "ru": {"oversize": "оверсайз", "classic": "классическая"}}

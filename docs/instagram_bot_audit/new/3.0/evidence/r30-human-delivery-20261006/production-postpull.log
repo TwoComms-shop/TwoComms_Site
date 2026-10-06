@@ -1,0 +1,100 @@
+maintenance active lease_id=r30-human-2f3361-release expires_at=1791289364
+From https://github.com/zainllw0w/TwoComms_Site
+   820ac2953..2f3361f76  main       -> origin/main
+Updating 820ac2953..2f3361f76
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   8 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   4 +-
+ .../evidence/r30-human-delivery-20261006/README.md |  19 +
+ .../human-contention-final-native.log              |   7 +
+ .../human-contention-initial-native.log            |  35 ++
+ .../human-echo-initial-sqlite.log                  |  10 +
+ .../human-full-bridge-fixed-sqlite.log             |  17 +
+ .../human-full-bridge-initial-sqlite.log           |  55 ++
+ .../human-integrated-final-native.log              |  17 +
+ .../human-integrated-initial-sqlite.log            | 515 +++++++++++++++
+ .../human-periodic-final-sqlite.log                |  10 +
+ .../human-schema-check.log                         |   3 +
+ .../r30-human-delivery-20261006/human-ui-js.log    |  82 +++
+ .../PRODUCTION_RELEASE_2026-10-06.md               |   9 +
+ .../production-postpull.log                        |  46 ++
+ tests/js/management-ig-human-documents.test.js     | 206 ++++++
+ twocomms/management/bot_human_document_views.py    | 271 ++++++++
+ twocomms/management/ig_bot_models.py               |  25 +-
+ twocomms/management/ig_human_reply_models.py       | 195 ++++++
+ .../commands/run_instagram_periodic_jobs.py        |  14 +-
+ .../0222_human_reply_parts_private_documents.py    |  82 +++
+ .../0223_selection_correction_operation.py         |  13 +
+ .../migrations/0224_deferred_human_echo.py         |  30 +
+ twocomms/management/models.py                      |   1 +
+ twocomms/management/services/ig_human_reply.py     | 461 +++++++++-----
+ .../management/services/ig_human_reply_delivery.py | 696 +++++++++++++++++++++
+ .../services/ig_human_reply_maintenance.py         | 232 +++++++
+ .../services/ig_human_reply_transport.py           | 306 +++++++++
+ twocomms/management/services/ig_revision_echo.py   | 184 +++++-
+ .../services/ig_revision_echo_integration.py       |  90 ++-
+ twocomms/management/services/instagram_bot.py      |   6 +-
+ .../static/management/ig_human_documents.css       |  25 +
+ .../static/management/ig_human_documents.js        | 297 +++++++++
+ twocomms/management/templates/management/bot.html  |  21 +
+ twocomms/management/tests_ig_human_document_api.py | 284 +++++++++
+ twocomms/management/tests_ig_human_echo.py         | 280 +++++++++
+ twocomms/management/tests_ig_human_reply.py        | 208 +++---
+ .../management/tests_ig_human_reply_delivery.py    | 557 +++++++++++++++++
+ .../management/tests_ig_human_reply_maintenance.py | 239 +++++++
+ twocomms/management/tests_ig_human_reply_native.py | 285 +++++++++
+ .../management/tests_ig_human_reply_privacy.py     |  87 +++
+ .../management/tests_ig_human_reply_transport.py   | 684 ++++++++++++++++++++
+ twocomms/management/tests_ig_runtime_ownership.py  |  92 ++-
+ twocomms/management/urls.py                        |   6 +
+ twocomms/test_support/ig_mariadb_runner.py         |  22 +-
+ 45 files changed, 6456 insertions(+), 280 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-contention-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-contention-initial-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-echo-initial-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-full-bridge-fixed-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-full-bridge-initial-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-integrated-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-integrated-initial-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-periodic-final-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-schema-check.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/human-ui-js.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-required-policy-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-required-policy-20261006/production-postpull.log
+ create mode 100644 tests/js/management-ig-human-documents.test.js
+ create mode 100644 twocomms/management/bot_human_document_views.py
+ create mode 100644 twocomms/management/ig_human_reply_models.py
+ create mode 100644 twocomms/management/migrations/0222_human_reply_parts_private_documents.py
+ create mode 100644 twocomms/management/migrations/0223_selection_correction_operation.py
+ create mode 100644 twocomms/management/migrations/0224_deferred_human_echo.py
+ create mode 100644 twocomms/management/services/ig_human_reply_delivery.py
+ create mode 100644 twocomms/management/services/ig_human_reply_maintenance.py
+ create mode 100644 twocomms/management/services/ig_human_reply_transport.py
+ create mode 100644 twocomms/management/static/management/ig_human_documents.css
+ create mode 100644 twocomms/management/static/management/ig_human_documents.js
+ create mode 100644 twocomms/management/tests_ig_human_document_api.py
+ create mode 100644 twocomms/management/tests_ig_human_echo.py
+ create mode 100644 twocomms/management/tests_ig_human_reply_delivery.py
+ create mode 100644 twocomms/management/tests_ig_human_reply_maintenance.py
+ create mode 100644 twocomms/management/tests_ig_human_reply_native.py
+ create mode 100644 twocomms/management/tests_ig_human_reply_privacy.py
+ create mode 100644 twocomms/management/tests_ig_human_reply_transport.py
+Operations to perform:
+  Target specific migration: 0224_deferred_human_echo, from management
+Running migrations:
+  Applying management.0222_human_reply_parts_private_documents... OK
+  Applying management.0223_selection_correction_operation... OK
+  Applying management.0224_deferred_human_echo... OK
+System check identified no issues (0 silenced).
+Running DTF asset minification before collectstatic...
+DTF minification complete: 3 files, 0 updated, saved 66648 bytes
+
+2 static files copied to '/home/qlknpodo/TWC/TwoComms_Site/twocomms/staticfiles', 734 unmodified, 1080 post-processed.
+Compressing... done
+Compressed 4 block(s) from 60 template(s) for 1 context(s).
+maintenance disabled
+daemon ready under supervisor — ok
+377 objects imported automatically (use -v 2 for details).
+
+{"health": {"main_healthy": true, "process_online": true, "process_pid": 1656597, "stalled": false, "supervisor": {"available": true, "child_pid": 1656597, "child_pid_matches_expected": true, "child_release_sha": "2f3361f76baa875e7b5e871aa2b0df74d20b6c42", "last_ensure_seen_at": 1791288488.246, "observed_at": 1791288490.647, "restart_count": 0, "status": "current", "supervisor_release_sha": "2f3361f76baa875e7b5e871aa2b0df74d20b6c42"}, "workers_healthy": true}, "human": {"applied": ["0222_human_reply_parts_private_documents", "0223_selection_correction_operation", "0224_deferred_human_echo"], "correction_prerequisite_nullable": true, "cron_hook": true, "deferred_human_field": "ForeignKey", "engines": {"management_humanreplycommand": "InnoDB", "management_humanreplypart": "InnoDB", "management_humanreplyprivatedocument": "InnoDB", "management_igclient": "InnoDB", "management_instagrambotsettings": "InnoDB"}, "private_document_version_field": "PositiveBigIntegerField", "recent_exact_receipt_count": 0, "recent_part_count": 0, "recent_part_states": []}, "maintenance_active": false, "memory_admission_accepted": false, "memory_generation_enabled": false, "release_sha": "2f3361f76baa875e7b5e871aa2b0df74d20b6c42"}

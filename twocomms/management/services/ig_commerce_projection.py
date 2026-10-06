@@ -72,6 +72,10 @@ def source_preferences_for(client, *, episode_id=None, line_id=None) -> dict:
     if constraints.get("query") and not line.get("product_id"):
         values["model_query"] = constraints["query"]
     evidence = {}
+    cleared = {}
+    correction_namespace = None
+    correction_reset_id = None
+    correction_order_id = None
     withdrawn_keys = set()
     transitions = IgCommerceSelectionTransition.objects.filter(
         session=session, to_revision__lte=session.revision,
@@ -94,6 +98,37 @@ def source_preferences_for(client, *, episode_id=None, line_id=None) -> dict:
             break
         owned = (source.client_id == client.pk and source.sender_id == current["igsid"]
                  and source.role == "user" and source.source == "webhook")
+        if transition.action == "manager_size_correction":
+            from management.services.ig_selection_corrections import validated_correction_receipt
+            from management.services.ig_admin_state_capture import _namespace
+            from management.models import IgFunnelResetAudit, IgCommercialEpisode
+            if correction_namespace is None:
+                correction_namespace = _namespace()
+                correction_reset_id = IgFunnelResetAudit.objects.filter(client_id=client.pk).order_by("-pk").values_list("pk", flat=True).first()
+                correction_order_id = IgCommercialEpisode.objects.filter(pk=current_episode, client_id=client.pk).values_list("intended_order_id", flat=True).first()
+            correction_scope = {"client_id": client.pk, "episode_id": current_episode,
+                "line_id": str(line["line_id"]), "recipient_id": str(line.get("recipient_id") or "self"),
+                "reset_floor": reset_floor, "reset_id": correction_reset_id, "order_id": correction_order_id}
+            receipt = validated_correction_receipt(transition, scope=correction_scope, namespace=correction_namespace) if owned else None
+            if receipt is None:
+                return {}
+            proof = {"decision_id": None, "transition_id": transition.pk, "source_message_id": source.pk,
+                "source_digest": hashlib.sha256(source.text.encode()).hexdigest(),
+                "observed_at": (source.provider_created_at or source.created_at).isoformat(),
+                "authority": "audited_correction", "correction": {"transition_id": transition.pk, "receipt": receipt}}
+            if "size" not in evidence and "size" not in withdrawn_keys:
+                if receipt["operation"] == "clear":
+                    cleared["size"] = proof
+                    withdrawn_keys.add("size")
+                elif values.get("size") == receipt["after"]:
+                    evidence["size"] = proof
+                else:
+                    return {}
+            elif "size" in evidence and evidence["size"].get("authority") != "audited_correction":
+                evidence["size"]["supersedes_transition_id"] = transition.pk
+            expected_snapshot = _source_snapshot(transition.previous_snapshot)
+            revision = transition.from_revision
+            continue
         authorized_product = None
         if transition.action == "selection_authorized":
             if not owned:
@@ -210,7 +245,7 @@ def source_preferences_for(client, *, episode_id=None, line_id=None) -> dict:
         expected_snapshot = _source_snapshot(transition.previous_snapshot)
         revision = transition.from_revision
     confirmed = {key: value for key, value in values.items() if key in evidence}
-    if not confirmed:
+    if not confirmed and not cleared:
         return {}
     # A GET can race erasure/reset or a selection update. Never publish a
     # captured object assembled from two different authority scopes.
@@ -231,13 +266,27 @@ def source_preferences_for(client, *, episode_id=None, line_id=None) -> dict:
                      ).values("pk", "text")}
     if final_sources != proof_sources:
         return {}
+    if correction_namespace is not None:
+        from management.services.ig_admin_state_capture import _namespace
+        from management.models import IgFunnelResetAudit, IgCommercialEpisode
+        if (_namespace() != correction_namespace
+            or IgFunnelResetAudit.objects.filter(client_id=client.pk).order_by("-pk").values_list("pk", flat=True).first() != correction_reset_id
+            or IgCommercialEpisode.objects.filter(pk=current_episode, client_id=client.pk).values_list("intended_order_id", flat=True).first() != correction_order_id):
+            return {}
+        clear_sources = {row["pk"]: hashlib.sha256(row["text"].encode()).hexdigest()
+            for row in InstagramBotMessage.objects.filter(pk__in={row["source_message_id"] for row in cleared.values()},
+                client_id=client.pk, sender_id=current["igsid"], role="user", source="webhook", pk__gte=reset_floor
+            ).values("pk", "text")}
+        if clear_sources != {row["source_message_id"]: row["source_digest"] for row in cleared.values()}:
+            return {}
     return {"session_id": session.pk, "generation": session.generation,
             "revision": session.revision, "active_index": index,
             "episode_id": current_episode, "reset_floor": reset_floor,
             "product_id": line.get("product_id"),
             "recipient_id": str(line.get("recipient_id") or "self"),
             "line_id": str(line.get("line_id") or ""), "values": confirmed,
-            "evidence": {key: evidence[key] for key in confirmed}}
+            "evidence": {**{key: evidence[key] for key in confirmed}, **cleared},
+            **({"cleared": cleared} if cleared else {})}
 
 
 def _source_snapshot(snapshot):
@@ -344,11 +393,14 @@ def captured_selection_from_preferences(client_id, projection) -> dict:
         "session_id", "generation", "revision", "active_index", "episode_id", "line_id", "recipient_id", "reset_floor",
     )}
     scope["client_id"] = client_id
-    return {**projection, "schema": "source-selection.v1", "scope": scope,
-            "fields": {key: {"value": value, "status": "ambiguous" if key == "model_query" else "confirmed",
+    fields = {key: {"value": value, "status": "ambiguous" if key == "model_query" else "confirmed",
                               "authority": projection["evidence"][key].get("authority", "customer_source"), "source": projection["evidence"][key],
                               "applicability": "unknown", "availability": "unknown"}
-                       for key, value in projection["values"].items()}}
+                       for key, value in projection["values"].items()}
+    for key, proof in (projection.get("cleared") or {}).items():
+        fields[key] = {"value": None, "status": "unknown", "authority": "audited_correction", "source": proof,
+            "applicability": "unknown", "availability": "unknown"}
+    return {**projection, "schema": "source-selection.v1", "scope": scope, "fields": fields}
 
 
 def _matching_legacy_selection(client) -> dict:

@@ -1,0 +1,65 @@
+.....Forbidden (CSRF cookie not set.): /bot/api/clients/6/state/size/
+.............................................................................................................E......................................................................................
+======================================================================
+ERROR: test_duplicate_decision_integrity_race_fetches_database_winner (management.tests_ig_commerce_state.CommerceStateTests.test_duplicate_decision_integrity_race_fetches_database_winner)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/services/ig_commerce_state.py", line 393, in _create_decision
+    return IgCommerceTurnDecision.objects.create(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        source_message=source_message,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1241, in _execute_mock_call
+    raise effect
+django.db.utils.IntegrityError: unique source race
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_commerce_state.py", line 861, in test_duplicate_decision_integrity_race_fetches_database_winner
+    replay = _create_decision(
+        source_message=source,
+    ...<6 lines>...
+        delivery_state=IgCommerceTurnDecision.DeliveryState.NOT_REQUIRED,
+    )
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/services/ig_commerce_state.py", line 401, in _create_decision
+    .first()
+     ~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/query.py", line 1189, in first
+    for obj in queryset[:1]:
+               ~~~~~~~~^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/query.py", line 434, in __iter__
+    self._fetch_all()
+    ~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/query.py", line 2239, in _fetch_all
+    self._result_cache = list(self._iterable_class(self))
+                         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/query.py", line 98, in __iter__
+    results = compiler.execute_sql(
+        chunked_fetch=self.chunked_fetch, chunk_size=self.chunk_size
+    )
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/sql/compiler.py", line 1611, in execute_sql
+    sql, params = self.as_sql()
+                  ~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/sql/compiler.py", line 847, in as_sql
+    raise TransactionManagementError(
+        "select_for_update cannot be used outside of a transaction."
+    )
+django.db.transaction.TransactionManagementError: select_for_update cannot be used outside of a transaction.
+
+----------------------------------------------------------------------
+Ran 201 tests in 73.047s
+
+FAILED (errors=1)
+Found 201 test(s).
+System check identified no issues (0 silenced).

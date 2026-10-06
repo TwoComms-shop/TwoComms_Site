@@ -23,6 +23,10 @@ REASON_CODES = (
     "unauthorized_action",
 )
 
+CORRECTED_REQUIREMENT_RE = re.compile(
+    r"уточн[её]н\w*|скоригован\w*|скорректирован\w*|corrected|updated requirement", re.I,
+)
+
 
 @dataclass(frozen=True)
 class ProposedAction:
@@ -56,6 +60,7 @@ class ReplyTruthContext:
     source_chosen_sizes: tuple[str, ...] = ()
     source_chosen_fits: tuple[str, ...] = ()
     source_chosen_colors: tuple[str, ...] = ()
+    audited_chosen_sizes: tuple[str, ...] = ()
     authorized_actions: tuple[AuthorizedAction, ...] = ()
     quoted_data: tuple[str, ...] = ()
     # Future recruitment-policy integration must supply explicit source-backed
@@ -248,7 +253,7 @@ _SELECTION_WORDS = (
 )
 _SIZE_RE = re.compile(
     rf"\b(?:(?P<selected>{_SELECTION_WORDS})\s+)?"
-    r"(?:розмір|размер|size)\s*(?P<separator>[:=-])?\s*"
+    r"(?:розмір|размер|size)(?:\s+requirement(?:\s+is)?)?\s*(?P<separator>[:=–—-])?\s*[\"'«“]?"
     r"(?P<value>[A-Za-z0-9_-]{1,16})\b",
     re.I,
 )
@@ -520,10 +525,10 @@ def validate_reply_truth(
         availability_claim = _has_positive_claim(_AVAILABILITY_RE, sentence)
         if availability_claim and not context.allowed_sizes:
             _add(reasons, "unverified_availability")
-        for pattern, allowed, source_choices in (
-            (_SIZE_RE, context.allowed_sizes, context.source_chosen_sizes),
-            (_FIT_RE, context.allowed_fits, context.source_chosen_fits),
-            (_COLOR_RE, context.allowed_colors, context.source_chosen_colors),
+        for pattern, allowed, source_choices, audited_choices in (
+            (_SIZE_RE, context.allowed_sizes, context.source_chosen_sizes, context.audited_chosen_sizes),
+            (_FIT_RE, context.allowed_fits, context.source_chosen_fits, ()),
+            (_COLOR_RE, context.allowed_colors, context.source_chosen_colors, ()),
         ):
             allowed_values = {_normalize(value) for value in allowed}
             for match in pattern.finditer(sentence):
@@ -546,6 +551,10 @@ def validate_reply_truth(
                 effective = set(allowed_values)
                 if not _has_positive_claim(_AVAILABILITY_RE, clause) and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause) and _CUSTOMER_CHOICE_RE.search(clause):
                     effective.update(_normalize(value) for value in source_choices)
+                if (not _has_positive_claim(_AVAILABILITY_RE, clause)
+                    and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause)
+                    and CORRECTED_REQUIREMENT_RE.search(clause)):
+                    effective.update(_normalize(value) for value in audited_choices)
                 if _normalize(claimed) not in effective:
                     _add(reasons, "configuration_mismatch")
 

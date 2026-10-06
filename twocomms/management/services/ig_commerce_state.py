@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import json
 import re
+from copy import deepcopy
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Callable
@@ -33,6 +34,48 @@ from management.services.ig_delivery_receipts import (
 
 class CommerceRevisionConflict(RuntimeError):
     """The caller's optimistic session revision is no longer current."""
+
+
+def size_correction_snapshot(before, *, operation, size):
+    """One reversible requirement edit; preserve identity/provider ordering."""
+    after = deepcopy(before)
+    index = after["active_index"]
+    line = after["lines"][index]
+    if operation == "set":
+        line["size"] = size
+    elif operation == "clear":
+        line.pop("size", None)
+    else:
+        raise ValueError("unsupported size correction")
+    after["revision"] = before["revision"] + 1
+    # Presentation and blocked configuration cache cannot authorize actions
+    # after a changed requirement. The next ordinary reducer rebuilds them.
+    _clear_candidate_anchor(after)
+    after["graph_digest"] = ""
+    after["semantic_block_key"] = ""
+    if after.get("pending_field") == "size":
+        after["pending_field"] = ""
+    return after
+
+
+def persist_size_correction_transition(session, source, *, operation_id, receipt):
+    """Append canonical history under caller-owned client/source/session locks.
+
+    This deliberately does not project legacy client fields or create a turn
+    decision, reply, price, checkout, permission, or provider effect.
+    """
+    if not transaction.get_connection().in_atomic_block:
+        raise ValueError("size correction requires transaction")
+    before = session.snapshot()
+    after = size_correction_snapshot(before, operation=receipt["operation"], size=receipt["after"])
+    transition = IgCommerceSelectionTransition.objects.create(session=session, source_message=source,
+        correction_operation_id=operation_id, action="manager_size_correction",
+        from_revision=before["revision"], to_revision=after["revision"], previous_snapshot=before,
+        next_snapshot=after, effects={"manager_correction": receipt}, reasons=[receipt["reason_code"]],
+        graph_digest="", source_order_key=f"manager-correction:{operation_id}")
+    _apply_snapshot(session, after, event_at=session.last_provider_event_at,
+        event_id=session.last_provider_message_id)
+    return transition
 
 
 def _jsonable(value):

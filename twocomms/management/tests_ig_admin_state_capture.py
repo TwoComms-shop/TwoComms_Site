@@ -166,6 +166,20 @@ class CurrentAdminStateTests(TestCase):
         self.assertEqual(catalog_result.read_queries, selects)
         self.assertLessEqual(selects, capture.MAX_READ_QUERIES)
         self.assertEqual(self.slots(catalog_result)["choice.product_id"]["value"], product.pk)
+        from management.services.ig_selection_corrections import save_size_correction
+        import uuid
+        operator = get_user_model().objects.create_superuser(username="admin-catalog-correction", password="test")
+        context = catalog_result.state.as_dict()["boundary"]["size_correction_context"]
+        save_size_correction(self.row.pk, actor=operator, operation_id=uuid.uuid4(),
+            expected_selection_revision=context["context"]["selection_revision"],
+            expected_context_digest=context["context_digest"], operation="set", value="XL", now=self.now)
+        with CaptureQueriesContext(connection) as queries:
+            corrected_catalog = self.result()
+        corrected_selects = self.assertSelectOnly(queries)
+        self.assertEqual(corrected_catalog.status, "captured", corrected_catalog.as_dict())
+        self.assertEqual(corrected_catalog.read_queries, corrected_selects)
+        self.assertLessEqual(corrected_selects, capture.MAX_READ_QUERIES)
+        self.assertEqual(self.slots(corrected_catalog)["choice.size"]["authority"], "audited_correction")
 
     def test_foreign_client_payment_is_omitted(self):
         self.partial()

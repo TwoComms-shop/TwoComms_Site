@@ -229,6 +229,16 @@ def _current_capture(client_id, expected_selection_revision, now):
         components["payment_truth"] = payment
     components["consent_state"] = {}  # No native purpose-grant producer exists.
     state = assemble_client_state(boundary=boundary, components=components, captured_at=now)
+    from management.services.ig_selection_corrections import build_size_correction_context
+    size_slot = state.as_dict()["slots"].get("choice.size") or {}
+    can_correct = size_slot.get("status") == "confirmed" or (
+        size_slot.get("authority") == "audited_correction" and size_slot.get("omission_reason") == "requirement_explicitly_cleared")
+    boundary["size_correction_context"] = build_size_correction_context(scope=scope, selection=selection,
+        line=line, permission_epoch=owner["reply_permission_epoch"], reset_id=boundary["reset_id"],
+        namespace=namespace, watermark=watermark,
+        source_time_origin="provider_event" if (proof.get((selection.get("evidence") or {}).get("size", {}).get("source_message_id")) or {}).get("provider_created_at") else "local_observation"
+    ) if can_correct else {"available": False, "reason": "size_source_unavailable"}
+    state = assemble_client_state(boundary=boundary, components=components, captured_at=now)
     final = _owner_fence(client_id)
     if _digest(first) != _digest(final):
         raise AdminStateReadError("current_state_changed")
