@@ -1,0 +1,35 @@
+F.F.
+======================================================================
+FAIL: test_competing_claims_real_lock_wait_has_one_owner_token_without_provider (management.tests_ig_human_reply_native.HumanReplyNativeContentionTests.test_competing_claims_real_lock_wait_has_one_owner_token_without_provider)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_human_reply_native.py", line 258, in test_competing_claims_real_lock_wait_has_one_owner_token_without_provider
+    results = self.pair([claim, claim], hold_client=True)
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_human_reply_native.py", line 144, in pair
+    self._wait_for_engine_contention(worker_ids, holder_id, issued, completed)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_human_reply_native.py", line 88, in _wait_for_engine_contention
+    self.assertGreater(remaining, 0, "MariaDB did not expose the expected bounded lock-wait graph")
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: -0.005733791011152789 not greater than 0 : MariaDB did not expose the expected bounded lock-wait graph
+
+======================================================================
+FAIL: test_same_document_cas_waits_on_real_row_lock_one_wins_one_stale (management.tests_ig_human_reply_native.HumanReplyNativeContentionTests.test_same_document_cas_waits_on_real_row_lock_one_wins_one_stale)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_human_reply_native.py", line 194, in test_same_document_cas_waits_on_real_row_lock_one_wins_one_stale
+    results = self.pair([action("Winner candidate A"), action("Winner candidate B")], hold_client=True)
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_human_reply_native.py", line 144, in pair
+    self._wait_for_engine_contention(worker_ids, holder_id, issued, completed)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_human_reply_native.py", line 88, in _wait_for_engine_contention
+    self.assertGreater(remaining, 0, "MariaDB did not expose the expected bounded lock-wait graph")
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: -0.0068825829948764294 not greater than 0 : MariaDB did not expose the expected bounded lock-wait graph
+
+----------------------------------------------------------------------
+Ran 4 tests in 11.914s
+
+FAILED (failures=2)
+Found 4 test(s).
+System check identified no issues (0 silenced).

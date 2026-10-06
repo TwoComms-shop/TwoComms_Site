@@ -1,0 +1,17 @@
+Creating test database for alias 'default'...
+Destroying old test database for alias 'default'...
+.............................................ig_bot event=send level=error detail=provider receipt checkpoint failed
+.....ig_bot event=send level=error detail=HTTP 403 [permanent] помилка дозволів або політики Meta (code 10)
+.......ig_bot event=send level=error detail=HTTP 500 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.............ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+...ig_bot event=send level=error detail=provider receipt checkpoint failed
+............................Forbidden (CSRF cookie not set.): /bot/api/clients/10/documents/create/
+....
+----------------------------------------------------------------------
+Ran 106 tests in 3.785s
+
+OK
+Destroying test database for alias 'default'...
+Found 106 test(s).
+System check identified no issues (0 silenced).

@@ -262,30 +262,55 @@ def resolve_unknown_human_reply(
     outcome = str(outcome or "").strip().lower()
     if outcome not in {"delivered", "not_delivered", "handled"}:
         return {"ok": False, "error": "invalid_outcome", "status": 400}
-    now = now or timezone.now()
+    locator = IgFollowUpTask.objects.filter(pk=task_id, client_id=client_id,
+        kind=IgFollowUpTask.Kind.MANAGER_TASK, reason=HUMAN_REPLY_UNKNOWN_REASON).values(
+            "event_payload", "manager_context").first()
+    if locator is None:
+        return {"ok": False, "error": "not_found", "status": 404}
+    located_payload = locator["event_payload"] if isinstance(locator["event_payload"], dict) else {}
+    located_context = locator["manager_context"] if isinstance(locator["manager_context"], dict) else {}
+    command_id = located_context.get("command_id") or located_payload.get("command_id")
+    if not isinstance(command_id, int) or isinstance(command_id, bool) or command_id < 1:
+        return {"ok": False, "error": "command_not_unknown", "status": 409}
     with transaction.atomic():
-        task = (
-            IgFollowUpTask.objects.select_for_update()
-            .filter(
-                pk=task_id,
-                client_id=client_id,
-                kind=IgFollowUpTask.Kind.MANAGER_TASK,
-                reason=HUMAN_REPLY_UNKNOWN_REASON,
-            )
-            .first()
-        )
+        # Match receipt settlement/closure ordering. Locator reads own no lock.
+        client = IgClient.objects.select_for_update().filter(pk=client_id).first()
+        if client is None:
+            return {"ok": False, "error": "not_found", "status": 404}
+        if client.hidden_at is not None or client.privacy_erasure_started_at is not None:
+            return {"ok": False, "error": "client_unavailable", "status": 410}
+        command = HumanReplyCommand.objects.select_for_update().filter(pk=command_id, client_id=client_id).first()
+        from management.services.ig_human_reply_transport import has_planned_human_delivery
+        from management.services.ig_human_reply_delivery import _part_rows, _valid_plan
+        planned = command is not None and has_planned_human_delivery(command)
+        rows = _part_rows(command) if planned else []
+        task = IgFollowUpTask.objects.select_for_update().filter(pk=task_id, client_id=client_id,
+            kind=IgFollowUpTask.Kind.MANAGER_TASK, reason=HUMAN_REPLY_UNKNOWN_REASON).first()
         if task is None:
             return {"ok": False, "error": "not_found", "status": 404}
+        from django.contrib.auth import get_user_model
+        actor = get_user_model().objects.filter(pk=getattr(actor, "pk", None)).first()
+        _check_actor(actor)
         payload = task.event_payload if isinstance(task.event_payload, dict) else {}
         context = task.manager_context if isinstance(task.manager_context, dict) else {}
-        command_id = context.get("command_id") or payload.get("command_id")
-        command = (
-            HumanReplyCommand.objects.select_for_update()
-            .filter(pk=command_id, client_id=client_id)
-            .first()
-        )
         if command is None or command.state != HumanReplyCommand.State.UNKNOWN:
             return {"ok": False, "error": "command_not_unknown", "status": 409}
+        original_source_id = rows[0].context_message_id_snapshot if rows else (
+            (command.operation_context or {}).get("context_message_id") or command.context_message_id)
+        if (payload.get("command_id") != command.pk or context.get("command_id") != command.pk
+            or payload.get("operation_id") != str(command.operation_id) or context.get("operation_id") != str(command.operation_id)
+            or payload.get("source_message_id") != original_source_id or context.get("source_message_id") != original_source_id
+            or payload.get("provider_namespace") != command.provider_namespace
+            or task.event_key != f"human-reply-unknown:{command.pk}"):
+            return {"ok": False, "error": "resolution_binding_changed", "status": 409}
+        if planned:
+            proof_parts = payload.get("parts")
+            if (not _valid_plan(command, rows, current_owner=False) or not isinstance(proof_parts, list)
+                or len(proof_parts) != len(rows) or any(not isinstance(proof, dict)
+                    or proof.get("part_id") != part.pk or proof.get("part_index") != part.ordinal
+                    or proof.get("payload_digest") != part.payload_digest for proof, part in zip(proof_parts, rows))):
+                return {"ok": False, "error": "resolution_binding_changed", "status": 409}
+        now = now or timezone.now()
         existing = context.get("resolution")
         if task.status == IgFollowUpTask.Status.COMPLETED and isinstance(existing, dict):
             if existing.get("outcome") == outcome:
@@ -318,6 +343,163 @@ def resolve_unknown_human_reply(
             "manager_context", "updated_at",
         ])
     return {"ok": True, "idempotent": False, "task_id": task_id, "command_id": command.pk, "outcome": outcome, "status": IgFollowUpTask.Status.COMPLETED, "actor_id": getattr(actor, "pk", None)}
+
+
+def _accept_human_reply_command_locked(client, *, actor, text, op, namespace,
+                                       context_message_id, expected_permission_epoch, now):
+    """Shared acceptance; caller owns one takeover barrier and settings/client locks."""
+    # The client lock serializes operation lookup, competing commands, and
+    # takeover.  A nested savepoint below handles the unique operation race
+    # without leaving the outer transaction broken.
+    existing = (
+        HumanReplyCommand.objects.select_for_update()
+        .filter(operation_id=op)
+        .first()
+    )
+    if existing:
+        _validate_existing_operation(
+            existing,
+            client_id=client.pk,
+            actor=actor,
+            text=text,
+            context_message_id=context_message_id,
+        )
+        return HumanReplyResult(existing, idempotent=True)
+    if client.hidden_at or client.privacy_erasure_started_at:
+        raise HumanReplyRejected("client_unavailable")
+    if client.opted_out_at and (not client.opted_in_at or client.opted_out_at > client.opted_in_at):
+        raise HumanReplyRejected("opted_out")
+    if getattr(client, "is_blocked", False):
+        raise HumanReplyRejected("client_blocked")
+    if expected_permission_epoch is not None and int(expected_permission_epoch) != int(client.reply_permission_epoch or 0):
+        raise HumanReplyRejected("permission_epoch_changed")
+    latest = _latest_inbound(client)
+    if not latest:
+        raise HumanReplyRejected("no_inbound_context")
+    if context_message_id is not None:
+        context = client.messages.filter(pk=context_message_id, role=InstagramBotMessage.Role.USER).first()
+        if not context:
+            raise HumanReplyRejected("context_not_found")
+        if client.messages.filter(role=InstagramBotMessage.Role.USER, pk__gt=context.pk).exists():
+            raise HumanReplyRejected("newer_inbound")
+    else:
+        context = latest
+    deadline = _window_deadline(latest)
+    if deadline is None or deadline <= now:
+        raise HumanReplyRejected("reply_window_closed")
+
+    # Keep one actor's active command as the client-level ownership fence.
+    # The context filter used here previously allowed a different manager
+    # to claim the same client after a newer inbound changed the context.
+    active_commands = (
+        HumanReplyCommand.objects.select_for_update()
+        .filter(
+            client=client,
+            state__in=[
+                HumanReplyCommand.State.PENDING,
+                HumanReplyCommand.State.CLAIMED,
+                HumanReplyCommand.State.PROVIDER_STARTED,
+                HumanReplyCommand.State.UNKNOWN,
+            ],
+        )
+        .exclude(operation_id=op)
+    )
+    unresolved = active_commands.filter(
+        state=HumanReplyCommand.State.UNKNOWN
+    ).first()
+    if unresolved:
+        if unresolved.actor_id != getattr(actor, "pk", None):
+            raise HumanReplyRejected("command_owned_by_other_actor")
+        raise HumanReplyRejected("competing_command")
+
+    competing = active_commands.first()
+    if competing:
+        if competing.actor_id != getattr(actor, "pk", None):
+            raise HumanReplyRejected("command_owned_by_other_actor")
+        if competing.context_message_id == context.pk:
+            raise HumanReplyRejected("competing_command")
+
+    # Confirm takeover before exposing the send button. Manual sends are
+    # allowed while bot automation is paused; the epoch fences old workers.
+    before = {"bot_paused": bool(client.bot_paused),
+              "manager_takeover": bool(client.manager_takeover),
+              "permission_epoch": int(client.reply_permission_epoch or 0)}
+    if not client.manager_takeover or not client.bot_paused:
+        client.manager_takeover = True
+        client.bot_paused = True
+        client.paused_reason = "manager_takeover"
+        client.paused_at = now
+        client.reply_permission_epoch = int(client.reply_permission_epoch or 0) + 1
+        client.save(update_fields=[
+            "manager_takeover", "bot_paused", "paused_reason", "paused_at",
+            "reply_permission_epoch", "updated_at",
+        ])
+    # Cleanup is part of the accepted transition, including an already
+    # paused client. Started/ambiguous sends remain receipt-owned. A failed
+    # cleanup rolls back this whole transition instead of claiming success.
+    try:
+        from management.services.ig_permission_transitions import cancel_client_unstarted_automation
+        cancel_client_unstarted_automation(
+            client, reason="human_reply_takeover", now=now, nowait=False,
+        )
+    except Exception:
+        raise HumanReplyRejected("takeover_cleanup_failed") from None
+    epoch = int(client.reply_permission_epoch or 0)
+    try:
+        with transaction.atomic():
+            command = HumanReplyCommand.objects.create(
+                operation_id=op,
+                client=client,
+                actor=actor,
+                context_message=context,
+                recipient_igsid=client.igsid,
+                text=text,
+                provider_namespace=namespace,
+                permission_epoch=epoch,
+                window_deadline=deadline,
+                draft_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                context_revision=str(context.pk),
+                operation_context={
+                    "client_id": client.pk,
+                    "context_message_id": context.pk,
+                    "recipient_igsid": client.igsid,
+                    "permission_epoch": epoch,
+                    "window_deadline": deadline.isoformat(),
+                    "provider_namespace": namespace,
+                },
+            )
+            AdminAuditLog.objects.create(
+                actor=actor,
+                actor_role="staff",
+                action="ig_bot.human_reply_command_created",
+                entity_type="HumanReplyCommand",
+                entity_id=str(command.pk),
+                before=before,
+                after={"bot_paused": True, "manager_takeover": True, "permission_epoch": epoch},
+                reason="authenticated_manual_reply",
+            )
+            from management.services.ig_human_reply_delivery import plan_human_command
+
+            planned = plan_human_command(command.pk, now=now)
+            if not planned.ready:
+                raise HumanReplyRejected(planned.reason or "human_plan_unavailable")
+            command = planned.command
+    except IntegrityError as exc:
+        with transaction.atomic():
+            command = HumanReplyCommand.objects.select_for_update().filter(operation_id=op).first()
+        if command is None:
+            # An unrelated command/audit failure is not a duplicate click.
+            # Propagate through the outer rollback and finite DB failure.
+            raise exc
+        _validate_existing_operation(
+            command,
+            client_id=client.pk,
+            actor=actor,
+            text=text,
+            context_message_id=context.pk,
+        )
+        return HumanReplyResult(command, idempotent=True)
+    return HumanReplyResult(command)
 
 
 def create_human_reply_command(
@@ -359,6 +541,12 @@ def create_human_reply_command(
         return HumanReplyResult(existing, idempotent=True)
 
     with _human_takeover_transition():
+        # Keep the same settings -> client -> command lock order as the part
+        # store. Re-read namespace after waiting for the accepted transition.
+        settings_obj = InstagramBotSettings.objects.select_for_update().filter(pk=settings_obj.pk).first()
+        if settings_obj is None:
+            raise HumanReplyRejected("settings_unavailable")
+        namespace = str(ingress_provider_namespace(settings_obj) or "")[:128]
         client = IgClient.objects.select_for_update().filter(pk=client_id).first()
         if not client:
             raise HumanReplyRejected("client_not_found")
@@ -366,156 +554,107 @@ def create_human_reply_command(
         # explicit clock; normal callers use the fresh clock after acquisition.
         now = now or timezone.now()
 
-        # The client lock serializes operation lookup, competing commands, and
-        # takeover.  A nested savepoint below handles the unique operation race
-        # without leaving the outer transaction broken.
-        existing = (
-            HumanReplyCommand.objects.select_for_update()
-            .filter(operation_id=op)
-            .first()
-        )
-        if existing:
-            _validate_existing_operation(
-                existing,
-                client_id=client.pk,
-                actor=actor,
-                text=text,
-                context_message_id=context_message_id,
-            )
-            return HumanReplyResult(existing, idempotent=True)
-        if client.hidden_at or client.privacy_erasure_started_at:
+        return _accept_human_reply_command_locked(client, actor=actor, text=text, op=op,
+            namespace=namespace, context_message_id=context_message_id,
+            expected_permission_epoch=expected_permission_epoch, now=now)
+
+
+def create_human_reply_command_from_draft(client_id, *, actor, operation_id, document_id,
+                                         expected_version, expected_hash, now=None):
+    """CAS saved private text -> one accepted command, plan and consume commit."""
+    from django.db import connection
+    from management.ig_human_reply_models import HumanReplyPrivateDocument, human_payload_digest
+    from management.services.ig_human_reply_delivery import (
+        PLAN_KEY, _context_payload, _document_owner, _part_rows, _private_actor,
+        _private_cas, _private_identity, _valid_plan, bind_private_draft_command,
+    )
+    from management.services.instagram_bot import ingress_provider_namespace
+    if connection.in_atomic_block and any(not getattr(block, "_from_testcase", False) for block in connection.atomic_blocks):
+        raise HumanReplyRejected("human_draft_requires_commit")
+    actor = _private_actor(actor)
+    document_id = _private_identity(document_id)
+    _private_cas(expected_version, expected_hash)
+    try:
+        op = uuid.UUID(str(operation_id))
+    except (TypeError, ValueError, AttributeError):
+        raise HumanReplyRejected("invalid_operation_id") from None
+    with _human_takeover_transition():
+        settings_obj = InstagramBotSettings.objects.select_for_update().order_by("pk").first()
+        if settings_obj is None:
+            raise HumanReplyRejected("settings_unavailable")
+        client = IgClient.objects.select_for_update().filter(pk=client_id).first()
+        if client is None or client.hidden_at or client.privacy_erasure_started_at:
             raise HumanReplyRejected("client_unavailable")
-        if client.opted_out_at and (not client.opted_in_at or client.opted_out_at > client.opted_in_at):
-            raise HumanReplyRejected("opted_out")
-        if getattr(client, "is_blocked", False):
-            raise HumanReplyRejected("client_blocked")
-        if expected_permission_epoch is not None and int(expected_permission_epoch) != int(client.reply_permission_epoch or 0):
-            raise HumanReplyRejected("permission_epoch_changed")
-        latest = _latest_inbound(client)
-        if not latest:
-            raise HumanReplyRejected("no_inbound_context")
-        if context_message_id is not None:
-            context = client.messages.filter(pk=context_message_id, role=InstagramBotMessage.Role.USER).first()
-            if not context:
-                raise HumanReplyRejected("context_not_found")
-            if client.messages.filter(role=InstagramBotMessage.Role.USER, pk__gt=context.pk).exists():
-                raise HumanReplyRejected("newer_inbound")
-        else:
-            context = latest
-        deadline = _window_deadline(latest)
-        if deadline is None or deadline <= now:
-            raise HumanReplyRejected("reply_window_closed")
-
-        # Keep one actor's active command as the client-level ownership fence.
-        # The context filter used here previously allowed a different manager
-        # to claim the same client after a newer inbound changed the context.
-        active_commands = (
-            HumanReplyCommand.objects.select_for_update()
-            .filter(
-                client=client,
-                state__in=[
-                    HumanReplyCommand.State.PENDING,
-                    HumanReplyCommand.State.CLAIMED,
-                    HumanReplyCommand.State.PROVIDER_STARTED,
-                    HumanReplyCommand.State.UNKNOWN,
-                ],
-            )
-            .exclude(operation_id=op)
-        )
-        unresolved = active_commands.filter(
-            state=HumanReplyCommand.State.UNKNOWN
-        ).first()
-        if unresolved:
-            if unresolved.actor_id != getattr(actor, "pk", None):
-                raise HumanReplyRejected("command_owned_by_other_actor")
-            raise HumanReplyRejected("competing_command")
-
-        competing = active_commands.first()
-        if competing:
-            if competing.actor_id != getattr(actor, "pk", None):
-                raise HumanReplyRejected("command_owned_by_other_actor")
-            if competing.context_message_id == context.pk:
-                raise HumanReplyRejected("competing_command")
-
-        # Confirm takeover before exposing the send button. Manual sends are
-        # allowed while bot automation is paused; the epoch fences old workers.
-        before = {"bot_paused": bool(client.bot_paused),
-                  "manager_takeover": bool(client.manager_takeover),
-                  "permission_epoch": int(client.reply_permission_epoch or 0)}
-        if not client.manager_takeover or not client.bot_paused:
-            client.manager_takeover = True
-            client.bot_paused = True
-            client.paused_reason = "manager_takeover"
-            client.paused_at = now
-            client.reply_permission_epoch = int(client.reply_permission_epoch or 0) + 1
-            client.save(update_fields=[
-                "manager_takeover", "bot_paused", "paused_reason", "paused_at",
-                "reply_permission_epoch", "updated_at",
-            ])
-        # Cleanup is part of the accepted transition, including an already
-        # paused client. Started/ambiguous sends remain receipt-owned. A failed
-        # cleanup rolls back this whole transition instead of claiming success.
-        try:
-            from management.services.ig_permission_transitions import cancel_client_unstarted_automation
-            cancel_client_unstarted_automation(
-                client, reason="human_reply_takeover", now=now, nowait=False,
-            )
-        except Exception:
-            raise HumanReplyRejected("takeover_cleanup_failed") from None
-        epoch = int(client.reply_permission_epoch or 0)
-        try:
-            with transaction.atomic():
-                command = HumanReplyCommand.objects.create(
-                    operation_id=op,
-                    client=client,
-                    actor=actor,
-                    context_message=context,
-                    recipient_igsid=client.igsid,
-                    text=text,
-                    provider_namespace=namespace,
-                    permission_epoch=epoch,
-                    window_deadline=deadline,
-                    draft_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                    context_revision=str(context.pk),
-                    operation_context={
-                        "client_id": client.pk,
-                        "context_message_id": context.pk,
-                        "recipient_igsid": client.igsid,
-                        "permission_epoch": epoch,
-                        "window_deadline": deadline.isoformat(),
-                        "provider_namespace": namespace,
-                    },
-                )
-                AdminAuditLog.objects.create(
-                    actor=actor,
-                    actor_role="staff",
-                    action="ig_bot.human_reply_command_created",
-                    entity_type="HumanReplyCommand",
-                    entity_id=str(command.pk),
-                    before=before,
-                    after={"bot_paused": True, "manager_takeover": True, "permission_epoch": epoch},
-                    reason="authenticated_manual_reply",
-                )
-        except IntegrityError as exc:
-            with transaction.atomic():
-                command = HumanReplyCommand.objects.select_for_update().filter(operation_id=op).first()
-            if command is None:
-                # An unrelated command/audit failure is not a duplicate click.
-                # Propagate through the outer rollback and finite DB failure.
-                raise exc
-            _validate_existing_operation(
-                command,
-                client_id=client.pk,
-                actor=actor,
-                text=text,
-                context_message_id=context.pk,
-            )
+        doc = HumanReplyPrivateDocument.objects.select_for_update().filter(document_id=document_id, client_id=client.pk).first()
+        if doc is None:
+            raise HumanReplyRejected("private_document_missing")
+        actor = _private_actor(actor)
+        if doc.actor_id != actor.pk:
+            raise HumanReplyRejected("private_document_owned_by_other_actor")
+        if doc.kind != doc.Kind.REPLY_DRAFT:
+            raise HumanReplyRejected("private_note_not_sendable")
+        if (not isinstance(doc.text, str) or not doc.text.strip()
+            or doc.text_hash != hashlib.sha256(doc.text.encode()).hexdigest() or doc.text_hash != expected_hash):
+            raise HumanReplyRejected("private_document_stale")
+        private_binding = dict(document_id=str(doc.document_id), source_version=expected_version,
+            source_hash=expected_hash, context_digest=doc.context_digest, reset_floor=doc.reset_floor,
+            source_permission_epoch=doc.source_permission_epoch)
+        if doc.state == doc.State.CONSUMED:
+            if doc.version != expected_version + 1 or doc.consumed_command_id is None:
+                raise HumanReplyRejected("private_document_stale")
+            command = HumanReplyCommand.objects.select_for_update().filter(pk=doc.consumed_command_id, client_id=client.pk).first()
+            if (command is None or command.operation_id != op or command.actor_id != actor.pk
+                or command.text != doc.text or command.draft_hash != expected_hash
+                or command.recipient_igsid != doc.recipient_igsid or command.provider_namespace != doc.provider_namespace
+                or (command.operation_context or {}).get("private_draft") != private_binding):
+                raise HumanReplyRejected("operation_conflict")
+            rows = _part_rows(command)
+            plan = (command.operation_context or {}).get(PLAN_KEY) or {}
+            source = plan.get("context_binding") or {}
+            if (not _valid_plan(command, rows, current_owner=False) or source.get("source_digest") != doc.context_digest
+                or source.get("reset_floor") != doc.reset_floor
+                or (doc.context_message_id is not None and source.get("message_id") != doc.context_message_id)):
+                raise HumanReplyRejected("private_command_binding_changed")
             return HumanReplyResult(command, idempotent=True)
-    return HumanReplyResult(command)
+        if doc.state != doc.State.OPEN:
+            raise HumanReplyRejected("private_document_closed")
+        if doc.version != expected_version:
+            raise HumanReplyRejected("private_document_stale")
+        # An OPEN draft cannot adopt an unrelated already accepted operation.
+        # Atomic first consumption cannot leave a command with an OPEN document.
+        if HumanReplyCommand.objects.select_for_update().filter(operation_id=op).exists():
+            raise HumanReplyRejected("operation_conflict")
+        namespace = str(ingress_provider_namespace(settings_obj) or "")[:128]
+        if namespace != doc.provider_namespace or doc.recipient_igsid != client.igsid:
+            raise HumanReplyRejected("provider_namespace_changed")
+        context = InstagramBotMessage.objects.filter(pk=doc.context_message_id, client_id=client.pk).first()
+        checked_at = now or timezone.now()
+        floor = _document_owner(client, context, doc.provider_namespace, doc.kind, checked_at)
+        if floor != doc.reset_floor or human_payload_digest(_context_payload(context)) != doc.context_digest:
+            raise HumanReplyRejected("private_context_changed")
+        if client.reply_permission_epoch != doc.source_permission_epoch:
+            raise HumanReplyRejected("permission_epoch_changed")
+        from management.services.ig_delivery_plan import build_delivery_plan
+        if len(doc.text) > MAX_HUMAN_REPLY_CHARS or not build_delivery_plan(doc.text).complete:
+            raise HumanReplyRejected("delivery_plan_incomplete")
+        accepted = _accept_human_reply_command_locked(client, actor=actor, text=doc.text, op=op,
+            namespace=doc.provider_namespace, context_message_id=doc.context_message_id,
+            expected_permission_epoch=doc.source_permission_epoch, now=checked_at)
+        bind_private_draft_command(doc.document_id, accepted.command.pk, actor=actor,
+            expected_version=expected_version, expected_hash=expected_hash, now=checked_at)
+        command = accepted.command
+        command.operation_context = {**(command.operation_context or {}), "private_draft": private_binding}
+        command.save(update_fields=["operation_context", "updated_at"])
+        return HumanReplyResult(command)
 
 
 def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None) -> HumanReplyCommand:
     """Claim and send once; an ambiguous provider outcome is terminal UNKNOWN."""
+    from management.services.ig_human_reply_transport import has_planned_human_delivery, dispatch_planned_human_reply
+
+    existing = HumanReplyCommand.objects.get(pk=command_id)
+    if has_planned_human_delivery(existing):
+        return dispatch_planned_human_reply(command_id, now=now)
     now = now or timezone.now()
     with transaction.atomic():
         command = HumanReplyCommand.objects.select_for_update().select_related("client").get(pk=command_id)

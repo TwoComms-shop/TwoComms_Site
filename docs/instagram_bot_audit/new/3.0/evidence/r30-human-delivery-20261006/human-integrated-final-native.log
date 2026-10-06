@@ -1,0 +1,17 @@
+..............................................ig_bot event=send level=error detail=provider receipt checkpoint failed
+.....ig_bot event=send level=error detail=HTTP 403 [permanent] помилка дозволів або політики Meta (code 10)
+.......ig_bot event=send level=error detail=HTTP 500 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.............ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+...ig_bot event=send level=error detail=provider receipt checkpoint failed
+................................................ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+.............Forbidden (CSRF cookie not set.): /bot/api/clients/1/documents/create/
+.......................................................
+----------------------------------------------------------------------
+Ran 193 tests in 36.276s
+
+OK
+Found 193 test(s).
+System check identified no issues (0 silenced).

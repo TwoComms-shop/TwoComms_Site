@@ -21,11 +21,22 @@ class RevisionEchoDeferred(RuntimeError):
         super().__init__(self.reason)
 
 
-def uses_revision_echo_scope(namespace, recipient=None):
+def uses_revision_echo_scope(namespace, recipient=None, *, mid=""):
     from management.services.ig_revision_live import revision_execution_enabled
+    from management.ig_human_reply_models import HumanReplyPart
 
     if not namespace:
         return False
+    human = HumanReplyPart.objects.filter(provider_namespace=namespace)
+    if mid and human.filter(provider_message_id=mid, state="sent").exists():
+        # Also route foreign-recipient exact identities through the finite
+        # guard, rather than legacy's unscoped cache shortcut.
+        return True
+    if (human.filter(recipient_igsid=recipient) if recipient else human).exists():
+        return True
+    pending_scope = IgDeferredEcho.objects.filter(provider_namespace=namespace)
+    if (pending_scope.filter(recipient_igsid=recipient) if recipient else pending_scope).exists():
+        return True
     if revision_execution_enabled():
         return not recipient or IgClient.objects.filter(igsid=recipient).exists()
     # Rolling schema deployment and flag rollback: the old outbox table exists
@@ -61,6 +72,14 @@ def _project_manager_event(event_id):
             return True
         if event.state != event.State.MANAGER_PENDING:
             return False
+        # Receipt completion can precede this projection after observation.
+        # A human checkpoint owns the client prefix, so this final recheck
+        # prevents an extra manager transcript/takeover from an early echo.
+        from management.services.ig_revision_echo import _own_human_part, _reconcile_event
+        if _own_human_part(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id) is not None:
+            event = _reconcile_event(event, client, timezone.now())
+            if event.state != event.State.MANAGER_PENDING:
+                return False
         historical = event.payload.get("historical") is True
         attachments = event.payload.get("attachments") or []
         urls = [item["url"] for item in attachments if item.get("url")]
@@ -121,6 +140,12 @@ def _project_attribution(result):
         raise RevisionEchoDeferred(result.reason, retryable=result.retryable)
     if result.classification == "manager_pending":
         _project_manager_event(result.event_id)
+        # A late exact human receipt can replace pending generic attribution
+        # before any manager projection effect is accepted.
+        if IgDeferredEcho.objects.filter(pk=result.event_id, state="human_pending").exists():
+            _project_human_event(result.event_id)
+    elif result.classification == "human_pending":
+        _project_human_event(result.event_id)
     elif result.classification == "own" and result.effect_id:
         from management.services.ig_revision_live import _project_sent_history
 
@@ -130,9 +155,46 @@ def _project_attribution(result):
     return True
 
 
+def _project_human_event(event_id):
+    from management.services.ig_human_reply_transport import project_human_part_receipt
+    from management.services.ig_revision_echo import acknowledge_human_echo
+
+    event = IgDeferredEcho.objects.filter(pk=event_id).first()
+    if event is None:
+        raise RevisionEchoDeferred("echo_event_missing")
+    if event.state == event.State.HUMAN_APPLIED:
+        return True
+    if event.state != event.State.HUMAN_PENDING or not event.matched_human_part_id:
+        return False
+    # Projection obtains client -> command -> part locks after the observer's
+    # Settings/client/event transaction committed. Never invert that prefix.
+    projected = project_human_part_receipt(event.matched_human_part_id)
+    if projected.reason == "client_unavailable":
+        return False
+    if projected.reason or projected.message is None:
+        raise RevisionEchoDeferred(projected.reason or "echo_human_projection_missing")
+    acknowledged = acknowledge_human_echo(event_id=event.pk,
+        settings_id=event.settings_id_snapshot, human_part_id=event.matched_human_part_id,
+        manager_message_id=projected.message.pk)
+    if not acknowledged.accepted:
+        raise RevisionEchoDeferred(acknowledged.reason, retryable=acknowledged.retryable)
+    return True
+
+
 def observe_and_project_echo(settings_row, *, namespace, recipient, mid, text="", attachments=None, received_at=None, historical=False):
     from management.services.ig_revision_echo import observe_revision_echo
     from management.services.ig_outgoing_registry import is_our_outgoing
+    from management.ig_human_reply_models import HumanReplyPart
+
+    human_scope = HumanReplyPart.objects.filter(provider_namespace=namespace)
+    if (human_scope.filter(recipient_igsid=recipient).exists()
+        or human_scope.filter(provider_message_id=mid, state="sent").exists()):
+        result = observe_revision_echo(
+            settings_id=settings_row.pk, namespace=namespace, recipient=recipient,
+            mid=mid, text=text, attachments=attachments, received_at=received_at,
+            historical=historical,
+        )
+        return _project_attribution(result)
 
     exact = IgRevisionDeliveryEffect.objects.filter(
         provider_namespace=namespace, recipient_igsid=recipient,
@@ -199,7 +261,7 @@ def reconcile_pending_revision_echoes(settings_row, *, limit=10):
     for client_id in clients:
         for result in reconcile_revision_echoes(settings_id=settings_row.pk, client_id=client_id, namespace=namespace, limit=8):
             _project_attribution(result)
-            handled += int(result.classification in {"own", "manager_pending", "manager_applied"})
+            handled += int(result.classification in {"own", "manager_pending", "manager_applied", "human_pending", "human_applied"})
     return handled
 
 
@@ -218,3 +280,27 @@ def reconcile_effect_echoes(effect):
         namespace=effect.provider_namespace, limit=32,
     ):
         _project_attribution(result)
+
+
+def reconcile_human_part_echoes(part_id):
+    """After-commit hook: reconcile early echoes using the original receipt.
+
+    Callers must use on_commit(robust=True). Projection failure keeps durable
+    pending work and cannot downgrade the already committed receipt or resend.
+    """
+    from management.ig_human_reply_models import HumanReplyPart
+    from management.services.ig_revision_echo import BLOCKING_STATES, reconcile_revision_echoes
+
+    part = HumanReplyPart.objects.filter(pk=part_id).first()
+    settings = InstagramBotSettings.objects.order_by("pk").first()
+    if part is None or settings is None:
+        return 0
+    if not IgDeferredEcho.objects.filter(client_id=part.client_id,
+            provider_namespace=part.provider_namespace, state__in=BLOCKING_STATES).exists():
+        return 0
+    handled = 0
+    for result in reconcile_revision_echoes(settings_id=settings.pk, client_id=part.client_id,
+            namespace=part.provider_namespace, limit=32):
+        _project_attribution(result)
+        handled += int(result.classification in {"human_pending", "human_applied"})
+    return handled

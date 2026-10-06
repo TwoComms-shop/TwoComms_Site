@@ -63,10 +63,30 @@ class InstagramMariaDbGateRunner(DiscoverRunner):
                     "DROP INDEX endpoint, ADD UNIQUE INDEX endpoint (endpoint) USING HASH"
                 )
             executor = MigrationExecutor(connection)
+        # Human actor erasure traverses the installed User relations. Apply
+        # their actual schema, without unrelated later Finance features. Its
+        # legacy predecessor creates FundingSource as MyISAM while our fresh
+        # Transaction fixture is InnoDB; prepare only this empty parent before
+        # the real 0020 FK operation (no migration is marked as faked).
+        if ("finance", "0020_finance_v2_classification_audit") not in executor.loader.applied_migrations:
+            executor.migrate([("finance", "0019_finance_v2_ledger")])
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM finance_fundingsource")
+                if cursor.fetchone()[0]:
+                    raise RuntimeError("Finance FK predecessor requires an empty disposable table")
+                cursor.execute("ALTER TABLE finance_fundingsource ENGINE=InnoDB")
+            executor = MigrationExecutor(connection)
         targets = []
-        for app in ("management", "sessions", "sites", "accounts", "product_catalog", "productcolors"):
+        # Actor deletion follows auth's admin.LogEntry relation as well; its
+        # real schema is required to verify SET_NULL/CASCADE receipt privacy.
+        for app in ("management", "admin", "sessions", "sites", "accounts", "product_catalog", "productcolors"):
             targets += executor.loader.graph.leaf_nodes(app)
         targets += [("storefront", "0098_sqlite_generated_fit_identity")]
+        targets += [
+            ("reviews", "0002_mariadb_vote_uniqueness"),
+            ("social_django", "0017_usersocialauth_user_social_auth_uid_required"),
+            ("finance", "0020_finance_v2_classification_audit"),
+        ]
         executor.migrate(targets)
         _truncate_aliases(("default",))
         return [(connection, name, False)]

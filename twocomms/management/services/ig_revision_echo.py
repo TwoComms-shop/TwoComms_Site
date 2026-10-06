@@ -26,7 +26,7 @@ MAX_UNRESOLVED = 32
 MAX_RETAINED = 128
 MAX_COMPETING = 32
 WAIT_REVIEW_AFTER = timedelta(seconds=90)
-BLOCKING_STATES = ("waiting_receipt", "ambiguous", "manager_pending")
+BLOCKING_STATES = ("waiting_receipt", "ambiguous", "manager_pending", "human_pending")
 _NAMESPACE = re.compile(r"(?:instagram_login|legacy_page):[A-Za-z0-9_.-]{1,96}")
 _RECIPIENT = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -43,13 +43,14 @@ class EchoAttribution:
     reason: str = ""
     replayed: bool = False
     retryable: bool = False
+    human_part_id: int = 0
 
 
 class _Blocked(Exception):
     pass
 
 
-def _payload(text, attachments):
+def _payload(text, attachments, *, allow_empty=False):
     if not isinstance(text, str) or len(text) > 4000:
         raise _Blocked("echo_text_invalid")
     if attachments is None:
@@ -97,7 +98,7 @@ def _payload(text, attachments):
         if item.get("context_only") is True:
             normalized["context_only"] = True
         media.append(normalized)
-    if not text and not media:
+    if not text and not media and not allow_empty:
         raise _Blocked("echo_empty")
     return {"text": text, "attachments": media}
 
@@ -139,6 +140,54 @@ def _foreign_receipt(client, namespace, recipient, mid):
     ).exclude(revision__client_id=client.pk, recipient_igsid=recipient).exists()
 
 
+def _human_parts(client, namespace, recipient):
+    from management.ig_human_reply_models import HumanReplyPart
+
+    return HumanReplyPart.objects.filter(client_id=client.pk,
+        provider_namespace=namespace, recipient_igsid=recipient)
+
+
+def _own_human_part(client, namespace, recipient, mid):
+    return _human_parts(client, namespace, recipient).filter(
+        state="sent", provider_message_id=mid, provider_started_at__isnull=False,
+    ).order_by("pk").first()
+
+
+def _foreign_human_receipt(client, namespace, recipient, mid):
+    from management.ig_human_reply_models import HumanReplyPart
+
+    return HumanReplyPart.objects.filter(provider_namespace=namespace,
+        provider_message_id=mid, state="sent").exclude(
+            client_id=client.pk, recipient_igsid=recipient).exists()
+
+
+def _human_receipt_valid(part):
+    from management.ig_bot_models import HumanReplyCommand
+    from management.ig_human_reply_models import HumanReplyPart
+    from management.services.ig_human_reply_delivery import _valid_plan
+    from management.services.ig_delivery_plan import DEFAULT_MAX_CHUNKS
+
+    command = HumanReplyCommand.objects.filter(pk=part.command_id, client_id=part.client_id).first()
+    if command is None:
+        return False
+    rows = list(HumanReplyPart.objects.filter(command_id=command.pk).order_by("ordinal")[:DEFAULT_MAX_CHUNKS + 1])
+    try:
+        return _valid_plan(command, rows, current_owner=False)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _human_projection_matches(part, message):
+    return bool(message is not None and message.client_id == part.client_id
+        and message.sender_id == part.recipient_igsid and message.provider_namespace == part.provider_namespace
+        and message.role == "manager" and message.source == "human_reply"
+        and message.send_idempotency_key == f"human:{part.operation_id_snapshot}:part:{part.ordinal}"
+        and message.provider_message_id == part.provider_message_id and message.text == part.text
+        and message.status == "done" and message.send_state == "sent"
+        and message.delivery_provider_message_ids == [part.provider_message_id]
+        and message.delivery_planned_chunk_count == 1 and message.delivery_delivered_chunk_count == 1)
+
+
 def _manager_proof(client, namespace, recipient, mid, *, message_id=None, job_id=None, settings_id=None, historical=False):
     messages = InstagramBotMessage.objects.filter(
         mid=mid, provider_namespace=namespace, sender_id=recipient,
@@ -169,7 +218,7 @@ def _result(event, *, replayed=False):
     return EchoAttribution(
         True, event.state, event.pk, event.matched_effect_id or 0,
         event.manager_message_id or 0, event.permission_transition_id or 0,
-        event.reason, replayed,
+        event.reason, replayed, human_part_id=event.matched_human_part_id or 0,
     )
 
 
@@ -203,26 +252,57 @@ def _technical_case(event, client, now):
     event.save(update_fields=["notification", "updated_at"])
 
 
-def _set_state(event, state, reason, now, *, matched_effect=None):
-    changed = event.state != state or event.reason != reason or (matched_effect is not None and event.matched_effect_id != matched_effect.pk)
+def _set_state(event, state, reason, now, *, matched_effect=None, matched_human_part=None):
+    changed = (event.state != state or event.reason != reason
+        or (matched_effect is not None and event.matched_effect_id != matched_effect.pk)
+        or (matched_human_part is not None and event.matched_human_part_id != matched_human_part.pk))
     if not changed:
         return
     event.state, event.reason = state, reason
     if matched_effect is not None:
         event.matched_effect = matched_effect
+    if matched_human_part is not None:
+        event.matched_human_part = matched_human_part
     if state == IgDeferredEcho.State.OWN:
         event.resolved_at = now
-    event.save(update_fields=["state", "reason", "matched_effect", "resolved_at", "updated_at"])
+    event.save(update_fields=["state", "reason", "matched_effect", "matched_human_part", "resolved_at", "updated_at"])
 
 
 def _reconcile_event(event, client, now):
-    if event.state in {event.State.OWN, event.State.MANAGER_PENDING, event.State.MANAGER_APPLIED}:
-        return event
-    if _foreign_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id):
+    terminal = {event.State.OWN, event.State.MANAGER_APPLIED, event.State.HUMAN_APPLIED}
+    foreign = (_foreign_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+        or _foreign_human_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id))
+    if foreign:
+        if event.state in terminal:
+            raise _Blocked("echo_receipt_identity_mismatch")
         _set_state(event, event.State.AMBIGUOUS, "echo_receipt_identity_mismatch", now)
         _technical_case(event, client, now)
         return event
     exact = _own_effect(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+    human = _own_human_part(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+    conflict = "echo_receipt_owner_conflict" if exact is not None and human is not None else "echo_human_receipt_invalid" if human is not None and not _human_receipt_valid(human) else ""
+    if conflict:
+        if event.state in terminal:
+            raise _Blocked(conflict)
+        _set_state(event, event.State.AMBIGUOUS, conflict, now)
+        _technical_case(event, client, now)
+        return event
+    if event.state == event.State.HUMAN_APPLIED:
+        message = InstagramBotMessage.objects.filter(pk=event.manager_message_id).first()
+        if (human is None or human.pk != event.matched_human_part_id
+            or not _human_projection_matches(human, message)
+            or event.matched_effect_id or event.permission_transition_id):
+            raise _Blocked("echo_human_projection_mismatch")
+    if event.state in terminal:
+        return event
+    if human is not None:
+        _set_state(event, event.State.HUMAN_PENDING, "exact_human_provider_receipt", now, matched_human_part=human)
+        return event
+    if event.state in {event.State.MANAGER_PENDING, event.State.HUMAN_PENDING}:
+        if event.state == event.State.HUMAN_PENDING:
+            _set_state(event, event.State.AMBIGUOUS, "echo_human_evidence_missing", now)
+            _technical_case(event, client, now)
+        return event
     if exact is not None:
         _set_state(event, event.State.OWN, "exact_provider_receipt", now, matched_effect=exact)
         return event
@@ -236,6 +316,12 @@ def _reconcile_event(event, client, now):
     missing = len(rows) != len(event.competing_effect_ids)
     unknown = any(row.state == row.State.UNKNOWN for row in rows)
     inflight = any(row.state in {row.State.PROVIDER_STARTED, row.State.CLAIMED, row.State.PLANNED} for row in rows)
+    human_rows = list(_human_parts(client, event.provider_namespace, event.recipient_igsid).filter(pk__in=event.competing_human_part_ids))
+    # Human physical receipts checkpoint under the client prefix. No echo
+    # payload, resemblance or timestamp can fill an unknown part's MID.
+    missing = missing or len(human_rows) != len(event.competing_human_part_ids)
+    unknown = unknown or any(row.state == row.State.UNKNOWN for row in human_rows)
+    inflight = inflight or any(row.state in {row.State.PROVIDER_STARTED, row.State.CLAIMED, row.State.PLANNED} for row in human_rows)
     if event.candidate_overflow or missing or unknown:
         reason = "echo_competing_limit" if event.candidate_overflow else "echo_effect_evidence_missing" if missing else "echo_provider_result_unknown"
         _set_state(event, event.State.AMBIGUOUS, reason, now)
@@ -252,10 +338,16 @@ def _reconcile_event(event, client, now):
 
 def _prune_confirmed(scope, client):
     """Prune only when another durable exact proof retains replay identity."""
-    candidates = list(scope.filter(state__in=("own", "manager_applied")).order_by("observed_at", "pk")[:MAX_UNRESOLVED])
+    candidates = list(scope.filter(state__in=("own", "manager_applied", "human_applied")).order_by("observed_at", "pk")[:MAX_UNRESOLVED])
     for event in candidates:
         if event.state == event.State.OWN:
             proof = _effects(client, event.provider_namespace, event.recipient_igsid).filter(pk=event.matched_effect_id, state="sent", provider_message_id=event.provider_message_id).exists()
+        elif event.state == event.State.HUMAN_APPLIED:
+            part = _own_human_part(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+            message = InstagramBotMessage.objects.filter(pk=event.manager_message_id).first()
+            proof = (part is not None and part.pk == event.matched_human_part_id
+                and _human_receipt_valid(part) and _human_projection_matches(part, message)
+                and not event.permission_transition_id)
         else:
             historical = event.payload.get("historical") is True
             message, job = _manager_proof(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id, message_id=event.manager_message_id, job_id=event.permission_transition_id, settings_id=event.settings_id_snapshot, historical=historical)
@@ -281,7 +373,13 @@ def observe_revision_echo(
             raise _Blocked("echo_timestamp_invalid")
         if type(historical) is not bool:
             raise _Blocked("echo_historical_mode_invalid")
-        payload = {**_payload(text, attachments), "historical": historical}
+        from management.ig_human_reply_models import HumanReplyPart
+        # A complete physical receipt is authoritative even when Meta omits
+        # echo content. Empty unowned echoes still cannot invent a message.
+        exact_human_identity = HumanReplyPart.objects.filter(provider_namespace=namespace,
+            recipient_igsid=recipient, client__igsid=recipient, provider_message_id=mid,
+            state="sent", provider_started_at__isnull=False).exists()
+        payload = {**_payload(text, attachments, allow_empty=exact_human_identity), "historical": historical}
         material = {"provider_namespace": namespace, "recipient_igsid": recipient, "provider_message_id": mid, "payload": payload, "provider_created_at": received_at.isoformat() if received_at else ""}
         if len(_canonical(material)) > 32 * 1024:
             raise _Blocked("echo_payload_too_large")
@@ -295,13 +393,21 @@ def observe_revision_echo(
                 # First captured metadata is immutable. Poll/CDN URL refreshes
                 # for the same exact MID do not overwrite or reapply that event.
                 return _result(_reconcile_event(event, client, now), replayed=True)
-            if _foreign_receipt(client, namespace, recipient, mid):
+            if (_foreign_receipt(client, namespace, recipient, mid)
+                or _foreign_human_receipt(client, namespace, recipient, mid)):
                 raise _Blocked("echo_receipt_identity_mismatch")
             exact = _own_effect(client, namespace, recipient, mid)
+            human = _own_human_part(client, namespace, recipient, mid)
+            if exact is not None and human is not None:
+                raise _Blocked("echo_receipt_owner_conflict")
+            if human is not None and not _human_receipt_valid(human):
+                raise _Blocked("echo_human_receipt_invalid")
+            if not payload["text"] and not payload["attachments"] and human is None:
+                raise _Blocked("echo_empty")
             if exact is not None:
                 return EchoAttribution(True, "own", effect_id=exact.pk, reason="exact_provider_receipt")
-            message, job = _manager_proof(client, namespace, recipient, mid, settings_id=settings_id)
-            if message is None:
+            message, job = (None, None) if human is not None else _manager_proof(client, namespace, recipient, mid, settings_id=settings_id)
+            if message is None and human is None:
                 message, job = _manager_proof(client, namespace, recipient, mid, settings_id=settings_id, historical=True)
             if message is not None:
                 return EchoAttribution(True, "manager_applied", manager_message_id=message.pk, permission_transition_id=job.pk if job else 0, reason="exact_manager_projection" if job else "exact_historical_projection", replayed=True)
@@ -314,18 +420,24 @@ def observe_revision_echo(
             if scope.count() >= MAX_RETAINED and not _prune_confirmed(scope, client):
                 return EchoAttribution(reason="echo_queue_limit", retryable=True)
             competing = list(_effects(client, namespace, recipient).filter(state__in=("provider_started", "unknown")).order_by("pk").values_list("pk", flat=True)[:MAX_COMPETING + 1])
+            competing_human = list(_human_parts(client, namespace, recipient).filter(state__in=("provider_started", "unknown")).order_by("pk").values_list("pk", flat=True)[:MAX_COMPETING + 1])
             # Receipt completion can race the two preceding reads. Recheck after
             # an empty competing set before declaring this an unmatched manager.
             if not competing:
                 exact = _own_effect(client, namespace, recipient, mid)
                 if exact is not None:
+                    if human is not None:
+                        raise _Blocked("echo_receipt_owner_conflict")
                     return EchoAttribution(True, "own", effect_id=exact.pk, reason="exact_provider_receipt")
+            overflow = len(competing) + len(competing_human) > MAX_COMPETING
+            captured_effects = competing[:MAX_COMPETING]
+            captured_human = competing_human[:MAX_COMPETING - len(captured_effects)]
             event = IgDeferredEcho.objects.create(
                 client=client, settings_id_snapshot=settings_id,
                 provider_namespace=namespace, recipient_igsid=recipient, provider_message_id=mid,
                 payload=payload, event_digest=digest, provider_created_at=received_at,
-                observed_at=now, competing_effect_ids=competing[:MAX_COMPETING],
-                candidate_overflow=len(competing) > MAX_COMPETING,
+                observed_at=now, competing_effect_ids=captured_effects,
+                competing_human_part_ids=captured_human, candidate_overflow=overflow,
             )
             return _result(_reconcile_event(event, client, now))
     except _Blocked as exc:
@@ -423,6 +535,44 @@ def acknowledge_manager_echo(*, event_id, settings_id, manager_message_id, permi
         return EchoAttribution(reason=str(exc))
     except Exception:
         return EchoAttribution(reason="echo_manager_projection_failed", retryable=True)
+
+
+def acknowledge_human_echo(*, event_id, settings_id, human_part_id, manager_message_id, now=None):
+    """Bind the existing command transcript; never create another takeover."""
+    identity = IgDeferredEcho.objects.filter(pk=event_id).values("client_id", "provider_namespace", "recipient_igsid").first()
+    if identity is None:
+        return EchoAttribution(reason="echo_event_missing")
+    try:
+        with transaction.atomic():
+            _settings, client = _lock_scope(settings_id, identity["provider_namespace"],
+                client_id=identity["client_id"], recipient=identity["recipient_igsid"])
+            event = IgDeferredEcho.objects.select_for_update().get(pk=event_id)
+            if event.settings_id_snapshot != settings_id:
+                raise _Blocked("echo_settings_changed")
+            part = _own_human_part(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+            message = InstagramBotMessage.objects.filter(pk=manager_message_id).first()
+            if (part is None or part.pk != human_part_id or not _human_receipt_valid(part)
+                or not _human_projection_matches(part, message)
+                or event.matched_human_part_id != part.pk or event.matched_effect_id
+                or event.permission_transition_id
+                or _foreign_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+                or _foreign_human_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+                or _own_effect(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id) is not None):
+                raise _Blocked("echo_human_projection_mismatch")
+            if event.state == event.State.HUMAN_APPLIED:
+                if event.manager_message_id != manager_message_id:
+                    raise _Blocked("echo_human_projection_mismatch")
+                return _result(event, replayed=True)
+            if event.state != event.State.HUMAN_PENDING:
+                raise _Blocked("echo_human_not_ready")
+            event.manager_message = message
+            event.state, event.reason, event.resolved_at = event.State.HUMAN_APPLIED, "exact_human_projection", now or timezone.now()
+            event.save(update_fields=["manager_message", "state", "reason", "resolved_at", "updated_at"])
+            return _result(event)
+    except _Blocked as exc:
+        return EchoAttribution(reason=str(exc))
+    except Exception:
+        return EchoAttribution(reason="echo_human_projection_failed", retryable=True)
 
 
 def acknowledge_historical_manager_echo(*, event_id, settings_id, manager_message_id, now=None):

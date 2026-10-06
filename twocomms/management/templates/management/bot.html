@@ -5,6 +5,7 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="{% static 'management/ig_journey.css' %}?v=journey-presentation-v14">
+{% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_human_documents.css' %}?v=human-documents-v1">{% endif %}
 <style>
 .bot-app{max-width:1360px;margin:0 auto;padding:20px 18px 64px;color:#e7ecf3;overflow-x:hidden;}
 .bot-app *{box-sizing:border-box;}
@@ -1832,6 +1833,7 @@ body.bot-drawer-open{overflow:hidden;}
 {% block extra_js %}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-presentation-v14"></script>
 <script src="{% static 'management/ig_journey.js' %}?v=journey-presentation-v15"></script>
+{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_human_documents.js' %}?v=human-documents-v1"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=30b82e345"></script>{% endif %}
@@ -2417,6 +2419,23 @@ body.bot-drawer-open{overflow:hidden;}
     const workspaceEl=document.querySelector('.bot-clients-workspace');
     const conversationEl=document.getElementById('bot-client-conversation');
     const contextEl=document.getElementById('bot-client-context');
+    let humanDocumentsController=null,humanDocumentsClientId=null,humanDocumentsRoot=null,humanDocumentsDisclosure=null;
+    function canLeaveHumanDocuments(id){
+      if(!humanDocumentsController||Number(humanDocumentsClientId)===Number(id)||!humanDocumentsController.hasUnsavedChanges())return true;
+      setGlobalFeedback('Є незавершена приватна чернетка. Збережіть або відкиньте текст перед переходом до іншого клієнта.','error');
+      if(humanDocumentsDisclosure)humanDocumentsDisclosure.open=true;
+      return false;
+    }
+    function renderHumanDocuments(d,id){
+      {% if bot_can_operate and bot_can_view_pii %}
+      if(!window.IgHumanDocuments)return;
+      if(!humanDocumentsRoot){humanDocumentsDisclosure=node('details','bot-context-block');humanDocumentsDisclosure.appendChild(node('summary','','Мої приватні чернетки та нотатки'));humanDocumentsRoot=node('div');humanDocumentsDisclosure.appendChild(humanDocumentsRoot);}
+      const source=(d.messages||[]).filter(message=>message.role==='user').reduce((latest,message)=>Number(message.id)>Number(latest?.id||0)?message:latest,null);
+      const options={clientId:id,contextMessageId:source?.id||null,csrf:csrf,baseUrl:'{% url "management_bot_clients_api" %}'.replace(/clients\/$/,''),onRefresh:()=>{if(Number(activeId)===Number(id))void detail(id);}};
+      if(humanDocumentsController)humanDocumentsController.update(options);else humanDocumentsController=window.IgHumanDocuments.mount(humanDocumentsRoot,options);
+      humanDocumentsClientId=id;contextEl.appendChild(humanDocumentsDisclosure);
+      {% endif %}
+    }
     const mobileNav=document.getElementById('bot-client-mobile-nav');
     const searchEl=document.getElementById('bot-clients-search');
     const filtersEl=document.getElementById('bot-client-filters');
@@ -2997,6 +3016,7 @@ body.bot-drawer-open{overflow:hidden;}
       const next=nextAction(d);const nextBlock=node('div','bot-context-next');nextBlock.style.marginTop='9px';nextBlock.append(node('span','','Наступна дія'),node('b','',next[0]),node('span','',next[1]));status.appendChild(nextBlock);const active=d.review&&d.review.active;if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-client-order-action is-pending');review.type='button';review.append(node('span','',active.approval.state==='needs_order_resolution'?"Потрібно прив'язати замовлення":'Потрібно підтвердити оплату'),node('span','',active.approval.state==='needs_order_resolution'?'Оберіть існуюче або створіть нове':'Звірте чек, товари та суму'));review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));status.appendChild(review);}
       renderCapturedState(contextEl,id);
       renderActualRequests(contextEl,id);
+      renderHumanDocuments(d,id);
       renderAssignments(contextEl,d,id,{interactive:false});
       const controls=section(contextEl,'Керування діалогом');const primary=node('div','bot-action-primary');if(c.hidden){primary.appendChild(node('span','bot-action-unavailable','Бот не обробляє прихованого клієнта'));}else if(c.opted_out){primary.appendChild(node('span','bot-action-unavailable','Автоматичні повідомлення вимкнено за відмовою клієнта. Повернення бота можливе після окремо підтвердженої згоди.'));}else{const pause=node('button','bot-client-action primary '+(c.bot_paused?'resume':'pause'),c.bot_paused?'▶ Вернути боту':'⏸ Відповідати самому');pause.type='button';pause.dataset.act=c.bot_paused?'resume':'pause';pause.setAttribute('aria-label',c.bot_paused?'Явно повернути клієнта боту після перевірки останнього нерозв’язаного запиту':'Взяти діалог і зупинити автоматичні відповіді');primary.appendChild(pause);}controls.appendChild(primary);const actions=node('div','bot-action-state-buttons');const visibility=node('button','bot-client-action '+(c.hidden?'restore':'hide'),c.hidden?'↩ Повернути до активних':'Приховати');visibility.type='button';visibility.setAttribute('aria-label',c.hidden?'Повернути клієнта до активних':'Приховати клієнта');visibility.dataset.act=c.hidden?'unhide':'hide';const lost=node('button','bot-client-action lost','Позначити як втрачено');lost.type='button';lost.setAttribute('aria-label','Позначити клієнта як втрачено');lost.dataset.act='lost';const reset=node('button','bot-client-action reset','Скинути');reset.type='button';reset.setAttribute('aria-label','Скинути воронку');reset.title='Скинути воронку з підтвердженням';reset.dataset.act='reset-funnel';actions.append(visibility,lost,reset);controls.appendChild(actions);const feedbackEl=node('div','bot-action-feedback');feedbackEl.id='bot-action-feedback';feedbackEl.setAttribute('role','status');feedbackEl.setAttribute('aria-live','polite');feedbackEl.hidden=true;controls.appendChild(feedbackEl);/* data-act='reset-funnel' reset_funnel_confirmation confirm_reset */controls.querySelectorAll('[data-act]').forEach(button=>button.addEventListener('click',()=>runClientAction(id,button.dataset.act,button)));
       renderPostSale(contextEl,d);renderOrders(contextEl,d);renderUgcRewards(contextEl,d);if(c.memory){const memory=section(contextEl,'Пам’ять');memory.appendChild(node('div','bot-mem',c.memory));}
@@ -3125,6 +3145,7 @@ body.bot-drawer-open{overflow:hidden;}
     }
     OrderAssignmentDrawer.setRenderer(renderAssignmentDrawer);
     async function detail(id){
+      if(!canLeaveHumanDocuments(id)){activeId=Number(humanDocumentsClientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));return false;}
       const requestedDetailId=Number(id);const requestGeneration=++detailRequestGeneration;if(detailAbortController)detailAbortController.abort();detailAbortController=new AbortController();const controller=detailAbortController;const preserveLastGood=renderedDetailId===requestedDetailId;
       if(!preserveLastGood){conversationEl.replaceChildren(node('div','bot-client-pane-empty','Завантаження переписки…'));contextEl.replaceChildren(node('div','bot-client-pane-empty','Завантаження контексту…'));}
       try{const response=await fetch(base+requestedDetailId+'/?detail=1'+journeyQuery(requestedDetailId),{cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest'},signal:controller.signal});const d=await readJsonResponse(response,'Не вдалося завантажити картку клієнта.');if(!response.ok||!d.success)throw new Error(d.error||'Не вдалося завантажити картку клієнта.');if(requestGeneration!==detailRequestGeneration||Number(activeId)!==requestedDetailId)return false;renderConversation(d);renderContext(d,requestedDetailId);OrderAssignmentDrawer.refresh(d);renderedDetailId=requestedDetailId;if(globalFeedback&&globalFeedback.dataset.source==='client-detail'){setGlobalFeedback('');delete globalFeedback.dataset.source;}return true;}catch(error){if(requestGeneration!==detailRequestGeneration||error&&error.name==='AbortError')return false;if(preserveLastGood){setGlobalFeedback((error&&error.message)||'Не вдалося оновити картку клієнта. Показано останні успішні дані.','error');if(globalFeedback)globalFeedback.dataset.source='client-detail';return false;}conversationEl.replaceChildren(node('div','bot-client-pane-empty',(error&&error.message)||'Не вдалося завантажити переписку.'));contextEl.replaceChildren(node('div','bot-client-pane-empty','Не вдалося завантажити картку клієнта.'));return false;}finally{if(requestGeneration===detailRequestGeneration&&detailAbortController===controller)detailAbortController=null;}

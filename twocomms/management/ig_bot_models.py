@@ -7702,6 +7702,9 @@ class IgCommerceSelectionTransition(models.Model):
         db_constraint=False,
     )
     action = models.CharField(max_length=80, db_index=True)
+    correction_operation_id = models.UUIDField(
+        null=True, blank=True, default=None, db_default=None, unique=True,
+    )
     from_revision = models.PositiveIntegerField()
     to_revision = models.PositiveIntegerField()
     previous_snapshot = models.JSONField(default=dict)
@@ -8342,6 +8345,8 @@ class IgDeferredEcho(models.Model):
         OWN = "own", _("Підтверджене власне повідомлення")
         MANAGER_PENDING = "manager_pending", _("Очікує запису менеджера")
         MANAGER_APPLIED = "manager_applied", _("Менеджера зафіксовано")
+        HUMAN_PENDING = "human_pending", _("Очікує квитанцію ручної відповіді")
+        HUMAN_APPLIED = "human_applied", _("Ручну відповідь зафіксовано")
 
     client = models.ForeignKey("management.IgClient", on_delete=models.CASCADE, related_name="deferred_echoes", db_constraint=False)
     settings_id_snapshot = models.PositiveIntegerField()
@@ -8353,10 +8358,12 @@ class IgDeferredEcho(models.Model):
     provider_created_at = models.DateTimeField(null=True, blank=True)
     observed_at = models.DateTimeField(default=timezone.now)
     competing_effect_ids = models.JSONField(default=list)
+    competing_human_part_ids = models.JSONField(default=list)
     candidate_overflow = models.BooleanField(default=False)
     state = models.CharField(max_length=20, choices=State.choices, default=State.WAITING_RECEIPT)
     reason = models.CharField(max_length=64, blank=True, default="")
     matched_effect = models.ForeignKey("management.IgRevisionDeliveryEffect", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
+    matched_human_part = models.ForeignKey("management.HumanReplyPart", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
     manager_message = models.ForeignKey("management.InstagramBotMessage", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
     permission_transition = models.ForeignKey("management.IgPermissionTransitionJob", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
     notification = models.ForeignKey("management.IgBotNotification", null=True, blank=True, on_delete=models.SET_NULL, related_name="deferred_echoes", db_constraint=False)
@@ -8367,7 +8374,7 @@ class IgDeferredEcho(models.Model):
     _IMMUTABLE_FIELDS = (
         "client_id", "settings_id_snapshot", "provider_namespace", "recipient_igsid",
         "provider_message_id", "payload", "event_digest", "provider_created_at",
-        "observed_at", "competing_effect_ids", "candidate_overflow",
+        "observed_at", "competing_effect_ids", "competing_human_part_ids", "candidate_overflow",
     )
     objects = models.Manager.from_queryset(_IgDeferredEchoQuerySet)()
 
@@ -8382,8 +8389,14 @@ class IgDeferredEcho(models.Model):
         import hashlib
         import json
 
-        if not isinstance(self.payload, dict) or not isinstance(self.competing_effect_ids, list) or len(self.competing_effect_ids) > 32:
+        if (not isinstance(self.payload, dict) or not isinstance(self.competing_effect_ids, list)
+            or not isinstance(self.competing_human_part_ids, list)
+            or len(self.competing_effect_ids) + len(self.competing_human_part_ids) > 32):
             raise ValueError("deferred echo payload is invalid")
+        if self.state == self.State.HUMAN_APPLIED and (
+            not self.matched_human_part_id or not self.manager_message_id or self.permission_transition_id
+        ):
+            raise ValueError("deferred echo human proof is missing")
         if self.state == self.State.MANAGER_APPLIED and (
             not self.manager_message_id
             or (self.payload.get("historical") is not True and not self.permission_transition_id)
@@ -8405,11 +8418,13 @@ class IgDeferredEcho(models.Model):
                 if any(getattr(self, field) != previous[field] for field in self._IMMUTABLE_FIELDS):
                     raise ValueError("deferred echo identity is immutable")
                 allowed = {
-                    self.State.WAITING_RECEIPT: {self.State.WAITING_RECEIPT, self.State.AMBIGUOUS, self.State.OWN, self.State.MANAGER_PENDING},
-                    self.State.AMBIGUOUS: {self.State.AMBIGUOUS, self.State.OWN, self.State.MANAGER_PENDING},
-                    self.State.MANAGER_PENDING: {self.State.MANAGER_PENDING, self.State.MANAGER_APPLIED},
+                    self.State.WAITING_RECEIPT: {self.State.WAITING_RECEIPT, self.State.AMBIGUOUS, self.State.OWN, self.State.MANAGER_PENDING, self.State.HUMAN_PENDING},
+                    self.State.AMBIGUOUS: {self.State.AMBIGUOUS, self.State.OWN, self.State.MANAGER_PENDING, self.State.HUMAN_PENDING},
+                    self.State.MANAGER_PENDING: {self.State.MANAGER_PENDING, self.State.MANAGER_APPLIED, self.State.HUMAN_PENDING, self.State.AMBIGUOUS},
                     self.State.OWN: {self.State.OWN},
                     self.State.MANAGER_APPLIED: {self.State.MANAGER_APPLIED},
+                    self.State.HUMAN_PENDING: {self.State.HUMAN_PENDING, self.State.HUMAN_APPLIED, self.State.AMBIGUOUS},
+                    self.State.HUMAN_APPLIED: {self.State.HUMAN_APPLIED},
                 }
                 if self.state not in allowed.get(previous["state"], set()):
                     raise ValueError("deferred echo transition is invalid")

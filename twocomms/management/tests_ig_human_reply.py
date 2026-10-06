@@ -1,12 +1,16 @@
 from datetime import timedelta
-from types import SimpleNamespace
+from dataclasses import replace
+import json
+import os
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.db import connection
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
 from management.ig_bot_models import HumanReplyCommand
+from management.ig_human_reply_models import HumanReplyPart
 from management.models import (
     AdminAuditLog,
     IgClient,
@@ -16,22 +20,34 @@ from management.models import (
 )
 from management.services.ig_human_reply import (
     HumanReplyRejected,
+    _window_deadline,
     create_human_reply_command,
     dispatch_human_reply_command,
 )
 
 
 @override_settings(ROOT_URLCONF="twocomms.urls_management", SECURE_SSL_REDIRECT=False)
-class HumanReplyCommandTests(TestCase):
+class HumanReplyCommandTests(TransactionTestCase):
     def setUp(self):
+        env = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.provider_mid = "mid-human-1"
+        self.provider_exception = None
+        self.expected_legacy_body = None
+        token = patch("management.services.instagram_bot.get_page_token", return_value="local-test-token")
+        self.token = token.start()
+        self.addCleanup(token.stop)
+        physical = patch("management.services.instagram_bot._provider_http", side_effect=self._physical_http)
+        self.http = physical.start()
+        self.addCleanup(physical.stop)
+        memory = patch("management.services.instagram_bot._enqueue_memory_source_event", return_value=True)
+        self.memory = memory.start()
+        self.addCleanup(memory.stop)
         self.actor = get_user_model().objects.create_superuser(
             username="human-reply-admin", email="human@example.test", password="x"
         )
-        self.settings = InstagramBotSettings.load()
-        self.settings.is_enabled = True
-        self.settings.ig_user_id = "999999"
-        self.settings.page_id = "999999"
-        self.settings.save(update_fields=["is_enabled", "ig_user_id", "page_id"])
+        self.settings = InstagramBotSettings.objects.create(pk=1, is_enabled=True, ig_user_id="999999", page_id="999999")
         self.customer = IgClient.get_or_create_for_sender("123456789")
         self.at = timezone.now() - timedelta(minutes=5)
         self.inbound = InstagramBotMessage.objects.create(
@@ -43,7 +59,42 @@ class HumanReplyCommandTests(TestCase):
             status=InstagramBotMessage.Status.DONE,
             provider_created_at=self.at,
             processed_at=self.at,
+            provider_namespace="instagram_login:999999",
         )
+
+    def _physical_http(self, settings, url, *, token, data):
+        # These legacy regressions now exercise real send_text callbacks and a
+        # genuinely committed start marker, not an opaque fabricated receipt.
+        self.assertFalse(connection.in_atomic_block)
+        payload = json.loads(data)
+        self.assertEqual(payload["recipient"], {"id": self.customer.igsid})
+        part = HumanReplyPart.objects.filter(state=HumanReplyPart.State.PROVIDER_STARTED).first()
+        if part is not None:
+            self.assertEqual(payload, part.payload)
+            self.assertIsNotNone(part.provider_started_at)
+            self.assertTrue(part.claim_token)
+        else:
+            legacy = HumanReplyCommand.objects.get(state=HumanReplyCommand.State.PROVIDER_STARTED)
+            self.assertEqual(payload["message"]["text"], self.expected_legacy_body or legacy.text)
+            self.assertIsNotNone(legacy.provider_started_at)
+        if self.provider_exception is not None:
+            raise self.provider_exception
+        return 200, json.dumps({"message_id": self.provider_mid})
+
+    def _legacy_unplanned_command(self, text):
+        # Actual durable shape accepted before per-part planning was introduced.
+        self.customer.bot_paused = True
+        self.customer.manager_takeover = True
+        self.customer.reply_permission_epoch += 1
+        self.customer.save(update_fields=["bot_paused", "manager_takeover", "reply_permission_epoch"])
+        deadline = _window_deadline(self.inbound)
+        return HumanReplyCommand.objects.create(client=self.customer, actor=self.actor, context_message=self.inbound,
+            recipient_igsid=self.customer.igsid, provider_namespace="instagram_login:999999", text=text,
+            permission_epoch=self.customer.reply_permission_epoch, context_revision=str(self.inbound.pk),
+            window_deadline=deadline, operation_context={"client_id": self.customer.pk,
+                "context_message_id": self.inbound.pk, "recipient_igsid": self.customer.igsid,
+                "provider_namespace": "instagram_login:999999", "permission_epoch": self.customer.reply_permission_epoch,
+                "window_deadline": deadline.isoformat()})
 
     def test_takeover_and_duplicate_operation_are_idempotent(self):
         first = create_human_reply_command(
@@ -65,19 +116,13 @@ class HumanReplyCommandTests(TestCase):
         self.assertTrue(self.customer.manager_takeover)
         self.assertEqual(HumanReplyCommand.objects.count(), 1)
 
-    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
-    @patch("management.services.instagram_bot.send_text")
-    def test_provider_receipt_creates_manager_message_once(self, send_text, load):
-        load.return_value = self.settings
-        send_text.return_value = SimpleNamespace(
-            ok=True, kind="", hint="", provider_message_ids=("mid-human-1",)
-        )
+    def test_provider_receipt_creates_manager_message_once(self):
         result = create_human_reply_command(
             self.customer.pk, actor=self.actor, text="Готово", operation_id="22222222-2222-2222-2222-222222222222"
         )
         command = dispatch_human_reply_command(result.command.pk)
         self.assertEqual(command.state, HumanReplyCommand.State.SENT)
-        self.assertEqual(send_text.call_count, 1)
+        self.assertEqual(self.http.call_count, 1)
         message = command.reply_message
         message.refresh_from_db()
         self.assertEqual(message.role, InstagramBotMessage.Role.MANAGER)
@@ -85,13 +130,8 @@ class HumanReplyCommandTests(TestCase):
         self.assertEqual(message.provider_message_id, "mid-human-1")
         self.assertEqual(InstagramBotMessage.objects.filter(source="human_reply").count(), 1)
 
-    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
-    @patch("management.services.instagram_bot.send_text")
-    def test_unknown_is_terminal_and_never_retried(self, send_text, load):
-        load.return_value = self.settings
-        send_text.return_value = SimpleNamespace(
-            ok=False, kind="unknown", hint="timeout", provider_message_ids=()
-        )
+    def test_unknown_is_terminal_and_never_retried(self):
+        self.provider_exception = TimeoutError("controlled provider timeout")
         result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")
         command = dispatch_human_reply_command(result.command.pk)
         self.assertEqual(command.state, HumanReplyCommand.State.UNKNOWN)
@@ -141,18 +181,13 @@ class HumanReplyCommandTests(TestCase):
         self.assertEqual(detail_task["status_label"], "Потребує перевірки")
         self.assertEqual(detail_task["reason_label"], "Звірка ручної доставки")
         dispatch_human_reply_command(command.pk)
-        self.assertEqual(send_text.call_count, 1)
+        self.assertEqual(self.http.call_count, 1)
         self.assertEqual(IgFollowUpTask.objects.count(), 1)
 
-    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
-    @patch("management.services.instagram_bot.send_text")
     def test_unknown_has_explicit_resolution_without_continuation_or_provider_retry(
-        self, send_text, load
+        self
     ):
-        load.return_value = self.settings
-        send_text.return_value = SimpleNamespace(
-            ok=False, kind="unknown", hint="timeout", provider_message_ids=()
-        )
+        self.provider_exception = TimeoutError("controlled provider timeout")
         command = dispatch_human_reply_command(
             create_human_reply_command(
                 self.customer.pk, actor=self.actor, text="Готово"
@@ -185,7 +220,7 @@ class HumanReplyCommandTests(TestCase):
         self.assertEqual(second.status_code, 200, second.content)
         self.assertTrue(second.json()["idempotent"])
         self.assertEqual(conflict.status_code, 409)
-        send_text.assert_called_once()
+        self.http.assert_called_once()
         task.refresh_from_db()
         self.assertEqual(task.status, IgFollowUpTask.Status.COMPLETED)
         self.assertEqual(task.manager_context["resolution"]["outcome"], "handled")
@@ -200,13 +235,8 @@ class HumanReplyCommandTests(TestCase):
         projected = _with_latest_interaction(IgClient.objects.all()).get(pk=self.customer.pk)
         self.assertFalse(projected.has_manager_action)
 
-    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
-    @patch("management.services.instagram_bot.send_text")
-    def test_unknown_resolution_requires_operator_capability(self, send_text, load):
-        load.return_value = self.settings
-        send_text.return_value = SimpleNamespace(
-            ok=False, kind="unknown", hint="timeout", provider_message_ids=()
-        )
+    def test_unknown_resolution_requires_operator_capability(self):
+        self.provider_exception = TimeoutError("controlled provider timeout")
         command = dispatch_human_reply_command(
             create_human_reply_command(
                 self.customer.pk, actor=self.actor, text="Готово"
@@ -229,7 +259,7 @@ class HumanReplyCommandTests(TestCase):
         self.assertEqual(response.status_code, 403)
         task.refresh_from_db()
         self.assertEqual(task.status, IgFollowUpTask.Status.SKIPPED)
-        send_text.assert_called_once()
+        self.http.assert_called_once()
 
     def test_new_inbound_invalidates_context_before_send(self):
         result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")
@@ -246,53 +276,58 @@ class HumanReplyCommandTests(TestCase):
         self.assertEqual(command.state, HumanReplyCommand.State.CANCELLED)
         self.assertEqual(command.failure_code, "newer_inbound")
 
-    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
-    @patch("management.services.instagram_bot.send_text")
     def test_provider_started_reentry_is_read_only_and_recursive_dispatch_is_safe(
-        self, send_text, load
+        self
     ):
-        load.return_value = self.settings
         result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")
         command = result.command
 
-        def recursive_send(*args, **kwargs):
+        self.provider_mid = "mid-reentry"
+
+        def recursive_http(*args, **kwargs):
             nested = dispatch_human_reply_command(command.pk)
             self.assertEqual(nested.state, HumanReplyCommand.State.PROVIDER_STARTED)
-            return SimpleNamespace(
-                ok=True, kind="", hint="", provider_message_ids=("mid-reentry",)
-            )
+            return self._physical_http(*args, **kwargs)
 
-        send_text.side_effect = recursive_send
+        self.http.side_effect = recursive_http
         returned = dispatch_human_reply_command(command.pk)
         self.assertEqual(returned.state, HumanReplyCommand.State.SENT)
-        self.assertEqual(send_text.call_count, 1)
+        self.assertEqual(self.http.call_count, 1)
 
-    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
-    @patch("management.services.instagram_bot.send_text")
-    def test_boundary_rechecks_late_inbound_before_provider_io(self, send_text, load):
-        load.return_value = self.settings
+    def test_boundary_rechecks_late_inbound_before_provider_io(self):
         result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")
 
-        def late_boundary_send(*args, **kwargs):
-            InstagramBotMessage.objects.create(
-                sender_id=self.customer.igsid,
-                client=self.customer,
-                role=InstagramBotMessage.Role.USER,
-                text="Пізніше питання",
-                mid="human-inbound-late",
-                status=InstagramBotMessage.Status.DONE,
-                provider_created_at=timezone.now(),
-            )
-            with kwargs["permission_boundary_factory"]() as allowed:
-                self.assertFalse(allowed)
-            return SimpleNamespace(
-                ok=False, kind="cancelled", hint="newer_inbound", provider_message_ids=()
-            )
+        def late_token(settings):
+            InstagramBotMessage.objects.create(sender_id=self.customer.igsid, client=self.customer,
+                role=InstagramBotMessage.Role.USER, text="Пізніше питання", mid="human-inbound-late",
+                status=InstagramBotMessage.Status.DONE, provider_created_at=timezone.now(),
+                provider_namespace="instagram_login:999999")
+            return "local-test-token"
 
-        send_text.side_effect = late_boundary_send
+        self.token.side_effect = late_token
         command = dispatch_human_reply_command(result.command.pk)
         self.assertEqual(command.state, HumanReplyCommand.State.CANCELLED)
         self.assertEqual(command.failure_code, "newer_inbound")
+        self.http.assert_not_called()
+        self.assertIsNone(HumanReplyPart.objects.get(command=command).provider_started_at)
+
+    def test_late_inbound_at_start_callback_retains_exact_cancellation_reason(self):
+        from management.services.ig_human_reply_delivery import record_human_part_started
+        result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")
+
+        def late_start(part_id, token, **kwargs):
+            InstagramBotMessage.objects.create(sender_id=self.customer.igsid, client=self.customer,
+                role=InstagramBotMessage.Role.USER, text="Між permission check і start marker",
+                mid="human-inbound-at-start", status=InstagramBotMessage.Status.DONE,
+                provider_created_at=timezone.now(), provider_namespace="instagram_login:999999")
+            return record_human_part_started(part_id, token, **kwargs)
+
+        with patch("management.services.ig_human_reply_transport.record_human_part_started", side_effect=late_start):
+            command = dispatch_human_reply_command(result.command.pk)
+        self.assertEqual(command.state, HumanReplyCommand.State.CANCELLED)
+        self.assertEqual(command.failure_code, "newer_inbound")
+        self.http.assert_not_called()
+        self.assertIsNone(HumanReplyPart.objects.get(command=command).provider_started_at)
 
     def test_unknown_command_blocks_competing_operation(self):
         first = create_human_reply_command(self.customer.pk, actor=self.actor, text="Перше")
@@ -345,19 +380,22 @@ class HumanReplyCommandTests(TestCase):
         with self.assertRaisesRegex(HumanReplyRejected, "delivery_plan_incomplete"):
             create_human_reply_command(self.customer.pk, actor=self.actor, text="я" * 2000)
 
-    @patch("management.services.ig_human_reply.InstagramBotSettings.load")
-    @patch("management.services.instagram_bot.send_text")
-    def test_provider_receipt_rejects_degraded_delivery_plan(self, send_text, load):
-        load.return_value = self.settings
-        send_text.return_value = SimpleNamespace(
-            ok=True,
-            kind="degraded_link_restriction",
-            hint="url removed",
-            provider_message_ids=("mid-degraded",),
-            planned_chunk_count=1,
-            delivered_chunk_count=1,
-        )
-        result = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово")
-        command = dispatch_human_reply_command(result.command.pk)
+    def test_provider_receipt_rejects_degraded_delivery_plan(self):
+        # Retain the old opaque-result contract for genuine unplanned commands.
+        # New prepared parts cannot legally remove URLs: fallback is disabled.
+        from management.services.instagram_bot import send_text as real_send_text
+        self.provider_mid = "mid-degraded"
+        self.expected_legacy_body = "Готово"
+        legacy = self._legacy_unplanned_command("Готово https://example.test/catalog")
+
+        def degraded_legacy_send(settings, recipient, text, **kwargs):
+            receipt = real_send_text(settings, recipient, self.expected_legacy_body, **kwargs)
+            return replace(receipt, kind="degraded_link_restriction", hint="url removed")
+
+        with patch("management.services.instagram_bot.send_text", side_effect=degraded_legacy_send):
+            command = dispatch_human_reply_command(legacy.pk)
         self.assertEqual(command.state, HumanReplyCommand.State.DEFINITE_FAILED)
         self.assertEqual(command.failure_code, "delivery_plan_incomplete")
+        self.assertFalse(HumanReplyPart.objects.filter(command=legacy).exists())
+        self.http.assert_called_once()
+        self.assertEqual(command.provider_message_ids, ["mid-degraded"])

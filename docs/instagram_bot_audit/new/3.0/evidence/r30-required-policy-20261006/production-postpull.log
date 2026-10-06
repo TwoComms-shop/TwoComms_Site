@@ -1,0 +1,46 @@
+maintenance active lease_id=r30-required-820ac-release expires_at=1791287111
+From https://github.com/zainllw0w/TwoComms_Site
+   000cc2614..820ac2953  main       -> origin/main
+Updating 000cc2614..820ac2953
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   8 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   4 +-
+ .../PRODUCTION_RELEASE_2026-10-06.md               |   9 +
+ .../production-postpull.log                        |  43 ++++
+ .../r30-required-policy-20261006/README.md         |  13 ++
+ .../required-playbook-compat-sqlite.log            |  10 +
+ .../required-policy-final-native.log               |  10 +
+ .../required-policy-final-sqlite.log               |  24 ++
+ .../required-policy-initial-sqlite.log             |  45 ++++
+ twocomms/management/bot_views.py                   |  22 ++
+ twocomms/management/services/bot_playbooks.py      |  28 ++-
+ .../services/gemini_accounting_contract.py         |  72 +++++-
+ twocomms/management/services/ig_policy_compiler.py |  34 ++-
+ .../management/services/ig_policy_publication.py   |  80 ++++---
+ twocomms/management/services/ig_prize_programme.py |  17 +-
+ twocomms/management/services/ig_required_policy.py | 210 +++++++++++++++++
+ twocomms/management/templates/management/bot.html  |  15 +-
+ twocomms/management/tests_ig_playbook.py           |  13 +-
+ twocomms/management/tests_ig_required_policy.py    | 240 +++++++++++++++++++
+ .../management/tests_ig_required_policy_editor.py  | 212 +++++++++++++++++
+ .../tests_ig_required_policy_integration.py        | 253 +++++++++++++++++++++
+ 21 files changed, 1317 insertions(+), 45 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-journey-cases-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-journey-cases-20261006/production-postpull.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-required-policy-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-required-policy-20261006/required-playbook-compat-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-required-policy-20261006/required-policy-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-required-policy-20261006/required-policy-final-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-required-policy-20261006/required-policy-initial-sqlite.log
+ create mode 100644 twocomms/management/services/ig_required_policy.py
+ create mode 100644 twocomms/management/tests_ig_required_policy.py
+ create mode 100644 twocomms/management/tests_ig_required_policy_editor.py
+ create mode 100644 twocomms/management/tests_ig_required_policy_integration.py
+System check identified no issues (0 silenced).
+Compressing... done
+Compressed 4 block(s) from 60 template(s) for 1 context(s).
+maintenance disabled
+daemon ready under supervisor — ok
+375 objects imported automatically (use -v 2 for details).
+
+{"health": {"main_healthy": true, "process_online": true, "process_pid": 1547337, "stalled": false, "supervisor": {"available": true, "child_pid": 1547337, "child_pid_matches_expected": true, "child_release_sha": "820ac2953c350197a8c0857f84de5cee912dfade", "last_ensure_seen_at": 1791286232.566, "observed_at": 1791286235.046, "restart_count": 0, "status": "current", "supervisor_release_sha": "820ac2953c350197a8c0857f84de5cee912dfade"}, "workers_healthy": true}, "maintenance_active": false, "memory_admission_accepted": false, "memory_generation_enabled": false, "policy": {"publication_hash": "504d49cd0a7b9fc638e73e42cf5432339025400a1f82b881d97afa7cc303a9c8", "publication_id": 2, "publication_version": 2, "required_policy": {"coverage_status": "legacy_unconfigured", "covered_scenarios": [], "declared_scenarios": [], "diagnostics": ["legacy_required_scenarios_undeclared"], "omitted": [{"id": "instruction:1", "reason": "not_relevant"}, {"id": "instruction:20", "reason": "not_relevant"}, {"id": "instruction:2", "reason": "not_relevant"}, {"id": "instruction:3", "reason": "not_relevant"}, {"id": "instruction:4", "reason": "not_relevant"}, {"id": "instruction:5", "reason": "not_relevant"}, {"id": "instruction:6", "reason": "not_relevant"}, {"id": "instruction:7", "reason": "not_relevant"}, {"id": "instruction:8", "reason": "not_relevant"}, {"id": "instruction:9", "reason": "not_relevant"}, {"id": "instruction:10", "reason": "not_relevant"}, {"id": "instruction:11", "reason": "not_relevant"}, {"id": "instruction:12", "reason": "not_relevant"}, {"id": "instruction:13", "reason": "not_relevant"}, {"id": "instruction:14", "reason": "not_relevant"}, {"id": "instruction:15", "reason": "not_relevant"}, {"id": "instruction:16", "reason": "not_relevant"}, {"id": "instruction:17", "reason": "not_relevant"}, {"id": "instruction:18", "reason": "not_relevant"}, {"id": "instruction:19", "reason": "not_relevant"}], "ready": true, "reason": "required_policy_legacy", "required_chars": 0, "required_ids": [], "selected_ids": [], "undeclared_scenarios": ["size"], "used_chars": 0}, "selected_count": 0}, "release_sha": "820ac2953c350197a8c0857f84de5cee912dfade"}

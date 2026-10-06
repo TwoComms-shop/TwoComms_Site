@@ -12,6 +12,7 @@ from . import bot_webhook
 from . import bot_views
 from . import bot_request_preview_views
 from . import bot_state_views
+from . import bot_human_document_views
 from . import ig_private_media_views
 from . import binotel_views
 from . import binotel_webhook
@@ -115,6 +116,11 @@ urlpatterns = [
     path('bot/api/clients/<int:client_id>/pause/', bot_views.bot_client_pause_api, name='management_bot_client_pause_api'),
     path('bot/api/clients/<int:client_id>/resume/', bot_views.bot_client_resume_api, name='management_bot_client_resume_api'),
     path('bot/api/clients/<int:client_id>/human-reply/', bot_views.bot_client_human_reply_api, name='management_bot_client_human_reply_api'),
+    path('bot/api/clients/<int:client_id>/human-documents/', bot_human_document_views.bot_human_documents_api, name='management_bot_human_documents_api'),
+    path('bot/api/clients/<int:client_id>/human-documents/create/', bot_human_document_views.bot_human_document_create_api, name='management_bot_human_document_create_api'),
+    path('bot/api/clients/<int:client_id>/human-documents/<uuid:document_id>/', bot_human_document_views.bot_human_document_detail_api, name='management_bot_human_document_detail_api'),
+    path('bot/api/clients/<int:client_id>/human-documents/<uuid:document_id>/update/', bot_human_document_views.bot_human_document_update_api, name='management_bot_human_document_update_api'),
+    path('bot/api/clients/<int:client_id>/human-documents/<uuid:document_id>/submit/', bot_human_document_views.bot_human_document_submit_api, name='management_bot_human_document_submit_api'),
     path('bot/api/clients/<int:client_id>/hide/', bot_views.bot_client_hide_api, name='management_bot_client_hide_api'),
     path('bot/api/clients/<int:client_id>/unhide/', bot_views.bot_client_unhide_api, name='management_bot_client_unhide_api'),
     path('bot/api/clients/<int:client_id>/lost/', bot_views.bot_client_mark_lost_api, name='management_bot_client_mark_lost_api'),

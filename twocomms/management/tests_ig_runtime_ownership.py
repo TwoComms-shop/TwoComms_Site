@@ -3,12 +3,14 @@ from io import StringIO
 import time
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
+from django.db import OperationalError
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
-from management.models import InstagramBotTaskHeartbeat
+from management.models import IgClient, IgFollowUpTask, InstagramBotMessage, InstagramBotSettings, InstagramBotTaskHeartbeat
 from management.services.ig_runtime_ownership import (
     DAEMON_OWNER,
     PERIODIC_LANES,
@@ -76,7 +78,10 @@ class RuntimeOwnerManifestTests(TestCase):
         self.assertEqual(keys[1], "nova_poshta_tracking")
 
 
-class PeriodicCoordinatorTests(TestCase):
+class PeriodicCoordinatorTests(TransactionTestCase):
+    # A real cron command rotates connections with close_old_connections().
+    # TestCase's synthetic outer atomic would close SQLite inside that atomic;
+    # use committed fixtures so rotation exercises the production boundary.
     @patch(
         "management.management.commands.run_instagram_periodic_jobs._call_auto_analysis_enabled",
         return_value=False,
@@ -258,9 +263,90 @@ class PeriodicCoordinatorTests(TestCase):
 class PeriodicDiagnosticPurityTests(TestCase):
     def test_dry_run_never_repairs_debt_or_notifies_managers(self):
         with (patch("management.services.ig_revision_execution.reconcile_incomplete_revision_deliveries") as repair,
+              patch("management.services.ig_human_reply_maintenance.maintain_human_reply_delivery") as human,
               patch("management.services.ig_daemon_health.alert_daemon_runtime_health") as alert,
               patch("management.management.commands.run_instagram_periodic_jobs.call_command") as lane):
             call_command("run_instagram_periodic_jobs", dry_run=True, stdout=StringIO())
         repair.assert_not_called()
+        human.assert_not_called()
         alert.assert_not_called()
         lane.assert_not_called()
+
+
+class PeriodicHumanMaintenanceIntegrationTests(TransactionTestCase):
+    # The coordinator owns actual connection rotation, not a TestCase savepoint.
+    def test_bot_off_cron_reaps_real_started_human_part_before_health_without_transport(self):
+        from management.services.ig_human_reply import create_human_reply_command
+        from management.services.ig_human_reply_delivery import claim_next_human_part, record_human_part_started
+
+        now = timezone.now() - timedelta(minutes=3)
+        actor = get_user_model().objects.create_superuser(username="periodic-human-owner", password="x")
+        InstagramBotSettings.objects.create(pk=1, is_enabled=False, ig_user_id="periodic-human", page_id="periodic-human")
+        customer = IgClient.objects.create(igsid="periodic-human-customer")
+        source = InstagramBotMessage.objects.create(client=customer, sender_id=customer.igsid,
+            provider_namespace="instagram_login:periodic-human", role="user", source="webhook", status="done",
+            mid="periodic-human-source", provider_created_at=now - timedelta(minutes=2), text="Підкажіть розмір")
+        events = []
+        with patch.dict("os.environ", {"IG_PROVIDER_TRANSPORT": "instagram_login"}):
+            command = create_human_reply_command(customer.pk, actor=actor, text="Вітаю!",
+                context_message_id=source.pk, now=now).command
+            claim = claim_next_human_part(command.pk, now=now)
+            self.assertTrue(claim.ready, claim.reason)
+            self.assertTrue(record_human_part_started(claim.part.pk, claim.token, now=now).ready)
+
+            def revision(**options):
+                self.assertEqual(options, {"limit": 25, "dry_run": False})
+                claim.part.refresh_from_db()
+                self.assertEqual(claim.part.state, "provider_started")
+                events.append("revision")
+
+            def health():
+                claim.part.refresh_from_db()
+                self.assertEqual(claim.part.state, "unknown")
+                self.assertEqual(IgFollowUpTask.objects.get(event_key=f"human-reply-unknown:{command.pk}").status, "skipped")
+                events.append("health")
+
+            with (patch("management.services.ig_revision_execution.reconcile_incomplete_revision_deliveries", side_effect=revision),
+                  patch("management.services.ig_daemon_health.alert_daemon_runtime_health", side_effect=health),
+                  patch("management.management.commands.run_instagram_periodic_jobs._call_auto_analysis_enabled", return_value=False),
+                  patch("management.management.commands.run_instagram_periodic_jobs.call_command") as child,
+                  patch("management.services.instagram_bot._provider_http", side_effect=AssertionError("cron provider I/O forbidden")) as http,
+                  patch("management.services.instagram_bot.send_text", side_effect=AssertionError("cron customer send forbidden")) as send):
+                call_command("run_instagram_periodic_jobs", stdout=StringIO())
+            http.assert_not_called()
+            send.assert_not_called()
+        self.assertEqual(events, ["revision", "health"])
+        self.assertEqual(child.call_count, 6)
+        self.assertFalse(InstagramBotMessage.objects.filter(role="manager").exists())
+
+    def test_human_database_failure_uses_own_circuit_lane_and_stops_before_health(self):
+        output = StringIO()
+        error = OperationalError(2006, "private connection details")
+        with (patch("management.services.ig_revision_execution.reconcile_incomplete_revision_deliveries"),
+              patch("management.services.ig_human_reply_maintenance.maintain_human_reply_delivery", side_effect=error) as human,
+              patch("management.services.ig_daemon_health.alert_daemon_runtime_health") as health,
+              patch("management.services.ig_db_circuit.record_db_failure", return_value=True) as failure,
+              patch("management.management.commands.run_instagram_periodic_jobs.call_command") as child):
+            call_command("run_instagram_periodic_jobs", stdout=output)
+        human.assert_called_once_with(limit=25)
+        failure.assert_called_once_with(error, lane="periodic_human_delivery_debt")
+        health.assert_not_called()
+        child.assert_not_called()
+        self.assertIn("deferred=db_circuit", output.getvalue())
+
+    def test_finite_human_receipt_failure_does_not_starve_health_or_business_lanes(self):
+        from management.services.ig_human_reply_transport import HumanReceiptCheckpointError
+
+        stderr = StringIO()
+        with (patch("management.services.ig_revision_execution.reconcile_incomplete_revision_deliveries"),
+              patch("management.services.ig_human_reply_maintenance.maintain_human_reply_delivery",
+                    side_effect=HumanReceiptCheckpointError("private payload details")),
+              patch("management.services.ig_daemon_health.alert_daemon_runtime_health") as health,
+              patch("management.services.ig_db_circuit.record_db_failure", return_value=False),
+              patch("management.management.commands.run_instagram_periodic_jobs._call_auto_analysis_enabled", return_value=False),
+              patch("management.management.commands.run_instagram_periodic_jobs.call_command") as child):
+            call_command("run_instagram_periodic_jobs", stdout=StringIO(), stderr=stderr)
+        health.assert_called_once()
+        self.assertEqual(child.call_count, 6)
+        self.assertIn("human_delivery_debt_reconcile_failed=HumanReceiptCheckpointError", stderr.getvalue())
+        self.assertNotIn("private payload details", stderr.getvalue())

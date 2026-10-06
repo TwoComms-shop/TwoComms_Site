@@ -9,7 +9,8 @@ from contextlib import contextmanager
 
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
-from django.db import close_old_connections
+from django.core.exceptions import ValidationError
+from django.db import DatabaseError, close_old_connections
 from django.utils import timezone
 
 from management.models import InstagramBotTaskHeartbeat
@@ -178,6 +179,17 @@ class Command(BaseCommand):
                         self.stdout.write("completed=- deferred=db_circuit failed=- timed_out=-")
                         return
                     self.stderr.write(f"revision_delivery_debt_reconcile_failed={type(exc).__name__}")
+                from management.services.ig_human_reply_maintenance import maintain_human_reply_delivery
+                from management.services.ig_human_reply_transport import HumanReceiptCheckpointError
+
+                try:
+                    maintain_human_reply_delivery(limit=25)
+                except (DatabaseError, ValidationError, ValueError, HumanReceiptCheckpointError) as exc:
+                    if record_db_failure(exc, lane="periodic_human_delivery_debt"):
+                        close_old_connections()
+                        self.stdout.write("completed=- deferred=db_circuit failed=- timed_out=-")
+                        return
+                    self.stderr.write(f"human_delivery_debt_reconcile_failed={type(exc).__name__}")
                 alert_daemon_runtime_health()
         except (PeriodicLaneTimeout, Exception) as exc:
             # Runtime-health delivery is important but must never starve the

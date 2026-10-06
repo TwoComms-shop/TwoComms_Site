@@ -2831,9 +2831,7 @@ def _handle_echo(
 
     settings_row = InstagramBotSettings.load()
     namespace = provider_namespace or ingress_provider_namespace(settings_row)
-    if mid and uses_revision_echo_scope(namespace, recipient_igsid):
-        if is_our_outgoing(mid, recipient_id=recipient_igsid, provider_namespace=namespace):
-            return True
+    if mid and uses_revision_echo_scope(namespace, recipient_igsid, mid=mid):
         return observe_and_project_echo(
             settings_row, namespace=namespace, recipient=recipient_igsid, mid=mid,
             text=text, attachments=attachments, received_at=received_at,
@@ -17160,7 +17158,7 @@ def _handle_polled_page_side(
     from management.services.ig_revision_echo_integration import observe_and_project_echo, uses_revision_echo_scope
 
     namespace = ingress_provider_namespace(s)
-    if uses_revision_echo_scope(namespace, customer_id):
+    if uses_revision_echo_scope(namespace, customer_id, mid=str(message.get("id") or "").strip()):
         try:
             return observe_and_project_echo(
                 s, namespace=namespace, recipient=customer_id,

@@ -1,0 +1,3 @@
+Human parts/documents/echo/correction schema matches real0222/0223/0224 migration state.
+Unchanged existing management migration metadata/default drift: [('AlterField', 'igclient', 'username'), ('AlterField', 'igconversationanalysisresult', 'ltv_signal'), ('AlterField', 'igmemoryfact', 'scope'), ('AlterField', 'igmemoryhead', 'scope'), ('AlterField', 'instagrambotsettings', 'system_prompt')]
+No migration generated/applied for those unrelated fields; real native gate applies0222/0223/0224.

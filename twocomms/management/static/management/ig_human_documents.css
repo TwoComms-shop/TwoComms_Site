@@ -1,0 +1,25 @@
+.ig-human-documents { min-width: 0; color: inherit; }
+.ig-hd-title { margin: 0 0 .5rem; font-size: 1rem; }
+.ig-hd-layout { display: grid; grid-template-columns: minmax(9rem, 1fr) minmax(0, 2fr); gap: 1rem; }
+.ig-hd-library, .ig-hd-editor { min-width: 0; }
+.ig-hd-label { display: grid; gap: .4rem; margin-bottom: .7rem; font-weight: 600; }
+.ig-hd-text, .ig-hd-kind { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid #64748b; border-radius: .5rem; padding: .65rem; font: inherit; color: inherit; background: transparent; }
+.ig-hd-text { min-height: 10rem; resize: vertical; font-size: 16px; }
+.ig-hd-text[readonly] { opacity: .8; }
+.ig-hd-button { box-sizing: border-box; min-height: 44px; max-width: 100%; padding: .6rem .75rem; border: 1px solid #64748b; border-radius: .5rem; color: inherit; background: transparent; font: inherit; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+.ig-hd-button:disabled { opacity: .5; cursor: default; }
+.ig-hd-button[data-action="submit"] { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+.ig-hd-button[hidden] { display: none; }
+.ig-hd-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.ig-hd-list { display: grid; gap: .5rem; max-height: 22rem; overflow-y: auto; padding: 0; margin: .7rem 0; list-style: none; }
+.ig-hd-list .ig-hd-button { width: 100%; text-align: left; }
+.ig-hd-help, .ig-hd-meta, .ig-hd-count { font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; }
+.ig-hd-status { min-height: 1.5rem; line-height: 1.5; overflow-wrap: anywhere; }
+.ig-hd-error { border-left: 3px solid #dc2626; padding-left: .6rem; }
+.ig-human-documents :focus-visible { outline: 3px solid #3b82f6; outline-offset: 2px; }
+@media (max-width: 600px) {
+  .ig-hd-layout { grid-template-columns: minmax(0, 1fr); gap: .8rem; }
+  .ig-hd-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .ig-hd-button { width: 100%; }
+  .ig-hd-list { max-height: 12rem; }
+}

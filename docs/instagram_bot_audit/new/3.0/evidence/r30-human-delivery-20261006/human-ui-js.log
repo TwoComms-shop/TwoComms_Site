@@ -1,0 +1,82 @@
+TAP version 13
+# Subtest: mount has zero I/O; notes save privately and never expose send
+ok 1 - mount has zero I/O; notes save privately and never expose send
+  ---
+  duration_ms: 1.714459
+  type: 'test'
+  ...
+# Subtest: draft save and CAS update require explicit actions; submit never contains browser text
+ok 2 - draft save and CAS update require explicit actions; submit never contains browser text
+  ---
+  duration_ms: 1.369791
+  type: 'test'
+  ...
+# Subtest: 503 and lost response retain original operation/CAS and accepted identity on retries
+ok 3 - 503 and lost response retain original operation/CAS and accepted identity on retries
+  ---
+  duration_ms: 0.515084
+  type: 'test'
+  ...
+# Subtest: UNKNOWN and provider-started outcomes disable resend and never silently send again
+ok 4 - UNKNOWN and provider-started outcomes disable resend and never silently send again
+  ---
+  duration_ms: 2.193375
+  type: 'test'
+  ...
+# Subtest: list is explicit, bounded and escaped; clicking detail cannot replace unsaved text
+ok 5 - list is explicit, bounded and escaped; clicking detail cannot replace unsaved text
+  ---
+  duration_ms: 0.548666
+  type: 'test'
+  ...
+# Subtest: editing during GET detail or server refresh never overwrites text
+ok 6 - editing during GET detail or server refresh never overwrites text
+  ---
+  duration_ms: 0.521584
+  type: 'test'
+  ...
+# Subtest: client switch aborts stale GET and never renders old client documents
+ok 7 - client switch aborts stale GET and never renders old client documents
+  ---
+  duration_ms: 0.309375
+  type: 'test'
+  ...
+# Subtest: ambiguous create save uses same UUID/body; explicit server check resolves without duplicate
+ok 8 - ambiguous create save uses same UUID/body; explicit server check resolves without duplicate
+  ---
+  duration_ms: 0.326583
+  type: 'test'
+  ...
+# Subtest: CAS conflict preserves local text and cannot submit stale text; explicit discard then reload
+ok 9 - CAS conflict preserves local text and cannot submit stale text; explicit discard then reload
+  ---
+  duration_ms: 0.46775
+  type: 'test'
+  ...
+# Subtest: finite access errors never echo response text, unsafe base never sends, text limit uses Unicode characters
+ok 10 - finite access errors never echo response text, unsafe base never sends, text limit uses Unicode characters
+  ---
+  duration_ms: 0.875
+  type: 'test'
+  ...
+# Subtest: unexpected document identity on success preserves pending body and cannot enable sending
+ok 11 - unexpected document identity on success preserves pending body and cannot enable sending
+  ---
+  duration_ms: 0.369083
+  type: 'test'
+  ...
+# Subtest: explicit pagination bounds DOM at 100 documents and refresh restarts the list
+ok 12 - explicit pagination bounds DOM at 100 documents and refresh restarts the list
+  ---
+  duration_ms: 0.949583
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 44.110833
