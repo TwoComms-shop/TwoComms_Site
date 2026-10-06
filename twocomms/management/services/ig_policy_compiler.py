@@ -46,6 +46,7 @@ class PolicyModule:
     priority: int = 100
     tags: tuple[str, ...] = ()
     active: bool = True
+    customer_bound: bool = False
 
     @classmethod
     def coerce(cls, value: "PolicyModule | Mapping[str, Any]", *, fallback_id: str) -> "PolicyModule":
@@ -62,6 +63,7 @@ class PolicyModule:
             priority=int(value.get("priority", 100)),
             tags=tuple(sorted(str(tag) for tag in raw_tags)),
             active=bool(value.get("active", True)),
+            customer_bound=bool(value.get("customer_bound", False)),
         )
 
 
@@ -149,13 +151,17 @@ def _manifest_payload(
     telemetry nor become a brute-forceable input to a public policy hash.
     """
     def item(module: PolicyModule) -> dict[str, Any]:
-        return {
+        result = {
             "id": module.id,
             "body": module.body,
             "priority": module.priority,
             "tags": list(module.tags),
             "active": module.active,
         }
+        if module.customer_bound:
+            result.pop("body")
+            result["customer_bound"] = True
+        return result
 
     return {
         "version": version,

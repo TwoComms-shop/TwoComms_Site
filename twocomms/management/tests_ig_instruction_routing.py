@@ -41,6 +41,42 @@ class TurnTriggerTests(TestCase):
         self.assertEqual(turn_triggers(""), set())
         self.assertEqual(turn_triggers("   "), set())
 
+    def test_price_objection_requires_own_current_semantic_concern(self):
+        from management.services.bot_instruction_routing import turn_triggers
+
+        for text in ("Це не дорого.", '«Дорого» — цитата.', "Друг сказав, що дорого.",
+                     "Раніше було дорого.", "Мені дорого. Це не дорого."):
+            with self.subTest(text=text):
+                self.assertNotIn("price_objection", turn_triggers(text))
+        self.assertIn("price_objection", turn_triggers("Мені дорого."))
+        self.assertIn("price_objection", turn_triggers("В іншому магазині дешевше."))
+
+    def test_first_person_contrast_keeps_real_objection_after_reported_history(self):
+        from management.services.bot_instruction_routing import turn_triggers
+
+        self.assertIn("price_objection", turn_triggers("Друг сказав, що дорого, але мені дорого."))
+        self.assertIn("price_objection", turn_triggers("Раніше було дорого, але зараз мені дорого."))
+
+    def test_hesitation_requires_current_own_concern(self):
+        from management.services.bot_instruction_routing import turn_triggers
+
+        self.assertIn("hesitation", turn_triggers("Ще подумаю."))
+        for text in ("Не подумаю.", '«Подумаю» — цитата.', "Друг сказав: подумаю.",
+                     "Раніше думав: подумаю."):
+            with self.subTest(text=text):
+                self.assertNotIn("hesitation", turn_triggers(text))
+
+    def test_greeting_thanks_and_ordinary_price_keep_existing_question_contract(self):
+        from management.services.bot_instruction_routing import turn_triggers
+
+        for text in ("Привіт", "Дякую"):
+            self.assertEqual(turn_triggers(text), set())
+        for text in ("Скільки коштує футболка?", "What is the price?", "Какая цена футболки?"):
+            with self.subTest(text=text):
+                triggers = turn_triggers(text)
+                self.assertIn("price_question", triggers)
+                self.assertNotIn("price_objection", triggers)
+
 
 class TagMarkupTests(TestCase):
     def test_markup_splits_plain_triggers_and_excludes(self):

@@ -1520,14 +1520,24 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
     )
     accounting_ownership_blocked = False
     accounting_block_reason = ""
-    # Chat remains observational in shadow; mandatory admission is enabled by
-    # the explicit non-live enforce mode used by background callers.
-    accounting_admission_required = False
+    # Shadow observes quota decisions, but a caller supplying a captured policy
+    # still requires a durable graph before any provider candidate is entered.
+    captured_request = bool(
+        isinstance(request_policy_manifest, dict)
+        and "request_context" in request_policy_manifest
+    )
+    accounting_admission_required = bool(
+        request_policy_manifest is not None
+        and (accounting_shadow_active or captured_request)
+    )
     try:
         from management.services import gemini_accounting_runtime
 
         accounting_shadow_active = gemini_accounting_runtime.shadow_runtime_active()
-        accounting_admission_required = False
+        accounting_admission_required = bool(
+            request_policy_manifest is not None
+            and (accounting_shadow_active or captured_request)
+        )
         accounting_observer = gemini_accounting_runtime.begin_request(
             request_id=request_id,
             role="chat",
@@ -3210,6 +3220,16 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
             "max_output_tokens": cap if type(cap) is int and 0 < cap <= 65536 else 0,
             "thinking_level": level if level in {"minimal", "low", "medium", "high"} else "",
         }
+        prepare_manifest = getattr(attempt_boundary, "prepare_dispatch_manifest", None)
+        if callable(prepare_manifest):
+            from management.services.gemini_accounting_contract import RequestPolicyManifestError
+            try:
+                prepare_manifest(body)
+            except RequestPolicyManifestError as exc:
+                error = _GeminiFatal("prepared dispatch evidence is invalid")
+                error.failure_kind = exc.code
+                attempt_boundary.cancelled_pre_dispatch(error)
+                raise error from exc
         admitted = attempt_boundary.before_provider(
             serialized_bytes=len(body),
             inline_count=request_inline_count,

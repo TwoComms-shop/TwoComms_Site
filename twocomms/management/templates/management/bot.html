@@ -2924,6 +2924,54 @@ body.bot-drawer-open{overflow:hidden;}
       allFollowups.forEach(item=>{(isFollowupDeliveryReview(item)?deliveryReviews:ordinary).push(item);});
       return deliveryReviews.concat(ordinary.slice(0,Math.max(0,8-deliveryReviews.length)));
     }
+    function renderCapturedState(root,id){
+      const block=section(root,'Стан із підтверджених джерел');const disclosure=node('details','bot-analysis-disclosure');
+      disclosure.appendChild(node('summary','','Дані, джерела та актуальність'));const body=node('div','bot-analysis-body');disclosure.appendChild(body);block.appendChild(disclosure);let loaded=false;
+      const statusLabels={confirmed:'Підтверджено',unknown:'Невідомо',ambiguous:'Потребує уточнення',stale:'Втратило актуальність',not_applicable:'Не застосовується',applicable:'Застосовується',available:'Є в наявності',unavailable:'Немає в наявності'};
+      const choiceLabels={product_id:'Товар',model_query:'Модель',garment_type:'Тип речі',size:'Обраний розмір',fit_option_code:'Фасон',color:'Колір',quantity:'Кількість',purchase_requested:'Намір замовити'};
+      disclosure.addEventListener('toggle',async()=>{if(!disclosure.open||loaded)return;loaded=true;body.replaceChildren(node('div','bot-hint','Завантаження…'));
+        try{const response=await fetch('{% url "management_bot_client_state_api" 0 %}'.replace('/clients/0/','/clients/'+String(id)+'/'),{headers:{'X-Requested-With':'XMLHttpRequest'}});const data=await response.json().catch(()=>({}));body.replaceChildren();
+          if(!response.ok||!data.success||data.status!=='captured'){body.appendChild(node('div','bot-hint','Поточний знімок недоступний. Оновіть картку після завершення змін.'));return;}
+          body.appendChild(node('div','bot-hint','Поточне спостереження: '+new Date(data.as_of).toLocaleString()+'. Історичні запити відкриваються окремо.'));
+          const slots=(data.state||{}).slots||{};Object.entries(slots).forEach(([key,item])=>{const row=node('div','bot-deal');const label=key.startsWith('choice.')?(choiceLabels[key.slice(7)]||key.slice(7)):(key==='payment.current'?'Оплата':key==='configuration.readiness'?'Готовність замовлення':key.startsWith('consent.')?'Дозвіл: '+({marketing:'Маркетинг',payment_reminder:'Нагадування про оплату',restock:'Повернення в наявність'}[key.slice(8)]||key.slice(8)):key);
+            let value=item.value==null?'—':typeof item.value==='boolean'?(item.value?'Так':'Ні'):String(item.value);
+            if(key==='choice.garment_type')value=({tshirt:'Футболка',hoodie:'Худі',sweatshirt:'Світшот'}[item.value]||value);
+            if(key==='configuration.readiness'&&item.value){const missing=(item.value.missing||[]).map(code=>({product:'товар',size:'розмір',color:'колір',fit:'фасон',options:'варіант',quantity:'кількість'}[code]||'вибір'));value=item.value.can_issue_link?'Готове до посилання на оплату':missing.length?'Потрібно уточнити: '+missing.join(', '):'Потрібна перевірка';}
+            else if(typeof item.value==='object'&&item.value!==null)value=item.status==='confirmed'?'Є підтверджені дані — відкрийте джерела':'Підтверджених даних ще немає';
+            row.append(node('b','',label+': '+value),node('div','bot-hint',statusLabels[item.status]||'Невідомо'));
+            const refs=(item.source_refs||[]).map(ref=>(ref.kind==='message'?'повідомлення №':'джерело №')+String(ref.id||ref.source_message_id||'—'));if(refs.length)row.appendChild(node('div','bot-hint',refs.join(' · ')));
+            if(key.startsWith('choice.'))row.appendChild(node('div','bot-hint','Застосовність: '+(statusLabels[item.applicability]||'Невідомо')+' · Наявність: '+(statusLabels[item.availability]||'Невідомо')));
+            const detail=node('details');detail.appendChild(node('summary','','Область, джерело й актуальність'));const pre=node('pre');pre.style.whiteSpace='pre-wrap';pre.style.overflowWrap='anywhere';pre.textContent=JSON.stringify(item,null,2);detail.appendChild(pre);row.appendChild(detail);body.appendChild(row);
+          });
+          if((data.state.omissions||[]).length)body.appendChild(node('div','bot-hint','Частина даних недоступна або не має підтвердженого джерела.'));
+        }catch(error){body.replaceChildren(node('div','bot-hint','Не вдалося прочитати стан клієнта.'));}
+      });
+    }
+    function renderActualRequests(root,id){
+      const block=section(root,'Фактичні запити бота');const disclosure=node('details','bot-analysis-disclosure');
+      disclosure.appendChild(node('summary','','Переглянути збережені запити'));const body=node('div','bot-analysis-body');disclosure.appendChild(body);block.appendChild(disclosure);
+      let loaded=false;
+      async function read(url){const response=await fetch(url,{headers:{'X-Requested-With':'XMLHttpRequest'}});const data=await response.json().catch(()=>({}));if(!response.ok||!data.success)throw new Error(data.error||'Збережений запит недоступний.');return data;}
+      async function show(revisionId,target){
+        target.replaceChildren(node('div','bot-hint','Завантаження…'));
+        try{
+          const url='{% url "management_bot_request_preview_api" 0 0 %}'.replace('/clients/0/','/clients/'+String(id)+'/').replace('/turn-revisions/0/','/turn-revisions/'+String(revisionId)+'/');
+          const data=await read(url);target.replaceChildren();const captured=data.capture_status==='captured_metadata_available';
+          target.appendChild(node('b','',captured?'Склад запиту збережено':'Знімок запиту недоступний'));
+          target.appendChild(node('div','bot-hint',captured?'Повний текст не зберігався. Показано зафіксовані джерела, версії та спроби; поточні дані клієнта їх не замінюють.':'Історичний запит неможливо відновити з поточного стану клієнта.'));
+          if(data.actual_model)target.appendChild(node('div','bot-hint','Модель прийнятої відповіді: '+data.actual_model));
+          (data.attempts||[]).forEach(attempt=>target.appendChild(node('div','bot-deal','Спроба '+String(attempt.attempt_index)+' · '+String(attempt.model||'—')+' · '+String(attempt.outcome||attempt.state||'—')+(attempt.http_code?' · HTTP '+String(attempt.http_code):'')+(attempt.winner?' · прийнята відповідь':''))));
+          if(captured){const details=node('details');details.appendChild(node('summary','','Джерела, включені блоки та пропуски'));const pre=node('pre');pre.style.whiteSpace='pre-wrap';pre.style.overflowWrap='anywhere';pre.textContent=JSON.stringify(data.manifest,null,2);details.appendChild(pre);target.appendChild(details);}
+        }catch(error){target.replaceChildren(node('div','bot-hint',error.message));}
+      }
+      disclosure.addEventListener('toggle',async()=>{if(!disclosure.open||loaded)return;loaded=true;body.replaceChildren(node('div','bot-hint','Завантаження…'));
+        try{const data=await read('{% url "management_bot_request_revision_index_api" 0 %}'.replace('/clients/0/','/clients/'+String(id)+'/'));body.replaceChildren();
+          if(!(data.revisions||[]).length){body.appendChild(node('div','bot-hint','Збережених запитів для цього клієнта ще немає.'));return;}
+          const output=node('div');(data.revisions||[]).forEach(item=>{const button=node('button','bot-btn','Запит №'+String(item.revision_id)+' · '+String(item.terminal_resolution||'очікує завершення'));button.type='button';button.addEventListener('click',()=>show(item.revision_id,output));body.appendChild(button);});body.appendChild(output);
+          if(!data.coverage_complete)body.appendChild(node('div','bot-hint','Показано останні '+String(data.limit)+' запитів.'));
+        }catch(error){body.replaceChildren(node('div','bot-hint',error.message));}
+      });
+    }
     function renderContext(d,id){
       const c=d.client;contextEl.replaceChildren();const status=section(contextEl,'Стан клієнта');const grid=node('div','bot-context-grid');contextFact(grid,'Категорія',c.interaction_type_label||'Не визначено');contextFact(grid,'Намір',c.intent_label||c.intent||'—');contextFact(grid,'Режим діалогу',c.manager_takeover?'Менеджер':(d.automation&&d.automation.owner==='manager'?'Автовідповіді призупинено':'Бот'));contextFact(grid,'Стан виконання',fulfillmentLabel(d));contextFact(grid,'Оплата через Monobank',providerTruthLabel(d.payment||{}));contextFact(grid,'Перевірка менеджера',managerTruthLabelForClient(d.payment||{},c));status.appendChild(grid);
       const selection=c.source_selection_display;
@@ -2938,6 +2986,8 @@ body.bot-drawer-open{overflow:hidden;}
         choices.append(choiceGrid,node('div','bot-hint','Застосовність і наявність перевіряються окремо. Намір замовити ще не означає оформлене замовлення.'));
       }
       const next=nextAction(d);const nextBlock=node('div','bot-context-next');nextBlock.style.marginTop='9px';nextBlock.append(node('span','','Наступна дія'),node('b','',next[0]),node('span','',next[1]));status.appendChild(nextBlock);const active=d.review&&d.review.active;if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-client-order-action is-pending');review.type='button';review.append(node('span','',active.approval.state==='needs_order_resolution'?"Потрібно прив'язати замовлення":'Потрібно підтвердити оплату'),node('span','',active.approval.state==='needs_order_resolution'?'Оберіть існуюче або створіть нове':'Звірте чек, товари та суму'));review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));status.appendChild(review);}
+      renderCapturedState(contextEl,id);
+      renderActualRequests(contextEl,id);
       renderAssignments(contextEl,d,id,{interactive:false});
       const controls=section(contextEl,'Керування діалогом');const primary=node('div','bot-action-primary');if(c.hidden){primary.appendChild(node('span','bot-action-unavailable','Бот не обробляє прихованого клієнта'));}else if(c.opted_out){primary.appendChild(node('span','bot-action-unavailable','Автоматичні повідомлення вимкнено за відмовою клієнта. Повернення бота можливе після окремо підтвердженої згоди.'));}else{const pause=node('button','bot-client-action primary '+(c.bot_paused?'resume':'pause'),c.bot_paused?'▶ Вернути боту':'⏸ Відповідати самому');pause.type='button';pause.dataset.act=c.bot_paused?'resume':'pause';pause.setAttribute('aria-label',c.bot_paused?'Явно повернути клієнта боту після перевірки останнього нерозв’язаного запиту':'Взяти діалог і зупинити автоматичні відповіді');primary.appendChild(pause);}controls.appendChild(primary);const actions=node('div','bot-action-state-buttons');const visibility=node('button','bot-client-action '+(c.hidden?'restore':'hide'),c.hidden?'↩ Повернути до активних':'Приховати');visibility.type='button';visibility.setAttribute('aria-label',c.hidden?'Повернути клієнта до активних':'Приховати клієнта');visibility.dataset.act=c.hidden?'unhide':'hide';const lost=node('button','bot-client-action lost','Позначити як втрачено');lost.type='button';lost.setAttribute('aria-label','Позначити клієнта як втрачено');lost.dataset.act='lost';const reset=node('button','bot-client-action reset','Скинути');reset.type='button';reset.setAttribute('aria-label','Скинути воронку');reset.title='Скинути воронку з підтвердженням';reset.dataset.act='reset-funnel';actions.append(visibility,lost,reset);controls.appendChild(actions);const feedbackEl=node('div','bot-action-feedback');feedbackEl.id='bot-action-feedback';feedbackEl.setAttribute('role','status');feedbackEl.setAttribute('aria-live','polite');feedbackEl.hidden=true;controls.appendChild(feedbackEl);/* data-act='reset-funnel' reset_funnel_confirmation confirm_reset */controls.querySelectorAll('[data-act]').forEach(button=>button.addEventListener('click',()=>runClientAction(id,button.dataset.act,button)));
       renderPostSale(contextEl,d);renderOrders(contextEl,d);renderUgcRewards(contextEl,d);if(c.memory){const memory=section(contextEl,'Пам’ять');memory.appendChild(node('div','bot-mem',c.memory));}

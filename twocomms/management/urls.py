@@ -10,6 +10,8 @@ from . import network_views
 from . import views_levels
 from . import bot_webhook
 from . import bot_views
+from . import bot_request_preview_views
+from . import bot_state_views
 from . import ig_private_media_views
 from . import binotel_views
 from . import binotel_webhook
@@ -97,6 +99,9 @@ urlpatterns = [
     path('bot/api/technical-debt/<int:case_id>/transition/', bot_views.bot_technical_debt_transition_api, name='management_bot_technical_debt_transition_api'),
     path('bot/api/clients/', bot_views.bot_clients_api, name='management_bot_clients_api'),
     path('bot/api/clients/<int:client_id>/', bot_views.bot_client_detail_api, name='management_bot_client_detail_api'),
+    path('bot/api/clients/<int:client_id>/state/', bot_state_views.bot_client_state_api, name='management_bot_client_state_api'),
+    path('bot/api/clients/<int:client_id>/request-revisions/', bot_request_preview_views.bot_request_revision_index_api, name='management_bot_request_revision_index_api'),
+    path('bot/api/clients/<int:client_id>/turn-revisions/<int:revision_id>/request-preview/', bot_request_preview_views.bot_request_preview_api, name='management_bot_request_preview_api'),
     path('bot/api/clients/<int:client_id>/followups/<int:task_id>/delivery-resolve/', bot_views.bot_client_followup_delivery_resolve_api, name='management_bot_client_followup_delivery_resolve_api'),
     path('bot/api/clients/<int:client_id>/followups/<int:task_id>/human-reply-resolve/', bot_views.bot_client_human_reply_delivery_resolve_api, name='management_bot_client_human_reply_delivery_resolve_api'),
     path('bot/api/clients/<int:client_id>/reply-debts/<int:task_id>/review/', bot_views.bot_client_reply_debt_review_api, name='management_bot_client_reply_debt_review_api'),

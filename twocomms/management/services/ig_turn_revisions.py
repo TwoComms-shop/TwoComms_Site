@@ -647,6 +647,7 @@ def seal_revision(revision_id: int, token: str, *, now=None) -> RevisionSealResu
                     source.provider_created_at.isoformat()
                     if source.provider_created_at else ""
                 ),
+                "observed_created_at": source.message.created_at.isoformat(),
                 "reply_to_provider_message_id": source.reply_to_provider_message_id,
                 "quick_reply_payload": source.quick_reply_payload,
                 "referral": source.referral,

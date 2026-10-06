@@ -1,0 +1,56 @@
+maintenance active lease_id=r30-cbf159d0f-release expires_at=1791281557
+From https://github.com/zainllw0w/TwoComms_Site
+   e9ac6cece..cbf159d0f  main       -> origin/main
+Updating e9ac6cece..cbf159d0f
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   4 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   4 +-
+ .../evidence/r30-human-takeover-20261006/README.md |  12 +
+ .../human-endpoint-gate.log                        |  10 +
+ .../human-native-gate.log                          |   7 +
+ .../manual-resume-head-baseline.log                |  19 ++
+ .../next-focused-sqlite-final.log                  |  19 ++
+ .../PRODUCTION_RELEASE_2026-10-06.md               |   9 +
+ .../production-postpull.log                        |  48 ++++
+ twocomms/management/bot_views.py                   |   5 +-
+ twocomms/management/services/ig_human_reply.py     |  65 ++++-
+ .../management/tests_ig_human_takeover_boundary.py | 306 +++++++++++++++++++++
+ twocomms/management/tests_ig_manual_resume.py      |   7 +
+ 13 files changed, 501 insertions(+), 14 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-takeover-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-takeover-20261006/human-endpoint-gate.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-takeover-20261006/human-native-gate.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-takeover-20261006/manual-resume-head-baseline.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-takeover-20261006/next-focused-sqlite-final.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-policy-publication-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-policy-publication-20261006/production-postpull.log
+ create mode 100644 twocomms/management/tests_ig_human_takeover_boundary.py
+System check identified no issues (0 silenced).
+maintenance disabled
+daemon alive under supervisor — ok
+375 objects imported automatically (use -v 2 for details).
+
+{"barrier_deployed": true, "branch": "main", "cleanup_api_correct": true, "finite_cleanup_rejection": true, "health": {"main_age_seconds": null, "main_healthy": false, "main_state": "", "process_age_seconds": null, "process_online": false, "process_pid": null, "stalled": false, "supervisor": {"available": true, "child_pid": null, "child_pid_matches_expected": null, "child_release_sha": null, "last_ensure_seen_at": 1791280682.748, "observed_at": 1791280683.758, "restart_count": null, "status": "current", "supervisor_release_sha": null}, "worker_stalled": false, "workers_healthy": false}, "maintenance_active": false, "memory_admission_accepted": false, "memory_generation_enabled": false, "release_sha": "cbf159d0fe8d426e01b1c47191aa8c0b518c557f", "retryable_endpoint": true}
+Traceback (most recent call last):
+  File "/home/qlknpodo/TWC/TwoComms_Site/twocomms/manage.py", line 65, in <module>
+    main()
+    ~~~~^^
+  File "/home/qlknpodo/TWC/TwoComms_Site/twocomms/manage.py", line 61, in main
+    execute_from_command_line(sys.argv)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/__init__.py", line 443, in execute_from_command_line
+    utility.execute()
+    ~~~~~~~~~~~~~~~^^
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/__init__.py", line 437, in execute
+    self.fetch_command(subcommand).run_from_argv(self.argv)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/base.py", line 422, in run_from_argv
+    self.execute(*args, **cmd_options)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/base.py", line 466, in execute
+    output = self.handle(*args, **options)
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/commands/shell.py", line 271, in handle
+    exec(sys.stdin.read(), {**globals(), **self.get_namespace(**options)})
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 17, in <module>
+AssertionError

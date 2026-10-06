@@ -155,12 +155,15 @@ def active_instruction_selection(
     budget_chars: int = MAX_INSTRUCTION_BLOCK_CHARS,
     visual_trigger_codes=None,
     publication_snapshot=None,
+    captured_tags=None,
 ) -> InstructionSelection:
     """Choose applicable playbooks without cutting any instruction body.
 
     Visual trigger codes are explicit inputs. No visual fact is inferred here:
     the bound publication only defines text/CRM routing and the caller supplies
     any observed visual codes.
+    ``captured_tags`` replaces all CRM tag reads for a sealed caller. Its one
+    finite language tag also fixes locale selection to that same capture.
     """
     from management.services.bot_instruction_routing import turn_triggers
     from management.services.ig_policy_publication import (
@@ -176,9 +179,10 @@ def active_instruction_selection(
         raise ValueError("instruction budget cannot be negative")
     visual_codes = tuple(sorted({str(code) for code in (visual_trigger_codes or ()) if str(code)}))
     bound = publication_snapshot or load_active_policy_snapshot()
-    client_tags = tags_for_client(client) if client is not None else None
+    client_tags = set(captured_tags) if captured_tags is not None else tags_for_client(client) if client is not None else None
     active_triggers = turn_triggers(turn_text)
-    locale = str(getattr(client, "language", "") or "all").casefold()
+    languages = (client_tags or set()) & {"uk", "ru", "en"}
+    locale = (next(iter(languages)) if len(languages) == 1 else "all") if captured_tags is not None else str(getattr(client, "language", "") or "all").casefold()
     if locale not in {"uk", "ru", "en"}:
         locale = "all"
     selected = select_policy_snapshot(

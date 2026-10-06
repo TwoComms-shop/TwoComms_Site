@@ -990,6 +990,8 @@ def begin_request(
             else "policy_manifest_invalid"
         )
     if not shadow_runtime_active():
+        if safe_policy_manifest.get("request_context") is not None:
+            return blocked_observer("policy_manifest_unavailable")
         if _revision_execution.get() is not None or enforce_nonlive:
             return blocked_observer("provider_accounting_unavailable")
         return NULL_OBSERVER
@@ -1092,6 +1094,18 @@ def begin_request(
                 return blocked_observer(provider_continuation.reason)
             candidate_plan = list(provider_continuation.candidate_plan)
             safe_plan = sanitize_candidate_plan(candidate_plan)
+        captured_context = safe_policy_manifest.get("request_context")
+        if captured_context is not None:
+            from types import SimpleNamespace
+            from management.services.gemini_accounting_contract import validate_request_context_binding
+
+            try:
+                validate_request_context_binding(SimpleNamespace(
+                    client_id=lineage.get("client_id"), source_message_id=source_message_id,
+                    logical_turn_id=logical_turn_id, source_execution_key=source_execution_key,
+                ), captured_context)
+            except RequestPolicyManifestError as exc:
+                return blocked_observer(exc.code)
         resolved_request_id = str(request_id or uuid.uuid4().hex)[:40]
         last_contention = None
         for delay in OWNERSHIP_RETRY_DELAYS:
@@ -1169,6 +1183,19 @@ def begin_request(
                             if existing_request.policy_manifest != safe_policy_manifest
                             else "request_conflict"
                         )
+                    if captured_context is not None and captured_context["revision_id"]:
+                        from management.models import IgCustomerTurnRevision
+
+                        captured_revision = IgCustomerTurnRevision.objects.filter(
+                            pk=captured_context["revision_id"], client_id=lineage.get("client_id"),
+                        ).values("bundle_snapshot", "snapshot_digest").first()
+                        if captured_revision is None or (
+                            captured_context["bundle_digest"] != captured_revision["snapshot_digest"]
+                            or captured_context["source_message_ids"] != [
+                                row.get("message_id") for row in (captured_revision["bundle_snapshot"] or {}).get("sources", [])
+                            ]
+                        ):
+                            return blocked_observer("policy_manifest_context_mismatch")
                     legacy_context_token = (
                         _legacy_execution.set(legacy_execution)
                         if legacy_execution is not None else None
@@ -1260,6 +1287,7 @@ def begin_request(
                     enforce_nonlive=enforce_nonlive,
                 )
                 observer.provider_continuation = provider_continuation
+                observer._request_context = safe_policy_manifest.get("request_context")
                 return observer
             except _LegacyProviderRootBlocked as exc:
                 return blocked_observer(exc.reason)
@@ -1278,6 +1306,8 @@ def begin_request(
                     return blocked_observer("legacy_execution_invalid")
                 if enforce_nonlive:
                     return blocked_observer("provider_accounting_unavailable")
+                if safe_policy_manifest.get("request_context") is not None:
+                    return blocked_observer("policy_manifest_unavailable")
                 return NULL_OBSERVER
         if last_contention is not None:
             return blocked_observer("ownership_contention")
@@ -1285,6 +1315,8 @@ def begin_request(
     except Exception:
         # Explicit revisions cannot turn an invalid claim or a failed identity
         # lookup into a provider-permitting legacy null observer.
+        if safe_policy_manifest.get("request_context") is not None:
+            return blocked_observer("policy_manifest_unavailable")
         if enforce_nonlive:
             return blocked_observer("provider_accounting_unavailable")
         if (
@@ -1374,6 +1406,23 @@ class AttemptBoundary:
     provider_repair_token: str = ""
     dispatch_deadline: float | None = None
     provider_deadline_at: dt.datetime | None = None
+    dispatch_manifest: dict | None = None
+
+    def prepare_dispatch_manifest(self, body: bytes) -> None:
+        """Capture the finalized bytes; never retain the body on this boundary."""
+        context = getattr(self.observer, "_request_context", None)
+        if context is None:
+            self.dispatch_manifest = None
+            return
+        from management.services.ig_request_manifest import capture_dispatch_context
+
+        captured = capture_dispatch_context(
+            payload=body, context=context, attempt_index=self.attempt_index, model=self.model,
+        )
+        if self.dispatch_manifest is not None and self.dispatch_manifest != captured:
+            from management.services.gemini_accounting_contract import RequestPolicyManifestError
+            raise RequestPolicyManifestError("policy_manifest_dispatch_mismatch", "prepared dispatch evidence cannot change")
+        self.dispatch_manifest = captured
 
     def validate_ownership(self) -> bool:
         try:
@@ -2022,6 +2071,12 @@ class RequestObserver:
             graph = self._lock_valid_boundary_graph(boundary, check_deadline=False)
             if graph is None:
                 return False
+            context = (graph.policy_manifest or {}).get("request_context")
+            if context is not None and not boundary.dispatch_manifest:
+                self._record_final_admission_denial_locked(graph, boundary, profile=profile,
+                    decision=GeminiRequestAttempt.ShadowDecision.UNKNOWN,
+                    reason="policy_manifest_dispatch_missing", now=timezone.now())
+                return False
             now = timezone.now()
             if self._provider_deadline_expired(graph, boundary, now=now):
                 self._record_final_admission_denial_locked(graph, boundary, profile=profile,
@@ -2232,6 +2287,7 @@ class RequestObserver:
                 permit_expires_at=expiry,
             )
             boundary.attempt_id = attempt.pk
+            self._attach_dispatch_evidence_locked(attempt.pk, boundary)
             boundary.state_id = state.pk if state is not None else None
             boundary.started_monotonic = time.monotonic()
 
@@ -2265,6 +2321,17 @@ class RequestObserver:
                 ).update(provider_phase_started_at=now, updated_at=now)
             return True
 
+    def _attach_dispatch_evidence_locked(self, attempt_id, boundary):
+        if boundary.dispatch_manifest is None:
+            return
+        from management.services.gemini_accounting_contract import (
+            _admission_dispatch_capture_scope, attach_attempt_dispatch_manifest_locked,
+        )
+
+        with _admission_dispatch_capture_scope(attempt_id, self.graph_id):
+            if not attach_attempt_dispatch_manifest_locked(attempt_id, boundary.dispatch_manifest):
+                raise IntegrityError("dispatch evidence CAS lost")
+
     def _record_final_admission_denial_locked(self, graph, boundary, *, profile, decision, reason, now, failure_kind=""):
         """One canonical no-HTTP denial; callers hold graph/pair locks."""
         from management.models import GeminiRequestAttempt
@@ -2288,6 +2355,7 @@ class RequestObserver:
             reservation_released_at=now, permit_released_at=now,
         )
         boundary.attempt_id = row.pk
+        self._attach_dispatch_evidence_locked(row.pk, boundary)
         outcomes = dict(graph.candidate_outcomes or {})
         key = str(boundary.candidate_index or boundary.attempt_index)
         payload = {"attempt_index": boundary.attempt_index, "outcome": row.outcome,
@@ -2352,6 +2420,7 @@ class RequestObserver:
                 permit_released_at=now,
             )
             boundary.attempt_id = attempt.pk
+            self._attach_dispatch_evidence_locked(attempt.pk, boundary)
             outcomes = dict(graph.candidate_outcomes or {})
             outcome_key = str(boundary.candidate_index or boundary.attempt_index)
             payload = {

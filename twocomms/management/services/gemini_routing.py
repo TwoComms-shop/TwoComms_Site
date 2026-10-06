@@ -127,6 +127,7 @@ class TurnFacts:
     objection_present: bool = False
     commercial_risk: str = "low"
     reasoning_task_hint: str = ""
+    has_video: bool = False
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,8 @@ def classify_live_turn(facts: TurnFacts, *, settings_obj=None, now=None) -> Rout
         complex_reasons.append("image_reasoning")
     if facts.has_audio:
         complex_reasons.append("audio_reasoning")
+    if facts.has_video:
+        complex_reasons.append("video_reasoning")
     if int(facts.unresolved_catalog_candidates or 0) > 1:
         complex_reasons.append("ambiguous_catalog")
     for enabled, reason in (
@@ -232,13 +235,13 @@ def classify_live_turn(facts: TurnFacts, *, settings_obj=None, now=None) -> Rout
             "media_analysis", "catalog_match", "product_decision",
             "size_fit_decision", "payment_decision", "order_decision",
         }:
-            task = "media_analysis" if facts.has_image or facts.has_audio else "product_decision"
+            task = "media_analysis" if facts.has_image or facts.has_audio or facts.has_video else "product_decision"
         return RoutingDecision(
             lane="live",
             task_class=TaskClass.COMPLEX_LIVE,
             reason_codes=_unique(complex_reasons),
             authority_snapshot_version=AUTHORITY_SNAPSHOT_VERSION,
-            requires_media_reasoning=bool(facts.has_image or facts.has_audio),
+            requires_media_reasoning=bool(facts.has_image or facts.has_audio or facts.has_video),
             commercial_risk=str(facts.commercial_risk or "medium"),
             model_chain=chain,
             deadline_ms=45_000,
@@ -302,13 +305,14 @@ def analysis_escalation_chain(
     return ()
 
 
-def recovery_decision_for(message, settings_obj, *, has_image=False, has_audio=False):
+def recovery_decision_for(message, settings_obj, *, has_image=False, has_audio=False, has_video=False):
     """Revalidate an original live route against the current routing policy."""
     reasons = set(getattr(message, "gemini_routing_reason_codes", None) or [])
     original_class = str(getattr(message, "gemini_task_class", "") or "")
     facts = TurnFacts(
         has_image=bool(has_image),
         has_audio=bool(has_audio),
+        has_video=bool(has_video or "video_reasoning" in reasons),
         unresolved_catalog_candidates=(
             2 if "ambiguous_catalog" in reasons else 0
         ),
@@ -324,7 +328,7 @@ def recovery_decision_for(message, settings_obj, *, has_image=False, has_audio=F
         ),
         reasoning_task_hint=(
             "media_analysis"
-            if has_image or has_audio
+            if has_image or has_audio or has_video or "video_reasoning" in reasons
             else "size_fit_decision"
             if "personalized_fit" in reasons
             else "product_decision"
@@ -335,6 +339,7 @@ def recovery_decision_for(message, settings_obj, *, has_image=False, has_audio=F
         and not any((
             facts.has_image,
             facts.has_audio,
+            facts.has_video,
             facts.unresolved_catalog_candidates,
             facts.personalized_fit_required,
             facts.product_or_recipient_switch,

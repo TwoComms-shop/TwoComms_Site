@@ -337,6 +337,13 @@ IG_LIFECYCLE_REASON_FUNNEL_ENABLED = _env_bool(
 IG_MEMORY_GENERATION_ENABLED = _env_bool('IG_MEMORY_GENERATION_ENABLED', False)
 IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = _env_bool('IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED', False)
 
+# Captured at request preparation. Environment changes require worker restart;
+# rollback modes keep the existing revision/outbox finalization lane intact.
+IG_TURN_CONTEXT_MODE = os.environ.get('IG_TURN_CONTEXT_MODE', 'unified').strip().casefold()
+if IG_TURN_CONTEXT_MODE not in {'legacy', 'shadow', 'unified'}:
+    IG_TURN_CONTEXT_MODE = 'legacy'
+IG_CLIENT_STATE_PROMPT_TOKENS = 2400
+
 # ЭА.14 / ЭА.15 — надзор за демоном: четыре состояния вместо одного,
 # операционный lease вместо абсолютного времени, изоляция клиентской полосы.
 # Откат: при выключении надзор работает как до этапа (один булев признак живости).

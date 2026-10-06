@@ -1,0 +1,25 @@
+.....................................................................................ig_bot event=policy_not_ready level=error detail=knowledge_directory_missing
+....ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+..ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+..ig_bot event=request_context_not_ready level=error detail=policy_manifest_context_invalid
+.ig_bot event=policy_not_ready level=error detail=publication_changed
+.ig_bot event=policy_not_ready level=error detail=captured_state_exceeds_budget
+.ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+.ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+.ig_bot event=policy_not_ready level=error detail=mandatory_policy_exceeds_budget
+.................................................................................................ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.............ig_bot event=gemini level=error detail=(0.0с) http_5xx
+............ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) http_5xx
+........ig_bot event=gemini level=error detail=(0.0с) http_5xx
+...................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 393 tests in 88.169s
+
+OK
+Found 393 test(s).
+System check identified no issues (0 silenced).

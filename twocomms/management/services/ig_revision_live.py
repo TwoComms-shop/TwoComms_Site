@@ -738,6 +738,39 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         ),
         settings_obj=settings_row,
     )
+    from management.services.ig_turn_integration import (
+        legacy_revision_context_metadata, prepare_revision_turn_context,
+    )
+    from management.services.ig_turn_intelligence import TurnContextError
+    context_mode = getattr(django_settings, "IG_TURN_CONTEXT_MODE", "legacy")
+    prepared_context = None
+    captured_context = None
+    context_reason = "context_legacy_mode"
+    if context_mode in {"shadow", "unified"}:
+        try:
+            captured_context = prepare_revision_turn_context(
+                revision, generation_boundary=boundary, collection=collection,
+                settings_row=settings_row, publication=publication,
+            )
+        except TurnContextError as exc:
+            context_reason = exc.reason
+            if context_mode == "unified" and exc.reason != "legacy_sealed_time_unavailable":
+                return None, boundary, (exc.reason,)
+        if captured_context is not None:
+            if context_mode == "unified":
+                prepared_context = captured_context
+                routing_decision = captured_context.context.decision
+            else:
+                logging.getLogger(__name__).info(
+                    "turn_context_shadow route_equal=%s omissions=%s",
+                    routing_decision == captured_context.context.decision,
+                    len(captured_context.context.omissions),
+                )
+    actual_context_mode = context_mode if context_mode != "unified" or prepared_context else "legacy"
+    request_context_metadata = (
+        prepared_context.request_metadata if prepared_context is not None
+        else legacy_revision_context_metadata(revision, mode=actual_context_mode, reason=context_reason)
+    )
     coverage_note = (
         "Analyze every attached supported image conversationally. Image classification "
         "does not require manager permission. Keep each caption and do not claim to "
@@ -769,9 +802,12 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         coverage_note += "\n[DETERMINISTIC SOURCE COMMERCE EVENTS]\n" + json.dumps(commerce.get("decisions") or [], ensure_ascii=False, separators=(",", ":"))
     from management.services.ig_turn_intent import build_turn_intent, intent_generation_guidance
     coverage_note += "\n" + intent_generation_guidance(build_turn_intent(revision.client, revision))
-    from management.services.ig_revision_conversation_context import conversation_timing_guidance
-    coverage_note += "\n" + conversation_timing_guidance(revision)
-    coverage_note += "\n" + boundary.response_plan.prompt_guidance()
+    if prepared_context is not None:
+        coverage_note += "\n" + prepared_context.context.turn_note
+    else:
+        from management.services.ig_revision_conversation_context import conversation_timing_guidance
+        coverage_note += "\n" + conversation_timing_guidance(revision)
+        coverage_note += "\n" + boundary.response_plan.prompt_guidance()
     from management.services.gemini_accounting_runtime import revision_request_execution
 
     with revision_request_execution(
@@ -782,7 +818,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         source_message_id=source_id, logical_turn_id=f"ig-revision:{revision.pk}",
     ):
         response = bot.gemini_generate(
-            settings_row, build_sealed_history(revision), images=images or None,
+            settings_row, list(prepared_context.history) if prepared_context is not None else build_sealed_history(revision), images=images or None,
             routing_decision=routing_decision,
             client=revision.client, turn_note=coverage_note,
             turn_candidate_set=candidate_set,
@@ -791,6 +827,14 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
             failure_context=failure, generation_boundary=boundary,
             deadline_at=deadline,
             customer_route_context=route_context,
+            memory_note=prepared_context.context.memory_note if prepared_context is not None else None,
+            context_note=prepared_context.context.context_note if prepared_context is not None else None,
+            captured_client_state=prepared_context.state if prepared_context is not None else None,
+            captured_dynamic_notes=prepared_context.dynamic_notes if prepared_context is not None else None,
+            captured_turn_text=prepared_context.current_text if prepared_context is not None else None,
+            request_context_metadata=request_context_metadata,
+            captured_policy_tags=prepared_context.policy_inputs.tags if prepared_context is not None else None,
+            captured_knowledge_language=prepared_context.policy_inputs.knowledge_language if prepared_context is not None else None,
         )
     if not isinstance(response, ValidatedResponse) or not response.valid:
         return None, boundary, boundary.last_reasons or (str(failure.get("kind") or "generation_failed"),)

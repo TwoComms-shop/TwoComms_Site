@@ -108,7 +108,20 @@ def turn_triggers(text: str) -> set[str]:
     value = str(text or "")
     if not value.strip():
         return set()
-    return {name for name, pattern in _TURN_TRIGGERS.items() if pattern.search(value)}
+    # Objections use the same customer's-own-current-clause predicate as the
+    # captured route. Lexical mentions in quotes, history or a negation do not
+    # admit a sales objection instruction. Other question selectors retain
+    # their established matching contract.
+    from management.services.ig_turn_intelligence import current_objections
+
+    kinds = {item["kind"] for item in current_objections([{"message_id": 0, "text": value}])}
+    result = {name for name, pattern in _TURN_TRIGGERS.items()
+              if name not in {"price_objection", "hesitation"} and pattern.search(value)}
+    if kinds & {"price", "cheaper_elsewhere"}:
+        result.add("price_objection")
+    if "thinking" in kinds:
+        result.add("hesitation")
+    return result
 
 
 def split_instruction_tags(raw: str) -> dict:

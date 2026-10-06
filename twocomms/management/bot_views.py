@@ -355,6 +355,19 @@ def _delete_direct_bot_records(
             message_filter = Q(client__in=clients)
             if sender_ids:
                 message_filter |= Q(sender_id__in=sender_ids)
+        from management.services.ig_accounting_privacy import scrub_client_accounting_context
+        # The earlier phase committed these owner fences. Scrub customer
+        # extensions before deleting source proofs; economic evidence stays.
+        owned_ids = [client.pk for client in clients]
+        owned_frozen_sources = tuple(InstagramBotMessage.objects.filter(
+            pk__in=frozen_message_ids, client_id__in=owned_ids,
+        ).values_list("pk", flat=True)) if frozen_targets else ()
+        scrub_client_accounting_context(
+            owned_ids, frozen_message_ids=owned_frozen_sources,
+            # A permanently fenced owner is deleted in full below. The claim
+            # cutoff restricts frozen external records, not owner extensions.
+            cutoff_at=None,
+        )
         mids = list(
             InstagramBotMessage.objects.filter(message_filter)
             .exclude(mid__isnull=True).values_list("mid", flat=True)

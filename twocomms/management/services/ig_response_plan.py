@@ -5,7 +5,7 @@ separate from applicable configuration and from any checkout effect.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import re
@@ -200,6 +200,8 @@ class ResponsePlan:
     next_selector: str
     authority: dict
     obligations: tuple[dict, ...]
+    source_selection: dict = field(default_factory=dict)
+    readiness_snapshot: dict = field(default_factory=dict)
 
     @property
     def digest(self):
@@ -392,5 +394,8 @@ def capture_response_plan(client, *, revision=None):
         context = ReplyTruthContext()
     else:
         context = build_reply_truth_context(client)
-    return build_response_plan(preferences=preferences, readiness=readiness,
-                               context=context, sources=sources)
+    from management.services.ig_commerce_projection import captured_selection_from_preferences
+    return replace(build_response_plan(preferences=preferences, readiness=readiness,
+                                      context=context, sources=sources),
+                   source_selection=captured_selection_from_preferences(client.pk, preferences),
+                   readiness_snapshot=readiness)

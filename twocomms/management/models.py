@@ -4782,6 +4782,7 @@ class GeminiRequestAttempt(models.Model):
     provider_quota_metric = models.CharField(max_length=16, blank=True, default="")
     provider_quota_id = models.CharField(max_length=120, blank=True, default="")
     provider_quota_dimensions = models.JSONField(default=dict, blank=True)
+    dispatch_manifest = models.JSONField(default=dict, db_default={}, blank=True)
     provider_retry_after_seconds = models.PositiveIntegerField(default=0)
     provider_block_until = models.DateTimeField(null=True, blank=True)
     winner_claimed = models.BooleanField(default=False)

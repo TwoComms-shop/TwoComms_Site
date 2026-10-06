@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -70,6 +72,7 @@ ATTEMPT_IMMUTABLE_FIELDS = (
     "incident_id",
     "recovery_job_id",
     "created_at",
+    "dispatch_manifest",
 )
 ATTEMPT_MUTABLE_FIELDS = frozenset({
     "fsm_state",
@@ -123,6 +126,7 @@ _MANIFEST_TOP_KEYS = frozenset({
     "budget_chars", "visual_trigger_codes", "core", "knowledge_hash",
     "instruction_publication", "instruction_selection",
 })
+_dispatch_capture_scope = ContextVar("gemini_dispatch_capture_scope", default=None)
 
 
 def _manifest_object(value, *, keys, code: str) -> dict:
@@ -183,7 +187,7 @@ def sanitize_request_policy_manifest(value) -> dict:
         return {}
     manifest = _manifest_object(
         value,
-        keys=_MANIFEST_TOP_KEYS,
+        keys=_MANIFEST_TOP_KEYS | ({"request_context"} if isinstance(value, dict) and "request_context" in value else set()),
         code="policy_manifest_invalid",
     )
     core = _manifest_object(
@@ -259,7 +263,7 @@ def sanitize_request_policy_manifest(value) -> dict:
             "policy_manifest_mismatch",
             "instruction publication metadata does not match selection metadata",
         )
-    return {
+    result = {
         "version": _manifest_token(
             manifest["version"], code="policy_manifest_invalid"
         ),
@@ -300,6 +304,18 @@ def sanitize_request_policy_manifest(value) -> dict:
         "instruction_publication": safe_publication,
         "instruction_selection": safe_selection,
     }
+    if "request_context" in manifest:
+        from management.services.ig_request_manifest import sanitize_request_context
+
+        result["request_context"] = sanitize_request_context(manifest["request_context"])
+        captured_publication_hash = result["request_context"]["view_versions"].get(
+            "publication_hash"
+        )
+        if captured_publication_hash is not None and captured_publication_hash != safe_publication["hash"]:
+            raise RequestPolicyManifestError(
+                "policy_manifest_mismatch", "Captured publication differs from compiled policy."
+            )
+    return result
 
 
 def canonical_candidate_plan_digest(candidate_plan) -> str:
@@ -334,6 +350,12 @@ def validate_request_contract(request) -> None:
             errors["policy_manifest"] = "Policy manifest is not canonical."
     except RequestPolicyManifestError as exc:
         errors["policy_manifest"] = str(exc)
+    context = (request.policy_manifest or {}).get("request_context") if isinstance(request.policy_manifest, dict) else None
+    if context:
+        try:
+            validate_request_context_binding(request, context)
+        except RequestPolicyManifestError as exc:
+            errors["policy_manifest"] = str(exc)
 
     if request.pk is not None:
         persisted = (
@@ -368,6 +390,14 @@ def validate_request_contract(request) -> None:
 def validate_attempt_contract(attempt) -> None:
     """Validate parent request identity and model/profile compatibility."""
     errors: dict[str, str] = {}
+    dispatch = getattr(attempt, "dispatch_manifest", {})
+    if not isinstance(dispatch, dict):
+        errors["dispatch_manifest"] = "Dispatch evidence must be a canonical object."
+    elif dispatch:
+        try:
+            validate_dispatch_manifest_binding(attempt, dispatch)
+        except RequestPolicyManifestError as exc:
+            errors["dispatch_manifest"] = str(exc)
     if attempt.request_graph_id is not None:
         request = attempt.request_graph
         if attempt.request_id != request.request_id:
@@ -388,6 +418,87 @@ def validate_attempt_contract(attempt) -> None:
                     errors[field] = "Gemini attempt project/candidate/lineage identity is immutable."
     if errors:
         raise ValidationError(errors)
+
+
+def validate_request_context_binding(request, context) -> None:
+    """A captured context must name the graph's actual owner and source scope."""
+    from management.services.ig_request_manifest import sanitize_request_context
+
+    context = sanitize_request_context(context)
+    source_ids = context["source_message_ids"]
+    revision_id = context["revision_id"]
+    if (
+        context["client_id"] != int(request.client_id or 0)
+        or (source_ids and request.source_message_id not in source_ids)
+        or (request.source_message_id is not None and not source_ids)
+        or (revision_id and (
+            request.logical_turn_id != f"ig-revision:{revision_id}"
+            or request.source_execution_key != f"ig-revision:{revision_id}"
+        ))
+    ):
+        raise RequestPolicyManifestError("policy_manifest_context_mismatch", "request context owner/source scope does not match graph")
+
+
+def validate_dispatch_manifest_binding(attempt, value) -> dict:
+    from management.services.ig_request_manifest import sanitize_dispatch_context
+
+    safe = sanitize_dispatch_context(value)
+    graph = attempt.request_graph if attempt.request_graph_id is not None else None
+    context = (graph.policy_manifest or {}).get("request_context") if graph is not None else None
+    if not context:
+        raise RequestPolicyManifestError("policy_manifest_dispatch_mismatch", "dispatch evidence requires captured logical input")
+    validate_request_context_binding(graph, context)
+    if (
+        safe["client_id"] != int(graph.client_id or 0)
+        or safe["revision_id"] != context["revision_id"]
+        or safe["logical_request_digest"] != context["request_digest"]
+        or safe["attempt_index"] != attempt.attempt_index or safe["model"] != attempt.model
+        or attempt.client_id != graph.client_id or attempt.source_message_id != graph.source_message_id
+        or attempt.logical_turn_id != graph.logical_turn_id or attempt.request_id != graph.request_id
+    ):
+        raise RequestPolicyManifestError("policy_manifest_dispatch_mismatch", "dispatch evidence does not match attempt scope")
+    if value != safe:
+        raise RequestPolicyManifestError("policy_manifest_dispatch_invalid", "dispatch evidence is not canonical")
+    return safe
+
+
+def attach_attempt_dispatch_manifest_locked(attempt_id: int, manifest: dict) -> bool:
+    """Write once under admission's economic locks; same-value retry is a no-op.
+
+    Generic queryset/save updates remain forbidden. This narrow CAS is the only
+    permitted blank-to-sealed transition, and cannot run outside an atomic block.
+    """
+    from django.db import connection
+    from django.db.models import QuerySet
+    from management.models import GeminiRequestAttempt
+
+    if not connection.in_atomic_block:
+        raise ValidationError("Dispatch evidence requires admission transaction")
+    attempt = GeminiRequestAttempt.objects.select_for_update().select_related("request_graph").get(pk=attempt_id)
+    safe = validate_dispatch_manifest_binding(attempt, manifest)
+    if attempt.dispatch_manifest:
+        if attempt.dispatch_manifest != safe:
+            raise ValidationError("Dispatch evidence is immutable once captured")
+        return True
+    if _dispatch_capture_scope.get() != (attempt.pk, attempt.request_graph_id):
+        raise ValidationError("Initial dispatch capture requires the active admission boundary")
+    if attempt.fsm_state not in {GeminiRequestAttempt.FsmState.PROVIDER_STARTED, GeminiRequestAttempt.FsmState.CANCELLED_PRE_DISPATCH}:
+        raise ValidationError("Dispatch evidence requires a prepared admission boundary")
+    updated = QuerySet.update(
+        GeminiRequestAttempt.objects.filter(pk=attempt.pk, dispatch_manifest={}),
+        dispatch_manifest=safe,
+    )
+    return updated == 1
+
+
+@contextmanager
+def _admission_dispatch_capture_scope(attempt_id, graph_id):
+    """Private capability issued only by the already-locked admission writer."""
+    token = _dispatch_capture_scope.set((attempt_id, graph_id))
+    try:
+        yield
+    finally:
+        _dispatch_capture_scope.reset(token)
 
 
 @transaction.atomic

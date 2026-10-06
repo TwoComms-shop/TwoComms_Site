@@ -333,12 +333,17 @@ def captured_selection_for(client, *, episode_id=None, line_id=None) -> dict:
     Historical callers must pass their episode; mismatched scope is absent.
     """
     projection = source_preferences_for(client, episode_id=episode_id, line_id=line_id)
+    return captured_selection_from_preferences(client.pk, projection)
+
+
+def captured_selection_from_preferences(client_id, projection) -> dict:
+    """Render an already validated projection without another mutable read."""
     if not projection:
         return {}
     scope = {key: projection[key] for key in (
         "session_id", "generation", "revision", "active_index", "episode_id", "line_id", "recipient_id", "reset_floor",
     )}
-    scope["client_id"] = client.pk
+    scope["client_id"] = client_id
     return {**projection, "schema": "source-selection.v1", "scope": scope,
             "fields": {key: {"value": value, "status": "ambiguous" if key == "model_query" else "confirmed",
                               "authority": projection["evidence"][key].get("authority", "customer_source"), "source": projection["evidence"][key],

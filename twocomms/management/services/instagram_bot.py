@@ -7165,122 +7165,62 @@ def select_chat_reasoning_task(
 
 
 def live_routing_decision(
-    settings_obj,
-    *,
-    images: list[tuple[str, bytes]] | None = None,
-    media: list[dict] | None = None,
-    commerce_request=None,
-    client=None,
-    ad_resolution=None,
-    deterministic_action: str = "",
-    current_text: str = "",
+    settings_obj, *, images=None, media=None, commerce_request=None, client=None,
+    ad_resolution=None, deterministic_action="", current_text="", source_message_id=0,
 ):
-    """Build the pre-provider route from typed current-turn state."""
-    from management.services.gemini_routing import TurnFacts, classify_live_turn
+    """Compatibility capture feeding the same pure revision feature extractor."""
+    from types import SimpleNamespace
+    from management.services.gemini_routing import classify_live_turn
+    from management.services.ig_turn_intelligence import build_routing_facts
 
-    media = [item for item in (media or []) if isinstance(item, dict)]
-    has_audio = any(
-        str(item.get("mime") or "").casefold().startswith("audio/")
-        or str(item.get("media_type") or "").casefold() in {"audio", "voice"}
-        for item in media
-    )
     reference = getattr(commerce_request, "exact_reference", None)
-    candidate_ids = tuple(getattr(reference, "candidate_product_ids", ()) or ())
-    pending = str(getattr(commerce_request, "pending_clarification", "") or "")
-    unresolved_candidates = len(set(candidate_ids))
-    if pending == "multiple_product_links":
-        unresolved_candidates = max(2, unresolved_candidates)
-    semantic = dict(getattr(commerce_request, "semantic_constraints", {}) or {})
-    garment_type = str(getattr(commerce_request, "garment_type", "") or "")
-    branch_switch = bool(
-        getattr(commerce_request, "reset_requested", False)
-        or getattr(commerce_request, "new_purchase_requested", False)
-        or getattr(commerce_request, "exchange_requested", False)
+    commerce = {key: getattr(commerce_request, key, False) for key in (
+        "reset_requested", "new_purchase_requested", "exchange_requested", "checkout_requested",
+        "support_requested", "personalized_fit_requested", "custom_print_requested", "comparison_requested",
+    )}
+    commerce.update(
+        deterministic_action=deterministic_action,
+        candidate_product_ids=list(getattr(reference, "candidate_product_ids", ()) or ()),
+        exact_product_id=getattr(commerce_request, "exact_product_id", None),
+        pending_clarification=str(getattr(commerce_request, "pending_clarification", "") or ""),
+        garment_type=str(getattr(commerce_request, "garment_type", "") or ""),
+        semantic_constraints=dict(getattr(commerce_request, "semantic_constraints", {}) or {}),
     )
-    custom_print = bool(
-        garment_type in {"custom", "custom_print"}
-        or any(key in semantic for key in ("artwork", "placement", "print_brief"))
-    )
-    personalized_fit = bool(
-        pending in {"size_fit", "fit_recommendation"}
-        or getattr(commerce_request, "personalized_fit_requested", False)
-    )
-    conflict = pending in {
-        "multiple_product_links",
-        "new_purchase_or_exchange",
-        "which_product",
-    }
-    commercial_risk = "high" if bool(
-        getattr(commerce_request, "checkout_requested", False)
-        or getattr(commerce_request, "exchange_requested", False)
-        or getattr(commerce_request, "support_requested", False)
-    ) else "low"
-    if ad_resolution is None and client is not None:
-        from management.services.ig_ad_referral import resolve_ad_referral
-
-        ad_resolution = resolve_ad_referral(client)
-    referral_status = str(getattr(ad_resolution, "status", "unavailable") or "unavailable")
-    ambiguous_referral = bool(
-        client is not None
-        and (
-            getattr(client, "ad_id", "")
-            or getattr(client, "ad_ref", "")
-            or getattr(client, "referral_payload", {})
-        )
-        and not getattr(client, "current_product_id", None)
-        and not getattr(commerce_request, "exact_product_id", None)
-        and referral_status != "resolved"
-    )
-    comparison_required = bool(
-        getattr(commerce_request, "comparison_requested", False)
-    )
-    objection_present = False
-    if current_text:
-        try:
-            from management.services.ig_objections import detect_objection_types
-
-            objection_present = bool(detect_objection_types(current_text))
-        except Exception:
-            objection_present = False
-    # A currently open objection remains relevant even when its wording is
-    # short and has no local lexical signal. Resolved/refusal states are not
-    # promoted into a new scarce-model call.
-    if client is not None and str(getattr(client, "primary_objection", "") or "").casefold() not in {
-        "", "none", "no_reply", "no_buy",
-    }:
-        objection_present = True
-    if objection_present:
-        commercial_risk = "high"
-    custom_print = bool(
-        custom_print
-        or getattr(commerce_request, "custom_print_requested", False)
-    )
-    reasoning_hint = ""
-    if images or has_audio:
-        reasoning_hint = "media_analysis"
-    elif personalized_fit:
-        reasoning_hint = "size_fit_decision"
-    elif branch_switch or unresolved_candidates or custom_print:
-        reasoning_hint = "product_decision"
-
-    return classify_live_turn(
-        TurnFacts(
-            deterministic_action=deterministic_action,
-            has_image=bool(images),
-            has_audio=has_audio,
-            unresolved_catalog_candidates=unresolved_candidates,
-            personalized_fit_required=personalized_fit,
-            product_or_recipient_switch=branch_switch,
-            custom_print_brief=custom_print,
-            conflicting_intent=conflict,
-            ambiguous_ad_referral=ambiguous_referral,
-            comparison_required=comparison_required,
-            objection_present=objection_present,
-            commercial_risk=commercial_risk,
-            reasoning_task_hint=reasoning_hint,
-        ),
-        settings_obj=settings_obj,
-    )
+    source_id = int(source_message_id or 0)
+    source = {"message_id": source_id, "text": current_text or ""}
+    referral = {"present": False, "status": "unknown"}
+    if source_id and getattr(client, "pk", None):
+        message = InstagramBotMessage.objects.filter(pk=source_id, client_id=client.pk,
+            sender_id=client.igsid, role="user", source__in=("webhook", "poll")).first()
+        raw = {}
+        if message is not None and message.provider_namespace:
+            from management.models import IgTurnRevisionSource
+            captured = list(IgTurnRevisionSource.objects.filter(message_id=source_id,
+                revision__client_id=client.pk, source_namespace=message.provider_namespace)
+                .order_by("-pk").values_list("referral", flat=True)[:2])
+            if captured and all(item == captured[0] for item in captured):
+                raw = captured[0] or {}
+        present = any(raw.get(key) for key in ("ad_id", "ref", "source", "type"))
+        if present:
+            from management.services.ig_ad_referral import resolve_ad_referral
+            resolution = resolve_ad_referral(SimpleNamespace(
+                ad_id=str(raw.get("ad_id") or ""), ad_ref=str(raw.get("ref") or "")))
+            referral = {"present": True, "source_message_id": source_id,
+                "status": resolution.status, "mapping_active": resolution.status == "resolved",
+                "mapping_unique": resolution.status == "resolved"}
+    parts = [{"source_message_id": source_id, "mime": mime, "validated": True}
+             for mime, _raw in images or []]
+    for item in media or []:
+        if not isinstance(item, dict):
+            continue
+        mime = str(item.get("mime") or "")
+        kind = str(item.get("media_type") or "").casefold()
+        if not mime and kind in {"audio", "voice"}:
+            mime = "audio/unknown"
+        if mime.startswith(("image/", "audio/", "video/")) and not any(part["mime"] == mime for part in parts):
+            parts.append({"source_message_id": source_id, "mime": mime, "validated": True})
+    return classify_live_turn(build_routing_facts(sources=[source], media={"parts": parts},
+        commerce=commerce, referral=referral), settings_obj=settings_obj)
 
 
 def _turn_requires_owned_media(row: InstagramBotMessage) -> bool:
@@ -7905,6 +7845,12 @@ def gemini_generate(
     generation_boundary=None,
     deadline_at=None,
     customer_route_context: dict | None = None,
+    captured_client_state=None,
+    captured_dynamic_notes: dict | None = None,
+    captured_turn_text: str | None = None,
+    request_context_metadata: dict | None = None,
+    captured_policy_tags=None,
+    captured_knowledge_language: str | None = None,
 ) -> str | None:
     """history: [{'role':'user'|'model','text':str}] хронологічно.
     images: список (mime_type, raw_bytes) для ОСТАННЬОГО (поточного) user-ходу."""
@@ -7962,6 +7908,8 @@ def gemini_generate(
         if item.get("role") == "user" and item.get("text"):
             latest_user_text = str(item["text"])
             break
+    if captured_turn_text is not None:
+        latest_user_text = captured_turn_text
     from management.services.gemini_routing import (
         TaskClass,
         TurnFacts,
@@ -8023,6 +7971,14 @@ def gemini_generate(
             for field, value in public_policy_inputs.items():
                 setattr(s, field, value)
         instruction_publication = load_active_policy_snapshot(settings_obj=s)
+        captured_publication = getattr(generation_boundary, "publication", None)
+        if captured_publication is not None:
+            if (
+                instruction_publication.publication_id != captured_publication.publication_id
+                or instruction_publication.version != captured_publication.version
+                or instruction_publication.snapshot_hash != captured_publication.snapshot_hash
+            ):
+                raise PolicyReadinessError("publication_changed", "captured publication is no longer current")
         sys_text = assemble_system_instruction(
             s,
             client=client,
@@ -8034,6 +7990,10 @@ def gemini_generate(
             turn_text=latest_user_text,
             compiled_metadata=policy_metadata,
             instruction_publication=instruction_publication,
+            captured_client_state=captured_client_state,
+            captured_dynamic_notes=captured_dynamic_notes,
+            captured_policy_tags=captured_policy_tags,
+            captured_knowledge_language=captured_knowledge_language,
         )
     except (PolicyReadinessError, KnowledgeReadinessError, PolicyPublicationError) as exc:
         if failure_context is not None:
@@ -8187,6 +8147,38 @@ def gemini_generate(
         return None
     if failure_context is not None:
         failure_context["serialized_request_bytes"] = serialized_request_bytes
+
+    if request_context_metadata is not None:
+        from management.services.ig_request_manifest import capture_request_context
+        from management.services.gemini_accounting_contract import RequestPolicyManifestError
+        metadata = deepcopy(request_context_metadata)
+        metadata["budgets"] = {**metadata.get("budgets", {}), "request_bytes": serialized_request_bytes}
+        metadata["selected_block_ids"] = list(policy_metadata.get("selected_ids") or [])
+        omissions = {item["block_id"]: item for item in metadata.get("omitted_blocks") or []}
+        omissions.update({item["id"]: {"block_id": item["id"], "reason": item["reason"]}
+                          for item in policy_metadata.get("omitted") or []})
+        metadata["omitted_blocks"] = [item for key, item in omissions.items()
+                                      if key not in metadata["selected_block_ids"]]
+        admitted_ids = [str(item.get("source_part_id") or item.get("part_id") or "")
+                        for item in (turn_media_binding or {}).get("items") or []]
+        original_media = metadata.get("media") or {}
+        originally_admitted = original_media.get("admitted_part_ids") or []
+        metadata["media"] = {
+            "admitted_part_ids": [item for item in admitted_ids if item],
+            "omitted_part_ids": list(dict.fromkeys([
+                *original_media.get("omitted_part_ids", []),
+                *(item for item in originally_admitted if item not in admitted_ids),
+            ])),
+            "unavailable_part_ids": list(original_media.get("unavailable_part_ids") or []),
+        }
+        try:
+            policy_metadata["request_context"] = capture_request_context(payload=payload, metadata=metadata)
+        except RequestPolicyManifestError as exc:
+            if failure_context is not None:
+                failure_context["kind"] = "invalid_payload"
+                failure_context["policy_readiness"] = exc.code
+            log("error", "request_context_not_ready", exc.code)
+            return None
 
     from management.services.ig_response_guard import ProviderResponseGuard
 
@@ -8574,6 +8566,10 @@ def assemble_system_instruction(
     turn_text: str = "",
     compiled_metadata: dict | None = None,
     instruction_publication=None,
+    captured_client_state=None,
+    captured_dynamic_notes: dict | None = None,
+    captured_policy_tags=None,
+    captured_knowledge_language: str | None = None,
 ) -> str:
     """Собрать system_instruction; на время сборки — один снимок фактов (Э8.5).
 
@@ -8606,6 +8602,10 @@ def assemble_system_instruction(
             turn_text=turn_text,
             compiled_metadata=compiled_metadata,
             instruction_publication=instruction_publication,
+            captured_client_state=captured_client_state,
+            captured_dynamic_notes=captured_dynamic_notes,
+            captured_policy_tags=captured_policy_tags,
+            captured_knowledge_language=captured_knowledge_language,
         )
 
 
@@ -8649,6 +8649,10 @@ def _assemble_system_instruction(
     turn_text: str = "",
     compiled_metadata: dict | None = None,
     instruction_publication=None,
+    captured_client_state=None,
+    captured_dynamic_notes: dict | None = None,
+    captured_policy_tags=None,
+    captured_knowledge_language: str | None = None,
 ) -> str:
     """Compile one ordered policy; mandatory sources are never truncated."""
     from management.services.ig_policy_compiler import PolicyModule, compile_policy
@@ -8661,15 +8665,31 @@ def _assemble_system_instruction(
     # Reading mandatory knowledge is deliberately outside _prompt_section:
     # unreadability is a named readiness fault, not a silent missing rule.
     knowledge_language = str(getattr(client, "language", "") or "uk").casefold()
+    if captured_client_state is not None:
+        language_slot = captured_client_state.as_dict().get("slots", {}).get("language", {})
+        knowledge_language = str(language_slot.get("value") or "uk").casefold()
+    if captured_knowledge_language is not None:
+        knowledge_language = captured_knowledge_language
     if knowledge_language not in {"uk", "ru", "en"}:
         knowledge_language = "uk"
     knowledge = read_knowledge_manifest(knowledge_language)
     selection = active_instruction_selection(
         client, turn_text=turn_text or "", budget_chars=budget,
         publication_snapshot=instruction_publication,
+        captured_tags=captured_policy_tags,
     )
     dynamic = []
     omissions = list(selection.omitted)
+    state_render = None
+    if captured_client_state is not None:
+        from management.services.ig_client_state_card import render_client_state_prompt
+        from management.services.ig_policy_compiler import PolicyReadinessError
+        state_render = render_client_state_prompt(
+            captured_client_state, budget=int(getattr(settings, "IG_CLIENT_STATE_PROMPT_TOKENS", 2400)),
+        )
+        if state_render.oversized:
+            raise PolicyReadinessError("captured_state_exceeds_budget", "captured state requirements do not fit")
+        omissions.extend({"id": "state:" + key, "reason": reason} for key, reason in state_render.omitted)
     for key, loader in (
         ("automation", lambda: automation_guardrails(client)),
         ("client_state", lambda: client_state_note(client)),
@@ -8679,9 +8699,14 @@ def _assemble_system_instruction(
         ("objection_lifecycle", lambda: _objection_lifecycle_note(client)),
         ("catalog", lambda: get_catalog_context(compact=True)),
     ):
-        value = _prompt_section(key, loader)
+        if key == "client_state" and state_render is not None:
+            value = state_render.text
+        elif captured_dynamic_notes is not None and key in captured_dynamic_notes:
+            value = str(captured_dynamic_notes[key] or "")
+        else:
+            value = _prompt_section(key, loader)
         if value:
-            dynamic.append(PolicyModule("facts:" + key, value))
+            dynamic.append(PolicyModule("facts:" + key, value, customer_bound=key != "catalog"))
         else:
             omissions.append({"id": "facts:" + key, "reason": "empty_or_unavailable"})
     links = _prompt_section("quick_links", BotQuickLink.active_block)
@@ -8689,11 +8714,14 @@ def _assemble_system_instruction(
         dynamic.append(PolicyModule(
             "facts:quick_links", "[ДОСТУПНІ ПОСИЛАННЯ — лише доречні запиту]\n" + links,
         ))
+    if turn_note and str(turn_note).strip():
+        # Source coverage and the response plan must survive optional budgets.
+        dynamic.append(PolicyModule("context:turn", str(turn_note).strip(), customer_bound=True))
     customer = [
         PolicyModule("context:" + key, str(value).strip(), priority=position)
         for position, (key, value) in enumerate((
             ("memory", memory_note), ("conversation", context_note),
-            ("match", match_hint), ("media", media_hint), ("turn", turn_note),
+            ("match", match_hint), ("media", media_hint),
         )) if value and str(value).strip()
     ]
     compiled = compile_policy(
@@ -8705,7 +8733,7 @@ def _assemble_system_instruction(
         customer_data=customer,
         preselected_omissions=omissions,
         budget_chars=budget,
-        version="compiled-core-v1",
+        version="compiled-core-v2",
     )
     if compiled_metadata is not None:
         compiled_metadata.update(compiled.metadata())
@@ -14833,6 +14861,7 @@ def _process_one_inside_reply_boundary(
                     client=row.client if row.client_id else None,
                     ad_resolution=ad_resolution,
                     current_text=row.text,
+                    source_message_id=row.pk,
                 )
                 persist_decision(row, routing_decision)
 

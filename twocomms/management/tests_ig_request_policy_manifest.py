@@ -53,6 +53,19 @@ def policy_manifest():
 
 
 class RequestPolicyManifestPureTests(SimpleTestCase):
+    def test_inactive_accounting_blocks_captured_context_and_keeps_legacy_null(self):
+        from management.services.ig_request_manifest import capture_request_context
+        manifest = {**policy_manifest(), "request_context": capture_request_context(
+            payload={"contents": []}, metadata={"client_id": 3},
+        )}
+        kwargs = dict(request_id=None, role="chat", reasoning_task="customer_chat", candidate_plan=[])
+        with patch.object(gemini_accounting_runtime, "shadow_runtime_active", return_value=False):
+            observer = gemini_accounting_runtime.begin_request(**kwargs, request_policy_manifest=manifest)
+            legacy = gemini_accounting_runtime.begin_request(**kwargs, request_policy_manifest=policy_manifest())
+        self.assertTrue(observer.provider_blocked)
+        self.assertEqual(observer.block_reason, "policy_manifest_unavailable")
+        self.assertIs(legacy, gemini_accounting_runtime.NULL_OBSERVER)
+
     def test_strict_content_free_manifest_is_canonical(self):
         manifest = policy_manifest()
 
@@ -110,40 +123,49 @@ class RequestPolicyManifestPureTests(SimpleTestCase):
             gemini_accounting_runtime.NULL_OBSERVER,
             RuntimeError("observer unavailable"),
         )
-        for outcome in outcomes:
-            with self.subTest(outcome=type(outcome).__name__), patch.object(
-                call_ai_analysis.gemini_keys,
-                "live_chat_candidate_plan",
-                return_value=candidate,
-            ), patch.object(
-                call_ai_analysis.gemini_scoreboard,
-                "order_candidates",
-                side_effect=lambda rows, **_kwargs: rows,
-            ), patch.object(
-                gemini_accounting_runtime,
-                "shadow_runtime_active",
-                return_value=True,
-            ), patch.object(
-                gemini_accounting_runtime,
-                "begin_request",
-                side_effect=outcome if isinstance(outcome, Exception) else None,
-                return_value=(
-                    outcome if not isinstance(outcome, Exception) else None
-                ),
-            ), patch.object(call_ai_analysis.requests, "post") as provider:
-                with self.assertRaises(call_ai_analysis.CallAIAnalysisError) as caught:
-                    call_ai_analysis.gemini_generate_text(
-                        {"contents": []},
-                        role="chat",
-                        model_chain_override=["gemini-3.5-flash-lite"],
-                        request_policy_manifest=policy_manifest(),
-                    )
+        cases = [(True, policy_manifest())]
+        from management.services.ig_request_manifest import capture_request_context
+        cases.append((False, {
+            **policy_manifest(),
+            "request_context": capture_request_context(
+                payload={"contents": []}, metadata={"client_id": 3},
+            ),
+        }))
+        for active, manifest in cases:
+            for outcome in outcomes:
+                with self.subTest(active=active, outcome=type(outcome).__name__), patch.object(
+                    call_ai_analysis.gemini_keys,
+                    "live_chat_candidate_plan",
+                    return_value=candidate,
+                ), patch.object(
+                    call_ai_analysis.gemini_scoreboard,
+                    "order_candidates",
+                    side_effect=lambda rows, **_kwargs: rows,
+                ), patch.object(
+                    gemini_accounting_runtime,
+                    "shadow_runtime_active",
+                    return_value=active,
+                ), patch.object(
+                    gemini_accounting_runtime,
+                    "begin_request",
+                    side_effect=outcome if isinstance(outcome, Exception) else None,
+                    return_value=(
+                        outcome if not isinstance(outcome, Exception) else None
+                    ),
+                ), patch.object(call_ai_analysis.requests, "post") as provider:
+                    with self.assertRaises(call_ai_analysis.CallAIAnalysisError) as caught:
+                        call_ai_analysis.gemini_generate_text(
+                            {"contents": []},
+                            role="chat",
+                            model_chain_override=["gemini-3.5-flash-lite"],
+                            request_policy_manifest=manifest,
+                        )
 
-            provider.assert_not_called()
-            self.assertEqual(
-                caught.exception.failure_kind,
-                "policy_manifest_unavailable",
-            )
+                provider.assert_not_called()
+                self.assertEqual(
+                    caught.exception.failure_kind,
+                    "policy_manifest_unavailable",
+                )
 
 
 class RequestPolicyManifestGraphTests(TestCase):
