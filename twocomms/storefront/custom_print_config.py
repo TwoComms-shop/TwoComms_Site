@@ -11,14 +11,44 @@ SESSION_CUSTOM_CART_KEY = "custom_print_cart"
 
 # ── V2 business constants ────────────────────────────────────────────
 GIFT_SERVICE = {
-    "value": "gift_pack",
-    "label": _("Подарункова упаковка"),
-    "price": 100,
-    "promo_code": "GIFT10",
-    "promo_discount_percent": 10,
-    "note": _("Ми упакуємо замовлення в преміум-крафт, додамо листівку і заховаємо цінники."),
-    "bonus_note": _("Бонус: разовий промокод -10% на наступну покупку в TwoComms."),
+    "value": "personalized_box",
+    "label": _("Персоналізована коробка"),
+    "price": 350,
+    "base_packaging": {"label": _("Фірмовий зіп-пакет"), "price": 0, "included": True},
+    "box": {"price": 350, "estimate_required": False},
+    "wrapping": {"price": 0, "papers": ["ivory", "kraft", "black"]},
+    "delivery": {"branch": {"price": 150}, "courier": {"price": 300}},
+    "certificate": {"price": 150, "discount_percent": 15, "scope": "any_order_including_custom", "max_message_length": 240},
+    "note": _("Фірмовий зіп-пакет входить у кожне замовлення без доплати. Персоналізована коробка містить виріб у цьому зіп-пакеті; всередині надрукуємо текст або зображення."),
 }
+
+
+def normalize_gift_extras(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    box = raw.get("box") if isinstance(raw.get("box"), dict) else {}
+    delivery = raw.get("delivery") if isinstance(raw.get("delivery"), dict) else {}
+    certificate = raw.get("certificate") if isinstance(raw.get("certificate"), dict) else {}
+    wrapping = raw.get("wrapping") if isinstance(raw.get("wrapping"), dict) else {}
+    box_enabled = box.get("enabled") is True
+    content_type = box.get("content_type") if isinstance(box.get("content_type"), str) and box.get("content_type") in {"text", "image"} else "text"
+    box_text = str(box.get("text") or raw.get("text") or "").strip()[:1000]
+    method = delivery.get("method") if isinstance(delivery.get("method"), str) and delivery.get("method") in {"branch", "courier"} else "branch"
+    paper = wrapping.get("paper") if isinstance(wrapping.get("paper"), str) and wrapping.get("paper") in GIFT_SERVICE["wrapping"]["papers"] else "ivory"
+    message_mode = certificate.get("message_mode") if certificate.get("message_mode") in ("blank", "write") else "blank"
+    return {"enabled": box_enabled, "text": box_text, "base_packaging": {"included": True, "price": 0, "type": "branded_zip"},
+            "box": {"enabled": box_enabled, "content_type": content_type, "text": box_text,
+                    "image_name": str(box.get("image_name") or "").strip()[:255],
+                    "price": GIFT_SERVICE["box"]["price"], "estimate_required": box_enabled and GIFT_SERVICE["box"]["price"] is None},
+            "delivery": {"enabled": delivery.get("enabled") is True, "method": method,
+                         "price": GIFT_SERVICE["delivery"][method]["price"] if delivery.get("enabled") is True else 0,
+                         "payment_state": "requested", "funded": False},
+            "wrapping": {"enabled": wrapping.get("enabled") is True, "paper": paper, "price": 0},
+            "certificate": {"enabled": certificate.get("enabled") is True,
+                            "price": GIFT_SERVICE["certificate"]["price"] if certificate.get("enabled") is True else 0,
+                            "discount_percent": GIFT_SERVICE["certificate"]["discount_percent"],
+                            "scope": GIFT_SERVICE["certificate"]["scope"], "issued": False,
+                            "message_mode": message_mode, "message": str(certificate.get("message") or "").strip() if message_mode == "write" else "", "message_price": 0,
+                            "placement": "box_top" if box_enabled else "zip_inside"}}
 
 B2B_TIER = {
     "unit_step": 8,
@@ -116,6 +146,7 @@ STAGE_META = {
 
 # ── Display labels (legacy + V2) ─────────────────────────────────────
 ZONE_LABELS = {
+    "gift_box": _("Друк усередині коробки"),
     "front": _("Спереду"),
     "back": _("На спині"),
     "kangaroo": _("Кенгуряча кишеня"),
@@ -1861,19 +1892,30 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
         if not isinstance(item, dict):
             continue
         zone = item.get("zone")
-        if zone not in available_zones:
+        if zone != "garment_reference" and zone not in available_zones:
             zone = zones[min(index, len(zones) - 1)] if zones else ""
         status = (item.get("status") or "").strip()
         if status not in TRIAGE_LABELS:
             status = "needs-review"
-        files.append(
-            {
-                "name": str(item.get("name") or "").strip(),
-                "zone": zone,
-                "status": status,
-                "role": str(item.get("role") or "design").strip() or "design",
-            }
-        )
+        file_meta = {
+            "name": str(item.get("name") or "").strip(),
+            "zone": zone,
+            "status": status,
+            "role": str(item.get("role") or "design").strip() or "design",
+        }
+        placement_key = str(item.get("placement_key") or zone).strip()
+        allowed_keys = {zone}
+        if zone in {"sleeve", "shoulder"}:
+            allowed_keys.update({f"{zone}_left", f"{zone}_right"})
+        elif zone == "hem":
+            allowed_keys.update({"hem_front", "hem_back"})
+        file_meta["placement_key"] = placement_key if placement_key in allowed_keys else zone
+        try:
+            file_index = int(item.get("file_index", index))
+        except (TypeError, ValueError):
+            file_index = index
+        file_meta["file_index"] = file_index if file_index >= 0 else index
+        files.append(file_meta)
 
     triage_status = (artwork_payload.get("triage_status") or "").strip()
     if triage_status not in TRIAGE_LABELS:
@@ -1957,7 +1999,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             "sizes_note": str(order_payload.get("sizes_note") or "").strip(),
             "size_breakdown": size_breakdown,
             "delivery_method": str(order_payload.get("delivery_method") or "").strip(),
-            "gift": gift_enabled,
+            "gift": normalize_gift_extras(gift_payload) if isinstance(gift_payload, dict) and any(key in gift_payload for key in ("box", "delivery", "certificate", "wrapping")) else gift_enabled,
             "gift_text": gift_text,
         },
         "contact": {
@@ -1972,6 +2014,10 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             "print_price": _coerce_price(pricing_payload.get("print_price")),
             "zones_price": _coerce_price(pricing_payload.get("zones_price")),
             "gift_price": _coerce_price(pricing_payload.get("gift_price")),
+            "gift_box_price": _coerce_price(pricing_payload.get("gift_box_price")),
+            "delivery_price": _coerce_price(pricing_payload.get("delivery_price")),
+            "certificate_price": _coerce_price(pricing_payload.get("certificate_price")),
+            "creation_base_total": _coerce_price(pricing_payload.get("creation_base_total")),
             "discount_percent": _coerce_price(pricing_payload.get("discount_percent")),
             "discount_amount": _coerce_price(pricing_payload.get("discount_amount")),
             "b2b_discount_per_unit": _coerce_price(pricing_payload.get("b2b_discount_per_unit")),

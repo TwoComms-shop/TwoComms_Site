@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
+  <defs>
+    <linearGradient id="cloth" x1="27" y1="24" x2="67" y2="82" gradientUnits="userSpaceOnUse"><stop stop-color="#F3F0E6"/><stop offset="1" stop-color="#B9C6D0"/></linearGradient>
+    <linearGradient id="sleeve" x1="14" y1="31" x2="81" y2="53" gradientUnits="userSpaceOnUse"><stop stop-color="#CED8DD"/><stop offset="1" stop-color="#8B9EAE"/></linearGradient>
+  </defs>
+  <ellipse cx="48" cy="88" rx="27" ry="3" fill="#000" opacity=".18"/>
+  <path d="m34 20-9 4-13 10 8 17 12-5v37h32V46l12 5 8-17-13-10-9-4c-3 9-25 9-28 0Z" fill="url(#sleeve)" stroke="#FFF2D5" stroke-width="1.7" stroke-linejoin="round"/>
+  <path d="m34 20-3 23 1 40h32l1-40-3-23c-3 9-25 9-28 0Z" fill="url(#cloth)"/>
+  <path d="M34 20c2 11 26 11 28 0" stroke="#5E7386" stroke-width="5"/>
+  <path d="M34 20c2 8 26 8 28 0M32 45v38h32V45" stroke="#FFF2D5" stroke-width="1.7" stroke-linejoin="round"/>
+  <path d="m16 42 5 10m54-1 5-10M35 79h26" stroke="#748A9C" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M38 37v33" stroke="#FFF" stroke-opacity=".35" stroke-width="2" stroke-linecap="round"/>
+  <path d="m58 35 2 3-2 3-2-3Z" fill="#D1A45E"/><path d="M61 75v5" stroke="#C99C55" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

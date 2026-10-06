@@ -301,6 +301,8 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
 
     from orders.services.delivery_payment import delivery_payment_snapshot
     delivery_policy = amounts.get('delivery_payment_snapshot') or delivery_payment_snapshot(order)
+    if delivery_policy.get('mode') == 'customer_paid_included' and delivery_policy['valid'] is True:
+        merchandise_payable = delivery_policy['merchandise_total']
     delivery_prepaid = delivery_policy['delivery_prepaid']
     automatic_fulfillment_blocked = bool(automatic_fulfillment_blocked or delivery_policy['requires_manual'])
     if payment_status == "paid":
@@ -330,6 +332,7 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
     manual_payment_valid = bool(
         isinstance(manual_payment, dict)
         and not instagram_authority
+        and delivery_policy.get('authority') != 'web_custom_print'
         and manual_payment.get("payer_type") in {"Sender", "Recipient"}
         and manual_payment.get("payment_method") in {"Cash", "NonCash"}
         and type(manual_payment.get("cod_enabled")) is bool

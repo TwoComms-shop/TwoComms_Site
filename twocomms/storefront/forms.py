@@ -14,7 +14,7 @@ from dtf.utils import (
     normalize_phone,
     validate_uploaded_file,
 )
-from storefront.custom_print_config import build_placement_specs, normalize_custom_print_snapshot
+from storefront.custom_print_config import PRODUCT_MATRIX, ZONE_LABELS, build_placement_specs, normalize_custom_print_snapshot
 
 from .models import (
     BlogCategory,
@@ -124,6 +124,10 @@ class CustomPrintLeadForm(forms.Form):
     def __init__(self, *args, require_artwork_files=None, **kwargs):
         self.require_artwork_files = require_artwork_files
         super().__init__(*args, **kwargs)
+        product_type = self.data.get("product_type") if self.is_bound else None
+        allowed_zones = (PRODUCT_MATRIX.get(product_type) or {}).get("zones")
+        if allowed_zones:
+            self.fields["placements"].choices = [(zone, str(ZONE_LABELS.get(zone, zone))) for zone in allowed_zones]
 
     @staticmethod
     def _spec_requires_artwork_file(spec):
@@ -270,6 +274,21 @@ class CustomPrintLeadForm(forms.Form):
             self.add_error("config_draft_json", exc)
             config_draft = {}
         normalized_snapshot = normalize_custom_print_snapshot(config_draft) if config_draft else {}
+        if normalized_snapshot:
+            normalized_gift = (normalized_snapshot.get("order") or {}).get("gift")
+            # Old cached configurators may still submit the retired packaging
+            # addon. New requests cannot purchase it or retain its former fee.
+            if not isinstance(normalized_gift, dict) or "box" not in normalized_gift:
+                legacy_fee = (normalized_snapshot.get("pricing") or {}).get("gift_price") or 0
+                if legacy_fee > 0:
+                    for price_data in (normalized_snapshot["pricing"], pricing_snapshot):
+                        if isinstance(price_data, dict):
+                            price_data["gift_price"] = 0
+                            try:
+                                if price_data.get("final_total") is not None:
+                                    price_data["final_total"] = max(0, float(price_data["final_total"]) - legacy_fee)
+                            except (TypeError, ValueError):
+                                price_data["final_total"] = None
         submission_type = (
             (config_draft.get("submission_type") if isinstance(config_draft, dict) else "")
             or ""
@@ -387,6 +406,7 @@ class CustomPrintLeadForm(forms.Form):
         *,
         source: str = "main_custom_print",
         moderation_status: str | None = None,
+        saved_uploads: list | None = None,
     ) -> CustomPrintLead:
         create_kwargs = {
             "service_kind": self.cleaned_data["service_kind"],
@@ -473,15 +493,22 @@ class CustomPrintLeadForm(forms.Form):
             matched_spec = file_meta_map.get(sort_order) or file_spec_map.get(sort_order)
             if matched_spec is None and sort_order < len(placement_specs):
                 matched_spec = placement_specs[sort_order]
-            CustomPrintLeadAttachment.objects.create(
-                lead=lead,
-                file=uploaded_file,
-                placement_zone=(matched_spec or {}).get("placement_key") or (matched_spec or {}).get("zone", ""),
-                attachment_role=(matched_spec or {}).get("attachment_role")
+            attachment_values = {
+                "lead": lead,
+                "file": uploaded_file,
+                "placement_zone": (matched_spec or {}).get("placement_key") or (matched_spec or {}).get("zone", ""),
+                "attachment_role": (matched_spec or {}).get("attachment_role")
                 or (matched_spec or {}).get("role")
                 or CustomPrintLeadAttachment.AttachmentRole.DESIGN,
-                sort_order=sort_order,
-            )
+                "sort_order": sort_order,
+            }
+            if saved_uploads is None:
+                CustomPrintLeadAttachment.objects.create(**attachment_values)
+                continue
+            attachment = CustomPrintLeadAttachment(**attachment_values)
+            attachment.file.save(uploaded_file.name, uploaded_file, save=False)
+            saved_uploads.append((attachment.file.storage, attachment.file.name))
+            attachment.save()
         return lead
 
 

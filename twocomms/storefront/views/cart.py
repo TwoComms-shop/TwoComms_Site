@@ -45,12 +45,13 @@ from storefront.custom_print_config import (
     FABRIC_LABELS,
     FIT_LABELS,
     PRODUCT_LABELS,
+    ORDER_PURPOSE_LABELS,
     SERVICE_LABELS,
     SESSION_CUSTOM_CART_KEY,
     TRIAGE_LABELS,
     ZONE_LABELS,
 )
-from storefront.custom_print_notifications import notify_custom_print_moderation_request
+from storefront.custom_print_notifications import notify_custom_print_creation, notify_custom_print_moderation_request
 from storefront.services.size_guides import normalize_requested_size
 from storefront.services.brigade_commerce import calculate_brigade_cart_pricing
 from storefront.services.garment_bundle_presentation import garment_bundle_text
@@ -544,10 +545,14 @@ def _promote_legacy_custom_draft(lead, session_item: dict | None) -> tuple[str, 
     if isinstance(session_item, dict):
         session_item['moderation_status'] = CustomPrintModerationStatus.AWAITING_REVIEW
 
-    try:
-        notify_custom_print_moderation_request(lead)
-    except Exception:
-        cart_logger.exception('notify_custom_print_moderation_request failed for legacy draft lead %s', lead.pk)
+    # Group members are notified together after the cart collector promotes all
+    # siblings, so opening a cart does not send one summary per garment.
+    creation = (lead.config_draft_json or {}).get('creation') or {}
+    if not creation.get('id'):
+        try:
+            notify_custom_print_moderation_request(lead)
+        except Exception:
+            cart_logger.exception('notify_custom_print_moderation_request failed for legacy draft lead %s', lead.pk)
 
     return CustomPrintModerationStatus.AWAITING_REVIEW, True
 
@@ -624,6 +629,11 @@ def _build_custom_cart_entry_payload(key: str, item: dict, lead=None) -> tuple[d
     service_kind = item.get('service_kind') or artwork_payload.get('service_kind') or getattr(lead, 'service_kind', '') or ''
     file_triage_status = item.get('file_triage_status') or artwork_payload.get('triage_status') or getattr(lead, 'file_triage_status', '') or ''
     placement_note = (item.get('placement_note') or print_payload.get('placement_note') or getattr(lead, 'placement_note', '') or '').strip()
+    creation = snapshot.get('creation') or item.get('creation') or {}
+    creation = creation if isinstance(creation, dict) else {}
+    gift_extras = creation.get('gift') or (order_payload.get('gift') if isinstance(order_payload.get('gift'), dict) and 'box' in order_payload['gift'] else {})
+    gift_charge_owner = bool(creation.get('gift_owner_lead_id') and creation['gift_owner_lead_id'] == (getattr(lead, 'pk', None) or item.get('lead_id')))
+    order_purpose = snapshot.get('order_purpose') or item.get('order_purpose') or ('organization' if mode_value == 'brand' else 'personal')
     add_on_values = _unique_strings(item.get('add_ons') or print_payload.get('add_ons') or [])
     add_on_labels = _unique_strings(item.get('add_on_labels') or [ADDON_LABELS.get(value, value) for value in add_on_values])
 
@@ -642,6 +652,11 @@ def _build_custom_cart_entry_payload(key: str, item: dict, lead=None) -> tuple[d
         'size_breakdown_display': size_breakdown_display,
         'gift_enabled': gift_enabled,
         'gift_text': gift_text,
+        'creation': creation,
+        'gift_extras': gift_extras,
+        'gift_charge_owner': gift_charge_owner,
+        'order_purpose': order_purpose,
+        'order_purpose_label': str(ORDER_PURPOSE_LABELS.get(order_purpose, ORDER_PURPOSE_LABELS['personal'])),
         'fit': fit_value,
         'fit_label': FIT_LABELS.get(fit_value, fit_value),
         'fabric': fabric_value,
@@ -675,6 +690,10 @@ def _build_custom_cart_entry_payload(key: str, item: dict, lead=None) -> tuple[d
     }
 
     session_snapshot = {
+        'creation': creation,
+        'gift_extras': gift_extras,
+        'gift_charge_owner': gift_charge_owner,
+        'order_purpose': order_purpose,
         'lead_id': payload['lead_id'],
         'lead_number': payload['lead_number'],
         'label': payload['label'],
@@ -733,6 +752,7 @@ def _collect_custom_cart_state(request) -> dict:
     approved_custom_total = Decimal('0')
     custom_items_qty = 0
     custom_items = []
+    promoted_group_ids = set()
 
     for key, item in list(custom_cart_raw.items()):
         if not isinstance(item, dict):
@@ -745,7 +765,12 @@ def _collect_custom_cart_state(request) -> dict:
             rejected_keys.append(key)
             continue
 
+        was_draft = lead is not None and lead.moderation_status == CustomPrintModerationStatus.DRAFT
         payload, session_snapshot = _build_custom_cart_entry_payload(key, item, lead=lead)
+        if was_draft and lead.moderation_status == CustomPrintModerationStatus.AWAITING_REVIEW:
+            creation_id = ((lead.config_draft_json or {}).get('creation') or {}).get('id')
+            if creation_id:
+                promoted_group_ids.add(creation_id)
         if item != {**item, **session_snapshot}:
             merged = dict(item)
             merged.update(session_snapshot)
@@ -777,6 +802,16 @@ def _collect_custom_cart_state(request) -> dict:
     if session_changed:
         request.session[SESSION_CUSTOM_CART_KEY] = custom_cart_raw
         request.session.modified = True
+
+    for creation_id in promoted_group_ids:
+        group = [lead for lead in leads_map.values()
+                 if ((lead.config_draft_json or {}).get('creation') or {}).get('id') == creation_id
+                 and lead.moderation_status != CustomPrintModerationStatus.REJECTED]
+        group.sort(key=lambda lead: ((lead.config_draft_json or {}).get('creation') or {}).get('item_index', 0))
+        try:
+            notify_custom_print_creation(group, submission_type='cart')
+        except Exception:
+            cart_logger.exception('Grouped custom-print draft promotion notification failed')
 
     return {
         'custom_items': custom_items,

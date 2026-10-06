@@ -23,6 +23,70 @@ LABELS = {
 }
 ZERO = Decimal("0.00")
 MAX_AMOUNT = Decimal("9999999999.99")
+CUSTOM_PRINT_INCLUDED_SCHEMA = "custom-print-delivery-included.v1"
+
+
+def build_custom_print_delivery_contract(*, gross_total, discount_amount, creation_data, order_id=None):
+    """Freeze an agreed web charge included in the total, without claiming payment."""
+    groups = creation_data.get("groups", []) if isinstance(creation_data, dict) else []
+    if not isinstance(groups, list) or len(groups) > 100 or any(not isinstance(group, dict) for group in groups):
+        raise DeliveryPaymentError("custom_print_delivery_binding_invalid")
+    owners = []
+    for group in groups:
+        gift = group.get("gift") or {}
+        if not isinstance(gift, dict) or not isinstance(gift.get("delivery", {}), dict):
+            raise DeliveryPaymentError("custom_print_delivery_binding_invalid")
+        delivery = gift.get("delivery") or {}
+        if not group.get("applied") or not delivery.get("enabled"):
+            continue
+        owner_id = group.get("owner_lead_id")
+        if (not _id(owner_id) or owner_id not in group.get("included_lead_ids", [])
+                or group.get("owner_status") != "approved" or group.get("source") not in {"custom_print_cart", "main_custom_print"}
+                or delivery.get("method") not in {"branch", "courier"}):
+            raise DeliveryPaymentError("custom_print_delivery_binding_invalid")
+        fee = _money(delivery.get("price"), positive=True)
+        if fee >= _money(group.get("owner_price"), positive=True):
+            raise DeliveryPaymentError("custom_print_delivery_amount_invalid")
+        owners.append({"creation_id": str(group.get("id") or ""), "lead_id": owner_id,
+                       "method": delivery["method"], "amount": f"{fee:.2f}"})
+    if not owners:
+        return None
+    if len({owner["method"] for owner in owners}) > 1 or len({owner["lead_id"] for owner in owners}) != len(owners):
+        raise DeliveryPaymentError("custom_print_delivery_conflict")
+    gross, discount = _money(gross_total, positive=True), _money(discount_amount)
+    fee = sum((_money(owner["amount"]) for owner in owners), ZERO)
+    if discount >= gross or fee >= gross - discount:
+        raise DeliveryPaymentError("custom_print_delivery_amount_invalid")
+    binding = hashlib.sha256(json.dumps(creation_data, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+    return {"schema": CUSTOM_PRINT_INCLUDED_SCHEMA, "authority": "web_custom_print", "mode": "customer_paid_included",
+            "payer_type": "Sender", "order_id": order_id, "owners": owners, "creation_digest": binding,
+            "gross_total": f"{gross:.2f}", "discount_amount": f"{discount:.2f}", "delivery_amount": f"{fee:.2f}",
+            "payable_total": f"{gross - discount:.2f}", "merchandise_total": f"{gross - discount - fee:.2f}"}
+
+
+def _custom_print_included_snapshot(order, payload, contract, gross, discount):
+    try:
+        normalized = build_custom_print_delivery_contract(gross_total=gross, discount_amount=discount,
+                        creation_data=payload.get("custom_print_creation"), order_id=getattr(order, "pk", None))
+        if normalized is None or normalized != contract:
+            raise DeliveryPaymentError("custom_print_delivery_changed")
+        lead_ids = payload.get("custom_print_lead_ids") or []
+        if any(owner["lead_id"] not in lead_ids for owner in normalized["owners"]):
+            raise DeliveryPaymentError("custom_print_delivery_binding_invalid")
+        fee = _money(normalized["delivery_amount"])
+        funded = getattr(order, "payment_status", "") == "paid"
+        paid = payload.get("paid_amount", payload.get("paid_value"))
+        if funded and paid is not None and _money(paid) < _money(normalized["payable_total"]):
+            funded = False
+        courier = any(owner["method"] == "courier" for owner in normalized["owners"])
+        return {"schema": CUSTOM_PRINT_INCLUDED_SCHEMA, "mode": "customer_paid_included", "payer_type": "Sender",
+                "label": "Доставку включено в суму замовлення" + (" та оплачено" if funded else "; ще не оплачено"),
+                "valid": True, "source_locked": False, "custom_print_source_locked": True, "authority": "web_custom_print", "reason": "courier_manual_required" if courier else "" if funded else "delivery_not_funded",
+                "requires_manual": courier or not funded, "delivery_prepaid": funded, "requested": True, "funded": funded,
+                "merchandise_total": _money(normalized["merchandise_total"]), "delivery_amount": fee,
+                "customer_charge_amount": fee, "payable_total": _money(normalized["payable_total"]), "contract": normalized}
+    except (DeliveryPaymentError, TypeError, ValueError, KeyError, AttributeError) as exc:
+        return _snapshot(gross - discount, valid=False, reason=getattr(exc, "reason", "custom_print_delivery_invalid"), source="web_custom_print")
 
 
 class DeliveryPaymentError(ValueError):
@@ -223,6 +287,8 @@ def delivery_payment_snapshot(order, *, item_rows=None):
         return _snapshot(merchandise)
     source = "delivery_payment" if "delivery_payment" in payload else "legacy_instagram_review"
     raw_contract = payload.get("delivery_payment")
+    if isinstance(raw_contract, dict) and raw_contract.get("schema") == CUSTOM_PRINT_INCLUDED_SCHEMA:
+        return _custom_print_included_snapshot(order, payload, raw_contract, gross, discount)
     lock_hint = {"authority": "payment_review"} if isinstance(raw_contract, dict) and raw_contract.get("authority") == "payment_review" else None
     try:
         if item_rows is not None:

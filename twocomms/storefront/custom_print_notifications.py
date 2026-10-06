@@ -172,6 +172,11 @@ def _build_attachment_caption(
     ]
     if file_name:
         lines.append(f"📎 <code>{escape(file_name)}</code>")
+    draft = getattr(lead, "config_draft_json", None) or {}
+    creation = draft.get("creation") if isinstance(draft, dict) else None
+    if isinstance(creation, dict):
+        product = str(PRODUCT_LABELS.get(getattr(lead, "product_type", ""), "Виріб"))
+        lines.insert(1, f"📦 Позиція {creation.get('item_index', 0) + 1}/{creation.get('item_count', 1)} · {escape(product)}")
     if transparency_note:
         lines.append(f"⚠️ <i>{escape(transparency_note)}</i>")
     return "\n".join(lines)
@@ -1064,6 +1069,110 @@ def _send_attachments(notifier: TelegramNotifier, lead) -> bool:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _escaped_short(value, limit):
+    """Bound HTML text without cutting an escaped entity or an HTML tag."""
+    result = ""
+    for char in str(value or ""):
+        encoded = escape(char)
+        if len(result) + len(encoded) > limit:
+            return result + "…"
+        result += encoded
+    return result
+
+
+def _build_creation_message(leads, *, submission_type="lead", creation=None):
+    snapshots = [lead.config_draft_json for lead in leads] if leads else [item["snapshot"] for item in creation.items]
+    first = snapshots[0]
+    meta = first.get("creation") or {}
+    contact = first.get("contact") or {}
+    gift = meta.get("gift") or (creation.gift if creation else {})
+    purpose = normalize_order_purpose(first.get("order_purpose"), mode=first.get("mode"))
+    title = {"lead": "Нова заявка на кастомний принт", "cart": "Кастом-кошик: потрібна модерація", "safe_exit": "Клієнт залишив конфігуратор"}.get(submission_type, "Кастомний принт")
+    parts = [f"📦 <b>{title}</b>", f"<b>Призначення:</b> {escape(str(ORDER_PURPOSE_LABELS[purpose]))}",
+             f"👤 {_escaped_short(contact.get('name'), 50)} · {_escaped_short(contact.get('channel'), 15)} · {_escaped_short(contact.get('value'), 80)}",
+             f"Позицій: {len(snapshots)} · Виробів: {sum((snapshot.get('order') or {}).get('quantity') or 1 for snapshot in snapshots)}",
+             "Фірмовий зіп-пакет: включено без доплати для кожного виробу", "🎁 Подарункові опції:"]
+    box, delivery, certificate = (gift.get(key) or {} for key in ("box", "delivery", "certificate"))
+    wrapping = gift.get("wrapping") or {}
+    if box.get("enabled"):
+        parts.append("Коробка: персоналізований друк усередині · ціну узгодити" if box.get("estimate_required") else f"Коробка: +{box.get('price')} грн · виріб усередині у фірмовому зіп-пакеті")
+        if box.get("content_type") == "image":
+            parts.append(f"Зображення коробки: {_escaped_short(box.get('image_name'), 80)}" + (" · потрібно завантажити повторно" if box.get("needs_reupload") else " · оригінал окремим документом"))
+        else:
+            parts.append(f"Текст коробки: {_escaped_short(box.get('text'), 100)}")
+    else:
+        parts.append("Персоналізована коробка: ні")
+    if wrapping.get("enabled"):
+        paper = {"ivory": "айворі", "kraft": "крафт", "black": "чорний"}.get(wrapping.get("paper"), wrapping.get("paper"))
+        parts.append(f"Святковий папір: {paper} · без доплати · навколо виробу у зіп-пакеті" + (" всередині коробки" if box.get("enabled") else ""))
+    if delivery.get("enabled"):
+        method = "у відділення" if delivery.get("method") == "branch" else "курʼєром (адресу та ТТН узгодити вручну)"
+        parts.append(f"Доставка {method}: +{delivery.get('price')} грн · запит на включення в оплату, ще не оплачено")
+    if certificate.get("enabled"):
+        parts.append(f"Сертифікат −{certificate.get('discount_percent')}% на будь-яке майбутнє замовлення, включно з кастомним: +{certificate.get('price')} грн · виготовити, не виданий автоматично")
+        parts.append("Листівка: покласти зверху у коробці" if certificate.get("placement") == "box_top" else "Листівка: покласти всередину зіп-пакета")
+        if certificate.get("message_mode") == "write":
+            parts.append(f"Написати привітання вручну без доплати:\n<blockquote>{escape(certificate.get('message') or '')}</blockquote>")
+        else:
+            parts.append("Зворот листівки залишити порожнім у лінійку — клієнт напише привітання сам.")
+    full_card_message = certificate.get("enabled") and certificate.get("message_mode") == "write" and len(snapshots) > 5
+    if full_card_message:
+        parts.append("Повні налаштування й брифи кожної позиції — за кнопками заявок.")
+    for index, snapshot in enumerate(snapshots):
+        product = snapshot.get("product") or {}
+        order = snapshot.get("order") or {}
+        artwork = snapshot.get("artwork") or {}
+        pricing = getattr(leads[index], "pricing_snapshot_json", {}) if leads else snapshot.get("pricing") or {}
+        number = leads[index].lead_number if leads else "чернетка"
+        sizes = order.get("sizes_note") or ", ".join(f"{size}×{qty}" for size, qty in (order.get("size_breakdown") or {}).items() if qty) or "уточнити"
+        value = pricing.get("final_total")
+        total = f"{value} грн" if value is not None else "потрібен прорахунок"
+        parts.extend(["", f"<b>{index + 1}. {_escaped_short(PRODUCT_LABELS.get(product.get('type'), product.get('type')), 30)} ×{order.get('quantity') or 1}</b> · <code>{_escaped_short(number, 25)}</code>",
+                      _escaped_short(_snapshot_product_label(snapshot), 20 if full_card_message else 65),
+                      f"Розміри: {_escaped_short(sizes, 40)} · {_escaped_short(SERVICE_LABELS.get(artwork.get('service_kind'), 'уточнити'), 30)}",
+                      f"Друк: {_escaped_short(_snapshot_placements_text(snapshot), 70)}",
+                      f"Сума позиції: {_escaped_short(total, 25)}"])
+        brief = (snapshot.get("notes") or {}).get("brief")
+        if brief and not full_card_message:
+            parts.append(f"Бриф: {_escaped_short(brief, 30 if len(snapshots) > 5 else 100)}")
+    values = [(snapshot.get("pricing") or {}).get("final_total") for snapshot in snapshots]
+    if all(value is not None for value in values):
+        from decimal import Decimal
+        total = sum(Decimal(str(value)) for value in values)
+        parts.append(f"\n<b>Разом: {total} грн</b>")
+    if submission_type == "cart":
+        parts.append("Погоджуйте ціну кожної позиції окремо через кнопки нижче.")
+    return "\n".join(parts)
+
+
+def notify_custom_print_creation(leads, *, submission_type="lead", creation=None):
+    """One summary per creation; original documents remain item-specific."""
+    try:
+        if leads and not _claim_notification_slot(leads[0], scope=f"creation_{submission_type}"):
+            return False
+        notifier = _build_notifier()
+        if not notifier.is_configured():
+            return False
+        keyboard = []
+        if leads:
+            keyboard.extend(_info_reply_markup_full(leads[0])["inline_keyboard"][:1])
+        for index, lead in enumerate(leads):
+            row = [{"text": f"{index + 1}. {lead.lead_number}", "url": _build_admin_panel_link(lead)}]
+            if submission_type == "cart" and lead.moderation_status != "approved":
+                row.extend([{"text": f"✅ {index + 1}", "url": _build_moderation_action_url(lead, "approve")},
+                            {"text": f"❌ {index + 1}", "url": _build_moderation_action_url(lead, "reject")}])
+            keyboard.append(row)
+        message = _build_creation_message(leads, submission_type=submission_type, creation=creation)
+        if not notifier.send_admin_message(message, parse_mode="HTML", reply_markup={"inline_keyboard": keyboard} if keyboard else None):
+            return False
+        for lead in leads:
+            _send_attachments(notifier, lead)
+        return True
+    except Exception:
+        logger.exception("Custom-print creation notification failed")
+        return False
 
 
 def notify_new_custom_print_lead(lead) -> bool:

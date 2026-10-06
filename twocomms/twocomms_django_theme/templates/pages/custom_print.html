@@ -42,7 +42,9 @@
   {{ block.super }}
   <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260729-color-fallback-v1">
   <link rel="stylesheet" href="{% static 'css/custom-print-mobile-hero.css' %}?v=20261002-mobile-hero-v2">
-  <link rel="stylesheet" href="{% static 'css/custom-print-purpose.css' %}?v=20261007-gift-card-v2">
+  <link rel="stylesheet" href="{% static 'css/custom-print-purpose.css' %}?v=20261007-custom-creation-v3">
+  <link rel="stylesheet" href="{% static 'css/custom-print-collection.css' %}?v=20261007-custom-creation-v3">
+  <link rel="stylesheet" href="{% static 'css/custom-print-gift-options.css' %}?v=20261007-custom-creation-v3">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -221,9 +223,9 @@
               <picture data-preview-picture>
                 <source data-preview-avif type="image/avif">
                 <source data-preview-webp type="image/webp">
-                <img data-preview-garment alt="" width="1200" height="1400" decoding="async">
+                <img data-preview-garment alt="" width="96" height="96" decoding="async">
               </picture>
-              <img data-preview-lacing alt="" width="1200" height="1400" hidden>
+              <img data-preview-lacing alt="" width="96" height="96" hidden>
               <div class="cp-png-preview-zones" data-preview-zones></div>
             </div>
           </div>
@@ -263,6 +265,11 @@
         <!-- ═══ WATERFALL: вертикальний список кроків ═══ -->
         <div class="cp-waterfall" data-waterfall>
           <div class="cp-step-viewport" data-step-viewport>
+          <div class="cp-collection-strip" data-collection-strip hidden>
+            <span data-collection-strip-label></span>
+            <button type="button" data-collection-show>{% trans 'Переглянути' %}</button>
+            <button type="button" data-collection-cancel hidden>{% trans 'Скасувати зміни' %}</button>
+          </div>
           <div class="cp-studio-step" data-studio-step="format">
           <!-- STEP 1: Mode (B2C / B2B) -->
           <section class="cp-step cp-step--mode" data-step="mode" id="cp-step-mode">
@@ -376,19 +383,37 @@
               <button type="button" class="cp-step-summary-edit" data-step-edit="product">{% trans 'Змінити' %}</button>
             </div>
             <div class="cp-step-body">
-              <div class="cp-step-head">
+              <div class="cp-step-head" data-product-choice-head>
                 <span class="cp-card-eyebrow">{% trans '2. Виріб' %}</span>
-                <h2>{% trans 'Обери основу' %}</h2>
-                <p>{% trans 'На чому буде твій дизайн?' %}</p>
+                <h2>{% trans 'Оберіть річ' %}</h2>
+                <p>{% trans 'Оберіть першу річ. Інші можна додати після її налаштування.' %}</p>
               </div>
               <div class="cp-product-grid" data-product-list>
                 {% for value, product in custom_print_config.products.items %}
+                  {% if value == 'customer_garment' %}
+                  <button type="button" class="cp-product-card cp-product-card--multiple" data-choice-value="multiple">
+                    <span class="cp-product-visual" aria-hidden="true"><svg viewBox="0 0 96 96" fill="none"><path d="m31 15-16 9 8 17 8-4v30h34V37l8 4 8-17-16-9c-5 10-29 10-34 0Z" fill="#849aa8" stroke="#f1e6cf" stroke-width="2"/><path d="m24 30-15 9 7 17 8-4v31h35V53l9 4 7-18-16-9c-5 10-30 10-35 0Z" fill="#d4d9d7" stroke="#f1e6cf" stroke-width="2"/><circle cx="73" cy="73" r="15" fill="#211e26" stroke="#dfc184" stroke-width="2"/><path d="M73 66v14m-7-7h14" stroke="#dfc184" stroke-width="2" stroke-linecap="round"/></svg></span>
+                    <span class="cp-product-copy"><strong>{% trans 'Кілька речей' %}</strong><span>{% trans 'Різні вироби в одній добірці' %}</span></span><span class="cp-product-arrow" aria-hidden="true">↗</span>
+                  </button>
+                  {% endif %}
                   <button type="button" class="cp-product-card" data-choice-value="{{ value }}">
-                    <small>{{ product.eyebrow }}</small>
-                    <strong>{{ product.label }}</strong>
-                    <span>{{ product.summary }}</span>
+                    <span class="cp-product-visual" aria-hidden="true">
+                      {% if value == 'tshirt' %}<img src="{% static 'img/configurator/choice/tshirt.svg' %}" alt="" width="96" height="96">
+                      {% elif value == 'hoodie' %}<img src="{% static 'img/configurator/choice/hoodie.svg' %}" alt="" width="96" height="96">
+                      {% elif value == 'longsleeve' %}<img src="{% static 'img/configurator/choice/longsleeve.svg' %}" alt="" width="96" height="96">
+                      {% else %}<svg viewBox="0 0 100 100" fill="none"><path d="m33 20-20 12 10 21 10-5v34h34V48l10 5 10-21-20-12c-4 12-30 12-34 0Z" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><circle cx="74" cy="73" r="16" fill="#201d25" stroke="currentColor" stroke-width="2"/><path d="M74 65v16m-8-8h16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>{% endif %}
+                    </span>
+                    <span class="cp-product-copy"><strong>{{ product.label }}</strong><span>{% if value == 'tshirt' %}{% trans 'Легка база на щодень' %}{% elif value == 'hoodie' %}{% trans 'Тепло, комфорт і ваш стиль' %}{% elif value == 'longsleeve' %}{% trans 'Легка річ із довгим рукавом' %}{% else %}{% trans 'Друк на вашій речі' %}{% endif %}</span></span>
+                    <span class="cp-product-arrow" aria-hidden="true">↗</span>
                   </button>
                 {% endfor %}
+              </div>
+              <div class="cp-multi-intro" data-multi-intro hidden>
+                <span class="cp-card-eyebrow">{% trans 'Одна ідея. Кілька речей.' %}</span><h2>{% trans 'Створіть свою добірку' %}</h2>
+                <p>{% trans 'Налаштовуйте речі по одній: дизайн, кількість і розміри — окремо для кожної. Наприклад, дві футболки та одне худі.' %}</p>
+                <div class="cp-multi-list" data-multi-list></div>
+                <button type="button" class="cp-link cp-link--primary cp-collection-primary" data-multi-add>{% trans '+ Додати першу річ' %}</button>
+                <button type="button" class="cp-secondary-button" data-multi-return hidden>{% trans 'До збереженої добірки' %}</button>
               </div>
             </div>
           </section>
@@ -686,6 +711,7 @@
               <button type="button" class="cp-step-summary-edit" data-step-edit="quantity">{% trans 'Змінити' %}</button>
             </div>
             <div class="cp-step-body">
+              <div data-quantity-editor>
               <div class="cp-step-head">
                 <span class="cp-card-eyebrow">{% trans '6. Кількість і розміри' %}</span>
                 <h2>{% trans 'Скільки речей потрібно?' %}</h2>
@@ -721,7 +747,18 @@
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="artwork">{% trans 'Назад' %}</button>
-                <button type="button" class="cp-link cp-link--primary" data-step-next="gift">{% trans 'Далі' %}</button>
+                <button type="button" class="cp-link cp-link--primary" data-step-next="gift">{% trans 'Зберегти виріб' %}</button>
+              </div>
+              </div>
+              <div class="cp-collection-panel" data-collection-review hidden>
+                <div class="cp-collection-heading"><span class="cp-card-eyebrow">{% trans 'Усе разом' %}</span><h2>{% trans 'Ваша добірка' %}</h2><p>{% trans 'Додайте ще одну річ або переходьте до оформлення.' %}</p></div>
+                <div class="cp-collection-list" data-collection-list></div>
+                <div class="cp-collection-summary"><span data-collection-count></span><strong data-collection-total></strong></div>
+                <p data-collection-file-note hidden>{% trans 'Після повернення до чернетки файли потрібно додати повторно. Налаштування речей збережено.' %}</p>
+                <div class="cp-collection-footer">
+                  <button type="button" class="cp-secondary-button cp-collection-secondary" data-collection-add>{% trans '+ Додати ще річ' %}</button>
+                  <button type="button" class="cp-link cp-link--primary cp-collection-primary" data-collection-continue>{% trans 'Продовжити' %} →</button>
+                </div>
               </div>
             </div>
           </section>
@@ -741,35 +778,63 @@
             </div>
             <div class="cp-step-body">
               <div class="cp-step-head">
-                <span class="cp-card-eyebrow">{% trans '7. Подарунок' %}</span>
-                <h2>{% trans 'Потрібна подарункова упаковка?' %}</h2>
-                <p>{% trans 'Додамо крафт-пакування, листівку й приберемо цінники.' %}</p>
+                <span class="cp-card-eyebrow">{% trans '7. Особливі деталі' %}</span>
+                <h2>{% trans 'Додайте турботи' %}</h2>
+                <p>{% trans 'Обирайте лише те, що потрібно. Доповнення — для всієї добірки.' %}</p>
               </div>
-
-              <p class="cp-gift-intent-note" data-gift-intent-note data-disabled-text="{% trans 'Створюємо на подарунок. Додаткову подарункову упаковку вимкнено.' %}" hidden>{% trans 'Створюємо на подарунок. Упаковку вже додано до розрахунку; ви можете вимкнути її нижче.' %}</p>
-              <button type="button" class="cp-addon-card cp-addon-card--gift" data-gift-toggle data-price-modifier="{{ custom_print_config.gift_service.price }}" aria-pressed="false">
-                <span class="cp-addon-card-icon" aria-hidden="true">
-                  <svg viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect x="6" y="20" width="44" height="30" rx="3" stroke="currentColor" stroke-width="2"/>
-                    <path d="M6 28h44" stroke="currentColor" stroke-width="2"/>
-                    <path d="M28 20v30" stroke="currentColor" stroke-width="2"/>
-                    <path d="M28 20c-6 0-10-3-10-7s4-5 7-3 3 6 3 10z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-                    <path d="M28 20c6 0 10-3 10-7s-4-5-7-3-3 6-3 10z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-                  </svg>
-                </span>
-                <span class="cp-addon-card-body">
-                  <strong>{% trans 'Подарункова упаковка' %}</strong>
-                  <span class="cp-addon-card-badge">+{{ custom_print_config.gift_service.price }} {% trans 'грн' %}</span>
-                  <span class="cp-addon-card-toggle" data-gift-toggle-state>{% trans 'Вимкнено' %}</span>
-                  <span class="cp-addon-card-hint">{{ custom_print_config.gift_service.note }}</span>
-                  <span class="cp-addon-card-bonus">{{ custom_print_config.gift_service.bonus_note }}</span>
-                </span>
-              </button>
-
-              <label class="cp-field" data-gift-text-wrap hidden>
-                <span>{% trans 'Текст побажання (необовʼязково)' %}</span>
-                <textarea rows="3" data-gift-text-input placeholder="{% trans 'Введіть текст для листівки. Або залиште пустим — ми покладемо чисту листівку для вашого почерку.' %}"></textarea>
-              </label>
+              <p class="cp-gift-intent-note" data-gift-intent-note hidden>{% trans 'Створюємо на подарунок. Усі доповнення нижче — за вашим бажанням.' %}</p>
+              <div class="cp-gift-standard"><svg viewBox="0 0 76 82" fill="none" aria-hidden="true"><rect x="12" y="7" width="52" height="68" rx="9" fill="#cbd3d214" stroke="#d0d6d5" stroke-width="1.5"/><path d="M15 17h46m-46 4h46" stroke="#d0d6d5" stroke-width="1.5"/><path d="m28 30-9 5 4 10 5-2v18h20V43l5 2 4-10-9-5c-3 6-17 6-20 0Z" fill="#bdc8ca" stroke="#e8ede7" stroke-width="1.2"/><text x="38" y="69" text-anchor="middle" fill="#f1e6cf" font-size="5.2" font-family="Arial,sans-serif" letter-spacing="1.1">TWOCOMMS</text></svg><span><strong>{% trans 'Фірмовий zip-пакет' %}</strong><small>{% trans 'Включено до кожної речі — без доплати' %}</small></span><span class="cp-gift-standard-check" aria-hidden="true">✓</span></div>
+              <div class="cp-gift-options">
+                <article class="cp-gift-option" data-gift-box-option>
+                  <button type="button" class="cp-gift-option-toggle" data-gift-toggle aria-pressed="false" aria-controls="cp-gift-box-panel">
+                    <span class="cp-gift-option-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="m7 18 17-9 17 9v22H7V18Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m7 18 17 9 17-9M24 27v13M14 22v10" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 8-4 8 4" stroke="currentColor" stroke-width="1.8"/></svg></span>
+                    <span class="cp-gift-option-copy"><strong>{% trans 'Коробка з вашим посланням' %}</strong><small>{% trans 'Текст або зображення всередині' %}</small><span data-gift-box-price>+350 {% trans 'грн' %}</span></span>
+                    <span class="cp-gift-option-switch" aria-hidden="true"></span><span class="visually-hidden" data-gift-toggle-state>{% trans 'Вимкнено' %}</span>
+                  </button>
+                  <div class="cp-gift-option-panel" id="cp-gift-box-panel" data-gift-text-wrap hidden>
+                    <div class="cp-gift-content-switch" aria-label="{% trans 'Що буде всередині коробки' %}"><button type="button" data-gift-content="text" aria-pressed="true">{% trans 'Напис' %}</button><button type="button" data-gift-content="image" aria-pressed="false">{% trans 'Зображення' %}</button></div>
+                    <label class="cp-field" data-gift-message-field><span>{% trans 'Ваше послання' %}</span><textarea rows="3" maxlength="1000" data-gift-text-input placeholder="{% trans 'Наприклад: Твоя ідея. Твоя особлива річ. Зі святом!' %}"></textarea></label>
+                    <div data-gift-image-field hidden><label class="cp-gift-upload"><input type="file" accept="image/png,image/jpeg,image/webp" data-gift-image-input><span>{% trans 'Додати зображення' %}</span><small>PNG, JPG, WEBP · {% trans 'до 20 МБ' %}</small></label><small data-gift-image-name></small></div>
+                    <div class="cp-gift-preview" id="cp-gift-preview" data-gift-preview>
+                      <div class="cp-gift-box-preview is-open" aria-label="{% trans 'Схематичне превʼю подарункової коробки' %}">
+                        <div class="cp-gift-preview-lid"><div class="cp-gift-preview-print"><img data-gift-preview-image alt="{% trans 'Ваше зображення всередині коробки' %}" hidden><strong data-gift-preview-text>{% trans 'Ваше послання' %}</strong></div></div>
+                        <div class="cp-gift-preview-base">
+                          <div class="cp-gift-preview-tissue" data-gift-tissue data-paper="ivory"></div>
+                          <div class="cp-gift-preview-zip"><span class="cp-gift-preview-zip-lock"></span><svg viewBox="0 0 96 68" fill="none" aria-hidden="true"><path d="m28 14-18 9 8 17 10-4v24h40V36l10 4 8-17-18-9c-6 12-34 12-40 0Z" fill="#9babb3" stroke="#dce3de" stroke-width="1.5"/><path d="M37 18c5 7 17 7 22 0M32 55h32" stroke="#c5d0d0" stroke-width="1.5"/></svg></div>
+                          <div class="cp-gift-preview-card" data-gift-box-card hidden><strong>−15%</strong></div>
+                        </div>
+                      </div>
+                      <p class="cp-gift-preview-caption">{% trans 'Під папером — фірмовий zip-пакет з одягом. Картка, якщо оберете, лежатиме зверху. Схематичне превʼю; фінальний макет узгодимо.' %}</p>
+                    </div>
+                  </div>
+                </article>
+                <article class="cp-gift-option" data-gift-wrapping-option>
+                  <button type="button" class="cp-gift-option-toggle" data-gift-wrapping-toggle aria-pressed="false" aria-controls="cp-gift-wrapping-panel"><span class="cp-gift-option-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="m9 10 30 5-3 25-28-6 1-24Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m9 10 13 15 17-10M22 25l-1 12m6-24 3 7m-14 2 5-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span><span class="cp-gift-option-copy"><strong>{% trans 'Святкове оформлення' %}</strong><small>{% trans 'Гарний папір навколо zip-пакета' %}</small><span>{% trans 'Без доплати' %}</span></span><span class="cp-gift-option-switch" aria-hidden="true"></span></button>
+                  <div class="cp-gift-option-panel" id="cp-gift-wrapping-panel" data-gift-wrapping-panel hidden><div class="cp-gift-paper-choices" aria-label="{% trans 'Папір для оформлення' %}"><button type="button" data-gift-paper="ivory" aria-pressed="true"><i class="cp-gift-paper-swatch cp-gift-paper-swatch--ivory" aria-hidden="true"></i>{% trans 'Молочний' %}</button><button type="button" data-gift-paper="kraft" aria-pressed="false"><i class="cp-gift-paper-swatch cp-gift-paper-swatch--kraft" aria-hidden="true"></i>{% trans 'Крафтовий' %}</button><button type="button" data-gift-paper="black" aria-pressed="false"><i class="cp-gift-paper-swatch cp-gift-paper-swatch--black" aria-hidden="true"></i>{% trans 'Чорний' %}</button></div><p>{% trans 'Без коробки обгорнемо zip-пакет; з коробкою він лежатиме в папері всередині.' %}</p></div>
+                </article>
+                <article class="cp-gift-option" data-gift-delivery-option>
+                  <button type="button" class="cp-gift-option-toggle" data-gift-delivery-toggle aria-pressed="false" aria-controls="cp-gift-delivery-panel">
+                    <span class="cp-gift-option-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M5 13h24v22H5V13Zm24 8h8l6 8v6H29V21Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="13" cy="36" r="4" fill="#201d25" stroke="currentColor" stroke-width="1.8"/><circle cx="35" cy="36" r="4" fill="#201d25" stroke="currentColor" stroke-width="1.8"/><path d="m11 23 4 4 7-8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    <span class="cp-gift-option-copy"><strong>{% trans 'Оплачу доставку заздалегідь' %}</strong><small>{% trans 'Щоб одержувач не платив за доставку' %}</small><span data-gift-delivery-price>+150 {% trans 'грн' %}</span></span><span class="cp-gift-option-switch" aria-hidden="true"></span>
+                  </button>
+                  <div class="cp-gift-option-panel" id="cp-gift-delivery-panel" data-gift-delivery-panel hidden>
+                    <div class="cp-gift-delivery-methods"><button type="button" data-gift-delivery-method="branch" aria-pressed="true">{% trans 'Відділення / поштомат' %}<small>+150 {% trans 'грн' %}</small></button><button type="button" data-gift-delivery-method="courier" aria-pressed="false">{% trans 'Курʼєр до дверей' %}<small data-gift-courier-price>+300 {% trans 'грн' %}</small></button></div>
+                    <p>{% trans 'Вартість додамо до замовлення. Спосіб та адресу узгодимо перед відправленням; нестандартний вантаж потребує окремого прорахунку.' %}</p>
+                  </div>
+                </article>
+                <article class="cp-gift-option" data-gift-certificate-option>
+                  <button type="button" class="cp-gift-option-toggle" data-gift-certificate-toggle aria-pressed="false" aria-controls="cp-gift-certificate-panel">
+                    <span class="cp-gift-option-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M6 12h36v8a4 4 0 0 0 0 8v8H6v-8a4 4 0 0 0 0-8v-8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m19 29 10-10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="20" cy="20" r="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="28" cy="28" r="2.5" stroke="currentColor" stroke-width="1.8"/></svg></span>
+                    <span class="cp-gift-option-copy"><strong>{% trans 'Сертифікат на знижку 15%' %}</strong><small>{% trans 'На будь-яке замовлення TwoComms, включно з кастомним' %}</small><span>+150 {% trans 'грн' %}</span></span><span class="cp-gift-option-switch" aria-hidden="true"></span>
+                  </button>
+                  <div class="cp-gift-option-panel" id="cp-gift-certificate-panel" data-gift-certificate-panel hidden>
+                    <p data-gift-certificate-placement>{% trans 'Без коробки покладемо картку всередину zip-пакета.' %}</p>
+                    <div class="cp-gift-content-switch"><button type="button" data-gift-card-mode="blank" aria-pressed="true">{% trans 'Напишу самостійно' %}</button><button type="button" data-gift-card-mode="write" aria-pressed="false">{% trans 'Напишіть мій текст' %}</button></div>
+                    <label class="cp-field" data-gift-card-message-field hidden><span>{% trans 'Побажання на звороті · без доплати' %}</span><textarea rows="3" data-gift-card-message placeholder="{% trans 'Теплі слова, які ми напишемо від вашого імені' %}"></textarea><small data-gift-card-counter>0 / 240</small></label>
+                    <div class="cp-gift-certificate-preview"><div class="cp-gift-certificate-front"><small>TWOCOMMS</small><strong>−15%</strong><span>{% trans 'На будь-яке замовлення, включно з кастомним' %}</span></div><div class="cp-gift-certificate-back"><small>{% trans 'Ваші слова на звороті' %}</small><p data-gift-card-preview-text></p></div></div>
+                  </div>
+                </article>
+              </div>
 
               <div class="cp-step-actions">
                 <button type="button" class="cp-secondary-button" data-step-back="quantity">{% trans 'Назад' %}</button>
@@ -926,9 +991,9 @@
             <picture data-preview-picture>
               <source data-preview-avif type="image/avif">
               <source data-preview-webp type="image/webp">
-              <img data-preview-garment alt="" width="1200" height="1400" decoding="async">
+              <img data-preview-garment alt="" width="96" height="96" decoding="async">
             </picture>
-            <img data-preview-lacing alt="" width="1200" height="1400" hidden>
+            <img data-preview-lacing alt="" width="96" height="96" hidden>
             <div class="cp-png-preview-zones" data-preview-zones></div>
           </div>
         </div>
@@ -1204,10 +1269,11 @@
   <script src="{% static 'js/custom-print-state.js' %}?v=20260719-responsive-v2" defer></script>
   <script src="{% static 'js/custom-print-render-plan.js' %}?v=20260813-render-plan-v1" defer></script>
   <script src="{% static 'js/custom-print-preview.js' %}?v=20260729-color-fallback-v1" defer></script>
-  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20261007-gift-card-v2" defer></script>
+  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20261007-custom-creation-v3" defer></script>
   <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260726-dialog-focus-v3" defer></script>
   <script src="{% static 'js/custom-print-mobile-hero.js' %}?v=20261002-mobile-hero-v1" defer></script>
-  <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-gift-card-v2" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-gift-card-v2" defer></script>
+  <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-custom-creation-v3" defer></script>
+  <script src="{% static 'js/custom-print-collection.js' %}?v=20261007-custom-creation-v3" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-custom-creation-v3" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

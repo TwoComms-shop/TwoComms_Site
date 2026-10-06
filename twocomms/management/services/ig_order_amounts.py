@@ -44,6 +44,10 @@ def order_amounts(order) -> dict[str, Decimal]:
     snapshot = delivery_payment_snapshot(order, item_rows=item_rows)
     delivery = snapshot["delivery_amount"]
     valid = snapshot["valid"]
+    if snapshot.get("mode") == "customer_paid_included" and valid is True:
+        return {"subtotal": subtotal, "discount": discount, "payable": snapshot["payable_total"],
+                "merchandise_payable": snapshot["merchandise_total"], "delivery": delivery, "delivery_contract_valid": valid,
+                "delivery_payment_snapshot": snapshot}
     return {"subtotal": subtotal, "discount": discount, "payable": merchandise + delivery,
             "merchandise_payable": merchandise, "delivery": delivery, "delivery_contract_valid": valid,
             "delivery_payment_snapshot": snapshot}

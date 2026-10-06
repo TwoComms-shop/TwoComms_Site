@@ -4,7 +4,7 @@
  * - Stage Receipt: прорахунок живе всередині картки виробу.
  * - Per-zone uploads: окрема dropzone для кожної обраної зони.
  * - Smart sizing: qty=1 → chip-row, qty>1 → matrix з валідацією суми.
- * - Gift як платний сервіс +100 грн з полем побажання та промокодом.
+ * - Подарункові деталі та доставка спільні для всієї добірки.
  * - B2B живий калькулятор: кожні 8 шт відкривають наступний рівень ціни.
  * - Dual final: «Додати в кошик» (сесійний кошик) і «Надіслати менеджеру» (Telegram).
  */
@@ -70,6 +70,11 @@
   let purposeSelectionPending = false;
   const filesByPlacement = new Map(); // placement_key -> File[]
   let garmentPhotoFile = null;
+  let giftImageFile = null;
+  let giftImageUrl = "";
+  const collectionTools = globalThis.CustomPrintCollection;
+  const collection = collectionTools.create();
+  let activeItemId = newItemId();
   const analyticsState = {
     flowStarted: false,
     enteredSteps: new Set(),
@@ -169,6 +174,12 @@
     sizeMatrix: root.querySelector("[data-size-matrix]"),
     sizeWarning: root.querySelector("[data-size-warning]"),
     sizeHint: root.querySelector("[data-size-hint]"),
+    quantityEditor: root.querySelector("[data-quantity-editor]"),
+    collectionReview: root.querySelector("[data-collection-review]"),
+    collectionList: root.querySelector("[data-collection-list]"),
+    collectionStrip: root.querySelector("[data-collection-strip]"),
+    collectionStripLabel: root.querySelector("[data-collection-strip-label]"),
+    collectionCancel: root.querySelector("[data-collection-cancel]"),
     sizeManagerBtn: root.querySelector("[data-size-manager]"),
     sizesNoteWrap: root.querySelector("[data-sizes-note-wrap]"),
     sizesNoteInput: root.querySelector("[data-sizes-note-input]"),
@@ -237,7 +248,7 @@
   const mobileShell = globalThis.CustomPrintMobileShell?.create({
     root,
     mobileBar: dom.mobileBar,
-    showMobileBar: () => STATE.ui.current_step !== "mode",
+    showMobileBar: () => !["mode", "product"].includes(STATE.ui.current_step) && !(STATE.ui.current_step === "quantity" && STATE.ui.collection_review),
     onExit: exitStudio,
     onBack: navigateBack,
     onManager: openManagerDialog,
@@ -300,7 +311,12 @@
         name: "",
         value: "",
       },
+      gift_options: { content_type: "text", image_name: "", delivery_enabled: false, delivery_method: "branch", certificate_enabled: false,
+        certificate_mode: "blank", certificate_text: "", wrapping_enabled: false, paper: "ivory" },
       ui: {
+        product_view: "chooser",
+        multi_item_mode: false,
+        collection_review: false,
         brand_brief_open: false,
         current_step: "mode",
         done_steps: new Set(),
@@ -434,6 +450,7 @@
     bindWaterfallNav();
     bindStageView();
     bindQuantity();
+    bindCollection();
     bindGiftToggle();
     bindFinalActions();
     bindGenericInputs();
@@ -506,6 +523,10 @@
       exitStudio();
       return;
     }
+    if (STATE.ui.collection_review && STATE.ui.current_step === "quantity") {
+      editCollectionItem(activeItemId || collection.list()[0]?.id, "quantity");
+      return;
+    }
     const previous = STEPS[index - 1];
     STATE.ui.done_steps.delete(STATE.ui.current_step);
     setActiveStep(previous, { fromStep: STATE.ui.current_step });
@@ -519,6 +540,18 @@
   }
 
   function buildManagerSummary() {
+    if (collection.list().length && STATE.mode !== "brand") {
+      const items = buildCreationEnvelope("manager_summary", true).items;
+      const lines = items.map(({ snapshot }, index) => {
+        const sizes = Object.entries(snapshot.order.size_breakdown || {}).filter(([, qty]) => qty > 0).map(([size, qty]) => `${size} × ${qty}`).join(", ");
+        const files = (snapshot.artwork.files || []).map((file) => file.name).join(", ") || "ще не додано";
+        return `${index + 1}. ${CONFIG.products[snapshot.product.type]?.label || "Виріб"} × ${snapshot.order.quantity || "—"} · ${getPreviewColorLabel(snapshot.product.color)}\n   ${sizes || "Розміри уточнимо"} · ${(snapshot.print.zones || []).join(", ") || "Зони ще не вибрано"}\n   Макети: ${files}`;
+      });
+      return [ui("manager_greeting", "Привіт! Хочу обговорити кастомний принт TwoComms."), "", `Формат: ${STATE.order_purpose === "gift" ? "на подарунок" : "для себе"}`, ...lines,
+        STATE.order.gift_enabled ? `Коробка: ${STATE.gift_options.content_type === "image" ? `зображення ${STATE.gift_options.image_name || "ще не додано"}` : STATE.order.gift_text || "текст ще не додано"}` : "Коробка: без додаткової коробки",
+        ...giftPricing().parts.filter((part) => part.label !== "Коробка з вашим посланням").map((part) => `${part.label}: ${Number.isFinite(part.value) ? formatPrice(part.value) : "узгодити ціну"}`),
+        `Контакт: ${STATE.contact.channel || "—"} ${STATE.contact.value || "ще не вказано"}`].join("\n");
+    }
     const cfg = getProductConfig() || {};
     const colors = getAllowedColorOptions(cfg);
     const fit = (cfg.fits || []).find((item) => item.value === STATE.product.fit)?.label || STATE.product.fit || "—";
@@ -1203,6 +1236,14 @@
     };
     STATE.ui.done_steps = new Set();
     STATE.ui.current_step = "mode";
+    STATE.ui.collection_review = false;
+    STATE.ui.product_view = "chooser";
+    STATE.ui.multi_item_mode = false;
+    STATE.gift_options = createState().gift_options;
+    collection.clear(); activeItemId = newItemId();
+    giftImageFile = null;
+    if (giftImageUrl) URL.revokeObjectURL(giftImageUrl);
+    giftImageUrl = "";
     filesByPlacement.clear();
     garmentPhotoFile = null;
     [dom.brandIntroName, dom.brandContactPerson, dom.brandContactValue, dom.brandResource, dom.brandPhone, dom.brandDeadline, dom.brandWish, dom.qtyInput, dom.ownColorInput, dom.garmentNoteInput].forEach((input) => {
@@ -1220,12 +1261,12 @@
         if (purposeSelectionPending) return;
         const choice = btn.dataset.choiceValue;
         const nextMode = choice === "brand" ? "brand" : "personal";
-        const previousPurpose = STATE.order_purpose;
         if (STATE.mode && STATE.mode !== nextMode) resetConfigurationForModeChange();
         STATE.mode = nextMode;
+        STATE.ui.product_view = collection.list().length ? "multiple" : "chooser";
+        STATE.ui.multi_item_mode = collection.list().length > 0;
         STATE.order_purpose = purposeTools?.fromChoice(choice) || (choice === "brand" ? "organization" : choice === "gift" ? "gift" : "personal");
-        if (choice === "gift") STATE.order.gift_enabled = true;
-        else if (previousPurpose === "gift") STATE.order.gift_enabled = false;
+        // Choosing the recipient never adds a paid service automatically.
         syncGiftUi();
         normalizeClientState();
         STATE.ui.brand_brief_open = STATE.mode === "brand";
@@ -1310,9 +1351,19 @@
 
   function renderProductCards() {
     if (!dom.productList) return;
+    const tshirtCard = dom.productList.querySelector('[data-choice-value="tshirt"]');
+    if (tshirtCard) dom.productList.prepend(tshirtCard);
     dom.productList.querySelectorAll("[data-choice-value]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const value = btn.dataset.choiceValue;
+        if (value === "multiple") {
+          STATE.ui.product_view = "multiple";
+          STATE.ui.multi_item_mode = true;
+          refreshAll(); persistDraft();
+          root.querySelector("[data-multi-add]")?.focus({ preventScroll: true });
+          return;
+        }
+        STATE.ui.product_view = "chooser";
         const previousType = STATE.product.type;
         STATE.product.type = value;
         STATE.product.fit = null;
@@ -3051,7 +3102,8 @@
     if (!dom.sizeBlock) return;
     const qty = STATE.order.quantity || 0;
     if (STATE.product.type === "customer_garment") {
-      if (dom.qtyBar) dom.qtyBar.hidden = true;
+      if (dom.qtyBar) dom.qtyBar.hidden = false;
+      if (dom.qtyHint) dom.qtyHint.textContent = "Вкажіть кількість ваших речей. Опис виробу вже збережено.";
       dom.sizeBlock.hidden = true;
       if (dom.b2bMeta) dom.b2bMeta.hidden = true;
       return;
@@ -3065,7 +3117,7 @@
       return;
     }
     dom.sizeBlock.hidden = false;
-    if (qty === 1) {
+    if (qty === 1 && STATE.order.size_mode !== "manager") {
       // Single-size chip row
       STATE.order.size_mode = "single";
       dom.sizeGrid.hidden = false;
@@ -3190,6 +3242,7 @@
   function bindGiftToggle() {
     dom.giftToggle?.addEventListener("click", () => {
       STATE.order.gift_enabled = !STATE.order.gift_enabled;
+      if (STATE.order.gift_enabled) STATE.gift_options.wrapping_enabled = true;
       syncGiftUi();
       updateGiftContinueLabel();
       refreshAll();
@@ -3197,7 +3250,57 @@
     });
     dom.giftTextInput?.addEventListener("input", () => {
       STATE.order.gift_text = dom.giftTextInput.value;
+      syncGiftPreview();
+      refreshAll();
       persistDraft();
+    });
+    root.querySelectorAll("[data-gift-content]").forEach((button) => button.addEventListener("click", () => {
+      STATE.gift_options.content_type = button.dataset.giftContent;
+      syncGiftUi(); refreshAll(); persistDraft();
+    }));
+    root.querySelector("[data-gift-image-input]")?.addEventListener("change", (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 20 * 1024 * 1024) {
+        event.target.value = ""; showStatus("Оберіть PNG, JPG або WEBP до 20 МБ.", "warning"); return;
+      }
+      if (giftImageUrl) URL.revokeObjectURL(giftImageUrl);
+      giftImageFile = file; giftImageUrl = URL.createObjectURL(file); STATE.gift_options.image_name = file.name;
+      syncGiftUi(); refreshAll(); persistDraft();
+    });
+    root.querySelector("[data-gift-delivery-toggle]")?.addEventListener("click", () => {
+      STATE.gift_options.delivery_enabled = !STATE.gift_options.delivery_enabled;
+      syncGiftUi(); refreshAll(); persistDraft();
+    });
+    root.querySelectorAll("[data-gift-delivery-method]").forEach((button) => button.addEventListener("click", () => {
+      STATE.gift_options.delivery_method = button.dataset.giftDeliveryMethod;
+      syncGiftUi(); refreshAll(); persistDraft();
+    }));
+    root.querySelector("[data-gift-certificate-toggle]")?.addEventListener("click", () => {
+      STATE.gift_options.certificate_enabled = !STATE.gift_options.certificate_enabled;
+      syncGiftUi(); refreshAll(); persistDraft();
+    });
+    root.querySelector("[data-gift-wrapping-toggle]")?.addEventListener("click", () => {
+      STATE.gift_options.wrapping_enabled = !STATE.gift_options.wrapping_enabled;
+      syncGiftUi(); refreshAll(); persistDraft();
+    });
+    root.querySelectorAll("[data-gift-paper]").forEach((button) => button.addEventListener("click", () => {
+      STATE.gift_options.paper = button.dataset.giftPaper;
+      syncGiftUi(); refreshAll(); persistDraft();
+    }));
+    root.querySelectorAll("[data-gift-card-mode]").forEach((button) => button.addEventListener("click", () => {
+      STATE.gift_options.certificate_mode = button.dataset.giftCardMode;
+      syncGiftUi(); refreshAll(); persistDraft();
+    }));
+    root.querySelector("[data-gift-card-message]")?.addEventListener("input", (event) => {
+      STATE.gift_options.certificate_text = event.target.value;
+      syncGiftUi(); refreshAll(); persistDraft();
+    });
+    root.querySelector("[data-gift-preview-toggle]")?.addEventListener("click", (event) => {
+      const preview = root.querySelector("[data-gift-preview]");
+      preview.hidden = !preview.hidden;
+      event.currentTarget.setAttribute("aria-expanded", String(!preview.hidden));
+      syncGiftPreview();
     });
     updateGiftContinueLabel();
   }
@@ -3211,9 +3314,68 @@
     const note = root.querySelector("[data-gift-intent-note]");
     if (note) {
       note.hidden = STATE.order_purpose !== "gift";
-      if (!note.dataset.enabledText) note.dataset.enabledText = note.textContent;
-      note.textContent = enabled ? note.dataset.enabledText : (note.dataset.disabledText || "Створюємо на подарунок. Додаткову подарункову упаковку вимкнено.");
     }
+    const options = STATE.gift_options;
+    root.querySelectorAll("[data-gift-content]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.giftContent === options.content_type)));
+    const text = root.querySelector("[data-gift-message-field]"); if (text) text.hidden = options.content_type !== "text";
+    const image = root.querySelector("[data-gift-image-field]"); if (image) image.hidden = options.content_type !== "image";
+    const name = root.querySelector("[data-gift-image-name]");
+    if (name) name.textContent = options.image_name ? `${options.image_name}${giftImageFile ? "" : " · додайте файл повторно"}` : "";
+    const delivery = root.querySelector("[data-gift-delivery-toggle]");
+    delivery?.setAttribute("aria-pressed", String(options.delivery_enabled));
+    root.querySelector("[data-gift-delivery-panel]")?.toggleAttribute("hidden", !options.delivery_enabled);
+    root.querySelector("[data-gift-certificate-toggle]")?.setAttribute("aria-pressed", String(options.certificate_enabled));
+    root.querySelector("[data-gift-certificate-panel]")?.toggleAttribute("hidden", !options.certificate_enabled);
+    root.querySelector("[data-gift-wrapping-toggle]")?.setAttribute("aria-pressed", String(options.wrapping_enabled));
+    root.querySelector("[data-gift-wrapping-panel]")?.toggleAttribute("hidden", !options.wrapping_enabled);
+    root.querySelectorAll("[data-gift-paper]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.giftPaper === options.paper)));
+    root.querySelectorAll("[data-gift-card-mode]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.giftCardMode === options.certificate_mode)));
+    root.querySelector("[data-gift-card-message-field]")?.toggleAttribute("hidden", options.certificate_mode !== "write");
+    const count = Array.from(options.certificate_text || "").length;
+    const counter = root.querySelector("[data-gift-card-counter]");
+    if (counter) { counter.textContent = `${count} / ${CONFIG.gift_service?.certificate?.max_message_length || 240}`; counter.classList.toggle("is-over-limit", count > 240); }
+    const placement = root.querySelector("[data-gift-certificate-placement]");
+    if (placement) placement.textContent = enabled ? "Покладемо картку зверху в коробці — перед папером із zip-пакетом." : "Покладемо картку всередину zip-пакета. На звороті — рядки для вашого побажання.";
+    const cardText = root.querySelector("[data-gift-card-preview-text]");
+    if (cardText) cardText.textContent = options.certificate_mode === "write" ? options.certificate_text : "";
+    const cardInBox = root.querySelector("[data-gift-box-card]"); if (cardInBox) cardInBox.hidden = !options.certificate_enabled;
+    const tissue = root.querySelector("[data-gift-tissue]"); if (tissue) tissue.dataset.paper = options.wrapping_enabled ? options.paper : "ivory";
+    root.querySelectorAll(".cp-gift-box-preview").forEach((scene) => { scene.dataset.wrapping = options.wrapping_enabled ? options.paper : "ivory"; });
+    root.querySelectorAll("[data-gift-delivery-method]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.giftDeliveryMethod === options.delivery_method)));
+    const service = CONFIG.gift_service || {};
+    const courierPrice = service.delivery?.courier?.price;
+    const deliveryPrice = service.delivery?.[options.delivery_method]?.price;
+    const boxPrice = service.box?.price;
+    const priceLabel = (price) => Number.isFinite(price) ? (price ? `+${formatPrice(price)}` : "Без доплати") : "Ціну узгодимо з менеджером";
+    const boxLabel = root.querySelector("[data-gift-box-price]"); if (boxLabel) boxLabel.textContent = priceLabel(boxPrice);
+    const deliveryLabel = root.querySelector("[data-gift-delivery-price]"); if (deliveryLabel) deliveryLabel.textContent = priceLabel(deliveryPrice);
+    const courierLabel = root.querySelector("[data-gift-courier-price]"); if (courierLabel) courierLabel.textContent = priceLabel(courierPrice);
+    syncGiftPreview();
+  }
+
+  function syncGiftPreview() {
+    const text = root.querySelector("[data-gift-preview-text]");
+    const image = root.querySelector("[data-gift-preview-image]");
+    if (text) { text.hidden = STATE.gift_options.content_type === "image" && !!giftImageUrl; text.textContent = STATE.gift_options.content_type === "text" ? (STATE.order.gift_text.trim() || "Ваше послання") : "Ваше зображення"; }
+    if (image) { image.hidden = STATE.gift_options.content_type !== "image" || !giftImageUrl; if (giftImageUrl) image.src = giftImageUrl; else image.removeAttribute("src"); }
+  }
+
+  function giftEnvelope() {
+    return { enabled: !!STATE.order.gift_enabled, text: STATE.order.gift_text || "",
+      box: { enabled: !!STATE.order.gift_enabled, content_type: STATE.gift_options.content_type, text: STATE.order.gift_text || "", image_name: STATE.gift_options.image_name || "" },
+      wrapping: { enabled: !!STATE.gift_options.wrapping_enabled, paper: STATE.gift_options.paper },
+      delivery: { enabled: !!STATE.gift_options.delivery_enabled, method: STATE.gift_options.delivery_method },
+      certificate: { enabled: !!STATE.gift_options.certificate_enabled, message_mode: STATE.gift_options.certificate_mode, message: STATE.gift_options.certificate_mode === "write" ? STATE.gift_options.certificate_text || "" : "" } };
+  }
+
+  function giftPricing() {
+    const service = CONFIG.gift_service || {};
+    const parts = [];
+    if (STATE.order.gift_enabled) parts.push({ label: "Коробка з вашим посланням", value: service.box?.price ?? null });
+    if (STATE.gift_options.delivery_enabled) parts.push({ label: STATE.gift_options.delivery_method === "courier" ? "Доставка курʼєром · у сумі замовлення" : "Доставка у відділення / поштомат · у сумі замовлення", value: service.delivery?.[STATE.gift_options.delivery_method]?.price ?? null });
+    if (STATE.gift_options.certificate_enabled) parts.push({ label: "Сертифікат на знижку 15%", value: service.certificate?.price ?? 150 });
+    if (STATE.gift_options.wrapping_enabled) parts.push({ label: "Святкове оформлення", value: 0 });
+    return { parts, total: parts.reduce((sum, part) => sum + (part.value || 0), 0), estimate_required: parts.some((part) => !Number.isFinite(part.value)) };
   }
 
   function getGiftContinueLabel() {
@@ -3297,6 +3459,10 @@
     });
     dom.stepNextButtons?.forEach((btn) => {
       btn.addEventListener("click", () => {
+        if (STATE.ui.current_step === "quantity" && STATE.mode !== "brand") {
+          saveCollectionItem();
+          return;
+        }
         const target = btn.dataset.stepNext;
         if (canAdvance(STATE.ui.current_step)) {
           ensureFlowStarted(`step_next_${STATE.ui.current_step}`);
@@ -3327,13 +3493,14 @@
   function setActiveStep(key, opts = {}) {
     if (purposeSelectionPending) giftReveal?.cancel();
     if (!STEPS.includes(key)) return;
+    if (["product", "config", "zones", "artwork"].includes(key)) STATE.ui.collection_review = false;
     if (!opts.silent) {
       resetStatus();
       clearValidationTargets();
     }
     if (key !== "mode" || !opts.silent) STATE.ui.brand_brief_open = false;
     STATE.ui.current_step = key;
-    if (key === "mode") {
+    if (key === "mode" || key === "product" || (key === "quantity" && STATE.ui.collection_review)) {
       const viewport = root.querySelector("[data-step-viewport]");
       if (viewport) viewport.scrollTop = 0;
     }
@@ -3395,7 +3562,6 @@
     let idx = STEPS.indexOf(stepKey);
     if (idx < 0) return null;
     for (let i = idx + 1; i < STEPS.length; i++) {
-      if (STEPS[i] === "quantity" && STATE.product.type === "customer_garment") continue;
       return STEPS[i];
     }
     return null;
@@ -3439,7 +3605,8 @@
         const sum = Object.values(STATE.order.size_breakdown || {}).reduce((a, b) => a + (parseInt(b, 10) || 0), 0);
         return sum === STATE.order.quantity;
       case "gift":
-        return true; // gift is optional, the next button always works
+        if (STATE.gift_options.certificate_enabled && STATE.gift_options.certificate_mode === "write" && (!STATE.gift_options.certificate_text.trim() || Array.from(STATE.gift_options.certificate_text).length > 240)) return false;
+        return !STATE.order.gift_enabled || (STATE.gift_options.content_type === "image" ? !!giftImageFile : !!STATE.order.gift_text.trim());
       case "contact":
         return !!STATE.contact.channel && !!STATE.contact.name && !!STATE.contact.value;
       default:
@@ -3448,6 +3615,7 @@
   }
 
   function getStepProblem(stepKey) {
+    if (stepKey === "gift" && STATE.gift_options.certificate_enabled && STATE.gift_options.certificate_mode === "write" && (!STATE.gift_options.certificate_text.trim() || Array.from(STATE.gift_options.certificate_text).length > 240)) return ["Додайте побажання на звороті картки — до 240 символів.", "[data-gift-card-message]"];
     const problems = {
       mode: ["Оберіть: для себе, на подарунок або для організації.", "[data-mode-list] button"],
       product: ["Оберіть виріб для друку.", "[data-product-list] button"],
@@ -3456,6 +3624,7 @@
       artwork: ["Оберіть, чи макет готовий, чи потрібна допомога.", "[data-artwork-service-list]"],
       quantity: ["Вкажіть кількість і розподіліть усі речі за розмірами.", "[data-quantity-input]"],
       contact: ["Заповніть імʼя, канал звʼязку та контакт.", "[data-name-input]"],
+      gift: [STATE.gift_options.content_type === "image" ? "Додайте зображення для внутрішньої частини коробки." : "Додайте послання для внутрішньої частини коробки.", STATE.gift_options.content_type === "image" ? "[data-gift-image-input]" : "[data-gift-text-input]"],
     };
     if (stepKey === "config") {
       const productConfig = getProductConfig();
@@ -3581,6 +3750,10 @@
       }))]);
     return renderPlanTools.signature({
       navigation: {
+        product_view: STATE.ui.product_view,
+        multi_item_mode: STATE.ui.multi_item_mode,
+        collection_review: STATE.ui.collection_review,
+        collection: collection.serialize(),
         current_step: STATE.ui.current_step,
         done_steps: Array.from(STATE.ui.done_steps || []).sort(),
         mode: STATE.mode,
@@ -3596,6 +3769,7 @@
         files,
       },
       pricing: {
+        gift_options: STATE.gift_options,
         mode: STATE.mode,
         product: STATE.product,
         print: STATE.print,
@@ -3633,6 +3807,8 @@
     lastRenderSignature = nextSignature;
     // Shell visibility must be synchronized even when cached content is unchanged.
     updateFlowPhase();
+    renderCollection();
+    renderMultiIntro();
     renderMobileBottomBar();
     if (!dirty.size) return;
     syncGiftUi();
@@ -3675,6 +3851,8 @@
     const active = root.classList.contains("is-studio-active");
     document.body.classList.toggle("cp-purpose-step", active && lobby);
     document.body.classList.toggle("cp-purpose-active", active && lobby && !STATE.ui.brand_brief_open);
+    document.body.classList.toggle("cp-product-step", active && STATE.ui.current_step === "product");
+    document.body.classList.toggle("cp-collection-step", active && STATE.ui.current_step === "quantity" && STATE.ui.collection_review);
     if (dom.shell) dom.shell.dataset.flowPhase = lobby ? "lobby" : "studio";
     if (dom.progressShell) dom.progressShell.hidden = lobby;
     if (dom.workbench) dom.workbench.classList.toggle("is-lobby-mode", !stageVisible);
@@ -3767,7 +3945,7 @@
           );
         }
       });
-      const giftLabel = STATE.order.gift_enabled ? `Подарункова упаковка` : null;
+      const giftLabel = STATE.order.gift_enabled ? "Коробка з вашим посланням" : null;
       const all = [...labels, giftLabel].filter(Boolean);
       dom.stageAddons.textContent = all.length ? all.join(" · ") : (cfg ? "Без додаткових деталей." : "Поки що без активних деталей.");
     }
@@ -3792,6 +3970,17 @@
   }
 
   function buildActionPolicy() {
+    if (collection.list().length && STATE.mode !== "brand" && !STATE.ui.collection_review) {
+      return { leadReady: false, cartReady: false, leadHint: "Збережіть поточну річ у добірці.", cartHint: "Збережіть поточну річ у добірці." };
+    }
+    if (collection.list().length && STATE.mode !== "brand" && STATE.ui.collection_review) {
+      const missing = collection.list().find(collectionTools.missingFiles);
+      const contactReady = canAdvance("contact") && canAdvance("gift");
+      const estimate = getCreationPricing().estimate_required;
+      const hint = missing ? "Додайте файли до збережених виробів." : !canAdvance("gift") ? "Перевірте текст або зображення у подарункових деталях." : !contactReady ? "Заповніть імʼя, канал звʼязку і контакт." : "Передамо менеджеру всі вироби однією добіркою.";
+      return { leadReady: !missing && contactReady, cartReady: !missing && contactReady && !estimate,
+        leadHint: hint, cartHint: estimate ? (giftPricing().estimate_required ? "Ціну коробки узгодимо з менеджером перед оплатою." : "У добірці є виріб, що потребує прорахунку менеджера.") : hint };
+    }
     const pricing = computePricing();
     const baseIssues = getSharedSubmissionIssues();
     const artworkIssues = getArtworkValidationIssues();
@@ -3869,6 +4058,16 @@
 
   function renderFinalChecklist(actionPolicy) {
     if (!dom.finalChecklist) return;
+    if (collection.list().length && STATE.mode !== "brand" && STATE.ui.collection_review) {
+      const pricing = getCreationPricing();
+      const missing = collection.list().some(collectionTools.missingFiles);
+      dom.finalChecklist.innerHTML = `<li class="cp-checklist-item ${missing ? "is-missing" : "is-ready"}"><span class="cp-checklist-mark">${missing ? "!" : "✓"}</span><span class="cp-checklist-copy"><strong>Ваша добірка · ${pricing.quantity} шт.</strong><small>Макети, розміри та налаштування кожної речі збережено</small></span><span class="cp-checklist-state"><button type="button" data-final-collection>Переглянути</button></span></li>
+        <li class="cp-checklist-item is-ready"><span class="cp-checklist-mark">✓</span><span class="cp-checklist-copy"><strong>${STATE.order_purpose === "gift" ? "На подарунок" : "Для себе"}</strong><small>${giftPricing().parts.map((part) => part.label).join(" · ") || "Без додаткових послуг"}</small></span></li>
+        <li class="cp-checklist-item ${canAdvance("contact") ? "is-ready" : "is-missing"}"><span class="cp-checklist-mark">${canAdvance("contact") ? "✓" : "!"}</span><span class="cp-checklist-copy"><strong>Контакт</strong><small>${canAdvance("contact") ? "Імʼя і канал звʼязку заповнено" : "Заповніть імʼя і контакт нижче"}</small></span></li>`;
+      dom.finalChecklist.querySelector("[data-final-collection]")?.addEventListener("click", showCollection);
+      dom.finalChecklist.dataset.ready = String(actionPolicy.leadReady);
+      return;
+    }
     const items = [
       { step: "mode", label: "Формат", ready: !!STATE.mode, detail: "Для себе, на подарунок або для організації" },
       { step: "product", label: "Виріб", ready: !!STATE.product.type, detail: "Основа і посадка" },
@@ -3959,7 +4158,7 @@
       setStepSummary("quantity", "—");
     }
 
-    setStepSummary("gift", STATE.order.gift_enabled ? `Так (+${(CONFIG.gift_service || {}).price || 100} грн)` : "Без подарунку");
+    setStepSummary("gift", giftPricing().parts.map((part) => part.label).join(" · ") || "Без доповнень");
 
     if (STATE.contact.channel || STATE.contact.value) {
       const channelMap = (CONFIG.contact_channels || []).reduce((acc, ch) => { acc[ch.value] = ch.label; return acc; }, {});
@@ -4050,10 +4249,7 @@
     });
 
     let giftPrice = 0;
-    if (STATE.order.gift_enabled) {
-      giftPrice = (CONFIG.gift_service || {}).price || 0;
-      if (giftPrice) breakdown.push({ label: "Подарункова упаковка", value: giftPrice });
-    }
+    // Shared gift/delivery services are added once to the creation, never to a garment.
 
     let unitTotal = base + printPrice + zonesPrice + designPrice + addonsPrice;
     let b2bDiscountPerUnit = 0;
@@ -4093,6 +4289,15 @@
 
   function renderReceipt() {
     if (!dom.receiptList || !dom.receiptTotal) return;
+    if (collection.list().length && STATE.ui.collection_review && STATE.mode !== "brand") {
+      const pricing = getCreationPricing();
+      dom.receiptTotal.textContent = pricing.estimate_required ? "Прорахунок з менеджером" : formatPrice(pricing.final_total);
+      dom.receiptList.innerHTML = collection.list().map((item) => `<li><span>${escapeHtml(CONFIG.products[item.snapshot.product.type]?.label || "Виріб")} × ${item.snapshot.order.quantity}</span><strong>${item.snapshot.pricing.estimate_required ? "Прорахунок" : formatPrice(item.snapshot.pricing.final_total)}</strong></li>`).join("")
+        + giftPricing().parts.map((part) => `<li><span>${part.label}</span><strong>${Number.isFinite(part.value) ? (part.value ? formatPrice(part.value) : "Включено") : "Прорахунок"}</strong></li>`).join("");
+      if (dom.receiptMode) dom.receiptMode.textContent = `Добірка · ${pricing.quantity} шт.`;
+      if (dom.receiptHint) dom.receiptHint.textContent = "Кожна річ має свої налаштування й макет.";
+      return;
+    }
     const pricing = computePricing();
     if (!STATE.product.type) {
       dom.receiptTotal.textContent = "Ціну побачите після першого вибору";
@@ -4164,7 +4369,7 @@
 
   function updateFinalActionsAvailability() {
     const actionPolicy = buildActionPolicy();
-    const pricing = computePricing();
+    const pricing = getCreationPricing();
     renderFinalChecklist(actionPolicy);
     if (dom.addToCartBtn) {
       dom.addToCartBtn.disabled = false;
@@ -4193,18 +4398,18 @@
     const lobby = isLobbyPhase();
     const stageVisible = !lobby && STAGE_VISIBLE_AFTER.has(stepKey);
     // Bar показуємо тільки після того як обрано режим (вийшли з lobby).
-    if (stepKey === "mode" || !root.classList.contains("is-studio-active")) {
+    if (["mode", "product"].includes(stepKey) || (stepKey === "quantity" && STATE.ui.collection_review) || !root.classList.contains("is-studio-active")) {
       dom.mobileBar.hidden = true;
       return;
     }
     dom.mobileBar.hidden = false;
 
-    const pricing = computePricing();
+    const pricing = STATE.ui.collection_review ? getCreationPricing() : computePricing();
     if (dom.mobileBarTotal) {
       if (!STATE.product.type) {
         dom.mobileBarTotal.textContent = "Оберіть виріб";
       } else if (pricing.estimate_required || pricing.base_price === null) {
-        dom.mobileBarTotal.textContent = "Прорахунок з менеджером";
+        dom.mobileBarTotal.textContent = "Ціну узгодимо";
       } else if (pricing.final_total !== null && pricing.final_total !== undefined) {
         dom.mobileBarTotal.textContent = formatPrice(pricing.final_total);
       } else {
@@ -4212,7 +4417,7 @@
       }
     }
     if (dom.mobileBarLabel) {
-      dom.mobileBarLabel.textContent = pricing.estimate_required ? "Орієнтир" : "Поточна ціна";
+      dom.mobileBarLabel.textContent = pricing.estimate_required ? "Прорахунок" : "Поточна ціна";
     }
     if (dom.mobileBarMeta) {
       const qty = STATE.order.quantity || 0;
@@ -4243,6 +4448,8 @@
         dom.mobileBarActionLabel.textContent = "Надіслати";
       } else if (stepKey === "gift") {
         dom.mobileBarActionLabel.textContent = getGiftContinueLabel();
+      } else if (stepKey === "quantity" && STATE.mode !== "brand") {
+        dom.mobileBarActionLabel.textContent = "Зберегти виріб";
       } else {
         const nextLabel = stepLabels[nextStepKey]?.label || "Далі";
         dom.mobileBarActionLabel.textContent = nextLabel;
@@ -4263,6 +4470,7 @@
         return;
       }
       if (target) {
+        if (STATE.ui.current_step === "quantity" && STATE.mode !== "brand") { saveCollectionItem(); return; }
         if (!canAdvance(STATE.ui.current_step)) {
           showStepProblem(STATE.ui.current_step);
           return;
@@ -4275,6 +4483,16 @@
   }
 
   function focusFirstIncomplete() {
+    if (collection.list().length && !STATE.ui.collection_review && STATE.mode !== "brand") {
+      setActiveStep("quantity"); if (!canAdvance("quantity")) showStepProblem("quantity"); else showStatus("Збережіть поточну річ у добірці.", "warning"); return true;
+    }
+    if (collection.list().length && STATE.ui.collection_review && STATE.mode !== "brand") {
+      const missing = collection.list().find(collectionTools.missingFiles);
+      if (missing) { editCollectionItem(missing.id, "artwork"); showStepProblem("artwork"); return true; }
+      if (!canAdvance("contact")) { setActiveStep("contact"); showStepProblem("contact"); return true; }
+      if (!canAdvance("gift")) { setActiveStep("gift"); showStepProblem("gift"); return true; }
+      return false;
+    }
     const incomplete = STEPS.find((step) => step !== "gift" && !canAdvance(step));
     if (!incomplete) return false;
     setActiveStep(incomplete, { fromStep: STATE.ui.current_step });
@@ -4299,6 +4517,209 @@
   }
 
   // ── Final actions ───────────────────────────────────────────
+  function newItemId() {
+    return globalThis.crypto?.randomUUID?.() || `item-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function captureItemState() {
+    return JSON.parse(JSON.stringify({ product: STATE.product, print: STATE.print, artwork: STATE.artwork, order: STATE.order, notes: STATE.notes,
+      ui: { current_step: STATE.ui.current_step, done_steps: Array.from(STATE.ui.done_steps), stage_view: STATE.ui.stage_view } }));
+  }
+
+  function rebuildItemUi() {
+    const fields = [[dom.qtyInput, STATE.order.quantity || ""], [dom.placementNoteInput, STATE.print.placement_note], [dom.briefInput, STATE.notes.brief],
+      [dom.garmentNoteInput, STATE.notes.garment_note], [dom.sizesNoteInput, STATE.order.sizes_note], [dom.ownColorInput, STATE.notes.garment_color_hex]];
+    fields.forEach(([input, value]) => { if (input) input.value = value || ""; });
+    if (dom.ownPhotoInput) dom.ownPhotoInput.value = "";
+    renderFitChips(); renderFabricChips(); renderColorChips(); renderZoneChipsForCurrent(); renderFrontSizeOptions(); renderBackSizeOptions();
+    renderSleeveControls(); renderShoulderControls(); renderHemControls(); renderAddons(); renderArtworkActiveState(); renderSizing(); renderDropzones();
+  }
+
+  function loadItemState(item) {
+    const commonGift = { gift_enabled: STATE.order.gift_enabled, gift_text: STATE.order.gift_text };
+    const saved = JSON.parse(JSON.stringify(item.state));
+    for (const key of ["product", "print", "artwork", "order", "notes"]) STATE[key] = saved[key];
+    Object.assign(STATE.order, commonGift);
+    STATE.ui.done_steps = new Set(saved.ui?.done_steps || STEPS.slice(0, 6));
+    STATE.ui.stage_view = saved.ui?.stage_view || "front";
+    filesByPlacement.clear();
+    item.files.forEach((files, key) => filesByPlacement.set(key, files.slice()));
+    garmentPhotoFile = item.photo;
+    activeItemId = item.id;
+    rebuildItemUi();
+  }
+
+  function itemSnapshot(submissionType) {
+    const snapshot = buildSnapshot(submissionType);
+    snapshot.placement_specs = buildPlacementSpecs(snapshot);
+    snapshot.order.gift = { enabled: false, text: "" };
+    snapshot.pricing = { ...snapshot.pricing, gift_price: 0,
+      final_total: Number.isFinite(snapshot.pricing.final_total) ? snapshot.pricing.final_total - Number(snapshot.pricing.gift_price || 0) : null,
+      breakdown: (snapshot.pricing.breakdown || []).filter((row) => row.label !== "Подарункова упаковка") };
+    return snapshot;
+  }
+
+  function saveCollectionItem() {
+    for (const step of ["product", "config", "zones", "artwork", "quantity"]) {
+      if (!canAdvance(step)) { setActiveStep(step); showStepProblem(step); return false; }
+    }
+    try {
+      collection.save({ id: activeItemId, snapshot: itemSnapshot("creation_item"), state: captureItemState(), files: filesByPlacement, photo: garmentPhotoFile });
+    } catch (_) { showStatus("У добірці може бути до 10 різних виробів.", "warning"); return false; }
+    markStepDone("quantity");
+    STATE.ui.collection_review = true;
+    setActiveStep("quantity");
+    persistDraft();
+    return true;
+  }
+
+  function showCollection() {
+    if (!collection.list().length) return;
+    STATE.ui.collection_review = true;
+    setActiveStep("quantity");
+    persistDraft();
+  }
+
+  function editCollectionItem(id, step = "config") {
+    const item = collection.get(id);
+    if (!item) return;
+    loadItemState(item);
+    STATE.ui.collection_review = false;
+    const missingPhoto = (item.snapshot.artwork.files || []).some((file) => file.role === "garment_reference") && !item.photo;
+    setActiveStep(collectionTools.missingFiles(item) ? (missingPhoto ? "config" : "artwork") : step);
+    persistDraft();
+  }
+
+  function addCollectionItem() {
+    if (collection.list().length >= collectionTools.MAX_ITEMS) return;
+    const blank = createState();
+    const commonGift = { gift_enabled: STATE.order.gift_enabled, gift_text: STATE.order.gift_text };
+    for (const key of ["product", "print", "artwork", "order", "notes"]) STATE[key] = blank[key];
+    Object.assign(STATE.order, commonGift);
+    STATE.ui.done_steps = new Set(["mode"]);
+    STATE.ui.collection_review = false;
+    STATE.ui.product_view = "chooser";
+    STATE.ui.multi_item_mode = true;
+    STATE.ui.stage_view = "front";
+    activeItemId = newItemId();
+    filesByPlacement.clear(); garmentPhotoFile = null;
+    rebuildItemUi(); setActiveStep("product"); persistDraft();
+  }
+
+  function returnToCollection() {
+    const item = collection.get(activeItemId) || collection.list().at(-1);
+    if (item) loadItemState(item);
+    showCollection();
+  }
+
+  function removeCollectionItem(id) {
+    collection.remove(id);
+    if (!collection.list().length) { addCollectionItem(); return; }
+    if (activeItemId === id) loadItemState(collection.list().at(-1));
+    renderCollection(); refreshAll(); persistDraft();
+  }
+
+  function getCreationPricing() {
+    if (!collection.list().length || STATE.mode === "brand") return computePricing();
+    const extras = giftPricing();
+    const pricing = collectionTools.pricing(collection.list(), extras.total);
+    if (extras.estimate_required) { pricing.estimate_required = true; pricing.final_total = null; pricing.base_price = null; }
+    return pricing;
+  }
+
+  function collectionImage(type) {
+    return dom.productList?.querySelector(`[data-choice-value="${type}"] img`)?.getAttribute("src") || "";
+  }
+
+  function renderCollection() {
+    const items = collection.list();
+    const enabled = STATE.mode !== "brand";
+    const reviewing = enabled && STATE.ui.collection_review;
+    if (dom.quantityEditor) dom.quantityEditor.hidden = reviewing;
+    if (dom.collectionReview) dom.collectionReview.hidden = !reviewing;
+    const editing = enabled && items.length > 0 && !reviewing && !["mode", "gift", "contact"].includes(STATE.ui.current_step);
+    if (dom.collectionStrip) dom.collectionStrip.hidden = !enabled || !items.length || STATE.ui.current_step === "mode" || (reviewing && STATE.ui.current_step === "quantity");
+    if (dom.collectionStripLabel) dom.collectionStripLabel.textContent = `Збережено ${collectionTools.pricing(items).quantity} шт.`;
+    if (dom.collectionCancel) {
+      dom.collectionCancel.hidden = !editing;
+      dom.collectionCancel.textContent = collection.get(activeItemId) ? "Скасувати зміни" : "Не додавати";
+      dom.collectionCancel.setAttribute("aria-label", collection.get(activeItemId) ? "Скасувати зміни й повернутися до добірки" : "Не додавати цю річ і повернутися до добірки");
+    }
+    root.querySelectorAll("[data-collection-show]").forEach((button) => { button.hidden = editing; });
+    if (!dom.collectionList || !reviewing) return;
+    const listSignature = JSON.stringify(items.map((item) => [item.id, item.snapshot, collectionTools.missingFiles(item)]));
+    if (dom.collectionList.dataset.signature !== listSignature) {
+      dom.collectionList.dataset.signature = listSignature;
+      dom.collectionList.innerHTML = items.map((item, index) => {
+        const snapshot = item.snapshot;
+        const type = snapshot.product.type;
+        const image = collectionImage(type);
+        const sizes = Object.entries(snapshot.order.size_breakdown || {}).filter(([, qty]) => qty > 0).map(([size, qty]) => `${size} × ${qty}`).join(" · ");
+        const color = getPreviewColorLabel(snapshot.product.color);
+        return `<article class="cp-collection-item" data-collection-item="${escapeHtml(item.id)}">
+          <span class="cp-collection-thumb" aria-hidden="true">${image ? `<img src="${escapeHtml(image)}" alt="">` : "✦"}</span>
+          <div class="cp-collection-details"><strong>${escapeHtml(CONFIG.products[type]?.label || type)} <span>× ${snapshot.order.quantity}</span></strong><span>${escapeHtml(color)}${sizes ? ` · ${escapeHtml(sizes)}` : snapshot.order.size_mode === "manager" ? " · Розміри з менеджером" : ""}</span><small>${collectionTools.missingFiles(item) ? "Додайте файли повторно" : snapshot.pricing.estimate_required ? "Прорахунок з менеджером" : formatPrice(snapshot.pricing.final_total)}</small></div>
+          <div class="cp-collection-actions"><button type="button" data-collection-edit="${escapeHtml(item.id)}" aria-label="Змінити виріб ${index + 1}">Змінити</button><button type="button" data-collection-remove="${escapeHtml(item.id)}" aria-label="Видалити виріб ${index + 1}">×</button></div>
+        </article>`;
+      }).join("");
+    }
+    const pricing = collectionTools.pricing(items);
+    root.querySelector("[data-collection-count]").textContent = `${items.length} ${items.length === 1 ? "варіант" : "варіанти"} · ${pricing.quantity} шт.`;
+    root.querySelector("[data-collection-total]").textContent = pricing.estimate_required ? "Прорахунок з менеджером" : formatPrice(pricing.final_total);
+    root.querySelector("[data-collection-file-note]").hidden = !items.some(collectionTools.missingFiles);
+    const add = root.querySelector("[data-collection-add]");
+    if (add) { add.disabled = items.length >= collectionTools.MAX_ITEMS; add.textContent = add.disabled ? "До 10 варіантів у добірці" : "+ Додати ще річ"; }
+  }
+
+  function bindCollection() {
+    root.querySelector("[data-multi-add]")?.addEventListener("click", addCollectionItem);
+    root.querySelector("[data-multi-return]")?.addEventListener("click", returnToCollection);
+    root.querySelector("[data-collection-add]")?.addEventListener("click", addCollectionItem);
+    root.querySelector("[data-collection-continue]")?.addEventListener("click", () => {
+      if (!collection.list().length) return;
+      const missing = collection.list().find(collectionTools.missingFiles);
+      if (missing) { editCollectionItem(missing.id, "artwork"); showStatus("Додайте файли повторно: браузер не зберігає їх після перезавантаження.", "warning"); return; }
+      markStepDone("quantity"); setActiveStep("gift");
+    });
+    root.querySelectorAll("[data-collection-show]").forEach((button) => button.addEventListener("click", showCollection));
+    dom.collectionCancel?.addEventListener("click", returnToCollection);
+    dom.collectionList?.addEventListener("click", (event) => {
+      const edit = event.target.closest("[data-collection-edit]");
+      const remove = event.target.closest("[data-collection-remove]");
+      if (edit) editCollectionItem(edit.dataset.collectionEdit);
+      if (remove) removeCollectionItem(remove.dataset.collectionRemove);
+    });
+  }
+
+  function renderMultiIntro() {
+    const multiple = STATE.ui.product_view === "multiple";
+    if (dom.productList) dom.productList.hidden = multiple;
+    root.querySelector("[data-product-choice-head]")?.toggleAttribute("hidden", multiple);
+    root.querySelector("[data-multi-intro]")?.toggleAttribute("hidden", !multiple);
+    const multipleCard = dom.productList?.querySelector('[data-choice-value="multiple"]');
+    if (multipleCard) multipleCard.hidden = STATE.ui.multi_item_mode && !multiple;
+    const heading = root.querySelector("[data-product-choice-head] h2");
+    if (heading) heading.textContent = STATE.ui.multi_item_mode ? (collection.list().length ? "Оберіть наступну річ" : "Оберіть першу річ") : "Оберіть річ";
+    const list = root.querySelector("[data-multi-list]");
+    if (list) list.innerHTML = collection.list().map((item) => `<div><strong>${escapeHtml(CONFIG.products[item.snapshot.product.type]?.label || "Виріб")}</strong><span>× ${item.snapshot.order.quantity}</span></div>`).join("");
+    const add = root.querySelector("[data-multi-add]");
+    if (add) { add.textContent = collection.list().length ? "+ Додати ще річ" : "+ Додати першу річ"; add.disabled = collection.list().length >= collectionTools.MAX_ITEMS; }
+    root.querySelector("[data-multi-return]")?.toggleAttribute("hidden", !collection.list().length);
+  }
+
+  function buildCreationEnvelope(submissionType, includeActive = false) {
+    const items = collection.list().map((item) => ({ id: item.id, snapshot: { ...item.snapshot, submission_type: submissionType } }));
+    if (includeActive && !STATE.ui.collection_review && STATE.product.type) {
+      const index = items.findIndex((item) => item.id === activeItemId);
+      const current = { id: activeItemId, snapshot: itemSnapshot(submissionType) };
+      if (index >= 0) items[index] = current;
+      else if (items.length < collectionTools.MAX_ITEMS) items.push(current);
+    }
+    return { version: 1, mode: STATE.mode || "personal", order_purpose: STATE.order_purpose,
+      contact: { ...STATE.contact }, gift: giftEnvelope(), items,
+      ui: { current_step: STATE.ui.current_step }, submission_type: submissionType };
+  }
+
   function bindFinalActions() {
     dom.addToCartBtn?.addEventListener("click", handleAddToCart);
     dom.submitLeadBtn?.addEventListener("click", (event) => {
@@ -4495,6 +4916,26 @@
 
   function buildFormData(submissionType, analytics = {}) {
     const fd = new FormData();
+    if (collection.list().length && STATE.mode !== "brand" && STATE.ui.collection_review) {
+      fd.append("creation_json", JSON.stringify(buildCreationEnvelope(submissionType)));
+      if (STATE.order.gift_enabled && STATE.gift_options.content_type === "image" && giftImageFile) fd.append("gift_image", giftImageFile);
+      collection.list().forEach((item) => {
+        // Map insertion order is the same order used by serializeFiles().
+        const fileReferences = (item.snapshot.artwork.files || []).filter((file) => file.role !== "garment_reference");
+        const ordered = Array.from(item.files.values()).flat();
+        const used = new Set();
+        fileReferences.forEach((reference) => {
+          const candidates = item.files.get(reference.placement_key) || ordered;
+          const file = candidates.find((upload) => upload.name === reference.name && !used.has(upload));
+          if (file) { fd.append(`files:${item.id}`, file); used.add(file); }
+        });
+        if (item.photo) fd.append(`garment_photo:${item.id}`, item.photo);
+      });
+      if (analytics.event_id) fd.append("analytics_event_id", analytics.event_id);
+      if (analytics.fbp) fd.append("analytics_fbp", analytics.fbp);
+      if (analytics.fbc) fd.append("analytics_fbc", analytics.fbc);
+      return fd;
+    }
     const snap = buildSnapshot(submissionType);
     const pricing = snap.pricing || computePricing();
     fd.append("placement_specs_json", JSON.stringify(buildPlacementSpecs(snap)));
@@ -4533,7 +4974,7 @@
   }
 
   async function handleSubmitLead() {
-    if (leadSubmitInFlight) return;
+    if (leadSubmitInFlight || cartSubmitInFlight) return;
     flushPersistDraft();
     const actionPolicy = buildActionPolicy();
     if (!actionPolicy.leadReady) {
@@ -4560,6 +5001,7 @@
       });
       const data = await safeJson(response);
       if (!response.ok || data?.ok === false) {
+        if (handleCreationErrors(data)) return;
         const msg = data?.errors ? formatErrors(data.errors) : "Не вдалося надіслати заявку. Спробуйте ще раз.";
         showStatus(msg, "error");
         return;
@@ -4570,7 +5012,7 @@
       dialogFlow?.openSuccessDialog({ trigger: dom.submitLeadBtn, kind: "lead", leadNumber: data?.lead_number || "" });
       try {
         if (window.trackEvent) {
-          const pricing = computePricing();
+          const pricing = getCreationPricing();
           const leadValue = (pricing && Number.isFinite(pricing.final_total) && pricing.final_total > 0)
             ? pricing.final_total
             : 0;
@@ -4597,7 +5039,7 @@
   }
 
   async function handleAddToCart() {
-    if (cartSubmitInFlight) return;
+    if (cartSubmitInFlight || leadSubmitInFlight) return;
     flushPersistDraft();
     const actionPolicy = buildActionPolicy();
     if (!actionPolicy.cartReady) {
@@ -4605,7 +5047,7 @@
       focusFirstIncomplete();
       return;
     }
-    const pricing = computePricing();
+    const pricing = getCreationPricing();
     const url = CONFIG.add_to_cart_url;
     if (!url) {
       showStatus("Кошик тимчасово недоступний. Скористайтесь Telegram-кнопкою.", "error");
@@ -4628,6 +5070,7 @@
       });
       const data = await safeJson(response);
       if (!response.ok || !data?.ok) {
+        if (handleCreationErrors(data)) return;
         const msg = data?.errors ? formatErrors(data.errors) : (data?.error || "Не вдалося додати в кошик. Спробуйте ще раз.");
         showStatus(msg, "error");
         return;
@@ -4697,7 +5140,7 @@
       return;
     }
     try {
-      const snap = buildSnapshot("safe_exit");
+      const snap = STATE.mode !== "brand" && collection.list().length ? buildCreationEnvelope("safe_exit", true) : buildSnapshot("safe_exit");
       const response = await fetch(url, {
         method: "POST",
         headers: { "X-CSRFToken": getCsrfToken(), "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
@@ -4710,6 +5153,21 @@
       console.error("[custom-print v2] safe exit failed", error);
       window.open(CONFIG.telegram_manager_url || "https://t.me/twocomms", "_blank");
     }
+  }
+
+  function handleCreationErrors(data) {
+    if (Object.keys(data?.errors || {}).some((key) => key.startsWith("gift"))) {
+      setActiveStep("gift"); showStatus(formatErrors(data.errors), "error"); return true;
+    }
+    const [id, errors] = Object.entries(data?.item_errors || {})[0] || [];
+    if (!id || !collection.get(id)) return false;
+    const fields = Object.keys(errors);
+    const step = fields.some((field) => ["files", "brief", "service_kind"].includes(field)) ? "artwork"
+      : fields.some((field) => ["quantity", "sizes_note", "size_mode"].includes(field)) ? "quantity"
+      : fields.some((field) => ["placements", "placement_note"].includes(field)) ? "zones" : "config";
+    editCollectionItem(id, step);
+    showStatus(formatErrors(errors), "error");
+    return true;
   }
 
   function setBusy(busy) {
@@ -4818,7 +5276,11 @@
         order: STATE.order,
         notes: STATE.notes,
         contact: STATE.contact,
+        gift_options: STATE.gift_options,
+        creation: { items: collection.serialize(), active_item_id: activeItemId, review: STATE.ui.collection_review },
         ui: {
+          product_view: STATE.ui.product_view,
+          multi_item_mode: STATE.ui.multi_item_mode,
           current_step: STATE.ui.current_step,
           brand_brief_open: STATE.ui.brand_brief_open,
           done_steps: Array.from(STATE.ui.done_steps),
@@ -4908,7 +5370,16 @@
       if (draft.order) Object.assign(STATE.order, draft.order);
       if (draft.notes) Object.assign(STATE.notes, draft.notes);
       if (draft.contact) Object.assign(STATE.contact, draft.contact);
+      if (draft.gift_options) Object.assign(STATE.gift_options, draft.gift_options);
+      else STATE.order.gift_enabled = false;
+      if (draft.creation) {
+        collection.restore(draft.creation.items);
+        activeItemId = /^[a-zA-Z0-9_-]{1,64}$/.test(draft.creation.active_item_id || "") ? draft.creation.active_item_id : newItemId();
+        STATE.ui.collection_review = !!draft.creation.review && collection.list().length > 0;
+      }
       if (draft.ui) {
+        STATE.ui.product_view = draft.ui.product_view === "multiple" ? "multiple" : "chooser";
+        STATE.ui.multi_item_mode = !!draft.ui.multi_item_mode;
         STATE.ui.current_step = draft.ui.current_step || "mode";
         STATE.ui.brand_brief_open = draft.ui.brand_brief_open ?? (STATE.mode === "brand" && STATE.ui.current_step === "mode");
         STATE.ui.done_steps = new Set(draft.ui.done_steps || []);
@@ -4916,6 +5387,7 @@
         STATE.ui.preview_render = draft.ui.preview_render || null;
       }
       normalizeClientState();
+      if (STATE.mode !== "brand" && !collection.list().length && ["gift", "contact"].includes(STATE.ui.current_step)) STATE.ui.current_step = "quantity";
       // Restore inputs
       if (dom.qtyInput && STATE.order.quantity) dom.qtyInput.value = STATE.order.quantity;
       if (dom.placementNoteInput) dom.placementNoteInput.value = STATE.print.placement_note || "";
@@ -4935,6 +5407,7 @@
       dom.brandContactChannelList?.querySelectorAll("[data-brand-contact-channel]").forEach((item) => item.classList.toggle("is-active", item.dataset.brandContactChannel === STATE.notes.brand_contact_channel));
       dom.brandProductList?.querySelectorAll("[data-brand-product]").forEach((item) => item.classList.toggle("is-active", (STATE.notes.brand_product_types || []).includes(item.dataset.brandProduct)));
       if (dom.giftTextInput) dom.giftTextInput.value = STATE.order.gift_text || "";
+      const cardMessageInput = root.querySelector("[data-gift-card-message]"); if (cardMessageInput) cardMessageInput.value = STATE.gift_options.certificate_text || "";
       if (dom.giftToggle) dom.giftToggle.classList.toggle("is-active", !!STATE.order.gift_enabled);
       if (dom.giftToggle) dom.giftToggle.setAttribute("aria-pressed", String(!!STATE.order.gift_enabled));
       if (dom.giftToggleState) dom.giftToggleState.textContent = STATE.order.gift_enabled ? "Увімкнено" : "Вимкнено";

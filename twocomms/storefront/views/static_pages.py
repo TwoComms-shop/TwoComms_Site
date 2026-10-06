@@ -38,9 +38,13 @@ from django.urls import reverse
 from storefront.models import BlogCategory, BlogPost, Category, CustomPrintLead, CustomPrintModerationStatus, Product, SizeGrid
 from storefront.seo_utils import _homepage_price_range_text
 from storefront.forms import CustomPrintLeadForm
+from storefront.custom_print_creation import (
+    CreationValidationError, creation_analytics_lead, creation_response, prepare_creation, save_creation,
+)
 from storefront.custom_print_config import (
     ADDON_LABELS,
     PRODUCT_LABELS,
+    ORDER_PURPOSE_LABELS,
     SESSION_CUSTOM_CART_KEY,
     TELEGRAM_MANAGER_URL,
     ZONE_LABELS,
@@ -50,6 +54,7 @@ from storefront.custom_print_config import (
     normalize_custom_print_snapshot,
 )
 from storefront.custom_print_notifications import (
+    notify_custom_print_creation,
     notify_custom_print_moderation_request,
     notify_custom_print_safe_exit,
     notify_new_custom_print_lead,
@@ -1568,6 +1573,8 @@ def custom_print_lead(request):
     """
     AJAX endpoint для новой лид-формы кастомного принта.
     """
+    if "creation_json" in request.POST:
+        return _submit_custom_print_creation(request, submission_type="lead")
     form = CustomPrintLeadForm(request.POST, request.FILES, require_artwork_files=False)
     if not form.is_valid():
         errors = {}
@@ -1608,6 +1615,41 @@ def custom_print_lead(request):
         "lead_number": lead.lead_number,
         "message": "Дякуємо! Менеджер зв’яжеться з вами найближчим часом.",
     }
+    if analytics_event_id:
+        payload["analytics_event_id"] = analytics_event_id
+    return JsonResponse(payload)
+
+
+def _submit_custom_print_creation(request, *, submission_type):
+    try:
+        creation = prepare_creation(request.POST.get("creation_json"), request.FILES,
+                                    submission_type=submission_type, verification=request.POST)
+    except CreationValidationError as exc:
+        return JsonResponse(exc.payload(), status=400)
+    analytics_event_id = (request.POST.get("analytics_event_id") or "").strip()[:120]
+    analytics = {"lead_event_id": analytics_event_id,
+                 "fbp": (request.POST.get("analytics_fbp") or "").strip()[:200],
+                 "fbc": (request.POST.get("analytics_fbc") or "").strip()[:200]} if analytics_event_id else None
+    leads, cart_items = save_creation(creation, cart_builder=_build_custom_cart_session_item if submission_type == "cart" else None,
+                                     analytics=analytics)
+    if submission_type == "cart":
+        existing = request.session.get(SESSION_CUSTOM_CART_KEY) or {}
+        custom_cart = {**(existing if isinstance(existing, dict) else {}), **cart_items}
+        request.session[SESSION_CUSTOM_CART_KEY] = custom_cart
+        request.session.modified = True
+        from storefront.views.utils import _reset_monobank_session
+        _reset_monobank_session(request, drop_pending=True)
+    transaction.on_commit(lambda: notify_custom_print_creation(leads, submission_type=submission_type), robust=True)
+    if analytics_event_id:
+        event_lead = creation_analytics_lead(leads)
+        transaction.on_commit(lambda: _send_custom_print_lead_capi(event_lead, request, analytics_event_id), robust=True)
+    record_custom_print_event(request, "custom_print_add_to_cart" if submission_type == "cart" else "custom_print_send_to_manager",
+                              lead=leads[0], step_key="contact",
+                              metadata={"submission_type": submission_type, "creation_id": creation.id, "item_count": len(leads)})
+    payload = creation_response(creation, leads)
+    payload["message"] = "Замовлення передано менеджеру." if submission_type == "lead" else "Усі вироби додано в кошик і передано менеджеру на модерацію."
+    if submission_type == "cart":
+        payload.update(cart_url=reverse("cart"), custom_cart_count=len(custom_cart))
     if analytics_event_id:
         payload["analytics_event_id"] = analytics_event_id
     return JsonResponse(payload)
@@ -1712,6 +1754,10 @@ def _build_custom_cart_session_item(lead) -> dict:
         "b2b_discount_per_unit": pricing.get("b2b_discount_per_unit") or 0,
         "mode": snapshot.get("mode") or lead.client_kind or "personal",
         "order_purpose": snapshot.get("order_purpose") or ("organization" if lead.client_kind == "brand" else "personal"),
+        "creation": snapshot.get("creation") or {},
+        "gift_extras": (snapshot.get("creation") or {}).get("gift") or {},
+        "gift_charge_owner": (snapshot.get("creation") or {}).get("gift_owner_lead_id") == lead.pk,
+        "order_purpose_label": str(ORDER_PURPOSE_LABELS.get(snapshot.get("order_purpose"), ORDER_PURPOSE_LABELS["personal"])),
         "service_kind": artwork_payload.get("service_kind") or lead.service_kind or "",
         "file_triage_status": artwork_payload.get("triage_status") or lead.file_triage_status or "",
         "add_ons": raw_add_ons,
@@ -1727,6 +1773,8 @@ def custom_print_add_to_cart(request):
     V2 endpoint: create a CustomPrintLead (source=custom_print_cart) and
     push a lightweight reference into the session-based custom cart.
     """
+    if "creation_json" in request.POST:
+        return _submit_custom_print_creation(request, submission_type="cart")
     form = CustomPrintLeadForm(request.POST, request.FILES, require_artwork_files=True)
     if not form.is_valid():
         errors = {}
@@ -1873,6 +1921,7 @@ def custom_print_submit_review(request):
     leads = list(CustomPrintLead.objects.filter(pk__in=lead_ids))
     notified = 0
     now = timezone.now()
+    changed_lead_ids = set()
     for lead in leads:
         # Skip if already awaiting or approved
         if lead.moderation_status in (CustomPrintModerationStatus.AWAITING_REVIEW,
@@ -1886,11 +1935,7 @@ def custom_print_submit_review(request):
         key = f"custom:{lead.pk}"
         if key in custom_cart and isinstance(custom_cart[key], dict):
             custom_cart[key]["moderation_status"] = CustomPrintModerationStatus.AWAITING_REVIEW
-        try:
-            if notify_custom_print_moderation_request(lead):
-                notified += 1
-        except Exception:
-            logging.getLogger(__name__).exception("notify_custom_print_moderation_request failed for lead %s", lead.pk)
+        changed_lead_ids.add(lead.pk)
         record_custom_print_event(
             request,
             "custom_print_send_to_manager",
@@ -1898,6 +1943,22 @@ def custom_print_submit_review(request):
             step_key=(lead.exit_step or "contact"),
             metadata={"submission_type": "cart_review"},
         )
+
+    grouped = {}
+    for lead in leads:
+        meta = (lead.config_draft_json or {}).get("creation") or {}
+        group_key = meta.get("id") or f"legacy:{lead.pk}"
+        grouped.setdefault(group_key, []).append(lead)
+    for group in grouped.values():
+        if not changed_lead_ids.intersection(lead.pk for lead in group):
+            continue
+        group.sort(key=lambda lead: ((lead.config_draft_json or {}).get("creation") or {}).get("item_index", 0))
+        try:
+            is_grouped = bool((group[0].config_draft_json or {}).get("creation"))
+            if (notify_custom_print_creation(group, submission_type="cart") if is_grouped else notify_custom_print_moderation_request(group[0])):
+                notified += 1
+        except Exception:
+            logging.getLogger(__name__).exception("Custom-print review notification failed")
 
     request.session[SESSION_CUSTOM_CART_KEY] = custom_cart
     request.session.modified = True
@@ -1948,7 +2009,9 @@ def custom_print_moderation_action(request, lead_id: int, action: str):
                                          ok=False, status_code=403)
 
     if action == "approve":
-        if Decimal(str(lead.final_price_value or 0)) <= 0:
+        extras = ((lead.config_draft_json or {}).get("creation") or {}).get("gift") or {}
+        quote_required = (extras.get("box") or {}).get("estimate_required") and lead.approved_price is None
+        if quote_required or Decimal(str(lead.final_price_value or 0)) <= 0:
             return _render_moderation_result(
                 request,
                 title="Потрібна ціна",
@@ -2004,6 +2067,21 @@ def custom_print_safe_exit(request):
         payload = json.loads((request.body or b"{}").decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError):
         return JsonResponse({"ok": False, "error": "Некоректний safe-exit payload."}, status=400)
+
+    if isinstance(payload, dict) and "items" in payload:
+        try:
+            creation = prepare_creation(payload, submission_type="safe_exit", partial=True)
+        except CreationValidationError as exc:
+            return JsonResponse(exc.payload(), status=400)
+        contact = creation.items[0]["snapshot"]["contact"]
+        leads, _ = save_creation(creation) if all(contact.get(key) for key in ("name", "channel", "value")) else ([], {})
+        transaction.on_commit(lambda: notify_custom_print_creation(leads, submission_type="safe_exit", creation=creation), robust=True)
+        record_custom_print_event(request, "custom_print_safe_exit", lead=leads[0] if leads else None,
+                                  step_key=(creation.items[-1]["snapshot"].get("ui") or {}).get("current_step"),
+                                  metadata={"submission_type": "safe_exit", "creation_id": creation.id, "item_count": len(creation.items), "had_contact": bool(leads)})
+        response = creation_response(creation, leads)
+        response["manager_url"] = TELEGRAM_MANAGER_URL
+        return JsonResponse(response)
 
     snapshot = normalize_custom_print_snapshot(payload if isinstance(payload, dict) else {})
     contact = snapshot.get("contact") or {}

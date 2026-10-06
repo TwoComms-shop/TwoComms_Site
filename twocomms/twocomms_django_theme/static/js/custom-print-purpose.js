@@ -11,7 +11,7 @@
 
   function createReveal(element) {
     let pending = null;
-    const duration = 2400;
+    const duration = 1250;
 
     function finish(completed) {
       if (!pending) return;

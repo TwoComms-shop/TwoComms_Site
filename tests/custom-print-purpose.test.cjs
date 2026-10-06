@@ -21,15 +21,16 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '../twocomms/twocomms_djang
  const classes=new Set();
  const el={hidden:false,offsetWidth:200,classList:{add:x=>classes.add(x),remove:x=>classes.delete(x)}};
  const reveal=tools.createReveal(el);
+ assert.equal(reveal.duration,1250,'the complete gift response lasts 1.25 seconds');
  assert.equal(el.portaled,undefined,'gift must stay on its button');
  const first=reveal.play();
  assert.ok(classes.has('is-gift-opening'));
- assert.equal([...timers.values()][0].ms,2400);
+ assert.equal([...timers.values()][0].ms,1250);
  reveal.cancel();
  assert.equal(await first,false,'exit cancels transition');
  assert.equal(el.hidden,false,'the purpose card must remain visible');
  assert.equal(classes.has('is-gift-opening'),false);
- assert.equal(timers.size,0);
+ assert.equal(timers.size,0,'cancelled animation removes its timer');
  const repeat=reveal.play();
  const newest=reveal.play();
  assert.equal(await repeat,false,'only latest reveal may advance');
@@ -37,6 +38,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '../twocomms/twocomms_djang
  assert.equal(await newest,true);
  assert.equal(el.hidden,false,'the purpose card must remain visible');
  assert.equal(classes.has('is-gift-opening'),false);
+ assert.equal(timers.size,0,'completed animation removes its timer');
  reduced=true;
  assert.equal(await reveal.play(),true);
  assert.equal(timers.size,0,'reduced motion never waits');
@@ -46,8 +48,11 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '../twocomms/twocomms_djang
  const preference=reveal.play();
  motionChange({matches:true});
  assert.equal(await preference,true,'new reduced-motion preference advances immediately');
+ assert.equal(timers.size,0,'preference change clears the timer');
  const leaving=reveal.play(); pagehide();
  assert.equal(await leaving,false);
+ assert.equal(timers.size,0,'page exit clears the timer');
+ assert.equal(classes.has('is-gift-opening'),false,'page exit cleans the card');
  assert.equal(await tools.createReveal(null).play(),true,'missing decoration must not block gift flow');
  console.log('custom print purpose lifecycle: ok');
 })().catch(error=>{console.error(error);process.exit(1)});

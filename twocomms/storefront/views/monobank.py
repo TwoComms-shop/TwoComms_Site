@@ -38,6 +38,8 @@ import requests
 
 from base64_utils import InvalidBase64, strict_b64decode
 from ..models import Product, PromoCode
+from storefront.custom_print_creation import CreationValidationError, custom_print_checkout_payload
+from orders.services.delivery_payment import DeliveryPaymentError, build_custom_print_delivery_contract
 from orders.nova_poshta_data import apply_nova_poshta_refs
 from orders.nova_poshta_documents import normalize_checkout_phone
 from orders.models import Order as OrderModel, OrderItem, PaymentAttempt
@@ -777,6 +779,11 @@ def _create_payment_attempt_invoice(request):
                 'promo_eligible': part['promo_eligible'],
             })
     gross += sum((Decimal(str(lead.final_price_value)) for lead in approved_leads), Decimal('0.00'))
+    try:
+        custom_creation_data = custom_print_checkout_payload(approved_leads)
+    except CreationValidationError:
+        return JsonResponse({'success': False, 'error_code': 'custom_print_delivery_conflict', 'field': 'gift_delivery',
+                             'error': 'Подарункові опції та доставку потрібно узгодити з менеджером перед оплатою.'}, status=400)
     if gross <= 0:
         return JsonResponse({
             'success': False,
@@ -842,6 +849,7 @@ def _create_payment_attempt_invoice(request):
             if payable <= 0:
                 raise PromoReservationError('invalid_amount')
             payment_amount = min(Decimal('200.00'), payable) if pay_type == 'prepay_200' else payable
+            build_custom_print_delivery_contract(gross_total=gross, discount_amount=discount, creation_data=custom_creation_data)
             attempt = PaymentAttempt.objects.create(
                 fingerprint=fingerprint,
                 user=request.user if request.user.is_authenticated else None,
@@ -859,6 +867,7 @@ def _create_payment_attempt_invoice(request):
                     'cart': snapshot_items,
                     'brigade_commerce': brigade_pricing.public_metadata(),
                     'custom_print_lead_ids': [lead.pk for lead in approved_leads],
+                    'custom_print_creation': custom_creation_data,
                     'custom_print_leads': [
                         {'lead_number': lead.lead_number, 'price': str(lead.final_price_value), 'qty': int(getattr(lead, 'quantity', 0) or 1)}
                         for lead in approved_leads
@@ -880,6 +889,9 @@ def _create_payment_attempt_invoice(request):
             attempt.event_state = invoice_lease_state
             attempt.last_status_at = timezone.now()
             attempt.save(update_fields=['status', 'event_state', 'last_status_at', 'updated'])
+    except DeliveryPaymentError:
+        return JsonResponse({'success': False, 'error_code': 'custom_print_delivery_conflict', 'field': 'gift_delivery',
+                             'error': 'Сума або спосіб доставки подарунка потребують погодження менеджера.'}, status=400)
     except PromoReservationError:
         return JsonResponse({
             'success': False,

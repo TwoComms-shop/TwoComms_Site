@@ -246,6 +246,10 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
         custom_ids = snapshot.get('custom_print_lead_ids') or []
         if custom_ids:
             CustomPrintLead.objects.filter(pk__in=custom_ids).update(order=order)
+        custom_creation = snapshot.get('custom_print_creation')
+        if isinstance(custom_creation, dict) and custom_creation.get('groups'):
+            from storefront.custom_print_creation import attach_custom_print_checkout
+            attach_custom_print_checkout(order, creation_data=custom_creation, lead_ids=custom_ids)
 
         if attempt.promo_code_id:
             from orders.promo_reservations import consume_payment_attempt_promo

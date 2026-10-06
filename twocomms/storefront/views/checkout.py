@@ -33,6 +33,8 @@ from ..utm_tracking import (
     record_order_action,
 )
 
+from storefront.custom_print_creation import CreationValidationError, attach_custom_print_checkout, custom_print_checkout_payload
+
 logger = logging.getLogger(__name__)
 
 class _ZeroTotalOrderError(Exception):
@@ -138,6 +140,12 @@ def create_order(request):
                 _("Кастомний принт ще очікує на перевірку менеджера. Оплата стане доступною після погодження.")
             )
             return redirect('cart')
+
+    try:
+        custom_print_checkout_payload(approved_custom_leads)
+    except CreationValidationError:
+        messages.error(request, _("Подарункові опції та доставку потрібно узгодити з менеджером перед оплатою."))
+        return redirect('cart')
 
     # Get user data
     try:
@@ -423,6 +431,8 @@ def create_order(request):
                 request.session.pop('promo_code', None)
                 request.session.pop('promo_code_data', None)
                 request.session.modified = True
+
+            attach_custom_print_checkout(order, leads=approved_custom_leads)
 
             # Clear regular cart — approved custom items are now attached to the order.
             clear_cart(request)
