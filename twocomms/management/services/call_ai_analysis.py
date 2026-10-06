@@ -577,7 +577,7 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                 deadline: float | None, accounting_observer=None,
                 candidate_index: int = 0,
                 accounting_admission_required: bool = False,
-                pre_dispatch_guard=None) -> tuple[str, dict | None]:
+                pre_dispatch_guard=None, dispatch_budget=None) -> tuple[str, dict | None]:
     """Один (key, model) кандидат із ретраями на transient.
 
     Повертає ('ok', result) | ('key_429', None) | ('model_skip', None).
@@ -706,6 +706,8 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                 call_kwargs["pre_dispatch_guard"] = pre_dispatch_guard
             if attempt_boundary is not None:
                 call_kwargs["attempt_boundary"] = attempt_boundary
+            if dispatch_budget is not None:
+                call_kwargs["dispatch_budget"] = dispatch_budget
             parsed, usage = _gemini_call_once(
                 model, request_payload, key_value, **call_kwargs
             )
@@ -846,7 +848,7 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
                    timeout: tuple | None = None, deadline_seconds: float | None = None,
                    log_cb=None, model_override: str | None = None,
                    reasoning_task: str | None = None,
-                   pre_dispatch_guard=None) -> dict:
+                   pre_dispatch_guard=None, inline_admission_profile=None) -> dict:
     """Прогоняє payload через пул ключів ролі та цепочку моделей.
 
     Кругова стратегія: у кожному КРУЗІ — ручний ключ (якщо є) першим, далі весь
@@ -875,6 +877,26 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
     n_attempts = gemini_keys.attempts_per_model(role)
     rounds = gemini_keys.max_rounds(role)
     models = gemini_keys.task_model_chain(role, task, model_override)
+    receipt_dispatch_budget = None
+    if inline_admission_profile is not None and role == "management" and task == "media_analysis":
+        from management.services.gemini_accounting_runtime import ReceiptInlineAdmission, RECEIPT_INLINE_ESTIMATOR_VERSION
+        preferred = "gemini-3.5-flash"
+        capability = gemini_model_registry.capability_for(preferred)
+        if (type(inline_admission_profile) is ReceiptInlineAdmission
+                and inline_admission_profile.version == RECEIPT_INLINE_ESTIMATOR_VERSION):
+            from management.services.ig_provider_dispatch_budget import ProviderDispatchBudget
+            # Separate provisional receipt consumer: at most two conservative
+            # HTTP boundaries per claim. Quota/UNKNOWN denials consume zero.
+            # Five durable observation claims bound this consumer to ten;
+            # this is not the live reply lineage's separate 8/2/1 budget.
+            receipt_dispatch_budget = ProviderDispatchBudget(max_dispatches=2)
+        if (receipt_dispatch_budget is not None and not model_override
+                and preferred in models and capability is not None and capability.free_quota
+                and capability.supports_image and capability.supports_structured_output):
+            # Provisional receipt observations retain manager authority. Prefer
+            # the existing ordinary Flash model before freezing BOTH the plan
+            # and execution candidates; preserve every configured fallback.
+            models = [preferred] + [model for model in models if model != preferred]
     call_timeout = timeout or (CHAT_TIMEOUT if role == "chat" else GEMINI_TIMEOUT)
     if deadline_seconds is None:
         deadline_seconds = CHAT_DEADLINE_SECONDS if role == "chat" else None
@@ -955,6 +977,10 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
                     candidate_plan=accounting_plan,
                     deadline_seconds=deadline_seconds,
                 )
+                # Ephemeral receipt capability; never part of the provider
+                # payload, request graph, or general background permission.
+                if inline_admission_profile is not None and getattr(accounting_observer, "enabled", False):
+                    accounting_observer._receipt_inline_admission = inline_admission_profile
                 accounting_ownership_blocked = bool(
                     getattr(accounting_observer, "provider_blocked", False)
                 )
@@ -996,6 +1022,17 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
     def _call_graph_owned(*args, **kwargs):
         """Terminalize the owned graph before propagating any gateway exit."""
         try:
+            if receipt_dispatch_budget is not None:
+                reason = receipt_dispatch_budget.dispatch_block_reason(args[2])
+                if reason:
+                    # Check before candidate admission/reservation so a third
+                    # never-dispatched candidate cannot be recorded as spend.
+                    if accounting_observer is not None:
+                        accounting_observer.record_remaining(reason)
+                    error = CallAIAnalysisError(f"Gemini receipt dispatch rejected: {reason}.")
+                    error.failure_kind = reason
+                    raise error
+                kwargs["dispatch_budget"] = receipt_dispatch_budget
             if pre_dispatch_guard is not None:
                 kwargs["pre_dispatch_guard"] = pre_dispatch_guard
             return _call_combo(*args, **kwargs)
@@ -2855,11 +2892,13 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
                          max_actual_dispatches: int | None = None,
                          request_policy_manifest=None,
                          legacy_provider_root: bool = False,
-                         pre_dispatch_guard=None) -> dict:
+                         pre_dispatch_guard=None, inline_admission_profile=None) -> dict:
     """Текстовий (не-JSON) запит для діалогового бота. Пул ключів ролі + цепочка
     моделей. У result['parsed'] — сирий текст відповіді моделі.
     log_cb (опц.) отримує короткі рядки про кожну спробу (для консолі бота)."""
     if role == "chat":
+        if inline_admission_profile is not None:
+            raise ValueError("receipt inline admission is supported only for management media analysis")
         if pre_dispatch_guard is not None:
             raise ValueError("source pre-dispatch guards are supported only for nonlive generation")
         return _run_chat_with_pool(
@@ -2887,6 +2926,12 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
     ):
         raise ValueError("result validation is supported only for live chat")
     bounded_management = role == "management"
+    if inline_admission_profile is not None:
+        from management.services.gemini_accounting_runtime import ReceiptInlineAdmission
+        if (type(inline_admission_profile) is not ReceiptInlineAdmission
+                or role != "management" or reasoning_task != "media_analysis"
+                or not callable(pre_dispatch_guard)):
+            raise ValueError("receipt inline admission requires a source capability and fresh receipt guard")
     return _run_with_pool(
         role,
         payload,
@@ -2903,6 +2948,7 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
             "customer_chat" if role == "chat" else "reporting_summary"
         ),
         pre_dispatch_guard=pre_dispatch_guard,
+        inline_admission_profile=inline_admission_profile,
     )
 
 
@@ -3213,6 +3259,9 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
     if attempt_boundary is not None:
         attempt_boundary.pre_dispatch_guard = pre_dispatch_guard
         attempt_boundary.dispatch_deadline = dispatch_deadline
+        prepare_receipt_inline = getattr(attempt_boundary, "prepare_receipt_inline", None)
+        if callable(prepare_receipt_inline):
+            prepare_receipt_inline(body)
         generation = payload.get("generationConfig") or {}
         cap = generation.get("maxOutputTokens")
         level = (generation.get("thinkingConfig") or {}).get("thinkingLevel")

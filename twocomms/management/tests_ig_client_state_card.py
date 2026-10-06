@@ -193,7 +193,8 @@ class CapturedClientStateCardTests(SimpleTestCase):
         state = self.capture({"payment_truth": payment, "manager_notes": [note]})
         slots = state.as_dict()["slots"]
         self.assertEqual(slots["payment.current"]["value"]["confirmed_paid_amount"], "0.00")
-        self.assertEqual(slots["payment.current"]["authority"], "payment_ledger")
+        self.assertEqual(slots["payment.current"]["authority"], "derived")
+        self.assertEqual(slots["payment.current"]["snapshot_state"], "unverified_payment")
         self.assertEqual(slots["context.manager_note.0"]["authority"], "untrusted_manager_note")
         rendered = render_client_state_prompt(state, budget=4000)
         self.assertIn("untrusted context", rendered.text)

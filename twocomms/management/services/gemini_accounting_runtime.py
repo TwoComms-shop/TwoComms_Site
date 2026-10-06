@@ -50,6 +50,15 @@ ACCOUNTING_POLICY_VERSION = "gemini-accounting-shadow-v1"
 OWNER_PROFILE_VERSION = "owner-observed-2026-08-29.v1"
 ACTIVE_QUOTA_PROFILE_VERSION = "production-observed-2026-08-31.v2"
 ACTIVE_ESTIMATOR_VERSION = "json_bytes_div4_v1"
+# An independently accepted media component, never a replacement for the
+# calibrated text profile. Google documents HIGH Gemini 3 images at max 1120
+# tokens; 8192 reserves over seven times that allocation, including overhead.
+# https://ai.google.dev/gemini-api/docs/generate-content/media-resolution
+RECEIPT_INLINE_ESTIMATOR_VERSION = "ig_receipt_images_high_v1"
+RECEIPT_IMAGE_TOKEN_RESERVE = 8192
+RECEIPT_INLINE_MAX_IMAGES = 8
+RECEIPT_INLINE_MAX_RAW_BYTES = 12 * 1024 * 1024
+RECEIPT_INLINE_MAX_TEXT_BYTES = 64 * 1024
 RANKING_EVIDENCE_FRESH_SECONDS = 24 * 60 * 60
 ATTEMPT_PERMIT_SECONDS = 180
 DB_RETRY_DELAYS = (0.0, 0.01, 0.03)
@@ -63,6 +72,151 @@ _PLAN_FIELDS = frozenset({
     "identity_status",
     "initial_skip_reason",
 })
+
+
+@dataclass(frozen=True)
+class ReceiptInlineSource:
+    source_message_id: int
+    source_part_id: str
+    content_hash: str
+    storage_name: str
+    use_token: str
+
+
+@dataclass(frozen=True)
+class ReceiptInlineAdmission:
+    """Private source capability supplied by the existing receipt consumer.
+
+    Contains no caller-selected token allowance. It remains ephemeral and is
+    never serialized to the provider or persisted in the request graph.
+    """
+    sources: tuple[ReceiptInlineSource, ...]
+    version: str = RECEIPT_INLINE_ESTIMATOR_VERSION
+
+
+@dataclass(frozen=True)
+class _ReceiptInlineEstimate:
+    serialized_bytes: int
+    inline_count: int
+    prompt_tokens: int
+    sources: tuple[ReceiptInlineSource, ...]
+
+
+def _estimate_receipt_inline(body, *, model, admission):
+    """Validate the exact final body locally; unsupported envelopes stay UNKNOWN.
+
+    Base64 bytes are transport, not text tokens. Only after strict decoding,
+    actual format/dimension verification and exact private-source hash matching
+    may their encoded data be replaced for the calibrated text component.
+    No countTokens, metadata, health or other provider I/O is performed.
+    """
+    if type(admission) is not ReceiptInlineAdmission or admission.version != RECEIPT_INLINE_ESTIMATOR_VERSION:
+        return None
+    import base64
+    import io
+    import warnings
+    from PIL import Image
+    from management.services import gemini_model_registry
+    from management.services.ig_media_url_policy import MAX_IMAGE_PIXELS
+
+    capability = gemini_model_registry.capability_for(model)
+    if (not str(model).startswith("gemini-3") or capability is None
+            or not capability.free_quota or not capability.supports_image
+            or not capability.supports_structured_output):
+        return None
+    sources = admission.sources
+    if type(sources) is not tuple or not 1 <= len(sources) <= RECEIPT_INLINE_MAX_IMAGES:
+        return None
+    bindings = set()
+    for source in sources:
+        if (type(source) is not ReceiptInlineSource
+                or type(source.source_message_id) is not int or source.source_message_id <= 0
+                or not isinstance(source.source_part_id, str) or not 1 <= len(source.source_part_id) <= 64
+                or not isinstance(source.content_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", source.content_hash)
+                or not isinstance(source.storage_name, str) or not source.storage_name or len(source.storage_name) > 512
+                or not isinstance(source.use_token, str) or not source.use_token or len(source.use_token) > 128):
+            return None
+        binding = (source.source_message_id, source.source_part_id)
+        if binding in bindings:
+            return None
+        bindings.add(binding)
+    try:
+        payload = json.loads(body)
+        if not isinstance(payload, dict) or set(payload) != {"contents", "generationConfig"}:
+            return None
+        generation = payload["generationConfig"]
+        if (not isinstance(generation, dict)
+                or set(generation) - {"temperature", "maxOutputTokens", "responseMimeType", "thinkingConfig", "mediaResolution"}
+                or generation.get("mediaResolution") != "MEDIA_RESOLUTION_HIGH"
+                or generation.get("responseMimeType") != "application/json"
+                or type(generation.get("maxOutputTokens")) is not int
+                or not 1 <= generation["maxOutputTokens"] <= 4096):
+            return None
+        contents = payload["contents"]
+        if not isinstance(contents, list) or len(contents) != 1:
+            return None
+        content = contents[0]
+        if not isinstance(content, dict) or set(content) != {"role", "parts"} or content["role"] != "user":
+            return None
+        parts = content["parts"]
+        if not isinstance(parts, list) or not 1 <= len(parts) <= len(sources) + 4:
+            return None
+        total_raw, count = 0, 0
+        for part in parts:
+            if not isinstance(part, dict):
+                return None
+            if set(part) == {"text"} and isinstance(part["text"], str):
+                continue
+            if set(part) != {"inline_data"} or count >= len(sources):
+                return None
+            inline = part["inline_data"]
+            if not isinstance(inline, dict) or set(inline) != {"mime_type", "data"}:
+                return None
+            mime, encoded = inline["mime_type"], inline["data"]
+            formats = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
+            if (mime not in formats or not isinstance(encoded, str) or not encoded
+                    or len(encoded) > ((RECEIPT_INLINE_MAX_RAW_BYTES + 2) // 3) * 4):
+                return None
+            raw = base64.b64decode(encoded, validate=True)
+            total_raw += len(raw)
+            if (not raw or total_raw > RECEIPT_INLINE_MAX_RAW_BYTES
+                    or hashlib.sha256(raw).hexdigest() != sources[count].content_hash):
+                return None
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(raw)) as image:
+                    width, height = image.size
+                    if (image.format != formats[mime] or getattr(image, "n_frames", 1) != 1
+                            or width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS):
+                        return None
+                    image.load()
+            # Keep MIME/envelope overhead in the text component; replace only
+            # verified encoded bytes, never the source identity or media token
+            # contribution. The exact body still goes unchanged to HTTP.
+            inline["data"] = ""
+            count += 1
+        if count != len(sources):
+            return None
+        text_bytes = len(json.dumps(payload).encode("utf-8"))
+        if text_bytes > RECEIPT_INLINE_MAX_TEXT_BYTES:
+            return None
+        return _ReceiptInlineEstimate(len(body), count,
+            max(1, int(math.ceil(text_bytes / 4))) + count * RECEIPT_IMAGE_TOKEN_RESERVE, sources)
+    except (TypeError, ValueError, KeyError, OSError, SyntaxError, Image.DecompressionBombError, Image.DecompressionBombWarning):
+        return None
+
+
+def _receipt_inline_sources_allowed(estimate):
+    """Recheck owner/privacy/reset/episode and the original private blob lease."""
+    from management.services.ig_receipt_inspection import _source_allowed
+    try:
+        return all(_source_allowed({"message_id": source.source_message_id,
+                    "source_part_id": source.source_part_id,
+                    "content_hash": source.content_hash,
+                    "storage_name": source.storage_name}, source.use_token) is True
+                   for source in estimate.sources)
+    except Exception:
+        return False
 
 
 @dataclass(frozen=True)
@@ -1407,6 +1561,11 @@ class AttemptBoundary:
     dispatch_deadline: float | None = None
     provider_deadline_at: dt.datetime | None = None
     dispatch_manifest: dict | None = None
+    receipt_inline_estimate: _ReceiptInlineEstimate | None = None
+
+    def prepare_receipt_inline(self, body: bytes) -> None:
+        self.receipt_inline_estimate = _estimate_receipt_inline(body, model=self.model,
+            admission=getattr(self.observer, "_receipt_inline_admission", None))
 
     def prepare_dispatch_manifest(self, body: bytes) -> None:
         """Capture the finalized bytes; never retain the body on this boundary."""
@@ -2062,6 +2221,12 @@ class RequestObserver:
         now = timezone.now()
         identity = self._identity_for(boundary)
         estimated = max(1, int(math.ceil(serialized_bytes / 4)))
+        receipt_estimate = getattr(boundary, "receipt_inline_estimate", None)
+        accepted_inline = bool(inline_count and type(receipt_estimate) is _ReceiptInlineEstimate
+            and receipt_estimate.serialized_bytes == serialized_bytes
+            and receipt_estimate.inline_count == inline_count)
+        if accepted_inline:
+            estimated = receipt_estimate.prompt_tokens
         profile = self._active_profile(boundary.model, now) if identity else None
 
         with transaction.atomic():
@@ -2071,6 +2236,15 @@ class RequestObserver:
             graph = self._lock_valid_boundary_graph(boundary, check_deadline=False)
             if graph is None:
                 return False
+            # Source capabilities authorize this receipt consumer only. A
+            # prepared image estimate is never permission for another lane,
+            # role, task, or an expired/reset/erased source.
+            if accepted_inline and (self._role_for_graph(graph) != "management"
+                    or graph.reasoning_task != "media_analysis"
+                    or not self.enforce_nonlive
+                    or not _receipt_inline_sources_allowed(receipt_estimate)
+                    or not callable(getattr(boundary, "pre_dispatch_guard", None))):
+                accepted_inline = False
             context = (graph.policy_manifest or {}).get("request_context")
             if context is not None and not boundary.dispatch_manifest:
                 self._record_final_admission_denial_locked(graph, boundary, profile=profile,
@@ -2162,10 +2336,10 @@ class RequestObserver:
                 elif int(state.in_flight_count or 0) >= int(profile.permit_limit):
                     shadow_decision = GeminiRequestAttempt.ShadowDecision.DENY
                     deny_reason = "permit_exhausted"
-                elif not inline_count and prompt_60 + estimated > int(profile.input_tpm_limit):
+                elif (not inline_count or accepted_inline) and prompt_60 + estimated > int(profile.input_tpm_limit):
                     shadow_decision = GeminiRequestAttempt.ShadowDecision.DENY
                     deny_reason = "tpm_exhausted"
-                elif inline_count or (profile.estimator_version != ACTIVE_ESTIMATOR_VERSION
+                elif (inline_count and not accepted_inline) or (profile.estimator_version != ACTIVE_ESTIMATOR_VERSION
                         if self.enforce_nonlive else profile.estimator_version == "shadow-calibration-required"):
                     shadow_decision = GeminiRequestAttempt.ShadowDecision.UNKNOWN
                     deny_reason = "estimator_uncalibrated"

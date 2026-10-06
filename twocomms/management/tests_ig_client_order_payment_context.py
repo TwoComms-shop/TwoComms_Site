@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import connection
@@ -138,11 +139,38 @@ class ClientOrderPaymentContextTests(TestCase):
                 self._order(f"LIST-{index}"), client=client, actor=self.manager
             )
 
-        with CaptureQueriesContext(connection) as queries:
+        from management.services.ig_commerce_projection import captured_selection_for
+
+        with CaptureQueriesContext(connection) as queries, patch(
+            "management.services.ig_commerce_projection.captured_selection_for", wraps=captured_selection_for,
+        ) as selection_reader:
             response = self.client.get(reverse("management_bot_clients_api"))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()["clients"]), 20)
+        selection_reader.assert_not_called()
         # The response has a fixed set of workspace queries; a context lookup
         # for every displayed card would exceed this bound.
         self.assertLessEqual(len(queries), 35)
+
+    def test_list_reads_existing_owned_selection_without_reading_absent_or_wrong_scope(self):
+        from management.ig_bot_models import IgCommerceSelectionSession
+        from management.services.ig_commerce_projection import captured_selection_for
+
+        current = IgClient.get_or_create_for_sender("list-selection-current")
+        IgCommerceSelectionSession.objects.create(client=current, generation=1, lines=[])
+        wrong_scope = IgClient.get_or_create_for_sender("list-selection-wrong-scope")
+        IgCommerceSelectionSession.objects.create(client=wrong_scope, commercial_episode=self.episode, generation=1, lines=[])
+        closed = IgClient.get_or_create_for_sender("list-selection-closed")
+        IgCommerceSelectionSession.objects.create(client=closed, generation=1, state="closed", open_slot=None, lines=[])
+        with patch(
+            "management.services.ig_commerce_projection.captured_selection_for", wraps=captured_selection_for,
+        ) as selection_reader:
+            response = self.client.get(reverse("management_bot_clients_api"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([call.args[0].pk for call in selection_reader.call_args_list], [current.pk])
+        cards = {row["id"]: row for row in response.json()["clients"]}
+        # An open session without accepted source evidence remains unconfirmed;
+        # the bulk presence check itself grants no configuration authority.
+        for client_id in (current.pk, wrong_scope.pk, closed.pk):
+            self.assertEqual(cards[client_id]["source_selection"], {})

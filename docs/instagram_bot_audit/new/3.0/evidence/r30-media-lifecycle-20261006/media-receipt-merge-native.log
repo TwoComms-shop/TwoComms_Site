@@ -1,0 +1,28 @@
+../Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+................................................F...F..................................................................................................................................................................
+======================================================================
+FAIL: test_deferred_attempt_clears_old_facts_while_lease_is_held (management.tests_ig_receipt_inspection.ReceiptSourceAdmissionTests.test_deferred_attempt_clears_old_facts_while_lease_is_held)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/management/tests_ig_receipt_inspection.py", line 366, in test_deferred_attempt_clears_old_facts_while_lease_is_held
+    self.assertTrue(receipts._persist_bound_inspection(self.item, token, allow_deferred=True))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_successful_observation_is_memoized_before_blob_lease_release (management.tests_ig_receipt_inspection.ReceiptSourceAdmissionTests.test_successful_observation_is_memoized_before_blob_lease_release)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/management/tests_ig_receipt_inspection.py", line 393, in test_successful_observation_is_memoized_before_blob_lease_release
+    self.assertTrue(receipts._persist_bound_inspection(self.item, token))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 217 tests in 9.502s
+
+FAILED (failures=2)
+Found 217 test(s).
+System check identified no issues (0 silenced).
+maintenance active — daemon exit

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 
 from django.utils import timezone
 
@@ -143,13 +144,20 @@ def classify_media_roles(images: list[tuple[str, bytes]] | None) -> list[dict]:
     if not images:
         return []
     parts: list[dict] = [{"text": MEDIA_ROLE_INSTRUCTION}]
+    from management.services.ig_media_url_policy import SUPPORTED_INLINE_IMAGE_MIMES
+
+    source_indexes = []
     usable_count = 0
-    for mime, raw in images[:MAX_MEDIA_ROLE_IMAGES]:
+    for source_index, (mime, raw) in enumerate(images[:MAX_MEDIA_ROLE_IMAGES]):
+        mime = str(mime or "").split(";", 1)[0].strip().lower()
+        if mime not in SUPPORTED_INLINE_IMAGE_MIMES or not isinstance(raw, bytes) or not raw:
+            continue
         try:
             encoded = base64.b64encode(raw).decode()
         except Exception:
             continue
         parts.append({"inline_data": {"mime_type": str(mime or "image/jpeg"), "data": encoded}})
+        source_indexes.append(source_index)
         usable_count += 1
     if not usable_count:
         return []
@@ -173,6 +181,8 @@ def classify_media_roles(images: list[tuple[str, bytes]] | None) -> list[dict]:
     for raw_item in raw_items:
         if not isinstance(raw_item, dict):
             continue
+        if type(raw_item.get("source_image_index")) is not int or isinstance(raw_item.get("confidence"), bool):
+            continue
         try:
             image_index = int(raw_item.get("source_image_index"))
             confidence = float(raw_item.get("confidence") or 0)
@@ -194,13 +204,14 @@ def classify_media_roles(images: list[tuple[str, bytes]] | None) -> list[dict]:
             or image_index >= usable_count
             or image_index in seen_indexes
             or role not in allowed_roles
+            or not math.isfinite(confidence)
             or confidence < 0
             or confidence > 1
         ):
             continue
         seen_indexes.add(image_index)
         result.append({
-            "source_image_index": image_index,
+            "source_image_index": source_indexes[image_index],
             "role": role,
             "type_code": type_code,
             "confidence": confidence,

@@ -30,6 +30,7 @@ _VIEW_KEYS = {
     "canonical_selection", "response_plan_digest", "memory_head_version",
     "memory_capture_digest", "publication_hash", "routing_policy", "facts_version",
     "state_view_version", "core_version",
+    "conversation_agreement", "receipt_observation",
 }
 _DIGEST_VIEW_KEYS = {"response_plan_digest", "memory_capture_digest", "publication_hash"}
 _METADATA_KEYS = {

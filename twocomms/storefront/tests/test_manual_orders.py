@@ -1171,3 +1171,127 @@ class ManualOrderCreateTests(TestCase):
         response = self.client.get(self.url)
         # staff_member_required перенаправляє не-адмінів на сторінку логіну адмінки
         self.assertIn(response.status_code, (302, 403))
+
+    def _receipt_contract_review(self, *, delivery=False):
+        from management.models import IgClient
+        from management.ig_bot_models import IgPaymentConfirmationReview
+        from management.services.ig_payment_review import record_review_decision
+
+        customer = IgClient.get_or_create_for_sender('receipt-order-contract')
+        draft = {
+            'quoted_total': '850.00',
+            'merchandise_total': '850.00',
+            'amount_source_message_id': 3282,
+            'items': [{
+                'title': 'Футболка TWOCOMMS 1654',
+                'fit': 'oversize', 'size': 'L', 'qty': 1,
+                'unit_price': '850.00', 'color_name': 'Білий',
+                'option_values': {'garment': 'tshirt', 'print': 'TWOCOMMS 1654'},
+                'option_labels': {'Тип': 'Футболка', 'Принт': 'TWOCOMMS 1654'},
+                'reference_message_ids': [3241],
+            }],
+        }
+        if delivery:
+            draft.update(delivery_amount='120.00', payable_total='970.00')
+        review = IgPaymentConfirmationReview.objects.create(
+            client=customer, dedupe_key='receipt-order-contract',
+            evidence={'order_draft': draft},
+        )
+        record_review_decision(
+            review, actor=self.admin, decision='manager_verified',
+            verification_scope='full_payment',
+            confirmed_amount='970.00' if delivery else '850.00',
+        )
+        return review
+
+    def _receipt_contract_payload(self, review):
+        return {
+            'payment_review_id': review.pk,
+            'full_name': 'Іван Іванов', 'phone': '0931112233',
+            'delivery_method': 'manual', 'city': 'Київ', 'np_office': 'Відділення №4',
+            'sale_source': 'Instagram', 'payment_preset': 'paid_full',
+            'items': [{
+                'kind': 'custom', 'title': 'Футболка TWOCOMMS 1654',
+                'size': 'L', 'fit_option_code': 'oversize', 'fit_option_label': 'Оверсайз',
+                'color_name': 'Білий', 'qty': 1, 'unit_price': '850.00',
+                'option_values': {'garment': 'tshirt', 'print': 'TWOCOMMS 1654', '_reference_message_ids': [3241]},
+                'option_labels': {'Тип': 'Футболка', 'Принт': 'TWOCOMMS 1654'},
+            }],
+        }
+
+    def test_review_order_keeps_merchandise_shipping_and_paid_authority_separate(self):
+        from orders.nova_poshta_documents import build_order_payment_snapshot
+        from management.services.ig_order_amounts import order_amounts
+        from management.models import IgClient
+
+        review = self._receipt_contract_review(delivery=True)
+        response, _notify = self._post(self._receipt_contract_payload(review))
+        self.assertEqual(response.status_code, 200, response.content)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        item = order.items.get()
+        self.assertEqual(order.total_sum, Decimal('850.00'))
+        self.assertEqual(item.unit_price, Decimal('850.00'))
+        self.assertEqual(item.color_name_custom, 'Білий')
+        self.assertEqual(item.fit_option_code, 'oversize')
+        self.assertEqual(item.option_values['_reference_message_ids'], [3241])
+        self.assertEqual(order.payment_status, 'unpaid')
+        self.assertFalse(order.payment_payload['provider_payment_confirmed'])
+        self.assertEqual(order.payment_payload['manager_confirmed_amount'], '970.00')
+        self.assertEqual(order_amounts(order)['payable'], Decimal('970.00'))
+        snapshot = build_order_payment_snapshot(order)
+        self.assertEqual(snapshot['declared_cost'], '850.00')
+        self.assertEqual(snapshot['payable_total'], '970.00')
+        self.assertEqual(snapshot['cod_amount'], '0.00')
+        self.assertEqual(snapshot['delivery_payer_type'], 'Sender')
+        review.client.refresh_from_db()
+        self.assertEqual(review.client.stage, IgClient.Stage.ORDER_CREATED)
+
+    def test_compatible_existing_episode_order_is_reused_without_appending_items(self):
+        from management.services.ig_commercial_episodes import ensure_episode_for_review
+
+        review = self._receipt_contract_review()
+        episode = ensure_episode_for_review(review)
+        existing = Order.objects.create(
+            full_name='Іван Іванов', phone='+380931112233', city='Київ',
+            np_office='Відділення №4', total_sum=Decimal('850.00'),
+            checkout_idempotency_key=f'ig-episode:{episode.pk}',
+        )
+        item_payload = self._receipt_contract_payload(review)['items'][0]
+        OrderItem.objects.create(
+            order=existing, title=item_payload['title'], size='L',
+            fit_option_code='oversize', fit_option_label='Оверсайз',
+            color_name_custom='Білий', is_custom=True,
+            option_values=item_payload['option_values'], option_labels=item_payload['option_labels'],
+            qty=1, unit_price=Decimal('850.00'), line_total=Decimal('850.00'),
+        )
+        response, notify = self._post(self._receipt_contract_payload(review))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['order_id'], existing.pk)
+        self.assertEqual(existing.items.count(), 1)
+        existing.refresh_from_db()
+        self.assertEqual(existing.subtotal, existing.total_sum)
+        review.refresh_from_db()
+        self.assertEqual(review.order_id, existing.pk)
+        notify.assert_not_called()
+
+    def test_custom_review_initial_preserves_color_fit_print_and_reference(self):
+        from storefront.views.manual_orders import _build_ig_review_initial
+
+        review = self._receipt_contract_review()
+        item = _build_ig_review_initial(review)['items'][0]
+        self.assertEqual(item['kind'], 'custom')
+        self.assertEqual(item['color_name'], 'Білий')
+        self.assertEqual(item['fit_option_code'], 'oversize')
+        self.assertEqual(item['option_values']['print'], 'TWOCOMMS 1654')
+        self.assertEqual(item['option_values']['_reference_message_ids'], [3241])
+
+    def test_paid_manual_manager_action_has_actor_audit(self):
+        payload = self._receipt_contract_payload(type('Review', (), {'pk': ''})())
+        response, _notify = self._post(payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        audit = order.payment_payload['manual_payment_action']
+        self.assertEqual(audit['actor_id'], self.admin.pk)
+        self.assertEqual(audit['source'], 'management_user')
+        self.assertEqual(audit['payment_status'], 'paid')
+        self.assertTrue(audit['recorded_at'])

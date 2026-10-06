@@ -244,7 +244,11 @@ def get_payment_status_label(value: Any) -> str:
 def build_order_payment_snapshot(order) -> dict[str, Any]:
     gross_total = NovaPoshtaDocumentService._as_money(getattr(order, "total_sum", 0))
     discount_amount = NovaPoshtaDocumentService._as_money(getattr(order, "discount_amount", 0))
-    payable_total = max(gross_total - discount_amount, Decimal("0.00"))
+    merchandise_payable = max(gross_total - discount_amount, Decimal("0.00"))
+    from management.services.ig_order_amounts import order_amounts
+
+    amounts = order_amounts(order)
+    payable_total = amounts["payable"]
     pay_type = canonicalize_order_pay_type(getattr(order, "pay_type", ""))
     order_payment_status = canonicalize_payment_status(getattr(order, "payment_status", ""))
     payment_status = order_payment_status
@@ -286,6 +290,22 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
     if manager_payment_verified and payment_status == "prepaid":
         prepayment_amount = min(manager_confirmed_amount, payable_total)
 
+    delivery_contract = payment_payload.get("instagram_delivery_contract") or {}
+    delivery_prepaid = bool(
+        isinstance(delivery_contract, dict)
+        and delivery_contract.get("prepaid")
+        and delivery_contract.get("payer_type") == "Sender"
+        and delivery_contract.get("actor_id")
+        and delivery_contract.get("review_id")
+        and delivery_contract.get("decision_id") == payment_payload.get("manager_payment_decision_id")
+        and manager_payment_verified
+        and manager_confirmed_amount == payable_total
+        and amounts.get("delivery_contract_valid", False)
+    )
+    if delivery_prepaid:
+        from management.services.ig_order_links import order_fulfillment_payment_verified
+
+        delivery_prepaid = order_fulfillment_payment_verified(order)
     if payment_status == "paid":
         cod_amount = Decimal("0.00")
     elif pay_type in {"prepayment", "prepay_200"}:
@@ -322,8 +342,10 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
         "payable_total_value": payable_total,
         "paid_amount": f"{paid_amount:.2f}",
         "paid_amount_value": paid_amount,
-        "declared_cost": f"{payable_total:.2f}",
-        "declared_cost_value": payable_total,
+        "declared_cost": f"{merchandise_payable:.2f}",
+        "declared_cost_value": merchandise_payable,
+        "delivery_prepaid": delivery_prepaid,
+        "delivery_payer_type": "Sender" if delivery_prepaid else "Recipient",
         "prepayment_amount": f"{prepayment_amount:.2f}",
         "prepayment_amount_value": prepayment_amount,
         "cod_amount": f"{cod_amount:.2f}",
@@ -492,7 +514,7 @@ class NovaPoshtaDocumentService:
             "width_cm": f"{self.DEFAULT_WIDTH_CM}",
             "height_cm": f"{self.DEFAULT_HEIGHT_CM}",
             "cod_amount": payment_snapshot["cod_amount"] if payment_snapshot["cod_amount_value"] > 0 else "",
-            "payer_type": "Recipient",
+            "payer_type": payment_snapshot["delivery_payer_type"],
             "payment_method": "Cash",
         }
 

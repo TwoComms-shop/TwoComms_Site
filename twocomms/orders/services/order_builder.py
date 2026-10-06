@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
+from functools import wraps
 
 from django.db import transaction
 from django.utils import timezone
@@ -33,6 +34,8 @@ def _commercial_item_fingerprint(item):
         int(getattr(item, "color_variant_id", None) or 0),
         str(getattr(item, "title", "") or "").strip().casefold(),
         str(getattr(item, "size", "") or "").strip().casefold(),
+        str(getattr(item, "color_name_custom", "") or "").strip().casefold(),
+        bool(getattr(item, "product_id", None) is None or getattr(item, "is_custom", False)),
         str(getattr(item, "fit_option_code", "") or "").strip().casefold(),
         json.dumps(
             getattr(item, "option_values", {}) or {},
@@ -52,6 +55,7 @@ def assert_order_matches_commercial_contract(
     expected_fields,
     expected_items,
     declared_total,
+    expected_delivery_contract=None,
 ):
     """Reject an idempotency-key collision with a different commercial order."""
     if Decimal(order.total_sum or 0).quantize(Decimal("0.01")) != declared_total:
@@ -61,6 +65,12 @@ def assert_order_matches_commercial_contract(
             raise ValueError(
                 f"Episode idempotency key points to an incompatible order {field}"
             )
+    if expected_delivery_contract:
+        payload = order.payment_payload if isinstance(order.payment_payload, dict) else {}
+        actual_delivery = payload.get("instagram_delivery_contract") or {}
+        for key in ("merchandise_total", "delivery_amount", "payable_total", "prepaid", "payer_type"):
+            if actual_delivery.get(key) != expected_delivery_contract.get(key):
+                raise ValueError("Episode idempotency key points to an incompatible delivery contract")
     actual_items = list(order.items.all())
     if not actual_items:
         raise ValueError("Episode idempotency key points to an incompatible order without items")
@@ -84,7 +94,30 @@ def assert_episode_order_compatible(order, *, deal, deal_items, declared_total):
     )
 
 
-@transaction.atomic
+def _deal_order_transaction(function):
+    @wraps(function)
+    def wrapped(deal, *, created_by=None):
+        from management.models import IgClient
+        from management.services.ig_commercial_episodes import commercial_episode_client_lock
+        client_id = deal.__class__.objects.filter(pk=deal.pk).values_list('client_id', flat=True).first()
+        if client_id is None or client_id != deal.client_id:
+            raise ValueError('IG deal client identity changed')
+        # Nested order-resolution callers must acquire this same barrier
+        # before their outer transaction takes any client/review row locks.
+        with commercial_episode_client_lock(client_id), transaction.atomic():
+            client = IgClient.objects.select_for_update().get(pk=client_id)
+            current = deal.__class__.objects.filter(pk=deal.pk, client_id=client_id).first()
+            if current is None or client.hidden_at is not None:
+                raise ValueError('IG deal client unavailable')
+            current.client = client
+            result = function(current, created_by=created_by)
+            for field in ('order_id', 'status', 'order_truth_updated_at'):
+                setattr(deal, field, getattr(current, field))
+            return result
+    return wrapped
+
+
+@_deal_order_transaction
 def _return_existing_order_after_payment_recheck(deal, *, created_by=None):
     """Serialize idempotent return with provider refund/reversal updates."""
     from management.ig_bot_models import IgPaymentConfirmationReview, IgPaymentProjection
@@ -95,9 +128,6 @@ def _return_existing_order_after_payment_recheck(deal, *, created_by=None):
         create_order_attribution,
     )
 
-    projection = IgPaymentProjection.objects.select_for_update().filter(
-        deal_id=deal.pk
-    ).first()
     review = (
         IgPaymentConfirmationReview.objects.select_for_update()
         .filter(
@@ -107,6 +137,9 @@ def _return_existing_order_after_payment_recheck(deal, *, created_by=None):
         .order_by("-id")
         .first()
     )
+    projection = IgPaymentProjection.objects.select_for_update().filter(
+        deal_id=deal.pk
+    ).first()
     decision = authoritative_manager_decision(review) if review else None
     payment_truth = payment_truth_snapshot(
         deal=deal,
@@ -153,6 +186,7 @@ def _return_existing_order_after_payment_recheck(deal, *, created_by=None):
     return deal.order
 
 
+@_deal_order_transaction
 def create_order_from_deal(deal, *, created_by=None):
     """Створює Order + OrderItem з оплаченої угоди. Повертає Order.
     Якщо замовлення для угоди вже є — повертає його (ідемпотентність)."""

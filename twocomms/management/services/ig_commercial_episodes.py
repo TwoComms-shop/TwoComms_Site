@@ -240,7 +240,15 @@ def payment_truth_snapshot(
         else {}
     )
     deal_total = _money(getattr(deal, "amount", None))
-    quoted_total = _money(draft.get("quoted_total"))
+    quoted_total = _money(draft.get("payable_total") or draft.get("quoted_total"))
+    merchandise_total = _money(draft.get("merchandise_total"))
+    delivery_amount = _money(draft.get("delivery_amount") or draft.get("delivery_total"))
+    if (
+        merchandise_total > 0 and delivery_amount > 0
+        and quoted_total == merchandise_total + delivery_amount
+        and deal_total == merchandise_total
+    ):
+        deal_total = quoted_total
     from management.services.ig_order_amounts import order_amounts
 
     linked_amounts = order_amounts(order)
@@ -333,6 +341,7 @@ def payment_truth_snapshot(
     )
     needs_reconciliation = bool(
         getattr(projection, "needs_reconciliation", False)
+        or linked_amounts.get("delivery_contract_valid") is False
         or (provider_paid > 0 and manager_paid > 0 and provider_paid != manager_paid)
         or provider_amount_mismatch
         or provider_partial_refund
@@ -404,6 +413,11 @@ def payment_truth_snapshot(
             f"{linked_order_subtotal:.2f}" if linked_order_subtotal > 0 else ""
         ),
         "order_discount_amount": f"{linked_order_discount:.2f}",
+        "merchandise_total": str(draft.get("merchandise_total") or draft.get("quoted_total") or ""),
+        "delivery_amount": (
+            f"{linked_amounts['delivery']:.2f}" if linked_amounts.get("delivery_contract_valid")
+            else str(draft.get("delivery_amount") or draft.get("delivery_total") or "")
+        ),
         "order_total": f"{order_total:.2f}" if order_total > 0 else "",
         "order_total_source": order_total_source,
         "requested_payment_amount": f"{requested:.2f}",
@@ -442,6 +456,15 @@ def payment_truth_snapshot(
                 provider_paid > 0
                 or (
                     manager_truth == IgPaymentReviewDecision.Decision.MANAGER_VERIFIED
+                    and getattr(review, "status", "") == "confirmed"
+                    and getattr(decision, "verification_source", "") == "manager"
+                    and getattr(decision, "actor_source", "") in {"management_user", "telegram_user"}
+                    and bool(str(getattr(decision, "actor_external_id", "") or "").strip())
+                    and order_total > 0
+                    and (
+                        (getattr(decision, "verification_scope", "") == "full_payment" and manager_paid == order_total)
+                        or (getattr(decision, "verification_scope", "") == "prepayment" and manager_paid < order_total)
+                    )
                     and getattr(decision, "verification_scope", "")
                     in {
                         IgPaymentReviewDecision.VerificationScope.FULL_PAYMENT,
@@ -892,6 +915,18 @@ def ensure_episode_for_review(review, *, isolate_from_current: bool = False):
                 )
                 current.open_slot = None
                 current.save(update_fields=["open_slot", "updated_at"])
+            transfer = {}
+            if (
+                current is None and not client.current_commercial_episode_id
+                and not review_is_historical and not review.deal_id and not review.order_id
+                and not client.hidden_at and not client.privacy_erasure_started_at
+            ):
+                from management.services.ig_payment_review import is_legacy_historical_payment_review
+                from management.services.ig_conversation_agreement import initial_agreement_transfer_sources
+
+                if not is_legacy_historical_payment_review(review):
+                    transfer = initial_agreement_transfer_sources(client)
+            source_transfer = bool(transfer.get("messages") and not transfer.get("reason"))
             episode = _new_episode(
                 client,
                 materialization_key=f"ig-review:{review.pk}",
@@ -902,9 +937,26 @@ def ensure_episode_for_review(review, *, isolate_from_current: bool = False):
                 ),
                 deal=episode_deal,
                 review=review,
-                opened_watermark_message_id=review.watermark_message_id,
+                opened_watermark_message_id=(
+                    transfer["source_floor"] if source_transfer else review.watermark_message_id
+                ),
                 make_current=not review_is_historical,
             )
+            if source_transfer:
+                from management.services.ig_conversation_agreement import persist_conversation_agreement
+
+                rebound = persist_conversation_agreement(
+                    client, transfer["messages"], watermark=transfer["agreement"]["watermark_message_id"],
+                )
+                if not rebound.get("persisted"):
+                    raise ValueError("Підтверджені джерела першого замовлення змінилися під час перенесення.")
+                append_episode_event(
+                    episode, dedupe_key=f"episode:{episode.pk}:initial-agreement-transfer",
+                    event_type="agreement_scope_transfer", source="conversation_agreement",
+                    evidence={"source_message_ids": transfer["source_message_ids"],
+                              "source_agreement_digest": transfer["agreement_digest"],
+                              "from_episode_id": None, "to_episode_id": episode.pk},
+                )
             return episode
 
 

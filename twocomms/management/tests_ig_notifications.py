@@ -272,12 +272,14 @@ class InstagramBotNotificationTests(TestCase):
             [(item["role"], item.get("url"), item.get("local_url")) for item in payload["media"]],
             [
                 ("product", "https://cdn.example/product.jpg", None),
-                ("receipt", None, "https://management.example/media/receipt.jpg"),
+                ("receipt", None, None),
             ],
         )
-        self.assertTrue(all(item["delivery_status"] == "sent" for item in payload["media"]))
-        self.assertTrue(all(item["delivery_message_id"] == "89" for item in payload["media"]))
-        self.assertGreaterEqual(http.call_count, 3)
+        self.assertEqual(payload["media"][0]["delivery_status"], "sent")
+        self.assertEqual(payload["media"][0]["delivery_message_id"], "89")
+        self.assertEqual(payload["media"][1]["delivery_status"], "not_forwarded_private")
+        self.assertFalse(payload["media"][1].get("delivery_message_id"))
+        self.assertEqual(http.call_count, 2)
 
     @patch.dict(
         "os.environ",
@@ -293,7 +295,7 @@ class InstagramBotNotificationTests(TestCase):
         ],
     )
     def test_failed_photo_is_retried_without_duplicate_main_alert(self, http):
-        media = [{"role": "receipt", "url": "https://cdn.example/receipt.jpg", "message_id": "12"}]
+        media = [{"role": "product", "url": "https://cdn.example/product.jpg"}]
         self.assertFalse(bot.notify_manager("Перевірка", dedupe_key="payment-photo-retry", media=media))
         row = IgBotNotification.objects.get(dedupe_key="payment-photo-retry")
         self.assertEqual(row.status, IgBotNotification.Status.FAILED)
@@ -672,7 +674,7 @@ class InstagramBotNotificationTests(TestCase):
 @MGMT
 class InstagramBotNotificationReviewApiTests(TestCase):
     def setUp(self):
-        self.admin = User.objects.create_user("notif-admin", password="x", is_staff=True)
+        self.admin = User.objects.create_user("notif-admin", password="x", is_staff=True, is_superuser=True)
         self.client.force_login(self.admin)
         self.row = IgBotNotification.objects.create(
             dedupe_key="manual-review",
@@ -683,6 +685,18 @@ class InstagramBotNotificationReviewApiTests(TestCase):
             failure_kind="ambiguous_transport",
             last_error="request token=secret-value failed",
         )
+
+    def test_plain_staff_cannot_read_or_requeue_private_notification(self):
+        staff = User.objects.create_user("notif-staff", password="x", is_staff=True)
+        self.client.force_login(staff)
+        self.assertEqual(self.client.get(reverse("management_bot_notification_review_api")).status_code, 403)
+        self.assertEqual(self.client.post(
+            reverse("management_bot_notification_review_action_api", args=[self.row.pk]),
+            {"action": "requeue"},
+        ).status_code, 403)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.status, IgBotNotification.Status.UNKNOWN)
+        self.assertEqual(self.row.attempts, 1)
 
     def test_review_list_is_sanitized_and_ordered(self):
         newer = IgBotNotification.objects.create(

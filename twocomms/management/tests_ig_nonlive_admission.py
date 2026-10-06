@@ -24,6 +24,10 @@ PAYLOAD = {"contents": [{"role": "user", "parts": [{"text": "summarize permitted
 @override_settings(**ENFORCE)
 class NonliveFinalAdmissionTests(TransactionTestCase):
     def setUp(self):
+        # Other HTTP-mocked suites may have produced synthetic 503 evidence.
+        # Each admission fixture starts with an available local model route.
+        ai.gemini_keys.clear_model_overload()
+        self.addCleanup(ai.gemini_keys.clear_model_overload)
         self.profile_sequence = 0
         self.profile = self._profile()
 

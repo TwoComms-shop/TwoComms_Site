@@ -60,6 +60,7 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
             state_inputs[key] = {**(value.get("capture") or {}), "scope": value.get("scope") or {}}
         elif key in {"payment_truth", "consent_state", "narrative", "manager_notes", "slots"}:
             state_inputs[key] = value
+    state_inputs["observation_omissions"] = components.get("observation_omissions") or []
     signals = components.get("signals") or {}
     signal_items = signals.get("items") or []
     if signal_items:
@@ -80,6 +81,8 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
     safe_versions = {key: str(value) for key, value in versions.items() if value not in (None, "")}
     safe_versions["state_view_version"] = state.as_dict()["schema"]
     safe_versions["canonical_selection"] = "source-selection.v1"
+    safe_versions["conversation_agreement"] = "conversation-agreement.v1"
+    safe_versions["receipt_observation"] = "payment-observation.v1"
     from management.services.approved_public_facts import APPROVED_PUBLIC_FACTS_VERSION
     safe_versions["facts_version"] = APPROVED_PUBLIC_FACTS_VERSION
     sources = revision.bundle_snapshot["sources"]

@@ -68,18 +68,22 @@ class InstagramOrderLinkTests(TestCase):
     def test_all_order_resolution_paths_lock_review_before_projection(self):
         """Keep one MariaDB row-lock order across provider/manual/link flows."""
         from management.services.ig_order_links import link_existing_order_to_review
+        from management.services.ig_payment_review import _lock_payment_review
         from orders.services.order_builder import create_order_from_deal
         from storefront.views.manual_orders import manual_order_create
 
-        for operation in (
-            create_order_from_deal,
-            manual_order_create,
-            link_existing_order_to_review,
+        helper_source = inspect.getsource(_lock_payment_review)
+        self.assertLess(
+            helper_source.index('IgClient.objects.select_for_update()'),
+            helper_source.index('IgPaymentConfirmationReview.objects.select_for_update()'),
+        )
+        for operation, review_lock_expression in (
+            (create_order_from_deal, 'IgPaymentConfirmationReview.objects.select_for_update()'),
+            (manual_order_create, '_lock_payment_review(payment_review)'),
+            (link_existing_order_to_review, '_lock_payment_review(review)'),
         ):
             source = inspect.getsource(operation)
-            review_lock = source.index(
-                "IgPaymentConfirmationReview.objects.select_for_update()"
-            )
+            review_lock = source.index(review_lock_expression)
             projection_lock = source.index(
                 "IgPaymentProjection.objects.select_for_update()"
             )

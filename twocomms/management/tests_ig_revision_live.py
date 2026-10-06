@@ -384,12 +384,14 @@ class RevisionLiveTests(TransactionTestCase):
         with (
             patch("management.services.call_ai_analysis.gemini_generate_text") as generate,
             patch("management.services.instagram_bot._provider_http") as http,
+            patch("management.services.ig_payment_observation.observe_payment_source") as observe,
         ):
             second = execute_claimed_revision(self.revision.pk, self.token, self.settings)
         self.assertEqual(second.state, "blocked")
         self.assertIn("settings_permission_changed", second.reasons)
         generate.assert_not_called()
         http.assert_not_called()
+        observe.assert_not_called()
 
     def test_selection_replay_uses_original_proposal_and_post_action_authority(self):
         from productcolors.models import Color, ProductColorVariant
@@ -623,9 +625,11 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(result.state, "completed", result.reasons)
         self.assertEqual(IgCheckoutProposal.objects.get().items.count(), 2)
         self.assertEqual(IgCheckoutAccessToken.objects.count(), 1)
-        resumed, generation, http = self._execute()
+        with patch("management.services.ig_payment_observation.observe_payment_source") as observe:
+            resumed, generation, http = self._execute()
         generation.assert_not_called()
         http.assert_not_called()
+        observe.assert_not_called()
         self.assertEqual(IgCheckoutAccessToken.objects.count(), 1)
 
     def test_checkout_rejects_independent_payment_scope_drift_and_rolls_back(self):

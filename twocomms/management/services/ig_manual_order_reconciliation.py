@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from functools import wraps
 
 from django.db import transaction
 
@@ -31,7 +32,20 @@ def _review_message_ids(review) -> set[int]:
     return values
 
 
-@transaction.atomic
+def _client_reconciliation_transaction(function):
+    @wraps(function)
+    def wrapped(*, client, **kwargs):
+        from management.models import IgClient
+        from management.services.ig_commercial_episodes import commercial_episode_client_lock
+        with commercial_episode_client_lock(client.pk), transaction.atomic():
+            current = IgClient.objects.select_for_update().get(pk=client.pk)
+            if current.hidden_at is not None:
+                raise ValueError('Instagram-клієнт недоступний.')
+            return function(client=current, **kwargs)
+    return wrapped
+
+
+@_client_reconciliation_transaction
 def reconcile_manager_paid_order(
     *,
     client,
@@ -52,10 +66,11 @@ def reconcile_manager_paid_order(
     )
     from management.services.ig_order_amounts import order_amounts
 
-    if str(getattr(order, "payment_status", "") or "").casefold() not in {
-        "paid", "prepaid", "partial",
-    }:
-        raise ValueError("Замовлення не має підтвердженого стану оплати.")
+    if str(getattr(order, "payment_status", "") or "").casefold() != "paid":
+        raise ValueError(
+            "Repair повної оплати дозволений лише для paid-замовлення; "
+            "для передоплати потрібні точна сума та окреме рішення менеджера."
+        )
     if (
         str(getattr(order, "source", "") or "").casefold() != "manual"
         or str(getattr(order, "sale_source", "") or "").casefold() != "instagram"

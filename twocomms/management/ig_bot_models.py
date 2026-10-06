@@ -36,6 +36,7 @@ __all__ = [
     "IgDealInvoiceLifecycle",
     "IgPaymentEvent",
     "IgPaymentProjection",
+    "IgPaymentObservationSource",
     "IgDealItem",
     "BotInstruction",
     "BotPolicyPublication",
@@ -8429,6 +8430,50 @@ class IgDeferredEcho(models.Model):
                 if self.state not in allowed.get(previous["state"], set()):
                     raise ValueError("deferred echo transition is invalid")
         return super().save(*args, **kwargs)
+
+
+class IgPaymentObservationSource(models.Model):
+    """Durable payment observation work for a customer source, independent of replies."""
+
+    class State(models.TextChoices):
+        PENDING = "pending", _("Очікує обробки")
+        PROCESSING = "processing", _("Обробляється")
+        APPLIED = "applied", _("Спостереження застосовано")
+        BLOCKED = "blocked", _("Заблоковано")
+        FAILED = "failed", _("Помилка обробки")
+
+    message = models.OneToOneField(
+        "management.InstagramBotMessage",
+        on_delete=models.CASCADE,
+        related_name="payment_observation",
+        db_constraint=False,
+    )
+    client = models.ForeignKey(
+        "management.IgClient",
+        on_delete=models.CASCADE,
+        related_name="payment_observation_sources",
+        db_constraint=False,
+    )
+    source_digest = models.CharField(max_length=64)
+    provider_namespace = models.CharField(max_length=128)
+    reset_floor = models.PositiveBigIntegerField(default=0)
+    state = models.CharField(max_length=16, choices=State.choices, default=State.PENDING)
+    claim_token = models.CharField(max_length=64, blank=True, default="")
+    lease_until = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    observed_media_digest = models.CharField(max_length=64, blank=True, default="")
+    outcome = models.JSONField(default=dict, blank=True)
+    last_error = models.CharField(max_length=120, blank=True, default="")
+    observed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["state", "next_attempt_at"], name="ig_payobs_state_due"),
+            models.Index(fields=["client", "id"], name="ig_payobs_client_id"),
+        ]
 
 
 class _IgSourceActionReceiptQuerySet(models.QuerySet):
