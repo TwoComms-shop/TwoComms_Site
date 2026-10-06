@@ -1,0 +1,43 @@
+maintenance active lease_id=r30-000cc2614-release expires_at=1791284923
+From https://github.com/zainllw0w/TwoComms_Site
+   e8d657f33..000cc2614  main       -> origin/main
+Updating e8d657f33..000cc2614
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   4 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   4 +-
+ .../PRODUCTION_RELEASE_2026-10-06.md               |   7 +
+ .../production-postpull.log                        |  38 ++++
+ .../evidence/r30-journey-cases-20261006/README.md  |  15 ++
+ .../journey-cases-final-native.log                 |   7 +
+ .../journey-cases-final-sqlite.log                 |  10 +
+ .../journey-cases-initial-sqlite.log               |  50 +++++
+ twocomms/management/services/ig_journey_cases.py   | 224 +++++++++++++++++++++
+ .../services/ig_journey_post_purchase.py           |  26 ++-
+ .../management/services/ig_journey_snapshot.py     |  19 +-
+ .../management/static/management/ig_journey.js     |  35 +++-
+ twocomms/management/templates/management/bot.html  |   2 +-
+ twocomms/management/tests_ig_journey_cases.py      | 185 +++++++++++++++++
+ .../management/tests_ig_journey_post_purchase.py   |  24 ++-
+ .../management/tests_ig_journey_presentation.py    |  81 ++++++++
+ twocomms/management/tests_ig_journey_snapshot.py   |   4 +-
+ 17 files changed, 710 insertions(+), 25 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-hosted-settlement-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-hosted-settlement-20261006/production-postpull.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-journey-cases-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-journey-cases-20261006/journey-cases-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-journey-cases-20261006/journey-cases-final-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-journey-cases-20261006/journey-cases-initial-sqlite.log
+ create mode 100644 twocomms/management/services/ig_journey_cases.py
+ create mode 100644 twocomms/management/tests_ig_journey_cases.py
+System check identified no issues (0 silenced).
+Running DTF asset minification before collectstatic...
+DTF minification complete: 3 files, 0 updated, saved 66648 bytes
+
+1 static file copied to '/home/qlknpodo/TWC/TwoComms_Site/twocomms/staticfiles', 733 unmodified, 1074 post-processed.
+Compressing... done
+Compressed 4 block(s) from 60 template(s) for 1 context(s).
+maintenance disabled
+daemon ready under supervisor — ok
+375 objects imported automatically (use -v 2 for details).
+
+{"health": {"main_healthy": true, "process_online": true, "process_pid": 1434914, "stalled": false, "supervisor": {"available": true, "child_pid": 1434914, "child_pid_matches_expected": true, "child_release_sha": "000cc261414f66980247789e5ac4a7c727d1942c", "last_ensure_seen_at": 1791284042.847, "observed_at": 1791284041.843, "restart_count": 0, "status": "current", "supervisor_release_sha": "000cc261414f66980247789e5ac4a7c727d1942c"}, "workers_healthy": true}, "journey": {"case_count": 0, "coverage": null, "edge_count": 0, "node_count": 6, "schema": null}, "maintenance_active": false, "memory_admission_accepted": false, "memory_generation_enabled": false, "release_sha": "000cc261414f66980247789e5ac4a7c727d1942c"}

@@ -1,0 +1,45 @@
+Creating test database for alias 'default'...
+Destroying old test database for alias 'default'...
+..Eig_bot event=policy_not_ready level=error detail=required_policy_exceeds_budget
+..ig_bot event=policy_not_ready level=error detail=knowledge_directory_missing
+......................ig_bot event=policy_not_ready level=error detail=active_publication_missing
+Eig_bot event=policy_not_ready level=error detail=active_publication_missing
+E........................................................
+======================================================================
+ERROR: test_missing_required_instruction_stops_real_generation_before_provider (management.tests_ig_required_policy_integration.RequiredPolicyRuntimeTests.test_missing_required_instruction_stops_real_generation_before_provider)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_required_policy_integration.py", line 205, in test_missing_required_instruction_stops_real_generation_before_provider
+    self.assertEqual(failure["policy_readiness"], "required_scenario_module_missing")
+                     ~~~~~~~^^^^^^^^^^^^^^^^^^^^
+KeyError: 'policy_readiness'
+
+======================================================================
+ERROR: test_complete_gemini_context_never_advertises_fixed_instagram_prepayment (management.tests_ig_playbook.ContextInjectionTests.test_complete_gemini_context_never_advertises_fixed_instagram_prepayment)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1439, in patched
+    return func(*newargs, **newkeywargs)
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_playbook.py", line 109, in test_complete_gemini_context_never_advertises_fixed_instagram_prepayment
+    sysi = captured["payload"].get("system_instruction", {}).get("parts", [{}])[0].get("text", "")
+           ~~~~~~~~^^^^^^^^^^^
+KeyError: 'payload'
+
+======================================================================
+ERROR: test_instructions_and_links_injected (management.tests_ig_playbook.ContextInjectionTests.test_instructions_and_links_injected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1439, in patched
+    return func(*newargs, **newkeywargs)
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_playbook.py", line 93, in test_instructions_and_links_injected
+    sysi = captured["payload"].get("system_instruction", {}).get("parts", [{}])[0].get("text", "")
+           ~~~~~~~~^^^^^^^^^^^
+KeyError: 'payload'
+
+----------------------------------------------------------------------
+Ran 85 tests in 0.664s
+
+FAILED (errors=3)
+Destroying test database for alias 'default'...
+Found 85 test(s).
+System check identified no issues (0 silenced).

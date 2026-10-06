@@ -89,6 +89,9 @@ class ContextInjectionTests(TestCase):
             kind=BotQuickLink.Kind.SIZE_CHART, label="Сітка худі", url="https://ig/hl/h"
         )
         s = InstagramBotSettings.load()
+        from management.tests_ig_policy_helpers import publish_current_instructions
+        publish_current_instructions()
+        s.refresh_from_db()
         bot.gemini_generate(s, [{"role": "user", "text": "привіт"}])
         sysi = captured["payload"].get("system_instruction", {}).get("parts", [{}])[0].get("text", "")
         self.assertIn("Працюємо щодня 10-20", sysi)
@@ -104,10 +107,18 @@ class ContextInjectionTests(TestCase):
 
         mock_gen.side_effect = _fake
         s = InstagramBotSettings.load()
+        from management.tests_ig_policy_helpers import publish_current_instructions
+        publish_current_instructions()
+        s.refresh_from_db()
         bot.gemini_generate(s, [{"role": "user", "text": "як оплатити?"}])
 
         sysi = captured["payload"].get("system_instruction", {}).get("parts", [{}])[0].get("text", "")
-        self.assertNotIn("передоплата 200 грн", sysi.casefold())
+        from management.services.ig_core_policy import CANONICAL_IG_CORE_POLICY
+        self.assertIn(CANONICAL_IG_CORE_POLICY, sysi)
+        # The reviewed core describes a capability-gated option. Dynamic
+        # sources must not turn that example into an unconditional offer.
+        self.assertNotIn("передоплата 200 грн", sysi.replace(CANONICAL_IG_CORE_POLICY, "").casefold())
+        self.assertIn("лише коли поточний серверний capability", CANONICAL_IG_CORE_POLICY)
         self.assertIn("точна", sysi.casefold())
         self.assertIn("погоджен", sysi.casefold())
 

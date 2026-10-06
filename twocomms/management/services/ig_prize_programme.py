@@ -70,8 +70,18 @@ def _version_for(publication, item: dict) -> str:
 def active_shooting_prize_programme(*, publication_snapshot=None) -> PrizeProgramme | None:
     """Return one public programme from one immutable publication snapshot."""
     from management.services.ig_policy_publication import load_active_policy_snapshot
+    from management.services.ig_required_policy import RequiredPolicyError, shooting_programme_metadata
 
     publication = publication_snapshot or load_active_policy_snapshot()
+    def has_shooting_metadata(item):
+        try:
+            return shooting_programme_metadata(item.get("programme_metadata")) == {
+                "kind": PROGRAMME_ID, "programme_id": PROGRAMME_ID,
+                "manager_required": True, "confirmed_visual_sample": False,
+            }
+        except RequiredPolicyError:
+            return False
+
     matches = [
         item
         for item in publication.snapshot.get("instructions") or []
@@ -79,12 +89,7 @@ def active_shooting_prize_programme(*, publication_snapshot=None) -> PrizeProgra
         and item.get("active") is True
         and item.get("trust_scope") == "public_policy"
         and str(item.get("body") or "").strip()
-        and item.get("programme_metadata") == {
-            "kind": PROGRAMME_ID,
-            "programme_id": PROGRAMME_ID,
-            "manager_required": True,
-            "confirmed_visual_sample": False,
-        }
+        and has_shooting_metadata(item)
     ]
     if len(matches) != 1:
         return None

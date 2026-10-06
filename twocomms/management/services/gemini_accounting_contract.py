@@ -181,13 +181,67 @@ def _manifest_omissions(values, *, code: str) -> list[dict]:
     return result
 
 
+def _manifest_required_policy(value) -> dict:
+    from management.services.ig_required_policy import SCENARIOS
+
+    code = "policy_manifest_required_invalid"
+    raw = _manifest_object(value, keys={"ready", "reason", "selected_ids", "required_ids", "omitted",
+        "declared_scenarios", "covered_scenarios", "undeclared_scenarios", "coverage_status",
+        "diagnostics", "required_chars", "used_chars"}, code=code)
+    reasons = {"required_policy_admitted", "required_policy_legacy", "required_policy_not_applicable",
+               "required_scenario_module_missing", "required_policy_exceeds_budget"}
+    statuses = {"not_applicable", "legacy_unconfigured", "partial", "declared_covered", "unavailable"}
+    if (type(raw["ready"]) is not bool or not isinstance(raw["reason"], str) or raw["reason"] not in reasons
+        or not isinstance(raw["coverage_status"], str) or raw["coverage_status"] not in statuses):
+        raise RequestPolicyManifestError(code, "required policy status is invalid")
+    result = {"ready": raw["ready"], "reason": raw["reason"],
+        "selected_ids": _manifest_ids(raw["selected_ids"], code=code),
+        "required_ids": _manifest_ids(raw["required_ids"], code=code),
+        "omitted": _manifest_omissions(raw["omitted"], code=code),
+        "coverage_status": raw["coverage_status"],
+        "required_chars": _manifest_positive_int(raw["required_chars"], code=code, allow_zero=True),
+        "used_chars": _manifest_positive_int(raw["used_chars"], code=code, allow_zero=True)}
+    for key in ("declared_scenarios", "covered_scenarios", "undeclared_scenarios"):
+        values = _manifest_ids(raw[key], code=code, maximum=len(SCENARIOS))
+        if values != sorted(values) or not set(values) <= SCENARIOS:
+            raise RequestPolicyManifestError(code, "required policy scenario is invalid")
+        result[key] = values
+    diagnostics = _manifest_ids(raw["diagnostics"], code=code, maximum=1)
+    if not set(diagnostics) <= {"legacy_required_scenarios_undeclared"}:
+        raise RequestPolicyManifestError(code, "required policy diagnostic is invalid")
+    result["diagnostics"] = diagnostics
+    declared, covered, undeclared = (set(result[key]) for key in
+                                   ("declared_scenarios", "covered_scenarios", "undeclared_scenarios"))
+    omission_ids = {item["id"] for item in result["omitted"]}
+    omission_reasons = {"operator_only", "inactive", "empty_body", "locale_mismatch", "not_relevant", "budget_exhausted"}
+    valid = (not declared & undeclared and covered <= declared
+             and not omission_ids & set(result["selected_ids"])
+             and all(item["reason"] in omission_reasons for item in result["omitted"])
+             and bool(undeclared) == bool(diagnostics))
+    if result["ready"]:
+        valid = valid and covered == declared and set(result["required_ids"]) <= set(result["selected_ids"])
+        status = "not_applicable" if not declared and not undeclared else "legacy_unconfigured" if not declared else "partial" if undeclared else "declared_covered"
+        reason = "required_policy_admitted" if result["required_ids"] else "required_policy_legacy" if undeclared else "required_policy_not_applicable"
+        valid = valid and result["coverage_status"] == status and result["reason"] == reason
+        valid = valid and bool(declared) == bool(result["required_ids"])
+        valid = valid and result["required_chars"] <= result["used_chars"]
+        valid = valid and bool(result["required_chars"]) == bool(result["required_ids"])
+    else:
+        valid = valid and not covered and not result["selected_ids"] and result["coverage_status"] == "unavailable"
+        valid = valid and result["reason"] in {"required_scenario_module_missing", "required_policy_exceeds_budget"}
+    if not valid:
+        raise RequestPolicyManifestError(code, "required policy coverage is inconsistent")
+    return result
+
+
 def sanitize_request_policy_manifest(value) -> dict:
     """Accept only content-free compiler/publication metadata."""
     if value in (None, {}):
         return {}
     manifest = _manifest_object(
         value,
-        keys=_MANIFEST_TOP_KEYS | ({"request_context"} if isinstance(value, dict) and "request_context" in value else set()),
+        keys=_MANIFEST_TOP_KEYS | ({"request_context"} if isinstance(value, dict) and "request_context" in value else set())
+            | ({"required_ids"} if isinstance(value, dict) and "required_ids" in value else set()),
         code="policy_manifest_invalid",
     )
     core = _manifest_object(
@@ -206,7 +260,8 @@ def sanitize_request_policy_manifest(value) -> dict:
             "selected_ids", "omitted", "visual_trigger_codes",
             "publication_id", "publication_version", "publication_hash",
             "publication_compiler_version",
-        },
+        } | ({"required_policy"} if isinstance(manifest["instruction_selection"], dict)
+             and "required_policy" in manifest["instruction_selection"] else set()),
         code="policy_manifest_selection_invalid",
     )
     safe_publication = {
@@ -252,6 +307,12 @@ def sanitize_request_policy_manifest(value) -> dict:
             maximum=64,
         ),
     }
+    if "required_policy" in selection:
+        safe_selection["required_policy"] = _manifest_required_policy(selection["required_policy"])
+        required_policy = safe_selection["required_policy"]
+        if (required_policy["selected_ids"] != safe_selection["selected_ids"]
+            or required_policy["omitted"] != safe_selection["omitted"]):
+            raise RequestPolicyManifestError("policy_manifest_required_invalid", "required policy differs from selection")
     if (
         safe_selection["publication_id"] != safe_publication["id"]
         or safe_selection["publication_version"] != safe_publication["version"]
@@ -304,6 +365,13 @@ def sanitize_request_policy_manifest(value) -> dict:
         "instruction_publication": safe_publication,
         "instruction_selection": safe_selection,
     }
+    if "required_ids" in manifest:
+        result["required_ids"] = _manifest_ids(manifest["required_ids"], code="policy_manifest_required_invalid")
+        if not set(result["required_ids"]) <= set(result["selected_ids"]):
+            raise RequestPolicyManifestError("policy_manifest_required_invalid", "required modules were not compiled")
+    required_policy = safe_selection.get("required_policy")
+    if required_policy and required_policy["ready"] and not set(required_policy["required_ids"]) <= set(result.get("required_ids", [])):
+        raise RequestPolicyManifestError("policy_manifest_required_invalid", "required selection was not reserved")
     if "request_context" in manifest:
         from management.services.ig_request_manifest import sanitize_request_context
 

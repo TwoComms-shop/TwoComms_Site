@@ -159,40 +159,27 @@ def _routing_fields(row) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 def _programme_metadata(row, tags: tuple[str, ...]) -> dict:
     raw = getattr(row, "programme_metadata", {}) or {}
-    if not isinstance(raw, dict):
-        raise PolicyPublicationError(
-            "invalid_programme_metadata", "programme metadata must be an object"
-        )
-    if not raw and RESERVED_PROGRAMME_TAG in tags:
-        return {
+    from management.services.ig_required_policy import (
+        RequiredPolicyError, normalize_programme_metadata, shooting_programme_metadata,
+    )
+    try:
+        normalized = normalize_programme_metadata(raw)
+        shooting = shooting_programme_metadata(normalized)
+    except RequiredPolicyError as exc:
+        code = "invalid_programme_metadata" if exc.code == "invalid_required_policy_metadata" else exc.code
+        raise PolicyPublicationError(code, "instruction metadata is invalid") from None
+    if not shooting and RESERVED_PROGRAMME_TAG in tags:
+        normalized.update({
             "kind": PROGRAMME_ID,
             "programme_id": PROGRAMME_ID,
             "manager_required": True,
             "confirmed_visual_sample": False,
-        }
-    if not raw:
-        return {}
-    expected = {
-        "kind", "programme_id", "manager_required", "confirmed_visual_sample"
-    }
-    if (
-        set(raw) != expected
-        or RESERVED_PROGRAMME_TAG not in tags
-        or raw.get("kind") != PROGRAMME_ID
-        or raw.get("programme_id") != PROGRAMME_ID
-        or raw.get("manager_required") is not True
-        or raw.get("confirmed_visual_sample") is not False
-    ):
+        })
+    elif shooting and RESERVED_PROGRAMME_TAG not in tags:
         raise PolicyPublicationError(
-            "invalid_programme_metadata",
-            "only the reserved shooting programme metadata is supported",
+            "invalid_programme_metadata", "shooting metadata requires its reserved tag",
         )
-    return {
-        "kind": PROGRAMME_ID,
-        "programme_id": PROGRAMME_ID,
-        "manager_required": True,
-        "confirmed_visual_sample": False,
-    }
+    return normalized
 
 
 def _instruction_item(row) -> dict:
@@ -279,6 +266,10 @@ def _snapshot_items(snapshot) -> list[dict]:
     for item in items:
         if not isinstance(item, dict):
             raise PolicyPublicationError("invalid_policy_snapshot", "instruction item is invalid")
+        metadata = item.get("programme_metadata")
+        if isinstance(metadata, dict) and "required_for_scenarios" in metadata:
+            probe = type("InstructionProbe", (), {"programme_metadata": metadata})()
+            _programme_metadata(probe, tuple(item.get("tags") or ()))
         if "reviewed_source" in item:
             _reviewed_source(item["reviewed_source"], str(item.get("body") or ""))
             if item.get("trust_scope") != "public_policy":
@@ -294,6 +285,7 @@ def select_policy_snapshot(
     active_triggers=(),
     budget_chars: int = DEFAULT_INSTRUCTION_BUDGET_CHARS,
     public_only: bool = True,
+    required_scenarios=None,
 ) -> dict:
     """Select whole modules with the same routing and byte budget as runtime."""
     requested_locale = str(locale or "all").strip().casefold()
@@ -308,7 +300,12 @@ def select_policy_snapshot(
     omitted = []
     used = 0
     declared_actions = set()
-    for item in _snapshot_items(snapshot):
+    items = _snapshot_items(snapshot)
+    candidate_inputs, eligible_ids = [], []
+    for item in items:
+        body = str(item.get("body") or "").strip()
+        title = str(item.get("title") or "").strip()
+        candidate_inputs.append({**item, "rendered_body": (f"• {title}: {body}" if title else f"• {body}") if body else ""})
         module_id = str(item.get("id") or "")
         if public_only and item.get("trust_scope") != "public_policy":
             omitted.append({"id": module_id, "reason": "operator_only"})
@@ -337,6 +334,7 @@ def select_policy_snapshot(
             continue
         title = str(item.get("title") or "").strip()
         rendered = f"• {title}: {body}" if title else f"• {body}"
+        eligible_ids.append(module_id)
         cost = len(rendered) + (1 if selected else 0)
         if used + cost > budget:
             omitted.append({"id": module_id, "reason": "budget_exhausted"})
@@ -344,6 +342,27 @@ def select_policy_snapshot(
         selected.append({**item, "rendered_body": rendered})
         used += cost
         declared_actions.update(item.get("allowed_actions") or [])
+    from management.services.ig_required_policy import (
+        RequiredPolicyError, admit_required_policy_modules, derive_required_scenarios,
+    )
+    try:
+        scenarios = (derive_required_scenarios(semantic_triggers=triggers)
+                     if required_scenarios is None else required_scenarios)
+        admission = admit_required_policy_modules(candidate_inputs, applicable_scenarios=scenarios,
+            eligible_ids=eligible_ids, locale=requested_locale, budget_chars=budget, separator_chars=1)
+    except RequiredPolicyError as exc:
+        raise PolicyPublicationError(exc.code, "required instruction policy is invalid") from None
+    if not admission.ready:
+        raise PolicyPublicationError(admission.reason, "required instruction policy is unavailable")
+    if admission.declared_scenarios:
+        # The legacy selector/order is unchanged when no applicable requirement
+        # is declared. New declared modules reserve their complete bodies first.
+        indexed = {item["id"]: item for item in candidate_inputs}
+        selected = [{**indexed[identity], "required": identity in admission.required_ids}
+                    for identity in admission.selected_ids]
+        omitted = [{"id": identity, "reason": reason} for identity, reason in admission.omitted]
+        used = admission.used_chars
+        declared_actions = set().union(*(set(item.get("allowed_actions") or []) for item in selected))
     effective_actions = (
         set(BASELINE_PROPOSAL_ACTIONS) | declared_actions
     ) & set(PROPOSAL_VISIBILITY_ACTIONS)
@@ -357,6 +376,9 @@ def select_policy_snapshot(
         "effective_proposal_actions": sorted(effective_actions),
         "snapshot_hash": snapshot_hash(snapshot),
         "compiler_version": PUBLICATION_COMPILER_VERSION,
+        "required_ids": list(admission.required_ids),
+        "required_policy": {**admission.metadata(), "selected_ids": [item["id"] for item in selected],
+                            "omitted": omitted, "used_chars": used},
     }
 
 

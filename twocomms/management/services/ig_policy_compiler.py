@@ -47,6 +47,7 @@ class PolicyModule:
     tags: tuple[str, ...] = ()
     active: bool = True
     customer_bound: bool = False
+    required: bool = False
 
     @classmethod
     def coerce(cls, value: "PolicyModule | Mapping[str, Any]", *, fallback_id: str) -> "PolicyModule":
@@ -54,6 +55,9 @@ class PolicyModule:
             return value
         if not isinstance(value, Mapping):
             raise TypeError("policy module must be PolicyModule or a mapping")
+        required = value.get("required", False)
+        if type(required) is not bool:
+            raise PolicyReadinessError("invalid_required_policy_module", "required must be boolean")
         raw_tags = value.get("tags") or ()
         if isinstance(raw_tags, str):
             raw_tags = tuple(tag.strip() for tag in raw_tags.split(",") if tag.strip())
@@ -64,6 +68,7 @@ class PolicyModule:
             tags=tuple(sorted(str(tag) for tag in raw_tags)),
             active=bool(value.get("active", True)),
             customer_bound=bool(value.get("customer_bound", False)),
+            required=required,
         )
 
 
@@ -89,6 +94,7 @@ class PolicyCompilation:
     mandatory_ids: tuple[str, ...]
     budget_chars: int
     visual_trigger_codes: tuple[str, ...]
+    required_ids: tuple[str, ...] = ()
 
     def metadata(self) -> dict[str, Any]:
         """Return telemetry-safe metadata without raw prompt/customer text.
@@ -96,7 +102,7 @@ class PolicyCompilation:
         ``context_hash`` is intentionally absent: it changes with customer
         context and is only for a request-local cache/freshness key.
         """
-        return {
+        result = {
             "version": self.version,
             "content_hash": self.content_hash,
             "selected_ids": list(self.selected),
@@ -105,6 +111,9 @@ class PolicyCompilation:
             "budget_chars": self.budget_chars,
             "visual_trigger_codes": list(self.visual_trigger_codes),
         }
+        if self.required_ids:
+            result["required_ids"] = list(self.required_ids)
+        return result
 
 
 def _coerce_many(
@@ -161,6 +170,8 @@ def _manifest_payload(
         if module.customer_bound:
             result.pop("body")
             result["customer_bound"] = True
+        if module.required:
+            result["required"] = True
         return result
 
     return {
@@ -231,6 +242,15 @@ def compile_policy(
         _coerce_many(knowledge, prefix="knowledge"),
         _coerce_many(customer_data, prefix="customer"),
     )
+    required_groups = [sorted((module for module in group if module.required), key=lambda item: (item.priority, item.id))
+                       for group in optional_groups]
+    required = [module for group in required_groups for module in group]
+    if any(type(module.required) is not bool for group in optional_groups for module in group):
+        raise PolicyReadinessError("invalid_required_policy_module", "required must be boolean")
+    all_ids = [module.id for module in (*mandatory, *(module for group in optional_groups for module in group))]
+    if any(all_ids.count(module.id) != 1 or not module.id or not module.active or not module.body for module in required):
+        raise PolicyReadinessError("required_scenario_module_missing", "required instruction is unavailable",
+            details={"required_ids": [module.id for module in required]})
     reusable_optional = [module for group in optional_groups[:2] for module in group]
     manifest = _manifest_payload(
         mandatory, reusable_optional, version=str(version or DEFAULT_POLICY_VERSION),
@@ -255,8 +275,19 @@ def compile_policy(
 
     selected = list(mandatory_ids)
     omitted = _coerce_omissions(preselected_omissions)
+    for module in required:
+        cost = _join_cost(parts, module.body)
+        if used + cost > budget:
+            raise PolicyReadinessError("required_policy_exceeds_budget", "required instruction does not fit",
+                details={"required_ids": [item.id for item in required], "budget_chars": budget,
+                         "required_chars": used + cost})
+        parts.append(module.body)
+        used += cost
+        selected.append(module.id)
     for group in optional_groups:
         for module in sorted(group, key=lambda item: (item.priority, item.id)):
+            if module.required:
+                continue
             if not module.active:
                 omitted.append(PolicyOmission(module.id, "inactive"))
             elif not module.body:
@@ -280,4 +311,5 @@ def compile_policy(
         mandatory_ids=mandatory_ids,
         budget_chars=budget,
         visual_trigger_codes=visual_codes,
+        required_ids=tuple(module.id for module in required),
     )

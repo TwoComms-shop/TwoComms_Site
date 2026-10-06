@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import json
 
 from management.models import IgClient
 
@@ -97,15 +98,19 @@ class InstructionModule:
     priority: int
     tags: tuple[str, ...]
     active: bool
+    required: bool = False
 
     def policy_input(self) -> dict:
-        return {
+        result = {
             "id": self.id,
             "body": self.body,
             "priority": self.priority,
             "tags": self.tags,
             "active": self.active,
         }
+        if self.required:
+            result["required"] = True
+        return result
 
 
 @dataclass(frozen=True)
@@ -128,6 +133,15 @@ class InstructionSelection:
     publication_version: int
     publication_hash: str
     compiler_version: str
+    required_policy_snapshot: str = ""
+
+    @property
+    def required_policy(self):
+        return json.loads(self.required_policy_snapshot) if self.required_policy_snapshot else {}
+
+    @property
+    def required_ids(self):
+        return tuple(module.id for module in self.modules if module.required)
 
     @property
     def selected_ids(self) -> tuple[str, ...]:
@@ -137,7 +151,7 @@ class InstructionSelection:
         return [module.policy_input() for module in self.modules]
 
     def metadata(self) -> dict:
-        return {
+        result = {
             "selected_ids": list(self.selected_ids),
             "omitted": [item.metadata() for item in self.omitted],
             "visual_trigger_codes": list(self.visual_trigger_codes),
@@ -146,6 +160,9 @@ class InstructionSelection:
             "publication_hash": self.publication_hash,
             "publication_compiler_version": self.compiler_version,
         }
+        if self.required_policy:
+            result["required_policy"] = self.required_policy
+        return result
 
 
 def active_instruction_selection(
@@ -181,6 +198,10 @@ def active_instruction_selection(
     bound = publication_snapshot or load_active_policy_snapshot()
     client_tags = set(captured_tags) if captured_tags is not None else tags_for_client(client) if client is not None else None
     active_triggers = turn_triggers(turn_text)
+    from management.services.ig_required_policy import derive_required_scenarios
+
+    required_scenarios = derive_required_scenarios(
+        captured_tags=captured_tags if captured_tags is not None else (), semantic_triggers=active_triggers)
     languages = (client_tags or set()) & {"uk", "ru", "en"}
     locale = (next(iter(languages)) if len(languages) == 1 else "all") if captured_tags is not None else str(getattr(client, "language", "") or "all").casefold()
     if locale not in {"uk", "ru", "en"}:
@@ -192,6 +213,7 @@ def active_instruction_selection(
         active_triggers=active_triggers,
         budget_chars=budget,
         public_only=True,
+        required_scenarios=required_scenarios,
     )
     modules = tuple(
         InstructionModule(
@@ -203,6 +225,7 @@ def active_instruction_selection(
                 *(f"on:{value}" for value in item.get("triggers") or []),
             ])),
             active=True,
+            required=bool(item.get("required", False)),
         )
         for item in selected["selected"]
     )
@@ -218,6 +241,7 @@ def active_instruction_selection(
         int(bound.version),
         str(bound.snapshot_hash),
         str(bound.compiler_version),
+        json.dumps(selected["required_policy"], sort_keys=True, separators=(",", ":")) if required_scenarios else "",
     )
 
 

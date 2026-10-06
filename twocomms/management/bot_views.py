@@ -8231,6 +8231,12 @@ def bot_kb_api(request):
 
     def instruction_payload(instruction):
         tags, triggers, programme_kind = instruction_routing(instruction)
+        from .services.ig_required_policy import required_for_scenarios, RequiredPolicyError
+        try:
+            required = list(required_for_scenarios(instruction.programme_metadata))
+            required_valid = True
+        except RequiredPolicyError:
+            required, required_valid = [], False
         return {
             "id": instruction.id,
             "title": instruction.title,
@@ -8241,6 +8247,8 @@ def bot_kb_api(request):
             "locale": instruction.locale,
             "trigger_codes": triggers,
             "programme_kind": programme_kind,
+            "required_for_scenarios": required,
+            "required_scenarios_valid": required_valid,
             "allowed_actions": list(instruction.allowed_actions or []),
             "trust_scope": instruction.trust_scope,
             "reviewed_source": instruction.reviewed_source,
@@ -8382,6 +8390,20 @@ def bot_kb_save_api(request):
                 }
                 if programme_kind == "shooting_prize" else {}
             )
+            from .services.ig_required_policy import normalize_programme_metadata, RequiredPolicyError
+            if "required_for_scenarios" in request.POST:
+                programme_metadata["required_for_scenarios"] = split_values("required_for_scenarios")
+            elif obj_id:
+                # Old editors must not silently erase an existing declaration.
+                prior_metadata = BotInstruction.objects.filter(pk=int(obj_id)).values_list(
+                    "programme_metadata", flat=True
+                ).first() or {}
+                if "required_for_scenarios" in prior_metadata:
+                    programme_metadata["required_for_scenarios"] = prior_metadata["required_for_scenarios"]
+            try:
+                programme_metadata = normalize_programme_metadata(programme_metadata)
+            except RequiredPolicyError as exc:
+                return JsonResponse({"success": False, "error": exc.code}, status=400)
             tags = split_values("intent_tags")
             if programme_kind == "shooting_prize":
                 tags.append("programme:shooting_prize")

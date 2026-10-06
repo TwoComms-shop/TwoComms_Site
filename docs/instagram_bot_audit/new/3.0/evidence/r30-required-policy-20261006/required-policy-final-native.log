@@ -1,0 +1,10 @@
+..ig_bot event=policy_not_ready level=error detail=required_scenario_module_missing
+.ig_bot event=policy_not_ready level=error detail=required_policy_exceeds_budget
+..ig_bot event=policy_not_ready level=error detail=knowledge_directory_missing
+..........................................................................................
+----------------------------------------------------------------------
+Ran 95 tests in 1.460s
+
+OK
+Found 95 test(s).
+System check identified no issues (0 silenced).
