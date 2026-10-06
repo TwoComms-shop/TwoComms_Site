@@ -999,7 +999,7 @@
     document.getElementById('moPaidAmountField').hidden = ['partial_manual', 'manager_prepayment', 'provider_prepayment'].indexOf(preset) < 0;
     document.getElementById('moPaidAmount').readOnly = ['manager_prepayment', 'provider_prepayment'].indexOf(preset) >= 0;
     document.getElementById('moCarrierPayment').hidden = !isNp;
-    document.getElementById('moPaymentPreview').textContent = 'Товари: ' + fmt(total) + ' грн · Отримано: ' + fmt(paid) + ' грн · ' + (isNp && cod.checked ? 'Післяплата: ' : 'Залишок до оплати: ') + fmt(remaining) + ' грн' + (isNp ? ' · Доставка: ' + (document.getElementById('moDeliveryPayer').value === 'Sender' ? 'за наш рахунок' : 'за рахунок одержувача') : '');
+    document.getElementById('moPaymentPreview').textContent = 'Товари: ' + fmt(total) + ' грн · Отримано: ' + fmt(paid) + ' грн · ' + (isNp && cod.checked ? 'Післяплата: ' : 'Залишок до оплати: ') + fmt(remaining) + ' грн' + (isNp ? ' · Платник доставки у ТТН: ' + (document.getElementById('moDeliveryPayer').value === 'Sender' ? 'TwoComms' : 'одержувач') : '');
   }
 
   // ── tabs (catalog / custom) ────────────────────────────
