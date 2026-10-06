@@ -15,8 +15,10 @@ GIFT_SERVICE = {
     "label": _("Персоналізована коробка"),
     "price": 350,
     "base_packaging": {"label": _("Фірмовий зіп-пакет"), "price": 0, "included": True},
-    "box": {"price": 350, "estimate_required": False},
-    "wrapping": {"price": 0, "papers": ["ivory", "kraft", "black"]},
+    "box": {"price": 350, "estimate_required": False, "inner_paper_included": True, "inner_paper_price": 0},
+    "wrapping": {"price": 200, "papers": ["brand", "ivory", "kraft", "black", "red"],
+                 "styles": ["brand", "minimal", "festive", "hearts", "newsprint", "new_year", "custom"],
+                 "max_preference_length": 240},
     "delivery": {"branch": {"price": 150}, "courier": {"price": 300}},
     "certificate": {"price": 150, "discount_percent": 15, "scope": "any_order_including_custom", "max_message_length": 240},
     "note": _("Фірмовий зіп-пакет входить у кожне замовлення без доплати. Персоналізована коробка містить виріб у цьому зіп-пакеті; всередині надрукуємо текст або зображення."),
@@ -33,16 +35,21 @@ def normalize_gift_extras(raw):
     content_type = box.get("content_type") if isinstance(box.get("content_type"), str) and box.get("content_type") in {"text", "image"} else "text"
     box_text = str(box.get("text") or raw.get("text") or "").strip()[:1000]
     method = delivery.get("method") if isinstance(delivery.get("method"), str) and delivery.get("method") in {"branch", "courier"} else "branch"
-    paper = wrapping.get("paper") if isinstance(wrapping.get("paper"), str) and wrapping.get("paper") in GIFT_SERVICE["wrapping"]["papers"] else "ivory"
+    paper = wrapping.get("paper") if isinstance(wrapping.get("paper"), str) and wrapping.get("paper") in GIFT_SERVICE["wrapping"]["papers"] else "brand"
+    style = wrapping.get("style") if isinstance(wrapping.get("style"), str) and wrapping.get("style") in GIFT_SERVICE["wrapping"]["styles"] else "brand"
     message_mode = certificate.get("message_mode") if certificate.get("message_mode") in ("blank", "write") else "blank"
     return {"enabled": box_enabled, "text": box_text, "base_packaging": {"included": True, "price": 0, "type": "branded_zip"},
             "box": {"enabled": box_enabled, "content_type": content_type, "text": box_text,
                     "image_name": str(box.get("image_name") or "").strip()[:255],
-                    "price": GIFT_SERVICE["box"]["price"], "estimate_required": box_enabled and GIFT_SERVICE["box"]["price"] is None},
+                    "price": GIFT_SERVICE["box"]["price"], "estimate_required": box_enabled and GIFT_SERVICE["box"]["price"] is None,
+                    "inner_paper_included": True, "inner_paper_price": 0},
             "delivery": {"enabled": delivery.get("enabled") is True, "method": method,
                          "price": GIFT_SERVICE["delivery"][method]["price"] if delivery.get("enabled") is True else 0,
                          "payment_state": "requested", "funded": False},
-            "wrapping": {"enabled": wrapping.get("enabled") is True, "paper": paper, "price": 0},
+            "wrapping": {"enabled": wrapping.get("enabled") is True, "paper": paper, "style": style,
+                         "preference": str(wrapping.get("preference") or "").strip(),
+                         "target": "box" if box_enabled else "zip", "availability_confirmed": False,
+                         "price": GIFT_SERVICE["wrapping"]["price"] if wrapping.get("enabled") is True else 0},
             "certificate": {"enabled": certificate.get("enabled") is True,
                             "price": GIFT_SERVICE["certificate"]["price"] if certificate.get("enabled") is True else 0,
                             "discount_percent": GIFT_SERVICE["certificate"]["discount_percent"],
@@ -520,7 +527,7 @@ PRODUCT_MATRIX = {
         "summary": _("Максимум налаштувань: тканина, посадка, колір, зони й деталі."),
         "hero_note": _("Найзручніший старт, якщо хочете точно зібрати худі під свій принт."),
         "detail_title": _("Деталі худі"),
-        "detail_note": _("Фліс і люверси можна змінити окремо; решта характеристик уже врахована у вибраній тканині."),
+        "detail_note": _("Фліс і люверси зі шнурками входять у кожне худі без доплати; решта характеристик врахована у вибраній тканині."),
         "fits": [
             {"value": "regular", "label": _("Класичний"), "description": _("Базова посадка для щоденного мерчу.")},
             {"value": "oversize", "label": _("Оверсайз"), "description": _("Більш масивний силует з відчуттям преміум-речі.")},
@@ -598,23 +605,18 @@ PRODUCT_MATRIX = {
             {
                 "value": "lacing",
                 "label": _("Люверси зі шнурками"),
-                "price_delta": 150,
+                "price_delta": 0,
+                "included": True,
                 "icon": "lacing",
-                "badge": _("+150 грн"),
-                "hint": _("Преміум-апгрейд: металеві люверси й унікальні шнурки замість стандартних."),
+                "badge": _("Включено"),
+                "hint": _("Люверси зі шнурками входять у кожне худі без доплати."),
             },
             {
                 "value": "fleece",
                 "label": _("З флісом"),
                 "price_delta": 0,
+                "included": True,
                 "icon": "fleece",
-                "group": "fleece"
-            },
-            {
-                "value": "no_fleece",
-                "label": _("Без флісу"),
-                "price_delta": 0,
-                "icon": "no_fleece",
                 "group": "fleece"
             },
         ],
@@ -1726,6 +1728,20 @@ def normalize_order_purpose(raw_purpose, *, mode: str = "personal") -> str:
     return "organization" if mode == "brand" else "personal"
 
 
+def normalize_hoodie_included_pricing(pricing, quantity):
+    """Remove a cached per-garment hardware fee without changing fabric/base prices."""
+    pricing = deepcopy(pricing) if isinstance(pricing, dict) else {}
+    old_fee = max(0, _coerce_price(pricing.get("addons_price")) or 0)
+    pricing["addons_price"] = 0
+    if old_fee:
+        for key, count in (("unit_total", 1), ("final_total", _coerce_int(quantity, 1)),
+                           ("creation_base_total", _coerce_int(quantity, 1))):
+            value = _coerce_price(pricing.get(key))
+            if value is not None:
+                pricing[key] = max(0, value - old_fee * count)
+    return pricing
+
+
 def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
     raw_snapshot = raw_snapshot or {}
 
@@ -1881,6 +1897,8 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             add_on = "lacing"
         if add_on in add_on_choices and add_on not in add_ons:
             add_ons.append(add_on)
+    if product_type == "hoodie":
+        add_ons = ["fleece", "lacing"]
 
     artwork_payload = raw_snapshot.get("artwork") or {}
     service_kind = (artwork_payload.get("service_kind") or "").strip()
@@ -1960,6 +1978,8 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
         channel = ""
 
     pricing_payload = raw_snapshot.get("pricing") or {}
+    if product_type == "hoodie":
+        pricing_payload = normalize_hoodie_included_pricing(pricing_payload, order_payload.get("quantity"))
     notes_payload = raw_snapshot.get("notes") or {}
     raw_ui = raw_snapshot.get("ui") or {}
     current_step = str((raw_ui.get("current_step") or "mode")).strip() or "mode"
@@ -2017,6 +2037,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             "gift_box_price": _coerce_price(pricing_payload.get("gift_box_price")),
             "delivery_price": _coerce_price(pricing_payload.get("delivery_price")),
             "certificate_price": _coerce_price(pricing_payload.get("certificate_price")),
+            "wrapping_price": _coerce_price(pricing_payload.get("wrapping_price")),
             "creation_base_total": _coerce_price(pricing_payload.get("creation_base_total")),
             "discount_percent": _coerce_price(pricing_payload.get("discount_percent")),
             "discount_amount": _coerce_price(pricing_payload.get("discount_amount")),

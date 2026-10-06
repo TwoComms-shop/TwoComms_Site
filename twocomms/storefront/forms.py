@@ -14,7 +14,7 @@ from dtf.utils import (
     normalize_phone,
     validate_uploaded_file,
 )
-from storefront.custom_print_config import PRODUCT_MATRIX, ZONE_LABELS, build_placement_specs, normalize_custom_print_snapshot
+from storefront.custom_print_config import PRODUCT_MATRIX, ZONE_LABELS, build_placement_specs, normalize_custom_print_snapshot, normalize_hoodie_included_pricing
 
 from .models import (
     BlogCategory,
@@ -274,6 +274,8 @@ class CustomPrintLeadForm(forms.Form):
             self.add_error("config_draft_json", exc)
             config_draft = {}
         normalized_snapshot = normalize_custom_print_snapshot(config_draft) if config_draft else {}
+        if cleaned.get("product_type") == "hoodie":
+            pricing_snapshot = normalize_hoodie_included_pricing(pricing_snapshot, cleaned.get("quantity"))
         if normalized_snapshot:
             normalized_gift = (normalized_snapshot.get("order") or {}).get("gift")
             # Old cached configurators may still submit the retired packaging

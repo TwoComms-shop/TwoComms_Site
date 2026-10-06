@@ -1088,38 +1088,43 @@ def _build_creation_message(leads, *, submission_type="lead", creation=None):
     meta = first.get("creation") or {}
     contact = first.get("contact") or {}
     gift = meta.get("gift") or (creation.gift if creation else {})
+    box, delivery, certificate = (gift.get(key) or {} for key in ("box", "delivery", "certificate"))
+    wrapping = gift.get("wrapping") or {}
+    compact_items = len(snapshots) > 5 and len(escape(certificate.get("message") or "") + escape(wrapping.get("preference") or "")) > 1500
     purpose = normalize_order_purpose(first.get("order_purpose"), mode=first.get("mode"))
     title = {"lead": "Нова заявка на кастомний принт", "cart": "Кастом-кошик: потрібна модерація", "safe_exit": "Клієнт залишив конфігуратор"}.get(submission_type, "Кастомний принт")
     parts = [f"📦 <b>{title}</b>", f"<b>Призначення:</b> {escape(str(ORDER_PURPOSE_LABELS[purpose]))}",
-             f"👤 {_escaped_short(contact.get('name'), 50)} · {_escaped_short(contact.get('channel'), 15)} · {_escaped_short(contact.get('value'), 80)}",
+             f"👤 {_escaped_short(contact.get('name'), 25 if compact_items else 50)} · {_escaped_short(contact.get('channel'), 10 if compact_items else 15)} · {_escaped_short(contact.get('value'), 40 if compact_items else 80)}",
              f"Позицій: {len(snapshots)} · Виробів: {sum((snapshot.get('order') or {}).get('quantity') or 1 for snapshot in snapshots)}",
              "Фірмовий зіп-пакет: включено без доплати для кожного виробу", "🎁 Подарункові опції:"]
-    box, delivery, certificate = (gift.get(key) or {} for key in ("box", "delivery", "certificate"))
-    wrapping = gift.get("wrapping") or {}
     if box.get("enabled"):
-        parts.append("Коробка: персоналізований друк усередині · ціну узгодити" if box.get("estimate_required") else f"Коробка: +{box.get('price')} грн · виріб усередині у фірмовому зіп-пакеті")
+        parts.append("Коробка: персоналізований друк усередині · ціну узгодити" if box.get("estimate_required") else f"Коробка: +{box.get('price')} грн · зіп-пакет і захисний папір усередині включено")
         if box.get("content_type") == "image":
             parts.append(f"Зображення коробки: {_escaped_short(box.get('image_name'), 80)}" + (" · потрібно завантажити повторно" if box.get("needs_reupload") else " · оригінал окремим документом"))
         else:
-            parts.append(f"Текст коробки: {_escaped_short(box.get('text'), 100)}")
+            parts.append(f"Текст коробки: {_escaped_short(box.get('text'), 40 if compact_items else 100)}")
     else:
         parts.append("Персоналізована коробка: ні")
     if wrapping.get("enabled"):
-        paper = {"ivory": "айворі", "kraft": "крафт", "black": "чорний"}.get(wrapping.get("paper"), wrapping.get("paper"))
-        parts.append(f"Святковий папір: {paper} · без доплати · навколо виробу у зіп-пакеті" + (" всередині коробки" if box.get("enabled") else ""))
+        paper = {"brand": "фірмовий", "ivory": "айворі", "kraft": "крафт", "black": "чорний", "red": "червоний"}.get(wrapping.get("paper"), "фірмовий")
+        style = {"brand": "фірмовий", "minimal": "мінімалістичний", "festive": "святковий", "hearts": "серця", "newsprint": "газетний", "new_year": "новорічний", "custom": "за побажанням"}.get(wrapping.get("style"), "фірмовий")
+        target = "навколо коробки" if wrapping.get("target") == "box" else "навколо зіп-пакета"
+        parts.append(f"Пакування: +{wrapping.get('price')} грн один раз · {target}; {paper}, {style} — побажання, наявність підтвердити.")
+        if wrapping.get("preference"):
+            parts.append(f"Побажання до пакування:\n<blockquote>{escape(wrapping['preference'])}</blockquote>")
     if delivery.get("enabled"):
         method = "у відділення" if delivery.get("method") == "branch" else "курʼєром (адресу та ТТН узгодити вручну)"
         parts.append(f"Доставка {method}: +{delivery.get('price')} грн · запит на включення в оплату, ще не оплачено")
     if certificate.get("enabled"):
-        parts.append(f"Сертифікат −{certificate.get('discount_percent')}% на будь-яке майбутнє замовлення, включно з кастомним: +{certificate.get('price')} грн · виготовити, не виданий автоматично")
+        parts.append(f"Сертифікат −{certificate.get('discount_percent')}% на будь-яке майбутнє замовлення, включно з кастомним: +{certificate.get('price')} грн · виготовити, не виданий автоматично" if not compact_items else f"Сертифікат −15% (будь-яке майбутнє замовлення, кастом теж): +{certificate.get('price')} грн; виготовити вручну.")
         parts.append("Листівка: покласти зверху у коробці" if certificate.get("placement") == "box_top" else "Листівка: покласти всередину зіп-пакета")
         if certificate.get("message_mode") == "write":
-            parts.append(f"Написати привітання вручну без доплати:\n<blockquote>{escape(certificate.get('message') or '')}</blockquote>")
+            parts.append(f"{'Привітання вручну, без доплати:' if compact_items else 'Написати привітання вручну без доплати:'}\n<blockquote>{escape(certificate.get('message') or '')}</blockquote>")
         else:
             parts.append("Зворот листівки залишити порожнім у лінійку — клієнт напише привітання сам.")
-    full_card_message = certificate.get("enabled") and certificate.get("message_mode") == "write" and len(snapshots) > 5
+    full_card_message = len(snapshots) > 5 and ((certificate.get("enabled") and certificate.get("message_mode") == "write") or (wrapping.get("enabled") and wrapping.get("preference")))
     if full_card_message:
-        parts.append("Повні налаштування й брифи кожної позиції — за кнопками заявок.")
+        parts.append("Повні деталі позицій — за кнопками заявок.")
     for index, snapshot in enumerate(snapshots):
         product = snapshot.get("product") or {}
         order = snapshot.get("order") or {}
@@ -1129,6 +1134,9 @@ def _build_creation_message(leads, *, submission_type="lead", creation=None):
         sizes = order.get("sizes_note") or ", ".join(f"{size}×{qty}" for size, qty in (order.get("size_breakdown") or {}).items() if qty) or "уточнити"
         value = pricing.get("final_total")
         total = f"{value} грн" if value is not None else "потрібен прорахунок"
+        if compact_items:
+            parts.append(f"{index + 1}. {_escaped_short(PRODUCT_LABELS.get(product.get('type'), product.get('type')), 10)} ×{order.get('quantity') or 1} · {_escaped_short(number, 25)} · {_escaped_short(sizes, 6)} · {_escaped_short(SERVICE_LABELS.get(artwork.get('service_kind'), 'уточнити'), 6)} · {_escaped_short(_snapshot_placements_text(snapshot), 6)} · {_escaped_short(total, 15)}")
+            continue
         parts.extend(["", f"<b>{index + 1}. {_escaped_short(PRODUCT_LABELS.get(product.get('type'), product.get('type')), 30)} ×{order.get('quantity') or 1}</b> · <code>{_escaped_short(number, 25)}</code>",
                       _escaped_short(_snapshot_product_label(snapshot), 20 if full_card_message else 65),
                       f"Розміри: {_escaped_short(sizes, 40)} · {_escaped_short(SERVICE_LABELS.get(artwork.get('service_kind'), 'уточнити'), 30)}",

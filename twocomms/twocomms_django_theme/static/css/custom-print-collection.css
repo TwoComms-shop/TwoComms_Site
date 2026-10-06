@@ -77,16 +77,6 @@
 }
 .cp-collection-cancel { justify-self: start; color: #bfb9c6; margin: 0 0 12px; }
 .cp-collection-strip .cp-collection-cancel { flex-shrink: 0; margin: 0; }
-.cp-multi-intro { display: grid; gap: 16px; min-width: 0; }
-.cp-multi-intro h2 { margin: 0; font-size: 1.5rem; line-height: 1.18; letter-spacing: -.035em; color: #f7f5ef; }
-.cp-multi-intro p { margin: 0; color: #c2bbc8; font-size: .875rem; line-height: 1.5; }
-.cp-multi-list { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; list-style: none; }
-.cp-multi-list > * { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px 12px; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid #ffffff17; border-radius: 13px; background: #ffffff04; font-size: .875rem; line-height: 1.4; }
-.cp-multi-list :is(span, small) { color: #bbb4c3; font-size: .75rem; line-height: 1.4; overflow-wrap: anywhere; }
-[data-multi-add], [data-multi-return] { display: inline-flex; align-items: center; justify-content: center; min-width: 0; min-height: 44px; padding: 12px; border-radius: 14px; font: inherit; font-size: .875rem; line-height: 1.4; cursor: pointer; }
-[data-multi-add] { min-height: 48px; border: 1px solid #e6bb68; color: #21170a; background: linear-gradient(135deg, #f1d493, #d9aa59); }
-[data-multi-return] { border: 1px solid #ffffff24; color: #ddd3c0; background: #ffffff04; }
-[data-multi-add]:focus-visible, [data-multi-return]:focus-visible { outline: 2px solid #f3d798; outline-offset: 3px; }
 :is(.cp-collection-actions, .cp-collection-footer, .cp-collection-strip) :is(button, a):focus-visible,
 .cp-collection-cancel:focus-visible { outline: 2px solid #f3d798; outline-offset: 3px; }
 
@@ -150,4 +140,14 @@
 @media (prefers-reduced-motion: reduce) {
   .cp-product-grid .cp-product-card { transition: none; }
   .cp-product-grid .cp-product-card:hover, .cp-product-grid .cp-product-card:active { transform: none; }
+}
+
+@media (max-width: 991.98px) {
+  body.cp-collection-step .cp-step-viewport { container: cp-collection-space / size; padding: 8px 16px 12px; }
+  body.cp-collection-step #cp-step-quantity { border: 0; background: none; box-shadow: none; }
+  body.cp-collection-step #cp-step-quantity .cp-step-body { padding: 0; min-height: 100cqh; }
+  body.cp-collection-step .cp-collection-review { display: flex; flex-direction: column; min-height: 100cqh; gap: 14px; }
+  body.cp-collection-step .cp-collection-summary { margin-top: auto; }
+  body.cp-studio-active { background: #08080b; }
+  html:has(body.cp-studio-active) { background: #08080b; }
 }

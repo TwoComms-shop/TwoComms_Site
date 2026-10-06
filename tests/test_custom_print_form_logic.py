@@ -112,6 +112,22 @@ def base_payload(**overrides):
 
 
 class CustomPrintLeadFormLogicTests(unittest.TestCase):
+    def test_legacy_hoodie_form_removes_cached_hardware_fee_from_separate_price_snapshot(self):
+        from tests.test_custom_print_creation_unit import item_snapshot
+        snapshot = item_snapshot("hoodie", 2, 3900)
+        snapshot["pricing"].update(addons_price=150, unit_total=1950, base_price=1800)
+        snapshot["print"]["add_ons"] = ["no_fleece", "grommets"]
+        snapshot["print"]["zones"] = ["sleeve"]
+        form = CustomPrintLeadForm(base_payload(quantity="2", config_draft_json=json.dumps(snapshot),
+                                               pricing_snapshot_json=json.dumps(snapshot["pricing"])))
+        self.assertTrue(form.is_valid(), form.errors)
+        for price in (form.cleaned_data["pricing_snapshot_json"], form.cleaned_data["config_draft_json"]["pricing"]):
+            self.assertEqual(price["base_price"], 1800)
+            self.assertEqual(price["unit_total"], 1800)
+            self.assertEqual(price["final_total"], 3600)
+            self.assertEqual(price["addons_price"], 0)
+        self.assertEqual(form.cleaned_data["config_draft_json"]["print"]["add_ons"], ["fleece", "lacing"])
+
     def test_ready_manager_submission_now_blocks_missing_files_for_upload_backed_placements(self):
         """CP-UX-2026-05-18 regression.
 

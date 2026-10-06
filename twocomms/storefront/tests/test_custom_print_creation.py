@@ -215,9 +215,10 @@ class CustomPrintCreationTests(TestCase):
         notify.assert_called_once()
         single_notify.assert_not_called()
 
-    def _gift_extras_cart(self):
+    def _gift_extras_cart(self, *, wrapping=False):
         payload = creation_payload(False)
         payload["gift"] = {"box": {"enabled": False}, "delivery": {"enabled": True, "method": "branch"}, "certificate": {"enabled": True}}
+        payload["gift"]["wrapping"] = {"enabled": wrapping, "paper": "red", "style": "hearts", "preference": "Без блискіток"}
         with patch("storefront.views.static_pages.notify_custom_print_creation"):
             response = self._submit(payload, cart=True)
         self.assertEqual(response.status_code, 200, response.content)
@@ -227,7 +228,7 @@ class CustomPrintCreationTests(TestCase):
     def test_cart_payload_exposes_common_extras_and_exactly_one_fee_owner(self):
         from storefront.views.cart import _collect_custom_cart_state
         from django.test import RequestFactory
-        self._gift_extras_cart()
+        self._gift_extras_cart(wrapping=True)
         request = RequestFactory().get("/cart/")
         request.session = self.client.session
         rows = _collect_custom_cart_state(request)["custom_items"]
@@ -237,6 +238,9 @@ class CustomPrintCreationTests(TestCase):
         response = self.client.get(reverse("cart"), secure=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Упаковка + промокод 10%")
+        self.assertContains(response, "200 грн один раз для добірки", count=1)
+        self.assertContains(response, "Без блискіток", count=1)
+        self.assertContains(response, "наявність підтвердить менеджер", count=1)
 
     def test_one_box_image_is_stored_on_carrier_and_shared_by_metadata(self):
         payload = creation_payload(False)
@@ -264,7 +268,7 @@ class CustomPrintCreationTests(TestCase):
         from orders.services.delivery_payment import delivery_payment_snapshot
         from management.services.ig_order_amounts import order_amounts
         from orders.nova_poshta_documents import build_order_payment_snapshot
-        self._gift_extras_cart()
+        self._gift_extras_cart(wrapping=True)
         payload = {"full_name": "Gift Buyer", "phone": "+380501112236", "city": "Kyiv", "np_office": "Branch 1", "pay_type": "online_full",
                    "np_city_token": build_city_choice_token({"label": "Kyiv", "settlement_ref": "settlement-1", "city_ref": "city-1"}),
                    "np_warehouse_token": build_warehouse_choice_token({"label": "Branch 1", "ref": "warehouse-1", "kind": "branch", "city_ref": "city-1"})}
@@ -276,17 +280,22 @@ class CustomPrintCreationTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertFalse(Order.objects.exists())
         attempt = PaymentAttempt.objects.get()
-        self.assertEqual(attempt.gross_amount, Decimal("2800.00"))
-        self.assertEqual(provider.call_args.kwargs["json_payload"]["amount"], 280000)
+        self.assertEqual(attempt.gross_amount, Decimal("3000.00"))
+        self.assertEqual(provider.call_args.kwargs["json_payload"]["amount"], 300000)
         self.assertTrue(attempt.cart_snapshot["custom_print_creation"]["groups"][0]["applied"])
-        order, created = materialize_payment_attempt(attempt.pk, status="success", payload={"paidAmount": 280000})
+        self.assertEqual(attempt.cart_snapshot["custom_print_creation"]["groups"][0]["gift"]["wrapping"]["target"], "zip")
+        order, created = materialize_payment_attempt(attempt.pk, status="success", payload={"paidAmount": 300000})
         self.assertTrue(created)
         self.assertEqual(order.custom_print_leads.count(), 2)
-        self.assertEqual(order.total_sum, Decimal("2800.00"))
+        self.assertEqual(order.total_sum, Decimal("3000.00"))
+        gift = order.payment_payload["custom_print_creation"]["groups"][0]["gift"]
+        self.assertEqual(gift["wrapping"]["price"], 200)
+        self.assertEqual(gift["wrapping"]["style"], "hearts")
+        self.assertEqual(gift["wrapping"]["preference"], "Без блискіток")
         self.assertTrue(delivery_payment_snapshot(order)["funded"])
-        self.assertEqual(order_amounts(order)["payable"], Decimal("2800.00"))
+        self.assertEqual(order_amounts(order)["payable"], Decimal("3000.00"))
         np = build_order_payment_snapshot(order)
-        self.assertEqual(np["declared_cost_value"], Decimal("2650.00"))
+        self.assertEqual(np["declared_cost_value"], Decimal("2850.00"))
         self.assertEqual(np["delivery_payer_type"], "Sender")
 
     def test_unpaid_manual_order_projection_keeps_requested_delivery_unfunded(self):
@@ -294,31 +303,33 @@ class CustomPrintCreationTests(TestCase):
         from storefront.custom_print_creation import attach_custom_print_checkout
         from orders.services.delivery_payment import delivery_payment_snapshot
         from management.services.ig_order_amounts import order_amounts
-        leads = self._gift_extras_cart()
+        leads = self._gift_extras_cart(wrapping=True)
         order = Order.objects.create(full_name="Buyer", phone="+380501112236", city="Kyiv", np_office="Branch 1",
-                                     pay_type="cod", payment_status="unpaid", total_sum=Decimal("2800.00"))
+                                     pay_type="cod", payment_status="unpaid", total_sum=Decimal("3000.00"))
         attach_custom_print_checkout(order, leads=leads)
-        self.assertEqual(order_amounts(order)["payable"], Decimal("2800.00"))
+        self.assertEqual(order_amounts(order)["payable"], Decimal("3000.00"))
         self.assertFalse(delivery_payment_snapshot(order)["delivery_prepaid"])
         self.assertEqual(delivery_payment_snapshot(order)["payer_type"], "Sender")
 
-    def test_box_card_message_and_wrapping_are_preserved_with_one_650_charge(self):
+    def test_box_card_message_and_wrapping_are_preserved_with_one_850_charge(self):
         payload = creation_payload(False)
         message = "а" * 240
         payload["gift"] = {"box": {"enabled": True, "content_type": "text", "text": "Зі святом!"},
-                           "wrapping": {"enabled": True, "paper": "kraft", "price": 999},
+                           "wrapping": {"enabled": True, "paper": "kraft", "style": "custom", "preference": "Без блискіток", "price": 999, "target": "zip"},
                            "delivery": {"enabled": True, "method": "branch"},
                            "certificate": {"enabled": True, "message_mode": "write", "message": message, "placement": "wrong"}}
         with patch("storefront.views.static_pages.notify_custom_print_creation"):
             response = self._submit(payload, cart=True)
         self.assertEqual(response.status_code, 200, response.content)
         carrier, sibling = list(CustomPrintLead.objects.order_by("pk"))
-        self.assertEqual(carrier.pricing_snapshot_json["gift_price"], 650)
-        self.assertEqual([int(lead.final_price_value) for lead in (carrier, sibling)], [1650, 1500])
+        self.assertEqual(carrier.pricing_snapshot_json["gift_price"], 850)
+        self.assertEqual([int(lead.final_price_value) for lead in (carrier, sibling)], [1850, 1500])
         for lead in (carrier, sibling):
             gift = lead.config_draft_json["creation"]["gift"]
             self.assertEqual(gift["certificate"]["message"], message)
             self.assertEqual(gift["certificate"]["placement"], "box_top")
             self.assertEqual(gift["certificate"]["message_price"], 0)
-            self.assertEqual(gift["wrapping"]["price"], 0)
+            self.assertEqual(gift["wrapping"]["price"], 200)
+            self.assertEqual(gift["wrapping"]["target"], "box")
+            self.assertEqual(gift["wrapping"]["preference"], "Без блискіток")
             self.assertTrue(gift["base_packaging"]["included"])

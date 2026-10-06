@@ -83,8 +83,13 @@ def prepare_creation(raw, uploads=None, *, submission_type="lead", verification=
     if (gift_raw.get("delivery") or {}).get("enabled") and (not isinstance(gift_raw["delivery"].get("method"), str) or gift_raw["delivery"].get("method") not in {"branch", "courier"}):
         raise CreationValidationError({"gift_delivery": ["Оберіть доставку у відділення або курʼєром."]})
     wrapping = gift_raw.get("wrapping") or {}
-    if wrapping.get("enabled") and (not isinstance(wrapping.get("paper", "ivory"), str) or wrapping.get("paper", "ivory") not in GIFT_SERVICE["wrapping"]["papers"]):
-        raise CreationValidationError({"gift_wrapping": ["Оберіть коректний святковий папір."]})
+    if wrapping.get("enabled"):
+        for field, choices in (("paper", "papers"), ("style", "styles")):
+            if not isinstance(wrapping.get(field, "brand"), str) or wrapping.get(field, "brand") not in GIFT_SERVICE["wrapping"][choices]:
+                raise CreationValidationError({"gift_wrapping": ["Оберіть коректні побажання до святкового пакування."]})
+        preference = wrapping.get("preference", "")
+        if not isinstance(preference, str) or len(preference) > GIFT_SERVICE["wrapping"]["max_preference_length"]:
+            raise CreationValidationError({"gift_wrapping_preference": ["Побажання до пакування можуть містити не більше 240 символів."]})
     certificate = gift_raw.get("certificate") or {}
     if certificate.get("enabled"):
         message_mode, message = certificate.get("message_mode", "blank"), certificate.get("message", "")
@@ -157,9 +162,9 @@ def prepare_creation(raw, uploads=None, *, submission_type="lead", verification=
         owner = items[0]["snapshot"]
         owner["order"].update(gift=deepcopy(gift), gift_text=gift["box"]["text"])
         box_price = gift["box"]["price"] if gift["box"]["enabled"] else 0
-        known_price = (box_price or 0) + gift["delivery"]["price"] + gift["certificate"]["price"]
+        known_price = (box_price or 0) + gift["delivery"]["price"] + gift["certificate"]["price"] + gift["wrapping"]["price"]
         owner["pricing"].update(creation_base_total=owner["pricing"].get("final_total"), gift_price=known_price,
-                                 gift_box_price=box_price, delivery_price=gift["delivery"]["price"], certificate_price=gift["certificate"]["price"])
+                                 gift_box_price=box_price, delivery_price=gift["delivery"]["price"], certificate_price=gift["certificate"]["price"], wrapping_price=gift["wrapping"]["price"])
         if owner["pricing"].get("final_total") is not None:
             owner["pricing"]["final_total"] += known_price
         if gift["box"]["estimate_required"]:

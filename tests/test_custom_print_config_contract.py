@@ -143,7 +143,8 @@ class CustomPrintConfigContractTests(unittest.TestCase):
         self.assertEqual(config["artwork_services"][1]["price_delta"], 100)
         self.assertIn("почистити чи адаптувати", config["artwork_services"][1]["hint"])
         self.assertEqual(config["artwork_services"][2]["price_delta"], 300)
-        self.assertEqual(config["products"]["hoodie"]["add_ons"][0]["price_delta"], 150)
+        self.assertEqual(config["products"]["hoodie"]["add_ons"][0]["price_delta"], 0)
+        self.assertTrue(all(item["included"] for item in config["products"]["hoodie"]["add_ons"]))
         self.assertEqual(
             [item["value"] for item in config["products"]["tshirt"]["fits"]],
             ["regular", "oversize"],
@@ -347,7 +348,7 @@ class CustomPrintConfigContractTests(unittest.TestCase):
 
         self.assertEqual(normalized["product"]["fit"], "oversize")
         self.assertEqual(normalized["product"]["fabric"], "premium")
-        self.assertEqual(normalized["print"]["add_ons"], ["lacing"])
+        self.assertEqual(normalized["print"]["add_ons"], ["fleece", "lacing"])
         self.assertEqual(normalized["print"]["zone_options"]["front"]["size_preset"], "A4")
         self.assertEqual(normalized["print"]["zone_options"]["back"]["size_preset"], "A3+")
         self.assertTrue(normalized["print"]["zone_options"]["sleeve"]["left_enabled"])

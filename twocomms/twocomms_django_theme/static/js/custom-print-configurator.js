@@ -12,6 +12,7 @@
   const root = document.querySelector("[data-custom-print-root]");
   const configNode = document.getElementById("customPrintConfiguratorConfig");
   if (!root || !configNode) return;
+  const giftPreview = globalThis.CustomPrintGiftPreview?.mount(root);
 
   let CONFIG;
   try {
@@ -282,7 +283,7 @@
         triage_status: null,
       },
       order: {
-        quantity: 0,
+        quantity: 1,
         size_mode: "single",
         sizes_note: "",
         size_breakdown: {},
@@ -312,7 +313,7 @@
         value: "",
       },
       gift_options: { content_type: "text", image_name: "", delivery_enabled: false, delivery_method: "branch", certificate_enabled: false,
-        certificate_mode: "blank", certificate_text: "", wrapping_enabled: false, paper: "ivory" },
+        certificate_mode: "blank", certificate_text: "", wrapping_enabled: false, paper: "brand", wrapping_style: "brand", wrapping_preference: "" },
       ui: {
         product_view: "chooser",
         multi_item_mode: false,
@@ -951,6 +952,7 @@
   }
 
   function normalizeClientState() {
+    STATE.order.quantity = Math.max(1, parseInt(STATE.order.quantity, 10) || 1);
     STATE.order_purpose = purposeTools?.normalize(STATE.order_purpose, STATE.mode)
       || (STATE.mode === "brand" ? "organization" : STATE.order_purpose === "gift" ? "gift" : "personal");
     if (!STATE.print.zone_options || typeof STATE.print.zone_options !== "object") {
@@ -970,6 +972,10 @@
     STATE.print.add_ons = (STATE.print.add_ons || [])
       .map((value) => legacyAddons.get(value) || value)
       .filter((value, index, list) => availableAddons.has(value) && list.indexOf(value) === index);
+    if (STATE.product.type === "hoodie") {
+      STATE.print.add_ons = STATE.print.add_ons.filter((value) => value !== "no_fleece");
+      for (const value of ["fleece", "lacing"]) if (!STATE.print.add_ons.includes(value)) STATE.print.add_ons.push(value);
+    }
 
     Object.keys(STATE.print.zone_options).forEach((zone) => {
       if (!STATE.print.zones.includes(zone)) {
@@ -1210,7 +1216,7 @@
     STATE.print = { zones: [], add_ons: [], placement_note: "", zone_options: {} };
     STATE.artwork = { service_kind: null, triage_status: null };
     STATE.order = {
-      quantity: 0,
+      quantity: 1,
       size_mode: "single",
       sizes_note: "",
       size_breakdown: {},
@@ -1263,7 +1269,7 @@
         const nextMode = choice === "brand" ? "brand" : "personal";
         if (STATE.mode && STATE.mode !== nextMode) resetConfigurationForModeChange();
         STATE.mode = nextMode;
-        STATE.ui.product_view = collection.list().length ? "multiple" : "chooser";
+        STATE.ui.product_view = "chooser";
         STATE.ui.multi_item_mode = collection.list().length > 0;
         STATE.order_purpose = purposeTools?.fromChoice(choice) || (choice === "brand" ? "organization" : choice === "gift" ? "gift" : "personal");
         // Choosing the recipient never adds a paid service automatically.
@@ -1295,6 +1301,7 @@
           if (!completed) return;
         }
         afterChoice("mode");
+        if (collection.list().length) showCollection();
       });
     });
   }
@@ -1356,13 +1363,6 @@
     dom.productList.querySelectorAll("[data-choice-value]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const value = btn.dataset.choiceValue;
-        if (value === "multiple") {
-          STATE.ui.product_view = "multiple";
-          STATE.ui.multi_item_mode = true;
-          refreshAll(); persistDraft();
-          root.querySelector("[data-multi-add]")?.focus({ preventScroll: true });
-          return;
-        }
         STATE.ui.product_view = "chooser";
         const previousType = STATE.product.type;
         STATE.product.type = value;
@@ -1378,7 +1378,8 @@
         invalidateAfter("product");
         filesByPlacement.clear();
         if (previousType !== value) {
-          STATE.order.quantity = 0;
+          STATE.order.quantity = 1;
+          if (dom.qtyInput) dom.qtyInput.value = "1";
           STATE.order.size_mode = "single";
           STATE.order.size_breakdown = {};
           STATE.order.sizes_note = "";
@@ -2223,6 +2224,17 @@
     dom.addonsList.innerHTML = "";
     const cfg = getProductConfig();
     const addons = cfg && cfg.add_ons ? cfg.add_ons : [];
+    if (STATE.product.type === "hoodie") {
+      STATE.print.add_ons = ["fleece", "lacing"];
+      if (dom.addonsWrap) dom.addonsWrap.hidden = false;
+      if (dom.addonsTitle) dom.addonsTitle.textContent = "Входить у вартість худі";
+      if (dom.addonsNote) dom.addonsNote.textContent = "Наразі шиємо худі тільки з флісом. Люверси та шнурки також уже включені.";
+      dom.addonsList.innerHTML = [
+        { label: "Утеплення з флісом", icon: "fleece", hint: "Мʼяке тепло всередині" },
+        { label: "Люверси та шнурки", icon: "lacing", hint: "Завершений вигляд капюшона" },
+      ].map((item) => `<div class="cp-addon-card cp-addon-card--included"><span class="cp-addon-card-icon" aria-hidden="true">${addonSvg(item.icon)}</span><span class="cp-addon-card-body"><strong>${item.label}</strong><small>${item.hint}</small></span><span class="cp-addon-included-check" aria-label="Включено у вартість">✓</span></div>`).join("");
+      return;
+    }
     if (dom.addonsTitle) dom.addonsTitle.textContent = cfg?.detail_title || "Додаткові деталі";
     if (dom.addonsNote) dom.addonsNote.textContent = cfg?.detail_note || "Опційні зміни моделі.";
     const fleeceOptions = addons.filter((addon) => addon.group === "fleece");
@@ -3019,7 +3031,7 @@
     if (dom.qtyInput) {
       dom.qtyInput.addEventListener("input", () => {
         const v = parseInt(dom.qtyInput.value, 10);
-        STATE.order.quantity = isFinite(v) && v > 0 ? v : 0;
+        STATE.order.quantity = isFinite(v) && v > 0 ? v : 1;
         clampSizeBreakdownToQuantity();
         renderSizing();
         refreshAll();
@@ -3029,7 +3041,7 @@
     dom.qtySteps?.forEach((btn) => {
       btn.addEventListener("click", () => {
         const delta = parseInt(btn.dataset.qtyStep, 10) || 0;
-        const next = Math.max(0, (STATE.order.quantity || 0) + delta);
+        const next = Math.max(1, (STATE.order.quantity || 1) + delta);
         STATE.order.quantity = next;
         clampSizeBreakdownToQuantity();
         if (dom.qtyInput) dom.qtyInput.value = next || "";
@@ -3101,6 +3113,8 @@
   function renderSizing() {
     if (!dom.sizeBlock) return;
     const qty = STATE.order.quantity || 0;
+    if (dom.qtyInput && !dom.qtyInput.value) dom.qtyInput.value = String(qty || 1);
+    dom.qtySteps?.forEach((button) => { button.disabled = Number(button.dataset.qtyStep) < 0 && qty <= 1; });
     if (STATE.product.type === "customer_garment") {
       if (dom.qtyBar) dom.qtyBar.hidden = false;
       if (dom.qtyHint) dom.qtyHint.textContent = "Вкажіть кількість ваших речей. Опис виробу вже збережено.";
@@ -3242,7 +3256,6 @@
   function bindGiftToggle() {
     dom.giftToggle?.addEventListener("click", () => {
       STATE.order.gift_enabled = !STATE.order.gift_enabled;
-      if (STATE.order.gift_enabled) STATE.gift_options.wrapping_enabled = true;
       syncGiftUi();
       updateGiftContinueLabel();
       refreshAll();
@@ -3288,6 +3301,14 @@
       STATE.gift_options.paper = button.dataset.giftPaper;
       syncGiftUi(); refreshAll(); persistDraft();
     }));
+    root.querySelector("[data-gift-wrap-style]")?.addEventListener("change", (event) => {
+      STATE.gift_options.wrapping_style = event.target.value;
+      syncGiftUi(); refreshAll(); persistDraft();
+    });
+    root.querySelector("[data-gift-wrap-preference]")?.addEventListener("input", (event) => {
+      STATE.gift_options.wrapping_preference = event.target.value;
+      syncGiftUi(); refreshAll(); persistDraft();
+    });
     root.querySelectorAll("[data-gift-card-mode]").forEach((button) => button.addEventListener("click", () => {
       STATE.gift_options.certificate_mode = button.dataset.giftCardMode;
       syncGiftUi(); refreshAll(); persistDraft();
@@ -3295,12 +3316,6 @@
     root.querySelector("[data-gift-card-message]")?.addEventListener("input", (event) => {
       STATE.gift_options.certificate_text = event.target.value;
       syncGiftUi(); refreshAll(); persistDraft();
-    });
-    root.querySelector("[data-gift-preview-toggle]")?.addEventListener("click", (event) => {
-      const preview = root.querySelector("[data-gift-preview]");
-      preview.hidden = !preview.hidden;
-      event.currentTarget.setAttribute("aria-expanded", String(!preview.hidden));
-      syncGiftPreview();
     });
     updateGiftContinueLabel();
   }
@@ -3335,12 +3350,24 @@
     const counter = root.querySelector("[data-gift-card-counter]");
     if (counter) { counter.textContent = `${count} / ${CONFIG.gift_service?.certificate?.max_message_length || 240}`; counter.classList.toggle("is-over-limit", count > 240); }
     const placement = root.querySelector("[data-gift-certificate-placement]");
-    if (placement) placement.textContent = enabled ? "Покладемо картку зверху в коробці — перед папером із zip-пакетом." : "Покладемо картку всередину zip-пакета. На звороті — рядки для вашого побажання.";
+    if (placement) placement.textContent = enabled ? "Покладемо картку зверху на згортку всередині коробки. На звороті — ваші слова." : "Покладемо картку всередину zip-пакета. На звороті — рядки для вашого побажання.";
     const cardText = root.querySelector("[data-gift-card-preview-text]");
     if (cardText) cardText.textContent = options.certificate_mode === "write" ? options.certificate_text : "";
+    giftPreview?.sync({ boxEnabled: enabled, certificateEnabled: options.certificate_enabled, messageMode: options.certificate_mode });
     const cardInBox = root.querySelector("[data-gift-box-card]"); if (cardInBox) cardInBox.hidden = !options.certificate_enabled;
-    const tissue = root.querySelector("[data-gift-tissue]"); if (tissue) tissue.dataset.paper = options.wrapping_enabled ? options.paper : "ivory";
-    root.querySelectorAll(".cp-gift-box-preview").forEach((scene) => { scene.dataset.wrapping = options.wrapping_enabled ? options.paper : "ivory"; });
+    const tissue = root.querySelector("[data-gift-tissue]"); if (tissue) tissue.dataset.paper = "ivory";
+    root.querySelectorAll(".cp-gift-box-preview").forEach((scene) => {
+      scene.dataset.wrapping = "ivory";
+      scene.dataset.outerPaper = options.wrapping_enabled ? options.paper : "none";
+      scene.dataset.outerStyle = options.wrapping_style || "brand";
+    });
+    const wrappingLabel = root.querySelector("[data-gift-wrapping-target-label]");
+    if (wrappingLabel) wrappingLabel.textContent = enabled ? "Подарунковий папір зовні коробки" : "Подарунковий папір навколо zip-пакета";
+    const preferenceCounter = root.querySelector("[data-gift-wrap-counter]");
+    const preferenceLength = Array.from(options.wrapping_preference || "").length;
+    if (preferenceCounter) { preferenceCounter.textContent = `${preferenceLength} / 240`; preferenceCounter.classList.toggle("is-over-limit", preferenceLength > 240); }
+    const wrappingStyle = root.querySelector("[data-gift-wrap-style]");
+    if (wrappingStyle) wrappingStyle.value = options.wrapping_style || "brand";
     root.querySelectorAll("[data-gift-delivery-method]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.giftDeliveryMethod === options.delivery_method)));
     const service = CONFIG.gift_service || {};
     const courierPrice = service.delivery?.courier?.price;
@@ -3348,6 +3375,7 @@
     const boxPrice = service.box?.price;
     const priceLabel = (price) => Number.isFinite(price) ? (price ? `+${formatPrice(price)}` : "Без доплати") : "Ціну узгодимо з менеджером";
     const boxLabel = root.querySelector("[data-gift-box-price]"); if (boxLabel) boxLabel.textContent = priceLabel(boxPrice);
+    const wrappingPrice = root.querySelector("[data-gift-wrapping-price]"); if (wrappingPrice) wrappingPrice.textContent = priceLabel(service.wrapping?.price ?? 200);
     const deliveryLabel = root.querySelector("[data-gift-delivery-price]"); if (deliveryLabel) deliveryLabel.textContent = priceLabel(deliveryPrice);
     const courierLabel = root.querySelector("[data-gift-courier-price]"); if (courierLabel) courierLabel.textContent = priceLabel(courierPrice);
     syncGiftPreview();
@@ -3363,7 +3391,7 @@
   function giftEnvelope() {
     return { enabled: !!STATE.order.gift_enabled, text: STATE.order.gift_text || "",
       box: { enabled: !!STATE.order.gift_enabled, content_type: STATE.gift_options.content_type, text: STATE.order.gift_text || "", image_name: STATE.gift_options.image_name || "" },
-      wrapping: { enabled: !!STATE.gift_options.wrapping_enabled, paper: STATE.gift_options.paper },
+      wrapping: { enabled: !!STATE.gift_options.wrapping_enabled, paper: STATE.gift_options.paper, style: STATE.gift_options.wrapping_style || "brand", preference: STATE.gift_options.wrapping_preference || "" },
       delivery: { enabled: !!STATE.gift_options.delivery_enabled, method: STATE.gift_options.delivery_method },
       certificate: { enabled: !!STATE.gift_options.certificate_enabled, message_mode: STATE.gift_options.certificate_mode, message: STATE.gift_options.certificate_mode === "write" ? STATE.gift_options.certificate_text || "" : "" } };
   }
@@ -3374,7 +3402,7 @@
     if (STATE.order.gift_enabled) parts.push({ label: "Коробка з вашим посланням", value: service.box?.price ?? null });
     if (STATE.gift_options.delivery_enabled) parts.push({ label: STATE.gift_options.delivery_method === "courier" ? "Доставка курʼєром · у сумі замовлення" : "Доставка у відділення / поштомат · у сумі замовлення", value: service.delivery?.[STATE.gift_options.delivery_method]?.price ?? null });
     if (STATE.gift_options.certificate_enabled) parts.push({ label: "Сертифікат на знижку 15%", value: service.certificate?.price ?? 150 });
-    if (STATE.gift_options.wrapping_enabled) parts.push({ label: "Святкове оформлення", value: 0 });
+    if (STATE.gift_options.wrapping_enabled) parts.push({ label: "Святкове оформлення", value: service.wrapping?.price ?? 200 });
     return { parts, total: parts.reduce((sum, part) => sum + (part.value || 0), 0), estimate_required: parts.some((part) => !Number.isFinite(part.value)) };
   }
 
@@ -3605,6 +3633,7 @@
         const sum = Object.values(STATE.order.size_breakdown || {}).reduce((a, b) => a + (parseInt(b, 10) || 0), 0);
         return sum === STATE.order.quantity;
       case "gift":
+        if (STATE.gift_options.wrapping_enabled && Array.from(STATE.gift_options.wrapping_preference || "").length > 240) return false;
         if (STATE.gift_options.certificate_enabled && STATE.gift_options.certificate_mode === "write" && (!STATE.gift_options.certificate_text.trim() || Array.from(STATE.gift_options.certificate_text).length > 240)) return false;
         return !STATE.order.gift_enabled || (STATE.gift_options.content_type === "image" ? !!giftImageFile : !!STATE.order.gift_text.trim());
       case "contact":
@@ -3615,6 +3644,7 @@
   }
 
   function getStepProblem(stepKey) {
+    if (stepKey === "gift" && STATE.gift_options.wrapping_enabled && Array.from(STATE.gift_options.wrapping_preference || "").length > 240) return ["Залиште побажання до оформлення — до 240 символів.", "[data-gift-wrap-preference]"];
     if (stepKey === "gift" && STATE.gift_options.certificate_enabled && STATE.gift_options.certificate_mode === "write" && (!STATE.gift_options.certificate_text.trim() || Array.from(STATE.gift_options.certificate_text).length > 240)) return ["Додайте побажання на звороті картки — до 240 символів.", "[data-gift-card-message]"];
     const problems = {
       mode: ["Оберіть: для себе, на подарунок або для організації.", "[data-mode-list] button"],
@@ -3808,7 +3838,7 @@
     // Shell visibility must be synchronized even when cached content is unchanged.
     updateFlowPhase();
     renderCollection();
-    renderMultiIntro();
+    renderProductChooser();
     renderMobileBottomBar();
     if (!dirty.size) return;
     syncGiftUi();
@@ -4672,8 +4702,6 @@
   }
 
   function bindCollection() {
-    root.querySelector("[data-multi-add]")?.addEventListener("click", addCollectionItem);
-    root.querySelector("[data-multi-return]")?.addEventListener("click", returnToCollection);
     root.querySelector("[data-collection-add]")?.addEventListener("click", addCollectionItem);
     root.querySelector("[data-collection-continue]")?.addEventListener("click", () => {
       if (!collection.list().length) return;
@@ -4691,20 +4719,11 @@
     });
   }
 
-  function renderMultiIntro() {
-    const multiple = STATE.ui.product_view === "multiple";
-    if (dom.productList) dom.productList.hidden = multiple;
-    root.querySelector("[data-product-choice-head]")?.toggleAttribute("hidden", multiple);
-    root.querySelector("[data-multi-intro]")?.toggleAttribute("hidden", !multiple);
-    const multipleCard = dom.productList?.querySelector('[data-choice-value="multiple"]');
-    if (multipleCard) multipleCard.hidden = STATE.ui.multi_item_mode && !multiple;
+  function renderProductChooser() {
+    if (dom.productList) dom.productList.hidden = false;
+    root.querySelector("[data-product-choice-head]")?.removeAttribute("hidden");
     const heading = root.querySelector("[data-product-choice-head] h2");
     if (heading) heading.textContent = STATE.ui.multi_item_mode ? (collection.list().length ? "Оберіть наступну річ" : "Оберіть першу річ") : "Оберіть річ";
-    const list = root.querySelector("[data-multi-list]");
-    if (list) list.innerHTML = collection.list().map((item) => `<div><strong>${escapeHtml(CONFIG.products[item.snapshot.product.type]?.label || "Виріб")}</strong><span>× ${item.snapshot.order.quantity}</span></div>`).join("");
-    const add = root.querySelector("[data-multi-add]");
-    if (add) { add.textContent = collection.list().length ? "+ Додати ще річ" : "+ Додати першу річ"; add.disabled = collection.list().length >= collectionTools.MAX_ITEMS; }
-    root.querySelector("[data-multi-return]")?.toggleAttribute("hidden", !collection.list().length);
   }
 
   function buildCreationEnvelope(submissionType, includeActive = false) {
@@ -5374,11 +5393,27 @@
       else STATE.order.gift_enabled = false;
       if (draft.creation) {
         collection.restore(draft.creation.items);
+        // Saved configurations from the previous offer must show today's
+        // included hoodie details before the user edits or submits them.
+        for (const item of collection.list()) {
+          if (item.snapshot.product.type !== "hoodie") continue;
+          item.snapshot.print.add_ons = ["fleece", "lacing"];
+          item.state.print.add_ons = ["fleece", "lacing"];
+          const pricing = item.snapshot.pricing;
+          const oldHardware = Math.max(0, Number(pricing.addons_price) || 0);
+          if (oldHardware) {
+            pricing.addons_price = 0;
+            if (Number.isFinite(pricing.unit_total)) pricing.unit_total = Math.max(0, pricing.unit_total - oldHardware);
+            if (Number.isFinite(pricing.final_total)) pricing.final_total = Math.max(0, pricing.final_total - oldHardware * item.snapshot.order.quantity);
+            pricing.breakdown = (pricing.breakdown || []).filter((row) => row.label !== "Люверси зі шнурками");
+          }
+          collection.save(item);
+        }
         activeItemId = /^[a-zA-Z0-9_-]{1,64}$/.test(draft.creation.active_item_id || "") ? draft.creation.active_item_id : newItemId();
         STATE.ui.collection_review = !!draft.creation.review && collection.list().length > 0;
       }
       if (draft.ui) {
-        STATE.ui.product_view = draft.ui.product_view === "multiple" ? "multiple" : "chooser";
+        STATE.ui.product_view = "chooser";
         STATE.ui.multi_item_mode = !!draft.ui.multi_item_mode;
         STATE.ui.current_step = draft.ui.current_step || "mode";
         STATE.ui.brand_brief_open = draft.ui.brand_brief_open ?? (STATE.mode === "brand" && STATE.ui.current_step === "mode");
@@ -5408,6 +5443,7 @@
       dom.brandProductList?.querySelectorAll("[data-brand-product]").forEach((item) => item.classList.toggle("is-active", (STATE.notes.brand_product_types || []).includes(item.dataset.brandProduct)));
       if (dom.giftTextInput) dom.giftTextInput.value = STATE.order.gift_text || "";
       const cardMessageInput = root.querySelector("[data-gift-card-message]"); if (cardMessageInput) cardMessageInput.value = STATE.gift_options.certificate_text || "";
+      const wrappingPreferenceInput = root.querySelector("[data-gift-wrap-preference]"); if (wrappingPreferenceInput) wrappingPreferenceInput.value = STATE.gift_options.wrapping_preference || "";
       if (dom.giftToggle) dom.giftToggle.classList.toggle("is-active", !!STATE.order.gift_enabled);
       if (dom.giftToggle) dom.giftToggle.setAttribute("aria-pressed", String(!!STATE.order.gift_enabled));
       if (dom.giftToggleState) dom.giftToggleState.textContent = STATE.order.gift_enabled ? "Увімкнено" : "Вимкнено";

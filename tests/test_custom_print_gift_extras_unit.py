@@ -26,8 +26,10 @@ class GiftExtrasUnitTests(unittest.TestCase):
                        "delivery": {"enabled": delivery, "method": method}, "certificate": {"enabled": certificate}}
         return raw
 
-    def _leads(self, *, method="branch"):
-        creation = prepare_creation(self._raw(delivery=True, certificate=True, method=method))
+    def _leads(self, *, method="branch", wrapping=False):
+        raw = self._raw(delivery=True, certificate=True, method=method)
+        raw["gift"]["wrapping"] = {"enabled": wrapping}
+        creation = prepare_creation(raw)
         leads = []
         for index, item in enumerate(creation.items):
             snap = item["snapshot"]
@@ -38,8 +40,8 @@ class GiftExtrasUnitTests(unittest.TestCase):
                                          pricing_snapshot_json=snap["pricing"], final_price_value=Decimal(str(snap["pricing"]["final_total"]))))
         return leads
 
-    def _order(self, *, status="unpaid", method="branch", discount=0):
-        leads = self._leads(method=method)
+    def _order(self, *, status="unpaid", method="branch", discount=0, wrapping=False):
+        leads = self._leads(method=method, wrapping=wrapping)
         data = custom_print_checkout_payload(leads)
         gross = sum(lead.final_price_value for lead in leads)
         contract = build_custom_print_delivery_contract(gross_total=gross, discount_amount=discount, creation_data=data, order_id=42)
@@ -73,6 +75,10 @@ class GiftExtrasUnitTests(unittest.TestCase):
         creation = prepare_creation(raw)
         self.assertEqual(creation.items[0]["snapshot"]["pricing"]["final_total"], 1350)
         self.assertFalse(creation.items[0]["snapshot"]["pricing"]["estimate_required"])
+        self.assertTrue(creation.gift["box"]["inner_paper_included"])
+        self.assertEqual(creation.gift["box"]["inner_paper_price"], 0)
+        self.assertFalse(creation.gift["wrapping"]["enabled"])
+        self.assertEqual(creation.gift["wrapping"]["price"], 0)
         self.assertEqual(prepare_creation(raw, submission_type="cart").items[0]["snapshot"]["pricing"]["gift_box_price"], 350)
         raw["gift"]["box"]["text"] = " "
         with self.assertRaises(CreationValidationError) as caught:
@@ -90,18 +96,75 @@ class GiftExtrasUnitTests(unittest.TestCase):
 
     def test_box_delivery_certificate_wrapping_and_message_are_priced_once(self):
         raw = self._raw(box=True, delivery=True, certificate=True)
-        raw["gift"]["wrapping"] = {"enabled": True, "paper": "black", "price": 999}
+        raw["gift"]["wrapping"] = {"enabled": True, "paper": "black", "style": "hearts", "preference": "Без блискіток", "price": 999, "target": "zip", "availability_confirmed": True}
         raw["gift"]["certificate"].update(message_mode="write", message="Нехай усе вдається!", placement="wrong", message_price=999)
         creation = prepare_creation(raw, submission_type="cart")
-        self.assertEqual([item["snapshot"]["pricing"]["final_total"] for item in creation.items], [1650, 1500])
-        self.assertEqual(creation.items[0]["snapshot"]["pricing"]["gift_price"], 650)
-        self.assertEqual(creation.gift["wrapping"]["price"], 0)
+        self.assertEqual([item["snapshot"]["pricing"]["final_total"] for item in creation.items], [1850, 1500])
+        self.assertEqual(creation.items[0]["snapshot"]["pricing"]["gift_price"], 850)
+        self.assertEqual(creation.items[0]["snapshot"]["pricing"]["wrapping_price"], 200)
+        self.assertEqual(creation.gift["wrapping"]["price"], 200)
+        self.assertEqual(creation.gift["wrapping"]["target"], "box")
+        self.assertEqual(creation.gift["wrapping"]["preference"], "Без блискіток")
+        self.assertFalse(creation.gift["wrapping"]["availability_confirmed"])
+        normalized = normalize_custom_print_snapshot(creation.items[0]["snapshot"])
+        self.assertEqual(normalized["pricing"]["wrapping_price"], 200)
+        self.assertEqual(normalized["order"]["gift"]["wrapping"], creation.gift["wrapping"])
         certificate = creation.gift["certificate"]
         self.assertEqual(certificate["message_price"], 0)
         self.assertEqual(certificate["placement"], "box_top")
         self.assertEqual(certificate["scope"], "any_order_including_custom")
         raw["gift"]["box"]["enabled"] = False
         self.assertEqual(prepare_creation(raw).gift["certificate"]["placement"], "zip_inside")
+        self.assertEqual(prepare_creation(raw).gift["wrapping"]["target"], "zip")
+
+    def test_wrapping_defaults_legacy_papers_and_preference_validation(self):
+        raw = self._raw()
+        for paper in ("brand", "ivory", "kraft", "black", "red"):
+            raw["gift"]["wrapping"] = {"enabled": True, "paper": paper, "preference": "💛" * 240}
+            gift = prepare_creation(raw, partial=True).gift
+            self.assertEqual(gift["wrapping"]["paper"], paper)
+            self.assertEqual(gift["wrapping"]["style"], "brand")
+            self.assertEqual(gift["wrapping"]["preference"], "💛" * 240)
+        for field, value in (("preference", "💛" * 241), ("preference", []), ("style", "promised_sku")):
+            raw["gift"]["wrapping"] = {"enabled": True, field: value}
+            with self.subTest(field=field, value=str(value)[:30]), self.assertRaises(CreationValidationError):
+                prepare_creation(raw, partial=True)
+        raw["gift"]["wrapping"] = {"enabled": False, "price": 999}
+        self.assertEqual(prepare_creation(raw).gift["wrapping"]["price"], 0)
+
+    def test_wrapping_only_is_200_once_for_high_item_quantity(self):
+        raw = self._raw()
+        raw["gift"]["wrapping"] = {"enabled": True, "price": 1}
+        raw["items"][0]["snapshot"]["order"].update(quantity=40, size_breakdown={"M": 40})
+        raw["items"][0]["snapshot"]["pricing"].update(unit_total=500, final_total=20000)
+        creation = prepare_creation(raw)
+        self.assertEqual([item["snapshot"]["pricing"]["final_total"] for item in creation.items], [20200, 1500])
+        self.assertEqual(creation.items[0]["snapshot"]["pricing"]["gift_price"], 200)
+        self.assertEqual(creation.gift["wrapping"]["target"], "zip")
+        self.assertEqual(creation.gift["wrapping"]["paper"], "brand")
+        self.assertTrue(creation.gift["base_packaging"]["included"])
+
+    def test_wrapping_preferences_survive_checkout_and_owner_exclusion(self):
+        leads = self._leads(wrapping=True)
+        gift = custom_print_checkout_payload(leads)["groups"][0]["gift"]
+        self.assertEqual(gift["wrapping"]["price"], 200)
+        self.assertEqual(gift["wrapping"]["target"], "zip")
+        self.assertEqual(gift["wrapping"]["style"], "brand")
+        data = custom_print_checkout_payload([leads[1]])
+        self.assertFalse(data["groups"][0]["applied"])
+        self.assertIsNone(build_custom_print_delivery_contract(gross_total=1500, discount_amount=0, creation_data=data))
+
+    def test_paid_wrapping_is_merchandise_once_and_shipping_stays_separate(self):
+        order = self._order(status="paid", discount=100, wrapping=True)
+        self.assertEqual(order.total_sum, Decimal("3000"))
+        self.assertEqual(order_amounts(order)["payable"], Decimal("2900"))
+        np = build_order_payment_snapshot(order)
+        self.assertEqual(np["declared_cost_value"], Decimal("2750"))
+        self.assertEqual(np["delivery_payer_type"], "Sender")
+        self.assertTrue(delivery_payment_snapshot(order)["funded"])
+        order.payment_status = "unpaid"
+        self.assertFalse(delivery_payment_snapshot(order)["funded"])
+        self.assertEqual(order_amounts(order)["payable"], Decimal("2900"))
 
     def test_certificate_message_limit_rejects_instead_of_truncating(self):
         raw = self._raw(certificate=True)
@@ -221,6 +284,10 @@ class GiftExtrasUnitTests(unittest.TestCase):
         self.assertIn("ще не оплачено", message)
         self.assertIn("−15%", message)
         self.assertIn("не виданий автоматично", message)
+        wrapping_message = _build_creation_message(self._leads(wrapping=True))
+        self.assertIn("+200 грн один раз", wrapping_message)
+        self.assertIn("навколо зіп-пакета", wrapping_message)
+        self.assertIn("побажання, наявність підтвердити", wrapping_message)
 
     def test_ten_item_summary_preserves_full_certificate_message_within_limit(self):
         raw = self._raw(box=True, delivery=True, certificate=True)
@@ -230,7 +297,7 @@ class GiftExtrasUnitTests(unittest.TestCase):
         for item in raw["items"]:
             item["snapshot"]["notes"]["brief"] = "&" * 100
             item["snapshot"]["order"]["sizes_note"] = "&" * 50
-        raw["gift"]["wrapping"] = {"enabled": True, "paper": "black"}
+        raw["gift"]["wrapping"] = {"enabled": True, "paper": "black", "style": "new_year", "preference": "&" * 240}
         text = "&" * 240
         raw["gift"]["certificate"].update(message_mode="write", message=text)
         creation = prepare_creation(raw)
@@ -241,6 +308,7 @@ class GiftExtrasUnitTests(unittest.TestCase):
             leads.append(SimpleNamespace(pk=index + 1, lead_number=f"CP07102026L{index + 1:013d}", config_draft_json=snap, pricing_snapshot_json=snap["pricing"]))
         message = _build_creation_message(leads)
         self.assertIn(escape(text), message)
+        self.assertEqual(message.count(escape(text)), 2)
         self.assertLessEqual(len(message), 4096)
         for lead in leads:
             self.assertIn(lead.lead_number, message)

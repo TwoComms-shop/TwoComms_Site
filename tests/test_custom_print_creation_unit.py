@@ -14,7 +14,7 @@ django.setup()
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils.datastructures import MultiValueDict
 
-from storefront.custom_print_config import normalize_custom_print_snapshot
+from storefront.custom_print_config import PRODUCT_MATRIX, normalize_custom_print_snapshot
 from storefront.custom_print_creation import CreationValidationError, creation_analytics_lead, prepare_creation, save_creation
 from storefront.custom_print_notifications import _build_creation_message, notify_custom_print_creation
 
@@ -35,6 +35,36 @@ def envelope(gift=True):
 
 
 class CreationUnitTests(unittest.TestCase):
+    def test_all_hoodie_modes_fits_and_fabrics_include_fleece_and_lacing_without_hardware_charge(self):
+        for mode, purpose in (("personal", "personal"), ("personal", "gift"), ("brand", "organization")):
+            for fit, fabrics in PRODUCT_MATRIX["hoodie"]["fabrics"].items():
+                for fabric in fabrics:
+                    snapshot = item_snapshot("hoodie", 2, 3900)
+                    snapshot.update(mode=mode, order_purpose=purpose)
+                    snapshot["product"].update(fit=fit, fabric=fabric["value"])
+                    snapshot["print"]["add_ons"] = ["no_fleece", "grommets"]
+                    snapshot["pricing"].update(addons_price=150, unit_total=1950, base_price=1800, gift_price=0)
+                    normalized = normalize_custom_print_snapshot(snapshot)
+                    with self.subTest(mode=mode, purpose=purpose, fit=fit, fabric=fabric):
+                        self.assertEqual(normalized["print"]["add_ons"], ["fleece", "lacing"])
+                        self.assertEqual(normalized["product"]["fabric"], fabric["value"])
+                        self.assertEqual(normalized["pricing"]["base_price"], 1800)
+                        self.assertEqual(normalized["pricing"]["addons_price"], 0)
+                        self.assertEqual(normalized["pricing"]["unit_total"], 1800)
+                        self.assertEqual(normalized["pricing"]["final_total"], 3600)
+                        self.assertEqual(normalize_custom_print_snapshot(normalized), normalized)
+
+    def test_mixed_creation_removes_cached_hoodie_fee_only_and_forms_keep_correct_prices(self):
+        raw = envelope(False)
+        hoodie = raw["items"][1]["snapshot"]
+        hoodie["pricing"].update(addons_price=150, unit_total=1500, final_total=1500)
+        hoodie["print"]["add_ons"] = ["no_fleece", "lacing"]
+        creation = prepare_creation(raw, submission_type="cart")
+        self.assertEqual([item["snapshot"]["pricing"]["final_total"] for item in creation.items], [1000, 1350])
+        self.assertEqual(creation.items[0]["snapshot"]["print"]["add_ons"], [])
+        self.assertEqual(creation.forms[1].cleaned_data["pricing_snapshot_json"]["final_total"], 1350)
+        self.assertEqual(creation.forms[1].cleaned_data["config_draft_json"]["print"]["add_ons"], ["fleece", "lacing"])
+
     def test_two_items_keep_independent_config_quantity_and_single_gift_price(self):
         raw = envelope()
         original = deepcopy(raw)

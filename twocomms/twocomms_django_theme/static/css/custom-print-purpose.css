@@ -189,3 +189,11 @@
   .cp-purpose-grid .cp-purpose-card:hover, .cp-purpose-grid .cp-purpose-card:active { transform: none; }
   .cp-purpose-card, .cp-gift-box, .cp-gift-box * { animation: none !important; }
 }
+
+@media (max-width: 991.98px) {
+  body.cp-purpose-active [data-purpose-view="chooser"] .cp-step--mode .cp-step-body {
+    display: flex; flex-direction: column; min-height: 100cqh;
+  }
+  body.cp-purpose-active .cp-step--mode :is(.cp-step-head, .cp-purpose-grid) { flex-shrink: 0; }
+  body.cp-purpose-active [data-personal-manager-cta].cp-manager-quick-link { margin-top: auto !important; flex-shrink: 0; }
+}

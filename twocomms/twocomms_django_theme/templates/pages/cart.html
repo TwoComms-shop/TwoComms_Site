@@ -194,7 +194,7 @@
                     {% endif %}
                     {% if ci.add_on_labels %}
                     <div class="cart-item-detail">
-                      <span class="cart-item-label">{% trans 'Додатково:' %}</span>
+                      <span class="cart-item-label">{% trans 'Деталі виробу:' %}</span>
                       <span class="cart-item-value">{{ ci.add_on_labels|join:", " }}</span>
                     </div>
                     {% endif %}
@@ -207,9 +207,11 @@
                     {% if ci.order_purpose == 'gift' %}
                     <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Призначення:' %}</span><span class="cart-item-value">{% trans 'На подарунок' %}</span></div>
                     {% endif %}
+                    <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Пакування виробу:' %}</span><span class="cart-item-value">{% trans 'Фірмовий зіп-пакет · включено без доплати, також усередині коробки' %}</span></div>
                     {% if ci.gift_charge_owner %}
                       {% if ci.gift_extras.box.enabled %}
                       <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Коробка:' %}</span><span class="cart-item-value">{% if ci.gift_extras.box.content_type == 'image' %}{{ ci.gift_extras.box.image_name }}{% else %}{{ ci.gift_extras.box.text }}{% endif %}</span></div>
+                      <div class="cart-item-detail"><span class="cart-item-label">{% trans 'У коробці:' %}</span><span class="cart-item-value">{% trans 'Зіп-пакет і захисний папір · включено без доплати' %}</span></div>
                       {% endif %}
                       {% if ci.gift_extras.delivery.enabled %}
                       <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Доставка у сумі замовлення:' %}</span><span class="cart-item-value">{% if ci.gift_extras.delivery.method == 'courier' %}{% trans 'Курʼєром · адресу узгодимо' %}{% else %}{% trans 'Відділення / поштомат' %}{% endif %} · {{ ci.gift_extras.delivery.price }} {% trans 'грн' %}</span></div>
@@ -219,7 +221,8 @@
                       {% if ci.gift_extras.certificate.message_mode == 'write' %}<div class="cart-item-detail"><span class="cart-item-label">{% trans 'Побажання на картці:' %}</span><span class="cart-item-value">{{ ci.gift_extras.certificate.message }}</span></div>{% endif %}
                       {% endif %}
                       {% if ci.gift_extras.wrapping.enabled %}
-                      <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Святковий папір:' %}</span><span class="cart-item-value">{% if ci.gift_extras.wrapping.paper == 'black' %}{% trans 'Чорний' %}{% elif ci.gift_extras.wrapping.paper == 'kraft' %}{% trans 'Крафтовий' %}{% else %}{% trans 'Молочний' %}{% endif %} · {% trans 'включено' %}</span></div>
+                      <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Святкове пакування:' %}</span><span class="cart-item-value">{{ ci.gift_extras.wrapping.price }} {% trans 'грн один раз для добірки' %} · {% if ci.gift_extras.wrapping.target == 'box' %}{% trans 'навколо коробки' %}{% else %}{% trans 'навколо зіп-пакета' %}{% endif %}</span></div>
+                      <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Побажання до паперу:' %}</span><span class="cart-item-value">{% if ci.gift_extras.wrapping.paper == 'black' %}{% trans 'Чорний' %}{% elif ci.gift_extras.wrapping.paper == 'kraft' %}{% trans 'Крафтовий' %}{% elif ci.gift_extras.wrapping.paper == 'ivory' %}{% trans 'Молочний' %}{% elif ci.gift_extras.wrapping.paper == 'red' %}{% trans 'Червоний' %}{% else %}{% trans 'Фірмовий' %}{% endif %} · {% if ci.gift_extras.wrapping.style == 'minimal' %}{% trans 'Мінімалістичний' %}{% elif ci.gift_extras.wrapping.style == 'festive' %}{% trans 'Святковий' %}{% elif ci.gift_extras.wrapping.style == 'hearts' %}{% trans 'Серця' %}{% elif ci.gift_extras.wrapping.style == 'newsprint' %}{% trans 'Газетний' %}{% elif ci.gift_extras.wrapping.style == 'new_year' %}{% trans 'Новорічний' %}{% elif ci.gift_extras.wrapping.style == 'custom' %}{% trans 'За побажанням' %}{% else %}{% trans 'Фірмовий' %}{% endif %} · {% trans 'наявність підтвердить менеджер' %}{% if ci.gift_extras.wrapping.preference %}<br>{{ ci.gift_extras.wrapping.preference }}{% endif %}</span></div>
                       {% endif %}
                     {% elif ci.gift_enabled and not ci.creation.id %}
                     <div class="cart-item-detail">
