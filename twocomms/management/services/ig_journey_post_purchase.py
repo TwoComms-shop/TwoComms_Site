@@ -38,27 +38,29 @@ def append_post_purchase_context(graph, *, is_history=False):
         order_id = order_refs[0]['id']
         anchors = {'fulfillment': parent['id']}
         for key in KEYS:
-            # Reuse only facts within this order's episode or explicit order scope.
+            # An episode may contain several orders. Discussion and unknown
+            # bindings never acquire factual order scope from proximity.
             matches = [n for n in result['nodes'] if (n.get('structural_key') or n.get('semantic_key')) == key
-                       and ((n.get('contextual_binding') or {}).get('order_id') == order_id
-                            or (parent.get('episode_id') is not None and n.get('episode_id') == parent['episode_id']))]
+                       and n.get('presentation_kind') != 'interpretation'
+                       and n.get('presentation_kind') != 'possible'
+                       and (n.get('contextual_binding') or {}).get('order_id') == order_id]
             if key == 'channel_consent' and not matches:
                 matches = [n for n in result['nodes'] if n.get('semantic_key') == 'client_order_contact'
                            and n.get('contextual_binding', {}).get('order_id') == order_id]
-            if len(matches) > 1:
-                continue  # Ambiguous facts must not be collapsed into one outcome.
-            if matches:
+            if len(matches) == 1:
                 node = matches[0]
                 node['structural_key'] = key
             else:
                 definition = definitions[key]
-                node = {'id': f'post-purchase:{order_id}:{key}', 'semantic_key': key,
+                existing = next((n for n in result['nodes'] if n['id'] == f'post-purchase:{order_id}:{key}'), None)
+                node = existing or {'id': f'post-purchase:{order_id}:{key}', 'semantic_key': key,
                         'structural_key': key, 'label': definition['label'], 'current': False,
                         'presentation_kind': 'possible', 'state': None, 'facts': [], 'evidence_refs': [],
                         'producer': 'post_purchase_context', 'scope': parent.get('scope'),
                         'episode_id': parent.get('episode_id'), 'contextual_binding': {'order_id': order_id},
                         **{k: definition[k] for k in ('implementation_status', 'implementation_note') if k in definition}}
-                result['nodes'].append(node)
+                if existing is None:
+                    result['nodes'].append(node)
             label, note = NOTES[key]
             readiness = 'available' if key == 'post_sale_case' or received and key in {'ugc_assessment', 'repeat_interest'} else 'conditional'
             if not received and key not in {'post_sale_case', 'channel_consent', 'channel_grant_checked'}:
@@ -72,8 +74,16 @@ def append_post_purchase_context(graph, *, is_history=False):
                 readiness, label, note = 'blocked', 'Контакт заборонено', 'Заборона повідомлень зберігається після доставки. Сервіс за зверненням клієнта — окрема гілка.'
             node['post_purchase'] = {'order_id': order_id, 'parent_id': parent['id'], 'received': received,
                                      'readiness': readiness, 'label': label, 'note': note, 'evidence_refs': order_refs}
+            # Several cases stay separate; the possible scenario anchor does
+            # not collapse their identities or manufacture a decision edge.
+            if len(matches) > 1:
+                for match in matches:
+                    match['post_purchase'] = deepcopy(node['post_purchase'])
             anchors[key] = node['id']
         parent['post_purchase_node_ids'] = [anchors[k] for k in KEYS if k in anchors]
+        parent['post_purchase_node_ids'].extend(n['id'] for n in result['nodes']
+            if n.get('post_purchase', {}).get('order_id') == order_id
+            and n['id'] not in parent['post_purchase_node_ids'])
         transitions = [t for t in catalogue['transitions'] if t['source_key'] in anchors and t['target_key'] in anchors]
         # Incoming UGC and repeat interest are independent of outbound marketing.
         transitions.append({'id': 'incoming-ugc', 'source_key': 'fulfillment', 'target_key': 'ugc_assessment', 'condition_label': 'Якщо клієнт надіслав матеріал'})

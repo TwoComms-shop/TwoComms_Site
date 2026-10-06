@@ -66,12 +66,34 @@ class AfterPurchaseTests(SimpleTestCase):
 
     def test_existing_bound_events_are_preserved(self):
         source=graph();source['nodes'][0].update(semantic_key='fulfillment',episode_id=9)
-        fact={'id':'reward','semantic_key':'reward_delivery','episode_id':9,'state':'complete','evidence_refs':[{'kind':'message','id':55}]}
+        fact={'id':'reward','semantic_key':'reward_delivery','episode_id':9,'contextual_binding':{'order_id':7},'state':'complete','evidence_refs':[{'kind':'message','id':55}]}
         source['nodes'].append(fact)
         result=append_post_purchase_context(source)
         reward=next(n for n in result['nodes'] if n['id']=='reward')
         self.assertEqual(reward['state'],'complete');self.assertEqual(reward['evidence_refs'],fact['evidence_refs'])
         self.assertEqual(len([n for n in result['nodes'] if n['semantic_key']=='reward_delivery']),1)
+
+    def test_same_episode_and_discussion_do_not_acquire_order_binding(self):
+        source = graph(); source['nodes'][0]['episode_id'] = 9
+        source['nodes'].extend([
+            {'id':'unbound','semantic_key':'reward_delivery','episode_id':9,'state':'complete'},
+            {'id':'discussion','semantic_key':'reward_use','presentation_kind':'interpretation',
+             'contextual_binding':{'order_id':7},'state':'partial'}])
+        result = append_post_purchase_context(source)
+        self.assertTrue(all('post_purchase' not in n for n in result['nodes'] if n['id'] in {'unbound','discussion'}))
+        self.assertTrue(all(n['presentation_kind']=='possible' for n in result['nodes']
+                            if n.get('post_purchase') and n['semantic_key'] in {'reward_delivery','reward_use'}))
+
+    def test_two_service_cases_keep_both_identities_and_replay_is_idempotent(self):
+        source = graph()
+        for number in (1,2):
+            source['nodes'].append({'id':f'case:{number}','semantic_key':'post_sale_case',
+                'contextual_binding':{'order_id':7,'case_id':number},'state':'partial'})
+        result = append_post_purchase_context(source)
+        self.assertEqual({n['id'] for n in result['nodes'] if n.get('post_purchase')
+                          and n['id'].startswith('case:')}, {'case:1','case:2'})
+        self.assertEqual(append_post_purchase_context(result), result)
+        self.assertFalse(any(e['from_node_id'].startswith('case:') or e['to_node_id'].startswith('case:') for e in result['edges']))
 
     def test_renderer_connects_full_tail_and_isolates_short_order_view(self):
         import json, subprocess, shutil

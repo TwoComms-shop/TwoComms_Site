@@ -1,0 +1,38 @@
+maintenance active lease_id=r30-e8d657f33-release expires_at=1791284189
+From https://github.com/zainllw0w/TwoComms_Site
+   fe98c174c..e8d657f33  main       -> origin/main
+Updating fe98c174c..e8d657f33
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   4 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   4 +-
+ .../r30-hosted-settlement-20261006/README.md       |  16 +
+ .../hosted-compatibility-sqlite.log                |  40 ++
+ .../hosted-final-native.log                        |  67 +++
+ .../hosted-final-sqlite.log                        | 258 +++++++++
+ .../hosted-native-race-fixture-final.log           |   7 +
+ .../PRODUCTION_RELEASE_2026-10-06.md               |   9 +
+ .../unified-production-health-recheck.log          |  26 +
+ .../unified-production-postpull.log                | 102 ++++
+ .../unified-production-supervisor-recovery.log     |   6 +
+ twocomms/management/services/bot_payments.py       |  39 +-
+ .../management/services/ig_checkout_generation.py  |  38 +-
+ .../management/services/ig_checkout_payment.py     | 255 ++++++++-
+ twocomms/management/tests_ig_hosted_settlement.py  | 587 +++++++++++++++++++++
+ twocomms/storefront/views/monobank.py              |  62 ++-
+ 16 files changed, 1475 insertions(+), 45 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-hosted-settlement-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-hosted-settlement-20261006/hosted-compatibility-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-hosted-settlement-20261006/hosted-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-hosted-settlement-20261006/hosted-final-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-hosted-settlement-20261006/hosted-native-race-fixture-final.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-unified-context-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-unified-context-20261006/unified-production-health-recheck.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-unified-context-20261006/unified-production-postpull.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-unified-context-20261006/unified-production-supervisor-recovery.log
+ create mode 100644 twocomms/management/tests_ig_hosted_settlement.py
+System check identified no issues (0 silenced).
+maintenance disabled
+daemon ready under supervisor — ok
+375 objects imported automatically (use -v 2 for details).
+
+{"bounded_projection_sample": [{"needs_reconciliation": false, "truth": "confirmed"}, {"needs_reconciliation": false, "truth": "confirmed"}, {"needs_reconciliation": false, "truth": "confirmed"}, {"needs_reconciliation": false, "truth": "cancelled"}], "canonical_lock_guard_loaded": true, "health": {"main_healthy": true, "process_online": true, "process_pid": 1399952, "stalled": false, "supervisor": {"available": true, "child_pid": 1399952, "child_pid_matches_expected": true, "child_release_sha": "e8d657f332caa4ced38ea3408f07422d02d94393", "last_ensure_seen_at": 1791283298.139, "observed_at": 1791283300.06, "restart_count": 0, "status": "current", "supervisor_release_sha": "e8d657f332caa4ced38ea3408f07422d02d94393"}, "workers_healthy": true}, "hosted_settlement_loaded": true, "maintenance_active": false, "memory_admission_accepted": false, "memory_generation_enabled": false, "release_sha": "e8d657f332caa4ced38ea3408f07422d02d94393", "strict_minor_parser": true}

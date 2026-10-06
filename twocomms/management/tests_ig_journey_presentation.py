@@ -40,6 +40,87 @@ class JourneyDisplayFocusTests(SimpleTestCase):
 
 
 class JourneyRendererPresentationTests(SimpleTestCase):
+    def test_renderer_update_aftercare_keeps_partial_transcript_coverage_with_confirmed_order(self):
+        source = (Path(__file__).parent / "static/management/ig_journey.js").read_text().replace(
+            "window.TwcJourney={create:options=>new Journey(options)};", "window.TwcJourney={Journey};")
+        program = "global.window={};\n" + source + r'''
+const assert=require('node:assert/strict');
+class Element{
+  constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.attrs={};this.base=new Map();this.classList={add(){}};}
+  append(...nodes){this.children.push(...nodes);}prepend(...nodes){this.children.unshift(...nodes);}
+  replaceChildren(...nodes){this.children=nodes;}setAttribute(k,v){this.attrs[k]=v;}addEventListener(){}remove(){}
+  get options(){return this.children;}
+  querySelector(selector){if(!['.twc-journey-core','.twc-journey-icon','.twc-journey-status','.twc-journey-step-label','.twc-journey-count'].includes(selector))return null;if(!this.base.has(selector))this.base.set(selector,new Element('span'));return this.base.get(selector);}
+}
+global.document={createElement:tag=>new Element(tag),createElementNS:(ns,tag)=>new Element(tag)};
+global.Option=function(text,value){const option=new Element('option');option.textContent=text;option.value=value;return option;};
+const j=Object.create(window.TwcJourney.Journey.prototype);
+Object.assign(j,{options:{},modal:{},mapMode:'short',possibleFamily:'after',showPossible:true,
+  afterPurchaseOrderId:'post-purchase:7:reward_delivery',buttons:new Map(),cells:new Map()});
+for(const name of ['root','title','mode','mobileContext','traceKey','inlineKey','select','grid','mapCoverage'])j[name]=new Element('div');
+// Keep the real update/presentGraph/presentEvents and DOM text rendering. Stub
+// unrelated rings, panels and timers so this fixture needs no browser process.
+for(const name of ['stopWalk','renderSegments','renderOrderOutcomes','renderObjections','renderAccessibleList','queueLayout','updateTimers'])j[name]=()=>{};
+const parent={id:'order:7',semantic_key:'client_order_context',label:'Замовлення',state:'complete',
+  producer:'client_order_assignments',scope:'client',episode_id:null,facts:[],evidence_refs:[{kind:'order',id:7}],
+  contextual_binding:{order_id:7},fulfillment_progress:{step:4,evidence_refs:[{kind:'order',id:7}]}};
+const possible={id:'post-purchase:7:reward_delivery',semantic_key:'reward_delivery',label:'Видача нагороди',
+  presentation_kind:'possible',post_purchase:{order_id:7,parent_id:'order:7',label:'Після призначення',readiness:'conditional'},facts:[],evidence_refs:[]};
+const graph={schema_version:1,nodes:[parent,possible],edges:[],coverage:{semantic_path:{state:'partial',reason:'trace_partial'},
+  transcript_reconstruction:'partial'},transcript_reconstruction:{status:'partial',coverage:{reasons:{quote_mismatch:1}}}};
+j.update({schema_version:1,client_id:4,nodes:[],graph,revision:'partial-aftercare',episodes:{items:[]}}, {force:true});
+assert.equal(j.mapMode,'short');assert.equal(j.possibleFamily,'after');
+assert.ok(j.graph.nodes.some(n=>n.fulfillment_progress?.step===4));
+assert.ok(j.graph.nodes.some(n=>n.post_purchase));
+assert.match(j.mapCoverage.textContent,/Маршрут після покупки/);
+assert.match(j.mapCoverage.textContent,/Шлях за перепискою неповний/);
+assert.match(j.mapCoverage.textContent,/частину переходів пропущено/);
+'''
+        result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_server_possible_aftercare_filtered_before_actual_composition_and_sources_paginate(self):
+        base = Path(__file__).parent / "static/management"
+        source = (base / "ig_journey.js").read_text().replace(
+            "window.TwcJourney={create:options=>new Journey(options)};",
+            "window.TwcJourney={Journey,witnessed,contextual,pathCoverageText};")
+        from management.services.ig_journey_catalogue import journey_catalogue
+        from management.services.ig_journey_post_purchase import append_post_purchase_context
+        import json
+        graph = append_post_purchase_context({"nodes": [{"id": "order:7", "semantic_key": "client_order_context",
+            "producer": "client_order_assignments", "scope": "client", "episode_id": None,
+            "contextual_binding": {"order_id": 7}, "facts": [], "evidence_refs": [{"kind": "order", "id": 7}],
+            "fulfillment_progress": {"step": 4, "evidence_refs": [{"kind": "order", "id": 7}]}},
+            {"id": "service:1", "semantic_key": "post_sale_case", "state": "partial",
+             "producer": "persisted_case_records", "presentation_kind": "client_context",
+             "contextual_binding": {"case_id": 1, "order_id": 7}, "evidence_refs": [{"kind": "message", "id": 11}]}],
+            "edges": [{"id": "service-context", "from_node_id": "order:7", "to_node_id": "service:1",
+                       "relation": "case_record_context", "evidence_refs": [{"kind": "message", "id": 11}]}]})
+        program = "global.window={};\n" + source + "\nconst graph=" + json.dumps(graph) + ";const snapshot=" + json.dumps({"catalogue": journey_catalogue()}) + r'''
+const assert=require('node:assert/strict');const {Journey,witnessed,contextual,pathCoverageText}=window.TwcJourney;
+const j=Object.create(Journey.prototype);j.options={onEvidence:()=>{}};j.modal={};j.mapMode='actual';j.showPossible=false;
+const before=JSON.stringify(graph),actual=j.presentEvents(j.presentGraph(graph,snapshot));
+assert.ok(actual.nodes.some(n=>n.id==='order:7'));assert.ok(actual.nodes.some(n=>n.id==='service:1'));
+assert.ok(actual.nodes.every(n=>n.presentation_kind!=='possible'));
+assert.ok(actual.nodes.flatMap(n=>n.composite_nodes||[]).every(n=>n.presentation_kind!=='possible'));
+assert.ok(actual.edges.every(e=>!['route','prerequisite'].includes(e.relation)));
+assert.ok(actual.edges.some(e=>e.id==='service-context'));assert.equal(witnessed(actual.edges[0]),false);assert.equal(contextual(actual.edges[0]),true);
+j.mapMode='all';j.showPossible=true;assert.ok(j.presentEvents(j.presentGraph(graph,snapshot)).nodes.some(n=>n.presentation_kind==='possible'));
+j.mapMode='short';j.possibleFamily='after';j.afterPurchaseOrderId='service:1';
+const after=j.presentEvents(j.presentGraph(graph,snapshot));assert.ok(after.nodes.some(n=>n.id==='service:1'));
+assert.ok(after.nodes.every(n=>n.id==='order:7'||n.post_purchase?.order_id===7));
+assert.equal(JSON.stringify(graph),before);
+assert.match(pathCoverageText({coverage:{semantic_path:{state:'partial',reason:'trace_partial'}}}),/неповний/);
+class Element{constructor(tag){this.tag=tag;this.children=[];}append(...nodes){this.children.push(...nodes);}addEventListener(){} }
+global.document={createElement:tag=>new Element(tag)};
+const root=new Element('div');const refs=[{kind:'message',id:1},{kind:'message',id:1},...Array.from({length:9},(_,i)=>({kind:'message',id:i+2}))];
+j.appendSources(root,refs,8);assert.equal(root.children.filter(n=>n.tag==='button').length,8);
+const overflow=root.children.find(n=>n.tag==='details');assert.equal(overflow.children[0].textContent,'Ще 2 джерел');
+assert.equal(overflow.children.filter(n=>n.tag==='button').length,2);
+'''
+        result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_complete_atlas_and_short_path_preserve_sources(self):
         base = Path(__file__).parent / "static/management"
         geometry = (base / "ig_journey_geometry.js").read_text()

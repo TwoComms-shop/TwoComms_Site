@@ -80,7 +80,7 @@ class JourneySnapshotTests(TestCase):
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
         # Fixed-cost privacy/trace reads plus one optional refresh-state read.
-        self.assertLessEqual(len(queries), 16)  # includes bounded story candidates, owner and reset fence
+        self.assertLessEqual(len(queries), 18)  # measured 16 -> 18: two bounded empty case-record SELECTs
         self.assertEqual(snapshot["graph"]["coverage"]["transcript_refresh"], {"status": "missing_source"})
         self.assertFalse(IgCommercialEpisode.objects.filter(client=self.buyer).exists())
         self.assertIsNone(snapshot["viewed_episode_id"])
@@ -381,7 +381,7 @@ class JourneySnapshotTests(TestCase):
             snapshot = build_journey_snapshot(self.buyer)
         self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
         # Privacy, episode ownership, trace and refresh are fixed-cost optional reads.
-        self.assertLessEqual(len(queries), 24)  # includes bounded story candidates, owner and reset fence
+        self.assertLessEqual(len(queries), 26)  # measured 24 -> 26: two bounded empty case-record SELECTs
         graph = snapshot["graph"]
         self.assertEqual((graph["schema_version"], graph["version"]), (1, 1))
         self.assertEqual(len(graph["edges"]), 1)

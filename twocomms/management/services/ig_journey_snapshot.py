@@ -1296,6 +1296,9 @@ def build_journey_snapshot(client, *, view_episode_id=None, source_selection=Non
     graph = append_ad_entry(graph, client=client, is_history=is_history)
     from management.services.ig_journey_consent import append_consent_context
     graph = append_consent_context(graph, client=client, is_history=is_history)
+    from management.services.ig_journey_cases import append_case_context
+    graph = append_case_context(graph, client_id=client_id,
+        episode_id=episode["id"] if episode else None, is_history=is_history)
     from management.services.ig_journey_post_purchase import append_post_purchase_context
     graph = append_post_purchase_context(graph, is_history=is_history)
     semantic_edges = [edge for edge in graph.get("edges", [])
@@ -1310,14 +1313,26 @@ def build_journey_snapshot(client, *, view_episode_id=None, source_selection=Non
     trace_reasons = trace_coverage.get("reasons") if isinstance(trace_coverage.get("reasons"), dict) else {}
     route_coverage = graph.get("coverage", {}).get("conversation_routes")
     route_truncated = isinstance(route_coverage, dict) and bool(route_coverage.get("has_more"))
+    # Each source family keeps its own completeness. One business edge cannot
+    # certify a partial reconstruction of the customer's conversation.
+    graph["coverage"]["business_transitions"] = {
+        "status": graph["coverage"].get("stage_transitions", {}).get("status", "missing_source"),
+        "edge_count": sum(edge.get("relation") in {"semantic_transition", "episode_stage_transition"}
+                          for edge in semantic_edges),
+    }
+    graph["coverage"]["accepted_routes"] = route_coverage or {"status": "missing_source"}
+    graph["coverage"]["transcript_sources"] = {
+        "status": trace_status or "missing_source", "reasons": trace_reasons,
+        "freshness": trace.get("freshness", "unknown"), **trace_coverage,
+    }
     if semantic_edges and route_truncated:
         path_state, path_reason = "partial", "conversation_route_history_truncated"
-    elif semantic_edges:
-        path_state, path_reason = "available", "semantic_transitions_present"
     elif trace_coverage.get("current_node_omitted"):
         path_state, path_reason = "partial", "trace_current_node_omitted"
     elif trace_status == "partial":
         path_state, path_reason = "partial", "trace_partial"
+    elif semantic_edges:
+        path_state, path_reason = "available", "semantic_transitions_present"
     elif history.get("events"):
         path_state, path_reason = "missing", "history_events_without_semantic_transitions"
     else:

@@ -1,0 +1,50 @@
+Creating test database for alias 'default'...
+Destroying old test database for alias 'default'...
+........E....................F...F................................
+======================================================================
+ERROR: test_service_two_orders_never_attach_to_neighbour_order (management.tests_ig_journey_cases.JourneyCaseRecordTests.test_service_two_orders_never_attach_to_neighbour_order)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_journey_cases.py", line 129, in test_service_two_orders_never_attach_to_neighbour_order
+    IgOrderAssignment.objects.create(client=self.buyer, order=order, source="manager_manual")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/manager.py", line 87, in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/models/query.py", line 713, in create
+    obj.save(force_insert=True, using=self.db)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/ig_bot_models.py", line 1562, in save
+    _require_ig_order_assignment_mutation_scope()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/ig_bot_models.py", line 1478, in _require_ig_order_assignment_mutation_scope
+    raise ValueError(
+        "IgOrderAssignment is managed by the assignment service"
+    )
+ValueError: IgOrderAssignment is managed by the assignment service
+
+======================================================================
+FAIL: test_graph_uses_allowlisted_lifecycle_edges_and_episode_bound_objections (management.tests_ig_journey_snapshot.JourneySnapshotTests.test_graph_uses_allowlisted_lifecycle_edges_and_episode_bound_objections)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_journey_snapshot.py", line 384, in test_graph_uses_allowlisted_lifecycle_edges_and_episode_bound_objections
+    self.assertLessEqual(len(queries), 24)  # includes bounded story candidates, owner and reset fence
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+AssertionError: 26 not less than or equal to 24
+
+======================================================================
+FAIL: test_no_episode_is_read_only_and_uses_only_actual_inbound (management.tests_ig_journey_snapshot.JourneySnapshotTests.test_no_episode_is_read_only_and_uses_only_actual_inbound)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_journey_snapshot.py", line 83, in test_no_episode_is_read_only_and_uses_only_actual_inbound
+    self.assertLessEqual(len(queries), 16)  # includes bounded story candidates, owner and reset fence
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+AssertionError: 18 not less than or equal to 16
+
+----------------------------------------------------------------------
+Ran 66 tests in 0.829s
+
+FAILED (failures=2, errors=1)
+Destroying test database for alias 'default'...
+Found 66 test(s).
+System check identified no issues (0 silenced).
