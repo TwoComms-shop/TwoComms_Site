@@ -1876,7 +1876,7 @@ def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
     from management.services.instagram_bot import ingress_provider_namespace
     from management.ig_private_media_views import _retention_current
 
-    groups = {"receipts": [], "products": [], "custom_print": [], "unknown": []}
+    groups = {"receipts": [], "agreed_products": [], "products": [], "custom_print": [], "unknown": []}
     rows = list(evidence.get("media", []) or []) if isinstance(evidence, dict) else []
     # Older reviews truncated the top-level mixed-media list. The immutable
     # source contexts can still identify a later receipt without guessing it.
@@ -1896,6 +1896,14 @@ def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
     bot_settings = InstagramBotSettings.objects.filter(pk=1).first() if sources else None
     namespace = ingress_provider_namespace(bot_settings) if bot_settings else ""
     reset_floor = _query_latest_reset_after_message_id(client_id) if sources else 0
+    from management.services.ig_conversation_agreement import _proof, _row
+    from management.services.ig_memory_producer import _namespaces, _source_allowed as agreement_source_allowed
+    agreement = draft.get("agreement") if isinstance(draft.get("agreement"), dict) else {}
+    accepted_ids = {_bounded_int(identifier) for line in (agreement.get("items") or []) if isinstance(line, dict)
+        for identifier in _bounded_int_list(line.get("accepted_reference_message_ids"))}
+    accepted_ids.discard(None)
+    proofs = agreement.get("evidence") if isinstance(agreement.get("evidence"), dict) else {}
+    namespaces = _namespaces(sources.values()) if accepted_ids else {}
     seen = set()
     for position, raw in enumerate(rows):
         if not isinstance(raw, dict):
@@ -1951,9 +1959,10 @@ def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
                 item["media_kind"] = _media_render_kind(part)
                 inspection = part.get("inspection") if isinstance(part.get("inspection"), dict) else {}
                 item["inspection_state"] = _bounded_text(inspection.get("state"), 32) or "uninspected"
-                deadline = source.private_media_delete_after
+                from management.services.ig_private_media import earliest_private_media_deadline
+                deadline = earliest_private_media_deadline(source)
                 now = timezone.now()
-                expired = not _retention_current(deadline, now=now) or not _retention_current(part.get("delete_after"), now=now)
+                expired = deadline is None or not _retention_current(deadline, now=now) or not _retention_current(part.get("delete_after"), now=now)
                 expected_hash = _bounded_text(raw.get("content_hash"), 64).lower()
                 current_hash = _bounded_text(part.get("content_hash"), 64).lower()
                 part_changed = bool(expected_hash and expected_hash != current_hash)
@@ -1988,8 +1997,24 @@ def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
         safe_product_url = _safe_storefront_url(raw.get("product_url"))
         if safe_product_url:
             item["product_url"] = safe_product_url
+        # An accepted garment photograph is identified by the agreed source,
+        # not by proximity to bank details or an earlier image-role guess.
+        accepted = bool(source and agreement.get("schema") == "conversation-agreement.v1"
+            and source_id in _bounded_int_list(agreement.get("source_message_ids"), limit=160)
+            and source_id in accepted_ids and namespace
+            and namespaces.get(source_id) == namespace and source.pk > reset_floor
+            and source.pk >= int(getattr(source.client.current_commercial_episode, "opened_watermark_message_id", 0) or 0)
+            and source.sender_id == source.client.igsid and source.status == "done"
+            and agreement_source_allowed(source) and not source.client.privacy_erasure_started_at
+            and proofs.get(str(source_id)) == _proof({**_row(source), "provider_namespace": namespace})
+            and part and _media_render_kind(part) == "image"
+            and item.get("availability") == "private_preview")
         group_role = role or "other"
-        if group_role in {"receipt", "payment_candidate"}:
+        if accepted:
+            item["role"] = "agreed_reference"
+            item["accepted_order_reference"] = True
+            groups["agreed_products"].append(item)
+        elif group_role in {"receipt", "payment_candidate"}:
             groups["receipts"].append(item)
         elif group_role in {"product", "purchase_candidate", "interest"}:
             groups["products"].append(item)

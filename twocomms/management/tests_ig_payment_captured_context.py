@@ -1,6 +1,6 @@
 """Offline payment observations remain separate from settlement authority."""
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 import json
@@ -257,6 +257,34 @@ class CapturedPaymentReadFenceTests(TestCase):
         self.assertEqual(slot["source_refs"][0]["id"], self.source.pk)
         self.assertEqual(slot["authority"], "typed_analysis")
 
+    def test_admin_capture_omits_unknown_or_shared_expired_private_receipt_without_io(self):
+        from management.services.ig_admin_state_capture import current_admin_state
+        self.source.private_media_state = "active"
+        self.source.attachment_media = [{"status": "owned", "private_storage": True,
+            "role": "receipt", "source_part_id": "mp1_" + "a" * 32, "content_hash": "b" * 64}]
+        for expired_sibling in (False, True):
+            with self.subTest(expired_sibling=expired_sibling):
+                self.source.private_media_delete_after = self.now + timedelta(hours=1) if expired_sibling else None
+                if expired_sibling:
+                    self.source.attachment_media.append({"status": "owned", "private_storage": True,
+                        "delete_after": (self.now - timedelta(seconds=1)).isoformat()})
+                self.source.save(update_fields=["private_media_state", "private_media_delete_after", "attachment_media"])
+                with patch("management.services.call_ai_analysis.gemini_generate_text") as provider, \
+                     patch("management.services.instagram_bot._capture_message_media") as media_capture:
+                    with CaptureQueriesContext(connection) as queries:
+                        result = current_admin_state(self.customer.pk, now=self.now)
+                self.assertEqual(result.status, "captured", result.as_dict())
+                slots = result.state.as_dict()["slots"]
+                self.assertIsNone(slots.get("receipt.observation", {}).get("value"))
+                # The real reader isolates accidental writes in its own atomic
+                # savepoint; transaction control is not a data mutation.
+                verbs = [row["sql"].lstrip().split(None, 1)[0].upper() for row in queries]
+                self.assertTrue(set(verbs) <= {"SELECT", "BEGIN", "SAVEPOINT", "RELEASE", "COMMIT", "ROLLBACK"}, verbs)
+                self.assertGreater(verbs.count("SELECT"), 0)
+                self.assertEqual(result.read_queries, verbs.count("SELECT"))
+                provider.assert_not_called()
+                media_capture.assert_not_called()
+
     def test_media_change_during_admin_read_discards_capture(self):
         from management.services.ig_admin_state_capture import current_admin_state
         with patch("management.services.ig_conversation_agreement.read_conversation_agreement", return_value={"agreement": {}, "reason": "conversation_agreement_unavailable"}), patch(
@@ -295,7 +323,8 @@ class CapturedPaymentReadFenceTests(TestCase):
         self.assertTrue(saved["persisted"], saved)
         receipt = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
             provider_namespace=namespace, role="user", source="webhook", status="pending", mid="capture-budget-receipt",
-            text="Fixture receipt", provider_created_at=self.now, private_media_state="active")
+            text="Fixture receipt", provider_created_at=self.now, private_media_state="active",
+            private_media_delete_after=self.now + timedelta(hours=1))
         binding = {"source_message_id": receipt.pk, "source_part_id": "mp1_" + "a" * 32, "content_hash": "b" * 64}
         receipt.attachment_media = [{**binding, "type": "image", "status": "owned", "private_storage": True,
             "receipt_inspection": {**binding, "schema_version": "ig-receipt-inspection-v1", "state": "inspected",

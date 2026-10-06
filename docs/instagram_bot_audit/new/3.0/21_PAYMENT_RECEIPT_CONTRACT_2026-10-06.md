@@ -155,3 +155,26 @@ The additional generic notification gate exposed five pre-existing failures, rep
 Material receipt/cart/amount changes renew a previously delivered review summary on the same canonical notification row. Prior finite Telegram receipt/candidate/version are audited, old buttons cannot approve the new candidate, retry budgets/backoff remain bounded, and the producer queues without network IO under financial locks. A changed UNKNOWN/SENDING/DEAD_LETTER report retains its original delivery identity and a durable deferred-material marker; the workspace explicitly says that the latest report is not delivered. Only a known successful completion can queue that deferred revision, using exact review/notification IDs. Transcript noise and unchanged OCR replay do not generate a new report.
 
 Production pull/schema/process checks, useful source3285 reconciliation and authenticated workspace QA follow this gate and must be recorded separately. Natural72h+20turn acceptance and future section15 passports remain OPEN.
+
+### Live-case follow-up gate
+
+Initial releaseac775db11 reached productionmain, actual0225/InnoDB and healthy supervisor/child/workers. Source3285 was recognized through an actual successful Flash Lite request:970UAH, completed status in the document, matching recipient and no receipt comparison findings. The review remains pending a manager decision; Telegram accepted its first report. This does not establish provider settlement or manager approval.
+
+Live evidence additionally exposed clause-wide negation suppressing an affirmative singular garment request, MIME-only manager photographs omitted from the accepted reference, and contextual payment classification of a manager product photograph blocking a later OCR summary revision. Parsing now preserves independent affirmative garment clauses, records the accepted seller photo separately from earlier examples, and binds image roles to their actual sender. A manager-forwarded receipt remains manual evidence with its own exact private part/hash checks.
+
+An explicit `reconcile_ig_payment_observations --message-id … --apply --refresh-agreement` operation upgrades a reviewed projection using expected-head digest, source proofs, current scope/watermark and transactional rollback. It refreshes the pending review from cached receipt data without new OCR. Ordinary GET and automatic readers retain their projection mismatch guard. Custom orders use the uniquely accepted source-verified photograph as primary; ambiguous primary references require manual completion.
+
+Provider connection release now respects explicitly owned MariaDB session locks. A replaced connection cannot silently reuse an advisory lock. Real native tests prove a second connection cannot acquire the same lock at the provider boundary and can acquire it after release.
+
+Final follow-up validation: **1123 SQLite tests, OK,11 skips**; **390 native MariaDB tests, OK,3 skips**, including actual lock ownership and migration reverse/reapply. Django check0 issues, scoped Python AST60 files. Both suites retain mocked provider transports. Final follow-up deployment, source-preserving refresh and authenticated QA remain separate runtime evidence.
+
+
+### Shared-retention and typed-memory integration
+
+Concurrent private-media expiry/deletion changes are retained. Receipt consumers, workspace previews, manager-forwarded receipt notifications and accepted custom-print references use the earliest stored deadline across all private siblings. Unknown or expired retention cannot be renewed by OCR/cache replay; pending observation becomes finite manual debt without recapture. A lease acquired before expiry does not authorize persistence after expiry. Public/unfetched payment links remain source-bound manual evidence.
+
+Concurrent typed-memory read-TTL changes are integrated: payment/agreement source facts remain in their own guarded projection, with no new financial keys admitted into generic typed memory. Future plan section15 passports and natural72h+20turn acceptance remain OPEN.
+
+Final integrated gate after private expiry/deletion and typed-memory read-TTL integration: **1234 no-network SQLite tests, OK,14 skips**; **487 disposable native MariaDB tests, OK,5 skips**. Native affected tables are InnoDB; source identity remains unique; actual0225 reverse/reapply succeeds and disposable namespace/user cleanup succeeds. Owned Python AST61 files and Django check pass; accepted-photo inline JavaScript syntax passes. Native gate includes shared-expiry lock contention and typed-memory read-TTL cases.
+
+The workspace now source-verifies a distinct `agreed_products` group. Accepted photo3242 is shown once as the agreed garment, separately from receipt3285 and earlier product examples. Historical images explicitly do not add order lines. Expiry, ownership, reset, namespace and exact source-proof checks still gate that grouping.

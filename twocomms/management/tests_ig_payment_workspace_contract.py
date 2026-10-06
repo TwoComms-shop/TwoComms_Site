@@ -92,6 +92,31 @@ class PaymentWorkspaceContractTests(TestCase):
             self.assertNotIn("preview_url", row)
             self.assertNotIn("url", row)
 
+    def test_accepted_garment_photo_is_one_agreed_reference_not_a_second_receipt(self):
+        from management.services.ig_conversation_agreement import _proof, _row
+        shirt, shirt_media = self._message(index=30, role="manager", text="Погоджена біла L oversize")
+        shirt.source = "echo"
+        shirt.save(update_fields=["source"])
+        _, example = self._message(index=31)
+        example["role"] = "product"
+        receipt, receipt_media = self._message(index=32)
+        receipt_media = self._inspected(receipt, receipt_media)
+        agreement = {"schema": "conversation-agreement.v1", "source_message_ids": [shirt.pk],
+            "items": [{"title": "Agreed shirt", "qty": 1,
+            "accepted_reference_message_ids": [shirt.pk]}],
+            "evidence": {str(shirt.pk): _proof(_row(shirt))}}
+        review = self._review({"media": [example, shirt_media, receipt_media],
+            "order_draft": {"agreement": agreement}})
+        groups = self._card(review)["media"]
+        self.assertEqual([row["message_id"] for row in groups["agreed_products"]], [shirt.pk])
+        self.assertEqual(groups["agreed_products"][0]["role"], "agreed_reference")
+        self.assertEqual([row["message_id"] for row in groups["receipts"]], [receipt.pk])
+        self.assertEqual([row["message_id"] for row in groups["products"]], [example["message_id"]])
+        self.assertEqual(groups["unknown"], [])
+        shirt.text = "Інше непогоджене фото"
+        shirt.save(update_fields=["text"])
+        self.assertEqual(self._card(review)["media"]["agreed_products"], [])
+
     def test_late_receipt_is_recovered_from_old_review_context_and_deduplicated(self):
         context = []
         products = []
@@ -136,7 +161,7 @@ class PaymentWorkspaceContractTests(TestCase):
         self.assertFalse(card["payment"]["authoritative_for_fulfillment"])
 
     def test_changed_or_expired_part_cannot_display_cached_ocr_facts_or_findings(self):
-        for index, change in [(21, "hash"), (22, "expiry"), (23, "part_expiry"), (24, "namespace")]:
+        for index, change in [(21, "hash"), (22, "expiry"), (23, "part_expiry"), (24, "namespace"), (26, "unknown_retention"), (27, "sibling_expiry")]:
             with self.subTest(change=change):
                 source, media = self._message(index=index)
                 media = self._inspected(source, media)
@@ -153,6 +178,13 @@ class PaymentWorkspaceContractTests(TestCase):
                     source.private_media_delete_after = timezone.now() - timedelta(seconds=1)
                 elif change == "part_expiry":
                     source.attachment_media[0]["delete_after"] = (timezone.now() - timedelta(seconds=1)).isoformat()
+                elif change == "unknown_retention":
+                    source.private_media_delete_after = None
+                elif change == "sibling_expiry":
+                    source.attachment_media.append({
+                        "source_part_id": "mp1_" + "e" * 32, "private_storage": True,
+                        "delete_after": (timezone.now() - timedelta(seconds=1)).isoformat(),
+                    })
                 else:
                     source.provider_namespace = "different-account"
                 source.save(update_fields=["attachment_media", "private_media_delete_after", "provider_namespace"])

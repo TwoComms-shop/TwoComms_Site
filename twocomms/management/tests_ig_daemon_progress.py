@@ -647,6 +647,16 @@ class ServiceLaneBudgetTests(SimpleTestCase):
         reset_inflight_operations()
         self.addCleanup(reset_service_lanes)
         self.addCleanup(reset_inflight_operations)
+        # Keep the real service-lane scheduler/maintenance guards, but isolate
+        # privacy storage/DB effects from notification budget measurements.
+        for target in (
+            "management.services.ig_private_media.purge_due",
+            "management.services.instagram_bot.purge_expired_failed_media_url_metadata",
+            "management.management.commands.run_instagram_bot._revision_receipt_tick",
+        ):
+            background = patch(target)
+            background.start()
+            self.addCleanup(background.stop)
 
     def _cycle(self, drain):
         with (

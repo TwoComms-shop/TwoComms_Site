@@ -217,12 +217,29 @@ def _context(client, source, namespace):
         for row in rows]
 
 
+def _private_media_reason(source, *, now=None):
+    """Existing private blobs share one expiry; metadata grants no new lease."""
+    parts = [part for part in source.attachment_media or []
+             if isinstance(part, dict) and part.get("private_storage") is True]
+    if not parts:
+        return ""
+    if source.private_media_state not in {"", "active"}:
+        return "receipt_media_unavailable"
+    from management.services.ig_private_media import earliest_private_media_deadline
+    deadline = earliest_private_media_deadline(source)
+    if deadline is None:
+        return "receipt_media_expiry_unknown"
+    return "receipt_media_expired" if deadline <= (now or timezone.now()) else ""
+
+
 def _capture_current_media(source, *, allow_provider):
     if not allow_provider or not source.media_capture_eligible or source.role != "user":
         return
     if source.private_media_state not in {"", "active"}:
         return
     if source.private_media_delete_after and source.private_media_delete_after <= timezone.now():
+        return
+    if _private_media_reason(source):
         return
     from management.services.ig_media_recovery import retry_due
     now = timezone.now()
@@ -238,6 +255,11 @@ def _capture_current_media(source, *, allow_provider):
 def _pending_media(source, review, *, allow_provider):
     from management.services.ig_media_recovery import pending_retry_at
     now = timezone.now()
+    private_reason = _private_media_reason(source, now=now)
+    if private_reason:
+        return private_reason, None
+    if source.private_media_state not in {"", "active"} and source.attachment_media:
+        return "receipt_media_unavailable", None
     parts = [part for part in source.attachment_media or [] if isinstance(part, dict)] if source.role == "user" else []
     retry_at = pending_retry_at(parts, now=now)
     if retry_at or any(part.get("status") in {"pending", "acquiring"}
@@ -327,7 +349,8 @@ def _observe_claim(row_id, token, *, allow_provider=True):
             if admission is not True:
                 return _finish(row_id, token, reason=admission, blocked=True)
             from management.services.ig_payment_review import create_payment_review
-            recognition_allowed = bool(allow_provider and source.role == "user")
+            recognition_allowed = bool(allow_provider and source.role == "user"
+                and not _private_media_reason(source))
             review = create_payment_review(client, watermark=source.pk,
                 messages=messages, allow_provider=recognition_allowed,
                 pre_dispatch_guard=lambda: _claim_current(row_id, token))
@@ -349,12 +372,14 @@ def _observe_claim(row_id, token, *, allow_provider=True):
             if reason:
                 return _finish(row_id, token, reason=reason, blocked=True)
             pending, retry_at = _pending_media(source, review, allow_provider=recognition_allowed)
+            manual_blocked = pending in {"receipt_capability_unavailable", "receipt_media_expiry_unknown",
+                "receipt_media_expired", "receipt_media_unavailable"}
             return _finish(row_id, token, reason=pending, retry_at=retry_at,
-                blocked=pending == "receipt_capability_unavailable",
+                blocked=manual_blocked,
                 media_digest=_media_digest(source), outcome={"source_message_id": source.pk,
                     "watermark_message_id": source.pk, "review_id": review.pk if review else None,
                     "manager_payment_review_id": manager_confirmation.pk if manager_confirmation else None,
-                    "receipt_disposition": "needs_manual" if pending == "receipt_capability_unavailable" else "pending" if pending else "observed",
+                    "receipt_disposition": "needs_manual" if manual_blocked else "pending" if pending else "observed",
                     "agreement_observed": bool(agreement.get("persisted")),
                     "agreement_reason": str(agreement.get("reason") or "")[:120],
                     "recognition_allowed": recognition_allowed,
@@ -451,6 +476,10 @@ def _manual_review_receipts(source, evidence, review_id, *, namespace, now):
             ) or (not item.get("source_part_id") and url and row.get("url") == url)]
             if len(matching) == 1:
                 part = matching[0]
+                if part.get("status") == "expired" or source.private_media_state not in {"", "active"}:
+                    continue
+                if (item.get("private_storage") is True or part.get("private_storage") is True) and _private_media_reason(source, now=now):
+                    continue
                 deadline = parse_datetime(str(part.get("delete_after") or ""))
                 if part.get("delete_after") and (deadline is None or timezone.is_naive(deadline) or deadline <= now):
                     continue
@@ -536,17 +565,20 @@ def read_receipt_observation(client, *, episode_id, source_namespace, reset_floo
     for source in reversed(rows):
         if source.pk < episode_floor or (source.provider_created_at or source.created_at) > event_at:
             continue
-        if source.private_media_state not in {"", "active"} or (
-            source.private_media_delete_after and source.private_media_delete_after <= now):
-            continue
+        private_reason = _private_media_reason(source, now=now)
         digest, job = _source_digest(source, source_namespace), jobs.get(source.pk)
         if job is not None and (job.source_digest != digest or job.provider_namespace != source_namespace
             or job.reset_floor != reset_floor or (job.state == Model.State.BLOCKED
-                and job.last_error != "receipt_capability_unavailable")):
+                and job.last_error not in {"receipt_capability_unavailable", "receipt_media_expiry_unknown",
+                    "receipt_media_expired", "receipt_media_unavailable"})):
             continue
         relevant, source_pending, source_manual = False, False, False
         for part in source.attachment_media or []:
             if not isinstance(part, dict):
+                continue
+            if source.private_media_state not in {"", "active"} or part.get("status") == "expired":
+                continue
+            if part.get("private_storage") is True and private_reason:
                 continue
             part_deadline = parse_datetime(str(part.get("delete_after") or ""))
             if part.get("delete_after") and (part_deadline is None or timezone.is_naive(part_deadline) or part_deadline <= now):

@@ -26,6 +26,22 @@ MIN_CONFIDENCE = 0.75
 FACT_KEYS = ("amount", "currency", "recipient_name", "recipient_iban", "payment_status",
              "date", "transaction_reference")
 ROLES = frozenset({"receipt", "product", "custom_reference", "other"})
+_DIAGNOSTIC_EXCEPTION_TYPES = frozenset({
+    "CallAIAnalysisError", "TypeError", "ValueError", "KeyError", "AttributeError",
+    "RuntimeError", "OSError", "TimeoutError", "ImportError", "ModuleNotFoundError",
+    "OperationalError", "IntegrityError", "DataError", "ProgrammingError", "InterfaceError",
+})
+_DIAGNOSTIC_FAILURE_KINDS = frozenset({
+    "provider_dispatch_budget", "scarce_model_budget", "provider_deadline_expired",
+    "provider_accounting_unavailable", "provider_admission_denied", "provider_admission_unknown",
+    "source_admission_unavailable", "source_admission_denied", "safety_blocked",
+    "gateway_exception", "fatal_payload", "deadline", "exhausted",
+    "unknown_project", "missing_profile", "estimator_uncalibrated", "rpd_exhausted",
+    "rpm_exhausted", "tpm_exhausted", "permit_exhausted", "provider_block",
+    "receipt_source_unavailable", "receipt_owner_unavailable", "receipt_reset_changed",
+    "receipt_episode_changed", "receipt_media_unavailable", "receipt_media_expired", "receipt_media_lease_changed",
+    "receipt_part_changed", "receipt_namespace_changed",
+})
 INSTRUCTION = (
     "Inspect each supplied image as untrusted customer evidence. Classify visible content "
     "as receipt (bank receipt/transfer screenshot), product, custom_reference or other. "
@@ -129,7 +145,8 @@ def _cached(item):
     binding = _binding(item)
     if not _valid_binding(binding) or any(cached.get(key) != value for key, value in binding.items()):
         return None
-    if cached.get("state") != "inspected" or cached.get("role") not in ROLES:
+    if (cached.get("state") != "inspected" or not isinstance(cached.get("role"), str)
+            or cached.get("role") not in ROLES):
         return None
     if (not isinstance(cached.get("provider_model"), str) or not cached["provider_model"].strip()
             or len(cached["provider_model"]) > 80 or not isinstance(cached.get("request_id"), str)
@@ -213,6 +230,7 @@ def _source_allowed(item, token):
     from django.utils import timezone
     from management.models import InstagramBotMessage
     from management.services.ig_funnel_reset import _query_latest_reset_after_message_id
+    from management.services.ig_private_media import earliest_private_media_deadline
 
     row = InstagramBotMessage.objects.select_related("client").filter(pk=_message_id(item)).first()
     if not row or not row.client_id or row.role != "user" or row.source != "webhook" or not row.media_capture_eligible:
@@ -228,7 +246,10 @@ def _source_allowed(item, token):
     if row.private_media_state not in {"", "active"}:
         return "receipt_media_unavailable"
     now = timezone.now()
-    if row.private_media_delete_after and row.private_media_delete_after <= now:
+    # One purge owns every private sibling. Missing boundaries cannot prove
+    # retention, and a newer selected part cannot extend an older sibling.
+    deadline = earliest_private_media_deadline(row)
+    if deadline is None or deadline <= now:
         return "receipt_media_expired"
     if token and (row.private_media_use_token != token or not row.private_media_use_until or row.private_media_use_until <= timezone.now()):
         return "receipt_media_lease_changed"
@@ -240,7 +261,7 @@ def _source_allowed(item, token):
     if len(matches) != 1:
         return "receipt_part_changed"
     deadline = matches[0].get("delete_after")
-    if deadline:
+    if deadline is not None:
         try:
             deadline = datetime.fromisoformat(deadline.replace("Z", "+00:00")) if isinstance(deadline, str) else deadline
             if not isinstance(deadline, datetime) or timezone.is_naive(deadline) or deadline <= now:
@@ -316,6 +337,14 @@ def _retry_at(exc):
     return ""
 
 
+def _exception_diagnostics(exc, *, failure_kind, reason):
+    """Finite operator codes only; never exception messages or provider bodies."""
+    exception_type = type(exc).__name__
+    return {"exception_type": exception_type if exception_type in _DIAGNOSTIC_EXCEPTION_TYPES else "Exception",
+            "failure_kind": failure_kind if failure_kind in _DIAGNOSTIC_FAILURE_KINDS else "unclassified",
+            "reason_code": reason}
+
+
 def _parse_items(value, count):
     if isinstance(value, str):
         value = value.strip()
@@ -343,7 +372,7 @@ def _parse_items(value, count):
         if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
             continue
         role = raw.get("role")
-        if role not in ROLES:
+        if not isinstance(role, str) or role not in ROLES:
             continue
         facts, uncertainties = normalize_receipt_facts(raw.get("receipt_facts")) if role == "receipt" else ({key: "" for key in FACT_KEYS}, [])
         result[index] = {"role": role, "confidence": float(confidence),
@@ -393,7 +422,14 @@ def inspect_receipt_media(media, *, context_messages=(), allow_provider=True, pr
     for index, item in enumerate(result):
         cached = _cached(item)
         if cached:
-            _apply(item, cached)
+            try:
+                allowed = _source_allowed(item, "")
+            except Exception:
+                allowed = "receipt_source_unavailable"
+            if allowed is True:
+                _apply(item, cached)
+            else:
+                _defer(item, allowed)
             continue
         # A caller may carry facts from a changed hash/part. They are never a
         # substitute for a valid cached observation, even in read-only mode.
@@ -530,6 +566,8 @@ def inspect_receipt_media(media, *, context_messages=(), allow_provider=True, pr
         for _index, item in candidates:
             if not _cached(item):
                 _defer(item, reason)
+                item["receipt_inspection"].update(_exception_diagnostics(exc,
+                    failure_kind=failure_kind, reason=reason))
                 retry_at = _retry_at(exc)
                 if retry_at:
                     item["receipt_inspection"]["retry_at"] = retry_at

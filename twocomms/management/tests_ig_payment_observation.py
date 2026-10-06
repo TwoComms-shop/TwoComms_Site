@@ -8,12 +8,47 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import close_old_connections, connection, transaction
-from django.test import TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from management.models import IgClient, IgPaymentObservationSource, InstagramBotMessage, InstagramBotSettings
 from management.services import ig_payment_observation as observation
 from management.services.instagram_bot import ingress_provider_namespace
+
+
+class PaymentObservationRetentionTests(SimpleTestCase):
+    def source(self, parts, deadline=None):
+        return SimpleNamespace(attachment_media=parts, private_media_state="active",
+            private_media_delete_after=deadline, media_capture_eligible=True,
+            role="user", attachments="[]", refresh_from_db=lambda: None)
+
+    def test_missing_private_boundary_stops_capture_and_retry_without_io(self):
+        source = self.source([{"status": "owned", "private_storage": True}])
+        with patch("management.services.instagram_bot._capture_message_media") as capture:
+            observation._capture_current_media(source, allow_provider=True)
+        self.assertEqual(observation._pending_media(source, None, allow_provider=True),
+            ("receipt_media_expiry_unknown", None))
+        capture.assert_not_called()
+
+    def test_earliest_sibling_expiry_wins_without_extending_message_boundary(self):
+        future = timezone.now() + timedelta(hours=1)
+        parts = [{"private_storage": True, "delete_after": future.isoformat()},
+            {"private_storage": True, "delete_after": (timezone.now() - timedelta(seconds=1)).isoformat()}]
+        source = self.source(parts, future)
+        with patch("management.services.instagram_bot._capture_message_media") as capture:
+            observation._capture_current_media(source, allow_provider=True)
+        self.assertEqual(observation._pending_media(source, None, allow_provider=True),
+            ("receipt_media_expired", None))
+        self.assertEqual(source.private_media_delete_after, future)
+        self.assertEqual(source.attachment_media, parts)
+        capture.assert_not_called()
+
+    def test_initial_unowned_transport_capture_is_preserved_without_private_expiry(self):
+        source = self.source([{"status": "pending"}])
+        with patch("management.services.instagram_bot._capture_message_media") as capture:
+            observation._capture_current_media(source, allow_provider=True)
+        capture.assert_called_once_with(source)
 
 
 class PaymentObservationTests(TransactionTestCase):
@@ -24,10 +59,15 @@ class PaymentObservationTests(TransactionTestCase):
         self.client = IgClient.objects.create(igsid="178400000000351",
             manager_takeover=True, bot_paused=True, paused_reason="manager_takeover")
 
-    def source(self, *, role="user", text="Оплатив, ось чек", parts=None):
+    def source(self, *, role="user", text="Оплатив, ось чек", parts=None, private_bound=True):
+        # Positive owned fixtures have a real stored boundary; unknown expiry
+        # is exercised explicitly instead of borrowing an evergreen lease.
+        private = any(isinstance(part, dict) and part.get("private_storage") is True for part in parts or [])
         return InstagramBotMessage.objects.create(client=self.client, sender_id=self.client.igsid,
             role=role, source="webhook" if role == "user" else "echo", text=text,
             provider_namespace=self.namespace, status="done", media_capture_eligible=True,
+            private_media_state="active" if private else "",
+            private_media_delete_after=timezone.now() + timedelta(hours=1) if private and private_bound else None,
             attachment_media=parts or [], provider_created_at=timezone.now())
 
     def test_ingress_queue_is_provider_free_and_idempotent_under_manager_pause(self):
@@ -121,7 +161,9 @@ class PaymentObservationTests(TransactionTestCase):
         self.assertTrue(observation.observe_payment_source(source.pk, allow_provider=False).observed)
         source.attachment_media = [{"source_part_id": "mp1_" + "a" * 32,
             "status": "owned", "content_hash": "b" * 64, "private_storage": True}]
-        source.save(update_fields=["attachment_media"])
+        source.private_media_state = "active"
+        source.private_media_delete_after = timezone.now() + timedelta(hours=1)
+        source.save(update_fields=["attachment_media", "private_media_state", "private_media_delete_after"])
         observation.enqueue_payment_observation(source.pk)
         self.assertEqual(IgPaymentObservationSource.objects.get(message=source).state, "pending")
         self.assertTrue(observation.observe_payment_source(source.pk, allow_provider=False).observed)
@@ -441,6 +483,78 @@ class PaymentObservationTests(TransactionTestCase):
         source.attachment_media[0]["delete_after"] = (timezone.now() - timedelta(seconds=1)).isoformat()
         source.save(update_fields=["attachment_media"])
         self.assertEqual(self.receipt_read(source)["observation"]["state"], "absent")
+
+    def test_private_receipt_without_any_deadline_is_read_only_unavailable(self):
+        source = self.source(text="", private_bound=False, parts=[{
+            "status": "owned", "private_storage": True, "role": "receipt",
+            "source_part_id": "mp1_" + "a" * 32, "content_hash": "b" * 64}])
+        with patch("management.services.call_ai_analysis.gemini_generate_text") as provider, \
+             patch("management.services.instagram_bot._capture_message_media") as capture:
+            with CaptureQueriesContext(connection) as queries:
+                result = self.receipt_read(source)
+        self.assertEqual(result["observation"]["state"], "absent")
+        self.assertEqual(result["source_refs"], [])
+        self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
+        self.assertEqual(observation._pending_media(source, None, allow_provider=True),
+            ("receipt_media_expiry_unknown", None))
+        provider.assert_not_called()
+        capture.assert_not_called()
+
+    def test_expired_private_sibling_blocks_a_future_receipt_without_reads_or_recapture(self):
+        source = self.recognized_receipt()
+        self.assertEqual(self.receipt_read(source)["observation"]["state"], "observed")
+        source.attachment_media.append({"status": "owned", "private_storage": True,
+            "source_part_id": "mp1_" + "e" * 32, "content_hash": "f" * 64,
+            "delete_after": (timezone.now() - timedelta(seconds=1)).isoformat()})
+        source.save(update_fields=["attachment_media"])
+        with patch("management.services.call_ai_analysis.gemini_generate_text") as provider, \
+             patch("management.services.instagram_bot._capture_message_media") as capture:
+            with CaptureQueriesContext(connection) as queries:
+                result = self.receipt_read(source)
+            observation._capture_current_media(source, allow_provider=True)
+        self.assertEqual(result["observation"]["state"], "absent")
+        self.assertEqual(result["source_refs"], [])
+        self.assertTrue(all(row["sql"].lstrip().upper().startswith("SELECT") for row in queries))
+        self.assertEqual(observation._pending_media(source, None, allow_provider=True),
+            ("receipt_media_expired", None))
+        provider.assert_not_called()
+        capture.assert_not_called()
+
+    @patch("management.services.ig_conversation_agreement.persist_conversation_agreement", return_value={"persisted": False})
+    @patch("management.services.ig_payment_review.create_payment_review", return_value=None)
+    def test_private_expiry_blocks_worker_retry_with_manual_debt(self, review, agreement):
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                source = self.source(private_bound=False, parts=[{"status": "owned", "private_storage": True}])
+                if not missing:
+                    source.private_media_delete_after = timezone.now() - timedelta(seconds=1)
+                    source.save(update_fields=["private_media_delete_after"])
+                with patch("management.services.call_ai_analysis.gemini_generate_text") as provider, \
+                     patch("management.services.instagram_bot._capture_message_media") as capture:
+                    result = observation.observe_payment_source(source.pk, allow_provider=True)
+                self.assertEqual(result.reason, "receipt_media_expiry_unknown" if missing else "receipt_media_expired")
+                job = IgPaymentObservationSource.objects.get(message=source)
+                self.assertEqual(job.state, job.State.BLOCKED)
+                self.assertEqual(job.outcome["receipt_disposition"], "needs_manual")
+                self.assertFalse(review.call_args.kwargs["allow_provider"])
+                self.assertIsNone(observation._claim(source.pk))
+                provider.assert_not_called()
+                capture.assert_not_called()
+
+    def test_expired_private_part_does_not_authorize_or_erase_unfetched_text_link(self):
+        source = self.source(text="Оплатив, чек https://receipts.example.test/receipt-manual", private_bound=False,
+            parts=[{"status": "owned", "private_storage": True,
+                "delete_after": (timezone.now() - timedelta(seconds=1)).isoformat()}])
+        self.anchor_review(source, [{"message_id": source.pk, "type": "receipt_link", "role": "receipt",
+            "url": "https://receipts.example.test/receipt-manual"}])
+        with patch("management.services.call_ai_analysis.gemini_generate_text") as provider, \
+             patch("management.services.instagram_bot.download_image") as fetch:
+            result = self.receipt_read(source)
+        self.assertEqual(result["observation"]["state"], "unreadable")
+        self.assertEqual(result["observation"]["receipts"][0]["reason"], "receipt_link_not_fetched")
+        self.assertFalse(result["observation"]["payment_verified"])
+        provider.assert_not_called()
+        fetch.assert_not_called()
 
     def test_exact_text_receipt_link_is_manual_unreadable_without_fetch_and_mutation_rejected(self):
         source = self.source(text="Оплатив, чек https://receipts.example.test/receipt-351", parts=[])

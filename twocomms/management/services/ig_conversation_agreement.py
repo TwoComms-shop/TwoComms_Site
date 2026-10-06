@@ -219,11 +219,54 @@ def _counteroffer(row):
         and re.search(r"\b(?:за|ціна|цена|price|вартість|стоимость|тільки|только|only|instead|пропоную|предлагаю)\b", text, re.I))
 
 
+def _source_clauses(text):
+    """Keep question/negation scope local while preserving source offsets."""
+    start = 0
+    for boundary in re.finditer(r"[,;.!?\n]|\b(?:але|но|but)\b", text, re.I):
+        end = boundary.end() if boundary.group() == "?" else boundary.start()
+        yield start, end, text[start:end]
+        start = boundary.end()
+    yield start, len(text), text[start:]
+
+
+def _customer_garment_requirement(row):
+    """An affirmative purchase clause can precede unrelated objections.
+
+    Singular grammar supplies quantity only for one garment mention in the
+    entire source. Alternatives, multiple garments and reported requests
+    deliberately require completion instead of a default quantity.
+    """
+    from management.services.ig_commerce_turns import _is_quoted_preference
+
+    text = row["text"]
+    mentions = list(_GARMENT.finditer(text))
+    if (not mentions or re.search(r"\b(?:сказ\w*|напис\w*|said|wrote)\b", text, re.I)
+            or (len(mentions) > 1 and re.search(r"\b(?:або|или|чи|or)\b", text[mentions[0].end():mentions[-1].start()], re.I))):
+        return {}
+    requirements = []
+    for start, _end, clause in _source_clauses(text):
+        intent = re.search(r"\b(?:хочу|беру|замовляю|заказываю|купую|want|order)\b[^.!?]{0,80}" + _GARMENT.pattern, clause, re.I)
+        if not intent or _is_quoted_preference(text, start + intent.start(), start + intent.end()):
+            continue
+        configuration, reasons = _configuration(clause)
+        if reasons or not configuration.get("garment_type"):
+            continue
+        requirement = {"garment_type": configuration["garment_type"], "garment_source_message_id": row["id"]}
+        if len(mentions) == 1:
+            if configuration.get("qty"):
+                requirement.update(qty=configuration["qty"], quantity_source_message_id=row["id"], quantity_inference="explicit_quantity")
+            elif re.search(r"\bфутболку\b|\ba\s+t-?shirt\b|\bone\s+(?:t-?shirt|hoodie)\b", clause, re.I):
+                requirement.update(qty=1, quantity_source_message_id=row["id"], quantity_inference="singular_garment")
+        requirements.append(requirement)
+    return requirements[0] if len(requirements) == 1 else {}
+
+
 def _withdraws_agreement(row):
     text = row["text"]
-    return bool(_NEGATIVE.search(text) and not _packaging(row).get("exclude_receipt") and re.search(
+    return bool(not _packaging(row).get("exclude_receipt") and any(_NEGATIVE.search(clause) and re.search(
         r"замов\w*|заказ\w*|беру|куп\w*|принт\w*|модел\w*|cancel|order|size|розмір|размер|"
-        + _FIT.pattern + "|" + _COLOR.pattern + "|" + _GARMENT.pattern, text, re.I))
+        + _FIT.pattern + "|" + _COLOR.pattern + "|" + _GARMENT.pattern, clause, re.I)
+        for _start, _end, clause in _source_clauses(text)))
 
 
 def _quoted_amounts(row):
@@ -343,7 +386,7 @@ def _packaging(row):
 
 def _media_parts(row):
     media = row.get("media") or row.get("attachment_media")
-    if not isinstance(media, list):
+    if not isinstance(media, list) or not media:
         try:
             media = json.loads(row.get("attachments") or "[]")
         except (TypeError, ValueError):
@@ -359,7 +402,9 @@ def _reference(row):
         and item.get("role") not in {"receipt", "payment_candidate"}
         and item.get("payment_evidence") is not True
         and (item.get("role") in {"product", "custom_reference", "reference", "screenshot"}
-             or str(item.get("type") or item.get("media_type") or "").casefold() in {"image", "photo", "screenshot", "ig_post", "share"}) for item in media)
+             or any(str(item.get(key) or "").casefold() in {"image", "photo", "screenshot", "ig_post", "share"}
+                    for key in ("type", "media_type"))
+             or str(item.get("mime") or "").casefold().startswith("image/")) for item in media)
 
 
 def extract_conversation_agreement(messages):
@@ -392,24 +437,21 @@ def extract_conversation_agreement(messages):
             result.update(items=[], amounts={})
             reasons.append("customer_counteroffer_pending")
             continue
-        if customer and _NEGATIVE.search(row["text"]) and not _packaging(row).get("exclude_receipt"):
+        requirement = _customer_garment_requirement(row) if customer else {}
+        if customer and _NEGATIVE.search(row["text"]) and not _packaging(row).get("exclude_receipt") and not requirement:
             pending, pending_money = None, {}
             # A direct withdrawal invalidates the current agreement. It must
             # not revive an older offer on the next short "yes".
-            if result["items"] and _withdraws_agreement(row):
-                result["items"] = []
-                result["amounts"] = {}
-                reasons.append("customer_configuration_withdrawn")
+            if _withdraws_agreement(row):
+                customer_requirement = {}
+                if result["items"]:
+                    result["items"] = []
+                    result["amounts"] = {}
+                    reasons.append("customer_configuration_withdrawn")
             continue
         if customer:
-            configuration, configuration_reasons = _configuration(row["text"])
-            if (not configuration_reasons and configuration.get("garment_type")
-                    and re.search(r"\b(?:хочу|беру|замовляю|заказываю|купую|want|order)\b[^.!?]{0,80}" + _GARMENT.pattern, row["text"], re.I)):
-                customer_requirement = {"garment_type": configuration["garment_type"], "garment_source_message_id": row["id"]}
-                if configuration.get("qty"):
-                    customer_requirement.update(qty=configuration["qty"], quantity_source_message_id=row["id"], quantity_inference="explicit_quantity")
-                elif re.search(r"\bфутболку\b|\ba\s+t-?shirt\b|\bone\s+(?:t-?shirt|hoodie)\b", row["text"], re.I):
-                    customer_requirement.update(qty=1, quantity_source_message_id=row["id"], quantity_inference="singular_garment")
+            if requirement:
+                customer_requirement = requirement
                 proofs[row["id"]] = _proof(row)
             fresh_reference_offer = (pending is not None and pending_at is not None
                 and index - pending_at <= 3 and pending.get("acceptance_message_id") is None)
@@ -469,6 +511,8 @@ def extract_conversation_agreement(messages):
                 and pending.get("acceptance_message_id") is None and _reference(row)):
             references = list(dict.fromkeys([*(pending.get("reference_message_ids") or []), row["id"]]))[-8:]
             pending["reference_message_ids"] = list(references)
+            pending["accepted_reference_message_ids"] = list(dict.fromkeys([
+                *(pending.get("accepted_reference_message_ids") or []), row["id"]]))[-8:]
             proofs[row["id"]] = _proof(row)
         amount, amount_reasons = _quoted_amounts(row)
         if amount:
@@ -641,7 +685,7 @@ def persist_conversation_agreement(client, messages, watermark):
 
 
 def _read_conversation_agreement(client, *, episode_id, source_namespace, reset_floor, watermark=None,
-        _allow_expired_quote_for_retention=False):
+        _allow_expired_quote_for_retention=False, _allow_projection_changed_for_reprojection=False):
     """GET-only reverified agreement and source vector for a caller's fence."""
     from management.models import IgClient, IgCommercialEpisode, InstagramBotMessage
     from management.services.ig_conversation_routes import conversation_route_reset_floor
@@ -708,9 +752,10 @@ def _read_conversation_agreement(client, *, episode_id, source_namespace, reset_
         row["event_at"] = proof["observed_at"]
         rows.append(row)
     reproduced = extract_conversation_agreement(rows)
-    for key, value in reproduced.items():
-        if key != "watermark_message_id" and agreement.get(key) != value:
-            return unavailable("conversation_agreement_projection_changed")
+    projection_changed = any(key != "watermark_message_id" and agreement.get(key) != value
+        for key, value in reproduced.items())
+    if projection_changed and not _allow_projection_changed_for_reprojection:
+        return unavailable("conversation_agreement_projection_changed")
     expires_at = (agreement.get("amounts") or {}).get("expires_at")
     if expires_at and not _allow_expired_quote_for_retention:
         try:
@@ -719,6 +764,114 @@ def _read_conversation_agreement(client, *, episode_id, source_namespace, reset_
         except (TypeError, ValueError):
             return unavailable("conversation_agreement_quote_expiry_unknown")
     return {"agreement": deepcopy(agreement), "source_rows": rows, "reason": ""}
+
+
+def agreement_projection_digest(agreement):
+    """Canonical expected-head fence; contains no exported source facts."""
+    return hashlib.sha256(json.dumps(agreement, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def reproject_conversation_agreement(client, messages, *, watermark, expected_agreement_digest):
+    """Explicit source-verified refresh of a reviewed projection head.
+
+    A parser upgrade may produce new facts from previously nonmaterial rows.
+    This operation verifies old material proofs, then captures those current
+    sources afresh. GET readers and ordinary observation cannot bypass a
+    projection mismatch. Any refused fresh capture rolls back the prior head.
+    """
+    from django.db import transaction
+    from django.utils import timezone
+    from management.models import IgClient, InstagramBotMessage
+    from management.services.ig_commercial_episodes import commercial_episode_client_lock
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_admin_state_capture import _namespace
+
+    unavailable = lambda reason: {"persisted": False, "reason": reason}
+    supplied = list(messages or ())
+    if (not isinstance(watermark, int) or isinstance(watermark, bool) or watermark <= 0
+            or not supplied or len(supplied) > MAX_MESSAGES):
+        return unavailable("agreement_reprojection_input_invalid")
+    rows = [_row(row) for row in supplied]
+    supplied_ids = [row["id"] for row in rows]
+    if (not all(supplied_ids) or supplied_ids != sorted(set(supplied_ids)) or supplied_ids[-1] != watermark
+            or not isinstance(expected_agreement_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_agreement_digest)):
+        return unavailable("agreement_reprojection_input_invalid")
+    with commercial_episode_client_lock(client.pk), transaction.atomic():
+        locked = IgClient.objects.select_for_update().filter(pk=client.pk).first()
+        if locked is None or locked.privacy_erasure_started_at is not None:
+            return unavailable("agreement_reprojection_client_unavailable")
+        context = deepcopy(locked.sales_context) if isinstance(locked.sales_context, dict) else {}
+        existing = context.get("conversation_agreement")
+        if not isinstance(existing, dict) or existing.get("schema") != SCHEMA:
+            return unavailable("agreement_reprojection_head_unavailable")
+        prior_digest = agreement_projection_digest(existing)
+        if prior_digest != expected_agreement_digest:
+            return unavailable("agreement_reprojection_head_changed")
+        scope = existing.get("scope") or {}
+        floor = conversation_route_reset_floor(locked.pk)
+        if (scope.get("client_id") != locked.pk or scope.get("episode_id") != locked.current_commercial_episode_id
+                or scope.get("reset_floor") != floor or not scope.get("source_namespace")
+                or scope.get("source_namespace") != _namespace()):
+            return unavailable("agreement_reprojection_scope_changed")
+        old_watermark = existing.get("watermark_message_id")
+        if (not isinstance(old_watermark, int) or isinstance(old_watermark, bool) or old_watermark > watermark):
+            return unavailable("agreement_reprojection_watermark_changed")
+        old_ids = existing.get("transcript_message_ids") or []
+        if (not isinstance(old_ids, list) or len(old_ids) > MAX_MESSAGES
+                or any(not isinstance(value, int) or isinstance(value, bool) for value in old_ids)):
+            return unavailable("agreement_reprojection_sources_invalid")
+        # Source edits must not race the old-proof check and fresh capture.
+        list(InstagramBotMessage.objects.select_for_update().filter(client_id=locked.pk,
+            pk__in=set(old_ids) | set(supplied_ids)).order_by("pk"))
+        verified = _read_conversation_agreement(locked, episode_id=scope["episode_id"],
+            source_namespace=scope["source_namespace"], reset_floor=floor, watermark=old_watermark,
+            _allow_projection_changed_for_reprojection=True)
+        if verified["reason"]:
+            return unavailable("agreement_reprojection_" + verified["reason"])
+        # The supplied source window must retain the whole reviewed head;
+        # otherwise a refresh could accidentally discard durable evidence.
+        if not set(old_ids) <= set(supplied_ids):
+            return unavailable("agreement_reprojection_history_incomplete")
+        context.pop("conversation_agreement")
+        locked.sales_context = context
+        locked.save(update_fields=["sales_context", "updated_at"])
+        captured = persist_conversation_agreement(locked, rows, watermark=watermark)
+        if not captured["persisted"]:
+            transaction.set_rollback(True)
+            return unavailable("agreement_reprojection_" + captured["reason"])
+        if captured["agreement"].get("scope") != scope:
+            transaction.set_rollback(True)
+            return unavailable("agreement_reprojection_scope_changed")
+        new_digest = agreement_projection_digest(captured["agreement"])
+        audit = context.get("conversation_agreement_reprojections")
+        audit = audit[-9:] if isinstance(audit, list) else []
+        # Only controlled, bounded metadata from previous entries survives.
+        allowed = {"prior_digest", "new_digest", "prior_source_message_ids", "source_message_ids", "watermark_message_id", "applied_at", "reason"}
+        audit = [{key: entry[key] for key in allowed} for entry in audit
+            if isinstance(entry, dict) and allowed <= entry.keys()
+            and entry["reason"] == "explicit_source_reprojection"
+            and all(isinstance(entry[key], str) and re.fullmatch(r"[0-9a-f]{64}", entry[key]) for key in ("prior_digest", "new_digest"))
+            and isinstance(entry["applied_at"], str) and len(entry["applied_at"]) <= 40
+            and re.fullmatch(r"[\dT:+.\-]+", entry["applied_at"])
+            and isinstance(entry["watermark_message_id"], int) and not isinstance(entry["watermark_message_id"], bool)
+            and all(isinstance(entry[key], list) and len(entry[key]) <= MAX_MESSAGES
+                and all(isinstance(value, int) and not isinstance(value, bool) for value in entry[key])
+                for key in ("prior_source_message_ids", "source_message_ids"))]
+        audit.append({"prior_digest": prior_digest, "new_digest": new_digest,
+            "prior_source_message_ids": list(existing.get("source_message_ids") or []),
+            "source_message_ids": list(captured["agreement"].get("source_message_ids") or []),
+            "watermark_message_id": watermark, "applied_at": timezone.now().isoformat(),
+            "reason": "explicit_source_reprojection"})
+        context = dict(locked.sales_context)
+        context["conversation_agreement_reprojections"] = audit
+        locked.sales_context = context
+        locked.save(update_fields=["sales_context", "updated_at"])
+        client.sales_context = context
+        for field in ("current_size", "current_color", "current_qty"):
+            setattr(client, field, getattr(locked, field))
+        return {**captured, "reason": "agreement_reprojected", "prior_digest": prior_digest, "new_digest": new_digest}
 
 
 def read_conversation_agreement(client, *, episode_id, source_namespace, reset_floor, watermark=None):

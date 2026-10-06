@@ -223,7 +223,15 @@ class GeminiHealthApiTests(TestCase):
                 detail=f"winner={env_alias}/gemini-3.5-flash-lite customer=private-legacy-body",
             )
 
-        status_response = self.client.get(reverse("management_bot_status_api"))
+        # The default feed hides harmless legacy rows while advancing its scan
+        # cursor. Explicit unknown history still exposes their safe projection.
+        default_response = self.client.get(reverse("management_bot_status_api"))
+        self.assertEqual(default_response.status_code, 200)
+        default_console = default_response.json()["console"]
+        self.assertEqual(default_console["items"], [])
+        self.assertEqual(default_console["scanned_rows"], len(gemini_keys.ALL_KEYS))
+        self.assertEqual(default_console["next_after_id"], InstagramBotLog.objects.latest("id").pk)
+        status_response = self.client.get(reverse("management_bot_status_api"), {"category": "unknown"})
         dashboard_items = bot_views._log_items()
 
         self.assertEqual(status_response.status_code, 200)

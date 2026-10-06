@@ -2,11 +2,13 @@ from contextlib import nullcontext
 from io import StringIO
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+import secrets
+from unittest import skipUnless
 from unittest.mock import MagicMock, patch
 
 from django.core.cache import cache
-from django.db import OperationalError
-from django.test import SimpleTestCase, override_settings
+from django.db import OperationalError, connection
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
 
 from management.services.ig_db_circuit import (
     DbActiveCapacityError,
@@ -17,6 +19,7 @@ from management.services.ig_db_circuit import (
     record_db_failure,
     record_read_success,
     release_idle_connection,
+    retain_session_connection,
     require_database_ready,
 )
 
@@ -64,6 +67,62 @@ class DbCircuitTests(SimpleTestCase):
         db.in_atomic_block = True
         self.assertFalse(release_idle_connection())
         db.close.assert_not_called()
+
+    def test_session_connection_retention_is_nested_alias_scoped_and_exception_safe(self):
+        default, other = MagicMock(), MagicMock()
+        default.in_atomic_block = other.in_atomic_block = False
+        with patch("management.services.ig_db_circuit.connections", {"default": default, "other": other}):
+            with retain_session_connection():
+                self.assertFalse(release_idle_connection())
+                with retain_session_connection():
+                    self.assertFalse(release_idle_connection())
+                self.assertFalse(release_idle_connection())
+                self.assertTrue(release_idle_connection(using="other"))
+            self.assertTrue(release_idle_connection())
+            default.close.assert_called_once()
+            other.close.assert_called_once()
+            default.close.reset_mock()
+            with self.assertRaises(ValueError):
+                with retain_session_connection():
+                    raise ValueError("synthetic")
+            self.assertTrue(release_idle_connection())
+            default.close.assert_called_once()
+
+    def test_commercial_advisory_owner_survives_provider_boundary_and_reentrant_scope(self):
+        from management.services import ig_commercial_episodes as episodes
+
+        db = MagicMock()
+        db.vendor, db.alias, db.in_atomic_block = "mysql", "default", False
+        db.cursor.return_value.__enter__.return_value.fetchone.return_value = (1,)
+        with patch.object(episodes, "connection", db), \
+             patch("management.services.ig_db_circuit.connections", {"default": db}):
+            with episodes.commercial_episode_client_lock(42):
+                self.assertFalse(release_idle_connection())
+                with episodes.commercial_episode_client_lock(42):
+                    self.assertFalse(release_idle_connection())
+                db.close.assert_not_called()
+            self.assertTrue(release_idle_connection())
+        db.close.assert_called_once()
+        self.assertEqual(db.cursor.return_value.__enter__.return_value.execute.call_count, 2)
+
+    def test_reentrant_commercial_owner_rejects_replaced_physical_connection(self):
+        from management.services import ig_commercial_episodes as episodes
+
+        db = MagicMock()
+        db.vendor, db.alias, db.in_atomic_block = "mysql", "default", False
+        owner = db.connection
+        db.cursor.return_value.__enter__.return_value.fetchone.return_value = (1,)
+        with patch.object(episodes, "connection", db), \
+             patch("management.services.ig_db_circuit.connections", {"default": db}):
+            with episodes.commercial_episode_client_lock(42):
+                db.connection = None
+                with self.assertRaises(episodes.SessionLockOwnershipLost):
+                    with episodes.commercial_episode_client_lock(42):
+                        self.fail("A lost advisory owner must not enter")
+                self.assertFalse(release_idle_connection())
+                db.connection = owner
+            self.assertTrue(release_idle_connection())
+        self.assertEqual(db.cursor.return_value.__enter__.return_value.execute.call_count, 2)
 
     def test_cached_capacity_cannot_heal_a_failed_half_open_probe(self):
         db = MagicMock()
@@ -119,3 +178,50 @@ class DbCircuitTests(SimpleTestCase):
         self.assertEqual(active_slot_cap(measured_user_cap=20), 4)
         with patch("management.services.ig_db_circuit.capacity_snapshot", return_value={"known": False}):
             self.assertEqual(active_slot_cap(), 1)
+
+
+@skipUnless(connection.vendor == "mysql", "Requires root-owned disposable MariaDB advisory locks")
+class SessionConnectionNativeTests(TransactionTestCase):
+    def test_provider_boundary_preserves_real_get_lock_until_owner_release(self):
+        from management.services.ig_commercial_episodes import commercial_episode_client_lock
+
+        client_id = 10000000 + secrets.randbelow(10000000)
+        lock_name = f"twocomms:ig-episode:{client_id}"
+        competitor = connection.copy(alias="episode_native_competitor")
+        try:
+            competitor.ensure_connection()
+            with commercial_episode_client_lock(client_id):
+                owner = connection.connection
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT CONNECTION_ID()")
+                    owner_id = cursor.fetchone()[0]
+                self.assertFalse(release_idle_connection())
+                self.assertIs(connection.connection, owner)
+                with competitor.cursor() as cursor:
+                    cursor.execute("SELECT GET_LOCK(%s, 0)", [lock_name])
+                    self.assertEqual(cursor.fetchone()[0], 0)
+                    cursor.execute("SELECT IS_USED_LOCK(%s)", [lock_name])
+                    self.assertEqual(cursor.fetchone()[0], owner_id)
+            with competitor.cursor() as cursor:
+                cursor.execute("SELECT GET_LOCK(%s, 0)", [lock_name])
+                self.assertEqual(cursor.fetchone()[0], 1)
+                cursor.execute("SELECT RELEASE_LOCK(%s)", [lock_name])
+                self.assertEqual(cursor.fetchone()[0], 1)
+        finally:
+            competitor.close()
+
+    def test_closed_native_connection_cannot_pretend_to_reenter_its_old_advisory_lock(self):
+        from management.services.ig_commercial_episodes import commercial_episode_client_lock, SessionLockOwnershipLost
+
+        client_id = 10000000 + secrets.randbelow(10000000)
+        lock_name = f"twocomms:ig-episode:{client_id}"
+        with commercial_episode_client_lock(client_id):
+            connection.close()
+            with self.assertRaises(SessionLockOwnershipLost):
+                with commercial_episode_client_lock(client_id):
+                    self.fail("Closed physical session must fail closed")
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT GET_LOCK(%s, 0)", [lock_name])
+            self.assertEqual(cursor.fetchone()[0], 1)
+            cursor.execute("SELECT RELEASE_LOCK(%s)", [lock_name])
+            self.assertEqual(cursor.fetchone()[0], 1)

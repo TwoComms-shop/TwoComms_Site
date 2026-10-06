@@ -15,6 +15,22 @@ from management.services.ig_payment_review import (
 
 
 class ReceiptEvidenceContractTests(SimpleTestCase):
+    def test_manager_reference_after_payment_instructions_is_not_customer_receipt_or_catalog_admission(self):
+        result = extract_payment_review_evidence([
+            {"id": 1, "role": "user", "text": "Беру базову L"},
+            {"id": 2, "role": "manager", "text": "До сплати 970 грн, IBAN"},
+            {"id": 3, "role": "manager", "media": [{"url": "https://example.invalid/manager-product", "type": "image"}]},
+            {"id": 4, "role": "user", "text": "Ось чек", "media": [{"url": "https://example.invalid/user-receipt", "type": "image"}]},
+            {"id": 5, "role": "manager", "text": "Ось чек", "media": [{"url": "https://example.invalid/forwarded-receipt", "type": "image"}]},
+        ])
+        media = {item["message_id"]: item for item in result["media"]}
+        self.assertEqual(media[3]["role"], "manager_reference")
+        self.assertFalse(media[3]["payment_evidence"])
+        self.assertFalse(media[3]["catalog_match_allowed"])
+        self.assertEqual((media[4]["source_message_id"], media[4]["source_role"]), (4, "user"))
+        self.assertEqual((media[5]["role"], media[5]["source_role"]), ("receipt", "manager"))
+        self.assertFalse(media[5]["catalog_match_allowed"])
+
     def test_notification_material_binds_accepted_cart_and_reported_facts_excluding_retry_noise(self):
         from management.services.ig_payment_review import _payment_notification_material
         media = {"message_id": 4, "source_part_id": "part", "content_hash": "a" * 64, "role": "receipt",
@@ -22,7 +38,8 @@ class ReceiptEvidenceContractTests(SimpleTestCase):
                 "source_message_id": 4, "source_part_id": "part", "content_hash": "a" * 64,
                 "role": "receipt", "confidence": 0.95, "provider_model": "synthetic-model", "request_id": "synthetic-request",
                 "receipt_facts": {"amount": "970.00", "currency": "UAH", "payment_status": "pending"}}}
-        item = {"size": "L", "unit_price": "850", "source_message_id": 1, "acceptance_message_id": 2}
+        item = {"size": "L", "unit_price": "850", "source_message_id": 1, "acceptance_message_id": 2,
+                "reference_message_ids": [6, 7], "accepted_reference_message_ids": [6]}
         review = SimpleNamespace(pk=1, watermark_message_id=4, deal=None,
             evidence={"media": [media], "order_draft": {"items": [item], "quoted_total": "970.00"}})
         baseline = _payment_notification_material(review)["material_digest"]
@@ -33,6 +50,10 @@ class ReceiptEvidenceContractTests(SimpleTestCase):
         item["size"] = "M"
         self.assertNotEqual(_payment_notification_material(review)["material_digest"], baseline)
         item["size"] = "L"
+        item["accepted_reference_message_ids"] = [7]
+        self.assertNotEqual(_payment_notification_material(review)["material_digest"], baseline)
+        self.assertEqual(item["reference_message_ids"], [6, 7])
+        item["accepted_reference_message_ids"] = [6]
         media["receipt_inspection"]["receipt_facts"]["payment_status"] = "completed"
         self.assertNotEqual(_payment_notification_material(review)["material_digest"], baseline)
 
@@ -558,7 +579,22 @@ class PaymentNotificationMaterialRevisionTests(_HumanStoreFixture):
             text=f"850 грн + {delivery} доставка = {850 + delivery} грн")
 
     def test_sent_claim_receipt_revision_once_then_replay_and_noise_never_resend(self):
+        from datetime import timedelta
+        from django.utils import timezone
         from management.models import InstagramBotMessage
+        self.inbound("Беру базову L")
+        manager_media = {"url": "https://example.invalid/manager-product", "type": "image",
+            "source_part_id": "mp1_" + "c" * 32, "content_hash": "d" * 64,
+            "storage_name": "synthetic/manager-product", "status": "owned", "private_storage": True,
+            "provenance": "live_webhook", "mime": "image/jpeg"}
+        manager_photo = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+            provider_namespace=self.namespace, role="manager", source="echo", status="done", text="",
+            mid="notification-manager-product", provider_message_id="notification-manager-product",
+            media_capture_eligible=True, private_media_state="active", attachment_media=[manager_media])
+        before_receipt = self.observe()
+        manager_view = next(item for item in before_receipt.evidence["media"] if item["message_id"] == manager_photo.pk)
+        self.assertEqual(manager_view["role"], "manager_reference")
+        self.assertFalse(manager_view["catalog_match_allowed"])
         row = self.finish()
         old_candidate = row.payload["payment_candidate"]
         media = {"url": "https://example.invalid/private-receipt", "type": "image", "role": "receipt",
@@ -568,7 +604,7 @@ class PaymentNotificationMaterialRevisionTests(_HumanStoreFixture):
         receipt = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
             provider_namespace=self.namespace, role="user", source="webhook", status="pending", text="Ось чек",
             mid="notification-receipt", provider_message_id="notification-receipt", media_capture_eligible=True,
-            private_media_state="active", attachment_media=[media])
+            private_media_state="active", private_media_delete_after=timezone.now() + timedelta(hours=1), attachment_media=[media])
         review = self.observe()
         self.assertEqual(review.pk, self.review.pk)
         row = self.notification()
@@ -582,12 +618,24 @@ class PaymentNotificationMaterialRevisionTests(_HumanStoreFixture):
         self.assertEqual(historical["candidate_digest"], old_candidate["digest"])
         self.assertTrue(any(item.get("message_id") == receipt.pk for item in review.evidence["media"]))
         self.finish(message_id="102")
+        media["receipt_inspection"] = {"schema_version": "ig-receipt-inspection-v1", "state": "inspected",
+            "source_message_id": receipt.pk, "source_part_id": media["source_part_id"], "content_hash": media["content_hash"],
+            "role": "receipt", "confidence": 0.95, "provider_model": "synthetic-model", "request_id": "synthetic-request",
+            "receipt_facts": {"amount": "970.00", "currency": "UAH", "payment_status": "completed",
+                              "recipient_name": "Synthetic recipient"}}
+        receipt.attachment_media = [media]
+        receipt.save(update_fields=["attachment_media"])
+        reported = self.observe()
+        row = self.notification()
+        self.assertEqual((row.status, row.attempts, row.payload["payment_notification_revision"]["version"]), ("pending", 2, 3))
+        self.assertEqual(reported.evidence["reported_payment_amounts"][0]["amount"], "970.00")
+        self.finish(message_id="103")
         self.observe()
         self.inbound("Дякую")
         self.observe()
         row = self.notification()
-        self.assertEqual((row.status, row.attempts, row.telegram_message_id), ("sent", 2, "102"))
-        self.assertEqual(row.audit_events.count(), 1)
+        self.assertEqual((row.status, row.attempts, row.telegram_message_id), ("sent", 3, "103"))
+        self.assertEqual(row.audit_events.count(), 2)
         self.http_mock.assert_not_called()
 
     def test_changed_payable_refreshes_early_provider_free_branch(self):
@@ -601,6 +649,78 @@ class PaymentNotificationMaterialRevisionTests(_HumanStoreFixture):
         self.assertEqual((row.status, row.attempts), ("pending", 1))
         self.assertIn("Сума: 1000.00", row.payload["text"])
         self.assertEqual(row.payload["payment_candidate"]["order_total"], "1000.00")
+
+    def test_exact_legacy_human_context_uses_effective_namespace_proof_and_rejects_broken_receipt(self):
+        from datetime import timedelta
+        from management.services.ig_conversation_agreement import _proof, _row
+        from management.services.ig_legacy_human_receipts import find_legacy_human_receipt
+        from management.services.ig_memory_producer import _namespaces
+        from management.services.ig_payment_review import _payment_notification_material, _payment_notification_scope_current, _payment_review_mutation, _lock_payment_review
+        from management.tests_ig_legacy_human_receipts import LegacyHumanReceiptReadTests
+        command, source = LegacyHumanReceiptReadTests.receipt(self,
+            ids=["notification-legacy-context"], text="850 грн + 120 доставка = 970 грн")
+        command.window_deadline = command.provider_started_at + timedelta(hours=1)
+        command.save(update_fields=["window_deadline"])
+        self.assertEqual(source.provider_namespace, "")
+        self.assertEqual(_namespaces([source])[source.pk], self.namespace)
+        proof = find_legacy_human_receipt(client_id=self.customer.pk, namespace=self.namespace,
+            recipient=self.customer.igsid, mid=source.provider_message_id,
+            command_id=command.pk, manager_message_id=source.pk)
+        self.assertTrue(proof.accepted, proof.reason)
+        self.review.refresh_from_db()
+        self.review.watermark_message_id = source.pk
+        draft = self.review.evidence["order_draft"]
+        draft["amount_source_message_id"] = source.pk
+        draft["agreement"] = {"evidence": {str(source.pk): _proof({
+            **_row(source), "provider_namespace": self.namespace,
+        })}}
+        self.review.save(update_fields=["evidence", "watermark_message_id"])
+        with _payment_review_mutation(self.review):
+            locked = _lock_payment_review(self.review)
+            self.assertTrue(_payment_notification_scope_current(locked, _payment_notification_material(locked), strict_sources=True))
+        command.provider_message_ids = ["different-unowned-receipt"]
+        command.save(update_fields=["provider_message_ids"])
+        with _payment_review_mutation(self.review):
+            locked = _lock_payment_review(self.review)
+            self.assertFalse(_payment_notification_scope_current(locked, _payment_notification_material(locked), strict_sources=True))
+        self.assertFalse(self.review.decisions.exists())
+
+    def test_forwarded_manager_receipt_requires_exact_owned_manager_part_without_user_ocr(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from management.models import InstagramBotMessage
+        from management.services.ig_payment_review import _payment_notification_material, _payment_notification_scope_current, _payment_review_mutation, _lock_payment_review
+        self.finish()
+        media = {"url": "https://example.invalid/forwarded-receipt", "type": "image",
+            "source_part_id": "mp1_" + "e" * 32, "content_hash": "f" * 64,
+            "storage_name": "synthetic/forwarded-receipt", "status": "owned", "private_storage": True,
+            "provenance": "live_webhook", "mime": "image/jpeg"}
+        forwarded = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+            provider_namespace=self.namespace, role="manager", source="echo", status="done", text="Ось чек",
+            mid="forwarded-receipt", provider_message_id="forwarded-receipt", private_media_state="active",
+            private_media_delete_after=timezone.now() + timedelta(hours=1), attachment_media=[media])
+        with patch("management.services.ig_receipt_inspection._source_allowed", side_effect=AssertionError("manager entered user OCR guard")):
+            review = self.observe()
+        self.assertEqual(self.notification().status, "pending")
+        self.assertFalse(review.decisions.exists())
+        for missing in (True, False):
+            with self.subTest(missing_shared_deadline=missing):
+                forwarded.private_media_delete_after = None if missing else timezone.now() + timedelta(hours=1)
+                forwarded.attachment_media = [media] if missing else [media, {
+                    "source_part_id": "mp1_" + "a" * 32, "private_storage": True,
+                    "delete_after": (timezone.now() - timedelta(seconds=1)).isoformat(),
+                }]
+                forwarded.save(update_fields=["private_media_delete_after", "attachment_media"])
+                with _payment_review_mutation(review):
+                    locked = _lock_payment_review(review)
+                    self.assertFalse(_payment_notification_scope_current(locked, _payment_notification_material(locked), strict_sources=True))
+        forwarded.private_media_delete_after = timezone.now() + timedelta(hours=1)
+        forwarded.save(update_fields=["private_media_delete_after"])
+        forwarded.attachment_media = [{**media, "content_hash": "0" * 64}]
+        forwarded.save(update_fields=["attachment_media"])
+        with _payment_review_mutation(review):
+            locked = _lock_payment_review(review)
+            self.assertFalse(_payment_notification_scope_current(locked, _payment_notification_material(locked), strict_sources=True))
 
     def test_unknown_sending_payloads_unchanged_and_latest_material_marked(self):
         for index, state in enumerate(("unknown", "sending")):

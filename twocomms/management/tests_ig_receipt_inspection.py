@@ -35,14 +35,14 @@ def observation(**overrides):
 
 
 class ReceiptInspectionTests(SimpleTestCase):
-    def inspect(self, items=None, answer=None, **kwargs):
+    def inspect(self, items=None, answer=None, *, provider_error=None, **kwargs):
         answer = observation() if answer is None else answer
         with (patch.object(receipts, "_source_allowed", return_value=True),
               patch.object(receipts, "_persist_bound_inspection", return_value=True),
               patch("management.services.ig_private_media.acquire_blob_use", return_value="lease"),
               patch("management.services.ig_private_media.release_blob_use") as release,
               patch("management.services.instagram_bot._owned_media_bytes", return_value=("image/jpeg", BODY)),
-              patch("management.services.call_ai_analysis.gemini_generate_text", return_value={
+              patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=provider_error, return_value={
                   "parsed": json.dumps({"items": [answer]}), "model": "approved-test-model",
                   "meta": {"request_id": "anonymous-request"}}) as provider):
             result = receipts.inspect_receipt_media(items or [media()], **kwargs)
@@ -139,7 +139,8 @@ class ReceiptInspectionTests(SimpleTestCase):
         cached = result[0]
         cached["url"] += "?new_signature=yes"
         cached["role"] = "other"
-        with patch("management.services.call_ai_analysis.gemini_generate_text") as provider:
+        with patch.object(receipts, "_source_allowed", return_value=True), \
+             patch("management.services.call_ai_analysis.gemini_generate_text") as provider:
             replay = receipts.inspect_receipt_media([cached])
         self.assertEqual(replay[0]["role"], "receipt")
         self.assertEqual(replay[0]["receipt_facts"]["amount"], "970.00")
@@ -196,11 +197,48 @@ class ReceiptInspectionTests(SimpleTestCase):
         for changed in ({"confidence": float("nan")}, {"confidence": float("inf")},
                         {"confidence": True}, {"source_image_index": True},
                         {"source_image_index": -1}, {"source_image_index": "0"},
-                        {"role": "paid"}):
+                        {"role": "paid"}, {"role": []}, {"role": {}}, {"role": None}):
             with self.subTest(changed=changed):
                 result, _provider, _release = self.inspect(answer=observation(**changed))
                 self.assertEqual(result[0]["role"], "other")
                 self.assertEqual(result[0]["receipt_inspection"]["state"], "deferred")
+                self.assertEqual(result[0]["receipt_inspection"]["reason"], "receipt_observation_missing")
+
+    def test_unhashable_cached_role_is_rejected_without_an_exception(self):
+        result, _provider, _release = self.inspect()
+        for role in ([], {}, None):
+            altered = deepcopy(result[0])
+            altered["receipt_inspection"]["role"] = role
+            self.assertIsNone(receipts.bound_receipt_inspection(altered))
+
+    def test_provider_failure_keeps_only_finite_exception_codes_for_operators(self):
+        from management.services.call_ai_analysis import CallAIAnalysisError
+
+        error = CallAIAnalysisError("Private Payer IBAN https://private-error.example/secret?q=token")
+        error.failure_kind = "provider_dispatch_budget"
+        result, provider, release = self.inspect(provider_error=error)
+        inspection = result[0]["receipt_inspection"]
+        self.assertEqual(inspection["state"], "deferred")
+        self.assertEqual(inspection["exception_type"], "CallAIAnalysisError")
+        self.assertEqual(inspection["failure_kind"], "provider_dispatch_budget")
+        self.assertEqual(inspection["reason_code"], "receipt_provider_failed")
+        serialized = json.dumps(inspection)
+        for private in ("Private Payer", "IBAN", "private-error.example", "secret", "token"):
+            self.assertNotIn(private, serialized)
+        provider.assert_called_once()
+        release.assert_called_once_with(10, "lease")
+
+    def test_unrecognized_exception_and_failure_kind_use_safe_generic_codes(self):
+        class UnexpectedReceiptFailure(Exception):
+            pass
+
+        error = UnexpectedReceiptFailure("private@example.test")
+        error.failure_kind = "private@example.test"
+        result, _provider, _release = self.inspect(provider_error=error)
+        inspection = result[0]["receipt_inspection"]
+        self.assertEqual(inspection["exception_type"], "Exception")
+        self.assertEqual(inspection["failure_kind"], "unclassified")
+        self.assertNotIn("private@example.test", json.dumps(inspection))
 
     def test_duplicate_indexes_are_rejected(self):
         self.assertEqual(receipts._parse_items({"items": [observation(), observation(role="product")]}, 1), {})
@@ -358,6 +396,64 @@ class ReceiptSourceAdmissionTests(TestCase):
         self.row.private_media_delete_after = timezone.now()
         self.row.save(update_fields=["private_media_delete_after"])
         self.assertEqual(receipts._source_allowed(self.item, ""), "receipt_media_expired")
+
+    def test_missing_all_private_deadlines_denies_initial_inspection_without_provider(self):
+        self.row.private_media_delete_after = None
+        self.row.save(update_fields=["private_media_delete_after"])
+        self.assertEqual(receipts._source_allowed(self.item, ""), "receipt_media_expired")
+        with patch("management.services.call_ai_analysis.gemini_generate_text") as provider:
+            inspected = receipts.inspect_receipt_media([self.item])
+        provider.assert_not_called()
+        self.assertEqual(inspected[0]["receipt_inspection"]["state"], "deferred")
+        self.assertNotIn("receipt_facts", inspected[0])
+
+    def test_expired_private_sibling_wins_over_current_selected_and_message_deadlines(self):
+        now = timezone.now()
+        self.row.attachment_media = [{**self.item, "delete_after": (now + timedelta(hours=1)).isoformat()},
+            {"source_part_id": "older-private-sibling", "private_storage": True,
+             "delete_after": (now - timedelta(seconds=1)).isoformat()}]
+        self.row.save(update_fields=["attachment_media"])
+        self.assertEqual(receipts._source_allowed(self.item, ""), "receipt_media_expired")
+        with patch("management.services.call_ai_analysis.gemini_generate_text") as provider:
+            inspected = receipts.inspect_receipt_media([self.item])
+        provider.assert_not_called()
+        self.assertEqual(inspected[0]["receipt_inspection"]["state"], "deferred")
+
+    def test_selected_malformed_deadline_is_not_hidden_by_valid_message_boundary(self):
+        for value in ("not-a-time", "2026-10-06T12:00:00", "", False, 7):
+            self.row.attachment_media = [{**self.item, "delete_after": value}]
+            self.row.save(update_fields=["attachment_media"])
+            self.assertEqual(receipts._source_allowed(self.item, ""), "receipt_media_expired")
+
+    def test_expiry_crossed_after_real_lease_prevents_memo_persistence(self):
+        from management.services.ig_private_media import acquire_blob_use, release_blob_use
+
+        deadline = timezone.now() + timedelta(seconds=30)
+        self.row.attachment_media = [{**self.item, "delete_after": deadline.isoformat()}]
+        self.row.save(update_fields=["attachment_media"])
+        token = acquire_blob_use(self.row.pk, seconds=120)
+        self.assertTrue(token, "real receipt fixture must acquire its pre-expiry lease")
+        receipts._defer(self.item, "receipt_provider_failed")
+        with patch("django.utils.timezone.now", return_value=deadline + timedelta(seconds=1)):
+            self.assertEqual(receipts._source_allowed(self.item, token), "receipt_media_expired")
+            self.assertFalse(receipts._persist_bound_inspection(self.item, token, allow_deferred=True))
+        self.row.refresh_from_db()
+        self.assertNotIn("receipt_inspection", self.row.attachment_media[0])
+        release_blob_use(self.row.pk, token)
+
+    def test_expired_cached_consumer_observation_is_not_reused_or_regenerated(self):
+        inspection = {"schema_version": receipts.SCHEMA_VERSION, **receipts._binding(self.item),
+            "state": "inspected", "provider_model": "approved-test-model", "request_id": "anonymous-request",
+            **{key: value for key, value in observation().items() if key != "source_image_index"}}
+        cached = deepcopy(self.item)
+        receipts._apply(cached, inspection)
+        self.row.private_media_delete_after = timezone.now() - timedelta(seconds=1)
+        self.row.save(update_fields=["private_media_delete_after"])
+        with patch("management.services.call_ai_analysis.gemini_generate_text") as provider:
+            inspected = receipts.inspect_receipt_media([cached])
+        provider.assert_not_called()
+        self.assertEqual(inspected[0]["receipt_inspection"]["reason"], "receipt_media_expired")
+        self.assertNotIn("receipt_facts", inspected[0])
 
     def test_deferred_attempt_clears_old_facts_while_lease_is_held(self):
         from management.services.ig_private_media import acquire_blob_use, release_blob_use

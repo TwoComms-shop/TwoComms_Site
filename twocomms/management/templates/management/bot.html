@@ -1809,7 +1809,7 @@ body.bot-drawer-open{overflow:hidden;}
   </div>
 
   <!-- ===== Замовлення ===== -->
-  <section class="bot-panel" data-panel="orders">
+  <section class="bot-panel" data-panel="orders" data-payment-workspace-version="agreed-media-v1">
     <div class="bot-card">
       <div class="bot-orders-toolbar">
         <div class="bot-orders-toolbar-copy">
@@ -3520,6 +3520,19 @@ body.bot-drawer-open{overflow:hidden;}
         if(media.role==='receipt'||media.role==='payment_candidate')card.appendChild(node('div','bot-hint',media.receipt_inspection_state==='inspected'?(media.receipt_inspection_role==='receipt'?'Чек проаналізовано · рішення менеджера окреме':'Зображення проаналізовано; чек не підтверджено'):media.receipt_inspection_state==='uncertain'?'Не підтверджено, що зображення є чеком':media.receipt_inspection_state==='unavailable'?'Аналіз чека недоступний для поточного джерела':'Чек ще не проаналізовано'));
         grid.appendChild(card);});
       if(grid.children.length)section.appendChild(grid);
+      return section;
+    }
+    function renderWorkspaceMedia(root,item){
+      const media=item.media||{};const agreed=Array.isArray(media.agreed_products)?media.agreed_products:[];
+      const identity=part=>{const messageId=part.message_id||part.source_message_id;return messageId&&part.source_part_id?String(messageId)+':'+part.source_part_id:part.preview_url||'';};
+      const agreedIdentities=new Set(agreed.map(identity).filter(Boolean));
+      const remaining=rows=>(Array.isArray(rows)?rows:[]).filter(part=>!agreedIdentities.has(identity(part)));
+      renderMediaGroup(root,'Фото погодженого товару',agreed,item);
+      const examples=renderMediaGroup(root,'Інші приклади з переписки (не склад замовлення)',remaining(media.products),item);
+      if(examples)examples.appendChild(node('div','bot-hint','Ці фото показують історію вибору й не додають позицій до замовлення.'));
+      renderMediaGroup(root,'Чеки з переписки',remaining(media.receipts),item);
+      renderMediaGroup(root,'Custom print референси',remaining(media.custom_print),item);
+      renderMediaGroup(root,'Невизначені зображення',remaining(media.unknown),item);
     }
     function clientEvidenceUrl(item,messageId){const url=new URL(window.location.href);url.search='';url.searchParams.set('section','clients');url.searchParams.set('client_id',String((item.client||{}).id||''));if(messageId)url.searchParams.set('message_id',String(messageId));return url.pathname+url.search;}
     function renderDecisionHistory(root,item){
@@ -3651,7 +3664,7 @@ body.bot-drawer-open{overflow:hidden;}
       const findings=(payment.receipt_review_findings||[]).filter(row=>(row.reason_codes||[]).length);if(findings.length){const section=addSection(inner,'Що потрібно звірити у чеках');findings.forEach(row=>{section.appendChild(node('div','bot-note',(row.reason_codes||[]).map(evidenceReasonLabel).join('; ')));if(row.message_id){const source=node('a','bot-order-product-link','Повідомлення #'+row.message_id);source.href=clientEvidenceUrl(item,row.message_id);section.appendChild(source);}});}
       if((payment.manager_confirmation_observations||[]).length){const section=addSection(inner,'Повідомлення менеджера про оплату');section.appendChild(node('div','bot-hint','У переписці є повідомлення менеджера про отримання оплати. Воно потребує окремого рішення у перевірці й не підміняє платіжний журнал.'));payment.manager_confirmation_observations.forEach(row=>{const source=node('a','bot-order-product-link','Повідомлення #'+row.message_id+(row.amount?' · '+row.amount+' '+row.currency:''));source.href=clientEvidenceUrl(item,row.message_id);section.appendChild(source);});}
       if(state==='needs_order_resolution'&&canResolveOrder)renderActions(inner,item,options||{});
-      renderItems(inner,item);renderMediaGroup(inner,'Фото товарів',(item.media||{}).products,item);renderMediaGroup(inner,'Чеки з переписки',(item.media||{}).receipts,item);renderMediaGroup(inner,'Custom print референси',(item.media||{}).custom_print,item);renderMediaGroup(inner,'Невизначені зображення',(item.media||{}).unknown,item);
+      renderItems(inner,item);renderWorkspaceMedia(inner,item);
       const delivery=item.draft&&item.draft.delivery||{};if(Object.keys(delivery).length){const section=addSection(inner,'Дані доставки');section.appendChild(node('div','bot-hint',[delivery.full_name,delivery.phone,delivery.city,delivery.office,delivery.address].filter(Boolean).join(' · ')));}
       renderNotification(inner,item);renderDecisionHistory(inner,item);if(state!=='needs_order_resolution'&&state!=='payment_reconciliation')renderActions(inner,item,options||{});inner.appendChild(node('div','bot-order-feedback',''));
       root.appendChild(inner);

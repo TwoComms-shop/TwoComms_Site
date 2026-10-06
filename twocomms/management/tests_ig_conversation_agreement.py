@@ -76,6 +76,73 @@ class ConversationAgreementTests(SimpleTestCase):
         self.assertEqual(item["quantity_inference"], "singular_garment")
         self.assertIn(8, result["source_message_ids"])
 
+    def test_affirmative_garment_clause_survives_unrelated_negation_and_questions(self):
+        for request in ("Вітаю, хочу на подарунок футболку другу, але він не любить яскраві пакунки. Чи є доставка?",
+                        "Хочу футболку. Не потрібна подарункова коробка. Коли відправка?",
+                        "I want a t-shirt, but no gift wrapping. Is shipping available?",
+                        "Хочу 2 футболки, але не потрібна подарункова коробка"):
+            with self.subTest(request=request):
+                result = extract_conversation_agreement([
+                    message(8, "user", request), message(10, "manager", "L oversize white TwoComms SamplePrint42"),
+                    message(11, "user", "Так"), message(12, "manager", "850 грн + 120 доставка = 970 грн"),
+                ])
+                item = result["items"][0]
+                self.assertEqual(item["garment_type"], "tshirt")
+                self.assertEqual(item["qty"], 2 if "2 футболки" in request else 1)
+                self.assertEqual((item["garment_source_message_id"], item["quantity_source_message_id"]), (8, 8))
+                self.assertEqual(item["unit_price"], None if item["qty"] == 2 else "850.00")
+
+    def test_question_negated_reported_and_alternative_requests_cannot_supply_quantity(self):
+        for request in ("Хочу футболку?", "Не хочу футболку", "Хочу футболку або худі",
+                        "I want a t-shirt or hoodie", "Хочу футболку і худі", 'Він написав: "хочу футболку"'):
+            with self.subTest(request=request):
+                item = extract_conversation_agreement([
+                    message(8, "user", request), message(10, "manager", "L oversize white TwoComms SamplePrint42"),
+                    message(11, "user", "Так"),
+                ])["items"][0]
+                self.assertEqual(item["garment_type"], "")
+                self.assertIsNone(item["qty"])
+        item = extract_conversation_agreement([
+            message(8, "user", "Хочу футболку, ще футболку для друга"),
+            message(10, "manager", "L oversize white TwoComms SamplePrint42"), message(11, "user", "Так"),
+        ])["items"][0]
+        self.assertIsNone(item["qty"])
+
+    def test_owned_mime_only_photo_and_confirmation_question_complete_custom_item(self):
+        result = extract_conversation_agreement([
+            message(8, "user", "Вітаю, хочу на подарунок футболку другу, але він не любить яскраві пакунки"),
+            message(9, "manager", "Сума (850 грн)"),
+            message(10, "manager", "L отверсаз білу TwoComms SamplePrint42"),
+            message(11, "manager", "Саме цей принт", attachments=json.dumps(["https://example.invalid/source-image"]),
+                attachment_media=[{"mime": "image/jpeg", "source_part_id": "synthetic-owned-image", "content_hash": "a" * 64,
+                    "status": "owned", "private_storage": True}]),
+            message(12, "manager", "Все вірно?"), message(13, "user", "Так"),
+            message(14, "manager", "850 грн + 120 доставка = 970 грн"),
+        ])
+        item = result["items"][0]
+        self.assertEqual((item["garment_type"], item["qty"], item["unit_price"]), ("tshirt", 1, "850.00"))
+        self.assertEqual(item["reference_message_ids"], [11])
+        self.assertEqual(item["accepted_reference_message_ids"], [11])
+        self.assertEqual(item["price_evidence_message_ids"], [14])
+        self.assertEqual(item["acceptance_message_id"], 13)
+        self.assertIsNone(item["product_id"])
+        self.assertIn("media_binding_digest", result["evidence"]["11"])
+
+    def test_accepted_seller_reference_excludes_prior_alternatives_and_late_receipt(self):
+        rows = [message(7, "user", "", attachment_media=[{"mime": "image/jpeg", "content_hash": "a" * 64}]),
+            message(10, "manager", "Футболка SamplePrint42 L oversize white"),
+            message(11, "manager", "Саме цей принт", attachment_media=[{"mime": "image/jpeg", "content_hash": "b" * 64}]),
+            message(12, "user", "Так"),
+            message(13, "user", "", attachment_media=[{"mime": "image/jpeg", "content_hash": "c" * 64}])]
+        before = extract_conversation_agreement(rows)
+        self.assertEqual(before["items"][0]["reference_message_ids"], [7, 11])
+        self.assertEqual(before["items"][0]["accepted_reference_message_ids"], [11])
+        self.assertNotIn(13, before["source_message_ids"])
+        rows[-1]["attachment_media"][0].update(role="receipt", payment_evidence=True)
+        after = extract_conversation_agreement(rows)
+        self.assertEqual(after["items"], before["items"])
+        self.assertEqual(after["evidence"], before["evidence"])
+
     def test_old_customer_type_and_quantity_do_not_cross_a_reset(self):
         result = extract_conversation_agreement([
             message(8, "user", "Хочу футболку"), message(9, "user", "Хочу інший товар"),
@@ -139,6 +206,7 @@ class ConversationAgreementTests(SimpleTestCase):
         ])
         self.assertEqual(result["items"][0]["reference_message_ids"], [11])
         self.assertIn(11, result["source_message_ids"])
+        self.assertEqual(result["items"][0]["accepted_reference_message_ids"], [11])
         self.assertEqual(result["items"][0]["acceptance_message_id"], 12)
         self.assertIsNone(result["items"][0]["product_id"])
 
@@ -320,6 +388,92 @@ class ConversationAgreementPersistenceTests(TestCase):
         self.assertEqual(self.read(source_namespace="instagram_login:foreign-owner")["reason"], "conversation_agreement_scope_mismatch")
         InstagramBotMessage.objects.filter(pk=self.rows[1].pk).update(text="Different source text")
         self.assertEqual(self.read()["reason"], "conversation_agreement_source_changed")
+
+    def legacy_projection(self):
+        from management.services.ig_conversation_agreement import agreement_projection_digest
+        self.persist()
+        context = deepcopy(self.customer.sales_context)
+        item = context["conversation_agreement"]["items"][0]
+        item.update(garment_type="", qty=None, unit_price=None, price_evidence_message_ids=[])
+        for key in ("garment_source_message_id", "quantity_source_message_id", "quantity_inference", "price_authority"):
+            item.pop(key, None)
+        self.customer.sales_context = context
+        self.customer.save(update_fields=["sales_context"])
+        return agreement_projection_digest(context["conversation_agreement"])
+
+    def reproject(self, expected_digest, rows=None):
+        from management.services.ig_conversation_agreement import reproject_conversation_agreement
+        rows = self.rows if rows is None else rows
+        with patch("management.services.ig_admin_state_capture._namespace", return_value="instagram_login:synthetic-agreement-owner"):
+            return reproject_conversation_agreement(self.customer, rows, watermark=rows[-1].pk,
+                expected_agreement_digest=expected_digest)
+
+    def test_explicit_reprojection_restores_current_source_facts_and_bounded_metadata(self):
+        expected = self.legacy_projection()
+        self.assertEqual(self.read()["reason"], "conversation_agreement_projection_changed")
+        self.assertEqual(self.persist()["reason"], "agreement_retained_conversation_agreement_projection_changed")
+        result = self.reproject(expected)
+        self.assertTrue(result["persisted"], result)
+        self.assertEqual(result["reason"], "agreement_reprojected")
+        item = result["agreement"]["items"][0]
+        self.assertEqual((item["garment_type"], item["qty"], item["unit_price"]), ("tshirt", 1, "850.00"))
+        self.assertEqual(self.read()["reason"], "")
+        self.customer.refresh_from_db()
+        audit = self.customer.sales_context["conversation_agreement_reprojections"]
+        self.assertEqual(len(audit), 1)
+        self.assertEqual((audit[0]["prior_digest"], audit[0]["new_digest"]), (expected, result["new_digest"]))
+        self.assertEqual(audit[0]["reason"], "explicit_source_reprojection")
+        self.assertEqual(audit[0]["source_message_ids"], result["agreement"]["source_message_ids"])
+        self.assertNotIn("SamplePrint", json.dumps(audit))
+
+    def test_reprojection_refuses_changed_material_source_before_projection_bypass(self):
+        from management.models import InstagramBotMessage
+        expected = self.legacy_projection()
+        before = deepcopy(self.customer.sales_context)
+        InstagramBotMessage.objects.filter(pk=self.rows[1].pk).update(text="A changed source")
+        result = self.reproject(expected)
+        self.assertEqual(result["reason"], "agreement_reprojection_conversation_agreement_source_changed")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, before)
+
+    def test_reprojection_refuses_erasure_started_after_preview(self):
+        from management.models import IgClient
+        expected = self.legacy_projection()
+        before = deepcopy(self.customer.sales_context)
+        IgClient.objects.filter(pk=self.customer.pk).update(privacy_erasure_started_at=self.now)
+        self.assertEqual(self.reproject(expected)["reason"], "agreement_reprojection_client_unavailable")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, before)
+
+    def test_reprojection_refuses_reset_after_preview(self):
+        expected = self.legacy_projection()
+        before = deepcopy(self.customer.sales_context)
+        with patch("management.services.ig_conversation_routes.conversation_route_reset_floor", return_value=self.rows[-1].pk):
+            self.assertEqual(self.reproject(expected)["reason"], "agreement_reprojection_scope_changed")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, before)
+
+    def test_reprojection_expected_digest_refuses_a_concurrent_head_change(self):
+        from management.models import IgClient
+        expected = self.legacy_projection()
+        newer = deepcopy(self.customer.sales_context)
+        newer["conversation_agreement"]["items"][0]["size"] = "M"
+        IgClient.objects.filter(pk=self.customer.pk).update(sales_context=newer)
+        self.assertEqual(self.reproject(expected)["reason"], "agreement_reprojection_head_changed")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, newer)
+
+    def test_reprojection_rolls_back_removed_head_when_fresh_source_capture_is_refused(self):
+        from management.models import InstagramBotMessage
+        expected = self.legacy_projection()
+        before = deepcopy(self.customer.sales_context)
+        foreign = InstagramBotMessage.objects.create(client=self.customer, sender_id="synthetic-foreign-recipient",
+            provider_namespace="instagram_login:synthetic-agreement-owner", role="user", source="webhook", status="done",
+            mid="synthetic-foreign-refresh-source", text="A source", provider_created_at=self.now)
+        result = self.reproject(expected, rows=[*self.rows, foreign])
+        self.assertEqual(result["reason"], "agreement_reprojection_agreement_source_changed")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, before)
 
     def test_capture_cannot_borrow_future_agreement_or_source_time(self):
         from datetime import timedelta
@@ -570,7 +724,7 @@ class ConversationAgreementPersistenceTests(TestCase):
                 source="echo" if role == "manager" else "webhook", status="done",
                 send_state="sent" if role == "manager" else "", provider_message_id=f"synthetic-manager-photo-{index}",
                 mid=f"synthetic-manager-photo-{index}", text=text, provider_created_at=self.now,
-                attachment_media=[{"media_type": "image", "source_part_id": "synthetic-owned-reference",
+                attachment_media=[{"mime": "image/jpeg", "source_part_id": "synthetic-owned-reference",
                     "content_hash": "a" * 64, "status": "owned", "private_storage": True,
                     "url": "https://example.invalid/image?signature=fixture"}] if index == 1 else []))
         self.rows.extend(added)
