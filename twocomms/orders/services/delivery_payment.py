@@ -7,7 +7,7 @@ shipping is not a customer prepayment.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
 import re
@@ -72,7 +72,16 @@ def _items(item_rows):
         if type(qty) is not int or not 1 <= qty <= 1000:
             raise DeliveryPaymentError("delivery_items_invalid")
         price = _money(_get(item, "unit_price"))
-        total = price * qty
+        kind = _get(item, 'item_kind', 'clothing') or 'clothing'
+        if kind not in {'clothing', 'dtf_film'}:
+            raise DeliveryPaymentError('delivery_items_invalid')
+        if kind == 'dtf_film':
+            length = _money(_get(item, 'film_length_m'), positive=True)
+            if qty != 1 or length > Decimal('999999.99'):
+                raise DeliveryPaymentError('delivery_items_invalid')
+            total = (price * length).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        else:
+            total = price * qty
         saved_total = _get(item, "line_total")
         if saved_total is not None and _money(saved_total) != total:
             raise DeliveryPaymentError("delivery_items_invalid")
@@ -81,6 +90,10 @@ def _items(item_rows):
         row = {key: str(_get(item, key, "") or "")[:512] for key in (
             "product_id", "color_variant_id", "title", "size", "fit_option_code", "color_name_custom")}
         row.update(qty=qty, unit_price=f"{price:.2f}", line_total=f"{total:.2f}")
+        # Preserve the historic clothing digest; add material identity only
+        # for metre-based film so existing source-locked proofs stay valid.
+        if kind == 'dtf_film':
+            row.update(item_kind='dtf_film', film_length_m=f'{length:.2f}')
         rows.append(row)
     if not rows or gross > MAX_AMOUNT:
         raise DeliveryPaymentError("delivery_items_invalid")

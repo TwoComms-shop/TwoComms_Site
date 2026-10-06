@@ -867,6 +867,7 @@ class TelegramNotifier:
         payable = self._fmt_amount(snapshot['payable_total_value'])
         prepayment = self._fmt_amount(snapshot['prepayment_amount_value'])
         remaining = self._fmt_amount(snapshot['remaining_amount_value'])
+        remaining_label = 'Залишок (при отриманні)' if snapshot.get('cod_amount_value', Decimal('0')) > 0 else 'Залишок до оплати'
 
         # Определяем тип оплаты
         if pay_type == 'online_full' or pay_type == 'full':
@@ -887,14 +888,14 @@ class TelegramNotifier:
 
             if payment_status == 'prepaid' or payment_status == 'partial':
                 payment_info += f"│     ✅ ПЕРЕДПЛАТА ВНЕСЕНА: {prepayment} грн\n"
-                payment_info += f"│     📦 Залишок (при отриманні): {remaining} грн\n"
+                payment_info += f"│     📦 {remaining_label}: {remaining} грн\n"
                 payment_info += f"│     💰 До сплати за замовлення: {payable} грн\n"
             elif payment_status == 'paid':
                 payment_info += f"│     ✅ ОПЛАЧЕНО ПОВНІСТЮ: {payable} грн\n"
-                payment_info += "│     (Передплата + залишок при отриманні)\n"
+                payment_info += "│     (Передплата + остаточна оплата)\n"
             else:
                 payment_info += f"│     ⏳ Очікується передплата: {prepayment} грн\n"
-                payment_info += f"│     📦 Залишок (при отриманні): {remaining} грн\n"
+                payment_info += f"│     📦 {remaining_label}: {remaining} грн\n"
                 payment_info += f"│     💰 До сплати за замовлення: {payable} грн\n"
 
         elif pay_type == 'cod':
@@ -915,6 +916,17 @@ class TelegramNotifier:
         if snapshot['discount_amount_value'] > 0:
             payment_info += f"│     🧾 Товари: {gross} грн · знижка: -{discount} грн\n"
 
+        payload = getattr(order, 'payment_payload', None)
+        shipment = payload.get('manual_shipment_payment') if isinstance(payload, dict) else None
+        if isinstance(shipment, dict):
+            payer = 'Відправник' if snapshot['delivery_payer_type'] == 'Sender' else 'Одержувач'
+            method = 'Безготівково' if snapshot.get('delivery_payment_method') == 'NonCash' else 'Готівка'
+            if getattr(order, 'delivery_method', 'nova_poshta') != 'handover':
+                payment_info += f"│     Доставку оплачує: {payer} · {method}\n"
+            cod_active = bool(snapshot.get('cod_enabled') and snapshot['cod_amount_value'] > 0)
+            payment_info += f"│     Накладений платіж: {'так' if cod_active else 'ні'}\n"
+            payment_info += f"│     Внесено: {self._fmt_amount(snapshot['paid_amount_value'])} грн\n"
+
         return payment_info
 
     def format_order_message(self, order):
@@ -924,10 +936,14 @@ class TelegramNotifier:
 
         # Подсчитываем товары
         total_items = 0
+        total_film = Decimal('0.00')
         subtotal = Decimal('0.00')
 
         for item in order.items.all():
-            total_items += item.qty
+            if getattr(item, 'is_dtf_film', False):
+                total_film += item.film_length_m or Decimal('0.00')
+            else:
+                total_items += item.qty
             subtotal += item.line_total
 
         # Форматируем информацию об оплате
@@ -943,7 +959,7 @@ class TelegramNotifier:
 │  👤 КЛИЕНТ:
 │     Имя: {order.full_name}
 │     Телефон: {order.phone}
-{delivery_point.telegram_pre_lines}│     🚚 НОВА ПОШТА
+{delivery_point.telegram_pre_lines}│     🚚 {('НОВА ПОШТА' if getattr(order, 'delivery_method', 'nova_poshta') == 'nova_poshta' else delivery_point.kind_label)}
 ├─────────────────────────────────────────┤
 │  📋 ДЕТАЛИ ЗАКАЗА:
 │     Статус оплаты: {order.get_payment_status_display()}
@@ -965,6 +981,15 @@ class TelegramNotifier:
         for i, item in enumerate(order.items.all(), 1):
             full_block += f"│     {i}. {item.title}\n"
 
+            if getattr(item, 'is_dtf_film', False):
+                full_block += f"│        └ DTF-плівка · ширина 60 см\n"
+                full_block += f"│        └ Довжина: {item.film_length_display} м\n"
+                full_block += f"│        └ Ціна: {item.unit_price} грн/м\n"
+                full_block += f"│        └ Сума: {item.line_total} грн\n"
+                if i < order.items.count():
+                    full_block += "│     ───────────────────────────────────\n"
+                continue
+
             # Добавляем детали товара каждая на новой строке с └
             if item.size:
                 full_block += f"│        └ Размер: {item.size}\n"
@@ -985,7 +1010,10 @@ class TelegramNotifier:
         # Добавляем итоговую информацию
         full_block += f"├─────────────────────────────────────────┤\n"
         full_block += f"│  📊 ИТОГОВАЯ ИНФОРМАЦИЯ:\n"
-        full_block += f"│     Всего товаров: {total_items} шт.\n"
+        if total_items:
+            full_block += f"│     Всего товаров: {total_items} шт.\n"
+        if total_film:
+            full_block += f"│     DTF-плівка: {self._fmt_amount(total_film)} м · ширина 60 см\n"
         full_block += f"│     Сумма товаров: {subtotal} грн\n"
 
         snapshot = build_order_payment_snapshot(order)
@@ -1107,6 +1135,7 @@ class TelegramNotifier:
                 build_storage_cancel_sale_url,
                 build_storage_writeoff_url,
             )
+            from warehouse.services.matching import order_has_dtf_film
         except Exception:
             return None
         try:
@@ -1126,6 +1155,8 @@ class TelegramNotifier:
             return None
 
         try:
+            if order_has_dtf_film(order):
+                return None
             writeoff_url = build_storage_writeoff_url(order)
         except Exception:
             return None
@@ -1152,6 +1183,9 @@ class TelegramNotifier:
             if storage_button:
                 return {"inline_keyboard": [[storage_button]]}
             return None
+
+        if getattr(order, 'delivery_method', 'nova_poshta') != 'nova_poshta':
+            return {"inline_keyboard": [[storage_button]]} if storage_button else None
 
         if getattr(order, "nova_poshta_document_ref", None):
             try:
@@ -1368,16 +1402,21 @@ class TelegramNotifier:
         changed = items.get('changed') or []
 
         for it in removed:
-            lines.append(f"➖ <b>Видалено:</b> {it['label']} ×{it['qty']}")
+            measure = f"{self._fmt_amount(it['film_length_m'])} м" if it.get('item_kind') == 'dtf_film' else f"×{it['qty']}"
+            lines.append(f"➖ <b>Видалено:</b> {it['label']} {measure}")
         for it in added:
-            lines.append(f"➕ <b>Додано:</b> {it['label']} ×{it['qty']}")
+            measure = f"{self._fmt_amount(it['film_length_m'])} м" if it.get('item_kind') == 'dtf_film' else f"×{it['qty']}"
+            lines.append(f"➕ <b>Додано:</b> {it['label']} {measure}")
         for it in changed:
             details = []
             if it['old_qty'] != it['new_qty']:
                 details.append(f"к-сть {it['old_qty']} → {it['new_qty']}")
+            if it.get('old_film_length_m') != it.get('new_film_length_m'):
+                details.append(f"довжина {self._fmt_amount(it.get('old_film_length_m'))} → {self._fmt_amount(it.get('new_film_length_m'))} м")
             if it['old_price'] != it['new_price']:
+                unit = 'грн/м' if it.get('item_kind') == 'dtf_film' else 'грн'
                 details.append(
-                    f"ціна {self._fmt_amount(it['old_price'])} → {self._fmt_amount(it['new_price'])} грн"
+                    f"ціна {self._fmt_amount(it['old_price'])} → {self._fmt_amount(it['new_price'])} {unit}"
                 )
             lines.append(f"🔁 <b>{it['label']}:</b> " + ", ".join(details))
 
@@ -1395,6 +1434,17 @@ class TelegramNotifier:
         delivery = diff.get('delivery')
         if delivery:
             lines.append(f"📍 Доставка: {delivery['old'] or '—'} → <b>{delivery['new'] or '—'}</b>")
+
+        payment = diff.get('payment')
+        if payment:
+            lines.append(f"💳 Оплата: {' / '.join(payment.get('old') or [])} → <b>{' / '.join(payment.get('new') or [])}</b>")
+            shipment = payment.get('new_shipment_payment')
+            if isinstance(shipment, dict) and shipment:
+                payer = 'відправник' if shipment.get('payer_type') == 'Sender' else 'одержувач'
+                method = 'безготівково' if shipment.get('payment_method') == 'NonCash' else 'готівка'
+                lines.append(f"Внесено: {self._fmt_amount(shipment.get('paid_amount'))} грн · накладений платіж: {'так' if shipment.get('cod_enabled') else 'ні'}")
+                if getattr(order, 'delivery_method', 'nova_poshta') != 'handover':
+                    lines.append(f"Доставку оплачує {payer} · {method}")
 
         customer = diff.get('customer')
         if customer:
@@ -1495,7 +1545,7 @@ class TelegramNotifier:
 
 👤 {order.full_name}
 📞 {order.phone}
-🚚 <b>Доставка Новою поштою</b>
+🚚 <b>{'Доставка Новою поштою' if getattr(order, 'delivery_method', 'nova_poshta') == 'nova_poshta' else delivery_point.kind_label}</b>
 {delivery_point.telegram_text}
 
 Тип оплати: {pay_type_label}

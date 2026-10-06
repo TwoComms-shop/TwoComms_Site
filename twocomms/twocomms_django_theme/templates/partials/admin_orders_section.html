@@ -641,13 +641,13 @@
                   </span>
                   <div class="order-delivery__meta">
                     <div class="order-delivery__top">
-                      <span class="order-delivery__kind">{% if o.delivery_display.kind == 'missing' %}Дані доставки не вказані{% elif o.delivery_display.kind == 'address' %}Адресна доставка{% else %}<span class="order-delivery__kind-full">Нова пошта · {{ o.delivery_display.kind_label }}</span><span class="order-delivery__kind-short">{{ o.delivery_display.kind_label }}</span>{% endif %}</span>
-                      {% if o.delivery_display.kind != 'missing' %}{% if o.delivery_display.number %}<strong class="order-delivery__number">№ {{ o.delivery_display.number }}</strong>{% elif o.delivery_display.kind != 'address' %}<strong class="order-delivery__number order-delivery__number--missing">№ не вказано</strong>{% endif %}{% endif %}
+                      <span class="order-delivery__kind">{% if o.delivery_method == 'handover' or o.delivery_method == 'manual' %}{{ o.delivery_display.kind_label }}{% elif o.delivery_display.kind == 'missing' %}Дані доставки не вказані{% elif o.delivery_display.kind == 'address' %}Адресна доставка{% else %}<span class="order-delivery__kind-full">Нова пошта · {{ o.delivery_display.kind_label }}</span><span class="order-delivery__kind-short">{{ o.delivery_display.kind_label }}</span>{% endif %}</span>
+                      {% if o.delivery_method != 'handover' and o.delivery_method != 'manual' and o.delivery_display.kind != 'missing' %}{% if o.delivery_display.number %}<strong class="order-delivery__number">№ {{ o.delivery_display.number }}</strong>{% elif o.delivery_display.kind != 'address' %}<strong class="order-delivery__number order-delivery__number--missing">№ не вказано</strong>{% endif %}{% endif %}
                     </div>
                     {% if o.delivery_display.city %}<span class="order-delivery__city">{{ o.delivery_display.city }}</span>{% endif %}
                     <span class="order-delivery__address">{{ o.delivery_display.address|default:'Адреса не вказана' }}</span>
                   </div>
-                  <div class="oadm-shipping__tracking">
+                  {% if o.delivery_method != 'handover' %}<div class="oadm-shipping__tracking">
                     <div class="oadm-shipping-policy{% if o.payment_snapshot.delivery_payer_type == 'Sender' %} oadm-shipping-policy--sender{% endif %}" data-shipping-payment-ui="v1" data-delivery-payment-mode="{{ o.payment_snapshot.delivery_payment_mode }}">
                       <strong>{% if o.payment_snapshot.delivery_payment_requires_manual %}Умови доставки потребують звірки{% else %}{{ o.payment_snapshot.delivery_payment_label|default:'Доставку оплачує клієнт перевізнику' }}{% endif %}</strong>
                       {% if o.payment_snapshot.delivery_payment_mode == 'customer_prepaid' %}
@@ -672,7 +672,7 @@
                       {% if o.shipment_status_updated %}<time datetime="{{ o.shipment_status_updated|date:'c' }}">{{ o.shipment_status_updated|date:"d.m H:i" }}</time>{% endif %}
                     </div>
                     {% endif %}
-                  </div>
+                  </div>{% endif %}
                 </div>
               </div>
             </div>
@@ -699,19 +699,24 @@
                   {% if o.payment_snapshot.delivery_payment_mode == 'customer_prepaid' %}
                     <div class="oadm-fact"><span>Товари: <b>{{ o.payment_snapshot.merchandise_total }} грн</b> · Доставка: <b>{{ o.payment_snapshot.delivery_charge_amount }} грн</b></span></div>
                   {% endif %}
+                  {% with shipment=o.payment_payload.manual_shipment_payment %}{% if shipment %}
+                    <div class="oadm-fact"><span>Внесено: <b>{{ o.payment_snapshot.paid_amount }} грн</b></span></div>
+                    {% if o.delivery_method == 'nova_poshta' %}<div class="oadm-fact"><span>Доставку оплачує: <b>{% if o.payment_snapshot.delivery_payer_type == 'Sender' %}Відправник{% else %}Одержувач{% endif %}</b> · {% if o.payment_snapshot.delivery_payment_method == 'NonCash' %}безготівково{% else %}готівка{% endif %}</span></div>{% endif %}
+                    <div class="oadm-fact"><span>Накладений платіж: <b>{% if o.payment_snapshot.cod_amount_value > 0 %}так{% else %}ні{% endif %}</b></span></div>
+                  {% endif %}{% endwith %}
                   {% if o.payment_status_canonical == 'paid' %}
                     <div class="oadm-fact oadm-fact--paid">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
                       <span>Оплачено повністю</span>
                     </div>
-                  {% elif o.payment_snapshot.pay_type == 'prepay_200' %}
+                  {% elif o.payment_snapshot.pay_type == 'prepay_200' or o.payment_snapshot.pay_type == 'prepayment' or o.payment_snapshot.pay_type == 'partial' %}
                     <div class="oadm-fact">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
                       <span>Передплата: <b>{{ o.payment_snapshot.prepayment_amount }} грн</b></span>
                     </div>
                     <div class="oadm-fact oadm-fact--cod">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h4c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4z"/></svg>
-                      <span>Залишок при отриманні: <b>{{ o.payment_snapshot.remaining_amount }} грн</b></span>
+                      <span>{% if o.payment_snapshot.cod_enabled %}Залишок при отриманні{% else %}Залишок до оплати{% endif %}: <b>{{ o.payment_snapshot.remaining_amount }} грн</b></span>
                     </div>
                   {% elif o.payment_snapshot.pay_type == 'cod' %}
                     <div class="oadm-fact oadm-fact--cod">
@@ -874,7 +879,7 @@
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                   Відв'язати ТТН
                 </a>
-              {% elif o.status != 'done' and not o.tracking_number %}
+              {% elif o.status != 'done' and not o.tracking_number and o.delivery_method != 'manual' and o.delivery_method != 'handover' %}
                 <a class="oadm-operation oadm-operation--np" data-admin-operation="nova-poshta-create"
                    href="{% url 'admin_order_nova_poshta_action' o.id %}" target="_blank" rel="noopener">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h4c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5S5.17 15.5 6 15.5 7.5 16.17 7.5 17 6.83 18.5 6 18.5z"/></svg>
@@ -888,7 +893,7 @@
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6 0 1.1-.3 2.13-.82 3.01l1.46 1.46A7.93 7.93 0 0 0 20 13c0-4.42-3.58-8-8-8zm-6.64.36L3.9 6.82A7.93 7.93 0 0 0 4 13c0 4.42 3.58 8 8 8v4l5-5-5-5v4c-3.31 0-6-2.69-6-6 0-1.1.3-2.13.82-3.01z"/></svg>
                   Відмінити продаж
                 </a>
-              {% else %}
+              {% elif not o.contains_dtf_film %}
                 <a class="oadm-operation oadm-operation--stock" data-admin-operation="warehouse-writeoff"
                    href="{% url 'admin_order_warehouse_action' o.id %}" target="_blank" rel="noopener">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h4c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5S5.17 15.5 6 15.5 7.5 16.17 7.5 17 6.83 18.5 6 18.5z"/></svg>
@@ -960,16 +965,17 @@
                     {% endif %}
                   {% endwith %}
                   <div class="oadm-item__main">
-                    <div class="oadm-item__title">{{ item.title }}{% if item.is_custom %} <span class="oadm-spec" style="color:#fcd34d;background:rgba(251,191,36,.14);">поза каталогом</span>{% endif %}</div>
+                    <div class="oadm-item__title">{{ item.title }}{% if item.is_dtf_film %} <span class="oadm-spec" style="color:#fcd34d;background:rgba(251,191,36,.14);">DTF-плівка</span>{% elif item.is_custom %} <span class="oadm-spec" style="color:#fcd34d;background:rgba(251,191,36,.14);">поза каталогом</span>{% endif %}</div>
                     <div class="oadm-item__specs">
+                      {% if item.is_dtf_film %}<span class="oadm-spec">{{ item.film_length_display }} м</span><span class="oadm-spec">Ширина 60 см</span>{% else %}
                       {% if item.size %}<span class="oadm-spec">Розмір: {{ item.size }}</span>{% endif %}
                       <span class="oadm-spec">{{ item.qty }} шт</span>
                       {% if item.fit_label %}<span class="oadm-spec">{{ item.fit_label }}</span>{% endif %}
-                      {% if item.color_name %}<span class="oadm-spec">{{ item.color_name }}</span>{% endif %}
+                      {% if item.color_name %}<span class="oadm-spec">{{ item.color_name }}</span>{% endif %}{% endif %}
                     </div>
                   </div>
                   <div class="oadm-item__price">
-                    <div class="oadm-item__unit">{{ item.unit_price }} грн/шт</div>
+                    <div class="oadm-item__unit">{{ item.unit_price }} грн/{% if item.is_dtf_film %}м{% else %}шт{% endif %}</div>
                     <div class="oadm-item__line">{{ item.line_total }} грн</div>
                   </div>
                 </div>
@@ -1023,6 +1029,7 @@
   border-left:1px solid rgba(148,163,184,.16); box-shadow:-30px 0 80px rgba(2,8,23,.55);
   transform:translateX(100%); transition:transform .34s cubic-bezier(.22,.61,.36,1); will-change:transform; }
 .oedit-drawer.is-open { transform:translateX(0); }
+.oedit-drawer[hidden], .oedit-backdrop[hidden], .oedit-drawer [hidden] { display:none !important; }
 
 .oedit-head { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:12px;
   padding:18px 20px; border-bottom:1px solid rgba(148,163,184,.14);
@@ -1135,7 +1142,7 @@
   color:#fdba74; background:rgba(249,115,22,.12); font-size:.84rem; font-weight:800; white-space:nowrap; }
 .oedit-delivery-action:hover, .oedit-delivery-action:focus-visible { background:rgba(249,115,22,.23); }
 .oedit-delivery-editor { margin-top:14px; padding-top:14px; border-top:1px solid rgba(148,163,184,.18); }
-.oedit-delivery-tabs { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+.oedit-delivery-tabs { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:14px; }
 .oedit-delivery-tab { border:1px solid rgba(148,163,184,.28); border-radius:11px; padding:9px 12px;
   color:#cbd5e1; background:rgba(8,14,23,.6); font-size:.85rem; font-weight:700; }
 .oedit-delivery-tab.is-active { border-color:#f97316; color:#fff; background:rgba(249,115,22,.18); }
@@ -1221,6 +1228,7 @@
 @keyframes oedit-spin { to { transform:rotate(360deg); } }
 
 @media (max-width:600px) {
+  .oedit-input, .oedit-select { font-size:16px; }
   .oedit-drawer { width:100vw; top:auto; bottom:0; height:92vh; border-left:0; border-top:1px solid rgba(148,163,184,.16);
     border-radius:20px 20px 0 0; transform:translateY(100%); }
   .oedit-drawer.is-open { transform:translateY(0); }
@@ -1228,6 +1236,8 @@
   .oedit-delivery-current { grid-template-columns:1fr; }
   .oedit-delivery-action { width:100%; }
   .oedit-delivery-grid { grid-template-columns:1fr; }
+  .oedit-delivery-tabs { grid-template-columns:1fr 1fr; }
+  .oedit-delivery-tab:last-child { grid-column:1 / -1; }
 }
 @media (prefers-reduced-motion:reduce) {
   .oedit-drawer, .oedit-backdrop, .oedit-toast { transition:none; }
@@ -1252,7 +1262,7 @@
   <div class="oedit-body" id="oeditBody"></div>
   <footer class="oedit-foot">
     <div class="oedit-total">
-      <span class="oedit-total__label">Разом до сплати</span>
+      <span class="oedit-total__label">Вартість товарів</span>
       <div><span class="oedit-total__val"><span id="oeditTotal">0</span> грн</span><span class="oedit-delta" id="oeditDelta" hidden></span></div>
       <span id="oeditShippingBreakdown" aria-live="polite"></span>
     </div>
@@ -1297,9 +1307,12 @@
   var uidSeq = 1;
   var initialTotal = 0;
   var retainedDiscount = 0;
+  var originalGoodsPaid = 0;
+  var paymentControlsLocked = false;
   var pickerTarget = null;      // uid позиції для заміни, або null = додати нову
   var pickerCategory = 'all';
   var deliveryMode = 'keep';
+  var originalDeliveryMethod = 'nova_poshta';
   var orderLoadSeq = 0;
   var npSelectorModule = null;
   var npSelectorPromise = null;
@@ -1317,7 +1330,8 @@
   function fmt(n) {
     return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('uk-UA');
   }
-  function lineTotal(it) { return (Number(it.unit_price) || 0) * (parseInt(it.qty, 10) || 0); }
+  function lineTotal(it) { return Math.round(((Number(it.unit_price) || 0) * (it.kind === 'dtf_film' ? decimalNumber(it.film_length_m) : (parseInt(it.qty, 10) || 0)) + Number.EPSILON) * 100) / 100; }
+  function decimalNumber(value) { return Number(String(value || '').replace(',', '.')) || 0; }
 
   function selectedVariant(it) {
     return (it.variants || []).find(function (v) {
@@ -1451,13 +1465,17 @@
   }
 
   function hydrate(order) {
+    originalDeliveryMethod = order.delivery_method || 'nova_poshta';
+    paymentControlsLocked = Boolean(order.payment_controls_locked) || ['manager_prepayment', 'provider_prepayment'].indexOf(order.payment_preset) >= 0;
+    originalGoodsPaid = Math.max(0, decimalNumber(order.merchandise_paid_amount != null ? order.merchandise_paid_amount : order.goods_paid_amount != null ? order.goods_paid_amount : order.paid_amount) - (order.merchandise_paid_amount == null && order.goods_paid_amount == null && order.delivery_payment_mode === 'customer_prepaid' ? decimalNumber(order.delivery_charge_amount) : 0));
     elNum.textContent = '#' + order.order_number;
     elClient.textContent = order.full_name || '';
     items = (order.items || []).map(function (raw) {
       var prod = raw.product_id ? productMap[raw.product_id] : null;
-      var item = {
+      var item = Object.assign({}, raw, {
         uid: uidSeq++,
-        kind: raw.kind === 'custom' ? 'custom' : 'catalog',
+        kind: raw.kind === 'dtf_film' ? 'dtf_film' : raw.kind === 'custom' ? 'custom' : 'catalog',
+        film_length_m: raw.film_length_m || '',
         item_id: raw.item_id || null,
         product_id: raw.product_id || null,
         title: raw.title || (prod && prod.title) || '',
@@ -1474,8 +1492,8 @@
         fits: prod ? (prod.fits || []) : [],
         default_fit_code: prod ? (prod.default_fit_code || '') : '',
         sizes_by_fit: prod ? (prod.sizes_by_fit || {}) : {}
-      };
-      return prod ? normalizeCatalogItem(item, prod, false, true) : item;
+      });
+      return prod && item.kind === 'catalog' ? normalizeCatalogItem(item, prod, false, true) : item;
     });
     retainedDiscount = Math.max(0, Number(order.discount_amount) || 0);
     initialTotal = Math.max(0, items.reduce(function (a, it) { return a + lineTotal(it); }, 0) - retainedDiscount) + (order.delivery_payment_mode === 'customer_prepaid' ? Math.max(0, Number(order.delivery_charge_amount) || 0) : 0);
@@ -1503,12 +1521,18 @@
     if (delivery.kind === 'address') deliveryClass = ' order-delivery--address';
     if (delivery.kind === 'missing') deliveryClass = ' order-delivery--missing';
     var deliveryKindLabel = delivery.kind_label || 'Доставка';
-    var deliveryKind = delivery.kind === 'missing'
+    var isNonNp = delivery.kind === 'handover' || delivery.kind === 'manual';
+    var shipment = order.manual_shipment_payment || {};
+    function paymentValue(key, fallback) {
+      var storedKey = key === 'delivery_payer_type' ? 'payer_type' : key === 'delivery_payment_method' ? 'payment_method' : key;
+      return order[key] != null ? order[key] : shipment[storedKey] != null ? shipment[storedKey] : fallback;
+    }
+    var deliveryKind = isNonNp ? esc(deliveryKindLabel) : delivery.kind === 'missing'
       ? 'Дані доставки не вказані'
       : delivery.kind === 'address'
         ? 'Адресна доставка'
         : '<span class="order-delivery__kind-full">' + esc('Нова пошта · ' + deliveryKindLabel) + '</span><span class="order-delivery__kind-short">' + esc(deliveryKindLabel) + '</span>';
-    var deliveryNumber = delivery.kind === 'missing' ? '' : (delivery.number ? '<strong class="order-delivery__number">№ ' + esc(delivery.number) + '</strong>' : (delivery.kind === 'address' ? '' : '<strong class="order-delivery__number order-delivery__number--missing">№ не вказано</strong>'));
+    var deliveryNumber = isNonNp || delivery.kind === 'missing' ? '' : (delivery.number ? '<strong class="order-delivery__number">№ ' + esc(delivery.number) + '</strong>' : (delivery.kind === 'address' ? '' : '<strong class="order-delivery__number order-delivery__number--missing">№ не вказано</strong>'));
     var deliveryAddress = delivery.kind === 'missing' ? 'Адреса не вказана' : (delivery.address || order.delivery_text || 'Адреса не вказана');
     var deliveryHtml = '<div class="oedit-delivery order-delivery' + deliveryClass + '">' +
       '<span class="order-delivery__icon" aria-hidden="true">' + deliveryIconSvg(delivery.kind) + '</span>' +
@@ -1518,6 +1542,7 @@
       '<span class="order-delivery__address">' + esc(deliveryAddress) + '</span></span></div>';
     var presetHtml = Object.keys(presets).map(function (key) {
       var checked = key === order.payment_preset ? ' checked' : '';
+      if (paymentControlsLocked) checked += ' disabled';
       var active = key === order.payment_preset ? ' is-active' : '';
       return '<label class="oedit-preset' + active + '" data-preset="' + key + '">' +
         '<input type="radio" name="oeditPreset" value="' + key + '"' + checked + '>' +
@@ -1527,10 +1552,10 @@
     var shippingLocked = Boolean(order.delivery_payment_locked);
     var shippingChoices = [
       ['carrier_recipient', 'Клієнт перевізнику', 'Окремо при отриманні; доставка не входить у платіж магазину.'],
-      ['customer_prepaid', 'Доставка в оплаті магазину', 'Клієнт платить за доставку TwoComms. Перевізнику платить TwoComms.'],
+      ['customer_prepaid', 'Доставка вже оплачена нам', 'Вибір підтверджує, що оплату доставки вже отримано. Оплата товарів враховується окремо.'],
       ['merchant_free', 'Безкоштовна для клієнта', 'Витрати доставки бере на себе TwoComms.']
     ];
-    var shippingHtml = '<div class="oedit-shipping-payment" data-shipping-payment-ui="v1"><fieldset><legend>Хто оплачує доставку</legend><div class="oedit-shipping-options">' + shippingChoices.map(function (choice) {
+    var shippingHtml = '<div id="oeditShippingControls" class="oedit-shipping-payment" data-shipping-payment-ui="v1"><fieldset><legend>Хто оплачує доставку</legend><div class="oedit-shipping-options">' + shippingChoices.map(function (choice) {
       return '<label class="oedit-preset"><input type="radio" name="oeditShippingMode" value="' + choice[0] + '"' + (shippingMode === choice[0] ? ' checked' : '') + (shippingLocked ? ' disabled' : '') + '><span>' + esc(choice[1]) + '<small>' + esc(choice[2]) + '</small></span></label>';
     }).join('') + '</div></fieldset>' +
       '<div class="oedit-fld oedit-shipping-charge" id="oeditShippingChargeWrap"' + (shippingMode === 'customer_prepaid' ? '' : ' hidden') + '><label for="oeditShippingCharge">Доставка в оплаті клієнта, грн</label><input type="number" class="oedit-input" id="oeditShippingCharge" min="0.01" step="0.01" inputmode="decimal" value="' + esc(order.delivery_charge_amount || '') + '"' + (shippingLocked ? ' disabled' : '') + '></div>' +
@@ -1547,6 +1572,7 @@
         '<div id="oeditItems"></div>' +
         '<div class="oedit-add-row">' +
           '<button type="button" class="oedit-add-btn" data-add="catalog"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg> З каталогу</button>' +
+          '<button type="button" class="oedit-add-btn" data-add="dtf_film">+ DTF-плівка</button>' +
           '<button type="button" class="oedit-add-btn" data-add="custom"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z"/></svg> Кастомна позиція</button>' +
         '</div>' +
         '<div class="oedit-picker" id="oeditPicker"></div>' +
@@ -1575,7 +1601,8 @@
         '<div class="oedit-delivery-editor" id="oeditDeliveryEditor" hidden>' +
           '<div class="oedit-delivery-tabs" role="group" aria-label="Спосіб доставки">' +
             '<button type="button" class="oedit-delivery-tab is-active" data-oedit-delivery-tab="np" aria-pressed="true">Нова Пошта</button>' +
-            '<button type="button" class="oedit-delivery-tab" data-oedit-delivery-tab="manual" aria-pressed="false">Ввести вручну</button></div>' +
+            '<button type="button" class="oedit-delivery-tab" data-oedit-delivery-tab="manual" aria-pressed="false">Ввести вручну</button>' +
+            '<button type="button" class="oedit-delivery-tab" data-oedit-delivery-tab="handover" aria-pressed="false">З рук у руки</button></div>' +
           '<div data-oedit-delivery-pane="np"><div data-np-form="1" id="oeditNpForm">' +
             '<input type="hidden" data-np-settlement-ref><input type="hidden" data-np-city-ref><input type="hidden" data-np-city-token>' +
             '<input type="hidden" data-np-warehouse-ref><input type="hidden" data-np-warehouse-token>' +
@@ -1596,6 +1623,7 @@
             '<div class="oedit-fld"><label for="oeditManualCity">Місто / населений пункт</label><input type="text" class="oedit-input" id="oeditManualCity" value="' + esc(order.city || '') + '" maxlength="100" autocomplete="off"></div>' +
             '<div class="oedit-fld"><label for="oeditManualOffice">Адреса / відділення</label><input type="text" class="oedit-input" id="oeditManualOffice" value="' + esc(order.np_office || '') + '" maxlength="200" autocomplete="off"></div></div>' +
             '<p class="oedit-delivery-help">Вкажіть повну адресу: вулицю, будинок і квартиру або назву пункту видачі.</p></div>' +
+          '<div data-oedit-delivery-pane="handover" hidden><div class="oedit-fld"><label for="oeditHandover">Кому й як передати замовлення</label><textarea class="oedit-input" id="oeditHandover" rows="2" maxlength="2000">' + esc(order.handover_details || '') + '</textarea></div><p class="oedit-delivery-help">Особиста передача без ТТН Нової Пошти.</p></div>' +
           (order.has_tracking ? '<p class="oedit-delivery-warning" role="note">Для цього замовлення вже є ТТН або документ Нової Пошти. Зміна адреси в замовленні не змінить маршрут оформленого відправлення. Перевірте його окремо у перевізника.</p>' : '') +
           '<p class="oedit-delivery-error" id="oeditDeliveryError" role="alert" hidden></p>' +
           '<p class="oedit-delivery-help">Застосується після «Зберегти зміни».</p>' +
@@ -1609,7 +1637,13 @@
           'Оплата' +
           '<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>' +
         '</div>' +
-        '<div class="oedit-collapse__body"><div class="oedit-presets" id="oeditPresets">' + presetHtml + '</div></div>' +
+        '<div class="oedit-collapse__body"><div class="oedit-presets" id="oeditPresets">' + presetHtml + '</div>' +
+          '<div class="oedit-grid2">' +
+            fld('Внесено за товари, грн', '<input type="text" inputmode="decimal" class="oedit-input" id="oeditPaidAmount" value="' + esc(originalGoodsPaid) + '">') +
+            fld('Доставку оплачує', '<select class="oedit-select" id="oeditPayer" disabled><option value="Recipient">Одержувач</option><option value="Sender"' + (paymentValue('delivery_payer_type', 'Recipient') === 'Sender' ? ' selected' : '') + '>Відправник</option></select>') +
+            fld('Оплата доставки', '<select class="oedit-select" id="oeditPaymentMethod"><option value="Cash">Готівка</option><option value="NonCash"' + (paymentValue('delivery_payment_method', 'Cash') === 'NonCash' ? ' selected' : '') + '>Безготівково</option></select>') +
+            fld('Накладений платіж', '<label><input type="checkbox" id="oeditCod"' + (paymentValue('cod_enabled', order.payment_preset === 'cod' || order.payment_preset === 'prepaid_200' || order.payment_preset === 'partial_manual') ? ' checked' : '') + '> Залишок при отриманні</label>') +
+          '</div><p id="oeditPaymentSummary" class="oedit-delivery-help" aria-live="polite"></p></div>' +
       '</div>';
 
     // collapse toggles
@@ -1618,10 +1652,12 @@
     });
     // payment preset selection
     body.querySelectorAll('#oeditPresets .oedit-preset').forEach(function (label) {
-      label.addEventListener('click', function () {
+      label.addEventListener('click', function (event) {
+        if (paymentControlsLocked) { event.preventDefault(); return; }
         body.querySelectorAll('#oeditPresets .oedit-preset').forEach(function (l) { l.classList.remove('is-active'); });
         label.classList.add('is-active');
         var radio = label.querySelector('input'); if (radio) radio.checked = true;
+        syncPaymentControls(true);
       });
     });
     // add buttons
@@ -1631,6 +1667,38 @@
     initDeliveryEditor();
     body.querySelectorAll('input[name="oeditShippingMode"]').forEach(function (radio) { radio.addEventListener('change', updateTotal); });
     body.querySelector('#oeditShippingCharge').addEventListener('input', updateTotal);
+    ['#oeditPaidAmount', '#oeditCod', '#oeditPayer', '#oeditPaymentMethod'].forEach(function (selector) { var control = body.querySelector(selector); if (control) { control.addEventListener('input', function () { syncPaymentControls(false); }); control.addEventListener('change', function () { syncPaymentControls(false); }); } });
+    syncPaymentControls(false);
+  }
+
+  function syncPaymentControls(resetCod) {
+    var preset = (body.querySelector('#oeditPresets input:checked') || {}).value;
+    var paid = body.querySelector('#oeditPaidAmount');
+    var cod = body.querySelector('#oeditCod');
+    var effectiveDelivery = deliveryMode === 'keep' ? originalDeliveryMethod : deliveryMode;
+    var isCarrier = effectiveDelivery === 'np' || effectiveDelivery === 'nova_poshta';
+    var shipping = body.querySelector('#oeditShippingControls');
+    if (shipping) shipping.hidden = !isCarrier;
+    var mode = shippingPaymentMode();
+    var payer = body.querySelector('#oeditPayer');
+    payer.value = mode === 'customer_prepaid' || mode === 'merchant_free' ? 'Sender' : 'Recipient';
+    payer.disabled = true;
+    ['#oeditPayer', '#oeditPaymentMethod'].forEach(function (selector) {
+      var control = body.querySelector(selector);
+      if (control) control.closest('.oedit-fld').hidden = !isCarrier;
+    });
+    paid.disabled = paymentControlsLocked || preset !== 'partial_manual';
+    var goods = Math.max(0, items.reduce(function (a, it) { return a + lineTotal(it); }, 0) - retainedDiscount);
+    if (paymentControlsLocked) paid.value = originalGoodsPaid;
+    else if (preset === 'paid_full') paid.value = Math.round(goods * 100) / 100;
+    else if (preset === 'prepaid_200') paid.value = Math.min(Math.max(200 - shippingCharge(), 0), goods);
+    else if (['cod', 'unpaid_full', 'free'].indexOf(preset) >= 0) paid.value = 0;
+    cod.disabled = paymentControlsLocked || !isCarrier || ['paid_full', 'free'].indexOf(preset) >= 0;
+    if (!isCarrier || ['paid_full', 'free'].indexOf(preset) >= 0) cod.checked = false;
+    else if (resetCod && !paymentControlsLocked) cod.checked = ['cod', 'prepaid_200', 'partial_manual'].indexOf(preset) >= 0;
+    var summary = body.querySelector('#oeditPaymentSummary');
+    var charge = shippingCharge();
+    if (summary) summary.textContent = 'Товари: ' + fmt(goods) + ' грн · Внесено за товари: ' + fmt(decimalNumber(paid.value)) + ' грн · ' + (cod.checked && isCarrier ? 'Післяплата за товари: ' : 'Залишок за товари: ') + fmt(preset === 'free' ? 0 : Math.max(0, goods - decimalNumber(paid.value))) + ' грн' + (charge > 0 ? ' · Отримано за доставку: ' + fmt(charge) + ' грн' : '');
   }
 
   function showDeliveryError(message, field) {
@@ -1639,6 +1707,7 @@
     error.textContent = message || '';
     error.hidden = !message;
     if (field) {
+      if (field === 'handover_details') { var handover = body.querySelector('#oeditHandover'); handover.setAttribute('aria-invalid', 'true'); handover.focus(); return; }
       var input = body.querySelector(deliveryMode === 'manual'
         ? (field === 'city' ? '#oeditManualCity' : '#oeditManualOffice')
         : (field === 'city' ? '#oeditNpCity' : '#oeditNpWarehouse'));
@@ -1670,9 +1739,11 @@
     var npForm = section.querySelector('#oeditNpForm');
     var originalCity = section.querySelector('#oeditManualCity').value;
     var originalOffice = section.querySelector('#oeditManualOffice').value;
+    var originalHandover = section.querySelector('#oeditHandover').value;
 
     function setMode(next) {
       deliveryMode = next;
+      updateTotal();
       state.hidden = next === 'keep';
       editor.hidden = next === 'keep';
       change.setAttribute('aria-expanded', String(next !== 'keep'));
@@ -1717,7 +1788,7 @@
 
     change.addEventListener('click', function () {
       if (deliveryMode === 'keep') {
-        setMode('np');
+        setMode(originalDeliveryMethod === 'handover' ? 'handover' : originalDeliveryMethod === 'manual' ? 'manual' : 'np');
       } else {
         editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
@@ -1742,6 +1813,7 @@
       npForm.querySelectorAll('input[type="hidden"]').forEach(function (input) { input.value = ''; });
       section.querySelector('#oeditManualCity').value = originalCity;
       section.querySelector('#oeditManualOffice').value = originalOffice;
+      section.querySelector('#oeditHandover').value = originalHandover;
       setMode('keep');
       change.focus();
     });
@@ -1763,7 +1835,7 @@
       var img = it.image
         ? '<img src="' + esc(it.image) + '" class="oedit-line__img" alt="">'
         : '<div class="oedit-line__img oedit-line__img--ph"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3L14.5 12l4.5 6H5l3.5-4.5z"/></svg></div>';
-      var tag = it.kind === 'custom'
+      var tag = it.kind === 'dtf_film' ? '<span class="oedit-line__tag oedit-line__tag--custom">DTF-плівка · ширина 60 см</span>' : it.kind === 'custom'
         ? '<span class="oedit-line__tag oedit-line__tag--custom">Поза каталогом</span>'
         : '<span class="oedit-line__tag oedit-line__tag--catalog">Каталог</span>';
       if (it.kind === 'catalog' && it.is_thermo) {
@@ -1771,28 +1843,32 @@
       }
 
       var fields = '';
-      fields += fld('Ціна, грн', '<input type="number" class="oedit-input" min="0" step="1" value="' + it.unit_price + '" data-edit="unit_price">');
-      fields += fld('К-сть', '<input type="number" class="oedit-input" min="1" step="1" value="' + it.qty + '" data-edit="qty">');
-      if (it.kind === 'catalog' && it.fits && it.fits.length) {
-        fields += fld('Посадка', '<select class="oedit-select" data-edit="fit_option_code">' + (it.available_fits || []).map(function (fit) {
-          return '<option value="' + esc(fit.code) + '"' + (String(fit.code) === String(it.fit_option_code) ? ' selected' : '') + '>' + esc(fit.label) + (fit.historical ? ' (недоступна)' : '') + '</option>';
-        }).join('') + '</select>');
-      }
-      if (it.kind === 'catalog' && it.active_sizes && it.active_sizes.length) {
-        fields += fld('Розмір', '<select class="oedit-select" data-edit="size">' + it.active_sizes.map(function (s) {
-          return '<option value="' + esc(s) + '"' + (s === it.size ? ' selected' : '') + '>' + esc(s) + (it.historical_size_unavailable && s === it.size ? ' (недоступний)' : '') + '</option>';
-        }).join('') + '</select>');
+      fields += fld(it.kind === 'dtf_film' ? 'Ціна, грн/м' : 'Ціна, грн', '<input type="number" class="oedit-input" min="0" step="0.01" value="' + it.unit_price + '" data-edit="unit_price">');
+      if (it.kind === 'dtf_film') {
+        fields += fld('Довжина, м', '<input type="text" inputmode="decimal" class="oedit-input" value="' + esc(it.film_length_m) + '" data-edit="film_length_m">');
       } else {
-        fields += fld('Розмір', '<input type="text" class="oedit-input" value="' + esc(it.size) + '" data-edit="size">');
-      }
-      if (it.kind === 'catalog' && it.variants && it.variants.length) {
-        fields += fld('Колір', '<select class="oedit-select" data-edit="color_variant_id">' + it.variants.map(function (v) {
-          return '<option value="' + esc(v.id) + '"' + (String(v.id) === String(it.color_variant_id) ? ' selected' : '') + '>' + esc(v.name) + '</option>';
-        }).join('') + '</select>');
-      } else if (it.kind === 'custom') {
-        fields += fld('Колір', '<input type="text" class="oedit-input" value="' + esc(it.color_name) + '" data-edit="color_name">');
-      }
+        fields += fld('К-сть', '<input type="number" class="oedit-input" min="1" step="1" value="' + it.qty + '" data-edit="qty">');
+        if (it.kind === 'catalog' && it.fits && it.fits.length) {
+          fields += fld('Посадка', '<select class="oedit-select" data-edit="fit_option_code">' + (it.available_fits || []).map(function (fit) {
+            return '<option value="' + esc(fit.code) + '"' + (String(fit.code) === String(it.fit_option_code) ? ' selected' : '') + '>' + esc(fit.label) + (fit.historical ? ' (недоступна)' : '') + '</option>';
+          }).join('') + '</select>');
+        }
+        if (it.kind === 'catalog' && it.active_sizes && it.active_sizes.length) {
+          fields += fld('Розмір', '<select class="oedit-select" data-edit="size">' + it.active_sizes.map(function (s) {
+            return '<option value="' + esc(s) + '"' + (s === it.size ? ' selected' : '') + '>' + esc(s) + (it.historical_size_unavailable && s === it.size ? ' (недоступний)' : '') + '</option>';
+          }).join('') + '</select>');
+        } else {
+          fields += fld('Розмір', '<input type="text" class="oedit-input" value="' + esc(it.size) + '" data-edit="size">');
+        }
+        if (it.kind === 'catalog' && it.variants && it.variants.length) {
+          fields += fld('Колір', '<select class="oedit-select" data-edit="color_variant_id">' + it.variants.map(function (v) {
+            return '<option value="' + esc(v.id) + '"' + (String(v.id) === String(it.color_variant_id) ? ' selected' : '') + '>' + esc(v.name) + '</option>';
+          }).join('') + '</select>');
+        } else if (it.kind === 'custom') {
+          fields += fld('Колір', '<input type="text" class="oedit-input" value="' + esc(it.color_name) + '" data-edit="color_name">');
+        }
 
+      }
       var swap = it.kind === 'catalog'
         ? '<button type="button" class="oedit-line__swap" data-swap><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg> Замінити товар</button>'
         : '';
@@ -1851,13 +1927,14 @@
     var charge = shippingCharge();
     var total = Math.max(0, goods - retainedDiscount) + charge;
     elTotal.textContent = fmt(total);
-    document.getElementById('oeditShippingBreakdown').textContent = 'Товари: ' + fmt(goods) + ' грн' + (retainedDiscount > 0 ? ' · Знижка: ' + fmt(retainedDiscount) + ' грн' : '') + ' · Доставка в оплаті магазину: ' + fmt(charge) + ' грн';
+    document.getElementById('oeditShippingBreakdown').textContent = 'Товари: ' + fmt(goods) + ' грн' + (retainedDiscount > 0 ? ' · Знижка: ' + fmt(retainedDiscount) + ' грн' : '') + ' · Доставка вже оплачена нам: ' + fmt(charge) + ' грн';
     body.querySelector('#oeditShippingChargeWrap').hidden = mode !== 'customer_prepaid';
     body.querySelectorAll('.oedit-shipping-options .oedit-preset').forEach(function (label) { label.classList.toggle('is-active', label.querySelector('input').checked); });
     body.querySelector('#oeditShippingPolicyNote').textContent = !mode ? 'Умови доставки потребують звірки. Оберіть, хто оплачує перевізнику і чи включено доставку в платіж магазину.' : mode === 'customer_prepaid'
-      ? 'Доставка включена в платіж клієнта. Спочатку підтвердьте оплату або передплату, що покриває доставку. Платник у ТТН — TwoComms (відправник).'
+      ? 'Цей вибір підтверджує отриману оплату доставки. Оплату товарів внесіть окремо. Платник у ТТН — TwoComms (відправник).'
       : mode === 'merchant_free' ? 'Для клієнта доставка безкоштовна. Платник у ТТН — TwoComms (відправник).'
         : 'Доставка сплачується окремо перевізнику. Платник у ТТН — клієнт (одержувач).';
+    syncPaymentControls(false);
     var delta = total - initialTotal;
     if (Math.abs(delta) < 0.005) { elDelta.hidden = true; return; }
     elDelta.hidden = false;
@@ -1866,19 +1943,23 @@
   }
 
   function shippingPaymentMode() {
+    var effectiveDelivery = deliveryMode === 'keep' ? originalDeliveryMethod : deliveryMode;
+    if (effectiveDelivery !== 'np' && effectiveDelivery !== 'nova_poshta') return 'carrier_recipient';
     return (body.querySelector('input[name="oeditShippingMode"]:checked') || {}).value || '';
   }
 
   function shippingCharge() {
     var field = body.querySelector('#oeditShippingCharge');
-    return shippingPaymentMode() === 'customer_prepaid' && field ? Math.max(0, Number(field.value) || 0) : 0;
+    return shippingPaymentMode() === 'customer_prepaid' && field ? Math.max(0, decimalNumber(field.value)) : 0;
   }
 
   // ── picker (catalog / custom) ──────────────────────────
   function openPicker(mode, targetUid) {
+    if (items.some(function (it) { return (mode === 'dtf_film') !== (it.kind === 'dtf_film'); })) { showToast('Одяг і DTF-плівку оформіть окремими замовленнями: вони мають різне пакування.'); return; }
     pickerTarget = targetUid;
     var picker = document.getElementById('oeditPicker');
     if (!picker) return;
+    if (mode === 'dtf_film') { closePicker(); items.push({ uid: uidSeq++, kind: 'dtf_film', title: 'DTF-плівка', film_length_m: '1', unit_price: 320, qty: 1, size: '', color_name: '' }); renderItems(); return; }
     if (mode === 'custom') { renderCustomForm(picker); }
     else { renderCatalogPicker(picker); }
     picker.classList.add('is-open');
@@ -2013,17 +2094,30 @@
     var payload = {
       full_name: name, phone: phone, delivery_method: deliveryMode, payment_preset: preset,
       delivery_payment_mode: shippingPaymentMode(), delivery_charge_amount: shippingCharge().toFixed(2),
+      delivery_paid_confirmed: shippingPaymentMode() === 'customer_prepaid',
       sale_source: ((document.getElementById('oeditSource') || {}).value || '').trim(),
       manager_comment: ((document.getElementById('oeditComment') || {}).value || '').trim(),
+      delivery_payer_type: ['customer_prepaid', 'merchant_free'].indexOf(shippingPaymentMode()) >= 0 ? 'Sender' : 'Recipient',
+      delivery_payment_method: body.querySelector('#oeditPaymentMethod').value,
+      cod_enabled: ((deliveryMode === 'keep' ? originalDeliveryMethod : deliveryMode) === 'np' || (deliveryMode === 'keep' ? originalDeliveryMethod : deliveryMode) === 'nova_poshta') && body.querySelector('#oeditCod').checked,
       items: items.map(function (it) {
-        if (it.kind === 'custom') {
-          return { kind: 'custom', title: it.title, unit_price: it.unit_price, qty: it.qty, size: it.size, color_name: it.color_name };
+        if (it.kind === 'dtf_film') {
+          return { kind: 'dtf_film', item_id: it.item_id || null, title: it.title, film_length_m: it.film_length_m, unit_price: it.unit_price, qty: 1 };
         }
-        return { kind: 'catalog', item_id: it.item_id || null, product_id: it.product_id, color_variant_id: it.color_variant_id || '', fit_option_code: it.fit_option_code, size: it.size, qty: it.qty, unit_price: it.unit_price };
+        if (it.kind === 'custom') {
+          return { kind: 'custom', item_id: it.item_id || null, option_values: it.option_values || {}, option_labels: it.option_labels || {}, title: it.title, unit_price: it.unit_price, qty: it.qty, size: it.size, color_name: it.color_name };
+        }
+        return { kind: 'catalog', item_id: it.item_id || null, product_id: it.product_id, color_variant_id: it.color_variant_id || '', fit_option_code: it.fit_option_code, option_values: it.option_values || {}, option_labels: it.option_labels || {}, size: it.size, qty: it.qty, unit_price: it.unit_price };
       })
     };
 
-    if (deliveryMode === 'manual') {
+    if (preset === 'partial_manual' && !paymentControlsLocked) payload.paid_amount = body.querySelector('#oeditPaidAmount').value.trim();
+    if ((deliveryMode === 'keep' ? originalDeliveryMethod : deliveryMode) === 'handover') payload.cod_enabled = false;
+    if (items.some(function (it) { return it.kind === 'dtf_film' && (!decimalNumber(it.film_length_m) || decimalNumber(it.film_length_m) < 0); })) { showToast('Вкажіть додатну довжину DTF-плівки в метрах.'); return; }
+    if (deliveryMode === 'handover') {
+      payload.handover_details = body.querySelector('#oeditHandover').value.trim();
+      if (!payload.handover_details) { showDeliveryError('Вкажіть, кому й як передати замовлення.'); body.querySelector('#oeditHandover').focus(); return; }
+    } else if (deliveryMode === 'manual') {
       var manualCity = body.querySelector('#oeditManualCity').value.trim();
       var manualOffice = body.querySelector('#oeditManualOffice').value.trim();
       if (!manualCity || !manualOffice) {

@@ -19,6 +19,17 @@ _STOCK_ORDER = (
     "size",
 )
 
+DTF_GARMENT_WRITEOFF_ERROR = (
+    "DTF-плівка не є одягом зі складу. Списання одягу та готових принтів "
+    "для замовлення з DTF-плівкою недоступне."
+)
+
+
+def order_has_dtf_film(order) -> bool:
+    relation = getattr(order, "items", [])
+    items = relation.all() if hasattr(relation, "all") else relation
+    return any(getattr(item, "item_kind", "") == "dtf_film" for item in items)
+
 
 def all_active_stock_items() -> list[StockItem]:
     """Усі активні складські позиції (для повного вибору під час списання).
@@ -62,6 +73,8 @@ def find_stock_items_for_order_item(order_item) -> list[StockItem]:
 
     Повний перелік для ручного вибору дає :func:`all_active_stock_items`.
     """
+    if getattr(order_item, "item_kind", "") == "dtf_film":
+        return []
     base = StockItem.objects.select_related("subcategory__category", "color").filter(
         subcategory__is_active=True,
         subcategory__category__is_active=True,

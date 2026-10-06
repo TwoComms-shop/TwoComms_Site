@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import contextmanager
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core import signing
@@ -41,7 +42,7 @@ from orders.nova_poshta_checkout import (
     resolve_delivery_selection,
 )
 from orders.nova_poshta_data import apply_nova_poshta_refs
-from orders.nova_poshta_documents import normalize_checkout_phone
+from orders.nova_poshta_documents import build_order_payment_snapshot, normalize_checkout_phone
 from orders.order_edit_diff import build_order_edit_diff, snapshot_order
 from orders.telegram_notifications import telegram_notifier
 from productcolors.models import ProductColorVariant
@@ -76,6 +77,11 @@ PAYMENT_PRESETS = {
     'prepaid_200': {
         'label': 'Передплата 200 грн внесена',
         'pay_type': 'prepay_200',
+        'payment_status': 'prepaid',
+    },
+    'partial_manual': {
+        'label': 'Часткова оплата (довільна сума)',
+        'pay_type': 'prepayment',
         'payment_status': 'prepaid',
     },
     'paid_full': {
@@ -148,10 +154,14 @@ def _preset_key_for_order(order):
     pay_type = (order.pay_type or '').strip()
     if payment_status == 'paid':
         return 'paid_full'
-    if payment_status in ('prepaid', 'partial'):
-        return 'prepaid_200'
+    if pay_type == 'prepayment' and _provider_payment_authorized(order, payment_payload):
+        return 'provider_prepayment'
     if pay_type == 'prepayment' and payment_payload.get('manager_confirmed_amount'):
         return 'manager_prepayment'
+    if payment_status in ('prepaid', 'partial'):
+        if pay_type == 'prepayment':
+            return 'partial_manual'
+        return 'prepaid_200'
     if pay_type == 'cod':
         return 'cod'
     if pay_type in ('online_full', 'full'):
@@ -169,7 +179,14 @@ def _build_order_initial(order):
             image = getattr(img, 'url', '') if img else ''
         except Exception:
             image = ''
-        if item.is_custom or not item.product_id:
+        if item.is_dtf_film:
+            items.append({
+                'kind': 'dtf_film', 'item_kind': 'dtf_film', 'item_id': item.id,
+                'title': item.title, 'film_length_m': f'{item.film_length_m:.2f}',
+                'unit_price': float(item.unit_price or 0), 'qty': 1,
+                'line_total': f'{item.line_total:.2f}', 'image': '',
+            })
+        elif item.is_custom or not item.product_id:
             items.append({
                 'kind': 'custom',
                 'item_id': item.id,
@@ -201,6 +218,11 @@ def _build_order_initial(order):
                 'image': image,
             })
     delivery_display = get_order_nova_poshta_point(order)
+    payment_snapshot = build_order_payment_snapshot(order)
+    shipping_initial = _shipping_initial(order)
+    merchandise_paid = Decimal(payment_snapshot['paid_amount'])
+    if shipping_initial['delivery_payment_mode'] == 'customer_prepaid' and not shipping_initial['delivery_payment_requires_manual']:
+        merchandise_paid = max(merchandise_paid - Decimal(shipping_initial['delivery_charge_amount']), Decimal('0'))
     return {
         'id': order.id,
         'order_number': order.order_number,
@@ -210,6 +232,13 @@ def _build_order_initial(order):
         'manager_comment': order.manager_comment or '',
         'payment_preset': _preset_key_for_order(order),
         'discount_amount': str(order.discount_amount or '0.00'),
+        'paid_amount': payment_snapshot['paid_amount'],
+        'merchandise_paid_amount': f'{merchandise_paid:.2f}',
+        'delivery_payer_type': payment_snapshot['delivery_payer_type'],
+        'delivery_payment_method': payment_snapshot.get('delivery_payment_method', 'Cash'),
+        'cod_enabled': payment_snapshot.get('cod_enabled', payment_snapshot['cod_amount_value'] > 0),
+        'delivery_method': order.delivery_method,
+        'handover_details': order.handover_details,
         'city': order.city or '',
         'np_office': order.np_office or '',
         'delivery_text': ', '.join(p for p in (order.city, order.np_office) if p),
@@ -224,7 +253,7 @@ def _build_order_initial(order):
         },
         'has_tracking': bool(order.tracking_number or order.nova_poshta_document_ref),
         'items': items,
-        **_shipping_initial(order),
+        **shipping_initial,
     }
 
 
@@ -376,12 +405,149 @@ def _decimal_or_none(raw):
     if raw in (None, ''):
         return None
     try:
-        value = Decimal(str(raw))
+        value = Decimal(str(raw).replace(',', '.'))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    if not value.is_finite() or value < 0:
+    if not value.is_finite() or value < 0 or value > Decimal('9999999999.99'):
         return None
-    return value.quantize(Decimal('0.01'))
+    try:
+        return value.quantize(Decimal('0.01'))
+    except InvalidOperation:
+        return None
+
+
+def _strict_decimal(raw, *, label, maximum=Decimal('9999999999.99'), positive=False):
+    text = str(raw if raw is not None else '').strip()
+    if not re.fullmatch(r'\d+(?:[.,]\d{1,2})?', text):
+        raise ValueError(f'{label}: введіть число з максимум двома знаками після коми.')
+    try:
+        value = Decimal(text.replace(',', '.'))
+        if not value.is_finite() or value > maximum or (positive and value <= 0):
+            raise ValueError
+        return value.quantize(Decimal('.01'))
+    except (InvalidOperation, ValueError):
+        raise ValueError(f'{label}: значення поза допустимими межами.')
+
+
+def _boolean_control(raw):
+    if isinstance(raw, bool):
+        return raw
+    if raw in (0, '0', 'false', 'False'):
+        return False
+    if raw in (1, '1', 'true', 'True'):
+        return True
+    raise ValueError('Оберіть, чи потрібен накладений платіж.')
+
+
+def _provider_payment_authorized(order, payload):
+    amount = _decimal_or_none(payload.get('paid_value'))
+    if not amount or amount <= 0:
+        return False
+    if payload.get('provider_payment_confirmed'):
+        return True
+    if not (order.payment_provider and order.payment_invoice_id):
+        return False
+    provider_status = payload.get('monobank_status')
+    if provider_status is not None:
+        return provider_status == 'success'
+    return order.payment_status in {'paid', 'prepaid', 'partial'}
+
+
+def _manual_payment_controls(data, *, order, preset_key, merchandise_total):
+    """Persist staff payment controls without replacing Instagram/provider evidence."""
+    payload = order.payment_payload if isinstance(order.payment_payload, dict) else {}
+    if preset_key in {'manager_prepayment', 'provider_prepayment'}:
+        authorized = (
+            payload.get('manual_payment_evidence_confirmed')
+            and _decimal_or_none(payload.get('manager_confirmed_amount'))
+        ) if preset_key == 'manager_prepayment' else (
+            _provider_payment_authorized(order, payload)
+        )
+        if not authorized:
+            raise ValueError('Цей спосіб оплати потребує наявного підтвердження менеджера або провайдера.')
+        return None
+    # Reviewed delivery and payment remain owned by their original evidence.
+    canonical_shipping = payload.get('delivery_payment')
+    reviewed_shipping = isinstance(canonical_shipping, dict) and canonical_shipping.get('authority') == 'payment_review'
+    if reviewed_shipping or any(payload.get(key) for key in (
+        'instagram_delivery_contract', 'instagram_payment_review_id',
+        'manager_payment_decision_id', 'manual_payment_evidence_confirmed',
+        'provider_payment_confirmed', 'ig_payment_reconciliation',
+    )) or _provider_payment_authorized(order, payload):
+        if preset_key == 'partial_manual':
+            raise ValueError('Змініть підтверджену оплату через її перевірку, щоб зберегти платіжні докази.')
+        return None
+
+    preset = PAYMENT_PRESETS[preset_key]
+    stored = payload.get('manual_shipment_payment')
+    stored = stored if isinstance(stored, dict) and payload.get('manual_payment_preset') == preset_key else {}
+    if order.pk and preset_key != 'partial_manual' and not stored and not any(
+        key in data for key in ('delivery_payer_type', 'delivery_payment_method', 'cod_enabled', 'paid_amount')
+    ):
+        return None
+    mode = data.get('delivery_payment_mode')
+    if mode is None and isinstance(canonical_shipping, dict):
+        canonical_mode = canonical_shipping.get('mode')
+        canonical_payer = 'Recipient' if canonical_mode == 'carrier_recipient' else 'Sender'
+        if 'delivery_payer_type' not in data or data.get('delivery_payer_type') == canonical_payer:
+            mode = canonical_mode
+    derived_payer = 'Recipient' if mode in {'carrier_recipient', 'clientcarrier'} else 'Sender' if mode in {'customer_prepaid', 'merchant_free'} else None
+    payer = str(derived_payer or data.get('delivery_payer_type') or stored.get('payer_type') or 'Recipient').strip()
+    method = str(data.get('delivery_payment_method') or stored.get('payment_method') or 'Cash').strip()
+    if payer not in {'Sender', 'Recipient'}:
+        raise ValueError('Оберіть платника доставки: відправник або отримувач.')
+    if method not in {'Cash', 'NonCash'}:
+        raise ValueError('Оберіть спосіб оплати доставки: готівковий або безготівковий.')
+
+    if preset_key == 'partial_manual':
+        paid = _strict_decimal(data.get('paid_amount', stored.get('paid_amount')), label='Внесена сума', positive=True)
+        if paid >= merchandise_total:
+            raise ValueError('Часткова оплата має бути меншою за суму товарів. Для повної оплати оберіть відповідний спосіб.')
+    else:
+        paid = (
+            merchandise_total if preset['payment_status'] == 'paid'
+            else min(Decimal('200.00'), merchandise_total) if preset_key == 'prepaid_200'
+            else Decimal('0.00')
+        )
+        if preset_key == 'prepaid_200' and mode == 'customer_prepaid':
+            fee = _decimal_or_none(data.get('delivery_charge_amount', canonical_shipping.get('delivery_amount', '0') if isinstance(canonical_shipping, dict) else '0'))
+            if fee is None or fee > Decimal('200.00'):
+                raise ValueError('Оплата 200 грн не покриває підтверджену суму доставки.')
+            paid = min(Decimal('200.00') - fee, merchandise_total)
+        if data.get('paid_amount') not in (None, ''):
+            submitted = _strict_decimal(data['paid_amount'], label='Внесена сума')
+            if submitted != paid:
+                raise ValueError('Внесена сума не відповідає способу оплати. Оберіть часткову оплату для довільної суми.')
+    if paid > merchandise_total:
+        raise ValueError('Внесена сума не може перевищувати суму товарів.')
+    default_cod = preset_key in {'cod', 'prepaid_200', 'partial_manual'} and paid < merchandise_total
+    cod = _boolean_control(data['cod_enabled']) if 'cod_enabled' in data else stored.get('cod_enabled', default_cod)
+    if cod and paid >= merchandise_total:
+        raise ValueError('Накладений платіж неможливий для повністю оплаченого замовлення.')
+    if order.delivery_method == 'handover':
+        if 'cod_enabled' in data and cod:
+            raise ValueError('Для передачі / самовивозу вимкніть накладений платіж.')
+        cod = False
+    return {
+        'payer_type': payer, 'payment_method': method,
+        'cod_enabled': bool(cod), 'paid_amount': f'{paid:.2f}',
+    }
+
+
+def _apply_delivery(order, delivery):
+    if delivery['delivery_method'] == 'handover' and (order.tracking_number or order.nova_poshta_document_ref):
+        raise ValueError('Для замовлення вже створено ТТН. Перед переходом на передачу / самовивіз скасуйте її.')
+    order.delivery_method = delivery['delivery_method']
+    order.handover_details = delivery['handover_details']
+    order.city, order.np_office = delivery['city'], delivery['np_office']
+    apply_nova_poshta_refs(order, delivery['refs'])
+    if order.delivery_method == 'handover':
+        order.nova_poshta_recipient_ref = order.nova_poshta_recipient_contact_ref = None
+
+
+def _validate_order_total(total):
+    if total > Decimal('9999999999.99'):
+        raise ValueError('Загальна сума замовлення завелика.')
 
 
 def _review_quoted_total(review):
@@ -433,18 +599,29 @@ def _review_shipping_initial(review):
 
 def _manual_delivery_contract(data, *, merchandise_total, actor, preset_key, item_rows, existing=None, confirmed_amount=None, review=None, discount_amount='0', existing_snapshot=None):
     from orders.services.delivery_payment import build_delivery_payment_contract, delivery_payment_snapshot
-    explicit = 'delivery_payment_mode' in data or 'delivery_charge_amount' in data
+    canonical_explicit = 'delivery_payment_mode' in data or 'delivery_charge_amount' in data
+    explicit = canonical_explicit or 'delivery_payer_type' in data
     if not explicit:
         return None
     mode = str(data.get('delivery_payment_mode') or '').strip()
+    if not canonical_explicit:
+        legacy_payer = str(data.get('delivery_payer_type') or '').strip()
+        if legacy_payer not in {'Sender', 'Recipient'}:
+            raise ValueError('Оберіть коректного платника доставки.')
+        mode = 'merchant_free' if legacy_payer == 'Sender' else 'carrier_recipient'
     if mode == 'clientcarrier':
         mode = 'carrier_recipient'
     amount = _decimal_or_none(data.get('delivery_charge_amount', '0'))
     if amount is None or amount < 0:
         raise ValueError('Вкажіть коректну суму доставки.')
+    current = None
     if existing is not None:
         current = existing_snapshot or delivery_payment_snapshot(existing, item_rows=list(existing.items.all()))
+        if not canonical_explicit and current['valid'] is True and data.get('delivery_payer_type') == current['payer_type']:
+            mode, amount = current['mode'], current['delivery_amount']
         if current['source_locked']:
+            if not canonical_explicit:
+                return None
             if mode != current['mode'] or amount != current['delivery_amount']:
                 raise ValueError('Доставку підтверджено з переписки; для зміни потрібна нова перевірка домовленості.')
             return None
@@ -453,13 +630,29 @@ def _manual_delivery_contract(data, *, merchandise_total, actor, preset_key, ite
         if preset_key == 'free':
             raise ValueError('Безкоштовне замовлення не підтверджує оплату доставки; оберіть доставку коштом продавця.')
         if confirmed_amount is None:
-            if preset_key == 'paid_full':
-                confirmed_amount = merchandise_total + amount
-            elif preset_key == 'prepaid_200':
-                confirmed_amount = Decimal('200.00')
+            if review is None and preset_key not in {'manager_prepayment', 'provider_prepayment'}:
+                payload = existing.payment_payload if existing and isinstance(existing.payment_payload, dict) else {}
+                controls = payload.get('manual_shipment_payment')
+                controls = controls if isinstance(controls, dict) else {}
+                carriage_confirmed = (
+                    _boolean_control(data['delivery_paid_confirmed']) if 'delivery_paid_confirmed' in data else False
+                ) or bool(current and current['valid'] is True and current['mode'] == 'customer_prepaid' and current['delivery_amount'] == amount)
+                if preset_key == 'paid_full':
+                    confirmed_amount = merchandise_total + amount
+                elif preset_key == 'prepaid_200':
+                    # Legacy fixed preset is a 200 UAH transfer in total;
+                    # prepaid carriage consumes part of it before goods.
+                    confirmed_amount = Decimal('200.00')
+                elif preset_key == 'partial_manual' and carriage_confirmed:
+                    goods_paid = _strict_decimal(data.get('paid_amount', controls.get('paid_amount', payload.get('paid_value'))), label='Внесена сума', positive=True)
+                    if goods_paid >= merchandise_total:
+                        raise ValueError('Часткова оплата має бути меншою за суму товарів.')
+                    confirmed_amount = goods_paid + amount
+                elif carriage_confirmed:
+                    confirmed_amount = amount
             elif existing is not None:
                 payload = existing.payment_payload if isinstance(existing.payment_payload, dict) else {}
-                confirmed_amount = _decimal_or_none(payload.get('manager_confirmed_amount'))
+                confirmed_amount = _decimal_or_none(payload.get('manager_confirmed_amount') or payload.get('paid_value'))
         # Explicit staff selection allocates the verified payment to carriage;
         # the builder still rejects an allocation larger than that payment.
         allocated = amount
@@ -634,6 +827,25 @@ def _build_order_item(
     Кидає ``ValueError`` з людським повідомленням при некоректних даних.
     """
     kind = str(raw_item.get('kind') or 'catalog').strip()
+    if kind == 'dtf_film':
+        length = _strict_decimal(
+            raw_item.get('film_length_m'), label='Довжина DTF плівки',
+            maximum=Decimal('999999.99'), positive=True,
+        )
+        price = _strict_decimal(
+            raw_item.get('unit_price') if raw_item.get('unit_price') not in (None, '') else '320',
+            label='Ціна DTF плівки за метр',
+        )
+        total = (length * price).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        if total > Decimal('9999999999.99'):
+            raise ValueError('Сума позиції DTF плівки завелика.')
+        return OrderItem(
+            order=order, item_kind='dtf_film', film_length_m=length,
+            title='DTF плівка TwoComms', unit_price=price, line_total=total,
+            qty=1, is_custom=True,
+        )
+    if kind not in {'catalog', 'custom'}:
+        raise ValueError('Невідомий тип позиції замовлення.')
     qty = _coerce_int(raw_item.get('qty'), default=1)
     size = str(raw_item.get('size') or '').strip()[:16]
     unit_price = _decimal_or_none(raw_item.get('unit_price'))
@@ -744,7 +956,8 @@ def _build_order_item(
 def _parse_request_payload(request):
     if request.content_type and 'application/json' in request.content_type:
         try:
-            return json.loads(request.body or '{}')
+            data = json.loads(request.body or '{}')
+            return data if isinstance(data, dict) else None
         except (ValueError, TypeError):
             return None
     return request.POST
@@ -762,24 +975,39 @@ def _resolve_delivery(data, *, allow_keep=False):
     if allow_keep and delivery_method == 'keep':
         return None
 
+    if delivery_method == 'handover':
+        details = str(data.get('handover_details') or '').strip()
+        if not details or len(details) > 2000:
+            raise _DeliveryError('Вкажіть, кому та як передати замовлення (до 2000 символів).', field='handover_details')
+        return {
+            'delivery_method': 'handover', 'handover_details': details,
+            'city': '', 'np_office': '',
+            'refs': {'np_settlement_ref': '', 'np_city_ref': '', 'np_warehouse_ref': ''},
+            'display': f'Передача / самовивіз: {details}',
+        }
+
     if delivery_method == 'manual':
         city = str(data.get('city') or '').strip()[:100]
         np_office = str(data.get('np_office') or '').strip()[:200]
         if not city or not np_office:
             raise _DeliveryError('Вкажіть місто та адресу/відділення доставки.', field='np_office')
         return {
+            'delivery_method': 'manual', 'handover_details': '',
             'city': city,
             'np_office': np_office,
             'refs': {'np_settlement_ref': '', 'np_city_ref': '', 'np_warehouse_ref': ''},
             'display': ', '.join(p for p in (city, np_office) if p),
         }
 
+    if delivery_method not in {'np', 'nova_poshta'}:
+        raise _DeliveryError('Оберіть коректний спосіб доставки.', field='delivery_method')
     # Нова Пошта
     try:
         selection = resolve_delivery_selection(data)
     except NovaPoshtaSelectionError as exc:
         raise _DeliveryError(exc.message, field=exc.field)
     return {
+        'delivery_method': 'nova_poshta', 'handover_details': '',
         'city': selection.city,
         'np_office': selection.np_office,
         'refs': {
@@ -814,7 +1042,9 @@ def _collect_items(raw_items):
     product_ids = []
     variant_ids = []
     for raw_item in raw_items:
-        if str(raw_item.get('kind') or 'catalog').strip() == 'custom':
+        if not isinstance(raw_item, dict):
+            raise ValueError('Некоректна позиція замовлення.')
+        if str(raw_item.get('kind') or 'catalog').strip() in {'custom', 'dtf_film'}:
             continue
         try:
             product_ids.append(int(raw_item.get('product_id')))
@@ -825,6 +1055,10 @@ def _collect_items(raw_items):
                 variant_ids.append(int(raw_item.get('color_variant_id')))
             except (TypeError, ValueError):
                 pass
+
+    kinds = {str(item.get('kind') or 'catalog').strip() for item in raw_items}
+    if 'dtf_film' in kinds and kinds != {'dtf_film'}:
+        raise ValueError('Одяг і DTF-плівку оформіть окремими замовленнями: вони мають різне пакування.')
 
     products_map = Product.objects.in_bulk(product_ids) if product_ids else {}
     variants_map = (
@@ -907,6 +1141,22 @@ def _normalize_review_fit(product, raw_fit):
 def _build_ig_review_initial(review):
     """Build an editable manual-order draft from a confirmed IG review."""
     deal = review.deal
+    evidence = review.evidence if isinstance(review.evidence, dict) else {}
+    draft = evidence.get('order_draft') if isinstance(evidence.get('order_draft'), dict) else {}
+    decision = _authoritative_manager_payment_decision(review)
+    confirmed = Decimal(decision.confirmed_amount or 0) if decision else Decimal('0')
+    merchandise = _decimal_or_none(draft.get('merchandise_total') or draft.get('quoted_total')) or Decimal(getattr(deal, 'amount', 0) or 0)
+    carriage = _decimal_or_none(draft.get('delivery_amount') or draft.get('delivery_total')) or Decimal('0')
+    payable = merchandise + carriage
+    fully_confirmed = bool(decision and decision.verification_scope == 'full_payment' and confirmed == payable)
+    payment_initial = {
+        'paid_amount': f'{confirmed:.2f}',
+        'merchandise_paid_amount': f'{max(confirmed - carriage, Decimal("0")) if fully_confirmed else confirmed:.2f}',
+        'delivery_payer_type': 'Sender' if carriage > 0 and fully_confirmed else 'Recipient',
+        'delivery_payment_method': 'Cash',
+        'cod_enabled': bool(confirmed < payable),
+        'handover_details': '',
+    }
     if deal:
         evidence = review.evidence if isinstance(review.evidence, dict) else {}
         matches = evidence.get("catalog_matches") if isinstance(evidence.get("catalog_matches"), list) else []
@@ -1007,6 +1257,7 @@ def _build_ig_review_initial(review):
         if draft.get("packaging_preference"):
             comment += f" Пакування: {draft['packaging_preference']}."
         return {
+            **payment_initial,
             "review_id": review.pk,
             "quoted_total": quoted_total,
             "merchandise_total": draft.get("merchandise_total") or quoted_total,
@@ -1058,6 +1309,7 @@ def _build_ig_review_initial(review):
             "variants": variants,
         })
     return {
+        **payment_initial,
         "review_id": review.pk,
         "quoted_total": str(deal.amount or ""),
         "uncertainty_reasons": [],
@@ -1070,6 +1322,7 @@ def _build_ig_review_initial(review):
         "sale_source": "Instagram",
         "manager_comment": "Платіж підтверджено менеджером через CRM; дані перевірити перед створенням.",
         "items": items,
+        **_review_shipping_initial(review),
     }
 
 
@@ -1243,7 +1496,9 @@ def manual_order_create(request):
         # A manager-confirmed screenshot authorizes order preparation, not paid
         # revenue. Provider/manual-ledger truth must transition payment later.
         preset_key = 'unpaid_full'
-    preset = PAYMENT_PRESETS.get(preset_key, PAYMENT_PRESETS[DEFAULT_PAYMENT_PRESET])
+    if preset_key not in PAYMENT_PRESETS:
+        return JsonResponse({'success': False, 'message': 'Оберіть коректний спосіб оплати.'}, status=422)
+    preset = PAYMENT_PRESETS[preset_key]
     sale_source = str(data.get('sale_source') or '').strip()[:120]
     manager_comment = str(data.get('manager_comment') or '').strip()
     try:
@@ -1304,6 +1559,7 @@ def manual_order_create(request):
                 order_items.append(item)
                 total_sum += item.line_total
             total_sum = total_sum.quantize(Decimal('0.01'))
+            _validate_order_total(total_sum)
             quoted_total = _review_quoted_total(payment_review)
             price_override = (
                 _price_override_payload(
@@ -1386,12 +1642,22 @@ def manual_order_create(request):
                     if effective_pay_type == 'prepayment'
                     else 'unpaid_full'
                 )
+            provisional_order.delivery_method = delivery['delivery_method']
+            shipment_payment = (
+                _manual_payment_controls(
+                    data, order=provisional_order, preset_key=preset_key,
+                    merchandise_total=total_sum,
+                )
+                if not payment_review else None
+            )
             order_defaults = {
                 'user': None,
                 'full_name': full_name[:200],
                 'phone': phone,
                 'city': delivery['city'],
                 'np_office': delivery['np_office'],
+                'delivery_method': delivery['delivery_method'],
+                'handover_details': delivery['handover_details'],
                 'pay_type': effective_pay_type,
                 'payment_status': preset['payment_status'],
                 'status': 'new',
@@ -1403,6 +1669,8 @@ def manual_order_create(request):
                     'manual_payment_preset': effective_preset_key,
                     **({'delivery_payment': delivery_contract} if delivery_contract else {}),
                     **({'instagram_delivery_contract': _legacy_delivery_alias(delivery_contract)} if delivery_contract and payment_review and delivery_contract.get('mode') == 'customer_prepaid' else {}),
+                    **({'manual_shipment_payment': shipment_payment} if shipment_payment else {}),
+                    **({'paid_value': shipment_payment['paid_amount']} if preset_key == 'partial_manual' and shipment_payment else {}),
                     **({'manual_payment_action': {
                         'actor_id': request.user.pk,
                         'source': 'management_user',
@@ -1447,7 +1715,7 @@ def manual_order_create(request):
                 )
                 _assert_delivery_contract_compatible(order, delivery_contract)
             if order_created:
-                apply_nova_poshta_refs(order, delivery['refs'])
+                _apply_delivery(order, delivery)
                 order.save()
             elif payment_review:
                 from management.services.ig_order_links import create_order_attribution
@@ -1601,7 +1869,9 @@ def manual_order_edit(request, order_id):
         return JsonResponse({'success': False, 'message': str(exc)}, status=422)
 
     preset_key = str(data.get('payment_preset') or _preset_key_for_order(order)).strip()
-    preset = PAYMENT_PRESETS.get(preset_key, PAYMENT_PRESETS[DEFAULT_PAYMENT_PRESET])
+    if preset_key not in PAYMENT_PRESETS:
+        return JsonResponse({'success': False, 'message': 'Оберіть коректний спосіб оплати.'}, status=422)
+    preset = PAYMENT_PRESETS[preset_key]
     sale_source = str(data.get('sale_source') or '').strip()[:120]
     manager_comment = str(data.get('manager_comment') or '').strip()
 
@@ -1611,6 +1881,8 @@ def manual_order_edit(request, order_id):
             before_snapshot = snapshot_order(locked)
             from orders.services.delivery_payment import delivery_payment_snapshot
             shipping_before = delivery_payment_snapshot(locked, item_rows=list(locked.items.all()))
+            old_payment_payload = dict(locked.payment_payload or {})
+            old_pay_type, old_payment_status = locked.pay_type, locked.payment_status
             locked.full_name = full_name[:200]
             locked.phone = phone
             locked.pay_type = preset['pay_type']
@@ -1630,12 +1902,10 @@ def manual_order_edit(request, order_id):
             locked.payment_payload = payment_payload
 
             if delivery is not None:
-                locked.city = delivery['city']
-                locked.np_office = delivery['np_office']
-                apply_nova_poshta_refs(locked, delivery['refs'])
+                _apply_delivery(locked, delivery)
                 delivery_display = delivery['display']
             else:
-                delivery_display = ', '.join(p for p in (locked.city, locked.np_office) if p)
+                delivery_display = locked.handover_details if locked.delivery_method == 'handover' else ', '.join(p for p in (locked.city, locked.np_office) if p)
 
             # Пересоздаём позиции
             historical_items_by_id = {
@@ -1661,6 +1931,26 @@ def manual_order_edit(request, order_id):
                 )
                 order_items.append(item)
                 total_sum += item.line_total
+            _validate_order_total(total_sum)
+            # Use the original preset when considering retained shipment controls.
+            locked.payment_payload = old_payment_payload
+            locked.pay_type, locked.payment_status = old_pay_type, old_payment_status
+            shipment_payment = _manual_payment_controls(
+                data, order=locked, preset_key=preset_key,
+                merchandise_total=max(total_sum - Decimal(locked.discount_amount or 0), Decimal('0.00')),
+            )
+            if shipment_payment:
+                payment_payload['manual_shipment_payment'] = shipment_payment
+                if preset_key == 'partial_manual':
+                    payment_payload['paid_value'] = shipment_payment['paid_amount']
+                elif old_payment_payload.get('manual_payment_preset') == 'partial_manual':
+                    payment_payload.pop('paid_value', None)
+            else:
+                payment_payload.pop('manual_shipment_payment', None)
+            if old_payment_payload.get('manual_payment_preset') == 'partial_manual' and preset_key != 'partial_manual':
+                payment_payload.pop('paid_value', None)
+            locked.payment_payload = payment_payload
+            locked.pay_type, locked.payment_status = preset['pay_type'], preset['payment_status']
             OrderItem.objects.bulk_create(order_items)
             merchandise_total = max(total_sum - Decimal(locked.discount_amount or 0), Decimal('0.00'))
             delivery_contract = _manual_delivery_contract(

@@ -18,6 +18,7 @@ from warehouse.services.order_links import (
     build_storage_writeoff_url,
     get_completed_write_off,
 )
+from warehouse.services.matching import DTF_GARMENT_WRITEOFF_ERROR, order_has_dtf_film
 
 
 def _orders_return_url(order: Order) -> str:
@@ -77,6 +78,9 @@ def admin_order_warehouse_action(request, order_id: int):
     if completed is not None:
         url = build_storage_cancel_sale_url(order)
     else:
+        if order_has_dtf_film(order):
+            messages.warning(request, DTF_GARMENT_WRITEOFF_ERROR)
+            return redirect(_orders_return_url(order))
         url = build_storage_writeoff_url(order)
 
     if not url:

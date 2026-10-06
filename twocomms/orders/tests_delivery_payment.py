@@ -12,6 +12,29 @@ from management.services.ig_order_amounts import order_amounts
 
 
 class DeliveryPaymentContractTests(SimpleTestCase):
+    def test_film_metres_rounding_and_material_identity_are_bound(self):
+        film = {'item_kind': 'dtf_film', 'film_length_m': '1.25', 'qty': 1,
+                'unit_price': '320.00', 'line_total': '400.00', 'title': 'DTF плівка TwoComms'}
+        contract = build_delivery_payment_contract(mode='merchant_free', merchandise_total='400',
+            actor_id=41, item_rows=[film])
+        order = SimpleNamespace(total_sum='400', discount_amount='0', payment_payload={'delivery_payment': contract})
+        self.assertTrue(delivery_payment_snapshot(order, item_rows=[film])['valid'])
+        changed = {**film, 'film_length_m': '2.50', 'unit_price': '160.00'}
+        self.assertEqual(delivery_payment_snapshot(order, item_rows=[changed])['reason'], 'delivery_items_changed')
+        clothing = {**film, 'item_kind': 'clothing', 'unit_price': '400.00'}
+        self.assertEqual(delivery_payment_snapshot(order, item_rows=[clothing])['reason'], 'delivery_items_changed')
+        tiny = {**film, 'film_length_m': '0.01', 'unit_price': '320.50', 'line_total': '3.21'}
+        rounded = build_delivery_payment_contract(mode='merchant_free', merchandise_total='3.21', actor_id=41, item_rows=[tiny])
+        self.assertEqual(rounded['merchandise_total'], '3.21')
+
+    def test_invalid_film_length_shape_cannot_sign_shipping_contract(self):
+        film = {'item_kind': 'dtf_film', 'film_length_m': '1.25', 'qty': 1,
+                'unit_price': '320.00', 'line_total': '400.00'}
+        for changes in ({'qty': 2}, {'film_length_m': '0'}, {'film_length_m': 'NaN'},
+                        {'film_length_m': '1.234'}, {'film_length_m': '1000000'}, {'line_total': '320'}):
+            with self.subTest(changes=changes), self.assertRaises(DeliveryPaymentError):
+                build_delivery_payment_contract(mode='merchant_free', merchandise_total='400', actor_id=41, item_rows=[{**film, **changes}])
+
     def order(self, mode="carrier_recipient", fee="0", *, confirmed=None, allocated=None,
               authority="manual_manager", items=None):
         contract = build_delivery_payment_contract(mode=mode, merchandise_total="850.00", delivery_amount=fee,

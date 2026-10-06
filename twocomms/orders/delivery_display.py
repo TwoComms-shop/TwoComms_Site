@@ -42,6 +42,8 @@ class NovaPoshtaPointDisplay:
     def telegram_text(self) -> str:
         """Compact, escaped HTML-safe block for Telegram messages."""
         city = html.escape(self.city or "—")
+        if self.kind == "handover":
+            return f"{self.icon} <b>{html.escape(self.kind_label)}</b>\n   {html.escape(self.address)}"
         if self.kind == "missing":
             city_line = f"\n   📍 {city}" if self.city else ""
             return f"{self.icon} <b>{html.escape(self.kind_label)}</b>{city_line}"
@@ -49,7 +51,7 @@ class NovaPoshtaPointDisplay:
         address = html.escape(self.address or self.raw_label or "—")
         if self.number:
             number_badge = f" · <b>№ {html.escape(self.number)}</b>"
-        elif self.kind == "address":
+        elif self.kind in {"address", "manual", "handover"}:
             number_badge = ""
         else:
             number_badge = " · <b>номер не вказано</b>"
@@ -64,6 +66,8 @@ class NovaPoshtaPointDisplay:
     def telegram_pre_lines(self) -> str:
         """Fixed-width-friendly lines used by the admin order card."""
         city = html.escape(self.city or "—")
+        if self.kind == "handover":
+            return f"│     {self.icon} {html.escape(self.kind_label)}\n│     {html.escape(self.address)}\n"
         if self.kind == "missing":
             city_line = f"│     📍 Місто: {city}\n" if self.city else ""
             return f"│     {self.icon} {html.escape(self.kind_label)}\n{city_line}"
@@ -154,6 +158,21 @@ def build_nova_poshta_point(city: Any = "", label: Any = "", *, kind: Any = "") 
 
 def get_order_nova_poshta_point(order: Any) -> NovaPoshtaPointDisplay:
     """Resolve the recipient point for an Order-like object."""
+    method = getattr(order, "delivery_method", "nova_poshta") or "nova_poshta"
+    if method in {"manual", "handover"}:
+        is_handover = method == "handover"
+        label = str(getattr(order, "handover_details", "") or "") if is_handover else str(getattr(order, "np_office", "") or "")
+        title = "Передача з рук у руки" if is_handover else "Доставка вручну"
+        return NovaPoshtaPointDisplay(
+            city="" if is_handover else str(getattr(order, "city", "") or ""),
+            raw_label=label,
+            kind=method,
+            kind_label=title,
+            icon="🤝" if is_handover else "📍",
+            number="",
+            title=title,
+            address=label or ("Місце й час узгоджуються" if is_handover else "Адреса не вказана"),
+        )
     label = getattr(order, "np_office", "")
     explicit_kind = getattr(order, "np_warehouse_kind", "")
     if not explicit_kind and getattr(order, "np_warehouse_ref", "") and not (

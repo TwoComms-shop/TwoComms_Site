@@ -1,6 +1,7 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models, IntegrityError, transaction
 from django.db.models import Max
 from django.utils.translation import gettext_lazy as _
@@ -47,6 +48,12 @@ class Order(models.Model):
         ('manual', _('Створено вручну')),
     ]
 
+    DELIVERY_METHOD_CHOICES = [
+        ('nova_poshta', _('Нова Пошта')),
+        ('manual', _('Адреса вручну')),
+        ('handover', _('Передача / самовивіз')),
+    ]
+
     # Пресети джерела продажу для ручних замовлень (UI-підказки).
     # Поле ``sale_source`` лишається вільним текстом, тому оператор може
     # обрати варіант зі списку або вписати власний.
@@ -69,6 +76,8 @@ class Order(models.Model):
     email = models.EmailField(max_length=254, blank=True, null=True, db_index=True, verbose_name='Email')
     city = models.CharField(max_length=100)
     np_office = models.CharField(max_length=200)
+    delivery_method = models.CharField(max_length=20, choices=DELIVERY_METHOD_CHOICES, default='nova_poshta')
+    handover_details = models.TextField(blank=True, default='')
     np_settlement_ref = models.CharField(max_length=36, blank=True)
     np_city_ref = models.CharField(max_length=36, blank=True)
     np_warehouse_ref = models.CharField(max_length=36, blank=True)
@@ -246,6 +255,10 @@ class Order(models.Model):
     def is_manual(self):
         """Замовлення створене вручну адміністратором (не через сайт)."""
         return self.source == 'manual'
+
+    @property
+    def contains_dtf_film(self):
+        return any(item.is_dtf_film for item in self.items.all())
 
     def get_payment_status_display(self):
         """Возвращает отображаемое название статуса оплаты"""
@@ -663,10 +676,14 @@ class PaymentSideEffectJob(models.Model):
 
 
 class OrderItem(models.Model):
+    ITEM_KIND_CHOICES = [('clothing', _('Одяг')), ('dtf_film', _('DTF плівка'))]
+
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.PROTECT, null=True, blank=True)
     color_variant = models.ForeignKey(ProductColorVariant, on_delete=models.PROTECT, null=True, blank=True)
     title = models.CharField(max_length=200)
+    item_kind = models.CharField(max_length=20, choices=ITEM_KIND_CHOICES, default='clothing')
+    film_length_m = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
     size = models.CharField(max_length=16, blank=True)
     fit_option_code = models.CharField(max_length=50, blank=True, default='')
     fit_option_label = models.CharField(max_length=100, blank=True, default='')
@@ -680,7 +697,56 @@ class OrderItem(models.Model):
     color_name_custom = models.CharField(max_length=100, blank=True, default='', verbose_name='Колір (для позиції поза каталогом)')
 
     def __str__(self):
+        if self.is_dtf_film:
+            return f'{self.title} · {self.film_length_display} м'
         return f'{self.title} × {self.qty}'
+
+    @property
+    def is_dtf_film(self):
+        return self.item_kind == 'dtf_film'
+
+    @property
+    def film_length_display(self):
+        return format(Decimal(self.film_length_m or 0), '.2f').rstrip('0').rstrip('.')
+
+    def _prepare_film_line(self):
+        if not self.is_dtf_film:
+            return
+        try:
+            length = Decimal(str(self.film_length_m))
+            price = Decimal(str(self.unit_price if self.unit_price is not None else 320))
+            valid = (
+                length.is_finite() and price.is_finite()
+                and Decimal('0') < length <= Decimal('999999.99')
+                and Decimal('0') <= price <= Decimal('9999999999.99')
+                and length == length.quantize(Decimal('.01'))
+                and price == price.quantize(Decimal('.01'))
+            )
+            total = (length * price).quantize(Decimal('.01'), rounding=ROUND_HALF_UP) if valid else None
+            if not valid or total > Decimal('9999999999.99'):
+                raise ValueError
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValidationError({'film_length_m': 'Вкажіть коректну довжину та ціну DTF плівки.'})
+        self.title = 'DTF плівка TwoComms'
+        self.film_length_m, self.unit_price, self.line_total = length, price, total
+        self.qty, self.is_custom = 1, True
+        self.product, self.color_variant = None, None
+        self.size = self.fit_option_code = self.fit_option_label = self.color_name_custom = ''
+        self.option_values, self.option_labels = {}, {}
+
+    def clean(self):
+        super().clean()
+        self._prepare_film_line()
+
+    def save(self, *args, **kwargs):
+        self._prepare_film_line()
+        if self.is_dtf_film and kwargs.get('update_fields') is not None:
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {
+                'item_kind', 'title', 'film_length_m', 'unit_price', 'line_total', 'qty', 'is_custom',
+                'product', 'color_variant', 'size', 'fit_option_code', 'fit_option_label',
+                'color_name_custom', 'option_values', 'option_labels',
+            }
+        return super().save(*args, **kwargs)
 
     def get_offer_id(self):
         """Генерирует offer_id для синхронизации с Google Merchant Feed и пикселями"""

@@ -6,6 +6,18 @@
 
 {% block extra_css %}
 <style>
+  .mo-page [hidden] { display: none !important; }
+  .mo-film-box { padding: 18px; border: 1px solid rgba(45,212,191,.35); border-radius: 16px; background: linear-gradient(135deg,rgba(20,184,166,.12),rgba(13,23,36,.5)); }
+  .mo-film-box h3 { margin: 0 0 6px; color: #99f6e4; font-size: 18px; }
+  .mo-film-quick { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+  .mo-film-quick button { min-height:44px; padding:8px 14px; border:1px solid var(--mo-line-strong); border-radius:12px; background:var(--mo-surface-2); color:var(--mo-text); }
+  .mo-film-quick button.is-active { border-color:#2dd4bf; color:#99f6e4; }
+  .mo-line--film { border-color:rgba(45,212,191,.4); background:rgba(20,184,166,.06); }
+  .mo-film-icon { display:grid; place-items:center; color:#99f6e4; font-size:24px; background:rgba(20,184,166,.15); }
+  .mo-payment-contract { border-top:1px solid var(--mo-line); padding-top:16px; margin:16px 0; }
+  .mo-payment-result { margin-top:12px; padding:12px 14px; border-radius:12px; background:rgba(52,211,153,.08); color:#a7f3d0; }
+  .mo-check { display:flex; align-items:center; gap:10px; min-height:44px; cursor:pointer; }
+  .mo-check input { width:20px; height:20px; accent-color:#f97316; }
   .mo-page {
     --mo-bg: #0a121d;
     --mo-surface: rgba(13, 23, 36, 0.92);
@@ -524,6 +536,7 @@
   .mo-source-chip.is-active { color: var(--mo-text); border-color: var(--mo-accent); background: var(--mo-accent-soft); }
 
   @media (max-width: 640px) {
+    .mo-input, .mo-select, .mo-textarea { font-size: 16px; }
     .mo-grid { grid-template-columns: 1fr; }
     .mo-card { padding: 16px; border-radius: 18px; }
     .mo-summary { flex-direction: column; align-items: stretch; }
@@ -604,6 +617,7 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
         Ввести вручну
       </button>
+      <button type="button" class="mo-delivery-tab" data-delivery-tab="handover">Передати в руки</button>
     </div>
 
     <!-- Нова Пошта (автокомпліт) -->
@@ -651,8 +665,15 @@
         <div class="mo-field">
           <label class="mo-label" for="moManualOffice">Адреса / відділення<span class="req">*</span></label>
           <input type="text" id="moManualOffice" class="mo-input" placeholder="Напр. Відділення №12, вул. Хрещатик 1, Укрпошта…" autocomplete="off">
-          <div class="mo-field-hint">Ручний спосіб — без автоматичної ТТН. Її можна буде створити пізніше.</div>
+          <div class="mo-field-hint">Інша пошта або кур’єр. Для ТТН Нової пошти спершу змініть спосіб доставки.</div>
         </div>
+      </div>
+    </div>
+    <div class="mo-delivery-pane" data-delivery-pane="handover">
+      <div class="mo-field">
+        <label class="mo-label" for="moHandoverDetails">Кому і як передаємо<span class="req">*</span></label>
+        <textarea id="moHandoverDetails" class="mo-textarea" maxlength="1000" placeholder="Наприклад: передати Олені при зустрічі або залишити Андрію в майстерні"></textarea>
+        <div class="mo-field-hint">Адреса та відділення не потрібні. Домовленість буде збережена в замовленні.</div>
       </div>
     </div>
     <div class="mo-shipping-payment" id="moShippingPayment">
@@ -660,13 +681,13 @@
         <legend class="mo-label">Хто оплачує доставку</legend>
         <div class="mo-shipping-options">
           <label class="mo-preset"><input type="radio" name="delivery_payment_mode" value="carrier_recipient" checked><span>Клієнт перевізнику<small>Окремо при отриманні. Доставка не входить у платіж магазину.</small></span></label>
-          <label class="mo-preset"><input type="radio" name="delivery_payment_mode" value="customer_prepaid"><span>Доставка в оплаті магазину<small>Клієнт платить за доставку TwoComms. Перевізнику платить TwoComms.</small></span></label>
+          <label class="mo-preset"><input type="radio" name="delivery_payment_mode" value="customer_prepaid"><span>Доставка вже оплачена нам<small>Сума доставки вже отримана від клієнта. Перевізнику платить TwoComms.</small></span></label>
           <label class="mo-preset"><input type="radio" name="delivery_payment_mode" value="merchant_free"><span>Безкоштовна для клієнта<small>Витрати доставки бере на себе TwoComms.</small></span></label>
         </div>
       </fieldset>
       <div class="mo-field mo-shipping-charge" id="moShippingChargeWrap" hidden>
         <label class="mo-label" for="moShippingCharge">Доставка в оплаті клієнта, грн</label>
-        <input type="number" id="moShippingCharge" class="mo-input" min="0.01" step="0.01" inputmode="decimal" placeholder="Напр. 120">
+        <input type="text" id="moShippingCharge" class="mo-input" min="0.01" step="0.01" inputmode="decimal" placeholder="Напр. 120">
       </div>
       <p class="mo-field-hint" id="moShippingPolicyNote" aria-live="polite"></p>
       <p class="mo-field-hint" id="moShippingPolicyLock" hidden>Умови доставки прив’язані до погоджених умов із переписки. Для зміни потрібна повторна звірка умов та оплати.</p>
@@ -679,13 +700,14 @@
       <span class="mo-card__index">3</span>
       <div>
         <h2 class="mo-card__title">Товари</h2>
-        <p class="mo-card__hint">Додайте товари з каталогу або вкажіть позицію вручну</p>
+        <p class="mo-card__hint">Одяг з каталогу, власна позиція або DTF-плівка на метраж</p>
       </div>
     </div>
 
     <div class="mo-item-tabs">
       <button type="button" class="mo-item-tab is-active" data-picker-tab="catalog">З каталогу</button>
       <button type="button" class="mo-item-tab" data-picker-tab="custom">Поза каталогом</button>
+      <button type="button" class="mo-item-tab" data-picker-tab="dtf_film">DTF-плівка</button>
     </div>
 
     <div class="mo-picker-pane is-active" data-picker-pane="catalog">
@@ -720,6 +742,28 @@
       <button type="button" class="mo-add-custom-btn" id="moAddCustom">+ Додати позицію</button>
     </div>
 
+    <div class="mo-picker-pane" data-picker-pane="dtf_film">
+      <div class="mo-film-box">
+        <h3>DTF-плівка TwoComms</h3>
+        <p class="mo-card__hint">Ширина 60 см · продаж погонними метрами · пакування в тубус</p>
+        <div class="mo-grid" style="margin-top:16px">
+          <div class="mo-field">
+            <label class="mo-label" for="moFilmLength">Метраж, м<span class="req">*</span></label>
+            <input id="moFilmLength" class="mo-input" type="text" inputmode="decimal" value="1" maxlength="9" autocomplete="off" aria-describedby="moFilmLengthHint">
+            <div class="mo-field-hint" id="moFilmLengthHint">Можна 1,4 або 1.45 · точність до 0,01 м</div>
+          </div>
+          <div class="mo-field">
+            <label class="mo-label" for="moFilmPrice">Ціна за погонний метр, грн<span class="req">*</span></label>
+            <input id="moFilmPrice" class="mo-input" type="text" inputmode="decimal" value="320" maxlength="10" autocomplete="off">
+          </div>
+        </div>
+        <div class="mo-film-quick" aria-label="Швидкий вибір метражу">
+          <button type="button" data-film-metres="0.5">0,5 м</button><button type="button" data-film-metres="1" class="is-active">1 м</button><button type="button" data-film-metres="1.5">1,5 м</button><button type="button" data-film-metres="2">2 м</button><button type="button" data-film-metres="5">5 м</button>
+        </div>
+        <p class="mo-payment-result" id="moFilmPreview" aria-live="polite">1 м × 320 грн = 320 грн</p>
+        <button type="button" class="mo-add-custom-btn" id="moAddFilm">+ Додати DTF-плівку</button>
+      </div>
+    </div>
     <div class="mo-items-divider"></div>
     <div class="mo-items" id="moItems"></div>
     <p class="mo-empty-hint" id="moItemsEmpty">Ще не додано жодного товару.</p>
@@ -764,6 +808,22 @@
       </div>
     </div>
 
+    <div class="mo-payment-contract">
+      <div class="mo-field" id="moPaidAmountField" hidden>
+        <label class="mo-label" for="moPaidAmount">Вже отримано за товар, грн</label>
+        <input id="moPaidAmount" class="mo-input" type="text" inputmode="decimal" value="0" autocomplete="off">
+        <div class="mo-field-hint">Підтверджена вами сума. Вартість доставки сюди не включайте.</div>
+      </div>
+      <div id="moCarrierPayment">
+        <label class="mo-check"><input id="moCodEnabled" type="checkbox" checked> Стягнути залишок післяплатою в Новій пошті</label>
+        <div class="mo-grid" style="margin-top:12px">
+          <div class="mo-field"><label class="mo-label" for="moDeliveryPayer">Платник у ТТН за умовами доставки</label><select id="moDeliveryPayer" class="mo-select" disabled><option value="Recipient">Одержувач</option><option value="Sender">Ми (відправник)</option></select></div>
+          <div class="mo-field"><label class="mo-label" for="moDeliveryPayment">Як оплачується доставка</label><select id="moDeliveryPayment" class="mo-select"><option value="Cash">Оплата при відправленні / отриманні</option><option value="NonCash">Безготівково з рахунку НП</option></select></div>
+        </div>
+        <div class="mo-field-hint">Безготівкова оплата потребує відповідного договору з Новою поштою.</div>
+      </div>
+      <div class="mo-payment-result" id="moPaymentPreview" aria-live="polite"></div>
+    </div>
     <div class="mo-field mo-field--full">
       <label class="mo-label" for="moSaleSource">Джерело продажу</label>
       <div class="mo-sale-source-wrap">
@@ -784,7 +844,7 @@
 
   <div class="mo-summary">
     <div class="mo-summary__total">
-      Разом до сплати
+      Разом із доставкою
       <b><span id="moTotal">0</span> грн</b>
       <span id="moShippingBreakdown" class="mo-field-hint" aria-live="polite"></span>
       <span id="moAllocationStatus" class="mo-field-hint" aria-live="polite"></span>
@@ -845,17 +905,22 @@
     document.getElementById('moPhone').value = initial.phone || '';
     document.getElementById('moSaleSource').value = initial.sale_source || '';
     document.getElementById('moComment').value = initial.manager_comment || '';
-    if (initial.delivery_method === 'manual') {
-      deliveryMethod = 'manual';
+    if (initial.delivery_method === 'manual' || initial.delivery_method === 'handover') {
+      deliveryMethod = initial.delivery_method;
       page.querySelectorAll('[data-delivery-tab]').forEach(function (tab) {
-        tab.classList.toggle('is-active', tab.dataset.deliveryTab === 'manual');
+        tab.classList.toggle('is-active', tab.dataset.deliveryTab === deliveryMethod);
       });
       page.querySelectorAll('[data-delivery-pane]').forEach(function (pane) {
-        pane.classList.toggle('is-active', pane.dataset.deliveryPane === 'manual');
+        pane.classList.toggle('is-active', pane.dataset.deliveryPane === deliveryMethod);
       });
       document.getElementById('moManualCity').value = initial.city || '';
       document.getElementById('moManualOffice').value = initial.np_office || '';
+      document.getElementById('moHandoverDetails').value = initial.handover_details || '';
     }
+    document.getElementById('moPaidAmount').value = initial.merchandise_paid_amount || initial.paid_amount || '0';
+    document.getElementById('moDeliveryPayer').value = initial.delivery_payer_type || 'Recipient';
+    document.getElementById('moDeliveryPayment').value = initial.delivery_payment_method || 'Cash';
+    document.getElementById('moCodEnabled').checked = typeof initial.cod_enabled === 'boolean' ? initial.cod_enabled : ['cod', 'prepaid_200', 'partial_manual', 'manager_prepayment', 'provider_prepayment'].indexOf(initial.payment_preset || 'cod') >= 0;
     if (initial.payment_preset) {
       var radio = page.querySelector('input[name="payment_preset"][value="' + initial.payment_preset + '"]');
       if (radio) {
@@ -907,6 +972,36 @@
     return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('uk-UA');
   }
 
+  function decimalValue(raw) {
+    var text = String(raw == null ? '' : raw).trim().replace(',', '.');
+    return /^\d+(?:\.\d{1,2})?$/.test(text) && Number.isFinite(Number(text)) ? Number(text) : NaN;
+  }
+  function lineTotal(it) {
+    var price = decimalValue(it.unit_price);
+    var quantity = it.kind === 'dtf_film' ? decimalValue(it.film_length_m) : Number(it.qty);
+    return Math.round((price * quantity + Number.EPSILON) * 100) / 100 || 0;
+  }
+  function orderTotal() { return items.reduce(function (sum, it) { return sum + lineTotal(it); }, 0); }
+  function currentPreset() { return (page.querySelector('input[name="payment_preset"]:checked') || {}).value || 'cod'; }
+  function updatePaymentPreview() {
+    var preset = currentPreset();
+    var total = Math.max(0, orderTotal() - (initial ? Number(initial.discount_amount) || 0 : 0));
+    var paid = initial && initial.review_id ? Math.min(total, decimalValue(initial.merchandise_paid_amount || initial.paid_amount) || 0) : ['paid_full', 'free'].indexOf(preset) >= 0 ? total : preset === 'prepaid_200' ? Math.min(Math.max(0, 200 - shippingCharge()), total) : ['partial_manual', 'manager_prepayment', 'provider_prepayment'].indexOf(preset) >= 0 ? decimalValue(document.getElementById('moPaidAmount').value) || 0 : 0;
+    var remaining = Math.max(0, Math.round((total - paid) * 100) / 100);
+    var isNp = deliveryMethod === 'np';
+    var cod = document.getElementById('moCodEnabled');
+    if (['paid_full', 'free'].indexOf(preset) >= 0) cod.checked = false;
+    cod.disabled = !!(initial && initial.review_id) || ['paid_full', 'free'].indexOf(preset) >= 0;
+    document.getElementById('moDeliveryPayer').value = shippingPaymentMode() === 'carrier_recipient' ? 'Recipient' : 'Sender';
+    document.getElementById('moDeliveryPayer').disabled = true;
+    document.getElementById('moShippingPayment').hidden = deliveryMethod === 'handover';
+    document.getElementById('moDeliveryPayment').disabled = !!(initial && initial.review_id);
+    document.getElementById('moPaidAmountField').hidden = ['partial_manual', 'manager_prepayment', 'provider_prepayment'].indexOf(preset) < 0;
+    document.getElementById('moPaidAmount').readOnly = ['manager_prepayment', 'provider_prepayment'].indexOf(preset) >= 0;
+    document.getElementById('moCarrierPayment').hidden = !isNp;
+    document.getElementById('moPaymentPreview').textContent = 'Товари: ' + fmt(total) + ' грн · Отримано: ' + fmt(paid) + ' грн · ' + (isNp && cod.checked ? 'Післяплата: ' : 'Залишок до оплати: ') + fmt(remaining) + ' грн' + (isNp ? ' · Доставка: ' + (document.getElementById('moDeliveryPayer').value === 'Sender' ? 'за наш рахунок' : 'за рахунок одержувача') : '');
+  }
+
   // ── tabs (catalog / custom) ────────────────────────────
   page.querySelectorAll('[data-picker-tab]').forEach(function (tab) {
     tab.addEventListener('click', function () {
@@ -927,6 +1022,7 @@
       page.querySelectorAll('[data-delivery-pane]').forEach(function (pane) {
         pane.classList.toggle('is-active', pane.dataset.deliveryPane === deliveryMethod);
       });
+      updateTotal();
     });
   });
 
@@ -1080,6 +1176,7 @@
 
   // ── add items ──────────────────────────────────────────
   function addCatalogItem(p) {
+    if (items.some(function (it) { return it.kind === 'dtf_film'; })) { flash('Одяг і DTF-плівку оформіть окремими замовленнями: вони мають різне пакування.', 'error'); return; }
     var item = {
       uid: uidSeq++,
       kind: 'catalog',
@@ -1103,6 +1200,7 @@
   }
 
   document.getElementById('moAddCustom').addEventListener('click', function () {
+    if (items.some(function (it) { return it.kind === 'dtf_film'; })) { flash('Одяг і DTF-плівку оформіть окремими замовленнями: вони мають різне пакування.', 'error'); return; }
     var title = document.getElementById('moCustomTitle').value.trim();
     var price = document.getElementById('moCustomPrice').value;
     var size = document.getElementById('moCustomSize').value.trim();
@@ -1129,6 +1227,25 @@
   });
 
   // ── render added items ─────────────────────────────────
+  var filmLength = document.getElementById('moFilmLength');
+  var filmPrice = document.getElementById('moFilmPrice');
+  function updateFilmPreview() {
+    var metres = decimalValue(filmLength.value), rate = decimalValue(filmPrice.value);
+    document.getElementById('moFilmPreview').textContent = metres > 0 && rate > 0 ? fmt(metres) + ' м × ' + fmt(rate) + ' грн = ' + fmt(lineTotal({kind:'dtf_film', film_length_m:metres, unit_price:rate})) + ' грн' : 'Вкажіть додатний метраж і ціну (до двох знаків після коми).';
+    page.querySelectorAll('[data-film-metres]').forEach(function (btn) { btn.classList.toggle('is-active', decimalValue(btn.dataset.filmMetres) === metres); });
+  }
+  filmLength.addEventListener('input', updateFilmPreview);
+  filmPrice.addEventListener('input', updateFilmPreview);
+  page.querySelectorAll('[data-film-metres]').forEach(function (btn) {
+    btn.addEventListener('click', function () { filmLength.value = btn.dataset.filmMetres.replace('.', ','); updateFilmPreview(); });
+  });
+  document.getElementById('moAddFilm').addEventListener('click', function () {
+    if (items.some(function (it) { return it.kind !== 'dtf_film'; })) { flash('Одяг і DTF-плівку оформіть окремими замовленнями: вони мають різне пакування.', 'error'); return; }
+    var metres = decimalValue(filmLength.value), rate = decimalValue(filmPrice.value);
+    if (!(metres > 0 && metres <= 999999.99 && rate > 0)) { flash('Вкажіть коректний метраж та ціну DTF-плівки (до двох знаків після коми).', 'error'); return; }
+    items.push({uid:uidSeq++, kind:'dtf_film', title:'DTF плівка TwoComms', unit_price:rate, film_length_m:metres, qty:1, size:'', color_name:''});
+    renderItems();
+  });
   var itemsEl = document.getElementById('moItems');
   var itemsEmptyEl = document.getElementById('moItemsEmpty');
 
@@ -1138,13 +1255,13 @@
 
     items.forEach(function (it) {
       var line = document.createElement('div');
-      line.className = 'mo-line';
+      line.className = 'mo-line' + (it.kind === 'dtf_film' ? ' mo-line--film' : '');
 
       var imgHtml = it.image
         ? '<img src="' + it.image + '" class="mo-line__img" alt="">'
-        : '<div class="mo-line__img"></div>';
+        : '<div class="mo-line__img' + (it.kind === 'dtf_film' ? ' mo-film-icon' : '') + '">' + (it.kind === 'dtf_film' ? '▱' : '') + '</div>';
 
-      var tag = it.kind === 'custom'
+      var tag = it.kind === 'dtf_film' ? '<span class="mo-line__tag" style="color:#99f6e4;background:rgba(20,184,166,.15)">DTF · ширина 60 см · тубус</span>' : it.kind === 'custom'
         ? '<span class="mo-line__tag mo-line__tag--custom">Поза каталогом</span>'
         : '<span class="mo-line__tag mo-line__tag--catalog">Каталог</span>';
       if (it.kind === 'catalog' && it.is_thermo) {
@@ -1154,9 +1271,9 @@
       var fields = '';
 
       // price
-      fields += field('Ціна, грн', '<input type="number" class="mo-input" min="0.01" step="0.01" value="' + (it.unit_price === '' ? '' : it.unit_price) + '" data-edit="unit_price">');
+      fields += field(it.kind === 'dtf_film' ? 'Ціна за метр, грн' : 'Ціна, грн', '<input type="text" inputmode="decimal" class="mo-input" value="' + escapeHtml(it.unit_price === '' ? '' : it.unit_price) + '" data-edit="unit_price">');
       // qty
-      fields += field('Кількість', '<input type="number" class="mo-input" min="1" step="1" value="' + it.qty + '" data-edit="qty">');
+      fields += it.kind === 'dtf_film' ? field('Метраж, м', '<input type="text" inputmode="decimal" class="mo-input" value="' + escapeHtml(it.film_length_m) + '" data-edit="film_length_m">') : field('Кількість', '<input type="number" class="mo-input" min="1" step="1" value="' + it.qty + '" data-edit="qty">');
 
       if (it.kind === 'catalog') {
         if (it.fits && it.fits.length) {
@@ -1181,7 +1298,7 @@
           }).join('');
           fields += field('Колір', '<select class="mo-select" data-edit="color_variant_id">' + colorOpts + '</select>');
         }
-      } else {
+      } else if (it.kind !== 'dtf_film') {
         if (it.fit_option_code || it.fit_option_label) {
           var customFits = [{code: 'oversize', label: 'Оверсайз'}, {code: 'classic', label: 'Класична'}];
           if (!customFits.some(function (fit) { return fit.code === it.fit_option_code; })) {
@@ -1207,7 +1324,7 @@
           '</button>' +
         '</div>' +
         '<div class="mo-line__grid">' + fields + '</div>' +
-        '<div class="mo-line__sub">Сума: <b>' + (it.unit_price === '' ? '—' : fmt(Number(it.unit_price) * it.qty) + ' грн') + '</b></div>';
+        '<div class="mo-line__sub">Сума: <b>' + (it.unit_price === '' ? '—' : fmt(lineTotal(it)) + ' грн') + '</b></div>';
 
       // bind edits
       line.querySelectorAll('[data-edit]').forEach(function (input) {
@@ -1234,7 +1351,7 @@
     var val = input.value;
     if (key === 'unit_price') {
       if (val === '') { it.unit_price = ''; }
-      else { it.unit_price = Math.max(0, Number(val) || 0); }
+      else { it.unit_price = val; }
     }
     else if (key === 'qty') { it.qty = Math.max(1, parseInt(val, 10) || 1); }
     else {
@@ -1254,13 +1371,13 @@
     var line = input.closest('.mo-line');
     if (line) {
       var sub = line.querySelector('.mo-line__sub b');
-      if (sub) sub.textContent = it.unit_price === '' ? '—' : fmt(Number(it.unit_price) * it.qty) + ' грн';
+      if (sub) sub.textContent = it.unit_price === '' ? '—' : fmt(lineTotal(it)) + ' грн';
     }
     updateTotal();
   }
 
   function updateTotal() {
-    var total = items.reduce(function (acc, it) { return acc + (Number(it.unit_price) || 0) * it.qty; }, 0);
+    var total = orderTotal();
     var mode = shippingPaymentMode();
     var charge = shippingCharge();
     var discount = initial ? Math.max(0, Number(initial.discount_amount) || 0) : 0;
@@ -1271,12 +1388,13 @@
       label.classList.toggle('is-active', label.querySelector('input').checked);
     });
     document.getElementById('moShippingPolicyNote').textContent = !mode ? 'Умови доставки потребують звірки. Оберіть, хто оплачує перевізнику і чи включено доставку в платіж магазину.' : mode === 'customer_prepaid'
-      ? 'Сума доставки включена в платіж клієнта. Спочатку підтвердьте оплату або передплату, що покриває доставку; неоплачене замовлення не підтверджує її оплату.'
+      ? 'Вибираючи цей варіант, ви підтверджуєте отримання суми доставки. Оплату товарів указуйте окремо нижче. У ТТН платник доставки — TwoComms.'
       : mode === 'merchant_free' ? 'Для клієнта доставка безкоштовна. У ТТН платник — TwoComms (відправник).'
         : 'Клієнт оплачує доставку перевізнику окремо. У ТТН платник — одержувач.';
+    updatePaymentPreview();
     var overrideBox = document.getElementById('moPriceOverride');
     var quoted = initial && initial.quoted_total ? Number(initial.quoted_total) : 0;
-    var incomplete = items.some(function (it) { return it.unit_price === '' || Number(it.unit_price) <= 0; });
+    var incomplete = items.some(function (it) { return !(decimalValue(it.unit_price) > 0) || (it.kind === 'dtf_film' && !(decimalValue(it.film_length_m) > 0)); });
     var allocation = document.getElementById('moAllocationStatus');
     if (allocation && quoted > 0) {
       var remaining = quoted - total;
@@ -1289,11 +1407,12 @@
   }
 
   function shippingPaymentMode() {
+    if (deliveryMethod === 'handover') return 'carrier_recipient';
     return (page.querySelector('input[name="delivery_payment_mode"]:checked') || {}).value || '';
   }
 
   function shippingCharge() {
-    return shippingPaymentMode() === 'customer_prepaid' ? Math.max(0, Number(document.getElementById('moShippingCharge').value) || 0) : 0;
+    return shippingPaymentMode() === 'customer_prepaid' ? Math.max(0, decimalValue(document.getElementById('moShippingCharge').value) || 0) : 0;
   }
 
   page.querySelectorAll('input[name="delivery_payment_mode"]').forEach(function (radio) {
@@ -1308,7 +1427,13 @@
       label.classList.add('is-active');
       var radio = label.querySelector('input');
       if (radio) radio.checked = true;
+      document.getElementById('moCodEnabled').checked = ['cod', 'prepaid_200', 'partial_manual', 'manager_prepayment', 'provider_prepayment'].indexOf(currentPreset()) >= 0;
+      updatePaymentPreview();
     });
+  });
+  ['moPaidAmount', 'moCodEnabled', 'moDeliveryPayer', 'moDeliveryPayment'].forEach(function (id) {
+    document.getElementById(id).addEventListener('input', updatePaymentPreview);
+    document.getElementById(id).addEventListener('change', updatePaymentPreview);
   });
 
   // ── sale source chips ──────────────────────────────────
@@ -1361,18 +1486,26 @@
       delivery_method: deliveryMethod,
       delivery_payment_mode: shippingPaymentMode(),
       delivery_charge_amount: shippingCharge().toFixed(2),
+      delivery_paid_confirmed: shippingPaymentMode() === 'customer_prepaid',
       payment_preset: (page.querySelector('input[name="payment_preset"]:checked') || {}).value || 'cod',
       sale_source: saleInput.value.trim(),
       manager_comment: document.getElementById('moComment').value.trim(),
       payment_review_id: initial && initial.review_id ? initial.review_id : ''
     };
+    payload.delivery_payer_type = document.getElementById('moDeliveryPayer').value;
+    payload.delivery_payment_method = document.getElementById('moDeliveryPayment').value;
+    payload.cod_enabled = deliveryMethod === 'np' && document.getElementById('moCodEnabled').checked;
+    if (currentPreset() === 'partial_manual') payload.paid_amount = document.getElementById('moPaidAmount').value;
     var pageRoot = document.querySelector('.mo-page');
     if (pageRoot && pageRoot.dataset.igClientId) {
       payload.ig_client_id = pageRoot.dataset.igClientId;
       payload.ig_client_token = pageRoot.dataset.igClientToken || '';
     }
 
-    if (deliveryMethod === 'manual') {
+    if (deliveryMethod === 'handover') {
+      payload.handover_details = document.getElementById('moHandoverDetails').value.trim();
+      if (!payload.handover_details) { flash('Вкажіть, кому і як передаємо замовлення.', 'error'); return; }
+    } else if (deliveryMethod === 'manual') {
       var mCity = document.getElementById('moManualCity').value.trim();
       var mOffice = document.getElementById('moManualOffice').value.trim();
       if (!mCity || !mOffice) {
@@ -1398,7 +1531,9 @@
     }
 
     if (!items.length) { flash('Додайте хоча б один товар.', 'error'); return; }
-    if (items.some(function (it) { return it.unit_price === '' || Number(it.unit_price) <= 0; })) {
+    if (items.some(function (it) { return it.kind === 'dtf_film' && !(decimalValue(it.film_length_m) > 0); })) { flash('Вкажіть додатний метраж DTF-плівки з точністю до 0,01 м.', 'error'); return; }
+    if (currentPreset() === 'partial_manual' && !(decimalValue(payload.paid_amount) > 0 && decimalValue(payload.paid_amount) < orderTotal())) { flash('Часткова оплата має бути більшою за нуль і меншою за вартість товарів.', 'error'); document.getElementById('moPaidAmount').focus(); return; }
+    if (items.some(function (it) { return !(decimalValue(it.unit_price) > 0) || (it.kind === 'dtf_film' && !(decimalValue(it.film_length_m) > 0)); })) {
       flash('Ціни всіх позицій мають бути більшими за нуль.', 'error');
       var missingPrice = page.querySelector('[data-edit="unit_price"][value=""]');
       if (missingPrice) missingPrice.focus();
@@ -1406,11 +1541,12 @@
     }
 
     payload.items = items.map(function (it) {
+      if (it.kind === 'dtf_film') return {kind:'dtf_film', film_length_m:it.film_length_m, unit_price:it.unit_price};
       if (it.kind === 'custom') {
         return {
           kind: 'custom',
           title: it.title,
-          unit_price: it.unit_price,
+          unit_price: decimalValue(it.unit_price),
           qty: it.qty,
           size: it.size,
           fit_option_code: it.fit_option_code || '',
@@ -1429,7 +1565,7 @@
         option_labels: it.option_labels || {},
         size: it.size,
         qty: it.qty,
-        unit_price: it.unit_price
+        unit_price: decimalValue(it.unit_price),
       };
     });
     var overrideBox = document.getElementById('moPriceOverride');

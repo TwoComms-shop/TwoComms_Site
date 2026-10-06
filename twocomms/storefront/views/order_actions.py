@@ -17,8 +17,10 @@ from orders.nova_poshta_documents import (
     NovaPoshtaDocumentError,
     NovaPoshtaDocumentService,
     build_order_payment_snapshot,
+    build_shipment_contract_token,
     build_waybill_description,
     normalize_phone,
+    validate_shipment_contract_token,
 )
 from orders.status_management import (
     _apply_order_status_update_to_order,
@@ -64,6 +66,10 @@ def _manual_ship_action_block_reason(order: Order, status: str) -> str | None:
 
 
 def _waybill_action_block_reason(order: Order) -> str | None:
+    try:
+        NovaPoshtaDocumentService._validate_order_delivery(order)
+    except NovaPoshtaDocumentError as exc:
+        return str(exc)
     if order.status in {"done", "cancelled"}:
         return (
             f"Створення ТТН більше недоступне. "
@@ -133,14 +139,11 @@ def _fallback_waybill_initial(service: NovaPoshtaDocumentService, order: Order) 
         "sender_warehouse_token": "",
         "description": build_waybill_description(order),
         "declared_cost": payment_snapshot["declared_cost"],
-        "weight": "1.0",
-        "seats_amount": "1",
-        "length_cm": f"{service.DEFAULT_LENGTH_CM}",
-        "width_cm": f"{service.DEFAULT_WIDTH_CM}",
-        "height_cm": f"{service.DEFAULT_HEIGHT_CM}",
+        **service.build_package_defaults(order),
         "cod_amount": payment_snapshot["cod_amount"] if payment_snapshot["cod_amount_value"] > 0 else "",
         "payer_type": payment_snapshot["delivery_payer_type"],
-        "payment_method": "Cash",
+        "payment_method": payment_snapshot["delivery_payment_method"],
+        "shipment_contract_token": build_shipment_contract_token(order),
     }
 
 
@@ -294,6 +297,7 @@ def _render_waybill_action_page(
             "delete_url": delete_url,
             "hidden_field_errors": _hidden_field_errors(form),
             "payment_snapshot": _payment_snapshot_payload(order) if order else None,
+            "packaging_hint": NovaPoshtaDocumentService().build_package_defaults(order)["packaging_hint"] if order else "",
         },
         status_code=status_code,
     )
@@ -566,10 +570,10 @@ def telegram_order_np_waybill_action(request, order_id: int, action: str):
 
     if request.method == "GET":
         initial, helper_message = _build_waybill_initial(service, order)
-        form = TelegramNovaPoshtaWaybillForm(initial=initial)
+        form = TelegramNovaPoshtaWaybillForm(initial=initial, order=order)
     else:
         helper_message = ""
-        form = TelegramNovaPoshtaWaybillForm(request.POST)
+        form = TelegramNovaPoshtaWaybillForm(request.POST, order=order)
 
     if request.method == "POST" and form.is_valid():
         created: dict | None = None
@@ -583,6 +587,7 @@ def telegram_order_np_waybill_action(request, order_id: int, action: str):
                 )
                 block_reason = _waybill_action_block_reason(locked_order)
                 snapshot = build_order_payment_snapshot(locked_order)
+                validate_shipment_contract_token(locked_order, form.cleaned_data.get("shipment_contract_token", ""))
                 if not block_reason and (
                     snapshot['delivery_payment_requires_manual']
                     or form.cleaned_data['payer_type'] != snapshot['delivery_payer_type']

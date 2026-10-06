@@ -565,6 +565,9 @@
     {% if helper_message %}
       <p class="tg-waybill-helper">{{ helper_message }}</p>
     {% endif %}
+    {% if packaging_hint %}
+      <p class="tg-waybill-helper" data-waybill-packaging-hint>{{ packaging_hint }}</p>
+    {% endif %}
 
     {% if warnings %}
       <ul class="tg-waybill-warning-list">
@@ -634,6 +637,7 @@
               <input type="hidden" name="recipient_settlement_ref" value="{{ form.recipient_settlement_ref.value|default:'' }}" data-np-settlement-ref>
               <input type="hidden" name="recipient_city_ref" value="{{ form.recipient_city_ref.value|default:'' }}" data-np-city-ref>
               <input type="hidden" name="recipient_city_token" value="{{ form.recipient_city_token.value|default:'' }}" data-np-city-token>
+              {{ form.shipment_contract_token }}
               <input type="hidden" name="recipient_warehouse_ref" value="{{ form.recipient_warehouse_ref.value|default:'' }}" data-np-warehouse-ref>
               <input type="hidden" name="recipient_warehouse_token" value="{{ form.recipient_warehouse_token.value|default:'' }}" data-np-warehouse-token>
 
@@ -811,6 +815,15 @@
               </div>
             </div>
 
+            <div class="tg-waybill-field">
+              <label class="tg-waybill-label" for="id_packaging_type">{{ form.packaging_type.label }}</label>
+              {{ form.packaging_type }}
+              <p class="tg-waybill-helper">{{ form.packaging_type.help_text }}</p>
+              {% if form.packaging_type.errors %}
+                <ul class="tg-waybill-errors">{% for error in form.packaging_type.errors %}<li>{{ error }}</li>{% endfor %}</ul>
+              {% endif %}
+            </div>
+
             <div class="tg-waybill-field-grid">
               <div class="tg-waybill-field">
                 <label class="tg-waybill-label" for="id_weight">{{ form.weight.label }}</label>
@@ -907,6 +920,7 @@
             <div class="tg-waybill-field">
               <label class="tg-waybill-label" for="id_payment_method">{{ form.payment_method.label }}</label>
               {{ form.payment_method }}
+              <p class="tg-waybill-helper">{{ form.payment_method.help_text }}</p>
               {% if form.payment_method.errors %}
                 <ul class="tg-waybill-errors">
                   {% for error in form.payment_method.errors %}

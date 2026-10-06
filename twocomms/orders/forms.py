@@ -1,6 +1,6 @@
 from django import forms
 
-from orders.nova_poshta_documents import normalize_phone, normalize_phone_for_np
+from orders.nova_poshta_documents import normalize_phone, normalize_phone_for_np, order_contains_dtf_film
 
 
 class CompanyProfileForm(forms.Form):
@@ -122,6 +122,13 @@ class TelegramNovaPoshtaWaybillForm(forms.Form):
     sender_warehouse_token = forms.CharField(max_length=2048, required=False, widget=forms.HiddenInput())
 
     description = forms.CharField(label="Опис відправлення", max_length=100)
+    shipment_contract_token = forms.CharField(max_length=1024, required=False, widget=forms.HiddenInput())
+    packaging_type = forms.ChoiceField(
+        label="Пакування",
+        required=False,
+        choices=[("own_packaging", "Власне пакування"), ("np_clothing_bag", "Пакет Нової пошти для одягу"), ("np_tube_60", "Тубус Нової пошти 60 см")],
+        help_text="Пакування Нової пошти додається до ТТН за актуальним довідником. При власному пакуванні послуга не додається.",
+    )
     declared_cost = forms.DecimalField(label="Оголошена вартість", max_digits=12, decimal_places=2, min_value=0)
     weight = forms.DecimalField(label="Вага, кг", max_digits=6, decimal_places=2, min_value=0.1)
     seats_amount = forms.IntegerField(label="Кількість місць", min_value=1, max_value=1)
@@ -144,10 +151,18 @@ class TelegramNovaPoshtaWaybillForm(forms.Form):
         label="Форма оплати доставки",
         required=False,
         choices=PAYMENT_METHOD_CHOICES,
+        help_text="Безготівкова оплата потребує доступного договору з Новою поштою для обраного платника. Якщо API відхиляє NonCash, перевірте договір або оберіть готівкову оплату.",
     )
 
     def __init__(self, *args, **kwargs):
+        order = kwargs.pop("order", None)
         super().__init__(*args, **kwargs)
+        if order is not None:
+            self.fields["packaging_type"].choices = (
+                [("np_tube_60", "Тубус Нової пошти 60 см")]
+                if order_contains_dtf_film(order)
+                else [("own_packaging", "Власне пакування"), ("np_clothing_bag", "Пакет Нової пошти для одягу")]
+            )
         placeholders = {
             "recipient_full_name": "ПІБ одержувача",
             "recipient_phone": "+380XXXXXXXXX",

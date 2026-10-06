@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from django.contrib import messages
 from django.db import transaction
-from django.http import JsonResponse, HttpResponseBadRequest
+from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -25,10 +25,12 @@ from warehouse.services.inventory import (
     reverse_write_off,
 )
 from warehouse.services.matching import (
+    DTF_GARMENT_WRITEOFF_ERROR,
     all_active_stock_items,
     find_prints_for_order_item,
     find_stock_items_for_order_item,
     group_stock_items_by_category,
+    order_has_dtf_film,
 )
 
 
@@ -78,6 +80,9 @@ def write_off_entry(request, token):
         WriteOffRequest.objects.select_related("order"), token=token_uuid
     )
     order = wo_request.order
+
+    if order_has_dtf_film(order):
+        return HttpResponse(DTF_GARMENT_WRITEOFF_ERROR, status=409, content_type="text/plain; charset=utf-8")
 
     if not wo_request.opened_at:
         wo_request.opened_at = timezone.now()
@@ -169,6 +174,11 @@ def write_off_submit(request, token):
 
     try:
         with transaction.atomic():
+            # Serialize with order editing so a cached garment form cannot
+            # deduct apparel after the order has been changed to DTF film.
+            order = Order.objects.select_for_update().get(pk=order.pk)
+            if order_has_dtf_film(order):
+                return HttpResponse(DTF_GARMENT_WRITEOFF_ERROR, status=409, content_type="text/plain; charset=utf-8")
             for item in order.items.all():
                 prefix = f"item_{item.pk}_"
 

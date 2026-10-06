@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -10,6 +12,7 @@ from typing import Any
 
 import requests
 from django.conf import settings
+from django.core import signing
 
 from orders.nova_poshta_checkout import build_city_choice_token, build_warehouse_choice_token
 from orders.nova_poshta_lookup import NovaPoshtaDirectoryService
@@ -26,6 +29,12 @@ logger = logging.getLogger(__name__)
 TELEGRAM_CREATE_NP_WAYBILL_ACTION = "create-np-waybill"
 TELEGRAM_DELETE_NP_WAYBILL_ACTION = "delete-np-waybill"
 NOVA_POSHTA_DESCRIPTION_MAX_LENGTH = 100
+SHIPMENT_CONTRACT_TOKEN_SALT = "orders.nova_poshta.manual_shipment_contract.v1"
+DTF_PACKAGING_HINT = (
+    "DTF-плівка: тубус Нової пошти 60 см, вага 2 кг. "
+    "Пакування додається до місця відправлення за актуальним довідником Нової пошти. "
+    "Перевірте вагу та зовнішні габарити перед створенням ТТН."
+)
 
 _DESCRIPTION_REPLACEMENTS = str.maketrans({
     "\u2014": "-",
@@ -310,6 +319,48 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
     else:
         paid_amount = Decimal("0.00")
 
+    manual_payment = payment_payload.get("manual_shipment_payment")
+    # A manual order contract must not weaken a reviewed Instagram agreement.
+    instagram_authority = bool(
+        delivery_policy['source_locked'] or delivery_policy['requires_manual']
+        or payment_payload.get('instagram_delivery_contract') or reconciliation or manager_payment_verified
+        or payment_payload.get("manager_payment_decision_id")
+        or payment_payload.get("manual_payment_evidence_confirmed")
+    )
+    manual_payment_valid = bool(
+        isinstance(manual_payment, dict)
+        and not instagram_authority
+        and manual_payment.get("payer_type") in {"Sender", "Recipient"}
+        and manual_payment.get("payment_method") in {"Cash", "NonCash"}
+        and type(manual_payment.get("cod_enabled")) is bool
+    )
+    if manual_payment_valid:
+        try:
+            manual_paid = Decimal(str(manual_payment.get("paid_amount", "0")))
+            manual_payment_valid = manual_paid.is_finite() and manual_paid >= 0
+        except (InvalidOperation, ValueError, TypeError):
+            manual_payment_valid = False
+    remaining_amount = max(payable_total - paid_amount, Decimal("0.00"))
+    if manual_payment_valid:
+        goods_paid_amount = (
+            merchandise_payable if payment_status == "paid"
+            else min(NovaPoshtaDocumentService._as_money(manual_paid), merchandise_payable)
+            if payment_status == "prepaid" else Decimal("0.00")
+        )
+        # Manual metadata records goods-only money. An audited customer-paid
+        # carrier charge is already allocated, so include it exactly once in
+        # the total received while COD collects only outstanding merchandise.
+        delivery_paid_amount = delivery_policy['delivery_amount'] if delivery_policy['valid'] is True and delivery_policy['mode'] == 'customer_prepaid' else Decimal('0.00')
+        paid_amount = goods_paid_amount + delivery_paid_amount
+        prepayment_amount = paid_amount if payment_status == "prepaid" else Decimal("0.00")
+        remaining_amount = max(merchandise_payable - goods_paid_amount, Decimal("0.00"))
+        cod_amount = remaining_amount if manual_payment["cod_enabled"] else Decimal("0.00")
+
+    delivery_payer_type = (
+        delivery_policy['payer_type'] if delivery_policy['valid'] is True or not manual_payment_valid
+        else manual_payment['payer_type']
+    )
+
     return {
         "payment_status": payment_status,
         "payment_status_label": get_payment_status_label(payment_status),
@@ -333,17 +384,22 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
         "declared_cost": f"{merchandise_payable:.2f}",
         "declared_cost_value": merchandise_payable,
         "delivery_prepaid": delivery_prepaid,
-        "delivery_payer_type": delivery_policy['payer_type'],
+        "delivery_payer_type": delivery_payer_type,
         "delivery_payment_mode": delivery_policy['mode'],
         "delivery_charge_amount": f"{delivery_policy['delivery_amount']:.2f}",
         "delivery_payment_locked": delivery_policy['source_locked'],
         "delivery_payment_requires_manual": delivery_policy['requires_manual'],
+        "delivery_payment_contract_valid": delivery_policy['valid'],
+        "delivery_payment_authority": delivery_policy['authority'],
+        "delivery_payment_method": manual_payment["payment_method"] if manual_payment_valid else "Cash",
+        "manual_shipment_payment_valid": manual_payment_valid,
+        "cod_enabled": manual_payment["cod_enabled"] and cod_amount > 0 if manual_payment_valid else cod_amount > 0,
         "prepayment_amount": f"{prepayment_amount:.2f}",
         "prepayment_amount_value": prepayment_amount,
         "cod_amount": f"{cod_amount:.2f}",
         "cod_amount_value": cod_amount,
-        "remaining_amount": f"{cod_amount:.2f}",
-        "remaining_amount_value": cod_amount,
+        "remaining_amount": f"{remaining_amount:.2f}",
+        "remaining_amount_value": remaining_amount,
     }
 
 
@@ -410,8 +466,94 @@ def split_person_name(full_name: str) -> dict[str, str]:
     }
 
 
+def _order_items(order) -> list:
+    relation = getattr(order, "items", [])
+    return list(relation.all() if hasattr(relation, "all") else relation or [])
+
+
+def _shipment_contract_fingerprint(order, snapshot: dict[str, Any]) -> str:
+    contract = {
+        key: snapshot[key] for key in (
+            "delivery_payer_type", "delivery_payment_method", "cod_enabled",
+            "cod_amount", "paid_amount", "payment_status", "payable_total",
+            "declared_cost", "discount_amount",
+            "delivery_payment_mode", "delivery_charge_amount", "delivery_payment_locked",
+            "delivery_payment_requires_manual", "delivery_payment_contract_valid", "delivery_payment_authority",
+        )
+    }
+    payload = getattr(order, 'payment_payload', None)
+    payload = payload if isinstance(payload, dict) else {}
+    contract['delivery_source'] = payload.get('delivery_payment') or payload.get('instagram_delivery_contract') or {}
+    contract["items"] = [
+        {name: str(getattr(item, name, "") or "") for name in (
+            "pk", "item_kind", "film_length_m", "qty", "unit_price", "title",
+            "product_id", "color_variant_id", "size", "fit_option_code",
+        )}
+        for item in _order_items(order)
+    ]
+    contract["recipient"] = {
+        name: str(getattr(order, name, "") or "") for name in (
+            "full_name", "phone", "delivery_method", "city", "np_office",
+            "np_settlement_ref", "np_city_ref", "np_warehouse_ref",
+        )
+    }
+    serialized = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def build_shipment_contract_token(order) -> str:
+    snapshot = build_order_payment_snapshot(order)
+    if not snapshot["manual_shipment_payment_valid"]:
+        return ""
+    return signing.dumps(
+        {"order_id": str(getattr(order, "pk", "") or ""), "fingerprint": _shipment_contract_fingerprint(order, snapshot)},
+        salt=SHIPMENT_CONTRACT_TOKEN_SALT,
+    )
+
+
+def validate_shipment_contract_token(order, token: str) -> None:
+    snapshot = build_order_payment_snapshot(order)
+    if not snapshot["manual_shipment_payment_valid"]:
+        return
+    message = "Умови оплати або товари замовлення змінилися після відкриття форми ТТН. Оновіть сторінку, перевірте актуальні умови та повторіть створення."
+    try:
+        signed = signing.loads(str(token or ""), salt=SHIPMENT_CONTRACT_TOKEN_SALT, max_age=86400)
+    except (signing.BadSignature, ValueError, TypeError):
+        raise NovaPoshtaDocumentError(message) from None
+    expected = {"order_id": str(getattr(order, "pk", "") or ""), "fingerprint": _shipment_contract_fingerprint(order, snapshot)}
+    if signed != expected:
+        raise NovaPoshtaDocumentError(message)
+
+
+def _is_film_item(item) -> bool:
+    return getattr(item, "item_kind", "") == "dtf_film" or getattr(item, "is_dtf_film", False) is True
+
+
+def order_contains_dtf_film(order) -> bool:
+    return any(_is_film_item(item) for item in _order_items(order))
+
+
 def build_waybill_description(order) -> str:
-    items = list(getattr(order, "items", []).all() if hasattr(getattr(order, "items", None), "all") else getattr(order, "items", []) or [])
+    items = _order_items(order)
+    film_items = [item for item in items if _is_film_item(item)]
+    if film_items:
+        film_metres = Decimal("0")
+        for item in film_items:
+            try:
+                metres = Decimal(str(getattr(item, "film_length_m", 0) or 0))
+            except (InvalidOperation, ValueError, TypeError):
+                continue
+            if metres.is_finite() and metres > 0:
+                film_metres += metres
+        length_label = NovaPoshtaDocumentService._format_decimal(film_metres, trim_zeroes=True)
+        description = f"DTF плівка бренду TwoComms, {length_label} м, ширина 60 см"
+        clothing_qty = sum(int(getattr(item, "qty", 0) or 0) for item in items if not _is_film_item(item))
+        custom_relation = getattr(order, "custom_print_leads", [])
+        custom_items = list(custom_relation.all() if hasattr(custom_relation, "all") else custom_relation or [])
+        clothing_qty += sum(int(getattr(item, "quantity", 0) or 0) for item in custom_items)
+        if clothing_qty:
+            description += f"; одяг {clothing_qty} шт."
+        return normalize_waybill_description(description)
     total_qty = sum(int(getattr(item, "qty", 0) or 0) for item in items)
     if total_qty == 1 and len(items) == 1:
         title = str(getattr(items[0], "title", "") or "товар").strip()
@@ -445,6 +587,10 @@ class NovaPoshtaDocumentService:
     DEFAULT_LENGTH_CM = Decimal("30")
     DEFAULT_WIDTH_CM = Decimal("20")
     DEFAULT_HEIGHT_CM = Decimal("8")
+    FILM_WEIGHT = Decimal("2")
+    FILM_LENGTH_CM = Decimal("60")
+    FILM_WIDTH_CM = Decimal("16")
+    FILM_HEIGHT_CM = Decimal("12")
 
     def __init__(self) -> None:
         self.api_key = getattr(settings, "NOVA_POSHTA_API_KEY", "") or ""
@@ -455,9 +601,105 @@ class NovaPoshtaDocumentService:
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
+    @staticmethod
+    def _validate_order_delivery(order) -> None:
+        if getattr(order, "delivery_method", "nova_poshta") != "nova_poshta":
+            raise NovaPoshtaDocumentError("Автоматичне створення ТТН доступне лише для доставки Новою поштою.")
+        items = _order_items(order)
+        if any(_is_film_item(item) for item in items):
+            custom_relation = getattr(order, "custom_print_leads", [])
+            custom_items = list(custom_relation.all() if hasattr(custom_relation, "all") else custom_relation or [])
+            if any(not _is_film_item(item) for item in items) or any(int(getattr(item, "quantity", 0) or 0) > 0 for item in custom_items):
+                raise NovaPoshtaDocumentError("DTF-плівку та одяг потрібно оформити окремими замовленнями та відправленнями.")
+
+    def build_package_defaults(self, order) -> dict[str, str]:
+        film = order_contains_dtf_film(order)
+        payment_payload = getattr(order, "payment_payload", None)
+        new_manual_clothing = bool(
+            not film and getattr(order, "source", "") == "manual"
+            and isinstance(payment_payload, dict)
+            and isinstance(payment_payload.get("manual_shipment_payment"), dict)
+        )
+        return {
+            "weight": "2.0" if film else "1.0",
+            "seats_amount": "1",
+            "length_cm": str(self.FILM_LENGTH_CM if film else self.DEFAULT_LENGTH_CM),
+            "width_cm": str(self.FILM_WIDTH_CM if film else self.DEFAULT_WIDTH_CM),
+            "height_cm": str(self.FILM_HEIGHT_CM if film else self.DEFAULT_HEIGHT_CM),
+            "packaging_hint": DTF_PACKAGING_HINT if film else "",
+            "packaging_type": "np_tube_60" if film else "np_clothing_bag" if new_manual_clothing else "own_packaging",
+        }
+
+    def _film_package_defaults(self, order, packaging: dict[str, Any]) -> dict[str, str]:
+        package_defaults = self.build_package_defaults(order)
+        package_defaults["packaging_ref"] = str(packaging["Ref"])
+        package_defaults["packaging_label"] = str(packaging["Description"])
+        for field_name, catalog_name in (("length_cm", "Length"), ("width_cm", "Width"), ("height_cm", "Height")):
+            # Common.getPackList dimensions are millimetres; OptionsSeat is cm.
+            millimetres = self._normalize_decimal(packaging.get(catalog_name), fallback=Decimal(package_defaults[field_name]) * 10, minimum=Decimal("10"))
+            package_defaults[field_name] = self._format_decimal(millimetres / Decimal("10"))
+        return package_defaults
+
+    def _get_packaging_catalog(self) -> list[dict[str, Any]]:
+        # The official business cabinet uses Common.getPackList(PackForSale=1)
+        # and writes the selected Ref to OptionsSeat[].packRef. PackingNumber is
+        # a separate customer packaging number, not a packaging catalogue Ref.
+        response = self._request("Common", "getPackList", {"PackForSale": "1"})
+        entries = []
+
+        def collect(value):
+            if isinstance(value, list):
+                for entry in value:
+                    collect(entry)
+            elif isinstance(value, dict):
+                if value.get("Ref") and value.get("Description"):
+                    entries.append(value)
+                else:
+                    for nested in value.values():
+                        if isinstance(nested, (dict, list)):
+                            collect(nested)
+
+        collect(response.get("data", []))
+        return entries
+
+    def _resolve_film_packaging(self) -> dict[str, Any]:
+        matches = [
+            entry for entry in self._get_packaging_catalog()
+            if re.search(r"тубус\b.*(?<!\d)60(?!\d)", str(entry.get("Description", "")), re.IGNORECASE)
+            and str(entry.get("PackagingForPlace", "")) == "1"
+        ]
+        if len(matches) != 1:
+            raise NovaPoshtaDocumentError("Не вдалося однозначно знайти тубус 60 см у довіднику пакування Нової пошти. Повторіть спробу пізніше.")
+        return matches[0]
+
+    def _resolve_clothing_packaging(self, payload: dict[str, Any]) -> dict[str, Any]:
+        dimensions = sorted(self._normalize_dimensions(payload.get("length_cm"), payload.get("width_cm"), payload.get("height_cm")))
+        weight = self._normalize_decimal(payload.get("weight"), fallback=self.DEFAULT_WEIGHT, minimum=Decimal("0.1"))
+        candidates = []
+        for entry in self._get_packaging_catalog():
+            label = str(entry.get("Description", "")).lower()
+            if "пакет" not in label or "одягу" not in label or str(entry.get("PackagingForPlace", "")) != "1":
+                continue
+            capacity_match = re.search(r"(?<!\d)(2|4)\s*кг", label)
+            if not capacity_match:
+                continue
+            capacity = Decimal(capacity_match.group(1))
+            package_dimensions = sorted(self._normalize_decimal(entry.get(name), fallback=Decimal("0")) / 10 for name in ("Length", "Width", "Height"))
+            if weight <= capacity and all(actual <= maximum for actual, maximum in zip(dimensions, package_dimensions)):
+                candidates.append((capacity, entry))
+        candidates.sort(key=lambda candidate: candidate[0])
+        if not candidates or (len(candidates) > 1 and candidates[0][0] == candidates[1][0]):
+            raise NovaPoshtaDocumentError("Не вдалося підібрати пакет Нової пошти для вказаних ваги та габаритів. Перевірте розміри або оберіть власне пакування.")
+        return candidates[0][1]
+
     def build_initial_payload(self, order) -> dict[str, Any]:
+        self._validate_order_delivery(order)
         sender_point = self._resolve_default_sender_point()
         payment_snapshot = build_order_payment_snapshot(order)
+        package_defaults = self.build_package_defaults(order)
+        if order_contains_dtf_film(order):
+            packaging = self._resolve_film_packaging()
+            package_defaults = self._film_package_defaults(order, packaging)
         recipient_city = getattr(order, "city", "") or ""
         recipient_settlement_ref = getattr(order, "np_settlement_ref", "") or ""
         recipient_city_ref = getattr(order, "np_city_ref", "") or ""
@@ -500,17 +742,16 @@ class NovaPoshtaDocumentService:
             "sender_warehouse_token": sender_warehouse_token,
             "description": build_waybill_description(order),
             "declared_cost": payment_snapshot["declared_cost"],
-            "weight": "1.0",
-            "seats_amount": "1",
-            "length_cm": f"{self.DEFAULT_LENGTH_CM}",
-            "width_cm": f"{self.DEFAULT_WIDTH_CM}",
-            "height_cm": f"{self.DEFAULT_HEIGHT_CM}",
+            **package_defaults,
             "cod_amount": payment_snapshot["cod_amount"] if payment_snapshot["cod_amount_value"] > 0 else "",
             "payer_type": payment_snapshot["delivery_payer_type"],
-            "payment_method": "Cash",
+            "payment_method": payment_snapshot["delivery_payment_method"],
+            "shipment_contract_token": build_shipment_contract_token(order),
         }
 
     def create_waybill(self, order, payload: dict[str, Any]) -> dict[str, Any]:
+        self._validate_order_delivery(order)
+        validate_shipment_contract_token(order, payload.get("shipment_contract_token", ""))
         snapshot = build_order_payment_snapshot(order)
         if snapshot['delivery_payment_requires_manual']:
             raise NovaPoshtaDocumentError('Уточніть і збережіть оплату доставки в замовленні перед створенням ТТН.')
@@ -518,6 +759,20 @@ class NovaPoshtaDocumentService:
             raise NovaPoshtaDocumentError('Платник доставки має відповідати збереженим умовам замовлення.')
         if not self.is_configured():
             raise NovaPoshtaDocumentError("NOVA_POSHTA_API_KEY не налаштований.")
+
+        film = order_contains_dtf_film(order)
+        package_defaults = self.build_package_defaults(order)
+        payload = dict(payload)
+        if film:
+            packaging = self._resolve_film_packaging()
+            package_defaults = self._film_package_defaults(order, packaging)
+        else:
+            packaging = None
+        for field_name in ("weight", "length_cm", "width_cm", "height_cm", "seats_amount", "packaging_type"):
+            if payload.get(field_name) in (None, ""):
+                payload[field_name] = package_defaults[field_name]
+        if not film and payload.get("packaging_type") == "np_clothing_bag":
+            packaging = self._resolve_clothing_packaging(payload)
 
         sender_profile = self._resolve_sender_profile()
         sender_point = self._resolve_point(
@@ -564,7 +819,7 @@ class NovaPoshtaDocumentService:
             payload.get("width_cm"),
             payload.get("height_cm"),
         )
-        weight = self._normalize_decimal(payload.get("weight"), fallback=self.DEFAULT_WEIGHT, minimum=Decimal("0.1"))
+        weight = self._normalize_decimal(payload.get("weight"), fallback=self.FILM_WEIGHT if film else self.DEFAULT_WEIGHT, minimum=Decimal("0.1"))
         declared_cost = self._as_money(payload.get("declared_cost"))
         seats_amount = int(str(payload.get("seats_amount") or "1").strip() or "1")
         description = normalize_waybill_description(
@@ -572,6 +827,10 @@ class NovaPoshtaDocumentService:
             fallback=build_waybill_description(order),
         )
         cod_amount = self._as_money(payload.get("cod_amount") or "0")
+        payment_snapshot = build_order_payment_snapshot(order)
+        if payment_snapshot["manual_shipment_payment_valid"]:
+            # A stale form cannot reintroduce COD after an explicit no-COD choice.
+            cod_amount = min(cod_amount, payment_snapshot["cod_amount_value"])
         self._validate_waybill_package(
             recipient_point=recipient_point,
             dimensions=dimensions,
@@ -612,6 +871,8 @@ class NovaPoshtaDocumentService:
                 }
             ],
         }
+        if packaging:
+            method_properties["OptionsSeat"][0]["packRef"] = str(packaging["Ref"])
 
         if cod_amount > 0:
             method_properties["AfterpaymentOnGoodsCost"] = self._format_money(cod_amount)
@@ -620,7 +881,11 @@ class NovaPoshtaDocumentService:
             response = self._request("InternetDocument", "save", method_properties)
         except NovaPoshtaInvalidDescriptionError:
             retry_properties = dict(method_properties)
-            retry_properties["Description"] = "Одяг від TwoComms"
+            if order_contains_dtf_film(order):
+                film_metres = sum((Decimal(str(item.film_length_m)) for item in _order_items(order) if _is_film_item(item)), Decimal("0"))
+                retry_properties["Description"] = f"DTF плівка TwoComms {self._format_decimal(film_metres, trim_zeroes=True)} м"
+            else:
+                retry_properties["Description"] = "Одяг від TwoComms"
             logger.warning("Retrying Nova Poshta waybill with canonical description")
             response = self._request("InternetDocument", "save", retry_properties)
         result = next(iter(response.get("data") or []), None) or {}
@@ -1063,7 +1328,7 @@ class NovaPoshtaDocumentService:
             normalized = Decimal(str(value if value not in (None, "") else fallback))
         except (InvalidOperation, ValueError, TypeError):
             normalized = fallback
-        if normalized < minimum:
+        if not normalized.is_finite() or normalized < minimum:
             return fallback
         return normalized
 
