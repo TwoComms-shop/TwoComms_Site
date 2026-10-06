@@ -108,6 +108,90 @@ class SourceFactStateTests(CommerceStateFixture, TestCase):
         self.assertEqual(selected.transition.previous_snapshot["lines"][0]["size"], "L")
         self.assertEqual(first.result_payload["source_facts"]["source_message_id"], size_source.pk)
 
+    def _legacy_category_then_first_size(self):
+        from copy import deepcopy
+        from management.models import IgCommercialEpisode, IgCommerceSelectionSession, IgCommerceSelectionTransition
+        from management.services.ig_commerce_state import _apply_snapshot, _create_decision, _request_payload
+        category = self.source("Хочу футболку")
+        # Historical reducers kept the category in constraints before creating
+        # a position. Build that old append-only receipt at INSERT, then use
+        # the current reducer for the size and subsequent real operations.
+        episode = IgCommercialEpisode.objects.create(client=self.client, sequence=1, open_slot=1)
+        self.client.current_commercial_episode = episode
+        self.client.save(update_fields=['current_commercial_episode'])
+        session = IgCommerceSelectionSession.objects.create(client=self.client, commercial_episode=episode,
+            generation=1, open_slot=1, state='open')
+        def historical(source, *, accepted, action, garment=None):
+            before = session.snapshot();after = deepcopy(before)
+            if garment:after['query_constraints']['garment_type'] = garment
+            after['revision'] = before['revision'] + 1
+            after['last_provider_message_id'] = source.mid
+            transition = IgCommerceSelectionTransition.objects.create(session=session, source_message=source,
+                from_revision=before['revision'], to_revision=after['revision'], action=action,
+                previous_snapshot=before, next_snapshot=after)
+            _apply_snapshot(session, after, event_at=source.provider_created_at, event_id=source.mid)
+            return _create_decision(source_message=source, session=session, transition=transition,
+                request_payload=_request_payload(parse_turn(source.text)), result_payload={'reason':action},
+                accepted=accepted, is_stale=False, delivery_required=False, delivery_state='not_required')
+        historical(category, accepted=True, action='query_constraints_updated', garment='tshirt')
+        unresolved = self.source("Допоможіть визначити модель")
+        historical(unresolved, accepted=False, action='turn_unresolved')
+        size = self.source("L")
+        apply_turn(self.client, size, parse_turn(size.text), reply_payload={})
+        self.client.refresh_from_db()
+        return category, size
+
+    def test_legacy_category_before_first_line_retains_its_own_source_through_unresolved_turns(self):
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        category, size = self._legacy_category_then_first_size()
+        captured = capture_current_selection_lines(self.client.pk)
+        self.assertTrue(captured['coverage_complete'], captured)
+        row = captured['lines'][0]
+        self.assertEqual(row['fields']['garment_type']['value'], 'tshirt')
+        self.assertEqual(row['evidence']['garment_type']['source_message_id'], category.pk)
+        self.assertEqual(row['fields']['size']['value'], 'L')
+        self.assertEqual(row['evidence']['size']['source_message_id'], size.pk)
+
+    def test_old_accepted_receipts_without_source_fact_extension_keep_exact_category_source(self):
+        from management.services import ig_commerce_state as reducer
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        create = reducer._create_decision
+        def older_receipt(*args, **kwargs):
+            payload = dict(kwargs['result_payload'])
+            payload.pop('source_facts', None)
+            return create(*args, **{**kwargs, 'result_payload': payload})
+        with patch.object(reducer, '_create_decision', side_effect=older_receipt):
+            category, size = self._legacy_category_then_first_size()
+        captured = capture_current_selection_lines(self.client.pk)
+        row = captured['lines'][0]
+        self.assertEqual(row['fields']['garment_type']['value'], 'tshirt')
+        self.assertEqual(row['evidence']['garment_type']['source_message_id'], category.pk)
+        self.assertEqual(row['evidence']['size']['source_message_id'], size.pk)
+
+    def test_legacy_first_category_remains_on_first_position_when_hoodie_is_added(self):
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        category, _ = self._legacy_category_then_first_size()
+        sibling = self.source('добавьте худи размер M для друга')
+        apply_turn(self.client, sibling, parse_turn(sibling.text), reply_payload={})
+        captured = capture_current_selection_lines(self.client.pk)
+        self.assertTrue(captured['coverage_complete'], captured)
+        self.assertEqual([r['fields']['garment_type']['value'] for r in captured['lines']], ['tshirt','hoodie'])
+        self.assertEqual(captured['lines'][0]['evidence']['garment_type']['source_message_id'], category.pk)
+        self.assertEqual(captured['lines'][1]['evidence']['garment_type']['source_message_id'], sibling.pk)
+
+    def test_superseded_legacy_category_is_not_restored_by_later_sibling(self):
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        old, _ = self._legacy_category_then_first_size()
+        replacement = self.source('Хочу худі')
+        apply_turn(self.client, replacement, parse_turn(replacement.text), reply_payload={})
+        sibling = self.source('добавьте футболку размер M для друга')
+        apply_turn(self.client, sibling, parse_turn(sibling.text), reply_payload={})
+        captured = capture_current_selection_lines(self.client.pk)
+        self.assertTrue(captured['coverage_complete'], captured)
+        self.assertEqual(captured['lines'][0]['fields']['garment_type']['value'], 'hoodie')
+        self.assertEqual(captured['lines'][0]['evidence']['garment_type']['source_message_id'], replacement.pk)
+        self.assertNotEqual(captured['lines'][0]['evidence']['garment_type']['source_message_id'], old.pk)
+
     def test_named_ambiguity_keeps_size_and_requires_one_identity_question(self):
         source = self.source("Reality Bends або Classic, розмір L")
         request = resolve_source_product_request(self.client, source, parse_turn(source.text))

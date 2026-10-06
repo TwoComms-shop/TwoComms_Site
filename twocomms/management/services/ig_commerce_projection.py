@@ -187,6 +187,20 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
         session=session, to_revision__lte=session.revision,
         source_message__pk__gte=reset_floor,
     ).select_related("session", "source_message__commerce_turn_decision").order_by("-to_revision")[:64])
+    if "garment_type" not in values and index == 0 and not line.get("garment_type"):
+        # A legacy category lived in shared constraints while this was the
+        # only position. Keep its exact last single-position value when a
+        # sibling is added. The walk below must still prove its original
+        # source through every intervening snapshot; this grants no fact.
+        for candidate in transitions:
+            prior = candidate.previous_snapshot or {}
+            prior_lines = prior.get("lines") or []
+            if (len(prior_lines) == 1 and isinstance(prior_lines[0], dict)
+                and prior_lines[0].get("line_id") == line["line_id"]):
+                prior_garment = (prior.get("query_constraints") or {}).get("garment_type")
+                if prior_garment:
+                    values["garment_type"] = prior_garment
+                break
     copy_capture = _capture
     if _capture is None and any((getattr(row.source_message, "commerce_turn_decision", None).result_payload or {}).get("line_source_facts")
             for row in transitions if getattr(row.source_message, "commerce_turn_decision", None)):
@@ -214,7 +228,8 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
         after = transition.next_snapshot or {}
         after_lines = after.get("lines") or []
         after_line = next((row for row in after_lines if isinstance(row, dict) and row.get("line_id") == line["line_id"]), {})
-        if not after_line:
+        if not after_line and not (index == 0 and not after_lines
+            and not (transition.previous_snapshot or {}).get("lines")):
             break
         before_lines = (transition.previous_snapshot or {}).get("lines") or []
         before_line = next((row for row in before_lines if isinstance(row, dict) and row.get("line_id") == line["line_id"]), {})

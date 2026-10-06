@@ -1,6 +1,6 @@
 # Repeat commerce and all-position source authority · 06.10.2026
 
-Deployment pending. This code/UI block implements the scoped §15 foundation; full passports and the natural 72h/20-turn gate remain open.
+Deployed as0874276aa; [production proof](PRODUCTION_RELEASE_2026-10-07.md). This code/UI block implements the scoped §15 foundation; full passports and the natural 72h/20-turn gate remain open.
 
 Every current position retains stable line/recipient identity, original field source and supersession. Atomic add/replace/remove/quantity/recipient operations preserve siblings; ambiguous targets do not silently use the active position. Unpaid additions stay in the same draft episode, while a separate admitted repeat purchase gets its own scope. Exact owned historical order/item copying does not inherit old price, payment, discount or delivery/contact authority. Neutral sources do not create new commercial rows; an unresolved historical reorder remains a typed clarification observation.
 
